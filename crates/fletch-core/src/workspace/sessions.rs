@@ -1,6 +1,8 @@
-//! `impl WorkspaceManager` — canonical session-record persistence, and the one
-//! definition of a workspace's current session.
+//! `impl WorkspaceManager` — canonical session-record persistence, the one
+//! definition of a workspace's current session, and starting a new one in
+//! place.
 
+use super::lineage::RepeatedHistory;
 use super::*;
 use crate::agent::BranchPoint;
 
@@ -70,9 +72,15 @@ impl WorkspaceManager {
     /// single transaction. Idempotent on `(session_id, native_id)`: a duplicate
     /// native_id is ignored and the original row's body is retained. One commit
     /// for the whole batch instead of one per record, so turn-end ingest is
-    /// O(batch) commits, not O(conversation). `seq` stays contiguous: an ignored
-    /// duplicate doesn't burn a number. Returns how many rows were actually
-    /// inserted (0 when the workspace has no session).
+    /// O(batch) commits, not O(conversation). An ignored duplicate doesn't burn
+    /// a `seq`. Returns how many rows were actually inserted (0 when the
+    /// workspace has no session).
+    ///
+    /// A branched session skips the history its transcript repeats
+    /// ([`RepeatedHistory`]), but each skipped record still takes a `seq`:
+    /// `session_record_count` (= MAX(seq)) is where the next read's positional
+    /// ids start, so every line read for the first time has to count, or a
+    /// later `ln:{i}` could repeat an earlier one.
     pub fn append_session_records(
         &self,
         workspace_id: &str,
@@ -96,6 +104,7 @@ impl WorkspaceManager {
             [&sid],
             |r| r.get(0),
         )?;
+        let repeated = RepeatedHistory::of(&tx, &sid)?;
         let mut inserted = 0usize;
         {
             let mut stmt = tx.prepare(
@@ -104,9 +113,13 @@ impl WorkspaceManager {
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             )?;
             for (native_id, body) in records {
+                let next = seq + 1;
+                if repeated.contains(&tx, native_id)? {
+                    seq = next;
+                    continue;
+                }
                 let body_json = serde_json::to_string(body)
                     .map_err(|e| Error::Other(format!("serialize record body: {e}")))?;
-                let next = seq + 1;
                 let n = stmt.execute(rusqlite::params![
                     sid,
                     next,
@@ -153,17 +166,130 @@ impl WorkspaceManager {
         Ok(())
     }
 
-    /// Record that the current session starts as a native branch of `point`
-    /// (see `Supervisor::set_branch_point`).
-    pub fn set_session_branch_point(&self, workspace_id: &str, point: &BranchPoint) -> Result<()> {
+    /// Start a new current session in `workspace_id` that continues `lineage`
+    /// — rewind's conversation half — and return its id. One transaction:
+    ///
+    /// - The current session is superseded. Its open turn is closed and its
+    ///   queued messages are dropped: nothing will deliver them now.
+    /// - The new session takes the old one's settings (provider, view, effort,
+    ///   model, brief, custom agent, skills, MCP servers) but none of its
+    ///   state: no handoff context, no error, nothing ingested, and a provider
+    ///   session of its own. Claude's id is minted here, as `insert_agent` does;
+    ///   a per-turn provider's is captured from its first turn.
+    /// - With `branch`, it starts as a native branch of that point
+    ///   (`SessionStart::Branch`), written with the row like the lineage.
+    ///
+    /// The view carries over unless the new session can't open in the native
+    /// view yet: a per-turn provider has no session to resume until its first
+    /// turn, and claude honors a cut at a message only in the custom view
+    /// (`Supervisor::switch_view` refuses both).
+    pub fn start_session(
+        &self,
+        workspace_id: &str,
+        lineage: &SessionLineage,
+        branch: Option<&BranchPoint>,
+    ) -> Result<String> {
         let conn = self.db.lock();
-        let sid = current_session_id(&conn, workspace_id)
+        let tx = conn.unchecked_transaction()?;
+        let old = current_session_id(&tx, workspace_id)
             .ok_or_else(|| Error::AgentNotFound(workspace_id.to_string()))?;
-        conn.execute(
-            "UPDATE sessions SET branch_from_session = ?2, branch_at_message = ?3 WHERE id = ?1",
-            rusqlite::params![sid, point.from_session, point.at_message],
+        let (provider, view): (String, String) = tx.query_row(
+            "SELECT provider, view FROM sessions WHERE id = ?1",
+            [&old],
+            |r| Ok((r.get(0)?, r.get(1)?)),
         )?;
-        Ok(())
+        let per_turn = is_per_turn_provider(&provider);
+        let provider_session_id = (!per_turn).then(|| uuid::Uuid::new_v4().to_string());
+        let cut_at_message = branch.is_some_and(|b| b.at_message.is_some());
+        let view = if per_turn || cut_at_message {
+            view_to_str(&AgentView::Custom).to_string()
+        } else {
+            view
+        };
+
+        let now = now_millis();
+        // Superseded first: `idx_sessions_current` allows one current session.
+        tx.execute(
+            "UPDATE sessions SET superseded_at = ?2 WHERE id = ?1",
+            rusqlite::params![old, now],
+        )?;
+        tx.execute(
+            "UPDATE session_user_turns SET ended_at = ?2
+             WHERE session_id = ?1 AND started_at IS NOT NULL AND ended_at IS NULL",
+            rusqlite::params![old, now],
+        )?;
+        tx.execute("DELETE FROM pending_messages WHERE session_id = ?1", [&old])?;
+        let id = uuid::Uuid::new_v4().to_string();
+        tx.execute(
+            "INSERT INTO sessions (id, workspace_id, provider, view, provider_session_id,
+                                   effort, model, instructions, custom_agent_id, skills, mcp_servers,
+                                   parent_session_id, parent_cut_seq,
+                                   branch_from_session, branch_at_message, created_at)
+             SELECT ?2, workspace_id, provider, ?3, ?4,
+                    effort, model, instructions, custom_agent_id, skills, mcp_servers,
+                    ?5, ?6, ?7, ?8, ?9
+               FROM sessions WHERE id = ?1",
+            rusqlite::params![
+                old,
+                id,
+                view,
+                provider_session_id,
+                lineage.parent_session_id,
+                lineage.cut_seq,
+                branch.map(|b| &b.from_session),
+                branch.and_then(|b| b.at_message.as_ref()),
+                now,
+            ],
+        )?;
+        tx.commit()?;
+        Ok(id)
+    }
+
+    /// The sessions `workspace_id` has superseded — the conversations it
+    /// rewound away from — oldest first, each with its records. A rewind
+    /// leaves the abandoned branch's records where they are, and what it
+    /// spent is still the workspace's, so its usage folds these in. Each
+    /// record is its own session's (`inherited: false`).
+    ///
+    /// A superseded session never changes again (nothing ingests into it), so
+    /// a caller folds each one once: every session is listed, but those in
+    /// `known` come without their records.
+    ///
+    /// Sessions `detach_children` handed over from a deleted workspace are
+    /// left out: what they spent was that workspace's. They are told apart by
+    /// age. A workspace is only ever handed sessions its history inherits
+    /// from, which all existed before it, while every session it starts is as
+    /// old as it is or younger (`insert_agent` stamps the first one with the
+    /// workspace's own `created_at`).
+    pub fn read_superseded_records(
+        &self,
+        workspace_id: &str,
+        known: &[String],
+    ) -> Result<Vec<SupersededSession>> {
+        let conn = self.db.lock();
+        let mut stmt = conn.prepare(
+            "SELECT s.id FROM sessions s JOIN workspaces w ON w.id = s.workspace_id
+              WHERE s.workspace_id = ?1 AND s.superseded_at IS NOT NULL
+                AND s.created_at >= w.created_at
+              ORDER BY s.created_at, s.rowid",
+        )?;
+        let sessions: Vec<String> = stmt
+            .query_map([workspace_id], |r| r.get(0))?
+            .collect::<std::result::Result<_, rusqlite::Error>>()?;
+        sessions
+            .into_iter()
+            .map(|session_id| {
+                let records = if known.contains(&session_id) {
+                    Vec::new()
+                } else {
+                    query_records(&conn, &session_id, i64::MAX, false)?
+                };
+                Ok(SupersededSession {
+                    session_id,
+                    records,
+                })
+            })
+            .collect()
     }
 
     /// Store what the current session's agent is told about the conversation
@@ -197,7 +323,8 @@ impl WorkspaceManager {
         }))
     }
 
-    /// Count of records already ingested for the current session (= MAX(seq)) —
+    /// Count of records already ingested for the current session (= MAX(seq),
+    /// which also counts the repeated history a branched session skipped) —
     /// the starting index for positional `ln:{i}` native ids on the next read.
     /// Own records only: history inherited through lineage is never re-read
     /// from this session's transcript.
@@ -272,5 +399,405 @@ impl WorkspaceManager {
             return Ok(vec![]);
         };
         query_records(&conn, &sid, i64::MAX, false)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::message_queue::PendingMsg;
+    use crate::workspace::tests::{
+        agent, concat, exchange, history, history_turns, inherited, owned, seed_repo, session_of,
+        test_db,
+    };
+    use crate::workspace::Anchor;
+    use serde_json::json;
+
+    /// Workspace `a`, which said alpha, then bravo.
+    fn talked() -> WorkspaceManager {
+        let db = test_db();
+        seed_repo(&db, "/r");
+        let wm = WorkspaceManager::new(db);
+        agent(&wm, "a", "/r", None);
+        exchange(&wm, "a", "a1", "alpha");
+        exchange(&wm, "a", "a2", "bravo");
+        wm
+    }
+
+    /// `a` rewound to just before bravo, in a new session.
+    fn rewound(wm: &WorkspaceManager, branch: Option<&BranchPoint>) -> String {
+        let lineage = wm.resolve_anchor("a", Anchor::Before("a2")).unwrap();
+        wm.start_session("a", &lineage, branch).unwrap()
+    }
+
+    fn branch() -> BranchPoint {
+        BranchPoint {
+            from_session: "claude-session".into(),
+            at_message: Some("a1-a".into()),
+        }
+    }
+
+    fn queued(turn_id: &str) -> PendingMsg {
+        PendingMsg {
+            turn_id: turn_id.into(),
+            text: "later".into(),
+            attachments: vec![],
+        }
+    }
+
+    /// A turn of `a` in flight, with a follow-up queued behind it.
+    fn busy(wm: &WorkspaceManager) {
+        wm.insert_user_turn("a", "a3", "charlie", &[]).unwrap();
+        wm.mark_user_turn_started("a3", 1).unwrap();
+        wm.enqueue_pending_message("a", &queued("q1")).unwrap();
+    }
+
+    fn ended_at(wm: &WorkspaceManager, turn_id: &str) -> Option<i64> {
+        wm.db
+            .lock()
+            .query_row(
+                "SELECT ended_at FROM session_user_turns WHERE turn_id = ?1",
+                [turn_id],
+                |r| r.get(0),
+            )
+            .unwrap()
+    }
+
+    fn superseded_at(wm: &WorkspaceManager, session: &str) -> Option<i64> {
+        wm.db
+            .lock()
+            .query_row(
+                "SELECT superseded_at FROM sessions WHERE id = ?1",
+                [session],
+                |r| r.get(0),
+            )
+            .unwrap()
+    }
+
+    /// The session columns a new session takes over, and the ones it doesn't.
+    fn settings(
+        wm: &WorkspaceManager,
+        session: &str,
+    ) -> (Vec<Option<String>>, Vec<Option<String>>) {
+        wm.db
+            .lock()
+            .query_row(
+                "SELECT provider, view, effort, model, instructions, custom_agent_id, skills,
+                        mcp_servers, handoff_context, last_error
+                   FROM sessions WHERE id = ?1",
+                [session],
+                |r| {
+                    let taken = (0..8).map(|i| r.get(i)).collect::<rusqlite::Result<_>>()?;
+                    let left = (8..10).map(|i| r.get(i)).collect::<rusqlite::Result<_>>()?;
+                    Ok((taken, left))
+                },
+            )
+            .unwrap()
+    }
+
+    #[test]
+    fn a_new_session_takes_the_old_ones_place_in_every_read_and_write() {
+        let wm = talked();
+        busy(&wm);
+        let old = session_of(&wm, "a");
+        wm.db
+            .lock()
+            .execute(
+                "UPDATE sessions SET view = 'native', effort = 'high', model = 'opus',
+                        instructions = 'be brief', custom_agent_id = 'ca', skills = '[1]',
+                        mcp_servers = '[2]', handoff_context = 'digest', last_error = 'boom'
+                  WHERE id = ?1",
+                [&old],
+            )
+            .unwrap();
+        let before = wm.agent("a").unwrap();
+        let lineage = wm.resolve_anchor("a", Anchor::Before("a2")).unwrap();
+
+        let new = wm.start_session("a", &lineage, None).unwrap();
+
+        // One current session, the new one; the old one stays as an ancestor.
+        assert_eq!(session_of(&wm, "a"), new);
+        assert!(superseded_at(&wm, &old).is_some());
+        let current: i64 = wm
+            .db
+            .lock()
+            .query_row(
+                "SELECT COUNT(*) FROM sessions WHERE workspace_id = 'a' AND superseded_at IS NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(current, 1);
+        // Settings carry over; context, error and the provider session don't.
+        let (taken, left) = settings(&wm, &new);
+        assert_eq!(taken, settings(&wm, &old).0);
+        assert_eq!(left, vec![None, None]);
+        let after = wm.agent("a").unwrap();
+        assert_eq!(after.lineage, Some(lineage));
+        assert!(after.session_id.is_some());
+        assert_ne!(after.session_id, before.session_id);
+        assert_eq!(wm.session_branch_point("a").unwrap(), None);
+        // The old session's turn is closed and its queue is gone.
+        assert!(ended_at(&wm, "a3").is_some());
+        assert!(wm.read_all_pending_messages().unwrap().is_empty());
+        // What it shows: the history before bravo, nothing of its own yet.
+        assert_eq!(history(&wm, "a"), inherited(&["a1-u", "a1-a"]));
+        assert_eq!(history_turns(&wm, "a"), inherited(&["a1"]));
+        assert_eq!(wm.session_record_count("a").unwrap(), 0);
+        assert_eq!(wm.last_activity("a"), None);
+
+        // Every write goes to the new session.
+        exchange(&wm, "a", "n1", "delta");
+        wm.update_agent_effort("a", Some("low")).unwrap();
+        wm.enqueue_pending_message("a", &queued("q2")).unwrap();
+        assert_eq!(
+            history(&wm, "a"),
+            concat(&[inherited(&["a1-u", "a1-a"]), owned(&["n1-u", "n1-a"])])
+        );
+        assert_eq!(
+            history_turns(&wm, "a"),
+            concat(&[inherited(&["a1"]), owned(&["n1"])])
+        );
+        assert_eq!(wm.agent("a").unwrap().effort.as_deref(), Some("low"));
+        assert_eq!(settings(&wm, &old).0[2].as_deref(), Some("high"));
+        let pending = wm.read_all_pending_messages().unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].1.turn_id, "q2");
+        assert!(wm.mark_user_turn_ended("a").unwrap().is_none());
+    }
+
+    #[test]
+    fn a_session_that_cant_start_leaves_the_old_one_as_it_was() {
+        let wm = talked();
+        busy(&wm);
+        let old = session_of(&wm, "a");
+        let nowhere = SessionLineage {
+            parent_session_id: "no-such-session".into(),
+            cut_seq: 1,
+        };
+
+        assert!(wm.start_session("a", &nowhere, None).is_err());
+
+        assert_eq!(session_of(&wm, "a"), old);
+        assert_eq!(superseded_at(&wm, &old), None);
+        assert_eq!(ended_at(&wm, "a3"), None);
+        assert_eq!(wm.read_all_pending_messages().unwrap().len(), 1);
+        assert!(wm.start_session("nonesuch", &nowhere, None).is_err());
+    }
+
+    /// The view carries over only where the new session can open in it.
+    #[test]
+    fn a_session_that_cant_open_natively_yet_starts_in_the_chat_view() {
+        let wm = talked();
+        let restart = |ws: &str, branch: Option<&BranchPoint>| {
+            let lineage = wm.resolve_anchor(ws, Anchor::End).unwrap();
+            wm.start_session(ws, &lineage, branch).unwrap();
+        };
+        wm.update_agent_view("a", AgentView::Native).unwrap();
+        restart("a", None);
+        assert_eq!(wm.agent("a").unwrap().view, AgentView::Native);
+        restart("a", Some(&branch()));
+        assert_eq!(wm.agent("a").unwrap().view, AgentView::Custom);
+        assert_eq!(wm.session_branch_point("a").unwrap(), Some(branch()));
+
+        // A per-turn provider's session is captured from its first turn, and
+        // only then can its native view resume it.
+        let mut codex = new_agent_record(
+            "c".into(),
+            "c".into(),
+            "codex".into(),
+            crate::workspace::tests::mk_repo("/r"),
+            "task".into(),
+            AgentView::Native,
+        );
+        wm.add_agent(&mut codex).unwrap();
+        wm.set_agent_session_id("c", "thread-1").unwrap();
+        restart("c", None);
+        let c = wm.agent("c").unwrap();
+        assert_eq!(c.view, AgentView::Custom);
+        assert_eq!(c.session_id, None);
+        // And the superseded session's id stays its own.
+        assert!(!wm.set_agent_session_id("c", "thread-1").unwrap());
+        assert!(wm.set_agent_session_id("c", "thread-2").unwrap());
+    }
+
+    /// A branch's transcript opens with the conversation it was cut from,
+    /// under the ids its ancestors stored it with.
+    #[test]
+    fn a_branched_session_skips_the_history_its_transcript_repeats() {
+        let wm = talked();
+        let meta = json!({"type": "mode"});
+        // A positional id the parent has too, below the cut.
+        wm.db
+            .lock()
+            .execute(
+                "UPDATE session_records SET native_id = 'ln:0' WHERE native_id = 'a1-a'",
+                [],
+            )
+            .unwrap();
+        rewound(&wm, Some(&branch()));
+        // The new turn repeats alpha's text, as a retried prompt would.
+        wm.insert_user_turn("a", "n1", "alpha", &[]).unwrap();
+        let alpha = json!({"type": "user", "text": "alpha"});
+        let reply = json!({"type": "assistant", "text": "re alpha"});
+        wm.append_session_records(
+            "a",
+            "claude",
+            "transcript",
+            None,
+            &[
+                ("ln:0", &meta),
+                ("a1-u", &alpha),
+                ("n1-u", &alpha),
+                ("n1-a", &reply),
+            ],
+        )
+        .unwrap();
+        wm.associate_pending_user_turns("a").unwrap();
+
+        // Alpha shows once, through lineage; an equal positional id is a
+        // different line, so it is stored.
+        assert_eq!(
+            history(&wm, "a"),
+            concat(&[
+                inherited(&["a1-u", "ln:0"]),
+                owned(&["ln:0", "n1-u", "n1-a"])
+            ])
+        );
+        // The new turn matched its own prompt, not the repeated one.
+        let turns = wm.read_history_turns("a").unwrap();
+        assert_eq!(turns.last().unwrap().native_id.as_deref(), Some("n1-u"));
+        // The skipped line still counted, so positional ids go on past it.
+        assert_eq!(wm.session_record_count("a").unwrap(), 4);
+        let seqs: Vec<i64> = wm
+            .read_session_records("a")
+            .unwrap()
+            .iter()
+            .map(|r| r.seq)
+            .collect();
+        assert_eq!(seqs, vec![1, 3, 4]);
+    }
+
+    /// Only a branch repeats anything: another session stores what its
+    /// transcript holds, whatever its history shows.
+    #[test]
+    fn a_session_that_isnt_a_branch_skips_nothing() {
+        let wm = talked();
+        rewound(&wm, None);
+        let alpha = json!({"type": "user", "text": "alpha"});
+        wm.append_session_records("a", "claude", "transcript", None, &[("a1-u", &alpha)])
+            .unwrap();
+        assert_eq!(
+            history(&wm, "a"),
+            concat(&[inherited(&["a1-u", "a1-a"]), owned(&["a1-u"])])
+        );
+    }
+
+    /// `ws`'s superseded sessions, given the `known` ones, as `(session id,
+    /// native ids)`.
+    fn superseded(wm: &WorkspaceManager, ws: &str, known: &[String]) -> Vec<(String, Vec<String>)> {
+        wm.read_superseded_records(ws, known)
+            .unwrap()
+            .into_iter()
+            .map(|s| {
+                assert!(s.records.iter().all(|r| !r.inherited));
+                let ids = s.records.into_iter().map(|r| r.native_id).collect();
+                (s.session_id, ids)
+            })
+            .collect()
+    }
+
+    fn native_ids(sessions: Vec<(String, Vec<String>)>) -> Vec<Vec<String>> {
+        sessions.into_iter().map(|(_, ids)| ids).collect()
+    }
+
+    /// `a` rewound twice: before bravo, then before delta.
+    fn rewound_twice() -> (WorkspaceManager, [String; 2]) {
+        let wm = talked();
+        let first = session_of(&wm, "a");
+        rewound(&wm, None);
+        let second = session_of(&wm, "a");
+        exchange(&wm, "a", "n1", "delta");
+        let lineage = wm.resolve_anchor("a", Anchor::Before("n1")).unwrap();
+        wm.start_session("a", &lineage, None).unwrap();
+        exchange(&wm, "a", "m1", "echo");
+        (wm, [first, second])
+    }
+
+    #[test]
+    fn superseded_sessions_keep_their_records_for_the_workspace() {
+        assert!(superseded(&talked(), "a", &[]).is_empty());
+        let (wm, ids) = rewound_twice();
+
+        let sessions = superseded(&wm, "a", &[]);
+
+        assert_eq!(
+            sessions
+                .iter()
+                .map(|(id, _)| id.clone())
+                .collect::<Vec<_>>(),
+            ids
+        );
+        assert_eq!(
+            native_ids(sessions),
+            vec![vec!["a1-u", "a1-a", "a2-u", "a2-a"], vec!["n1-u", "n1-a"]]
+        );
+    }
+
+    /// A caller folds a superseded session once: those it names come back
+    /// listed, so it still learns the whole set, but without their records.
+    #[test]
+    fn known_superseded_sessions_come_back_without_their_records() {
+        let (wm, [first, second]) = rewound_twice();
+
+        assert_eq!(
+            superseded(&wm, "a", std::slice::from_ref(&first)),
+            vec![
+                (first.clone(), vec![]),
+                (second.clone(), vec!["n1-u".into(), "n1-a".into()])
+            ]
+        );
+        let both = [first.clone(), second.clone(), "elsewhere".into()];
+        assert_eq!(
+            superseded(&wm, "a", &both),
+            vec![(first, vec![]), (second, vec![])]
+        );
+    }
+
+    /// A deleted workspace's session handed to its fork stays out of the
+    /// fork's own: what it spent was the deleted workspace's.
+    #[test]
+    fn a_session_handed_over_on_delete_is_not_the_heirs() {
+        let db = test_db();
+        seed_repo(&db, "/r");
+        let wm = WorkspaceManager::new(db);
+        // Created some seconds ago, as a fork always is after its parent.
+        let add = |id: &str, secs_ago: i64, lineage: Option<SessionLineage>| {
+            let mut rec = new_agent_record(
+                id.into(),
+                id.into(),
+                "claude".into(),
+                crate::workspace::tests::mk_repo("/r"),
+                "task".into(),
+                AgentView::Custom,
+            );
+            rec.created_at = (Utc::now() - chrono::Duration::seconds(secs_ago)).to_rfc3339();
+            rec.lineage = lineage;
+            wm.add_agent(&mut rec).unwrap();
+        };
+        add("p", 20, None);
+        exchange(&wm, "p", "p1", "alpha");
+        add("f", 10, Some(wm.resolve_anchor("p", Anchor::End).unwrap()));
+        exchange(&wm, "f", "f1", "bravo");
+
+        wm.remove_agent("p").unwrap();
+        assert!(superseded(&wm, "f", &[]).is_empty());
+
+        let lineage = wm.resolve_anchor("f", Anchor::Before("f1")).unwrap();
+        wm.start_session("f", &lineage, None).unwrap();
+        assert_eq!(
+            native_ids(superseded(&wm, "f", &[])),
+            vec![vec!["f1-u", "f1-a"]]
+        );
     }
 }

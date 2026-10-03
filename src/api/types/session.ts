@@ -17,6 +17,13 @@ export interface SessionRecord {
   inherited?: boolean;
 }
 
+/** A session the agent's workspace superseded (a rewind's abandoned branch),
+ *  with its own records — empty when the caller named it as already known. */
+export interface SupersededSession {
+  session_id: string;
+  records: SessionRecord[];
+}
+
 /** One Fletch-origin outgoing user message (session_user_turns). Carries the
  *  attachment metadata the transcript lacks; `native_id` links it to the
  *  canonical session_records user-message once matched at turn-end (null =

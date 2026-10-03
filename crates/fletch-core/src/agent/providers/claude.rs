@@ -168,14 +168,21 @@ fn is_compact_boundary(body: &Value) -> bool {
 /// Whether claude has written a message into `session_id`'s transcript, i.e.
 /// whether the session can be `--resume`d. Claude creates the file with its
 /// first message, and only message lines carry a `uuid` (metadata lines such
-/// as `mode` don't).
+/// as `mode` don't). Every claude launch asks, so it reads only up to the
+/// first message, not a long session's whole transcript.
 pub(crate) fn claude_session_has_messages(session_id: &str, cwd: &Path) -> bool {
+    use std::io::BufRead;
     let mut diag = ReadDiagnostics::default();
-    crate::transcripts::find_session_jsonl(session_id, cwd, &mut diag).is_some_and(|path| {
-        crate::transcripts::read_jsonl_values(&path, &mut diag)
-            .iter()
-            .any(|v| v.get("uuid").is_some())
-    })
+    let Some(path) = crate::transcripts::find_session_jsonl(session_id, cwd, &mut diag) else {
+        return false;
+    };
+    let Ok(file) = std::fs::File::open(path) else {
+        return false;
+    };
+    std::io::BufReader::new(file)
+        .lines()
+        .map_while(std::result::Result::ok)
+        .any(|line| serde_json::from_str::<Value>(&line).is_ok_and(|v| v.get("uuid").is_some()))
 }
 
 /// Claude as a one-shot completion (`OneShot`), per `claude --help` (2.1.287):

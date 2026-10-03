@@ -312,19 +312,36 @@ fn build_activity(record: &AgentRecord, start: &SessionStart) -> Box<dyn Activit
 
 /// The session a launch attaches to. An unlanded branch (see
 /// `Supervisor::unlanded_branch`) wins over what the caller asked for and over
-/// the no-messages-yet rule below: until it lands, the agent's own session
+/// the not-started rule below: until it lands, the agent's own session
 /// doesn't exist.
 ///
-/// Claude only writes a session file once the first turn lands. If task is
-/// still empty (no first user message has ever been sent) `--resume <uuid>`
-/// will 404. So we treat that case as fresh — same UUID, no replay attempt —
-/// and the eventual first message creates the session file. Once that's
-/// happened, switch / resume can safely `--resume`.
-fn resolve_start(requested: SessionStart, branch: Option<BranchPoint>, task: &str) -> SessionStart {
+/// A session that hasn't `started` (see [`session_started`]) has nothing to
+/// `--resume`, which would 404. So a resume is treated as fresh — same UUID,
+/// no replay attempt — and the eventual first message creates the session.
+/// Once that's happened, switch / resume can safely `--resume`.
+fn resolve_start(
+    requested: SessionStart,
+    branch: Option<BranchPoint>,
+    started: bool,
+) -> SessionStart {
     match (branch, requested) {
         (Some(point), _) => SessionStart::Branch(point),
-        (None, SessionStart::Resume) if task.trim().is_empty() => SessionStart::Fresh,
+        (None, SessionStart::Resume) if !started => SessionStart::Fresh,
         (None, requested) => requested,
+    }
+}
+
+/// Whether `record`'s current session has a conversation to resume. Claude
+/// writes a session's transcript with its first message, so that is what is
+/// asked, of this session: one started in place (a rewind) has nothing of its
+/// own until its first turn lands, however long the workspace has run. A
+/// per-turn agent resumes nothing at launch, so for it a first prompt will do.
+fn session_started(record: &AgentRecord, cwd: &Path) -> bool {
+    match record.session_id.as_deref() {
+        Some(own) if !is_per_turn_provider(&record.provider) => {
+            claude_session_has_messages(own, cwd)
+        }
+        _ => !record.task.trim().is_empty(),
     }
 }
 
@@ -973,28 +990,13 @@ impl Supervisor {
         Ok(repo)
     }
 
-    /// Start `agent_id`'s current session as a native branch of `point` rather
-    /// than an empty one — rewind's `Exact` handoff. Persisted on the session
-    /// row, so the record must already carry the new session's id: the branch
-    /// is written under it. Refused for providers that can't branch at a
-    /// message; for claude, a branch cut at a message only opens in the custom
-    /// view.
-    pub fn set_branch_point(&self, agent_id: &str, point: BranchPoint) -> Result<()> {
-        let provider = self.workspace.agent(agent_id)?.provider;
-        if !capabilities(&provider).branch_at_message {
-            return Err(Error::Other(format!(
-                "{provider} can't branch a conversation at a message"
-            )));
-        }
-        self.workspace.set_session_branch_point(agent_id, &point)
-    }
-
     /// The branch `record`'s launch must start, if its session has one that
-    /// hasn't landed. Claude writes the new session's transcript only with its
-    /// first message, so until then every launch (view switch, respawn,
-    /// resume, restore, after a restart) branches again; once the transcript
-    /// holds a message the agent resumes its own session. Derived, never
-    /// cleared: a recycled agent id gets a new session row without one.
+    /// hasn't landed (rewind's `Exact` handoff, written with the session by
+    /// `Supervisor::start_session`). Claude writes the new session's
+    /// transcript only with its first message, so until then every launch
+    /// (view switch, respawn, resume, restore, after a restart) branches
+    /// again; once the transcript holds a message the agent resumes its own
+    /// session. Derived, never cleared: a later session is a new row.
     fn unlanded_branch(&self, record: &AgentRecord) -> Result<Option<BranchPoint>> {
         let (Some(point), Some(own)) = (
             self.workspace.session_branch_point(&record.id)?,
@@ -1109,7 +1111,11 @@ impl Supervisor {
             (None, false) => Arc::new(git_dispatcher),
         };
 
-        let start = resolve_start(start, self.unlanded_branch(&record)?, &record.task);
+        let start = resolve_start(
+            start,
+            self.unlanded_branch(&record)?,
+            session_started(&record, &cwd),
+        );
 
         let agent_id_str = agent_id.to_string();
 
@@ -2254,11 +2260,8 @@ mod tests {
     }
 
     /// A `claude` and a `codex` agent on one repo, both with the checkout
-    /// adopted at `<td>/ws/repo`. Returns the supervisor and where the claude
-    /// agent's transcript goes: the docker per-agent dir beside the checkout,
-    /// which the locator checks first (the agent's random session id keeps the
-    /// real `~/.claude` scan from ever matching).
-    fn branch_fixture(td: &Path) -> (Supervisor, PathBuf) {
+    /// adopted at `<td>/ws/repo`.
+    fn branch_fixture(td: &Path) -> Supervisor {
         let sup = crate::supervisor::tests::test_supervisor();
         let repo = td.join("repo");
         std::fs::create_dir_all(repo.join(".git")).unwrap();
@@ -2287,13 +2290,30 @@ mod tests {
             );
             sup.workspace.add_agent(&mut record).unwrap();
         }
+        sup
+    }
+
+    /// Where the claude agent's current session writes its transcript: the
+    /// docker per-agent dir beside the checkout, which the locator checks
+    /// first (the session's random id keeps the real `~/.claude` scan from
+    /// ever matching).
+    fn transcript_of(sup: &Supervisor, td: &Path) -> PathBuf {
         let own = sup.workspace.agent("claude").unwrap().session_id.unwrap();
         let slug = td
             .join("ws")
             .join(crate::transcripts::DOCKER_CLAUDE_PROJECTS_DIRNAME)
             .join("slug");
         std::fs::create_dir_all(&slug).unwrap();
-        (sup, slug.join(format!("{own}.jsonl")))
+        slug.join(format!("{own}.jsonl"))
+    }
+
+    /// Rewind `agent_id` to the end of its conversation in a new session,
+    /// branched at `point` when given.
+    fn rewind(sup: &Supervisor, agent_id: &str, point: Option<BranchPoint>) -> Result<String> {
+        let lineage = sup
+            .workspace
+            .resolve_anchor(agent_id, crate::workspace::Anchor::End)?;
+        sup.start_session(agent_id, &lineage, point.as_ref())
     }
 
     fn unlanded(sup: &Supervisor) -> Option<BranchPoint> {
@@ -2304,16 +2324,22 @@ mod tests {
     #[test]
     fn only_a_provider_that_can_branch_takes_a_branch_point() {
         let td = tempfile::tempdir().unwrap();
-        let (sup, _) = branch_fixture(td.path());
+        let sup = branch_fixture(td.path());
+        let codex = sup.workspace.agent("codex").unwrap().session_id;
 
-        sup.set_branch_point("claude", branch_point()).unwrap();
-        assert!(sup.set_branch_point("codex", branch_point()).is_err());
-        assert!(sup.set_branch_point("nonesuch", branch_point()).is_err());
+        rewind(&sup, "claude", Some(branch_point())).unwrap();
+        assert!(rewind(&sup, "codex", Some(branch_point())).is_err());
+        assert!(rewind(&sup, "nonesuch", Some(branch_point())).is_err());
         assert_eq!(
             sup.workspace.session_branch_point("claude").unwrap(),
             Some(branch_point())
         );
         assert_eq!(sup.workspace.session_branch_point("codex").unwrap(), None);
+        assert_eq!(
+            sup.workspace.agent("codex").unwrap().session_id,
+            codex,
+            "a refused branch starts no session"
+        );
     }
 
     /// Until the branched session's first message lands there is nothing of
@@ -2322,10 +2348,11 @@ mod tests {
     #[test]
     fn a_branch_holds_until_its_session_has_a_message() {
         let td = tempfile::tempdir().unwrap();
-        let (sup, transcript) = branch_fixture(td.path());
+        let sup = branch_fixture(td.path());
         assert_eq!(unlanded(&sup), None, "an ordinary session");
 
-        sup.set_branch_point("claude", branch_point()).unwrap();
+        rewind(&sup, "claude", Some(branch_point())).unwrap();
+        let transcript = transcript_of(&sup, td.path());
         assert_eq!(unlanded(&sup), Some(branch_point()), "no transcript yet");
         let restarted = Supervisor::new(sup.workspace.clone());
         assert_eq!(
@@ -2358,9 +2385,8 @@ mod tests {
     async fn the_native_view_waits_for_a_rewound_branch_to_land() {
         let (ctx, _sink, _dir) = crate::host::ctx::test_ctx();
         let td = tempfile::tempdir().unwrap();
-        let (sup, _) = branch_fixture(td.path());
-        let sup = Arc::new(sup);
-        sup.set_branch_point("claude", branch_point()).unwrap();
+        let sup = Arc::new(branch_fixture(td.path()));
+        rewind(&sup, "claude", Some(branch_point())).unwrap();
 
         let err = sup
             .clone()
@@ -2374,31 +2400,59 @@ mod tests {
         );
     }
 
+    /// Whether a session has started is asked of the session, not the
+    /// workspace: one started in place has nothing to resume until its own
+    /// first message lands, though the workspace has long had a task.
+    #[test]
+    fn a_session_started_in_place_launches_fresh_until_its_first_message() {
+        let td = tempfile::tempdir().unwrap();
+        let sup = branch_fixture(td.path());
+        let cwd = td.path().join("ws").join("repo");
+        let started =
+            |sup: &Supervisor| session_started(&sup.workspace.agent("claude").unwrap(), &cwd);
+        let message = "{\"type\":\"user\",\"uuid\":\"u1\"}\n";
+        std::fs::write(transcript_of(&sup, td.path()), message).unwrap();
+        assert!(started(&sup));
+
+        rewind(&sup, "claude", None).unwrap();
+        assert!(!started(&sup), "the new session has no transcript yet");
+        assert_eq!(
+            resolve_start(SessionStart::Resume, None, started(&sup)),
+            SessionStart::Fresh
+        );
+
+        std::fs::write(transcript_of(&sup, td.path()), message).unwrap();
+        assert!(started(&sup));
+    }
+
     #[test]
     fn a_branch_wins_over_every_other_start() {
         let branch = SessionStart::Branch(branch_point());
-        for (requested, task) in [
-            (SessionStart::Resume, "did things"),
-            // The no-messages-yet rule would otherwise make this fresh.
-            (SessionStart::Resume, ""),
-            (SessionStart::Fresh, ""),
+        for (requested, started) in [
+            (SessionStart::Resume, true),
+            // The not-started rule would otherwise make this fresh.
+            (SessionStart::Resume, false),
+            (SessionStart::Fresh, false),
         ] {
-            assert_eq!(resolve_start(requested, Some(branch_point()), task), branch);
+            assert_eq!(
+                resolve_start(requested, Some(branch_point()), started),
+                branch
+            );
         }
     }
 
     #[test]
     fn without_a_branch_an_agent_resumes_once_it_has_messages() {
         assert_eq!(
-            resolve_start(SessionStart::Resume, None, "did things"),
+            resolve_start(SessionStart::Resume, None, true),
             SessionStart::Resume
         );
         assert_eq!(
-            resolve_start(SessionStart::Resume, None, "  "),
+            resolve_start(SessionStart::Resume, None, false),
             SessionStart::Fresh
         );
         assert_eq!(
-            resolve_start(SessionStart::Fresh, None, "did things"),
+            resolve_start(SessionStart::Fresh, None, true),
             SessionStart::Fresh
         );
     }

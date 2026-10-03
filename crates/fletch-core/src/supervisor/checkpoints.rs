@@ -1,13 +1,17 @@
 //! Turn checkpoints for an agent's workspace: before a turn reaches the agent,
 //! pin every checkout as it stands (`git::checkpoint`), so the code as of that
 //! message outlives the edits the turn goes on to make. A new workspace can
-//! start from a workspace's pinned code ([`PinnedCode`]): a fork's code.
+//! start from a workspace's pinned code ([`PinnedCode`]): a fork's code. And
+//! every checkout can be put back to one, with an undo point: rewind's code
+//! half.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use serde::Serialize;
+
 use crate::error::{Error, Result};
-use crate::git::checkpoint;
+use crate::git::checkpoint::{self, LeavingCommit};
 
 use super::Supervisor;
 
@@ -99,9 +103,38 @@ impl PinnedCode {
     }
 }
 
+/// What restoring a turn's code does to an agent's checkouts, in `repos`
+/// order: what a confirmation shows before
+/// ([`Supervisor::preview_turn_code_restore`]) and what changed after
+/// ([`Supervisor::restore_turn_code`]).
+#[derive(Debug, Clone, Serialize)]
+pub struct RestoreReport {
+    pub repos: Vec<RepoRestore>,
+}
+
+/// One checkout in a [`RestoreReport`].
+#[derive(Debug, Clone, Serialize)]
+pub struct RepoRestore {
+    /// The tracked repo's subdir within the workspace (`TrackedRepo::subdir`).
+    pub subdir: String,
+    /// The branch the checkout is on, which goes back with HEAD; `None` when
+    /// HEAD is detached.
+    pub branch: Option<String>,
+    /// The turn's checkpoint, or `None` when the checkout has none: it is then
+    /// left as it is.
+    pub checkpoint: Option<String>,
+    /// The commits the restore takes off the branch, newest first.
+    pub leaving: Vec<LeavingCommit>,
+}
+
 impl Supervisor {
     /// Checkpoint every checkout of `agent_id` under `turn_id`. Called as a
     /// turn is delivered, before the agent sees it (`deliver_as_turn`).
+    ///
+    /// The turn also retires the undo point a code restore left
+    /// ([`Self::restore_turn_code`]): undoing once the agent has acted would
+    /// clobber its work, and this checkpoint keeps that code anyway. Dropped
+    /// first, being the quick half.
     ///
     /// Best-effort: a checkout that can't be captured (a config the hardening
     /// refuses, a vanished directory) is logged and skipped, and the whole
@@ -109,7 +142,8 @@ impl Supervisor {
     /// way. Nothing is captured when there is no settled tree:
     /// - mid-turn or mid-spawn — `deliver_as_turn` then holds the message
     ///   rather than start its turn;
-    /// - a workflow step agent (`owner_run_id`) works in a tree its run shares.
+    /// - a workflow step agent (`owner_run_id`) works in a tree its run shares,
+    ///   and so never has a checkpoint to restore, nor an undo point.
     ///
     /// Live-injected messages and native PTY typing never get here.
     pub(super) async fn checkpoint_turn(&self, agent_id: &str, turn_id: &str) {
@@ -120,6 +154,14 @@ impl Supervisor {
             return;
         }
         let capture_all = async {
+            for repo in &record.repos {
+                let Ok(checkout) = repo.checkout_path(agent_id) else {
+                    continue;
+                };
+                if let Err(e) = checkpoint::drop_undo(&checkout).await {
+                    tracing::warn!(error = %e, agent_id, subdir = %repo.subdir, "dropping the code undo point failed");
+                }
+            }
             for repo in &record.repos {
                 let captured = match repo.checkout_path(agent_id) {
                     Ok(checkout) => checkpoint::capture(&checkout, turn_id).await,
@@ -292,6 +334,243 @@ impl Supervisor {
         }
         Ok(())
     }
+
+    /// What [`Self::restore_turn_code`] would do to `agent_id`'s checkouts for
+    /// `turn_id`, without changing anything — for the confirmation.
+    pub async fn preview_turn_code_restore(
+        &self,
+        agent_id: &str,
+        turn_id: &str,
+    ) -> Result<RestoreReport> {
+        let repos = self.plan_code_restore(agent_id, turn_id).await?;
+        Ok(RestoreReport {
+            repos: repos.into_iter().map(|(_, repo)| repo).collect(),
+        })
+    }
+
+    /// Put each of `agent_id`'s checkouts back to its checkpoint for
+    /// `turn_id` — files and HEAD, the code as it was before that turn — and
+    /// report what changed. A checkout without a checkpoint is left as it is.
+    ///
+    /// The branch a checkout is on stays checked out and goes back with HEAD
+    /// (a reset), so the user is still on the branch they were on, minus the
+    /// commits made since (`leaving`). Pushed commits stay on the remote, so
+    /// the branch's next push has to force. Ignored files are never touched.
+    ///
+    /// Each checkout it changes is pinned first as its undo point, which
+    /// keeps those commits reachable and the restore undoable
+    /// ([`Self::undo_code_restore`]). A checkout has one undo point, so this
+    /// restore's replaces any earlier one — in every checkout, so that none of
+    /// an older one survives where this restore changes nothing. It lasts until
+    /// it is undone or discarded, the next turn is delivered, or the code
+    /// changes in any way: an undo only ever replaces code exactly as this
+    /// restore left it.
+    ///
+    /// All or nothing: a failure before the first checkout changes leaves
+    /// every one as it was, and a failure during the restore puts back the
+    /// ones already changed, from their undo points. Either way no undo point
+    /// is left, as there is nothing to undo — unless putting one back fails:
+    /// that one keeps its point, to recover the code from by hand, until it is
+    /// next found stale.
+    ///
+    /// Runs under the caller's delivery lock and input route (`lock_delivery`,
+    /// `open_route`), and is refused while a turn runs: the agent would be
+    /// editing the very files being replaced.
+    pub async fn restore_turn_code(&self, agent_id: &str, turn_id: &str) -> Result<RestoreReport> {
+        if self.is_busy(agent_id) {
+            return Err(Error::Other(
+                "stop the agent before restoring its code".into(),
+            ));
+        }
+        let repos = self.plan_code_restore(agent_id, turn_id).await?;
+        for (checkout, _) in &repos {
+            checkpoint::drop_undo(checkout).await?;
+        }
+        let changing: Vec<(&Path, &str)> = repos
+            .iter()
+            .filter_map(|(checkout, repo)| Some((checkout.as_path(), repo.checkpoint.as_deref()?)))
+            .collect();
+        for (pinned, (checkout, sha)) in changing.iter().enumerate() {
+            if let Err(e) = checkpoint::pin_undo(checkout, sha).await {
+                take_back_restore(agent_id, &changing[..pinned], 0).await;
+                return Err(e);
+            }
+        }
+        for (i, (checkout, sha)) in changing.iter().enumerate() {
+            if let Err(e) = checkpoint::restore(checkout, sha).await {
+                take_back_restore(agent_id, &changing, i + 1).await;
+                return Err(e);
+            }
+        }
+        Ok(RestoreReport {
+            repos: repos.into_iter().map(|(_, repo)| repo).collect(),
+        })
+    }
+
+    /// Undo the last code restore ([`Self::restore_turn_code`]): each checkout
+    /// it changed goes back to how it stood before, and the undo points go.
+    /// They go only once every checkout is back, so a failure can be tried
+    /// again. An error when there is nothing to undo.
+    ///
+    /// Refused, with nothing restored and the points dropped, once the code
+    /// has changed in any checkout since the restore (`code_undo`): undoing
+    /// would discard that work, whichever view, terminal or editor made it.
+    ///
+    /// Takes the agent's delivery lock and input route, like a send: no turn
+    /// may start on a half-undone tree, and no archive tear it down. Refused
+    /// while a turn runs.
+    pub async fn undo_code_restore(&self, agent_id: &str) -> Result<()> {
+        // First, so an unknown id never creates a delivery lock.
+        self.workspace.agent(agent_id)?;
+        let _delivering = self.lock_delivery(agent_id).await;
+        let _route = self.open_route(agent_id)?;
+        if self.is_busy(agent_id) {
+            return Err(Error::Other(
+                "stop the agent before undoing the code restore".into(),
+            ));
+        }
+        let undoable = match self.code_undo(agent_id).await? {
+            CodeUndo::Ready(checkouts) => checkouts,
+            CodeUndo::Nothing => {
+                return Err(Error::Other("there is no code restore to undo".into()))
+            }
+            CodeUndo::Stale => {
+                return Err(Error::Other(
+                    "The code has changed since it was restored, so undoing would discard \
+                     that work."
+                        .into(),
+                ))
+            }
+        };
+        for checkout in &undoable {
+            checkpoint::undo(checkout).await?;
+        }
+        for checkout in &undoable {
+            checkpoint::drop_undo(checkout).await?;
+        }
+        Ok(())
+    }
+
+    /// Let the last code restore's undo points go, keeping the restored code.
+    /// Takes the agent's delivery lock and input route, as an undo does.
+    pub async fn discard_code_undo(&self, agent_id: &str) -> Result<()> {
+        let checkouts = self.checkouts(agent_id)?;
+        let _delivering = self.lock_delivery(agent_id).await;
+        let _route = self.open_route(agent_id)?;
+        for checkout in &checkouts {
+            checkpoint::drop_undo(checkout).await?;
+        }
+        Ok(())
+    }
+
+    /// Whether `agent_id`'s last code restore can still be undone — what the
+    /// UI offers again, after a restart too. Takes the delivery lock, so it
+    /// never judges a restore or undo that is half done, and drops an undo it
+    /// finds stale (`code_undo`).
+    pub async fn has_code_undo(&self, agent_id: &str) -> Result<bool> {
+        self.workspace.agent(agent_id)?;
+        let _delivering = self.lock_delivery(agent_id).await;
+        Ok(matches!(
+            self.code_undo(agent_id).await?,
+            CodeUndo::Ready(_)
+        ))
+    }
+
+    /// The state of `agent_id`'s code undo. It can be undone only while every
+    /// checkout holding a point is exactly as the restore left it
+    /// (`checkpoint::undo_is_current`): an edit, a commit, a new file in any
+    /// one of them, from any view, terminal or editor, and the whole undo is
+    /// stale, as undoing only the untouched ones would leave the workspace in
+    /// a state it never had. A stale undo's points are dropped, best-effort,
+    /// so they don't outlive their use when no turn comes to retire them.
+    /// Runs under the caller's delivery lock.
+    async fn code_undo(&self, agent_id: &str) -> Result<CodeUndo> {
+        let mut held = Vec::new();
+        for checkout in self.checkouts(agent_id)? {
+            if checkpoint::has_undo(&checkout).await? {
+                held.push(checkout);
+            }
+        }
+        if held.is_empty() {
+            return Ok(CodeUndo::Nothing);
+        }
+        for checkout in &held {
+            if !checkpoint::undo_is_current(checkout).await? {
+                for checkout in &held {
+                    if let Err(e) = checkpoint::drop_undo(checkout).await {
+                        tracing::warn!(error = %e, agent_id, checkout = %checkout.display(), "dropping a stale code undo point failed");
+                    }
+                }
+                return Ok(CodeUndo::Stale);
+            }
+        }
+        Ok(CodeUndo::Ready(held))
+    }
+
+    /// `agent_id`'s checkouts, in `repos` order.
+    fn checkouts(&self, agent_id: &str) -> Result<Vec<PathBuf>> {
+        self.workspace
+            .agent(agent_id)?
+            .repos
+            .iter()
+            .map(|repo| repo.checkout_path(agent_id))
+            .collect()
+    }
+
+    /// Each checkout with what restoring `turn_id`'s checkpoint would do to it.
+    async fn plan_code_restore(
+        &self,
+        agent_id: &str,
+        turn_id: &str,
+    ) -> Result<Vec<(PathBuf, RepoRestore)>> {
+        let mut repos = Vec::new();
+        for found in self.turn_checkpoints(agent_id, turn_id).await? {
+            let leaving = match &found.sha {
+                Some(sha) => checkpoint::leaving_commits(&found.checkout, sha).await?,
+                None => Vec::new(),
+            };
+            let repo = RepoRestore {
+                subdir: found.subdir,
+                branch: crate::git::current_branch(&found.checkout).await?,
+                checkpoint: found.sha,
+                leaving,
+            };
+            repos.push((found.checkout, repo));
+        }
+        Ok(repos)
+    }
+}
+
+/// Where an agent's code undo stands (`Supervisor::code_undo`).
+enum CodeUndo {
+    /// No checkout holds an undo point.
+    Nothing,
+    /// The code changed since the restore; the points are dropped.
+    Stale,
+    /// Every checkout holding a point, each still as the restore left it.
+    Ready(Vec<PathBuf>),
+}
+
+/// Take back a restore that failed after its undo points were pinned in
+/// `pinned`, and after the first `changed` of those checkouts were (perhaps
+/// partly) restored: those go back from their points, and no point is left
+/// behind. A checkout that can't be put back keeps its point, holding its code
+/// to recover by hand; it is not as a restore left it, so no undo is offered.
+async fn take_back_restore(agent_id: &str, pinned: &[(&Path, &str)], changed: usize) {
+    for (i, (checkout, _)) in pinned.iter().enumerate() {
+        let put_back = if i < changed {
+            checkpoint::undo(checkout).await
+        } else {
+            Ok(())
+        };
+        let taken_back = match put_back {
+            Ok(()) => checkpoint::drop_undo(checkout).await,
+            Err(e) => Err(e),
+        };
+        if let Err(e) = taken_back {
+            tracing::warn!(error = %e, agent_id, checkout = %checkout.display(), "taking back a failed code restore failed");
+        }
+    }
 }
 
 #[cfg(test)]
@@ -303,7 +582,6 @@ mod tests {
         checkout_of, committed_repo, pins, record_in_checkouts, test_supervisor, workspace_of,
     };
     use crate::workspace::AgentStatus;
-    use std::path::Path;
 
     const TURN: &str = "2c9d7e41-5a0b-4f6e-8d13-9b7a6c5e4f30";
 
@@ -440,6 +718,412 @@ mod tests {
         for checkout in parent.iter().chain(&child) {
             assert_eq!(pins(checkout).await, Vec::<String>::new());
         }
+    }
+
+    // ── restoring a turn's code ──────────────────────────────────────────
+
+    async fn commit(repo: &Path, file: &str, body: &str) -> String {
+        std::fs::write(repo.join(file), body).unwrap();
+        crate::git::commit_all(repo, body).await.unwrap();
+        head(repo).await
+    }
+
+    fn read(repo: &Path, file: &str) -> Option<String> {
+        std::fs::read_to_string(repo.join(file)).ok()
+    }
+
+    /// Checkouts `a` and `b`, checkpointed at [`TURN`] with uncommitted work
+    /// in `a`; then the turn goes on in both, and a third checkout `c` is
+    /// attached, after the turn. Returns the supervisor and the checkouts.
+    async fn worked_past_the_turn(td: &Path) -> (Supervisor, [PathBuf; 3]) {
+        let a = committed_repo(td, "a").await;
+        let b = committed_repo(td, "b").await;
+        let c = committed_repo(td, "c").await;
+        let sup = test_supervisor();
+        let mut record = record_in_checkouts(&sup, "denali", &[a.clone(), b.clone()]);
+        sup.workspace.add_agent(&mut record).unwrap();
+        std::fs::write(a.join("wip.txt"), b"at the turn").unwrap();
+        sup.checkpoint_turn("denali", TURN).await;
+
+        commit(&a, "later.txt", "a commit after the turn").await;
+        std::fs::write(a.join("wip.txt"), b"edited later").unwrap();
+        std::fs::write(b.join("stray.txt"), b"created later").unwrap();
+        sup.workspace.add_workspace_repo(c.clone()).unwrap();
+        let attached = crate::workspace::TrackedRepo {
+            repo_path: c.clone(),
+            subdir: "repo-2".into(),
+            adopted_checkout: Some(c.clone()),
+            ..record.repos[0].clone()
+        };
+        sup.workspace
+            .append_tracked_repo("denali", attached)
+            .unwrap();
+        (sup, [a, b, c])
+    }
+
+    #[tokio::test]
+    async fn a_preview_reports_the_restore_and_changes_nothing() {
+        let td = tempfile::tempdir().unwrap();
+        let (sup, [a, _, c]) = worked_past_the_turn(td.path()).await;
+        let tip = head(&a).await;
+
+        let report = sup.preview_turn_code_restore("denali", TURN).await.unwrap();
+
+        let [ra, rb, rc] = &report.repos[..] else {
+            panic!("{report:?}")
+        };
+        assert!(ra.checkpoint.is_some() && rb.checkpoint.is_some());
+        assert_eq!(rc.checkpoint, None, "c was attached after the turn");
+        assert_eq!(ra.branch, crate::git::current_branch(&a).await.unwrap());
+        assert!(ra.branch.is_some());
+        assert_eq!(ra.leaving.len(), 1);
+        assert_eq!(ra.leaving[0].sha, tip);
+        assert_eq!(ra.leaving[0].subject, "a commit after the turn");
+        assert!(!ra.leaving[0].pushed);
+        assert!(rb.leaving.is_empty() && rc.leaving.is_empty());
+        // Nothing moved, and there is nothing to undo.
+        assert!(!sup.has_code_undo("denali").await.unwrap());
+        assert_eq!(head(&a).await, tip);
+        assert_eq!(read(&a, "wip.txt").as_deref(), Some("edited later"));
+        assert!(c.join("a.txt").exists());
+    }
+
+    #[tokio::test]
+    async fn restoring_a_turn_puts_every_checkout_back_and_can_be_undone() {
+        let td = tempfile::tempdir().unwrap();
+        let (sup, [a, b, c]) = worked_past_the_turn(td.path()).await;
+        let branch = crate::git::current_branch(&a).await.unwrap().unwrap();
+        let tip = head(&a).await;
+        let c_head = head(&c).await;
+
+        let report = sup.restore_turn_code("denali", TURN).await.unwrap();
+
+        // `a` is back on its branch, which went back with HEAD, and has the
+        // work it had at the turn, still uncommitted.
+        assert_eq!(
+            crate::git::current_branch(&a).await.unwrap().as_deref(),
+            Some(branch.as_str())
+        );
+        let at_turn = crate::git::rev_parse(
+            &a,
+            &format!("{}^", report.repos[0].checkpoint.as_ref().unwrap()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(head(&a).await, at_turn);
+        assert_eq!(
+            crate::git::rev_parse(&a, &format!("refs/heads/{branch}"))
+                .await
+                .unwrap(),
+            at_turn
+        );
+        assert_eq!(read(&a, "wip.txt").as_deref(), Some("at the turn"));
+        assert_eq!(read(&a, "later.txt"), None);
+        assert_eq!(read(&b, "stray.txt"), None);
+        // `c` had no checkpoint and is left alone.
+        assert_eq!(head(&c).await, c_head);
+        assert_eq!(report.repos[0].leaving[0].sha, tip);
+
+        // The undo puts every changed checkout back, and is then spent.
+        assert!(sup.has_code_undo("denali").await.unwrap());
+        sup.undo_code_restore("denali").await.unwrap();
+        assert_eq!(head(&a).await, tip);
+        assert_eq!(read(&a, "wip.txt").as_deref(), Some("edited later"));
+        assert_eq!(
+            read(&a, "later.txt").as_deref(),
+            Some("a commit after the turn")
+        );
+        assert_eq!(read(&b, "stray.txt").as_deref(), Some("created later"));
+        assert!(!sup.has_code_undo("denali").await.unwrap());
+        assert!(sup.undo_code_restore("denali").await.is_err());
+    }
+
+    async fn undo_points(checkouts: &[PathBuf]) -> Vec<bool> {
+        let mut found = Vec::new();
+        for checkout in checkouts {
+            found.push(checkpoint::has_undo(checkout).await.unwrap());
+        }
+        found
+    }
+
+    #[tokio::test]
+    async fn a_restore_pins_only_what_it_changes_and_clears_older_undo_points() {
+        let td = tempfile::tempdir().unwrap();
+        let (sup, checkouts) = worked_past_the_turn(td.path()).await;
+        // Left over from an earlier restore in `c`, which this one won't change.
+        let c_head = head(&checkouts[2]).await;
+        checkpoint::pin_undo(&checkouts[2], &c_head).await.unwrap();
+
+        sup.restore_turn_code("denali", TURN).await.unwrap();
+
+        assert_eq!(undo_points(&checkouts).await, [true, true, false]);
+    }
+
+    #[tokio::test]
+    async fn a_second_restore_replaces_the_first_undo_point() {
+        let td = tempfile::tempdir().unwrap();
+        let (sup, [a, ..]) = worked_past_the_turn(td.path()).await;
+        sup.restore_turn_code("denali", TURN).await.unwrap();
+        std::fs::write(a.join("wip.txt"), b"between the restores").unwrap();
+
+        sup.restore_turn_code("denali", TURN).await.unwrap();
+        sup.undo_code_restore("denali").await.unwrap();
+
+        // Back to before the second restore, not the first.
+        assert_eq!(read(&a, "wip.txt").as_deref(), Some("between the restores"));
+        assert_eq!(read(&a, "later.txt"), None);
+    }
+
+    #[tokio::test]
+    async fn a_discarded_undo_point_leaves_the_restored_code() {
+        let td = tempfile::tempdir().unwrap();
+        let (sup, [a, ..]) = worked_past_the_turn(td.path()).await;
+        sup.restore_turn_code("denali", TURN).await.unwrap();
+
+        sup.discard_code_undo("denali").await.unwrap();
+
+        assert!(!sup.has_code_undo("denali").await.unwrap());
+        assert!(sup.undo_code_restore("denali").await.is_err());
+        assert_eq!(read(&a, "wip.txt").as_deref(), Some("at the turn"));
+    }
+
+    /// Undoing once the agent has worked on the restored code would clobber
+    /// that work, so the next turn retires the undo point.
+    #[tokio::test]
+    async fn the_next_turn_retires_the_undo_point() {
+        let td = tempfile::tempdir().unwrap();
+        let (sup, checkouts) = worked_past_the_turn(td.path()).await;
+        sup.restore_turn_code("denali", TURN).await.unwrap();
+        let next = "7a1e5c3b-2d4f-4e6a-9b8c-0d1e2f3a4b5c";
+
+        sup.checkpoint_turn("denali", next).await;
+
+        assert!(!sup.has_code_undo("denali").await.unwrap());
+        assert_eq!(undo_points(&checkouts).await, [false; 3]);
+        assert!(checkpoint::resolve(&checkouts[0], next)
+            .await
+            .unwrap()
+            .is_some());
+    }
+
+    /// A restore that fails part-way puts back the checkouts it changed and
+    /// leaves no undo point but for one it couldn't put back.
+    #[tokio::test]
+    async fn a_failed_restore_is_taken_back() {
+        let td = tempfile::tempdir().unwrap();
+        let (sup, checkouts) = worked_past_the_turn(td.path()).await;
+        let [a, b, _] = &checkouts;
+        let tip = head(a).await;
+        // `b` can be read and pinned, but not reset, and not put back either.
+        let lock = b.join(".git").join("index.lock");
+        std::fs::write(&lock, b"").unwrap();
+
+        assert!(sup.restore_turn_code("denali", TURN).await.is_err());
+
+        assert_eq!(head(a).await, tip);
+        assert_eq!(read(a, "wip.txt").as_deref(), Some("edited later"));
+        assert_eq!(read(b, "stray.txt").as_deref(), Some("created later"));
+        assert_eq!(undo_points(&checkouts).await, [false, true, false]);
+        // `b` keeps its code to recover by hand, but isn't as a restore left
+        // it, so no undo is offered, and the stale point goes when that's seen.
+        std::fs::remove_file(&lock).unwrap();
+        assert!(!sup.has_code_undo("denali").await.unwrap());
+        assert_eq!(undo_points(&checkouts).await, [false; 3]);
+        assert_eq!(read(b, "stray.txt").as_deref(), Some("created later"));
+    }
+
+    /// The undo is stale once the code changes in any way after the restore:
+    /// it is refused, nothing is restored, and its points go.
+    #[tokio::test]
+    async fn an_edit_after_the_restore_ends_the_undo() {
+        let td = tempfile::tempdir().unwrap();
+        let (sup, checkouts) = worked_past_the_turn(td.path()).await;
+        let a = &checkouts[0];
+        sup.restore_turn_code("denali", TURN).await.unwrap();
+        // What a native-view turn, the terminal panel or an editor does.
+        std::fs::write(a.join("wip.txt"), b"edited after the restore").unwrap();
+
+        let err = sup.undo_code_restore("denali").await.unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("has changed since it was restored"),
+            "{err}"
+        );
+        assert_eq!(
+            read(a, "wip.txt").as_deref(),
+            Some("edited after the restore")
+        );
+        assert_eq!(undo_points(&checkouts).await, [false; 3]);
+        assert!(!sup.has_code_undo("denali").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn a_commit_after_the_restore_ends_the_undo() {
+        let td = tempfile::tempdir().unwrap();
+        let (sup, checkouts) = worked_past_the_turn(td.path()).await;
+        let a = &checkouts[0];
+        sup.restore_turn_code("denali", TURN).await.unwrap();
+        // Commit exactly what the restore left: the tree is unchanged, HEAD
+        // isn't.
+        crate::git::commit_all(a, "committed after the restore")
+            .await
+            .unwrap();
+        let committed = head(a).await;
+
+        assert!(!sup.has_code_undo("denali").await.unwrap());
+        assert!(sup.undo_code_restore("denali").await.is_err());
+        assert_eq!(head(a).await, committed);
+    }
+
+    /// One changed checkout ends the undo for all of them: undoing only the
+    /// untouched ones would leave a workspace that never existed.
+    #[tokio::test]
+    async fn a_change_in_one_checkout_ends_the_undo_for_all() {
+        let td = tempfile::tempdir().unwrap();
+        let (sup, checkouts) = worked_past_the_turn(td.path()).await;
+        let [a, b, _] = &checkouts;
+        sup.restore_turn_code("denali", TURN).await.unwrap();
+        std::fs::write(b.join("new.txt"), b"created after the restore").unwrap();
+
+        let err = sup.undo_code_restore("denali").await.unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("has changed since it was restored"),
+            "{err}"
+        );
+        // `a` is untouched by the refused undo: still as restored.
+        assert_eq!(read(a, "wip.txt").as_deref(), Some("at the turn"));
+        assert_eq!(read(a, "later.txt"), None);
+        assert_eq!(
+            read(b, "new.txt").as_deref(),
+            Some("created after the restore")
+        );
+        assert_eq!(undo_points(&checkouts).await, [false; 3]);
+    }
+
+    /// Ignored files never count, here as everywhere else checkpoints look.
+    #[tokio::test]
+    async fn an_ignored_file_leaves_the_undo_in_place() {
+        let td = tempfile::tempdir().unwrap();
+        let (sup, [a, ..]) = worked_past_the_turn(td.path()).await;
+        sup.restore_turn_code("denali", TURN).await.unwrap();
+        std::fs::write(
+            a.join(".git").join("info").join("exclude"),
+            b"scratch.txt\n",
+        )
+        .unwrap();
+        std::fs::write(a.join("scratch.txt"), b"ignored").unwrap();
+
+        assert!(sup.has_code_undo("denali").await.unwrap());
+        sup.undo_code_restore("denali").await.unwrap();
+        assert_eq!(read(&a, "wip.txt").as_deref(), Some("edited later"));
+    }
+
+    /// Input typed into the native view never reaches `checkpoint_turn`, but
+    /// what its turn does to the code still ends the undo.
+    #[tokio::test]
+    async fn native_input_that_edits_the_code_ends_the_undo() {
+        use crate::pty_session::{PtySession, PtySpawn};
+        use std::time::Instant;
+
+        let (ctx, _sink, _dir) = crate::host::ctx::test_ctx();
+        let td = tempfile::tempdir().unwrap();
+        let (sup, [a, ..]) = worked_past_the_turn(td.path()).await;
+        sup.restore_turn_code("denali", TURN).await.unwrap();
+        // A stand-in for the agent's TUI: it edits the code once a line is
+        // submitted.
+        let wip = a.join("wip.txt");
+        let script = format!("read line; echo \"$line\" > '{}'", wip.display());
+        let pty = PtySession::spawn(
+            PtySpawn {
+                program: Path::new("/bin/sh"),
+                args: &["-c".to_string(), script],
+                cwd: &a,
+                env: &[],
+                cols: 80,
+                rows: 24,
+                kill_plan: crate::sandbox::KillHandle::ProcessGroup,
+            },
+            |_| {},
+            |_| {},
+        )
+        .unwrap();
+        let sup = std::sync::Arc::new(sup);
+        sup.agents.lock().insert(
+            "denali".to_string(),
+            std::sync::Arc::new(crate::agent::Agent::over_pty(pty)),
+        );
+
+        sup.clone()
+            .write_to_agent(&ctx, "denali", b"typed natively\r")
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while read(&a, "wip.txt").as_deref() != Some("typed natively\n") {
+            assert!(Instant::now() < deadline, "the native turn never edited");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+
+        assert!(!sup.has_code_undo("denali").await.unwrap());
+        assert_eq!(read(&a, "wip.txt").as_deref(), Some("typed natively\n"));
+    }
+
+    #[tokio::test]
+    async fn commits_origin_already_has_are_reported_pushed() {
+        let td = tempfile::tempdir().unwrap();
+        let (sup, [a, ..]) = worked_past_the_turn(td.path()).await;
+        let origin = td.path().join("origin.git");
+        crate::git::run_git(
+            td.path(),
+            &["init", "-q", "--bare", origin.to_str().unwrap()],
+            "init",
+        )
+        .await
+        .unwrap();
+        crate::git::run_git(
+            &a,
+            &["remote", "add", "origin", origin.to_str().unwrap()],
+            "remote",
+        )
+        .await
+        .unwrap();
+        crate::git::run_git(
+            &a,
+            &["push", "-q", "origin", "HEAD:refs/heads/feature"],
+            "push",
+        )
+        .await
+        .unwrap();
+        let unpushed = commit(&a, "unpushed.txt", "not pushed yet").await;
+
+        let report = sup.preview_turn_code_restore("denali", TURN).await.unwrap();
+
+        let leaving: Vec<(&str, bool)> = report.repos[0]
+            .leaving
+            .iter()
+            .map(|c| (c.subject.as_str(), c.pushed))
+            .collect();
+        assert_eq!(
+            leaving,
+            [("not pushed yet", false), ("a commit after the turn", true)]
+        );
+        assert_eq!(report.repos[0].leaving[0].sha, unpushed);
+    }
+
+    #[tokio::test]
+    async fn the_code_stays_put_under_a_running_turn() {
+        let td = tempfile::tempdir().unwrap();
+        let (sup, [a, ..]) = worked_past_the_turn(td.path()).await;
+        let tip = head(&a).await;
+        sup.statuses
+            .lock()
+            .insert("denali".to_string(), AgentStatus::Running);
+
+        assert!(sup.restore_turn_code("denali", TURN).await.is_err());
+
+        assert_eq!(head(&a).await, tip);
+        assert_eq!(read(&a, "wip.txt").as_deref(), Some("edited later"));
     }
 
     #[tokio::test]

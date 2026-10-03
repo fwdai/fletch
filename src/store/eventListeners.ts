@@ -49,6 +49,7 @@ import {
   persistLiveReasoning,
   persistLiveUsage,
   providerFor,
+  recordWorkspaceUsage,
   reduceRecords,
 } from "@/helpers";
 import { pushAgentOutput, pushShellOutput } from "@/pty/buffers";
@@ -73,7 +74,6 @@ import {
   type ThemeMode,
 } from "@/storage/preferences";
 import { getAllSettings } from "@/storage/settings";
-import { recordUsageSnapshot } from "@/storage/usageDaily";
 import { notify } from "@/util/notify";
 import { playSound, type SoundKind } from "@/util/sound";
 import { reduceInstallEvent } from "./agentInstall";
@@ -406,7 +406,7 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
           if (hasUsage(usage)) {
             // Via agentRecord, not the workspace snapshot: an off-sidebar chat's
             // spend belongs to its project like anyone else's.
-            recordUsageSnapshot(id, agentRecord(get(), id)?.project_id, usage);
+            void recordWorkspaceUsage(id, agentRecord(get(), id)?.project_id, usage);
           }
           // The first turn captures the agent's session id in the DB; pull it
           // into the live workspace so the Native toggle unblocks without a

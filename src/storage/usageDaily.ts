@@ -3,11 +3,13 @@ import { localDay } from "@/util/format";
 import { dbUpsert } from "./db";
 
 // Daily token-usage snapshots (usage_daily table): one row per (workspace,
-// local day) holding the session's CUMULATIVE spend as of the last aggregation
-// that day. Cumulative — not per-day deltas — because a session's ledger is
-// only ever rebuilt in full from session_records; a day's spend is the
-// difference between consecutive snapshots. Written opportunistically from
-// every place usage is re-aggregated, so history accrues as the app is used.
+// local day) holding the workspace's CUMULATIVE spend as of the last
+// aggregation that day — every session it ran, the ones a rewind superseded
+// included (`recordWorkspaceUsage`), so the total never drops. Cumulative — not
+// per-day deltas — because a session's ledger is only ever rebuilt in full from
+// session_records; a day's spend is the difference between consecutive
+// snapshots. Written opportunistically from every place usage is re-aggregated,
+// so history accrues as the app is used.
 
 // Last written fingerprint per workspace, so re-reads that didn't change the
 // totals (the common refresh case) never touch the DB.

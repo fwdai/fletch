@@ -1709,6 +1709,7 @@ pub fn run() {
             commands::archive_agent,
             commands::restore_agent,
             commands::read_session_records,
+            commands::read_superseded_records,
             commands::read_user_turns,
             commands::sync_session,
             commands::append_live_record,

@@ -55,7 +55,11 @@ records. History is stored once, and children reference it.
   expensive half. Every internal read (ingestion, turn matching,
   `last_activity`, record counts, usage, workflow ledger) stays
   own-session-only.
-- **Usage** counts only records with `inherited == false`.
+- **Usage** counts only records with `inherited == false`. A workspace's
+  recorded spend also counts the own records of the sessions it superseded
+  (a rewind's abandoned branches), so it never drops, but not those of a
+  session `detach_children` handed it, whose spend was the deleted
+  workspace's.
 - **Deleting an ancestor:** every path that deletes sessions (discard,
   recycled-name eviction, project delete) first calls
   `detach_children(tx, doomed_workspaces)`. A doomed session that a surviving
@@ -159,6 +163,16 @@ pinned at `refs/fletch/checkpoints/<turn_id>` in that checkout.
 ### Rewind `(agent, turn T, conversation | code | both)`
 - **Code:** in each checkout, restore checkpoint(T): files and HEAD. Confirm
   first if commits made after T would leave the branch, or were already pushed.
+  The checked-out branch moves back with HEAD, and each checkout it changes is
+  first pinned at `refs/fletch/undo/latest`, which keeps those commits
+  reachable and makes the restore undoable; `refs/fletch/undo/restored` pins
+  what it was restored to. The backend owns that one undo point per checkout:
+  a new restore replaces it, an undo or a discard ends it, and otherwise it
+  lasts until the next delivered turn, or until the code changes in any way,
+  whichever comes first. An undo applies only while every restored checkout is
+  exactly as the restore left it (HEAD and the working tree, ignored files
+  aside), so it never discards newer work, whether a turn, the native view,
+  the terminal or an editor made it.
 - **Conversation:**
   1. Stop the agent and drop its queued messages.
   2. Create a new session in the same workspace with lineage

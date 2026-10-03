@@ -17,6 +17,20 @@ pub fn read_session_records(
     supervisor.workspace.read_history_records(&agent_id)
 }
 
+/// The sessions the agent's workspace has superseded (a rewind's abandoned
+/// branches), each with its records unless the caller already has them
+/// (`known`) — for its spend.
+#[tauri::command]
+pub fn read_superseded_records(
+    supervisor: State<'_, Arc<Supervisor>>,
+    agent_id: String,
+    known: Vec<String>,
+) -> Result<Vec<crate::workspace::SupersededSession>> {
+    supervisor
+        .workspace
+        .read_superseded_records(&agent_id, &known)
+}
+
 /// The user turns of the same history, in the same order.
 #[tauri::command]
 pub fn read_user_turns(

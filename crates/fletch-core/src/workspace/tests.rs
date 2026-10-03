@@ -110,6 +110,76 @@ pub(crate) fn mk_repo(path: &str) -> TrackedRepo {
     }
 }
 
+// ── Conversation fixtures (lineage, session switches) ─────────────────────
+
+/// A claude workspace `id` (on repo `repo`), whose session continues `lineage`.
+pub(crate) fn agent(wm: &WorkspaceManager, id: &str, repo: &str, lineage: Option<SessionLineage>) {
+    let mut rec = new_agent_record(
+        id.into(),
+        id.into(),
+        "claude".into(),
+        mk_repo(repo),
+        "task".into(),
+        AgentView::Custom,
+    );
+    rec.lineage = lineage;
+    wm.add_agent(&mut rec).unwrap();
+}
+
+/// One exchange in `ws`'s current session, as turn-end ingest leaves it: the
+/// sent turn, its prompt and reply records (`{turn}-u`, `{turn}-a`), matched.
+pub(crate) fn exchange(wm: &WorkspaceManager, ws: &str, turn: &str, text: &str) {
+    wm.insert_user_turn(ws, turn, text, &[]).unwrap();
+    let prompt = serde_json::json!({"type": "user", "text": text});
+    let reply = serde_json::json!({"type": "assistant", "text": format!("re {text}")});
+    wm.append_session_records(
+        ws,
+        "claude",
+        "transcript",
+        None,
+        &[
+            (format!("{turn}-u").as_str(), &prompt),
+            (format!("{turn}-a").as_str(), &reply),
+        ],
+    )
+    .unwrap();
+    wm.associate_pending_user_turns(ws).unwrap();
+}
+
+pub(crate) fn session_of(wm: &WorkspaceManager, ws: &str) -> String {
+    sessions::current_session_id(&wm.db.lock(), ws).unwrap()
+}
+
+/// `(native_id, inherited)` of the workspace's stitched records.
+pub(crate) fn history(wm: &WorkspaceManager, ws: &str) -> Vec<(String, bool)> {
+    wm.read_history_records(ws)
+        .unwrap()
+        .into_iter()
+        .map(|r| (r.native_id, r.inherited))
+        .collect()
+}
+
+/// `(turn_id, inherited)` of the workspace's stitched turns.
+pub(crate) fn history_turns(wm: &WorkspaceManager, ws: &str) -> Vec<(String, bool)> {
+    wm.read_history_turns(ws)
+        .unwrap()
+        .into_iter()
+        .map(|t| (t.turn_id, t.inherited))
+        .collect()
+}
+
+pub(crate) fn owned(ids: &[&str]) -> Vec<(String, bool)> {
+    ids.iter().map(|id| (id.to_string(), false)).collect()
+}
+
+pub(crate) fn inherited(ids: &[&str]) -> Vec<(String, bool)> {
+    ids.iter().map(|id| (id.to_string(), true)).collect()
+}
+
+pub(crate) fn concat(parts: &[Vec<(String, bool)>]) -> Vec<(String, bool)> {
+    parts.concat()
+}
+
 /// The title starts empty, round-trips through the record, and — unlike the
 /// task — is overwritten on every write so the agent can refine an early guess.
 #[test]
