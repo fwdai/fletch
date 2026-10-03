@@ -19,6 +19,13 @@ import { clearHost, loadSettings, saveSettings } from "../src/store/persist";
 
 const state = () => useStore.getState();
 
+/** Deliver a host event frame to the store's listeners, as the socket would:
+ *  for the events the mock host never emits on its own. */
+const hostEvent = (event: string, payload: unknown) =>
+  (
+    client as unknown as { dispatchEvent(frame: { event: string; payload: unknown }): void }
+  ).dispatchEvent({ event, payload });
+
 beforeAll(async () => {
   await state().init();
   await vi.waitFor(() => expect(state().connection).toBe("connected"), { timeout: 5000 });
@@ -286,6 +293,46 @@ describe("git and PR state", () => {
       useStore.setState({ protocol });
       spy.mockRestore();
     }
+  });
+
+  it("keeps the latest verify:report per agent", () => {
+    const report = {
+      checks: [{ name: "test", command: "bun test", outcome: "passed", duration_ms: 1, tail: [] }],
+    };
+    hostEvent("verify:report", { agent_id: "arabia", report });
+    expect(state().verificationReports.arabia).toEqual(report);
+    hostEvent("verify:report", { agent_id: "arabia", report: { checks: [] } });
+    expect(state().verificationReports.arabia).toEqual({ checks: [] });
+  });
+
+  it("writes a line of ship activity when a PR opens, read against the record it replaces", () => {
+    useStore.setState((s) => ({
+      prStates: { ...s.prStates, pamukkale: null },
+      shipActivity: { ...s.shipActivity, pamukkale: [] },
+    }));
+    const opened = {
+      number: 650,
+      url: "https://github.com/o/r/pull/650",
+      state: "open",
+      title: "t",
+      mergeable: "unknown",
+    };
+    hostEvent("pr:state_changed", { agent_id: "pamukkale", state: opened });
+    expect(state().shipActivity.pamukkale?.map((e) => e.text)).toEqual(["PR #650 opened"]);
+    // The same state again is not a transition.
+    hostEvent("pr:state_changed", { agent_id: "pamukkale", state: opened });
+    expect(state().shipActivity.pamukkale).toHaveLength(1);
+  });
+
+  it("caps an agent's ship activity at 20, newest first", () => {
+    useStore.setState((s) => ({ shipActivity: { ...s.shipActivity, pamukkale: [] } }));
+    for (let i = 0; i < 25; i += 1) {
+      hostEvent("agent:git-action", { agent_id: "pamukkale", op: `op${i}` });
+    }
+    const lines = state().shipActivity.pamukkale ?? [];
+    expect(lines).toHaveLength(20);
+    expect(lines[0].text).toBe("Agent ran op24");
+    expect(lines.at(-1)?.text).toBe("Agent ran op5");
   });
 
   it("polls working-tree stats for the whole fleet, and replaces them wholesale", async () => {

@@ -29,6 +29,17 @@ export const fmtElapsed = (sec: number) => {
   return m ? `${m}m ${String(s).padStart(2, "0")}s` : `${s}s`;
 };
 
+/** "just now" / "2m ago" / "3h ago" / "2d ago" for an epoch-millis `at`. */
+export const fmtAgo = (at: number, now = Date.now()) => {
+  const sec = Math.max(0, Math.floor((now - at) / 1000));
+  if (sec < 60) return "just now";
+  const m = Math.floor(sec / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  return `${Math.floor(h / 24)}d ago`;
+};
+
 /** Whole seconds from `startedAt` (epoch millis) to `now`; 0 when not started. */
 export const elapsedSec = (startedAt: number | undefined, now: number) =>
   startedAt ? Math.max(0, Math.floor((now - startedAt) / 1000)) : 0;

@@ -6,6 +6,7 @@ import type { PrChecks, PrComments, PrState } from "@desktop/api/types/pr";
 import type { GhRepoSummary, GhStatus } from "@desktop/api/types/providers";
 import type { PublishApproval } from "@desktop/api/types/sandbox";
 import type { LiveTurn } from "@desktop/api/types/session";
+import type { VerificationReport } from "@desktop/api/types/verify";
 import { appActionMessage } from "@desktop/delegation";
 import { reconcileSending, whileSending } from "@desktop/helpers/sending";
 import { newestWins } from "@desktop/util/newestWins";
@@ -35,6 +36,7 @@ import { replayLiveTurn, runningTurnStart, withPendingTurns } from "./liveTurn";
 import { clearHost, loadDestParent, loadSettings, saveDestParent, saveSettings } from "./persist";
 import { createProposalsSlice, type ProposalsSlice } from "./proposals";
 import { forgetPush, startPush, syncPush } from "./push";
+import { appendActivity, askedText, type ShipActivityMap } from "./shipActivity";
 import { applyUserTurns, reduceRecords } from "./transcript";
 
 export const client = createClient();
@@ -48,6 +50,7 @@ export type SheetName =
   | "newPlan"
   | "addProject"
   | "agentMore"
+  | "shipMore"
   | "modelPicker"
   | "pr";
 
@@ -133,6 +136,12 @@ export interface MobileState extends ChatsSlice, ProposalsSlice {
   /** Unresolved review threads per agent, from `get_pr_threads`. Never set on
    *  a host without the op, so a missing key means "unknown", not "none". */
   prComments: Record<string, PrComments | null>;
+  /** The latest turn-end verification per agent (`verify:report`). Absent =
+   *  never verified since this launch. Not persisted. */
+  verificationReports: Record<string, VerificationReport>;
+  /** The Ship tab's activity list per agent, newest first (store/shipActivity).
+   *  Live only: empty after every handshake, like `backgroundTasks`. */
+  shipActivity: ShipActivityMap;
   trees: Record<string, CheckoutFile[]>;
 
   theme: ThemeMode;
@@ -183,7 +192,7 @@ export interface MobileState extends ChatsSlice, ProposalsSlice {
    *  turn is replayed on top from `read_live_turn` (see store/liveTurn). */
   rebuildLog(agentId: string, opts?: { liveTurn?: boolean }): Promise<void>;
   loadGit(agentId: string): Promise<void>;
-  /** The Git tab's live tick: PR state and CI from one `get_pr_live` pass, so
+  /** The Ship tab's live tick: PR state and CI from one `get_pr_live` pass, so
    *  both are from the same moment. A null `checks` means the CI read didn't
    *  resolve (see `PrLive`), so the last tint is kept rather than blanked. */
   loadPrLive(agentId: string): Promise<void>;
@@ -495,6 +504,8 @@ export const useStore = create<MobileState>()((set, get) => ({
   prStates: {},
   prChecks: {},
   prComments: {},
+  verificationReports: {},
+  shipActivity: {},
   trees: {},
 
   theme: "dark",
@@ -558,8 +569,9 @@ export const useStore = create<MobileState>()((set, get) => ({
       // Task events missed while the socket was down are gone for good — a
       // task held as running could never be seen ending — so the maps start
       // over on every handshake and refill from whatever the host emits next.
-      // The replay watermarks go with them: a restarted host counts from zero.
-      set({ backgroundTasks: {}, liveSeq: {} });
+      // The replay watermarks go with them: a restarted host counts from zero,
+      // and so does the Ship tab's activity list.
+      set({ backgroundTasks: {}, liveSeq: {}, shipActivity: {} });
       // The snapshot carries no stats, so the rows get their numbers from the
       // first poll of every handshake rather than waiting out its interval.
       void get().loadShortstats();
@@ -738,6 +750,8 @@ export const useStore = create<MobileState>()((set, get) => ({
       logs: {},
       backgroundTasks: {},
       liveSeq: {},
+      verificationReports: {},
+      shipActivity: {},
       // The chats belong to the host that holds their checkouts, and the ghosts
       // to the boards those chats propose onto.
       chats: {},
@@ -1132,6 +1146,7 @@ export const useStore = create<MobileState>()((set, get) => ({
     // Completion needs no tracking here — `agent:git-action` and
     // `pr:state_changed` (events.ts) reload the git/PR state when it lands.
     await get().send(agentId, appActionMessage(action, params));
+    set((s) => ({ shipActivity: appendActivity(s.shipActivity, agentId, askedText(action)) }));
   },
 
   async publish(agentId, title, body) {
@@ -1153,7 +1168,17 @@ export const useStore = create<MobileState>()((set, get) => ({
 
   async mergePr(agentId) {
     return guard(set, async () => {
+      // Read before the reload: afterwards the record says merged, and the
+      // line is about the PR that was open when the tap landed.
+      const number = get().prStates[agentId]?.number;
       await api.mergePr(agentId);
+      set((s) => ({
+        shipActivity: appendActivity(
+          s.shipActivity,
+          agentId,
+          number != null ? `Merged PR #${number}` : "Merged the PR",
+        ),
+      }));
       await get().loadGit(agentId);
     });
   },

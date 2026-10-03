@@ -1364,54 +1364,11 @@
   color: var(--fg-2);
   text-align: center;
 }
-.pr-card {
-  background: var(--bg-1);
-  border: 1px solid var(--bd-soft);
-  border-radius: 16px;
-  padding: 14px;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  margin-bottom: 12px;
-}
-.pr-card .t {
-  font-size: 14.5px;
-  font-weight: 600;
-  line-height: 1.35;
-}
-.pr-card .m {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-  align-items: center;
-}
-.pr-card .m .mono {
-  font-size: 11.5px;
-  color: var(--fg-3);
-}
-.checks {
-  display: flex;
-  gap: 3px;
-}
-.checks i {
-  width: 12px;
-  height: 5px;
-  border-radius: 2px;
-  background: var(--success);
-}
-.checks i.p {
-  background: var(--fg-3);
-  animation: blink 1.2s infinite;
-}
-.checks i.f {
-  background: var(--danger);
-}
-
-/* Git tab. The strip's tint carries the state before any word is read:
-   clean/ready=green · uncommitted=amber · pushed/PR=accent · fixable=orange ·
-   merged=purple · closed/loading=neutral. One `--tone` per kind, every other
-   rule mixes from it, so light and dark follow the tokens. */
-.git-hdr {
+/* Ship tab. The strip's tint carries the state before any word is read:
+   clean/ready=green · changes=amber · info=accent · att=orange · merged=purple
+   · neutral=grey · working=accent with the chat's spinner. One `--tone` per
+   kind, every other rule mixes from it, so light and dark follow the tokens. */
+.ship-hdr {
   --tone: var(--fg-2);
   display: flex;
   align-items: center;
@@ -1422,82 +1379,162 @@
   background: color-mix(in oklch, var(--tone), var(--bg-0) 90%);
   border-bottom: 1px solid color-mix(in oklch, var(--tone), transparent 72%);
 }
-.git-hdr.k-clean,
-.git-hdr.k-ready {
+.ship-hdr.k-clean,
+.ship-hdr.k-ready {
   --tone: var(--success);
 }
-.git-hdr.k-changes {
+.ship-hdr.k-changes {
   --tone: var(--warn);
 }
-.git-hdr.k-info {
+.ship-hdr.k-info,
+.ship-hdr.k-working {
   --tone: var(--accent);
 }
-.git-hdr.k-att {
+.ship-hdr.k-att {
   --tone: color-mix(in oklch, var(--danger), var(--warn) 35%);
 }
-.git-hdr.k-merged {
+.ship-hdr.k-merged {
   --tone: var(--merged);
 }
-.git-hdr .pill {
-  color: var(--tone);
-  border-color: color-mix(in oklch, var(--tone), transparent 60%);
-  background: color-mix(in oklch, var(--tone), transparent 88%);
-}
-.git-hdr .hdr-dot {
+.ship-hdr .hdr-dot {
   width: 8px;
   height: 8px;
   border-radius: 50%;
   background: var(--tone);
   flex-shrink: 0;
 }
-.git-hdr .bn {
+.ship-hdr .working-dots i {
+  background: var(--tone);
+}
+.ship-hdr .bn {
   color: var(--fg-0);
   font-weight: 500;
-  font-size: 12.5px;
+  font-size: 13px;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.git-hdr .base {
+.ship-hdr .base {
   color: var(--fg-3);
   font-size: 11.5px;
   white-space: nowrap;
 }
-.git-hdr .grow {
+.ship-hdr .grow {
   flex: 1;
 }
-.git-hdr .hdr-diff {
+.ship-hdr .hdr-diff {
   display: flex;
   gap: 5px;
   font-size: 11.5px;
 }
-.git-hdr .hdr-ext {
+.ship-hdr .hdr-ext {
   display: inline-flex;
   padding: 4px;
   color: var(--fg-2);
 }
-.git-body {
+.ship-body {
   display: flex;
   flex-direction: column;
   gap: 12px;
   padding: 12px 16px 120px;
 }
-.git-body .pr-card {
-  margin-bottom: 0;
+/* Evidence rows: a `.row` with the small icon square and a 14px label, so
+   several facts fit above the fold. A muted row is a statement, not a tap. */
+.ship-row {
+  min-height: 48px;
+  padding: 10px 14px;
 }
-.git-kv {
-  padding: 0 14px;
+.ship-row .lbl {
+  font-size: 14px;
 }
-.git-kv .kv:first-child {
+.ship-row.muted .lbl {
+  color: var(--fg-2);
+}
+.ship-row.muted:active {
+  background: transparent;
+}
+/* Unfolded under their row: both lists sit inside the evidence card. */
+.ship-evidence .checks-list,
+.ship-evidence .ship-comments {
+  border-top: 1px solid var(--bd-soft);
+  background: var(--bg-0);
+}
+.ship-comment {
+  padding: 10px 14px 8px;
+  border-top: 1px solid var(--bd-soft);
+}
+.ship-comment:first-child {
   border-top: 0;
 }
-.git-kv .hint {
-  font-style: normal;
+.ship-comment .who {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  color: var(--fg-1);
+  min-width: 0;
+}
+.ship-comment .who .pill {
+  height: 18px;
+  font-size: 10.5px;
+}
+.ship-comment .who .loc {
+  font-size: 11px;
+  color: var(--fg-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ship-comment .body {
+  margin-top: 4px;
+  font-size: 13.5px;
+  line-height: 1.4;
+  color: var(--fg-1);
+}
+.ship-comment .acts {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 2px;
+}
+.ship-comment .acts .alt {
+  padding: 6px 0;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--accent);
+}
+.ship-comment .acts .alt:disabled {
   color: var(--fg-3);
 }
-/* The PR's checks, one per row under its card: a glyph per outcome, failing
-   first. The tints are the ticks' (`.checks i`), so the two agree. */
+.ship-comment .acts a {
+  display: inline-flex;
+  padding: 6px;
+  color: var(--fg-3);
+}
+/* Activity: one line per thing that moved the work, newest first. */
+.ship-act {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 9px 14px;
+  font-size: 13.5px;
+  border-top: 1px solid var(--bd-soft);
+}
+.ship-act:first-child {
+  border-top: 0;
+}
+.ship-act .txt {
+  flex: 1;
+  min-width: 0;
+  color: var(--fg-1);
+}
+.ship-act .when {
+  font-size: 11px;
+  color: var(--fg-3);
+  white-space: nowrap;
+}
+/* The PR's checks, one per row: a glyph per outcome, failing first. */
 .checks-list .check-row {
   display: flex;
   align-items: center;
