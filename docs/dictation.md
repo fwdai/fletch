@@ -518,8 +518,8 @@ alias. What differs on the phone:
   "dictate more".
 - **Return inserts a newline.** There is no ↵ to send with, so the arrow is
   always visible and send is only ever a deliberate tap. While the agent works
-  the disc is the stop, and the draft waits — there is no mid-turn send on the
-  phone.
+  the disc is the stop only while the box is empty; with a draft it is Send
+  again and the tap sends a mid-turn follow-up, as ↵ does on the desktop.
 - **Every exit has a button.** While listening the footer's leading row
   becomes the voice row: ✕ cancel, a 12-bar waveform of recent mic levels with
   the clock, and ✓ in the disc. Stop-agent ignores taps for 450 ms after send
