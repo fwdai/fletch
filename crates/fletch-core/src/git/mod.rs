@@ -5,6 +5,7 @@
 
 mod base;
 mod branch;
+pub mod checkpoint;
 mod cmd;
 mod diff;
 mod files;

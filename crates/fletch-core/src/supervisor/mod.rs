@@ -1,6 +1,7 @@
 //! Coordinator between Tauri IPC commands and the running agents.
 
 pub mod auto_archive;
+mod checkpoints;
 mod disposition;
 mod events;
 mod fork;
@@ -13,6 +14,7 @@ pub(crate) mod run;
 mod session_sync;
 mod shell;
 
+pub use checkpoints::RepoCheckpoint;
 pub use disposition::ArchiveTrigger;
 pub use events::emit_workspace_changed;
 pub use fork::{ForkCode, ForkContext};
@@ -99,6 +101,18 @@ pub struct Supervisor {
     /// Archive reservations and open input routes, per agent — the per-agent
     /// counterpart of `deleting_projects`. See `disposition::Disposal`.
     pub(super) disposal: Mutex<disposition::Disposal>,
+    /// One delivery at a time per agent. Each top-level entry point that can
+    /// start a turn — `send_user_message`, and the queue flushes at turn end,
+    /// after a spawn, a revive or a respawn — holds its agent's lock from the
+    /// routing decision until the turn has started (`Supervisor::lock_delivery`).
+    /// A delivery checkpoints before its turn starts; without this a message
+    /// routed in that window could start its turn first. A send that waits
+    /// here routes against the state the one before it left: as its follow-up.
+    ///
+    /// Never taken by `deliver_as_turn` or `flush_queued`, which run under it,
+    /// and never held across a spawn (whose completion drains under it).
+    /// Created on first use; dropped with the runtime (`detach_runtime`).
+    pub(super) delivery_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     /// Agent ids whose binary-path change couldn't be applied immediately
     /// because the agent was mid-turn. Drained at the next turn-end Idle
     /// transition (see `transition_active`), which respawns them onto the
@@ -165,6 +179,7 @@ impl Supervisor {
             agent_lifecycle: tokio::sync::Mutex::new(()),
             deleting_projects: Mutex::new(HashSet::new()),
             disposal: Mutex::new(disposition::Disposal::default()),
+            delivery_locks: Mutex::new(HashMap::new()),
             respawn_pending: Mutex::new(HashSet::new()),
             message_queue: Mutex::new(MessageQueue::new()),
             stale_base: Mutex::new(HashSet::new()),
@@ -903,6 +918,48 @@ mod tests {
             AgentView::Custom,
         );
         record.status = status;
+        record
+    }
+
+    /// A git repo with one commit at `<dir>/<name>`, standing in for a checkout.
+    pub(super) async fn committed_repo(dir: &Path, name: &str) -> PathBuf {
+        let repo = dir.join(name);
+        std::fs::create_dir(&repo).unwrap();
+        crate::git::init_repo(&repo).await.unwrap();
+        for (key, value) in [("user.email", "t@example.com"), ("user.name", "Tester")] {
+            crate::git::run_git(&repo, &["config", key, value], "config")
+                .await
+                .unwrap();
+        }
+        std::fs::write(repo.join("a.txt"), b"base").unwrap();
+        crate::git::commit_all(&repo, "base").await.unwrap();
+        repo
+    }
+
+    /// An idle agent `id` working in `checkouts`, one tracked repo each, for
+    /// the caller to `add_agent`. Adopted, so they resolve as given rather than
+    /// under the checkouts root; each is registered as a repo so it can be
+    /// tracked.
+    pub(super) fn record_in_checkouts(
+        sup: &Supervisor,
+        id: &str,
+        checkouts: &[PathBuf],
+    ) -> AgentRecord {
+        let mut record = record_with_status(id, AgentStatus::Idle);
+        let template = record.repos[0].clone();
+        record.repos = checkouts
+            .iter()
+            .enumerate()
+            .map(|(i, checkout)| {
+                sup.workspace.add_workspace_repo(checkout.clone()).unwrap();
+                TrackedRepo {
+                    repo_path: checkout.clone(),
+                    subdir: format!("repo-{i}"),
+                    adopted_checkout: Some(checkout.clone()),
+                    ..template.clone()
+                }
+            })
+            .collect();
         record
     }
 

@@ -257,7 +257,7 @@ fn dispatch(ctx: &Arc<EngineCtx>, db: &Db, turn: &PmTurn<'_>, decision: Plan) {
     let (ctx, db) = (ctx.clone(), db.clone());
     crate::host::spawn(async move {
         let delivered = match decision {
-            Plan::Deliver { agent_id } => deliver(&ctx, &agent_id, &prompt),
+            Plan::Deliver { agent_id } => deliver(&ctx, &agent_id, &prompt).await,
             Plan::Off | Plan::NoChat => false,
         };
         if !delivered {
@@ -266,13 +266,16 @@ fn dispatch(ctx: &Arc<EngineCtx>, db: &Db, turn: &PmTurn<'_>, decision: Plan) {
     });
 }
 
-fn deliver(ctx: &Arc<EngineCtx>, agent_id: &str, prompt: &str) -> bool {
+async fn deliver(ctx: &Arc<EngineCtx>, agent_id: &str, prompt: &str) -> bool {
     let Some(sup) = ctx.supervisor() else {
         tracing::warn!("roadmap PM turn: no supervisor to deliver through");
         return false;
     };
     let turn_id = uuid::Uuid::new_v4().to_string();
-    match sup.send_user_message(ctx, agent_id, &turn_id, prompt, &[]) {
+    match sup
+        .send_user_message(ctx, agent_id, &turn_id, prompt, &[])
+        .await
+    {
         Ok(held) => {
             tracing::info!(agent_id, held, "roadmap PM turn: sent");
             true

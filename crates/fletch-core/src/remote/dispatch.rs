@@ -626,13 +626,10 @@ impl Dispatch for SupervisorDispatch {
 
                 "send_user_message" => {
                     let a: SendMessageArgs = parse(args)?;
-                    res(sup.clone().send_user_message(
-                        ctx,
-                        &a.agent_id,
-                        &a.turn_id,
-                        &a.text,
-                        &a.attachments,
-                    ))
+                    res(sup
+                        .clone()
+                        .send_user_message(ctx, &a.agent_id, &a.turn_id, &a.text, &a.attachments)
+                        .await)
                 }
 
                 "answer_tool_use" => {
