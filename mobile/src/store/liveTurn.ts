@@ -94,7 +94,6 @@ export function replayLiveTurn(
   }
   return {
     logs: next.logs,
-    busy: next.busy,
     pendingToolUse: next.pendingToolUse,
     backgroundTasks: next.backgroundTasks,
     liveSeq: { ...s.liveSeq, [agentId]: live.next_seq },

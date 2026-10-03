@@ -25,10 +25,12 @@ import type {
   TurnStartedEvent,
 } from "@desktop/api/types/session";
 import { mirrorSentTurn } from "@desktop/helpers/mirrorTurn";
+import { dischargeSending } from "@desktop/helpers/sending";
 import { getAdapter, type RawEvent } from "../adapters";
 import { ignore } from "../lib/ignore";
 import type { RemoteClient } from "../remote";
 import { dropTasks, foldTaskEvent } from "./backgroundTasks";
+import { patchChatIn } from "./chats";
 import { agentOf, type MobileState } from "./index";
 import { isReplayed } from "./liveTurn";
 import { applyLiveEvent } from "./transcript";
@@ -91,10 +93,11 @@ export function foldAgentEvent(
     next = { ...next, ...foldTaskEvent(next, agentId, task) };
   }
   const { items, turnEnded } = applyLiveEvent(provider, next.logs[agentId] ?? [], raw);
+  // A turn can't end with prompts still held. The busy state itself is not
+  // touched here — the host's `agent:status` owns it.
   return {
     backgroundTasks: next.backgroundTasks,
     logs: { ...next.logs, [agentId]: items },
-    busy: turnEnded ? { ...next.busy, [agentId]: false } : next.busy,
     pendingToolUse: turnEnded ? { ...next.pendingToolUse, [agentId]: {} } : next.pendingToolUse,
   };
 }
@@ -117,11 +120,10 @@ export function registerRemoteEvents(client: RemoteClient, set: Set, get: Get): 
   });
 
   on<AgentStatusEvent>("agent:status", (e) => {
-    // A planning chat's record is not in the snapshot, so it is patched in its
-    // own registry — this is what lets `waitForSpawn` and the status line work
-    // for one. A no-op for a sidebar agent.
-    get().patchChat(e.agent_id, { status: e.status, last_error: e.last_error ?? null });
     set((s) => {
+      // Read before either registry changes: the discharge rule below needs
+      // the status the agent is leaving.
+      const prevStatus = agentOf(s, e.agent_id)?.status;
       const ws = s.workspace;
       const turnStartedAt = { ...s.turnStartedAt };
       if (e.status === "idle" || e.status === "error" || e.status === "stopped") {
@@ -134,10 +136,17 @@ export function registerRemoteEvents(client: RemoteClient, set: Set, get: Get): 
               last_error: e.last_error ?? undefined,
             })
           : ws,
-        busy:
-          e.status === "running"
-            ? { ...s.busy, [e.agent_id]: true }
-            : { ...s.busy, [e.agent_id]: false },
+        // A planning chat's record is not in the snapshot, so it is patched in
+        // its own registry — this is what lets `waitForSpawn` and the status
+        // line work for one. Same fold as the snapshot's, so nothing reads a
+        // half-patched store. A no-op for a sidebar agent.
+        chats: patchChatIn(s.chats, e.agent_id, {
+          status: e.status,
+          last_error: e.last_error ?? null,
+        }),
+        // This device's send is answered by the status it produced — the rule
+        // lives in helpers/sending, shared with the desktop.
+        sending: dischargeSending(s.sending, e.agent_id, prevStatus, e.status),
         turnStartedAt,
         // `idle` is not a clear: sub-agents outlive the turn. A stopped or
         // errored process takes its tasks with it.
@@ -149,16 +158,14 @@ export function registerRemoteEvents(client: RemoteClient, set: Set, get: Get): 
   // A user message the host accepted, from whichever device sent it. Mirror it
   // so a prompt typed on the Mac shows here while its turn is still running;
   // our own send is already in the log under its turnId (see `send`) and is
-  // skipped. A turn-opening message asserts busy the way `send` does.
+  // skipped. The Running status the message produces lands right after, on
+  // every device alike.
   on<TurnSentEvent>("turn:sent", (e) => {
     set((s) => {
       const prev = s.logs[e.agent_id] ?? [];
       const next = mirrorSentTurn(prev, e);
       if (next === prev) return {};
-      return {
-        logs: { ...s.logs, [e.agent_id]: next },
-        busy: e.follow_up ? s.busy : { ...s.busy, [e.agent_id]: true },
-      };
+      return { logs: { ...s.logs, [e.agent_id]: next } };
     });
   });
 

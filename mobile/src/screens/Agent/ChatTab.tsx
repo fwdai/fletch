@@ -1,7 +1,7 @@
 import type { AgentRecord } from "@desktop/api/types/agent";
 import { type MutableRefObject, useEffect, useMemo } from "react";
 import { applyPolicy, type ChatItem, getAdapter } from "../../adapters";
-import { isBusy, providerLabel } from "../../lib/agents";
+import { isAgentBusy, providerLabel } from "../../lib/agents";
 import { fmtElapsed, useElapsed } from "../../lib/hooks";
 import { useStickyScroll } from "../../lib/useStickyScroll";
 import { useStore } from "../../store";
@@ -34,7 +34,7 @@ export function ChatTab({
   const loadProposals = useStore((s) => s.loadProposals);
   const connected = useStore((s) => s.connection === "connected");
   const planning = !!agent.purpose;
-  const busy = isBusy(agent);
+  const busy = useStore((s) => isAgentBusy(s, agent));
   const elapsed = useElapsed(startedAt, busy);
 
   // The ghosts can predate this session — a chat resumed tomorrow has to show

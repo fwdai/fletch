@@ -7,6 +7,7 @@ import type { GhRepoSummary, GhStatus } from "@desktop/api/types/providers";
 import type { PublishApproval } from "@desktop/api/types/sandbox";
 import type { LiveTurn } from "@desktop/api/types/session";
 import { appActionMessage } from "@desktop/delegation";
+import { reconcileSending, whileSending } from "@desktop/helpers/sending";
 import { newestWins } from "@desktop/util/newestWins";
 import { type ApprovalEvent, replayApprovalEvents } from "@desktop/util/publishApprovals";
 import { create } from "zustand";
@@ -102,7 +103,13 @@ export interface MobileState extends ChatsSlice, ProposalsSlice {
 
   workspace: Workspace | null;
   logs: Record<string, ChatItem[]>;
-  busy: Record<string, boolean>;
+  /** Agents with a send from this device that the host has not answered with
+   *  a status yet. The agent's `status` is the busy signal (`isAgentBusy`);
+   *  this only bridges the gap between the tap and the `running` it produces —
+   *  or the spawn it triggers first. Discharged by the next `agent:status`
+   *  other than that spawn and its resting `idle`, by a failed send, and by a
+   *  snapshot that shows the agent at rest (`reconcileSending`). */
+  sending: Record<string, boolean>;
   /** tool_use id → held control-protocol request id, per agent. */
   pendingToolUse: Record<string, Record<string, string>>;
   /** Gated publishes waiting on an answer, oldest first. The host is blocked on
@@ -378,41 +385,6 @@ export const projectOf = (s: AgentSource, agentId: string) => {
   return s.workspace?.projects.find((p) => p.project_id === agent?.project_id);
 };
 
-/** Agents with a send in flight from this device. Their optimistic `busy` flag
- *  is younger than any snapshot the host can answer with, so `reconcileBusy`
- *  has to leave it alone. */
-const sending = new Set<string>();
-
-/** Run a send with its agent marked in-flight, so a snapshot landing in the
- *  optimistic window can't clear the flag the send just set. */
-async function whileSending<T>(agentId: string, fn: () => Promise<T>): Promise<T> {
-  sending.add(agentId);
-  try {
-    return await fn();
-  } finally {
-    sending.delete(agentId);
-  }
-}
-
-/** Drop optimistic `busy` flags a fresh host snapshot contradicts.
- *
- *  The flag covers the gap between tapping send and the host's `running`
- *  status; past that it is only ever cleared by a live event (a turn end, or a
- *  status that isn't `running`). A backgrounded webview or a dropped socket
- *  misses those silently — which used to strand the flag on `true` for the rest
- *  of the session, leaving the Changes tab (the one surface that reads it) on
- *  "Agent is busy…" for an agent the chat showed as finished. A snapshot saying
- *  the agent isn't running is the authority that the gap is over. */
-function reconcileBusy(busy: Record<string, boolean>, ws: Workspace): Record<string, boolean> {
-  let next = busy;
-  for (const a of ws.agents) {
-    if (!busy[a.id] || isBusy(a) || sending.has(a.id)) continue;
-    if (next === busy) next = { ...busy };
-    next[a.id] = false;
-  }
-  return next;
-}
-
 /** Wait for a freshly spawned agent to leave `spawning` before the first
  *  message is sent — the spawn flow in docs/remote-protocol.md. */
 function waitForSpawn(get: () => MobileState, agentId: string, timeoutMs = 30_000) {
@@ -457,7 +429,7 @@ async function firstTurn(
         { kind: "user_message", text: prompt, turnId, ...withAttachments(attachments) },
       ],
     },
-    busy: { ...s.busy, [record.id]: true },
+    sending: { ...s.sending, [record.id]: true },
   }));
   get().closeSheet();
   get().push("agent", { agentId: record.id });
@@ -468,14 +440,14 @@ async function firstTurn(
     });
   } catch (e) {
     // The agent exists on the host but never got the prompt: drop the
-    // optimistic turn and the busy flag, and let the re-read record show
+    // optimistic turn and the sending flag, and let the re-read record show
     // whatever state it is really in.
     set((s) => {
       const logs = { ...s.logs };
-      const busy = { ...s.busy };
+      const sending = { ...s.sending };
       delete logs[record.id];
-      delete busy[record.id];
-      return { logs, busy };
+      delete sending[record.id];
+      return { logs, sending };
     });
     await recover();
     throw e;
@@ -498,7 +470,7 @@ export const useStore = create<MobileState>()((set, get) => ({
 
   workspace: null,
   logs: {},
-  busy: {},
+  sending: {},
   pendingToolUse: {},
   pendingPublishApprovals: [],
   turnStartedAt: {},
@@ -550,14 +522,24 @@ export const useStore = create<MobileState>()((set, get) => ({
       const agentId = [...get().nav].reverse().find((n) => n.props.agentId)?.props.agentId;
       if (agentId) void get().loadAgent(agentId).catch(ignore);
     };
+    // Every project whose planning chats are loaded re-reads them: a status
+    // those records missed off-socket has no other way back.
+    const refreshChats = () => {
+      for (const projectId of Object.keys(get().chats)) {
+        void get().loadChats(projectId).catch(ignore);
+      }
+    };
     client.onSnapshot((snapshot) => {
       set({ hostInfo: snapshot.host, protocol: snapshot.protocol ?? null });
       const ws = snapshot.workspace;
       // The handshake's snapshot is as authoritative as `refreshWorkspace`'s
-      // read, so it reconciles the optimistic busy flags the same way — this is
-      // the path that clears them after a reconnect.
-      if (ws) set((s) => ({ workspace: ws, busy: reconcileBusy(s.busy, ws) }));
+      // read, so it settles the `sending` bridge the same way (helpers/sending)
+      // — this is the path that clears a flag stranded by a reconnect.
+      if (ws) set((s) => ({ workspace: ws, sending: reconcileSending(s.sending, ws.agents) }));
       else void get().refreshWorkspace();
+      // Planning chats are absent from that snapshot; their records, and their
+      // flags, settle through their own list.
+      refreshChats();
       // Task events missed while the socket was down are gone for good — a
       // task held as running could never be seen ending — so the maps start
       // over on every handshake and refill from whatever the host emits next.
@@ -597,6 +579,7 @@ export const useStore = create<MobileState>()((set, get) => ({
       }
       void get().loadShortstats();
       refreshOpenAgent();
+      refreshChats();
     };
     if (typeof document !== "undefined") {
       document.addEventListener("visibilitychange", () => {
@@ -833,7 +816,9 @@ export const useStore = create<MobileState>()((set, get) => ({
   async refreshWorkspace() {
     try {
       const workspace = await api.getWorkspace();
-      if (workspace) set((s) => ({ workspace, busy: reconcileBusy(s.busy, workspace) }));
+      if (workspace) {
+        set((s) => ({ workspace, sending: reconcileSending(s.sending, workspace.agents) }));
+      }
       return true;
     } catch {
       // Best effort; the next event or resync recovers.
@@ -974,7 +959,7 @@ export const useStore = create<MobileState>()((set, get) => ({
           { kind: "queued_message", text: trimmed, turnId, ...withAttachments(attachments) },
         ],
       },
-      busy: { ...s.busy, [agentId]: true },
+      sending: { ...s.sending, [agentId]: true },
     }));
     return guard(set, async () => {
       try {
@@ -982,7 +967,8 @@ export const useStore = create<MobileState>()((set, get) => ({
           api.sendUserMessage(agentId, turnId, trimmed, attachments),
         );
       } catch (e) {
-        set((s) => ({ busy: { ...s.busy, [agentId]: false } }));
+        // The send never reached the host, so no status will discharge it.
+        set((s) => ({ sending: { ...s.sending, [agentId]: false } }));
         throw e;
       }
     });
@@ -1013,21 +999,15 @@ export const useStore = create<MobileState>()((set, get) => ({
   async answerToolUse(agentId, toolUseId, updatedInput, behavior) {
     const requestId = get().pendingToolUse[agentId]?.[toolUseId];
     if (!requestId) return;
+    // Feeding the answer resumes the paused turn, which never left `running`,
+    // so the working indicator returns on its own.
     set((s) => {
       const forAgent = { ...(s.pendingToolUse[agentId] ?? {}) };
       delete forAgent[toolUseId];
-      return {
-        pendingToolUse: { ...s.pendingToolUse, [agentId]: forAgent },
-        busy: { ...s.busy, [agentId]: true },
-      };
+      return { pendingToolUse: { ...s.pendingToolUse, [agentId]: forAgent } };
     });
     return guard(set, async () => {
-      try {
-        await api.answerToolUse(agentId, requestId, updatedInput, behavior);
-      } catch (e) {
-        set((s) => ({ busy: { ...s.busy, [agentId]: false } }));
-        throw e;
-      }
+      await api.answerToolUse(agentId, requestId, updatedInput, behavior);
     });
   },
 
@@ -1075,14 +1055,12 @@ export const useStore = create<MobileState>()((set, get) => ({
   async stop(agentId) {
     return guard(set, async () => {
       await api.stopAgent(agentId);
-      set((s) => ({ busy: { ...s.busy, [agentId]: false } }));
     });
   },
 
   async resume(agentId) {
     return guard(set, async () => {
       await api.resumeAgent(agentId);
-      set((s) => ({ busy: { ...s.busy, [agentId]: true } }));
     });
   },
 
