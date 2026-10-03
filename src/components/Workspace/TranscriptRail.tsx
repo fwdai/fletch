@@ -18,12 +18,12 @@ import { IconButton } from "@/components/ui/IconButton";
 import { useAppStore } from "@/store";
 import { TranscriptList } from "./messages/TranscriptList";
 import { useTranscript } from "./messages/useTranscript";
+import { useLiveBusy } from "./useLiveBusy";
 
 export function TranscriptRail({ agent, onClose }: { agent: AgentRecord; onClose: () => void }) {
   const transcript = useTranscript(agent);
-  // Native turns produce no event stream, so `managedBusy` is never set for
-  // them. The agent's own status is the liveness signal here.
-  const liveBusy = agent.status === "running";
+  // A native turn can't pause on a question widget, so nothing to suppress.
+  const liveBusy = useLiveBusy(agent, false);
 
   return (
     <aside className="native-rail" aria-label="Transcript">

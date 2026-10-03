@@ -2,7 +2,7 @@
 // (AppState/Workspace/DraftAgent). Type-only store import, erased at compile
 // time, so there's no runtime cycle.
 
-import type { Workspace } from "../api";
+import type { AgentRecord, AgentStatus, Workspace } from "../api";
 import type { AppState, DraftAgent } from "../store";
 
 /** An agent's record, wherever it lives: the sidebar snapshot, or the
@@ -17,6 +17,54 @@ export function agentRecord(state: AppState, agentId: string) {
 
 export function providerFor(state: AppState, agentId: string): string | undefined {
   return agentRecord(state, agentId)?.provider;
+}
+
+/** Whether an agent is working right now — the one busy signal every surface
+ *  renders from (sidebar rail, composer strip, code panel, run thread).
+ *
+ *  The backend's status is the truth: `running` while a turn is in flight,
+ *  whoever started it, and `spawning` while the process it needs is coming up.
+ *  The only thing this client adds is its own send that the backend has not
+ *  answered with a status yet (`sending`), so the UI reads "working" from the
+ *  click rather than from the round trip.
+ *
+ *  The status is the store's record's when the store has one — that is what
+ *  `agent:status` patches (see `patchAgentRecord`), so it is never behind a
+ *  copy a component holds. `fallbackStatus` is for a record the store does not
+ *  carry at all: a run's step agents, fetched separately. */
+export function isAgentBusy(
+  state: AppState,
+  agentId: string,
+  fallbackStatus?: AgentStatus,
+): boolean {
+  const status = agentRecord(state, agentId)?.status ?? fallbackStatus;
+  return status === "running" || status === "spawning" || state.sending[agentId] === true;
+}
+
+export type AgentPatch = Partial<AgentRecord> | ((a: AgentRecord) => Partial<AgentRecord>);
+
+/** Patch an agent's record wherever the store holds it — the workspace
+ *  snapshot for a sidebar agent, the off-sidebar registry for a Roadmap chat —
+ *  as a state patch. The one path for every `agent:*` event, so a chat the
+ *  snapshot omits follows the same status, title and model changes a sidebar
+ *  agent does. Touches only the registries that hold the record. */
+export function patchAgentRecord(
+  state: AppState,
+  agentId: string,
+  patch: AgentPatch,
+): Partial<AppState> {
+  const apply = (a: AgentRecord): AgentRecord => ({
+    ...a,
+    ...(typeof patch === "function" ? patch(a) : patch),
+  });
+  const out: Partial<AppState> = {};
+  const ws = state.workspace;
+  if (ws?.agents.some((a) => a.id === agentId)) {
+    out.workspace = { ...ws, agents: ws.agents.map((a) => (a.id === agentId ? apply(a) : a)) };
+  }
+  const off = state.offSidebarAgents[agentId];
+  if (off) out.offSidebarAgents = { ...state.offSidebarAgents, [agentId]: apply(off) };
+  return out;
 }
 
 /** The primary repo path for an agent (`repos[0]`), used to scope
@@ -66,7 +114,8 @@ export function dropAgentEntries(state: AppState, id: string): Partial<AppState>
   const { [id]: _log, ...managedLogs } = state.managedLogs;
   const { [id]: _loading, ...transcriptLoading } = state.transcriptLoading;
   const { [id]: _loaded, ...transcriptLoaded } = state.transcriptLoaded;
-  const { [id]: _busy, ...managedBusy } = state.managedBusy;
+  const { [id]: _sending, ...sending } = state.sending;
+  const { [id]: _label, ...busyLabel } = state.busyLabel;
   const { [id]: _started, ...turnStartedAt } = state.turnStartedAt;
   const { [id]: _usage, ...usage } = state.usage;
   // The git/PR/delegation maps are checkout-scoped: a multi-repo agent also
@@ -110,7 +159,8 @@ export function dropAgentEntries(state: AppState, id: string): Partial<AppState>
     managedLogs,
     transcriptLoading,
     transcriptLoaded,
-    managedBusy,
+    sending,
+    busyLabel,
     turnStartedAt,
     usage,
     gitStates,

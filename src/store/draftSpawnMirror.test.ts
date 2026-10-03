@@ -42,7 +42,7 @@ const makeStore = () => {
     modelsByAgent: {},
     skills: [],
     managedLogs: {},
-    managedBusy: {},
+    sending: {},
     // biome-ignore lint/suspicious/noExplicitAny: partial store seed
   } as any);
   return store;

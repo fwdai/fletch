@@ -33,26 +33,29 @@ const SENDABLE = new Set(["running", "idle", "spawning"]);
  *  markdownTokens.ts) and the clicks are caught by delegation on this container,
  *  which is what keeps the shared transcript components out of it entirely. */
 export function ChatPane({
-  agent,
+  agent: listed,
   codes,
   onCodeClick,
 }: {
+  /** The chat as the tab's list holds it. Identity only: the record rendered
+   *  is the store's, which `agent:status` and the resync keep current. */
   agent: AgentRecord;
   /** Every code on the project's board, or omitted for no linking at all. */
   codes?: ReadonlySet<string>;
   /** Jump the board to a clicked code. */
   onCodeClick?: (code: string) => void;
 }) {
+  const agent = useAppStore((s) => s.offSidebarAgents[listed.id]) ?? listed;
   const send = useAppStore((s) => s.sendUserMessage);
   const turnStartedAt = useAppStore((s) => s.turnStartedAt[agent.id]);
-  const busyLabel = useAppStore((s) => s.managedBusyLabel[agent.id]);
+  const busyLabel = useAppStore((s) => s.busyLabel[agent.id]);
   const customAgent = useAppStore((s) =>
     agent.custom_agent_id ? s.customAgents.find((a) => a.id === agent.custom_agent_id) : undefined,
   );
 
   const transcript = useTranscript(agent);
   const { items, turns, awaitingInput, openTurnStartedAt, transcriptLoading } = transcript;
-  const liveBusy = useLiveBusy(agent.id, awaitingInput);
+  const liveBusy = useLiveBusy(agent, awaitingInput);
 
   // Owned here so sending re-pins the log to the bottom, as in the main chat.
   const pinnedToBottom = useRef(true);

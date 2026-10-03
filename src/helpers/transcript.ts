@@ -267,10 +267,11 @@ export function applyEvent(
   }
   if (next === prev) return { patch: {}, turnEnded: false, turnFailed: false };
 
-  // `result` events signal turn end for claude; mirror that state on the
-  // store so the composer re-enables. Adapter-agnostic: any notice with
-  // subtype "turn_end" appended this tick clears managedBusy. The `next !== prev`
-  // guard above means this is true exactly once per turn-end.
+  // Adapter-agnostic turn-end detection, for the caller's side effects (the
+  // completion chime, the unseen-results dot): any notice with subtype
+  // "turn_end" appended this tick. The `next !== prev` guard above means this
+  // is true exactly once per turn-end. The busy state itself is not touched
+  // here — the backend's `agent:status` owns it.
   const last = next[next.length - 1] as { kind?: string; subtype?: string; text?: string };
   const turnEnded =
     next.length > prev.length && last?.kind === "notice" && last.subtype === "turn_end";
@@ -280,12 +281,6 @@ export function applyEvent(
   return {
     turnEnded,
     turnFailed,
-    patch: {
-      managedLogs: { ...state.managedLogs, [agentId]: next },
-      managedBusy: turnEnded ? { ...state.managedBusy, [agentId]: false } : state.managedBusy,
-      managedBusyLabel: turnEnded
-        ? { ...state.managedBusyLabel, [agentId]: undefined }
-        : state.managedBusyLabel,
-    },
+    patch: { managedLogs: { ...state.managedLogs, [agentId]: next } },
   };
 }

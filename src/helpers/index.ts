@@ -13,6 +13,7 @@ export * from "./agentLookups";
 export * from "./commands";
 export * from "./mirrorTurn";
 export * from "./reasoning";
+export * from "./sending";
 export * from "./spawn";
 export * from "./transcript";
 export * from "./usage";

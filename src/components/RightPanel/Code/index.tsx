@@ -10,6 +10,7 @@ import { useEffect, useState } from "react";
 import type { AgentRecord, DiffBaseMode } from "@/api";
 import { Icon } from "@/components/Icon";
 import { FilePanel } from "@/components/RightPanel/FilePanel";
+import { isAgentBusy } from "@/helpers";
 import { useAppStore } from "@/store";
 import { CodeLivePanel } from "./CodeLivePanel";
 
@@ -129,7 +130,7 @@ function ModeSwitch({
   );
   // Whether the agent is mid-turn — the dot is green & pulsing only then, and
   // goes grey when work stops so it never implies activity that isn't there.
-  const busy = useAppStore((s) => s.managedBusy[agent.id] ?? false);
+  const busy = useAppStore((s) => isAgentBusy(s, agent.id, agent.status));
 
   return (
     <div className="code-modeswitch" role="tablist" aria-label="Code view mode">

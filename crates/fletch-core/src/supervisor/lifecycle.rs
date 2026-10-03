@@ -1186,7 +1186,13 @@ impl Supervisor {
             drain_message_queue(self, ctx, &agent_id_str);
         }
 
-        spawn_turn_watchdog(self.clone(), ctx.clone(), agent_id_str.clone(), my_gen);
+        // Only the native view needs a clock to end a turn: its PTY has no
+        // terminal event, so silence is the signal. Event-stream views move
+        // the status from the event handler itself (`make_event_handler`) or
+        // from the per-turn process exit (`on_turn_exit`).
+        if matches!(record.view, AgentView::Native) {
+            spawn_turn_watchdog(self.clone(), ctx.clone(), agent_id_str.clone(), my_gen);
+        }
 
         // A native-view agent drives its own TUI in a PTY, so there's no event
         // stream to render progress from — without this the panel stays a raw
@@ -1823,23 +1829,61 @@ fn make_output_handler(
     }
 }
 
+/// What closes a turn for an agent whose output is a JSON event stream.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum TurnClose {
+    /// One persistent process for the whole session (claude managed). The
+    /// provider's terminal event is the turn boundary, and the status follows
+    /// the stream both ways: main-line output after a terminal event means the
+    /// provider opened a turn of its own, so the agent is Running again until
+    /// that turn's terminal event.
+    OnTerminalEvent,
+    /// One process per turn (codex, cursor, opencode, pi). The process exit is
+    /// the boundary — `on_turn_exit` ends the turn — and the stream only feeds
+    /// the detector so the exit can tell a reported turn end from a crash. The
+    /// status never follows the stream here: a line flushed after the exit has
+    /// no process behind it to end the turn it would open.
+    OnProcessExit,
+}
+
 /// Parsed-JSON event callback shared by the managed + per-turn spawners:
-/// record activity, then emit `agent:event`.
+/// record activity, move the status when the stream says the turn opened or
+/// closed, then emit `agent:event`.
 pub(super) fn make_event_handler(
     sup: Arc<Supervisor>,
     ctx: Arc<EngineCtx>,
     agent_id: String,
+    close: TurnClose,
 ) -> impl Fn(Value) + Send + Sync + 'static {
     move |event: Value| {
-        if let Some(activity) = sup.activities.lock().get_mut(&agent_id) {
-            activity.observe_event(&event);
-        }
+        let (active, ended) = {
+            let mut activities = sup.activities.lock();
+            match activities.get_mut(&agent_id) {
+                Some(activity) => {
+                    let active = activity.observe_event(&event);
+                    (active, activity.turn_ended())
+                }
+                None => (false, false),
+            }
+        };
+        let follows_stream = close == TurnClose::OnTerminalEvent;
 
-        // Claude keeps streaming after a turn's `result` when a background
-        // task is still running, and starts a turn of its own once that task
-        // finishes. Neither moves the agent off Idle, so the transcript they
-        // write would otherwise wait for the next user turn to be ingested.
+        // Background sub-agents keep streaming after the main turn's terminal
+        // event, and their lifecycle events are the only trace of them while
+        // the agent rests; settle their records rather than wait for the next
+        // user turn to ingest them.
         sup.settle_after_idle_event(&ctx, &agent_id, &event);
+
+        // Main-line output while Idle: the provider started a turn Fletch never
+        // asked for (claude answering a finished background task). Mark it like
+        // any other turn — Running, a `turn:started` anchor for the timer — so
+        // every surface reads "working" for exactly as long as output flows.
+        // Emitted ahead of the event so no client renders content under an
+        // idle status.
+        if follows_stream && active && matches!(sup.live_status(&agent_id), Some(AgentStatus::Idle))
+        {
+            mark_user_turn_started(&sup, &ctx, &agent_id, None);
+        }
 
         // Keep the turn for a client that missed the stream (`read_live_turn`).
         let seq = sup
@@ -1850,6 +1894,17 @@ pub(super) fn make_event_handler(
             .push(event.clone());
 
         emit_agent_event(ctx.sink.as_ref(), &agent_id, event, seq);
+
+        // The terminal event closes the turn here and now — after the event
+        // itself, so the transcript holds the result before the status says
+        // the agent is done. Every turn-end side effect (queue drain, session
+        // sync, PR state) hangs off this one transition.
+        if follows_stream
+            && ended
+            && matches!(sup.live_status(&agent_id), Some(AgentStatus::Running))
+        {
+            transition_active(&sup, &ctx, &agent_id, AgentStatus::Idle);
+        }
     }
 }
 
@@ -1909,7 +1964,12 @@ fn spawn_managed_agent(
 ) -> Result<Agent> {
     Agent::spawn_managed(
         spec,
-        make_event_handler(sup.clone(), ctx.clone(), agent_id.clone()),
+        make_event_handler(
+            sup.clone(),
+            ctx.clone(),
+            agent_id.clone(),
+            TurnClose::OnTerminalEvent,
+        ),
         make_exit_handler(sup, ctx, agent_id, gen),
     )
 }
@@ -1938,7 +1998,7 @@ fn spawn_per_turn_agent(
     let id_for_exit = agent_id.clone();
     let sup_for_exit = sup.clone();
 
-    let on_event = make_event_handler(sup, ctx, agent_id);
+    let on_event = make_event_handler(sup, ctx, agent_id, TurnClose::OnProcessExit);
     let on_session_id = move |sid: String| {
         if let Err(e) = sup_for_sid
             .workspace
@@ -2002,6 +2062,10 @@ fn spawn_per_turn_agent(
     Agent::spawn_per_turn(desc, spec, on_event, on_session_id, on_turn_exit)
 }
 
+/// The native view's turn-end clock. A PTY has no terminal event, so a turn
+/// ends when the TUI's redraw stream goes quiet (`ClaudeNativeActivity`). The
+/// conclusion is a heuristic: it is marked as such in `heuristic_idle` so the
+/// output handler can revoke it the moment bytes arrive again.
 fn spawn_turn_watchdog(sup: Arc<Supervisor>, ctx: Arc<EngineCtx>, agent_id: String, gen: u64) {
     crate::host::spawn(async move {
         loop {
@@ -2018,33 +2082,15 @@ fn spawn_turn_watchdog(sup: Arc<Supervisor>, ctx: Arc<EngineCtx>, agent_id: Stri
                 .get(&agent_id)
                 .map(|a| a.turn_ended())
                 .unwrap_or(false);
-
-            if ended {
-                // Output may land after the check above. Recheck under the
-                // activity lock to narrow that handoff window; if bytes land
-                // later, the output handler's heuristic-idle recovery is the
-                // final authority.
-                let still_ended = sup
-                    .activities
-                    .lock()
-                    .get(&agent_id)
-                    .map(|a| a.turn_ended())
-                    .unwrap_or(false);
-                if !still_ended {
-                    continue;
-                }
-                // Managed/per-turn detectors only end on explicit provider
-                // events. The remaining silence-based detector is native PTY,
-                // whose conclusion can be disproved by later output.
-                let native_heuristic = sup
-                    .workspace
-                    .agent(&agent_id)
-                    .is_ok_and(|record| matches!(record.view, AgentView::Native));
-                if native_heuristic {
-                    sup.heuristic_idle.lock().insert(agent_id.clone());
-                }
-                transition_active(&sup, &ctx, &agent_id, AgentStatus::Idle);
+            if !ended {
+                continue;
             }
+            // Bytes may land between the check above and the transition. The
+            // output handler's heuristic-idle recovery is the final authority
+            // either way, so mark before transitioning: a byte that arrives
+            // mid-handoff finds the marker and restores Running.
+            sup.heuristic_idle.lock().insert(agent_id.clone());
+            transition_active(&sup, &ctx, &agent_id, AgentStatus::Idle);
         }
     });
 }
@@ -2151,6 +2197,138 @@ fn apply_exit_if_current(
 mod tests {
     use super::*;
     use crate::workspace::NativeTranscript;
+
+    /// An Idle supervisor holding one agent whose last turn ended, plus the
+    /// event handler that would receive its stream.
+    struct RestingAgent {
+        sup: Arc<Supervisor>,
+        agent_id: String,
+        sink: Arc<crate::host::sink::RecordingSink>,
+        on_event: Box<dyn Fn(Value)>,
+        /// `host::spawn` falls back to `tokio::spawn` before boot, so the handler
+        /// needs a runtime context for as long as it is called.
+        _runtime: tokio::runtime::Runtime,
+        /// Dropping it would delete the context's database.
+        _dir: tempfile::TempDir,
+    }
+
+    fn resting_agent(close: TurnClose) -> RestingAgent {
+        let db = crate::workspace::tests::test_db();
+        let (agent_id, wm) = crate::workspace::tests::make_workspace_with_session(&db);
+        let sup = Arc::new(Supervisor::new(Arc::new(wm)));
+        let (ctx, sink, dir) = crate::host::ctx::test_ctx();
+        sup.statuses
+            .lock()
+            .insert(agent_id.clone(), AgentStatus::Idle);
+        let mut activity = ManagedActivity::claude();
+        activity.observe_event(&serde_json::json!({"type": "result", "subtype": "success"}));
+        sup.activities
+            .lock()
+            .insert(agent_id.clone(), Box::new(activity));
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let on_event = Box::new(make_event_handler(
+            sup.clone(),
+            ctx,
+            agent_id.clone(),
+            close,
+        ));
+        RestingAgent {
+            sup,
+            agent_id,
+            sink,
+            on_event,
+            _runtime: runtime,
+            _dir: dir,
+        }
+    }
+
+    /// Claude ends the user's turn while a background sub-agent is still
+    /// running, then starts a turn of its own to answer the task's notification.
+    /// Nothing Fletch delivered opened that turn, so the status has to follow
+    /// the stream: Running from its first main-line event, Idle at its `result`.
+    #[test]
+    fn a_turn_the_provider_starts_on_its_own_moves_the_status_with_the_stream() {
+        use serde_json::json;
+        let RestingAgent {
+            sup,
+            agent_id,
+            sink,
+            on_event,
+            _runtime,
+            _dir,
+        } = resting_agent(TurnClose::OnTerminalEvent);
+        let _enter = _runtime.enter();
+
+        // Background-task chatter between turns is not a turn.
+        on_event(json!({"type": "system", "subtype": "task_notification", "task_id": "abc"}));
+        assert_eq!(sup.live_status(&agent_id), Some(AgentStatus::Idle));
+
+        // The reply turn's first main-line event: Running, with a timer anchor,
+        // announced ahead of the event so no client renders it under `idle`.
+        on_event(json!({
+            "type": "user",
+            "message": {"role": "user", "content": "<task-notification>done</task-notification>"}
+        }));
+        assert_eq!(sup.live_status(&agent_id), Some(AgentStatus::Running));
+        let events = sink.events();
+        assert!(events.iter().any(|(n, _)| n == "turn:started"));
+        let status_at = events
+            .iter()
+            .position(|(n, _)| n == "agent:status")
+            .unwrap();
+        let user_event_at = events
+            .iter()
+            .position(|(n, p)| n == "agent:event" && p["event"]["type"] == "user")
+            .unwrap();
+        assert!(status_at < user_event_at, "{events:?}");
+
+        on_event(json!({"type": "assistant", "message": {"role": "assistant", "content": []}}));
+        assert_eq!(sup.live_status(&agent_id), Some(AgentStatus::Running));
+
+        // Its `result` closes the turn — after the event itself, so the
+        // transcript holds the result before the status says the agent is done.
+        on_event(json!({"type": "result", "subtype": "success"}));
+        assert_eq!(sup.live_status(&agent_id), Some(AgentStatus::Idle));
+        let events = sink.events();
+        let last_status = events
+            .iter()
+            .rposition(|(n, _)| n == "agent:status")
+            .unwrap();
+        let last_event = events
+            .iter()
+            .rposition(|(n, _)| n == "agent:event")
+            .unwrap();
+        assert!(last_event < last_status);
+        assert_eq!(events[last_status].1["status"], "idle");
+    }
+
+    /// A per-turn provider's process exit is its turn boundary (`on_turn_exit`).
+    /// Its stream only feeds the detector: a line the reader flushes after the
+    /// exit must not reopen a turn that no process is left to end, and its
+    /// terminal event must not pre-empt the exit.
+    #[test]
+    fn a_per_turn_stream_never_moves_the_status() {
+        use serde_json::json;
+        let RestingAgent {
+            sup,
+            agent_id,
+            sink,
+            on_event,
+            _runtime,
+            _dir,
+        } = resting_agent(TurnClose::OnProcessExit);
+        let _enter = _runtime.enter();
+
+        on_event(json!({"type": "item.completed", "item": {"type": "agent_message"}}));
+        assert_eq!(sup.live_status(&agent_id), Some(AgentStatus::Idle));
+
+        sup.statuses
+            .lock()
+            .insert(agent_id.clone(), AgentStatus::Running);
+        on_event(json!({"type": "turn.completed", "usage": {}}));
+        assert_eq!(sup.live_status(&agent_id), Some(AgentStatus::Running));
+        assert!(sink.events().iter().all(|(n, _)| n == "agent:event"));
+    }
 
     #[test]
     fn docker_supports_wired_providers_but_refuses_the_rest() {

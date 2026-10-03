@@ -19,13 +19,16 @@ import {
   applyUserTurns,
   dropAgentEntries,
   expandSlashCommand,
+  isAgentBusy,
   passthroughSlashName,
   providerFor,
+  reconcileSending,
   recordWorkspaceUsage,
   reduceRecords,
   repoPathFor,
   resolveBaseBranch,
   unsupportedManagedCommand,
+  whileSending,
 } from "@/helpers";
 import { clearOutputBuffer, dropAgentPty } from "@/pty/buffers";
 import { createKeyedQueue } from "@/util/keyedQueue";
@@ -124,18 +127,22 @@ export interface WorkspaceSlice {
   /** True once the current process has attempted transcript replay for
    *  an agent. Prevents repeated reloads when a session has no JSONL. */
   transcriptLoaded: Record<string, boolean>;
-  /** True between user sending a turn and claude's `result` event for
-   *  that turn. Drives the send-button disabled state and the
-   *  "thinking…" indicator. */
-  managedBusy: Record<string, boolean>;
+  /** Agents with a send from this client that the backend has not answered
+   *  with a status yet. The agent's `status` is the busy signal (see
+   *  `isAgentBusy`); this only bridges the gap between the click and the
+   *  `running` it produces — or the spawn it triggers first — so the UI reads
+   *  "working" from the click on. Discharged by the next `agent:status` other
+   *  than the resting `idle` a spawn emits before its first turn, and by a
+   *  failed send. */
+  sending: Record<string, boolean>;
   /** The backend's own start timestamp (epoch millis) for the current turn,
    *  from the `turn:started` event — the live-timer anchor. Shared with the
    *  persisted `started_at`, so the strip and footer measure from the identical
    *  instant; cleared at turn end. */
   turnStartedAt: Record<string, number>;
-  /** Optional label shown alongside the busy indicator, e.g. "Compacting"
-   *  for `/compact`. Cleared when the turn ends. */
-  managedBusyLabel: Record<string, string | undefined>;
+  /** Label shown alongside the busy indicator when a slash command opened the
+   *  turn, e.g. "Compacting" for `/compact`. Cleared when the turn ends. */
+  busyLabel: Record<string, string | undefined>;
   /** What a spawning agent is doing right now, from `agent:spawn-progress` —
    *  the composer placeholder and the sidebar spinner's tooltip. Absent until
    *  the first stage arrives (a client that connects mid-spawn gets no
@@ -284,9 +291,9 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
   pendingToolUse: {},
   transcriptLoading: {},
   transcriptLoaded: {},
-  managedBusy: {},
+  sending: {},
   turnStartedAt: {},
-  managedBusyLabel: {},
+  busyLabel: {},
   spawnStage: {},
   switchInFlight: {},
   unseenResults: {},
@@ -304,6 +311,10 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
         },
         { ...state.offSidebarAgents },
       ),
+      // A fresh read of these records settles their `sending` bridge the way a
+      // workspace snapshot settles a sidebar agent's (see helpers/sending):
+      // they are absent from that snapshot, so this is their only authority.
+      sending: reconcileSending(state.sending, agents),
     })),
 
   selectAgent: (id) =>
@@ -428,7 +439,6 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
         };
         if (view === "custom") {
           patches.managedLogs = { ...state.managedLogs, [rec.id]: [] };
-          patches.managedBusy = { ...state.managedBusy, [rec.id]: false };
         }
         return patches;
       });
@@ -537,7 +547,7 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
     // and leave the running turn's busy state untouched. The backend decides
     // whether to inject it live (claude) or queue it (per-turn agents); the
     // store never drives delivery.
-    const wasBusy = get().managedBusy[id] === true;
+    const wasBusy = isAgentBusy(get(), id);
     try {
       set((state) => {
         const slashName = wasBusy
@@ -562,13 +572,14 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
             ...state.managedLogs,
             [id]: [...(state.managedLogs[id] ?? []), entry],
           },
-          // Only assert busy / set the slash label when *starting* a turn.
+          // Only a turn-*starting* send is ours to bridge until the backend's
+          // `running` lands; a follow-up rides a turn that is already busy.
           ...(wasBusy
             ? {}
             : {
-                managedBusy: { ...state.managedBusy, [id]: true },
-                managedBusyLabel: {
-                  ...state.managedBusyLabel,
+                sending: { ...state.sending, [id]: true },
+                busyLabel: {
+                  ...state.busyLabel,
                   [id]: slashName ? SLASH_BUSY_LABELS[slashName] : undefined,
                 },
               }),
@@ -581,7 +592,11 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
       // error, but the backend no longer surfaces one — it holds the message
       // instead — and keeping the revive there covers every other sender
       // (autopilot, delegation, drafts) rather than just this one.
-      const enqueued = await api.sendUserMessage(id, turnId, sendText, attachments);
+      // In-flight for the round trip, so a snapshot landing meanwhile can't
+      // settle the `sending` flag this send just raised (see helpers/sending).
+      const enqueued = await whileSending(id, () =>
+        api.sendUserMessage(id, turnId, sendText, attachments),
+      );
       // Only a genuinely-held message wears the badge; a delivered one stays a
       // plain bubble. Match by turnId — agent output may have appended since.
       if (wasBusy && enqueued) {
@@ -597,9 +612,8 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
     } catch (e) {
       set((state) => ({
         lastError: String(e),
-        // Only clear busy if this call started the turn; a failed mid-turn
-        // follow-up must not stop the still-running turn.
-        ...(wasBusy ? {} : { managedBusy: { ...state.managedBusy, [id]: false } }),
+        // The send never reached the backend, so no status will discharge it.
+        ...(wasBusy ? {} : { sending: { ...state.sending, [id]: false } }),
       }));
     }
   },
@@ -607,25 +621,19 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
   answerToolUse: async (id, toolUseId, updatedInput, behavior = "allow", message) => {
     const requestId = get().pendingToolUse[id]?.[toolUseId];
     if (!requestId) return;
-    // Drop the held prompt and mark busy: feeding the answer resumes the
-    // paused turn. The transcript records the resulting tool_result, so there's
-    // no separate durable row to write.
+    // Drop the held prompt: feeding the answer resumes the paused turn, which
+    // never left `running`, so the spinner returns on its own. The transcript
+    // records the resulting tool_result, so there's no separate durable row to
+    // write.
     set((state) => {
       const forAgent = { ...(state.pendingToolUse[id] ?? {}) };
       delete forAgent[toolUseId];
-      return {
-        pendingToolUse: { ...state.pendingToolUse, [id]: forAgent },
-        managedBusy: { ...state.managedBusy, [id]: true },
-        managedBusyLabel: { ...state.managedBusyLabel, [id]: undefined },
-      };
+      return { pendingToolUse: { ...state.pendingToolUse, [id]: forAgent } };
     });
     try {
       await api.answerToolUse(id, requestId, updatedInput, behavior, message);
     } catch (e) {
-      set((state) => ({
-        lastError: String(e),
-        managedBusy: { ...state.managedBusy, [id]: false },
-      }));
+      set({ lastError: String(e) });
     }
   },
 
@@ -634,7 +642,6 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
       clearOutputBuffer(id);
     }
     set((state) => ({
-      managedBusy: { ...state.managedBusy, [id]: false },
       switchInFlight: { ...state.switchInFlight, [id]: true },
     }));
     try {
@@ -660,9 +667,6 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
 
   resume: async (id) => {
     clearOutputBuffer(id);
-    set((state) => ({
-      managedBusy: { ...state.managedBusy, [id]: false },
-    }));
     try {
       await api.resumeAgent(id);
     } catch (e) {
@@ -850,7 +854,6 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
         }
         return {
           managedLogs: { ...state.managedLogs, [id]: items },
-          managedBusy: { ...state.managedBusy, [id]: false },
           // Only overwrite when records carried usage — cursor folds usage
           // live, so an empty records result must not wipe it.
           ...(hasUsage(usage) ? { usage: { ...state.usage, [id]: usage } } : {}),

@@ -6,7 +6,6 @@
 import { getAdapter, type RawEvent } from "@/adapters";
 import { isTaskEvent } from "@/adapters/shared/backgroundTasks";
 import { hasUsage, usageFromRecords } from "@/adapters/usage";
-import type { AgentRecord, Workspace } from "@/api";
 import {
   api,
   onAgentBranch,
@@ -40,12 +39,16 @@ import {
 import type { UnlistenFn } from "@/api/transport";
 import { isCommitAction } from "@/components/RightPanel/primaryActions";
 import {
+  type AgentPatch,
   agentRecord,
   applyEvent,
   applyUserTurns,
   carryForwardStoreOnly,
+  dischargeSending,
+  isAgentBusy,
   mirrorSentTurn,
   needsSessionIdRefresh,
+  patchAgentRecord,
   persistLiveReasoning,
   persistLiveUsage,
   providerFor,
@@ -112,22 +115,11 @@ const signalError = (get: AppGet, agentId: string, title: string) => {
   signalAway(get, agentId, title, "error");
 };
 
-type AgentPatch = Partial<AgentRecord> | ((a: AgentRecord) => Partial<AgentRecord>);
-
-// Map the agent matching `agentId` through `patch` (a flat partial or a
-// function of the current record), leaving the rest untouched. Returns the new
-// agents array; callers fold it into the workspace.
-const mapAgents = (ws: Workspace, agentId: string, patch: AgentPatch): AgentRecord[] =>
-  ws.agents.map((a) =>
-    a.id === agentId ? { ...a, ...(typeof patch === "function" ? patch(a) : patch) } : a,
-  );
-
-// Patch a single agent in the workspace and commit it. No-op when the
-// workspace isn't loaded yet.
-const patchAgent = (get: AppGet, set: AppSet, agentId: string, patch: AgentPatch) => {
-  const ws = get().workspace;
-  if (!ws) return;
-  set({ workspace: { ...ws, agents: mapAgents(ws, agentId, patch) } });
+// Patch a single agent's record wherever the store holds it and commit it —
+// the workspace snapshot and the off-sidebar registry alike (see
+// `patchAgentRecord`). No-op for a record the store doesn't have.
+const patchAgent = (_get: AppGet, set: AppSet, agentId: string, patch: AgentPatch) => {
+  set((state) => patchAgentRecord(state, agentId, patch));
 };
 
 // Load persisted settings from the DB and hydrate the matching UI state.
@@ -498,8 +490,6 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
 
   await bind(
     onAgentStatus((e) => {
-      const ws = get().workspace;
-      if (!ws) return;
       // A new turn starting clears any stale stop-suppression flag: if the
       // killed process never flushed a turn_end, this ensures the next genuine
       // completion still chimes.
@@ -523,14 +513,17 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
       if (e.status === "stopped" || e.status === "error") {
         get().clearBackgroundTasks(e.agent_id);
       }
-      const next = {
-        ...ws,
-        agents: mapAgents(ws, e.agent_id, (a) => ({
+      set((state) => {
+        // Read before the record changes: was it working, by every measure the
+        // UI goes by, when this status arrived?
+        const wasBusy = isAgentBusy(state, e.agent_id);
+        const prevStatus = agentRecord(state, e.agent_id)?.status;
+        // The record itself, in whichever registry holds it — a Roadmap chat is
+        // not in the workspace snapshot but follows status the same way.
+        const record = patchAgentRecord(state, e.agent_id, (a) => ({
           status: e.status,
           last_error: e.last_error ?? a.last_error,
-        })),
-      };
-      set((state) => {
+        }));
         // Clear the live-timer anchor at turn end so the next turn's send→running
         // gap can't show a stale one. The anchor itself is set from the
         // `turn:started` event (the backend's own timestamp), not here.
@@ -543,10 +536,21 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
         // the label outlives).
         const spawnStage = { ...state.spawnStage };
         if (e.status !== "spawning") delete spawnStage[e.agent_id];
+        // This client's send is answered by the status it produced (the rule
+        // lives in helpers/sending, shared with the phone). The slash label
+        // lives for the whole turn: it goes with any status that isn't the
+        // turn running — except the resting `idle` of a spawn the send
+        // triggered, which the turn has yet to follow.
+        const sending = dischargeSending(state.sending, e.agent_id, prevStatus, e.status);
+        const spawnResting = e.status === "idle" && prevStatus === "spawning";
+        const busyLabel = { ...state.busyLabel };
+        if (e.status !== "spawning" && e.status !== "running" && !spawnResting) {
+          delete busyLabel[e.agent_id];
+        }
         return {
-          workspace: next,
+          ...record,
           managedLogs:
-            e.status === "stopped" && (state.managedBusy[e.agent_id] ?? false)
+            e.status === "stopped" && wasBusy
               ? {
                   ...state.managedLogs,
                   [e.agent_id]: [
@@ -559,16 +563,8 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
                   ],
                 }
               : state.managedLogs,
-          // `running` is the backend's authoritative "a turn is in flight"
-          // signal — re-assert busy here so a stale `idle` (e.g. the one
-          // start_process emits just before the first turn lands) can't
-          // leave the spinner off. `idle`/`error`/`stopped` clear it.
-          managedBusy:
-            e.status === "running"
-              ? { ...state.managedBusy, [e.agent_id]: true }
-              : e.status === "error" || e.status === "stopped" || e.status === "idle"
-                ? { ...state.managedBusy, [e.agent_id]: false }
-                : state.managedBusy,
+          sending,
+          busyLabel,
           turnStartedAt,
           spawnStage,
         };
@@ -599,18 +595,15 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
   // A user message the host accepted, from whichever client sent it — this
   // window, a paired phone, a git-action trigger. Mirror it so the chat reads
   // the same on every device; our own send is already in the log under its
-  // turnId (see workspace.sendMessage) and is skipped. A turn-opening message
-  // asserts busy the way the sender did; the Running status lands right after.
+  // turnId (see workspace.sendMessage) and is skipped. The Running status the
+  // message produces lands right after, on every client alike.
   await bind(
     onTurnSent((e) => {
       set((state) => {
         const prev = state.managedLogs[e.agent_id] ?? [];
         const next = mirrorSentTurn(prev, e);
         if (next === prev) return {};
-        return {
-          managedLogs: { ...state.managedLogs, [e.agent_id]: next },
-          ...(e.follow_up ? {} : { managedBusy: { ...state.managedBusy, [e.agent_id]: true } }),
-        };
+        return { managedLogs: { ...state.managedLogs, [e.agent_id]: next } };
       });
     }),
   );
@@ -744,26 +737,32 @@ export const detachEventListeners = async () => {
 // but a single event missed while the OS had the webview backgrounded would
 // otherwise strand a row's status (e.g. a sidebar agent stuck "idle" while it's
 // actually running) until its next transition. The refetch is cheap and
-// `get_workspace` overlays live in-memory status, so it's authoritative.
-// `managedBusy` is reconciled from that same status the way an `agent:status`
-// event would (see `onAgentStatus`), so the composer/spinner can't drift either.
-export const setupResync = (set: AppSet) => {
+// `get_workspace` overlays live in-memory status, so it's authoritative — and
+// every busy surface derives from that status, so one refetch corrects them all.
+export const setupResync = (set: AppSet, get: AppGet) => {
   let resyncInFlight = false;
+  // The records the snapshot omits — Roadmap chats — are re-read by project
+  // from the same host, so a status they missed has a way back too. Each fresh
+  // list settles its own `sending` flags (see `registerOffSidebarAgents`).
+  const refreshOffSidebarAgents = async () => {
+    const byProject = new Map<string, string>();
+    for (const a of Object.values(get().offSidebarAgents)) {
+      if (a.purpose && !a.archive) byProject.set(a.project_id, a.purpose);
+    }
+    await Promise.all(
+      [...byProject].map(([projectId, purpose]) =>
+        api
+          .listProjectChats(projectId, purpose)
+          .then((rows) => get().registerOffSidebarAgents(rows))
+          .catch(() => {}),
+      ),
+    );
+  };
   const resyncWorkspace = async () => {
     if (resyncInFlight) return;
     resyncInFlight = true;
     try {
-      await refreshWorkspace(set, (fresh, state) => {
-        const managedBusy = { ...state.managedBusy };
-        for (const a of fresh.agents) {
-          if (a.status === "running" || a.status === "spawning") {
-            managedBusy[a.id] = true;
-          } else if (a.status === "idle" || a.status === "stopped" || a.status === "error") {
-            managedBusy[a.id] = false;
-          }
-        }
-        return { managedBusy };
-      });
+      await Promise.all([refreshWorkspace(set), refreshOffSidebarAgents()]);
     } catch {
       // Best-effort; the next event or resync recovers.
     } finally {
