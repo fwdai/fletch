@@ -17,7 +17,9 @@ import { useStore } from "../../../store";
 import { PrimaryPair } from "./PrimaryPair";
 
 /** Stop ignores taps this long after send, so a double-tap can't kill the run
- *  it just started. Taps are swallowed, not queued. */
+ *  it just started — or, for a mid-turn follow-up, the run it was sent into,
+ *  which the disc flips back to Stop for the moment the box empties. Taps are
+ *  swallowed, not queued. */
 const SEND_ARM_MS = 450;
 
 /** How long a just-committed span is marked. A hair longer than its CSS wash,
@@ -88,11 +90,16 @@ export function Composer({
   );
 
   const hasMic = dictation.supported;
+  const hasDraft = text.trim().length > 0 || attachments.items.length > 0;
+  // Same rule as the desktop composer: a busy agent claims the disc only while
+  // the box is empty. Once there is a draft the disc is Send again, so a
+  // follow-up goes out mid-turn (delivered live or queued by the host) without
+  // stopping the run or waiting for it to end.
   const state = primaryState({
     sttError: dictation.error !== null,
     dictation: dictation.phase,
-    agentRunning: busy,
-    hasDraft: text.trim().length > 0 || attachments.items.length > 0,
+    agentRunning: busy && !hasDraft,
+    hasDraft,
     micDenied: dictation.blocked,
   });
   const listening = state === "listening";
@@ -105,13 +112,13 @@ export function Composer({
   const lastError = useRef("");
   if (error) lastError.current = error;
 
-  /** Send the draft. Only from `draft`: while the agent works the draft waits,
-   *  nothing is sent by voice alone, and a file still on its way up holds the
+  /** Send the draft — also while the agent works, as a mid-turn follow-up.
+   *  Nothing is sent by voice alone, and a file still on its way up holds the
    *  send until it has landed — its chip shows the wait. */
   const submit = () => {
     const value = text.trim();
     const paths = attachments.paths;
-    if ((!value && paths.length === 0) || busy || dictation.phase !== "idle") return;
+    if ((!value && paths.length === 0) || dictation.phase !== "idle") return;
     if (attachments.uploading) return;
     setText("");
     attachments.clear();
@@ -155,7 +162,7 @@ export function Composer({
     state === "unavailable"
       ? "Type a message · dictation is off"
       : busy
-        ? "Agent is working · the draft waits"
+        ? "Agent is working · send a follow-up"
         : hasMic
           ? "Type, or tap the mic to dictate"
           : "Message agent";
