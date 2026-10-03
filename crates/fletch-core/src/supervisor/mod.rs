@@ -7,6 +7,7 @@ mod events;
 mod fork;
 mod lifecycle;
 mod live_turn;
+mod materialize;
 mod messaging;
 mod pr_set;
 mod rewind;
@@ -20,7 +21,7 @@ pub use checkpoints::{PinnedCheckout, PinnedCode, RepoCheckpoint, RepoRestore, R
 pub use disposition::ArchiveTrigger;
 pub use events::emit_workspace_changed;
 pub use fork::{ForkCode, ForkContext};
-pub use lifecycle::SpawnRequest;
+pub use lifecycle::{SpawnHandoff, SpawnRequest};
 pub use live_turn::LiveTurnSnapshot;
 pub use pr_set::sync_pr_set_links;
 pub use rewind::{RewindOutcome, RewindScope};

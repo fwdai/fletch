@@ -13,12 +13,10 @@ export interface RewindOption {
  *  was kept), or nothing yet. */
 export type CodeState = { report: RestoreReport } | { unavailable: string } | "checking";
 
-/** Why no rewind can start now, if none can: the agent is mid-turn, or the
- *  chat isn't the view. Rewind lives in the chat view, the only one in which
- *  claude can resume a conversation cut at a message. */
-export function rewindBlocker(agent: Pick<AgentRecord, "status" | "view">): string | null {
+/** Why no rewind can start now, if none can: the agent is mid-turn. The view
+ *  is no obstacle: the rewound session launches in it like any other. */
+export function rewindBlocker(agent: Pick<AgentRecord, "status">): string | null {
   if (agent.status === "running" || agent.status === "spawning") return "Stop the agent first.";
-  if (agent.view === "native") return "Rewind from the chat view.";
   return null;
 }
 

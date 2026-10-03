@@ -50,30 +50,13 @@ pub(crate) fn subagent_args(codegraph_available: bool) -> Vec<String> {
     ]
 }
 
-/// Claude's session flags, shared by the managed and PTY builders. A branch
-/// resumes the source session into a new one under the agent's own id —
-/// `--fork-session` is what lets `--session-id` combine with `--resume` — cut
-/// after `at_message` when there is one.
-fn session_args(start: &SessionStart, session_id: &str) -> Vec<String> {
-    match start {
-        SessionStart::Fresh => vec!["--session-id".into(), session_id.to_string()],
-        SessionStart::Resume => vec!["--resume".into(), session_id.to_string()],
-        SessionStart::Branch(point) => {
-            let mut args = vec![
-                "--resume".into(),
-                point.from_session.clone(),
-                "--fork-session".into(),
-                "--session-id".into(),
-                session_id.to_string(),
-            ];
-            push_opt(
-                &mut args,
-                "--resume-session-at",
-                point.at_message.as_deref(),
-            );
-            args
-        }
-    }
+/// Claude's session flags, shared by the managed and PTY builders.
+fn session_args(start: SessionStart, session_id: &str) -> Vec<String> {
+    let flag = match start {
+        SessionStart::Fresh => "--session-id",
+        SessionStart::Resume => "--resume",
+    };
+    vec![flag.into(), session_id.to_string()]
 }
 
 /// `mcp_args` comes from the provider's `McpDeliveryBuilder`, resolved and run
@@ -92,7 +75,7 @@ pub(crate) fn prepare_pty_args(spec: &SpawnSpec<'_>, mcp_args: &[String]) -> Vec
     args.extend(crate::attribution::claude_settings_args());
     args.extend_from_slice(mcp_args);
     args.extend(subagent_args(spec.codegraph_available));
-    args.extend(session_args(&spec.start, spec.session_id));
+    args.extend(session_args(spec.start, spec.session_id));
     args
 }
 
@@ -127,6 +110,6 @@ pub(crate) fn prepare_managed_args(spec: &SpawnSpec<'_>, mcp_args: &[String]) ->
     args.extend(crate::attribution::claude_settings_args());
     args.extend_from_slice(mcp_args);
     args.extend(subagent_args(spec.codegraph_available));
-    args.extend(session_args(&spec.start, spec.session_id));
+    args.extend(session_args(spec.start, spec.session_id));
     args
 }

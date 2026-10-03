@@ -1,16 +1,16 @@
 //! Starting a new session in an agent's workspace, in place — rewind's
 //! conversation half, without the orchestration (docs/fork-and-rewind.md).
 
-use crate::agent::{capabilities, BranchPoint};
 use crate::error::{Error, Result};
-use crate::workspace::SessionLineage;
+use crate::workspace::{NativeTranscript, SessionLineage};
 
 use super::Supervisor;
 
 impl Supervisor {
     /// Replace `agent_id`'s current session with a new one that continues
-    /// `lineage`, natively branched at `branch` when given (see
-    /// `WorkspaceManager::start_session`), and return the new session's id.
+    /// `lineage`, as the provider session `native` was written as when given
+    /// (see `WorkspaceManager::start_session`), and return the new session's
+    /// id.
     ///
     /// Runs under the caller's delivery lock and input route
     /// (`lock_delivery`, `open_route`), so no message is routed against the
@@ -39,17 +39,11 @@ impl Supervisor {
         &self,
         agent_id: &str,
         lineage: &SessionLineage,
-        branch: Option<&BranchPoint>,
+        native: Option<&NativeTranscript>,
     ) -> Result<String> {
         let record = self.workspace.agent(agent_id)?;
         if record.archive.is_some() {
             return Err(Error::Other("agent is archived".into()));
-        }
-        if branch.is_some() && !capabilities(&record.provider).branch_at_message {
-            return Err(Error::Other(format!(
-                "{} can't branch a conversation at a message",
-                record.provider
-            )));
         }
         // Checked under the `agents` lock it is removed under: a keystroke in
         // the native view starts a turn without the delivery lock.
@@ -74,7 +68,7 @@ impl Supervisor {
             // The rows and the in-memory queue go under one hold of the queue
             // lock, as in `detach_runtime`. Lock order queue → db.
             let mut queue = self.message_queue.lock();
-            let session = self.workspace.start_session(agent_id, lineage, branch)?;
+            let session = self.workspace.start_session(agent_id, lineage, native)?;
             queue.clear(agent_id);
             Ok::<_, Error>(session)
         })?;

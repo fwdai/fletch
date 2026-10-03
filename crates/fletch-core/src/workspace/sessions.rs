@@ -2,9 +2,22 @@
 //! definition of a workspace's current session, and starting a new one in
 //! place.
 
-use super::lineage::RepeatedHistory;
+use rusqlite::OptionalExtension;
+
 use super::*;
-use crate::agent::BranchPoint;
+
+/// A session's own transcript, written by Fletch before its first launch so
+/// the CLI resumes the conversation the session continues
+/// (`Supervisor::materialize`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeTranscript {
+    /// The provider session the transcript was written as.
+    pub provider_session_id: String,
+    /// How many records it opens with: the copied history, which the session
+    /// already shows through its lineage, so ingestion drops them
+    /// (`sessions.transcript_prefix`).
+    pub prefix: usize,
+}
 
 /// The workspace's current session: its one session that hasn't been
 /// superseded (`idx_sessions_current` allows at most one). Every read or write
@@ -75,12 +88,6 @@ impl WorkspaceManager {
     /// O(batch) commits, not O(conversation). An ignored duplicate doesn't burn
     /// a `seq`. Returns how many rows were actually inserted (0 when the
     /// workspace has no session).
-    ///
-    /// A branched session skips the history its transcript repeats
-    /// ([`RepeatedHistory`]), but each skipped record still takes a `seq`:
-    /// `session_record_count` (= MAX(seq)) is where the next read's positional
-    /// ids start, so every line read for the first time has to count, or a
-    /// later `ln:{i}` could repeat an earlier one.
     pub fn append_session_records(
         &self,
         workspace_id: &str,
@@ -104,7 +111,6 @@ impl WorkspaceManager {
             [&sid],
             |r| r.get(0),
         )?;
-        let repeated = RepeatedHistory::of(&tx, &sid)?;
         let mut inserted = 0usize;
         {
             let mut stmt = tx.prepare(
@@ -114,10 +120,6 @@ impl WorkspaceManager {
             )?;
             for (native_id, body) in records {
                 let next = seq + 1;
-                if repeated.contains(&tx, native_id)? {
-                    seq = next;
-                    continue;
-                }
                 let body_json = serde_json::to_string(body)
                     .map_err(|e| Error::Other(format!("serialize record body: {e}")))?;
                 let n = stmt.execute(rusqlite::params![
@@ -174,20 +176,18 @@ impl WorkspaceManager {
     /// - The new session takes the old one's settings (provider, view, effort,
     ///   model, brief, custom agent, skills, MCP servers) but none of its
     ///   state: no handoff context, no error, nothing ingested, and a provider
-    ///   session of its own. Claude's id is minted here, as `insert_agent` does;
-    ///   a per-turn provider's is captured from its first turn.
-    /// - With `branch`, it starts as a native branch of that point
-    ///   (`SessionStart::Branch`), written with the row like the lineage.
+    ///   session of its own: `native`'s, the transcript written for it, else
+    ///   claude's minted here, as `insert_agent` does, or a per-turn
+    ///   provider's captured from its first turn.
     ///
     /// The view carries over unless the new session can't open in the native
-    /// view yet: a per-turn provider has no session to resume until its first
-    /// turn, and claude honors a cut at a message only in the custom view
-    /// (`Supervisor::switch_view` refuses both).
+    /// view yet: a per-turn provider without a session has none to resume
+    /// until its first turn (`Supervisor::switch_view` refuses it too).
     pub fn start_session(
         &self,
         workspace_id: &str,
         lineage: &SessionLineage,
-        branch: Option<&BranchPoint>,
+        native: Option<&NativeTranscript>,
     ) -> Result<String> {
         let conn = self.db.lock();
         let tx = conn.unchecked_transaction()?;
@@ -198,13 +198,13 @@ impl WorkspaceManager {
             [&old],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )?;
-        let per_turn = is_per_turn_provider(&provider);
-        let provider_session_id = (!per_turn).then(|| uuid::Uuid::new_v4().to_string());
-        let cut_at_message = branch.is_some_and(|b| b.at_message.is_some());
-        let view = if per_turn || cut_at_message {
-            view_to_str(&AgentView::Custom).to_string()
-        } else {
-            view
+        let provider_session_id = match native {
+            Some(native) => Some(native.provider_session_id.clone()),
+            None => (!is_per_turn_provider(&provider)).then(|| uuid::Uuid::new_v4().to_string()),
+        };
+        let view = match provider_session_id {
+            Some(_) => view,
+            None => view_to_str(&AgentView::Custom).to_string(),
         };
 
         let now = now_millis();
@@ -223,11 +223,10 @@ impl WorkspaceManager {
         tx.execute(
             "INSERT INTO sessions (id, workspace_id, provider, view, provider_session_id,
                                    effort, model, instructions, custom_agent_id, skills, mcp_servers,
-                                   parent_session_id, parent_cut_seq,
-                                   branch_from_session, branch_at_message, created_at)
+                                   parent_session_id, parent_cut_seq, transcript_prefix, created_at)
              SELECT ?2, workspace_id, provider, ?3, ?4,
                     effort, model, instructions, custom_agent_id, skills, mcp_servers,
-                    ?5, ?6, ?7, ?8, ?9
+                    ?5, ?6, ?7, ?8
                FROM sessions WHERE id = ?1",
             rusqlite::params![
                 old,
@@ -236,13 +235,60 @@ impl WorkspaceManager {
                 provider_session_id,
                 lineage.parent_session_id,
                 lineage.cut_seq,
-                branch.map(|b| &b.from_session),
-                branch.and_then(|b| b.at_message.as_ref()),
+                native.map_or(0, |n| n.prefix as i64),
                 now,
             ],
         )?;
         tx.commit()?;
         Ok(id)
+    }
+
+    /// Give the current session the transcript Fletch wrote for it before its
+    /// first launch (`Supervisor::materialize`): the provider session it was
+    /// written as, and how many leading records ingestion drops.
+    pub fn set_native_transcript(
+        &self,
+        workspace_id: &str,
+        native: &NativeTranscript,
+    ) -> Result<()> {
+        let conn = self.db.lock();
+        let sid = current_session_id(&conn, workspace_id)
+            .ok_or_else(|| Error::AgentNotFound(workspace_id.to_string()))?;
+        conn.execute(
+            "UPDATE sessions SET provider_session_id = ?2, transcript_prefix = ?3 WHERE id = ?1",
+            rusqlite::params![sid, native.provider_session_id, native.prefix as i64],
+        )?;
+        Ok(())
+    }
+
+    /// How many leading records of the current session's own transcript are
+    /// the history it continues, written there for its CLI to resume (see
+    /// [`NativeTranscript`]). 0 for a session that started its own.
+    pub fn session_transcript_prefix(&self, workspace_id: &str) -> Result<usize> {
+        let conn = self.db.lock();
+        let Some(sid) = current_session_id(&conn, workspace_id) else {
+            return Ok(0);
+        };
+        let prefix: i64 = conn.query_row(
+            "SELECT transcript_prefix FROM sessions WHERE id = ?1",
+            [&sid],
+            |r| r.get(0),
+        )?;
+        Ok(prefix.max(0) as usize)
+    }
+
+    /// What session `session_id`'s agent was told of the conversation it
+    /// continued (`set_handoff_context`). A session continuing it natively is
+    /// told the same, so it knows what that agent knew.
+    pub fn session_handoff_context(&self, session_id: &str) -> Result<Option<String>> {
+        let conn = self.db.lock();
+        conn.query_row(
+            "SELECT handoff_context FROM sessions WHERE id = ?1",
+            [session_id],
+            |r| r.get(0),
+        )
+        .optional()?
+        .ok_or_else(|| Error::Other(format!("unknown session {session_id}")))
     }
 
     /// The sessions `workspace_id` has superseded — the conversations it
@@ -306,28 +352,11 @@ impl WorkspaceManager {
         Ok(())
     }
 
-    /// The branch point the current session starts from, if any.
-    pub fn session_branch_point(&self, workspace_id: &str) -> Result<Option<BranchPoint>> {
-        let conn = self.db.lock();
-        let Some(sid) = current_session_id(&conn, workspace_id) else {
-            return Ok(None);
-        };
-        let (from_session, at_message): (Option<String>, Option<String>) = conn.query_row(
-            "SELECT branch_from_session, branch_at_message FROM sessions WHERE id = ?1",
-            [&sid],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )?;
-        Ok(from_session.map(|from_session| BranchPoint {
-            from_session,
-            at_message,
-        }))
-    }
-
-    /// Count of records already ingested for the current session (= MAX(seq),
-    /// which also counts the repeated history a branched session skipped) —
-    /// the starting index for positional `ln:{i}` native ids on the next read.
-    /// Own records only: history inherited through lineage is never re-read
-    /// from this session's transcript.
+    /// Count of records already ingested for the current session (= MAX(seq))
+    /// — past its transcript's prefix, the starting index for positional
+    /// `ln:{i}` native ids on the next read. Own records only: history
+    /// inherited through lineage is never re-read from this session's
+    /// transcript.
     pub fn session_record_count(&self, workspace_id: &str) -> Result<usize> {
         let conn = self.db.lock();
         let Some(sid) = current_session_id(&conn, workspace_id) else {
@@ -425,15 +454,16 @@ mod tests {
     }
 
     /// `a` rewound to just before bravo, in a new session.
-    fn rewound(wm: &WorkspaceManager, branch: Option<&BranchPoint>) -> String {
+    fn rewound(wm: &WorkspaceManager) -> String {
         let lineage = wm.resolve_anchor("a", Anchor::Before("a2")).unwrap();
-        wm.start_session("a", &lineage, branch).unwrap()
+        wm.start_session("a", &lineage, None).unwrap()
     }
 
-    fn branch() -> BranchPoint {
-        BranchPoint {
-            from_session: "claude-session".into(),
-            at_message: Some("a1-a".into()),
+    /// A transcript written for a new session, opening with `prefix` records.
+    fn native(prefix: usize) -> NativeTranscript {
+        NativeTranscript {
+            provider_session_id: "written-session".into(),
+            prefix,
         }
     }
 
@@ -536,7 +566,7 @@ mod tests {
         assert_eq!(after.lineage, Some(lineage));
         assert!(after.session_id.is_some());
         assert_ne!(after.session_id, before.session_id);
-        assert_eq!(wm.session_branch_point("a").unwrap(), None);
+        assert_eq!(wm.session_transcript_prefix("a").unwrap(), 0);
         // The old session's turn is closed and its queue is gone.
         assert!(ended_at(&wm, "a3").is_some());
         assert!(wm.read_all_pending_messages().unwrap().is_empty());
@@ -585,32 +615,33 @@ mod tests {
         assert!(wm.start_session("nonesuch", &nowhere, None).is_err());
     }
 
-    /// The view carries over only where the new session can open in it.
-    #[test]
-    fn a_session_that_cant_open_natively_yet_starts_in_the_chat_view() {
-        let wm = talked();
-        let restart = |ws: &str, branch: Option<&BranchPoint>| {
-            let lineage = wm.resolve_anchor(ws, Anchor::End).unwrap();
-            wm.start_session(ws, &lineage, branch).unwrap();
-        };
-        wm.update_agent_view("a", AgentView::Native).unwrap();
-        restart("a", None);
-        assert_eq!(wm.agent("a").unwrap().view, AgentView::Native);
-        restart("a", Some(&branch()));
-        assert_eq!(wm.agent("a").unwrap().view, AgentView::Custom);
-        assert_eq!(wm.session_branch_point("a").unwrap(), Some(branch()));
-
-        // A per-turn provider's session is captured from its first turn, and
-        // only then can its native view resume it.
+    fn codex_agent(wm: &WorkspaceManager, id: &str) {
         let mut codex = new_agent_record(
-            "c".into(),
-            "c".into(),
+            id.into(),
+            id.into(),
             "codex".into(),
             crate::workspace::tests::mk_repo("/r"),
             "task".into(),
             AgentView::Native,
         );
         wm.add_agent(&mut codex).unwrap();
+    }
+
+    /// The view carries over only where the new session can open in it.
+    #[test]
+    fn a_session_that_cant_open_natively_yet_starts_in_the_chat_view() {
+        let wm = talked();
+        let restart = |ws: &str, native: Option<&NativeTranscript>| {
+            let lineage = wm.resolve_anchor(ws, Anchor::End).unwrap();
+            wm.start_session(ws, &lineage, native).unwrap();
+        };
+        wm.update_agent_view("a", AgentView::Native).unwrap();
+        restart("a", None);
+        assert_eq!(wm.agent("a").unwrap().view, AgentView::Native);
+
+        // A per-turn provider's session is captured from its first turn, and
+        // only then can its native view resume it.
+        codex_agent(&wm, "c");
         wm.set_agent_session_id("c", "thread-1").unwrap();
         restart("c", None);
         let c = wm.agent("c").unwrap();
@@ -621,69 +652,55 @@ mod tests {
         assert!(wm.set_agent_session_id("c", "thread-2").unwrap());
     }
 
-    /// A branch's transcript opens with the conversation it was cut from,
-    /// under the ids its ancestors stored it with.
+    /// A session whose transcript was written for it starts as that provider
+    /// session, in whatever view it was in: it has a conversation to resume.
     #[test]
-    fn a_branched_session_skips_the_history_its_transcript_repeats() {
+    fn a_session_with_a_written_transcript_starts_as_it() {
         let wm = talked();
-        let meta = json!({"type": "mode"});
-        // A positional id the parent has too, below the cut.
-        wm.db
-            .lock()
-            .execute(
-                "UPDATE session_records SET native_id = 'ln:0' WHERE native_id = 'a1-a'",
-                [],
-            )
-            .unwrap();
-        rewound(&wm, Some(&branch()));
-        // The new turn repeats alpha's text, as a retried prompt would.
-        wm.insert_user_turn("a", "n1", "alpha", &[]).unwrap();
-        let alpha = json!({"type": "user", "text": "alpha"});
-        let reply = json!({"type": "assistant", "text": "re alpha"});
-        wm.append_session_records(
-            "a",
-            "claude",
-            "transcript",
-            None,
-            &[
-                ("ln:0", &meta),
-                ("a1-u", &alpha),
-                ("n1-u", &alpha),
-                ("n1-a", &reply),
-            ],
-        )
-        .unwrap();
-        wm.associate_pending_user_turns("a").unwrap();
+        codex_agent(&wm, "c");
+        let lineage = wm.resolve_anchor("a", Anchor::End).unwrap();
 
-        // Alpha shows once, through lineage; an equal positional id is a
-        // different line, so it is stored.
-        assert_eq!(
-            history(&wm, "a"),
-            concat(&[
-                inherited(&["a1-u", "ln:0"]),
-                owned(&["ln:0", "n1-u", "n1-a"])
-            ])
-        );
-        // The new turn matched its own prompt, not the repeated one.
-        let turns = wm.read_history_turns("a").unwrap();
-        assert_eq!(turns.last().unwrap().native_id.as_deref(), Some("n1-u"));
-        // The skipped line still counted, so positional ids go on past it.
-        assert_eq!(wm.session_record_count("a").unwrap(), 4);
-        let seqs: Vec<i64> = wm
-            .read_session_records("a")
-            .unwrap()
-            .iter()
-            .map(|r| r.seq)
-            .collect();
-        assert_eq!(seqs, vec![1, 3, 4]);
+        wm.start_session("c", &lineage, Some(&native(4))).unwrap();
+
+        let c = wm.agent("c").unwrap();
+        assert_eq!(c.session_id.as_deref(), Some("written-session"));
+        assert_eq!(c.view, AgentView::Native);
+        assert_eq!(wm.session_transcript_prefix("c").unwrap(), 4);
+        assert_eq!(wm.session_record_count("c").unwrap(), 0);
     }
 
-    /// Only a branch repeats anything: another session stores what its
-    /// transcript holds, whatever its history shows.
+    /// A session created first (a fork's) is given its transcript once it is
+    /// written; the session it continues says what its agent was told.
     #[test]
-    fn a_session_that_isnt_a_branch_skips_nothing() {
+    fn a_transcript_written_after_the_session_is_recorded_on_it() {
         let wm = talked();
-        rewound(&wm, None);
+        let lineage = wm.resolve_anchor("a", Anchor::End).unwrap();
+        wm.set_handoff_context("a", "what a was told").unwrap();
+        codex_agent(&wm, "c");
+
+        wm.set_native_transcript("c", &native(3)).unwrap();
+
+        assert_eq!(
+            wm.agent("c").unwrap().session_id.as_deref(),
+            Some("written-session")
+        );
+        assert_eq!(wm.session_transcript_prefix("c").unwrap(), 3);
+        assert_eq!(wm.session_transcript_prefix("a").unwrap(), 0);
+        assert_eq!(
+            wm.session_handoff_context(&lineage.parent_session_id)
+                .unwrap()
+                .as_deref(),
+            Some("what a was told")
+        );
+        assert!(wm.session_handoff_context("nonesuch").is_err());
+    }
+
+    /// Nothing about a record's id makes ingestion skip it: a session stores
+    /// what its transcript holds past its prefix, whatever its history shows.
+    #[test]
+    fn a_new_session_stores_what_its_transcript_holds() {
+        let wm = talked();
+        rewound(&wm);
         let alpha = json!({"type": "user", "text": "alpha"});
         wm.append_session_records("a", "claude", "transcript", None, &[("a1-u", &alpha)])
             .unwrap();
@@ -715,7 +732,7 @@ mod tests {
     fn rewound_twice() -> (WorkspaceManager, [String; 2]) {
         let wm = talked();
         let first = session_of(&wm, "a");
-        rewound(&wm, None);
+        rewound(&wm);
         let second = session_of(&wm, "a");
         exchange(&wm, "a", "n1", "delta");
         let lineage = wm.resolve_anchor("a", Anchor::Before("n1")).unwrap();

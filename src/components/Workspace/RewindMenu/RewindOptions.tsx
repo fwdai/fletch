@@ -32,7 +32,7 @@ export function RewindOptions({
         >
           <span className="di-l">
             {option.label}
-            {option.reason && <span className="rewind-why text-xs">{option.reason}</span>}
+            {option.reason && <span className="option-why text-xs">{option.reason}</span>}
           </span>
         </DropdownItem>
       ))}

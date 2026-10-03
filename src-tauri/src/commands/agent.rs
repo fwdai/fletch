@@ -62,14 +62,15 @@ pub async fn spawn_agent(
 
 /// Fork an existing workspace into a new one at an anchor — through the turn
 /// `turn_id` names, or the end of the parent's session when `null` — seeding
-/// its worktree (`code`) and conversation (`context`) independently.
-/// `context = summary` continues the parent conversation by reference (the
-/// child shows the parent's history through session lineage) and briefs the
-/// child's fresh agent with a summary of it.
+/// its worktree (`code`) and conversation (`context`) independently. Every
+/// fork continues the parent conversation by reference (the child shows the
+/// parent's history through session lineage); `context = full` has the
+/// child's agent resume it natively, `context = summary` briefs its fresh
+/// agent with a summary of it.
 ///
 /// `transcript` is the frontend-rendered text of the parent conversation up to
 /// the anchor — built there so it renders uniformly across every provider's
-/// chat adapter — which the spawn summarizes. `null` when nothing is carried.
+/// chat adapter — which the spawn summarizes. `null` for a full fork.
 #[tauri::command]
 pub async fn fork_agent(
     supervisor: State<'_, Arc<Supervisor>>,

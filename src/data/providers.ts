@@ -25,21 +25,47 @@ export interface Provider {
    *  when the Docker engine is selected. Mirror the backend capability when a
    *  new provider is ported. */
   dockerSupported?: boolean;
+  /** Fletch can write this provider's session files, so a new session can
+   *  continue a conversation natively: a fork's full conversation, a rewind
+   *  that resumes rather than summarizes. Providers without it carry a
+   *  conversation over as a summary only. Mirrors the backend capability
+   *  `AgentCapabilities::transcript_writer`. */
+  transcriptWriter?: boolean;
 }
 
 // Versions and per-account status are never hardcoded here: the backend probes
 // real versions into the store (`providerVersions`, see refreshProviderVersions),
 // and honest, non-user-specific model routing lives in PROVIDER_DETAIL.
 export const PROVIDERS: Provider[] = [
-  { id: "claude", label: "Claude Code", short: "CC", hue: 28, dockerSupported: true },
-  { id: "codex", label: "Codex", short: "CX", hue: 145, dockerSupported: true },
+  {
+    id: "claude",
+    label: "Claude Code",
+    short: "CC",
+    hue: 28,
+    dockerSupported: true,
+    transcriptWriter: true,
+  },
+  {
+    id: "codex",
+    label: "Codex",
+    short: "CX",
+    hue: 145,
+    dockerSupported: true,
+    transcriptWriter: true,
+  },
   { id: "cursor", label: "Cursor Agent", short: "CR", hue: 215, dockerSupported: true },
   { id: "antigravity", label: "Antigravity", short: "AG", hue: 260, fixedModel: true },
   { id: "opencode", label: "OpenCode", short: "OC", hue: 195, dockerSupported: true },
-  { id: "pi", label: "Pi", short: "PI", hue: 320, dockerSupported: true },
+  { id: "pi", label: "Pi", short: "PI", hue: 320, dockerSupported: true, transcriptWriter: true },
 ];
 
 export const DEFAULT_PROVIDER_ID = "claude";
+
+/** Whether a new session of provider `id` can continue a conversation
+ *  natively (`Provider.transcriptWriter`). Unknown ids can't. */
+export function hasTranscriptWriter(id: string | null | undefined): boolean {
+  return !!PROVIDERS.find((p) => p.id === id)?.transcriptWriter;
+}
 
 /** Whether a provider (or a custom agent's base provider) can run under the
  *  Docker sandbox engine. Mirrors the backend's

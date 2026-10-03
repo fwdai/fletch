@@ -41,6 +41,31 @@ pub(crate) fn find_session_jsonl(
     find_session_jsonl_in(&dirs, session_id, diag)
 }
 
+/// The `projects` directory claude keeps its sessions in when it runs in
+/// `cwd`: the per-agent dir a container sandbox mounts over it (`container`),
+/// or the active config dir's. The first place [`find_session_jsonl`] looks
+/// for each kind of agent.
+pub(crate) fn claude_projects_dir(cwd: &Path, container: bool) -> Option<PathBuf> {
+    if container {
+        return Some(cwd.parent()?.join(DOCKER_CLAUDE_PROJECTS_DIRNAME));
+    }
+    claude_projects_dirs().into_iter().next()
+}
+
+/// The directory under `projects` claude files the sessions of `cwd` in, as
+/// claude names it (2.1.287): every character that isn't an ASCII letter or
+/// digit becomes `-`. A name over 200 characters gets a hash suffix computed
+/// in a way claude doesn't document, so such a path is refused rather than
+/// guessed.
+pub(crate) fn claude_project_dirname(cwd: &Path) -> Option<String> {
+    let name: String = cwd
+        .to_string_lossy()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    (name.len() <= 200).then_some(name)
+}
+
 /// Candidate `projects` directories Claude may have written transcripts to.
 /// Honors `CLAUDE_CONFIG_DIR` (Claude CLI's own config-dir override) and always
 /// also includes the default `~/.claude`, so a transcript is located regardless
@@ -123,15 +148,24 @@ pub(crate) fn codex_sessions_dir() -> Option<PathBuf> {
 /// defaults to `~/.codex`); the id suffix is the thread id we captured. Resume
 /// normally keeps one file per session, but returning all is correct if it splits.
 pub(crate) fn find_codex_rollouts(session_id: &str, diag: &mut ReadDiagnostics) -> Vec<PathBuf> {
-    let Some(sessions) = codex_sessions_dir() else {
-        return Vec::new();
-    };
+    match codex_sessions_dir() {
+        Some(sessions) => find_codex_rollouts_in(&sessions, session_id, diag),
+        None => Vec::new(),
+    }
+}
+
+/// [`find_codex_rollouts`] under the `sessions` root given.
+pub(crate) fn find_codex_rollouts_in(
+    sessions: &Path,
+    session_id: &str,
+    diag: &mut ReadDiagnostics,
+) -> Vec<PathBuf> {
     // Anchor on the `-<id>.jsonl` boundary (filenames are
     // `rollout-<ts>-<id>.jsonl`) so one thread id can't match another whose
     // name merely ends with the same characters.
     let suffix = format!("-{session_id}.jsonl");
     diag.root_exists = sessions.exists();
-    let out: Vec<PathBuf> = codex_rollout_files(&sessions)
+    let out: Vec<PathBuf> = codex_rollout_files(sessions)
         .into_iter()
         .filter(|path| {
             path.file_name()

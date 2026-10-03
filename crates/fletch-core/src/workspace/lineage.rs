@@ -11,10 +11,9 @@
 //!
 //! The operations: resolving an [`Anchor`] into the [`SessionLineage`] a new
 //! session is created with (`insert_agent` and `start_session` write it with
-//! the session row), the stitched reads, the history a branched transcript
-//! repeats ([`RepeatedHistory`]), the session a turn ran in ([`TurnSession`]),
-//! and [`detach_children`] for every path that deletes sessions. See
-//! docs/fork-and-rewind.md.
+//! the session row), the stitched reads, whether a workspace ran a turn's
+//! session itself (`turn_is_own`), and [`detach_children`] for every path that
+//! deletes sessions. See docs/fork-and-rewind.md.
 
 use rusqlite::OptionalExtension;
 
@@ -42,25 +41,6 @@ pub enum Anchor<'a> {
     Before(&'a str),
     /// Everything through turn T and its reply, up to the next turn.
     Through(&'a str),
-}
-
-/// The session that ran a turn, as a rewind to just before that turn needs it
-/// (`Supervisor::rewind`).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TurnSession {
-    /// The provider's id for the session: what a native branch resumes.
-    pub provider_session_id: Option<String>,
-    /// The turn's matched prompt record (`native_id`); `None` while syncing.
-    pub prompt: Option<String>,
-    /// Whether the asking workspace ran the session itself — its current
-    /// session or one it rewound away from — rather than inheriting it from
-    /// another workspace (a fork's parent, or a session `detach_children`
-    /// handed it, told apart by age as in `read_superseded_records`). Only
-    /// then are the turn's checkpoints in this workspace's checkouts, and the
-    /// session's transcript where this workspace's agent can resume it.
-    pub own: bool,
-    /// What the session's agent was told of the conversation it continued.
-    pub handoff_context: Option<String>,
 }
 
 /// One session of a history chain, and the exclusive seq below which the chain
@@ -94,54 +74,19 @@ fn history_chain(conn: &Connection, session_id: &str) -> Result<Vec<Link>> {
     Ok(links)
 }
 
-/// The history a branched session's transcript repeats. A native branch
-/// (`SessionStart::Branch`) starts its transcript with a copy of the
-/// conversation it was cut from, under the same native ids, and the session
-/// already shows that conversation through lineage — so ingestion skips what
-/// this finds rather than show it twice (`append_session_records`).
-///
-/// Only a branched session's transcript repeats anything, so for any other
-/// this is empty. Positional ids (`ln:{i}`) never match: they number the lines
-/// of one transcript, so an equal id in an ancestor is a different line.
-pub(super) struct RepeatedHistory {
-    /// The session's ancestors, each with the bound it shows them below.
-    ancestors: Vec<Link>,
-}
-
-impl RepeatedHistory {
-    pub(super) fn of(conn: &Connection, session_id: &str) -> Result<Self> {
-        let branched: bool = conn.query_row(
-            "SELECT branch_from_session IS NOT NULL FROM sessions WHERE id = ?1",
-            [session_id],
-            |r| r.get(0),
-        )?;
-        let ancestors = if branched {
-            history_chain(conn, session_id)?
-                .into_iter()
-                .filter(|link| link.bound.is_some())
-                .collect()
-        } else {
-            Vec::new()
-        };
-        Ok(Self { ancestors })
+/// The records a chain shows, root first: each session's below its bound,
+/// tagged `inherited`, and all of an unbounded one's (the chain's own).
+fn chain_records(conn: &Connection, links: &[Link]) -> Result<Vec<SessionRecord>> {
+    let mut records = Vec::new();
+    for link in links {
+        records.extend(query_records(
+            conn,
+            &link.session_id,
+            link.bound.unwrap_or(i64::MAX),
+            link.bound.is_some(),
+        )?);
     }
-
-    /// Whether `native_id` is a record the session already shows through
-    /// lineage.
-    pub(super) fn contains(&self, conn: &Connection, native_id: &str) -> Result<bool> {
-        if self.ancestors.is_empty() || native_id.starts_with("ln:") {
-            return Ok(false);
-        }
-        let mut stmt = conn.prepare_cached(
-            "SELECT 1 FROM session_records WHERE session_id = ?1 AND native_id = ?2 AND seq < ?3",
-        )?;
-        for link in &self.ancestors {
-            if stmt.exists(rusqlite::params![link.session_id, native_id, link.bound])? {
-                return Ok(true);
-            }
-        }
-        Ok(false)
-    }
+    Ok(records)
 }
 
 /// One past the session's last record: the cut that keeps all of it.
@@ -260,57 +205,25 @@ impl WorkspaceManager {
             .optional()?)
     }
 
-    /// The session that ran turn `turn_id`, as seen from `workspace_id`.
-    pub fn turn_session(&self, workspace_id: &str, turn_id: &str) -> Result<TurnSession> {
+    /// Whether `workspace_id` ran the session turn `turn_id` ran in itself —
+    /// its current session or one it rewound away from — rather than
+    /// inheriting it from another workspace (a fork's parent, or a session
+    /// `detach_children` handed it, told apart by age as in
+    /// `read_superseded_records`). Only then are the turn's checkpoints in
+    /// this workspace's checkouts.
+    pub fn turn_is_own(&self, workspace_id: &str, turn_id: &str) -> Result<bool> {
         let conn = self.db.lock();
         conn.query_row(
-            "SELECT t.native_id, s.provider_session_id, s.handoff_context,
-                    s.workspace_id = w.id AND s.created_at >= w.created_at
+            "SELECT s.workspace_id = w.id AND s.created_at >= w.created_at
                FROM session_user_turns t
                JOIN sessions s ON s.id = t.session_id
                JOIN workspaces w ON w.id = ?2
               WHERE t.turn_id = ?1",
             [turn_id, workspace_id],
-            |r| {
-                Ok(TurnSession {
-                    prompt: r.get(0)?,
-                    provider_session_id: r.get(1)?,
-                    handoff_context: r.get(2)?,
-                    own: r.get(3)?,
-                })
-            },
+            |r| r.get(0),
         )
         .optional()?
         .ok_or_else(|| Error::Other(format!("unknown turn {turn_id}")))
-    }
-
-    /// The bodies of turn `turn_id`'s session's records from its prompt on,
-    /// in seq order: what the session's transcript holds from the turn on,
-    /// for asking whether the provider can still cut it there
-    /// (`agent::claude_branch_before`). All of the session's own records,
-    /// not only what a workspace's history shows of it: a part a later
-    /// rewind left behind is still in the transcript a resume loads. Empty
-    /// while the prompt is unmatched.
-    pub fn bodies_from_turn(&self, turn_id: &str) -> Result<Vec<serde_json::Value>> {
-        let conn = self.db.lock();
-        let mut stmt = conn.prepare(
-            "SELECT r.body
-               FROM session_user_turns t
-               JOIN session_records p ON p.session_id = t.session_id AND p.native_id = t.native_id
-               JOIN session_records r ON r.session_id = t.session_id AND r.seq >= p.seq
-              WHERE t.turn_id = ?1
-              ORDER BY r.seq",
-        )?;
-        let bodies: Vec<String> = stmt
-            .query_map([turn_id], |r| r.get(0))?
-            .collect::<std::result::Result<_, rusqlite::Error>>()?;
-        bodies
-            .iter()
-            .map(|text| {
-                serde_json::from_str(text)
-                    .map_err(|e| Error::Other(format!("deserialize record body: {e}")))
-            })
-            .collect()
     }
 
     /// The current session's display history: each ancestor's records below
@@ -322,16 +235,19 @@ impl WorkspaceManager {
         let Some(current) = current_session_id(&conn, workspace_id) else {
             return Ok(vec![]);
         };
-        let mut records = Vec::new();
-        for link in history_chain(&conn, &current)? {
-            records.extend(query_records(
-                &conn,
-                &link.session_id,
-                link.bound.unwrap_or(i64::MAX),
-                link.bound.is_some(),
-            )?);
+        chain_records(&conn, &history_chain(&conn, &current)?)
+    }
+
+    /// The history a session continuing `lineage` shows before it has records
+    /// of its own: what `read_history_records` reads for it, all inherited.
+    /// The conversation a new session continues, read before it exists.
+    pub fn read_lineage_records(&self, lineage: &SessionLineage) -> Result<Vec<SessionRecord>> {
+        let conn = self.db.lock();
+        let mut links = history_chain(&conn, &lineage.parent_session_id)?;
+        if let Some(parent) = links.last_mut() {
+            parent.bound = Some(lineage.cut_seq);
         }
-        Ok(records)
+        chain_records(&conn, &links)
     }
 
     /// The user turns of [`Self::read_history_records`], in the same order:
@@ -595,36 +511,53 @@ mod tests {
     #[test]
     fn a_turns_session_is_the_workspaces_own_only_if_it_ran_it() {
         let wm = three_level_chain();
-        let own = |ws: &str, turn: &str| wm.turn_session(ws, turn).unwrap().own;
+        let own = |ws: &str, turn: &str| wm.turn_is_own(ws, turn).unwrap();
         assert!(own("c", "c1"));
         assert!(!own("c", "b1"), "inherited from a fork's parent");
         assert!(!own("c", "a1"));
         assert!(own("a", "a1"));
-        let c1 = wm.turn_session("c", "c1").unwrap();
-        assert_eq!(c1.prompt.as_deref(), Some("c1-u"));
-        assert_eq!(c1.provider_session_id, wm.agent("c").unwrap().session_id);
 
         // A session it rewound away from is still its own.
         let before = wm.resolve_anchor("c", Anchor::Before("c1")).unwrap();
         wm.start_session("c", &before, None).unwrap();
         assert!(own("c", "c1"));
-        assert!(wm.turn_session("c", "nope").is_err());
+        assert!(wm.turn_is_own("c", "nope").is_err());
     }
 
+    /// What a new session continuing a lineage will show, read before it
+    /// exists, is what it shows once it does.
     #[test]
-    fn a_turns_bodies_run_from_its_prompt_to_its_sessions_end() {
+    fn a_lineages_records_are_the_history_its_session_shows() {
         let wm = three_level_chain();
-        let texts = |turn: &str| -> Vec<String> {
-            wm.bodies_from_turn(turn)
+        for (ws, anchor) in [
+            ("c", Anchor::Through("b1")),
+            ("c", Anchor::Before("c1")),
+            ("c", Anchor::End),
+            ("a", Anchor::Through("a2")),
+        ] {
+            let lineage = wm.resolve_anchor(ws, anchor).unwrap();
+            let read = wm.read_lineage_records(&lineage).unwrap();
+            agent(&wm, "probe", "/r", Some(lineage));
+            let shown = wm.read_history_records("probe").unwrap();
+            let ids = |records: &[SessionRecord]| -> Vec<(String, bool)> {
+                records
+                    .iter()
+                    .map(|r| (r.native_id.clone(), r.inherited))
+                    .collect()
+            };
+            assert_eq!(ids(&read), ids(&shown), "{ws} {anchor:?}");
+            assert!(read.iter().all(|r| r.inherited));
+            wm.remove_agent("probe").unwrap();
+        }
+        let c = wm.resolve_anchor("c", Anchor::Before("c1")).unwrap();
+        assert_eq!(
+            wm.read_lineage_records(&c)
                 .unwrap()
                 .iter()
-                .map(|b| b["text"].as_str().unwrap().to_string())
-                .collect()
-        };
-        // Past the cut `b` branched at: the session's transcript has it all.
-        assert_eq!(texts("a2"), ["bravo", "re bravo", "charlie", "re charlie"]);
-        wm.insert_user_turn("c", "c2", "unsynced", &[]).unwrap();
-        assert!(texts("c2").is_empty());
+                .map(|r| r.native_id.as_str())
+                .collect::<Vec<_>>(),
+            ["a1-u", "a1-a", "b1-u", "b1-a"]
+        );
     }
 
     #[test]

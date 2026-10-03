@@ -8,18 +8,21 @@
 //!  - **Code** ([`ForkCode`]) — what the new checkouts start from: the
 //!    parent's base branch, the parent's code now, or the code as it was at
 //!    the anchor (a turn checkpoint, see `git::checkpoint`).
-//!  - **Context** ([`ForkContext`]) — what the new session knows of the
-//!    parent conversation up to the anchor: nothing, or a summary.
+//!  - **Context** ([`ForkContext`]) — how the new session's agent knows the
+//!    parent conversation up to the anchor: the full conversation, or a
+//!    summary of it.
 //!
-//! Carried context reaches the child two ways:
+//! The conversation reaches the child two ways:
 //!  1. **Display** — the child's session references the parent's history up to
 //!     the anchor through session lineage (see `workspace::lineage`). Nothing is
-//!     copied; the chat renders it through the stitched history read.
-//!  2. **Agent knowledge** — the child's agent starts a fresh provider session,
-//!     so it is told what was discussed by a summary of the same range, written
-//!     while the spawn provisions (`crate::handoff`). The frontend renders the
-//!     transcript the summary is made from, since it has every provider's chat
-//!     adapter.
+//!     stored twice; the chat renders it through the stitched history read.
+//!  2. **Agent knowledge** — `Full`: the same history is written as the child's
+//!     own provider transcript once its checkouts exist
+//!     (`Supervisor::materialize`), and its CLI resumes it. `Summary`: the
+//!     child's agent starts a fresh provider session and is told a summary of
+//!     the range, written while the spawn provisions (`crate::handoff`). The
+//!     frontend renders the transcript the summary is made from, since it has
+//!     every provider's chat adapter.
 
 use std::sync::Arc;
 
@@ -28,7 +31,7 @@ use crate::host::EngineCtx;
 use crate::workspace::{AgentRecord, Anchor};
 
 use super::checkpoints::OTHER_CODE;
-use super::{PinnedCode, SpawnRequest, Supervisor};
+use super::{PinnedCode, SpawnHandoff, SpawnRequest, Supervisor};
 
 /// What the forked workspace's checkouts start from. Every mode but `Clean`
 /// copies a snapshot faithfully: the checkout's working tree is the snapshot,
@@ -47,14 +50,16 @@ pub enum ForkCode {
     AtMessage,
 }
 
-/// What the forked session knows of the parent conversation up to the anchor.
+/// How the forked session's agent knows the parent conversation up to the
+/// anchor. Either way the chat shows that history, through lineage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ForkContext {
-    /// A fresh conversation — carry nothing (the agent's brief is preserved).
-    None,
-    /// Show the parent's history up to the anchor, and tell the agent about it
-    /// through a summary.
+    /// The full conversation: the agent resumes it natively, as its own
+    /// transcript. Only for a provider Fletch can write transcripts for
+    /// (`AgentCapabilities::transcript_writer`), and a history all its own.
+    Full,
+    /// A summary of it.
     Summary,
 }
 
@@ -65,13 +70,15 @@ impl Supervisor {
     /// are seeded independently.
     ///
     /// `transcript` is the frontend-rendered text of the conversation up to the
-    /// anchor (`None` when nothing is carried); the spawn summarizes it into the
-    /// new session's handoff context.
+    /// anchor, for a `Summary`; the spawn summarizes it into the new session's
+    /// handoff context. A `Full` fork that can't be made (see [`ForkContext`])
+    /// is refused before anything is created.
     ///
-    /// Returns the new agent record. Heavy provisioning, summarizing included,
-    /// runs in the background exactly like a normal spawn; the session's
-    /// lineage is in place before this returns, so the frontend can open the
-    /// new agent and load its history immediately.
+    /// Returns the new agent record. Heavy provisioning, writing the
+    /// transcript or summarizing included, runs in the background exactly like
+    /// a normal spawn; the session's lineage is in place before this returns,
+    /// so the frontend can open the new agent and load its history
+    /// immediately.
     pub async fn fork_agent(
         self: Arc<Self>,
         ctx: Arc<EngineCtx>,
@@ -89,17 +96,29 @@ impl Supervisor {
             .clone();
 
         // Resolved before anything is created, so an anchor that can't be
-        // placed (its message is still syncing) fails the fork cleanly.
+        // placed (its message is still syncing), or a conversation the child
+        // can't continue in full, fails the fork cleanly.
         let anchor = match turn_id {
             Some(turn_id) => Anchor::Through(turn_id),
             None => Anchor::End,
         };
-        let (lineage, handoff_transcript) = match context {
-            ForkContext::None => (None, None),
-            ForkContext::Summary => (
-                Some(self.workspace.resolve_anchor(parent_id, anchor)?),
-                transcript.filter(|t| !t.trim().is_empty()),
-            ),
+        let lineage = self.workspace.resolve_anchor(parent_id, anchor)?;
+        let handoff = match context {
+            ForkContext::Full => {
+                if let Err(why) = self.native_history(&parent.provider, &lineage)? {
+                    return Err(Error::Other(format!(
+                        "The full conversation can't be carried over: {why} Fork with a summary instead."
+                    )));
+                }
+                Some(SpawnHandoff::Native {
+                    context: self
+                        .workspace
+                        .session_handoff_context(&lineage.parent_session_id)?,
+                })
+            }
+            ForkContext::Summary => transcript
+                .filter(|t| !t.trim().is_empty())
+                .map(SpawnHandoff::Summary),
         };
 
         // Code: reuse the normal spawn/provision path. Every mode forks the
@@ -117,11 +136,12 @@ impl Supervisor {
             name: None,
             effort: parent.effort.clone(),
             model: parent.model.clone(),
-            // The parent's brief passes through verbatim; its handoff context
-            // never does. Each fork gets a summary of its own.
+            // The parent's brief passes through verbatim. What its agent was
+            // told of an earlier conversation goes with a full one; a summary
+            // is a fork's own.
             instructions: parent.instructions.clone(),
-            handoff_transcript,
-            lineage,
+            handoff,
+            lineage: Some(lineage),
             custom_agent_id: parent.custom_agent_id.clone(),
             skills: parent.skills.clone(),
             mcp_servers: parent.mcp_servers.clone(),
@@ -211,10 +231,17 @@ mod tests {
 
     #[test]
     fn code_and_context_deserialize_from_their_wire_names() {
-        let none: ForkContext = serde_json::from_value(json!("none")).unwrap();
-        assert_eq!(none, ForkContext::None);
-        let summary: ForkContext = serde_json::from_value(json!("summary")).unwrap();
-        assert_eq!(summary, ForkContext::Summary);
+        for (wire, context) in [
+            ("full", ForkContext::Full),
+            ("summary", ForkContext::Summary),
+        ] {
+            assert_eq!(
+                serde_json::from_value::<ForkContext>(json!(wire)).unwrap(),
+                context
+            );
+        }
+        // Every fork continues the conversation: there is no fresh one.
+        assert!(serde_json::from_value::<ForkContext>(json!("none")).is_err());
 
         for (wire, code) in [
             ("clean", ForkCode::Clean),
@@ -427,7 +454,7 @@ mod tests {
                 "denali",
                 Some("t2"),
                 ForkCode::AtMessage,
-                ForkContext::None,
+                ForkContext::Summary,
                 None,
             )
             .await
@@ -462,7 +489,7 @@ mod tests {
                 "denali",
                 None,
                 ForkCode::Current,
-                ForkContext::None,
+                ForkContext::Summary,
                 None,
             )
             .await;

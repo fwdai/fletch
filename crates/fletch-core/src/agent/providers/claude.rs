@@ -1,4 +1,4 @@
-//! Claude transcript reader, branch point and one-shot args.
+//! Claude transcript reader and writer, and one-shot args.
 //!
 //! Claude is the lone persistent-runner agent (not in PER_TURN_AGENTS), launched
 //! `--session-id <uuid>` / `--resume <uuid>`, so it writes
@@ -6,6 +6,8 @@
 //! `~/.claude`). find_session_jsonl locates it, honoring the Docker sandbox's
 //! per-agent transcript dir (derived from `cwd`). Content lines carry a top-level
 //! `uuid`; metadata lines (mode/permission-mode/…) don't → positional fallback.
+//! Nearly every line also names its session (`sessionId`), and message lines
+//! the directory claude ran in (`cwd`).
 //!
 //! A sub-agent (Task/Agent tool) never writes into that file. Each one gets
 //! `<config-dir>/projects/<slug>/<uuid>/subagents/agent-<agentId>.jsonl` — a
@@ -21,9 +23,9 @@ use serde_json::Value;
 
 use crate::agent::args::model_args;
 use crate::agent::transcript::{
-    records_with_id, JsonlTail, RawRecord, ReadDiagnostics, SubagentLayout, TranscriptReader,
+    records_with_id, replace_field, write_new_jsonl, JsonlTail, RawRecord, ReadDiagnostics,
+    SubagentLayout, TranscriptReader,
 };
-use crate::agent::BranchPoint;
 use crate::error::{Error, Result};
 
 fn claude_locate(session_id: &str, cwd: &Path, diag: &mut ReadDiagnostics) -> Vec<PathBuf> {
@@ -116,53 +118,58 @@ pub(crate) static CLAUDE_TRANSCRIPT: TranscriptReader = TranscriptReader {
         id_field: Some("uuid"),
     }), // single persistent jsonl
     subagents: Some(CLAUDE_SUBAGENTS),
+    write: Some(claude_write),
 };
 
-/// The branch of `from_session` that rewinds to just before the user prompt
-/// whose `uuid` is `prompt_id`. `bodies` are that session's records in
-/// transcript order.
+/// Write `bodies` as claude session `session_id`, run in `cwd`: the file
+/// `--resume <session_id>` opens, `<projects>/<cwd as a dirname>/<id>.jsonl`
+/// in the projects dir claude uses there (the per-agent one in a container,
+/// [`crate::transcripts::claude_projects_dir`]). Each line's `sessionId` and
+/// `cwd`, where it has them, name the new session; the rest, `uuid` and
+/// `parentUuid` chain included, is copied as is, so claude resumes the same
+/// conversation, compactions and all.
 ///
-/// `--resume-session-at <id>` keeps the resumed conversation "up to and
-/// including the chain entry with <id>": claude (verified on 2.1.287) finds
-/// the loaded message whose `uuid` is `<id>`, drops everything after it, and
-/// exits with "No message found with message.uuid of: <id>" if there's none.
-/// Any chain entry is accepted, not only user/assistant ones. So the cut is the
-/// entry the prompt was appended to, its `parentUuid` — usually the `system`
-/// entry that closed the previous turn (`stop_hook_summary`, `turn_duration`),
-/// sometimes an assistant message or an attachment.
-///
-/// - `Ok(None)`: the prompt opens the session, so nothing is kept. Launch
-///   `SessionStart::Fresh`; a `BranchPoint` without a message keeps *all*.
-/// - `Err`: the prompt isn't in `bodies`, or the session was compacted after
-///   it. A resume loads only the chain since the last compaction, so a cut
-///   before one has nothing to resume at.
-pub fn claude_branch_before<'a>(
-    from_session: &str,
-    bodies: impl IntoIterator<Item = &'a Value>,
-    prompt_id: &str,
-) -> Result<Option<BranchPoint>> {
-    let mut bodies = bodies.into_iter();
-    let prompt = bodies
-        .by_ref()
-        .find(|b| b.get("uuid").and_then(Value::as_str) == Some(prompt_id))
-        .ok_or_else(|| Error::Other(format!("message {prompt_id} isn't in the session")))?;
-    if bodies.any(is_compact_boundary) {
-        return Err(Error::Other(
-            "the conversation was compacted after this message".into(),
-        ));
+/// A claude session is resumable once it holds a message (a line with a
+/// `uuid`, see [`claude_session_has_messages`]); without one nothing is
+/// written, since a file claude can't resume also stops `--session-id` from
+/// starting the session fresh ("already in use").
+fn claude_write(
+    session_id: &str,
+    cwd: &Path,
+    container: bool,
+    bodies: &[Value],
+) -> Result<Option<PathBuf>> {
+    if !bodies.iter().any(|b| b.get("uuid").is_some()) {
+        return Ok(None);
     }
-    Ok(prompt
-        .get("parentUuid")
-        .and_then(Value::as_str)
-        .map(|parent| BranchPoint {
-            from_session: from_session.to_string(),
-            at_message: Some(parent.to_string()),
-        }))
-}
-
-fn is_compact_boundary(body: &Value) -> bool {
-    body.get("type").and_then(Value::as_str) == Some("system")
-        && body.get("subtype").and_then(Value::as_str) == Some("compact_boundary")
+    let projects = crate::transcripts::claude_projects_dir(cwd, container)
+        .ok_or_else(|| Error::Other("claude's projects directory can't be resolved".into()))?;
+    // Claude goes by its working directory as the OS reports it, symlinks
+    // resolved; in a container, that is the path the checkout is mounted at.
+    let run_dir = if container {
+        cwd.to_path_buf()
+    } else {
+        std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf())
+    };
+    let dirname = crate::transcripts::claude_project_dirname(&run_dir).ok_or_else(|| {
+        Error::Other(format!(
+            "{} is too long a path to name claude's session directory for",
+            run_dir.display()
+        ))
+    })?;
+    let run_dir_text = run_dir.to_string_lossy();
+    let lines: Vec<Value> = bodies
+        .iter()
+        .map(|body| {
+            let mut line = body.clone();
+            replace_field(&mut line, "sessionId", session_id);
+            replace_field(&mut line, "cwd", &run_dir_text);
+            line
+        })
+        .collect();
+    let path = projects.join(dirname).join(format!("{session_id}.jsonl"));
+    write_new_jsonl(&path, &lines)?;
+    Ok(Some(path))
 }
 
 /// Whether claude has written a message into `session_id`'s transcript, i.e.
@@ -295,59 +302,111 @@ mod tests {
         assert_eq!(claude_subagent_parent(&[notification, own], "abc"), None);
     }
 
-    /// Two turns in the shape real transcripts use: a metadata line (no uuid),
-    /// then prompt → assistant → the `system` entry that closes the turn, which
-    /// the next prompt is appended to.
-    fn two_turns() -> Vec<Value> {
-        vec![
-            json!({ "type": "mode", "mode": "normal" }),
-            json!({ "type": "user", "uuid": "p1", "parentUuid": null }),
-            json!({ "type": "assistant", "uuid": "a1", "parentUuid": "p1" }),
-            json!({ "type": "system", "subtype": "turn_duration", "uuid": "s1", "parentUuid": "a1" }),
-            json!({ "type": "user", "uuid": "p2", "parentUuid": "s1" }),
-            json!({ "type": "assistant", "uuid": "a2", "parentUuid": "p2" }),
-        ]
-    }
+    // ── writing a session ─────────────────────────────────────────────────
 
-    #[test]
-    fn branch_before_a_prompt_keeps_through_the_entry_it_follows() {
-        let bodies = two_turns();
-        assert_eq!(
-            claude_branch_before("src", &bodies, "p2").unwrap(),
-            Some(BranchPoint {
-                from_session: "src".into(),
-                at_message: Some("s1".into()),
-            })
+    const NEW: &str = "0b9d7c1e-5f3a-4c2b-9e8d-7a6b5c4d3e2f";
+
+    /// A real session's lines (the shared usage fixture: messages, a
+    /// sidechain line, a compaction), opened by the metadata line claude
+    /// writes first and with the directory it ran in on its messages.
+    fn session_lines() -> Vec<Value> {
+        let mut lines: Vec<Value> =
+            include_str!("../../../../../tests/fixtures/usage/claude.jsonl")
+                .lines()
+                .map(|line| serde_json::from_str(line).unwrap())
+                .collect();
+        for line in &mut lines {
+            line["cwd"] = json!("/Users/u/.fletch/workspaces/old/repo");
+        }
+        let session = lines[0]["sessionId"].clone();
+        lines.insert(
+            0,
+            json!({ "type": "mode", "mode": "normal", "sessionId": session }),
         );
+        lines
+    }
+
+    /// An agent's checkout in a container sandbox, whose projects dir is the
+    /// per-agent one beside it, under `td`.
+    fn container_cwd(td: &Path) -> PathBuf {
+        td.join("ws").join("repo")
     }
 
     #[test]
-    fn branch_before_the_opening_prompt_keeps_nothing() {
+    fn a_written_session_is_where_claude_resumes_it_with_only_its_identity_changed() {
+        let td = tempfile::tempdir().unwrap();
+        let cwd = container_cwd(td.path());
+        let lines = session_lines();
+
+        let path = claude_write(NEW, &cwd, true, &lines).unwrap().unwrap();
+
+        // Claude's own dir for the new checkout, under the container's mount.
         assert_eq!(
-            claude_branch_before("src", &two_turns(), "p1").unwrap(),
-            None
+            path,
+            td.path()
+                .join("ws")
+                .join(crate::transcripts::DOCKER_CLAUDE_PROJECTS_DIRNAME)
+                .join(crate::transcripts::claude_project_dirname(&cwd).unwrap())
+                .join(format!("{NEW}.jsonl"))
         );
+        let mut diag = ReadDiagnostics::default();
+        let located = (CLAUDE_TRANSCRIPT.locate)(NEW, &cwd, &mut diag);
+        assert_eq!(located, [path]);
+        let read = (CLAUDE_TRANSCRIPT.read)(&located, &mut diag);
+        assert_eq!(read.len(), lines.len());
+        for (back, line) in read.iter().zip(&lines) {
+            let mut expected = line.clone();
+            expected["sessionId"] = json!(NEW);
+            if line.get("cwd").is_some() {
+                expected["cwd"] = json!(cwd.to_string_lossy());
+            }
+            assert_eq!(back.body, expected);
+        }
+        // The same records under the same ids, so the chain is intact.
+        let ids = |records: &[RawRecord]| -> Vec<String> {
+            records.iter().map(|r| r.native_id.clone()).collect()
+        };
+        let original = records_with_id(lines, Some("uuid"));
+        assert_eq!(ids(&read), ids(&original));
+        // And a launch resumes it rather than starting it fresh.
+        assert!(claude_session_has_messages(NEW, &cwd));
     }
 
     #[test]
-    fn branch_before_an_unknown_prompt_is_an_error() {
-        assert!(claude_branch_before("src", &two_turns(), "nope").is_err());
+    fn a_history_claude_cant_resume_writes_nothing() {
+        let td = tempfile::tempdir().unwrap();
+        let cwd = container_cwd(td.path());
+        let metadata = [json!({ "type": "mode", "mode": "normal", "sessionId": "old" })];
+
+        assert_eq!(claude_write(NEW, &cwd, true, &metadata).unwrap(), None);
+        assert_eq!(claude_write(NEW, &cwd, true, &[]).unwrap(), None);
+        assert!(!claude_session_has_messages(NEW, &cwd));
     }
 
     #[test]
-    fn branch_cannot_cut_before_a_compaction() {
-        let boundary = json!({
-            "type": "system", "subtype": "compact_boundary", "uuid": "c1", "parentUuid": null
-        });
-        let mut bodies = two_turns();
-        bodies.push(boundary.clone());
-        assert!(claude_branch_before("src", &bodies, "p2").is_err());
+    fn a_session_is_never_written_over() {
+        let td = tempfile::tempdir().unwrap();
+        let cwd = container_cwd(td.path());
+        let lines = session_lines();
+        let path = claude_write(NEW, &cwd, true, &lines).unwrap().unwrap();
+        let before = std::fs::read(&path).unwrap();
 
-        // A compaction *before* the prompt is part of the resumed chain.
-        let mut bodies = vec![boundary];
-        bodies.extend(two_turns());
-        assert!(claude_branch_before("src", &bodies, "p2")
-            .unwrap()
-            .is_some());
+        assert!(claude_write(NEW, &cwd, true, &lines[..2]).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+    }
+
+    #[test]
+    fn claude_names_a_session_dir_after_the_whole_path() {
+        let dirname = |p: &str| crate::transcripts::claude_project_dirname(Path::new(p));
+        assert_eq!(
+            dirname("/Users/alex/.fletch/workspaces/bromo/quorum").as_deref(),
+            Some("-Users-alex--fletch-workspaces-bromo-quorum")
+        );
+        assert_eq!(dirname("/a_b/c d").as_deref(), Some("-a-b-c-d"));
+        assert_eq!(
+            dirname(&format!("/{}", "x".repeat(199))).unwrap().len(),
+            200
+        );
+        assert_eq!(dirname(&format!("/{}", "x".repeat(200))), None);
     }
 }

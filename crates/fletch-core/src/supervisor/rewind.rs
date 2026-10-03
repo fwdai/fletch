@@ -5,9 +5,9 @@
 //!
 //!  - **Conversation** — a new session continues the history before the turn
 //!    (`resolve_anchor(Before)`, `start_session`). Its agent knows that
-//!    history natively when it can (`Exact`: claude resumes the session that
-//!    ran the turn, cut just before it), or from a summary, as a fork's agent
-//!    does (`Summary`).
+//!    history natively when it can (`Exact`: the history is written as the new
+//!    session's own transcript, which its CLI resumes), or from a summary, as
+//!    a fork's agent does (`Summary`).
 //!  - **Code** — every checkout goes back to the turn's checkpoint, behind an
 //!    undo point (`restore_turn_code`).
 //!
@@ -18,11 +18,11 @@
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
-use crate::agent::{capabilities, claude_branch_before, BranchPoint, SessionStart};
 use crate::error::{Error, Result};
 use crate::host::EngineCtx;
-use crate::workspace::{AgentRecord, AgentStatus, AgentView, Anchor, SessionLineage};
+use crate::workspace::{AgentRecord, AgentStatus, Anchor, NativeTranscript, SessionLineage};
 
 use super::events::{emit_spawn_progress, emit_workspace_changed, SpawnStage};
 use super::lifecycle::{arm_spawn_timeout, fail_spawn};
@@ -62,16 +62,19 @@ pub struct RewindOutcome {
 /// How the rewound session's agent learns the conversation before the turn.
 #[derive(Debug, PartialEq, Eq)]
 enum Handoff {
-    /// `Exact`: claude resumes the session that ran the turn, cut just before
-    /// it.
-    Branch(BranchPoint),
-    /// `Exact` too, when the turn opened the session that ran it: start fresh
-    /// as that session did, told what its agent was told (nothing for a
-    /// workspace's first session).
-    Carry(Option<String>),
+    /// `Exact`: `history` is written as the new session's own transcript,
+    /// which its CLI resumes, and its agent is told `context`, what the
+    /// turn's session's agent was told (nothing for a workspace's first
+    /// session). With no history to write, it starts fresh, told that.
+    Native {
+        history: Vec<Value>,
+        context: Option<String>,
+    },
     /// `Summary`: a summary of this transcript of the conversation before the
     /// turn, rendered by the client.
     Summarize(String),
+    /// `Summary` of nothing: no conversation comes before the turn.
+    Nothing,
 }
 
 /// A conversation rewind, decided before anything changes.
@@ -86,13 +89,11 @@ impl Supervisor {
     /// code, or both (`scope`). `transcript` is the client-rendered text of
     /// the conversation before the turn, for a `Summary` handoff.
     ///
-    /// Refused while a turn runs ("stop the agent first"), for a workflow
-    /// step, and from the native view: claude can cut a conversation at a
-    /// message only in the chat view. Everything that can refuse is checked
-    /// before anything changes, the code's checkpoint included; then the
-    /// code goes first and the conversation second. A conversation that can't
-    /// be rewound after the code was restored is reported in the outcome, with
-    /// the code's undo.
+    /// Refused while a turn runs ("stop the agent first") and for a workflow
+    /// step. Everything that can refuse is checked before anything changes,
+    /// the code's checkpoint included; then the code goes first and the
+    /// conversation second. A conversation that can't be rewound after the
+    /// code was restored is reported in the outcome, with the code's undo.
     ///
     /// Returns once the rewound agent is up, or failed to start: it is then in
     /// error, as after a failed spawn.
@@ -149,7 +150,7 @@ impl Supervisor {
         agent_id: &str,
         turn_id: &str,
     ) -> Result<RestoreReport> {
-        if !self.workspace.turn_session(agent_id, turn_id)?.own {
+        if !self.workspace.turn_is_own(agent_id, turn_id)? {
             return Err(Error::Other(
                 "The code as of this message isn't available: it ran in another workspace.".into(),
             ));
@@ -169,8 +170,6 @@ impl Supervisor {
             "agent is archived"
         } else if record.owner_run_id.is_some() {
             "A workflow step's conversation belongs to its run."
-        } else if record.view == AgentView::Native {
-            "Rewind from the chat view."
         } else if self.is_busy(&record.id) {
             "Stop the agent before rewinding."
         } else {
@@ -180,7 +179,8 @@ impl Supervisor {
     }
 
     /// Where `record`'s rewound conversation starts — the history before
-    /// `turn_id`'s prompt — and how its agent learns that history.
+    /// `turn_id`'s prompt — and how its agent learns that history: natively
+    /// when its provider can continue it (`Exact`), else from a summary.
     fn plan_conversation(
         &self,
         record: &AgentRecord,
@@ -190,58 +190,44 @@ impl Supervisor {
         let lineage = self
             .workspace
             .resolve_anchor(&record.id, Anchor::Before(turn_id))?;
-        let handoff = match self.exact_handoff(record, turn_id)? {
-            Some(exact) => exact,
-            None => match transcript.filter(|t| !t.trim().is_empty()) {
-                Some(transcript) => Handoff::Summarize(transcript),
-                // Nothing comes before the turn.
-                None => Handoff::Carry(None),
+        let handoff = match self.native_history(&record.provider, &lineage)? {
+            Ok(history) => Handoff::Native {
+                history,
+                context: self
+                    .workspace
+                    .session_handoff_context(&lineage.parent_session_id)?,
             },
+            Err(why) => {
+                tracing::info!(agent_id = %record.id, %why, "can't rewind natively; summarizing");
+                match transcript.filter(|t| !t.trim().is_empty()) {
+                    Some(transcript) => Handoff::Summarize(transcript),
+                    None => Handoff::Nothing,
+                }
+            }
         };
         Ok(ConversationPlan { lineage, handoff })
     }
 
-    /// The `Exact` handoff to before `turn_id`, when there is one: `record`'s
-    /// provider can branch a session at a message (claude), the workspace ran
-    /// the turn's session itself, so the session's transcript is where the
-    /// rewound agent looks for it, and the session can still be cut there
-    /// (not when it was compacted after the turn).
-    fn exact_handoff(&self, record: &AgentRecord, turn_id: &str) -> Result<Option<Handoff>> {
-        if !capabilities(&record.provider).branch_at_message {
-            return Ok(None);
-        }
-        let session = self.workspace.turn_session(&record.id, turn_id)?;
-        let (true, Some(from_session), Some(prompt)) =
-            (session.own, session.provider_session_id, session.prompt)
-        else {
-            return Ok(None);
-        };
-        let bodies = self.workspace.bodies_from_turn(turn_id)?;
-        match claude_branch_before(&from_session, &bodies, &prompt) {
-            Ok(Some(point)) => Ok(Some(Handoff::Branch(point))),
-            Ok(None) => Ok(Some(Handoff::Carry(session.handoff_context))),
-            Err(e) => {
-                tracing::info!(agent_id = %record.id, error = %e, "can't rewind natively; summarizing");
-                Ok(None)
-            }
-        }
-    }
-
     /// Rewind `record`'s conversation as `plan` says, then launch its agent.
-    /// An error means the conversation wasn't rewound. Once it is, the launch
-    /// is the agent's own outcome, as a spawn's is: a failure leaves the agent
-    /// in error, and resuming it launches the rewound session.
+    /// An error means the conversation wasn't rewound: an `Exact` history is
+    /// written as the new session's transcript before the switch, so a
+    /// failure to write it changes nothing. Once it is rewound, the launch is
+    /// the agent's own outcome, as a spawn's is: a failure leaves the agent in
+    /// error, and resuming it launches the rewound session.
     async fn rewind_conversation(
         self: &Arc<Self>,
         ctx: &Arc<EngineCtx>,
         record: &AgentRecord,
         plan: ConversationPlan,
     ) -> Result<()> {
-        let branch = match &plan.handoff {
-            Handoff::Branch(point) => Some(point),
+        let native = match &plan.handoff {
+            Handoff::Native { history, .. } => {
+                let session = uuid::Uuid::new_v4().to_string();
+                self.write_native_transcript(record, &session, history)?
+            }
             _ => None,
         };
-        self.start_rewound_session(ctx, record, &plan.lineage, branch)
+        self.start_rewound_session(ctx, record, &plan.lineage, native.as_ref())
             .await?;
         if let Err(e) = self.launch_rewound_session(ctx, record, plan.handoff).await {
             tracing::warn!(agent_id = %record.id, error = %e, "rewound agent failed to start");
@@ -250,24 +236,24 @@ impl Supervisor {
         Ok(())
     }
 
-    /// Replace `record`'s session with one that continues `lineage`, branched
-    /// at `branch` when given, and leave the agent `Spawning` for its launch.
-    /// Under the lifecycle lock, as a spawn creates its agent: project
-    /// deletion either goes first or finds the agent `Spawning` and waits the
-    /// launch out.
+    /// Replace `record`'s session with one that continues `lineage`, as the
+    /// provider session `native` was written as when given, and leave the
+    /// agent `Spawning` for its launch. Under the lifecycle lock, as a spawn
+    /// creates its agent: project deletion either goes first or finds the
+    /// agent `Spawning` and waits the launch out.
     async fn start_rewound_session(
         &self,
         ctx: &Arc<EngineCtx>,
         record: &AgentRecord,
         lineage: &SessionLineage,
-        branch: Option<&BranchPoint>,
+        native: Option<&NativeTranscript>,
     ) -> Result<()> {
         {
             let _lifecycle = self.agent_lifecycle.lock().await;
             if self.deleting_projects.lock().contains(&record.project_id) {
                 return Err(Error::Other("project deletion is in progress".into()));
             }
-            self.start_session(&record.id, lineage, branch)?;
+            self.start_session(&record.id, lineage, native)?;
             self.set_status(ctx, &record.id, AgentStatus::Spawning, None);
         }
         // The session, and with it the history the chat shows, changed.
@@ -275,7 +261,8 @@ impl Supervisor {
         Ok(())
     }
 
-    /// Brief the rewound session's agent as `handoff` says, then start it.
+    /// Brief the rewound session's agent as `handoff` says, then start it:
+    /// resuming its written transcript, or fresh.
     async fn launch_rewound_session(
         self: &Arc<Self>,
         ctx: &Arc<EngineCtx>,
@@ -287,10 +274,7 @@ impl Supervisor {
         }
         emit_spawn_progress(ctx.sink.as_ref(), &record.id, SpawnStage::Starting, None);
         arm_spawn_timeout(self.clone(), ctx.clone(), record.id.clone());
-        // Fresh, or the branch the session was started with
-        // (`start_process` launches an unlanded one).
-        self.start_process(ctx, &record.id, SessionStart::Fresh)
-            .await
+        self.start_process(ctx, &record.id).await
     }
 
     /// The handoff context `handoff` gives the rewound session's agent, if
@@ -303,8 +287,8 @@ impl Supervisor {
         handoff: Handoff,
     ) -> Option<String> {
         match handoff {
-            Handoff::Branch(_) => None,
-            Handoff::Carry(context) => context,
+            Handoff::Native { context, .. } => context,
+            Handoff::Nothing => None,
             Handoff::Summarize(transcript) => {
                 emit_spawn_progress(ctx.sink.as_ref(), &record.id, SpawnStage::Summarizing, None);
                 Some(
@@ -332,7 +316,8 @@ mod tests {
     const AGENT: &str = "denali";
 
     /// Workspace `id` of `provider`, working in `checkout`, continuing
-    /// `lineage`.
+    /// `lineage`. In a container sandbox, so a claude transcript written for
+    /// it goes to the per-agent projects dir beside the checkout.
     fn agent(
         sup: &Supervisor,
         id: &str,
@@ -343,12 +328,14 @@ mod tests {
         let mut record = record_in_checkouts(sup, id, &[checkout.to_path_buf()]);
         record.provider = provider.into();
         record.lineage = lineage;
+        record.sandbox_engine = Some("docker".into());
         sup.workspace.add_agent(&mut record).unwrap();
     }
 
     fn append(sup: &Supervisor, ws: &str, records: &[(&str, &Value)]) {
+        let provider = sup.workspace.agent(ws).unwrap().provider;
         sup.workspace
-            .append_session_records(ws, "claude", "transcript", None, records)
+            .append_session_records(ws, &provider, "transcript", None, records)
             .unwrap();
     }
 
@@ -359,11 +346,25 @@ mod tests {
         sup.checkpoint_turn(ws, turn).await;
         sup.workspace.insert_user_turn(ws, turn, turn, &[]).unwrap();
         let (prompt_id, reply_id) = (format!("{turn}-u"), format!("{turn}-a"));
-        let prompt = json!({"type": "user", "uuid": prompt_id, "parentUuid": parent,
-                            "message": {"content": turn}});
-        let reply = json!({"type": "assistant", "uuid": reply_id, "parentUuid": prompt_id});
-        append(sup, ws, &[(&prompt_id, &prompt), (&reply_id, &reply)]);
+        append(
+            sup,
+            ws,
+            &[
+                (&prompt_id, &prompt(turn, parent)),
+                (&reply_id, &reply(turn)),
+            ],
+        );
         sup.workspace.associate_pending_user_turns(ws).unwrap();
+    }
+
+    fn prompt(turn: &str, parent: Option<&str>) -> Value {
+        json!({"type": "user", "uuid": format!("{turn}-u"), "parentUuid": parent,
+               "sessionId": "old", "message": {"content": turn}})
+    }
+
+    fn reply(turn: &str) -> Value {
+        json!({"type": "assistant", "uuid": format!("{turn}-a"), "parentUuid": format!("{turn}-u"),
+               "sessionId": "old"})
     }
 
     fn edit(checkout: &Path, text: &str) {
@@ -396,26 +397,36 @@ mod tests {
         plan(sup, ws, turn, transcript).handoff
     }
 
-    fn provider_session(sup: &Supervisor, ws: &str) -> String {
-        sup.workspace.agent(ws).unwrap().session_id.unwrap()
+    /// The `Exact` handoff that writes the records `ids` (in `history`'s
+    /// order) and tells nothing more.
+    fn native(sup: &Supervisor, ws: &str, ids: &[&str]) -> Handoff {
+        let bodies = sup.workspace.read_history_records(ws).unwrap();
+        let history = ids
+            .iter()
+            .map(|id| {
+                bodies
+                    .iter()
+                    .find(|r| r.native_id == *id)
+                    .unwrap_or_else(|| panic!("no record {id}"))
+                    .body
+                    .clone()
+            })
+            .collect();
+        Handoff::Native {
+            history,
+            context: None,
+        }
     }
 
-    fn branch_at(from_session: String, message: &str) -> Handoff {
-        Handoff::Branch(BranchPoint {
-            from_session,
-            at_message: Some(message.into()),
-        })
-    }
-
-    fn compaction(sup: &Supervisor, ws: &str) {
-        let boundary = json!({"type": "system", "subtype": "compact_boundary", "uuid": "c1"});
-        append(sup, ws, &[("c1", &boundary)]);
+    fn compaction() -> Value {
+        json!({"type": "system", "subtype": "compact_boundary", "uuid": "c1", "parentUuid": null,
+               "logicalParentUuid": "t2-a", "sessionId": "old"})
     }
 
     // ── Exact or Summary ──────────────────────────────────────────────────
 
     #[tokio::test]
-    async fn claude_branches_the_session_that_ran_the_turn_just_before_it() {
+    async fn the_history_before_the_turn_is_continued_natively() {
         let td = tempfile::tempdir().unwrap();
         let (sup, _) = talked(td.path()).await;
 
@@ -427,56 +438,52 @@ mod tests {
                 .resolve_anchor(AGENT, Anchor::Before("t2"))
                 .unwrap()
         );
-        assert_eq!(
-            plan.handoff,
-            branch_at(provider_session(&sup, AGENT), "t1-a")
-        );
+        assert_eq!(plan.handoff, native(&sup, AGENT, &["t1-u", "t1-a"]));
     }
 
     #[tokio::test]
-    async fn a_turn_that_opened_its_session_starts_fresh_as_that_session_did() {
+    async fn a_turn_that_opened_the_conversation_starts_fresh_as_its_session_did() {
         let td = tempfile::tempdir().unwrap();
         let (sup, _) = talked(td.path()).await;
-        assert_eq!(handoff(&sup, AGENT, "t1", None), Handoff::Carry(None));
+        assert_eq!(handoff(&sup, AGENT, "t1", None), native(&sup, AGENT, &[]));
 
         sup.workspace
             .set_handoff_context(AGENT, "what came before")
             .unwrap();
         assert_eq!(
             handoff(&sup, AGENT, "t1", Some("User: earlier")),
-            Handoff::Carry(Some("what came before".into()))
+            Handoff::Native {
+                history: vec![],
+                context: Some("what came before".into()),
+            }
         );
     }
 
+    /// The copied lines hold the provider's own compaction records, so a cut
+    /// on either side of one needs nothing special.
     #[tokio::test]
-    async fn a_compaction_after_the_turn_falls_back_to_a_summary() {
+    async fn a_cut_around_a_compaction_copies_what_the_cli_wrote() {
         let td = tempfile::tempdir().unwrap();
         let (sup, _) = talked(td.path()).await;
-        compaction(&sup, AGENT);
+        append(&sup, AGENT, &[("c1", &compaction())]);
+        say(&sup, AGENT, "t3", Some("c1")).await;
 
         assert_eq!(
-            handoff(&sup, AGENT, "t2", Some("User: t1")),
-            Handoff::Summarize("User: t1".into())
-        );
-        // With no transcript to summarize, nothing is told.
-        assert_eq!(
-            handoff(&sup, AGENT, "t2", Some(" \n")),
-            Handoff::Carry(None)
-        );
-        // A compaction before the turn is no obstacle.
-        say(&sup, AGENT, "t3", Some("c1")).await;
-        assert_eq!(
             handoff(&sup, AGENT, "t3", None),
-            branch_at(provider_session(&sup, AGENT), "c1")
+            native(&sup, AGENT, &["t1-u", "t1-a", "t2-u", "t2-a", "c1"])
+        );
+        assert_eq!(
+            handoff(&sup, AGENT, "t2", Some("User: t1")),
+            native(&sup, AGENT, &["t1-u", "t1-a"])
         );
     }
 
     #[tokio::test]
-    async fn a_provider_that_cant_branch_summarizes() {
+    async fn a_provider_fletch_cant_write_for_summarizes() {
         let td = tempfile::tempdir().unwrap();
         let sup = test_supervisor();
         let checkout = committed_repo(td.path(), "rainier").await;
-        agent(&sup, "rainier", "codex", &checkout, None);
+        agent(&sup, "rainier", "cursor", &checkout, None);
         say(&sup, "rainier", "r1", None).await;
         say(&sup, "rainier", "r2", Some("r1-a")).await;
 
@@ -484,10 +491,55 @@ mod tests {
             handoff(&sup, "rainier", "r2", Some("User: r1")),
             Handoff::Summarize("User: r1".into())
         );
+        // With no transcript to summarize, nothing is told.
+        assert_eq!(
+            handoff(&sup, "rainier", "r2", Some(" \n")),
+            Handoff::Nothing
+        );
+    }
+
+    /// A history part of which another provider wrote can't be continued as
+    /// this one's own transcript.
+    #[tokio::test]
+    async fn a_history_partly_another_providers_summarizes() {
+        let td = tempfile::tempdir().unwrap();
+        let (sup, _) = talked(td.path()).await;
+        let foreign = json!({"type": "response_item", "payload": {"type": "message"}});
+        sup.workspace
+            .append_session_records(AGENT, "codex", "transcript", None, &[("ln:9", &foreign)])
+            .unwrap();
+        say(&sup, AGENT, "t3", Some("t2-a")).await;
+
+        assert_eq!(
+            handoff(&sup, AGENT, "t3", Some("User: t1")),
+            Handoff::Summarize("User: t1".into())
+        );
+    }
+
+    /// Only the main transcript is copied: a sub-agent's records, ingested
+    /// from files of their own, and records compiled from the live stream
+    /// aren't lines of it.
+    #[tokio::test]
+    async fn only_the_main_transcript_is_copied() {
+        let td = tempfile::tempdir().unwrap();
+        let (sup, _) = talked(td.path()).await;
+        let sub = json!({"type": "assistant", "uuid": "s1", "isSidechain": true,
+                         "parent_tool_use_id": "toolu_1"});
+        let live = json!({"type": "usage", "tokens": 12});
+        append(&sup, AGENT, &[("s1", &sub)]);
+        sup.workspace
+            .append_session_records(AGENT, "claude", "live_compiled", None, &[("live-1", &live)])
+            .unwrap();
+        say(&sup, AGENT, "t3", Some("t2-a")).await;
+
+        assert_eq!(
+            handoff(&sup, AGENT, "t3", None),
+            native(&sup, AGENT, &["t1-u", "t1-a", "t2-u", "t2-a"])
+        );
     }
 
     #[tokio::test]
-    async fn a_turn_inherited_from_another_workspace_summarizes_and_has_no_code() {
+    async fn a_turn_inherited_from_another_workspace_continues_natively_but_has_no_code() {
         let td = tempfile::tempdir().unwrap();
         let (sup, _) = talked(td.path()).await;
         let fork = committed_repo(td.path(), "fuji").await;
@@ -496,28 +548,28 @@ mod tests {
             .resolve_anchor(AGENT, Anchor::Through("t1"))
             .unwrap();
         agent(&sup, "fuji", "claude", &fork, Some(lineage));
-        say(&sup, "fuji", "f1", None).await;
+        say(&sup, "fuji", "f1", Some("t1-a")).await;
 
-        // t1 ran in `denali`: `fuji`'s agent can't resume that session, nor
-        // can its checkouts restore that code.
+        // The history is copied from what Fletch stored, wherever it ran.
         assert_eq!(
-            handoff(&sup, "fuji", "t1", Some("User: t1")),
-            Handoff::Summarize("User: t1".into())
+            handoff(&sup, "fuji", "f1", None),
+            native(&sup, "fuji", &["t1-u", "t1-a"])
         );
+        // But t1's code is in `denali`'s checkouts.
         let err = sup
             .preview_rewind_code("fuji", "t1")
             .await
             .unwrap_err()
             .to_string();
         assert!(err.contains("another workspace"), "{err}");
-        // Its own turn has both.
-        assert_eq!(handoff(&sup, "fuji", "f1", None), Handoff::Carry(None));
         assert!(sup.preview_rewind_code("fuji", "f1").await.is_ok());
     }
 
-    /// `denali` after t3, rewound to before t3, its first session left
-    /// behind as an ancestor.
-    fn rewound_before_t3(sup: &Supervisor) {
+    #[tokio::test]
+    async fn a_session_the_workspace_rewound_away_from_is_still_in_its_history() {
+        let td = tempfile::tempdir().unwrap();
+        let (sup, _) = talked(td.path()).await;
+        say(&sup, AGENT, "t3", Some("t2-a")).await;
         let before_t3 = sup
             .workspace
             .resolve_anchor(AGENT, Anchor::Before("t3"))
@@ -525,35 +577,13 @@ mod tests {
         sup.workspace
             .start_session(AGENT, &before_t3, None)
             .unwrap();
-    }
+        say(&sup, AGENT, "n1", Some("t2-a")).await;
 
-    #[tokio::test]
-    async fn a_session_the_workspace_rewound_away_from_is_still_its_own() {
-        let td = tempfile::tempdir().unwrap();
-        let (sup, _) = talked(td.path()).await;
-        say(&sup, AGENT, "t3", Some("t2-a")).await;
-        let first = provider_session(&sup, AGENT);
-        rewound_before_t3(&sup);
-        say(&sup, AGENT, "n1", None).await;
-
-        assert_eq!(handoff(&sup, AGENT, "t2", None), branch_at(first, "t1-a"));
-        assert!(sup.preview_rewind_code(AGENT, "t2").await.is_ok());
-    }
-
-    #[tokio::test]
-    async fn a_compaction_a_rewind_left_behind_still_counts() {
-        let td = tempfile::tempdir().unwrap();
-        let (sup, _) = talked(td.path()).await;
-        say(&sup, AGENT, "t3", Some("t2-a")).await;
-        compaction(&sup, AGENT);
-        rewound_before_t3(&sup);
-
-        // The history no longer shows the compaction, but a resume of the
-        // first session would still load only what follows it.
         assert_eq!(
-            handoff(&sup, AGENT, "t2", Some("User: t1")),
-            Handoff::Summarize("User: t1".into())
+            handoff(&sup, AGENT, "n1", None),
+            native(&sup, AGENT, &["t1-u", "t1-a", "t2-u", "t2-a"])
         );
+        assert!(sup.preview_rewind_code(AGENT, "t2").await.is_ok());
     }
 
     // ── The steps ─────────────────────────────────────────────────────────
@@ -573,28 +603,55 @@ mod tests {
             .collect()
     }
 
+    /// `denali`'s current session's transcript file, where claude looks for
+    /// it from the checkout: the container's per-agent projects dir.
+    fn transcript_file(sup: &Supervisor, td: &Path) -> PathBuf {
+        let record = sup.workspace.agent(AGENT).unwrap();
+        let checkout = td.join(AGENT);
+        td.join(crate::transcripts::DOCKER_CLAUDE_PROJECTS_DIRNAME)
+            .join(crate::transcripts::claude_project_dirname(&checkout).unwrap())
+            .join(format!("{}.jsonl", record.session_id.unwrap()))
+    }
+
+    fn append_lines(path: &Path, lines: &[Value]) {
+        use std::io::Write;
+        let mut file = std::fs::OpenOptions::new().append(true).open(path).unwrap();
+        for line in lines {
+            writeln!(file, "{line}").unwrap();
+        }
+    }
+
+    /// An `Exact` rewind past a compaction, step by step: the history is
+    /// written as the new session's transcript, which the session starts as;
+    /// what the CLI appends to it is the session's own, and nothing it copied
+    /// is stored twice.
     #[tokio::test]
-    async fn an_exact_rewind_starts_its_session_as_a_branch_and_briefs_nothing() {
+    async fn an_exact_rewind_starts_its_session_as_the_written_history() {
         let td = tempfile::tempdir().unwrap();
         let (sup, _) = talked(td.path()).await;
+        append(&sup, AGENT, &[("c1", &compaction())]);
+        say(&sup, AGENT, "t3", Some("c1")).await;
         let (ctx, sink, _dir) = test_ctx();
         let record = sup.workspace.agent(AGENT).unwrap();
-        let ConversationPlan { lineage, handoff } = plan(&sup, AGENT, "t2", None);
-        let Handoff::Branch(point) = &handoff else {
+        let ConversationPlan { lineage, handoff } = plan(&sup, AGENT, "t3", None);
+        let Handoff::Native { history, .. } = &handoff else {
             panic!("{handoff:?}")
         };
+        let session = uuid::Uuid::new_v4().to_string();
 
-        sup.start_rewound_session(&ctx, &record, &lineage, Some(point))
+        let native = sup
+            .write_native_transcript(&record, &session, history)
+            .unwrap()
+            .unwrap();
+        sup.start_rewound_session(&ctx, &record, &lineage, Some(&native))
             .await
             .unwrap();
 
         let rewound = sup.workspace.agent(AGENT).unwrap();
         assert_eq!(rewound.lineage, Some(lineage));
-        assert_ne!(rewound.session_id, record.session_id);
-        assert_eq!(
-            sup.workspace.session_branch_point(AGENT).unwrap().as_ref(),
-            Some(point)
-        );
+        assert_eq!(rewound.session_id.as_deref(), Some(session.as_str()));
+        assert_eq!(native.prefix, 5);
+        assert_eq!(sup.workspace.session_transcript_prefix(AGENT).unwrap(), 5);
         assert_eq!(sup.status_of(AGENT), Some(AgentStatus::Spawning));
         assert_eq!(sup.brief(&ctx, &record, handoff).await, None);
         assert_eq!(
@@ -604,6 +661,82 @@ mod tests {
                 ("workspace:changed".to_string(), Value::Null),
             ]
         );
+        // The file claude resumes: the history, with the new session's id.
+        let file = transcript_file(&sup, td.path());
+        let written: Vec<Value> = std::fs::read_to_string(&file)
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert_eq!(
+            written
+                .iter()
+                .map(|l| l["uuid"].clone())
+                .collect::<Vec<_>>(),
+            ["t1-u", "t1-a", "t2-u", "t2-a", "c1"]
+        );
+        assert!(written.iter().all(|l| l["sessionId"] == session.as_str()));
+
+        // Claude resumes it and answers a new prompt: only that is stored.
+        append_lines(&file, &[prompt("n1", Some("c1")), reply("n1")]);
+        sup.workspace
+            .insert_user_turn(AGENT, "n1", "n1", &[])
+            .unwrap();
+        sup.sync_session(AGENT);
+        let own: Vec<String> = sup
+            .workspace
+            .read_session_records(AGENT)
+            .unwrap()
+            .into_iter()
+            .map(|r| r.native_id)
+            .collect();
+        assert_eq!(own, ["n1-u", "n1-a"]);
+        let history: Vec<(String, bool)> = sup
+            .workspace
+            .read_history_records(AGENT)
+            .unwrap()
+            .into_iter()
+            .map(|r| (r.native_id, r.inherited))
+            .collect();
+        assert_eq!(
+            history,
+            [
+                ("t1-u".to_string(), true),
+                ("t1-a".to_string(), true),
+                ("t2-u".to_string(), true),
+                ("t2-a".to_string(), true),
+                ("c1".to_string(), true),
+                ("n1-u".to_string(), false),
+                ("n1-a".to_string(), false),
+            ]
+        );
+        let turns = sup.workspace.read_history_turns(AGENT).unwrap();
+        assert_eq!(turns.last().unwrap().native_id.as_deref(), Some("n1-u"));
+    }
+
+    /// A rewind whose history can't be written changes nothing.
+    #[tokio::test]
+    async fn a_history_that_cant_be_written_leaves_the_conversation_as_it_was() {
+        let td = tempfile::tempdir().unwrap();
+        let (sup, _) = talked(td.path()).await;
+        let (ctx, sink, _dir) = test_ctx();
+        let record = sup.workspace.agent(AGENT).unwrap();
+        // Something already sits where the projects dir goes.
+        std::fs::write(
+            td.path()
+                .join(crate::transcripts::DOCKER_CLAUDE_PROJECTS_DIRNAME),
+            "",
+        )
+        .unwrap();
+
+        let plan = plan(&sup, AGENT, "t2", None);
+        assert!(sup.rewind_conversation(&ctx, &record, plan).await.is_err());
+
+        assert_eq!(
+            sup.workspace.agent(AGENT).unwrap().session_id,
+            record.session_id
+        );
+        assert!(sink.events().is_empty());
     }
 
     #[tokio::test]
@@ -631,37 +764,43 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn nothing_changes_while_a_turn_runs_or_outside_the_chat_view() {
+    async fn nothing_changes_while_a_turn_runs() {
         let td = tempfile::tempdir().unwrap();
         let (sup, checkout) = talked(td.path()).await;
         let (ctx, sink, _dir) = test_ctx();
         let session = sup.workspace.agent(AGENT).unwrap().session_id;
-        let refused = |err: Error, why: &str| {
-            let err = err.to_string();
-            assert!(err.contains(why), "{err}");
-        };
 
         for busy in [AgentStatus::Running, AgentStatus::Spawning] {
             sup.statuses.lock().insert(AGENT.into(), busy);
             let err = sup
                 .rewind(&ctx, AGENT, "t2", RewindScope::Both, None)
                 .await
-                .unwrap_err();
-            refused(err, "Stop the agent");
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("Stop the agent"), "{err}");
         }
-        sup.statuses.lock().remove(AGENT);
-        sup.workspace
-            .update_agent_view(AGENT, AgentView::Native)
-            .unwrap();
-        let err = sup
-            .rewind(&ctx, AGENT, "t2", RewindScope::Code, None)
-            .await
-            .unwrap_err();
-        refused(err, "chat view");
 
         assert_eq!(code(&checkout), "after t2");
         assert_eq!(sup.workspace.agent(AGENT).unwrap().session_id, session);
         assert!(sink.events().is_empty());
+    }
+
+    /// The native view is no obstacle: what it resumes is a transcript like
+    /// any other.
+    #[tokio::test]
+    async fn the_native_view_rewinds_too() {
+        let td = tempfile::tempdir().unwrap();
+        let (sup, checkout) = talked(td.path()).await;
+        let (ctx, _sink, _dir) = test_ctx();
+        sup.workspace
+            .update_agent_view(AGENT, crate::workspace::AgentView::Native)
+            .unwrap();
+
+        sup.rewind(&ctx, AGENT, "t2", RewindScope::Code, None)
+            .await
+            .unwrap();
+
+        assert_eq!(code(&checkout), "after t1");
     }
 
     #[tokio::test]

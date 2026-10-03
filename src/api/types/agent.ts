@@ -11,10 +11,12 @@ export type AgentView = "custom" | "native";
  *  Mirrors the backend `ForkCode`. */
 export type ForkCode = "clean" | "current" | "at_message";
 
-/** What a forked session knows of the parent conversation up to the fork's
- *  anchor: nothing, or a summary (and the chat shows the history it covers).
- *  Mirrors the backend `ForkContext`. */
-export type ForkContext = "none" | "summary";
+/** How a forked session's agent knows the parent conversation up to the
+ *  fork's anchor: `full` — it resumes the whole conversation natively, as its
+ *  own transcript (providers with a transcript writer only); `summary` — it is
+ *  told a summary of it. Either way the chat shows that history. Mirrors the
+ *  backend `ForkContext`. */
+export type ForkContext = "full" | "summary";
 
 /** What a rewind to just before a message puts back. Mirrors the backend
  *  `RewindScope`. */

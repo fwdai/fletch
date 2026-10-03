@@ -8,8 +8,8 @@ use std::time::Duration;
 
 use crate::activity::{Activity, ClaudeNativeActivity, ManagedActivity};
 use crate::agent::{
-    capabilities, claude_session_has_messages, per_turn_descriptor, Agent, BranchPoint,
-    PerTurnSpec, SessionStart, SpawnSpec,
+    capabilities, claude_session_has_messages, per_turn_descriptor, Agent, PerTurnSpec,
+    SessionStart, SpawnSpec,
 };
 use crate::error::{Error, Result};
 use crate::git;
@@ -310,39 +310,42 @@ fn build_activity(record: &AgentRecord, start: &SessionStart) -> Box<dyn Activit
     activity
 }
 
-/// The session a launch attaches to. An unlanded branch (see
-/// `Supervisor::unlanded_branch`) wins over what the caller asked for and over
-/// the not-started rule below: until it lands, the agent's own session
-/// doesn't exist.
+/// The session a launch attaches to, read from the session itself: resumed
+/// once it has a conversation to resume, fresh (same id) until then. Claude's
+/// `--resume` of a session with no message would fail, and its `--session-id`
+/// of one that has a transcript is refused ("already in use"), so the
+/// transcript decides, never the caller: a session started in place (a
+/// rewind) has nothing of its own until its first turn lands, however long
+/// the workspace has run, and a session whose transcript Fletch wrote for it
+/// (`Supervisor::materialize`) has its conversation from the first launch.
 ///
-/// A session that hasn't `started` (see [`session_started`]) has nothing to
-/// `--resume`, which would 404. So a resume is treated as fresh — same UUID,
-/// no replay attempt — and the eventual first message creates the session.
-/// Once that's happened, switch / resume can safely `--resume`.
-fn resolve_start(
-    requested: SessionStart,
-    branch: Option<BranchPoint>,
-    started: bool,
-) -> SessionStart {
-    match (branch, requested) {
-        (Some(point), _) => SessionStart::Branch(point),
-        (None, SessionStart::Resume) if !started => SessionStart::Fresh,
-        (None, requested) => requested,
-    }
-}
-
-/// Whether `record`'s current session has a conversation to resume. Claude
-/// writes a session's transcript with its first message, so that is what is
-/// asked, of this session: one started in place (a rewind) has nothing of its
-/// own until its first turn lands, however long the workspace has run. A
-/// per-turn agent resumes nothing at launch, so for it a first prompt will do.
-fn session_started(record: &AgentRecord, cwd: &Path) -> bool {
-    match record.session_id.as_deref() {
+/// A per-turn agent resumes nothing at launch (each turn resumes its session
+/// by id), so for it a first prompt will do.
+fn session_start(record: &AgentRecord, cwd: &Path) -> SessionStart {
+    let started = match record.session_id.as_deref() {
         Some(own) if !is_per_turn_provider(&record.provider) => {
             claude_session_has_messages(own, cwd)
         }
         _ => !record.task.trim().is_empty(),
+    };
+    if started {
+        SessionStart::Resume
+    } else {
+        SessionStart::Fresh
     }
+}
+
+/// How a new session's agent learns the conversation it continues (its
+/// `lineage`), made ready while the spawn provisions, before the first launch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SpawnHandoff {
+    /// Natively: that history is written as the session's own transcript
+    /// (`Supervisor::materialize`) for its CLI to resume, and the agent is
+    /// told `context`, what the session it continues was told.
+    Native { context: Option<String> },
+    /// From a summary of this client-rendered transcript of it, written in the
+    /// Summarizing stage (`crate::handoff`).
+    Summary(String),
 }
 
 /// Everything a caller supplies to spawn a fresh agent. Bundled so the (single)
@@ -362,11 +365,9 @@ pub struct SpawnRequest {
     pub model: Option<String>,
     /// Custom agent's standing brief, re-injected on every spawn/resume.
     pub instructions: Option<String>,
-    /// The conversation the new session continues (a fork's parent, up to its
-    /// anchor), rendered as text. The Summarizing stage condenses it into the
-    /// session's handoff context before the agent starts (`crate::handoff`).
-    /// `None` carries nothing.
-    pub handoff_transcript: Option<String>,
+    /// How the agent learns the conversation the new session continues (a
+    /// fork's parent, up to its anchor). `None` tells it nothing.
+    pub handoff: Option<SpawnHandoff>,
     /// The history the new session continues (a fork's parent up to its
     /// anchor), written with the session row. `None` starts it empty.
     pub lineage: Option<crate::workspace::SessionLineage>,
@@ -435,7 +436,7 @@ impl Supervisor {
             effort,
             model,
             instructions,
-            handoff_transcript,
+            handoff,
             lineage,
             custom_agent_id,
             skills,
@@ -572,6 +573,11 @@ impl Supervisor {
         record.instructions = instructions;
         // The history the session continues; inserted with the session row.
         record.lineage = lineage;
+        // A native continuation is told what the session it continues was
+        // told; a summary is written while the spawn provisions.
+        if let Some(SpawnHandoff::Native { context }) = &handoff {
+            record.handoff_context = context.clone();
+        }
         record.custom_agent_id = custom_agent_id;
         // Skill/MCP snapshots, persisted like the brief so every process spawn
         // (fresh, view-switch, resume) re-materializes the same profile.
@@ -629,9 +635,9 @@ impl Supervisor {
         emit_workspace_changed(ctx.sink.as_ref());
         // A spawn that summarizes may spend the summarizer's whole budget on
         // it, on top of everything else a spawn does.
-        let watchdog = match handoff_transcript {
-            Some(_) => SPAWN_TIMEOUT + crate::handoff::TIMEOUT,
-            None => SPAWN_TIMEOUT,
+        let watchdog = match handoff {
+            Some(SpawnHandoff::Summary(_)) => SPAWN_TIMEOUT + crate::handoff::TIMEOUT,
+            _ => SPAWN_TIMEOUT,
         };
         arm_spawn_watchdog(self.clone(), ctx.clone(), agent_id.clone(), watchdog);
 
@@ -841,26 +847,44 @@ impl Supervisor {
                 }
             }
 
-            // The conversation the session continues, condensed into what its
-            // agent is told — in place before the first launch reads it. A
-            // summary that can't be made falls back to the transcript's tail
-            // (`handoff::context`), so only failing to store it fails the spawn.
-            if let Some(transcript) = &handoff_transcript {
-                if !progress(SpawnStage::Summarizing, None) {
-                    discard_if_still_dead(&sup, &id_for_task, &parent_dir).await;
-                    return;
+            // The conversation the session continues, in place before the first
+            // launch reads it: written as the session's own transcript, once
+            // the checkouts it is found from exist, or condensed into what its
+            // agent is told. A copy that fails fails the spawn, since the user
+            // asked for that conversation; a summary that can't be made falls
+            // back to the transcript's tail (`handoff::context`), so only
+            // failing to store it does.
+            match &handoff {
+                Some(SpawnHandoff::Native { .. }) => {
+                    if let Err(e) = sup.materialize(&id_for_task) {
+                        discard_failed_spawn(owned_checkout.as_deref(), &parent_dir).await;
+                        fail_spawn(
+                            &sup,
+                            &ctx_for_task,
+                            &id_for_task,
+                            format!("Couldn't carry the conversation over: {e}"),
+                        );
+                        return;
+                    }
                 }
-                let context = crate::handoff::context(
-                    &provider_for_task,
-                    model_for_task.as_deref(),
-                    transcript,
-                )
-                .await;
-                if let Err(e) = sup.workspace.set_handoff_context(&id_for_task, &context) {
-                    discard_failed_spawn(owned_checkout.as_deref(), &parent_dir).await;
-                    fail_spawn(&sup, &ctx_for_task, &id_for_task, e.to_string());
-                    return;
+                Some(SpawnHandoff::Summary(transcript)) => {
+                    if !progress(SpawnStage::Summarizing, None) {
+                        discard_if_still_dead(&sup, &id_for_task, &parent_dir).await;
+                        return;
+                    }
+                    let context = crate::handoff::context(
+                        &provider_for_task,
+                        model_for_task.as_deref(),
+                        transcript,
+                    )
+                    .await;
+                    if let Err(e) = sup.workspace.set_handoff_context(&id_for_task, &context) {
+                        discard_failed_spawn(owned_checkout.as_deref(), &parent_dir).await;
+                        fail_spawn(&sup, &ctx_for_task, &id_for_task, e.to_string());
+                        return;
+                    }
                 }
+                None => {}
             }
 
             if !progress(SpawnStage::Starting, None) {
@@ -869,10 +893,7 @@ impl Supervisor {
             }
             tokio::time::sleep(Duration::from_millis(350)).await;
 
-            if let Err(e) = sup
-                .start_process(&ctx_for_task, &id_for_task, SessionStart::Fresh)
-                .await
-            {
+            if let Err(e) = sup.start_process(&ctx_for_task, &id_for_task).await {
                 discard_failed_spawn(owned_checkout.as_deref(), &parent_dir).await;
                 fail_spawn(&sup, &ctx_for_task, &id_for_task, e.to_string());
             }
@@ -990,33 +1011,12 @@ impl Supervisor {
         Ok(repo)
     }
 
-    /// The branch `record`'s launch must start, if its session has one that
-    /// hasn't landed (rewind's `Exact` handoff, written with the session by
-    /// `Supervisor::start_session`). Claude writes the new session's
-    /// transcript only with its first message, so until then every launch
-    /// (view switch, respawn, resume, restore, after a restart) branches
-    /// again; once the transcript holds a message the agent resumes its own
-    /// session. Derived, never cleared: a later session is a new row.
-    fn unlanded_branch(&self, record: &AgentRecord) -> Result<Option<BranchPoint>> {
-        let (Some(point), Some(own)) = (
-            self.workspace.session_branch_point(&record.id)?,
-            record.session_id.as_deref(),
-        ) else {
-            return Ok(None);
-        };
-        let cwd = record
-            .repos
-            .first()
-            .ok_or_else(|| Error::Other("agent has no tracked repos".into()))?
-            .checkout_path(&record.id)?;
-        Ok((!claude_session_has_messages(own, &cwd)).then_some(point))
-    }
-
+    /// Launch `agent_id`'s current session: fresh or resumed, as the session
+    /// itself says (`session_start`).
     pub(super) async fn start_process(
         self: &Arc<Self>,
         ctx: &Arc<EngineCtx>,
         agent_id: &str,
-        start: SessionStart,
     ) -> Result<()> {
         let record = self.workspace.agent(agent_id)?;
         let per_turn = is_per_turn_provider(&record.provider);
@@ -1111,11 +1111,7 @@ impl Supervisor {
             (None, false) => Arc::new(git_dispatcher),
         };
 
-        let start = resolve_start(
-            start,
-            self.unlanded_branch(&record)?,
-            session_started(&record, &cwd),
-        );
+        let start = session_start(&record, &cwd);
 
         let agent_id_str = agent_id.to_string();
 
@@ -1487,8 +1483,7 @@ impl Supervisor {
         self.set_status(&ctx, agent_id, AgentStatus::Spawning, None);
         arm_spawn_timeout(self.clone(), ctx.clone(), agent_id.to_string());
 
-        self.start_process(&ctx, agent_id, SessionStart::Resume)
-            .await?;
+        self.start_process(&ctx, agent_id).await?;
         Ok(())
     }
 
@@ -1558,23 +1553,6 @@ impl Supervisor {
             ));
         }
 
-        // Claude's TUI can't open a branch cut at a message (see
-        // `Agent::spawn_pty`), so a rewound conversation stays in the custom
-        // view until its first turn lands it as a session of its own.
-        if new_view == AgentView::Native
-            && matches!(
-                self.unlanded_branch(&record)?,
-                Some(BranchPoint {
-                    at_message: Some(_),
-                    ..
-                })
-            )
-        {
-            return Err(Error::Other(
-                "Switch to the native view after the rewound conversation's first turn".into(),
-            ));
-        }
-
         let taken = self.agents.lock().remove(agent_id);
         if let Some(agent) = taken {
             let _ = agent.shutdown();
@@ -1589,10 +1567,7 @@ impl Supervisor {
 
         tokio::time::sleep(Duration::from_millis(150)).await;
 
-        if let Err(e) = self
-            .start_process(&ctx, agent_id, SessionStart::Resume)
-            .await
-        {
+        if let Err(e) = self.start_process(&ctx, agent_id).await {
             let err = e.to_string();
             self.set_status(&ctx, agent_id, AgentStatus::Error, Some(err));
             return Err(e);
@@ -1762,10 +1737,7 @@ impl Supervisor {
         // (mirrors `switch_view`).
         tokio::time::sleep(Duration::from_millis(150)).await;
 
-        if let Err(e) = self
-            .start_process(ctx, agent_id, SessionStart::Resume)
-            .await
-        {
+        if let Err(e) = self.start_process(ctx, agent_id).await {
             let err = e.to_string();
             tracing::warn!(agent_id, error = %err, "session-preserving respawn failed");
             self.set_status(ctx, agent_id, AgentStatus::Error, Some(err));
@@ -2178,6 +2150,7 @@ fn apply_exit_if_current(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::workspace::NativeTranscript;
 
     #[test]
     fn docker_supports_wired_providers_but_refuses_the_rest() {
@@ -2252,16 +2225,9 @@ mod tests {
         discard_if_still_dead(&sup, "failed", &root.join("never-made")).await;
     }
 
-    fn branch_point() -> BranchPoint {
-        BranchPoint {
-            from_session: "src".into(),
-            at_message: Some("m1".into()),
-        }
-    }
-
     /// A `claude` and a `codex` agent on one repo, both with the checkout
     /// adopted at `<td>/ws/repo`.
-    fn branch_fixture(td: &Path) -> Supervisor {
+    fn fixture(td: &Path) -> Supervisor {
         let sup = crate::supervisor::tests::test_supervisor();
         let repo = td.join("repo");
         std::fs::create_dir_all(repo.join(".git")).unwrap();
@@ -2307,153 +2273,75 @@ mod tests {
         slug.join(format!("{own}.jsonl"))
     }
 
-    /// Rewind `agent_id` to the end of its conversation in a new session,
-    /// branched at `point` when given.
-    fn rewind(sup: &Supervisor, agent_id: &str, point: Option<BranchPoint>) -> Result<String> {
+    /// Start a new session in `agent_id` continuing the end of its
+    /// conversation, as the provider session `native` was written as when
+    /// given.
+    fn restart(sup: &Supervisor, agent_id: &str, native: Option<&NativeTranscript>) {
         let lineage = sup
             .workspace
-            .resolve_anchor(agent_id, crate::workspace::Anchor::End)?;
-        sup.start_session(agent_id, &lineage, point.as_ref())
+            .resolve_anchor(agent_id, crate::workspace::Anchor::End)
+            .unwrap();
+        sup.start_session(agent_id, &lineage, native).unwrap();
     }
 
-    fn unlanded(sup: &Supervisor) -> Option<BranchPoint> {
-        sup.unlanded_branch(&sup.workspace.agent("claude").unwrap())
-            .unwrap()
+    fn start(sup: &Supervisor, td: &Path) -> SessionStart {
+        let cwd = td.join("ws").join("repo");
+        session_start(&sup.workspace.agent("claude").unwrap(), &cwd)
     }
 
-    #[test]
-    fn only_a_provider_that_can_branch_takes_a_branch_point() {
-        let td = tempfile::tempdir().unwrap();
-        let sup = branch_fixture(td.path());
-        let codex = sup.workspace.agent("codex").unwrap().session_id;
+    const MESSAGE: &str = "{\"type\":\"user\",\"uuid\":\"u1\"}\n";
 
-        rewind(&sup, "claude", Some(branch_point())).unwrap();
-        assert!(rewind(&sup, "codex", Some(branch_point())).is_err());
-        assert!(rewind(&sup, "nonesuch", Some(branch_point())).is_err());
-        assert_eq!(
-            sup.workspace.session_branch_point("claude").unwrap(),
-            Some(branch_point())
-        );
-        assert_eq!(sup.workspace.session_branch_point("codex").unwrap(), None);
-        assert_eq!(
-            sup.workspace.agent("codex").unwrap().session_id,
-            codex,
-            "a refused branch starts no session"
-        );
-    }
-
-    /// Until the branched session's first message lands there is nothing of
-    /// its own to resume, so every launch — after a restart too — branches
-    /// again. Once it lands the agent resumes, with nothing to clear.
-    #[test]
-    fn a_branch_holds_until_its_session_has_a_message() {
-        let td = tempfile::tempdir().unwrap();
-        let sup = branch_fixture(td.path());
-        assert_eq!(unlanded(&sup), None, "an ordinary session");
-
-        rewind(&sup, "claude", Some(branch_point())).unwrap();
-        let transcript = transcript_of(&sup, td.path());
-        assert_eq!(unlanded(&sup), Some(branch_point()), "no transcript yet");
-        let restarted = Supervisor::new(sup.workspace.clone());
-        assert_eq!(
-            unlanded(&restarted),
-            Some(branch_point()),
-            "after a restart"
-        );
-
-        std::fs::write(&transcript, "{\"type\":\"mode\",\"mode\":\"normal\"}\n").unwrap();
-        assert_eq!(
-            unlanded(&sup),
-            Some(branch_point()),
-            "metadata alone can't be resumed"
-        );
-
-        std::fs::write(
-            &transcript,
-            "{\"type\":\"mode\",\"mode\":\"normal\"}\n{\"type\":\"user\",\"uuid\":\"u1\"}\n",
-        )
-        .unwrap();
-        assert_eq!(unlanded(&sup), None, "landed");
-        assert_eq!(
-            sup.workspace.session_branch_point("claude").unwrap(),
-            Some(branch_point()),
-            "the row keeps where the session came from"
-        );
-    }
-
-    #[tokio::test]
-    async fn the_native_view_waits_for_a_rewound_branch_to_land() {
-        let (ctx, _sink, _dir) = crate::host::ctx::test_ctx();
-        let td = tempfile::tempdir().unwrap();
-        let sup = Arc::new(branch_fixture(td.path()));
-        rewind(&sup, "claude", Some(branch_point())).unwrap();
-
-        let err = sup
-            .clone()
-            .switch_view(ctx, "claude", AgentView::Native)
-            .await
-            .expect_err("a branch cut at a message can't open in the TUI");
-        assert!(err.to_string().contains("first turn"), "{err}");
-        assert_eq!(
-            sup.workspace.agent("claude").unwrap().view,
-            AgentView::Custom
-        );
-    }
-
-    /// Whether a session has started is asked of the session, not the
-    /// workspace: one started in place has nothing to resume until its own
+    /// Whether a launch resumes is asked of the session, not the workspace or
+    /// the caller: one started in place has nothing to resume until its own
     /// first message lands, though the workspace has long had a task.
     #[test]
-    fn a_session_started_in_place_launches_fresh_until_its_first_message() {
+    fn a_session_launches_fresh_until_its_transcript_holds_a_message() {
         let td = tempfile::tempdir().unwrap();
-        let sup = branch_fixture(td.path());
-        let cwd = td.path().join("ws").join("repo");
-        let started =
-            |sup: &Supervisor| session_started(&sup.workspace.agent("claude").unwrap(), &cwd);
-        let message = "{\"type\":\"user\",\"uuid\":\"u1\"}\n";
-        std::fs::write(transcript_of(&sup, td.path()), message).unwrap();
-        assert!(started(&sup));
+        let sup = fixture(td.path());
+        std::fs::write(transcript_of(&sup, td.path()), MESSAGE).unwrap();
+        assert_eq!(start(&sup, td.path()), SessionStart::Resume);
 
-        rewind(&sup, "claude", None).unwrap();
-        assert!(!started(&sup), "the new session has no transcript yet");
+        restart(&sup, "claude", None);
         assert_eq!(
-            resolve_start(SessionStart::Resume, None, started(&sup)),
-            SessionStart::Fresh
+            start(&sup, td.path()),
+            SessionStart::Fresh,
+            "the new session has no transcript yet"
         );
-
-        std::fs::write(transcript_of(&sup, td.path()), message).unwrap();
-        assert!(started(&sup));
+        let transcript = transcript_of(&sup, td.path());
+        std::fs::write(&transcript, "{\"type\":\"mode\",\"mode\":\"normal\"}\n").unwrap();
+        assert_eq!(
+            start(&sup, td.path()),
+            SessionStart::Fresh,
+            "metadata alone can't be resumed"
+        );
+        std::fs::write(&transcript, MESSAGE).unwrap();
+        assert_eq!(start(&sup, td.path()), SessionStart::Resume);
     }
 
+    /// A session whose transcript Fletch wrote for it resumes from its very
+    /// first launch: that is how the CLI picks the conversation up.
     #[test]
-    fn a_branch_wins_over_every_other_start() {
-        let branch = SessionStart::Branch(branch_point());
-        for (requested, started) in [
-            (SessionStart::Resume, true),
-            // The not-started rule would otherwise make this fresh.
-            (SessionStart::Resume, false),
-            (SessionStart::Fresh, false),
-        ] {
-            assert_eq!(
-                resolve_start(requested, Some(branch_point()), started),
-                branch
-            );
-        }
-    }
+    fn a_session_with_a_written_transcript_resumes_from_its_first_launch() {
+        let td = tempfile::tempdir().unwrap();
+        let sup = fixture(td.path());
+        let native = NativeTranscript {
+            provider_session_id: uuid::Uuid::new_v4().to_string(),
+            prefix: 1,
+        };
+        restart(&sup, "claude", Some(&native));
+        std::fs::write(transcript_of(&sup, td.path()), MESSAGE).unwrap();
 
-    #[test]
-    fn without_a_branch_an_agent_resumes_once_it_has_messages() {
         assert_eq!(
-            resolve_start(SessionStart::Resume, None, true),
-            SessionStart::Resume
+            sup.workspace.agent("claude").unwrap().session_id,
+            Some(native.provider_session_id)
         );
+        assert_eq!(start(&sup, td.path()), SessionStart::Resume);
+        // A per-turn agent resumes by its session id on every turn instead.
+        let codex = sup.workspace.agent("codex").unwrap();
         assert_eq!(
-            resolve_start(SessionStart::Resume, None, false),
-            SessionStart::Fresh
-        );
-        assert_eq!(
-            resolve_start(SessionStart::Fresh, None, true),
-            SessionStart::Fresh
+            session_start(&codex, &td.path().join("ws").join("repo")),
+            SessionStart::Resume,
+            "it has had a first prompt"
         );
     }
 }

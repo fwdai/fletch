@@ -15,7 +15,7 @@ use super::providers::antigravity::{
 use super::providers::claude::{claude_one_shot_args, CLAUDE_TRANSCRIPT};
 use super::providers::codex::{
     codex_build_args, codex_locate, codex_one_shot_args, codex_pty_args, codex_read,
-    codex_session_id, CODEX_SUBAGENTS,
+    codex_session_id, codex_write, CODEX_SUBAGENTS,
 };
 use super::providers::cursor::{
     cursor_build_args, cursor_locate, cursor_one_shot_args, cursor_pty_args, cursor_read,
@@ -25,7 +25,7 @@ use super::providers::opencode::{
     opencode_build_args, opencode_locate, opencode_pty_args, opencode_read, opencode_session_id,
 };
 use super::providers::pi::{
-    pi_build_args, pi_locate, pi_one_shot_args, pi_pty_args, pi_read, pi_session_id,
+    pi_build_args, pi_locate, pi_one_shot_args, pi_pty_args, pi_read, pi_session_id, pi_write,
 };
 use super::transcript::{JsonlTail, TranscriptReader};
 use super::{McpDeliveryBuilder, OneShot, PtyArgsBuilder, TurnArgs};
@@ -102,31 +102,24 @@ pub struct AgentCapabilities {
     /// and every per-turn agent (codex/cursor/opencode/pi); a per-turn agent
     /// can only switch *into* native once it has a session id to resume.
     pub native_view: bool,
-    /// Can start a session as a native, lossless branch of another of its
-    /// sessions, cut at a message (`SessionStart::Branch`) — rewind's `Exact`
-    /// handoff. Claude only, and in the custom view only: claude honors
-    /// `--resume-session-at` in print mode alone, so its TUI can't open such a
-    /// branch. No per-turn arg builder can branch.
-    pub branch_at_message: bool,
+    /// Fletch can write this provider's session file (`TranscriptReader::write`),
+    /// so a new session can continue a conversation natively: the CLI resumes
+    /// the history written as its own transcript (a fork's full conversation,
+    /// rewind's `Exact` handoff). Without it, only a summary carries over.
+    pub transcript_writer: bool,
 }
 
 /// Capabilities for a provider. Per-turn agents read theirs from the
 /// descriptor table; claude (the lone persistent-runner agent) is the
 /// fully-wired baseline. Unknown providers get nothing.
 pub fn capabilities(provider: &str) -> AgentCapabilities {
-    match per_turn_descriptor(provider) {
-        Some(d) => AgentCapabilities {
-            native_view: d.native_view,
-            branch_at_message: false,
-        },
-        None if provider == "claude" => AgentCapabilities {
-            native_view: true,
-            branch_at_message: true,
-        },
-        None => AgentCapabilities {
-            native_view: false,
-            branch_at_message: false,
-        },
+    let native_view = match per_turn_descriptor(provider) {
+        Some(d) => d.native_view,
+        None => provider == "claude",
+    };
+    AgentCapabilities {
+        native_view,
+        transcript_writer: transcript_reader(provider).is_some_and(|r| r.write.is_some()),
     }
 }
 
@@ -161,6 +154,7 @@ pub(crate) const PER_TURN_AGENTS: &[PerTurnDescriptor] = &[
             read: codex_read,
             tail: None, // multiple rollout files
             subagents: Some(CODEX_SUBAGENTS),
+            write: Some(codex_write),
         }),
         one_shot: Some(OneShot {
             args: codex_one_shot_args,
@@ -186,6 +180,9 @@ pub(crate) const PER_TURN_AGENTS: &[PerTurnDescriptor] = &[
             read: cursor_read,
             tail: Some(JsonlTail { id_field: None }), // single jsonl, positional ids
             subagents: Some(CURSOR_SUBAGENTS),
+            // cursor-agent keeps its conversations in private storage; the
+            // transcript Fletch reads is a projection of it.
+            write: None,
         }),
         one_shot: Some(OneShot {
             args: cursor_one_shot_args,
@@ -209,6 +206,10 @@ pub(crate) const PER_TURN_AGENTS: &[PerTurnDescriptor] = &[
             read: opencode_read,
             tail: None, // blob-store directory, not a single file
             subagents: None,
+            // Message and part ids are global keys (a part lives under its
+            // message's id), and a session needs a project-scoped info blob:
+            // a copy would re-key every record, not just name a new session.
+            write: None,
         }),
         // `opencode run` reads piped stdin, but has no flag to turn tools off
         // or make them read-only (per `opencode run --help`, 1.18).
@@ -234,6 +235,7 @@ pub(crate) const PER_TURN_AGENTS: &[PerTurnDescriptor] = &[
                 id_field: Some("id"),
             }), // single jsonl when one file
             subagents: None,
+            write: Some(pi_write),
         }),
         one_shot: Some(OneShot {
             args: pi_one_shot_args,
@@ -262,6 +264,8 @@ pub(crate) const PER_TURN_AGENTS: &[PerTurnDescriptor] = &[
             read: antigravity_read,
             tail: None, // per-turn agent; full read on exit is bounded
             subagents: None,
+            // agy's conversations live in its own private storage.
+            write: None,
         }),
         // agy takes the prompt only as `--print <prompt>` (argv) and has no
         // tool-less mode (per `agy --help`).
@@ -441,16 +445,18 @@ mod tests {
         }
     }
 
+    /// The providers whose session file Fletch writes: the set the UI mirrors
+    /// (`transcriptWriter` in src/data/providers.ts).
     #[test]
-    fn only_claude_branches_at_a_message() {
-        assert!(capabilities("claude").branch_at_message);
-        for d in PER_TURN_AGENTS {
-            assert!(
-                !capabilities(d.id).branch_at_message,
-                "{} claims a branch it can't launch",
-                d.id
-            );
-        }
-        assert!(!capabilities("nonesuch").branch_at_message);
+    fn claude_codex_and_pi_have_a_transcript_writer() {
+        let writers: Vec<&str> = ["claude"]
+            .into_iter()
+            .chain(PER_TURN_AGENTS.iter().map(|d| d.id))
+            .filter(|p| capabilities(p).transcript_writer)
+            .collect();
+        assert_eq!(writers, ["claude", "codex", "pi"]);
+        assert!(!capabilities("nonesuch").transcript_writer);
+        assert!(capabilities("claude").native_view);
+        assert!(!capabilities("nonesuch").native_view);
     }
 }
