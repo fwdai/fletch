@@ -2,6 +2,7 @@ import { useCallback, useEffect } from "react";
 import { Stack } from "./components/Stack";
 import { usePoll, useSystemTheme } from "./lib/hooks";
 import { AgentScreen } from "./screens/Agent";
+import { CodeScreen } from "./screens/Code";
 import { DiffScreen } from "./screens/Diff";
 import { FileScreen } from "./screens/File";
 import { HomeScreen } from "./screens/Home";
@@ -30,6 +31,8 @@ function Screen({ item }: { item: NavItem }) {
       return <ProjectScreen projectId={item.props.projectId} />;
     case "agent":
       return <AgentScreen agentId={item.props.agentId} />;
+    case "code":
+      return <CodeScreen agentId={item.props.agentId} />;
     case "file":
       return <FileScreen agentId={item.props.agentId} path={item.props.path} />;
     case "diff":

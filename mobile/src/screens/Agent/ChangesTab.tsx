@@ -1,11 +1,13 @@
 import type { AgentRecord } from "@desktop/api/types/agent";
 import { Icon } from "@desktop/components/Icon";
 import { PrPill } from "../../components/ui";
-import { baseOf, isAgentBusy, refLabel } from "../../lib/agents";
+import { refLabel } from "../../lib/agents";
 import { STATUS_LETTER } from "../../lib/diff";
 import { useStore } from "../../store";
-import { PrCard } from "./PrCard";
+import { GitActionFooter } from "./GitActionFooter";
 
+/** The working tree's diff: one row per changed file, each opening its diff,
+ *  and a way into the whole checkout. Branch and PR state live on the Git tab. */
 export function ChangesTab({
   agent,
   onDelegated,
@@ -18,58 +20,22 @@ export function ChangesTab({
   const git = useStore((s) => s.gitStates[agent.id]);
   const pr = useStore((s) => s.prStates[agent.id]);
   const push = useStore((s) => s.push);
-  const openSheet = useStore((s) => s.openSheet);
-  const delegateGit = useStore((s) => s.delegateGit);
   const files = git?.files ?? [];
-  // A trigger sent mid-turn folds into the running turn instead of running as
-  // its own (the desktop queues it until idle); v1 on the phone simply waits.
-  const busy = useStore((s) => isAgentBusy(s, agent));
-
-  // Mirrors the desktop's default. The commit-* playbooks start with a commit,
-  // so a clean tree (only unpushed commits) gets the plain push / open-pr
-  // playbook instead; with a PR already open, "open PR" degrades to push,
-  // since that's what updates it.
-  const action = pr
-    ? files.length
-      ? { name: "commit-push", label: `Commit & push to #${pr.number}` }
-      : { name: "push", label: `Push to #${pr.number}` }
-    : files.length
-      ? { name: "commit-pr", label: "Commit & open PR" }
-      : { name: "open-pr", label: "Open PR" };
-
-  const delegate = async () => {
-    await delegateGit(agent.id, action.name, { base: baseOf(agent) });
-    onDelegated?.();
-  };
 
   return (
     <>
       <div className="scroll">
-        <div className="ch-head">
-          {pr && <PrCard agentId={agent.id} pr={pr} />}
-          <div className="ch-sum">
-            <span className={`pill mono ${files.length ? "warn" : "ok"}`}>
-              {files.length ? "uncommitted" : "clean"}
-            </span>
-            <span className="pill mono">
-              <Icon name="branch" size={11} />
-              {refLabel(git)}
-            </span>
-            {git && git.unpushed > 0 && (
-              <span className="pill mono">
-                <Icon name="commit" size={11} />
-                {git.unpushed} unpushed
-              </span>
-            )}
-            {files.length > 0 && (
+        {files.length > 0 && (
+          <div className="ch-head">
+            <div className="ch-sum">
               <span className="big">
                 <span>{files.length} files</span>
                 <span className="add">+{git?.additions ?? 0}</span>
                 <span className="rem">−{git?.deletions ?? 0}</span>
               </span>
-            )}
+            </div>
           </div>
-        </div>
+        )}
         <div className="ch-list">
           {files.length > 0 ? (
             <div className="card">
@@ -113,28 +79,25 @@ export function ChangesTab({
               )}
             </div>
           )}
+          <div className="card">
+            <button
+              type="button"
+              className="row"
+              onClick={() => push("code", { agentId: agent.id })}
+            >
+              <span className="pm lg" style={{ background: "var(--bg-2)", color: "var(--fg-2)" }}>
+                <Icon name="folder" size={15} />
+              </span>
+              <div className="main">
+                <div className="lbl">Browse all files</div>
+                <div className="sub">The whole checkout, read-only</div>
+              </div>
+              <Icon name="chevR" size={16} className="chev" />
+            </button>
+          </div>
         </div>
       </div>
-      {(files.length > 0 || (git?.unpushed ?? 0) > 0) && (
-        <div className="ch-foot">
-          <button
-            type="button"
-            className="btn primary"
-            onClick={() => void delegate()}
-            disabled={busy}
-          >
-            <Icon name="pr" size={17} />
-            {busy ? "Agent is busy…" : `${action.label} with agent`}
-          </button>
-          <button
-            type="button"
-            className="alt"
-            onClick={() => openSheet("pr", { agentId: agent.id })}
-          >
-            Write the message yourself
-          </button>
-        </div>
-      )}
+      <GitActionFooter agent={agent} onDelegated={onDelegated} />
     </>
   );
 }
