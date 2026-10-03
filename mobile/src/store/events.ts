@@ -25,10 +25,12 @@ import type {
   TurnStartedEvent,
 } from "@desktop/api/types/session";
 import { mirrorSentTurn } from "@desktop/helpers/mirrorTurn";
+import { dischargeSending } from "@desktop/helpers/sending";
 import { getAdapter, type RawEvent } from "../adapters";
 import { ignore } from "../lib/ignore";
 import type { RemoteClient } from "../remote";
 import { dropTasks, foldTaskEvent } from "./backgroundTasks";
+import { patchChatIn } from "./chats";
 import { agentOf, type MobileState } from "./index";
 import { isReplayed } from "./liveTurn";
 import { applyLiveEvent } from "./transcript";
@@ -118,26 +120,15 @@ export function registerRemoteEvents(client: RemoteClient, set: Set, get: Get): 
   });
 
   on<AgentStatusEvent>("agent:status", (e) => {
-    // A planning chat's record is not in the snapshot, so it is patched in its
-    // own registry — this is what lets `waitForSpawn` and the status line work
-    // for one. A no-op for a sidebar agent.
-    get().patchChat(e.agent_id, { status: e.status, last_error: e.last_error ?? null });
     set((s) => {
+      // Read before either registry changes: the discharge rule below needs
+      // the status the agent is leaving.
+      const prevStatus = agentOf(s, e.agent_id)?.status;
       const ws = s.workspace;
       const turnStartedAt = { ...s.turnStartedAt };
       if (e.status === "idle" || e.status === "error" || e.status === "stopped") {
         delete turnStartedAt[e.agent_id];
       }
-      // This device's send is answered by the status it produced: `running`
-      // (it landed), `error` / `stopped` (it won't), or an `idle` the send did
-      // not account for. Not by the spawn the send itself triggered — a dead
-      // agent revives as `spawning`, then rests at `idle` before the held
-      // message becomes its first turn — so those two keep it. Same rule as
-      // the desktop's `onAgentStatus`.
-      const prevStatus = agentOf(s, e.agent_id)?.status;
-      const spawnResting = e.status === "idle" && prevStatus === "spawning";
-      const sending = { ...s.sending };
-      if (e.status !== "spawning" && !spawnResting) delete sending[e.agent_id];
       return {
         workspace: ws
           ? patchAgent(ws, e.agent_id, {
@@ -145,7 +136,17 @@ export function registerRemoteEvents(client: RemoteClient, set: Set, get: Get): 
               last_error: e.last_error ?? undefined,
             })
           : ws,
-        sending,
+        // A planning chat's record is not in the snapshot, so it is patched in
+        // its own registry — this is what lets `waitForSpawn` and the status
+        // line work for one. Same fold as the snapshot's, so nothing reads a
+        // half-patched store. A no-op for a sidebar agent.
+        chats: patchChatIn(s.chats, e.agent_id, {
+          status: e.status,
+          last_error: e.last_error ?? null,
+        }),
+        // This device's send is answered by the status it produced — the rule
+        // lives in helpers/sending, shared with the desktop.
+        sending: dischargeSending(s.sending, e.agent_id, prevStatus, e.status),
         turnStartedAt,
         // `idle` is not a clear: sub-agents outlive the turn. A stopped or
         // errored process takes its tasks with it.

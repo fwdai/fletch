@@ -7,6 +7,7 @@ import type { GhRepoSummary, GhStatus } from "@desktop/api/types/providers";
 import type { PublishApproval } from "@desktop/api/types/sandbox";
 import type { LiveTurn } from "@desktop/api/types/session";
 import { appActionMessage } from "@desktop/delegation";
+import { reconcileSending, whileSending } from "@desktop/helpers/sending";
 import { newestWins } from "@desktop/util/newestWins";
 import { type ApprovalEvent, replayApprovalEvents } from "@desktop/util/publishApprovals";
 import { create } from "zustand";
@@ -384,43 +385,6 @@ export const projectOf = (s: AgentSource, agentId: string) => {
   return s.workspace?.projects.find((p) => p.project_id === agent?.project_id);
 };
 
-/** Agents with a send still on the wire from this device. Their `sending` flag
- *  is younger than any snapshot the host can answer with, so
- *  `reconcileSending` has to leave it alone. */
-const inFlight = new Set<string>();
-
-/** Run a send with its agent marked in-flight, so a snapshot landing in the
- *  optimistic window can't clear the flag the send just set. */
-async function whileSending<T>(agentId: string, fn: () => Promise<T>): Promise<T> {
-  inFlight.add(agentId);
-  try {
-    return await fn();
-  } finally {
-    inFlight.delete(agentId);
-  }
-}
-
-/** Drop `sending` flags a fresh host snapshot contradicts.
- *
- *  The flag covers the gap between tapping send and the host's `running`
- *  status, and is otherwise discharged by a live `agent:status`. A
- *  backgrounded webview or a dropped socket misses those silently — which
- *  would strand the flag on `true` for the rest of the session, every surface
- *  reading "working" for an agent that finished. A snapshot saying the agent
- *  is at rest is the authority that the gap is over. */
-function reconcileSending(
-  sending: Record<string, boolean>,
-  ws: Workspace,
-): Record<string, boolean> {
-  let next = sending;
-  for (const a of ws.agents) {
-    if (!sending[a.id] || isBusy(a) || inFlight.has(a.id)) continue;
-    if (next === sending) next = { ...sending };
-    next[a.id] = false;
-  }
-  return next;
-}
-
 /** Wait for a freshly spawned agent to leave `spawning` before the first
  *  message is sent — the spawn flow in docs/remote-protocol.md. */
 function waitForSpawn(get: () => MobileState, agentId: string, timeoutMs = 30_000) {
@@ -558,14 +522,24 @@ export const useStore = create<MobileState>()((set, get) => ({
       const agentId = [...get().nav].reverse().find((n) => n.props.agentId)?.props.agentId;
       if (agentId) void get().loadAgent(agentId).catch(ignore);
     };
+    // Every project whose planning chats are loaded re-reads them: a status
+    // those records missed off-socket has no other way back.
+    const refreshChats = () => {
+      for (const projectId of Object.keys(get().chats)) {
+        void get().loadChats(projectId).catch(ignore);
+      }
+    };
     client.onSnapshot((snapshot) => {
       set({ hostInfo: snapshot.host, protocol: snapshot.protocol ?? null });
       const ws = snapshot.workspace;
       // The handshake's snapshot is as authoritative as `refreshWorkspace`'s
-      // read, so it reconciles the optimistic busy flags the same way — this is
-      // the path that clears them after a reconnect.
-      if (ws) set((s) => ({ workspace: ws, sending: reconcileSending(s.sending, ws) }));
+      // read, so it settles the `sending` bridge the same way (helpers/sending)
+      // — this is the path that clears a flag stranded by a reconnect.
+      if (ws) set((s) => ({ workspace: ws, sending: reconcileSending(s.sending, ws.agents) }));
       else void get().refreshWorkspace();
+      // Planning chats are absent from that snapshot; their records, and their
+      // flags, settle through their own list.
+      refreshChats();
       // Task events missed while the socket was down are gone for good — a
       // task held as running could never be seen ending — so the maps start
       // over on every handshake and refill from whatever the host emits next.
@@ -605,6 +579,7 @@ export const useStore = create<MobileState>()((set, get) => ({
       }
       void get().loadShortstats();
       refreshOpenAgent();
+      refreshChats();
     };
     if (typeof document !== "undefined") {
       document.addEventListener("visibilitychange", () => {
@@ -841,7 +816,9 @@ export const useStore = create<MobileState>()((set, get) => ({
   async refreshWorkspace() {
     try {
       const workspace = await api.getWorkspace();
-      if (workspace) set((s) => ({ workspace, sending: reconcileSending(s.sending, workspace) }));
+      if (workspace) {
+        set((s) => ({ workspace, sending: reconcileSending(s.sending, workspace.agents) }));
+      }
       return true;
     } catch {
       // Best effort; the next event or resync recovers.

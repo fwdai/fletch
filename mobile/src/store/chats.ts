@@ -7,6 +7,7 @@
 // bridges the two registries.
 
 import { type AgentRecord, ROADMAP_PM_PURPOSE } from "@desktop/api/types/agent";
+import { reconcileSending } from "@desktop/helpers/sending";
 import { PROJECT_MANAGER_NAME, PROJECT_MANAGER_PRESET } from "@desktop/starterPack/presets";
 import type { Api } from "../api";
 import { dropTasks } from "./backgroundTasks";
@@ -112,7 +113,13 @@ export function createChatsSlice(set: Set, get: Get, deps: ChatsDeps): ChatsSlic
       if (!get().hostSupports("list_project_chats")) return;
       try {
         const rows = await api.listProjectChats(projectId, ROADMAP_PM_PURPOSE);
-        set((s) => ({ chats: { ...s.chats, [projectId]: rows } }));
+        // A fresh read of these records settles their `sending` bridge the way
+        // a workspace snapshot settles a sidebar agent's (see helpers/sending):
+        // chats are absent from that snapshot, so this is their only authority.
+        set((s) => ({
+          chats: { ...s.chats, [projectId]: rows },
+          sending: reconcileSending(s.sending, rows),
+        }));
       } catch {
         // Advisory, like the other list reads: the section stays as it was and
         // the next mount or reconnect tries again.
@@ -209,19 +216,25 @@ export function createChatsSlice(set: Set, get: Get, deps: ChatsDeps): ChatsSlic
 
     patchChat(agentId, fields) {
       set((s) => {
-        const projectId = Object.keys(s.chats).find((pid) =>
-          s.chats[pid].some((c) => c.id === agentId),
-        );
-        if (!projectId) return {};
-        return {
-          chats: {
-            ...s.chats,
-            [projectId]: s.chats[projectId].map((c) =>
-              c.id === agentId ? { ...c, ...fields } : c,
-            ),
-          },
-        };
+        const chats = patchChatIn(s.chats, agentId, fields);
+        return chats === s.chats ? {} : { chats };
       });
     },
+  };
+}
+
+/** The chat registry with one record patched, or the same object when no
+ *  project holds that chat. Pure, so a fold that patches both registries at
+ *  once (the status handler) can read the record before either changes. */
+export function patchChatIn(
+  chats: ChatsSlice["chats"],
+  agentId: string,
+  fields: Partial<AgentRecord>,
+): ChatsSlice["chats"] {
+  const projectId = Object.keys(chats).find((pid) => chats[pid].some((c) => c.id === agentId));
+  if (!projectId) return chats;
+  return {
+    ...chats,
+    [projectId]: chats[projectId].map((c) => (c.id === agentId ? { ...c, ...fields } : c)),
   };
 }

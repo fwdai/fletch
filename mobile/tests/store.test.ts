@@ -545,7 +545,7 @@ describe("sending flag", () => {
     useStore.setState((s) => ({ sending: { ...s.sending, caspian: true } }));
     await state().refreshWorkspace();
     expect(agentOf(state(), "caspian")?.status).not.toBe("running");
-    expect(state().sending.caspian).toBe(false);
+    expect(state().sending.caspian).toBeUndefined();
   });
 
   it("leaves a send that is still in flight alone", async () => {
