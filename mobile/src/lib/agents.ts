@@ -21,6 +21,14 @@ export const isActive = (a: AgentRecord) =>
 
 export const isBusy = (a: AgentRecord) => a.status === "running" || a.status === "spawning";
 
+/** The one busy signal every surface renders from, as on the desktop: the
+ *  host's status — `running` while a turn is in flight, whoever started it,
+ *  `spawning` while the process it needs comes up — plus this device's own
+ *  send until the host answers it with a status (`sending`), so the UI reads
+ *  "working" from the tap rather than from the round trip. */
+export const isAgentBusy = (s: { sending: Record<string, boolean> }, a: AgentRecord) =>
+  isBusy(a) || !!s.sending[a.id];
+
 /** `repos[0]` is the workspace repo the agent was spawned in. */
 export const primaryRepo = (a: AgentRecord) => a.repos[0];
 

@@ -1,7 +1,7 @@
 import type { AgentRecord } from "@desktop/api/types/agent";
 import { Icon } from "@desktop/components/Icon";
 import { PrPill } from "../../components/ui";
-import { baseOf, isBusy, refLabel } from "../../lib/agents";
+import { baseOf, isAgentBusy, refLabel } from "../../lib/agents";
 import { STATUS_LETTER } from "../../lib/diff";
 import { useStore } from "../../store";
 import { PrCard } from "./PrCard";
@@ -20,11 +20,10 @@ export function ChangesTab({
   const push = useStore((s) => s.push);
   const openSheet = useStore((s) => s.openSheet);
   const delegateGit = useStore((s) => s.delegateGit);
-  const sending = useStore((s) => !!s.busy[agent.id]);
   const files = git?.files ?? [];
   // A trigger sent mid-turn folds into the running turn instead of running as
   // its own (the desktop queues it until idle); v1 on the phone simply waits.
-  const busy = sending || isBusy(agent);
+  const busy = useStore((s) => isAgentBusy(s, agent));
 
   // Mirrors the desktop's default. The commit-* playbooks start with a commit,
   // so a clean tree (only unpushed commits) gets the plain push / open-pr

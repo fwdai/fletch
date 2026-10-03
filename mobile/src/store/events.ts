@@ -91,10 +91,11 @@ export function foldAgentEvent(
     next = { ...next, ...foldTaskEvent(next, agentId, task) };
   }
   const { items, turnEnded } = applyLiveEvent(provider, next.logs[agentId] ?? [], raw);
+  // A turn can't end with prompts still held. The busy state itself is not
+  // touched here — the host's `agent:status` owns it.
   return {
     backgroundTasks: next.backgroundTasks,
     logs: { ...next.logs, [agentId]: items },
-    busy: turnEnded ? { ...next.busy, [agentId]: false } : next.busy,
     pendingToolUse: turnEnded ? { ...next.pendingToolUse, [agentId]: {} } : next.pendingToolUse,
   };
 }
@@ -127,6 +128,16 @@ export function registerRemoteEvents(client: RemoteClient, set: Set, get: Get): 
       if (e.status === "idle" || e.status === "error" || e.status === "stopped") {
         delete turnStartedAt[e.agent_id];
       }
+      // This device's send is answered by the status it produced: `running`
+      // (it landed), `error` / `stopped` (it won't), or an `idle` the send did
+      // not account for. Not by the spawn the send itself triggered — a dead
+      // agent revives as `spawning`, then rests at `idle` before the held
+      // message becomes its first turn — so those two keep it. Same rule as
+      // the desktop's `onAgentStatus`.
+      const prevStatus = agentOf(s, e.agent_id)?.status;
+      const spawnResting = e.status === "idle" && prevStatus === "spawning";
+      const sending = { ...s.sending };
+      if (e.status !== "spawning" && !spawnResting) delete sending[e.agent_id];
       return {
         workspace: ws
           ? patchAgent(ws, e.agent_id, {
@@ -134,10 +145,7 @@ export function registerRemoteEvents(client: RemoteClient, set: Set, get: Get): 
               last_error: e.last_error ?? undefined,
             })
           : ws,
-        busy:
-          e.status === "running"
-            ? { ...s.busy, [e.agent_id]: true }
-            : { ...s.busy, [e.agent_id]: false },
+        sending,
         turnStartedAt,
         // `idle` is not a clear: sub-agents outlive the turn. A stopped or
         // errored process takes its tasks with it.
@@ -149,16 +157,14 @@ export function registerRemoteEvents(client: RemoteClient, set: Set, get: Get): 
   // A user message the host accepted, from whichever device sent it. Mirror it
   // so a prompt typed on the Mac shows here while its turn is still running;
   // our own send is already in the log under its turnId (see `send`) and is
-  // skipped. A turn-opening message asserts busy the way `send` does.
+  // skipped. The Running status the message produces lands right after, on
+  // every device alike.
   on<TurnSentEvent>("turn:sent", (e) => {
     set((s) => {
       const prev = s.logs[e.agent_id] ?? [];
       const next = mirrorSentTurn(prev, e);
       if (next === prev) return {};
-      return {
-        logs: { ...s.logs, [e.agent_id]: next },
-        busy: e.follow_up ? s.busy : { ...s.busy, [e.agent_id]: true },
-      };
+      return { logs: { ...s.logs, [e.agent_id]: next } };
     });
   });
 

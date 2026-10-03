@@ -89,18 +89,24 @@ describe("event folding", () => {
     );
   });
 
-  it("agent:status drives the record and the busy flag", async () => {
-    await vi.waitFor(() => expect(state().busy.arabia).toBe(true));
+  it("agent:status drives the record and discharges this device's send", async () => {
+    await vi.waitFor(() => expect(agentOf(state(), "arabia")?.status).toBe("running"), {
+      timeout: 5000,
+    });
+    // A send of ours: the host answers it with `running`, or failing that the
+    // turn's `idle` — a status is what discharges it, never a transcript event.
+    useStore.setState((s) => ({ sending: { ...s.sending, arabia: true } }));
     await vi.waitFor(() => expect(agentOf(state(), "arabia")?.status).toBe("idle"), {
       timeout: 5000,
     });
-    expect(state().busy.arabia).toBe(false);
+    expect(state().sending.arabia).toBeUndefined();
   });
 
   it("turn:started anchors the live timer", () => {
-    expect(typeof state().turnStartedAt.arabia === "number" || state().busy.arabia === false).toBe(
-      true,
-    );
+    expect(
+      typeof state().turnStartedAt.arabia === "number" ||
+        agentOf(state(), "arabia")?.status !== "running",
+    ).toBe(true);
   });
 
   it("does not draw our own send twice when the host echoes it as turn:sent", async () => {
@@ -524,22 +530,22 @@ describe("spawn flow", () => {
     const fresh = (state().workspace?.agents ?? []).find((a) => !before.has(a.id));
     expect(fresh).toBeTruthy();
     const id = fresh?.id ?? "";
-    expect(state().busy[id]).toBeFalsy();
+    expect(state().sending[id]).toBeFalsy();
     expect(state().logs[id]).toBeUndefined();
     send.mockRestore();
   });
 });
 
-/** The optimistic `busy` flag is set on send and cleared by live events. A
- *  backgrounded webview or a dropped socket misses those, so every fresh
- *  snapshot reconciles it — otherwise the Changes tab sits on "Agent is busy…"
- *  for an agent that finished while the phone was away. */
-describe("optimistic busy flag", () => {
+/** The `sending` flag is set on send and discharged by the status the send
+ *  produces. A backgrounded webview or a dropped socket misses that silently,
+ *  so every fresh snapshot reconciles it — otherwise every surface reads
+ *  "working" for an agent that finished while the phone was away. */
+describe("sending flag", () => {
   it("clears against a fresh snapshot when the turn ended off-socket", async () => {
-    useStore.setState((s) => ({ busy: { ...s.busy, caspian: true } }));
+    useStore.setState((s) => ({ sending: { ...s.sending, caspian: true } }));
     await state().refreshWorkspace();
     expect(agentOf(state(), "caspian")?.status).not.toBe("running");
-    expect(state().busy.caspian).toBe(false);
+    expect(state().sending.caspian).toBe(false);
   });
 
   it("leaves a send that is still in flight alone", async () => {
@@ -552,11 +558,11 @@ describe("optimistic busy flag", () => {
     );
     try {
       const pending = state().send("caspian", "hold this one open");
-      expect(state().busy.caspian).toBe(true);
+      expect(state().sending.caspian).toBe(true);
       // The host cannot have flipped the agent to running yet — the snapshot
       // is older than the tap, so it must not clear the flag.
       await state().refreshWorkspace();
-      expect(state().busy.caspian).toBe(true);
+      expect(state().sending.caspian).toBe(true);
       release();
       await pending;
     } finally {

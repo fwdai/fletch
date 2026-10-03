@@ -1,7 +1,7 @@
 import type { AgentRecord, ProjectRef } from "@desktop/api/types/agent";
 import { Icon } from "@desktop/components/Icon";
 import type { MouseEvent } from "react";
-import { isBusy, STATUS_LABEL } from "../../lib/agents";
+import { isAgentBusy, STATUS_LABEL } from "../../lib/agents";
 import { elapsedSec, fmtElapsed } from "../../lib/hooks";
 import { subagentLabel } from "../../lib/subagents";
 import { useSubagentClock } from "../../lib/useSubagentClock";
@@ -27,7 +27,7 @@ export function AgentRow({
   const diff = useStore((s) => s.shortstats[agent.id]);
   const pr = useStore((s) => s.prStates[agent.id]);
   const tasks = useStore((s) => s.backgroundTasks[agent.id]);
-  const busy = isBusy(agent);
+  const busy = useStore((s) => isAgentBusy(s, agent));
   // One clock drives the turn timer and the sub-agent cues, so a "sub-agent
   // failed" chip keeps re-rendering until it expires even after the row has
   // otherwise gone quiet.

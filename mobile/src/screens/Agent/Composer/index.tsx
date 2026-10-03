@@ -10,7 +10,7 @@ import { useEffect, useRef, useState } from "react";
 import { AttachButton, StagedChips, useAttachments } from "../../../attachments";
 import { ProviderMark } from "../../../components/ui";
 import { useDictation, VoiceRow } from "../../../dictation";
-import { isBusy, modelLabel } from "../../../lib/agents";
+import { isAgentBusy, modelLabel } from "../../../lib/agents";
 import { autosize } from "../../../lib/autosize";
 import { ignore } from "../../../lib/ignore";
 import { useStore } from "../../../store";
@@ -61,7 +61,7 @@ export function Composer({
   const freshTimer = useRef<number | null>(null);
   const [armed, setArmed] = useState(true);
   const armTimer = useRef<number | null>(null);
-  const busy = isBusy(agent);
+  const busy = useStore((s) => isAgentBusy(s, agent));
   const attachments = useAttachments();
 
   // The transcript lands once, appended to whatever was typed — the same join
