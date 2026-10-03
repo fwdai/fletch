@@ -2,7 +2,7 @@
 // (AppState/Workspace/DraftAgent). Type-only store import, erased at compile
 // time, so there's no runtime cycle.
 
-import type { Workspace } from "../api";
+import type { AgentStatus, Workspace } from "../api";
 import type { AppState, DraftAgent } from "../store";
 
 /** An agent's record, wherever it lives: the sidebar snapshot, or the
@@ -17,6 +17,26 @@ export function agentRecord(state: AppState, agentId: string) {
 
 export function providerFor(state: AppState, agentId: string): string | undefined {
   return agentRecord(state, agentId)?.provider;
+}
+
+/** Whether an agent is working right now — the one busy signal every surface
+ *  renders from (sidebar rail, composer strip, code panel, run thread).
+ *
+ *  The backend's status is the truth: `running` while a turn is in flight,
+ *  whoever started it, and `spawning` while the process it needs is coming up.
+ *  The only thing this client adds is its own send that the backend has not
+ *  answered with a status yet (`sending`), so the UI reads "working" from the
+ *  click rather than from the round trip.
+ *
+ *  `status` defaults to the record's, looked up by id. Callers that render a
+ *  record the workspace snapshot does not carry (a run's step agents, fetched
+ *  separately) pass theirs. */
+export function isAgentBusy(
+  state: AppState,
+  agentId: string,
+  status: AgentStatus | undefined = agentRecord(state, agentId)?.status,
+): boolean {
+  return status === "running" || status === "spawning" || state.sending[agentId] === true;
 }
 
 /** The primary repo path for an agent (`repos[0]`), used to scope
@@ -66,7 +86,8 @@ export function dropAgentEntries(state: AppState, id: string): Partial<AppState>
   const { [id]: _log, ...managedLogs } = state.managedLogs;
   const { [id]: _loading, ...transcriptLoading } = state.transcriptLoading;
   const { [id]: _loaded, ...transcriptLoaded } = state.transcriptLoaded;
-  const { [id]: _busy, ...managedBusy } = state.managedBusy;
+  const { [id]: _sending, ...sending } = state.sending;
+  const { [id]: _label, ...busyLabel } = state.busyLabel;
   const { [id]: _started, ...turnStartedAt } = state.turnStartedAt;
   const { [id]: _usage, ...usage } = state.usage;
   // The git/PR/delegation maps are checkout-scoped: a multi-repo agent also
@@ -110,7 +131,8 @@ export function dropAgentEntries(state: AppState, id: string): Partial<AppState>
     managedLogs,
     transcriptLoading,
     transcriptLoaded,
-    managedBusy,
+    sending,
+    busyLabel,
     turnStartedAt,
     usage,
     gitStates,

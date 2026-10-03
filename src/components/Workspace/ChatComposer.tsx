@@ -11,6 +11,7 @@ import { type AgentRecord, api } from "@/api";
 import { Composer } from "@/components/Composer";
 import { providerLabel } from "@/data/providers";
 import { spawnStageLabel } from "@/data/spawnStage";
+import { isAgentBusy } from "@/helpers";
 import { getLinearTeamId } from "@/storage/projectSettings";
 import { useAppStore } from "@/store";
 import { ChatWorkingStatus } from "./ChatWorkingStatus";
@@ -25,7 +26,7 @@ export function ChatComposer({
   agent: AgentRecord;
   /** Model the agent actually used most recently (from its transcript). */
   activeModel: string | undefined;
-  /** Debounced "is working" — drives the working strip above the composer. */
+  /** "Is working" (see useLiveBusy) — drives the working strip above the composer. */
   liveBusy: boolean;
   /** Epoch millis the open turn started; when set, the strip's timer ticks. */
   liveStartedAt: number | undefined;
@@ -34,8 +35,10 @@ export function ChatComposer({
   onSend?: () => void;
 }) {
   const transcriptLoading = useAppStore((s) => s.transcriptLoading[agent.id] ?? false);
-  const busy = useAppStore((s) => s.managedBusy[agent.id] ?? false);
-  const busyLabel = useAppStore((s) => s.managedBusyLabel[agent.id]);
+  // Raw busy (a paused question still counts) for the Stop affordance; the
+  // strip gets the question-aware `liveBusy` from the owner.
+  const busy = useAppStore((s) => isAgentBusy(s, agent.id, agent.status));
+  const busyLabel = useAppStore((s) => s.busyLabel[agent.id]);
   const switchInFlight = useAppStore((s) => s.switchInFlight[agent.id] ?? false);
   // Which step a fresh spawn is on, so the disabled composer says "Cloning
   // repository…" rather than only "Agent is not ready".

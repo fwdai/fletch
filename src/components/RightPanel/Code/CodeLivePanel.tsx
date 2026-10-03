@@ -9,6 +9,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { AgentRecord, DiffBaseMode, FileStatus } from "@/api";
 import { Icon } from "@/components/Icon";
+import { isAgentBusy } from "@/helpers";
 import { useAppStore } from "@/store";
 import { useHljsTheme } from "@/util/codeTheme";
 import { type DiffLine, statusLetter } from "@/util/diff";
@@ -37,7 +38,7 @@ export function CodeLivePanel({
   // Is the agent mid-turn? Same signal the chat "thinking" spinner uses, so
   // the panel's "live" state appears and clears in lockstep with the rest of
   // the UI. Nothing is "live" once the turn ends.
-  const busy = useAppStore((s) => s.managedBusy[agent.id] ?? false);
+  const busy = useAppStore((s) => isAgentBusy(s, agent.id, agent.status));
   // Match the editor's syntax theme: the "quorum" palette is gated by `cq`;
   // other families color `.hljs-*` globally via a loaded stylesheet.
   const isBuiltInTheme = useHljsTheme();

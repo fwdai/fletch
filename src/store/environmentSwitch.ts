@@ -42,6 +42,7 @@
 //     counter is globally monotonic: every write issued after a switch outranks
 //     every one issued before it, so a shared key cannot reject a fresh write.
 
+import { isAgentBusy } from "@/helpers";
 import type { EnvironmentId } from "./environments";
 import { detachEventListeners, registerEventListeners } from "./eventListeners";
 import { erroredAgents, interruptedAgents } from "./interrupted";
@@ -74,8 +75,8 @@ const STASH_KEYS = [
   "backgroundTasks",
   "transcriptLoading",
   "transcriptLoaded",
-  "managedBusy",
-  "managedBusyLabel",
+  "sending",
+  "busyLabel",
   "spawnStage",
   "turnStartedAt",
   "switchInFlight",
@@ -145,8 +146,8 @@ const BLANK: Pick<AppState, StashKey> = {
   backgroundTasks: {},
   transcriptLoading: {},
   transcriptLoaded: {},
-  managedBusy: {},
-  managedBusyLabel: {},
+  sending: {},
+  busyLabel: {},
   spawnStage: {},
   turnStartedAt: {},
   switchInFlight: {},
@@ -207,7 +208,7 @@ export const createEnvironmentSwitchSlice: SliceCreator<EnvironmentSwitchSlice> 
   const resyncSelectedAgent = async () => {
     const agentId = get().selectedAgentId;
     if (!agentId) return;
-    const midTurn = get().managedBusy[agentId] && get().managedLogs[agentId] !== undefined;
+    const midTurn = isAgentBusy(get(), agentId) && get().managedLogs[agentId] !== undefined;
     if (midTurn) return;
     await get().loadHistoryTranscript(agentId);
   };

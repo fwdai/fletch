@@ -44,6 +44,7 @@ import {
   applyEvent,
   applyUserTurns,
   carryForwardStoreOnly,
+  isAgentBusy,
   mirrorSentTurn,
   needsSessionIdRefresh,
   persistLiveReasoning,
@@ -531,6 +532,10 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
         })),
       };
       set((state) => {
+        // Read before the record changes: was it working, by every measure the
+        // UI goes by, when this status arrived?
+        const wasBusy = isAgentBusy(state, e.agent_id);
+        const prevStatus = agentRecord(state, e.agent_id)?.status;
         // Clear the live-timer anchor at turn end so the next turn's send→running
         // gap can't show a stale one. The anchor itself is set from the
         // `turn:started` event (the backend's own timestamp), not here.
@@ -543,10 +548,21 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
         // the label outlives).
         const spawnStage = { ...state.spawnStage };
         if (e.status !== "spawning") delete spawnStage[e.agent_id];
+        // This client's send is answered by the status it produced — any
+        // status but one: the resting `idle` a spawn emits between process
+        // start and the first turn, when the send is still on its way to that
+        // process. The slash label lives for the turn, so `running` keeps it.
+        const spawnResting = e.status === "idle" && prevStatus === "spawning";
+        const sending = { ...state.sending };
+        const busyLabel = { ...state.busyLabel };
+        if (!spawnResting) {
+          delete sending[e.agent_id];
+          if (e.status !== "running") delete busyLabel[e.agent_id];
+        }
         return {
           workspace: next,
           managedLogs:
-            e.status === "stopped" && (state.managedBusy[e.agent_id] ?? false)
+            e.status === "stopped" && wasBusy
               ? {
                   ...state.managedLogs,
                   [e.agent_id]: [
@@ -559,16 +575,8 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
                   ],
                 }
               : state.managedLogs,
-          // `running` is the backend's authoritative "a turn is in flight"
-          // signal — re-assert busy here so a stale `idle` (e.g. the one
-          // start_process emits just before the first turn lands) can't
-          // leave the spinner off. `idle`/`error`/`stopped` clear it.
-          managedBusy:
-            e.status === "running"
-              ? { ...state.managedBusy, [e.agent_id]: true }
-              : e.status === "error" || e.status === "stopped" || e.status === "idle"
-                ? { ...state.managedBusy, [e.agent_id]: false }
-                : state.managedBusy,
+          sending,
+          busyLabel,
           turnStartedAt,
           spawnStage,
         };
@@ -599,18 +607,15 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
   // A user message the host accepted, from whichever client sent it — this
   // window, a paired phone, a git-action trigger. Mirror it so the chat reads
   // the same on every device; our own send is already in the log under its
-  // turnId (see workspace.sendMessage) and is skipped. A turn-opening message
-  // asserts busy the way the sender did; the Running status lands right after.
+  // turnId (see workspace.sendMessage) and is skipped. The Running status the
+  // message produces lands right after, on every client alike.
   await bind(
     onTurnSent((e) => {
       set((state) => {
         const prev = state.managedLogs[e.agent_id] ?? [];
         const next = mirrorSentTurn(prev, e);
         if (next === prev) return {};
-        return {
-          managedLogs: { ...state.managedLogs, [e.agent_id]: next },
-          ...(e.follow_up ? {} : { managedBusy: { ...state.managedBusy, [e.agent_id]: true } }),
-        };
+        return { managedLogs: { ...state.managedLogs, [e.agent_id]: next } };
       });
     }),
   );
@@ -744,26 +749,15 @@ export const detachEventListeners = async () => {
 // but a single event missed while the OS had the webview backgrounded would
 // otherwise strand a row's status (e.g. a sidebar agent stuck "idle" while it's
 // actually running) until its next transition. The refetch is cheap and
-// `get_workspace` overlays live in-memory status, so it's authoritative.
-// `managedBusy` is reconciled from that same status the way an `agent:status`
-// event would (see `onAgentStatus`), so the composer/spinner can't drift either.
+// `get_workspace` overlays live in-memory status, so it's authoritative — and
+// every busy surface derives from that status, so one refetch corrects them all.
 export const setupResync = (set: AppSet) => {
   let resyncInFlight = false;
   const resyncWorkspace = async () => {
     if (resyncInFlight) return;
     resyncInFlight = true;
     try {
-      await refreshWorkspace(set, (fresh, state) => {
-        const managedBusy = { ...state.managedBusy };
-        for (const a of fresh.agents) {
-          if (a.status === "running" || a.status === "spawning") {
-            managedBusy[a.id] = true;
-          } else if (a.status === "idle" || a.status === "stopped" || a.status === "error") {
-            managedBusy[a.id] = false;
-          }
-        }
-        return { managedBusy };
-      });
+      await refreshWorkspace(set);
     } catch {
       // Best-effort; the next event or resync recovers.
     } finally {

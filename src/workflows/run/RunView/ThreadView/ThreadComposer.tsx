@@ -61,7 +61,7 @@ export function ThreadComposer({
 function LiveComposer({ agent, onSend }: { agent: AgentRecord; onSend: () => void }) {
   const turnStartedAt = useAppStore((s) => s.turnStartedAt[agent.id]);
   const transcript = useTranscript(agent);
-  const liveBusy = useLiveBusy(agent.id, transcript.awaitingInput);
+  const liveBusy = useLiveBusy(agent, transcript.awaitingInput);
   const liveStartedAt = liveBusy ? (turnStartedAt ?? transcript.openTurnStartedAt) : undefined;
 
   return (

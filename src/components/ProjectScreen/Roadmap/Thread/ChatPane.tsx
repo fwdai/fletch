@@ -45,14 +45,14 @@ export function ChatPane({
 }) {
   const send = useAppStore((s) => s.sendUserMessage);
   const turnStartedAt = useAppStore((s) => s.turnStartedAt[agent.id]);
-  const busyLabel = useAppStore((s) => s.managedBusyLabel[agent.id]);
+  const busyLabel = useAppStore((s) => s.busyLabel[agent.id]);
   const customAgent = useAppStore((s) =>
     agent.custom_agent_id ? s.customAgents.find((a) => a.id === agent.custom_agent_id) : undefined,
   );
 
   const transcript = useTranscript(agent);
   const { items, turns, awaitingInput, openTurnStartedAt, transcriptLoading } = transcript;
-  const liveBusy = useLiveBusy(agent.id, awaitingInput);
+  const liveBusy = useLiveBusy(agent, awaitingInput);
 
   // Owned here so sending re-pins the log to the bottom, as in the main chat.
   const pinnedToBottom = useRef(true);

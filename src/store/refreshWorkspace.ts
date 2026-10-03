@@ -34,9 +34,8 @@ const refetches = newestWins();
  * this one was in flight — in which case the fresh snapshot is dropped rather
  * than allowed to clobber the newer state.
  *
- * `extra` computes any state DERIVED from the snapshot (e.g. resync's
- * `managedBusy`) so it lands atomically with the workspace it came from; it
- * runs only when this refresh wins. State that reflects user intent rather than
+ * `extra` computes any state DERIVED from the snapshot so it lands atomically
+ * with the workspace it came from; it runs only when this refresh wins. State that reflects user intent rather than
  * the snapshot (selection, draft cleanup, log seeds) must be set by the caller
  * BEFORE calling this, so it is never dropped along with a superseded snapshot.
  *

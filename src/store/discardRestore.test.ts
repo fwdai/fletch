@@ -29,7 +29,7 @@ const EMPTY_MAPS = {
   managedLogs: {},
   transcriptLoading: {},
   transcriptLoaded: {},
-  managedBusy: {},
+  sending: {},
   turnStartedAt: {},
   usage: {},
   gitStates: {},

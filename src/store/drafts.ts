@@ -398,7 +398,9 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get) => ({
                 : { kind: "user_message", text: prompt, turnId },
             ],
           },
-          managedBusy: { ...state.managedBusy, [rec.id]: true },
+          // The first prompt is on its way: busy from here until the backend's
+          // `running` lands, across the spawn in between.
+          sending: { ...state.sending, [rec.id]: true },
         };
         return patches;
       });
@@ -408,7 +410,7 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get) => ({
       const selected = get().selectedAgentId;
       set((state) => ({
         lastError: String(e),
-        managedBusy: selected ? { ...state.managedBusy, [selected]: false } : state.managedBusy,
+        sending: selected ? { ...state.sending, [selected]: false } : state.sending,
       }));
     } finally {
       set({ busy: false });

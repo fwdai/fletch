@@ -45,7 +45,7 @@ export function ThreadSegment({
  *  agent record to hook onto. */
 function SegmentBody({ agent, live }: { agent: AgentRecord; live: boolean }) {
   const transcript = useTranscript(agent);
-  const busy = useLiveBusy(agent.id, transcript.awaitingInput);
+  const busy = useLiveBusy(agent, transcript.awaitingInput);
   // An archived agent can still read `busy` from a stale store entry; only the
   // attempt the run is actually working may render as live.
   const liveBusy = live && busy;

@@ -76,7 +76,7 @@ const newStore = () => {
         selectedAgentId: null,
         composerDrafts: {},
         managedLogs: {},
-        managedBusy: {},
+        sending: {},
         autopilot: {},
         autopilotLog: {},
         autopilotVerdicts: {},
@@ -315,7 +315,7 @@ describe("environmentReconnected", () => {
     await store.getState().switchEnvironment(HOST);
     store.setState({
       selectedAgentId: "fuji",
-      managedBusy: { fuji: true },
+      sending: { fuji: true },
       managedLogs: { fuji: [] },
     });
 
