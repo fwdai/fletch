@@ -548,14 +548,16 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
         // the label outlives).
         const spawnStage = { ...state.spawnStage };
         if (e.status !== "spawning") delete spawnStage[e.agent_id];
-        // This client's send is answered by the status it produced — any
-        // status but one: the resting `idle` a spawn emits between process
-        // start and the first turn, when the send is still on its way to that
-        // process. The slash label lives for the turn, so `running` keeps it.
+        // This client's send is answered by the status it produced: `running`
+        // (it landed), `error` / `stopped` (it won't), or an `idle` the send
+        // did not account for. Not by the spawn the send itself triggered —
+        // a dead agent revives as `spawning`, then rests at `idle` before the
+        // held message becomes its first turn — so those two keep it. The
+        // slash label lives for the turn, so `running` keeps that.
         const spawnResting = e.status === "idle" && prevStatus === "spawning";
         const sending = { ...state.sending };
         const busyLabel = { ...state.busyLabel };
-        if (!spawnResting) {
+        if (e.status !== "spawning" && !spawnResting) {
           delete sending[e.agent_id];
           if (e.status !== "running") delete busyLabel[e.agent_id];
         }
