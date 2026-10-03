@@ -14,7 +14,7 @@ pub(crate) mod run;
 mod session_sync;
 mod shell;
 
-pub use checkpoints::RepoCheckpoint;
+pub use checkpoints::{PinnedCheckout, PinnedCode, RepoCheckpoint};
 pub use disposition::ArchiveTrigger;
 pub use events::emit_workspace_changed;
 pub use fork::{ForkCode, ForkContext};
@@ -961,6 +961,59 @@ mod tests {
             })
             .collect();
         record
+    }
+
+    /// A `--shared` clone of `source` at `<dir>/<name>`, the shape of every
+    /// checkout, with an identity to commit with.
+    pub(super) async fn checkout_of(source: &Path, dir: &Path, name: &str) -> PathBuf {
+        let dest = dir.join(name);
+        let (source, dest_str) = (source.to_str().unwrap(), dest.to_str().unwrap());
+        crate::git::run_git(dir, &["clone", "-q", "--shared", source, dest_str], "clone")
+            .await
+            .unwrap();
+        for (key, value) in [("user.email", "t@example.com"), ("user.name", "Tester")] {
+            crate::git::run_git(&dest, &["config", key, value], "config")
+                .await
+                .unwrap();
+        }
+        dest
+    }
+
+    /// Add workspace `id`, with a checkout of each of `sources` at
+    /// `checkouts`.
+    pub(super) fn workspace_of(
+        sup: &Supervisor,
+        id: &str,
+        sources: &[&PathBuf],
+        checkouts: &[PathBuf],
+    ) {
+        let mut record = record_in_checkouts(sup, id, checkouts);
+        for (repo, source) in record.repos.iter_mut().zip(sources) {
+            sup.workspace
+                .add_workspace_repo(source.to_path_buf())
+                .unwrap();
+            repo.repo_path = source.to_path_buf();
+        }
+        sup.workspace.add_agent(&mut record).unwrap();
+    }
+
+    /// The checkpoint refs pinned in `checkout`.
+    pub(super) async fn pins(checkout: &Path) -> Vec<String> {
+        let out = crate::git::run_git(
+            checkout,
+            &[
+                "for-each-ref",
+                "--format=%(refname)",
+                "refs/fletch/checkpoints/",
+            ],
+            "for-each-ref",
+        )
+        .await
+        .unwrap();
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .map(str::to_string)
+            .collect()
     }
 
     #[test]

@@ -5,7 +5,7 @@
 import { useEffect, useState } from "react";
 import { Icon } from "@/components/Icon";
 import { CopyButton } from "@/components/ui/CopyButton";
-import { ForkButton } from "./ForkButton";
+import { ForkMenu } from "./ForkMenu";
 
 /** Whole seconds under a minute; `{m}m {ss}s` (zero-padded seconds) at a
  *  minute or more; `{h}h {mm}m {ss}s` at an hour or more. Never a leading
@@ -57,7 +57,9 @@ export function TurnFooter({
       <Icon name="clock" size={11} />
       <span>Ran {fmtDur(runSec)}</span>
       {copyText && <CopyButton text={copyText} className="turn-copy" />}
-      {forkTurnId && <ForkButton agentId={agentId} turnId={forkTurnId} />}
+      {forkTurnId && (
+        <ForkMenu agentId={agentId} turnId={forkTurnId} tip="Fork from here" compact />
+      )}
     </div>
   );
 }

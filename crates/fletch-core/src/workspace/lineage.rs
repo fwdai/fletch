@@ -168,6 +168,27 @@ impl WorkspaceManager {
         })
     }
 
+    /// The turn delivered after `turn_id` in its own session, as `(workspace,
+    /// turn)`: the workspace is the one that session belongs to, so its
+    /// checkouts hold that turn's checkpoint — the code `turn_id`'s reply left
+    /// behind. `None` when no turn followed it.
+    pub fn turn_after(&self, turn_id: &str) -> Result<Option<(String, String)>> {
+        let conn = self.db.lock();
+        Ok(conn
+            .query_row(
+                "SELECT s.workspace_id, n.turn_id
+                   FROM session_user_turns t
+                   JOIN sessions s ON s.id = t.session_id
+                   JOIN session_user_turns n ON n.session_id = t.session_id AND n.seq > t.seq
+                  WHERE t.turn_id = ?1
+                  ORDER BY n.seq
+                  LIMIT 1",
+                [turn_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?)
+    }
+
     /// The current session's display history: each ancestor's records below
     /// its cut, root first, then the session's own, with the ancestors' tagged
     /// `inherited`. What the transcript command and the remote op serve;
@@ -495,6 +516,21 @@ mod tests {
                 .cut_seq,
             3
         );
+    }
+
+    #[test]
+    fn the_turn_after_is_the_next_one_delivered_in_the_same_session() {
+        let wm = three_level_chain();
+        let after = |turn| wm.turn_after(turn).unwrap();
+        assert_eq!(after("a1"), Some(("a".into(), "a2".into())));
+        assert_eq!(after("b1"), Some(("b".into(), "b2".into())));
+        // Nothing followed a3 in `a`, whatever its descendants did.
+        assert_eq!(after("a3"), None);
+        // A delivered turn counts before its prompt is matched: its checkpoint
+        // was taken as it went out.
+        wm.insert_user_turn("a", "a4", "in flight", &[]).unwrap();
+        assert_eq!(after("a3"), Some(("a".into(), "a4".into())));
+        assert_eq!(after("nope"), None);
     }
 
     #[test]

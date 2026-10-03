@@ -24,7 +24,8 @@ const SYSTEM_REMINDER_RE = /<system-reminder>([\s\S]*?)<\/system-reminder>/g;
 // Claude emits this preamble as a synthetic user-role event right after
 // a /compact finishes. The body is the summary of the prior context;
 // surfacing it as a user bubble is misleading because the user didn't
-// type it. Convert to a compact_summary notice instead.
+// type it. Convert to a compact_summary notice instead, keeping the body for
+// a handoff transcript to start from.
 const COMPACT_PREAMBLE_RE = /^This session is being continued from a previous conversation/;
 
 // When a background Task/Bash finishes, the harness re-invokes the agent with
@@ -68,7 +69,14 @@ export function sanitizeUserText(raw: string): SanitizeResult {
   if (COMPACT_PREAMBLE_RE.test(raw.trimStart())) {
     return {
       text: "",
-      notices: [{ kind: "notice", subtype: "compact_summary", text: "Conversation compacted" }],
+      notices: [
+        {
+          kind: "notice",
+          subtype: "compact_summary",
+          text: "Conversation compacted",
+          summary: raw.trim(),
+        },
+      ],
     };
   }
 

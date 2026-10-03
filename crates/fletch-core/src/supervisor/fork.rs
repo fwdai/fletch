@@ -1,107 +1,85 @@
 //! Forking a conversation into a new workspace.
 //!
 //! A fork is a normal [`Supervisor::spawn_agent`] whose new session is seeded
-//! along two *independent* axes, so nothing about the runtime, sandbox,
-//! worktree, streaming or chat rendering changes:
+//! from a point in the parent's conversation, the *anchor* (a turn, or the end
+//! of the conversation), along two independent axes, so nothing about the
+//! runtime, sandbox, worktree, streaming or chat rendering changes:
 //!
-//!  - **Code** ([`ForkCode`]) — what the new worktree starts from: the parent's
-//!    base branch, optionally with the parent's current working tree on top.
-//!  - **Context** ([`ForkContext`]) — what of the parent conversation the new
-//!    session continues: nothing, or everything through a chosen turn.
+//!  - **Code** ([`ForkCode`]) — what the new checkouts start from: the
+//!    parent's base branch, the parent's code now, or the code as it was at
+//!    the anchor (a turn checkpoint, see `git::checkpoint`).
+//!  - **Context** ([`ForkContext`]) — what the new session knows of the
+//!    parent conversation up to the anchor: nothing, or a summary.
 //!
 //! Carried context reaches the child two ways:
 //!  1. **Display** — the child's session references the parent's history up to
 //!     the anchor through session lineage (see `workspace::lineage`). Nothing is
 //!     copied; the chat renders it through the stitched history read.
 //!  2. **Agent knowledge** — the child's agent starts a fresh provider session,
-//!     so it is told what was discussed by a plain-text digest of the same
-//!     range, composed into its brief. The frontend renders the digest, since it
-//!     has every provider's chat adapter, and the backend only wraps it.
+//!     so it is told what was discussed by a summary of the same range, written
+//!     while the spawn provisions (`crate::handoff`). The frontend renders the
+//!     transcript the summary is made from, since it has every provider's chat
+//!     adapter.
 
-use std::borrow::Cow;
 use std::sync::Arc;
 
 use crate::error::{Error, Result};
 use crate::host::EngineCtx;
 use crate::workspace::{AgentRecord, Anchor};
 
-use super::{SpawnRequest, Supervisor};
+use super::checkpoints::OTHER_CODE;
+use super::{PinnedCode, SpawnRequest, Supervisor};
 
-/// Sentinels that visually bracket the injected prior-conversation digest inside
-/// the composed prompt, so the agent can see where the carried context begins and
-/// ends. HTML-comment form, namespaced to Fletch. These are purely presentational
-/// now: the digest is persisted in its own `forked_context` session column (never
-/// spliced into the user brief), so nothing ever parses these back out — a fork
-/// simply drops the parent's `forked_context` and rebuilds a fresh one.
-const FORK_CONTEXT_OPEN: &str = "<!-- fletch:forked-conversation-context -->";
-const FORK_CONTEXT_CLOSE: &str = "<!-- /fletch:forked-conversation-context -->";
-
-/// Hard cap, in bytes, on the stored forked context. It reaches the agent
-/// inside a single argv element (e.g. `--append-system-prompt <text>`), and the
-/// OS rejects oversized arguments with E2BIG ("Argument list too long"): Linux
-/// caps any one argument at 128 KiB (`MAX_ARG_STRLEN`), macOS caps argv + env
-/// together at 1 MiB (`ARG_MAX`). 64 KiB leaves room for the rest of the brief.
-/// Enforced here, not just by the frontend, because remote clients send their
-/// own digest.
-const MAX_FORKED_CONTEXT_BYTES: usize = 64 * 1024;
-
-/// First line of a digest that [`keep_tail`] had to cut.
-const OMITTED_NOTE: &str =
-    "[Earlier conversation omitted to fit the size limit; the most recent part follows.]\n";
-
-/// What the forked workspace's worktree starts from.
+/// What the forked workspace's checkouts start from. Every mode but `Clean`
+/// copies a snapshot faithfully: the checkout's working tree is the snapshot,
+/// and its HEAD the commit the snapshot was taken on, so committed work stays
+/// committed and uncommitted work uncommitted. It takes a snapshot of every
+/// repo of the source workspace, or fails before anything is created: a fork
+/// never starts from part of the code ([`PinnedCode`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ForkCode {
-    /// A fresh worktree from the parent's base branch — no uncommitted work.
+    /// Fresh checkouts of the parent's base branch.
     Clean,
-    /// The parent's current working tree (incl. uncommitted work) overlaid onto
-    /// the fresh checkout — "build on unmerged work".
-    Carry,
+    /// The parent's code as it is now — "build on unmerged work".
+    Current,
+    /// The code as it was through the anchor turn and its reply.
+    AtMessage,
 }
 
-/// What of the parent conversation the fork continues.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+/// What the forked session knows of the parent conversation up to the anchor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ForkContext {
-    /// Fresh conversation — carry nothing (the agent's brief is preserved).
+    /// A fresh conversation — carry nothing (the agent's brief is preserved).
     None,
-    /// The parent conversation through turn `turn_id` and its reply, or through
-    /// the end of the parent's current session when `turn_id` is `None`.
-    Through { turn_id: Option<String> },
-}
-
-impl ForkContext {
-    /// The point in the parent's conversation this context forks at, or `None`
-    /// for a fresh conversation.
-    fn anchor(&self) -> Option<Anchor<'_>> {
-        match self {
-            ForkContext::None => None,
-            ForkContext::Through { turn_id: Some(t) } => Some(Anchor::Through(t)),
-            ForkContext::Through { turn_id: None } => Some(Anchor::End),
-        }
-    }
+    /// Show the parent's history up to the anchor, and tell the agent about it
+    /// through a summary.
+    Summary,
 }
 
 impl Supervisor {
-    /// Fork `parent_id` into a brand-new workspace, seeding its worktree
-    /// (`code`) and conversation (`context`) independently.
+    /// Fork `parent_id` into a brand-new workspace at an anchor: through turn
+    /// `turn_id` and its reply, or through the end of the parent's current
+    /// session when `None`. Its worktree (`code`) and conversation (`context`)
+    /// are seeded independently.
     ///
-    /// `context_digest` is the frontend-rendered prose for the same range
-    /// `context` selects (`None` when nothing is carried); it becomes the
-    /// injected brief context.
+    /// `transcript` is the frontend-rendered text of the conversation up to the
+    /// anchor (`None` when nothing is carried); the spawn summarizes it into the
+    /// new session's handoff context.
     ///
-    /// Returns the new agent record. Heavy provisioning runs in the background
-    /// exactly like a normal spawn; the session's lineage and brief are in place
-    /// before this returns, so the frontend can open the new agent and load its
-    /// history immediately.
+    /// Returns the new agent record. Heavy provisioning, summarizing included,
+    /// runs in the background exactly like a normal spawn; the session's
+    /// lineage is in place before this returns, so the frontend can open the
+    /// new agent and load its history immediately.
     pub async fn fork_agent(
         self: Arc<Self>,
         ctx: Arc<EngineCtx>,
         parent_id: &str,
+        turn_id: Option<&str>,
         code: ForkCode,
         context: ForkContext,
-        context_digest: Option<String>,
+        transcript: Option<String>,
     ) -> Result<AgentRecord> {
         let parent = self.workspace.agent(parent_id)?;
         let primary = parent
@@ -112,32 +90,25 @@ impl Supervisor {
 
         // Resolved before anything is created, so an anchor that can't be
         // placed (its message is still syncing) fails the fork cleanly.
-        let lineage = context
-            .anchor()
-            .map(|anchor| self.workspace.resolve_anchor(parent_id, anchor))
-            .transpose()?;
-
-        // Brief and forked-conversation context are stored in *separate* session
-        // columns and only composed at spawn (see `effective_instructions`). So
-        // the parent's brief passes through verbatim — never scanned for an
-        // injected block — and the fresh digest lands in its own field. A fork of
-        // a fork therefore inherits only the pure brief and gets a freshly built
-        // digest: no stacking, and no way for sentinel-looking brief text to be
-        // mistaken for a machine block and stripped.
-        let instructions = parent.instructions.clone();
-        let forked_context = context_digest
-            .filter(|d| !d.trim().is_empty())
-            .map(|prose| wrap_context(&prose));
-
-        // Code: reuse the normal spawn/provision path. Both modes fork the
-        // parent's own base branch (so the fork starts where the parent did);
-        // `Carry` additionally overlays the parent's current working tree after
-        // provisioning, so its uncommitted work reads as the fork's diff.
-        let fork_base = Some(primary.base_branch().await);
-        let carry_from = match code {
-            ForkCode::Clean => None,
-            ForkCode::Carry => Some(primary.checkout_path(parent_id)?),
+        let anchor = match turn_id {
+            Some(turn_id) => Anchor::Through(turn_id),
+            None => Anchor::End,
         };
+        let (lineage, handoff_transcript) = match context {
+            ForkContext::None => (None, None),
+            ForkContext::Summary => (
+                Some(self.workspace.resolve_anchor(parent_id, anchor)?),
+                transcript.filter(|t| !t.trim().is_empty()),
+            ),
+        };
+
+        // Code: reuse the normal spawn/provision path. Every mode forks the
+        // parent's own base branch (so the fork targets what the parent did);
+        // the others then start the checkouts from a snapshot, resolved — and
+        // for the parent's current code, taken — before anything is created.
+        let fork_base = Some(primary.base_branch().await);
+        let code_from = self.fork_code(&parent, code, turn_id).await?;
+        let pin = code_from.clone();
 
         let req = SpawnRequest {
             view: parent.view,
@@ -146,8 +117,10 @@ impl Supervisor {
             name: None,
             effort: parent.effort.clone(),
             model: parent.model.clone(),
-            instructions,
-            forked_context,
+            // The parent's brief passes through verbatim; its handoff context
+            // never does. Each fork gets a summary of its own.
+            instructions: parent.instructions.clone(),
+            handoff_transcript,
             lineage,
             custom_agent_id: parent.custom_agent_id.clone(),
             skills: parent.skills.clone(),
@@ -156,7 +129,7 @@ impl Supervisor {
             run_repo: None,
             owner_run_id: None,
             existing_workspace: None,
-            carry_from,
+            code_from,
             // A fork is a fresh line of work; it doesn't inherit the parent's
             // originating issue (only one workspace should close it).
             issue_ref: None,
@@ -166,140 +139,363 @@ impl Supervisor {
             // A fork has no first prompt yet; its task is captured on first send.
             task: None,
         };
-        self.spawn_agent(ctx, req).await
+        let spawned = self.spawn_agent(ctx, req).await;
+        // Once spawned, its provisioning releases the code's pin; a spawn
+        // refused before that never will.
+        if let (Err(_), Some(code)) = (&spawned, pin) {
+            code.release().await;
+        }
+        spawned
     }
-}
 
-/// Wrap the frontend-supplied conversation prose in the fork sentinels plus a
-/// short framing line the agent reads as instructions, keeping only as much of
-/// the prose's tail as fits the whole thing in [`MAX_FORKED_CONTEXT_BYTES`].
-fn wrap_context(prose: &str) -> String {
-    let frame = |prose: &str| {
-        format!(
-            "{FORK_CONTEXT_OPEN}\n\
-             The conversation below is the prior context this session was forked from. \
-             Treat it as already-established history and continue from where it left off; \
-             do not redo work that is already complete.\n\n\
-             {prose}\n\
-             {FORK_CONTEXT_CLOSE}"
-        )
-    };
-    let budget = MAX_FORKED_CONTEXT_BYTES - frame("").len();
-    frame(&keep_tail(prose, budget))
-}
-
-/// Fit `text` into `max` bytes (`max` must exceed [`OMITTED_NOTE`]) by keeping
-/// its most recent tail — the end of the conversation is what the fork
-/// continues from — behind [`OMITTED_NOTE`]. The cut lands on a char boundary
-/// and, when one is near, at the start of a line.
-fn keep_tail(text: &str, max: usize) -> Cow<'_, str> {
-    if text.len() <= max {
-        return Cow::Borrowed(text);
-    }
-    // How far past the byte cut to look for a line start before settling for
-    // a mid-line cut, rather than give up most of the budget to reach one.
-    const LINE_SEARCH: usize = 1024;
-
-    let mut start = text.len() - (max - OMITTED_NOTE.len());
-    while !text.is_char_boundary(start) {
-        start += 1;
-    }
-    if !text[..start].ends_with('\n') {
-        let window = &text.as_bytes()[start..text.len().min(start + LINE_SEARCH)];
-        if let Some(nl) = window.iter().position(|&b| b == b'\n') {
-            start += nl + 1;
+    /// The pinned code `code` starts the fork's checkouts from (`None` for a
+    /// clean fork) — always the code of every checkout of its workspace, never
+    /// part of it. `turn_id` is the fork's anchor; code as of a message needs
+    /// one.
+    async fn fork_code(
+        &self,
+        parent: &AgentRecord,
+        code: ForkCode,
+        turn_id: Option<&str>,
+    ) -> Result<Option<PinnedCode>> {
+        match (code, turn_id) {
+            (ForkCode::Clean, _) => Ok(None),
+            (ForkCode::Current, _) => self.pin_code(&parent.id).await.map(Some),
+            (ForkCode::AtMessage, Some(turn_id)) => {
+                self.code_through(parent, turn_id).await.map(Some)
+            }
+            (ForkCode::AtMessage, None) => Err(Error::Other(
+                "Code as of a message needs a message to fork from.".into(),
+            )),
         }
     }
-    Cow::Owned(format!("{OMITTED_NOTE}{}", &text[start..]))
+
+    /// The code as turn `turn_id`'s reply left it: the checkpoint of the turn
+    /// delivered next in `turn_id`'s own session, in every checkout of the
+    /// workspace that ran it (an ancestor's, for an inherited turn). When
+    /// nothing came next and `turn_id` is the latest turn of `parent`'s
+    /// conversation, that code is `parent`'s current code.
+    async fn code_through(&self, parent: &AgentRecord, turn_id: &str) -> Result<PinnedCode> {
+        let history = self.workspace.read_history_turns(&parent.id)?;
+        let position = history
+            .iter()
+            .position(|t| t.turn_id == turn_id)
+            .ok_or_else(|| {
+                Error::Other(format!(
+                    "turn {turn_id} is not part of {}'s conversation",
+                    parent.id
+                ))
+            })?;
+        match self.workspace.turn_after(turn_id)? {
+            Some((owner, next)) => self.code_at(&owner, &next).await,
+            None if position + 1 == history.len() => self.pin_code(&parent.id).await,
+            // The turn ended its session, but the conversation went on in a
+            // later one: the code as that session left it was never pinned.
+            None => Err(Error::Other(format!(
+                "The code as of this message wasn't kept. {OTHER_CODE}"
+            ))),
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::git::checkpoint;
+    use crate::supervisor::tests::{
+        committed_repo, pins, record_in_checkouts, test_supervisor, workspace_of,
+    };
+    use crate::supervisor::PinnedCheckout;
     use serde_json::json;
+    use std::path::{Path, PathBuf};
 
     #[test]
-    fn wrap_brackets_prose_with_sentinels() {
-        let w = wrap_context("User: hi\n\nAssistant: hey");
-        assert!(w.starts_with(FORK_CONTEXT_OPEN));
-        assert!(w.trim_end().ends_with(FORK_CONTEXT_CLOSE));
-        assert!(w.contains("User: hi"));
-        assert!(w.contains("Assistant: hey"));
-        assert!(!w.contains(OMITTED_NOTE));
-    }
+    fn code_and_context_deserialize_from_their_wire_names() {
+        let none: ForkContext = serde_json::from_value(json!("none")).unwrap();
+        assert_eq!(none, ForkContext::None);
+        let summary: ForkContext = serde_json::from_value(json!("summary")).unwrap();
+        assert_eq!(summary, ForkContext::Summary);
 
-    #[test]
-    fn wrap_caps_an_oversized_digest_keeping_its_tail() {
-        // ~3 MB, the size of the real forks that blew past ARG_MAX.
-        let prose: String = (0..100_000)
-            .map(|i| format!("User: message {i:06}\n\n"))
-            .collect();
-        let w = wrap_context(&prose);
-        assert!(w.len() <= MAX_FORKED_CONTEXT_BYTES);
-        assert!(w.starts_with(FORK_CONTEXT_OPEN));
-        assert!(w.ends_with(FORK_CONTEXT_CLOSE));
-        assert!(w.contains(OMITTED_NOTE));
-        assert!(!w.contains("message 000000"));
-        assert!(w.contains("User: message 099999\n"));
-        // The cut snapped to a line start, so the first kept line is whole.
-        let after_note = w.split(OMITTED_NOTE).nth(1).unwrap();
-        assert!(after_note.trim_start().starts_with("User: message "));
-    }
-
-    #[test]
-    fn keep_tail_passes_text_within_the_cap_through() {
-        assert_eq!(keep_tail("short", 100), "short");
-        let exact = "x".repeat(100);
-        assert_eq!(keep_tail(&exact, 100), exact);
-    }
-
-    #[test]
-    fn keep_tail_prefers_a_line_start() {
-        let text = format!("{}\nkept line\n", "a".repeat(200));
-        let max = OMITTED_NOTE.len() + 14;
-        // The byte cut lands mid-way through the "a" run; the next line start
-        // is close, so the cut moves there.
-        assert_eq!(keep_tail(&text, max), format!("{OMITTED_NOTE}kept line\n"));
-    }
-
-    #[test]
-    fn keep_tail_cuts_mid_line_when_no_line_start_is_near() {
-        let text = "a".repeat(10_000);
-        let max = OMITTED_NOTE.len() + 100;
-        let kept = keep_tail(&text, max);
-        assert_eq!(kept, format!("{OMITTED_NOTE}{}", "a".repeat(100)));
-    }
-
-    #[test]
-    fn keep_tail_never_splits_a_multibyte_char() {
-        // 4-byte chars with every leading pad, so the raw byte cut falls at each
-        // offset within a char. Slicing off a boundary would panic.
-        for pad in 0..4 {
-            let text = format!("{}{}", "x".repeat(pad), "😀".repeat(1_000));
-            for budget in 1..12 {
-                let max = OMITTED_NOTE.len() + budget;
-                let kept = keep_tail(&text, max);
-                assert!(kept.len() <= max, "pad {pad}, budget {budget}");
-                let tail = kept.strip_prefix(OMITTED_NOTE).unwrap();
-                assert_eq!(tail, "😀".repeat(budget / 4), "pad {pad}, budget {budget}");
-            }
+        for (wire, code) in [
+            ("clean", ForkCode::Clean),
+            ("current", ForkCode::Current),
+            ("at_message", ForkCode::AtMessage),
+        ] {
+            assert_eq!(
+                serde_json::from_value::<ForkCode>(json!(wire)).unwrap(),
+                code
+            );
         }
     }
 
-    #[test]
-    fn context_deserializes_to_its_anchor() {
-        let none: ForkContext = serde_json::from_value(json!({"kind": "none"})).unwrap();
-        assert_eq!(none.anchor(), None);
-        let turn: ForkContext =
-            serde_json::from_value(json!({"kind": "through", "turn_id": "t1"})).unwrap();
-        assert_eq!(turn.anchor(), Some(Anchor::Through("t1")));
-        let end: ForkContext =
-            serde_json::from_value(json!({"kind": "through", "turn_id": null})).unwrap();
-        assert_eq!(end.anchor(), Some(Anchor::End));
+    /// Workspace `id` working in `checkout`, continuing `lineage`.
+    fn agent(
+        sup: &Supervisor,
+        id: &str,
+        checkout: &Path,
+        lineage: Option<crate::workspace::SessionLineage>,
+    ) -> AgentRecord {
+        let mut record = record_in_checkouts(sup, id, &[checkout.to_path_buf()]);
+        record.lineage = lineage;
+        sup.workspace.add_agent(&mut record).unwrap();
+        sup.workspace.agent(id).unwrap()
+    }
 
-        let clean: ForkCode = serde_json::from_value(json!("clean")).unwrap();
-        assert_eq!(clean, ForkCode::Clean);
-        let carry: ForkCode = serde_json::from_value(json!("carry")).unwrap();
-        assert_eq!(carry, ForkCode::Carry);
+    /// Deliver `turn` to `ws` as `deliver_as_turn` does — checkpoint, then the
+    /// turn row — and ingest its prompt, matched.
+    async fn deliver(sup: &Supervisor, ws: &str, turn: &str) {
+        sup.checkpoint_turn(ws, turn).await;
+        sup.workspace.insert_user_turn(ws, turn, turn, &[]).unwrap();
+        let prompt = json!({"type": "user", "text": turn});
+        sup.workspace
+            .append_session_records(ws, "claude", "transcript", None, &[(turn, &prompt)])
+            .unwrap();
+        sup.workspace.associate_pending_user_turns(ws).unwrap();
+    }
+
+    fn edit(checkout: &Path, text: &str) {
+        std::fs::write(checkout.join("a.txt"), text).unwrap();
+    }
+
+    /// `alps` ran a1 and a2, editing between them; `andes` forked it through
+    /// a1 and has run b1 since.
+    async fn forked_pair(dir: &Path) -> (Supervisor, PathBuf, PathBuf) {
+        let sup = test_supervisor();
+        let (alps, andes) = (
+            committed_repo(dir, "alps").await,
+            committed_repo(dir, "andes").await,
+        );
+        agent(&sup, "alps", &alps, None);
+        deliver(&sup, "alps", "a1").await;
+        edit(&alps, "after a1");
+        deliver(&sup, "alps", "a2").await;
+        edit(&alps, "after a2");
+        let lineage = sup
+            .workspace
+            .resolve_anchor("alps", Anchor::Through("a1"))
+            .unwrap();
+        agent(&sup, "andes", &andes, Some(lineage));
+        deliver(&sup, "andes", "b1").await;
+        (sup, alps, andes)
+    }
+
+    async fn code(sup: &Supervisor, ws: &str, turn: Option<&str>) -> Result<PinnedCode> {
+        let parent = sup.workspace.agent(ws).unwrap();
+        let code = sup.fork_code(&parent, ForkCode::AtMessage, turn).await?;
+        Ok(code.expect("code as of a message pins code"))
+    }
+
+    /// `a.txt` as pinned under `key` in `checkout`.
+    async fn pinned_file(checkout: &Path, key: &str) -> Vec<u8> {
+        let sha = checkpoint::resolve(checkout, key).await.unwrap().unwrap();
+        crate::git::run_git(checkout, &["show", &format!("{sha}:a.txt")], "show")
+            .await
+            .unwrap()
+            .stdout
+    }
+
+    #[tokio::test]
+    async fn code_as_of_an_inherited_message_comes_from_the_workspace_that_ran_it() {
+        let td = tempfile::tempdir().unwrap();
+        let (sup, alps, _) = forked_pair(td.path()).await;
+
+        // From `andes`, a1 is inherited: the code its reply left is a2's
+        // checkpoint, kept in `alps`.
+        let found = code(&sup, "andes", Some("a1")).await.unwrap();
+        assert_eq!(found.key(), "a2");
+        assert_eq!(
+            found.checkouts(),
+            [PinnedCheckout {
+                repo_path: alps.clone(),
+                subdir: "repo-0".into(),
+                checkout: alps.clone(),
+            }]
+        );
+        assert_eq!(pinned_file(&alps, "a2").await, b"after a1");
+    }
+
+    #[tokio::test]
+    async fn code_as_of_the_latest_message_is_the_parents_code_now() {
+        let td = tempfile::tempdir().unwrap();
+        let (sup, _, andes) = forked_pair(td.path()).await;
+        edit(&andes, "after b1");
+
+        let found = code(&sup, "andes", Some("b1")).await.unwrap();
+        assert_eq!(found.checkouts().len(), 1);
+        assert_eq!(found.checkouts()[0].checkout, andes);
+        assert_eq!(pinned_file(&andes, found.key()).await, b"after b1");
+    }
+
+    #[tokio::test]
+    async fn code_as_of_a_message_fails_without_its_snapshot() {
+        let td = tempfile::tempdir().unwrap();
+        let (sup, _, _) = forked_pair(td.path()).await;
+        let not_kept = |r: Result<PinnedCode>| {
+            let err = r.unwrap_err().to_string();
+            assert!(err.contains("wasn't kept"), "{err}");
+            assert!(err.contains("Current code"), "{err}");
+        };
+
+        // a2 ended `alps`'s session, but `atlas` went on from it in one of
+        // its own: nothing pinned the code a2 left.
+        let atlas = committed_repo(td.path(), "atlas").await;
+        let lineage = sup
+            .workspace
+            .resolve_anchor("alps", Anchor::Through("a2"))
+            .unwrap();
+        agent(&sup, "atlas", &atlas, Some(lineage));
+        deliver(&sup, "atlas", "c1").await;
+        not_kept(code(&sup, "atlas", Some("a2")).await);
+
+        // a3 went out without a checkpoint (mid-turn, or before checkpoints).
+        sup.workspace
+            .insert_user_turn("alps", "a3", "a3", &[])
+            .unwrap();
+        not_kept(code(&sup, "alps", Some("a2")).await);
+
+        // Not this conversation's turn (a2 is past the cut `andes` forked
+        // at), or no message at all.
+        assert!(code(&sup, "andes", Some("a2")).await.is_err());
+        assert!(code(&sup, "andes", None).await.is_err());
+    }
+
+    /// A checkout that can't be read is an error of its own, not a snapshot
+    /// that was never kept.
+    #[tokio::test]
+    async fn a_failed_lookup_is_not_taken_for_a_missing_snapshot() {
+        let td = tempfile::tempdir().unwrap();
+        let (sup, alps, _) = forked_pair(td.path()).await;
+        std::fs::remove_dir_all(&alps).unwrap();
+
+        let err = code(&sup, "andes", Some("a1"))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(!err.contains("wasn't kept"), "{err}");
+        assert!(!err.contains("isn't available"), "{err}");
+    }
+
+    /// `denali` checks out two repos and ran t1, t2 and t3; t3's checkpoint
+    /// was only taken in its first repo.
+    async fn two_repos_one_snapshot_short(dir: &Path) -> (Arc<Supervisor>, [PathBuf; 2]) {
+        let sup = Arc::new(test_supervisor());
+        let checkouts = [
+            committed_repo(dir, "a").await,
+            committed_repo(dir, "b").await,
+        ];
+        let mut record = record_in_checkouts(&sup, "denali", &checkouts);
+        sup.workspace.add_agent(&mut record).unwrap();
+        deliver(&sup, "denali", "t1").await;
+        edit(&checkouts[0], "after t1");
+        edit(&checkouts[1], "after t1");
+        deliver(&sup, "denali", "t2").await;
+        checkpoint::capture(&checkouts[0], "t3").await.unwrap();
+        sup.workspace
+            .insert_user_turn("denali", "t3", "t3", &[])
+            .unwrap();
+        (sup, checkouts)
+    }
+
+    #[tokio::test]
+    async fn code_as_of_a_message_takes_every_repo() {
+        let td = tempfile::tempdir().unwrap();
+        let (sup, checkouts) = two_repos_one_snapshot_short(td.path()).await;
+
+        let found = code(&sup, "denali", Some("t1")).await.unwrap();
+        assert_eq!(found.key(), "t2");
+        let pinned: Vec<&Path> = found
+            .checkouts()
+            .iter()
+            .map(|c| c.checkout.as_path())
+            .collect();
+        assert_eq!(pinned, [checkouts[0].as_path(), checkouts[1].as_path()]);
+        for checkout in &checkouts {
+            assert_eq!(pinned_file(checkout, "t2").await, b"after t1");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_fork_missing_any_repos_snapshot_fails_and_spawns_nothing() {
+        let td = tempfile::tempdir().unwrap();
+        let (sup, _) = two_repos_one_snapshot_short(td.path()).await;
+        let (ctx, _sink, _dir) = crate::host::ctx::test_ctx();
+
+        let err = sup
+            .clone()
+            .fork_agent(
+                ctx,
+                "denali",
+                Some("t2"),
+                ForkCode::AtMessage,
+                ForkContext::None,
+                None,
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("wasn't kept for repo-1."), "{err}");
+        assert!(!err.contains("repo-0"), "{err}");
+        assert!(
+            err.contains("\"Current code\" or \"Clean from base\""),
+            "{err}"
+        );
+        assert_eq!(sup.workspace.current().unwrap().agents.len(), 1);
+    }
+
+    /// The spawn is refused before its provisioning (which releases the pin)
+    /// ever runs: the fork releases it itself.
+    #[tokio::test]
+    async fn a_fork_refused_at_spawn_leaves_no_pin() {
+        let td = tempfile::tempdir().unwrap();
+        let sup = Arc::new(test_supervisor());
+        let source = committed_repo(td.path(), "src").await;
+        let checkout = committed_repo(td.path(), "checkout").await;
+        workspace_of(&sup, "denali", &[&source], std::slice::from_ref(&checkout));
+        // The source repo is gone, so the spawn refuses it.
+        std::fs::remove_dir_all(source.join(".git")).unwrap();
+        let (ctx, _sink, _dir) = crate::host::ctx::test_ctx();
+
+        let forked = sup
+            .clone()
+            .fork_agent(
+                ctx,
+                "denali",
+                None,
+                ForkCode::Current,
+                ForkContext::None,
+                None,
+            )
+            .await;
+        assert!(forked
+            .unwrap_err()
+            .to_string()
+            .contains("not a git repository"));
+        assert_eq!(pins(&checkout).await, Vec::<String>::new());
+    }
+
+    #[tokio::test]
+    async fn clean_code_has_no_snapshot_and_current_code_pins_every_checkout() {
+        let td = tempfile::tempdir().unwrap();
+        let sup = test_supervisor();
+        let checkouts = [
+            committed_repo(td.path(), "a").await,
+            committed_repo(td.path(), "b").await,
+        ];
+        let mut record = record_in_checkouts(&sup, "denali", &checkouts);
+        sup.workspace.add_agent(&mut record).unwrap();
+
+        let clean = sup.fork_code(&record, ForkCode::Clean, None).await.unwrap();
+        assert_eq!(clean, None);
+        let current = sup
+            .fork_code(&record, ForkCode::Current, None)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(current.checkouts().len(), 2);
+        for (pinned, checkout) in current.checkouts().iter().zip(&checkouts) {
+            assert_eq!(&pinned.checkout, checkout);
+            let sha = checkpoint::resolve(checkout, current.key()).await.unwrap();
+            assert!(sha.is_some(), "{}", checkout.display());
+        }
     }
 }

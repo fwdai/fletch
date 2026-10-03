@@ -58,21 +58,23 @@ export const agentsApi = {
    *  them lists them here; the records are ordinary agents otherwise. */
   listProjectChats: (projectId: string, purpose: string) =>
     invoke<AgentRecord[]>("list_project_chats", { projectId, purpose }),
-  /** Fork an existing workspace into a new one, seeding its worktree (`code`)
-   *  and conversation (`context`) independently. A carried conversation is
-   *  referenced, not copied: the child's history starts with the parent's,
-   *  through the anchor turn.
+  /** Fork an existing workspace into a new one at an anchor — through the turn
+   *  `turnId` names, or the end of the parent's session when `null` — seeding
+   *  its worktree (`code`) and conversation (`context`) independently. A
+   *  carried conversation is referenced, not copied: the child's history
+   *  starts with the parent's, through the anchor.
    *
-   *  `contextDigest` is the rendered prose for the carried range, assembled by
-   *  the caller from the normalized chat log (so it works uniformly across every
-   *  provider) — it briefs the child's fresh agent. `null` when nothing is
-   *  carried. */
+   *  `transcript` is the carried range rendered as text (adapters/handoff),
+   *  from the normalized chat log so it works uniformly across every provider;
+   *  the backend summarizes it to brief the child's fresh agent. `null` when
+   *  nothing is carried. */
   forkAgent: (
     parentId: string,
+    turnId: string | null,
     code: ForkCode,
     context: ForkContext,
-    contextDigest: string | null,
-  ) => invoke<AgentRecord>("fork_agent", { parentId, code, context, contextDigest }),
+    transcript: string | null,
+  ) => invoke<AgentRecord>("fork_agent", { parentId, turnId, code, context, transcript }),
   writeToAgent: (agentId: string, data: string) =>
     invoke<void>("write_to_agent", { agentId, data }),
   /** Resolves to `true` when the message was enqueued for a later turn boundary

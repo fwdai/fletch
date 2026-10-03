@@ -1,5 +1,6 @@
+import { renderToolResult } from "@/util/toolText";
 import type { ToolPresenter } from "./types";
-import { firstLineOf, getCommandField, getStringField, renderToolResult, ToolBlock } from "./util";
+import { firstLineOf, getCommandField, getStringField, ToolBlock } from "./util";
 
 export const bashPresenter: ToolPresenter = {
   icon: "terminal",

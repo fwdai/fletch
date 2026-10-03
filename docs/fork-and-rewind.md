@@ -110,8 +110,8 @@ no-tools, text-only mode, with the input on stdin, never argv. Its input is the
 rendered history up to the anchor, starting from the last compaction summary
 before the cut, with tool output truncated.
 
-If summarizing fails, the session gets the bounded raw digest tail plus a
-notice. It never fails the fork.
+If summarizing fails, or the provider has no safe one-shot mode, the session
+gets the bounded raw transcript tail plus a notice. It never fails the fork.
 
 ### 5. Checkpoints (code as of a message)
 Before Fletch delivers a turn to the agent (`deliver_as_turn`), it snapshots
@@ -120,7 +120,8 @@ work, excluding gitignored files, as a commit whose parent is HEAD. It is
 pinned at `refs/fletch/checkpoints/<turn_id>` in that checkout.
 
 - The code **before T** is checkpoint(T). The code **through T** is
-  checkpoint(next turn), or the live tree if T is the latest turn.
+  checkpoint(the next turn in T's session), taken in the checkout of the
+  workspace that ran it, or the live tree if T is the latest turn.
 - Capture is best-effort and never fails or delays a send beyond the snapshot
   itself. The snapshot seeds a temporary index from the real one, so only
   changed files are re-hashed.
@@ -129,8 +130,17 @@ pinned at `refs/fletch/checkpoints/<turn_id>` in that checkout.
   (`owner_run_id`, which share a tree).
 - Checkpoints live in the checkout, so they disappear when the checkout is
   deleted on archive. "Code as of this message" is then unavailable.
-- A child receives a checkpoint by fetching its ref from the parent's checkout
-  and reusing `carry_worktree`.
+- A child receives a checkpoint by fetching its ref from the checkout that
+  holds it and restoring it, in its checkout of the same repo: the tree is
+  the snapshot's and HEAD the snapshot's parent, so commits stay commits and
+  uncommitted work stays uncommitted. A fork of the current code pins the
+  parent's live tree the same way, under a key of its own. The child drops
+  its fetched copy once restored, and the spawn drops an on-demand pin from
+  the parent however it ends; a turn's checkpoint is never dropped.
+- A fork takes the code of every checkout of the source workspace or none of
+  it: a checkout without the checkpoint, or a repo the child doesn't check
+  out, fails the fork and names the repos. A repo the child checks out but
+  the source never had keeps its clean base.
 
 ## Flows
 
@@ -170,14 +180,14 @@ pinned at `refs/fletch/checkpoints/<turn_id>` in that checkout.
 | `supervisor/checkpoints.rs` | capture for every checkout of an agent at turn delivery |
 | `supervisor/fork.rs` | fork orchestration only |
 | `supervisor/rewind.rs` | rewind orchestration only |
-| `handoff/` | the summarizer: per-provider one-shot runner, input budget, fallback |
+| `handoff/` | the summarizer: the one-shot runner (per-provider flags are `agent::OneShot` descriptors), the fallback tail |
 | `agent` | `SessionStart { Fresh, Resume, Branch(BranchPoint) }` replaces `fresh: bool`; the `branch` capability per provider |
 
 **Frontend** (`src`)
 
 | Module | Owns |
 |---|---|
-| `adapters/handoff.ts` | the handoff renderer (was `store/forkDigest.ts`) |
+| `adapters/handoff.ts` | the handoff transcript: the cut, the compaction start, tool caps and the input budget (was `store/forkDigest.ts`) |
 | fork UI | sends `turn_id` anchors |
 | rewind UI | a per-message action |
 

@@ -43,7 +43,9 @@ pub fn new_agent_record(
         effort: None,
         model: None,
         instructions: None,
-        forked_context: None,
+        // Written by the spawn's Summarizing stage when it continues a
+        // conversation (`Supervisor::spawn_agent`).
+        handoff_context: None,
         // Set by a fork, from the anchor it resolved; a plain spawn starts empty.
         lineage: None,
         custom_agent_id: None,

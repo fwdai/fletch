@@ -89,6 +89,10 @@ export type ChatItem =
       /** For `command_output`: the invoked command, shown as the block header
        *  (e.g. "/doctor"). Ignored by other subtypes. */
       label?: string;
+      /** For `compact_summary`: the summary of the earlier conversation the
+       *  agent continued from. Not rendered; a handoff transcript starts from
+       *  it (see adapters/handoff). */
+      summary?: string;
     };
 
 export type NoticeSubtype =

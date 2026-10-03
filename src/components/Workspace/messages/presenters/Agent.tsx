@@ -1,6 +1,7 @@
 import { Markdown } from "@/components/Markdown";
+import { renderToolResult } from "@/util/toolText";
 import type { ToolPresenter } from "./types";
-import { getStringField, renderToolResult } from "./util";
+import { getStringField } from "./util";
 
 export const agentPresenter: ToolPresenter = {
   icon: "subagent",
