@@ -221,7 +221,7 @@ pub fn delegation_done(kind: DelegationKind) -> &'static str {
 /// order given. Params carry only the dynamic context the static playbook
 /// can't know; empty values are dropped and `"` is backslash-escaped. Same
 /// format as the TypeScript `appActionMessage` (pinned by the shared fixture in
-/// the tests on both sides).
+/// `delegation_tests.rs` and `tests/delegation.test.ts`).
 pub fn app_action_message(action: &str, params: &[(&str, &str)]) -> String {
     let mut out = format!("{APP_ACTION_PREFIX}{action}");
     for (key, value) in params {

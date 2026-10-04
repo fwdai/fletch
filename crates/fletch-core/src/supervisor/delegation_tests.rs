@@ -1,9 +1,11 @@
-// Ported from the desktop watcher's tests (`src/store/delegationSync.test.ts`,
-// `src/store/publishApproval.test.ts`), which pinned the bugs that shaped the
-// rules: a delegation dispatched at an agent nobody was looking at never
-// advanced (and a running agent's held trigger was never delivered), and a
-// multi-repo agent could only hold one delegation. Plus the host-only parts:
-// the ops, the driver's pass, and the approval pre-authorization.
+// Ported from the desktop watcher's tests (`tests/delegation.test.ts`,
+// `src/store/delegationSync.test.ts`, `src/store/publishApproval.test.ts`),
+// which pinned the bugs that shaped the rules: a snapshot that matched without
+// the agent's own git op read as success, a delegation dispatched at an agent
+// nobody was looking at never advanced (and a running agent's held trigger was
+// never delivered), and a multi-repo agent could only hold one delegation. Plus
+// the host-only parts: the ops, the driver's pass, and the approval
+// pre-authorization.
 
 use super::*;
 use crate::git_state::FileStatus;
@@ -122,7 +124,7 @@ fn finish(k: Key, phase: Phase, notice: &'static str) -> Effect {
 
 // ── the trigger string ─────────────────────────────────────────────────────
 
-/// The shared fixture: `src/delegation.test.ts` pins the TypeScript
+/// The shared fixture: `tests/delegation.test.ts` pins the TypeScript
 /// `appActionMessage` against these same strings, so the host composes exactly
 /// what a client used to.
 #[test]
@@ -347,6 +349,103 @@ fn a_step_arms_the_clock_on_our_turn_or_after_the_grace_window() {
         delegation_step(&d, &AgentStatus::Stopped, false, NOW),
         Step::GiveUp
     );
+}
+
+/// `tests/delegation.test.ts`'s `delegationStep` block, case for case (its
+/// `startedAt` was 1_000 with `soon` inside the grace window and `late` past
+/// it).
+#[test]
+fn delegation_step_keeps_every_typescript_case() {
+    use AgentStatus::{Idle, Running, Spawning};
+    use Step::*;
+    let soon = 2_000;
+    let late = 1_000 + GIVE_UP_GRACE_MS + 1;
+    let d = |saw_running: bool, saw_git_op: bool, queued: bool| Delegation {
+        started_at: 1_000,
+        saw_running,
+        saw_git_op,
+        queued,
+        ..delegation(DelegationKind::Commit)
+    };
+    let cases = [
+        // Resolution requires the agent's own git op, not just a match —
+        // whether the turn is still running or already idle.
+        (d(false, true, false), Idle, true, late, Resolve),
+        (d(false, true, false), Running, true, soon, Resolve),
+        // A matching snapshot WITHOUT our git op never resolves.
+        (d(true, false, false), Running, true, soon, Wait),
+        (d(true, false, false), Idle, true, late, GiveUp),
+        (d(false, false, true), Running, true, soon, Wait),
+        (d(false, false, false), Idle, true, soon, Wait),
+        (d(false, false, false), Idle, true, late, GiveUp),
+        // A fast turn whose git op landed before resolve still succeeds.
+        (d(false, true, false), Idle, true, soon, Resolve),
+        // A still-queued delegation never resolves, even with an op recorded.
+        (d(false, true, true), Running, true, soon, Wait),
+        (d(false, true, true), Idle, true, late, Dequeue),
+        // Queued behind an in-flight turn: wait it out, then dequeue — never
+        // give up, and never mark-running off the foreign turn.
+        (d(false, false, true), Running, false, late, Wait),
+        (d(false, false, true), Idle, false, late, Dequeue),
+        // After dequeue, an idle gap before our turn starts is tolerated.
+        (d(false, false, false), Idle, false, soon, Wait),
+        (d(false, false, false), Idle, false, late, GiveUp),
+        // Our own turn is marked running once, then settles into give-up.
+        (d(false, false, false), Running, false, soon, MarkRunning),
+        (d(true, false, false), Running, false, late, Wait),
+        (d(true, false, false), Idle, false, soon, GiveUp),
+        // Spawning counts as active, not settled.
+        (d(false, false, true), Spawning, false, late, Wait),
+        (d(true, false, false), Spawning, false, late, Wait),
+    ];
+    for (i, (delegation, status, resolved, now, expected)) in cases.into_iter().enumerate() {
+        assert_eq!(
+            delegation_step(&delegation, &status, resolved, now),
+            expected,
+            "case {i}"
+        );
+    }
+}
+
+/// The rest of `tests/delegation.test.ts`'s `delegationResolved` and
+/// `actionProvesKind` cases not already spelled out above.
+#[test]
+fn the_remaining_typescript_resolution_and_proof_cases() {
+    use DelegationKind::*;
+    // update-branch without checks: only a real conflict or a not-yet-computed
+    // verdict keeps waiting.
+    for (mergeable, expected) in [
+        (MergeableState::Conflicting, false),
+        (MergeableState::Unknown, false),
+        (MergeableState::Mergeable, true),
+    ] {
+        assert_eq!(
+            delegation_resolved(
+                UpdateBranch,
+                Some(&clean()),
+                Some(&pr(PrStatus::Open, mergeable)),
+                None
+            ),
+            expected,
+            "{mergeable:?}"
+        );
+    }
+    // A foreign queued turn's push or PR can't prove a commit, and so on.
+    for (kind, op) in [
+        (Commit, "open_pr"),
+        (Push, "git_commit"),
+        (OpenPr, "git_commit"),
+        (UpdateBranch, "git_push"),
+    ] {
+        assert!(!action_proves_kind(kind, op), "{kind:?} / {op}");
+    }
+    for (kind, op) in [(CommitPush, "git_commit"), (CommitPr, "git_commit")] {
+        assert!(action_proves_kind(kind, op), "{kind:?} / {op}");
+    }
+    // Every kind has its done copy.
+    for kind in DelegationKind::ALL {
+        assert!(!delegation_done(kind).is_empty(), "{kind:?}");
+    }
 }
 
 // ── the pass (planDelegationPass) ──────────────────────────────────────────
