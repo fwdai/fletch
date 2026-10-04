@@ -13,14 +13,7 @@
 import type { HostProvider } from "@/remote/types";
 import { useAppStore } from "@/store";
 import { activeEnvironment, type EnvironmentEntry, LOCAL_ENVIRONMENT_ID } from "./environments";
-import {
-  anyGateReason,
-  type ClosedGate,
-  closedGates,
-  type GateName,
-  gateReason,
-  requiredOps,
-} from "./gates";
+import { anyGateReason, type ClosedGate, closedGates, type GateName, gateReason } from "./gates";
 import type { AppState } from "./types";
 
 // The table and its pure predicates live in `./gates` (no store import, so
@@ -61,11 +54,7 @@ export function hostSkew(env: EnvironmentEntry, clientVersion: string): HostSkew
   // fails closed — but here it would accuse a host that has simply not been
   // greeted yet of gaps it may not have.
   if (env.connection !== "connected") return null;
-  // The host's own answer only. A gate with no op is closed by *this* side —
-  // autopilot judges a project by this Mac's own opt-out rows — and saying it is
-  // "unavailable on this host" would blame the wrong machine; the control that
-  // is gated says so itself, where the user is trying to use it.
-  const closed = closedGates(env).filter((g) => requiredOps(g.name).length > 0);
+  const closed = closedGates(env);
   if (closed.length === 0) return null;
   const summary =
     closed.length > NAMED_LIMIT

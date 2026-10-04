@@ -13,7 +13,7 @@
 // Kept pure and out of the component for the usual reason: the interesting part
 // is the choice, not the markup, and the choice is what a test can pin down.
 
-import type { AutopilotState } from "@/autopilot";
+import type { AutopilotCheckout } from "@/api";
 import type { DelegationKind } from "@/delegation";
 import { rungNoun } from "@/helpers/autopilotCopy";
 
@@ -37,7 +37,7 @@ export interface AutopilotSignal {
  *  is just as real as the primary's. The first checkout scanned wins, so the row
  *  doesn't flip between equally-busy siblings as the map's key order shifts. */
 export function autopilotSignal(
-  autopilot: Record<string, AutopilotState>,
+  autopilot: Record<string, AutopilotCheckout>,
   agentId: string,
 ): AutopilotSignal | null {
   const prefix = `${agentId}::`;

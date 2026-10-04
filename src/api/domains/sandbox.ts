@@ -20,8 +20,7 @@ export const sandboxApi = {
   // What each engine actually guarantees, for the picker (`sandbox::guarantees`).
   describeSandboxIsolation: () => invoke<IsolationReport[]>("describe_sandbox_isolation"),
   // Whether an agent must get the user's approval before publishing. Backend-owned
-  // (`publish_confirmation`); off by default because autopilot publishes
-  // unattended and a prompt would hang it until the decision timeout.
+  // (`publish_confirmation`); off by default.
   getPublishConfirmation: () => invoke<boolean>("get_publish_confirmation"),
   setPublishConfirmation: (enabled: boolean) =>
     invoke<void>("set_publish_confirmation", { enabled }),

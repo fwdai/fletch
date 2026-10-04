@@ -1,15 +1,21 @@
 import { describe, expect, it } from "vitest";
-import type { AutopilotState, CyclePhase } from "@/autopilot";
-import { newEnrollment } from "@/autopilot";
+import type { AutopilotCheckout } from "@/api";
+import type { CyclePhase } from "@/autopilot";
 import { autopilotSignal, autopilotTip } from "./autopilotSignal";
 
-const state = (over: Partial<AutopilotState> = {}): AutopilotState => ({
-  ...newEnrollment(),
+const state = (over: Partial<AutopilotCheckout> = {}): AutopilotCheckout => ({
+  agent_id: "a",
+  subdir: null,
+  project_id: "p",
+  enrolled: true,
+  paused: false,
+  project_enabled: true,
+  cycle: null,
   ...over,
 });
 
 const working = (attempt = 1, phase: CyclePhase = "working") =>
-  state({ cycle: { rung: "fix-checks", attempt, signature: "s", phase, phaseSince: 0 } });
+  state({ cycle: { rung: "fix-checks", attempt, phase, since: 0 } });
 
 describe("autopilotSignal", () => {
   it("is absent when the agent has no enrolled checkout", () => {
@@ -19,17 +25,6 @@ describe("autopilotSignal", () => {
 
   it("is absent for an enrolled-but-quiet checkout — on is the norm, not news", () => {
     expect(autopilotSignal({ a: state() }, "a")).toBeNull();
-  });
-
-  it("is absent for a checkout autopilot gave up on — that is just a PR, not a mark", () => {
-    // A spent budget and a barren world are autopilot's own bookkeeping. The row
-    // says nothing; the Git panel's history says what happened, if asked.
-    const spent = state({
-      attempts: { "fix-checks": 3 },
-      situation: "checks-failing:test",
-      barren: ["sha1|test||"],
-    });
-    expect(autopilotSignal({ a: spent }, "a")).toBeNull();
   });
 
   it("is absent while waiting for CI — the PR pill already says checks are running", () => {

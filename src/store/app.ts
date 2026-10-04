@@ -50,7 +50,7 @@ export const createAppSlice: SliceCreator<AppSlice> = (set, get) => ({
     if (get().initialized) return;
     set({ initialized: true });
 
-    await hydrateSettings(set, get);
+    await hydrateSettings(set);
     await hydrateAccount(set);
 
     // Probe installed provider CLIs for real versions + paths (async,
@@ -83,6 +83,8 @@ export const createAppSlice: SliceCreator<AppSlice> = (set, get) => ({
     // Delegations the host was already running — a reloaded window, or one
     // opened while an agent works through a playbook it was handed earlier.
     void get().loadDelegations();
+    // …and the autopilot it runs: its switches, its open cycles, its history.
+    void get().loadAutopilot();
   },
 
   clearError: () => set({ lastError: null }),

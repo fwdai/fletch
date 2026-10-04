@@ -1,38 +1,83 @@
-// The slice behind autopilot: what persists, what deliberately doesn't, and the
-// transitions the driver applies. The pure policy is tested in autopilot.test.ts
-// at the root; this covers the state it reads.
+// The store's autopilot is a mirror of host facts (docs/remote-protocol.md,
+// "Autopilot"): the host runs the loop, this window renders it and flips its
+// switches. What is left to pin is the mirroring — that every event lands where
+// the panel reads it, that a resync can't be undone by an event it raced, and
+// that a switch reaches the host op and settles on its answer. The decisions
+// themselves are the host's tests now.
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { create } from "zustand";
 
-// `vi.mock` is hoisted above the module body, so the spies have to be too.
-const { setProjectSetting, deleteProjectSetting, loadAutopilotDisabledProjects } = vi.hoisted(
-  () => ({
-    setProjectSetting: vi.fn(() => Promise.resolve()),
-    deleteProjectSetting: vi.fn(() => Promise.resolve()),
-    loadAutopilotDisabledProjects: vi.fn(() => Promise.resolve([] as string[])),
-  }),
-);
-vi.mock("@/storage/projectSettings", () => ({
-  AUTOPILOT_ENABLED_KEY: "autopilot.enabled",
-  setProjectSetting,
-  deleteProjectSetting,
-  loadAutopilotDisabledProjects,
+const { getAutopilotState, getAutopilotLog, setAutopilot } = vi.hoisted(() => ({
+  getAutopilotState: vi.fn(),
+  getAutopilotLog: vi.fn(),
+  setAutopilot: vi.fn(),
 }));
-const { setSetting } = vi.hoisted(() => ({ setSetting: vi.fn(() => Promise.resolve()) }));
-vi.mock("@/storage/settings", () => ({ setSetting }));
+vi.mock("@/api", () => ({ api: { getAutopilotState, getAutopilotLog, setAutopilot } }));
 
-import { autopilotAgentOn, autopilotProjectOn, createAutopilotSlice } from "./autopilot";
+import type { AutopilotCheckout, AutopilotLogEntry, AutopilotSnapshot } from "@/api";
+import { dropAgentEntries } from "@/helpers/agentLookups";
+import { AUTOPILOT_LOG_LIMIT, autopilotProjectOn, createAutopilotSlice } from "./autopilot";
+import { type EnvironmentEntry, LOCAL_ENVIRONMENT_ID, setEnvironmentsSource } from "./environments";
 import type { AppState } from "./types";
 
-const makeStore = () =>
-  create<AppState>()((...a) => ({ ...createAutopilotSlice(...a) }) as AppState);
-const report = (outcome: "passed" | "failed") => ({
-  checks: [{ name: "test", command: "t", outcome, duration_ms: 1, tail: [] }],
+const remote = (ops: string[]): EnvironmentEntry => ({
+  id: "host-1",
+  name: "Cloud box",
+  kind: "remote",
+  connection: "connected",
+  protocol: { version: 2, ops, events: [], features: [] },
 });
 
-/** An async op the test releases by hand, to order completions deliberately. */
-const deferred = <T = void>() => {
+const activeIs = (entry?: EnvironmentEntry) =>
+  setEnvironmentsSource(() => ({
+    activeEnvironmentId: entry?.id ?? LOCAL_ENVIRONMENT_ID,
+    environments: entry ? { [entry.id]: entry } : {},
+  }));
+
+const row = (over: Partial<AutopilotCheckout> = {}): AutopilotCheckout => ({
+  agent_id: "a1",
+  subdir: null,
+  project_id: "p1",
+  enrolled: true,
+  paused: false,
+  project_enabled: true,
+  cycle: null,
+  ...over,
+});
+
+let stamp = 0;
+const entry = (over: Partial<AutopilotLogEntry> = {}): AutopilotLogEntry => {
+  stamp++;
+  return {
+    id: `e${stamp}`,
+    agent_id: "a1",
+    subdir: null,
+    at: stamp,
+    outcome: "dispatch",
+    rung: "fix-checks",
+    attempt: 1,
+    ...over,
+  };
+};
+
+const snapshot = (over: Partial<AutopilotSnapshot> = {}): AutopilotSnapshot => ({
+  checkouts: [],
+  disabled_projects: [],
+  paused_agents: [],
+  ...over,
+});
+
+const makeStore = () => {
+  const setLastError = vi.fn();
+  const store = create<AppState>()(
+    (...a) => ({ ...createAutopilotSlice(...a), setLastError }) as unknown as AppState,
+  );
+  return { store, setLastError };
+};
+
+/** An async answer the test releases by hand, to order completions. */
+const deferred = <T>() => {
   let resolve!: (v: T) => void;
   let reject!: (e: unknown) => void;
   const promise = new Promise<T>((res, rej) => {
@@ -42,468 +87,274 @@ const deferred = <T = void>() => {
   return { promise, resolve, reject };
 };
 
-// Every test that writes uses its own project id: the per-project write queue
-// and sequence live at module scope, like the writes they order, so a queued
-// write from one test must not be able to trail into the next one's expectations.
-let n = 0;
-const fresh = () => `p${++n}`;
-
 beforeEach(() => {
-  setProjectSetting.mockReset().mockImplementation(() => Promise.resolve());
-  deleteProjectSetting.mockReset().mockImplementation(() => Promise.resolve());
-  loadAutopilotDisabledProjects.mockReset().mockImplementation(() => Promise.resolve([]));
-  setSetting.mockReset().mockImplementation(() => Promise.resolve());
-  vi.spyOn(console, "error").mockImplementation(() => {});
-});
-
-describe("autopilotAgentOn", () => {
-  const agent = { id: "a1", project_id: "p1" };
-
-  it("needs the project on AND the workspace not paused", () => {
-    expect(autopilotAgentOn([], [], agent)).toBe(true);
-    expect(autopilotAgentOn(["p1"], [], agent)).toBe(false);
-    expect(autopilotAgentOn([], ["a1"], agent)).toBe(false);
-    expect(autopilotAgentOn([], ["a2"], agent)).toBe(true);
-  });
-
-  it("stays closed while the project opt-outs are unknown, whatever the pause says", () => {
-    expect(autopilotAgentOn(null, [], agent)).toBe(false);
-  });
-});
-
-// ── workspace switch ─────────────────────────────────────────────────────────
-// The Git panel's kill switch: one workspace off, on top of the project switch.
-// Persisted whole in `settings`, the way Mission Control's dismissals are.
-
-describe("workspace switch", () => {
-  const withAgents = (ids: string[]) => {
-    const store = makeStore();
-    store.setState({
-      workspace: { agents: ids.map((id) => ({ id, project_id: "p1" })) },
-      // biome-ignore lint/suspicious/noExplicitAny: minimal workspace fixture
-    } as any);
-    return store;
-  };
-
-  it("starts with nothing paused", () => {
-    expect(makeStore().getState().autopilotPausedAgents).toEqual([]);
-  });
-
-  it("pauses a workspace and persists the whole list", () => {
-    const store = withAgents(["a1", "a2"]);
-    store.getState().setAgentAutopilot("a1", false);
-    store.getState().setAgentAutopilot("a2", false);
-
-    expect(store.getState().autopilotPausedAgents).toEqual(["a1", "a2"]);
-    expect(setSetting).toHaveBeenLastCalledWith("autopilotPausedAgents", ["a1", "a2"]);
-  });
-
-  it("un-pauses only the workspace asked for", () => {
-    const store = withAgents(["a1", "a2"]);
-    store.setState({ autopilotPausedAgents: ["a1", "a2"] });
-    store.getState().setAgentAutopilot("a1", true);
-
-    expect(store.getState().autopilotPausedAgents).toEqual(["a2"]);
-    expect(setSetting).toHaveBeenCalledExactlyOnceWith("autopilotPausedAgents", ["a2"]);
-  });
-
-  it("does not write when the switch already says so", () => {
-    const store = withAgents(["a1"]);
-    store.getState().setAgentAutopilot("a1", true);
-    expect(setSetting).not.toHaveBeenCalled();
-  });
-
-  it("prunes ids of workspaces that no longer exist on the way out", () => {
-    // A discarded agent's pause would otherwise sit in the list forever; the
-    // next write is the natural moment to drop it.
-    const store = withAgents(["a1"]);
-    store.setState({ autopilotPausedAgents: ["gone"] });
-    store.getState().setAgentAutopilot("a1", false);
-
-    expect(store.getState().autopilotPausedAgents).toEqual(["a1"]);
-    expect(setSetting).toHaveBeenCalledExactlyOnceWith("autopilotPausedAgents", ["a1"]);
-  });
-
-  it("keeps the optimistic state when the write fails, and says so", async () => {
-    setSetting.mockRejectedValueOnce(new Error("db locked"));
-    const store = withAgents(["a1"]);
-    store.getState().setAgentAutopilot("a1", false);
-    await Promise.resolve();
-
-    // The switch is a kill switch: the in-session pause must hold even if the
-    // durable copy didn't land — a relaunch is the only thing that loses it.
-    expect(store.getState().autopilotPausedAgents).toEqual(["a1"]);
-    expect(console.error).toHaveBeenCalled();
-  });
+  getAutopilotState.mockReset();
+  getAutopilotLog.mockReset().mockResolvedValue([]);
+  setAutopilot.mockReset();
+  activeIs();
 });
 
 describe("autopilotProjectOn", () => {
-  it("is on for every project not listed, and off for a listed one", () => {
+  it("is on by default, off when opted out, and off while unknown", () => {
     expect(autopilotProjectOn([], "p1")).toBe(true);
     expect(autopilotProjectOn(["p1"], "p1")).toBe(false);
-    expect(autopilotProjectOn(["p1"], "p2")).toBe(true);
-  });
-
-  it("is off for EVERY project while the opt-outs are unknown", () => {
-    // The one predicate the driver, the chip and the toggle all share, so
-    // "unknown" fails closed everywhere at once rather than in three places.
     expect(autopilotProjectOn(null, "p1")).toBe(false);
   });
 });
 
-describe("project switch: loading", () => {
-  it("starts with the opt-outs unknown (null), not with everything on", () => {
-    // Until hydration fills the list, the driver must run nothing: on-by-default
-    // without knowing who opted out would act on exactly the wrong projects.
-    expect(makeStore().getState().autopilotDisabledProjects).toBeNull();
+describe("applyAutopilotState", () => {
+  it("replaces the row for its checkout, primary and secondary alike", () => {
+    const { store } = makeStore();
+    store.getState().applyAutopilotState(row());
+    store.getState().applyAutopilotState(row({ subdir: "web" }));
+    const working = {
+      rung: "fix-checks" as const,
+      attempt: 2,
+      phase: "working" as const,
+      since: 9,
+    };
+    store.getState().applyAutopilotState(row({ cycle: working }));
+
+    expect(Object.keys(store.getState().autopilot).sort()).toEqual(["a1", "a1::web"]);
+    expect(store.getState().autopilot.a1.cycle).toEqual(working);
   });
 
-  it("loads the list, and a failed load leaves it unknown rather than empty", async () => {
-    const store = makeStore();
-    loadAutopilotDisabledProjects.mockRejectedValueOnce(new Error("db not ready"));
-    await store.getState().loadAutopilotProjects();
-    expect(store.getState().autopilotDisabledProjects).toBeNull();
-
-    // The same action is the retry: the settings section calls it again.
-    loadAutopilotDisabledProjects.mockResolvedValueOnce(["p9"]);
-    await store.getState().loadAutopilotProjects();
-    expect(store.getState().autopilotDisabledProjects).toEqual(["p9"]);
-  });
-
-  it("ignores a load that a later load overtook", async () => {
-    // Startup load is slow; the user hits Retry, which finishes first. The
-    // startup load then completes with an older snapshot and must not replace
-    // the fresher one — or a project the retry saw as off would flip back on.
-    const store = makeStore();
-    const slow = deferred<string[]>();
-    loadAutopilotDisabledProjects.mockReturnValueOnce(slow.promise);
-    const first = store.getState().loadAutopilotProjects();
-
-    loadAutopilotDisabledProjects.mockResolvedValueOnce(["p-off"]);
-    await store.getState().loadAutopilotProjects();
-    expect(store.getState().autopilotDisabledProjects).toEqual(["p-off"]);
-
-    slow.resolve([]);
-    await first;
-    expect(store.getState().autopilotDisabledProjects).toEqual(["p-off"]);
-  });
-
-  it("ignores a load that a click overtook, in the store AND in the known row values", async () => {
-    // Loaded, then a load is in flight (Retry) when the user opts a project out
-    // and the write succeeds. The load's snapshot predates that opt-out: landing
-    // it would show the project on, run autopilot on it, and make a later failed
-    // write roll back to "on" — the wrong row value.
-    const store = makeStore();
-    const p = fresh();
-    loadAutopilotDisabledProjects.mockResolvedValueOnce([]);
-    await store.getState().loadAutopilotProjects();
-
-    const slow = deferred<string[]>();
-    loadAutopilotDisabledProjects.mockReturnValueOnce(slow.promise);
-    const stale = store.getState().loadAutopilotProjects();
-
-    store.getState().setProjectAutopilot(p, false);
-    await vi.waitFor(() => expect(setProjectSetting).toHaveBeenCalledTimes(1));
-    slow.resolve([]); // snapshot from before the opt-out
-    await stale;
-    expect(store.getState().autopilotDisabledProjects).toEqual([p]);
-
-    // The known row value survived too: a failed "on" now reverts to off.
-    deleteProjectSetting.mockRejectedValueOnce(new Error("db locked"));
-    store.getState().setProjectAutopilot(p, true);
-    await vi.waitFor(() => expect(store.getState().autopilotDisabledProjects).toEqual([p]));
-  });
-
-  it("refuses to flip a switch while the opt-outs are unknown", () => {
-    // Applying a click on top of null would invent an empty list and switch
-    // every project on — the exact failure null exists to prevent. The store
-    // enforces it, so no caller (not just the disabled toggle) can do it.
-    const store = makeStore();
-    store.getState().setProjectAutopilot(fresh(), true);
-    expect(store.getState().autopilotDisabledProjects).toBeNull();
-    expect(deleteProjectSetting).not.toHaveBeenCalled();
-    expect(setProjectSetting).not.toHaveBeenCalled();
-  });
-});
-
-describe("project switch: writing", () => {
-  const loaded = () => {
-    const store = makeStore();
+  it("keeps the opt-out lists in step with the row", () => {
+    const { store } = makeStore();
     store.setState({ autopilotDisabledProjects: [] });
-    return store;
-  };
 
-  it("turning a project off writes the one row that exists; turning it on deletes it", async () => {
-    // On is the default, so "on" is the ABSENCE of a row — a project never
-    // touched and a project switched back on look identical in the table.
-    const store = loaded();
-    const p = fresh();
-    store.getState().setProjectAutopilot(p, false);
-    expect(store.getState().autopilotDisabledProjects).toEqual([p]);
-    await vi.waitFor(() =>
-      expect(setProjectSetting).toHaveBeenLastCalledWith(p, "autopilot.enabled", "0"),
+    store.getState().applyAutopilotState(row({ paused: true, project_enabled: false }));
+    expect(store.getState().autopilotPausedAgents).toEqual(["a1"]);
+    expect(store.getState().autopilotDisabledProjects).toEqual(["p1"]);
+
+    store.getState().applyAutopilotState(row());
+    expect(store.getState().autopilotPausedAgents).toEqual([]);
+    expect(store.getState().autopilotDisabledProjects).toEqual([]);
+  });
+
+  it("leaves unknown opt-outs unknown — one row says nothing of other projects", () => {
+    const { store } = makeStore();
+    store.getState().applyAutopilotState(row({ project_enabled: false }));
+    expect(store.getState().autopilotDisabledProjects).toBeNull();
+  });
+});
+
+describe("applyAutopilotEvent", () => {
+  it("keeps each checkout's history newest first, and apart", () => {
+    const { store } = makeStore();
+    const first = entry();
+    const second = entry({ outcome: "settle" });
+    const web = entry({ subdir: "web" });
+    for (const e of [first, second, web]) store.getState().applyAutopilotEvent(e);
+
+    expect(store.getState().autopilotLog.a1).toEqual([second, first]);
+    expect(store.getState().autopilotLog["a1::web"]).toEqual([web]);
+  });
+
+  it("ignores a row it already holds", () => {
+    const { store } = makeStore();
+    const e = entry();
+    store.getState().applyAutopilotEvent(e);
+    store.getState().applyAutopilotEvent(e);
+    expect(store.getState().autopilotLog.a1).toHaveLength(1);
+  });
+
+  it(`keeps at most ${AUTOPILOT_LOG_LIMIT} rows per checkout, dropping the oldest`, () => {
+    const { store } = makeStore();
+    const all = Array.from({ length: AUTOPILOT_LOG_LIMIT + 3 }, () => entry());
+    for (const e of all) store.getState().applyAutopilotEvent(e);
+
+    const log = store.getState().autopilotLog.a1;
+    expect(log).toHaveLength(AUTOPILOT_LOG_LIMIT);
+    expect(log[0]).toBe(all.at(-1));
+    expect(log).not.toContain(all[0]);
+  });
+});
+
+describe("loadAutopilot", () => {
+  it("replaces the mirror with the host's state and history", async () => {
+    const { store } = makeStore();
+    store.getState().applyAutopilotState(row({ agent_id: "stale" }));
+    const newer = entry({ outcome: "settle" });
+    const older = entry();
+    getAutopilotState.mockResolvedValue(
+      snapshot({
+        checkouts: [row({ agent_id: "a2", subdir: "web" })],
+        disabled_projects: ["p9"],
+        paused_agents: ["a3"],
+      }),
+    );
+    getAutopilotLog.mockResolvedValue([newer, older]);
+
+    await store.getState().loadAutopilot();
+
+    const s = store.getState();
+    expect(Object.keys(s.autopilot)).toEqual(["a2::web"]);
+    expect(s.autopilotDisabledProjects).toEqual(["p9"]);
+    expect(s.autopilotPausedAgents).toEqual(["a3"]);
+    expect(s.autopilotLog).toEqual({ a1: [newer, older] });
+  });
+
+  it("keeps what the host said while the read was in flight", async () => {
+    const { store } = makeStore();
+    const before = entry();
+    const during = entry({ outcome: "settle" });
+    getAutopilotState.mockImplementation(async () => {
+      store.getState().applyAutopilotState(row({ paused: true }));
+      store.getState().applyAutopilotEvent(during);
+      return snapshot({ checkouts: [row()] });
+    });
+    getAutopilotLog.mockResolvedValue([before]);
+
+    await store.getState().loadAutopilot();
+
+    expect(store.getState().autopilot.a1.paused).toBe(true);
+    expect(store.getState().autopilotPausedAgents).toEqual(["a1"]);
+    expect(store.getState().autopilotLog.a1).toEqual([during, before]);
+  });
+
+  it("lets the newest of two overlapping loads own the mirror", async () => {
+    const { store } = makeStore();
+    const answers = [deferred<AutopilotSnapshot>(), deferred<AutopilotSnapshot>()];
+    getAutopilotState
+      .mockReturnValueOnce(answers[0].promise)
+      .mockReturnValueOnce(answers[1].promise);
+
+    const older = store.getState().loadAutopilot();
+    const newer = store.getState().loadAutopilot();
+    answers[1].resolve(snapshot({ paused_agents: ["from-the-newer-read"] }));
+    await newer;
+    answers[0].resolve(snapshot({ paused_agents: ["from-the-older-read"] }));
+    await older;
+
+    expect(store.getState().autopilotPausedAgents).toEqual(["from-the-newer-read"]);
+  });
+
+  it("stays unknown when the read fails", async () => {
+    const { store } = makeStore();
+    getAutopilotState.mockRejectedValue(new Error("not connected"));
+
+    await store.getState().loadAutopilot();
+
+    expect(store.getState().autopilotDisabledProjects).toBeNull();
+  });
+
+  it("asks no host too old for the op", async () => {
+    activeIs(remote(["send_user_message"]));
+    const { store } = makeStore();
+
+    await store.getState().loadAutopilot();
+
+    expect(getAutopilotState).not.toHaveBeenCalled();
+  });
+});
+
+describe("the switches", () => {
+  it("ask the host, by project or by agent, and settle on its answer", async () => {
+    const { store } = makeStore();
+    store.setState({ autopilotDisabledProjects: [] });
+    setAutopilot.mockResolvedValueOnce(snapshot({ disabled_projects: ["p1"] }));
+    setAutopilot.mockResolvedValueOnce(
+      snapshot({ disabled_projects: ["p1"], paused_agents: ["a1"] }),
     );
 
-    store.getState().setProjectAutopilot(p, true);
+    await store.getState().setProjectAutopilot("p1", false);
+    await store.getState().setAgentAutopilot("a1", false);
+
+    expect(setAutopilot).toHaveBeenNthCalledWith(1, { projectId: "p1" }, false);
+    expect(setAutopilot).toHaveBeenNthCalledWith(2, { agentId: "a1" }, false);
+    expect(store.getState().autopilotDisabledProjects).toEqual(["p1"]);
+    expect(store.getState().autopilotPausedAgents).toEqual(["a1"]);
+  });
+
+  it("answer at once, before the host does", () => {
+    const { store } = makeStore();
+    setAutopilot.mockReturnValue(new Promise(() => {}));
+
+    void store.getState().setAgentAutopilot("a1", false);
+
+    expect(store.getState().autopilotPausedAgents).toEqual(["a1"]);
+  });
+
+  it("put the switch back, and say why, when the host refuses", async () => {
+    const { store, setLastError } = makeStore();
+    store.setState({ autopilotDisabledProjects: [] });
+    setAutopilot.mockRejectedValue("forbidden");
+
+    await store.getState().setProjectAutopilot("p1", false);
+
     expect(store.getState().autopilotDisabledProjects).toEqual([]);
-    await vi.waitFor(() =>
-      expect(deleteProjectSetting).toHaveBeenLastCalledWith(p, "autopilot.enabled"),
+    expect(setLastError).toHaveBeenCalledWith("forbidden");
+  });
+
+  it("do not let a slow earlier answer undo a later click", async () => {
+    const { store } = makeStore();
+    const first = deferred<AutopilotSnapshot>();
+    setAutopilot
+      .mockReturnValueOnce(first.promise)
+      .mockResolvedValueOnce(snapshot({ paused_agents: [] }));
+
+    const pause = store.getState().setAgentAutopilot("a1", false);
+    await store.getState().setAgentAutopilot("a1", true);
+    first.resolve(snapshot({ paused_agents: ["a1"] }));
+    await pause;
+
+    expect(store.getState().autopilotPausedAgents).toEqual([]);
+  });
+
+  it("are refused on a host too old to run autopilot, and send nothing", async () => {
+    activeIs(remote(["send_user_message"]));
+    const { store, setLastError } = makeStore();
+
+    await store.getState().setAgentAutopilot("a1", false);
+
+    expect(setAutopilot).not.toHaveBeenCalled();
+    expect(setLastError).toHaveBeenCalledOnce();
+    expect(store.getState().autopilotPausedAgents).toEqual([]);
+  });
+});
+
+describe("dropAgentEntries", () => {
+  it("takes every checkout's row and history with the agent", () => {
+    const { store } = makeStore();
+    for (const r of [row(), row({ subdir: "web" }), row({ agent_id: "a2" })]) {
+      store.getState().applyAutopilotState(r);
+      store.getState().applyAutopilotEvent(entry({ agent_id: r.agent_id, subdir: r.subdir }));
+    }
+    const s = store.getState();
+
+    const patch = dropAgentEntries(
+      {
+        managedLogs: {},
+        transcriptLoading: {},
+        transcriptLoaded: {},
+        sending: {},
+        busyLabel: {},
+        turnStartedAt: {},
+        usage: {},
+        gitStates: {},
+        gitBlocked: {},
+        prStates: {},
+        prChecks: {},
+        prComments: {},
+        gitShortstats: {},
+        composerSeeds: {},
+        composerDrafts: {},
+        delegations: {},
+        delegationNotices: {},
+        autopilot: s.autopilot,
+        autopilotLog: s.autopilotLog,
+        unseenResults: {},
+        rightPanelTabs: {},
+        offSidebarAgents: {},
+        backgroundTasks: {},
+        codeUndo: {},
+        // biome-ignore lint/suspicious/noExplicitAny: partial state fixture
+      } as any,
+      "a1",
     );
-  });
 
-  it("switching a project off twice records it once", () => {
-    const store = loaded();
-    const p = fresh();
-    store.getState().setProjectAutopilot(p, false);
-    store.getState().setProjectAutopilot(p, false);
-    expect(store.getState().autopilotDisabledProjects).toEqual([p]);
-  });
-
-  it("reverts the switch when the durable write fails", async () => {
-    // The row is the truth: a session that shows "off" while the table still
-    // says "on" would quietly resume autopilot on the next launch. Better to
-    // snap the toggle back so the user sees the change didn't take.
-    setProjectSetting.mockRejectedValueOnce(new Error("db locked"));
-    const store = loaded();
-    const p = fresh();
-
-    store.getState().setProjectAutopilot(p, false);
-    expect(store.getState().autopilotDisabledProjects).toEqual([p]);
-    await vi.waitFor(() => expect(store.getState().autopilotDisabledProjects).toEqual([]));
-  });
-
-  it("runs one project's writes in click order, even when the first is slow", async () => {
-    // off (slow) then on (fast): without ordering the delete lands first and the
-    // slow upsert then persists "off" — the opposite of the last click.
-    const slow = deferred();
-    setProjectSetting.mockReturnValueOnce(slow.promise);
-    const store = loaded();
-    const p = fresh();
-
-    store.getState().setProjectAutopilot(p, false);
-    store.getState().setProjectAutopilot(p, true);
-    await vi.waitFor(() => expect(setProjectSetting).toHaveBeenCalledTimes(1));
-    expect(deleteProjectSetting).not.toHaveBeenCalled();
-
-    slow.resolve();
-    await vi.waitFor(() => expect(deleteProjectSetting).toHaveBeenCalledTimes(1));
-    expect(store.getState().autopilotDisabledProjects).toEqual([]);
-  });
-
-  it("a stale failure does not roll back a later choice", async () => {
-    // off fails slowly while on has already been requested: the user's latest
-    // choice is "on", and the earlier failure must not be allowed to touch it.
-    // Only the latest request for a project may roll back.
-    const slow = deferred();
-    setProjectSetting.mockReturnValueOnce(slow.promise);
-    const store = loaded();
-    const p = fresh();
-
-    store.getState().setProjectAutopilot(p, false); // slow, will fail
-    store.getState().setProjectAutopilot(p, true); // queued behind it
-    expect(store.getState().autopilotDisabledProjects).toEqual([]);
-
-    slow.reject(new Error("db locked"));
-    await vi.waitFor(() => expect(deleteProjectSetting).toHaveBeenCalledTimes(1));
-    expect(store.getState().autopilotDisabledProjects).toEqual([]);
-  });
-
-  it("a failure of the LATEST request does roll back, even behind an earlier success", async () => {
-    // Mirror image: the earlier write succeeds, the latest one fails, so the
-    // store must return to what the earlier write persisted.
-    deleteProjectSetting.mockRejectedValueOnce(new Error("db locked"));
-    const store = loaded();
-    const p = fresh();
-
-    store.getState().setProjectAutopilot(p, false); // succeeds
-    store.getState().setProjectAutopilot(p, true); // fails
-    await vi.waitFor(() => expect(store.getState().autopilotDisabledProjects).toEqual([p]));
-  });
-
-  it("rolls back to what the row is KNOWN to hold, not to the click before", async () => {
-    // off fails, then on fails. The inverse of the latest click would be "off",
-    // but neither write changed the row — it still holds the default (on). A
-    // store showing off here would have autopilot resume at the next launch
-    // behind a switch that says otherwise.
-    setProjectSetting.mockRejectedValueOnce(new Error("db locked"));
-    deleteProjectSetting.mockRejectedValueOnce(new Error("db locked"));
-    const store = loaded();
-    const p = fresh();
-
-    store.getState().setProjectAutopilot(p, false); // fails
-    store.getState().setProjectAutopilot(p, true); // fails
-    await vi.waitFor(() => expect(deleteProjectSetting).toHaveBeenCalledTimes(1));
-    await vi.waitFor(() => expect(store.getState().autopilotDisabledProjects).toEqual([]));
-    // And the mirror: on fails, then off fails, from a row that holds off.
-    const q = fresh();
-    store.setState({ autopilotDisabledProjects: [q] });
-    loadAutopilotDisabledProjects.mockResolvedValueOnce([q]);
-    await store.getState().loadAutopilotProjects();
-    deleteProjectSetting.mockRejectedValueOnce(new Error("db locked"));
-    setProjectSetting.mockRejectedValueOnce(new Error("db locked"));
-
-    store.getState().setProjectAutopilot(q, true); // fails
-    store.getState().setProjectAutopilot(q, false); // fails
-    await vi.waitFor(() => expect(setProjectSetting).toHaveBeenCalledTimes(2));
-    await vi.waitFor(() => expect(store.getState().autopilotDisabledProjects).toEqual([q]));
-  });
-
-  it("a load seeds what the row holds, so the first failed write reverts to it", async () => {
-    // The loaded list is the truth as of launch: a project the table says is off
-    // must revert to off when its very first write of the session fails.
-    const store = makeStore();
-    const p = fresh();
-    loadAutopilotDisabledProjects.mockResolvedValueOnce([p]);
-    await store.getState().loadAutopilotProjects();
-    deleteProjectSetting.mockRejectedValueOnce(new Error("db locked"));
-
-    store.getState().setProjectAutopilot(p, true);
-    expect(store.getState().autopilotDisabledProjects).toEqual([]);
-    await vi.waitFor(() => expect(store.getState().autopilotDisabledProjects).toEqual([p]));
-  });
-
-  it("keeps different projects' writes independent", async () => {
-    // Serialization is per project: a slow write for one must not hold up
-    // another's.
-    const slow = deferred();
-    setProjectSetting.mockReturnValueOnce(slow.promise);
-    const store = loaded();
-    const a = fresh();
-    const b = fresh();
-
-    store.getState().setProjectAutopilot(a, false); // slow
-    store.getState().setProjectAutopilot(b, false);
-    await vi.waitFor(() => expect(setProjectSetting).toHaveBeenCalledTimes(2));
-    slow.resolve();
-  });
-});
-
-describe("enrollment", () => {
-  it("starts absent — the driver enrolls live checkouts on its first tick", () => {
-    expect(makeStore().getState().autopilot).toEqual({});
-  });
-
-  it("enrolls clean, with no spent budget and nothing in flight", () => {
-    const store = makeStore();
-    store.getState().enrollAutopilot("a1");
-    expect(store.getState().autopilot.a1).toEqual({
-      enrolled: true,
-      cycle: null,
-      attempts: {},
-      situation: "",
-      barren: [],
-    });
-  });
-
-  it("unenrolling forgets the checkout entirely, and only that checkout", () => {
-    const store = makeStore();
-    store.getState().enrollAutopilot("a1");
-    store.getState().enrollAutopilot("a1::web");
-    store.getState().retryAutopilotCycle("a1", "fix-checks", "x");
-    store.getState().unenrollAutopilot("a1");
-
-    expect(Object.keys(store.getState().autopilot)).toEqual(["a1::web"]);
-  });
-
-  it("ignores transitions for a checkout that was never enrolled", () => {
-    // The driver only ticks enrolled keys, but a race (unenroll mid-tick) must
-    // not resurrect an entry.
-    const store = makeStore();
-    store.getState().openAutopilotCycle("ghost", "fix-checks", "sig", "checks-failing:test");
-    store.getState().retryAutopilotCycle("ghost", "fix-checks", null);
-    expect(store.getState().autopilot.ghost).toBeUndefined();
-  });
-});
-
-describe("cycle bookkeeping", () => {
-  const SITUATION = "checks-failing:test";
-
-  it("numbers attempts from the rung's spent budget", () => {
-    const store = makeStore();
-    store.getState().enrollAutopilot("a1");
-    store.getState().openAutopilotCycle("a1", "fix-checks", "sig", SITUATION);
-    expect(store.getState().autopilot.a1.cycle?.attempt).toBe(1);
-
-    store.getState().retryAutopilotCycle("a1", "fix-checks", null);
-    store.getState().openAutopilotCycle("a1", "fix-checks", "sig2", SITUATION);
-    expect(store.getState().autopilot.a1.cycle?.attempt).toBe(2);
-  });
-
-  it("starts the budget over for a new situation, but REMEMBERS what it already failed at", () => {
-    // A different failing check is a different problem: the tries spent on the
-    // old one don't count against it. Barren signatures are kept regardless —
-    // without that, a checkout whose world oscillates (a flaky check flipping
-    // back and forth) would burn a full budget on every flip re-attempting a
-    // world it has already proven it cannot change.
-    const store = makeStore();
-    store.getState().enrollAutopilot("a1");
-    store.getState().openAutopilotCycle("a1", "fix-checks", "sig", SITUATION);
-    store.getState().retryAutopilotCycle("a1", "fix-checks", "dead-world");
-    store.getState().retryAutopilotCycle("a1", "fix-checks", null);
-    expect(store.getState().autopilot.a1.attempts).toEqual({ "fix-checks": 2 });
-
-    store.getState().openAutopilotCycle("a1", "fix-checks", "sig3", "checks-failing:lint");
-
-    const s = store.getState().autopilot.a1;
-    expect(s.situation).toBe("checks-failing:lint");
-    expect(s.cycle?.attempt).toBe(1);
-    expect(s.attempts).toEqual({});
-    expect(s.barren).toEqual(["dead-world"]);
-  });
-
-  it("records a barren signature once, and only when given one", () => {
-    const store = makeStore();
-    store.getState().enrollAutopilot("a1");
-    store.getState().retryAutopilotCycle("a1", "fix-checks", "sig");
-    store.getState().retryAutopilotCycle("a1", "fix-checks", "sig");
-    store.getState().retryAutopilotCycle("a1", "fix-checks", null);
-    expect(store.getState().autopilot.a1.barren).toEqual(["sig"]);
-    expect(store.getState().autopilot.a1.attempts).toEqual({ "fix-checks": 3 });
-  });
-
-  it("gives the budget back on success, so a long-lived PR isn't capped for life", () => {
-    const store = makeStore();
-    store.getState().enrollAutopilot("a1");
-    store.getState().retryAutopilotCycle("a1", "fix-checks", null);
-    store.getState().retryAutopilotCycle("a1", "fix-checks", null);
-    store.getState().settleAutopilotCycle("a1", "fix-checks");
-    expect(store.getState().autopilot.a1.attempts["fix-checks"]).toBe(0);
-    expect(store.getState().autopilot.a1.cycle).toBeNull();
-  });
-
-  it("stamps the phase clock when evidence starts being awaited", () => {
-    const store = makeStore();
-    store.getState().enrollAutopilot("a1");
-    store.getState().openAutopilotCycle("a1", "fix-checks", "sig", SITUATION);
-    store.getState().advanceAutopilotCycle("a1", "awaiting-evidence", 4242);
-    expect(store.getState().autopilot.a1.cycle).toMatchObject({
-      phase: "awaiting-evidence",
-      phaseSince: 4242,
-    });
-  });
-});
-
-describe("verdicts belong to the cycle that produced them", () => {
-  it("drops the previous cycle's verdict when a new cycle opens", () => {
-    // Otherwise a stale "tests failed" from the last attempt would immediately
-    // condemn the next one.
-    const store = makeStore();
-    store.getState().enrollAutopilot("a1");
-    store.getState().recordAutopilotVerdict("a1", report("failed"));
-    expect(store.getState().autopilotVerdicts.a1).toBeDefined();
-
-    store.getState().openAutopilotCycle("a1", "fix-checks", "sig", "checks-failing:test");
-    expect(store.getState().autopilotVerdicts.a1).toBeUndefined();
-  });
-
-  it("keys verdicts per checkout, so a secondary repo gets its own evidence", () => {
-    // The existing `verificationReports` map is agent-keyed, which is why
-    // autopilot keeps its own: a secondary checkout would otherwise overwrite the
-    // primary's report and be judged by it.
-    const store = makeStore();
-    store.getState().recordAutopilotVerdict("a1", report("passed"));
-    store.getState().recordAutopilotVerdict("a1::web", report("failed"));
-    expect(store.getState().autopilotVerdicts.a1.checks[0].outcome).toBe("passed");
-    expect(store.getState().autopilotVerdicts["a1::web"].checks[0].outcome).toBe("failed");
+    expect(Object.keys(patch.autopilot ?? {})).toEqual(["a2"]);
+    expect(Object.keys(patch.autopilotLog ?? {})).toEqual(["a2"]);
   });
 });

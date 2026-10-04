@@ -1,3 +1,4 @@
+import type { CyclePhase, GiveUpReason } from "@/autopilot";
 import type { DelegationKind, DelegationPhase } from "@/delegation";
 
 export interface DiffStats {
@@ -74,4 +75,55 @@ export interface DelegationEvent {
   /** Epoch ms when it entered its current phase. */
   started_at: number;
   notice?: string;
+}
+
+/** The cycle autopilot has open on a checkout: the rung it handed the agent,
+ *  which try that is (1-based), and since when (epoch ms) it has been in the
+ *  current phase. */
+export interface AutopilotCycle {
+  rung: DelegationKind;
+  attempt: number;
+  phase: CyclePhase;
+  since: number;
+}
+
+/** One checkout as the host's autopilot sees it: a row of `autopilot_state`,
+ *  or one `autopilot:state` event (which replaces the row it names). */
+export interface AutopilotCheckout {
+  agent_id: string;
+  /** The secondary repo; null for the agent's primary. */
+  subdir: string | null;
+  project_id: string;
+  /** `project_enabled && !paused`. */
+  enrolled: boolean;
+  /** The agent's own pause, from the Git panel's switch. */
+  paused: boolean;
+  /** The project's switch. */
+  project_enabled: boolean;
+  cycle: AutopilotCycle | null;
+}
+
+/** Autopilot across the whole host: what `autopilot_state` and `autopilot_set`
+ *  answer. */
+export interface AutopilotSnapshot {
+  checkouts: AutopilotCheckout[];
+  /** Projects whose switch is off. Every other project is on. */
+  disabled_projects: string[];
+  /** Agents paused from the Git panel. */
+  paused_agents: string[];
+}
+
+/** One thing autopilot did: a row of `autopilot_log`, or one `autopilot:event`. */
+export interface AutopilotLogEntry {
+  id: string;
+  agent_id: string;
+  subdir: string | null;
+  /** Epoch ms. */
+  at: number;
+  outcome: "dispatch" | "settle" | "retry" | "give-up";
+  rung: DelegationKind;
+  /** 1-based try of the cycle the row belongs to. */
+  attempt: number;
+  /** Only on a `give-up`. */
+  reason?: GiveUpReason;
 }

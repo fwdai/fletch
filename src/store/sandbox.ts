@@ -12,8 +12,6 @@ import { DEFAULT_SANDBOX_ENGINE, type SandboxEngine } from "@/storage/preference
 import { newestWins } from "@/util/newestWins";
 import { type ApprovalEvent, replayApprovalEvents } from "@/util/publishApprovals";
 import { activeEnvironment, forActiveEnvironment } from "./environments";
-import { checkoutKey } from "./git";
-import { autopilotIsDriving, publishPreAuthorized } from "./publishApproval";
 import type { SliceCreator } from "./types";
 
 /** Live state of one embedded container image build (first spawn under a
@@ -111,9 +109,7 @@ export interface SandboxSlice {
   podmanMemory: string;
   podmanCpus: string;
   /** Whether an agent must get the user's approval before publishing. Mirrors
-   *  the backend-owned `publish_confirmation` setting. Off by default: autopilot
-   *  publishes unattended, and a prompt would hang it until the decision
-   *  timeout. */
+   *  the backend-owned `publish_confirmation` setting. Off by default. */
   publishConfirmation: boolean;
   /** Publishes waiting on the user, oldest first. Two agents can be waiting at
    *  once, so this is a queue rather than a single slot; the prompt shows the
@@ -126,10 +122,9 @@ export interface SandboxSlice {
   setSandboxEngine: (engine: SandboxEngine) => Promise<void>;
   /** Turn the publish-approval prompt on or off (backend-owned setting). */
   setPublishConfirmation: (enabled: boolean) => Promise<void>;
-  /** Handle a publish the backend is blocked on: answer it immediately when the
-   *  user already authorized it, otherwise queue it for the prompt. Owns the
-   *  decision so it is testable without a rendered listener — and the decision is
-   *  what keeps an unattended autopilot run from stalling on a prompt. */
+  /** Queue a publish the backend is blocked on for the prompt. What the user
+   *  already authorized — a delegation's or an autopilot-enrolled checkout's own
+   *  pushes — the host approves without asking, so it never arrives here. */
   receivePublishApproval: (request: PublishApproval) => void;
   /** Replace the queue with what the active host says is still waiting.
    *
@@ -215,23 +210,6 @@ export const createSandboxSlice: SliceCreator<SandboxSlice> = (set, get) => ({
   },
 
   receivePublishApproval: (request) => {
-    const key = checkoutKey(request.agent_id, request.repo);
-    const s = get();
-    if (publishPreAuthorized(request.op, key, s)) {
-      // Not awaited: the listener is synchronous and the backend is blocked on the
-      // answer, so surface a failed IPC rather than dropping it silently.
-      s.answerPublishApproval(request.id, true).catch((err) =>
-        console.error("failed to auto-approve a pre-authorized publish", { key, err }),
-      );
-      return;
-    }
-    // A *push* prompted while autopilot is driving is unreachable (the branch above
-    // covers it) and would stall that run at the backend's timeout, so say so
-    // loudly. `open_pr` is not covered by enrollment on purpose, so a prompt for one
-    // is expected and must not be reported as a fault.
-    if (request.op === "git_push" && autopilotIsDriving(s.autopilot[key])) {
-      console.error("publish approval prompted while autopilot is driving", { key, request });
-    }
     approvalsInFlight?.push({ kind: "requested", request });
     set((prev) => ({ pendingPublishApprovals: [...prev.pendingPublishApprovals, request] }));
   },

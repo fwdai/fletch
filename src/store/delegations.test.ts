@@ -225,7 +225,6 @@ describe("dropAgentEntries", () => {
         delegations: { a1: live, "a1::web": { ...live, subdir: "web" }, a2: live },
         delegationNotices: { a1: "done", "a1::web": "done", a2: "done" },
         autopilot: {},
-        autopilotVerdicts: {},
         autopilotLog: {},
         unseenResults: {},
         rightPanelTabs: {},

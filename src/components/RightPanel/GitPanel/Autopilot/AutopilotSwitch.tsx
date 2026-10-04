@@ -25,9 +25,8 @@ function switchTip(projectOn: boolean, on: boolean): string {
 }
 
 export function AutopilotSwitch({ agentId, projectId }: { agentId: string; projectId: string }) {
-  // Autopilot only ever runs against this Mac (see the `autopilot` gate), and
-  // its pause list is keyed by agent id — a recycled place name — so a click
-  // while a host is on screen would pause a LOCAL workspace of the same name.
+  // The pause is the host's (`autopilot_set`); a host too old to run autopilot
+  // has nothing to pause.
   const gate = useGate("autopilot");
   const disabledProjects = useAppStore((s) => s.autopilotDisabledProjects);
   const paused = useAppStore((s) => s.autopilotPausedAgents.includes(agentId));
@@ -49,7 +48,7 @@ export function AutopilotSwitch({ agentId, projectId }: { agentId: string; proje
       aria-label={tip}
       data-tip={tip}
       disabled={!projectOn}
-      onClick={() => setAgentAutopilot(agentId, !on)}
+      onClick={() => void setAgentAutopilot(agentId, !on)}
     >
       <Icon name={on ? "zap" : "zapOff"} size={13} />
     </button>
