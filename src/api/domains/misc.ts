@@ -18,6 +18,11 @@ export const miscApi = {
   // owned so the phone push reads the same `notify_turn_complete` key.
   setNotifyTurnComplete: (enabled: boolean) =>
     invokeLocal<void>("set_notify_turn_complete", { enabled }),
+  /** The ship-loop alert opt-out (checks settled, review comment, PR merged or
+   *  closed), backend-owned like `notify_turn_complete` so the phone push reads
+   *  the same `notify_pr_activity` key. */
+  setNotifyPrActivity: (enabled: boolean) =>
+    invokeLocal<void>("set_notify_pr_activity", { enabled }),
   // Code indexing (codegraph). Persists the flag and, when enabled, warms the
   // index in the background (install + per-repo mirror). Backend-owned.
   setCodeIndexingEnabled: (enabled: boolean) =>

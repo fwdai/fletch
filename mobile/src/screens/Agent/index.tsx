@@ -13,6 +13,9 @@ import { ShipTab } from "./ShipTab";
 const TABS = ["chat", "changes", "ship"] as const;
 type Tab = (typeof TABS)[number];
 
+const isTab = (value: string | undefined): value is Tab =>
+  (TABS as readonly string[]).includes(value ?? "");
+
 function SpawnPane({ task, base, branch }: { task: string; base: string; branch: string }) {
   return (
     <div className="scroll">
@@ -97,7 +100,9 @@ function Subtitle({ agentId }: { agentId: string }) {
   );
 }
 
-export function AgentScreen({ agentId }: { agentId: string }) {
+/** `tab` is the one to open on — a nav prop, so a push tap about the PR can land
+ *  on Ship; anything unrecognized, or nothing, opens the chat. */
+export function AgentScreen({ agentId, tab: initialTab }: { agentId: string; tab?: string }) {
   const agent = useStore((s) => agentOf(s, agentId));
   const project = useStore((s) => projectOf(s, agentId));
   const pop = useStore((s) => s.pop);
@@ -105,7 +110,7 @@ export function AgentScreen({ agentId }: { agentId: string }) {
   const git = useStore((s) => s.gitStates[agentId]);
   const ensureAgent = useStore((s) => s.ensureAgent);
   const connected = useStore((s) => s.connection === "connected");
-  const [tab, setTab] = useState<Tab>("chat");
+  const [tab, setTab] = useState<Tab>(isTab(initialTab) ? initialTab : "chat");
   const [dir, setDir] = useState(1);
   // Owned here so sending a message can re-pin the log to the bottom.
   const pinnedToBottom = useRef(true);

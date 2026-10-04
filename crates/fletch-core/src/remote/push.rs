@@ -1,19 +1,31 @@
-//! Push-notification triggers: the two out-of-app signals the desktop already
-//! raises, mirrored to paired phones as APNs alerts.
+//! Push-notification triggers: the out-of-app signals the desktop already
+//! raises, plus the ship loop's, mirrored to paired phones as APNs alerts.
 //!
 //! The contract is `docs/remote-protocol.md` → "Push notifications". The host's
 //! whole job is deciding *when* and building the NOTIFY frame; the relay holds
 //! the APNs key and does the sending, so nothing here talks to Apple and no
-//! transcript text leaves the Mac — the body is the agent's name.
+//! transcript text leaves the Mac — the body is the agent's name, at most
+//! joined by a check name, a reviewer's login or a PR number.
 //!
-//! The rules mirror `signalAway` in `src/store/eventListeners.ts`, which is the
-//! desktop's own chime/notification gate, so a phone and the Mac agree about
-//! what is worth interrupting a user for:
+//! The first two rules mirror `signalAway` in `src/store/eventListeners.ts`,
+//! which is the desktop's own chime/notification gate, so a phone and the Mac
+//! agree about what is worth interrupting a user for:
 //!
 //! - `turn_complete` on a `running → idle` transition the user did not cause.
 //! - `needs_input` on the first held `can_use_tool` prompt for an agent, one
 //!   per batch of parallel prompts.
-//! - Neither while the desktop's own window has focus: the user is right here.
+//!
+//! The ship-loop rules read the events the host-side PR watcher
+//! (`supervisor::pr_watch`) emits, so they fire with the window shut:
+//!
+//! - `checks_settled` when a PR's CI rollup lands on `passing` or `failing`
+//!   from anything else (a `failing → failing` with a different set of names is
+//!   not a second alert; `failing → passing` is).
+//! - `review_comment` when unresolved review threads gain one not seen before.
+//! - `pr_merged` / `pr_closed` when a PR this process saw open leaves `open`,
+//!   so a cold start's first stale snapshot of a merged PR alerts nobody.
+//! - None of them while the desktop's own window has focus: the user is right
+//!   here.
 //!
 //! ## Why a sink and not a subscriber task
 //!
@@ -26,13 +38,13 @@
 //! separate task and may be polled on another worker thread, so it can only
 //! ever race that removal: it would report every stop as a natural completion.
 //!
-//! So these two triggers are an [`EventSink`] in the host's fanout instead.
+//! So these triggers are an [`EventSink`] in the host's fanout instead.
 //! A sink runs *inside* `emit`, on the emitting thread, exactly where the Tauri
 //! `listen_any` tap used to run, and `agent:status` is emitted before
 //! `drain_message_queue` in the same frame — so the flag still means something
 //! when the trigger reads it. Hence this module contains no `async`.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -50,7 +62,13 @@ use crate::workspace::{AgentStatus, AgentView};
 /// banner (the frontend reads the same key), so one switch covers every alert
 /// surface. Mirrored in memory because the taps run without a DB handle.
 pub const TURN_COMPLETE_SETTING: &str = "notify_turn_complete";
+/// Settings key: alert on the ship loop at all — `checks_settled`,
+/// `review_comment`, `pr_merged` and `pr_closed` under one switch. Opt-out,
+/// same mechanics as `notify_turn_complete`.
+pub const PR_ACTIVITY_SETTING: &str = "notify_pr_activity";
+
 static TURN_COMPLETE: AtomicBool = AtomicBool::new(true);
+static PR_ACTIVITY: AtomicBool = AtomicBool::new(true);
 
 pub fn parse_turn_complete(raw: Option<&str>) -> bool {
     raw != Some("false")
@@ -64,11 +82,32 @@ fn turn_complete_enabled() -> bool {
     TURN_COMPLETE.load(Ordering::Relaxed)
 }
 
-/// The two `kind`s and their titles, verbatim from the protocol doc.
+pub fn parse_pr_activity(raw: Option<&str>) -> bool {
+    raw != Some("false")
+}
+
+pub fn set_pr_activity(enabled: bool) {
+    PR_ACTIVITY.store(enabled, Ordering::Relaxed);
+}
+
+fn pr_activity_enabled() -> bool {
+    PR_ACTIVITY.load(Ordering::Relaxed)
+}
+
+/// The `kind`s and their titles, verbatim from the protocol doc.
 const KIND_TURN_COMPLETE: &str = "turn_complete";
 const KIND_NEEDS_INPUT: &str = "needs_input";
+const KIND_CHECKS_SETTLED: &str = "checks_settled";
+const KIND_REVIEW_COMMENT: &str = "review_comment";
+const KIND_PR_MERGED: &str = "pr_merged";
+const KIND_PR_CLOSED: &str = "pr_closed";
 const TITLE_TURN_COMPLETE: &str = "Turn complete";
 const TITLE_NEEDS_INPUT: &str = "Needs your input";
+const TITLE_CHECKS_PASSED: &str = "Checks passed";
+const TITLE_CHECKS_FAILED: &str = "Checks failed";
+const TITLE_REVIEW_COMMENT: &str = "New review comment";
+const TITLE_PR_MERGED: &str = "PR merged";
+const TITLE_PR_CLOSED: &str = "PR closed";
 
 /// Doc cap on the tokens in one NOTIFY. The relay caps device links per host at
 /// 8 too, so this can only bite if that ever grows; truncating is defensive.
@@ -143,6 +182,16 @@ pub(super) struct PushTriggers {
     /// a batch of parallel prompts one alert; it is dropped when the agent
     /// leaves `Running`, which is also how a turn ends.
     pending_input: Mutex<HashSet<String>>,
+    /// The rollup each PR's last `pr:checks_changed` carried, keyed by the
+    /// event's agent/subdir plus its PR number, so a `failing → failing` with a
+    /// different set of names is not a second alert while `failing → passing`
+    /// is — and the next PR on the same checkout starts with no memory. Entries
+    /// go when their PR leaves `open`.
+    last_rollup: Mutex<HashMap<String, String>>,
+    /// The state each agent's last `pr:state_changed` carried. A merge or close
+    /// alerts only when this saw the PR open: a cold start's first event may be
+    /// a stale snapshot of a PR that merged last week.
+    last_pr_state: Mutex<HashMap<String, String>>,
 }
 
 impl PushTriggers {
@@ -153,6 +202,8 @@ impl PushTriggers {
             notify,
             running: Mutex::new(HashSet::new()),
             pending_input: Mutex::new(HashSet::new()),
+            last_rollup: Mutex::new(HashMap::new()),
+            last_pr_state: Mutex::new(HashMap::new()),
         }
     }
 
@@ -193,11 +244,17 @@ impl PushTriggers {
         if !turn_complete_enabled() {
             return;
         }
-        self.alert(agents, agent_id, KIND_TURN_COMPLETE, TITLE_TURN_COMPLETE);
+        self.alert(
+            agents,
+            agent_id,
+            KIND_TURN_COMPLETE,
+            TITLE_TURN_COMPLETE,
+            None,
+        );
     }
 
-    /// Route one event off the sink. The two names are the whole surface; every
-    /// other event the engine emits passes through untouched.
+    /// Route one event off the sink. These five names are the whole surface;
+    /// every other event the engine emits passes through untouched.
     pub(super) fn on_event(&self, agents: &dyn AgentLookup, event: &str, payload: &Value) {
         match event {
             "agent:status" => {
@@ -206,8 +263,120 @@ impl PushTriggers {
                 }
             }
             "agent:event" => self.on_agent_event(agents, payload),
+            "pr:checks_changed" => self.on_checks_changed(agents, payload),
+            "pr:threads_changed" => self.on_threads_changed(agents, payload),
+            "pr:state_changed" => self.on_pr_state_changed(agents, payload),
             _ => {}
         }
+    }
+
+    /// One `pr:checks_changed`. Alerts when the rollup *settles* — lands on
+    /// `passing` or `failing` from anything else, an unseen PR included. The
+    /// watcher also emits for a changed set of failing names under the same
+    /// rollup; that is the phone's list to refresh, not a second alert.
+    fn on_checks_changed(&self, agents: &dyn AgentLookup, payload: &Value) {
+        let Ok(payload) = ChecksChangedPayload::deserialize(payload) else {
+            return;
+        };
+        // Keyed by PR, not just by checkout: the next PR on the same branch
+        // settling green is its own news, not a repeat of the last one's.
+        let key = match &payload.subdir {
+            Some(subdir) => format!("{}::{subdir}#{}", payload.agent_id, payload.number),
+            None => format!("{}#{}", payload.agent_id, payload.number),
+        };
+        let rollup = payload.checks.rollup;
+        let previous = self.last_rollup.lock().insert(key, rollup.clone());
+        let settled = matches!(rollup.as_str(), "passing" | "failing");
+        if !settled || previous.as_deref() == Some(rollup.as_str()) {
+            return;
+        }
+        if !pr_activity_enabled() {
+            return;
+        }
+        let (title, detail) = if rollup == "passing" {
+            (TITLE_CHECKS_PASSED, None)
+        } else {
+            (
+                TITLE_CHECKS_FAILED,
+                payload.checks.required_failing.first().map(String::as_str),
+            )
+        };
+        self.alert(
+            agents,
+            &payload.agent_id,
+            KIND_CHECKS_SETTLED,
+            title,
+            detail,
+        );
+    }
+
+    /// One `pr:threads_changed`. The watcher already did the diffing — the
+    /// event names the new ids — so this only needs the first one's author.
+    fn on_threads_changed(&self, agents: &dyn AgentLookup, payload: &Value) {
+        let Ok(payload) = ThreadsChangedPayload::deserialize(payload) else {
+            return;
+        };
+        let Some(first) = payload.new_thread_ids.first() else {
+            return;
+        };
+        if !pr_activity_enabled() {
+            return;
+        }
+        let author = payload
+            .comments
+            .unresolved
+            .iter()
+            .find(|thread| &thread.id == first)
+            .map(|thread| thread.author.as_str());
+        self.alert(
+            agents,
+            &payload.agent_id,
+            KIND_REVIEW_COMMENT,
+            TITLE_REVIEW_COMMENT,
+            author,
+        );
+    }
+
+    /// One `pr:state_changed`. The event fires from several paths (a turn end,
+    /// a push, the watcher) and each reports the state it found, not a
+    /// transition — so the transition is reconstructed here, and only an
+    /// `open → merged|closed` this process witnessed is a merge or a close.
+    fn on_pr_state_changed(&self, agents: &dyn AgentLookup, payload: &Value) {
+        let Ok(payload) = PrStateChangedPayload::deserialize(payload) else {
+            return;
+        };
+        let previous = {
+            let mut last = self.last_pr_state.lock();
+            match &payload.state {
+                Some(state) => last.insert(payload.agent_id.clone(), state.state.clone()),
+                None => last.remove(&payload.agent_id),
+            }
+        };
+        // A PR that is no longer open takes its rollup memory with it, so the
+        // map stays bounded by the PRs still being watched.
+        if payload.state.as_ref().map(|s| s.state.as_str()) != Some("open") {
+            let agent = payload.agent_id.as_str();
+            self.last_rollup.lock().retain(|key, _| {
+                let own = key.strip_prefix(agent);
+                !matches!(own, Some(rest) if rest.starts_with('#') || rest.starts_with("::"))
+            });
+        }
+        let Some(state) = payload.state else {
+            return;
+        };
+        if previous.as_deref() != Some("open") {
+            return;
+        }
+        let (kind, title) = match state.state.as_str() {
+            "merged" => (KIND_PR_MERGED, TITLE_PR_MERGED),
+            "closed" => (KIND_PR_CLOSED, TITLE_PR_CLOSED),
+            _ => return,
+        };
+        if !pr_activity_enabled() {
+            return;
+        }
+        let number = format!("#{}", state.number);
+        self.alert(agents, &payload.agent_id, kind, title, Some(&number));
     }
 
     /// One `agent:event` payload. Only held `can_use_tool` control requests are
@@ -235,12 +404,22 @@ impl PushTriggers {
             &payload.agent_id,
             KIND_NEEDS_INPUT,
             TITLE_NEEDS_INPUT,
+            None,
         );
     }
 
     /// Build and send one alert, unless the user is already looking at it or no
-    /// device could receive it.
-    fn alert(&self, agents: &dyn AgentLookup, agent_id: &str, kind: &str, title: &str) {
+    /// device could receive it. The body is the agent's name, joined with
+    /// ` · ` to `detail` when a kind has one (a check name, a reviewer, a PR
+    /// number).
+    fn alert(
+        &self,
+        agents: &dyn AgentLookup,
+        agent_id: &str,
+        kind: &str,
+        title: &str,
+        detail: Option<&str>,
+    ) {
         if (self.focused)() {
             tracing::debug!(agent_id, kind, "remote: push skipped, the Mac has focus");
             return;
@@ -257,9 +436,13 @@ impl PushTriggers {
         if tokens.is_empty() {
             return;
         }
-        let body = agents
+        let name = agents
             .agent_name(agent_id)
             .unwrap_or_else(|| UNNAMED_AGENT.to_string());
+        let body = match detail {
+            Some(detail) => format!("{name} · {detail}"),
+            None => name,
+        };
         let payload = json!({
             "tokens": tokens,
             "title": clamp(title),
@@ -296,7 +479,7 @@ pub(super) fn tap(ctx: &Arc<EngineCtx>, state: Arc<RemoteState>) -> Sink {
     })
 }
 
-/// The two triggers hanging off the engine's emits. See the module doc for why
+/// The triggers hanging off the engine's emits. See the module doc for why
 /// this is a sink and not a task.
 struct PushTap {
     triggers: PushTriggers,
@@ -358,4 +541,56 @@ struct RawEvent {
 #[derive(Deserialize)]
 struct RawRequest {
     subtype: Option<String>,
+}
+
+/// `supervisor::events::PrChecksChangedPayload`, the part of it this needs.
+#[derive(Deserialize)]
+struct ChecksChangedPayload {
+    agent_id: String,
+    subdir: Option<String>,
+    #[serde(default)]
+    number: u32,
+    checks: ChecksSummary,
+}
+
+#[derive(Deserialize)]
+struct ChecksSummary {
+    rollup: String,
+    #[serde(default)]
+    required_failing: Vec<String>,
+}
+
+/// `supervisor::events::PrThreadsChangedPayload`, the part of it this needs.
+#[derive(Deserialize)]
+struct ThreadsChangedPayload {
+    agent_id: String,
+    #[serde(default)]
+    comments: ThreadsSummary,
+    #[serde(default)]
+    new_thread_ids: Vec<String>,
+}
+
+#[derive(Deserialize, Default)]
+struct ThreadsSummary {
+    #[serde(default)]
+    unresolved: Vec<ThreadSummary>,
+}
+
+#[derive(Deserialize)]
+struct ThreadSummary {
+    id: String,
+    author: String,
+}
+
+/// `supervisor::events::PrStateChangedPayload`, the part of it this needs.
+#[derive(Deserialize)]
+struct PrStateChangedPayload {
+    agent_id: String,
+    state: Option<PrStateSummary>,
+}
+
+#[derive(Deserialize)]
+struct PrStateSummary {
+    number: u64,
+    state: String,
 }

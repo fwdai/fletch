@@ -634,6 +634,8 @@ export const protocol: HostProtocol = {
     "turn:started",
     "workspace:changed",
     "pr:state_changed",
+    "pr:checks_changed",
+    "pr:threads_changed",
     "verify:report",
     "publish:approval-requested",
     "publish:approval-resolved",

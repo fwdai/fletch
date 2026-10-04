@@ -324,6 +324,84 @@ describe("git and PR state", () => {
     expect(state().shipActivity.pamukkale).toHaveLength(1);
   });
 
+  it("takes the watcher's checks and writes a line when they settle", () => {
+    useStore.setState((s) => ({
+      prChecks: { ...s.prChecks, pamukkale: null },
+      shipActivity: { ...s.shipActivity, pamukkale: [] },
+    }));
+    const checks = {
+      merge_state: "unstable",
+      rollup: "failing",
+      total: 2,
+      passed: 1,
+      failed: 1,
+      pending: 0,
+      required_failing: ["unit"],
+      runs: [],
+    };
+    hostEvent("pr:checks_changed", { agent_id: "pamukkale", subdir: null, checks });
+    expect(state().prChecks.pamukkale).toEqual(checks);
+    expect(state().shipActivity.pamukkale?.map((e) => e.text)).toEqual(["Checks failing: unit"]);
+    // The same verdict with another failing name refreshes the list, not the log.
+    hostEvent("pr:checks_changed", {
+      agent_id: "pamukkale",
+      subdir: null,
+      checks: { ...checks, required_failing: ["lint"] },
+    });
+    expect(state().shipActivity.pamukkale).toHaveLength(1);
+    // A secondary repo's checks are not this agent's PR on the phone.
+    hostEvent("pr:checks_changed", {
+      agent_id: "pamukkale",
+      subdir: "api",
+      checks: { ...checks, rollup: "passing" },
+    });
+    expect(state().prChecks.pamukkale?.rollup).toBe("failing");
+  });
+
+  it("takes the watcher's review threads and names the new one's author", () => {
+    useStore.setState((s) => ({ shipActivity: { ...s.shipActivity, pamukkale: [] } }));
+    const thread = (id: string, author: string) => ({
+      id,
+      author,
+      is_bot: false,
+      body: "",
+      path: null,
+      line: null,
+      url: "",
+      replies: 0,
+      we_replied_last: false,
+    });
+    const comments = { unresolved: [thread("t1", "greptile"), thread("t2", "alex")] };
+    hostEvent("pr:threads_changed", {
+      agent_id: "pamukkale",
+      subdir: null,
+      comments,
+      new_thread_ids: ["t2"],
+    });
+    expect(state().prComments.pamukkale).toEqual(comments);
+    expect(state().shipActivity.pamukkale?.map((e) => e.text)).toEqual([
+      "New review comment from alex",
+    ]);
+    hostEvent("pr:threads_changed", {
+      agent_id: "pamukkale",
+      subdir: null,
+      comments,
+      new_thread_ids: ["t1", "t2"],
+    });
+    expect(state().shipActivity.pamukkale?.[0].text).toBe("2 new review comments");
+  });
+
+  it("lands a tapped checks alert on the agent's Ship tab", () => {
+    state().openFromPush({ hostId: MOCK_HOST_KEY, agentId: "pamukkale", kind: "checks_settled" });
+    const top = state().nav[state().nav.length - 1];
+    expect(top.screen).toBe("agent");
+    expect(top.props).toMatchObject({ agentId: "pamukkale", tab: "ship" });
+    // A turn ending is answered in the chat, as before.
+    state().openFromPush({ hostId: MOCK_HOST_KEY, agentId: "pamukkale", kind: "turn_complete" });
+    const chat = state().nav[state().nav.length - 1];
+    expect(chat.props.tab).toBeUndefined();
+  });
+
   it("caps an agent's ship activity at 20, newest first", () => {
     useStore.setState((s) => ({ shipActivity: { ...s.shipActivity, pamukkale: [] } }));
     for (let i = 0; i < 25; i += 1) {

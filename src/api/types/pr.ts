@@ -91,6 +91,26 @@ export interface PrComments {
   unresolved: PrComment[];
 }
 
+/** The host-side PR watcher saw a bound open PR's CI rollup, or its set of
+ *  failing checks, change. `subdir` is null for the agent's primary repo. */
+export interface PrChecksChangedEvent {
+  agent_id: string;
+  subdir: string | null;
+  /** The PR these checks belong to — a new PR on the same branch is not a
+   *  continuation of the last one's rollup. */
+  number: number;
+  checks: PrChecks;
+}
+
+/** The host-side PR watcher saw new unresolved review threads on a bound open
+ *  PR: the whole current set, plus the ids it had not seen before. */
+export interface PrThreadsChangedEvent {
+  agent_id: string;
+  subdir: string | null;
+  comments: PrComments;
+  new_thread_ids: string[];
+}
+
 /** One agent-repo's entry in the app-wide sidebar sweep: PR state, plus the CI
  *  rollup when the PR is open. `checks: null` means "nothing to say this round"
  *  — served from a snapshot, not open, or the lookup degraded — so the store

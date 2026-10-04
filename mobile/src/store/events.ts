@@ -16,7 +16,11 @@ import type {
   AgentTitleEvent,
   Workspace,
 } from "@desktop/api/types/agent";
-import type { PrStateChangedEvent } from "@desktop/api/types/pr";
+import type {
+  PrChecksChangedEvent,
+  PrStateChangedEvent,
+  PrThreadsChangedEvent,
+} from "@desktop/api/types/pr";
 import type { RoadmapItem } from "@desktop/api/types/roadmap";
 import type { PublishApproval, PublishApprovalResolved } from "@desktop/api/types/sandbox";
 import type {
@@ -34,7 +38,12 @@ import { dropTasks, foldTaskEvent } from "./backgroundTasks";
 import { patchChatIn } from "./chats";
 import { agentOf, type MobileState } from "./index";
 import { isReplayed } from "./liveTurn";
-import { appendActivity, prTransitionText } from "./shipActivity";
+import {
+  appendActivity,
+  checksSettledText,
+  newThreadsText,
+  prTransitionText,
+} from "./shipActivity";
 import { applyLiveEvent } from "./transcript";
 
 type Set = (partial: Partial<MobileState> | ((s: MobileState) => Partial<MobileState>)) => void;
@@ -242,6 +251,30 @@ export function registerRemoteEvents(client: RemoteClient, set: Set, get: Get): 
       };
     });
     if (e.state) void get().loadGit(e.agent_id);
+  });
+
+  // The host-side PR watcher's reads. The phone keeps one PR per agent — the
+  // primary repo's — so a secondary's event (`subdir` set) has nowhere to land.
+  on<PrChecksChangedEvent>("pr:checks_changed", (e) => {
+    if (e.subdir) return;
+    set((s) => {
+      const line = checksSettledText(s.prChecks[e.agent_id], e.checks);
+      return {
+        prChecks: { ...s.prChecks, [e.agent_id]: e.checks },
+        ...(line ? { shipActivity: appendActivity(s.shipActivity, e.agent_id, line) } : {}),
+      };
+    });
+  });
+
+  on<PrThreadsChangedEvent>("pr:threads_changed", (e) => {
+    if (e.subdir) return;
+    set((s) => {
+      const line = newThreadsText(e.comments, e.new_thread_ids);
+      return {
+        prComments: { ...s.prComments, [e.agent_id]: e.comments },
+        ...(line ? { shipActivity: appendActivity(s.shipActivity, e.agent_id, line) } : {}),
+      };
+    });
   });
 
   // The turn-end verification for an opted-in project: the Ship tab's tests

@@ -31,7 +31,7 @@ function Screen({ item }: { item: NavItem }) {
     case "project":
       return <ProjectScreen projectId={item.props.projectId} />;
     case "agent":
-      return <AgentScreen agentId={item.props.agentId} />;
+      return <AgentScreen agentId={item.props.agentId} tab={item.props.tab} />;
     case "code":
       return <CodeScreen agentId={item.props.agentId} />;
     case "file":

@@ -33,6 +33,8 @@ export function GeneralPane() {
   const setNotifyEnabled = useAppStore((s) => s.setNotifyEnabled);
   const notifyTurnComplete = useAppStore((s) => s.notifyTurnComplete);
   const setNotifyTurnComplete = useAppStore((s) => s.setNotifyTurnComplete);
+  const notifyPrActivity = useAppStore((s) => s.notifyPrActivity);
+  const setNotifyPrActivity = useAppStore((s) => s.setNotifyPrActivity);
   const telemetryEnabled = useAppStore((s) => s.telemetryEnabled);
   const setTelemetryEnabled = useAppStore((s) => s.setTelemetryEnabled);
   const autoArchiveIdleDays = useAppStore((s) => s.autoArchiveIdleDays);
@@ -106,6 +108,12 @@ export function GeneralPane() {
             on={notifyTurnComplete}
             onClick={() => setNotifyTurnComplete(!notifyTurnComplete)}
           />
+        </SetRow>
+        <SetRow
+          title="Pull request activity"
+          sub="Also alert your phone when a PR's checks settle, a review comment arrives, or the PR merges or closes. Sent while this window is in the background."
+        >
+          <SetToggle on={notifyPrActivity} onClick={() => setNotifyPrActivity(!notifyPrActivity)} />
         </SetRow>
       </SetGroup>
 

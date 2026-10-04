@@ -194,10 +194,12 @@ repo); anyone can run their own and point both apps at it.
 
 ## Push notifications
 
-The phone cannot keep a socket open in the background, so the two out-of-app
+The phone cannot keep a socket open in the background, so the out-of-app
 signals the desktop already raises — a turn finishing, an agent waiting on a
-tool-use approval — reach it as APNs alerts. Content stays minimal: a fixed
-title and the agent's name. Transcript text never leaves the Mac.
+tool-use approval — and the ship loop's — checks settling, a review comment, a
+PR merging or closing — reach it as APNs alerts. Content stays minimal: a fixed
+title and the agent's name, at most joined by a check name, a reviewer's login
+or a PR number. Transcript text never leaves the Mac.
 
 - **Registration.** After every successful `pair` or `hello`, and whenever iOS
   hands it a new token, the phone sends `register_push` with
@@ -214,17 +216,42 @@ title and the agent's name. Transcript text never leaves the Mac.
   (phones only spawn the structured view anyway). `needs_input`:
   the first held `control_request` (`can_use_tool`) for an agent while none is
   pending for it — one alert per batch of parallel prompts, cleared when the
-  turn ends. Both mirror `signalAway` in `src/store/eventListeners.ts`. The
-  host skips a trigger while its own main window has focus (the user is at the
-  Mac); otherwise it sends to every device with a token, and iOS itself hides
-  the banner when the app is in the foreground. Title is `Turn complete` or
-  `Needs your input`; body is the agent's name. No settings in v1.
+  turn ends. Both mirror `signalAway` in `src/store/eventListeners.ts`.
+  The ship-loop kinds read the host-side PR watcher's events (see "Events",
+  `pr:checks_changed` / `pr:threads_changed`), so they fire with the Mac's
+  window shut. `checks_settled`: a bound open PR's CI rollup lands on `passing`
+  or `failing` from anything else — `pending`, `none`, unseen, or the other of
+  the two; a `failing → failing` with a different set of failing names is not
+  a second alert. Title `Checks passed` or `Checks failed`; body the agent's
+  name, and for a failure ` · ` plus the first failing check's name when there
+  is one. `review_comment`: the PR's unresolved review threads gained one the
+  watcher had not seen (first observation of a PR seeds and never alerts, so a
+  host restart does not re-raise old threads). Title `New review comment`;
+  body the agent's name, ` · ` plus the new thread's author when known.
+  `pr_merged` / `pr_closed`: a `pr:state_changed` whose state is `merged` /
+  `closed` for a PR this host process had seen `open` — the event reports a
+  state, not a transition, so a first event of `merged` after a cold start is a
+  stale snapshot and alerts nobody. Title `PR merged` / `PR closed`; body the
+  agent's name ` · #<number>`.
+  The host skips every trigger while its own main window has focus (the user
+  is at the Mac); otherwise it sends to every device with a token, and iOS
+  itself hides the banner when the app is in the foreground. Every alert's
+  `collapseId` is the agent id, so a later alert for the same agent replaces
+  the banner rather than stacking.
+  Opt-outs are host settings, both default on, only `"false"` disables:
+  `notify_turn_complete` (`turn_complete`) and `notify_pr_activity` (all four
+  ship-loop kinds under one switch); `needs_input` is always sent. The desktop
+  writes them with the Tauri commands `set_notify_turn_complete` and
+  `set_notify_pr_activity`, both `{ enabled }`.
 - **NOTIFY frame (host → relay).** Mux type `0x05`, `connId` 0, payload UTF-8 JSON:
 
   ```json
   { "tokens": [{ "token": "<hex>", "environment": "sandbox" }], "title": "Turn complete", "body": "Fix login crash", "kind": "turn_complete", "agentId": "…", "collapseId": "<agentId>" }
   ```
 
+  `kind` is one of `turn_complete`, `needs_input`, `checks_settled`,
+  `review_comment`, `pr_merged`, `pr_closed`; the same payload shape for all
+  six, e.g. `{ …, "title": "Checks failed", "body": "Fix login crash · unit", "kind": "checks_settled", … }`.
   One to 8 tokens; `title`, `body`, `kind` and `agentId` at most 200
   characters each (Apple caps the whole payload at 4 KB). `collapseId` is
   optional and at most 64 bytes, Apple's limit for `apns-collapse-id`; a
@@ -253,7 +280,8 @@ title and the agent's name. Transcript text never leaves the Mac.
   pairing, not on launch; the answer is remembered per host and a refusal is
   never asked again. Tapping an alert opens the app on that agent when
   `fletch.hostId` equals the paired host's key (the host ID *is* the host public
-  key, the value the phone stores as `hostKey`), otherwise Home; the plugin
+  key, the value the phone stores as `hostKey`), otherwise Home — on the Ship
+  tab for the four ship-loop kinds, the chat for the rest; the plugin
   delivers the payload to the webview as event `push://opened` and the token as
   `push://token`, holding both until the app's listeners are attached so a
   cold-start tap is not lost. The token comes from
@@ -897,7 +925,8 @@ agent:title            agent:branch           agent:model
 agent:effort
 agent:repo_added       agent:git-action       session:records-appended
 turn:sent              turn:started           workspace:changed
-pr:state_changed       verify:report          publish:approval-requested
+pr:state_changed       pr:checks_changed      pr:threads_changed
+verify:report          publish:approval-requested
 publish:approval-resolved
 wf:event               wf:run                 wf:run-deleted
 roadmap:item           roadmap:item-deleted   roadmap:item-event
@@ -950,6 +979,25 @@ already the answerer's, and the agent has been told. A host that does not list
 it on `protocol.events` never emits it, and a client that has no handler for it
 behaves as it did before the event existed — the prompt stays until answered,
 which is what every client did until this event.
+
+`pr:checks_changed` `{ agent_id, subdir: string | null, number, checks: PrChecks }` and
+`pr:threads_changed` `{ agent_id, subdir, comments: PrComments, new_thread_ids: string[] }`
+come from the host-side PR watcher, which runs the sidebar's batched sweep
+(`get_all_pr_status`'s resolver — state and CI for every bound PR in one query)
+once a minute, reads the open PRs' review threads every other tick through
+`get_pr_threads`'s resolver, and emits only on a change: the
+first fires when the normalized `rollup` (`none | pending | passing |
+failing`) or the set of failing check names moves, the second when the
+unresolved thread set gains ids the watcher had not seen, naming exactly those
+in `new_thread_ids` beside the whole current set. `subdir` is `null` for the
+agent's primary repo and the repo's subdir for a secondary. The watcher's first
+read of a PR seeds its memory and emits nothing, so a host restart announces no
+old thread; a PR that leaves `open` gets one final `pr:state_changed` (primary
+repo only, as that event always was) and is then forgotten. A client treats
+both as the freshest copy of the PR's checks and comments and may append an
+activity line for them; a client without a handler loses nothing it had, since
+its own polls still read the same resolvers. These two are the only `pr:*`
+events besides `pr:state_changed`.
 
 The whole `wf:*` and `roadmap:*` stream is forwarded, so a remote run monitor
 and a remote board stay live instead of rendering once and going stale. Three

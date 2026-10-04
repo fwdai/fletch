@@ -21,7 +21,7 @@ import type {
   DictationStateEvent,
   DictationTranscriptEvent,
 } from "./types/dictation";
-import type { PrStateChangedEvent } from "./types/pr";
+import type { PrChecksChangedEvent, PrStateChangedEvent, PrThreadsChangedEvent } from "./types/pr";
 import type {
   AgentInstallEvent,
   ProviderLoginExitEvent,
@@ -326,6 +326,16 @@ export function onWorkspaceAutoArchived(
 
 export function onPrStateChanged(cb: (e: PrStateChangedEvent) => void): Promise<UnlistenFn> {
   return on<PrStateChangedEvent>("pr:state_changed", cb);
+}
+
+/** The host-side PR watcher's CI read moved (rollup or failing set). */
+export function onPrChecksChanged(cb: (e: PrChecksChangedEvent) => void): Promise<UnlistenFn> {
+  return on<PrChecksChangedEvent>("pr:checks_changed", cb);
+}
+
+/** The host-side PR watcher found new unresolved review threads. */
+export function onPrThreadsChanged(cb: (e: PrThreadsChangedEvent) => void): Promise<UnlistenFn> {
+  return on<PrThreadsChangedEvent>("pr:threads_changed", cb);
 }
 
 export function onVerificationReport(
