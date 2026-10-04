@@ -3,10 +3,11 @@ import { Icon } from "@desktop/components/Icon";
 import type { MouseEvent } from "react";
 import { isAgentBusy, STATUS_LABEL } from "../../lib/agents";
 import { elapsedSec, fmtElapsed } from "../../lib/hooks";
+import { prPill } from "../../lib/shipPill";
 import { subagentLabel } from "../../lib/subagents";
 import { useSubagentClock } from "../../lib/useSubagentClock";
 import { useStore } from "../../store";
-import { ProviderMark, PrPill, StatusDot } from "../ui";
+import { ProviderMark, StatusDot } from "../ui";
 
 /** One agent line: status, name, what needs attention, live timer and diff. */
 export function AgentRow({
@@ -26,6 +27,7 @@ export function AgentRow({
   const startedAt = useStore((s) => s.turnStartedAt[agent.id]);
   const diff = useStore((s) => s.shortstats[agent.id]);
   const pr = useStore((s) => s.prStates[agent.id]);
+  const checks = useStore((s) => s.prChecks[agent.id]);
   const tasks = useStore((s) => s.backgroundTasks[agent.id]);
   const busy = useStore((s) => isAgentBusy(s, agent));
   // One clock drives the turn timer and the sub-agent cues, so a "sub-agent
@@ -55,6 +57,8 @@ export function AgentRow({
       </span>
     ) : null;
 
+  // Where the PR stands, off the fleet-wide sweep the Home poll fills.
+  const pill = prPill(pr, checks);
   const changes = diff ?? { additions: 0, deletions: 0 };
   const excerpt =
     agent.status === "error"
@@ -83,7 +87,12 @@ export function AgentRow({
             </span>
           )}
           {showProject && project && <span className="sl">{project.name}</span>}
-          {pr && !working && !badge && <PrPill pr={pr} />}
+          {pill && !working && !badge && (
+            <span className={`pill mono ${pill.tone}`}>
+              <Icon name={pr?.state === "merged" ? "merge" : "pr"} size={11} />
+              {pill.text}
+            </span>
+          )}
         </div>
         <div className="ex">{excerpt}</div>
       </div>

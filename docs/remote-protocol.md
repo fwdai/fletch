@@ -534,6 +534,7 @@ allowlist; any op not listed returns `{ ok: false, error: "unknown op" }`.
 | `get_git_state` | `{ agentId }` — a checkout whose config Fletch refuses to run git over comes back as a zero-state with the keys in `blocked_config` | `GitState \| null` |
 | `get_all_shortstats` | `{}` — uncommitted working-tree stats for every live agent; archived and still-cloning agents are omitted | `Record<agentId, ShortStats>` |
 | `get_all_git_meta` | `{}` — advisory local-git metadata per checkout (base staleness, changed paths), keyed like the PR maps (`agentId` for the primary repo, `"{agentId}::{subdir}"` for secondaries); no network | `Record<gitKey, GitMeta>` |
+| `get_all_pr_status` | `{ reverifyClosed?: boolean }` — every live agent-repo's bound PR state plus the CI rollup when open, keyed like `get_all_git_meta`; `checks: null` means "nothing to say this round" so a client keeps its last value; merged PRs are served from the snapshot, closed ones re-verified live only when `reverifyClosed` | `Record<gitKey, AgentPrStatus>` |
 | `list_checkout_tree` | as command | `CheckoutFile[]` |
 | `read_checkout_file` | `{ agentId, path, baseMode? }` | `CheckoutFileContents` |
 | `get_file_diff` | as command | `string` |

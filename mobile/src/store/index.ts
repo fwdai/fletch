@@ -201,6 +201,12 @@ export interface MobileState extends ChatsSlice, ProposalsSlice {
   loadPrThreads(agentId: string): Promise<void>;
   /** Refresh the fleet-wide working-tree stats behind the agent rows. */
   loadShortstats(): Promise<void>;
+  /** Refresh the fleet-wide PR state behind the agent rows from one
+   *  `get_all_pr_status` sweep. Primary-repo entries only (the phone is
+   *  single-repo for now); a null `checks` keeps the last tint, as in
+   *  `loadPrLive`, and an agent absent from the map keeps everything — absence
+   *  means "nothing to say", not "no PR". A no-op on a host without the op. */
+  loadPrStatus(): Promise<void>;
   loadTree(agentId: string): Promise<void>;
 
   /** `attachments` are host paths staged through the `attachment_*` ops; a
@@ -572,9 +578,10 @@ export const useStore = create<MobileState>()((set, get) => ({
       // The replay watermarks go with them: a restarted host counts from zero,
       // and so does the Ship tab's activity list.
       set({ backgroundTasks: {}, liveSeq: {}, shipActivity: {} });
-      // The snapshot carries no stats, so the rows get their numbers from the
-      // first poll of every handshake rather than waiting out its interval.
+      // The snapshot carries no stats or PR state, so the rows get both from
+      // the first poll of every handshake rather than waiting out its interval.
       void get().loadShortstats();
+      void get().loadPrStatus();
       // The publishes this host is blocked on. Every handshake, because the
       // request event only reached the devices connected when it fired — and so
       // did the resolution, whoever gave it.
@@ -987,6 +994,27 @@ export const useStore = create<MobileState>()((set, get) => ({
       set({ shortstats });
     } catch {
       // Advisory, like the rest of the git reads: keep the last numbers.
+    }
+  },
+
+  async loadPrStatus() {
+    if (!get().hostSupports("get_all_pr_status")) return;
+    try {
+      const all = await api.getAllPrStatus();
+      set((s) => {
+        const prStates = { ...s.prStates };
+        const prChecks = { ...s.prChecks };
+        for (const [key, entry] of Object.entries(all)) {
+          // `"{agentId}::{subdir}"` keys are secondary repos, which no screen
+          // here shows yet.
+          if (key.includes("::")) continue;
+          prStates[key] = entry.state;
+          if (entry.checks) prChecks[key] = entry.checks;
+        }
+        return { prStates, prChecks };
+      });
+    } catch {
+      // Advisory, like loadShortstats: keep the last-known state.
     }
   },
 

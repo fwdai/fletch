@@ -578,6 +578,15 @@ export class MockHost {
         const state = fx.prStates[id];
         return state ? { state, checks: fx.prChecks[id] ?? null } : null;
       }
+      // Every bound PR at once, keyed by agent id for the primary repo: only
+      // agents with a PR appear, as on the host.
+      case "get_all_pr_status":
+        return Object.fromEntries(
+          Object.entries(fx.prStates).map(([agentId, state]) => [
+            agentId,
+            { state, checks: state.state === "open" ? (fx.prChecks[agentId] ?? null) : null },
+          ]),
+        );
       case "list_repo_branches":
         return fx.branches[String(args.repoPath ?? "")] ?? ["main"];
       case "repo_default_branch":

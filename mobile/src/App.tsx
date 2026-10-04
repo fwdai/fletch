@@ -55,14 +55,17 @@ export function App() {
   const hostKey = useStore((s) => s.hostKey);
   const connected = useStore((s) => s.connection === "connected");
   const loadShortstats = useStore((s) => s.loadShortstats);
+  const loadPrStatus = useStore((s) => s.loadPrStatus);
 
   useEffect(() => {
     void init();
   }, [init]);
   useSystemTheme(useCallback((t) => setSystemTheme(t), [setSystemTheme]));
   // One fleet-wide poll for the whole app, like the desktop's — every agent row
-  // on every screen reads the map it fills, so no row polls for itself.
+  // on every screen reads the maps these fill, so no row polls for itself. The
+  // PR sweep is network-bound on the host, so it runs at the Ship tab's cadence.
   usePoll(loadShortstats, 10_000, connected);
+  usePoll(loadPrStatus, 30_000, connected);
 
   const resolved = theme === "system" ? systemTheme : theme;
   const props = (name: string) => (sheet?.name === name ? sheet.props : {});

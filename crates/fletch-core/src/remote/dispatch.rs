@@ -136,6 +136,7 @@ pub const OPS: &[&str] = &[
     "get_git_state",
     "get_all_shortstats",
     "get_all_git_meta",
+    "get_all_pr_status",
     "list_checkout_tree",
     "read_checkout_file",
     "get_file_diff",
@@ -376,6 +377,7 @@ const OP_SCOPES: &[(&str, Scope)] = &[
     ("get_git_state", Scope::Observe),
     ("get_all_shortstats", Scope::Observe),
     ("get_all_git_meta", Scope::Observe),
+    ("get_all_pr_status", Scope::Observe),
     ("list_checkout_tree", Scope::Observe),
     ("read_checkout_file", Scope::Observe),
     ("get_file_diff", Scope::Observe),
@@ -741,6 +743,17 @@ impl Dispatch for SupervisorDispatch {
                 "get_all_shortstats" => res(crate::commands::get_all_shortstats_impl(sup).await),
 
                 "get_all_git_meta" => res(crate::commands::get_all_git_meta_impl(sup).await),
+
+                // The desktop's `refresh_all_pr_status` minus its re-verify
+                // tick: the caller decides when a closed PR is worth a live
+                // look, since a phone's cadence is not the desktop's.
+                "get_all_pr_status" => {
+                    let a: AllPrStatusArgs = parse(args)?;
+                    ok(
+                        crate::supervisor::resolve_all_pr_status(&sup.workspace, a.reverify_closed)
+                            .await,
+                    )
+                }
 
                 "list_checkout_tree" => {
                     let a: AgentArgs = parse(args)?;
@@ -1743,6 +1756,26 @@ mod approval_tests {
     use crate::supervisor::Supervisor;
     use crate::workspace::WorkspaceManager;
 
+    /// The fleet-wide PR sweep on a host with no workspace: an empty map, not
+    /// an error — a phone polls this on every handshake, including the first
+    /// one against a Mac that has nothing open yet.
+    #[tokio::test]
+    async fn get_all_pr_status_on_an_empty_host_is_an_empty_map() {
+        let (ctx, _sink, _dir) = test_ctx();
+        let sup = Arc::new(Supervisor::new(Arc::new(WorkspaceManager::new(
+            ctx.db.clone(),
+        ))));
+        let dispatch = SupervisorDispatch::new(ctx, sup);
+
+        for args in [json!({}), json!({ "reverifyClosed": true })] {
+            let reply = dispatch
+                .dispatch("get_all_pr_status", args)
+                .await
+                .expect("a sweep over no agents is always answerable");
+            assert_eq!(reply, json!({}));
+        }
+    }
+
     /// `publish:approval-requested` only reaches the clients that were
     /// connected when it fired. This op is how every other one — a phone opened
     /// afterwards, a desktop that just reconnected — learns a publish is
@@ -1883,6 +1916,15 @@ struct RelocateArgs {
 struct DraftsArgs {
     #[serde(default)]
     drafts: Vec<String>,
+}
+
+/// `get_all_pr_status`: whether closed PRs get a live re-check this round, or
+/// are served from their snapshot like merged ones always are.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AllPrStatusArgs {
+    #[serde(default)]
+    reverify_closed: bool,
 }
 
 #[derive(Deserialize)]

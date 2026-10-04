@@ -11,7 +11,7 @@ import type {
   DirListing,
 } from "@desktop/api/types/checkout";
 import type { GitState, ShortStats } from "@desktop/api/types/git";
-import type { PrChecks, PrComments, PrLive, PrState } from "@desktop/api/types/pr";
+import type { AgentPrStatus, PrChecks, PrComments, PrLive, PrState } from "@desktop/api/types/pr";
 import type { GhRepoSummary, GhStatus } from "@desktop/api/types/providers";
 import type {
   ItemStatus,
@@ -157,6 +157,10 @@ export function createApi(client: RemoteClient) {
     /** Uncommitted working-tree stats for the whole fleet, keyed by agent id —
      *  the same fleet-wide poll the desktop sidebar reads. */
     getAllShortstats: () => call<Record<string, ShortStats>>("get_all_shortstats"),
+    /** Bound PR state (and CI while open) for the whole fleet, keyed like the
+     *  desktop's PR maps — the sweep behind its sidebar tints. Gated on
+     *  `hostSupports("get_all_pr_status")`. */
+    getAllPrStatus: () => call<Record<string, AgentPrStatus>>("get_all_pr_status"),
     listCheckoutTree: (agentId: string) => call<CheckoutFile[]>("list_checkout_tree", { agentId }),
     readCheckoutFile: (agentId: string, path: string, baseMode?: DiffBaseMode) =>
       call<CheckoutFileContents>("read_checkout_file", { agentId, path, baseMode }),
