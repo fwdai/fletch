@@ -459,7 +459,7 @@ The six scopes, and what each one covers:
 | `projects` | add, clone, create, rename, relocate, label, attach/detach and delete projects and their repos |
 | `workflows` | launch, cancel, resume, retry, approve, reject and delete runs; save, delete and import stored definitions |
 | `roadmap` | create, edit, rank, hand off, hold, release, reject, reopen and delete items; accept or reject the PM's proposals |
-| `publish` | the five ops that leave this machine under the user's name: `push_agent`, `create_pr`, `merge_pr`, `roadmap_merge_item_pr`, `answer_publish_approval` |
+| `publish` | the ops that leave this machine under the user's name: `push_agent`, `create_pr`, `merge_pr`, `roadmap_merge_item_pr`, `answer_publish_approval`, and `delegate_git` — a delegation's own pushes and PRs are approved by the host without a prompt (see "Delegations"), so starting one is as much a publish as answering the prompt would be |
 
 Every op in the table below has exactly one scope. `register_push` is outside
 the scheme and always allowed: it writes the calling device's own APNs token
@@ -580,6 +580,8 @@ allowlist; any op not listed returns `{ ok: false, error: "unknown op" }`.
 | `get_pr_checks` | as command | `PrChecks \| null` |
 | `get_pr_live` | as command | `PrLive \| null` |
 | `get_pr_threads` | as command — unresolved review threads; GraphQL, so polled well below the `get_pr_live` cadence | `PrComments \| null` |
+| `delegate_git` | `{ agentId, subdir?, action, params? }` — hands a git playbook to the agent (see "Delegations"). `action` is a playbook name (`commit`, `commit-push`, `commit-pr`, `open-pr`, `push`, `resolve-conflicts`, `update-branch`, `fix-checks`, `resolve-comments`); anything else is refused. `params` is a `{ [key]: string }` of the playbook's dynamic context (`base`, `failing`); empty values are dropped and `repo` is the host's to set from `subdir`. The host composes the `[app-action]` trigger, records the delegation and either sends it now as a user turn (`turn:sent` fires as for any send) or, while the agent is `running`, holds it until the agent goes idle | `Delegation` |
+| `get_delegations` | `{}` — every delegation the host is tracking, for a client that connected mid-flight | `Delegation[]` |
 | `list_repo_branches` | `{ repoPath }` | `string[]` |
 | `repo_default_branch` | `{ repoPath }` | `string` |
 | `discover_supported_models` | as command | `AgentModels[]` |
@@ -928,6 +930,7 @@ turn:sent              turn:started           workspace:changed
 pr:state_changed       pr:checks_changed      pr:threads_changed
 verify:report          publish:approval-requested
 publish:approval-resolved
+delegation:changed
 wf:event               wf:run                 wf:run-deleted
 roadmap:item           roadmap:item-deleted   roadmap:item-event
 roadmap:proposal       roadmap:proposal-deleted
@@ -999,6 +1002,21 @@ activity line for them; a client without a handler loses nothing it had, since
 its own polls still read the same resolvers. These two are the only `pr:*`
 events besides `pr:state_changed`.
 
+`delegation:changed` `{ agent_id, subdir: string | null, kind, phase, started_at, notice? }`
+is one step of a delegation's life (see "Delegations"). `kind` is the
+delegation kind (`commit`, `commit-push`, `commit-pr`, `open-pr`, `push`,
+`resolve`, `update-branch`, `fix-checks`, `resolve-comments` — the playbook name,
+except `resolve-conflicts`, whose kind is `resolve`). `phase` is `queued` (held
+behind the agent's running turn), `started` (the trigger was delivered),
+`running` (the delegated turn is under way), `done` or `abandoned`. The last two
+end the delegation and carry a one-line `notice` for the client to show
+("Committed & pushed", "Agent finished — review the chat for details"); an
+`abandoned` with no `notice` is a delegation dropped because its agent went away.
+`started_at` is epoch milliseconds, reset when a held trigger is delivered. A
+client keeps the live ones keyed by `(agent_id, subdir)`, drops the entry on
+`done`/`abandoned`, and replaces its set with `get_delegations` after every
+handshake — an event reaches only the clients connected when it fired.
+
 The whole `wf:*` and `roadmap:*` stream is forwarded, so a remote run monitor
 and a remote board stay live instead of rendering once and going stale. Three
 of them carry an id rather than a row and are named for what they address:
@@ -1033,6 +1051,38 @@ backgrounded app or a dropped socket is rendered whole, for every provider,
 and the frames still to come continue from where the replay left off. A host
 without the op (gate on `protocol.ops`) leaves the phone with the live log it
 already has, as before.
+
+## Delegations
+
+A delegation hands one git playbook to the coding agent (`delegate_git`): the
+agent writes the judgment part (commit message, PR description, conflict
+edits, the test fix) and runs the credentialed steps through its own RPC. It is
+a host fact, so it runs to its end with every window closed and is the same on
+every client. The host:
+
+- **holds the trigger while the agent is mid-turn.** A message written to a
+  running turn folds into it instead of running as its own, so a delegation sent
+  to a `running` agent is recorded `queued` and delivered when the agent goes
+  idle — at most one per agent at a time, so two queued on one agent's two
+  checkouts never coalesce either.
+- **decides when it is over.** Done when the agent ran an op from the
+  delegation's own playbook during the delegated turn (`agent:git-action`) *and*
+  that checkout reached the target (clean tree, nothing unpushed, PR open, no
+  conflicts, branch mergeable). `fix-checks` and `resolve-comments` cannot be
+  observed that way (CI takes minutes, GitHub reports threads on its own
+  schedule), so the agent settling is their normal ending and reports `done`.
+  Any other kind whose agent settles without reaching its target — after its turn
+  ran, or 15 s after delivery if no turn was ever seen — is `abandoned`.
+- **pre-approves its own publishes.** While a delivered delegation is live on a
+  checkout, a gated `git_push` / `open_pr` there that the playbook performs is
+  approved without a `publish:approval-requested` prompt: the user asked for it
+  when they started the delegation. An op outside the playbook (a `commit`
+  delegation pushing) still prompts.
+
+`Delegation` is `{ agent_id, subdir: string | null, kind, phase: "queued" |
+"started" | "running", started_at }` — the `delegation:changed` payload without
+a `notice`. The table is in memory: a host restart forgets its delegations,
+which then read to a client as simply having ended.
 
 ## Errors
 
