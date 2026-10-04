@@ -1,5 +1,6 @@
 import type { DictationModel, DictationModelProgressEvent, DictationModelStatus } from "@/api";
 import { Button } from "@/components/ui/Button";
+import { ProgressBar } from "@/components/ui/ProgressBar";
 import { downloadPercent, formatBytes } from "@/util/format";
 
 /** What one model's weights are doing and the single action that applies, for
@@ -75,11 +76,7 @@ export function ModelStatusRow({
         {line}
         {action}
       </div>
-      {bar !== undefined && (
-        <div className={`set-dict-bar ${bar === null ? "indet" : ""}`}>
-          <i style={bar === null ? undefined : { width: `${bar}%` }} />
-        </div>
-      )}
+      {bar !== undefined && <ProgressBar percent={bar} />}
     </div>
   );
 }

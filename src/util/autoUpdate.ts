@@ -19,13 +19,30 @@ export type UpdateCheckResult =
   | { kind: "uptodate" }
   | { kind: "error"; message: string };
 
+/** Where a found update is between "found" and "staged". */
+export type UpdateProgress = {
+  version: string;
+  /** `installing` covers unpacking + swapping the bundle after the last byte. */
+  phase: "downloading" | "installing";
+  received: number;
+  /** The artifact's Content-Length; `null` when the server didn't send one. */
+  total: number | null;
+};
+
+// The updater fires one event per network chunk — hundreds a second on a fast
+// link — so byte counts are reported at most this often.
+const PROGRESS_INTERVAL_MS = 250;
+
 /**
  * Check once and, if a newer release is found, download + stage it. Never
  * throws — any failure (offline, endpoint down, malformed manifest) comes back
  * as an `error` result. The staged update is applied on the next launch; the
  * caller decides whether to restart now (see {@link restartForUpdate}).
+ * `onProgress` follows the download, which can take minutes on a slow link.
  */
-export async function checkForUpdate(): Promise<UpdateCheckResult> {
+export async function checkForUpdate(
+  onProgress?: (progress: UpdateProgress) => void,
+): Promise<UpdateCheckResult> {
   try {
     const update = await check();
     if (!update) return { kind: "uptodate" };
@@ -33,7 +50,28 @@ export async function checkForUpdate(): Promise<UpdateCheckResult> {
     console.info(
       `Update available: ${update.version} (current ${update.currentVersion}); downloading…`,
     );
-    await update.downloadAndInstall();
+    let received = 0;
+    let total: number | null = null;
+    let lastReport = 0;
+    const report = (phase: UpdateProgress["phase"]) =>
+      onProgress?.({ version: update.version, phase, received, total });
+
+    report("downloading");
+    await update.downloadAndInstall((event) => {
+      if (event.event === "Started") {
+        total = event.data.contentLength ?? null;
+        report("downloading");
+      } else if (event.event === "Progress") {
+        received += event.data.chunkLength;
+        const now = Date.now();
+        if (now - lastReport >= PROGRESS_INTERVAL_MS) {
+          lastReport = now;
+          report("downloading");
+        }
+      } else {
+        report("installing");
+      }
+    });
     // `body` carries the manifest's `notes` field (release notes); absent or
     // whitespace-only manifests collapse to null so the UI can skip the section.
     return { kind: "staged", version: update.version, notes: update.body?.trim() || null };
