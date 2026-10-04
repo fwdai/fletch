@@ -749,8 +749,10 @@ impl Dispatch for SupervisorDispatch {
                 // look, since a phone's cadence is not the desktop's.
                 "get_all_pr_status" => {
                     let a: AllPrStatusArgs = parse(args)?;
-                    ok(crate::supervisor::resolve_all_pr_status(&sup.workspace, a.reverify_closed)
-                        .await)
+                    ok(
+                        crate::supervisor::resolve_all_pr_status(&sup.workspace, a.reverify_closed)
+                            .await,
+                    )
                 }
 
                 "list_checkout_tree" => {
