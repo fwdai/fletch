@@ -23,11 +23,18 @@
  *  fresher data is discarded rather than reordered — there is no server-side
  *  freshness signal to compare, and issue order is the only total order we own.
  *  The watcher's next event (or the next resync) carries it, so the effect is
- *  brief staleness, never a regression. */
+ *  brief staleness, never a regression.
+ *
+ *  The phone's store (mobile/src/store) follows the same watcher and orders its
+ *  one-shot reads against its events through this module too. */
 
 export type PrSlice = "prStates" | "prChecks" | "prComments";
 
 let ticket = 0;
+
+/** Tickets at or below this were issued against a host the store has since
+ *  left (see `fencePrWrites`). */
+let floor = 0;
 
 /** Highest ticket applied, per slice then per store key. Nested rather than a
  *  composite string key so no separator can collide with an agent id or subdir. */
@@ -44,6 +51,7 @@ export const issuePrWrite = (): number => ++ticket;
  *  it as applied, so re-checking the same ticket reports false the second time —
  *  call it once per (slice, key) at the point of writing. */
 export const acceptPrWrite = (slice: PrSlice, key: string, issued: number): boolean => {
+  if (issued <= floor) return false;
   const seen = applied[slice];
   if (issued <= (seen.get(key) ?? 0)) return false;
   seen.set(key, issued);
@@ -62,8 +70,20 @@ export const stampPrWrite = (slice: PrSlice, key: string): void => {
   applied[slice].set(key, issuePrWrite());
 };
 
+/** Refuse every write issued so far, for every key — for a store that has just
+ *  moved to another host (the phone's handshake), where an answer still in
+ *  flight describes the host it left, and agent ids recur across hosts. Per-key
+ *  marks cannot do this: a key the new host never stamped would take it.
+ *
+ *  Nothing issued afterwards is affected: the counter keeps rising, so the new
+ *  host's first read outranks the fence and every stamp the old host left. */
+export const fencePrWrites = (): void => {
+  floor = issuePrWrite();
+};
+
 /** Tests only — the counter and applied maps are module-global. */
 export const resetPrWriteOrder = (): void => {
   ticket = 0;
+  floor = 0;
   for (const seen of Object.values(applied)) seen.clear();
 };

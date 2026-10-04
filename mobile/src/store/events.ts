@@ -38,6 +38,7 @@ import type {
 import type { VerificationReportEvent } from "@desktop/api/types/verify";
 import { mirrorSentTurn } from "@desktop/helpers/mirrorTurn";
 import { dischargeSending } from "@desktop/helpers/sending";
+import { stampPrWrite } from "@desktop/store/prWriteOrder";
 import { getAdapter, type RawEvent } from "../adapters";
 import { ignore } from "../lib/ignore";
 import type { RemoteClient } from "../remote";
@@ -270,9 +271,12 @@ export function registerRemoteEvents(client: RemoteClient, set: Set, get: Get): 
 
   // The phone keeps one PR per agent — the primary repo's — so a secondary's
   // event (`subdir` set) has nowhere to land, here or below; writing it to the
-  // agent would show another repo's merge as this PR's.
+  // agent would show another repo's merge as this PR's. Each one stamps its
+  // slice, so a read issued before it cannot land after it with what it saw
+  // earlier (@desktop/store/prWriteOrder).
   on<PrStateChangedEvent>("pr:state_changed", (e) => {
     if (e.subdir) return;
+    stampPrWrite("prStates", e.agent_id);
     set((s) => {
       // The transition is read against the record being replaced, so the line
       // says what changed ("opened", "merged", "closed") and not merely that
@@ -290,6 +294,7 @@ export function registerRemoteEvents(client: RemoteClient, set: Set, get: Get): 
   // The host-side PR watcher's reads.
   on<PrChecksChangedEvent>("pr:checks_changed", (e) => {
     if (e.subdir) return;
+    stampPrWrite("prChecks", e.agent_id);
     set((s) => {
       const line = checksSettledText(s.prChecks[e.agent_id], e.checks);
       return {
@@ -301,6 +306,7 @@ export function registerRemoteEvents(client: RemoteClient, set: Set, get: Get): 
 
   on<PrThreadsChangedEvent>("pr:threads_changed", (e) => {
     if (e.subdir) return;
+    stampPrWrite("prComments", e.agent_id);
     set((s) => {
       const line = newThreadsText(e.comments, e.new_thread_ids);
       return {

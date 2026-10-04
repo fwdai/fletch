@@ -16,6 +16,12 @@ import type { LiveTurn } from "@desktop/api/types/session";
 import type { VerificationReport } from "@desktop/api/types/verify";
 import { appActionMessage } from "@desktop/delegation";
 import { reconcileSending, whileSending } from "@desktop/helpers/sending";
+import {
+  acceptPrWrite,
+  fencePrWrites,
+  issuePrWrite,
+  stampPrWrite,
+} from "@desktop/store/prWriteOrder";
 import { newestWins } from "@desktop/util/newestWins";
 import { type ApprovalEvent, replayApprovalEvents } from "@desktop/util/publishApprovals";
 import { create } from "zustand";
@@ -644,6 +650,10 @@ export const useStore = create<MobileState>()((set, get) => ({
       // — this is the path that clears a flag stranded by a reconnect.
       if (ws) set((s) => ({ workspace: ws, sending: reconcileSending(s.sending, ws.agents) }));
       else void get().refreshWorkspace();
+      // A PR read still out was asked of the socket before this one — perhaps
+      // of another host, whose agent ids recur here — so none of them may land.
+      // The reads below are issued after the fence and outrank it.
+      fencePrWrites();
       // Planning chats are absent from that snapshot; their records, and their
       // flags, settle through their own list.
       refreshChats();
@@ -836,6 +846,8 @@ export const useStore = create<MobileState>()((set, get) => ({
     // Before the link drops: the host keeps the push token until told otherwise.
     await forgetPush();
     client.disconnect();
+    // A PR read still out describes the host being forgotten.
+    fencePrWrites();
     await clearHost();
     set({
       hostKey: null,
@@ -1046,14 +1058,19 @@ export const useStore = create<MobileState>()((set, get) => ({
   },
 
   async loadGit(agentId) {
+    // The PR halves are ordered against the watcher's events like every PR
+    // read here (see `loadPrLive`); the git state has no event to race.
+    const ticket = issuePrWrite();
     try {
       const [git, pr] = await Promise.all([api.getGitState(agentId), api.getPrState(agentId)]);
+      const takeState = acceptPrWrite("prStates", agentId, ticket);
       set((s) => ({
         gitStates: { ...s.gitStates, [agentId]: git },
-        prStates: { ...s.prStates, [agentId]: pr },
+        ...(takeState ? { prStates: { ...s.prStates, [agentId]: pr } } : {}),
       }));
       if (pr) {
         const checks = await api.getPrChecks(agentId);
+        if (!acceptPrWrite("prChecks", agentId, ticket)) return;
         set((s) => ({ prChecks: { ...s.prChecks, [agentId]: checks } }));
       }
     } catch {
@@ -1062,13 +1079,21 @@ export const useStore = create<MobileState>()((set, get) => ({
   },
 
   async loadPrLive(agentId) {
+    // Claimed before asking: a `pr:*` event that lands while the read is out
+    // is newer than what the read saw, and the watcher, having sent it, will
+    // not send it again — so the reply must not land on top of it
+    // (@desktop/store/prWriteOrder).
+    const ticket = issuePrWrite();
     try {
       const live = await api.getPrLive(agentId);
       // Null means the host had nothing to say this round, not "no PR".
       if (!live) return;
+      // One ticket, checked per slice: a checks event outranks only the checks.
+      const takeState = acceptPrWrite("prStates", agentId, ticket);
+      const takeChecks = !!live.checks && acceptPrWrite("prChecks", agentId, ticket);
       set((s) => ({
-        prStates: { ...s.prStates, [agentId]: live.state },
-        ...(live.checks ? { prChecks: { ...s.prChecks, [agentId]: live.checks } } : {}),
+        ...(takeState ? { prStates: { ...s.prStates, [agentId]: live.state } } : {}),
+        ...(takeChecks ? { prChecks: { ...s.prChecks, [agentId]: live.checks } } : {}),
       }));
     } catch {
       // Advisory, like loadGit: keep the last-known state.
@@ -1077,8 +1102,11 @@ export const useStore = create<MobileState>()((set, get) => ({
 
   async loadPrThreads(agentId) {
     if (!get().hostSupports("get_pr_threads")) return;
+    // Ordered against `pr:threads_changed`, as `loadPrLive` is against the rest.
+    const ticket = issuePrWrite();
     try {
       const comments = await api.getPrThreads(agentId);
+      if (!acceptPrWrite("prComments", agentId, ticket)) return;
       set((s) => ({ prComments: { ...s.prComments, [agentId]: comments } }));
     } catch {
       // Advisory, like loadGit: keep the last-known threads.
@@ -1099,20 +1127,24 @@ export const useStore = create<MobileState>()((set, get) => ({
 
   async loadPrStatus() {
     if (!get().hostSupports("get_all_pr_status")) return;
+    // Ordered per agent, row by row: an event for one agent while the sweep is
+    // out outranks that agent's row and nobody else's (see `loadPrLive`).
+    const ticket = issuePrWrite();
     try {
       const all = await api.getAllPrStatus();
-      set((s) => {
-        const prStates = { ...s.prStates };
-        const prChecks = { ...s.prChecks };
-        for (const [key, entry] of Object.entries(all)) {
-          // `"{agentId}::{subdir}"` keys are secondary repos, which no screen
-          // here shows yet.
-          if (key.includes("::")) continue;
-          prStates[key] = entry.state;
-          if (entry.checks) prChecks[key] = entry.checks;
-        }
-        return { prStates, prChecks };
-      });
+      const states: Record<string, PrState | null> = {};
+      const checks: Record<string, PrChecks> = {};
+      for (const [key, entry] of Object.entries(all)) {
+        // `"{agentId}::{subdir}"` keys are secondary repos, which no screen
+        // here shows yet.
+        if (key.includes("::")) continue;
+        if (acceptPrWrite("prStates", key, ticket)) states[key] = entry.state;
+        if (entry.checks && acceptPrWrite("prChecks", key, ticket)) checks[key] = entry.checks;
+      }
+      set((s) => ({
+        prStates: { ...s.prStates, ...states },
+        prChecks: { ...s.prChecks, ...checks },
+      }));
     } catch {
       // Advisory, like loadShortstats: keep the last-known state.
     }
@@ -1372,6 +1404,9 @@ export const useStore = create<MobileState>()((set, get) => ({
     if (git?.files.length) await api.commitAgent(agentId, title);
     await api.pushAgent(agentId);
     const pr = await api.createPr(agentId, title, body);
+    // The host's own answer: a read that went out before the PR existed must
+    // not land after it and say there is none.
+    stampPrWrite("prStates", agentId);
     set((s) => ({ prStates: { ...s.prStates, [agentId]: pr } }));
     await get().loadGit(agentId);
   },

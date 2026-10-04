@@ -1,6 +1,12 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { acceptPrWrite, issuePrWrite, resetPrWriteOrder, stampPrWrite } from "./prWriteOrder";
+import {
+  acceptPrWrite,
+  fencePrWrites,
+  issuePrWrite,
+  resetPrWriteOrder,
+  stampPrWrite,
+} from "./prWriteOrder";
 
 describe("prWriteOrder", () => {
   beforeEach(() => resetPrWriteOrder());
@@ -86,6 +92,23 @@ describe("prWriteOrder", () => {
     const checks = issuePrWrite();
     stampPrWrite("prStates", "agent-1");
     expect(acceptPrWrite("prChecks", "agent-1", checks)).toBe(true);
+  });
+
+  /** A fence drops every answer issued before it, including for keys nothing
+   *  ever stamped — the answers of a host the store has since left. */
+  it("drops every write issued before a fence", () => {
+    const before = issuePrWrite();
+    fencePrWrites();
+    expect(acceptPrWrite("prStates", "agent-1", before)).toBe(false);
+    expect(acceptPrWrite("prComments", "agent-2", before)).toBe(false);
+  });
+
+  /** …and none issued after it, whatever the old host stamped. */
+  it("lets a write issued after a fence apply over the old host's stamps", () => {
+    stampPrWrite("prStates", "agent-1");
+    fencePrWrites();
+    const fresh = issuePrWrite();
+    expect(acceptPrWrite("prStates", "agent-1", fresh)).toBe(true);
   });
 
   /** A single ticket covers one (slice, key) write. Re-checking the same ticket
