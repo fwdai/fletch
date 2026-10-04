@@ -1,4 +1,8 @@
-import { getProjectSettings, setProjectSetting } from "./projectSettings";
+import { api } from "@/api";
+
+// The document is the host's — its Run panel resolves shared variables from it
+// at spawn — so it is read and written through the host's project-settings ops
+// (docs/remote-protocol.md, "Settings"), not this Mac's table.
 
 /** Where a shared variable's value comes from. Mirrors Rust `run_env::Source`
  *  (serialized as a bare lowercase string). */
@@ -29,7 +33,7 @@ function emptyDoc(): RunEnvDoc {
 /** Load the project's run-environment document. Absent or malformed → empty
  *  (share nothing), matching the backend's degrade-gracefully posture. */
 export async function loadRunEnvDoc(projectId: string): Promise<RunEnvDoc> {
-  const settings = await getProjectSettings(projectId);
+  const settings = await api.getProjectSettings(projectId);
   const raw = settings[RUN_ENV_KEY];
   if (!raw) return emptyDoc();
   try {
@@ -45,7 +49,7 @@ export async function loadRunEnvDoc(projectId: string): Promise<RunEnvDoc> {
 
 /** Persist the run-environment document for a project. */
 export async function saveRunEnvDoc(projectId: string, doc: RunEnvDoc): Promise<void> {
-  await setProjectSetting(projectId, RUN_ENV_KEY, JSON.stringify(doc));
+  await api.setProjectSetting(projectId, RUN_ENV_KEY, JSON.stringify(doc));
 }
 
 /** Return the config for `key`, or a default (unshared, mirror) if absent. */

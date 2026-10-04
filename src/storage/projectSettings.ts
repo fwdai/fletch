@@ -1,4 +1,15 @@
+import { api } from "@/api";
 import { dbDelete, dbSelect, dbUpsert } from "./db";
+
+// Per-project settings. Two homes, by who reads the key:
+//
+// - The HOST's keys (run commands, env sharing, verify, roadmap autonomy, the
+//   Linear team, …; `hostOwnedKeys.ts`) live in the host's `project_settings`
+//   and are read and written only through `api.getProjectSettings` /
+//   `api.setProjectSetting` (or `useProjectSettings`), so a project page edits
+//   the engine the UI is driving (docs/remote-protocol.md, "Settings").
+// - THIS desktop's own keys — autopilot's opt-out, which this Mac's autopilot
+//   loop reads — stay in this Mac's table through the generic bridge below.
 
 export interface ProjectSettingRow {
   project_id: string;
@@ -6,17 +17,8 @@ export interface ProjectSettingRow {
   value: string;
 }
 
-export async function getProjectSettings(projectId: string): Promise<Record<string, string>> {
-  const rows = await dbSelect<ProjectSettingRow>("project_settings", {
-    where: { project_id: projectId },
-  });
-  const out: Record<string, string> = {};
-  for (const row of rows) {
-    out[row.key] = row.value;
-  }
-  return out;
-}
-
+/** Write a client-owned key in THIS Mac's table. Never for a host-owned key
+ *  (`hostOwnedKeys.test.ts` fails the build if one is passed here). */
 export async function setProjectSetting(
   projectId: string,
   key: string,
@@ -25,6 +27,7 @@ export async function setProjectSetting(
   await dbUpsert("project_settings", { project_id: projectId, key, value }, "project_id,key");
 }
 
+/** Delete a client-owned key from THIS Mac's table. */
 export async function deleteProjectSetting(projectId: string, key: string): Promise<void> {
   await dbDelete("project_settings", { project_id: projectId, key });
 }
@@ -52,7 +55,8 @@ export async function loadAutopilotDisabledProjects(): Promise<string[]> {
 
 /** Per-project keys for the Linear integration (set in Project Settings).
  *  The id scopes which team's issues feed the inbox + composer picker; the
- *  name is display-only so the picker renders without a network round-trip. */
+ *  name is display-only so the picker renders without a network round-trip.
+ *  Host-owned: the host's issue listing is handed the id. */
 export const LINEAR_TEAM_ID_KEY = "linear.team_id";
 export const LINEAR_TEAM_NAME_KEY = "linear.team_name";
 
@@ -60,6 +64,6 @@ export const LINEAR_TEAM_NAME_KEY = "linear.team_name";
  *  `projectId`, e.g. before a draft's project resolves). */
 export async function getLinearTeamId(projectId: string): Promise<string | undefined> {
   if (!projectId) return undefined;
-  const all = await getProjectSettings(projectId);
+  const all = await api.getProjectSettings(projectId);
   return all[LINEAR_TEAM_ID_KEY] || undefined;
 }

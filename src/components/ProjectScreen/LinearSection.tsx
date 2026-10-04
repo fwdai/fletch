@@ -1,14 +1,10 @@
 import { useEffect, useState } from "react";
 import { api, type LinearTeam } from "@/api";
 import { Button } from "@/components/ui/Button";
-import {
-  deleteProjectSetting,
-  getProjectSettings,
-  LINEAR_TEAM_ID_KEY,
-  LINEAR_TEAM_NAME_KEY,
-  setProjectSetting,
-} from "@/storage/projectSettings";
+import { LINEAR_TEAM_ID_KEY, LINEAR_TEAM_NAME_KEY } from "@/storage/projectSettings";
 import { useAppStore } from "@/store";
+import { useGate } from "@/store/capabilities";
+import { useProjectSettings } from "@/util/useProjectSettings";
 
 /** Linear integration: the account connection (an API key, app-wide) and the
  *  team this project draws tickets from. With a team set, Linear tickets join
@@ -22,26 +18,19 @@ export function LinearSection({ projectId }: { projectId: string }) {
   const [connecting, setConnecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [teams, setTeams] = useState<LinearTeam[] | null>(null);
-  const [teamId, setTeamId] = useState("");
+  // The team is the host's row — its issue inbox reads it — while the Linear
+  // connection above it is this Mac's.
+  const { settings, save } = useProjectSettings(projectId);
+  const gate = useGate("projectSettings");
+  const teamId = settings?.[LINEAR_TEAM_ID_KEY] ?? "";
 
   const connected = !!linear?.authenticated;
 
   // Reflect the current connection on open (it may have changed in another
-  // project's settings) and load this project's saved team.
+  // project's settings).
   useEffect(() => {
     void refreshLinear();
   }, [refreshLinear]);
-  useEffect(() => {
-    let cancelled = false;
-    getProjectSettings(projectId)
-      .then((all) => {
-        if (!cancelled) setTeamId(all[LINEAR_TEAM_ID_KEY] ?? "");
-      })
-      .catch((e) => console.error("load linear team failed", e));
-    return () => {
-      cancelled = true;
-    };
-  }, [projectId]);
 
   // Load the workspace's teams once connected, for the picker.
   useEffect(() => {
@@ -88,18 +77,10 @@ export function LinearSection({ projectId }: { projectId: string }) {
   }
 
   function pickTeam(nextId: string) {
-    setTeamId(nextId);
     const team = teams?.find((t) => t.id === nextId);
-    const write = nextId
-      ? Promise.all([
-          setProjectSetting(projectId, LINEAR_TEAM_ID_KEY, nextId),
-          setProjectSetting(projectId, LINEAR_TEAM_NAME_KEY, team?.name ?? ""),
-        ])
-      : Promise.all([
-          deleteProjectSetting(projectId, LINEAR_TEAM_ID_KEY),
-          deleteProjectSetting(projectId, LINEAR_TEAM_NAME_KEY),
-        ]);
-    write.catch((e) => console.error("save linear team failed", e));
+    // Blank clears both rows: Linear off for this project.
+    save(LINEAR_TEAM_ID_KEY, nextId || null);
+    save(LINEAR_TEAM_NAME_KEY, nextId ? (team?.name ?? "") : null);
   }
 
   return (
@@ -167,6 +148,8 @@ export function LinearSection({ projectId }: { projectId: string }) {
               id="ps-linear-team"
               className="ps-input text-base"
               value={teamId}
+              disabled={!!gate || settings === null}
+              title={gate ?? undefined}
               onChange={(e) => pickTeam(e.target.value)}
             >
               <option value="">None — Linear off for this project</option>

@@ -5,13 +5,15 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // exercised without a real Tauri backend.
 let stored: Record<string, string> = {};
 
-vi.mock("@/storage/projectSettings", () => ({
-  getProjectSettings: async () => ({ ...stored }),
-  setProjectSetting: async (_p: string, key: string, value: string) => {
-    stored[key] = value;
-  },
-  deleteProjectSetting: async (_p: string, key: string) => {
-    delete stored[key];
+// The run rows are the host's: read and written through its project-settings
+// ops, where `null` deletes the row.
+vi.mock("@/api", () => ({
+  api: {
+    getProjectSettings: async () => ({ ...stored }),
+    setProjectSetting: async (_p: string, key: string, value: string | null) => {
+      if (value === null) delete stored[key];
+      else stored[key] = value;
+    },
   },
 }));
 

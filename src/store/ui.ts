@@ -265,8 +265,8 @@ export const createUiSlice: SliceCreator<UiSlice> = (set, get) => ({
     }),
   selectHistoryAgent: (id) => set({ selectedHistoryAgentId: id }),
   openProjectScreen: (repoPath, tab = "roadmap") => {
-    // The project page is the roadmap, the activity feed and the local
-    // `project_settings` table — none of which a host answers for. The
+    // The project page opens on the roadmap, so it needs a host that drives
+    // one; its settings sections gate themselves (`projectSettings`). The
     // sidebar hides its button behind this gate; every other way in (⌘⇧,,
     // a roadmap chip) is refused here so none can slip past it.
     if (gateReason(activeEnvironment(), "roadmap")) return;

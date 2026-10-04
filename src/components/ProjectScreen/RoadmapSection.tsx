@@ -1,10 +1,6 @@
-import { useEffect, useState } from "react";
 import { Toggle } from "@/components/Settings/Toggle";
-import {
-  deleteProjectSetting,
-  getProjectSettings,
-  setProjectSetting,
-} from "@/storage/projectSettings";
+import { useGate } from "@/store/capabilities";
+import { useProjectSettings } from "@/util/useProjectSettings";
 import {
   AUTOQUEUE_KEY,
   CONCURRENCY_CHOICES,
@@ -23,62 +19,33 @@ import {
  *  which both this section and the board read, so nothing here decides anything
  *  the queue doesn't also see.
  *
- *  Each row follows the neighbouring sections' pattern: load on mount, write (or
- *  delete) on change, absent meaning the default. Deleting rather than writing the
+ *  Each row follows the neighbouring sections' pattern: read from the host the UI
+ *  is driving, write (or delete) on change, absent meaning the default, and
+ *  follow `project_settings:changed` from other clients. Deleting rather than writing the
  *  default keeps "never configured" and "configured back to the default" the same
  *  row, which is what makes a future change of default actually reach old
  *  projects. */
 export function RoadmapSection({ projectId }: { projectId: string }) {
-  const [autoqueue, setAutoqueue] = useState(false);
-  const [cap, setCap] = useState(DEFAULT_MAX_CONCURRENT);
-  const [settleReview, setSettleReview] = useState(true);
-  const [midrunAwareness, setMidrunAwareness] = useState(true);
+  // `save(key, null)` deletes the row: "back to the default".
+  const { settings, save } = useProjectSettings(projectId);
+  const gate = useGate("projectSettings");
+  const locked = !!gate || settings === null;
+  const all = settings ?? {};
+  const autoqueue = flagOn(all[AUTOQUEUE_KEY], false);
+  const cap = parseCap(all[MAX_CONCURRENT_KEY]);
+  const settleReview = flagOn(all[SETTLE_REVIEW_KEY], true);
+  const midrunAwareness = flagOn(all[MIDRUN_AWARENESS_KEY], true);
 
-  useEffect(() => {
-    let cancelled = false;
-    getProjectSettings(projectId)
-      .then((all) => {
-        if (cancelled) return;
-        setAutoqueue(flagOn(all[AUTOQUEUE_KEY], false));
-        setCap(parseCap(all[MAX_CONCURRENT_KEY]));
-        setSettleReview(flagOn(all[SETTLE_REVIEW_KEY], true));
-        setMidrunAwareness(flagOn(all[MIDRUN_AWARENESS_KEY], true));
-      })
-      .catch((e) => console.error("load roadmap settings failed", e));
-    return () => {
-      cancelled = true;
-    };
-  }, [projectId]);
+  const toggleAutoqueue = (next: boolean) => save(AUTOQUEUE_KEY, next ? "1" : null);
 
-  /** Persist one dial, treating `value === null` as "back to the default". */
-  const save = (key: string, value: string | null) => {
-    const write =
-      value === null
-        ? deleteProjectSetting(projectId, key)
-        : setProjectSetting(projectId, key, value);
-    write.catch((e) => console.error(`save ${key} failed`, e));
-  };
-
-  const toggleAutoqueue = (next: boolean) => {
-    setAutoqueue(next);
-    save(AUTOQUEUE_KEY, next ? "1" : null);
-  };
-
-  const pickCap = (next: number) => {
-    setCap(next);
+  const pickCap = (next: number) =>
     save(MAX_CONCURRENT_KEY, next === DEFAULT_MAX_CONCURRENT ? null : String(next));
-  };
 
-  const toggleSettleReview = (next: boolean) => {
-    setSettleReview(next);
-    // On is the default here, so *off* is the row that has to exist.
-    save(SETTLE_REVIEW_KEY, next ? null : "0");
-  };
+  // On is the default for the two PM switches, so *off* is the row that has to
+  // exist.
+  const toggleSettleReview = (next: boolean) => save(SETTLE_REVIEW_KEY, next ? null : "0");
 
-  const toggleMidrunAwareness = (next: boolean) => {
-    setMidrunAwareness(next);
-    save(MIDRUN_AWARENESS_KEY, next ? null : "0");
-  };
+  const toggleMidrunAwareness = (next: boolean) => save(MIDRUN_AWARENESS_KEY, next ? null : "0");
 
   return (
     <section className="ps-section">
@@ -95,7 +62,12 @@ export function RoadmapSection({ projectId }: { projectId: string }) {
         <label className="ps-label text-sm" htmlFor="ps-rm-autoqueue">
           Accepted items queue automatically
         </label>
-        <Toggle value={autoqueue} onChange={toggleAutoqueue} />
+        <Toggle
+          value={autoqueue}
+          onChange={toggleAutoqueue}
+          disabled={locked}
+          title={gate ?? undefined}
+        />
       </div>
       <p className="ps-section-lead text-sm">
         With this on, accepting a proposal is the only touch before a pull request arrives —
@@ -112,6 +84,7 @@ export function RoadmapSection({ projectId }: { projectId: string }) {
           id="ps-rm-concurrency"
           className="ps-input text-base"
           value={String(cap)}
+          disabled={locked}
           onChange={(e) => pickCap(Number(e.target.value))}
         >
           {CONCURRENCY_CHOICES.map((n) => (
@@ -131,7 +104,12 @@ export function RoadmapSection({ projectId }: { projectId: string }) {
         <label className="ps-label text-sm" htmlFor="ps-rm-settle-review">
           The PM reviews every finished run
         </label>
-        <Toggle value={settleReview} onChange={toggleSettleReview} />
+        <Toggle
+          value={settleReview}
+          onChange={toggleSettleReview}
+          disabled={locked}
+          title={gate ?? undefined}
+        />
       </div>
       <p className="ps-section-lead text-sm">
         When a run settles, the PM agent reads the outcome against the item it wrote and records
@@ -144,7 +122,12 @@ export function RoadmapSection({ projectId }: { projectId: string }) {
         <label className="ps-label text-sm" htmlFor="ps-rm-midrun">
           The PM follows runs as they happen
         </label>
-        <Toggle value={midrunAwareness} onChange={toggleMidrunAwareness} />
+        <Toggle
+          value={midrunAwareness}
+          onChange={toggleMidrunAwareness}
+          disabled={locked}
+          title={gate ?? undefined}
+        />
       </div>
       <p className="ps-section-lead text-sm">
         A run reports its progress while it works. With this on the PM reads those as they arrive,

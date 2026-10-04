@@ -7,6 +7,7 @@ import {
   rowsOrFallback,
   type SetupRow,
 } from "@/components/RunConfig";
+import { useGate } from "@/store/capabilities";
 
 interface Props {
   projectId: string;
@@ -23,6 +24,8 @@ export function RunEnvSection({ projectId, rows: detected, ecosystem, initialOve
   // unrecognized stack should be configurable, not hidden.
   const rows = rowsOrFallback(detected);
   const [overrides, setOverrides] = useState<Record<string, string>>(initialOverrides);
+  // The host's verifier and Run panel read these rows.
+  const gate = useGate("projectSettings");
 
   // Reconcile a single edit against the detected rows and persist it. Same
   // logic the Run panel runs on Apply, just committed immediately.
@@ -53,13 +56,17 @@ export function RunEnvSection({ projectId, rows: detected, ecosystem, initialOve
       <div className="ps-eco text-xs">
         <EcosystemBadge ecosystem={ecosystem} />
       </div>
-      <RunConfigEditor
-        rows={rows}
-        draft={overrides}
-        scope="project"
-        onChange={onChange}
-        onRevert={onRevert}
-      />
+      {gate ? (
+        <p className="ps-section-lead text-sm">{gate}</p>
+      ) : (
+        <RunConfigEditor
+          rows={rows}
+          draft={overrides}
+          scope="project"
+          onChange={onChange}
+          onRevert={onRevert}
+        />
+      )}
     </section>
   );
 }
