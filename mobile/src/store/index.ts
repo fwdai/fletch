@@ -150,8 +150,11 @@ export interface MobileState extends ChatsSlice, ProposalsSlice {
   shortstats: Record<string, ShortStats>;
   prStates: Record<string, PrState | null>;
   prChecks: Record<string, PrChecks | null>;
-  /** Unresolved review threads per agent, from `get_pr_threads`. Never set on
-   *  a host without the op, so a missing key means "unknown", not "none". */
+  /** Unresolved review threads per agent: one `get_pr_threads` when the Ship
+   *  tab opens with none cached, then `pr:threads_changed`. Never set on a host
+   *  without the op, so a missing key means "unknown", not "none". Emptied on
+   *  every handshake — an event missed while the socket was down has no other
+   *  way back — so an open tab reads again. */
   prComments: Record<string, PrComments | null>;
   /** The latest turn-end verification per agent (`verify:report`). Absent =
    *  never verified since this launch. Not persisted. */
@@ -160,6 +163,10 @@ export interface MobileState extends ChatsSlice, ProposalsSlice {
    *  Empty after every handshake, like `backgroundTasks`, then refilled with
    *  the autopilot log the host keeps (`autopilot_log`). */
   shipActivity: ShipActivityMap;
+  /** Names of the workspaces the host's idle sweep archived
+   *  (`workspace:auto-archived`) since the user last dismissed the notice on
+   *  Home. Null when there is nothing to say. Not persisted. */
+  autoArchived: string[] | null;
   /** The host's live delegation per agent (`delegation:changed`), primary repo
    *  only — the phone is single-repo for now. A mirror: the host decides when
    *  one starts, runs and ends; the Ship strip reads `working` off it. Re-read
@@ -222,21 +229,28 @@ export interface MobileState extends ChatsSlice, ProposalsSlice {
    *  turn is replayed on top from `read_live_turn` (see store/liveTurn). */
   rebuildLog(agentId: string, opts?: { liveTurn?: boolean }): Promise<void>;
   loadGit(agentId: string): Promise<void>;
-  /** The Ship tab's live tick: PR state and CI from one `get_pr_live` pass, so
-   *  both are from the same moment. A null `checks` means the CI read didn't
-   *  resolve (see `PrLive`), so the last tint is kept rather than blanked. */
+  /** The Ship tab's one read when it opens with no checks cached: PR state and
+   *  CI from one `get_pr_live` pass, so both are from the same moment. The
+   *  host's `pr:*` events keep them current after that. A null `checks` means
+   *  the CI read didn't resolve (see `PrLive`), so the last tint is kept rather
+   *  than blanked. */
   loadPrLive(agentId: string): Promise<void>;
-  /** Re-read the PR's unresolved review threads. A no-op on a host without
+  /** Read the PR's unresolved review threads — once, when the Ship tab opens
+   *  with none cached; `pr:threads_changed` follows. A no-op on a host without
    *  `get_pr_threads`. */
   loadPrThreads(agentId: string): Promise<void>;
   /** Refresh the fleet-wide working-tree stats behind the agent rows. */
   loadShortstats(): Promise<void>;
-  /** Refresh the fleet-wide PR state behind the agent rows from one
-   *  `get_all_pr_status` sweep. Primary-repo entries only (the phone is
-   *  single-repo for now); a null `checks` keeps the last tint, as in
-   *  `loadPrLive`, and an agent absent from the map keeps everything — absence
-   *  means "nothing to say", not "no PR". A no-op on a host without the op. */
+  /** Seed the fleet-wide PR state behind the agent rows from one
+   *  `get_all_pr_status` read, on every handshake and return to the
+   *  foreground; the host watcher's `pr:*` events keep it current between.
+   *  Primary-repo entries only (the phone is single-repo for now); a null
+   *  `checks` keeps the last tint, as in `loadPrLive`, and an agent absent from
+   *  the map keeps everything — absence means "nothing to say", not "no PR". A
+   *  no-op on a host without the op. */
   loadPrStatus(): Promise<void>;
+  /** Clear the auto-archive notice on Home. */
+  dismissAutoArchived(): void;
   loadTree(agentId: string): Promise<void>;
 
   /** `attachments` are host paths staged through the `attachment_*` ops; a
@@ -562,6 +576,7 @@ export const useStore = create<MobileState>()((set, get) => ({
   prComments: {},
   verificationReports: {},
   shipActivity: {},
+  autoArchived: null,
   delegations: {},
   autopilot: {},
   trees: {},
@@ -628,10 +643,20 @@ export const useStore = create<MobileState>()((set, get) => ({
       // task held as running could never be seen ending — so the maps start
       // over on every handshake and refill from whatever the host emits next.
       // The replay watermarks go with them: a restarted host counts from zero,
-      // and so does the Ship tab's activity list.
-      set({ backgroundTasks: {}, liveSeq: {}, shipActivity: {}, delegations: {}, autopilot: {} });
-      // The snapshot carries no stats or PR state, so the rows get both from
-      // the first poll of every handshake rather than waiting out its interval.
+      // and so does the Ship tab's activity list. Review threads too: they
+      // follow `pr:threads_changed`, so a missed one would linger — emptied,
+      // an open Ship tab reads them again.
+      set({
+        backgroundTasks: {},
+        liveSeq: {},
+        shipActivity: {},
+        delegations: {},
+        autopilot: {},
+        prComments: {},
+      });
+      // The snapshot carries no stats or PR state, so the rows get both on
+      // every handshake: stats from the first tick of their poll, PR state
+      // from the one seed the watcher's events then keep current.
       void get().loadShortstats();
       void get().loadPrStatus();
       // The publishes this host is blocked on. Every handshake, because the
@@ -670,6 +695,8 @@ export const useStore = create<MobileState>()((set, get) => ({
         return;
       }
       void get().loadShortstats();
+      // A `pr:*` event that reached a suspended app may never have been read.
+      void get().loadPrStatus();
       refreshOpenAgent();
       refreshChats();
     };
@@ -817,6 +844,7 @@ export const useStore = create<MobileState>()((set, get) => ({
       liveSeq: {},
       verificationReports: {},
       shipActivity: {},
+      autoArchived: null,
       delegations: {},
       autopilot: {},
       // The chats belong to the host that holds their checkouts, and the ghosts
@@ -1078,6 +1106,10 @@ export const useStore = create<MobileState>()((set, get) => ({
     } catch {
       // Advisory, like loadShortstats: keep the last-known state.
     }
+  },
+
+  dismissAutoArchived() {
+    set({ autoArchived: null });
   },
 
   async loadTree(agentId) {

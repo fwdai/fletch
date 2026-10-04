@@ -15,6 +15,7 @@ import type {
   AgentTaskEvent,
   AgentTitleEvent,
   Workspace,
+  WorkspaceAutoArchivedEvent,
 } from "@desktop/api/types/agent";
 import type { AutopilotCheckout, AutopilotLogEntry, DelegationEvent } from "@desktop/api/types/git";
 import type {
@@ -306,6 +307,14 @@ export function registerRemoteEvents(client: RemoteClient, set: Set, get: Get): 
   // cover — reload the snapshot.
   on<null>("workspace:changed", () => {
     void get().refreshWorkspace();
+  });
+
+  // The host's idle sweep archived something; `workspace:changed` already took
+  // it off the list, and this says what went. Held for Home until dismissed,
+  // gathering any later pass's names meanwhile.
+  on<WorkspaceAutoArchivedEvent>("workspace:auto-archived", (e) => {
+    if (e.names.length === 0) return;
+    set((s) => ({ autoArchived: [...(s.autoArchived ?? []), ...e.names] }));
   });
 
   // A roadmap row that was written, wherever it was written from. The phone

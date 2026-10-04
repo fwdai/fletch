@@ -11,6 +11,7 @@ import type {
   AutopilotLogEntry,
   AutopilotSnapshot,
 } from "@desktop/api/types/git";
+import type { PrChecks } from "@desktop/api/types/pr";
 import type { RoadmapItem, RoadmapItemPatch } from "@desktop/api/types/roadmap";
 import type { SessionRecord, UserTurn } from "@desktop/api/types/session";
 import { appActionMessage, DELEGATION_KINDS, type DelegationKind } from "@desktop/delegation";
@@ -175,6 +176,45 @@ export class MockHost {
 
   private event(event: string, payload: unknown) {
     this.emit({ event, payload });
+  }
+
+  /** What the host's PR watcher would report about a PR just opened: CI
+   *  settling green, then a reviewer's first thread. The phone polls none of
+   *  it, so this is the only way the mock's Ship strip moves past `pending`. */
+  private watchNewPr(id: string, number: number) {
+    this.later(() => {
+      const checks: PrChecks = {
+        merge_state: "clean",
+        rollup: "passing",
+        total: 11,
+        passed: 11,
+        failed: 0,
+        pending: 0,
+        required_failing: [],
+        runs: [],
+      };
+      fx.prChecks[id] = checks;
+      this.event("pr:checks_changed", { agent_id: id, subdir: null, number, checks });
+    }, 6000);
+    this.later(() => {
+      const thread = {
+        id: `mock-thread-${number}`,
+        author: "greptile",
+        is_bot: true,
+        body: "Consider guarding the empty case before indexing.",
+        path: "src/main.tsx",
+        line: 12,
+        url: `https://github.com/fwdai/fletch/pull/${number}#discussion_r1`,
+        replies: 0,
+        we_replied_last: false,
+      };
+      this.event("pr:threads_changed", {
+        agent_id: id,
+        subdir: null,
+        comments: { unresolved: [thread] },
+        new_thread_ids: [thread.id],
+      });
+    }, 9000);
   }
 
   /** One `agent:event`, numbered and kept for `read_live_turn` as the host
@@ -763,6 +803,7 @@ export class MockHost {
         };
         this.event("agent:git-action", { agent_id: id, op: "pr" });
         this.event("pr:state_changed", { agent_id: id, state: pr });
+        this.watchNewPr(id, number);
         return pr;
       }
       case "get_pr_state":
