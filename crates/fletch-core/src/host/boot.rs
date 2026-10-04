@@ -552,6 +552,10 @@ pub fn boot(cfg: BootConfig) -> Result<Engine, BootError> {
     // Reads once now to seed its memory — the seed announces nothing, so a
     // restart does not re-raise last week's threads.
     crate::supervisor::pr_watch::spawn(ctx.clone(), supervisor.clone());
+    // Delegations (`delegate_git`) run to their end on the host: the held
+    // trigger is delivered when the agent settles, and the outcome is decided
+    // here once rather than by whichever windows happen to be open.
+    crate::supervisor::delegation::spawn(ctx.clone(), supervisor.clone());
     // Archive sidebar workspaces left idle past the user's threshold — only
     // ones that are clean and fully pushed, so nothing unrecoverable goes.
     crate::supervisor::auto_archive::spawn(ctx.clone(), supervisor.clone(), db.clone());

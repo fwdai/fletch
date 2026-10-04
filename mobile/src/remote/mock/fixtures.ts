@@ -619,6 +619,8 @@ export const protocol: HostProtocol = {
     "roadmap_discard_proposal",
     "read_live_turn",
     "get_all_pr_status",
+    "delegate_git",
+    "get_delegations",
   ],
   events: [
     "agent:event",
@@ -639,10 +641,25 @@ export const protocol: HostProtocol = {
     "verify:report",
     "publish:approval-requested",
     "publish:approval-resolved",
+    "delegation:changed",
     "roadmap:item",
     "roadmap:item-deleted",
   ],
   features: [],
+};
+
+/** The outcome line the host's `done` carries per delegation kind
+ *  (`supervisor::delegation::delegation_done`), so the mock's read the same. */
+export const delegationDone: Record<string, string> = {
+  commit: "Agent committed your changes",
+  "commit-push": "Committed & pushed",
+  "commit-pr": "Committed — PR is open",
+  "open-pr": "PR is open",
+  push: "Pushed to origin",
+  resolve: "Conflicts resolved",
+  "update-branch": "Branch updated",
+  "fix-checks": "Agent finished — checks are re-running",
+  "resolve-comments": "Review comments addressed",
 };
 
 /** What `~` expands to on the fake host. */

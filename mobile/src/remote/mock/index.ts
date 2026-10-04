@@ -7,6 +7,7 @@ import type { AgentRecord, Workspace } from "@desktop/api/types/agent";
 import type { DirEntry, DirListing } from "@desktop/api/types/checkout";
 import type { RoadmapItem, RoadmapItemPatch } from "@desktop/api/types/roadmap";
 import type { SessionRecord, UserTurn } from "@desktop/api/types/session";
+import { appActionMessage, DELEGATION_KINDS, type DelegationKind } from "@desktop/delegation";
 import type { Socket, SocketFactory } from "@desktop/remote/socket";
 import {
   CLOSE_BAD_FIRST_FRAME,
@@ -51,6 +52,16 @@ interface MockState {
   /** Mutable, because cloning creates a directory the next clone must trip
    *  over ("a folder already exists at …"). */
   filesystem: Record<string, DirEntry[]>;
+  /** The host's delegation table, primary repos only: held while the agent is
+   *  mid-turn, delivered when it settles, done when the delegated turn ends. */
+  delegations: Record<string, MockDelegation>;
+}
+
+interface MockDelegation {
+  kind: DelegationKind;
+  phase: "queued" | "started" | "running";
+  started_at: number;
+  prompt: string;
 }
 
 /** Tilde expansion, as the host does it — including the trailing slash a bare
@@ -91,6 +102,7 @@ export class MockHost {
       roadmapItems: structuredClone(fx.roadmapItems),
       nextPrNumber: 649,
       filesystem: structuredClone(fx.filesystem),
+      delegations: {},
     };
   }
 
@@ -258,6 +270,7 @@ export class MockHost {
     while (end > 0 && !steps[end].record) end -= 1;
     this.event("turn:started", { agent_id: id, started_at: Date.now() });
     this.setStatus(id, "running");
+    this.delegationRunning(id);
     this.state.liveTurns[id] = [];
     steps.forEach((step, i) => {
       this.later(
@@ -267,11 +280,100 @@ export class MockHost {
           if (i === end) {
             this.event("session:records-appended", { agent_id: id });
             this.setStatus(id, "idle");
+            this.settleDelegation(id);
           }
         },
         700 * (i + 1),
       );
     });
+  }
+
+  private delegationEvent(id: string, d: MockDelegation, extra: Record<string, unknown> = {}) {
+    this.event("delegation:changed", {
+      agent_id: id,
+      subdir: null,
+      kind: d.kind,
+      phase: d.phase,
+      started_at: d.started_at,
+      ...extra,
+    });
+  }
+
+  /** Hand the held (or fresh) trigger over as a turn of its own. */
+  private deliverDelegation(id: string) {
+    const d = this.state.delegations[id];
+    if (!d) return;
+    d.phase = "started";
+    d.started_at = Date.now();
+    this.delegationEvent(id, d);
+    this.sendTurn(id, `delegation-${d.started_at}`, d.prompt, []);
+  }
+
+  private delegationRunning(id: string) {
+    const d = this.state.delegations[id];
+    if (d?.phase !== "started") return;
+    d.phase = "running";
+    this.delegationEvent(id, d);
+  }
+
+  /** A turn ended: the delegated one is done (the mock's playbooks always
+   *  land), and one held behind a foreign turn goes out now. */
+  private settleDelegation(id: string) {
+    const d = this.state.delegations[id];
+    if (!d) return;
+    if (d.phase === "queued") {
+      this.deliverDelegation(id);
+      return;
+    }
+    delete this.state.delegations[id];
+    this.event("delegation:changed", {
+      agent_id: id,
+      subdir: null,
+      kind: d.kind,
+      phase: "done",
+      started_at: d.started_at,
+      notice: fx.delegationDone[d.kind],
+    });
+  }
+
+  /** `send_user_message`'s delivery, shared with the delegations. */
+  private sendTurn(id: string, turnId: string, text: string, attachments: string[]) {
+    // Echoed to every client before delivery, as the host does; the sender
+    // recognizes its own turn id and does not draw the bubble twice.
+    this.event("turn:sent", {
+      agent_id: id,
+      turn_id: turnId,
+      text,
+      attachments,
+      follow_up: this.agent(id).status === "running",
+    });
+    // The transcript holds what the runner sent: the text, padded with a
+    // reference line per attachment.
+    const sent = [text, ...attachments.map((p) => `Attached file: ${p}`)]
+      .filter(Boolean)
+      .join("\n");
+    this.appendRecord(id, this.agent(id).provider, {
+      type: "user",
+      message: { role: "user", content: [{ type: "text", text: sent }] },
+    });
+    // The turn row, matched to the record it just wrote — as the host's
+    // turn-end ingest stamps it — so the rebuilt bubble reads like the
+    // optimistic one: the typed text, with the attachments hung on it.
+    this.state.turns[id] = [
+      ...(this.state.turns[id] ?? []),
+      {
+        turn_id: turnId,
+        seq: this.seq,
+        text,
+        attachments,
+        native_id: `n${this.seq}`,
+        started_at: Date.now(),
+        ended_at: null,
+      },
+    ];
+    this.patchAgent(id, { task: this.agent(id).task || text });
+    this.event("session:records-appended", { agent_id: id });
+    this.later(() => this.runTurn(id, text), 500);
   }
 
   // One flat table mirroring docs/remote-protocol.md's op allowlist; splitting
@@ -393,46 +495,44 @@ export class MockHost {
         return record;
       }
       case "send_user_message": {
-        const text = String(args.text ?? "");
         const attachments = Array.isArray(args.attachments) ? (args.attachments as string[]) : [];
-        // Echoed to every client before delivery, as the host does; the sender
-        // recognizes its own turn id and does not draw the bubble twice.
-        this.event("turn:sent", {
-          agent_id: id,
-          turn_id: String(args.turnId ?? ""),
-          text,
-          attachments,
-          follow_up: this.agent(id).status === "running",
-        });
-        // The transcript holds what the runner sent: the text, padded with a
-        // reference line per attachment.
-        const sent = [text, ...attachments.map((p) => `Attached file: ${p}`)]
-          .filter(Boolean)
-          .join("\n");
-        this.appendRecord(id, this.agent(id).provider, {
-          type: "user",
-          message: { role: "user", content: [{ type: "text", text: sent }] },
-        });
-        // The turn row, matched to the record it just wrote — as the host's
-        // turn-end ingest stamps it — so the rebuilt bubble reads like the
-        // optimistic one: the typed text, with the attachments hung on it.
-        this.state.turns[id] = [
-          ...(this.state.turns[id] ?? []),
-          {
-            turn_id: String(args.turnId ?? ""),
-            seq: this.seq,
-            text,
-            attachments,
-            native_id: `n${this.seq}`,
-            started_at: Date.now(),
-            ended_at: null,
-          },
-        ];
-        this.patchAgent(id, { task: this.agent(id).task || text });
-        this.event("session:records-appended", { agent_id: id });
-        this.later(() => this.runTurn(id, text), 500);
+        this.sendTurn(id, String(args.turnId ?? ""), String(args.text ?? ""), attachments);
         return false;
       }
+      // The host's delegation, in miniature: the trigger is composed here and
+      // held while the agent is mid-turn, so a tap during a turn runs as a turn
+      // of its own once that one ends.
+      case "delegate_git": {
+        const action = String(args.action ?? "");
+        const kind = (action === "resolve-conflicts" ? "resolve" : action) as DelegationKind;
+        if (action === "resolve" || !DELEGATION_KINDS.includes(kind)) {
+          throw new Error(`unknown git action "${action}"`);
+        }
+        const d: MockDelegation = {
+          kind,
+          phase: this.agent(id).status === "running" ? "queued" : "started",
+          started_at: Date.now(),
+          prompt: appActionMessage(action, (args.params as Record<string, string>) ?? undefined),
+        };
+        this.state.delegations[id] = d;
+        if (d.phase === "queued") this.delegationEvent(id, d);
+        else this.deliverDelegation(id);
+        return {
+          agent_id: id,
+          subdir: null,
+          kind: d.kind,
+          phase: d.phase,
+          started_at: d.started_at,
+        };
+      }
+      case "get_delegations":
+        return Object.entries(this.state.delegations).map(([agentId, d]) => ({
+          agent_id: agentId,
+          subdir: null,
+          kind: d.kind,
+          phase: d.phase,
+          started_at: d.started_at,
+        }));
       case "answer_tool_use": {
         const behavior = String(args.behavior ?? "allow");
         delete this.state.pendingToolUse[id];

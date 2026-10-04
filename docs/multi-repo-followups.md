@@ -54,9 +54,10 @@ byte-identical everywhere:
   Single-repo agents early-return the bare section — pixel-identical to the
   old panel. Delegations (`Delegation` in `src/delegation.ts`) are keyed by
   `checkoutKey`, so a multi-repo agent can hold one per checkout; their
-  lifecycle belongs to `useDelegationSync` (`src/store/delegationSync.ts`),
-  mounted once at the app root — NOT to a panel section, so a delegation
-  advances whether or not its section is on screen. Sections only read it.
+  lifecycle belongs to the host (`crates/fletch-core/src/supervisor/
+  delegation.rs`) — NOT to a panel section or any window, so a delegation
+  advances whether or not anything is on screen. The store's `delegations`
+  map is a mirror of `delegation:changed`; sections only read it.
 
 **Non-negotiable invariants for all follow-ups:**
 
@@ -119,7 +120,7 @@ correct; the badge isn't).
 (`commands.rs` "multi-repo PR tracking is out of scope here" — delete those);
 `session_sync.rs` has `pr_opened_at/pr_merged_at` timestamps persisted per
 worktree via `persist_pr_snapshot` — already per-repo, don't duplicate.
-Delegation attribution (`markDelegationActed` path) keys off
+Delegation attribution (the host's `note_git_action` path) keys off
 `agent:git-action` events, not prStates — untouched.
 
 ## 2. "One task → N PRs" presented as a unit  ·  ✅ done  ·  size: M

@@ -1,3 +1,5 @@
+import type { DelegationKind, DelegationPhase } from "@/delegation";
+
 export interface DiffStats {
   additions: number;
   deletions: number;
@@ -57,4 +59,19 @@ export interface GitState {
    *  means every other field is a zero-state; the panel offers to remove them.
    *  Absent from hosts that predate the field. */
   blocked_config?: string[];
+}
+
+/** One delegation as the host reports it: a row of `get_delegations` (a live
+ *  phase, no `notice`), or one step of its life on `delegation:changed`. `done`
+ *  and `abandoned` end it; their `notice` is the outcome line to show. An
+ *  `abandoned` with no `notice` was dropped because its agent went away. */
+export interface DelegationEvent {
+  agent_id: string;
+  /** The secondary repo it targets; null for the primary. */
+  subdir: string | null;
+  kind: DelegationKind;
+  phase: DelegationPhase | "done" | "abandoned";
+  /** Epoch ms when it entered its current phase. */
+  started_at: number;
+  notice?: string;
 }

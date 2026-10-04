@@ -1,7 +1,7 @@
 import type { BackgroundTaskMap } from "@desktop/adapters/shared/backgroundTasks";
 import type { AgentManagedEvent, AgentRecord, Workspace } from "@desktop/api/types/agent";
 import type { CheckoutFile, DirListing } from "@desktop/api/types/checkout";
-import type { GitState, ShortStats } from "@desktop/api/types/git";
+import type { DelegationEvent, GitState, ShortStats } from "@desktop/api/types/git";
 import type { PrChecks, PrComments, PrState } from "@desktop/api/types/pr";
 import type { GhRepoSummary, GhStatus } from "@desktop/api/types/providers";
 import type { PublishApproval } from "@desktop/api/types/sandbox";
@@ -37,7 +37,12 @@ import { replayLiveTurn, runningTurnStart, withPendingTurns } from "./liveTurn";
 import { clearHost, loadDestParent, loadSettings, saveDestParent, saveSettings } from "./persist";
 import { createProposalsSlice, type ProposalsSlice } from "./proposals";
 import { forgetPush, startPush, syncPush } from "./push";
-import { appendActivity, askedText, type ShipActivityMap } from "./shipActivity";
+import {
+  appendActivity,
+  askedText,
+  delegationActivityText,
+  type ShipActivityMap,
+} from "./shipActivity";
 import { applyUserTurns, reduceRecords } from "./transcript";
 
 export const client = createClient();
@@ -150,6 +155,11 @@ export interface MobileState extends ChatsSlice, ProposalsSlice {
   /** The Ship tab's activity list per agent, newest first (store/shipActivity).
    *  Live only: empty after every handshake, like `backgroundTasks`. */
   shipActivity: ShipActivityMap;
+  /** The host's live delegation per agent (`delegation:changed`), primary repo
+   *  only — the phone is single-repo for now. A mirror: the host decides when
+   *  one starts, runs and ends; the Ship strip reads `working` off it. Re-read
+   *  with `get_delegations` on every handshake. */
+  delegations: Record<string, DelegationEvent>;
   trees: Record<string, CheckoutFile[]>;
 
   theme: ThemeMode;
@@ -253,6 +263,11 @@ export interface MobileState extends ChatsSlice, ProposalsSlice {
    *  playbook name from `instructions/git_actions.md` (`commit-pr`, `open-pr`,
    *  `commit-push`, …); `params` carry only what the playbook can't know. */
   delegateGit(agentId: string, action: string, params?: Record<string, string>): Promise<void>;
+  /** Fold one `delegation:changed` into `delegations`, with its activity line. */
+  applyDelegation(e: DelegationEvent): void;
+  /** Replace `delegations` with the host's table. A no-op on a host without
+   *  `get_delegations`. */
+  loadDelegations(): Promise<void>;
   /** Manual path: commit + push + open a PR with the user's own text. */
   publish(agentId: string, title: string, body: string): Promise<void>;
   pushToPr(agentId: string): Promise<void>;
@@ -295,6 +310,10 @@ let initialized = false;
 export const RESUME_PROBE_TIMEOUT_MS = 6_000;
 
 let queuedPush: PushFletch | null = null;
+
+/** The `started_at` of the last delegation that ended per agent, so a
+ *  `delegate_git` reply landing after its own end cannot put it back. */
+const endedDelegations = new Map<string, number>();
 
 /** A pairing link that arrived before `init` finished — the usual case, in
  *  fact: `registerDeepLinks` and `init` start together, and the link has only
@@ -520,6 +539,7 @@ export const useStore = create<MobileState>()((set, get) => ({
   prComments: {},
   verificationReports: {},
   shipActivity: {},
+  delegations: {},
   trees: {},
 
   theme: "dark",
@@ -585,7 +605,7 @@ export const useStore = create<MobileState>()((set, get) => ({
       // over on every handshake and refill from whatever the host emits next.
       // The replay watermarks go with them: a restarted host counts from zero,
       // and so does the Ship tab's activity list.
-      set({ backgroundTasks: {}, liveSeq: {}, shipActivity: {} });
+      set({ backgroundTasks: {}, liveSeq: {}, shipActivity: {}, delegations: {} });
       // The snapshot carries no stats or PR state, so the rows get both from
       // the first poll of every handshake rather than waiting out its interval.
       void get().loadShortstats();
@@ -594,6 +614,9 @@ export const useStore = create<MobileState>()((set, get) => ({
       // request event only reached the devices connected when it fired — and so
       // did the resolution, whoever gave it.
       void get().loadPendingApprovals().catch(ignore);
+      // …and the delegations it is running: the strip's `working` state is
+      // the host's, and the events that built it were lost with the socket.
+      void get().loadDelegations().catch(ignore);
       refreshOpenAgent();
       // Every handshake — the first pairing and every reconnect — is when the
       // host is told the APNs token again.
@@ -767,6 +790,7 @@ export const useStore = create<MobileState>()((set, get) => ({
       liveSeq: {},
       verificationReports: {},
       shipActivity: {},
+      delegations: {},
       // The chats belong to the host that holds their checkouts, and the ghosts
       // to the boards those chats propose onto.
       chats: {},
@@ -1179,12 +1203,50 @@ export const useStore = create<MobileState>()((set, get) => ({
   },
 
   async delegateGit(agentId, action, params) {
-    // Delivered as a normal user turn: the host's `send_user_message` is the
-    // same op the desktop uses, and the agent already carries the playbooks.
-    // Completion needs no tracking here — `agent:git-action` and
-    // `pr:state_changed` (events.ts) reload the git/PR state when it lands.
-    await get().send(agentId, appActionMessage(action, params));
-    set((s) => ({ shipActivity: appendActivity(s.shipActivity, agentId, askedText(action)) }));
+    if (!get().hostSupports("delegate_git")) {
+      // A host from before the op: send the trigger as the plain user turn it
+      // always was. Nothing holds it while the agent is mid-turn, and nothing
+      // tracks it — `agent:git-action` and `pr:state_changed` (events.ts) reload
+      // the git/PR state when it lands.
+      await get().send(agentId, appActionMessage(action, params));
+      set((s) => ({ shipActivity: appendActivity(s.shipActivity, agentId, askedText(action)) }));
+      return;
+    }
+    // The host's: it composes the trigger, holds it while the agent is
+    // mid-turn and decides when it is over, so the delegation outlives this
+    // phone's connection and reads the same on the Mac.
+    await guard(set, async () => {
+      const recorded = await api.delegateGit(agentId, action, params);
+      // The `delegation:changed` for this carries the activity line and may
+      // land either side of this reply; this only makes sure the strip turns at
+      // once — and never revives one whose end already arrived.
+      if (endedDelegations.get(agentId) === recorded.started_at) return;
+      set((s) =>
+        s.delegations[agentId] ? {} : { delegations: { ...s.delegations, [agentId]: recorded } },
+      );
+    });
+  },
+
+  applyDelegation(e) {
+    if (e.subdir) return;
+    const ended = e.phase === "done" || e.phase === "abandoned";
+    if (ended) endedDelegations.set(e.agent_id, e.started_at);
+    set((s) => {
+      const line = delegationActivityText(s.delegations[e.agent_id], e);
+      const { [e.agent_id]: _prev, ...rest } = s.delegations;
+      return {
+        delegations: ended ? rest : { ...rest, [e.agent_id]: e },
+        ...(line ? { shipActivity: appendActivity(s.shipActivity, e.agent_id, line) } : {}),
+      };
+    });
+  },
+
+  async loadDelegations() {
+    if (!get().hostSupports("get_delegations")) return;
+    const rows = await api.getDelegations();
+    set({
+      delegations: Object.fromEntries(rows.filter((r) => !r.subdir).map((r) => [r.agent_id, r])),
+    });
   },
 
   async publish(agentId, title, body) {

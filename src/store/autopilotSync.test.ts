@@ -2,9 +2,9 @@
 // What is left is the wiring — the store transitions, the delegation the effect
 // turns into, and the two guards that only exist in the pass itself:
 //
-//   1. One dispatch per agent per pass. `delegateAction` sends the agent a
-//      message, but the status flip to `running` comes back asynchronously from
-//      the backend, so both checkouts of a multi-repo agent see an `idle` agent
+//   1. One dispatch per agent per pass. `delegateAction` hands the agent a
+//      playbook through the host, but the status flip to `running` comes back
+//      asynchronously from the backend, so both checkouts of a multi-repo agent see an `idle` agent
 //      inside a single pass. Both dispatching coalesces two triggers into one
 //      turn — what `queued` exists to prevent — and `delegationInFlight` can't
 //      see it because it is keyed per checkout.
@@ -14,7 +14,7 @@
 //      is what survives that.
 //
 // `autopilotPass` is the whole sweep, so both are testable without a rendered
-// hook — the same reason `planDelegationPass` is exported.
+// hook.
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { create } from "zustand";
@@ -22,8 +22,24 @@ import type { AgentStatus, GitState, PrChecks, PrState, VerificationReport } fro
 import type { AutopilotState, Cycle } from "@/autopilot";
 import { newEnrollment } from "@/autopilot";
 
-const { runVerification } = vi.hoisted(() => ({ runVerification: vi.fn() }));
-vi.mock("@/api", () => ({ api: { runVerification } }));
+// `delegate_git` answers with the delegation as the host recorded it. Each
+// reply is stamped later than the last, as the host's clock would.
+const { runVerification, delegateGit } = vi.hoisted(() => {
+  let clock = 0;
+  return {
+    runVerification: vi.fn(),
+    delegateGit: vi.fn(
+      async (agentId: string, action: string, _params?: unknown, subdir?: string) => ({
+        agent_id: agentId,
+        subdir: subdir ?? null,
+        kind: action === "resolve-conflicts" ? "resolve" : action,
+        phase: "started",
+        started_at: ++clock,
+      }),
+    ),
+  };
+});
+vi.mock("@/api", () => ({ api: { runVerification, delegateGit } }));
 vi.mock("@/storage/settings", () => ({ setSetting: vi.fn() }));
 vi.mock("@/storage/projectSettings", () => ({
   AUTOPILOT_ENABLED_KEY: "autopilot.enabled",
@@ -96,8 +112,10 @@ const cycle = (over: Partial<Cycle> = {}): Cycle => ({
   ...over,
 });
 
-/** The trigger a `fix-checks` dispatch sends, as `appActionMessage` builds it. */
-const TRIGGER = '[app-action] fix-checks failing="test"';
+/** What a `fix-checks` dispatch hands the host for the primary checkout. */
+const DISPATCH = ["a1", "fix-checks", { failing: "test" }, undefined] as const;
+/** …and for the `web` secondary, which the host scopes with `repo="web"`. */
+const DISPATCH_WEB = ["a1", "fix-checks", { failing: "test" }, "web"] as const;
 /** The blocker fingerprint of the seeded world (`blockerFingerprint`), so a
  *  fixture's spent attempts belong to the situation the pass will see. */
 const SITUATION = "checks-failing:test";
@@ -127,7 +145,6 @@ function makeStore({
   paused = [],
   readiness = [],
 }: Fixture) {
-  const sendUserMessage = vi.fn();
   const store = create<AppState>()(
     (...a) =>
       ({
@@ -141,7 +158,6 @@ function makeStore({
   const seeded = [...new Set([...Object.keys(autopilot), ...readiness])];
   const per = <T>(value: T) => Object.fromEntries(seeded.map((k) => [k, value]));
   store.setState({
-    sendUserMessage,
     workspace: {
       agents: Object.entries(agents).map(([id, status]) => ({
         id,
@@ -161,12 +177,13 @@ function makeStore({
     // biome-ignore lint/suspicious/noExplicitAny: partial store seed
   } as any);
   held.store = store;
-  return { store, sendUserMessage };
+  return { store, delegateGit };
 }
 
 const key = { primary: checkoutKey("a1"), web: checkoutKey("a1", "web") };
 
 beforeEach(() => {
+  delegateGit.mockClear();
   runVerification.mockReset();
   runVerification.mockResolvedValue(passing);
 });
@@ -176,7 +193,7 @@ describe("autopilotPass dispatches at most once per agent per pass", () => {
     // Both checkouts are enrolled, both blocked on failing checks, and the agent
     // reads `idle` for both because the status flip from the first dispatch
     // hasn't come back yet. Dispatching both would coalesce the triggers.
-    const { store, sendUserMessage } = makeStore({
+    const { store, delegateGit } = makeStore({
       autopilot: { [key.primary]: state(), [key.web]: state() },
       agents: { a1: "idle" },
     });
@@ -184,7 +201,7 @@ describe("autopilotPass dispatches at most once per agent per pass", () => {
     await autopilotPass([key.primary, key.web], new Set());
 
     expect(Object.keys(store.getState().delegations)).toEqual([key.primary]);
-    expect(sendUserMessage).toHaveBeenCalledExactlyOnceWith("a1", TRIGGER);
+    expect(delegateGit).toHaveBeenCalledExactlyOnceWith(...DISPATCH);
     // The loser is left completely untouched — no cycle was opened for it, so
     // the next tick re-derives it against a world that now shows a busy agent.
     expect(store.getState().autopilot[key.primary].cycle).not.toBeNull();
@@ -193,7 +210,7 @@ describe("autopilotPass dispatches at most once per agent per pass", () => {
 
   it("still dispatches concurrently for different agents", async () => {
     // The guard is per agent, not global: two agents can each take a turn.
-    const { store, sendUserMessage } = makeStore({
+    const { store, delegateGit } = makeStore({
       autopilot: { a1: state(), a2: state() },
       agents: { a1: "idle", a2: "idle" },
     });
@@ -201,13 +218,13 @@ describe("autopilotPass dispatches at most once per agent per pass", () => {
     await autopilotPass(["a1", "a2"], new Set());
 
     expect(Object.keys(store.getState().delegations).sort()).toEqual(["a1", "a2"]);
-    expect(sendUserMessage).toHaveBeenCalledTimes(2);
+    expect(delegateGit).toHaveBeenCalledTimes(2);
   });
 
   it("lets the loser dispatch on the NEXT pass, once its sibling turn is done", async () => {
     // The set is per pass, so nothing is remembered: the deferral costs one tick,
     // it doesn't blacklist the checkout.
-    const { store, sendUserMessage } = makeStore({
+    const { store, delegateGit } = makeStore({
       autopilot: { [key.primary]: state(), [key.web]: state() },
       agents: { a1: "idle" },
     });
@@ -216,7 +233,13 @@ describe("autopilotPass dispatches at most once per agent per pass", () => {
     // That turn landed: the primary's checks are green, its cycle settled and its
     // delegation was cleared — so this pass has nothing for the primary, and the
     // sibling deferred a tick ago takes its turn.
-    store.getState().clearDelegation(key.primary);
+    store.getState().applyDelegationChange({
+      agent_id: "a1",
+      subdir: null,
+      kind: "fix-checks",
+      phase: "abandoned",
+      started_at: 0,
+    });
     store.setState({
       autopilot: { ...store.getState().autopilot, [key.primary]: state() },
       prChecks: {
@@ -233,16 +256,13 @@ describe("autopilotPass dispatches at most once per agent per pass", () => {
     await autopilotPass([key.primary, key.web], new Set());
 
     expect(store.getState().autopilot[key.web].cycle).not.toBeNull();
-    expect(sendUserMessage).toHaveBeenLastCalledWith(
-      "a1",
-      '[app-action] fix-checks failing="test" repo="web"',
-    );
+    expect(delegateGit).toHaveBeenLastCalledWith(...DISPATCH_WEB);
   });
 });
 
 describe("autopilotPass applies a dispatch", () => {
   it("opens the cycle AND sends the delegation, so the turn is tracked", async () => {
-    const { store, sendUserMessage } = makeStore({
+    const { store, delegateGit } = makeStore({
       autopilot: { [key.primary]: state() },
       agents: { a1: "idle" },
     });
@@ -261,23 +281,20 @@ describe("autopilotPass applies a dispatch", () => {
     // Without the delegation nothing would ever advance the cycle out of
     // `working` — the driver depends on the delegation layer's lifecycle.
     expect(store.getState().delegations[key.primary].kind).toBe("fix-checks");
-    expect(sendUserMessage).toHaveBeenCalledExactlyOnceWith("a1", TRIGGER);
+    expect(delegateGit).toHaveBeenCalledExactlyOnceWith(...DISPATCH);
   });
 
   it("scopes a secondary checkout's trigger to its repo", async () => {
     // Without `repo=`, the agent would run the fix in the primary repo — the
     // wrong checkout entirely.
-    const { store, sendUserMessage } = makeStore({
+    const { store, delegateGit } = makeStore({
       autopilot: { [key.web]: state() },
       agents: { a1: "idle" },
     });
 
     await autopilotPass([key.web], new Set());
 
-    expect(sendUserMessage).toHaveBeenCalledExactlyOnceWith(
-      "a1",
-      '[app-action] fix-checks failing="test" repo="web"',
-    );
+    expect(delegateGit).toHaveBeenCalledExactlyOnceWith(...DISPATCH_WEB);
     expect(store.getState().delegations[key.web].subdir).toBe("web");
   });
 });
@@ -346,7 +363,7 @@ describe("autopilotPass applies a verification", () => {
 describe("autopilotPass drops an enrollment whose agent is gone", () => {
   it("unenrolls rather than ticking forever against nothing", async () => {
     // Archiving or discarding an agent leaves its persisted enrollment behind.
-    const { store, sendUserMessage } = makeStore({
+    const { store, delegateGit } = makeStore({
       autopilot: { [key.primary]: state(), [key.web]: state() },
       agents: {},
     });
@@ -354,7 +371,7 @@ describe("autopilotPass drops an enrollment whose agent is gone", () => {
     await autopilotPass([key.primary, key.web], new Set());
 
     expect(store.getState().autopilot).toEqual({});
-    expect(sendUserMessage).not.toHaveBeenCalled();
+    expect(delegateGit).not.toHaveBeenCalled();
   });
 });
 
@@ -413,7 +430,7 @@ describe("autopilotPass enrolls on the first tick and honours the project switch
   it("enrolls an unseen checkout of an enabled project and acts on it in the same pass", async () => {
     // The whole point of on-by-default: a PR with failing checks gets a fix
     // dispatched without anyone having clicked anything.
-    const { store, sendUserMessage } = makeStore({
+    const { store, delegateGit } = makeStore({
       autopilot: {},
       agents: { a1: "idle" },
       readiness: [key.primary],
@@ -423,14 +440,14 @@ describe("autopilotPass enrolls on the first tick and honours the project switch
 
     expect(store.getState().autopilot[key.primary]).toMatchObject({ enrolled: true });
     expect(store.getState().autopilot[key.primary].cycle?.rung).toBe("fix-checks");
-    expect(sendUserMessage).toHaveBeenCalledExactlyOnceWith("a1", TRIGGER);
+    expect(delegateGit).toHaveBeenCalledExactlyOnceWith(...DISPATCH);
   });
 
   it("does nothing for a checkout whose project has autopilot off, and forgets its state", async () => {
     // Switching a project off mid-cycle: the agent's turn (if any) runs on, but
     // autopilot stops judging it and drops the entry, so the chip stops claiming
     // it is working. Coming back on starts fresh on the next tick.
-    const { store, sendUserMessage } = makeStore({
+    const { store, delegateGit } = makeStore({
       autopilot: { [key.primary]: state({ cycle: cycle() }) },
       agents: { a1: "idle" },
       disabled: ["p1"],
@@ -439,7 +456,7 @@ describe("autopilotPass enrolls on the first tick and honours the project switch
     await autopilotPass([key.primary], new Set());
 
     expect(store.getState().autopilot[key.primary]).toBeUndefined();
-    expect(sendUserMessage).not.toHaveBeenCalled();
+    expect(delegateGit).not.toHaveBeenCalled();
     expect(runVerification).not.toHaveBeenCalled();
   });
 
@@ -447,7 +464,7 @@ describe("autopilotPass enrolls on the first tick and honours the project switch
     // Someone else is already on this PR: the user flipped the panel switch
     // mid-cycle. The turn already running is theirs to stop; autopilot just
     // stops judging, dispatching, and claiming anything about this workspace.
-    const { store, sendUserMessage } = makeStore({
+    const { store, delegateGit } = makeStore({
       autopilot: { [key.primary]: state({ cycle: cycle() }), [key.web]: state() },
       agents: { a1: "idle" },
       paused: ["a1"],
@@ -456,12 +473,12 @@ describe("autopilotPass enrolls on the first tick and honours the project switch
     await autopilotPass([key.primary, key.web], new Set());
 
     expect(store.getState().autopilot).toEqual({});
-    expect(sendUserMessage).not.toHaveBeenCalled();
+    expect(delegateGit).not.toHaveBeenCalled();
     expect(runVerification).not.toHaveBeenCalled();
   });
 
   it("picks a workspace back up on the tick after it is un-paused, fresh", async () => {
-    const { store, sendUserMessage } = makeStore({
+    const { store, delegateGit } = makeStore({
       autopilot: {},
       agents: { a1: "idle" },
       paused: ["a1"],
@@ -469,13 +486,13 @@ describe("autopilotPass enrolls on the first tick and honours the project switch
     });
 
     await autopilotPass([key.primary], new Set());
-    expect(sendUserMessage).not.toHaveBeenCalled();
+    expect(delegateGit).not.toHaveBeenCalled();
 
     store.setState({ autopilotPausedAgents: [] });
     await autopilotPass([key.primary], new Set());
 
     expect(store.getState().autopilot[key.primary].cycle?.rung).toBe("fix-checks");
-    expect(sendUserMessage).toHaveBeenCalledExactlyOnceWith("a1", TRIGGER);
+    expect(delegateGit).toHaveBeenCalledExactlyOnceWith(...DISPATCH);
   });
 });
 
@@ -523,7 +540,7 @@ describe("autopilotPass records what it did", () => {
     // The last cycle in the budget failed: the pass records WHY — that row is the
     // only explanation the user ever gets — and from then on the checkout waits
     // silently for the situation to change. No state, no marker, no card.
-    const { store, sendUserMessage } = makeStore({
+    const { store, delegateGit } = makeStore({
       autopilot: {
         [key.primary]: state({
           cycle: cycle({ phase: "awaiting-evidence", attempt: 3 }),
@@ -545,7 +562,7 @@ describe("autopilotPass records what it did", () => {
 
     await autopilotPass([key.primary], new Set());
     expect(store.getState().autopilotLog[key.primary]).toHaveLength(1);
-    expect(sendUserMessage).not.toHaveBeenCalled();
+    expect(delegateGit).not.toHaveBeenCalled();
   });
 
   it("stays silent on a tick with nothing to do", async () => {

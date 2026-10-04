@@ -1,8 +1,10 @@
 // The Ship tab's activity list: a short, live-only memory of what moved the
 // checkout toward landing — git actions the agent ran, PR transitions, the
-// playbooks and merges asked for from this phone. Newest first, capped, and
+// playbooks asked for (from any device, as the host reports them) and their
+// outcomes, and the merges asked for from this phone. Newest first, capped, and
 // never persisted: it starts empty on every handshake like `backgroundTasks`.
 
+import type { DelegationEvent } from "@desktop/api/types/git";
 import type { PrChecks, PrComments, PrState } from "@desktop/api/types/pr";
 
 export interface ShipActivityEntry {
@@ -57,6 +59,29 @@ export function askedText(action: string): string {
     "resolve-comments": "work through the review comments",
   };
   return `Asked the agent to ${what[action] ?? action}`;
+}
+
+/** What a `delegation:changed` means in one line, read against the delegation
+ *  it replaces (`prev`, absent for a new one): the ask when one is recorded —
+ *  once, so a held trigger's later delivery is not a second ask — and the
+ *  host's outcome notice when it ends. A turn starting is the strip's to show,
+ *  not the log's, and an end with no notice (its agent went away) says nothing. */
+export function delegationActivityText(
+  prev: DelegationEvent | undefined,
+  next: DelegationEvent,
+): string | null {
+  const asked = askedText(next.kind === "resolve" ? "resolve-conflicts" : next.kind);
+  switch (next.phase) {
+    case "queued":
+      return `${asked} once its turn ends`;
+    case "started":
+      return prev?.phase === "queued" || prev?.started_at === next.started_at ? null : asked;
+    case "running":
+      return null;
+    case "done":
+    case "abandoned":
+      return next.notice ?? null;
+  }
 }
 
 /** What a `pr:checks_changed` means in one line, or null when the rollup did

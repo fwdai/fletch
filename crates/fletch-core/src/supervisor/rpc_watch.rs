@@ -193,6 +193,9 @@ fn handle_rpc_event(sup: &Supervisor, ctx: &Arc<EngineCtx>, agent_id: &str, even
                 .and_then(|v| v.as_str())
                 .unwrap_or_default()
                 .to_string();
+            // The delegation driver hears it here rather than off the sink:
+            // the same fact, at the same moment every client hears it.
+            super::delegation::note_git_action(agent_id, &op);
             emit_git_action(ctx.sink.as_ref(), agent_id, op);
         }
         rpc::RpcEvent::Named { name, payload } if name == rpc::git::EVENT_TITLE_SET => {

@@ -30,9 +30,9 @@ import { StatusHeader } from "./StatusHeader";
  *  `useGitPanelData`, the commit draft in `useCommitDraft`, busy/notice in
  *  `useTransientFeedback`, the dispatch table in `useGitActions`, and the
  *  split-button model in `useActionBarModel`. The agent-handoff lifecycle is
- *  NOT here — it belongs to `useDelegationSync` at the app root, so a
- *  delegation completes whether or not this section is on screen; the section
- *  only reads the delegation to render it. */
+ *  NOT here — it belongs to the host (`supervisor::delegation`), so a
+ *  delegation completes whether or not this section, or any window, is on
+ *  screen; the section only reads the store's mirror of it to render it. */
 export function GitRepoSection({
   agent,
   repo,
@@ -63,9 +63,9 @@ export function GitRepoSection({
     useCommitDraft(agent.id, panelState);
 
   // This checkout's in-flight delegation, for display only — the lifecycle that
-  // clears it runs at the app root. Its settled outcome arrives the same way:
-  // `useDelegationSync` posts it to the store (it has no panel to write to), and
-  // we merge it with this section's own action notices.
+  // clears it runs on the host. Its settled outcome arrives the same way: the
+  // host's `done` / `abandoned` event posts it to the store, and we merge it
+  // with this section's own action notices.
   const key = checkoutKey(agent.id, subdir);
   const delegation = useAppStore((s) => s.delegations[key]);
   const delegationNotice = useAppStore((s) => s.delegationNotices[key]);

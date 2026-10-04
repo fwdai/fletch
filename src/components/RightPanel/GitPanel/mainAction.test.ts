@@ -76,10 +76,17 @@ describe("mainActionState", () => {
   });
 
   it("leaves an ungated action alone on the same old host", () => {
-    // `push` has been on the wire since v1, and `agent-*` keys are the coding
-    // agent's work, not an op — neither is the environment's business.
+    // `push` has been on the wire since v1 — not the environment's business.
     expect(against("push")).toEqual({ disabled: false, reason: null });
-    expect(against("agent-commit-push")).toEqual({ disabled: false, reason: null });
+  });
+
+  it("explains a host that cannot run the agent's playbooks", () => {
+    // `agent-*` keys go through the host's `delegate_git`, which owns the
+    // delegation; a host from before it says so on the button.
+    const state = against("agent-commit-push");
+
+    expect(state.disabled).toBe(true);
+    expect(state.reason).toBe(actionGateReason(oldHost, "agent-commit-push"));
   });
 
   it("stays silent about the transient blocks the bar already narrates", () => {

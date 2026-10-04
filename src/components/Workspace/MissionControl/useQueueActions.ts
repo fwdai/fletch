@@ -10,7 +10,6 @@ import { open } from "@tauri-apps/plugin-shell";
 import { useCallback } from "react";
 import { api } from "@/api";
 import type { GitCommitAction } from "@/components/RightPanel/primaryActions";
-import { appActionMessage } from "@/delegation";
 import { type LadderContext, nextRung } from "@/readiness";
 import { useAppStore } from "@/store";
 import { useGate } from "@/store/capabilities";
@@ -101,15 +100,10 @@ export function useQueueActions(openReview: (runId: string) => void): QueueActio
 
       switch (rung.do) {
         case "delegate":
-          // Scope the trigger to this repo: a secondary adds `repo="<subdir>"` so
-          // the agent works in that sibling checkout, not the primary (mirrors
-          // useGitActions' trigger).
-          delegateAction(
-            agentId,
-            rung.kind,
-            appActionMessage(rung.action, subdir ? { ...rung.params, repo: subdir } : rung.params),
-            subdir,
-          );
+          // Scoped to this repo: the host adds `repo="<subdir>"` for a
+          // secondary so the agent works in that sibling checkout, not the
+          // primary.
+          await delegateAction(agentId, rung.action, rung.params, subdir);
           return;
         case "merge":
           // A host from before `merge_pr` says so instead of dispatching a call
@@ -130,20 +124,16 @@ export function useQueueActions(openReview: (runId: string) => void): QueueActio
   );
 
   // Fan-out "Update all": dispatch the existing `update-branch` delegation to
-  // every affected agent, each scoped to its own checkout. Running agents queue
-  // the trigger and idle ones start immediately — either way each flips into its
-  // delegated/running state through the same machinery the Git panel uses, so no
-  // new progress UI is needed.
+  // every affected agent, each scoped to its own checkout. The host queues the
+  // trigger for running agents and starts idle ones immediately — either way
+  // each flips into its delegated/running state through the same machinery the
+  // Git panel uses, so no new progress UI is needed.
   const updateAll = useCallback(
     (item: ReviewItem) => {
       const fanout = item.fanout;
       if (!fanout) return;
       for (const a of fanout.agents) {
-        const trigger = appActionMessage(
-          "update-branch",
-          a.subdir ? { base: fanout.base, repo: a.subdir } : { base: fanout.base },
-        );
-        delegateAction(a.agentId, "update-branch", trigger, a.subdir);
+        void delegateAction(a.agentId, "update-branch", { base: fanout.base }, a.subdir);
       }
     },
     [delegateAction],
