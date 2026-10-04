@@ -3,7 +3,8 @@ import { Icon } from "@desktop/components/Icon";
 import { useEffect, useState } from "react";
 import { AgentRow } from "../../components/AgentRow";
 import { Nav, Segmented, Swatch } from "../../components/ui";
-import { agentsOfProject, baseOf, isActive, isBusy, repoLabel } from "../../lib/agents";
+import { agentsOfProject, baseOf, isActive, isBusy } from "../../lib/agents";
+import { projectById, repoLabel } from "../../lib/projects";
 import { useStore } from "../../store";
 
 /** The three stages of an agent's life, each row in exactly one: working now,
@@ -15,7 +16,7 @@ export function ProjectScreen({ projectId }: { projectId: string }) {
   // Derived outside the selector: a selector that builds a new array on every
   // call re-renders forever under zustand v5.
   const workspace = useStore((s) => s.workspace);
-  const project = workspace?.projects.find((p) => p.project_id === projectId);
+  const project = projectById(workspace, projectId);
   const agents = agentsOfProject(workspace, projectId);
   const prStates = useStore((s) => s.prStates);
   const pop = useStore((s) => s.pop);

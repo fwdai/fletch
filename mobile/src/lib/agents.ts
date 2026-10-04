@@ -1,7 +1,8 @@
 // Derivations over the workspace snapshot: which agents are active, what a
-// row's status word is, the primary checkout, and colour for a project chip.
+// row's status word is, the primary checkout, and colour for a provider chip.
+// Project derivations live in lib/projects.
 
-import type { AgentRecord, AgentStatus, ProjectRef, Workspace } from "@desktop/api/types/agent";
+import type { AgentRecord, AgentStatus, Workspace } from "@desktop/api/types/agent";
 import type { GitState } from "@desktop/api/types/git";
 import { PROVIDERS } from "@desktop/data/providers";
 
@@ -62,20 +63,7 @@ export const providerShort = (id: string) =>
 
 export const providerHue = (id: string) => PROVIDERS.find((p) => p.id === id)?.hue ?? 0;
 
-/** A stable hue per project so its swatch keeps its colour across launches. */
-export function projectHue(project: ProjectRef): number {
-  let h = 0;
-  for (const ch of project.project_id) h = (h * 31 + ch.charCodeAt(0)) % 360;
-  return h;
-}
-
 export const hueColor = (hue: number) => `oklch(0.72 0.12 ${hue})`;
-
-/** GitHub `owner/repo` when the remote says so, else the folder name. */
-export function repoLabel(project: ProjectRef, remoteUrl?: string | null): string {
-  const match = remoteUrl ? /github\.com[/:]([^/]+\/[^/.]+)/.exec(remoteUrl) : null;
-  return match ? match[1] : (project.path.split("/").pop() ?? project.name);
-}
 
 /** Compact model name for chips: drop a provider prefix and prettify dashes. */
 export function modelLabel(model: string | null | undefined): string {

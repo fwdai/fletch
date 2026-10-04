@@ -2,6 +2,7 @@ import { Icon } from "@desktop/components/Icon";
 import { useEffect, useState } from "react";
 import { Segmented, Sheet, Toggle } from "../components/ui";
 import { ignore } from "../lib/ignore";
+import { projectsOf } from "../lib/projects";
 import { client, useStore } from "../store";
 
 const CONNECTION_TEXT: Record<string, string> = {
@@ -33,7 +34,7 @@ export function HostSheet({ open, onClose }: { open: boolean; onClose: () => voi
   const relay = useStore((s) => s.relay);
   const via = useStore((s) => s.via);
   const setRelay = useStore((s) => s.setRelay);
-  const projects = useStore((s) => s.workspace?.projects.length ?? 0);
+  const projects = useStore((s) => projectsOf(s.workspace).length);
   const agents = useStore((s) => s.workspace?.agents.length ?? 0);
   // The client owns the target; this re-reads it on every render, which the
   // connection-state subscription above already drives.

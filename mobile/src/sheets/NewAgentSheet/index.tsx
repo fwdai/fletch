@@ -8,6 +8,7 @@ import { modelLabel, providerLabel } from "../../lib/agents";
 import { hostProviderBlock, useHostProviders } from "../../lib/hostProviders";
 import { ignore } from "../../lib/ignore";
 import { modelsFor, useModels } from "../../lib/models";
+import { primaryPath, projectsOf } from "../../lib/projects";
 import { api, useStore } from "../../store";
 import { RunnerSheet } from "./RunnerSheet";
 
@@ -22,11 +23,10 @@ export function NewAgentSheet({
   onClose: () => void;
   projectId?: string;
 }) {
-  // The projects list is derived, not selected: a selector returning a fresh
-  // array is a new reference every render, which would both re-render forever
-  // and re-fire the reset effect below.
+  // Derived from the snapshot, not selected: `projectsOf` is stable per
+  // snapshot, so neither the render nor the reset effect below loops.
   const workspace = useStore((s) => s.workspace);
-  const projects = workspace?.projects ?? [];
+  const projects = projectsOf(workspace);
   const spawn = useStore((s) => s.spawn);
   const lastError = useStore((s) => s.lastError);
   const clearError = useStore((s) => s.clearError);
@@ -36,7 +36,7 @@ export function NewAgentSheet({
   // and null blocks nothing.
   const hostProviders = useHostProviders(open);
 
-  const [pid, setPid] = useState(projectId ?? projects[0]?.project_id ?? "");
+  const [pid, setPid] = useState(projectId ?? projects[0]?.id ?? "");
   const [prompt, setPrompt] = useState("");
   const [provider, setProvider] = useState("claude");
   const [model, setModel] = useState("");
@@ -53,14 +53,16 @@ export function NewAgentSheet({
   const [dictating, setDictating] = useState(false);
   const attachments = useAttachments();
 
-  const project = projects.find((p) => p.project_id === pid) ?? projects[0];
+  const project = projects.find((p) => p.id === pid) ?? projects[0];
+  // The phone spawns in the project's primary repo (single-repo for now).
+  const repoPath = project ? primaryPath(project) : null;
 
   const allocate = useCallback(async (taken: string[]) => {
     const next = await api.allocateDraftName(taken).catch(() => "");
     if (next) setName(next);
   }, []);
 
-  const firstProjectId = workspace?.projects[0]?.project_id;
+  const firstProjectId = projects[0]?.id;
   useEffect(() => {
     if (!open) return;
     setPid(projectId ?? firstProjectId ?? "");
@@ -71,11 +73,11 @@ export function NewAgentSheet({
   }, [open, projectId, firstProjectId, allocate, clearError]);
 
   useEffect(() => {
-    if (!open || !project) return;
+    if (!open || !repoPath) return;
     let live = true;
     void Promise.all([
-      api.listRepoBranches(project.path).catch(() => [] as string[]),
-      api.repoDefaultBranch(project.path).catch(() => "main"),
+      api.listRepoBranches(repoPath).catch(() => [] as string[]),
+      api.repoDefaultBranch(repoPath).catch(() => "main"),
     ]).then(([list, fallback]) => {
       if (!live) return;
       setBranches(list);
@@ -84,9 +86,9 @@ export function NewAgentSheet({
     return () => {
       live = false;
     };
-  }, [open, project]);
+  }, [open, repoPath]);
 
-  if (!project) {
+  if (!project || !repoPath) {
     return (
       <Sheet open={open} onClose={onClose} full title="New agent">
         <div className="empty">
@@ -112,7 +114,7 @@ export function NewAgentSheet({
     setStarting(true);
     clearError();
     void spawn({
-      repoPath: project.path,
+      repoPath,
       provider,
       model: model || null,
       effort,
@@ -226,9 +228,9 @@ export function NewAgentSheet({
         onClose={() => setPicker(null)}
         title="Project"
         items={projects.map((p) => ({
-          id: p.project_id,
+          id: p.id,
           label: p.name,
-          sub: p.path,
+          sub: primaryPath(p),
           icon: <Swatch project={p} />,
         }))}
         value={pid}

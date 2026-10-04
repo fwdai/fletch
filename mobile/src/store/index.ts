@@ -16,6 +16,7 @@ import type { ChatItem, RawEvent } from "../adapters";
 import { createApi } from "../api";
 import { isBusy } from "../lib/agents";
 import { ignore } from "../lib/ignore";
+import { projectById } from "../lib/projects";
 import { withTimeout } from "../lib/timeout";
 import {
   type ConnectionState,
@@ -418,10 +419,8 @@ export const agentOf = (s: AgentSource, id: string): AgentRecord | undefined =>
     .flat()
     .find((c) => c.id === id);
 
-export const projectOf = (s: AgentSource, agentId: string) => {
-  const agent = agentOf(s, agentId);
-  return s.workspace?.projects.find((p) => p.project_id === agent?.project_id);
-};
+export const projectOf = (s: AgentSource, agentId: string) =>
+  projectById(s.workspace, agentOf(s, agentId)?.project_id);
 
 /** Wait for a freshly spawned agent to leave `spawning` before the first
  *  message is sent — the spawn flow in docs/remote-protocol.md. */
