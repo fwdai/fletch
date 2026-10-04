@@ -80,6 +80,9 @@ export const createAppSlice: SliceCreator<AppSlice> = (set, get) => ({
     setupResync(set, get);
 
     await refreshWorkspace(set);
+    // Delegations the host was already running — a reloaded window, or one
+    // opened while an agent works through a playbook it was handed earlier.
+    void get().loadDelegations();
   },
 
   clearError: () => set({ lastError: null }),

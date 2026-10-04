@@ -5,15 +5,13 @@
 // to recognise an autopilot-driven push, the backend prompt goes unanswered, its
 // 120s timeout denies it, the rung fails, autopilot retries it to its budget and
 // then gives up — a run nobody was watching, spent for nothing. So the
-// autopilot ground is asserted from both directions, and its independence from the
-// delegation ground is asserted too.
+// autopilot ground is asserted from both directions.
 
 import { describe, expect, it, vi } from "vitest";
 import { create } from "zustand";
 import type { PublishApproval, PublishApprovalResolved } from "@/api";
 import type { AutopilotState } from "@/autopilot";
 import { newEnrollment } from "@/autopilot";
-import type { Delegation, DelegationKind } from "@/delegation";
 import { type EnvironmentEntry, LOCAL_ENVIRONMENT_ID, setEnvironmentsSource } from "./environments";
 import { checkoutKey } from "./git";
 import { type PublishAuthorityState, publishPreAuthorized } from "./publishApproval";
@@ -36,15 +34,11 @@ const KEY = checkoutKey("a1");
 const SECOND_REPO = checkoutKey("a1", "web");
 
 function state(over: Partial<PublishAuthorityState> = {}): PublishAuthorityState {
-  return { autopilot: {}, delegations: {}, ...over };
+  return { autopilot: {}, ...over };
 }
 
 function enrolled(over: Partial<AutopilotState> = {}): AutopilotState {
   return { ...newEnrollment(), ...over };
-}
-
-function delegation(kind: DelegationKind): Delegation {
-  return { kind } as Delegation;
 }
 
 describe("autopilot's standing authorization", () => {
@@ -65,44 +59,11 @@ describe("autopilot's standing authorization", () => {
     const s = state({ autopilot: { [KEY]: enrolled() } });
     expect(publishPreAuthorized("git_push", SECOND_REPO, s)).toBe(false);
   });
-
-  it("holds with no delegation in flight", () => {
-    // The two grounds are independent: autopilot pushes without a user click, so
-    // requiring both would stall exactly the case this exists for.
-    const s = state({ autopilot: { [KEY]: enrolled() }, delegations: {} });
-    expect(publishPreAuthorized("git_push", KEY, s)).toBe(true);
-  });
 });
 
-describe("a live delegation's authorization", () => {
-  it("covers the ops its own playbook publishes", () => {
-    for (const [kind, op] of [
-      ["push", "git_push"],
-      ["commit-push", "git_push"],
-      ["fix-checks", "git_push"],
-      ["open-pr", "open_pr"],
-      ["commit-pr", "open_pr"],
-    ] as const) {
-      const s = state({ delegations: { [KEY]: delegation(kind) } });
-      expect(publishPreAuthorized(op, KEY, s), `${kind} → ${op}`).toBe(true);
-    }
-  });
-
-  it("cannot launder an op its playbook never performs", () => {
-    // The guard that matters: a delegation the user started for one thing must
-    // not authorize a different publish the agent chose on its own.
-    const s = state({ delegations: { [KEY]: delegation("commit") } });
-    expect(publishPreAuthorized("git_push", KEY, s)).toBe(false);
-    expect(publishPreAuthorized("open_pr", KEY, s)).toBe(false);
-    const pushOnly = state({ delegations: { [KEY]: delegation("push") } });
-    expect(publishPreAuthorized("open_pr", KEY, pushOnly)).toBe(false);
-  });
-
-  it("is scoped to its own checkout", () => {
-    const s = state({ delegations: { [KEY]: delegation("push") } });
-    expect(publishPreAuthorized("git_push", SECOND_REPO, s)).toBe(false);
-  });
-});
+// A live delegation's half of the policy moved to the host with the delegations
+// themselves (`supervisor::delegation::pre_authorizes`, tested there): the gate
+// answers it without ever raising the prompt this client would have seen.
 
 describe("with no authority at all", () => {
   it("authorizes nothing", () => {

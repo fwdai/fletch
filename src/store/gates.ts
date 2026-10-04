@@ -188,6 +188,15 @@ export const GATES = {
     label: "Removing blocking git settings",
     reason: "This host is too old to remove these settings — remove them on the host.",
   },
+  /** Handing a git playbook to the agent. The host owns the delegation —
+   *  holding the trigger while the agent is mid-turn, deciding when it is done —
+   *  so a host from before `delegate_git` cannot run one, and a device paired
+   *  without `publish` may not (a delegation's own pushes skip the prompt). */
+  delegateGit: {
+    op: "delegate_git",
+    label: "Agent git actions",
+    reason: "This host can't hand git actions to the agent — update it, or ask in the chat.",
+  },
   /** The one Git-panel action deliberately withheld rather than pending: it
    *  runs `git branch -D` in the user's real clone, outside every checkout
    *  (docs/remote-protocol.md, "Withheld on policy"). No host advertises the

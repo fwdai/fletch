@@ -11,7 +11,6 @@ import {
   onAgentBranch,
   onAgentEffort,
   onAgentEvent,
-  onAgentGitAction,
   onAgentInstallState,
   onAgentModel,
   onAgentOutput,
@@ -20,6 +19,7 @@ import {
   onAgentTask,
   onAgentTitle,
   onAgentView,
+  onDelegationChanged,
   onDockerBuildProgress,
   onPrChecksChanged,
   onPrStateChanged,
@@ -455,12 +455,11 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
     }),
   );
 
-  // Ground-truth that the agent ran a git mutation this turn — the delegation
-  // lifecycle resolves on this (paired with the target snapshot) instead of
-  // inferring success from polled state, which can't attribute causality.
+  // The host owns every delegation's lifecycle; this window mirrors it, so it
+  // shows the same label at the same moment as every other client.
   await bind(
-    onAgentGitAction((e) => {
-      get().markDelegationActed(e.agent_id, e.op);
+    onDelegationChanged((e) => {
+      get().applyDelegationChange(e);
     }),
   );
 

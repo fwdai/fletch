@@ -85,8 +85,8 @@ const STASH_KEYS = [
   "usage",
   "runPhases",
   "runPorts",
-  // Per-checkout git / PR / delegation state. All of it is polled, so a stale
-  // stash is corrected within one cadence of switching back.
+  // Per-checkout git / PR / delegation state. All of it is polled or re-read
+  // (`loadDelegations`), so a stale stash is corrected on switching back.
   "gitStates",
   "gitBlocked",
   "gitShortstats",
@@ -231,6 +231,11 @@ export const createEnvironmentSwitchSlice: SliceCreator<EnvironmentSwitchSlice> 
     // that was not connected when it was raised.
     await get()
       .loadPendingPublishApprovals()
+      .catch(() => {});
+    // The delegations it is running, which it owns: the mirror parked in the
+    // stash (or one built from events this client missed) is not the truth.
+    await get()
+      .loadDelegations()
       .catch(() => {});
     // …and whose GitHub login gates its push / PR / clone affordances:
     // `store.github` is the ACTIVE environment's answer, so it is this Mac's

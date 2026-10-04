@@ -1,5 +1,6 @@
 import {
   api,
+  type DelegationEvent,
   type GitMeta,
   type GitState,
   type PrChecks,
@@ -9,13 +10,16 @@ import {
   type VerificationReport,
 } from "@/api";
 import type { GitCommitAction } from "@/components/RightPanel/primaryActions";
-import { actionProvesKind, type Delegation, type DelegationKind } from "@/delegation";
+import type { Delegation } from "@/delegation";
+import { hostSupports } from "@/remote/types";
 import {
   DEFAULT_AUTO_ARCHIVE_IDLE_DAYS,
   DEFAULT_PUBLISH_APPROVAL_WAIT,
 } from "@/storage/preferences";
 import { setSetting } from "@/storage/settings";
-import { forActiveEnvironment } from "./environments";
+import { newestWins } from "@/util/newestWins";
+import { activeEnvironment, forActiveEnvironment } from "./environments";
+import { gateReason } from "./gates";
 import { acceptPrWrite, issuePrWrite, stampPrWrite } from "./prWriteOrder";
 import type { SliceCreator } from "./types";
 
@@ -55,19 +59,16 @@ export interface GitSlice {
    *  Absent = not yet fetched; `null` = confirmed unavailable (no PR / gh
    *  failure). */
   prComments: Record<string, PrComments | null>;
-  /** In-flight delegation per checkout, keyed by `checkoutKey(agentId, subdir?)`
-   *  (absent = none). Set when an action hands control to the agent; cleared by
-   *  `useDelegationSync` when the watched transition lands or the agent gives up.
-   *
-   *  Keyed per *checkout*, not per agent, because that is the scope a delegation
-   *  actually targets: a multi-repo agent can hold one in each of its checkouts,
-   *  and each is judged against its own repo's git/PR state. */
+  /** Live host delegations per checkout, keyed by `checkoutKey(agentId,
+   *  subdir?)` (absent = none). A MIRROR: the host owns the lifecycle
+   *  (`supervisor::delegation`), and this is fed by `delegation:changed` and by
+   *  `get_delegations` on bootstrap, reconnect and environment switch, so every
+   *  window driving the host shows the same thing at the same moment. */
   delegations: Record<string, Delegation>;
   /** Transient outcome text for a settled delegation, keyed by checkout — the
-   *  "Conflicts resolved" / "Agent finished" confirmation. Written by
-   *  `useDelegationSync` (which runs app-wide, with no panel of its own) and
-   *  rendered by the matching Git panel section if one is mounted; self-expires,
-   *  so an outcome nobody was looking at simply lapses. */
+   *  "Conflicts resolved" / "Agent finished" confirmation the host's `done` /
+   *  `abandoned` event carries. Rendered by the matching Git panel section if
+   *  one is mounted; self-expires, so an outcome nobody was looking at lapses. */
   delegationNotices: Record<string, string>;
   /** Latest turn-end verification report per agent (keyed by agent_id), from
    *  the opt-in `verify:report` event. Feeds the Mission Control card's tests
@@ -123,30 +124,23 @@ export interface GitSlice {
    *  equivalent) and so does cost points — hence the gentler cadence. Driven by
    *  `gitSync`. */
   fetchPrThreads: (agentId: string, subdir?: string) => Promise<void>;
+  /** Hand the playbook `action` to the agent through the host's `delegate_git`
+   *  (which composes the trigger, holds it while the agent is mid-turn and
+   *  watches it to its end). `params` carry only the dynamic context the
+   *  playbook can't know; `subdir` targets a secondary checkout. Mirrors the
+   *  recorded delegation at once, so a caller re-reading `delegations` this tick
+   *  sees it; a refusal lands in `lastError`. */
   delegateAction: (
     agentId: string,
-    kind: DelegationKind,
-    prompt: string,
-    /** Target checkout of a multi-repo agent; undefined = primary. */
+    action: string,
+    params?: Record<string, string>,
     subdir?: string,
-  ) => void;
-  /** Our turn started — arms the give-up clock. Takes a `checkoutKey`. */
-  markDelegationRunning: (key: string) => void;
-  /** The agent ran a successful mutating git op `op` (backend
-   *  `agent:git-action`). Sets the causal proof on every delegation of that
-   *  agent whose kind the op belongs to.
-   *
-   *  Agent-scoped rather than checkout-scoped because the event is: the hook
-   *  reports which op ran, not which checkout ran it. That coarseness is safe —
-   *  resolution ANDs `sawGitOp` with the *per-checkout* target snapshot, so an
-   *  ack that leaks to a sibling checkout can't resolve a delegation whose own
-   *  target hasn't been reached. Making the backend event carry its checkout
-   *  would sharpen this; until then the snapshot is the real gate. */
-  markDelegationActed: (agentId: string, op: string) => void;
-  /** The pre-existing turn the delegation was queued behind has settled —
-   *  drop `queued`, deliver the held trigger, restart the give-up clock. */
-  markDelegationDequeued: (key: string) => void;
-  clearDelegation: (key: string) => void;
+  ) => Promise<void>;
+  /** Fold one `delegation:changed` into the mirror: a live phase replaces the
+   *  checkout's entry, `done` / `abandoned` drops it and posts its notice. */
+  applyDelegationChange: (e: DelegationEvent) => void;
+  /** Replace the mirror with the host's table (`get_delegations`). */
+  loadDelegations: () => Promise<void>;
   /** Post a settled delegation's outcome for the panel to show, if mounted. */
   noteDelegationOutcome: (key: string, text: string) => void;
   setGitCommitAction: (action: GitCommitAction) => void;
@@ -281,6 +275,30 @@ const DELEGATION_NOTICE_MS = 3500;
 /** Live expiry timers for `delegationNotices`, by checkout key. Module scope
  *  because they're side-channel cleanup, not observable state. */
 const noticeTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+/** The mirror entry a host delegation report becomes, or null for one that has
+ *  ended (`done` / `abandoned`). */
+function mirrorOf(e: DelegationEvent): Delegation | null {
+  if (e.phase === "done" || e.phase === "abandoned") return null;
+  return {
+    kind: e.kind,
+    phase: e.phase,
+    startedAt: e.started_at,
+    ...(e.subdir ? { subdir: e.subdir } : {}),
+  };
+}
+
+/** The `started_at` of the last delegation that ended on each checkout, so the
+ *  `delegate_git` reply landing after its own `done` cannot put it back. */
+const endedDelegations = new Map<string, number>();
+
+/** Every resync starts a `get_delegations` without waiting for the last, so the
+ *  newest owns the mirror (util/newestWins). */
+const delegationLoads = newestWins();
+
+/** `delegation:changed` events seen while a `get_delegations` is in flight,
+ *  replayed over its answer. Null when no load is outstanding. */
+let delegationsInFlight: DelegationEvent[] | null = null;
 
 export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
   gitStates: {},
@@ -446,86 +464,75 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
     await fetchPrAux(set, agentId, "prComments", api.getPrThreads, subdir);
   },
 
-  delegateAction: (agentId, kind, prompt, subdir) => {
-    // If the agent is already running, DON'T inject the trigger mid-turn: Claude
-    // coalesces a stdin message into the current turn (it wouldn't run as its
-    // own turn), and the turn boundary isn't observable, so we couldn't tell our
-    // turn's git ops from the in-flight turn's. Instead hold the trigger and
-    // deliver it once the agent goes idle (markDelegationDequeued) — then the
-    // delegated turn runs in isolation and its git-action is unambiguously ours.
-    const status = get().workspace?.agents.find((a) => a.id === agentId)?.status;
-    const queued = status === "running";
-    set((s) => ({
-      delegations: {
-        ...s.delegations,
-        [checkoutKey(agentId, subdir)]: {
-          kind,
-          prompt,
-          startedAt: Date.now(),
-          sawRunning: false,
-          sawGitOp: false,
-          queued,
-          subdir,
-        },
-      },
-    }));
-    if (!queued) void get().sendUserMessage(agentId, prompt);
+  delegateAction: async (agentId, action, params, subdir) => {
+    // A host that can't run delegations says so rather than being sent a
+    // trigger nothing on it would watch. Never closed locally.
+    const gated = gateReason(activeEnvironment(), "delegateGit");
+    if (gated) {
+      get().setLastError(gated);
+      return;
+    }
+    try {
+      const recorded = await forActiveEnvironment(() =>
+        api.delegateGit(agentId, action, params, subdir),
+      );
+      if (!recorded) return;
+      // The host's `delegation:changed` says the same and may land either side
+      // of this reply. Writing now is what lets a caller that re-reads
+      // `delegations` on its next tick (autopilot) see it; the one thing it must
+      // not do is resurrect a delegation whose end already arrived.
+      const key = checkoutKey(recorded.agent_id, recorded.subdir ?? undefined);
+      const live = mirrorOf(recorded);
+      if (!live || endedDelegations.get(key) === recorded.started_at) return;
+      set((s) => ({ delegations: { ...s.delegations, [key]: live } }));
+    } catch (e) {
+      get().setLastError(String(e));
+    }
   },
 
-  markDelegationRunning: (key) => {
+  applyDelegationChange: (e) => {
+    delegationsInFlight?.push(e);
+    const key = checkoutKey(e.agent_id, e.subdir ?? undefined);
+    const live = mirrorOf(e);
+    if (live) {
+      set((s) => ({ delegations: { ...s.delegations, [key]: live } }));
+      return;
+    }
+    endedDelegations.set(key, e.started_at);
     set((s) => {
-      const d = s.delegations[key];
-      if (!d || d.sawRunning) return s;
-      return { delegations: { ...s.delegations, [key]: { ...d, sawRunning: true } } };
-    });
-  },
-
-  markDelegationActed: (agentId, op) => {
-    set((s) => {
-      // Every checkout of this agent that is waiting on an op of this kind. See
-      // the interface doc for why an agent-scoped ack is sound: the per-checkout
-      // target snapshot, not this flag, is what actually resolves a delegation.
-      const next: Record<string, Delegation> = {};
-      for (const [key, d] of Object.entries(s.delegations)) {
-        const { agentId: owner } = splitCheckoutKey(key);
-        // Ignore ops while `queued`: our trigger hasn't been delivered yet, so
-        // any git-action belongs to the turn we're waiting behind.
-        // (`delegateAction` defers delivery until idle, so this is reliable — by
-        // the time we drop `queued` the prior turn has ended.) Then require an op
-        // from this delegation's own playbook (kind-match), so even within our
-        // turn an unrelated mutation can't stand in. Paired with `resolved` in
-        // delegationStep, that ties success to the agent doing the work asked.
-        if (owner !== agentId || d.queued || d.sawGitOp || !actionProvesKind(d.kind, op)) continue;
-        next[key] = { ...d, sawGitOp: true };
-      }
-      if (Object.keys(next).length === 0) return s;
-      return { delegations: { ...s.delegations, ...next } };
-    });
-  },
-
-  markDelegationDequeued: (key) => {
-    // The turn we were queued behind has ended — NOW deliver the held trigger so
-    // our delegated turn runs in isolation, and start the give-up clock from
-    // here. Capture the prompt inside the atomic flip so only the call that
-    // actually dequeues sends (no double-delivery from repeated effect ticks).
-    const { agentId } = splitCheckoutKey(key);
-    let toSend: string | null = null;
-    set((s) => {
-      const d = s.delegations[key];
-      if (!d?.queued) return s;
-      toSend = d.prompt;
-      return {
-        delegations: { ...s.delegations, [key]: { ...d, queued: false, startedAt: Date.now() } },
-      };
-    });
-    if (toSend !== null) void get().sendUserMessage(agentId, toSend);
-  },
-
-  clearDelegation: (key) => {
-    set((s) => {
-      const { [key]: _dropped, ...rest } = s.delegations;
+      const { [key]: _ended, ...rest } = s.delegations;
       return { delegations: rest };
     });
+    if (e.notice) get().noteDelegationOutcome(key, e.notice);
+    // A fresh PR (or branch update) changes the merge gate — refresh now rather
+    // than waiting out the slow poll.
+    if (e.phase === "done") void get().fetchPrChecks(e.agent_id, e.subdir ?? undefined);
+  },
+
+  loadDelegations: async () => {
+    const env = activeEnvironment();
+    if (env.kind === "remote" && !hostSupports(env.protocol, "get_delegations")) return;
+    const claim = delegationLoads.claim();
+    const buffer: DelegationEvent[] = [];
+    delegationsInFlight = buffer;
+    try {
+      const rows = await forActiveEnvironment(() => api.getDelegations());
+      if (!rows || !claim.current()) return;
+      // The table as the host read it, with whatever it said since folded back
+      // in — an event that raced the read must not be undone by it.
+      const delegations: Record<string, Delegation> = {};
+      for (const e of [...rows, ...buffer]) {
+        const key = checkoutKey(e.agent_id, e.subdir ?? undefined);
+        const live = mirrorOf(e);
+        if (live) delegations[key] = live;
+        else delete delegations[key];
+      }
+      set({ delegations });
+    } catch {
+      // Best effort, like the other resync reads: the events keep it current.
+    } finally {
+      if (delegationsInFlight === buffer) delegationsInFlight = null;
+    }
   },
 
   noteDelegationOutcome: (key, text) => {
