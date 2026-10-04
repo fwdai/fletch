@@ -103,14 +103,19 @@ export interface AutopilotCheckout {
   cycle: AutopilotCycle | null;
 }
 
-/** Autopilot across the whole host: what `autopilot_state` and `autopilot_set`
- *  answer. */
-export interface AutopilotSnapshot {
-  checkouts: AutopilotCheckout[];
+/** Both autopilot opt-out lists, whole: part of every snapshot, and the
+ *  `autopilot:switches` payload every `autopilot_set` fires. */
+export interface AutopilotSwitches {
   /** Projects whose switch is off. Every other project is on. */
   disabled_projects: string[];
   /** Agents paused from the Git panel. */
   paused_agents: string[];
+}
+
+/** Autopilot across the whole host: what `autopilot_state` and `autopilot_set`
+ *  answer. */
+export interface AutopilotSnapshot extends AutopilotSwitches {
+  checkouts: AutopilotCheckout[];
 }
 
 /** One thing autopilot did: a row of `autopilot_log`, or one `autopilot:event`. */

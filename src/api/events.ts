@@ -20,7 +20,12 @@ import type {
   DictationStateEvent,
   DictationTranscriptEvent,
 } from "./types/dictation";
-import type { AutopilotCheckout, AutopilotLogEntry, DelegationEvent } from "./types/git";
+import type {
+  AutopilotCheckout,
+  AutopilotLogEntry,
+  AutopilotSwitches,
+  DelegationEvent,
+} from "./types/git";
 import type { PrChecksChangedEvent, PrStateChangedEvent, PrThreadsChangedEvent } from "./types/pr";
 import type {
   AgentInstallEvent,
@@ -319,6 +324,12 @@ export function onDelegationChanged(cb: (e: DelegationEvent) => void): Promise<U
  *  switch or cycle. Replaces the row it names. */
 export function onAutopilotState(cb: (e: AutopilotCheckout) => void): Promise<UnlistenFn> {
   return on<AutopilotCheckout>("autopilot:state", cb);
+}
+
+/** An autopilot switch was written on the host — by any client, even for a
+ *  project with no agents. Carries both opt-out lists whole. */
+export function onAutopilotSwitches(cb: (e: AutopilotSwitches) => void): Promise<UnlistenFn> {
+  return on<AutopilotSwitches>("autopilot:switches", cb);
 }
 
 /** The host's autopilot did something worth recording on a checkout. */

@@ -49,6 +49,8 @@ pub use store::{LogEntry, Outcome, Switches};
 pub const EVENT_STATE: &str = "autopilot:state";
 /// One [`LogEntry`] was recorded.
 pub const EVENT_LOG: &str = "autopilot:event";
+/// A switch was written: both opt-out lists, whole ([`Switches`]).
+pub const EVENT_SWITCHES: &str = "autopilot:switches";
 
 // ---------------------------------------------------------------------------
 // What clients see
@@ -308,6 +310,10 @@ fn state(
 /// `autopilot_set`: flip a project's switch or pause/resume one agent. Takes
 /// effect before it returns: a checkout switched off loses its cycle and its
 /// push pre-approval now, not at the next tick.
+///
+/// Announces every write as `autopilot:switches` first — both lists whole, so
+/// every client's switches agree even when no checkout changed (a project
+/// with no agents) — then `autopilot:state` for each affected checkout.
 pub fn autopilot_set_impl(
     ctx: &EngineCtx,
     sup: &Supervisor,
@@ -353,6 +359,7 @@ fn set(
     };
     table.bump();
     let switches = read_switches(ctx)?;
+    crate::host::emit(ctx.sink.as_ref(), EVENT_SWITCHES, &switches);
     for record in affected {
         let on = switches.agent_on(&record.project_id, &record.id);
         for subdir in checkouts(record) {

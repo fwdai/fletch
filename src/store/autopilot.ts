@@ -2,11 +2,17 @@
 // field here is a MIRROR: the host owns the loop, the switches and the history,
 // and this window renders them and asks the host to flip a switch. Seeded by
 // `autopilot_state {}` / `autopilot_log {}` on bootstrap, reconnect and
-// environment switch (`loadAutopilot`); kept current by `autopilot:state` and
-// `autopilot:event` in between — so every client driving the host shows the
-// same thing at the same moment.
+// environment switch (`loadAutopilot`); kept current by `autopilot:state`,
+// `autopilot:switches` and `autopilot:event` in between — so every client
+// driving the host shows the same thing at the same moment.
 
-import { type AutopilotCheckout, type AutopilotLogEntry, type AutopilotSnapshot, api } from "@/api";
+import {
+  type AutopilotCheckout,
+  type AutopilotLogEntry,
+  type AutopilotSnapshot,
+  type AutopilotSwitches,
+  api,
+} from "@/api";
 import { hostSupports } from "@/remote/types";
 import { newestWins } from "@/util/newestWins";
 import { activeEnvironment, forActiveEnvironment } from "./environments";
@@ -41,6 +47,8 @@ export interface AutopilotSlice {
   loadAutopilot: () => Promise<void>;
   /** Fold one `autopilot:state` into the mirror: the row, and the two lists. */
   applyAutopilotState: (row: AutopilotCheckout) => void;
+  /** Take one `autopilot:switches`: both lists, replaced whole. */
+  applyAutopilotSwitches: (switches: AutopilotSwitches) => void;
   /** Fold one `autopilot:event` into that checkout's history. */
   applyAutopilotEvent: (entry: AutopilotLogEntry) => void;
   /** Flip a project's switch on the host. */
@@ -74,6 +82,16 @@ function foldRow(m: Mirror, row: AutopilotCheckout): Mirror {
     autopilotDisabledProjects:
       m.autopilotDisabledProjects &&
       withMember(m.autopilotDisabledProjects, row.project_id, !row.project_enabled),
+  };
+}
+
+/** The host's lists, whole — idempotent, so a repeat or a late one is harmless
+ *  and nothing is merged. Fills unknown opt-outs too. */
+function foldSwitches(m: Mirror, switches: AutopilotSwitches): Mirror {
+  return {
+    autopilot: m.autopilot,
+    autopilotDisabledProjects: switches.disabled_projects,
+    autopilotPausedAgents: switches.paused_agents,
   };
 }
 
@@ -118,8 +136,9 @@ function withSwitch(m: Mirror, target: SwitchTarget, on: boolean): Partial<Mirro
 const autopilotLoads = newestWins();
 
 /** Events seen while a load is in flight, replayed over its answer so a snapshot
- *  cannot undo what the host said after reading it. Null when no load is out. */
-let inFlight: { rows: AutopilotCheckout[]; entries: AutopilotLogEntry[] } | null = null;
+ *  cannot undo what the host said after reading it — the mirror's (rows and
+ *  switches) in arrival order. Null when no load is out. */
+let inFlight: { mirror: ((m: Mirror) => Mirror)[]; entries: AutopilotLogEntry[] } | null = null;
 
 /** Switch writes in click order: only the newest one's answer (or failure)
  *  touches the lists, so a slow earlier reply can't undo a later click. */
@@ -161,7 +180,7 @@ export const createAutopilotSlice: SliceCreator<AutopilotSlice> = (set, get) => 
       const env = activeEnvironment();
       if (env.kind === "remote" && !hostSupports(env.protocol, "autopilot_state")) return;
       const claim = autopilotLoads.claim();
-      const buffer: NonNullable<typeof inFlight> = { rows: [], entries: [] };
+      const buffer: NonNullable<typeof inFlight> = { mirror: [], entries: [] };
       inFlight = buffer;
       try {
         const answer = await forActiveEnvironment(() =>
@@ -175,7 +194,8 @@ export const createAutopilotSlice: SliceCreator<AutopilotSlice> = (set, get) => 
           .reverse()
           .concat(buffer.entries)
           .reduce(foldEntry, {} as Log);
-        set({ ...buffer.rows.reduce(foldRow, mirrorOf(snapshot)), autopilotLog: log });
+        const mirror = buffer.mirror.reduce((m, fold) => fold(m), mirrorOf(snapshot));
+        set({ ...mirror, autopilotLog: log });
       } catch {
         // Best effort, like the other resync reads: the events keep it current,
         // and opt-outs never loaded stay unknown.
@@ -185,8 +205,13 @@ export const createAutopilotSlice: SliceCreator<AutopilotSlice> = (set, get) => 
     },
 
     applyAutopilotState: (row) => {
-      inFlight?.rows.push(row);
+      inFlight?.mirror.push((m) => foldRow(m, row));
       set((s) => foldRow(s, row));
+    },
+
+    applyAutopilotSwitches: (switches) => {
+      inFlight?.mirror.push((m) => foldSwitches(m, switches));
+      set((s) => foldSwitches(s, switches));
     },
 
     applyAutopilotEvent: (entry) => {

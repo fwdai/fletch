@@ -1221,6 +1221,17 @@ describe("autopilot", () => {
     expect(state().autopilot[AGENT]?.cycle).toBeNull();
   });
 
+  it("takes the host's switches whole, though no row changed", () => {
+    const rows = state().autopilot;
+    useStore.setState({ autopilotSwitches: { disabled_projects: [], paused_agents: [AGENT] } });
+
+    // A project with no agents switched off on the Mac: no `autopilot:state`.
+    hostEvent("autopilot:switches", { disabled_projects: ["empty"], paused_agents: [] });
+
+    expect(state().autopilotSwitches).toEqual({ disabled_projects: ["empty"], paused_agents: [] });
+    expect(state().autopilot).toBe(rows);
+  });
+
   it("pauses and resumes an agent through the host, taking its answer as the state", async () => {
     const spy = vi.spyOn(api, "setAutopilot");
     try {
@@ -1236,6 +1247,7 @@ describe("autopilot", () => {
         cycle: null,
       });
       expect(state().autopilot.arabia?.paused).toBe(false);
+      expect(state().autopilotSwitches?.paused_agents).toEqual([AGENT]);
 
       await state().setAgentAutopilot(AGENT, true);
       expect(spy).toHaveBeenLastCalledWith({ agentId: AGENT }, true);

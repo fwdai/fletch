@@ -21,6 +21,7 @@ import {
   onAgentView,
   onAutopilotEvent,
   onAutopilotState,
+  onAutopilotSwitches,
   onDelegationChanged,
   onDockerBuildProgress,
   onPrChecksChanged,
@@ -457,11 +458,16 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
     }),
   );
 
-  // Autopilot runs on the host too; its rows and its history are mirrored the
-  // same way.
+  // Autopilot runs on the host too; its rows, its switches and its history are
+  // mirrored the same way.
   await bind(
     onAutopilotState((e) => {
       get().applyAutopilotState(e);
+    }),
+  );
+  await bind(
+    onAutopilotSwitches((e) => {
+      get().applyAutopilotSwitches(e);
     }),
   );
   await bind(

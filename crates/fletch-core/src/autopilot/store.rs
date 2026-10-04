@@ -31,8 +31,8 @@ fn project_off(value: &str) -> bool {
     value == "0" || value == "false"
 }
 
-/// The two switches, as one read.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// The two switches, as one read; also the `autopilot:switches` payload.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct Switches {
     pub disabled_projects: Vec<String>,
     pub paused_agents: Vec<String>,
