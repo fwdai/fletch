@@ -325,6 +325,14 @@ describe("git and PR state", () => {
     // The same state again is not a transition.
     hostEvent("pr:state_changed", { agent_id: "pamukkale", state: opened });
     expect(state().shipActivity.pamukkale).toHaveLength(1);
+    // A secondary repo's PR is not this agent's PR on the phone.
+    hostEvent("pr:state_changed", {
+      agent_id: "pamukkale",
+      subdir: "api",
+      state: { ...opened, number: 12, state: "merged" },
+    });
+    expect(state().prStates.pamukkale?.state).toBe("open");
+    expect(state().shipActivity.pamukkale).toHaveLength(1);
   });
 
   it("takes the watcher's checks and writes a line when they settle", () => {

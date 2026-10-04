@@ -83,9 +83,8 @@ import { getAllSettings } from "@/storage/settings";
 import { notify } from "@/util/notify";
 import { playSound, type SoundKind } from "@/util/sound";
 import { reduceInstallEvent } from "./agentInstall";
-import { checkoutKey } from "./git";
 import { erroredAgents, interruptedAgents } from "./interrupted";
-import { stampPrWrite } from "./prWriteOrder";
+import { applyPrChecksChanged, applyPrStateChanged, applyPrThreadsChanged } from "./prEvents";
 import { refreshWorkspace } from "./refreshWorkspace";
 import { applyBuildEvent } from "./sandbox";
 import type { AppSlice, SliceCreator } from "./types";
@@ -672,34 +671,14 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
     }),
   );
 
-  await bind(
-    onPrStateChanged((e) => {
-      // A backend-pushed change is the freshest thing we have. Stamp it so a poll
-      // already in flight — which observed the PR before this transition — can't
-      // land afterwards and roll the badge back (merged flipping to open).
-      stampPrWrite("prStates", e.agent_id);
-      set((s) => ({ prStates: { ...s.prStates, [e.agent_id]: e.state } }));
-    }),
-  );
-
-  // The host-side PR watcher's reads land here the same way. These are what
-  // keep the Git panel's checks and comments current — the webview no longer
-  // polls them (store/gitSync) — for every agent, panel open or not. Same stamp
-  // rule: a seed or one-shot read already in flight must not roll them back.
-  await bind(
-    onPrChecksChanged((e) => {
-      const key = checkoutKey(e.agent_id, e.subdir ?? undefined);
-      stampPrWrite("prChecks", key);
-      set((s) => ({ prChecks: { ...s.prChecks, [key]: e.checks } }));
-    }),
-  );
-  await bind(
-    onPrThreadsChanged((e) => {
-      const key = checkoutKey(e.agent_id, e.subdir ?? undefined);
-      stampPrWrite("prComments", key);
-      set((s) => ({ prComments: { ...s.prComments, [key]: e.comments } }));
-    }),
-  );
+  // The host-side PR watcher's events (and a push's or turn end's state read).
+  // These are what keep the PR badges, checks and comments current — the
+  // webview no longer polls them (store/gitSync) — for every agent and each of
+  // its repos, panel open or not. Each lands on its checkout's key, stamped so
+  // a read already in flight can't roll it back (store/prEvents).
+  await bind(onPrStateChanged((e) => set((s) => applyPrStateChanged(s, e))));
+  await bind(onPrChecksChanged((e) => set((s) => applyPrChecksChanged(s, e))));
+  await bind(onPrThreadsChanged((e) => set((s) => applyPrThreadsChanged(s, e))));
 
   // Turn-end verification result (opt-in per project) — stored per agent to
   // feed the Mission Control card's tests chip.

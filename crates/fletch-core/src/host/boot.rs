@@ -549,8 +549,9 @@ pub fn boot(cfg: BootConfig) -> Result<Engine, BootError> {
     // open PR once a minute (state and CI, review threads every other tick)
     // and emit a `pr:*` event per change, so a paired phone hears about failed
     // checks, a reviewer's comment or a merge without the Git panel polling.
-    // Reads once now to seed its memory — the seed announces nothing, so a
-    // restart does not re-raise last week's threads.
+    // Reads once now to seed its memory — the seed announces each open PR's
+    // state and nothing else, so a restart does not re-raise last week's
+    // threads.
     crate::supervisor::pr_watch::spawn(ctx.clone(), supervisor.clone());
     // Delegations (`delegate_git`) run to their end on the host: the held
     // trigger is delivered when the agent settles, and the outcome is decided

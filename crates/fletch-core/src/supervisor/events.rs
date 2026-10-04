@@ -422,15 +422,26 @@ pub(super) fn emit_shell_output(sink: &dyn EventSink, agent_id: &str, bytes: Vec
 #[derive(Clone, serde::Serialize)]
 struct PrStateChangedPayload {
     agent_id: String,
+    /// `None` for the agent's primary repo, the subdir for a secondary — as on
+    /// `pr:checks_changed`. Added after the fact, so a client that predates it
+    /// reads every event as the primary's.
+    subdir: Option<String>,
     state: Option<PrState>,
 }
 
-pub(super) fn emit_pr_state(sink: &dyn EventSink, agent_id: &str, state: Option<PrState>) {
+/// The bound PR of one checkout, as found now — a state, not a transition.
+pub(super) fn emit_pr_state(
+    sink: &dyn EventSink,
+    agent_id: &str,
+    subdir: Option<&str>,
+    state: Option<PrState>,
+) {
     emit(
         sink,
         "pr:state_changed",
         PrStateChangedPayload {
             agent_id: agent_id.to_string(),
+            subdir: subdir.map(str::to_string),
             state,
         },
     );

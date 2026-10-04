@@ -35,7 +35,7 @@ describe("focusedPrReads", () => {
     const seen = new Map();
     focusedPrReads([pr({ number: null, open: false })], seen);
     // `createPr` or a `pr:state_changed` brought the new PR: its checks and
-    // threads are not in the store, and the watcher's seed emits nothing.
+    // threads are not in the store, and the watcher's seed emits only its state.
     expect(focusedPrReads([pr({ number: 651 })], seen)).toEqual({
       live: ["fuji"],
       threads: ["fuji"],

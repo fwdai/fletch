@@ -259,11 +259,16 @@ export function registerRemoteEvents(client: RemoteClient, set: Set, get: Get): 
     get().applyAutopilotEvent(entry);
   });
 
+  // The phone keeps one PR per agent — the primary repo's — so a secondary's
+  // event (`subdir` set) has nowhere to land, here or below; writing it to the
+  // agent would show another repo's merge as this PR's.
   on<PrStateChangedEvent>("pr:state_changed", (e) => {
+    if (e.subdir) return;
     set((s) => {
       // The transition is read against the record being replaced, so the line
       // says what changed ("opened", "merged", "closed") and not merely that
-      // something did.
+      // something did — and a re-report of the same state (the host restarting
+      // re-announces every open PR) says nothing.
       const line = prTransitionText(s.prStates[e.agent_id], e.state);
       return {
         prStates: { ...s.prStates, [e.agent_id]: e.state },
@@ -273,8 +278,7 @@ export function registerRemoteEvents(client: RemoteClient, set: Set, get: Get): 
     if (e.state) void get().loadGit(e.agent_id);
   });
 
-  // The host-side PR watcher's reads. The phone keeps one PR per agent — the
-  // primary repo's — so a secondary's event (`subdir` set) has nowhere to land.
+  // The host-side PR watcher's reads.
   on<PrChecksChangedEvent>("pr:checks_changed", (e) => {
     if (e.subdir) return;
     set((s) => {

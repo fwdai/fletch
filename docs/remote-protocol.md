@@ -229,10 +229,12 @@ or a PR number. Transcript text never leaves the Mac.
   host restart does not re-raise old threads). Title `New review comment`;
   body the agent's name, ` · ` plus the new thread's author when known.
   `pr_merged` / `pr_closed`: a `pr:state_changed` whose state is `merged` /
-  `closed` for a PR this host process had seen `open` — the event reports a
-  state, not a transition, so a first event of `merged` after a cold start is a
-  stale snapshot and alerts nobody. Title `PR merged` / `PR closed`; body the
-  agent's name ` · #<number>`. `autopilot_gave_up`: the host's autopilot gave
+  `closed` for a checkout (primary or secondary repo) whose PR this host
+  process had seen `open` — the event reports a state, not a transition, so a
+  first event of `merged` after a cold start is a stale snapshot and alerts
+  nobody, and becoming `open` never alerts. Title `PR merged` / `PR closed`;
+  body the agent's name ` · #<number>`. Two repos of one agent merging are two
+  alerts under the one agent `collapseId`, so the later replaces the earlier. `autopilot_gave_up`: the host's autopilot gave
   up on a rung (an `autopilot:event` with outcome `give-up`, see "Autopilot").
   Title `Autopilot gave up · <rung>` (`fix-checks`, `resolve`, `update-branch`,
   `resolve-comments`); body the agent's name ` · ` the reason (`budget spent`,
@@ -993,6 +995,18 @@ it on `protocol.events` never emits it, and a client that has no handler for it
 behaves as it did before the event existed — the prompt stays until answered,
 which is what every client did until this event.
 
+`pr:state_changed` `{ agent_id, subdir?: string | null, state: PrState | null }`
+is one checkout's bound PR as found now — a state, not a transition; `null` is
+"no bound PR". It fires after a push or a turn end (primary repo) and from the
+host-side PR watcher below, for the primary and every secondary repo. `subdir`
+is `null` (or absent, from a host that predates it) for the agent's primary
+repo and the repo's subdir for a secondary, so a client keys the write by
+checkout as it does `get_all_pr_status`; a client that keeps only the primary's
+PR ignores an event with `subdir` set rather than writing it to the primary.
+The same state may be reported again — the watcher re-reports every open PR on
+its first look after a host restart — so a client derives "opened" / "merged"
+from the record it replaces and treats a same-state event as a refresh.
+
 `pr:checks_changed` `{ agent_id, subdir: string | null, number, checks: PrChecks }` and
 `pr:threads_changed` `{ agent_id, subdir, comments: PrComments, new_thread_ids: string[] }`
 come from the host-side PR watcher, which runs the sidebar's batched sweep
@@ -1006,9 +1020,10 @@ unresolved thread set changes, naming in `new_thread_ids` the ids the watcher
 had not seen beside the whole current set — an empty `new_thread_ids` is a
 thread resolved, which a client applies and does not announce. `subdir` is
 `null` for the agent's primary repo and the repo's subdir for a secondary. The
-watcher's first read of a PR seeds its memory and emits nothing, so a host
-restart announces no old thread; a PR that leaves `open` gets one final
-`pr:state_changed` (primary repo only, as that event always was) and is then
+watcher's first read of an open PR seeds its memory and emits only its
+`pr:state_changed` — so a PR reopened or opened outside Fletch reaches every
+client — and no checks or threads, so a host restart announces no old thread;
+a PR that leaves `open` gets one final `pr:state_changed` and is then
 forgotten. A client treats both as the freshest copy of the PR's checks and
 comments and may append an activity line for them. They are what keeps a
 client current: clients read `get_all_pr_status` after a handshake and

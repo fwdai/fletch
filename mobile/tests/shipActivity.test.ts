@@ -47,11 +47,16 @@ describe("prTransitionText", () => {
     expect(prTransitionText(undefined, pr("open"))).toBe("PR #7 opened");
     expect(prTransitionText(pr("open"), pr("merged"))).toBe("PR #7 merged");
     expect(prTransitionText(pr("open"), pr("closed"))).toBe("PR #7 closed");
+    expect(prTransitionText(pr("closed"), pr("open"))).toBe("PR #7 reopened");
+    // A follow-up PR on the same branch is a new one, whatever came before.
+    expect(prTransitionText(pr("merged"), { ...pr("open"), number: 8 })).toBe("PR #8 opened");
   });
 
   it("stays quiet for a re-report, an edit, or a PR going away", () => {
     expect(prTransitionText(pr("open"), { ...pr("open"), title: "renamed" })).toBeNull();
     expect(prTransitionText(pr("merged"), pr("merged"))).toBeNull();
+    // The host re-reports every open PR on its first look after a restart.
+    expect(prTransitionText(pr("open"), pr("open"))).toBeNull();
     expect(prTransitionText(null, pr("merged"))).toBeNull();
     expect(prTransitionText(pr("open"), null)).toBeNull();
   });

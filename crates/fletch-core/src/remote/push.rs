@@ -194,7 +194,9 @@ pub(super) struct PushTriggers {
     /// is — and the next PR on the same checkout starts with no memory. Entries
     /// go when their PR leaves `open`.
     last_rollup: Mutex<HashMap<String, String>>,
-    /// The state each agent's last `pr:state_changed` carried. A merge or close
+    /// The state each checkout's last `pr:state_changed` carried, keyed like
+    /// the client stores (`agent` for the primary repo, `agent::subdir` for a
+    /// secondary) so one repo's merge is not read as another's. A merge or close
     /// alerts only when this saw the PR open: a cold start's first event may be
     /// a stale snapshot of a PR that merged last week.
     last_pr_state: Mutex<HashMap<String, String>>,
@@ -308,10 +310,11 @@ impl PushTriggers {
         };
         // Keyed by PR, not just by checkout: the next PR on the same branch
         // settling green is its own news, not a repeat of the last one's.
-        let key = match &payload.subdir {
-            Some(subdir) => format!("{}::{subdir}#{}", payload.agent_id, payload.number),
-            None => format!("{}#{}", payload.agent_id, payload.number),
-        };
+        let key = format!(
+            "{}#{}",
+            checkout_key(&payload.agent_id, payload.subdir.as_deref()),
+            payload.number
+        );
         let rollup = payload.checks.rollup;
         let previous = self.last_rollup.lock().insert(key, rollup.clone());
         let settled = matches!(rollup.as_str(), "passing" | "failing");
@@ -367,26 +370,32 @@ impl PushTriggers {
 
     /// One `pr:state_changed`. The event fires from several paths (a turn end,
     /// a push, the watcher) and each reports the state it found, not a
-    /// transition — so the transition is reconstructed here, and only an
-    /// `open → merged|closed` this process witnessed is a merge or a close.
+    /// transition — so the transition is reconstructed here, per checkout, and
+    /// only an `open → merged|closed` this process witnessed is a merge or a
+    /// close. Becoming open is never an alert: the watcher reports every open
+    /// PR on its first look, a host restart included.
+    ///
+    /// Two repos of one agent merging are two alerts, but they share the
+    /// agent's `collapseId`, so the phone shows the later banner in place of
+    /// the earlier one rather than stacking them.
     fn on_pr_state_changed(&self, agents: &dyn AgentLookup, payload: &Value) {
         let Ok(payload) = PrStateChangedPayload::deserialize(payload) else {
             return;
         };
+        let checkout = checkout_key(&payload.agent_id, payload.subdir.as_deref());
         let previous = {
             let mut last = self.last_pr_state.lock();
             match &payload.state {
-                Some(state) => last.insert(payload.agent_id.clone(), state.state.clone()),
-                None => last.remove(&payload.agent_id),
+                Some(state) => last.insert(checkout.clone(), state.state.clone()),
+                None => last.remove(&checkout),
             }
         };
         // A PR that is no longer open takes its rollup memory with it, so the
-        // map stays bounded by the PRs still being watched.
+        // map stays bounded by the PRs still being watched. Only this
+        // checkout's: the agent's other repos are still open.
         if payload.state.as_ref().map(|s| s.state.as_str()) != Some("open") {
-            let agent = payload.agent_id.as_str();
             self.last_rollup.lock().retain(|key, _| {
-                let own = key.strip_prefix(agent);
-                !matches!(own, Some(rest) if rest.starts_with('#') || rest.starts_with("::"))
+                !matches!(key.strip_prefix(checkout.as_str()), Some(rest) if rest.starts_with('#'))
             });
         }
         let Some(state) = payload.state else {
@@ -489,6 +498,11 @@ impl PushTriggers {
             );
         }
     }
+}
+
+/// One checkout's key from an event's `subdir` (`None` = the primary repo).
+fn checkout_key(agent_id: &str, subdir: Option<&str>) -> String {
+    crate::supervisor::pr_map_key(agent_id, subdir.unwrap_or_default(), subdir.is_none())
 }
 
 /// Trim to the doc's 200-character cap, on a character boundary.
@@ -614,6 +628,9 @@ struct ThreadSummary {
 #[derive(Deserialize)]
 struct PrStateChangedPayload {
     agent_id: String,
+    /// Absent from a host that predates it, which only ever meant the primary.
+    #[serde(default)]
+    subdir: Option<String>,
     state: Option<PrStateSummary>,
 }
 
