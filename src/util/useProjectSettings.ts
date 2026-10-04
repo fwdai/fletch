@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, onProjectSettingsChanged } from "@/api";
 import { useAppStore } from "@/store";
+import { followProjectSettings, withSetting } from "./settingsReplay";
 
 /** One project's host-owned settings (docs/remote-protocol.md, "Settings"),
  *  read from the engine the UI is driving and kept live by
@@ -23,27 +24,17 @@ export function useProjectSettings(projectId: string | null | undefined): {
   useEffect(() => {
     setSettings(null);
     if (!projectId) return;
-    let alive = true;
-    api
-      .getProjectSettings(projectId)
-      .then((all) => {
-        if (alive) setSettings(all);
-      })
-      .catch((e) => console.error("load project settings failed", e));
-    const unlisten = onProjectSettingsChanged((e) => {
-      if (!alive || e.project_id !== projectId) return;
-      setSettings((prev) => withValue(prev ?? {}, e.key, e.value));
-    });
-    return () => {
-      alive = false;
-      void unlisten.then((off) => off()).catch(() => {});
-    };
+    return followProjectSettings(
+      projectId,
+      { read: api.getProjectSettings, subscribe: onProjectSettingsChanged },
+      setSettings,
+    );
   }, [projectId, environmentId]);
 
   const save = useCallback(
     (key: string, value: string | null) => {
       if (!projectId) return;
-      setSettings((prev) => withValue(prev ?? {}, key, value));
+      setSettings((prev) => withSetting(prev ?? {}, key, value));
       api
         .setProjectSetting(projectId, key, value)
         .catch((e) => console.error(`save ${key} failed`, e));
@@ -52,15 +43,4 @@ export function useProjectSettings(projectId: string | null | undefined): {
   );
 
   return { settings, save };
-}
-
-function withValue(
-  all: Record<string, string>,
-  key: string,
-  value: string | null,
-): Record<string, string> {
-  const next = { ...all };
-  if (value === null) delete next[key];
-  else next[key] = value;
-  return next;
 }

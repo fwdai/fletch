@@ -15,6 +15,8 @@ import {
   parseSandboxEngine,
 } from "@/storage/preferences";
 import { getAllSettings } from "@/storage/settings";
+import { newestWins } from "@/util/newestWins";
+import { replaySettingChanges, withSetting } from "@/util/settingsReplay";
 import { activeEnvironment, forActiveEnvironment } from "./environments";
 import type { AppState } from "./types";
 
@@ -56,6 +58,16 @@ export function hostSettingsState(s: Record<string, string>): Partial<AppState> 
  *  that reads several (`providerPathOverrides`). */
 let current: Record<string, string> = {};
 
+/** One order for every hydrate: a switch and back (A → B → A) or two
+ *  reconnects issue two reads of the same environment, and the older answer
+ *  must not land over the newer. */
+const hydrates = newestWins();
+
+/** The `settings:changed` events that landed while the newest hydrate's read
+ *  was in flight, replayed over its answer: the host may have served the read
+ *  before a write the event already put on screen. */
+let hydrateInFlight: SettingsChangedEvent[] | null = null;
+
 export function applyHostSettings(set: Patch, settings: Record<string, string>) {
   current = { ...settings };
   set(hostSettingsState(current));
@@ -64,10 +76,8 @@ export function applyHostSettings(set: Patch, settings: Record<string, string>) 
 /** Fold one write — this window's, another desktop's, a phone's — over what was
  *  read, without a refetch. */
 export function applyHostSettingChange(set: Patch, e: SettingsChangedEvent) {
-  const next = { ...current };
-  if (e.value === null) delete next[e.key];
-  else next[e.key] = e.value;
-  applyHostSettings(set, next);
+  hydrateInFlight?.push(e);
+  applyHostSettings(set, withSetting(current, e.key, e.value));
 }
 
 /** The active environment's host-owned settings, or `null` when it cannot say:
@@ -84,6 +94,17 @@ async function readHostSettings(): Promise<Record<string, string> | null> {
  *  at launch and on every switch and reconnect; an answer that lands after the
  *  user moved on is dropped. */
 export async function hydrateHostSettings(set: Patch) {
-  const settings = await forActiveEnvironment(readHostSettings);
-  if (settings) applyHostSettings(set, settings);
+  const claim = hydrates.claim();
+  const buffer: SettingsChangedEvent[] = [];
+  hydrateInFlight = buffer;
+  try {
+    // Two guards, as for the approval queue: a switch while the read was in
+    // flight means ours is another engine's settings, and a newer hydrate
+    // means ours is the older snapshot it was issued to replace.
+    const settings = await forActiveEnvironment(readHostSettings);
+    if (!settings || !claim.current()) return;
+    applyHostSettings(set, replaySettingChanges(settings, buffer));
+  } finally {
+    if (hydrateInFlight === buffer) hydrateInFlight = null;
+  }
 }
