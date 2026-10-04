@@ -3549,3 +3549,13 @@ fn the_pr_watch_events_are_forwarded_and_advertised() {
         );
     }
 }
+
+/// The idle sweep runs on the host, so its notice reaches every client rather
+/// than only the window that happens to share the host's process.
+#[test]
+fn the_auto_archive_notice_is_forwarded_and_advertised() {
+    assert!(super::events::FORWARDED_EVENTS.contains(&"workspace:auto-archived"));
+    assert!(super::protocol_descriptor()
+        .events
+        .contains(&"workspace:auto-archived"));
+}

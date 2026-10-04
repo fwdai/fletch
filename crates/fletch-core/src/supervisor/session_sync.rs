@@ -447,15 +447,17 @@ impl AgentPrStatus {
 }
 
 /// Resolve PR state *and* CI for every bound repo of every agent in one batched
-/// round-trip — the app-wide sidebar poll behind `refresh_all_pr_status`. Same
+/// round-trip — behind `get_all_pr_status` (the clients' sidebar seed) and the
+/// host's own PR watcher (`pr_watch`). Same
 /// per-repo policy as [`resolve_pr_state`], but the live lookups are collapsed
 /// into a single aliased GraphQL query instead of a per-agent fan-out:
 ///
 /// - **Merged** PRs are served from the persisted snapshot (terminal — never
 ///   re-fetched).
-/// - **Closed** PRs are served from the snapshot too, *except* on the slow
-///   re-verify tick (`reverify_closed`), so a reopen is still eventually caught
-///   without paying a poll every cycle.
+/// - **Closed** PRs are served from the snapshot too, *except* when the caller
+///   asks for a live look (`reverify_closed` — a client's launch or
+///   environment-switch seed), so a reopen is still caught without paying for
+///   it on every read.
 /// - Everything else is fetched live by number and its snapshot refreshed.
 ///
 /// A paused backoff, an unresolvable slug, a not-found alias, or a whole-batch

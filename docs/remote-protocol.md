@@ -567,8 +567,8 @@ allowlist; any op not listed returns `{ ok: false, error: "unknown op" }`.
 | `read_live_turn` | `{ agentId }` — the `event` payloads of the agent's current turn, oldest first, as they were forwarded on `agent:event`; `dropped` counts events cut from the head when the turn outgrew the host's buffer; `next_seq` is the `seq` the agent's next `agent:event` will carry, so a frame with `seq >= next_seq` is one the snapshot does not hold. Empty for a turn that ran under a previous host process or in the native view. No desktop command of this name yet | `{ events: object[], dropped: number, next_seq: number }` |
 | `get_git_state` | `{ agentId }` — a checkout whose config Fletch refuses to run git over comes back as a zero-state with the keys in `blocked_config` | `GitState \| null` |
 | `get_all_shortstats` | `{}` — uncommitted working-tree stats for every live agent; archived and still-cloning agents are omitted | `Record<agentId, ShortStats>` |
-| `get_all_git_meta` | `{}` — advisory local-git metadata per checkout (base staleness, changed paths), keyed like the PR maps (`agentId` for the primary repo, `"{agentId}::{subdir}"` for secondaries); no network | `Record<gitKey, GitMeta>` |
-| `get_all_pr_status` | `{ reverifyClosed?: boolean }` — every live agent-repo's bound PR state plus the CI rollup when open, keyed like `get_all_git_meta`; `checks: null` means "nothing to say this round" so a client keeps its last value; merged PRs are served from the snapshot, closed ones re-verified live only when `reverifyClosed` | `Record<gitKey, AgentPrStatus>` |
+| `get_all_git_meta` | `{}` — advisory local-git metadata per checkout (base staleness, changed paths), keyed like the PR maps (`agentId` for the primary repo, `"{agentId}::{subdir}"` for secondaries); no network. Staleness is measured against the source repo's `origin/<base>`, which the host itself fetches every five minutes when it has a GitHub credential — no client asks for that fetch | `Record<gitKey, GitMeta>` |
+| `get_all_pr_status` | `{ reverifyClosed?: boolean }` — every live agent-repo's bound PR state plus the CI rollup when open, keyed like `get_all_git_meta`; `checks: null` means "nothing to say this round" so a client keeps its last value; merged PRs are served from the snapshot, closed ones re-verified live only when `reverifyClosed`. A seed, not a poll: read it after a handshake (and on returning to the foreground), then follow `pr:state_changed` / `pr:checks_changed`, which the host's PR watcher emits on every change it sees in its once-a-minute sweep of the same resolver | `Record<gitKey, AgentPrStatus>` |
 | `list_checkout_tree` | as command | `CheckoutFile[]` |
 | `read_checkout_file` | `{ agentId, path, baseMode? }` | `CheckoutFileContents` |
 | `get_file_diff` | as command | `string` |
@@ -584,8 +584,8 @@ allowlist; any op not listed returns `{ ok: false, error: "unknown op" }`.
 | `merge_pr` | as command — merges the open PR on the targeted repo's branch | `null` |
 | `get_pr_state` | as command | `PrState \| null` |
 | `get_pr_checks` | as command | `PrChecks \| null` |
-| `get_pr_live` | as command | `PrLive \| null` |
-| `get_pr_threads` | as command — unresolved review threads; GraphQL, so polled well below the `get_pr_live` cadence | `PrComments \| null` |
+| `get_pr_live` | as command — read once when a screen showing the PR opens with nothing cached for it; `pr:state_changed` / `pr:checks_changed` keep it current after that | `PrLive \| null` |
+| `get_pr_threads` | as command — unresolved review threads (GraphQL). Read once like `get_pr_live`; `pr:threads_changed` keeps it current | `PrComments \| null` |
 | `delegate_git` | `{ agentId, subdir?, action, params? }` — hands a git playbook to the agent (see "Delegations"). `action` is a playbook name (`commit`, `commit-push`, `commit-pr`, `open-pr`, `push`, `resolve-conflicts`, `update-branch`, `fix-checks`, `resolve-comments`); anything else is refused. `params` is a `{ [key]: string }` of the playbook's dynamic context (`base`, `failing`); empty values are dropped and `repo` is the host's to set from `subdir`. The host composes the `[app-action]` trigger, records the delegation and either sends it now as a user turn (`turn:sent` fires as for any send) or, while the agent is `running`, holds it until the agent goes idle | `Delegation` |
 | `get_delegations` | `{}` — every delegation the host is tracking, for a client that connected mid-flight | `Delegation[]` |
 | `autopilot_state` | `{ agentId? }` — autopilot as the host runs it (see "Autopilot"): one row per checkout of `agentId`, or of every live agent when it is absent, plus the two opt-out lists | `AutopilotSnapshot` |
@@ -935,6 +935,7 @@ agent:title            agent:branch           agent:model
 agent:effort
 agent:repo_added       agent:git-action       session:records-appended
 turn:sent              turn:started           workspace:changed
+workspace:auto-archived
 pr:state_changed       pr:checks_changed      pr:threads_changed
 verify:report          publish:approval-requested
 publish:approval-resolved
@@ -999,17 +1000,27 @@ come from the host-side PR watcher, which runs the sidebar's batched sweep
 once a minute, reads the open PRs' review threads every other tick through
 `get_pr_threads`'s resolver, and emits only on a change: the
 first fires when the normalized `rollup` (`none | pending | passing |
-failing`) or the set of failing check names moves, the second when the
-unresolved thread set gains ids the watcher had not seen, naming exactly those
-in `new_thread_ids` beside the whole current set. `subdir` is `null` for the
-agent's primary repo and the repo's subdir for a secondary. The watcher's first
-read of a PR seeds its memory and emits nothing, so a host restart announces no
-old thread; a PR that leaves `open` gets one final `pr:state_changed` (primary
-repo only, as that event always was) and is then forgotten. A client treats
-both as the freshest copy of the PR's checks and comments and may append an
-activity line for them; a client without a handler loses nothing it had, since
-its own polls still read the same resolvers. These two are the only `pr:*`
-events besides `pr:state_changed`.
+failing`), the set of failing check names or the merge gate (`merge_state`,
+ignoring GitHub's transient `unknown`) moves, the second whenever the
+unresolved thread set changes, naming in `new_thread_ids` the ids the watcher
+had not seen beside the whole current set — an empty `new_thread_ids` is a
+thread resolved, which a client applies and does not announce. `subdir` is
+`null` for the agent's primary repo and the repo's subdir for a secondary. The
+watcher's first read of a PR seeds its memory and emits nothing, so a host
+restart announces no old thread; a PR that leaves `open` gets one final
+`pr:state_changed` (primary repo only, as that event always was) and is then
+forgotten. A client treats both as the freshest copy of the PR's checks and
+comments and may append an activity line for them. They are what keeps a
+client current: clients read `get_all_pr_status` after a handshake and
+`get_pr_live` / `get_pr_threads` once for a PR on screen with nothing cached,
+and do not poll them — so GitHub is read by the watcher alone. These two are
+the only `pr:*` events besides `pr:state_changed`.
+
+`workspace:auto-archived` `{ agent_ids: string[], names: string[] }` is the
+idle sweep's notice: one per pass that archived anything, naming the agents by
+id and display name (nothing from their transcripts), so a client can say what
+moved to History. `workspace:changed` fires alongside it and already reloads
+the list; this one only explains the change, and a client may ignore it.
 
 `delegation:changed` `{ agent_id, subdir: string | null, kind, phase, started_at, notice? }`
 is one step of a delegation's life (see "Delegations"). `kind` is the

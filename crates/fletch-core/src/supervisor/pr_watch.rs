@@ -1,10 +1,10 @@
-//! Host-side watch over every bound PR, for the ship loop.
+//! Host-side watch over every bound PR, for the ship loop and for every client.
 //!
-//! The desktop polls a PR's state, checks and review threads only while its
-//! Git panel is open, and `pr:state_changed` fires only when something else
-//! triggers a resolve (a turn end, a push, a client poll). A phone with the
-//! Mac's window closed therefore hears nothing when checks fail, a reviewer
-//! comments or the PR merges. This task is the host's own poll: once a minute
+//! Clients do not poll GitHub: they seed from one read (`get_all_pr_status`,
+//! and `get_pr_live` / `get_pr_threads` for a PR on screen with nothing
+//! cached) and then follow the events this task emits, so GitHub is read once
+//! a minute however many windows and phones are open — and still read with
+//! every one of them shut. This task is the host's own poll: once a minute
 //! it runs the same batched sweep the sidebar uses
 //! ([`resolve_all_pr_status`] — one GraphQL query for every bound PR, snapshot
 //! persistence and the backoff gate included), every other tick also reads the
@@ -24,7 +24,7 @@ use std::time::Duration;
 use parking_lot::Mutex;
 use tokio::sync::Notify;
 
-use crate::github::{PrChecks, PrComments, PrState, PrStatus};
+use crate::github::{MergeState, PrChecks, PrComments, PrState, PrStatus};
 use crate::host::{EngineCtx, EventSink};
 
 use super::events::{emit_pr_checks, emit_pr_state, emit_pr_threads};
@@ -57,6 +57,10 @@ pub(crate) struct Seen {
     /// `None` until a tick resolved checks.
     rollup: Option<String>,
     required_failing: BTreeSet<String>,
+    /// The merge gate, `None` until a read reported a known one: GitHub
+    /// computes it lazily, and an `unknown` in between two real answers is not
+    /// a change.
+    merge_state: Option<MergeState>,
     threads: BTreeSet<String>,
 }
 
@@ -67,6 +71,7 @@ impl Seen {
             state: read.state.state,
             rollup: read.checks.as_ref().map(|c| c.rollup.clone()),
             required_failing: read.checks.as_ref().map(failing_set).unwrap_or_default(),
+            merge_state: read.checks.as_ref().and_then(known_merge_state),
             threads: read.threads.as_ref().map(thread_ids).unwrap_or_default(),
         }
     }
@@ -98,6 +103,10 @@ fn failing_set(checks: &PrChecks) -> BTreeSet<String> {
     checks.required_failing.iter().cloned().collect()
 }
 
+fn known_merge_state(checks: &PrChecks) -> Option<MergeState> {
+    (checks.merge_state != MergeState::Unknown).then_some(checks.merge_state)
+}
+
 fn thread_ids(comments: &PrComments) -> BTreeSet<String> {
     comments.unresolved.iter().map(|c| c.id.clone()).collect()
 }
@@ -111,8 +120,12 @@ fn thread_ids(comments: &PrComments) -> BTreeSet<String> {
 ///   PR that is gone.
 /// - A state change is the only thing reported for it, and the key goes —
 ///   a settled PR has nothing further to watch.
-/// - Checks report when the rollup or the set of failing names moves.
-/// - Threads report the ids not seen before; a resolved one just leaves.
+/// - Checks report when the rollup, the set of failing names or the (known)
+///   merge gate moves.
+/// - Threads report whenever the unresolved set changes, naming the ids not
+///   seen before — none when a thread was only resolved. Clients follow these
+///   events instead of polling, so a resolution has to reach them too; the
+///   alerts key off the new ids and stay quiet for it.
 pub(crate) fn diff(last: &mut HashMap<String, Seen>, key: &str, read: &Read) -> Vec<Change> {
     let Some(seen) = last.get_mut(key) else {
         if read.state.state == PrStatus::Open {
@@ -134,19 +147,22 @@ pub(crate) fn diff(last: &mut HashMap<String, Seen>, key: &str, read: &Read) -> 
     let mut changes = Vec::new();
     if let Some(checks) = &read.checks {
         let failing = failing_set(checks);
+        let merge_state = known_merge_state(checks).or(seen.merge_state);
         if seen.rollup.as_deref() != Some(checks.rollup.as_str())
             || seen.required_failing != failing
+            || seen.merge_state != merge_state
         {
             seen.rollup = Some(checks.rollup.clone());
             seen.required_failing = failing;
+            seen.merge_state = merge_state;
             changes.push(Change::Checks(checks.clone()));
         }
     }
     if let Some(comments) = &read.threads {
         let ids = thread_ids(comments);
-        let new_ids: Vec<String> = ids.difference(&seen.threads).cloned().collect();
-        seen.threads = ids;
-        if !new_ids.is_empty() {
+        if ids != seen.threads {
+            let new_ids: Vec<String> = ids.difference(&seen.threads).cloned().collect();
+            seen.threads = ids;
             changes.push(Change::Threads {
                 comments: comments.clone(),
                 new_ids,
@@ -245,7 +261,7 @@ async fn tick(ctx: &Arc<EngineCtx>, supervisor: &Arc<Supervisor>, last: &Last, w
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::github::{MergeState, MergeableState, PrComment};
+    use crate::github::{MergeableState, PrComment};
     use crate::supervisor::pr_map_key;
 
     fn pr(status: PrStatus) -> PrState {
@@ -400,12 +416,42 @@ mod tests {
             }
             other => panic!("expected one threads change: {other:?}"),
         }
-        // A thread resolving is not news; the one that stays is not new.
+        // A thread resolving travels too, so a client following the events
+        // drops it — but it names nothing new, which is what keeps it quiet.
+        match &step(
+            &mut last,
+            &read(PrStatus::Open, None, Some(threads(&["t3"]))),
+        )[..]
+        {
+            [Change::Threads { comments, new_ids }] => {
+                assert!(new_ids.is_empty(), "{new_ids:?}");
+                assert_eq!(comments.unresolved.len(), 1);
+            }
+            other => panic!("expected one threads change: {other:?}"),
+        }
+        // The same set again is nothing.
         assert!(step(
             &mut last,
             &read(PrStatus::Open, None, Some(threads(&["t3"])))
         )
         .is_empty());
+    }
+
+    /// The merge gate is what the panel's buttons read, so its moving is news —
+    /// but GitHub's lazy `unknown` between two real answers is not.
+    #[test]
+    fn a_moved_merge_gate_emits_checks_and_unknown_does_not() {
+        let mut last = HashMap::new();
+        let gate = |state: MergeState| {
+            let mut c = checks("passing", &[]);
+            c.merge_state = state;
+            read(PrStatus::Open, Some(c), None)
+        };
+        step(&mut last, &gate(MergeState::Clean));
+        assert!(step(&mut last, &gate(MergeState::Unknown)).is_empty());
+        assert!(step(&mut last, &gate(MergeState::Clean)).is_empty());
+        let changes = step(&mut last, &gate(MergeState::Behind));
+        assert!(matches!(&changes[..], [Change::Checks(_)]), "{changes:?}");
     }
 
     #[test]
