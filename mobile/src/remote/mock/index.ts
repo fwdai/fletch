@@ -5,6 +5,12 @@
 
 import type { AgentRecord, Workspace } from "@desktop/api/types/agent";
 import type { DirEntry, DirListing } from "@desktop/api/types/checkout";
+import type {
+  AutopilotCheckout,
+  AutopilotCycle,
+  AutopilotLogEntry,
+  AutopilotSnapshot,
+} from "@desktop/api/types/git";
 import type { RoadmapItem, RoadmapItemPatch } from "@desktop/api/types/roadmap";
 import type { SessionRecord, UserTurn } from "@desktop/api/types/session";
 import { appActionMessage, DELEGATION_KINDS, type DelegationKind } from "@desktop/delegation";
@@ -55,7 +61,20 @@ interface MockState {
   /** The host's delegation table, primary repos only: held while the agent is
    *  mid-turn, delivered when it settles, done when the delegated turn ends. */
   delegations: Record<string, MockDelegation>;
+  /** The host's autopilot: the two switches, the open cycles by checkout key,
+   *  and the log, newest first. The mock never ticks — cycles only move when a
+   *  switch drops them. */
+  autopilot: {
+    disabledProjects: string[];
+    pausedAgents: string[];
+    cycles: Record<string, AutopilotCycle>;
+    log: AutopilotLogEntry[];
+  };
 }
+
+/** The desktop's `checkoutKey`: the agent id for the primary repo. */
+const checkoutKey = (agentId: string, subdir: string | null) =>
+  subdir ? `${agentId}::${subdir}` : agentId;
 
 interface MockDelegation {
   kind: DelegationKind;
@@ -103,6 +122,7 @@ export class MockHost {
       nextPrNumber: 649,
       filesystem: structuredClone(fx.filesystem),
       delegations: {},
+      autopilot: { disabledProjects: [], pausedAgents: [], ...fx.autopilot(Date.now()) },
     };
   }
 
@@ -336,6 +356,66 @@ export class MockHost {
     });
   }
 
+  /** One row per checkout of every live agent, as `autopilot_state` reports
+   *  them: the primary repo first, with a null subdir. */
+  private autopilotRows(agentId?: string): AutopilotCheckout[] {
+    const ap = this.state.autopilot;
+    return this.visibleWorkspace()
+      .agents.filter((a) => !agentId || a.id === agentId)
+      .flatMap((a) =>
+        a.repos.map((r, i) => {
+          const subdir = i === 0 ? null : r.subdir;
+          const project_enabled = !ap.disabledProjects.includes(a.project_id);
+          const paused = ap.pausedAgents.includes(a.id);
+          const enrolled = project_enabled && !paused;
+          return {
+            agent_id: a.id,
+            subdir,
+            project_id: a.project_id,
+            enrolled,
+            paused,
+            project_enabled,
+            cycle: (enrolled && ap.cycles[checkoutKey(a.id, subdir)]) || null,
+          };
+        }),
+      );
+  }
+
+  private autopilotSnapshot(agentId?: string): AutopilotSnapshot {
+    return {
+      checkouts: this.autopilotRows(agentId),
+      disabled_projects: [...this.state.autopilot.disabledProjects],
+      paused_agents: [...this.state.autopilot.pausedAgents],
+    };
+  }
+
+  /** `autopilot_set`, as the host takes it: exactly one id, the switch flipped
+   *  at once, every checkout that left autopilot losing its cycle, and an
+   *  `autopilot:state` for each row that changed. */
+  private setAutopilot(args: Record<string, unknown>): AutopilotSnapshot {
+    const { projectId, agentId, enabled } = args;
+    if ((projectId == null) === (agentId == null)) {
+      throw new Error("autopilot_set takes exactly one of projectId and agentId");
+    }
+    if (typeof enabled !== "boolean") throw new Error("enabled must be a boolean");
+    const ap = this.state.autopilot;
+    const flip = (list: string[], key: string, off: boolean) =>
+      off ? [...new Set([...list, key])] : list.filter((k) => k !== key);
+    const before = this.autopilotRows();
+    if (projectId != null) {
+      ap.disabledProjects = flip(ap.disabledProjects, String(projectId), !enabled);
+    } else {
+      this.agent(String(agentId));
+      ap.pausedAgents = flip(ap.pausedAgents, String(agentId), !enabled);
+    }
+    const after = this.autopilotRows();
+    after.forEach((row, i) => {
+      if (!row.enrolled) delete ap.cycles[checkoutKey(row.agent_id, row.subdir)];
+      if (JSON.stringify(row) !== JSON.stringify(before[i])) this.event("autopilot:state", row);
+    });
+    return this.autopilotSnapshot();
+  }
+
   /** `send_user_message`'s delivery, shared with the delegations. */
   private sendTurn(id: string, turnId: string, text: string, attachments: string[]) {
     // Echoed to every client before delivery, as the host does; the sender
@@ -533,6 +613,21 @@ export class MockHost {
           phase: d.phase,
           started_at: d.started_at,
         }));
+      case "autopilot_state":
+        return this.autopilotSnapshot(id || undefined);
+      case "autopilot_set":
+        return this.setAutopilot(args);
+      // Newest first, one agent's checkouts or everyone's; a `subdir` names one
+      // checkout, the primary's own subdir naming the primary.
+      case "autopilot_log": {
+        const subdir = args.subdir == null ? null : String(args.subdir);
+        return this.state.autopilot.log.filter((e) => {
+          if (id && e.agent_id !== id) return false;
+          if (subdir === null) return true;
+          const primary = this.state.workspace.agents.find((a) => a.id === e.agent_id)?.repos[0];
+          return (e.subdir ?? primary?.subdir) === subdir;
+        });
+      }
       case "answer_tool_use": {
         const behavior = String(args.behavior ?? "allow");
         delete this.state.pendingToolUse[id];

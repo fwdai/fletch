@@ -1,8 +1,9 @@
 import { fmtAgo, useTick } from "../../../lib/hooks";
 import type { ShipActivityEntry } from "../../../store/shipActivity";
 
-/** What moved the work along since this session connected, newest first
- *  (store/shipActivity). Nothing to draw renders nothing. */
+/** What moved the work along since this session connected — plus what the
+ *  host's autopilot did, which it keeps — newest first (store/shipActivity).
+ *  Nothing to draw renders nothing. */
 export function Activity({ entries }: { entries: ShipActivityEntry[] | undefined }) {
   const any = !!entries?.length;
   // The relative times age on their own; a half-minute tick keeps "just now"
@@ -13,7 +14,7 @@ export function Activity({ entries }: { entries: ShipActivityEntry[] | undefined
   return (
     <div className="card ship-activity">
       {entries.map((e) => (
-        <div key={`${e.at}:${e.text}`} className="ship-act">
+        <div key={e.id ?? `${e.at}:${e.text}`} className="ship-act">
           <span className="txt">{e.text}</span>
           <span className="when mono">{fmtAgo(e.at, now)}</span>
         </div>

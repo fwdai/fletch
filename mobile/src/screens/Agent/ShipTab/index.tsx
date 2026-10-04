@@ -3,6 +3,7 @@ import { baseOf } from "../../../lib/agents";
 import { usePoll } from "../../../lib/hooks";
 import { useStore } from "../../../store";
 import { Activity } from "./Activity";
+import { AutopilotBar } from "./AutopilotBar";
 import { Evidence } from "./Evidence";
 import { ShipFooter } from "./ShipFooter";
 import { StatusHeader } from "./StatusHeader";
@@ -14,8 +15,9 @@ const LIVE_MS = 30_000;
 const THREADS_MS = 60_000;
 
 /** Where the work stands on its way to landing, and the one thing to do about
- *  it: a tinted strip off the desktop's remediation ladder, the evidence behind
- *  it (diff, tests, PR, checks, review), what happened lately, and the footer. */
+ *  it: a tinted strip off the desktop's remediation ladder, the host's autopilot
+ *  under it, the evidence behind it (diff, tests, PR, checks, review), what
+ *  happened lately, and the footer. */
 export function ShipTab({
   agent,
   onDelegated,
@@ -49,6 +51,7 @@ export function ShipTab({
     <>
       <div className="scroll">
         <StatusHeader strip={view.strip} git={git} pr={pr} />
+        <AutopilotBar agentId={agent.id} />
         <div className="ship-body">
           <Evidence
             agent={agent}

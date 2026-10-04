@@ -1,13 +1,16 @@
 // The Ship tab's derivation (src/screens/Agent/ShipTab/derive.ts) over the
-// desktop's ladder. The in-flight playbook is the host's (`delegation:changed`),
-// covered with the store in store.test.ts.
+// desktop's ladder, and its autopilot line (ShipTab/autopilot.ts). The
+// in-flight playbook is the host's (`delegation:changed`), covered with the
+// store in store.test.ts.
 
-import type { GitState } from "@desktop/api/types/git";
+import type { AutopilotCheckout, AutopilotCycle, GitState } from "@desktop/api/types/git";
 import type { CheckRun, PrChecks, PrComment, PrComments, PrState } from "@desktop/api/types/pr";
 import { delegationLabel } from "@desktop/delegation";
 import type { ReadinessInput } from "@desktop/readiness";
 import { describe, expect, it } from "vitest";
+import { describeAutopilot } from "../src/screens/Agent/ShipTab/autopilot";
 import { describeShip, type ShipExtra } from "../src/screens/Agent/ShipTab/derive";
+import { agentCheckouts, autopilotFromSnapshot } from "../src/store/autopilot";
 
 const git = (over: Partial<GitState> = {}): GitState => ({
   branch: "feat/x",
@@ -324,5 +327,93 @@ describe("describeShip", () => {
     expect(v.strip).toEqual({ kind: "att", text: "Git paused", sub: "blocking settings" });
     expect(v.primary).toBeNull();
     expect(v.more).toEqual([]);
+  });
+});
+
+describe("describeAutopilot", () => {
+  const row = (over: Partial<AutopilotCheckout> = {}): AutopilotCheckout => ({
+    agent_id: "a",
+    subdir: null,
+    project_id: "p",
+    enrolled: true,
+    paused: false,
+    project_enabled: true,
+    cycle: null,
+    ...over,
+  });
+  const cycle = (over: Partial<AutopilotCycle> = {}): AutopilotCycle => ({
+    rung: "fix-checks",
+    attempt: 1,
+    phase: "working",
+    since: 1,
+    ...over,
+  });
+
+  it("says nothing for an agent the host reported no rows for", () => {
+    expect(describeAutopilot([], true)).toBeNull();
+  });
+
+  it("is on by default, with the agent's switch when the host takes it", () => {
+    expect(describeAutopilot([row()], true)).toEqual({
+      text: "Autopilot on",
+      on: true,
+      switchable: true,
+      busy: false,
+    });
+    // A Control pairing has no `autopilot_set`: the line stays, the switch goes.
+    expect(describeAutopilot([row()], false)?.switchable).toBe(false);
+  });
+
+  it("names the rung as the desktop does, and the try from the second on", () => {
+    expect(describeAutopilot([row({ cycle: cycle() })], true)?.text).toBe(
+      "Autopilot: working on the failing checks",
+    );
+    expect(
+      describeAutopilot([row({ cycle: cycle({ rung: "resolve", attempt: 2 }) })], true),
+    ).toMatchObject({ text: "Autopilot: working on the conflicts, try 2", busy: true });
+    expect(
+      describeAutopilot(
+        [row({ cycle: cycle({ phase: "awaiting-evidence", rung: "resolve-comments" }) })],
+        true,
+      )?.text,
+    ).toBe("Autopilot: checking its work on the review comments");
+  });
+
+  it("speaks for the first checkout with a cycle, the primary first", () => {
+    const map = autopilotFromSnapshot({
+      checkouts: [
+        row({ subdir: "api", cycle: cycle({ rung: "update-branch" }) }),
+        row({ subdir: "web", cycle: cycle() }),
+        row(),
+      ],
+      disabled_projects: [],
+      paused_agents: [],
+    });
+    const rows = agentCheckouts(map, "a");
+    expect(rows.map((r) => r.subdir)).toEqual([null, "api", "web"]);
+    expect(describeAutopilot(rows, true)?.text).toBe(
+      "Autopilot: working on the branch update (api)",
+    );
+    // The primary's own cycle wins over a secondary's.
+    const primaryBusy = agentCheckouts({ ...map, a: row({ cycle: cycle({ attempt: 3 }) }) }, "a");
+    expect(describeAutopilot(primaryBusy, true)?.text).toBe(
+      "Autopilot: working on the failing checks, try 3",
+    );
+  });
+
+  it("says when the agent is paused, and when the project's switch is off", () => {
+    expect(describeAutopilot([row({ paused: true, enrolled: false })], true)).toEqual({
+      text: "Autopilot paused",
+      on: false,
+      switchable: true,
+      busy: false,
+    });
+    // The phone flips only the pause, which means nothing with the project off.
+    expect(describeAutopilot([row({ project_enabled: false, enrolled: false })], true)).toEqual({
+      text: "Autopilot is off for this project",
+      on: false,
+      switchable: false,
+      busy: false,
+    });
   });
 });

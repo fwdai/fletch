@@ -10,7 +10,13 @@ import type {
   DiffBaseMode,
   DirListing,
 } from "@desktop/api/types/checkout";
-import type { DelegationEvent, GitState, ShortStats } from "@desktop/api/types/git";
+import type {
+  AutopilotLogEntry,
+  AutopilotSnapshot,
+  DelegationEvent,
+  GitState,
+  ShortStats,
+} from "@desktop/api/types/git";
 import type { AgentPrStatus, PrChecks, PrComments, PrLive, PrState } from "@desktop/api/types/pr";
 import type { GhRepoSummary, GhStatus } from "@desktop/api/types/providers";
 import type {
@@ -176,6 +182,17 @@ export function createApi(client: RemoteClient) {
     /** Every delegation the host is tracking. Gated on
      *  `hostSupports("get_delegations")`. */
     getDelegations: () => call<DelegationEvent[]>("get_delegations"),
+    /** Autopilot as the host runs it: every live agent's checkouts and the two
+     *  opt-out lists. Gated on `hostSupports("autopilot_state")`. */
+    getAutopilotState: () => call<AutopilotSnapshot>("autopilot_state", {}),
+    /** What autopilot did on every checkout, newest first. Gated on
+     *  `hostSupports("autopilot_log")`. */
+    getAutopilotLog: () => call<AutopilotLogEntry[]>("autopilot_log", {}),
+    /** Flip a project's autopilot switch, or pause / resume one agent; answers
+     *  with the whole host's state after the change. A `publish` scope op, so
+     *  gated on `hostSupports("autopilot_set")` — a Control pairing lacks it. */
+    setAutopilot: (target: { projectId: string } | { agentId: string }, enabled: boolean) =>
+      call<AutopilotSnapshot>("autopilot_set", { ...target, enabled }),
     pushAgent: (agentId: string, subdir?: string) =>
       call<string>("push_agent", { agentId, subdir }),
     createPr: (agentId: string, title: string, body: string, subdir?: string) =>

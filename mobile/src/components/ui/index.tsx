@@ -294,13 +294,26 @@ export function Segmented({
   );
 }
 
-export function Toggle({ on, onChange }: { on: boolean; onChange: (v: boolean) => void }) {
+export function Toggle({
+  on,
+  onChange,
+  disabled,
+  label,
+}: {
+  on: boolean;
+  onChange: (v: boolean) => void;
+  disabled?: boolean;
+  /** Its accessible name, where no visible label says what it switches. */
+  label?: string;
+}) {
   return (
     <button
       type="button"
       className={`toggle${on ? " on" : ""}`}
       onClick={() => onChange(!on)}
       aria-pressed={on}
+      aria-label={label}
+      disabled={disabled}
     />
   );
 }
