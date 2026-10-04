@@ -913,13 +913,13 @@ fn delegations_are_on_the_wire() {
     assert!(dispatch::allows(&control, "get_delegations"));
 }
 
-/// Autopilot runs on the host and every client mirrors it: both events are
+/// Autopilot runs on the host and every client mirrors it: its events are
 /// forwarded and advertised, its state and history are readable by any device
 /// that can observe, and flipping its switches is a publish (an enrolled
 /// checkout's pushes skip the approval prompt).
 #[test]
 fn autopilot_is_on_the_wire() {
-    for event in ["autopilot:state", "autopilot:event"] {
+    for event in ["autopilot:state", "autopilot:event", "autopilot:switches"] {
         assert!(super::events::FORWARDED_EVENTS.contains(&event), "{event}");
         assert!(
             super::protocol_descriptor().events.contains(&event),

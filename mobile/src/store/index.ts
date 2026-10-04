@@ -4,6 +4,7 @@ import type { CheckoutFile, DirListing } from "@desktop/api/types/checkout";
 import type {
   AutopilotCheckout,
   AutopilotLogEntry,
+  AutopilotSwitches,
   DelegationEvent,
   GitState,
   ShortStats,
@@ -36,7 +37,7 @@ import {
   type Via,
 } from "../remote";
 import type { PushFletch } from "../remote/push";
-import { type AutopilotMap, autopilotFromSnapshot, checkoutKey } from "./autopilot";
+import { type AutopilotMap, autopilotFromSnapshot, checkoutKey, switchesOf } from "./autopilot";
 import { type ChatsSlice, createChatsSlice } from "./chats";
 import { registerRemoteEvents } from "./events";
 import { replayLiveTurn, runningTurnStart, withPendingTurns } from "./liveTurn";
@@ -177,6 +178,10 @@ export interface MobileState extends ChatsSlice, ProposalsSlice {
    *  a row, a snapshot (`autopilot_state` on every handshake, `autopilot_set`'s
    *  answer) replaces them all. Empty on a host without the ops. */
   autopilot: AutopilotMap;
+  /** The host's two autopilot opt-out lists, whole: from every snapshot, and
+   *  replaced by `autopilot:switches` — which every `autopilot_set` fires, even
+   *  on a project with no agents (so no row changes). `null` until read. */
+  autopilotSwitches: AutopilotSwitches | null;
   trees: Record<string, CheckoutFile[]>;
 
   theme: ThemeMode;
@@ -294,6 +299,8 @@ export interface MobileState extends ChatsSlice, ProposalsSlice {
   loadDelegations(): Promise<void>;
   /** Fold one `autopilot:state` into `autopilot`. */
   applyAutopilotState(row: AutopilotCheckout): void;
+  /** Take one `autopilot:switches`: both lists, replaced whole. */
+  applyAutopilotSwitches(switches: AutopilotSwitches): void;
   /** Fold one `autopilot:event` into the agent's activity list. */
   applyAutopilotEvent(entry: AutopilotLogEntry): void;
   /** Re-read autopilot from the host: its state into `autopilot`, its log into
@@ -579,6 +586,7 @@ export const useStore = create<MobileState>()((set, get) => ({
   autoArchived: null,
   delegations: {},
   autopilot: {},
+  autopilotSwitches: null,
   trees: {},
 
   theme: "dark",
@@ -652,6 +660,7 @@ export const useStore = create<MobileState>()((set, get) => ({
         shipActivity: {},
         delegations: {},
         autopilot: {},
+        autopilotSwitches: null,
         prComments: {},
       });
       // The snapshot carries no stats or PR state, so the rows get both on
@@ -847,6 +856,7 @@ export const useStore = create<MobileState>()((set, get) => ({
       autoArchived: null,
       delegations: {},
       autopilot: {},
+      autopilotSwitches: null,
       // The chats belong to the host that holds their checkouts, and the ghosts
       // to the boards those chats propose onto.
       chats: {},
@@ -1314,6 +1324,10 @@ export const useStore = create<MobileState>()((set, get) => ({
     set((s) => ({ autopilot: { ...s.autopilot, [checkoutKey(row.agent_id, row.subdir)]: row } }));
   },
 
+  applyAutopilotSwitches(switches) {
+    set({ autopilotSwitches: switchesOf(switches) });
+  },
+
   applyAutopilotEvent(entry) {
     set((s) => ({
       shipActivity: mergeActivity(s.shipActivity, entry.agent_id, [autopilotActivity(entry)]),
@@ -1324,7 +1338,10 @@ export const useStore = create<MobileState>()((set, get) => ({
     await Promise.all([
       get().hostSupports("autopilot_state") &&
         api.getAutopilotState().then((snapshot) => {
-          set({ autopilot: autopilotFromSnapshot(snapshot) });
+          set({
+            autopilot: autopilotFromSnapshot(snapshot),
+            autopilotSwitches: switchesOf(snapshot),
+          });
         }),
       // Merged rather than replaced: a live event may have landed first, and
       // it is the same row by id.
@@ -1346,7 +1363,7 @@ export const useStore = create<MobileState>()((set, get) => ({
       // The whole host's state after the change — the pause, and the cycle it
       // dropped — so the switch settles on the host's word, not the tap's.
       const snapshot = await api.setAutopilot({ agentId }, enabled);
-      set({ autopilot: autopilotFromSnapshot(snapshot) });
+      set({ autopilot: autopilotFromSnapshot(snapshot), autopilotSwitches: switchesOf(snapshot) });
     });
   },
 

@@ -430,8 +430,9 @@ export class MockHost {
   }
 
   /** `autopilot_set`, as the host takes it: exactly one id, the switch flipped
-   *  at once, every checkout that left autopilot losing its cycle, and an
-   *  `autopilot:state` for each row that changed. */
+   *  at once, every checkout that left autopilot losing its cycle, then an
+   *  `autopilot:switches` (always) and an `autopilot:state` for each row that
+   *  changed. */
   private setAutopilot(args: Record<string, unknown>): AutopilotSnapshot {
     const { projectId, agentId, enabled } = args;
     if ((projectId == null) === (agentId == null)) {
@@ -449,6 +450,10 @@ export class MockHost {
       ap.pausedAgents = flip(ap.pausedAgents, String(agentId), !enabled);
     }
     const after = this.autopilotRows();
+    this.event("autopilot:switches", {
+      disabled_projects: [...ap.disabledProjects],
+      paused_agents: [...ap.pausedAgents],
+    });
     after.forEach((row, i) => {
       if (!row.enrolled) delete ap.cycles[checkoutKey(row.agent_id, row.subdir)];
       if (JSON.stringify(row) !== JSON.stringify(before[i])) this.event("autopilot:state", row);

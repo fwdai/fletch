@@ -648,6 +648,7 @@ export const protocol: HostProtocol = {
     "delegation:changed",
     "autopilot:state",
     "autopilot:event",
+    "autopilot:switches",
     "roadmap:item",
     "roadmap:item-deleted",
   ],

@@ -97,6 +97,14 @@ fn states(sink: &RecordingSink) -> Vec<serde_json::Value> {
         .collect()
 }
 
+fn switches_events(sink: &RecordingSink) -> Vec<serde_json::Value> {
+    sink.events()
+        .into_iter()
+        .filter(|(name, _)| name == EVENT_SWITCHES)
+        .map(|(_, payload)| payload)
+        .collect()
+}
+
 fn entry(agent: &str, subdir: Option<&str>, at: i64, outcome: Outcome) -> LogEntry {
     LogEntry {
         id: uuid::Uuid::new_v4().to_string(),
@@ -389,6 +397,54 @@ fn switching_a_project_off_drops_only_its_agents() {
     assert_eq!(snap.checkouts.len(), 2);
 }
 
+#[test]
+fn switching_a_project_with_no_agents_still_tells_every_client() {
+    let (ctx, sink, sup, dir) = host();
+    add_agent(&sup, dir.path(), "other", "rhone", &["repo"]);
+    let path = repo_dir(dir.path(), "empty");
+    let ws = sup.workspace.add_workspace_repo(path.clone()).unwrap();
+    let empty = ws
+        .projects
+        .iter()
+        .find(|p| p.path == path)
+        .unwrap()
+        .project_id
+        .clone();
+    let t = table();
+
+    set(&t, &ctx, &sup, Some(&empty), None, false).unwrap();
+
+    let events = sink.events();
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0].0, EVENT_SWITCHES);
+    assert_eq!(
+        events[0].1,
+        serde_json::json!({ "disabled_projects": [empty], "paused_agents": [] })
+    );
+    assert!(states(&sink).is_empty(), "no checkout's row changed");
+}
+
+#[test]
+fn every_write_announces_both_lists_before_the_rows() {
+    let (ctx, sink, sup, dir) = host();
+    let a = add_agent(&sup, dir.path(), "proj", "aare", &["repo"]);
+    let t = table();
+
+    set(&t, &ctx, &sup, Some(&a.project_id), None, false).unwrap();
+    set(&t, &ctx, &sup, None, Some("aare"), false).unwrap();
+
+    let names: Vec<String> = sink.events().into_iter().map(|(n, _)| n).collect();
+    assert_eq!(
+        names,
+        [EVENT_SWITCHES, EVENT_STATE, EVENT_SWITCHES, EVENT_STATE]
+    );
+    let last = switches_events(&sink).pop().unwrap();
+    assert_eq!(
+        last,
+        serde_json::json!({ "disabled_projects": [a.project_id], "paused_agents": ["aare"] })
+    );
+}
+
 // ── the publish pre-approval ───────────────────────────────────────────────
 
 #[test]
@@ -418,11 +474,12 @@ fn a_secondary_checkout_is_covered_by_its_own_enrollment_only() {
     global().remove(&k);
 }
 
-/// The two event names are the wire contract (docs/remote-protocol.md).
+/// The three event names are the wire contract (docs/remote-protocol.md).
 #[test]
 fn the_wire_names_are_the_documented_ones() {
     assert_eq!(EVENT_STATE, "autopilot:state");
     assert_eq!(EVENT_LOG, "autopilot:event");
+    assert_eq!(EVENT_SWITCHES, "autopilot:switches");
     assert_eq!(PROJECT_ENABLED_KEY, "autopilot.enabled");
     assert_eq!(PAUSED_AGENTS_KEY, "autopilotPausedAgents");
 }

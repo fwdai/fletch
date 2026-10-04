@@ -139,6 +139,36 @@ describe("applyAutopilotState", () => {
   });
 });
 
+describe("applyAutopilotSwitches", () => {
+  it("replaces both lists whole, unknown opt-outs included", () => {
+    const { store } = makeStore();
+    store.setState({ autopilotPausedAgents: ["a1", "a2"] });
+
+    // A project with no agents: no row arrives, only the lists.
+    store
+      .getState()
+      .applyAutopilotSwitches({ disabled_projects: ["empty"], paused_agents: ["a2"] });
+    expect(store.getState().autopilotDisabledProjects).toEqual(["empty"]);
+    expect(store.getState().autopilotPausedAgents).toEqual(["a2"]);
+
+    store.getState().applyAutopilotSwitches({ disabled_projects: [], paused_agents: [] });
+    expect(store.getState().autopilotDisabledProjects).toEqual([]);
+    expect(store.getState().autopilotPausedAgents).toEqual([]);
+  });
+
+  it("survives a load that read the host before it", async () => {
+    const { store } = makeStore();
+    getAutopilotState.mockImplementation(async () => {
+      store.getState().applyAutopilotSwitches({ disabled_projects: ["p2"], paused_agents: [] });
+      return snapshot();
+    });
+
+    await store.getState().loadAutopilot();
+
+    expect(store.getState().autopilotDisabledProjects).toEqual(["p2"]);
+  });
+});
+
 describe("applyAutopilotEvent", () => {
   it("keeps each checkout's history newest first, and apart", () => {
     const { store } = makeStore();

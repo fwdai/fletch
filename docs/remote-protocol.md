@@ -591,7 +591,7 @@ allowlist; any op not listed returns `{ ok: false, error: "unknown op" }`.
 | `delegate_git` | `{ agentId, subdir?, action, params? }` — hands a git playbook to the agent (see "Delegations"). `action` is a playbook name (`commit`, `commit-push`, `commit-pr`, `open-pr`, `push`, `resolve-conflicts`, `update-branch`, `fix-checks`, `resolve-comments`); anything else is refused. `params` is a `{ [key]: string }` of the playbook's dynamic context (`base`, `failing`); empty values are dropped and `repo` is the host's to set from `subdir`. The host composes the `[app-action]` trigger, records the delegation and either sends it now as a user turn (`turn:sent` fires as for any send) or, while the agent is `running`, holds it until the agent goes idle | `Delegation` |
 | `get_delegations` | `{}` — every delegation the host is tracking, for a client that connected mid-flight | `Delegation[]` |
 | `autopilot_state` | `{ agentId? }` — autopilot as the host runs it (see "Autopilot"): one row per checkout of `agentId`, or of every live agent when it is absent, plus the two opt-out lists | `AutopilotSnapshot` |
-| `autopilot_set` | `{ projectId, enabled }` or `{ agentId, enabled }` — exactly one of the two ids. On a project it is the project's switch (default on); on an agent `enabled: false` pauses that agent's checkouts and `true` resumes them. Persists the host setting, takes effect before the call returns, and emits `autopilot:state` for every checkout it changed | `AutopilotSnapshot` (the whole host's, as `autopilot_state {}` would answer) |
+| `autopilot_set` | `{ projectId, enabled }` or `{ agentId, enabled }` — exactly one of the two ids. On a project it is the project's switch (default on); on an agent `enabled: false` pauses that agent's checkouts and `true` resumes them. Persists the host setting, takes effect before the call returns, and emits `autopilot:switches` (always, first) then `autopilot:state` for every checkout it changed | `AutopilotSnapshot` (the whole host's, as `autopilot_state {}` would answer) |
 | `autopilot_log` | `{ agentId?, subdir? }` — what autopilot did, newest first: one agent's checkouts (only the one named when `subdir` is given; the primary's own subdir names the primary), or every agent's when `agentId` is absent. At most the newest 50 rows per checkout are kept | `AutopilotLogEntry[]` |
 | `list_repo_branches` | `{ repoPath }` | `string[]` |
 | `repo_default_branch` | `{ repoPath }` | `string` |
@@ -942,7 +942,7 @@ pr:state_changed       pr:checks_changed      pr:threads_changed
 verify:report          publish:approval-requested
 publish:approval-resolved
 delegation:changed
-autopilot:state        autopilot:event
+autopilot:state        autopilot:event        autopilot:switches
 wf:event               wf:run                 wf:run-deleted
 roadmap:item           roadmap:item-deleted   roadmap:item-event
 roadmap:proposal       roadmap:proposal-deleted
@@ -1054,10 +1054,15 @@ handshake — an event reaches only the clients connected when it fired.
 
 `autopilot:state` is one `AutopilotCheckout` (see "Autopilot") whenever a
 checkout's enrollment, pause, project switch or cycle changes; a client replaces
-its row for `(agent_id, subdir)` with it. `autopilot:event` is one
+its row for `(agent_id, subdir)` with it. `autopilot:switches` is `{
+disabled_projects: string[], paused_agents: string[] }`, the whole of both
+opt-out lists, fired by every successful `autopilot_set` — including a project
+switch on a project with no agents, which changes no row — before that call's
+`autopilot:state` rows; a client replaces both lists with it (no merge, so a
+repeat or a late one is harmless). `autopilot:event` is one
 `AutopilotLogEntry`, the row `autopilot_log` will answer from then on; a client
-prepends it to that checkout's history. Both are host facts: a client seeds them
-with `autopilot_state {}` and `autopilot_log {}` after every handshake and
+prepends it to that checkout's history. All three are host facts: a client seeds
+them with `autopilot_state {}` and `autopilot_log {}` after every handshake and
 treats the events as the deltas.
 
 The whole `wf:*` and `roadmap:*` stream is forwarded, so a remote run monitor
@@ -1165,7 +1170,9 @@ desktop's generic table bridge): `project_settings` key `autopilot.enabled` per
 project (`"0"` off, anything else or no row on) and `settings` key
 `autopilotPausedAgents` (a JSON array of agent ids). A pause or a switched-off
 project takes effect at once: the checkout's cycle is dropped, its pushes
-prompt again, and its turn already running is left to finish.
+prompt again, and its turn already running is left to finish. Every write is
+announced as `autopilot:switches` (both lists, whole) so every client's switches
+agree, then as `autopilot:state` for each checkout whose row it changed.
 
 `AutopilotSnapshot` is `{ checkouts: AutopilotCheckout[], disabled_projects:
 string[], paused_agents: string[] }`. `AutopilotCheckout` is `{ agent_id,

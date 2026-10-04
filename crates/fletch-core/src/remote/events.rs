@@ -49,9 +49,10 @@ pub const FORWARDED_EVENTS: &[&str] = &[
     // mirrors the same lifecycle instead of tracking its own.
     "delegation:changed",
     // Autopilot runs on the host (`autopilot`): every client renders the same
-    // per-checkout state and history.
+    // per-checkout state and history, and the same switches.
     "autopilot:state",
     "autopilot:event",
+    "autopilot:switches",
     // The whole workflow and roadmap stream (multi-host plan §5.3, item 2): the
     // run monitor, the board and the PM's three proposal kinds all update live
     // on a remote host, as they do locally. `wf:event` carries addressing only
