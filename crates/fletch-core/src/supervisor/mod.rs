@@ -2,6 +2,7 @@
 
 pub mod auto_archive;
 mod checkpoints;
+pub mod delegation;
 mod disposition;
 mod events;
 mod fork;

@@ -1744,6 +1744,8 @@ pub fn run() {
             commands::get_all_git_meta,
             commands::refresh_base_freshness,
             commands::push_agent,
+            commands::delegate_git,
+            commands::get_delegations,
             commands::pull_agent,
             commands::rebase_agent,
             commands::commit_agent,

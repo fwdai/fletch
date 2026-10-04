@@ -128,6 +128,18 @@ pub async fn refuse_unless_approved(
     if !enabled() {
         return None;
     }
+    // The user already asked for this publish: a delegation they started on
+    // this checkout is live and its playbook performs `op`. Asking again would
+    // be a double confirm at best, and a stall with nobody watching at worst.
+    if crate::supervisor::delegation::pre_authorizes(agent_id, repo, op) {
+        tracing::debug!(
+            agent_id,
+            op,
+            ?repo,
+            "publish pre-authorized by a delegation"
+        );
+        return None;
+    }
     let (id, answer) = register(agent_id, op, repo, detail);
     // The one emit in the engine whose failure matters: an unasked question is
     // a denial, so this goes through the sink directly rather than through the

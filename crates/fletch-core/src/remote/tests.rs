@@ -527,7 +527,7 @@ fn begin_pairing_names_the_preset_and_refuses_an_unknown_one() {
 
 #[test]
 fn allowlist_matches_the_protocol_table() {
-    // The 119 rows of docs/remote-protocol.md's op table, spelled out here so a
+    // The 121 rows of docs/remote-protocol.md's op table, spelled out here so a
     // silent widening of the wire surface fails this test. `register_push` is
     // the one the session layer answers itself (it needs the connection's
     // device identity), so it lives in `SESSION_OPS`; the two together are what
@@ -572,6 +572,8 @@ fn allowlist_matches_the_protocol_table() {
         "get_pr_checks",
         "get_pr_live",
         "get_pr_threads",
+        "delegate_git",
+        "get_delegations",
         "list_repo_branches",
         "repo_default_branch",
         "discover_supported_models",
@@ -696,11 +698,12 @@ fn every_op_has_exactly_one_scope() {
     }
 }
 
-/// The five ops that spend the user's GitHub credential or let an agent out of
-/// the sandbox. Named here so narrowing or widening `publish` is a deliberate
-/// edit of this list, not a side effect of moving a row.
+/// The ops that spend the user's GitHub credential or let an agent out of the
+/// sandbox. Named here so narrowing or widening `publish` is a deliberate edit
+/// of this list, not a side effect of moving a row. `delegate_git` is on it
+/// because a live delegation's own pushes and PRs skip the approval prompt.
 #[test]
-fn the_publish_scope_is_the_five_ops_that_leave_the_machine() {
+fn the_publish_scope_is_the_ops_that_leave_the_machine() {
     let publish: Vec<&str> = dispatch::ops_for(&[Scope::Publish]);
     assert_eq!(
         publish,
@@ -709,6 +712,7 @@ fn the_publish_scope_is_the_five_ops_that_leave_the_machine() {
             "push_agent",
             "create_pr",
             "merge_pr",
+            "delegate_git",
             "roadmap_merge_item_pr",
         ],
         "publish is the set a Control device cannot reach"
@@ -886,6 +890,22 @@ fn the_whole_wf_and_roadmap_surface_is_exposed() {
             op.0
         );
     }
+}
+
+/// Delegations are a host fact every client mirrors: the event is forwarded and
+/// advertised, the table is readable by any device that can observe, and
+/// starting one is a publish (its own pushes skip the approval prompt).
+#[test]
+fn delegations_are_on_the_wire() {
+    assert!(super::events::FORWARDED_EVENTS.contains(&"delegation:changed"));
+    assert!(super::protocol_descriptor()
+        .events
+        .contains(&"delegation:changed"));
+    assert_eq!(dispatch::scope_of("get_delegations"), Some(Scope::Observe));
+    assert_eq!(dispatch::scope_of("delegate_git"), Some(Scope::Publish));
+    let control = dispatch::preset_scopes("control").expect("control");
+    assert!(!dispatch::allows(&control, "delegate_git"));
+    assert!(dispatch::allows(&control, "get_delegations"));
 }
 
 /// Per-stage spawn progress rides the wire too: a remote client watches the
@@ -1856,7 +1876,7 @@ async fn pairing_twice_on_one_key_does_not_duplicate_the_device() {
 }
 
 /// A Control pairing, end to end over the socket: the code's scopes reach the
-/// record, both handshake results hide the five publish ops, and calling one
+/// record, both handshake results hide the publish ops, and calling one
 /// anyway is answered `forbidden` on a connection that stays up.
 #[tokio::test]
 async fn a_control_device_is_refused_the_publish_ops() {
