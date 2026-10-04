@@ -1,19 +1,19 @@
 import type { CheckRun, PrChecks } from "@desktop/api/types/pr";
 import { Icon } from "@desktop/components/Icon";
-import { checkOutcome } from "./actions";
+import { checkOutcome } from "./checks";
 
 const MAX_ROWS = 20;
 /** Failing first, then still running, then passed — the actionable rows lead. */
 const WEIGHT = { failed: 0, pending: 1, passed: 2 } as const;
 
-/** The PR's checks one per row, under the PR card. */
+/** The PR's checks one per row, unfolded under the Checks evidence row. */
 export function ChecksList({ checks }: { checks: PrChecks }) {
   if (checks.runs.length === 0) return null;
   const runs = [...checks.runs].sort((a, b) => WEIGHT[checkOutcome(a)] - WEIGHT[checkOutcome(b)]);
   const shown = runs.slice(0, MAX_ROWS);
   const hidden = runs.length - shown.length;
   return (
-    <div className="card checks-list">
+    <div className="checks-list">
       {shown.map((run) => (
         <CheckRow key={`${run.name}:${run.url ?? ""}`} run={run} />
       ))}

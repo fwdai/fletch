@@ -4,10 +4,12 @@ import { PrPill } from "../../components/ui";
 import { refLabel } from "../../lib/agents";
 import { STATUS_LETTER } from "../../lib/diff";
 import { useStore } from "../../store";
-import { GitActionFooter } from "./GitActionFooter";
+import { ShipFooter } from "./ShipTab/ShipFooter";
+import { useShipView } from "./ShipTab/useShipView";
+import { testsEvidence, testsText } from "./ShipTab/verification";
 
 /** The working tree's diff: one row per changed file, each opening its diff,
- *  and a way into the whole checkout. Branch and PR state live on the Git tab. */
+ *  and a way into the whole checkout. PR state lives on the Ship tab. */
 export function ChangesTab({
   agent,
   onDelegated,
@@ -20,19 +22,28 @@ export function ChangesTab({
   const git = useStore((s) => s.gitStates[agent.id]);
   const pr = useStore((s) => s.prStates[agent.id]);
   const push = useStore((s) => s.push);
+  const tests = useStore((s) => testsEvidence(s.verificationReports[agent.id]));
+  const view = useShipView(agent);
   const files = git?.files ?? [];
 
   return (
     <>
       <div className="scroll">
-        {files.length > 0 && (
+        {(files.length > 0 || tests) && (
           <div className="ch-head">
             <div className="ch-sum">
-              <span className="big">
-                <span>{files.length} files</span>
-                <span className="add">+{git?.additions ?? 0}</span>
-                <span className="rem">−{git?.deletions ?? 0}</span>
-              </span>
+              {files.length > 0 && (
+                <span className="big">
+                  <span>{files.length} files</span>
+                  <span className="add">+{git?.additions ?? 0}</span>
+                  <span className="rem">−{git?.deletions ?? 0}</span>
+                </span>
+              )}
+              {tests && (
+                <span className={`pill ${tests === "passed" ? "ok" : "err"}`}>
+                  {testsText(tests)}
+                </span>
+              )}
             </div>
           </div>
         )}
@@ -97,7 +108,7 @@ export function ChangesTab({
           </div>
         </div>
       </div>
-      <GitActionFooter agent={agent} onDelegated={onDelegated} />
+      <ShipFooter agent={agent} view={view} onDelegated={onDelegated} commitOnly />
     </>
   );
 }
