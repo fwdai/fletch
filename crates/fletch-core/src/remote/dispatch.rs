@@ -245,6 +245,26 @@ pub const OPS: &[&str] = &[
     // that ran the sessions, so a client aggregating several hosts asks each
     // one separately.
     "scan_usage_transcripts",
+    // The host-owned settings (protocol doc, "Settings"): one allowlisted read,
+    // and the desktop's own setter for each group, so a client edits the host
+    // it is driving rather than its own database.
+    "get_settings",
+    "set_notify_turn_complete",
+    "set_notify_pr_activity",
+    "set_auto_archive_idle_days",
+    "set_code_indexing_enabled",
+    "set_sandbox_engine",
+    "set_docker_launch_settings",
+    "set_podman_launch_settings",
+    "set_agent_bin_override",
+    "set_branch_prefix",
+    "set_draft_prs",
+    "set_publish_confirmation",
+    "set_publish_approval_wait",
+    "set_agent_attribution_removed",
+    // And a project's: one allowlisted pair over `project_settings`.
+    "get_project_settings",
+    "set_project_setting",
 ];
 
 pub const REGISTER_PUSH: &str = "register_push";
@@ -484,6 +504,27 @@ const OP_SCOPES: &[(&str, Scope)] = &[
     ("host_providers", Scope::Observe),
     // Counts off transcripts already on disk; writes nothing.
     ("scan_usage_transcripts", Scope::Observe),
+    // Both reads answer an allowlist with no secret on it.
+    ("get_settings", Scope::Observe),
+    ("get_project_settings", Scope::Observe),
+    // The host's own configuration: what `projects` already is — the scope
+    // that rewrites what the host holds.
+    ("set_notify_turn_complete", Scope::Projects),
+    ("set_notify_pr_activity", Scope::Projects),
+    ("set_auto_archive_idle_days", Scope::Projects),
+    ("set_code_indexing_enabled", Scope::Projects),
+    ("set_sandbox_engine", Scope::Projects),
+    ("set_docker_launch_settings", Scope::Projects),
+    ("set_podman_launch_settings", Scope::Projects),
+    ("set_agent_bin_override", Scope::Projects),
+    ("set_project_setting", Scope::Projects),
+    // How a publish happens, and whether one waits for a human: a device that
+    // may not publish must not be able to switch the approval gate off.
+    ("set_branch_prefix", Scope::Publish),
+    ("set_draft_prs", Scope::Publish),
+    ("set_publish_confirmation", Scope::Publish),
+    ("set_publish_approval_wait", Scope::Publish),
+    ("set_agent_attribution_removed", Scope::Publish),
 ];
 
 /// The one scope that reaches `op`. `None` for a name outside [`OPS`] —
@@ -1524,6 +1565,23 @@ impl Dispatch for SupervisorDispatch {
                     .map_err(|e| format!("usage scan failed: {e}"))?)
                 }
 
+                "get_settings"
+                | "set_notify_turn_complete"
+                | "set_notify_pr_activity"
+                | "set_auto_archive_idle_days"
+                | "set_code_indexing_enabled"
+                | "set_sandbox_engine"
+                | "set_docker_launch_settings"
+                | "set_podman_launch_settings"
+                | "set_agent_bin_override"
+                | "set_branch_prefix"
+                | "set_draft_prs"
+                | "set_publish_confirmation"
+                | "set_publish_approval_wait"
+                | "set_agent_attribution_removed"
+                | "get_project_settings"
+                | "set_project_setting" => settings_op(ctx, sup, op, args).await,
+
                 // Unreachable while `OPS` and the arms above agree; kept so a
                 // name added to one and not the other fails closed.
                 _ => Err(UNKNOWN_OP.to_string()),
@@ -1633,6 +1691,91 @@ pub(super) async fn project_settings_op(sup: &Supervisor, op: &str, args: Value)
             ok(sup.project_has_running_agents(&a.project_id))
         }
 
+        _ => Err(UNKNOWN_OP.to_string()),
+    }
+}
+
+/// The settings ops (protocol doc, "Settings"): the host-owned global settings
+/// and a project's client-writable rows. Every arm is the `_impl` the Tauri
+/// command of the same name calls, so a remote write updates the same mirrors
+/// and emits the same `settings:changed` / `project_settings:changed` a click
+/// in the host's own window does.
+pub(super) async fn settings_op(
+    ctx: &Arc<EngineCtx>,
+    sup: &Arc<Supervisor>,
+    op: &str,
+    args: Value,
+) -> DispatchResult {
+    use crate::commands as c;
+    match op {
+        "get_settings" => res(c::get_settings_impl(ctx)),
+        "set_notify_turn_complete" => {
+            let a: EnabledArgs = parse(args)?;
+            res(c::set_notify_turn_complete_impl(ctx, a.enabled))
+        }
+        "set_notify_pr_activity" => {
+            let a: EnabledArgs = parse(args)?;
+            res(c::set_notify_pr_activity_impl(ctx, a.enabled))
+        }
+        "set_auto_archive_idle_days" => {
+            let a: DaysArgs = parse(args)?;
+            res(c::set_auto_archive_idle_days_impl(ctx, a.days))
+        }
+        "set_code_indexing_enabled" => {
+            let a: EnabledArgs = parse(args)?;
+            res(c::set_code_indexing_enabled_impl(ctx, sup, a.enabled))
+        }
+        "set_sandbox_engine" => {
+            let a: EngineArgs = parse(args)?;
+            res(c::set_sandbox_engine_impl(ctx, &a.engine).await)
+        }
+        "set_docker_launch_settings" => {
+            let a: LaunchArgs = parse(args)?;
+            res(c::set_docker_launch_settings_impl(ctx, a.into()))
+        }
+        "set_podman_launch_settings" => {
+            let a: LaunchArgs = parse(args)?;
+            res(c::set_podman_launch_settings_impl(ctx, a.into()))
+        }
+        // A path on *this* host; the client never validates it against its
+        // own disk.
+        "set_agent_bin_override" => {
+            let a: BinOverrideArgs = parse(args)?;
+            res(c::set_agent_bin_override_impl(ctx, sup, &a.id, a.path.as_deref()).await)
+        }
+        "set_branch_prefix" => {
+            let a: BranchPrefixArgs = parse(args)?;
+            res(c::set_branch_prefix_impl(ctx, &a.prefix))
+        }
+        "set_draft_prs" => {
+            let a: EnabledArgs = parse(args)?;
+            res(c::set_draft_prs_impl(ctx, a.enabled))
+        }
+        "set_publish_confirmation" => {
+            let a: EnabledArgs = parse(args)?;
+            res(c::set_publish_confirmation_impl(ctx, a.enabled))
+        }
+        "set_publish_approval_wait" => {
+            let a: WaitArgs = parse(args)?;
+            res(c::set_publish_approval_wait_impl(ctx, a.secs))
+        }
+        "set_agent_attribution_removed" => {
+            let a: RemovedArgs = parse(args)?;
+            res(c::set_agent_attribution_removed_impl(ctx, a.removed))
+        }
+        "get_project_settings" => {
+            let a: ProjectArgs = parse(args)?;
+            res(c::get_project_settings_impl(ctx, &a.project_id))
+        }
+        "set_project_setting" => {
+            let a: ProjectSettingArgs = parse(args)?;
+            res(c::set_project_setting_impl(
+                ctx,
+                &a.project_id,
+                &a.key,
+                a.value.as_deref(),
+            ))
+        }
         _ => Err(UNKNOWN_OP.to_string()),
     }
 }
@@ -1910,6 +2053,71 @@ struct RenameProjectArgs {
 struct RelocateArgs {
     old_path: String,
     new_path: String,
+}
+
+#[derive(Deserialize)]
+struct EnabledArgs {
+    enabled: bool,
+}
+
+#[derive(Deserialize)]
+struct RemovedArgs {
+    removed: bool,
+}
+
+#[derive(Deserialize)]
+struct DaysArgs {
+    days: u32,
+}
+
+#[derive(Deserialize)]
+struct WaitArgs {
+    secs: u64,
+}
+
+#[derive(Deserialize)]
+struct EngineArgs {
+    engine: String,
+}
+
+#[derive(Deserialize)]
+struct BranchPrefixArgs {
+    prefix: String,
+}
+
+/// Blank or `null` clears a knob back to the launch default.
+#[derive(Deserialize)]
+struct LaunchArgs {
+    #[serde(default)]
+    image: Option<String>,
+    #[serde(default)]
+    memory: Option<String>,
+    #[serde(default)]
+    cpus: Option<String>,
+}
+
+impl From<LaunchArgs> for crate::commands::LaunchKnobs {
+    fn from(a: LaunchArgs) -> Self {
+        Self::new(a.image, a.memory, a.cpus)
+    }
+}
+
+/// `path: null` (or blank) clears the override.
+#[derive(Deserialize)]
+struct BinOverrideArgs {
+    id: String,
+    #[serde(default)]
+    path: Option<String>,
+}
+
+/// `value: null` deletes the row — back to the key's default.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProjectSettingArgs {
+    project_id: String,
+    key: String,
+    #[serde(default)]
+    value: Option<String>,
 }
 
 #[derive(Deserialize)]

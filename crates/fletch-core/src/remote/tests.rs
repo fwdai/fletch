@@ -527,7 +527,7 @@ fn begin_pairing_names_the_preset_and_refuses_an_unknown_one() {
 
 #[test]
 fn allowlist_matches_the_protocol_table() {
-    // The 119 rows of docs/remote-protocol.md's op table, spelled out here so a
+    // The 135 rows of docs/remote-protocol.md's op table, spelled out here so a
     // silent widening of the wire surface fails this test. `register_push` is
     // the one the session layer answers itself (it needs the connection's
     // device identity), so it lives in `SESSION_OPS`; the two together are what
@@ -653,6 +653,22 @@ fn allowlist_matches_the_protocol_table() {
         "roadmap_reject_brief_proposal",
         "host_providers",
         "scan_usage_transcripts",
+        "get_settings",
+        "set_notify_turn_complete",
+        "set_notify_pr_activity",
+        "set_auto_archive_idle_days",
+        "set_code_indexing_enabled",
+        "set_sandbox_engine",
+        "set_docker_launch_settings",
+        "set_podman_launch_settings",
+        "set_agent_bin_override",
+        "set_branch_prefix",
+        "set_draft_prs",
+        "set_publish_confirmation",
+        "set_publish_approval_wait",
+        "set_agent_attribution_removed",
+        "get_project_settings",
+        "set_project_setting",
         "register_push",
     ];
     assert_eq!(
@@ -697,10 +713,12 @@ fn every_op_has_exactly_one_scope() {
 }
 
 /// The five ops that spend the user's GitHub credential or let an agent out of
-/// the sandbox. Named here so narrowing or widening `publish` is a deliberate
+/// the sandbox, and the five settings that decide how they do it — the approval
+/// gate above all, which a device that may not publish must not be able to
+/// switch off. Named here so narrowing or widening `publish` is a deliberate
 /// edit of this list, not a side effect of moving a row.
 #[test]
-fn the_publish_scope_is_the_five_ops_that_leave_the_machine() {
+fn the_publish_scope_is_what_leaves_the_machine_and_how() {
     let publish: Vec<&str> = dispatch::ops_for(&[Scope::Publish]);
     assert_eq!(
         publish,
@@ -710,6 +728,11 @@ fn the_publish_scope_is_the_five_ops_that_leave_the_machine() {
             "create_pr",
             "merge_pr",
             "roadmap_merge_item_pr",
+            "set_branch_prefix",
+            "set_draft_prs",
+            "set_publish_confirmation",
+            "set_publish_approval_wait",
+            "set_agent_attribution_removed",
         ],
         "publish is the set a Control device cannot reach"
     );
@@ -3421,5 +3444,115 @@ fn the_pr_watch_events_are_forwarded_and_advertised() {
             protocol.events.contains(&event),
             "{event} is missing from the descriptor"
         );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Settings ops
+// ---------------------------------------------------------------------------
+
+/// The settings read and a project's pair, end to end over the wire arms with
+/// the desktop's argument keys. The `_impl`s have their own tests; this is the
+/// wiring — and that a refused key comes back as an error naming it rather
+/// than as `unknown op`.
+#[tokio::test]
+async fn the_settings_ops_answer_through_the_dispatcher() {
+    let (d, _dir) = wf_roadmap_dispatch();
+
+    d.dispatch("set_auto_archive_idle_days", json!({ "days": 3 }))
+        .await
+        .expect("set");
+    let settings = d.dispatch("get_settings", json!({})).await.expect("get");
+    assert_eq!(settings, json!({ "auto_archive_idle_days": "3" }));
+
+    d.dispatch(
+        "set_project_setting",
+        json!({ "projectId": "p1", "key": "verify.on_turn_end", "value": "1" }),
+    )
+    .await
+    .expect("write");
+    d.dispatch(
+        "set_project_setting",
+        json!({ "projectId": "p1", "key": "run.agent.fuji.test", "value": "bun test" }),
+    )
+    .await
+    .expect("a run. key");
+    assert_eq!(
+        d.dispatch("get_project_settings", json!({ "projectId": "p1" }))
+            .await
+            .expect("read"),
+        json!({ "run.agent.fuji.test": "bun test", "verify.on_turn_end": "1" })
+    );
+    d.dispatch(
+        "set_project_setting",
+        json!({ "projectId": "p1", "key": "verify.on_turn_end", "value": null }),
+    )
+    .await
+    .expect("null deletes");
+    assert_eq!(
+        d.dispatch("get_project_settings", json!({ "projectId": "p1" }))
+            .await
+            .expect("read"),
+        json!({ "run.agent.fuji.test": "bun test" })
+    );
+
+    let refused = d
+        .dispatch(
+            "set_project_setting",
+            json!({ "projectId": "p1", "key": "autopilot.enabled", "value": "0" }),
+        )
+        .await
+        .expect_err("autopilot's switch is not a client project key");
+    assert!(refused.contains("autopilot.enabled"), "{refused}");
+    assert_ne!(refused, dispatch::UNKNOWN_OP);
+}
+
+/// Every settings op is reachable as itself: none falls through to `unknown
+/// op` for want of an arm. Arguments that fail to parse are the cheapest way to
+/// ask without changing this process's mirrors.
+#[tokio::test]
+async fn every_settings_op_has_an_arm() {
+    let (d, _dir) = wf_roadmap_dispatch();
+    let settings_ops = dispatch::OPS.iter().filter(|op| {
+        (op.starts_with("set_") || op.ends_with("_settings"))
+            && !matches!(
+                **op,
+                "set_agent_model" | "set_agent_effort" | "set_repo_label"
+            )
+    });
+    let mut seen = 0;
+    for op in settings_ops {
+        seen += 1;
+        if let Err(e) = d.dispatch(op, json!({ "projectId": 7 })).await {
+            assert_ne!(e, dispatch::UNKNOWN_OP, "{op} has no arm");
+        }
+    }
+    assert_eq!(seen, 16, "the settings family is 16 ops");
+}
+
+/// The two settings events are forwarded and advertised, so a second desktop
+/// follows a write without polling.
+#[test]
+fn the_settings_events_are_forwarded_and_advertised() {
+    let protocol = super::protocol_descriptor();
+    for event in ["settings:changed", "project_settings:changed"] {
+        assert!(super::events::FORWARDED_EVENTS.contains(&event));
+        assert!(protocol.events.contains(&event));
+    }
+}
+
+/// The generic table bridge stays off the wire whatever settings gained, and
+/// so do this client's own switches.
+#[test]
+fn the_settings_ops_did_not_bring_the_db_bridge_with_them() {
+    for op in [
+        "db_upsert",
+        "db_delete",
+        "db_update",
+        "db_count",
+        "set_telemetry_enabled",
+        "set_dictation_engine",
+    ] {
+        assert!(!dispatch::is_allowed(op), "{op} must not be dispatchable");
     }
 }

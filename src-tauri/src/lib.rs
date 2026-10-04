@@ -43,7 +43,6 @@ pub use fletch_core::{build_state_subpath, data_dir, logs_dir, DbState, BUNDLE_I
 
 use parking_lot::Mutex;
 use serde_json::{json, Value};
-use std::path::PathBuf;
 use std::sync::Arc;
 use tauri::Manager;
 
@@ -373,42 +372,6 @@ async fn db_query(
     serde_json::to_value(rows).map_err(|e| e.to_string())
 }
 
-/// Set or clear a per-agent custom binary path override. Writes (or deletes,
-/// for an empty path) the `agent_bin_path_<id>` setting, then refreshes the
-/// in-memory registry binary resolution reads — keeping the DB and the
-/// registry in sync through a single call so the frontend doesn't have to.
-#[tauri::command]
-async fn set_agent_bin_override(
-    id: String,
-    path: Option<String>,
-    ctx: tauri::State<'_, Arc<host::EngineCtx>>,
-    state: tauri::State<'_, DbState>,
-    supervisor: tauri::State<'_, Arc<Supervisor>>,
-) -> Result<(), String> {
-    // Scope the DB guard so it drops before the async respawn below — parking_lot
-    // guards aren't Send across await, and the respawn re-locks the DB internally.
-    {
-        let conn = state.lock();
-        let key = format!("{}{}", database::AGENT_BIN_PREFIX, id);
-        match path.as_deref().map(str::trim) {
-            Some(p) if !p.is_empty() => {
-                database::db_upsert(&conn, "settings", json!({ "key": key, "value": p }), "key")
-                    .map_err(|e| e.to_string())?;
-            }
-            _ => {
-                database::db_delete(&conn, "settings", json!({ "where": { "key": key } }))
-                    .map_err(|e| e.to_string())?;
-            }
-        }
-        bin_resolve::set_agent_overrides(database::load_agent_bin_overrides(&conn));
-    }
-    // Restart any live agents on this provider so they exec the new binary.
-    // Resolution happens only at spawn time, so without this an already-running
-    // agent keeps the old binary (and thus the old account) on its next turn.
-    supervisor.respawn_provider(ctx.inner(), &id).await;
-    Ok(())
-}
-
 /// Flip the anonymous-telemetry consent flag. Persists it to `settings` (so the
 /// renderer's `getAllSettings` sees it) and toggles the live pipeline, like
 /// `set_agent_bin_override` keeps the DB and in-memory state in sync.
@@ -434,76 +397,6 @@ async fn set_telemetry_enabled(
     }
     telemetry::set_enabled(enabled);
     Ok(())
-}
-
-/// Flip code-indexing consent. Persists it to `settings` (so the renderer's
-/// `getAllSettings` sees it as `s.code_indexing_enabled`) and updates the
-/// in-process mirror the spawn path reads — the same persist-then-mirror shape
-/// as `set_sandbox_engine`/`set_telemetry_enabled`. Backend-owned snake_case key.
-///
-/// Turning it ON kicks a best-effort background task: install the codegraph
-/// bundle, then warm the index mirror for every pinned repo so the first agent
-/// spawn after a fresh enable already has an index to copy in. Turning it OFF
-/// does nothing else — indexes die with their workspaces, no cleanup needed.
-#[tauri::command]
-async fn set_code_indexing_enabled(
-    enabled: bool,
-    state: tauri::State<'_, DbState>,
-    supervisor: tauri::State<'_, Arc<Supervisor>>,
-) -> Result<(), String> {
-    {
-        let conn = state.lock();
-        database::set_setting(
-            &conn,
-            codegraph::SETTING,
-            if enabled { "true" } else { "false" },
-        )
-        .map_err(|e| e.to_string())?;
-    }
-    codegraph::set_enabled(enabled);
-    if enabled {
-        // Snapshot the pinned repos (path + owning project) up front so the
-        // background task holds no DB handle across awaits.
-        let repos: Vec<(String, PathBuf)> = supervisor
-            .workspace
-            .current()
-            .map(|w| {
-                w.projects
-                    .into_iter()
-                    .map(|p| (p.project_id, p.path))
-                    .collect()
-            })
-            .unwrap_or_default();
-        tauri::async_runtime::spawn(async move {
-            warm_codegraph_index(repos).await;
-        });
-    }
-    Ok(())
-}
-
-/// Best-effort: ensure codegraph is installed, then build/refresh the index
-/// mirror for each `(project_id, source_repo)`. Every step logs and continues —
-/// a failure here just means indexing warms up on a later spawn.
-async fn warm_codegraph_index(repos: Vec<(String, PathBuf)>) {
-    let bin = match codegraph::ensure_installed().await {
-        Ok(bin) => bin,
-        Err(e) => {
-            tracing::warn!(error = %e, "codegraph install failed; indexing stays off until retry");
-            return;
-        }
-    };
-    for (project_id, source_repo) in repos {
-        let mirror = match codegraph::mirror_dir(&project_id, &source_repo) {
-            Ok(m) => m,
-            Err(e) => {
-                tracing::warn!(error = %e, repo = %source_repo.display(), "codegraph mirror path failed");
-                continue;
-            }
-        };
-        if let Err(e) = codegraph::ensure_mirror(&source_repo, &mirror, &bin).await {
-            tracing::warn!(error = %e, repo = %source_repo.display(), "codegraph mirror warm-up failed");
-        }
-    }
 }
 
 /// Send `app_opened` at most once per process.
@@ -582,217 +475,11 @@ fn get_publish_confirmation() -> bool {
     rpc::approval::enabled()
 }
 
-/// Turn the publish-approval prompt on or off.
-///
-/// Off by default and deliberately so: autopilot publishes while nobody is
-/// watching, and a prompt would hang it until the decision timeout and then
-/// refuse. Turning this on trades unattended publishing for a gate.
-#[tauri::command]
-fn set_publish_confirmation(enabled: bool, state: tauri::State<'_, DbState>) -> Result<(), String> {
-    {
-        let conn = state.lock();
-        database::set_setting(
-            &conn,
-            rpc::approval::SETTING,
-            if enabled { "true" } else { "false" },
-        )
-        .map_err(|e| e.to_string())?;
-    }
-    rpc::approval::set_enabled(enabled);
-    Ok(())
-}
-
 /// Record the user's answer to one publish-approval prompt. An id that already
 /// timed out is ignored, so a late answer can never publish anything.
 #[tauri::command]
 fn answer_publish_approval(id: String, approved: bool) {
     rpc::approval::answer(&id, approved);
-}
-
-/// Whether finishing a turn alerts at all (chime, banner, phone push); needing
-/// input always does. Backend-owned so the phone push (which runs without a
-/// DB handle) and the frontend read one key: `notify_turn_complete`.
-#[tauri::command]
-fn set_notify_turn_complete(enabled: bool, state: tauri::State<'_, DbState>) -> Result<(), String> {
-    {
-        let conn = state.lock();
-        database::set_setting(
-            &conn,
-            remote::push::TURN_COMPLETE_SETTING,
-            if enabled { "true" } else { "false" },
-        )
-        .map_err(|e| e.to_string())?;
-    }
-    remote::push::set_turn_complete(enabled);
-    Ok(())
-}
-
-/// Whether the ship loop alerts the phone at all — checks settling, a review
-/// comment, a PR merging or closing. Same shape as `set_notify_turn_complete`:
-/// one backend-owned key, `notify_pr_activity`, mirrored for the push triggers.
-#[tauri::command]
-fn set_notify_pr_activity(enabled: bool, state: tauri::State<'_, DbState>) -> Result<(), String> {
-    {
-        let conn = state.lock();
-        database::set_setting(
-            &conn,
-            remote::push::PR_ACTIVITY_SETTING,
-            if enabled { "true" } else { "false" },
-        )
-        .map_err(|e| e.to_string())?;
-    }
-    remote::push::set_pr_activity(enabled);
-    Ok(())
-}
-
-/// How long a publish-approval prompt waits before denying; `0` waits until
-/// answered.
-#[tauri::command]
-fn set_publish_approval_wait(secs: u64, state: tauri::State<'_, DbState>) -> Result<(), String> {
-    {
-        let conn = state.lock();
-        database::set_setting(&conn, rpc::approval::WAIT_SETTING, &secs.to_string())
-            .map_err(|e| e.to_string())?;
-    }
-    rpc::approval::set_wait_secs(secs);
-    Ok(())
-}
-
-/// Days a sidebar workspace may sit idle before the hourly sweep archives it;
-/// `0` turns the sweep off. The sweep reads the setting on every pass, so
-/// there is no in-process mirror to update.
-#[tauri::command]
-fn set_auto_archive_idle_days(days: u32, state: tauri::State<'_, DbState>) -> Result<(), String> {
-    let conn = state.lock();
-    database::set_setting(
-        &conn,
-        supervisor::auto_archive::IDLE_DAYS_SETTING,
-        &days.to_string(),
-    )
-    .map_err(|e| e.to_string())
-}
-
-/// The prefix prepended to every branch an agent creates. Validated and
-/// trimmed; the stored form is returned so the UI shows exactly what applies.
-/// Empty clears it.
-#[tauri::command]
-fn set_branch_prefix(prefix: String, state: tauri::State<'_, DbState>) -> Result<String, String> {
-    let prefix = publish_prefs::validate_branch_prefix(&prefix)?;
-    {
-        let conn = state.lock();
-        database::set_setting(&conn, publish_prefs::BRANCH_PREFIX_SETTING, &prefix)
-            .map_err(|e| e.to_string())?;
-    }
-    publish_prefs::set_branch_prefix(&prefix);
-    Ok(prefix)
-}
-
-/// Whether pull requests Fletch opens start as drafts.
-#[tauri::command]
-fn set_draft_prs(enabled: bool, state: tauri::State<'_, DbState>) -> Result<(), String> {
-    {
-        let conn = state.lock();
-        database::set_setting(
-            &conn,
-            publish_prefs::DRAFT_PRS_SETTING,
-            if enabled { "true" } else { "false" },
-        )
-        .map_err(|e| e.to_string())?;
-    }
-    publish_prefs::set_draft_prs(enabled);
-    Ok(())
-}
-
-/// "Remove agent attribution": on strips agents' co-author trailers and
-/// "Generated with" lines regardless of their own settings; off leaves those
-/// settings in charge. Applies from each agent's next spawn or resume.
-#[tauri::command]
-fn set_agent_attribution_removed(
-    removed: bool,
-    state: tauri::State<'_, DbState>,
-) -> Result<(), String> {
-    {
-        let conn = state.lock();
-        database::set_setting(
-            &conn,
-            fletch_core::attribution::SETTING,
-            if removed { "true" } else { "false" },
-        )
-        .map_err(|e| e.to_string())?;
-    }
-    fletch_core::attribution::set_removed(removed);
-    Ok(())
-}
-
-/// Change the sandbox engine stamped onto *new* agents. Container engines are
-/// validated live before being accepted — Docker against a daemon probe, Podman
-/// against `sandbox::podman::availability` plus
-/// `sandbox::podman::launch_blocker` — so a success here means the choice is
-/// actionable. Persists to `settings` and updates the in-memory mirror — like
-/// `set_agent_bin_override` keeps the DB and process state in sync. Existing
-/// agents are unaffected: each keeps the engine stamped on its record at
-/// creation.
-#[tauri::command]
-async fn set_sandbox_engine(
-    engine: String,
-    state: tauri::State<'_, DbState>,
-) -> Result<(), String> {
-    let kind = sandbox::EngineKind::from_setting(&engine)
-        .ok_or_else(|| format!("unknown sandbox engine: {engine}"))?;
-    if kind == sandbox::EngineKind::Podman {
-        // Same gate Docker gets below — a stored engine is stamped onto every
-        // new agent, so one whose runtime can't launch fails every spawn — and
-        // here rather than in the UI alone because the setting is reachable over
-        // IPC. "Available" isn't "launchable": `podman info` can answer over a
-        // remote default connection that every launch then refuses, hence the
-        // blocker check on the same `spawn_blocking`.
-        let (probe, blocker) = tauri::async_runtime::spawn_blocking(|| {
-            let probe = sandbox::podman_availability();
-            let blocker = matches!(probe, sandbox::PodmanAvailability::Available { .. })
-                .then(sandbox::podman_launch_blocker)
-                .flatten();
-            (probe, blocker)
-        })
-        .await
-        .map_err(|e| e.to_string())?;
-        match probe {
-            sandbox::PodmanAvailability::Available { .. } => {
-                if let Some(blocker) = blocker {
-                    return Err(blocker);
-                }
-            }
-            sandbox::PodmanAvailability::NotInstalled => {
-                return Err("Podman is not installed — install Podman first.".into())
-            }
-            sandbox::PodmanAvailability::MachineDown => {
-                return Err(
-                    "The Podman machine isn't running — run `podman machine start` first.".into(),
-                )
-            }
-        }
-    }
-    if kind == sandbox::EngineKind::Docker {
-        // `spawn_blocking`: the probe can block up to its 2s timeout.
-        let probe = tauri::async_runtime::spawn_blocking(sandbox::docker_availability)
-            .await
-            .map_err(|e| e.to_string())?;
-        match probe {
-            sandbox::DockerAvailability::Available { .. } => {}
-            sandbox::DockerAvailability::NotInstalled => {
-                return Err("Docker is not installed — install Docker Desktop first.".into())
-            }
-            sandbox::DockerAvailability::DaemonDown => {
-                return Err("Docker isn't running — start Docker Desktop first.".into())
-            }
-        }
-    }
-    {
-        let conn = state.lock();
-        database::set_setting(&conn, sandbox::ENGINE_SETTING, kind.as_setting())
-            .map_err(|e| e.to_string())?;
-    }
-    sandbox::set_selected_engine_kind(kind);
-    Ok(())
 }
 
 /// Probe the local Docker installation for the settings UI. Async +
@@ -979,95 +666,6 @@ async fn clear_container_auth_token(state: tauri::State<'_, DbState>) -> Result<
         secrets::delete(&conn, sandbox::docker::auth::TOKEN_SETTING).map_err(|e| e.to_string())?;
     }
     sandbox::docker::auth::set_stored_token(None);
-    Ok(())
-}
-
-/// Persist the docker launch knobs (`docker_image` override + `docker_memory` /
-/// `docker_cpus` limits) and update the in-process mirror the spawn path reads,
-/// so a change applies to the next docker spawn without a restart. Blank values
-/// clear the setting (the launch path falls back to its defaults). Same
-/// persist-then-mirror shape as `set_sandbox_engine` — the mirror
-/// (`sandbox::docker::LaunchSettings`) is the whole struct, so all three are
-/// written together.
-#[tauri::command]
-async fn set_docker_launch_settings(
-    image: Option<String>,
-    memory: Option<String>,
-    cpus: Option<String>,
-    state: tauri::State<'_, DbState>,
-) -> Result<(), String> {
-    // Blank → None: a cleared field must not be stored as a launch override
-    // (an empty `--memory`/`--cpus` value or `docker_image` would break `docker
-    // run`), and the mirror treats blank as "use default" anyway.
-    let norm = |v: Option<String>| v.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
-    let image = norm(image);
-    let memory = norm(memory);
-    let cpus = norm(cpus);
-    {
-        let conn = state.lock();
-        // All three must land together. Written individually, a mid-loop
-        // failure (image commits, then memory errors) would leave a mixed
-        // config committed to the DB — one the UI never shows, since it reverts
-        // all three optimistically and we skip the mirror update on error, so a
-        // restart would silently hydrate the partial write. The transaction
-        // rolls back on any failure, keeping DB, mirror, and UI in sync.
-        let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
-        for (key, value) in [
-            (sandbox::docker::IMAGE_SETTING, &image),
-            (sandbox::docker::MEMORY_SETTING, &memory),
-            (sandbox::docker::CPUS_SETTING, &cpus),
-        ] {
-            database::set_setting(&tx, key, value.as_deref().unwrap_or(""))
-                .map_err(|e| e.to_string())?;
-        }
-        tx.commit().map_err(|e| e.to_string())?;
-    }
-    sandbox::docker::set_launch_settings(sandbox::docker::LaunchSettings {
-        image_override: image,
-        memory,
-        cpus,
-    });
-    Ok(())
-}
-
-/// Persist the podman launch knobs (`podman_image` override + `podman_memory` /
-/// `podman_cpus` limits) and update the in-process mirror the spawn path reads.
-/// The docker command's twin in every respect but the keys and the mirror it
-/// writes — the two runtimes keep separate knobs so a user running both can
-/// point each at its own image and limits.
-#[tauri::command]
-async fn set_podman_launch_settings(
-    image: Option<String>,
-    memory: Option<String>,
-    cpus: Option<String>,
-    state: tauri::State<'_, DbState>,
-) -> Result<(), String> {
-    // Blank → None, as in the docker twin above: a cleared field must not be
-    // stored as a launch override.
-    let norm = |v: Option<String>| v.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
-    let image = norm(image);
-    let memory = norm(memory);
-    let cpus = norm(cpus);
-    {
-        let conn = state.lock();
-        // All three must land together, for the reason the docker twin above
-        // spells out: a partial write is a config the UI never shows.
-        let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
-        for (key, value) in [
-            (sandbox::podman::IMAGE_SETTING, &image),
-            (sandbox::podman::MEMORY_SETTING, &memory),
-            (sandbox::podman::CPUS_SETTING, &cpus),
-        ] {
-            database::set_setting(&tx, key, value.as_deref().unwrap_or(""))
-                .map_err(|e| e.to_string())?;
-        }
-        tx.commit().map_err(|e| e.to_string())?;
-    }
-    sandbox::podman::set_launch_settings(sandbox::podman::LaunchSettings {
-        image_override: image,
-        memory,
-        cpus,
-    });
     Ok(())
 }
 
@@ -1617,24 +1215,30 @@ pub fn run() {
             db_upsert,
             db_count,
             db_query,
-            set_agent_bin_override,
             set_telemetry_enabled,
-            set_code_indexing_enabled,
             track_app_opened,
             track_event,
             get_sandbox_engine,
-            set_sandbox_engine,
             describe_sandbox_isolation,
             get_publish_confirmation,
-            set_publish_confirmation,
             answer_publish_approval,
-            set_publish_approval_wait,
-            set_auto_archive_idle_days,
-            set_branch_prefix,
-            set_draft_prs,
-            set_agent_attribution_removed,
-            set_notify_turn_complete,
-            set_notify_pr_activity,
+            // The host-owned settings, shared with the remote dispatcher.
+            commands::get_settings,
+            commands::set_agent_bin_override,
+            commands::set_code_indexing_enabled,
+            commands::set_sandbox_engine,
+            commands::set_publish_confirmation,
+            commands::set_publish_approval_wait,
+            commands::set_auto_archive_idle_days,
+            commands::set_branch_prefix,
+            commands::set_draft_prs,
+            commands::set_agent_attribution_removed,
+            commands::set_notify_turn_complete,
+            commands::set_notify_pr_activity,
+            commands::set_docker_launch_settings,
+            commands::set_podman_launch_settings,
+            commands::get_project_settings,
+            commands::set_project_setting,
             probe_docker_engine,
             probe_podman_engine,
             get_container_auth_status,
@@ -1643,8 +1247,6 @@ pub fn run() {
             connect_claude_container_auth,
             submit_claude_setup_code,
             cancel_claude_container_auth,
-            set_docker_launch_settings,
-            set_podman_launch_settings,
             commands::wf_list_runs,
             commands::wf_get_run,
             commands::wf_events,
