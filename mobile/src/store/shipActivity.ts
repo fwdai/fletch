@@ -90,15 +90,17 @@ export const autopilotActivity = (e: AutopilotLogEntry): ShipActivityEntry => ({
 });
 
 /** What a `pr:state_changed` means in one line, or null when it is not a
- *  transition worth a line (a title edit, a mergeable flip, a closed PR
- *  re-reported). */
+ *  transition worth a line (a title edit, a mergeable flip, an open or closed
+ *  PR re-reported). A PR open where there was none, or a different one, is
+ *  "opened"; the same PR open again after closing is "reopened". */
 export function prTransitionText(
   prev: PrState | null | undefined,
   next: PrState | null,
 ): string | null {
   if (!next) return null;
-  if (!prev) return next.state === "open" ? `PR #${next.number} opened` : null;
-  if (prev.state === next.state) return null;
+  if (next.state === "open" && prev?.number !== next.number) return `PR #${next.number} opened`;
+  if (!prev || prev.state === next.state) return null;
+  if (prev.state === "closed" && next.state === "open") return `PR #${next.number} reopened`;
   if (prev.state === "open" && next.state === "merged") return `PR #${next.number} merged`;
   if (prev.state === "open" && next.state === "closed") return `PR #${next.number} closed`;
   return null;

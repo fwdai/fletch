@@ -1762,7 +1762,7 @@ pub fn run() {
             commands::create_pr,
             commands::merge_pr,
             commands::get_pr_state,
-            commands::refresh_all_pr_status,
+            commands::get_all_pr_status,
             commands::get_pr_checks,
             commands::get_pr_live,
             commands::get_pr_history,

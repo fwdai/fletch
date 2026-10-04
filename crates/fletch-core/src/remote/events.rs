@@ -34,6 +34,9 @@ pub const FORWARDED_EVENTS: &[&str] = &[
     "turn:sent",
     "turn:started",
     "workspace:changed",
+    // The idle sweep's notice (`supervisor::auto_archive`): agent ids and
+    // names only, so any client can say what went to History.
+    "workspace:auto-archived",
     "pr:state_changed",
     // The host-side PR watcher's two (`supervisor::pr_watch`): CI and review
     // threads reach the phone without its Git tab polling for them.

@@ -3335,6 +3335,62 @@ fn a_merge_or_close_after_a_seen_open_alerts_with_the_pr_number() {
     assert_eq!(h.sent()[1]["collapseId"], "dolomites");
 }
 
+/// A secondary repo's PR state is its own checkout's: one repo merging does not
+/// stand in for the other's state, so each repo's witnessed merge alerts once.
+/// Both share the agent's `collapseId`, so the phone keeps one banner.
+#[test]
+fn each_repo_of_an_agent_alerts_on_its_own_merge() {
+    let _prefs = pr_prefs();
+    let h = Triggers::boot(false, &[("a1b2", "sandbox")]);
+    let agents = Agents::named("Fix login crash");
+    let secondary = |state: &str| {
+        let mut payload = pr_state_of("arabia", state);
+        payload["subdir"] = json!("api");
+        payload
+    };
+    h.triggers
+        .on_event(&agents, "pr:state_changed", &pr_state_of("arabia", "open"));
+    h.triggers
+        .on_event(&agents, "pr:state_changed", &secondary("open"));
+    assert!(h.sent().is_empty(), "opening is not an alert");
+    h.triggers
+        .on_event(&agents, "pr:state_changed", &secondary("merged"));
+    // The primary's re-reported open is not a transition, and the secondary's
+    // merge did not overwrite what the primary was last seen as.
+    h.triggers
+        .on_event(&agents, "pr:state_changed", &pr_state_of("arabia", "open"));
+    h.triggers.on_event(
+        &agents,
+        "pr:state_changed",
+        &pr_state_of("arabia", "merged"),
+    );
+    assert_eq!(h.kinds(), ["pr_merged", "pr_merged"]);
+    assert!(h.sent().iter().all(|s| s["collapseId"] == "arabia"));
+}
+
+/// A secondary merging forgets that checkout's rollup and nobody else's.
+#[test]
+fn a_secondary_merge_keeps_the_primary_rollup() {
+    let _prefs = pr_prefs();
+    let h = Triggers::boot(false, &[("a1b2", "sandbox")]);
+    let agents = Agents::named("Fix login crash");
+    h.triggers.on_event(
+        &agents,
+        "pr:checks_changed",
+        &checks_changed("arabia", "passing", &[]),
+    );
+    let mut merged = pr_state_of("arabia", "merged");
+    merged["subdir"] = json!("api");
+    h.triggers.on_event(&agents, "pr:state_changed", &merged);
+    // Still passing on the primary is still not a second settle.
+    h.triggers.on_event(
+        &agents,
+        "pr:checks_changed",
+        &checks_changed("arabia", "passing", &[]),
+    );
+    assert_eq!(h.kinds(), ["checks_settled"]);
+}
+
 /// The event reports a state, not a transition, and fires from a turn end as
 /// readily as from the watcher. A first `merged` is a stale snapshot of a PR
 /// that landed while this process was not running — nobody needs telling.
@@ -3548,4 +3604,14 @@ fn the_pr_watch_events_are_forwarded_and_advertised() {
             "{event} is missing from the descriptor"
         );
     }
+}
+
+/// The idle sweep runs on the host, so its notice reaches every client rather
+/// than only the window that happens to share the host's process.
+#[test]
+fn the_auto_archive_notice_is_forwarded_and_advertised() {
+    assert!(super::events::FORWARDED_EVENTS.contains(&"workspace:auto-archived"));
+    assert!(super::protocol_descriptor()
+        .events
+        .contains(&"workspace:auto-archived"));
 }

@@ -38,7 +38,11 @@ export const githubApi = {
   githubDisconnect: () => invokeLocal<void>("github_disconnect"),
   getPrState: (agentId: string, subdir?: string) =>
     invoke<PrState | null>("get_pr_state", { agentId, subdir }),
-  refreshAllPrStatus: () => invoke<Record<string, AgentPrStatus>>("refresh_all_pr_status"),
+  /** PR state + CI for every bound repo in one batched read — the sidebar's
+   *  seed. `reverifyClosed` asks for a live look at closed PRs too (they can
+   *  reopen); otherwise they are served from their snapshot like merged ones. */
+  getAllPrStatus: (reverifyClosed = false) =>
+    invoke<Record<string, AgentPrStatus>>("get_all_pr_status", { reverifyClosed }),
   getPrChecks: (agentId: string, subdir?: string) =>
     invoke<PrChecks | null>("get_pr_checks", { agentId, subdir }),
   getPrLive: (agentId: string, subdir?: string) =>

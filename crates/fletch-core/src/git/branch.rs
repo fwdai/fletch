@@ -131,8 +131,8 @@ pub async fn default_branch(repo: &Path) -> String {
 /// when it can't reach `origin`.
 ///
 /// Prefers `origin/<base>` over the local head. The tracking ref is the fresher
-/// of the two: the app advances it on a background sweep
-/// (`refresh_base_freshness`), while a local branch only moves when the user
+/// of the two: the host advances it on a background loop
+/// (`supervisor::base_freshness`), while a local branch only moves when the user
 /// checks it out and pulls. It is also the one that exists at all in a
 /// single-branch clone, or for a default branch resolved from `origin/HEAD`
 /// that was never checked out locally.

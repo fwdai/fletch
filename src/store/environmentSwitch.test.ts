@@ -88,6 +88,7 @@ const newStore = () => {
         loadAutopilot: vi.fn().mockResolvedValue(undefined),
         github: null,
         refreshGithub: vi.fn().mockResolvedValue(undefined),
+        loadAllPrStatus: vi.fn().mockResolvedValue(undefined),
       }) as unknown as AppState,
   );
   setEnvironmentsSource(store.getState);
@@ -246,6 +247,14 @@ describe("switchEnvironment", () => {
     expect(store.getState().refreshGithub).toHaveBeenCalledOnce();
     // Blank until the probe answers, rather than the Mac's login held over.
     expect(store.getState().github).toBeNull();
+    // The PR seed waits for that login, since the read is GitHub-gated, and
+    // re-checks closed PRs: nothing else would see one reopen.
+    const seed = vi.mocked(store.getState().loadAllPrStatus);
+    expect(seed).toHaveBeenCalledOnce();
+    expect(seed).toHaveBeenCalledWith(true);
+    expect(vi.mocked(store.getState().refreshGithub).mock.invocationCallOrder[0]).toBeLessThan(
+      seed.mock.invocationCallOrder[0],
+    );
 
     await store.getState().switchEnvironment(LOCAL_ENVIRONMENT_ID);
     expect(store.getState().github).toEqual(gh("alex-on-this-mac"));
@@ -311,6 +320,8 @@ describe("environmentReconnected", () => {
     // …and so are the delegations it runs: events missed while away are gone.
     expect(store.getState().loadDelegations).toHaveBeenCalledTimes(2);
     expect(store.getState().loadAutopilot).toHaveBeenCalledTimes(2);
+    // …and the PR badges, which only the watcher's events keep current.
+    expect(store.getState().loadAllPrStatus).toHaveBeenCalledTimes(2);
   });
 
   it("leaves a background host's handshake alone", async () => {

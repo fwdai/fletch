@@ -55,7 +55,6 @@ export function App() {
   const hostKey = useStore((s) => s.hostKey);
   const connected = useStore((s) => s.connection === "connected");
   const loadShortstats = useStore((s) => s.loadShortstats);
-  const loadPrStatus = useStore((s) => s.loadPrStatus);
 
   useEffect(() => {
     void init();
@@ -64,8 +63,11 @@ export function App() {
   // One fleet-wide poll for the whole app, like the desktop's — every agent row
   // on every screen reads the maps these fill, so no row polls for itself. The
   // PR sweep is network-bound on the host, so it runs at the Ship tab's cadence.
+  // Working-tree stats are local git on the host, with no event for them, so
+  // they poll. PR state does not: it is seeded on every handshake and return to
+  // the foreground (store/index) and the host watcher's `pr:*` events keep it
+  // current between.
   usePoll(loadShortstats, 10_000, connected);
-  usePoll(loadPrStatus, 30_000, connected);
 
   const resolved = theme === "system" ? systemTheme : theme;
   const props = (name: string) => (sheet?.name === name ? sheet.props : {});

@@ -19,7 +19,6 @@ export const gitApi = {
     invoke<GitState | null>("get_git_state", { agentId, subdir }),
   getAllShortstats: () => invoke<Record<string, ShortStats>>("get_all_shortstats"),
   getAllGitMeta: () => invoke<Record<string, GitMeta>>("get_all_git_meta"),
-  refreshBaseFreshness: () => invoke<void>("refresh_base_freshness"),
   /** Hand a git playbook (`action`) to the agent. The host composes the
    *  trigger, holds it while the agent is mid-turn and watches it to its end;
    *  resolves to the delegation as recorded (`queued` or `started`). */

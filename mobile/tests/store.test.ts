@@ -10,6 +10,8 @@ import { beforeAll, describe, expect, it, vi } from "vitest";
 import type { ChatItem } from "../src/adapters";
 import { MOCK_HOST_KEY } from "../src/remote/mock";
 import {
+  prChecks as fixturePrChecks,
+  prStates as fixturePrStates,
   PENDING_REQUEST_ID,
   PENDING_TOOL_USE_ID,
   PM_CUSTOM_AGENT_ID,
@@ -323,6 +325,14 @@ describe("git and PR state", () => {
     // The same state again is not a transition.
     hostEvent("pr:state_changed", { agent_id: "pamukkale", state: opened });
     expect(state().shipActivity.pamukkale).toHaveLength(1);
+    // A secondary repo's PR is not this agent's PR on the phone.
+    hostEvent("pr:state_changed", {
+      agent_id: "pamukkale",
+      subdir: "api",
+      state: { ...opened, number: 12, state: "merged" },
+    });
+    expect(state().prStates.pamukkale?.state).toBe("open");
+    expect(state().shipActivity.pamukkale).toHaveLength(1);
   });
 
   it("takes the watcher's checks and writes a line when they settle", () => {
@@ -489,6 +499,50 @@ describe("git and PR state", () => {
   it("reads the checkout tree", async () => {
     await state().loadTree("arabia");
     expect(state().trees.arabia?.some((f) => f.status === "M")).toBe(true);
+  });
+
+  it("follows a new PR's checks and review threads from the host's events, polling neither", async () => {
+    const live = vi.spyOn(api, "getPrLive");
+    const threads = vi.spyOn(api, "getPrThreads");
+    try {
+      await state().publish("pamukkale", "feat: watch me", "");
+      expect(state().prChecks.pamukkale?.rollup).toBe("pending");
+      // The mock host plays the watcher: CI settles, then a reviewer writes.
+      await vi.waitFor(() => expect(state().prChecks.pamukkale?.rollup).toBe("passing"));
+      await vi.waitFor(() => expect(state().prComments.pamukkale?.unresolved).toHaveLength(1));
+      const lines = state().shipActivity.pamukkale?.map((e) => e.text) ?? [];
+      expect(lines).toContain("Checks passed");
+      expect(lines).toContain("New review comment from greptile");
+      expect(live).not.toHaveBeenCalled();
+      expect(threads).not.toHaveBeenCalled();
+    } finally {
+      live.mockRestore();
+      threads.mockRestore();
+      // The fixtures are module state the mock host writes through; later
+      // files see pamukkale without a PR, as before.
+      delete fixturePrStates.pamukkale;
+      delete fixturePrChecks.pamukkale;
+      useStore.setState((s) => {
+        const { pamukkale: _state, ...prStates } = s.prStates;
+        const { pamukkale: _checks, ...prChecks } = s.prChecks;
+        const { pamukkale: _comments, ...prComments } = s.prComments;
+        return { prStates, prChecks, prComments };
+      });
+    }
+  });
+});
+
+describe("auto-archive notice", () => {
+  it("gathers what the host's idle sweep archived until Home dismisses it", () => {
+    expect(state().autoArchived).toBeNull();
+    hostEvent("workspace:auto-archived", { agent_ids: ["a1"], names: ["fuji"] });
+    hostEvent("workspace:auto-archived", { agent_ids: ["a2", "a3"], names: ["kyoto", "nara"] });
+    expect(state().autoArchived).toEqual(["fuji", "kyoto", "nara"]);
+    state().dismissAutoArchived();
+    expect(state().autoArchived).toBeNull();
+    // A pass that archived nothing says nothing.
+    hostEvent("workspace:auto-archived", { agent_ids: [], names: [] });
+    expect(state().autoArchived).toBeNull();
   });
 });
 

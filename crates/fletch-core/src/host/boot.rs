@@ -549,8 +549,9 @@ pub fn boot(cfg: BootConfig) -> Result<Engine, BootError> {
     // open PR once a minute (state and CI, review threads every other tick)
     // and emit a `pr:*` event per change, so a paired phone hears about failed
     // checks, a reviewer's comment or a merge without the Git panel polling.
-    // Reads once now to seed its memory — the seed announces nothing, so a
-    // restart does not re-raise last week's threads.
+    // Reads once now to seed its memory — the seed announces each open PR's
+    // state and nothing else, so a restart does not re-raise last week's
+    // threads.
     crate::supervisor::pr_watch::spawn(ctx.clone(), supervisor.clone());
     // Delegations (`delegate_git`) run to their end on the host: the held
     // trigger is delivered when the agent settles, and the outcome is decided
@@ -564,6 +565,10 @@ pub fn boot(cfg: BootConfig) -> Result<Engine, BootError> {
     // Archive sidebar workspaces left idle past the user's threshold — only
     // ones that are clean and fully pushed, so nothing unrecoverable goes.
     crate::supervisor::auto_archive::spawn(ctx.clone(), supervisor.clone(), db.clone());
+    // Fetch every project's base on its source repo every five minutes, so the
+    // "base moved" chips (`get_all_git_meta`) see a base that moved on GitHub.
+    // Once per host, window or no window — it used to be a webview timer.
+    crate::supervisor::base_freshness::spawn(supervisor.clone());
     // Reload follow-ups that were queued behind an in-flight turn when a prior
     // run exited, so a mid-turn message survives a restart. They rest in the
     // queue and flush on the user's next send (no auto-spawn).

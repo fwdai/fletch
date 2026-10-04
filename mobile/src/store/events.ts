@@ -15,6 +15,7 @@ import type {
   AgentTaskEvent,
   AgentTitleEvent,
   Workspace,
+  WorkspaceAutoArchivedEvent,
 } from "@desktop/api/types/agent";
 import type {
   AutopilotCheckout,
@@ -37,6 +38,7 @@ import type {
 import type { VerificationReportEvent } from "@desktop/api/types/verify";
 import { mirrorSentTurn } from "@desktop/helpers/mirrorTurn";
 import { dischargeSending } from "@desktop/helpers/sending";
+import { stampPrWrite } from "@desktop/store/prWriteOrder";
 import { getAdapter, type RawEvent } from "../adapters";
 import { ignore } from "../lib/ignore";
 import type { RemoteClient } from "../remote";
@@ -267,11 +269,19 @@ export function registerRemoteEvents(client: RemoteClient, set: Set, get: Get): 
     get().applyAutopilotEvent(entry);
   });
 
+  // The phone keeps one PR per agent — the primary repo's — so a secondary's
+  // event (`subdir` set) has nowhere to land, here or below; writing it to the
+  // agent would show another repo's merge as this PR's. Each one stamps its
+  // slice, so a read issued before it cannot land after it with what it saw
+  // earlier (@desktop/store/prWriteOrder).
   on<PrStateChangedEvent>("pr:state_changed", (e) => {
+    if (e.subdir) return;
+    stampPrWrite("prStates", e.agent_id);
     set((s) => {
       // The transition is read against the record being replaced, so the line
       // says what changed ("opened", "merged", "closed") and not merely that
-      // something did.
+      // something did — and a re-report of the same state (the host restarting
+      // re-announces every open PR) says nothing.
       const line = prTransitionText(s.prStates[e.agent_id], e.state);
       return {
         prStates: { ...s.prStates, [e.agent_id]: e.state },
@@ -281,10 +291,10 @@ export function registerRemoteEvents(client: RemoteClient, set: Set, get: Get): 
     if (e.state) void get().loadGit(e.agent_id);
   });
 
-  // The host-side PR watcher's reads. The phone keeps one PR per agent — the
-  // primary repo's — so a secondary's event (`subdir` set) has nowhere to land.
+  // The host-side PR watcher's reads.
   on<PrChecksChangedEvent>("pr:checks_changed", (e) => {
     if (e.subdir) return;
+    stampPrWrite("prChecks", e.agent_id);
     set((s) => {
       const line = checksSettledText(s.prChecks[e.agent_id], e.checks);
       return {
@@ -296,6 +306,7 @@ export function registerRemoteEvents(client: RemoteClient, set: Set, get: Get): 
 
   on<PrThreadsChangedEvent>("pr:threads_changed", (e) => {
     if (e.subdir) return;
+    stampPrWrite("prComments", e.agent_id);
     set((s) => {
       const line = newThreadsText(e.comments, e.new_thread_ids);
       return {
@@ -315,6 +326,14 @@ export function registerRemoteEvents(client: RemoteClient, set: Set, get: Get): 
   // cover — reload the snapshot.
   on<null>("workspace:changed", () => {
     void get().refreshWorkspace();
+  });
+
+  // The host's idle sweep archived something; `workspace:changed` already took
+  // it off the list, and this says what went. Held for Home until dismissed,
+  // gathering any later pass's names meanwhile.
+  on<WorkspaceAutoArchivedEvent>("workspace:auto-archived", (e) => {
+    if (e.names.length === 0) return;
+    set((s) => ({ autoArchived: [...(s.autoArchived ?? []), ...e.names] }));
   });
 
   // A roadmap row that was written, wherever it was written from. The phone

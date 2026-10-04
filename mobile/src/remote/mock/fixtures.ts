@@ -638,6 +638,7 @@ export const protocol: HostProtocol = {
     "turn:sent",
     "turn:started",
     "workspace:changed",
+    "workspace:auto-archived",
     "pr:state_changed",
     "pr:checks_changed",
     "pr:threads_changed",

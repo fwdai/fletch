@@ -780,9 +780,10 @@
   line-height: 1.45;
 }
 
-/* Connection status line over a cached list (Home/ConnectionBanner): the
-   shared Notice, placed. */
-.notice-bar.conn {
+/* Lines over Home's list — the connection status (Home/ConnectionBanner) and
+   the auto-archive notice (Home/AutoArchivedNotice): the shared Notice, placed. */
+.notice-bar.conn,
+.notice-bar.home-note {
   margin: 0 16px 10px;
   flex-shrink: 0;
 }
