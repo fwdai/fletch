@@ -73,6 +73,11 @@ pub const FORWARDED_EVENTS: &[&str] = &[
     "roadmap:brief-proposal",
     "roadmap:brief-proposal-deleted",
     "roadmap:queue-note",
+    // A write to a host-owned setting (protocol doc, "Settings"), so a second
+    // client's Settings pane and project page follow without a refetch. Only
+    // ever emitted for an allowlisted key, so no secret can ride one.
+    crate::commands::SETTINGS_CHANGED,
+    crate::commands::PROJECT_SETTINGS_CHANGED,
 ];
 
 /// Install the taps and hand back the push-alert one.

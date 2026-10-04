@@ -61,8 +61,21 @@ export function ProjectScreen({ repoPath }: { repoPath: string }) {
     setError(null);
     (async () => {
       try {
-        const { project_id, configs } = await api.projectRunConfig(repoPath);
-        const overrides = await loadRunOverrides(project_id);
+        // Run detection is not on a host's table yet, so a remote project page
+        // still opens — with the project id the workspace already carries and
+        // no detected rows — rather than failing whole: every section below
+        // but detection edits the host through ops it does answer.
+        const known = useAppStore
+          .getState()
+          .workspace?.projects.find((p) => p.path === repoPath)?.project_id;
+        const { project_id, configs } = await api.projectRunConfig(repoPath).catch((err) => {
+          if (!known) throw err;
+          return { project_id: known, configs: [] };
+        });
+        const overrides = await loadRunOverrides(project_id).catch((err) => {
+          console.error("loadRunOverrides failed", err);
+          return {};
+        });
         if (cancelled) return;
         const primary = configs[0];
         setLoaded({

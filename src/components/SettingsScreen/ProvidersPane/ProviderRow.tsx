@@ -17,6 +17,7 @@ import { modelSummary } from "@/data/modelCatalog";
 import { installCommand, PROVIDER_DETAIL } from "@/data/providerDetail";
 import type { Provider } from "@/data/providers";
 import { useAppStore } from "@/store";
+import { activeEntry, useGate } from "@/store/capabilities";
 import type { InstallState } from "@/store/types";
 import { BinaryPathRow } from "../BinaryPathRow";
 import { ProviderAuthBadge } from "../ProviderAuthBadge";
@@ -41,6 +42,11 @@ export function ProviderRow({ provider }: { provider: Provider }) {
   const installAgent = useAppStore((s) => s.installAgent);
   const cancelAgentInstall = useAppStore((s) => s.cancelAgentInstall);
   const clearInstallState = useAppStore((s) => s.clearInstallState);
+  const remoteHost = useAppStore((s) => {
+    const env = activeEntry(s);
+    return env.kind === "remote" ? env.name : undefined;
+  });
+  const binGate = useGate("hostSettings");
 
   const [open, setOpen] = useState(false);
   const phase = install?.phase;
@@ -86,12 +92,16 @@ export function ProviderRow({ provider }: { provider: Provider }) {
 
   // Built once and handed to whichever detail is showing: "Locate binary…" is
   // the same validated editor in the installed, missing and failed states.
+  // With a host on screen the override is the host's (a path on its disk), so
+  // this Mac's probe can neither validate it nor call it missing.
   const locate: ReactNode = (
     <BinaryPathRow
       providerLabel={label}
       effectivePath={effectivePath}
       override={override}
-      resolved={!!livePath}
+      resolved={remoteHost ? true : !!livePath}
+      onHost={remoteHost}
+      gate={binGate}
       onSave={(path) => setProviderPathOverride(id, path)}
     />
   );

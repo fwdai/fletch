@@ -113,6 +113,26 @@ describe("gateReason", () => {
     }
   });
 
+  it("gates the host's settings by group, so a device without publish keeps the rest", () => {
+    // A host from before the settings ops offers none of the three groups.
+    for (const gate of ["hostSettings", "publishSettings", "projectSettings"] as const) {
+      expect(gateReason(host([...V2_DEFAULT_OPS]), gate)).toBe(GATES[gate].reason);
+    }
+    // A `control` device's descriptor: every settings op but the five that
+    // decide how publishing happens (docs/remote-protocol.md, "Scopes").
+    const control = host([
+      ...V2_DEFAULT_OPS,
+      ...requiredOps("hostSettings"),
+      ...requiredOps("projectSettings"),
+    ]);
+    expect(gateReason(control, "hostSettings")).toBeNull();
+    expect(gateReason(control, "projectSettings")).toBeNull();
+    expect(gateReason(control, "publishSettings")).toBe(GATES.publishSettings.reason);
+    expect(
+      gateReason(host([...V2_DEFAULT_OPS, ...requiredOps("publishSettings")]), "publishSettings"),
+    ).toBeNull();
+  });
+
   it("reads a host that reported no descriptor as the v2 default set", () => {
     const old = host();
 

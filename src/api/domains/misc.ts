@@ -14,19 +14,6 @@ export const miscApi = {
   // pipeline (events themselves are emitted from the backend).
   setTelemetryEnabled: (enabled: boolean) =>
     invokeLocal<void>("set_telemetry_enabled", { enabled }),
-  // Whether a finished turn alerts at all (chime, banner, phone push). Backend-
-  // owned so the phone push reads the same `notify_turn_complete` key.
-  setNotifyTurnComplete: (enabled: boolean) =>
-    invokeLocal<void>("set_notify_turn_complete", { enabled }),
-  /** The ship-loop alert opt-out (checks settled, review comment, PR merged or
-   *  closed), backend-owned like `notify_turn_complete` so the phone push reads
-   *  the same `notify_pr_activity` key. */
-  setNotifyPrActivity: (enabled: boolean) =>
-    invokeLocal<void>("set_notify_pr_activity", { enabled }),
-  // Code indexing (codegraph). Persists the flag and, when enabled, warms the
-  // index in the background (install + per-repo mirror). Backend-owned.
-  setCodeIndexingEnabled: (enabled: boolean) =>
-    invokeLocal<void>("set_code_indexing_enabled", { enabled }),
   // Emit the deferred first `app_opened` once the onboarding overlay (which
   // carries the data-sharing disclosure) is on screen. Idempotent per process.
   // See `track_app_opened` (Rust).

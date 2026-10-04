@@ -28,15 +28,6 @@ export const providersApi = {
   cancelAgentInstall: (id: string) => invokeLocal<boolean>("cancel_agent_install", { id }),
   /** Check a candidate custom binary path before saving it as an override. */
   validateAgentBin: (path: string) => invokeLocal<BinValidation>("validate_agent_bin", { path }),
-  /** Set (or clear, with a null/blank path) a per-agent custom binary path.
-   *  Persists the setting and refreshes the backend's resolution registry. */
-  setAgentBinOverride: (id: string, path: string | null) =>
-    invokeLocal<void>("set_agent_bin_override", { id, path }),
-  /** "Remove agent attribution": true strips agents' commit/PR attribution
-   *  whatever their own settings say; false follows those settings. Backend-
-   *  owned — the agent arg builders and spawn path read it. */
-  setAgentAttributionRemoved: (removed: boolean) =>
-    invokeLocal<void>("set_agent_attribution_removed", { removed }),
   /** Per-agent supported-model discovery (raw ids + any cheap CLI metadata).
    *  The frontend enriches these against models.dev. */
   discoverSupportedModels: () => invokeLocal<AgentModels[]>("discover_supported_models"),

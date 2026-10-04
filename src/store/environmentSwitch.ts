@@ -34,6 +34,7 @@
 import { isAgentBusy } from "@/helpers";
 import type { EnvironmentId } from "./environments";
 import { detachEventListeners, registerEventListeners } from "./eventListeners";
+import { hydrateHostSettings } from "./hostSettings";
 import { erroredAgents, interruptedAgents } from "./interrupted";
 import { clearPendingHides } from "./pendingHides";
 import { refreshWorkspace } from "./refreshWorkspace";
@@ -246,6 +247,11 @@ export const createEnvironmentSwitchSlice: SliceCreator<EnvironmentSwitchSlice> 
     await get()
       .loadAllPrStatus(true)
       .catch(() => {});
+    // …and the settings it reads: Settings › General, Git, Sandbox and the
+    // provider binary paths show (and edit) the engine on screen. Not awaited:
+    // nothing after it depends on it, and an answer that lands after a later
+    // switch is dropped by `hydrateHostSettings` itself.
+    void hydrateHostSettings(set).catch(() => {});
   };
 
   return {

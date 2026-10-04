@@ -130,9 +130,9 @@ export function ProjectGroup({
         <Icon name="chevR" size={10} className="chev" />
         <span className="pname">{label}</span>
         <span className="pcount">{count}</span>
-        {/* The project page is the roadmap, the activity feed and the local
-            `project_settings` table — none of which a host answers for
-            (docs/multi-host-plan.md §5.3, item 2). */}
+        {/* The project page opens on the roadmap, so it is offered wherever
+            the board is; its settings sections gate themselves on the host's
+            project-settings ops (docs/remote-protocol.md, "Settings"). */}
         {!roadmapGate && (
           <button
             className="padd padd-settings tip"

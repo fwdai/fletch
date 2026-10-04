@@ -11,7 +11,7 @@ import { Icon } from "@/components/Icon";
 import { IconButton } from "@/components/ui/IconButton";
 import { PROVIDERS } from "@/data/providers";
 import { useAppStore } from "@/store";
-import { activeEntry } from "@/store/capabilities";
+import { activeEntry, useGate } from "@/store/capabilities";
 import { useProviderPoll } from "@/util/useProviderPoll";
 import { SetGroup, SetHead, SetRow, SetToggle } from "../primitives";
 import { ProviderRow } from "./ProviderRow";
@@ -93,7 +93,8 @@ export function ProvidersPane() {
           than let the rows read as the host's. */}
       {env.kind === "remote" && (
         <p className="set-prov-hint text-sm">
-          These are this Mac's providers. {env.name}'s are managed on {env.name}.
+          These are this Mac's providers. {env.name}'s are managed on {env.name} — except a custom
+          binary path and agent attribution, which are {env.name}'s settings and edit it.
         </p>
       )}
 
@@ -117,6 +118,8 @@ export function ProvidersPane() {
 function AttributionRow() {
   const removed = useAppStore((s) => s.agentAttributionRemoved);
   const setRemoved = useAppStore((s) => s.setAgentAttributionRemoved);
+  // The host's publish path strips the trailers, so this is its setting.
+  const gate = useGate("publishSettings");
   return (
     <SetRow
       title="Remove agent attribution"
@@ -126,7 +129,12 @@ function AttributionRow() {
           : "Following your agent settings. Commits and PRs carry whatever attribution your agents' own settings add."
       } Applies to PRs right away, and to an agent's commits from its next start.`}
     >
-      <SetToggle on={removed} onClick={() => void setRemoved(!removed)} />
+      <SetToggle
+        on={removed}
+        onClick={() => void setRemoved(!removed)}
+        disabled={!!gate}
+        tip={gate ?? undefined}
+      />
     </SetRow>
   );
 }

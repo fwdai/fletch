@@ -20,7 +20,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, type RoadmapItem, type TrackerIssue } from "@/api";
 import { useRoadmapRows } from "@/roadmapRows";
-import { getProjectSettings } from "@/storage/projectSettings";
 import {
   DECLINED_ISSUES_KEY,
   type FunnelAction,
@@ -94,7 +93,7 @@ export function useIssueFunnel(projectIds: string[]): IssueFunnel {
     void (async () => {
       const entries = await Promise.all(
         ids.map(async (id) => {
-          const all = await getProjectSettings(id).catch(() => ({}) as Record<string, string>);
+          const all = await api.getProjectSettings(id).catch(() => ({}) as Record<string, string>);
           return [id, parseDeclinedIssues(all[DECLINED_ISSUES_KEY])] as const;
         }),
       );

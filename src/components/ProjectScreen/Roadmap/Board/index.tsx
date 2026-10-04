@@ -2,8 +2,8 @@ import { type RefObject, useCallback, useEffect, useMemo, useRef, useState } fro
 import type { Horizon, RoadmapItem } from "@/api";
 import { Icon } from "@/components/Icon";
 import { IconButton } from "@/components/ui/IconButton";
-import { getProjectSettings } from "@/storage/projectSettings";
 import { useAppStore } from "@/store";
+import { useProjectSettings } from "@/util/useProjectSettings";
 import { AUTOQUEUE_KEY, acceptActions, flagOn } from "../autonomy";
 import { InFlightRail } from "../InFlightRail";
 import { buildInFlight } from "../InFlightRail/select";
@@ -152,24 +152,12 @@ export function Board({
   const blank = !loading && items.length === 0 && ghosts.length === 0;
 
   /** The project's autoqueue dial — what an accept *does*, so the accept buttons
-   *  can say it (`acceptActions`). Read here rather than in `useRoadmap` on
-   *  purpose: this component mounts every time the user comes back to the Roadmap
-   *  tab, so a dial they just changed two tabs over is never stale on screen.
-   *  Where an accept actually lands is decided host-side either way — this only
-   *  labels the button. */
-  const [autoqueue, setAutoqueue] = useState(false);
-  useEffect(() => {
-    if (!projectId) return;
-    let cancelled = false;
-    getProjectSettings(projectId)
-      .then((all) => {
-        if (!cancelled) setAutoqueue(flagOn(all[AUTOQUEUE_KEY], false));
-      })
-      .catch((e) => console.error("load roadmap.autoqueue failed", e));
-    return () => {
-      cancelled = true;
-    };
-  }, [projectId]);
+   *  can say it (`acceptActions`). Read from the host, and kept live by
+   *  `project_settings:changed`, so a dial changed on another tab or another
+   *  client is never stale on screen. Where an accept actually lands is decided
+   *  host-side either way — this only labels the button. */
+  const { settings: projectSettings } = useProjectSettings(projectId);
+  const autoqueue = flagOn(projectSettings?.[AUTOQUEUE_KEY], false);
   const cardAccept = acceptActions(autoqueue, "Accept");
   const batchAccept = acceptActions(autoqueue, "Accept all");
 
