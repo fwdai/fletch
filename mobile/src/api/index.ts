@@ -10,7 +10,7 @@ import type {
   DiffBaseMode,
   DirListing,
 } from "@desktop/api/types/checkout";
-import type { GitState, ShortStats } from "@desktop/api/types/git";
+import type { DelegationEvent, GitState, ShortStats } from "@desktop/api/types/git";
 import type { AgentPrStatus, PrChecks, PrComments, PrLive, PrState } from "@desktop/api/types/pr";
 import type { GhRepoSummary, GhStatus } from "@desktop/api/types/providers";
 import type {
@@ -168,6 +168,14 @@ export function createApi(client: RemoteClient) {
       call<string>("get_file_diff", { agentId, path, baseMode }),
     commitAgent: (agentId: string, message: string, subdir?: string) =>
       call<null>("commit_agent", { agentId, message, subdir }),
+    /** Hand a git playbook to the agent; the host composes the trigger, holds
+     *  it while the agent is mid-turn and watches it to its end. Gated on
+     *  `hostSupports("delegate_git")`. */
+    delegateGit: (agentId: string, action: string, params?: Record<string, string>) =>
+      call<DelegationEvent>("delegate_git", { agentId, action, params }),
+    /** Every delegation the host is tracking. Gated on
+     *  `hostSupports("get_delegations")`. */
+    getDelegations: () => call<DelegationEvent[]>("get_delegations"),
     pushAgent: (agentId: string, subdir?: string) =>
       call<string>("push_agent", { agentId, subdir }),
     createPr: (agentId: string, title: string, body: string, subdir?: string) =>

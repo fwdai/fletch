@@ -1,10 +1,12 @@
 // The Ship tab's activity list helpers in src/store/shipActivity.ts.
 
+import type { DelegationEvent } from "@desktop/api/types/git";
 import type { PrState } from "@desktop/api/types/pr";
 import { describe, expect, it } from "vitest";
 import {
   appendActivity,
   askedText,
+  delegationActivityText,
   prTransitionText,
   SHIP_ACTIVITY_CAP,
 } from "../src/store/shipActivity";
@@ -57,5 +59,48 @@ describe("askedText", () => {
     expect(askedText("commit-pr")).toBe("Asked the agent to commit & open a PR");
     expect(askedText("resolve-conflicts")).toBe("Asked the agent to resolve the conflicts");
     expect(askedText("sweep-floor")).toBe("Asked the agent to sweep-floor");
+  });
+});
+
+describe("delegationActivityText", () => {
+  const ev = (over: Partial<DelegationEvent> = {}): DelegationEvent => ({
+    agent_id: "a",
+    subdir: null,
+    kind: "fix-checks",
+    phase: "started",
+    started_at: 1,
+    ...over,
+  });
+
+  it("logs the ask once, whether it went out now or after the running turn", () => {
+    expect(delegationActivityText(undefined, ev())).toBe(
+      "Asked the agent to fix the failing checks",
+    );
+    const held = ev({ phase: "queued" });
+    expect(delegationActivityText(undefined, held)).toBe(
+      "Asked the agent to fix the failing checks once its turn ends",
+    );
+    // The held trigger's delivery is not a second ask…
+    expect(delegationActivityText(held, ev({ started_at: 2 }))).toBeNull();
+    // …nor is the same report twice (the op's reply, then its event).
+    expect(delegationActivityText(ev(), ev())).toBeNull();
+  });
+
+  it("names a playbook by its trigger, not its kind", () => {
+    expect(delegationActivityText(undefined, ev({ kind: "resolve" }))).toBe(
+      "Asked the agent to resolve the conflicts",
+    );
+  });
+
+  it("leaves the turn starting to the strip, and logs the host's outcome", () => {
+    expect(delegationActivityText(ev(), ev({ phase: "running" }))).toBeNull();
+    expect(
+      delegationActivityText(
+        ev({ phase: "running" }),
+        ev({ phase: "done", notice: "Agent finished — checks are re-running" }),
+      ),
+    ).toBe("Agent finished — checks are re-running");
+    // Dropped because the agent went away: nothing to say.
+    expect(delegationActivityText(ev(), ev({ phase: "abandoned" }))).toBeNull();
   });
 });

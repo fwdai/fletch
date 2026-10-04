@@ -1063,6 +1063,105 @@ describe("PM proposals", () => {
   });
 });
 
+/** Delegations are the host's (`delegate_git`, `delegation:changed`): the phone
+ *  asks, and mirrors what the host says about it into the Ship strip and the
+ *  activity list. The mock host runs the same lifecycle in miniature. */
+describe("delegations", () => {
+  const AGENT = "kamakura";
+  const idle = () =>
+    vi.waitFor(() => expect(agentOf(state(), AGENT)?.status).toBe("idle"), { timeout: 5000 });
+  const lines = () => (state().shipActivity[AGENT] ?? []).map((e) => e.text);
+  const sentTexts = () =>
+    (state().logs[AGENT] ?? []).flatMap((i) =>
+      i.kind === "user_message" || i.kind === "queued_message" ? [i.text] : [],
+    );
+
+  it("hands an idle agent's playbook to the host, which runs it and reports the outcome", async () => {
+    await idle();
+    useStore.setState((s) => ({ shipActivity: { ...s.shipActivity, [AGENT]: [] } }));
+
+    await state().delegateGit(AGENT, "commit-pr", { base: "main" });
+    // The strip turns at once, off the host's record.
+    expect(state().delegations[AGENT]?.kind).toBe("commit-pr");
+
+    await vi.waitFor(() => expect(state().delegations[AGENT]).toBeUndefined(), { timeout: 5000 });
+    expect(sentTexts()).toContain('[app-action] commit-pr base="main"');
+    expect(lines()).toContain("Asked the agent to commit & open a PR");
+    expect(lines()[0]).toBe("Committed — PR is open");
+  });
+
+  it("holds a playbook asked of a running agent until its turn ends, then runs it as its own", async () => {
+    await idle();
+    useStore.setState((s) => ({ shipActivity: { ...s.shipActivity, [AGENT]: [] } }));
+    await state().send(AGENT, "keep going");
+    await vi.waitFor(() => expect(agentOf(state(), AGENT)?.status).toBe("running"), {
+      timeout: 5000,
+    });
+
+    await state().delegateGit(AGENT, "fix-checks", { failing: "unit" });
+    expect(state().delegations[AGENT]?.phase).toBe("queued");
+    expect(sentTexts()).not.toContain('[app-action] fix-checks failing="unit"');
+
+    await vi.waitFor(() => expect(state().delegations[AGENT]).toBeUndefined(), { timeout: 5000 });
+    const sent = sentTexts();
+    // Its own turn, after the one it waited behind — not folded into it.
+    expect(sent.indexOf('[app-action] fix-checks failing="unit"')).toBeGreaterThan(
+      sent.lastIndexOf("keep going"),
+    );
+    expect(lines()).toEqual([
+      "Agent finished — checks are re-running",
+      "Asked the agent to fix the failing checks once its turn ends",
+    ]);
+  });
+
+  it("sends the trigger as a plain message to a host without delegate_git", async () => {
+    await idle();
+    const protocol = state().protocol;
+    useStore.setState({
+      protocol: protocol && { ...protocol, ops: protocol.ops.filter((o) => o !== "delegate_git") },
+    });
+    const delegate = vi.spyOn(api, "delegateGit");
+    const send = vi.spyOn(api, "sendUserMessage");
+    try {
+      await state().delegateGit(AGENT, "commit");
+      expect(delegate).not.toHaveBeenCalled();
+      expect(send).toHaveBeenCalledWith(AGENT, expect.any(String), "[app-action] commit", []);
+      expect(lines()[0]).toBe("Asked the agent to commit");
+    } finally {
+      useStore.setState({ protocol });
+      delegate.mockRestore();
+      send.mockRestore();
+      await idle();
+    }
+  });
+
+  it("re-reads the host's table, primary repos only, and asks no host without the op", async () => {
+    const rows = [
+      { agent_id: AGENT, subdir: null, kind: "push", phase: "running", started_at: 5 },
+      { agent_id: AGENT, subdir: "api", kind: "commit", phase: "queued", started_at: 6 },
+    ] as const;
+    const spy = vi.spyOn(api, "getDelegations").mockResolvedValue([...rows]);
+    const protocol = state().protocol;
+    try {
+      await state().loadDelegations();
+      expect(state().delegations).toEqual({ [AGENT]: rows[0] });
+
+      spy.mockClear();
+      useStore.setState({
+        protocol: protocol && {
+          ...protocol,
+          ops: protocol.ops.filter((o) => o !== "get_delegations"),
+        },
+      });
+      await state().loadDelegations();
+      expect(spy).not.toHaveBeenCalled();
+    } finally {
+      useStore.setState({ protocol, delegations: {} });
+      spy.mockRestore();
+    }
+  });
+});
+
 /** A pairing code is single use and lasts five minutes, so a second delivery
  *  of the same link — the launch URL read from the plugin, and the event it
  *  also emits — must not tear down the attempt already spending it. */

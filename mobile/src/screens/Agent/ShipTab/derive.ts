@@ -59,7 +59,8 @@ export interface ShipView {
 }
 
 export interface ShipExtra {
-  /** A playbook the agent is running right now (`activeDelegation`). */
+  /** A playbook the host has in flight for this agent, held or running
+   *  (`delegation:changed` / `get_delegations`). */
   delegation: DelegationKind | null;
   /** The host answers `merge_pr` (`hostSupports`). */
   canMerge: boolean;
