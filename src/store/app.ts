@@ -1,4 +1,4 @@
-import { checkForUpdate } from "@/util/autoUpdate";
+import { checkForUpdate, type UpdateProgress } from "@/util/autoUpdate";
 import {
   hydrateAccount,
   hydrateSettings,
@@ -23,6 +23,9 @@ export interface AppSlice {
    *  driving the feedback toast. `null` = idle. A found update transitions to
    *  `updateReadyVersion` instead. */
   updateCheckStatus: "checking" | "uptodate" | "error" | null;
+  /** Download progress of the update a manual check found, while it's being
+   *  fetched and staged. `null` before one is found and once it's done. */
+  updateDownload: UpdateProgress | null;
 
   init: () => Promise<void>;
   clearError: () => void;
@@ -44,6 +47,7 @@ export const createAppSlice: SliceCreator<AppSlice> = (set, get) => ({
   updateReadyVersion: null,
   updateReadyNotes: null,
   updateCheckStatus: null,
+  updateDownload: null,
   initialized: false,
 
   init: async () => {
@@ -98,11 +102,14 @@ export const createAppSlice: SliceCreator<AppSlice> = (set, get) => ({
     if (get().updateCheckStatus === "checking") return;
     set({ updateCheckStatus: "checking" });
 
-    const result = await checkForUpdate();
+    // Status stays "checking" through the download too, so the guard above
+    // still holds; `updateDownload` is what tells the toast to show progress.
+    const result = await checkForUpdate((progress) => set({ updateDownload: progress }));
     if (result.kind === "staged") {
       // Hand off to the restart toast; the transient status is done.
       set({
         updateCheckStatus: null,
+        updateDownload: null,
         updateReadyVersion: result.version,
         updateReadyNotes: result.notes,
       });
@@ -110,7 +117,7 @@ export const createAppSlice: SliceCreator<AppSlice> = (set, get) => ({
     }
 
     const status = result.kind === "uptodate" ? "uptodate" : "error";
-    set({ updateCheckStatus: status });
+    set({ updateCheckStatus: status, updateDownload: null });
     // Auto-dismiss the feedback, but only if nothing has changed since — a new
     // check (or a staged update) may have superseded this one.
     const clearAfter = status === "uptodate" ? 4000 : 6000;

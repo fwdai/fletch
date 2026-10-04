@@ -1083,32 +1083,6 @@
 .set-dict-status.err {
   color: var(--danger);
 }
-.set-dict-bar {
-  height: 3px;
-  border-radius: 2px;
-  background: var(--bd);
-  overflow: hidden;
-}
-.set-dict-bar i {
-  display: block;
-  height: 100%;
-  border-radius: 2px;
-  background: var(--accent);
-  transition: width 0.3s var(--ease);
-}
-/* No Content-Length (or no event yet), so there's no percentage to show. */
-.set-dict-bar.indet i {
-  width: 40%;
-  animation: set-dict-indet 1.2s var(--ease) infinite;
-}
-@keyframes set-dict-indet {
-  from {
-    transform: translateX(-100%);
-  }
-  to {
-    transform: translateX(350%);
-  }
-}
 
 /* ── MOBILE DEVICES ──────────────────────────────────────────────────── */
 /* The listen port sits beside a wrapping address list, so it reads as a label

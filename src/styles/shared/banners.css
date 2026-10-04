@@ -167,6 +167,15 @@
   font-size: var(--fs-base);
   line-height: var(--lh-snug);
 }
+/* Download progress: a fixed width, so the card doesn't resize as the byte
+   count ticks and the bar has a stable track. */
+.update-toast.downloading {
+  width: 320px;
+}
+.update-toast.downloading .update-toast-body {
+  flex: 1;
+  min-width: 0;
+}
 .update-toast-text strong {
   color: var(--fg-0);
   font-weight: 600;

@@ -1,0 +1,28 @@
+/* ── ProgressBar ──────────────────────────────────────────────────────
+ * The app's one download progress bar (ProgressBar.tsx). */
+.ui-progress {
+  height: 3px;
+  border-radius: 2px;
+  background: var(--bd);
+  overflow: hidden;
+}
+.ui-progress i {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+  background: var(--accent);
+  transition: width 0.3s var(--ease);
+}
+/* No Content-Length (or no event yet), so there's no percentage to show. */
+.ui-progress.indet i {
+  width: 40%;
+  animation: ui-progress-indet 1.2s var(--ease) infinite;
+}
+@keyframes ui-progress-indet {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(350%);
+  }
+}

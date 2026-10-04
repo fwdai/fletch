@@ -17,6 +17,7 @@ export { Loader } from "./Loader";
 export { MenuButton } from "./MenuButton";
 export type { ModalLayer, ModalSize } from "./Modal";
 export { Modal, ModalBody, ModalFooter, ModalSheet } from "./Modal";
+export { ProgressBar } from "./ProgressBar";
 export { SandboxBadge } from "./SandboxBadge";
 export { Scrim } from "./Scrim";
 export type { SelectOption } from "./Select";
