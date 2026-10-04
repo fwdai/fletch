@@ -564,6 +564,10 @@ pub fn boot(cfg: BootConfig) -> Result<Engine, BootError> {
     // Archive sidebar workspaces left idle past the user's threshold — only
     // ones that are clean and fully pushed, so nothing unrecoverable goes.
     crate::supervisor::auto_archive::spawn(ctx.clone(), supervisor.clone(), db.clone());
+    // Fetch every project's base on its source repo every five minutes, so the
+    // "base moved" chips (`get_all_git_meta`) see a base that moved on GitHub.
+    // Once per host, window or no window — it used to be a webview timer.
+    crate::supervisor::base_freshness::spawn(supervisor.clone());
     // Reload follow-ups that were queued behind an in-flight turn when a prior
     // run exited, so a mid-turn message survives a restart. They rest in the
     // queue and flush on the user's next send (no auto-spawn).

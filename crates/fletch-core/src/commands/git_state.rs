@@ -1,5 +1,9 @@
 //! Git state surfaces shared with the remote dispatcher: one checkout's full
-//! state, and the fleet-wide shortstats poll behind the sidebar badges.
+//! state, the fleet-wide shortstats poll behind the sidebar badges, and the
+//! base-freshness fetch the host runs on its own clock.
+
+use std::collections::BTreeSet;
+use std::path::PathBuf;
 
 use crate::error::Result;
 use crate::git_state::{self, GitMeta, GitState, ShortStats};
@@ -102,8 +106,8 @@ pub async fn get_all_shortstats_impl(
 ///
 /// Purely local git — no network. Each checkout's `behind` is measured against
 /// its resolved base tip (`git::resolve_base`), preferring the SOURCE repo's
-/// `refs/remotes/origin/<base>` that the slow `refresh_base_freshness` poll
-/// advances, whenever that commit is readable from the checkout. Without a
+/// `refs/remotes/origin/<base>` that the host's base-freshness loop
+/// ([`refresh_base_freshness_impl`]) advances, whenever that commit is readable from the checkout. Without a
 /// GitHub connection the source ref never advances, so `behind` stays
 /// unknown/zero and no chip shows — the intended silent degrade. File paths
 /// always resolve (local status), so overlap hints work with or without GitHub.
@@ -147,4 +151,73 @@ pub async fn get_all_git_meta_impl(
         }
     }
     Ok(out)
+}
+
+/// What one base-freshness pass did, for the host's log line.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct BaseFreshness {
+    /// Distinct `(source repo, base)` pairs fetched.
+    pub fetched: usize,
+    /// Fetches that failed and were stepped over.
+    pub failed: usize,
+    /// Why the pass touched no network, when it did not.
+    pub skipped: Option<&'static str>,
+}
+
+impl BaseFreshness {
+    fn skipped(why: &'static str) -> Self {
+        Self {
+            skipped: Some(why),
+            ..Self::default()
+        }
+    }
+}
+
+/// Fetch each project's base branch on its SOURCE repo, so `get_all_git_meta`
+/// can measure staleness against a base that moved on GitHub (a sibling's PR
+/// merging, a teammate's push). One fetch per distinct `(source repo, base)` —
+/// deduped so a multi-agent project pays a single fetch, and the shared object
+/// store propagates it to every clone.
+///
+/// Best-effort and silent by contract: no GitHub credential or a paused
+/// rate-limit backoff skips the whole pass, and each fetch failure is logged
+/// and stepped over — a background fetch must never raise a user-facing error.
+/// Nothing is emitted: there is no git-meta event, and the clients'
+/// `get_all_git_meta` poll reads the moved ref on its next tick.
+///
+/// Run by the host's own loop (`supervisor::base_freshness`) and by the
+/// desktop's `refresh_base_freshness` command.
+pub async fn refresh_base_freshness_impl(supervisor: &Supervisor) -> BaseFreshness {
+    if crate::github::client::token().is_none() {
+        return BaseFreshness::skipped("no GitHub credential");
+    }
+    // Paused → touch no network; the last-fetched base tips still serve.
+    if crate::github::client::is_backing_off() {
+        return BaseFreshness::skipped("rate-limit backoff");
+    }
+    let Some(workspace) = supervisor.workspace.current() else {
+        return BaseFreshness::skipped("no workspace");
+    };
+    // Distinct (source repo, base) across every live agent's repos — one fetch
+    // covers all clones that share that source's objects.
+    let mut seen: BTreeSet<(PathBuf, String)> = BTreeSet::new();
+    for agent in &workspace.agents {
+        if agent.archive.is_some() {
+            continue;
+        }
+        for repo in &agent.repos {
+            seen.insert((repo.repo_path.clone(), repo.base_branch().await));
+        }
+    }
+    let mut out = BaseFreshness::default();
+    for (source, base) in seen {
+        match crate::git::fetch_base(&source, &base).await {
+            Ok(()) => out.fetched += 1,
+            Err(e) => {
+                out.failed += 1;
+                tracing::debug!(error = %e, source = %source.display(), base, "base freshness fetch skipped");
+            }
+        }
+    }
+    out
 }
