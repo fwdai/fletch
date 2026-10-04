@@ -49,6 +49,10 @@ pub(crate) fn nudge() {
 /// What the watcher last saw of one PR, keyed by [`pr_map_key`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Seen {
+    /// Which PR this memory is about. A checkout's key outlives its PR — a
+    /// follow-up is adopted onto the same branch after a merge — and the old
+    /// PR's rollup and threads say nothing about the new one.
+    number: u32,
     state: PrStatus,
     /// `None` until a tick resolved checks.
     rollup: Option<String>,
@@ -59,6 +63,7 @@ pub(crate) struct Seen {
 impl Seen {
     fn first(read: &Read) -> Self {
         Self {
+            number: read.state.number,
             state: read.state.state,
             rollup: read.checks.as_ref().map(|c| c.rollup.clone()),
             required_failing: read.checks.as_ref().map(failing_set).unwrap_or_default(),
@@ -101,6 +106,9 @@ fn thread_ids(comments: &PrComments) -> BTreeSet<String> {
 /// testable without GitHub:
 ///
 /// - A PR not in `last` is seeded (if open) and reports nothing.
+/// - A different PR number under the same key is a new PR: its state is
+///   reported once and it is seeded afresh, since the old memory is about a
+///   PR that is gone.
 /// - A state change is the only thing reported for it, and the key goes —
 ///   a settled PR has nothing further to watch.
 /// - Checks report when the rollup or the set of failing names moves.
@@ -112,6 +120,13 @@ pub(crate) fn diff(last: &mut HashMap<String, Seen>, key: &str, read: &Read) -> 
         }
         return Vec::new();
     };
+    if read.state.number != seen.number {
+        last.remove(key);
+        if read.state.state == PrStatus::Open {
+            last.insert(key.to_string(), Seen::first(read));
+        }
+        return vec![Change::State(read.state.clone())];
+    }
     if read.state.state != seen.state {
         last.remove(key);
         return vec![Change::State(read.state.clone())];
@@ -144,7 +159,13 @@ pub(crate) fn diff(last: &mut HashMap<String, Seen>, key: &str, read: &Read) -> 
 /// Put the changes on the wire. A state change is app-wide only for the
 /// primary repo, as `fetch_and_emit_pr_state` emits it; a secondary's PR is
 /// per-repo panel state and only its checks and threads are announced.
-fn publish(sink: &dyn EventSink, agent_id: &str, subdir: Option<&str>, changes: Vec<Change>) {
+fn publish(
+    sink: &dyn EventSink,
+    agent_id: &str,
+    subdir: Option<&str>,
+    number: u32,
+    changes: Vec<Change>,
+) {
     for change in changes {
         match change {
             Change::State(state) => {
@@ -152,7 +173,7 @@ fn publish(sink: &dyn EventSink, agent_id: &str, subdir: Option<&str>, changes: 
                     emit_pr_state(sink, agent_id, Some(state));
                 }
             }
-            Change::Checks(checks) => emit_pr_checks(sink, agent_id, subdir, checks),
+            Change::Checks(checks) => emit_pr_checks(sink, agent_id, subdir, number, checks),
             Change::Threads { comments, new_ids } => {
                 emit_pr_threads(sink, agent_id, subdir, comments, new_ids)
             }
@@ -215,8 +236,9 @@ async fn tick(ctx: &Arc<EngineCtx>, supervisor: &Arc<Supervisor>, last: &Last, w
             checks: status.checks,
             threads,
         };
+        let number = read.state.number;
         let changes = diff(&mut last.lock(), &key, &read);
-        publish(ctx.sink.as_ref(), agent_id, subdir, changes);
+        publish(ctx.sink.as_ref(), agent_id, subdir, number, changes);
     }
 }
 
@@ -411,6 +433,41 @@ mod tests {
             "{changes:?}"
         );
         assert!(last.is_empty(), "a settled PR has nothing further to watch");
+    }
+
+    /// A follow-up PR adopted onto the same branch is a different PR: its state
+    /// is announced once and the memory starts over, so the old PR's green
+    /// rollup and read threads are not held against the new one.
+    #[test]
+    fn a_different_pr_number_under_the_same_key_starts_over() {
+        let mut last = HashMap::new();
+        step(
+            &mut last,
+            &read(
+                PrStatus::Open,
+                Some(checks("passing", &[])),
+                Some(threads(&["t1"])),
+            ),
+        );
+        let mut next = read(
+            PrStatus::Open,
+            Some(checks("passing", &[])),
+            Some(threads(&["t1"])),
+        );
+        next.state.number = 651;
+        let changes = step(&mut last, &next);
+        assert!(
+            matches!(&changes[..], [Change::State(s)] if s.number == 651),
+            "{changes:?}"
+        );
+        let seen = &last["arabia"];
+        assert_eq!(seen.number, 651);
+        assert_eq!(seen.rollup.as_deref(), Some("passing"));
+        // The new PR's own first settle is news when it moves, like any PR's.
+        let mut later = read(PrStatus::Open, Some(checks("failing", &["unit"])), None);
+        later.state.number = 651;
+        let changes = step(&mut last, &later);
+        assert!(matches!(&changes[..], [Change::Checks(_)]), "{changes:?}");
     }
 
     #[test]

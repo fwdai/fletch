@@ -442,6 +442,9 @@ struct PrChecksChangedPayload {
     /// `None` for the agent's primary repo, the subdir for a secondary — the
     /// same addressing the per-repo PR reads take.
     subdir: Option<String>,
+    /// Which PR these checks belong to, so a listener that remembers the last
+    /// rollup per checkout can tell a new PR on the same branch from the old.
+    number: u32,
     checks: PrChecks,
 }
 
@@ -451,6 +454,7 @@ pub(super) fn emit_pr_checks(
     sink: &dyn EventSink,
     agent_id: &str,
     subdir: Option<&str>,
+    number: u32,
     checks: PrChecks,
 ) {
     emit(
@@ -459,6 +463,7 @@ pub(super) fn emit_pr_checks(
         PrChecksChangedPayload {
             agent_id: agent_id.to_string(),
             subdir: subdir.map(str::to_string),
+            number,
             checks,
         },
     );

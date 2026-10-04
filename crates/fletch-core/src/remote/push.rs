@@ -182,9 +182,11 @@ pub(super) struct PushTriggers {
     /// a batch of parallel prompts one alert; it is dropped when the agent
     /// leaves `Running`, which is also how a turn ends.
     pending_input: Mutex<HashSet<String>>,
-    /// The rollup each PR's last `pr:checks_changed` carried, by the event's
-    /// agent/subdir key, so a `failing → failing` with a different set of names
-    /// is not a second alert while `failing → passing` is.
+    /// The rollup each PR's last `pr:checks_changed` carried, keyed by the
+    /// event's agent/subdir plus its PR number, so a `failing → failing` with a
+    /// different set of names is not a second alert while `failing → passing`
+    /// is — and the next PR on the same checkout starts with no memory. Entries
+    /// go when their PR leaves `open`.
     last_rollup: Mutex<HashMap<String, String>>,
     /// The state each agent's last `pr:state_changed` carried. A merge or close
     /// alerts only when this saw the PR open: a cold start's first event may be
@@ -276,9 +278,11 @@ impl PushTriggers {
         let Ok(payload) = ChecksChangedPayload::deserialize(payload) else {
             return;
         };
+        // Keyed by PR, not just by checkout: the next PR on the same branch
+        // settling green is its own news, not a repeat of the last one's.
         let key = match &payload.subdir {
-            Some(subdir) => format!("{}::{subdir}", payload.agent_id),
-            None => payload.agent_id.clone(),
+            Some(subdir) => format!("{}::{subdir}#{}", payload.agent_id, payload.number),
+            None => format!("{}#{}", payload.agent_id, payload.number),
         };
         let rollup = payload.checks.rollup;
         let previous = self.last_rollup.lock().insert(key, rollup.clone());
@@ -348,6 +352,15 @@ impl PushTriggers {
                 None => last.remove(&payload.agent_id),
             }
         };
+        // A PR that is no longer open takes its rollup memory with it, so the
+        // map stays bounded by the PRs still being watched.
+        if payload.state.as_ref().map(|s| s.state.as_str()) != Some("open") {
+            let agent = payload.agent_id.as_str();
+            self.last_rollup.lock().retain(|key, _| {
+                let own = key.strip_prefix(agent);
+                !matches!(own, Some(rest) if rest.starts_with('#') || rest.starts_with("::"))
+            });
+        }
         let Some(state) = payload.state else {
             return;
         };
@@ -535,6 +548,8 @@ struct RawRequest {
 struct ChecksChangedPayload {
     agent_id: String,
     subdir: Option<String>,
+    #[serde(default)]
+    number: u32,
     checks: ChecksSummary,
 }
 

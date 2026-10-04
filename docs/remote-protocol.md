@@ -980,7 +980,7 @@ it on `protocol.events` never emits it, and a client that has no handler for it
 behaves as it did before the event existed — the prompt stays until answered,
 which is what every client did until this event.
 
-`pr:checks_changed` `{ agent_id, subdir: string | null, checks: PrChecks }` and
+`pr:checks_changed` `{ agent_id, subdir: string | null, number, checks: PrChecks }` and
 `pr:threads_changed` `{ agent_id, subdir, comments: PrComments, new_thread_ids: string[] }`
 come from the host-side PR watcher, which runs the sidebar's batched sweep
 (`get_all_pr_status`'s resolver — state and CI for every bound PR in one query)

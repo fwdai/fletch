@@ -96,6 +96,9 @@ export interface PrComments {
 export interface PrChecksChangedEvent {
   agent_id: string;
   subdir: string | null;
+  /** The PR these checks belong to — a new PR on the same branch is not a
+   *  continuation of the last one's rollup. */
+  number: number;
   checks: PrChecks;
 }
 

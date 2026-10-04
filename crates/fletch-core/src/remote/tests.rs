@@ -3037,11 +3037,17 @@ impl Drop for Muted {
 }
 
 /// A `pr:checks_changed` payload as `supervisor::events::emit_pr_checks` writes
-/// it, for the primary repo.
+/// it, for the primary repo's PR #7.
 fn checks_changed(agent_id: &str, rollup: &str, failing: &[&str]) -> Value {
+    checks_changed_on(7, agent_id, rollup, failing)
+}
+
+/// The same, for a given PR number — the next PR on the same checkout.
+fn checks_changed_on(number: u32, agent_id: &str, rollup: &str, failing: &[&str]) -> Value {
     json!({
         "agent_id": agent_id,
         "subdir": null,
+        "number": number,
         "checks": {
             "merge_state": "unknown",
             "rollup": rollup,
@@ -3148,6 +3154,51 @@ fn passing_checks_alert_with_their_own_title() {
     assert_eq!(h.sent()[0]["title"], "Checks passed");
     assert_eq!(h.sent()[0]["body"], "Fix login crash");
     assert_eq!(h.sent()[0]["collapseId"], "arabia");
+}
+
+/// The rollup memory belongs to a PR, not a checkout: the next PR on the same
+/// branch settling green is its own alert, and a PR that merged takes its
+/// memory with it.
+#[test]
+fn the_next_pr_on_the_same_checkout_alerts_on_its_own_settle() {
+    let _prefs = pr_prefs();
+    let h = Triggers::boot(false, &[("a1b2", "sandbox")]);
+    let agents = Agents::named("Fix login crash");
+    h.triggers.on_event(
+        &agents,
+        "pr:checks_changed",
+        &checks_changed_on(7, "arabia", "passing", &[]),
+    );
+    h.triggers.on_event(
+        &agents,
+        "pr:checks_changed",
+        &checks_changed_on(8, "arabia", "passing", &[]),
+    );
+    assert_eq!(h.kinds(), ["checks_settled", "checks_settled"]);
+
+    // #8 merges: its memory goes, so a #8 that somehow reports green again
+    // reads as a fresh settle rather than a duplicate.
+    h.triggers
+        .on_event(&agents, "pr:state_changed", &pr_state_of("arabia", "open"));
+    h.triggers.on_event(
+        &agents,
+        "pr:state_changed",
+        &pr_state_of("arabia", "merged"),
+    );
+    h.triggers.on_event(
+        &agents,
+        "pr:checks_changed",
+        &checks_changed_on(8, "arabia", "passing", &[]),
+    );
+    assert_eq!(
+        h.kinds(),
+        [
+            "checks_settled",
+            "checks_settled",
+            "pr_merged",
+            "checks_settled"
+        ]
+    );
 }
 
 /// The watcher emits for a changed set of failing names too; that is the
