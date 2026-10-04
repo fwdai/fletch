@@ -99,10 +99,10 @@ pub const WITHHELD_WF_ROADMAP_OPS: &[(&str, &str)] = &[
     // file/github read surface, which is off the wire as a family.
     ("list_repo_tree", "file-read surface, withheld as a family"),
     ("list_repo_prs", "github-read surface, withheld as a family"),
-    // The desktop autopilot ladder's two rungs. `run_verification` runs this
-    // machine's verify scripts and `fork_agent` is a documented follow-up, so
-    // the ladder stays a local loop over the local engine (see
-    // `src/store/autopilotSync.ts`).
+    // `run_verification` runs this machine's verify scripts. Autopilot does
+    // not need it on the wire: the ladder runs on the host, which calls its
+    // own verifier (`commands::run_verification_impl`) and reports the result
+    // as `verify:report`. `fork_agent` is a documented follow-up.
     (
         "run_verification",
         "runs the local machine's verify scripts",
@@ -156,6 +156,9 @@ pub const OPS: &[&str] = &[
     "get_pr_threads",
     "delegate_git",
     "get_delegations",
+    "autopilot_state",
+    "autopilot_set",
+    "autopilot_log",
     "list_repo_branches",
     "repo_default_branch",
     "discover_supported_models",
@@ -404,6 +407,12 @@ const OP_SCOPES: &[(&str, Scope)] = &[
     // same grant as answering that prompt.
     ("delegate_git", Scope::Publish),
     ("get_delegations", Scope::Observe),
+    ("autopilot_state", Scope::Observe),
+    // Publish, like `delegate_git`: an enrolled checkout's pushes skip the
+    // approval prompt (`rpc::approval`), so switching autopilot on is a
+    // standing publish grant.
+    ("autopilot_set", Scope::Publish),
+    ("autopilot_log", Scope::Observe),
     ("list_repo_branches", Scope::Observe),
     ("repo_default_branch", Scope::Observe),
     ("discover_supported_models", Scope::Observe),
@@ -920,6 +929,38 @@ impl Dispatch for SupervisorDispatch {
                 }
 
                 "get_delegations" => ok(crate::commands::get_delegations_impl()),
+
+                // Autopilot runs on the host; clients read its state and flip
+                // its two switches, which only the host writes.
+                "autopilot_state" => {
+                    let a: AutopilotStateArgs = parse(args)?;
+                    res(crate::autopilot::autopilot_state_impl(
+                        ctx,
+                        sup,
+                        a.agent_id.as_deref(),
+                    ))
+                }
+
+                "autopilot_set" => {
+                    let a: AutopilotSetArgs = parse(args)?;
+                    res(crate::autopilot::autopilot_set_impl(
+                        ctx,
+                        sup,
+                        a.project_id.as_deref(),
+                        a.agent_id.as_deref(),
+                        a.enabled,
+                    ))
+                }
+
+                "autopilot_log" => {
+                    let a: AutopilotLogArgs = parse(args)?;
+                    res(crate::autopilot::autopilot_log_impl(
+                        ctx,
+                        sup,
+                        a.agent_id.as_deref(),
+                        a.subdir.as_deref(),
+                    ))
+                }
 
                 "get_pr_live" => {
                     let a: AgentSubdirArgs = parse(args)?;
@@ -1829,6 +1870,42 @@ mod approval_tests {
         assert!(rows.is_array(), "{rows}");
     }
 
+    /// The autopilot ops take the desktop's argument keys: `autopilot_set`
+    /// refuses anything but exactly one id before writing, and the two reads
+    /// answer the shapes a client seeds its mirror from.
+    #[tokio::test]
+    async fn the_autopilot_ops_read_back_and_set_refuses_two_ids() {
+        let (ctx, sink, _dir) = test_ctx();
+        let sup = Arc::new(Supervisor::new(Arc::new(WorkspaceManager::new(
+            ctx.db.clone(),
+        ))));
+        let dispatch = SupervisorDispatch::new(ctx, sup);
+
+        let err = dispatch
+            .dispatch(
+                "autopilot_set",
+                json!({ "projectId": "p1", "agentId": "arabia", "enabled": false }),
+            )
+            .await
+            .expect_err("one id or the other");
+        assert!(err.contains("exactly one"), "{err}");
+        assert!(sink.events().is_empty(), "nothing was written or announced");
+
+        let snap = dispatch
+            .dispatch("autopilot_state", json!({}))
+            .await
+            .expect("a read of the host's autopilot is always answerable");
+        assert!(snap["checkouts"].is_array(), "{snap}");
+        assert!(snap["disabled_projects"].is_array(), "{snap}");
+        assert!(snap["paused_agents"].is_array(), "{snap}");
+
+        let log = dispatch
+            .dispatch("autopilot_log", json!({ "agentId": "arabia" }))
+            .await
+            .expect("history reads back");
+        assert_eq!(log, json!([]));
+    }
+
     /// `publish:approval-requested` only reaches the clients that were
     /// connected when it fired. This op is how every other one — a phone opened
     /// afterwards, a desktop that just reconnected — learns a publish is
@@ -1982,6 +2059,35 @@ struct DelegateGitArgs {
     action: String,
     #[serde(default)]
     params: std::collections::BTreeMap<String, String>,
+}
+
+/// `autopilot_state`: one agent, or every live agent when absent.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AutopilotStateArgs {
+    #[serde(default)]
+    agent_id: Option<String>,
+}
+
+/// `autopilot_set`: exactly one of the two ids (checked by the impl).
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AutopilotSetArgs {
+    #[serde(default)]
+    project_id: Option<String>,
+    #[serde(default)]
+    agent_id: Option<String>,
+    enabled: bool,
+}
+
+/// `autopilot_log`: everything, one agent, or one of its checkouts.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AutopilotLogArgs {
+    #[serde(default)]
+    agent_id: Option<String>,
+    #[serde(default)]
+    subdir: Option<String>,
 }
 
 /// `get_all_pr_status`: whether closed PRs get a live re-check this round, or

@@ -14,6 +14,7 @@ pub mod files;
 pub mod git_ops;
 pub mod git_state;
 pub mod github;
+pub mod verify;
 pub mod workspace;
 
 pub use agent::*;
@@ -21,4 +22,5 @@ pub use files::*;
 pub use git_ops::*;
 pub use git_state::*;
 pub use github::*;
+pub use verify::*;
 pub use workspace::*;

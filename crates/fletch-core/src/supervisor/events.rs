@@ -586,7 +586,7 @@ struct VerificationReportPayload {
 /// its Mission Control card renders a tests chip from this report. Fire-and-
 /// forget from `trigger_turn_end_verification`; the frontend stores the latest
 /// per agent.
-pub(super) fn emit_verification(
+pub(crate) fn emit_verification(
     sink: &dyn EventSink,
     agent_id: &str,
     report: crate::verify::VerificationReport,

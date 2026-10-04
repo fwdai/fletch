@@ -58,6 +58,56 @@ pub fn get_delegations() -> Vec<fletch_core::supervisor::delegation::DelegationV
     fletch_core::commands::get_delegations_impl()
 }
 
+/// Autopilot as the host runs it: one agent's checkouts (or every live
+/// agent's) plus both opt-out lists. Same body as the remote op.
+#[tauri::command]
+pub fn autopilot_state(
+    supervisor: State<'_, Arc<Supervisor>>,
+    ctx: State<'_, Arc<EngineCtx>>,
+    agent_id: Option<String>,
+) -> Result<fletch_core::autopilot::AutopilotSnapshot> {
+    fletch_core::autopilot::autopilot_state_impl(
+        ctx.inner(),
+        supervisor.inner(),
+        agent_id.as_deref(),
+    )
+}
+
+/// Flip a project's autopilot switch, or pause/resume one agent — exactly one
+/// of the two ids. The host owns both settings; same body as the remote op.
+#[tauri::command]
+pub fn autopilot_set(
+    supervisor: State<'_, Arc<Supervisor>>,
+    ctx: State<'_, Arc<EngineCtx>>,
+    project_id: Option<String>,
+    agent_id: Option<String>,
+    enabled: bool,
+) -> Result<fletch_core::autopilot::AutopilotSnapshot> {
+    fletch_core::autopilot::autopilot_set_impl(
+        ctx.inner(),
+        supervisor.inner(),
+        project_id.as_deref(),
+        agent_id.as_deref(),
+        enabled,
+    )
+}
+
+/// What autopilot did, newest first. Same body as the remote op.
+#[tauri::command]
+pub fn autopilot_log(
+    supervisor: State<'_, Arc<Supervisor>>,
+    ctx: State<'_, Arc<EngineCtx>>,
+    agent_id: Option<String>,
+    subdir: Option<String>,
+) -> Result<Vec<fletch_core::autopilot::LogEntry>> {
+    fletch_core::autopilot::autopilot_log_impl(
+        ctx.inner(),
+        supervisor.inner(),
+        agent_id.as_deref(),
+        subdir.as_deref(),
+    )
+}
+
 /// Stage all working-tree changes and commit them with the given message.
 #[tauri::command]
 pub async fn commit_agent(

@@ -808,18 +808,15 @@ commands have a row above, plus `wf_run_agents` and the remote-only
 desktop-only state, or is a host policy decision, so there was nothing to
 withhold. The flows around them keep the exclusions of the families they borrow
 from — the composers' `@file` / `#PR` mention sources (`list_repo_tree`,
-`list_repo_prs`) and the desktop autopilot ladder's `run_verification` — and a
-client gates them by name like any other absent op.
+`list_repo_prs`) and `run_verification` — and a client gates them by name like
+any other absent op.
 
 Two things a client should know before driving them. `wf_launch`'s
 `attachments` are paths on the *host*, so upload with `attachment_*` first and
 pass what `attachment_end` answered, exactly as for `send_user_message`. And
-the ladder that walks one agent's checkout through commit → push → PR is the
-desktop's own loop over its own engine, not an op: its opt-outs are rows in the
-client's local `settings` / `project_settings`, and its verify rung runs local
-scripts. The host's autonomous loop is the roadmap *queue*, which runs on the
-host and is driven by the board ops above — holding a project or an item is how
-a client stops it.
+the host has two autonomous loops: the roadmap *queue*, driven by the board ops
+above — holding a project or an item is how a client stops it — and autopilot
+(see "Autopilot"), which a client steers with `autopilot_set`.
 
 ## Dictation
 

@@ -629,6 +629,12 @@ pub fn pre_authorizes(agent_id: &str, repo: Option<&str>, op: &str) -> bool {
     global().pre_authorizes(agent_id, repo, op)
 }
 
+/// Whether any delegation — queued or delivered, the user's or autopilot's —
+/// is live on this checkout. Autopilot never dispatches over one.
+pub fn is_live(key: &Key) -> bool {
+    global().inner.lock().table.contains_key(key)
+}
+
 /// An `agent:git-action` the agent's RPC reported. Called where the host emits
 /// that event, so the ack is the same fact every client hears.
 pub(crate) fn note_git_action(agent_id: &str, op: &str) {
