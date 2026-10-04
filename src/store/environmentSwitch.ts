@@ -239,6 +239,13 @@ export const createEnvironmentSwitchSlice: SliceCreator<EnvironmentSwitchSlice> 
     await get()
       .refreshGithub()
       .catch(() => {});
+    // Its PR badges, once that login is known (the read is GitHub-gated). The
+    // host watcher's events keep them current from here, but they only reach a
+    // client connected when they fired; closed PRs get a live look too, since
+    // nothing else re-checks one that reopened.
+    await get()
+      .loadAllPrStatus(true)
+      .catch(() => {});
   };
 
   return {

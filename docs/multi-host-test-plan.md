@@ -124,7 +124,8 @@ leaves a spinner, a stuck state, or a wrong-host side effect is a bug.
   (`github_disconnect` is env-routed, `store/account.ts:92`). Should
   disconnect this Mac, will instead fail. Bug.
 - **Slash commands** discovery and `run_claude_command`.
-- **Sidebar PR badge sweep** (`refresh_all_pr_status`) — check console noise.
+- **Sidebar PR badge seed** (`get_all_pr_status`, on switch/reconnect/focus;
+  the host's PR watcher events keep it current) — check console noise.
 - **Live records for Cursor/Codex agents** (`append_live_record` fires per
   event): watch for an error flood in the console.
 - **Agent already in native view on the host** opened from the client:

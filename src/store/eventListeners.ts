@@ -682,10 +682,10 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
     }),
   );
 
-  // The host-side PR watcher's reads land here the same way, so the Git panel's
-  // checks and comments move between its own polls — and keep moving for an
-  // agent whose panel is not open. Same stamp rule: a poll already in flight
-  // must not roll these back.
+  // The host-side PR watcher's reads land here the same way. These are what
+  // keep the Git panel's checks and comments current — the webview no longer
+  // polls them (store/gitSync) — for every agent, panel open or not. Same stamp
+  // rule: a seed or one-shot read already in flight must not roll them back.
   await bind(
     onPrChecksChanged((e) => {
       const key = checkoutKey(e.agent_id, e.subdir ?? undefined);
@@ -793,7 +793,13 @@ export const setupResync = (set: AppSet, get: AppGet) => {
     if (resyncInFlight) return;
     resyncInFlight = true;
     try {
-      await Promise.all([refreshWorkspace(set), refreshOffSidebarAgents()]);
+      // The PR badges too: they follow the host watcher's events, and an event
+      // missed while the window was in the background has no other way back.
+      await Promise.all([
+        refreshWorkspace(set),
+        refreshOffSidebarAgents(),
+        get().loadAllPrStatus(),
+      ]);
     } catch {
       // Best-effort; the next event or resync recovers.
     } finally {
