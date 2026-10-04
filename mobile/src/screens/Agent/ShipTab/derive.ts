@@ -241,9 +241,13 @@ export function describeShip(
 
   // The overflow: Merge stays reachable from any open state the gate allows
   // (as on the desktop), the manual sheet backs every commit-family playbook,
-  // and GitHub is always one tap away once a PR exists.
+  // and GitHub is always one tap away once a PR exists. Never Merge while the
+  // local tree is conflicted, however green GitHub's gate is: the checkout
+  // cannot even be reconciled yet, and that holds while the agent is mid-way
+  // through resolving it (the desktop's conflict state offers no merge either).
+  const conflicted = (input.git?.files ?? []).some((f) => f.kind === "conflicted");
   const more: ShipAction[] = [];
-  if (gate?.mergeAllowed && extra.canMerge && primary?.kind !== "merge" && open) {
+  if (gate?.mergeAllowed && extra.canMerge && primary?.kind !== "merge" && open && !conflicted) {
     more.push({ key: "merge", label: `Merge PR #${open.number}`, kind: "merge" });
   }
   if (isCommitAction(primary)) {

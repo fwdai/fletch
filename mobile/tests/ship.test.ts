@@ -148,13 +148,14 @@ describe("describeShip", () => {
     expect(push.primary).not.toHaveProperty("params");
   });
 
-  it("resolves conflicts before anything else, with no manual alternative", () => {
-    const v = ship({
+  it("resolves conflicts before anything else, and never offers Merge meanwhile", () => {
+    const input = {
       git: git({ files: [file("conflicted"), file()], unpushed: 2 }),
       pr: pr(),
       checks: checks(),
       comments: threads(thread()),
-    });
+    };
+    const v = ship(input);
     expect(v.strip).toEqual({ kind: "att", text: "Conflicts in 1 file", prLink: true });
     expect(v.primary).toEqual({
       key: "resolve",
@@ -163,8 +164,17 @@ describe("describeShip", () => {
       action: "resolve-conflicts",
       delegation: "resolve",
     });
-    // The gate is green, so Merge stays reachable — but never the PR sheet.
-    expect(v.more.map((a) => a.key)).toEqual(["merge", "github"]);
+    // GitHub's gate is green, but the local tree cannot be reconciled yet:
+    // no Merge in the overflow and no PR sheet — only the informational link.
+    // The same holds while the agent is mid-way through resolving it.
+    expect(v.more.map((a) => a.key)).toEqual(["github"]);
+    expect(keys(input, { delegation: "resolve" })).toEqual(["github"]);
+    // Once the conflict is gone, Merge is back where the gate allows it.
+    expect(keys({ ...input, git: git({ files: [file()] }) })).toEqual([
+      "merge",
+      "manual",
+      "github",
+    ]);
   });
 
   it("updates the branch when behind or conflicting with the base, naming which", () => {
