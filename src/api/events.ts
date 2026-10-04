@@ -45,6 +45,7 @@ import type {
   TurnSentEvent,
   TurnStartedEvent,
 } from "./types/session";
+import type { ProjectSettingsChangedEvent, SettingsChangedEvent } from "./types/settings";
 import type { VerificationReportEvent } from "./types/verify";
 import type { WfEventEnvelope, WfRun } from "./types/workflow";
 
@@ -378,6 +379,19 @@ export function onPublishApprovalResolved(
  *  image builds on a cold first spawn — feeds the build progress toast. */
 export function onDockerBuildProgress(cb: (e: DockerBuildEvent) => void): Promise<UnlistenFn> {
   return on<DockerBuildEvent>("docker:build-progress", cb);
+}
+
+/** A host-owned global setting was written — by this window, another desktop
+ *  or a phone. Fold it over what `get_settings` answered. */
+export function onSettingsChanged(cb: (e: SettingsChangedEvent) => void): Promise<UnlistenFn> {
+  return on<SettingsChangedEvent>("settings:changed", cb);
+}
+
+/** One project's client-writable setting was written, from any client. */
+export function onProjectSettingsChanged(
+  cb: (e: ProjectSettingsChangedEvent) => void,
+): Promise<UnlistenFn> {
+  return on<ProjectSettingsChangedEvent>("project_settings:changed", cb);
 }
 
 /** Raw PTY bytes from a provider's in-app sign-in (Settings → Providers). */

@@ -5,6 +5,7 @@ import { CODE_THEMES } from "@/data/codeThemes";
 import { ACCENTS } from "@/data/providers";
 import type { ThemeMode } from "@/storage/preferences";
 import { useAppStore } from "@/store";
+import { useGate } from "@/store/capabilities";
 import { SetGroup, SetHead, SetRow, SetSeg, SetToggle } from "./primitives";
 
 const CODE_THEME_OPTIONS = CODE_THEMES.map((t) => ({ value: t.id, label: t.label }));
@@ -40,6 +41,9 @@ export function GeneralPane() {
   const autoArchiveIdleDays = useAppStore((s) => s.autoArchiveIdleDays);
   const setAutoArchiveIdleDays = useAppStore((s) => s.setAutoArchiveIdleDays);
   const revealLogs = useAppStore((s) => s.revealLogs);
+  // The two alert switches and the sweep are the host's (it sends the alerts
+  // and runs the sweep), so they edit the environment on screen.
+  const hostGate = useGate("hostSettings");
 
   return (
     <div className="set-pane">
@@ -107,24 +111,35 @@ export function GeneralPane() {
           <SetToggle
             on={notifyTurnComplete}
             onClick={() => setNotifyTurnComplete(!notifyTurnComplete)}
+            disabled={!!hostGate}
+            tip={hostGate ?? undefined}
           />
         </SetRow>
         <SetRow
           title="Pull request activity"
           sub="Also alert your phone when a PR's checks settle, a review comment arrives, or the PR merges or closes. Sent while this window is in the background."
         >
-          <SetToggle on={notifyPrActivity} onClick={() => setNotifyPrActivity(!notifyPrActivity)} />
+          <SetToggle
+            on={notifyPrActivity}
+            onClick={() => setNotifyPrActivity(!notifyPrActivity)}
+            disabled={!!hostGate}
+            tip={hostGate ?? undefined}
+          />
         </SetRow>
       </SetGroup>
 
       <SetGroup label="Workspaces">
         <SetRow
           title="Auto-archive idle workspaces"
-          sub="Archive a workspace once it has sat idle this long. Only workspaces with no uncommitted changes and no unpushed commits are archived; a workspace whose PR has merged or closed goes after a day. Archived workspaces can be restored from History."
+          sub={
+            hostGate ??
+            "Archive a workspace once it has sat idle this long. Only workspaces with no uncommitted changes and no unpushed commits are archived; a workspace whose PR has merged or closed goes after a day. Archived workspaces can be restored from History."
+          }
         >
           <Select
             value={String(autoArchiveIdleDays)}
             ariaLabel="Auto-archive idle workspaces"
+            disabled={!!hostGate}
             options={AUTO_ARCHIVE_OPTIONS}
             onChange={(v) => void setAutoArchiveIdleDays(Number(v))}
           />

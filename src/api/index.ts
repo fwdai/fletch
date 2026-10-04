@@ -12,6 +12,7 @@ import { roadmapApi } from "./domains/roadmap";
 import { runApi } from "./domains/run";
 import { sandboxApi } from "./domains/sandbox";
 import { sessionApi } from "./domains/session";
+import { settingsApi } from "./domains/settings";
 import { shellApi } from "./domains/shell";
 import { usageApi } from "./domains/usage";
 import { workflowsApi } from "./domains/workflows";
@@ -33,6 +34,7 @@ export * from "./types/roadmap";
 export * from "./types/run";
 export * from "./types/sandbox";
 export * from "./types/session";
+export * from "./types/settings";
 export * from "./types/usage";
 export * from "./types/verify";
 export * from "./types/workflow";
@@ -48,6 +50,7 @@ export const api = {
   ...issuesApi,
   ...agentsApi,
   ...sessionApi,
+  ...settingsApi,
   ...gitApi,
   ...shellApi,
   ...runApi,

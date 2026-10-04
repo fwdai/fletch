@@ -9,12 +9,9 @@ import type {
 } from "../types/sandbox";
 
 export const sandboxApi = {
-  // Sandbox engine selection. The setting is backend-owned (snake_case
-  // `sandbox_engine`, written by `set_sandbox_engine` — which validates each
-  // container engine against a live probe and refuses when its runtime is
-  // unreachable).
+  // Sandbox engine selection. The setting is host-owned (`sandbox_engine`,
+  // written by `settingsApi.setSandboxEngine`).
   getSandboxEngine: () => invoke<SandboxEngine>("get_sandbox_engine"),
-  setSandboxEngine: (engine: SandboxEngine) => invoke<void>("set_sandbox_engine", { engine }),
   probeDockerEngine: () => invoke<DockerProbe>("probe_docker_engine"),
   probePodmanEngine: () => invoke<PodmanProbe>("probe_podman_engine"),
   // What each engine actually guarantees, for the picker (`sandbox::guarantees`).
@@ -23,8 +20,6 @@ export const sandboxApi = {
   // (`publish_confirmation`); off by default because autopilot publishes
   // unattended and a prompt would hang it until the decision timeout.
   getPublishConfirmation: () => invoke<boolean>("get_publish_confirmation"),
-  setPublishConfirmation: (enabled: boolean) =>
-    invoke<void>("set_publish_confirmation", { enabled }),
   // Answer one prompt. A request that already timed out is ignored backend-side,
   // so a late answer can never publish anything.
   answerPublishApproval: (id: string, approved: boolean) =>
@@ -54,18 +49,6 @@ export const sandboxApi = {
   connectClaudeContainerAuth: () => invokeLocal<void>("connect_claude_container_auth"),
   submitClaudeSetupCode: (code: string) => invokeLocal<void>("submit_claude_setup_code", { code }),
   cancelClaudeContainerAuth: () => invokeLocal<void>("cancel_claude_container_auth"),
-  // Advanced docker launch knobs (image override + resource limits). Backend-
-  // owned settings (`docker_image` / `docker_memory` / `docker_cpus`): the
-  // command persists all three AND updates the spawn-path mirror. Blank clears
-  // a field (falls back to the launch defaults). Never write these via a
-  // frontend `setSetting`.
-  setDockerLaunchSettings: (image: string | null, memory: string | null, cpus: string | null) =>
-    invoke<void>("set_docker_launch_settings", { image, memory, cpus }),
-  // The podman twin, over its own `podman_image` / `podman_memory` /
-  // `podman_cpus` settings. Same contract, separate keys: a user running both
-  // engines points each at its own image and limits.
-  setPodmanLaunchSettings: (image: string | null, memory: string | null, cpus: string | null) =>
-    invoke<void>("set_podman_launch_settings", { image, memory, cpus }),
   /** Launch Docker Desktop (the daemon-down error state's action). macOS-only;
    *  rejects elsewhere. Local whatever environment is active: it opens an app on
    *  this Mac, and there is no screen on a remote host to open one on. */

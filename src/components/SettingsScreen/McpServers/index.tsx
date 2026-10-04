@@ -5,6 +5,7 @@ import { SetGroup, SetRow, SetToggle } from "@/components/SettingsScreen/primiti
 import { mcpCapableLabels } from "@/data/providers";
 import type { McpServer, NewMcpServer } from "@/storage/mcpServers";
 import { useAppStore } from "@/store";
+import { useGate } from "@/store/capabilities";
 import { ServerEditor } from "./ServerEditor";
 
 // Tools (MCP servers) settings pane: a list ⇄ editor switch over the shared
@@ -19,6 +20,8 @@ import { ServerEditor } from "./ServerEditor";
 function BuiltInTools() {
   const codeIndexingEnabled = useAppStore((s) => s.codeIndexingEnabled);
   const setCodeIndexingEnabled = useAppStore((s) => s.setCodeIndexingEnabled);
+  // The host indexes its own repos for the agents it spawns.
+  const hostGate = useGate("hostSettings");
   return (
     <SetGroup label="Built-in">
       <SetRow
@@ -28,6 +31,8 @@ function BuiltInTools() {
         <SetToggle
           on={codeIndexingEnabled}
           onClick={() => setCodeIndexingEnabled(!codeIndexingEnabled)}
+          disabled={!!hostGate}
+          tip={hostGate ?? undefined}
         />
       </SetRow>
     </SetGroup>

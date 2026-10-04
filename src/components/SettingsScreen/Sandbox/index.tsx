@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { Select } from "@/components/ui/Select";
 import type { SandboxEngine } from "@/storage/preferences";
 import { useAppStore } from "@/store";
+import { useGate } from "@/store/capabilities";
 import { SetGroup, SetHead, SetRow } from "../primitives";
 import { ContainerAuth } from "./ContainerAuth";
 import { ContainerLaunchKnobs } from "./ContainerLaunchKnobs";
@@ -24,6 +25,9 @@ export function SandboxPane() {
   const refreshDockerProbe = useAppStore((s) => s.refreshDockerProbe);
   const podmanProbe = useAppStore((s) => s.podmanProbe);
   const refreshPodmanProbe = useAppStore((s) => s.refreshPodmanProbe);
+  // The engine (and the launch knobs below) are the host's: it stamps them on
+  // the agents it spawns.
+  const hostGate = useGate("hostSettings");
 
   useEffect(() => {
     let cancelled = false;
@@ -77,11 +81,15 @@ export function SandboxPane() {
       <SetGroup label="Isolation">
         <SetRow
           title="Engine"
-          sub="Docker and Podman run agents in a Linux container. Applies to new agents only."
+          sub={
+            hostGate ??
+            "Docker and Podman run agents in a Linux container. Applies to new agents only."
+          }
         >
           <Select<SandboxEngine>
             value={sandboxEngine}
             ariaLabel="Sandbox engine"
+            disabled={!!hostGate}
             options={[
               { value: "sandbox-exec", label: "Seatbelt (sandbox-exec)" },
               {

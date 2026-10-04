@@ -81,6 +81,49 @@ export const GATES = {
     label: "Project settings",
     reason: "This host is too old to change project settings — change them on the host.",
   },
+  /** The host's own configuration in Settings: the alerts, the idle sweep,
+   *  code indexing, the sandbox engine and its launch knobs, provider binary
+   *  overrides (docs/remote-protocol.md, "Settings"). The read and every
+   *  setter, which went on the wire together under the `projects` scope. */
+  hostSettings: {
+    op: [
+      "get_settings",
+      "set_notify_turn_complete",
+      "set_notify_pr_activity",
+      "set_auto_archive_idle_days",
+      "set_code_indexing_enabled",
+      "set_sandbox_engine",
+      "set_docker_launch_settings",
+      "set_podman_launch_settings",
+      "set_agent_bin_override",
+    ],
+    label: "Host settings",
+    reason: "This host is too old to change its settings from here — change them on the host.",
+  },
+  /** Settings › Git's publishing preferences and attribution. Their own gate
+   *  because they are `publish`-scoped: a device paired without it reads them
+   *  but may not change them, so the reason names both causes. */
+  publishSettings: {
+    op: [
+      "get_settings",
+      "set_publish_confirmation",
+      "set_publish_approval_wait",
+      "set_branch_prefix",
+      "set_draft_prs",
+      "set_agent_attribution_removed",
+    ],
+    label: "Publishing settings",
+    reason:
+      "This host is too old, or this device isn't paired to publish — change publishing settings on the host.",
+  },
+  /** A project page's run commands, env sharing, Linear team, roadmap
+   *  autonomy and turn-end verify — every `project_settings` row the host
+   *  reads, through one allowlisted pair. */
+  projectSettings: {
+    op: ["get_project_settings", "set_project_setting"],
+    label: "Project preferences",
+    reason: "This host is too old to change this project's settings — change them on the host.",
+  },
   sideShell: {
     op: "open_agent_shell",
     label: "Terminals",

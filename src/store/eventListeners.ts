@@ -30,6 +30,7 @@ import {
   onRunState,
   onSessionRecordsAppended,
   onSessionSyncHealth,
+  onSettingsChanged,
   onShellOutput,
   onSpawnProgress,
   onTurnSent,
@@ -63,18 +64,14 @@ import { getOrCreateAccount, toProfile } from "@/storage/accounts";
 import {
   DEFAULT_LEFT_WIDTH,
   DEFAULT_RIGHT_WIDTH,
-  parseAutoArchiveIdleDays,
   parseAutopilotPausedAgents,
   parseDraftBaseBranches,
   parseFeatures,
   parseNewDraftSelection,
   parsePaneWidth,
   parseProviderFlags,
-  parseProviderPathOverrides,
-  parsePublishApprovalWait,
   parseReviewDismissed,
   parseRoadmapBoardWidth,
-  parseSandboxEngine,
   parseShortcutOverrides,
   type ThemeMode,
 } from "@/storage/preferences";
@@ -83,6 +80,7 @@ import { notify } from "@/util/notify";
 import { playSound, type SoundKind } from "@/util/sound";
 import { reduceInstallEvent } from "./agentInstall";
 import { checkoutKey } from "./git";
+import { applyHostSettingChange, hydrateHostSettings } from "./hostSettings";
 import { erroredAgents, interruptedAgents } from "./interrupted";
 import { stampPrWrite } from "./prWriteOrder";
 import { refreshWorkspace } from "./refreshWorkspace";
@@ -144,18 +142,7 @@ export const hydrateSettings = async (set: AppSet, get: AppGet) => {
       soundEnabled: s.soundEnabled !== "false",
       // Opt-out native notifications: only an explicit "false" disables them.
       notifyEnabled: s.notifyEnabled !== "false",
-      // Opt-out, backend-owned (snake_case, written by `set_notify_turn_complete`;
-      // the phone push reads the same key): only an explicit "false" silences
-      // turn-complete alerts.
-      notifyTurnComplete: s.notify_turn_complete !== "false",
-      // The ship-loop alerts, same rule and same ownership
-      // (`set_notify_pr_activity`).
-      notifyPrActivity: s.notify_pr_activity !== "false",
       providerFlags: parseProviderFlags(s.providers),
-      providerPathOverrides: parseProviderPathOverrides(s),
-      // Opt-in, backend-owned (`set_agent_attribution_removed`): only an explicit
-      // "true" removes attribution, matching Rust's `attribution::parse`.
-      agentAttributionRemoved: s.agent_attribution_removed === "true",
       newDraftProvider,
       newDraftModel,
       newDraftCustomAgentId,
@@ -172,40 +159,12 @@ export const hydrateSettings = async (set: AppSet, get: AppGet) => {
       // switch a caller to `setSetting("telemetryEnabled", …)`: that's a
       // different key and the toggle would silently stop working.
       telemetryEnabled: s.telemetry_enabled !== "false",
-      // Code indexing is opt-out too, and backend-owned (snake_case, written by
-      // the `set_code_indexing_enabled` Rust command): read `s.code_indexing_enabled`,
-      // never setSetting it. Only an explicit "false" disables.
-      codeIndexingEnabled: s.code_indexing_enabled !== "false",
       // The local dictation engine is opt-in and backend-owned (written by
       // `set_dictation_engine`): only an explicit "whisper" selects it, which
       // matches Rust's `whisper::parse_enabled`.
       dictationEngineEnabled: s.dictation_engine === "whisper",
       // Opt-out, backend-owned (`set_dictation_auto_stop`): only "false" disables.
       dictationAutoStop: s.dictation_auto_stop !== "false",
-      // Backend-owned like telemetry_enabled (snake_case, written by the
-      // `set_sandbox_engine` Rust command) — read it, never setSetting it.
-      sandboxEngine: parseSandboxEngine(s.sandbox_engine),
-      // Publish approval is opt-*in*, unlike the two above: autopilot publishes
-      // unattended, so defaulting it on would hang every unattended run until
-      // the decision timeout. Backend-owned (`set_publish_confirmation`), so only
-      // an explicit "true" enables — matching `rpc::approval::parse_enabled`.
-      publishConfirmation: s.publish_confirmation === "true",
-      // Publishing preferences, all backend-owned (snake_case, written by
-      // `set_publish_approval_wait` / `set_branch_prefix` / `set_draft_prs`).
-      publishApprovalWait: parsePublishApprovalWait(s.publish_approval_wait),
-      // Backend-owned (`set_auto_archive_idle_days`); the sweep reads the key.
-      autoArchiveIdleDays: parseAutoArchiveIdleDays(s.auto_archive_idle_days),
-      branchPrefix: s.git_branch_prefix || "",
-      draftPrs: s.github_draft_prs === "true",
-      // Advanced per-runtime launch knobs — backend-owned (snake_case, written
-      // by `set_docker_launch_settings` / `set_podman_launch_settings`), so read
-      // them here and never setSetting. Blank = unset (launch defaults apply).
-      dockerImage: s.docker_image || "",
-      dockerMemory: s.docker_memory || "",
-      dockerCpus: s.docker_cpus || "",
-      podmanImage: s.podman_image || "",
-      podmanMemory: s.podman_memory || "",
-      podmanCpus: s.podman_cpus || "",
       // Auto-open the welcome tour for new users (no completion flag yet).
       onboardingOpen: s.onboardingComplete !== "true",
       // Panel layout — restore the user's last splitter widths and collapse state.
@@ -230,6 +189,11 @@ export const hydrateSettings = async (set: AppSet, get: AppGet) => {
   } catch {
     // First launch or DB not ready — defaults are fine.
   }
+  // The host-owned keys (alerts, sweep, sandbox, publishing, provider binaries)
+  // belong to the engine the UI is driving, not to this client's table: read
+  // apart from the client's own preferences above, and again on every switch
+  // and reconnect (`resyncEnvironment`).
+  await hydrateHostSettings(set).catch(() => {});
   // Autopilot's per-project opt-outs live in `project_settings`, not the global
   // table above, and the slice owns their loading (it fails closed and is
   // re-runnable from the settings section) — so just kick it off here.
@@ -694,6 +658,11 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
       set((s) => ({ prComments: { ...s.prComments, [key]: e.comments } }));
     }),
   );
+
+  // A host-owned setting was written — here, on another desktop, or from a
+  // phone. Folded over what was read, so Settings follows without a refetch.
+  // (Project settings are per page; each section subscribes for its project.)
+  await bind(onSettingsChanged((e) => applyHostSettingChange(set, e)));
 
   // Turn-end verification result (opt-in per project) — stored per agent to
   // feed the Mission Control card's tests chip.

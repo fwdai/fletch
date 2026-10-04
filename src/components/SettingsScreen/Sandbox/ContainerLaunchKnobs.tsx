@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { TextInput } from "@/components/ui/TextInput";
 import { useAppStore } from "@/store";
+import { useGate } from "@/store/capabilities";
 import { SetGroup, SetRow } from "../primitives";
 
 /** The two container runtimes that carry launch knobs, and the only copy that
@@ -50,6 +51,7 @@ export function ContainerLaunchKnobs({ runtime, last }: { runtime: Runtime; last
   const save = useAppStore((s) =>
     runtime === "docker" ? s.saveDockerLaunchSettings : s.savePodmanLaunchSettings,
   );
+  const hostGate = useGate("hostSettings");
 
   // Local edit state, committed on blur/Enter so we don't persist per keystroke.
   const [draft, setDraft] = useState({ image, memory, cpus });
@@ -76,10 +78,11 @@ export function ContainerLaunchKnobs({ runtime, last }: { runtime: Runtime; last
   return (
     <SetGroup label={RUNTIMES[runtime].label} last={last}>
       {LAUNCH_FIELDS.map((f) => (
-        <SetRow key={f.key} title={f.title} sub={f.sub(runtime)}>
+        <SetRow key={f.key} title={f.title} sub={hostGate ?? f.sub(runtime)}>
           <TextInput
             mono
             value={draft[f.key]}
+            disabled={!!hostGate}
             placeholder={f.placeholder}
             spellCheck={false}
             onChange={(e) => setDraft((d) => ({ ...d, [f.key]: e.target.value }))}

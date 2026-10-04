@@ -3,6 +3,7 @@ import { type GitCommitAction, isCommitAction } from "@/components/RightPanel/pr
 import { Select } from "@/components/ui/Select";
 import { TextInput } from "@/components/ui/TextInput";
 import { useAppStore } from "@/store";
+import { useGate } from "@/store/capabilities";
 import { SetGroup, SetHead, SetRow, SetToggle } from "./primitives";
 
 const ACTION_OPTIONS: { value: GitCommitAction; label: string }[] = [
@@ -29,6 +30,10 @@ export function GitPane() {
   const setPublishApprovalWait = useAppStore((s) => s.setPublishApprovalWait);
   const draftPrs = useAppStore((s) => s.draftPrs);
   const setDraftPrs = useAppStore((s) => s.setDraftPrs);
+  // Everything but the default Git action is the host's: its publish path
+  // reads them. The default action is this window's own preference.
+  const gate = useGate("publishSettings");
+  const tip = gate ?? undefined;
 
   return (
     <div className="set-pane">
@@ -59,6 +64,8 @@ export function GitPane() {
           <SetToggle
             on={publishConfirmation}
             onClick={() => void setPublishConfirmation(!publishConfirmation)}
+            disabled={!!gate}
+            tip={tip}
           />
         </SetRow>
         <SetRow
@@ -68,7 +75,7 @@ export function GitPane() {
           <Select
             value={String(publishApprovalWait)}
             ariaLabel="Approval wait"
-            disabled={!publishConfirmation}
+            disabled={!publishConfirmation || !!gate}
             options={WAIT_OPTIONS}
             onChange={(v) => void setPublishApprovalWait(Number(v))}
           />
@@ -77,12 +84,17 @@ export function GitPane() {
           title="Open PRs as drafts"
           sub="Every pull request Fletch opens starts as a draft until you mark it ready."
         >
-          <SetToggle on={draftPrs} onClick={() => void setDraftPrs(!draftPrs)} />
+          <SetToggle
+            on={draftPrs}
+            onClick={() => void setDraftPrs(!draftPrs)}
+            disabled={!!gate}
+            tip={tip}
+          />
         </SetRow>
       </SetGroup>
 
       <SetGroup label="Branches" last>
-        <BranchPrefixRow />
+        <BranchPrefixRow gate={gate} />
       </SetGroup>
     </div>
   );
@@ -90,7 +102,7 @@ export function GitPane() {
 
 /** Free-text prefix, committed on blur/Enter. The backend validates and
  *  normalizes; a rejection shows inline and leaves the field editable. */
-function BranchPrefixRow() {
+function BranchPrefixRow({ gate }: { gate: string | null }) {
   const branchPrefix = useAppStore((s) => s.branchPrefix);
   const setBranchPrefix = useAppStore((s) => s.setBranchPrefix);
   const [draft, setDraft] = useState(branchPrefix);
@@ -119,12 +131,14 @@ function BranchPrefixRow() {
       title="Branch prefix"
       sub={
         error ??
+        gate ??
         "Prepended to every branch an agent creates, e.g. alex/ or feature/. Blank for none."
       }
     >
       <TextInput
         mono
         value={draft}
+        disabled={!!gate}
         placeholder="none"
         spellCheck={false}
         autoCapitalize="off"

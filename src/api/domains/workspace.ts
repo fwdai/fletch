@@ -29,7 +29,4 @@ export const workspaceApi = {
    *  already-pinned destination. */
   relocateRepo: (oldPath: string, newPath: string) =>
     invoke<Workspace>("relocate_repo", { oldPath, newPath }),
-  /** Days an idle, clean, fully pushed workspace waits before the backend's
-   *  sweep archives it; 0 = off. Backend-owned setting: the sweep reads it. */
-  setAutoArchiveIdleDays: (days: number) => invoke<void>("set_auto_archive_idle_days", { days }),
 };

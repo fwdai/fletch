@@ -17,6 +17,8 @@ export function BinaryPathRow({
   effectivePath,
   override,
   resolved,
+  onHost,
+  gate,
   onSave,
 }: {
   providerLabel: string;
@@ -28,6 +30,12 @@ export function BinaryPathRow({
    *  `path`, not its parsed version — a working CLI may report no version). An
    *  override that fails this is flagged as not-runnable. */
   resolved: boolean;
+  /** The remote host the override belongs to, when one is on screen: the path
+   *  is on ITS disk, so this Mac can't validate it (the host's next spawn is
+   *  the check). Undefined for the local environment. */
+  onHost?: string;
+  /** Why the override can't be edited here, or null/undefined when it can. */
+  gate?: string | null;
   /** Persist (path) or clear (null) the override. Resolves once the store and
    *  backend have updated; rejects to keep the editor open on failure. */
   onSave: (path: string | null) => Promise<void>;
@@ -60,7 +68,8 @@ export function BinaryPathRow({
     setError(null);
     try {
       // Empty clears the override — no validation needed to go back to auto.
-      if (value) {
+      // A host's path is checked by the host, not against this Mac's disk.
+      if (value && !onHost) {
         const result = await api.validateAgentBin(value);
         if (!result.executable) {
           setError("No executable file at this path.");
@@ -139,7 +148,8 @@ export function BinaryPathRow({
             <div className="set-prov-bin-err text-xs">{error}</div>
           ) : (
             <div className="set-prov-bin-hint text-xs">
-              Absolute path to the {providerLabel} binary. Leave blank to auto-detect.
+              Absolute path to the {providerLabel} binary{onHost ? ` on ${onHost}` : ""}. Leave
+              blank to auto-detect.
             </div>
           )}
         </div>
@@ -151,14 +161,20 @@ export function BinaryPathRow({
             {broken && <span className="set-prov-bin-warn text-xs">not found</span>}
             <span className="grow" />
             {override && (
-              <Button variant="ghost" size="sm" disabled={busy} onClick={() => void reset()}>
+              <Button
+                variant="ghost"
+                size="sm"
+                disabled={busy || !!gate}
+                onClick={() => void reset()}
+              >
                 Reset to auto
               </Button>
             )}
             <IconButton
               className="sm-i"
-              tip="Edit path"
+              tip={gate ?? "Edit path"}
               aria-label="Edit binary path"
+              disabled={!!gate}
               onClick={beginEdit}
             >
               <Icon name="edit" size={13} />
