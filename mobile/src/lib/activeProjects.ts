@@ -3,7 +3,7 @@
 // sidebar's "Active projects first" (src/components/Sidebar/recentProjects.ts),
 // so the two apps agree on what is at the top.
 
-import type { ProjectRef, Workspace } from "@desktop/api/types/agent";
+import type { Workspace } from "@desktop/api/types/agent";
 import { bubbleActive } from "@desktop/components/Sidebar/recentProjects";
 import {
   loadProjectActivity,
@@ -14,6 +14,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useStore } from "../store";
 import { agentsOfProject } from "./agents";
 import { useTick } from "./hooks";
+import { type Project, projectsOf } from "./projects";
 
 /** Projects with recent activity first, most recent first; the others keep
  *  their incoming order. `turns` is the last turn start per project id. */
@@ -21,12 +22,11 @@ export function orderProjects(
   ws: Workspace | null,
   turns: ProjectActivity,
   now: number,
-): ProjectRef[] {
-  const projects = ws?.projects ?? [];
-  const candidates = projects.map((p) => ({
-    key: p.project_id,
+): Project[] {
+  const candidates = projectsOf(ws).map((p) => ({
+    key: p.id,
     project: p,
-    agents: agentsOfProject(ws, p.project_id),
+    agents: agentsOfProject(ws, p.id),
     runs: [],
   }));
   const { active, rest } = bubbleActive(candidates, now, turns);
@@ -36,7 +36,7 @@ export function orderProjects(
 /** The Home list, ordered. Stamps each turn start on its project and keeps
  *  the stamps locally, the way the desktop sidebar does, so a message sent to
  *  an idle agent counts as activity and survives a relaunch. */
-export function useOrderedProjects(): ProjectRef[] {
+export function useOrderedProjects(): Project[] {
   const workspace = useStore((s) => s.workspace);
   const turnStartedAt = useStore((s) => s.turnStartedAt);
   const activeFirst = useStore((s) => s.activeFirst);
@@ -59,7 +59,7 @@ export function useOrderedProjects(): ProjectRef[] {
   useTick(60_000, activeFirst);
   const now = Date.now();
   return useMemo(
-    () => (activeFirst ? orderProjects(workspace, turns, now) : (workspace?.projects ?? [])),
+    () => (activeFirst ? orderProjects(workspace, turns, now) : projectsOf(workspace)),
     [workspace, turns, activeFirst, now],
   );
 }
