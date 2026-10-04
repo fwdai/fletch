@@ -5,6 +5,7 @@
 import type { AgentRecord, ProjectRef, Workspace } from "@desktop/api/types/agent";
 import { describe, expect, it } from "vitest";
 import { orderProjects } from "../src/lib/activeProjects";
+import type { Project } from "../src/lib/projects";
 
 const DAY = 86_400_000;
 const NOW = Date.parse("2026-09-24T12:00:00Z");
@@ -31,7 +32,7 @@ const agent = (
 const ws = (projects: ProjectRef[], agents: AgentRecord[]) =>
   ({ projects, agents, repos: [] }) as Workspace;
 
-const ids = (list: ProjectRef[]) => list.map((p) => p.project_id);
+const ids = (list: Project[]) => list.map((p) => p.id);
 
 describe("orderProjects", () => {
   const snapshot = ws(

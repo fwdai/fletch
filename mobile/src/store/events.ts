@@ -16,6 +16,7 @@ import type {
   AgentTitleEvent,
   Workspace,
 } from "@desktop/api/types/agent";
+import type { DelegationEvent } from "@desktop/api/types/git";
 import type {
   PrChecksChangedEvent,
   PrStateChangedEvent,
@@ -237,6 +238,14 @@ export function registerRemoteEvents(client: RemoteClient, set: Set, get: Get): 
     // A commit or discard empties the working tree, which is what the rows
     // show — don't make them wait out the poll interval to catch up.
     void get().loadShortstats();
+  });
+
+  // A host delegation moved — asked for here or on the Mac, delivered, its turn
+  // running, or over with an outcome. The Ship strip and activity list read
+  // this, so the phone shows a delegation it did not start and its end even
+  // when nothing here is driving it.
+  on<DelegationEvent>("delegation:changed", (e) => {
+    get().applyDelegation(e);
   });
 
   on<PrStateChangedEvent>("pr:state_changed", (e) => {

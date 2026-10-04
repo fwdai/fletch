@@ -10,6 +10,7 @@ import { type AgentRecord, ROADMAP_PM_PURPOSE } from "@desktop/api/types/agent";
 import { reconcileSending } from "@desktop/helpers/sending";
 import { PROJECT_MANAGER_NAME, PROJECT_MANAGER_PRESET } from "@desktop/starterPack/presets";
 import type { Api } from "../api";
+import { primaryPath, projectById } from "../lib/projects";
 import { dropTasks } from "./backgroundTasks";
 import { agentOf, type MobileState } from "./index";
 
@@ -128,17 +129,18 @@ export function createChatsSlice(set: Set, get: Get, deps: ChatsDeps): ChatsSlic
 
     async startPlanningChat({ projectId, prompt, attachments = [] }) {
       return guard(async () => {
-        const project = get().workspace?.projects.find((p) => p.project_id === projectId);
+        const project = projectById(get().workspace, projectId);
         if (!project) throw new Error("that project is not on the host");
+        const repoPath = primaryPath(project);
         const pm = await projectManager(api);
         const [name, forkBase] = await Promise.all([
           // The chat was never a sidebar draft, but the spawn op still wants a
           // name, so one is drawn here exactly as `spawn` draws it.
           api.allocateDraftName([]),
-          api.repoDefaultBranch(project.path).catch(() => "main"),
+          api.repoDefaultBranch(repoPath).catch(() => "main"),
         ]);
         const record = await api.spawnAgent(
-          project.path,
+          repoPath,
           pm.provider,
           name,
           pm.effort,

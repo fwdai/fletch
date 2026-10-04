@@ -29,6 +29,35 @@ pub async fn push_agent(
     .await
 }
 
+/// Hand a git playbook to the agent: the host composes the trigger, holds it
+/// while the agent is mid-turn, and watches the delegation to its end
+/// (`supervisor::delegation`). Same body the remote `delegate_git` op calls.
+#[tauri::command]
+pub async fn delegate_git(
+    supervisor: State<'_, Arc<Supervisor>>,
+    ctx: State<'_, Arc<EngineCtx>>,
+    agent_id: String,
+    subdir: Option<String>,
+    action: String,
+    params: Option<std::collections::BTreeMap<String, String>>,
+) -> Result<fletch_core::supervisor::delegation::DelegationView> {
+    fletch_core::commands::delegate_git_impl(
+        supervisor.inner(),
+        ctx.inner(),
+        &agent_id,
+        subdir.as_deref(),
+        &action,
+        &params.unwrap_or_default(),
+    )
+    .await
+}
+
+/// Every delegation the host is tracking, for a window resyncing its mirror.
+#[tauri::command]
+pub fn get_delegations() -> Vec<fletch_core::supervisor::delegation::DelegationView> {
+    fletch_core::commands::get_delegations_impl()
+}
+
 /// Stage all working-tree changes and commit them with the given message.
 #[tauri::command]
 pub async fn commit_agent(

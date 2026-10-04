@@ -1,5 +1,5 @@
 import { invoke } from "../invoke";
-import type { GitMeta, GitState, ShortStats } from "../types/git";
+import type { DelegationEvent, GitMeta, GitState, ShortStats } from "../types/git";
 
 export const gitApi = {
   /** The current HEAD commit SHA of an agent's checkout (primary repo). The
@@ -13,6 +13,17 @@ export const gitApi = {
   getAllShortstats: () => invoke<Record<string, ShortStats>>("get_all_shortstats"),
   getAllGitMeta: () => invoke<Record<string, GitMeta>>("get_all_git_meta"),
   refreshBaseFreshness: () => invoke<void>("refresh_base_freshness"),
+  /** Hand a git playbook (`action`) to the agent. The host composes the
+   *  trigger, holds it while the agent is mid-turn and watches it to its end;
+   *  resolves to the delegation as recorded (`queued` or `started`). */
+  delegateGit: (
+    agentId: string,
+    action: string,
+    params?: Record<string, string>,
+    subdir?: string,
+  ) => invoke<DelegationEvent>("delegate_git", { agentId, subdir, action, params }),
+  /** Every delegation the host is tracking, to resync the mirror. */
+  getDelegations: () => invoke<DelegationEvent[]>("get_delegations"),
   pushAgent: (agentId: string, subdir?: string) =>
     invoke<string>("push_agent", { agentId, subdir }),
   pullAgent: (agentId: string, subdir?: string) => invoke<void>("pull_agent", { agentId, subdir }),

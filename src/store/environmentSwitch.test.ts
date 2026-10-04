@@ -83,6 +83,7 @@ const newStore = () => {
         loadHistoryTranscript: vi.fn(),
         pendingPublishApprovals: [],
         loadPendingPublishApprovals: vi.fn().mockResolvedValue(undefined),
+        loadDelegations: vi.fn().mockResolvedValue(undefined),
         github: null,
         refreshGithub: vi.fn().mockResolvedValue(undefined),
       }) as unknown as AppState,
@@ -300,6 +301,8 @@ describe("environmentReconnected", () => {
     // A reconnect means this client was out of touch, so the host's GitHub
     // login is as much in doubt as its workspace.
     expect(store.getState().refreshGithub).toHaveBeenCalledTimes(2);
+    // …and so are the delegations it runs: events missed while away are gone.
+    expect(store.getState().loadDelegations).toHaveBeenCalledTimes(2);
   });
 
   it("leaves a background host's handshake alone", async () => {

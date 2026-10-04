@@ -13,6 +13,7 @@ import { ADD_PROJECT_GATES, useAnyGate } from "@/store/capabilities";
 import { arrowTarget } from "@/util/arrowNav";
 import { basename } from "@/util/format";
 import { useMinuteClock } from "@/util/hooks";
+import { groupProjectRefs } from "@/util/projects";
 import { useRuns } from "@/workflows/run/useRuns";
 import { isGroupOpen, type OpenMap } from "./groupOpen";
 import { NewProjectPopover } from "./NewProjectPopover";
@@ -61,25 +62,20 @@ function groupByProject(
   const groups = new Map<string, ProjectGroupData>();
   const byPath = new Map<string, ProjectGroupData>();
   const byProjectId = new Map<string, ProjectGroupData>();
-  for (const ref of refs) {
-    const key = ref.project_id || ref.path;
-    let g = groups.get(key);
-    if (!g) {
-      g = {
-        key,
-        label: ref.name,
-        repoPaths: [],
-        primaryPath: ref.path,
-        agents: [],
-        drafts: [],
-        runs: [],
-        pinned: true,
-      };
-      groups.set(key, g);
-      if (ref.project_id) byProjectId.set(ref.project_id, g);
-    }
-    g.repoPaths.push(ref.path);
-    byPath.set(ref.path, g);
+  for (const project of groupProjectRefs(refs)) {
+    const g: ProjectGroupData = {
+      key: project.id,
+      label: project.name,
+      repoPaths: project.repos.map((r) => r.path),
+      primaryPath: project.repos[0].path,
+      agents: [],
+      drafts: [],
+      runs: [],
+      pinned: true,
+    };
+    groups.set(project.id, g);
+    if (project.repos[0].project_id) byProjectId.set(project.repos[0].project_id, g);
+    for (const r of project.repos) byPath.set(r.path, g);
   }
   // Resolve real backend work (agents, runs) to its group: by project first, so
   // a relocate — which moves the repo path but keeps the project_id — attaches

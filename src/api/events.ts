@@ -2,7 +2,6 @@ import { activeTransport, localTransport, type UnlistenFn } from "./transport";
 import type {
   AgentBranchEvent,
   AgentEffortEvent,
-  AgentGitActionEvent,
   AgentManagedEvent,
   AgentModelEvent,
   AgentOutputEvent,
@@ -21,6 +20,7 @@ import type {
   DictationStateEvent,
   DictationTranscriptEvent,
 } from "./types/dictation";
+import type { DelegationEvent } from "./types/git";
 import type { PrChecksChangedEvent, PrStateChangedEvent, PrThreadsChangedEvent } from "./types/pr";
 import type {
   AgentInstallEvent,
@@ -310,8 +310,10 @@ export function onAgentRepoAdded(cb: (e: AgentRepoAddedEvent) => void): Promise<
   return on<AgentRepoAddedEvent>("agent:repo_added", cb);
 }
 
-export function onAgentGitAction(cb: (e: AgentGitActionEvent) => void): Promise<UnlistenFn> {
-  return on<AgentGitActionEvent>("agent:git-action", cb);
+/** A host delegation moved (`supervisor::delegation`): recorded, delivered,
+ *  running, or over with an outcome notice. */
+export function onDelegationChanged(cb: (e: DelegationEvent) => void): Promise<UnlistenFn> {
+  return on<DelegationEvent>("delegation:changed", cb);
 }
 
 export function onWorkspaceChanged(cb: () => void): Promise<UnlistenFn> {

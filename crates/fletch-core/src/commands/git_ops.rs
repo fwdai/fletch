@@ -17,6 +17,10 @@ use crate::supervisor::Supervisor;
 
 use super::files::{agent_repo_checkout, repo_branch};
 
+// The delegation ops live with the table they act on; named here so they read
+// as `commands::*_impl` like every other command body.
+pub use crate::supervisor::delegation::{delegate_git_impl, get_delegations_impl};
+
 /// Push the targeted repo's current branch to origin (primary by default).
 ///
 /// Shared with the remote dispatcher, so a push from the phone triggers the

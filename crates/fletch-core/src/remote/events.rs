@@ -42,6 +42,9 @@ pub const FORWARDED_EVENTS: &[&str] = &[
     "verify:report",
     "publish:approval-requested",
     "publish:approval-resolved",
+    // Delegations are a host fact (`supervisor::delegation`): every client
+    // mirrors the same lifecycle instead of tracking its own.
+    "delegation:changed",
     // The whole workflow and roadmap stream (multi-host plan §5.3, item 2): the
     // run monitor, the board and the PM's three proposal kinds all update live
     // on a remote host, as they do locally. `wf:event` carries addressing only

@@ -1,13 +1,12 @@
 // The Ship tab's derivation (src/screens/Agent/ShipTab/derive.ts) over the
-// desktop's ladder, and the in-flight playbook read off the chat log.
+// desktop's ladder. The in-flight playbook is the host's (`delegation:changed`),
+// covered with the store in store.test.ts.
 
 import type { GitState } from "@desktop/api/types/git";
 import type { CheckRun, PrChecks, PrComment, PrComments, PrState } from "@desktop/api/types/pr";
 import { delegationLabel } from "@desktop/delegation";
 import type { ReadinessInput } from "@desktop/readiness";
 import { describe, expect, it } from "vitest";
-import type { ChatItem } from "../src/adapters";
-import { activeDelegation, appActionName } from "../src/screens/Agent/ShipTab/delegation";
 import { describeShip, type ShipExtra } from "../src/screens/Agent/ShipTab/derive";
 
 const git = (over: Partial<GitState> = {}): GitState => ({
@@ -325,42 +324,5 @@ describe("describeShip", () => {
     expect(v.strip).toEqual({ kind: "att", text: "Git paused", sub: "blocking settings" });
     expect(v.primary).toBeNull();
     expect(v.more).toEqual([]);
-  });
-});
-
-const user = (text: string): ChatItem => ({ kind: "user_message", text });
-const queued = (text: string): ChatItem => ({ kind: "queued_message", text });
-const agent = (text: string): ChatItem => ({ kind: "agent_message", text });
-
-describe("activeDelegation", () => {
-  it("is null while the agent is idle, whatever the log says", () => {
-    expect(activeDelegation([user("[app-action] commit-pr")], false)).toBeNull();
-    expect(activeDelegation(undefined, true)).toBeNull();
-  });
-
-  it("reads the kind off the message that opened the running turn", () => {
-    const log = [
-      user("hi"),
-      agent("hello"),
-      user('[app-action] commit-pr base="main"'),
-      agent("Committing…"),
-    ];
-    expect(activeDelegation(log, true)).toBe("commit-pr");
-  });
-
-  it("maps the resolve-conflicts trigger onto the resolve kind", () => {
-    expect(activeDelegation([user("[app-action] resolve-conflicts")], true)).toBe("resolve");
-  });
-
-  it("counts the optimistic bubble, since our own send sits there first", () => {
-    expect(activeDelegation([user("hi"), queued("[app-action] push")], true)).toBe("push");
-  });
-
-  it("is null for a plain turn, and for a trigger this build does not know", () => {
-    expect(
-      activeDelegation([user("[app-action] commit-pr"), user("and now fix the test")], true),
-    ).toBeNull();
-    expect(activeDelegation([user("[app-action] deploy-prod")], true)).toBeNull();
-    expect(appActionName("[app-action] ")).toBeNull();
   });
 });

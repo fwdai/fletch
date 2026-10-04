@@ -1,8 +1,9 @@
-import type { AgentRecord, ProjectRef } from "@desktop/api/types/agent";
+import type { AgentRecord } from "@desktop/api/types/agent";
 import { Icon } from "@desktop/components/Icon";
 import type { MouseEvent } from "react";
 import { isAgentBusy, STATUS_LABEL } from "../../lib/agents";
 import { elapsedSec, fmtElapsed } from "../../lib/hooks";
+import type { Project } from "../../lib/projects";
 import { prPill } from "../../lib/shipPill";
 import { subagentLabel } from "../../lib/subagents";
 import { useSubagentClock } from "../../lib/useSubagentClock";
@@ -17,7 +18,7 @@ export function AgentRow({
   onClick,
 }: {
   agent: AgentRecord;
-  project?: ProjectRef;
+  project?: Project;
   showProject?: boolean;
   /** Gets the event so a row nested in a clickable project card can stop it
    *  from also opening the project. */

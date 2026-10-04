@@ -54,10 +54,23 @@ describe("actionGateReason", () => {
   });
 
   it("passes through the keys that call no gated op, however old the host", () => {
-    // Local actions, agent delegations and the v1 ops are nobody's gate, so the
-    // dispatch has to reach them untouched on every environment.
-    for (const key of ["commit-direct", "push", "open-pr", "agent-commit", "view-pr", "loading"]) {
+    // Local actions and the v1 ops are nobody's gate, so the dispatch has to
+    // reach them untouched on every environment.
+    for (const key of ["commit-direct", "push", "open-pr", "view-pr", "loading"]) {
       expect(actionGateReason(host(), key)).toBeNull();
+      expect(actionGateReason(local, key)).toBeNull();
+    }
+  });
+
+  it("hands work to the agent only through a host that runs delegations", () => {
+    // The host owns the delegation now (`delegate_git`), so one from before the
+    // op — or a device paired without `publish`, whose descriptor omits it —
+    // says so instead of sending a trigger nothing watches.
+    const agentKeys = Object.keys(ACTION_GATES).filter((k) => k.startsWith("agent-"));
+    expect(agentKeys).toHaveLength(7);
+    for (const key of agentKeys) {
+      expect(actionGateReason(host([...V2_DEFAULT_OPS]), key)).toBe(GATES.delegateGit.reason);
+      expect(actionGateReason(host([...V2_DEFAULT_OPS, "delegate_git"]), key)).toBeNull();
       expect(actionGateReason(local, key)).toBeNull();
     }
   });

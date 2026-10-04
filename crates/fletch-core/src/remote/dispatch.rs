@@ -154,6 +154,8 @@ pub const OPS: &[&str] = &[
     "get_pr_checks",
     "get_pr_live",
     "get_pr_threads",
+    "delegate_git",
+    "get_delegations",
     "list_repo_branches",
     "repo_default_branch",
     "discover_supported_models",
@@ -417,6 +419,11 @@ const OP_SCOPES: &[(&str, Scope)] = &[
     ("get_pr_checks", Scope::Observe),
     ("get_pr_live", Scope::Observe),
     ("get_pr_threads", Scope::Observe),
+    // Publish, not Agents: a live delegation's own pushes and PRs are approved
+    // by the host without a prompt (`rpc::approval`), so starting one is the
+    // same grant as answering that prompt.
+    ("delegate_git", Scope::Publish),
+    ("get_delegations", Scope::Observe),
     ("list_repo_branches", Scope::Observe),
     ("repo_default_branch", Scope::Observe),
     ("discover_supported_models", Scope::Observe),
@@ -936,6 +943,24 @@ impl Dispatch for SupervisorDispatch {
                             .await,
                     )
                 }
+
+                // The host composes the trigger, holds it while the agent is
+                // mid-turn and watches it to its end, so every client renders
+                // the same delegation and none has to stay open for it.
+                "delegate_git" => {
+                    let a: DelegateGitArgs = parse(args)?;
+                    res(crate::commands::delegate_git_impl(
+                        sup,
+                        ctx,
+                        &a.agent_id,
+                        a.subdir.as_deref(),
+                        &a.action,
+                        &a.params,
+                    )
+                    .await)
+                }
+
+                "get_delegations" => ok(crate::commands::get_delegations_impl()),
 
                 "get_pr_live" => {
                     let a: AgentSubdirArgs = parse(args)?;
@@ -1919,6 +1944,34 @@ mod approval_tests {
         }
     }
 
+    /// `delegate_git` takes the desktop's argument keys, refuses a name that is
+    /// not a playbook before touching anything, and `get_delegations` answers
+    /// the table as an array a late client replaces its view with.
+    #[tokio::test]
+    async fn delegate_git_refuses_an_unknown_playbook_and_the_table_reads_back() {
+        let (ctx, sink, _dir) = test_ctx();
+        let sup = Arc::new(Supervisor::new(Arc::new(WorkspaceManager::new(
+            ctx.db.clone(),
+        ))));
+        let dispatch = SupervisorDispatch::new(ctx, sup);
+
+        let err = dispatch
+            .dispatch(
+                "delegate_git",
+                json!({ "agentId": "arabia", "action": "rm-rf", "params": { "base": "main" } }),
+            )
+            .await
+            .expect_err("not a playbook");
+        assert!(err.contains("unknown git action"), "{err}");
+        assert!(sink.events().is_empty(), "nothing was recorded or sent");
+
+        let rows = dispatch
+            .dispatch("get_delegations", json!({}))
+            .await
+            .expect("a read of the table is always answerable");
+        assert!(rows.is_array(), "{rows}");
+    }
+
     /// `publish:approval-requested` only reaches the clients that were
     /// connected when it fired. This op is how every other one — a phone opened
     /// afterwards, a desktop that just reconnected — learns a publish is
@@ -2124,6 +2177,19 @@ struct ProjectSettingArgs {
 struct DraftsArgs {
     #[serde(default)]
     drafts: Vec<String>,
+}
+
+/// `delegate_git`: a playbook name plus its dynamic context. `params` values
+/// are strings, as the trigger carries them.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DelegateGitArgs {
+    agent_id: String,
+    #[serde(default)]
+    subdir: Option<String>,
+    action: String,
+    #[serde(default)]
+    params: std::collections::BTreeMap<String, String>,
 }
 
 /// `get_all_pr_status`: whether closed PRs get a live re-check this round, or

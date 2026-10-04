@@ -20,7 +20,6 @@ import { Workspace } from "./components/Workspace";
 import { ACCENT_VALUES } from "./data/providers";
 import { useAppStore } from "./store";
 import { useAutopilotSync } from "./store/autopilotSync";
-import { useDelegationSync } from "./store/delegationSync";
 import { useGitSync } from "./store/gitSync";
 import { useGlobalShortcuts } from "./util/shortcuts";
 import { useSplitter } from "./util/splitter";
@@ -72,9 +71,6 @@ export function App() {
 
   // All git / GitHub polling lives in one place.
   useGitSync();
-  // …and so does every in-flight delegation's lifecycle, so one running on an
-  // agent the user has navigated away from still completes.
-  useDelegationSync();
   // …and the autopilot loop for checkouts the user enrolled.
   useAutopilotSync();
 

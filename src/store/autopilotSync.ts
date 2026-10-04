@@ -1,7 +1,7 @@
 // The autopilot driver: one tick, every live checkout of every project that has
 // autopilot on (the default — see `autopilotDisabledProjects`).
 //
-// Mounted once at the app root, like `useGitSync` and `useDelegationSync`. The
+// Mounted once at the app root, like `useGitSync`. The
 // decision for each checkout is pure (`autopilotStep`); this hook is the applier
 // — it turns effects into store transitions, delegations and verification calls.
 //
@@ -17,7 +17,6 @@ import { useCallback, useRef } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { type AgentRecord, api } from "@/api";
 import { type AutopilotEffect, type AutopilotState, autopilotStep } from "@/autopilot";
-import { appActionMessage } from "@/delegation";
 import { useAppStore } from "@/store";
 import { usePoll } from "@/util/hooks";
 import { autopilotAgentOn } from "./autopilot";
@@ -98,7 +97,7 @@ export function useAutopilotSync() {
  *  Exported so the WIRING is testable without a rendered hook: the decision is
  *  pure and covered by `autopilot.test.ts`, but the store transitions, the
  *  delegation it sends and the per-agent/per-checkout guards below only exist
- *  here. Same reason `planDelegationPass` is exported from `delegationSync`.
+ *  here.
  *
  *  `verifying` is owned by the caller (a ref on the hook) because it must
  *  outlive a single pass — see `useAutopilotSync`. */
@@ -114,7 +113,7 @@ export async function autopilotPass(keys: string[], verifying: Set<string>) {
   // to counts as busy, which also stops a sibling cycle from being verified
   // while a turn we just started rewrites the tree under it. The loser waits for
   // the next tick, by which time the real status has caught up. Mirrors the
-  // per-pass `dequeued` set in `planDelegationPass`.
+  // host's one-dequeue-per-agent-per-pass rule (`supervisor::delegation`).
   const dispatchedTo = new Set<string>();
 
   for (const key of keys) {
@@ -184,17 +183,11 @@ async function apply(
     case "dispatch": {
       s.openAutopilotCycle(key, effect.rung, effect.signature, effect.situation);
       log({ outcome: "dispatch", rung: effect.rung, attempt: attemptNow() });
-      // Same trigger construction the panel and Mission Control use, including
-      // the `repo=` scope for a secondary checkout.
-      s.delegateAction(
-        agentId,
-        effect.rung,
-        appActionMessage(
-          effect.action,
-          subdir ? { ...effect.params, repo: subdir } : effect.params,
-        ),
-        subdir,
-      );
+      // The same host op the panel and Mission Control use; the host composes
+      // the trigger, including the `repo=` scope for a secondary checkout.
+      // Awaited so the mirror holds the delegation before the next tick reads
+      // `delegationInFlight`.
+      await s.delegateAction(agentId, effect.action, effect.params, subdir);
       return;
     }
     case "await-evidence":

@@ -13,10 +13,18 @@ import { activeEnvironment, type EnvironmentEntry } from "@/store/environments";
 
 /** The panel actions that call a git op on the environment's host, by the key
  *  `runAction` dispatches. Everything else the menu offers is either local
- *  (`view-pr`), delegated to the coding agent (`agent-*`), or an op that has
- *  been on the wire since v1 (`push`, `commit-*`, `open-pr`, `archive`) — so
- *  only these can be refused by the host the user is driving. */
+ *  (`view-pr`) or an op that has been on the wire since v1 (`push`, `commit-*`,
+ *  `open-pr`, `archive`) — so only these can be refused by the host the user is
+ *  driving. The `agent-*` keys hand the work to the agent through the host's
+ *  `delegate_git`. */
 export const ACTION_GATES: Partial<Record<string, GateName>> = {
+  "agent-commit": "delegateGit",
+  "agent-commit-push": "delegateGit",
+  "agent-commit-pr": "delegateGit",
+  "agent-open-pr": "delegateGit",
+  "agent-resolve": "delegateGit",
+  "agent-update-branch": "delegateGit",
+  "agent-fix": "delegateGit",
   merge: "mergePr",
   pull: "pull",
   rebase: "rebase",

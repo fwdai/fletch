@@ -1,21 +1,21 @@
-import type { ProjectRef } from "@desktop/api/types/agent";
 import { Icon } from "@desktop/components/Icon";
 import { AgentRow } from "../../components/AgentRow";
 import { Swatch } from "../../components/ui";
 import { useOrderedProjects } from "../../lib/activeProjects";
-import { agentsOfProject, baseOf, isActive, isBusy, repoLabel } from "../../lib/agents";
+import { agentsOfProject, baseOf, isActive, isBusy } from "../../lib/agents";
+import { type Project, repoLabel } from "../../lib/projects";
 import { useStore } from "../../store";
 import { ConnectionBanner } from "./ConnectionBanner";
 import { EmptyProjects } from "./EmptyProjects";
 import { HostState } from "./HostState";
 import { Wordmark } from "./Wordmark";
 
-function ProjectCard({ project }: { project: ProjectRef }) {
+function ProjectCard({ project }: { project: Project }) {
   // Selectors must return a stable reference — a fresh array on every call
   // re-renders forever under zustand v5's useSyncExternalStore. So the
   // workspace comes out of the store as-is and is filtered here.
   const workspace = useStore((s) => s.workspace);
-  const agents = agentsOfProject(workspace, project.project_id);
+  const agents = agentsOfProject(workspace, project.id);
   const openAgent = useStore((s) => s.openAgent);
   const push = useStore((s) => s.push);
   const active = agents.filter(isActive);
@@ -26,9 +26,9 @@ function ProjectCard({ project }: { project: ProjectRef }) {
       className="pc"
       role="button"
       tabIndex={0}
-      onClick={() => push("project", { projectId: project.project_id })}
+      onClick={() => push("project", { projectId: project.id })}
       onKeyDown={(e) => {
-        if (e.key === "Enter") push("project", { projectId: project.project_id });
+        if (e.key === "Enter") push("project", { projectId: project.id });
       }}
     >
       <div className="pc-h">
@@ -115,7 +115,7 @@ export function HomeScreen() {
   ) : projects.length === 0 ? (
     <EmptyProjects />
   ) : (
-    projects.map((p) => <ProjectCard key={p.project_id} project={p} />)
+    projects.map((p) => <ProjectCard key={p.id} project={p} />)
   );
 
   return (

@@ -2,7 +2,6 @@ import { open } from "@tauri-apps/plugin-shell";
 import { useCallback } from "react";
 import type { PrChecks, PrComment } from "@/api";
 import { formatCommentForChat } from "@/components/RightPanel/prComments";
-import { appActionMessage, type DelegationKind } from "@/delegation";
 import { useAppStore } from "@/store";
 import { activeActionGateReason } from "../actionGates";
 
@@ -85,22 +84,14 @@ export function useGitActions(ctx: GitActionsCtx) {
 
   // Hand control to the coding agent: it writes the judgment part (message /
   // description / conflict edits) and executes the mutation through the app's
-  // file RPC. The panel tracks the delegation until the matching transition —
-  // scoped to this section's repo, so this section's watcher owns it.
+  // file RPC. The host composes the `[app-action]` trigger — scoped to this
+  // section's repo with `repo="<subdir>"` — and watches the delegation to its
+  // end; the panel renders what it reports.
   const delegate = useCallback(
-    (kind: DelegationKind, prompt: string) => {
-      delegateAction(agentId, kind, prompt, subdir);
+    (action: string, params?: Record<string, string>) => {
+      void delegateAction(agentId, action, params, subdir);
     },
     [agentId, subdir, delegateAction],
-  );
-
-  // Trigger builder scoped to this section's repo: a secondary section adds
-  // `repo="<subdir>"` so the agent works in that sibling checkout (and passes
-  // `args.repo` on the host git ops — see git_actions.md).
-  const trigger = useCallback(
-    (name: string, params?: Record<string, string>) =>
-      appActionMessage(name, subdir ? { ...params, repo: subdir } : params),
-    [subdir],
   );
 
   // "→ chat" on a review comment: drop the formatted comment into this agent's
@@ -154,30 +145,27 @@ export function useGitActions(ctx: GitActionsCtx) {
       // lives in the agent's injected instructions (git_actions.md), keeping
       // the chat free of boilerplate. Params carry only dynamic context.
       case "agent-commit-pr":
-        delegate("commit-pr", trigger("commit-pr", { base }));
+        delegate("commit-pr", { base });
         break;
       case "agent-commit":
-        delegate("commit", trigger("commit"));
+        delegate("commit");
         break;
       case "agent-commit-push":
-        delegate("commit-push", trigger("commit-push"));
+        delegate("commit-push");
         break;
       case "agent-open-pr":
-        delegate("open-pr", trigger("open-pr", { base }));
+        delegate("open-pr", { base });
         break;
       case "agent-resolve":
-        delegate("resolve", trigger("resolve-conflicts"));
+        delegate("resolve-conflicts");
         break;
       case "agent-update-branch":
         // PR can't merge cleanly with the base (the base advanced). This is NOT
         // a local in-progress merge — the agent must sync the base in first.
-        delegate("update-branch", trigger("update-branch", { base }));
+        delegate("update-branch", { base });
         break;
       case "agent-fix":
-        delegate(
-          "fix-checks",
-          trigger("fix-checks", { failing: (checks?.required_failing ?? []).join(", ") }),
-        );
+        delegate("fix-checks", { failing: (checks?.required_failing ?? []).join(", ") });
         break;
       // ── direct, agent bypassed (user typed their own message) ──
       case "commit-direct":
@@ -202,7 +190,7 @@ export function useGitActions(ctx: GitActionsCtx) {
             const ok = await commitChanges(agentId, msg.trim(), subdir);
             if (ok) {
               revertOverride();
-              delegate("open-pr", trigger("open-pr", { base }));
+              delegate("open-pr", { base });
             }
           });
           break;
@@ -216,7 +204,7 @@ export function useGitActions(ctx: GitActionsCtx) {
         // Needs a branch — hand to the agent to name + create one if there
         // isn't one yet; otherwise the direct gh --fill PR.
         if (!hasBranch) {
-          delegate("open-pr", trigger("open-pr", { base }));
+          delegate("open-pr", { base });
           break;
         }
         void runBusy("Opening PR…", async () => {
@@ -239,7 +227,7 @@ export function useGitActions(ctx: GitActionsCtx) {
         // Direct git push needs a branch; with none yet, the agent names and
         // creates one, then pushes.
         if (!hasBranch) {
-          delegate("push", trigger("push"));
+          delegate("push");
           break;
         }
         void runBusy("Pushing…", async () => {

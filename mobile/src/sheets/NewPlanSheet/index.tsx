@@ -5,6 +5,7 @@ import { PromptField } from "../../components/PromptField";
 import { PickerSheet, Sheet, Swatch } from "../../components/ui";
 import { Notice } from "../../components/ui/Notice";
 import { ignore } from "../../lib/ignore";
+import { primaryPath, projectsOf } from "../../lib/projects";
 import { useStore } from "../../store";
 
 /** The idea you had on the way somewhere: pick the project, say the thing, and
@@ -23,15 +24,15 @@ export function NewPlanSheet({
   onClose: () => void;
   projectId?: string;
 }) {
-  // Derived, not selected: a selector building a fresh array re-renders forever
-  // under zustand v5, and would re-fire the reset effect below with it.
+  // Derived from the snapshot, not selected: `projectsOf` is stable per
+  // snapshot, so neither the render nor the reset effect below loops.
   const workspace = useStore((s) => s.workspace);
-  const projects = workspace?.projects ?? [];
+  const projects = projectsOf(workspace);
   const startPlanningChat = useStore((s) => s.startPlanningChat);
   const lastError = useStore((s) => s.lastError);
   const clearError = useStore((s) => s.clearError);
 
-  const [pid, setPid] = useState(projectId ?? projects[0]?.project_id ?? "");
+  const [pid, setPid] = useState(projectId ?? projects[0]?.id ?? "");
   const [prompt, setPrompt] = useState("");
   const [picking, setPicking] = useState(false);
   const [starting, setStarting] = useState(false);
@@ -40,9 +41,9 @@ export function NewPlanSheet({
   const [dictating, setDictating] = useState(false);
   const attachments = useAttachments();
 
-  const project = projects.find((p) => p.project_id === pid) ?? projects[0];
+  const project = projects.find((p) => p.id === pid) ?? projects[0];
 
-  const firstProjectId = workspace?.projects[0]?.project_id;
+  const firstProjectId = projects[0]?.id;
   useEffect(() => {
     if (!open) return;
     setPid(projectId ?? firstProjectId ?? "");
@@ -69,7 +70,7 @@ export function NewPlanSheet({
     setStarting(true);
     clearError();
     void startPlanningChat({
-      projectId: project.project_id,
+      projectId: project.id,
       prompt: prompt.trim(),
       attachments: attachments.paths,
     })
@@ -145,9 +146,9 @@ export function NewPlanSheet({
         onClose={() => setPicking(false)}
         title="Project"
         items={projects.map((p) => ({
-          id: p.project_id,
+          id: p.id,
           label: p.name,
-          sub: p.path,
+          sub: primaryPath(p),
           icon: <Swatch project={p} />,
         }))}
         value={pid}

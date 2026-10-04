@@ -2,11 +2,12 @@
 // list picker, segmented control, toggle, chips, tiny markdown and the
 // syntax-tinted code line.
 
-import type { AgentStatus, ProjectRef } from "@desktop/api/types/agent";
+import type { AgentStatus } from "@desktop/api/types/agent";
 import type { PrState } from "@desktop/api/types/pr";
 import { Icon, type IconName } from "@desktop/components/Icon";
 import { type ReactNode, useEffect, useRef, useState } from "react";
-import { hueColor, projectHue, providerHue, providerShort } from "../../lib/agents";
+import { hueColor, providerHue, providerShort } from "../../lib/agents";
+import { type Project, projectHue } from "../../lib/projects";
 import { useSwipe } from "../../lib/swipe";
 import { useProviderIcon } from "../../lib/useProviderIcon";
 
@@ -309,7 +310,7 @@ export function StatusDot({ status }: { status: AgentStatus }) {
   return <span className={`dot ${status}`} />;
 }
 
-export function Swatch({ project, size }: { project: ProjectRef; size?: number }) {
+export function Swatch({ project, size }: { project: Project; size?: number }) {
   const style = size
     ? {
         width: size,
