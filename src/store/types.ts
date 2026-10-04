@@ -11,7 +11,6 @@ import type { AgentInstallSlice, InstallState } from "./agentInstall";
 import type { AppSlice } from "./app";
 import type { AppearanceSlice } from "./appearance";
 import type { AutopilotSlice } from "./autopilot";
-import type { AutopilotLogSlice } from "./autopilotLog";
 import type { BackgroundTasksSlice } from "./backgroundTasks";
 import type { ComposerSlice } from "./composer";
 import type { CustomAgentsSlice } from "./customAgents";
@@ -34,7 +33,6 @@ export type {
   AgentInstallSlice,
   AppearanceSlice,
   AppSlice,
-  AutopilotLogSlice,
   AutopilotSlice,
   BackgroundTasksSlice,
   ComposerSlice,
@@ -74,7 +72,6 @@ export type AppState = AppSlice &
   AccountSlice &
   AppearanceSlice &
   AutopilotSlice &
-  AutopilotLogSlice &
   BackgroundTasksSlice &
   ProvidersSlice &
   AgentInstallSlice &

@@ -1,10 +1,10 @@
-//! Host-side watch over every bound PR, for the ship loop.
+//! Host-side watch over every bound PR, for the ship loop and for every client.
 //!
-//! The desktop polls a PR's state, checks and review threads only while its
-//! Git panel is open, and `pr:state_changed` fires only when something else
-//! triggers a resolve (a turn end, a push, a client poll). A phone with the
-//! Mac's window closed therefore hears nothing when checks fail, a reviewer
-//! comments or the PR merges. This task is the host's own poll: once a minute
+//! Clients do not poll GitHub: they seed from one read (`get_all_pr_status`,
+//! and `get_pr_live` / `get_pr_threads` for a PR on screen with nothing
+//! cached) and then follow the events this task emits, so GitHub is read once
+//! a minute however many windows and phones are open — and still read with
+//! every one of them shut. This task is the host's own poll: once a minute
 //! it runs the same batched sweep the sidebar uses
 //! ([`resolve_all_pr_status`] — one GraphQL query for every bound PR, snapshot
 //! persistence and the backoff gate included), every other tick also reads the
@@ -14,8 +14,10 @@
 //! remote forwarder and the push triggers (`remote::push`) to act on.
 //!
 //! Modelled on `roadmap::merge_sweep`: a `Notify` nudge, each pass on its own
-//! task so a panic cannot end the loop. The first read of a PR seeds the memory
-//! and emits nothing, so a restart does not re-announce last week's threads.
+//! task so a panic cannot end the loop. The first read of an open PR seeds the
+//! memory and emits only its state — a PR reopened, or opened outside Fletch,
+//! must reach clients that no longer poll — never its checks or threads, so a
+//! restart does not re-announce last week's threads.
 
 use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, OnceLock};
@@ -24,7 +26,7 @@ use std::time::Duration;
 use parking_lot::Mutex;
 use tokio::sync::Notify;
 
-use crate::github::{PrChecks, PrComments, PrState, PrStatus};
+use crate::github::{MergeState, PrChecks, PrComments, PrState, PrStatus};
 use crate::host::{EngineCtx, EventSink};
 
 use super::events::{emit_pr_checks, emit_pr_state, emit_pr_threads};
@@ -40,8 +42,8 @@ fn signal() -> &'static Notify {
 
 /// Wake the watcher now. Called when a PR has just been resolved for an agent
 /// (a push, a turn end), so a freshly opened PR is seeded while its checks are
-/// still pending — the seed emits nothing, and a PR first seen already failing
-/// would otherwise never announce that failure.
+/// still pending — the seed emits no checks, and a PR first seen already
+/// failing would otherwise never announce that failure.
 pub(crate) fn nudge() {
     signal().notify_one();
 }
@@ -57,6 +59,10 @@ pub(crate) struct Seen {
     /// `None` until a tick resolved checks.
     rollup: Option<String>,
     required_failing: BTreeSet<String>,
+    /// The merge gate, `None` until a read reported a known one: GitHub
+    /// computes it lazily, and an `unknown` in between two real answers is not
+    /// a change.
+    merge_state: Option<MergeState>,
     threads: BTreeSet<String>,
 }
 
@@ -67,6 +73,7 @@ impl Seen {
             state: read.state.state,
             rollup: read.checks.as_ref().map(|c| c.rollup.clone()),
             required_failing: read.checks.as_ref().map(failing_set).unwrap_or_default(),
+            merge_state: read.checks.as_ref().and_then(known_merge_state),
             threads: read.threads.as_ref().map(thread_ids).unwrap_or_default(),
         }
     }
@@ -98,6 +105,10 @@ fn failing_set(checks: &PrChecks) -> BTreeSet<String> {
     checks.required_failing.iter().cloned().collect()
 }
 
+fn known_merge_state(checks: &PrChecks) -> Option<MergeState> {
+    (checks.merge_state != MergeState::Unknown).then_some(checks.merge_state)
+}
+
 fn thread_ids(comments: &PrComments) -> BTreeSet<String> {
     comments.unresolved.iter().map(|c| c.id.clone()).collect()
 }
@@ -105,20 +116,30 @@ fn thread_ids(comments: &PrComments) -> BTreeSet<String> {
 /// Fold one read into `last` and say what changed. Pure, so the rules are
 /// testable without GitHub:
 ///
-/// - A PR not in `last` is seeded (if open) and reports nothing.
+/// - An open PR not in `last` is seeded and reports its state alone: clients
+///   follow these events instead of polling, so a PR reopened, opened outside
+///   Fletch or opened before the first look has to reach them. Its checks and
+///   threads are the baseline, not news — a restart re-announces no thread. A
+///   settled PR not in `last` reports nothing: the sweep serves it from its
+///   snapshot every tick and there is nothing to watch.
 /// - A different PR number under the same key is a new PR: its state is
 ///   reported once and it is seeded afresh, since the old memory is about a
 ///   PR that is gone.
 /// - A state change is the only thing reported for it, and the key goes —
 ///   a settled PR has nothing further to watch.
-/// - Checks report when the rollup or the set of failing names moves.
-/// - Threads report the ids not seen before; a resolved one just leaves.
+/// - Checks report when the rollup, the set of failing names or the (known)
+///   merge gate moves.
+/// - Threads report whenever the unresolved set changes, naming the ids not
+///   seen before — none when a thread was only resolved. Clients follow these
+///   events instead of polling, so a resolution has to reach them too; the
+///   alerts key off the new ids and stay quiet for it.
 pub(crate) fn diff(last: &mut HashMap<String, Seen>, key: &str, read: &Read) -> Vec<Change> {
     let Some(seen) = last.get_mut(key) else {
-        if read.state.state == PrStatus::Open {
-            last.insert(key.to_string(), Seen::first(read));
+        if read.state.state != PrStatus::Open {
+            return Vec::new();
         }
-        return Vec::new();
+        last.insert(key.to_string(), Seen::first(read));
+        return vec![Change::State(read.state.clone())];
     };
     if read.state.number != seen.number {
         last.remove(key);
@@ -134,19 +155,22 @@ pub(crate) fn diff(last: &mut HashMap<String, Seen>, key: &str, read: &Read) -> 
     let mut changes = Vec::new();
     if let Some(checks) = &read.checks {
         let failing = failing_set(checks);
+        let merge_state = known_merge_state(checks).or(seen.merge_state);
         if seen.rollup.as_deref() != Some(checks.rollup.as_str())
             || seen.required_failing != failing
+            || seen.merge_state != merge_state
         {
             seen.rollup = Some(checks.rollup.clone());
             seen.required_failing = failing;
+            seen.merge_state = merge_state;
             changes.push(Change::Checks(checks.clone()));
         }
     }
     if let Some(comments) = &read.threads {
         let ids = thread_ids(comments);
-        let new_ids: Vec<String> = ids.difference(&seen.threads).cloned().collect();
-        seen.threads = ids;
-        if !new_ids.is_empty() {
+        if ids != seen.threads {
+            let new_ids: Vec<String> = ids.difference(&seen.threads).cloned().collect();
+            seen.threads = ids;
             changes.push(Change::Threads {
                 comments: comments.clone(),
                 new_ids,
@@ -156,9 +180,9 @@ pub(crate) fn diff(last: &mut HashMap<String, Seen>, key: &str, read: &Read) -> 
     changes
 }
 
-/// Put the changes on the wire. A state change is app-wide only for the
-/// primary repo, as `fetch_and_emit_pr_state` emits it; a secondary's PR is
-/// per-repo panel state and only its checks and threads are announced.
+/// Put the changes on the wire, each addressed to its checkout: `subdir` is
+/// `None` for the primary repo and names a secondary, so a secondary's merge
+/// lands on its own key rather than the agent's primary PR.
 fn publish(
     sink: &dyn EventSink,
     agent_id: &str,
@@ -168,11 +192,7 @@ fn publish(
 ) {
     for change in changes {
         match change {
-            Change::State(state) => {
-                if subdir.is_none() {
-                    emit_pr_state(sink, agent_id, Some(state));
-                }
-            }
+            Change::State(state) => emit_pr_state(sink, agent_id, subdir, Some(state)),
             Change::Checks(checks) => emit_pr_checks(sink, agent_id, subdir, number, checks),
             Change::Threads { comments, new_ids } => {
                 emit_pr_threads(sink, agent_id, subdir, comments, new_ids)
@@ -245,7 +265,7 @@ async fn tick(ctx: &Arc<EngineCtx>, supervisor: &Arc<Supervisor>, last: &Last, w
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::github::{MergeState, MergeableState, PrComment};
+    use crate::github::{MergeableState, PrComment};
     use crate::supervisor::pr_map_key;
 
     fn pr(status: PrStatus) -> PrState {
@@ -305,18 +325,26 @@ mod tests {
         diff(last, &pr_map_key("arabia", "", true), read)
     }
 
+    /// The first look at an open PR reports its state — clients follow these
+    /// events and would otherwise never learn of a PR opened outside Fletch —
+    /// and only its state: its checks and threads are the baseline. That is
+    /// also what a host restart looks like for an already-open PR, so the
+    /// restart announces no old thread or failing check.
     #[test]
-    fn the_first_observation_seeds_and_emits_nothing() {
+    fn the_first_observation_seeds_and_emits_only_the_state() {
         let mut last = HashMap::new();
-        let changes = step(
-            &mut last,
-            &read(
-                PrStatus::Open,
-                Some(checks("failing", &["unit"])),
-                Some(threads(&["t1"])),
-            ),
+        let first = read(
+            PrStatus::Open,
+            Some(checks("failing", &["unit"])),
+            Some(threads(&["t1"])),
         );
-        assert!(changes.is_empty(), "{changes:?}");
+        let changes = step(&mut last, &first);
+        assert!(
+            matches!(&changes[..], [Change::State(s)] if s.state == PrStatus::Open),
+            "{changes:?}"
+        );
+        // A second identical read is nothing.
+        assert!(step(&mut last, &first).is_empty());
         let seen = &last["arabia"];
         assert_eq!(seen.rollup.as_deref(), Some("failing"));
         assert_eq!(seen.required_failing, BTreeSet::from(["unit".to_string()]));
@@ -400,12 +428,69 @@ mod tests {
             }
             other => panic!("expected one threads change: {other:?}"),
         }
-        // A thread resolving is not news; the one that stays is not new.
+        // A thread resolving travels too, so a client following the events
+        // drops it — but it names nothing new, which is what keeps it quiet.
+        match &step(
+            &mut last,
+            &read(PrStatus::Open, None, Some(threads(&["t3"]))),
+        )[..]
+        {
+            [Change::Threads { comments, new_ids }] => {
+                assert!(new_ids.is_empty(), "{new_ids:?}");
+                assert_eq!(comments.unresolved.len(), 1);
+            }
+            other => panic!("expected one threads change: {other:?}"),
+        }
+        // The same set again is nothing.
         assert!(step(
             &mut last,
             &read(PrStatus::Open, None, Some(threads(&["t3"])))
         )
         .is_empty());
+    }
+
+    /// The merge gate is what the panel's buttons read, so its moving is news —
+    /// but GitHub's lazy `unknown` between two real answers is not.
+    #[test]
+    fn a_moved_merge_gate_emits_checks_and_unknown_does_not() {
+        let mut last = HashMap::new();
+        let gate = |state: MergeState| {
+            let mut c = checks("passing", &[]);
+            c.merge_state = state;
+            read(PrStatus::Open, Some(c), None)
+        };
+        step(&mut last, &gate(MergeState::Clean));
+        assert!(step(&mut last, &gate(MergeState::Unknown)).is_empty());
+        assert!(step(&mut last, &gate(MergeState::Clean)).is_empty());
+        let changes = step(&mut last, &gate(MergeState::Behind));
+        assert!(matches!(&changes[..], [Change::Checks(_)]), "{changes:?}");
+    }
+
+    /// A reopened PR is unseen again (its key went when it closed), and the
+    /// clients that no longer poll have to hear it is open.
+    #[test]
+    fn open_closed_open_emits_closed_then_open() {
+        let mut last = HashMap::new();
+        let states = |changes: Vec<Change>| -> Vec<PrStatus> {
+            changes
+                .into_iter()
+                .map(|c| match c {
+                    Change::State(s) => s.state,
+                    other => panic!("expected a state change: {other:?}"),
+                })
+                .collect()
+        };
+        let open = read(PrStatus::Open, Some(checks("passing", &[])), None);
+        assert_eq!(states(step(&mut last, &open)), [PrStatus::Open]);
+        assert_eq!(
+            states(step(&mut last, &read(PrStatus::Closed, None, None))),
+            [PrStatus::Closed]
+        );
+        assert!(last.is_empty());
+        // Closed again is not news; the reopen is, once.
+        assert!(step(&mut last, &read(PrStatus::Closed, None, None)).is_empty());
+        assert_eq!(states(step(&mut last, &open)), [PrStatus::Open]);
+        assert!(step(&mut last, &open).is_empty());
     }
 
     #[test]
@@ -478,7 +563,7 @@ mod tests {
             Some(checks("failing", &["unit"])),
             Some(threads(&["t1", "t2"])),
         );
-        step(&mut last, &same);
+        assert_eq!(step(&mut last, &same).len(), 1, "the seed's state");
         assert!(step(&mut last, &same).is_empty());
         assert_eq!(last.len(), 1);
     }
@@ -493,7 +578,10 @@ mod tests {
         );
         let secondary = pr_map_key("arabia", "api", false);
         let pending = read(PrStatus::Open, Some(checks("pending", &[])), None);
-        assert!(diff(&mut last, &secondary, &pending).is_empty());
+        assert!(matches!(
+            &diff(&mut last, &secondary, &pending)[..],
+            [Change::State(_)]
+        ));
         let changes = diff(
             &mut last,
             &secondary,
@@ -502,5 +590,51 @@ mod tests {
         assert!(matches!(&changes[..], [Change::Checks(_)]));
         assert_eq!(last["arabia"].rollup.as_deref(), Some("pending"));
         assert_eq!(last["arabia::api"].rollup.as_deref(), Some("passing"));
+    }
+
+    /// A secondary's PR settling is reported under its own key, like the
+    /// primary's — it is not hidden as per-repo panel state.
+    #[test]
+    fn a_secondary_pr_merging_emits_state_under_its_key() {
+        let mut last = HashMap::new();
+        let secondary = pr_map_key("arabia", "api", false);
+        step(&mut last, &read(PrStatus::Open, None, None));
+        diff(&mut last, &secondary, &read(PrStatus::Open, None, None));
+        let changes = diff(&mut last, &secondary, &read(PrStatus::Merged, None, None));
+        assert!(
+            matches!(&changes[..], [Change::State(s)] if s.state == PrStatus::Merged),
+            "{changes:?}"
+        );
+        assert!(!last.contains_key("arabia::api"));
+        assert!(last.contains_key("arabia"), "the primary is still watched");
+    }
+
+    /// `publish` puts a secondary's state on the wire with its subdir and the
+    /// primary's with `subdir: null`, so a client can key each by checkout.
+    #[test]
+    fn publish_addresses_state_to_its_checkout() {
+        use crate::host::sink::RecordingSink;
+
+        let sink = RecordingSink::new();
+        let merged = pr(PrStatus::Merged);
+        publish(
+            &sink,
+            "arabia",
+            Some("api"),
+            650,
+            vec![Change::State(merged.clone())],
+        );
+        publish(&sink, "arabia", None, 650, vec![Change::State(merged)]);
+        let events = sink.events();
+        let subdirs: Vec<_> = events
+            .iter()
+            .map(|(name, payload)| {
+                assert_eq!(name, "pr:state_changed");
+                assert_eq!(payload["agent_id"], "arabia");
+                assert_eq!(payload["state"]["state"], "merged");
+                payload["subdir"].clone()
+            })
+            .collect();
+        assert_eq!(subdirs, [serde_json::json!("api"), serde_json::Value::Null]);
     }
 }

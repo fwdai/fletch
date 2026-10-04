@@ -9,7 +9,7 @@ use crate::host::EngineCtx;
 use crate::run_session::RunStateSnapshot;
 use crate::supervisor::Supervisor;
 
-use super::files::{agent_repo_checkout, expand_tilde};
+use super::files::expand_tilde;
 
 /// Start the Run-panel process for an agent.
 /// Runs setup-then-run on first start, then run only on subsequent.
@@ -43,98 +43,18 @@ pub fn run_state(
     Ok(supervisor.run_state(&agent_id))
 }
 
-/// Default wall-clock budget for an ad-hoc verification run's checks, matching
-/// the workflow tests gate's `DEFAULT_TESTS_TIMEOUT_SECS` (15 min). Ad-hoc
-/// checkouts have no step budget to draw from.
-const VERIFY_TIMEOUT_SECS: u64 = 900;
-
-/// Releases an agent's `verify_inflight` slot however `run_verification` returns
-/// — including the `?` early exits below, which a manual `remove` would leak.
-struct VerifyGuard {
-    supervisor: Arc<Supervisor>,
-    agent_id: String,
-}
-
-impl Drop for VerifyGuard {
-    fn drop(&mut self) {
-        self.supervisor
-            .verify_inflight
-            .lock()
-            .remove(&self.agent_id);
-    }
-}
-
 /// Run the project's deterministic checks — install → test → lint — in an
-/// agent's checkout and return a [`crate::verify::VerificationReport`]. Resolves
-/// the target repo via `subdir` (primary when `None`) and layers the project's
-/// `run.test` / `run.install` / `run.lint` overrides over detection, the same
-/// layering the workflow tests gate uses.
+/// agent's checkout and return a [`crate::verify::VerificationReport`]. The
+/// body lives in the engine (`commands::run_verification_impl`), where the
+/// host's autopilot calls it too.
 #[tauri::command]
 pub async fn run_verification(
     supervisor: State<'_, Arc<Supervisor>>,
     agent_id: String,
     subdir: Option<String>,
 ) -> Result<crate::verify::VerificationReport> {
-    let (repo, checkout) = agent_repo_checkout(&supervisor, &agent_id, subdir.as_deref())?;
-    // Serialize against the turn-end verification (`trigger_turn_end_verification`)
-    // and any other in-flight run for this agent. Both drive the same install /
-    // test / lint commands in the agent's checkout, so two at once race on the
-    // working tree and on whatever build cache the project shares — and only the
-    // turn-end path used to guard itself, leaving this command free to collide
-    // with it. Autopilot calls this after every cycle, so the collision went from
-    // theoretical to routine.
-    //
-    // Coarse on purpose: the key is the agent, not the checkout, because two
-    // checkouts of one agent still contend for CPU and for a shared dependency
-    // cache. Refusing is better than queueing here — the caller (Run panel or
-    // autopilot) can retry, and neither wants to block on a 15-minute test run.
-    if !supervisor.verify_inflight.lock().insert(agent_id.clone()) {
-        return Err(crate::error::Error::Other(format!(
-            "verification already running for agent {agent_id}"
-        )));
-    }
-    let _guard = VerifyGuard {
-        supervisor: supervisor.inner().clone(),
-        agent_id: agent_id.clone(),
-    };
-    // Project-scoped command overrides (mirrors the tests gate's `run.test` /
-    // `run.install`, plus `run.lint`). Empty project_id → detection only.
-    let project_id = supervisor
-        .workspace
-        .agent(&agent_id)
-        .map(|r| r.project_id)
-        .unwrap_or_default();
-    let setting = |key: &str| -> Option<String> {
-        if project_id.is_empty() {
-            None
-        } else {
-            supervisor.workspace.project_setting(&project_id, key)
-        }
-    };
-    let verifier = crate::verify::Verifier::new(
-        setting("run.test"),
-        setting("run.install"),
-        setting("run.lint"),
-        VERIFY_TIMEOUT_SECS,
-    )?;
-    // The project's shared run env — the verifier runs the same trust class of
-    // sandboxed process as the Run panel, so it gets the same membrane. Empty
-    // project (or nothing shared) → no vars, and the checks run as before.
-    let env = if project_id.is_empty() {
-        Vec::new()
-    } else {
-        supervisor
-            .workspace
-            .run_env(&project_id, &repo.repo_path, &agent_id, &checkout)
-    };
-    let report = verifier.verify(&checkout, &env).await;
-    tracing::info!(
-        agent_id = %agent_id,
-        passed = report.passed(),
-        checks = report.checks.len(),
-        "ran ad-hoc verification"
-    );
-    Ok(report)
+    fletch_core::commands::run_verification_impl(supervisor.inner(), &agent_id, subdir.as_deref())
+        .await
 }
 
 /// Detect the run configuration for an agent's primary repo, ranked by

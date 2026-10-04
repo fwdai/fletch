@@ -79,13 +79,16 @@ const newStore = () => {
         sending: {},
         autopilot: {},
         autopilotLog: {},
-        autopilotVerdicts: {},
+        autopilotDisabledProjects: null,
+        autopilotPausedAgents: [],
         loadHistoryTranscript: vi.fn(),
         pendingPublishApprovals: [],
         loadPendingPublishApprovals: vi.fn().mockResolvedValue(undefined),
         loadDelegations: vi.fn().mockResolvedValue(undefined),
+        loadAutopilot: vi.fn().mockResolvedValue(undefined),
         github: null,
         refreshGithub: vi.fn().mockResolvedValue(undefined),
+        loadAllPrStatus: vi.fn().mockResolvedValue(undefined),
       }) as unknown as AppState,
   );
   setEnvironmentsSource(store.getState);
@@ -103,7 +106,7 @@ const gh = (login: string) =>
 
 /** `environmentReconnected` is fire-and-forget; let its awaits land. */
 const settle = async () => {
-  for (let i = 0; i < 10; i++) await Promise.resolve();
+  for (let i = 0; i < 20; i++) await Promise.resolve();
 };
 
 describe("switchEnvironment", () => {
@@ -170,26 +173,31 @@ describe("switchEnvironment", () => {
     expect(store.getState().addProjectOpen).toBe(true);
   });
 
-  it("does not let an autopilot enrolment answer for the host's same-named agent", async () => {
+  it("keeps one host's autopilot off the other's same-named agents, and re-reads it", async () => {
     const store = newStore();
-    // Agent ids are recycled place names, so the host has a `fuji` too — and
-    // `publishPreAuthorized` reads this map by bare checkout key to auto-approve
-    // a push. An enrolment made here must not be on screen over there.
+    // Agent ids are recycled place names, so the host has a `fuji` too; this
+    // Mac's rows, history and opt-outs must not be on screen over there.
     store.setState({
-      autopilot: { "fuji::": { enrolled: true } as never },
-      autopilotVerdicts: { "fuji::": { ok: true } as never },
-      autopilotLog: { "fuji::": [{ at: 1 }] as never },
+      autopilot: { fuji: { enrolled: true } as never },
+      autopilotLog: { fuji: [{ at: 1 }] as never },
+      autopilotDisabledProjects: ["p1"],
+      autopilotPausedAgents: ["fuji"],
     });
 
     await store.getState().switchEnvironment(HOST);
 
     expect(store.getState().autopilot).toEqual({});
-    expect(store.getState().autopilotVerdicts).toEqual({});
     expect(store.getState().autopilotLog).toEqual({});
+    // Unknown until the host answers, not this Mac's list held over.
+    expect(store.getState().autopilotDisabledProjects).toBeNull();
+    expect(store.getState().autopilotPausedAgents).toEqual([]);
+    expect(store.getState().loadAutopilot).toHaveBeenCalledOnce();
 
-    // And it is parked, not lost: switching back puts the enrolment on screen.
+    // Parked, not lost: switching back shows it while it is re-read.
     await store.getState().switchEnvironment(LOCAL_ENVIRONMENT_ID);
-    expect(store.getState().autopilot["fuji::"]).toEqual({ enrolled: true });
+    expect(store.getState().autopilot.fuji).toEqual({ enrolled: true });
+    expect(store.getState().autopilotPausedAgents).toEqual(["fuji"]);
+    expect(store.getState().loadAutopilot).toHaveBeenCalledTimes(2);
   });
 
   it("re-registers the engine listeners against the new transport", async () => {
@@ -239,6 +247,14 @@ describe("switchEnvironment", () => {
     expect(store.getState().refreshGithub).toHaveBeenCalledOnce();
     // Blank until the probe answers, rather than the Mac's login held over.
     expect(store.getState().github).toBeNull();
+    // The PR seed waits for that login, since the read is GitHub-gated, and
+    // re-checks closed PRs: nothing else would see one reopen.
+    const seed = vi.mocked(store.getState().loadAllPrStatus);
+    expect(seed).toHaveBeenCalledOnce();
+    expect(seed).toHaveBeenCalledWith(true);
+    expect(vi.mocked(store.getState().refreshGithub).mock.invocationCallOrder[0]).toBeLessThan(
+      seed.mock.invocationCallOrder[0],
+    );
 
     await store.getState().switchEnvironment(LOCAL_ENVIRONMENT_ID);
     expect(store.getState().github).toEqual(gh("alex-on-this-mac"));
@@ -303,6 +319,9 @@ describe("environmentReconnected", () => {
     expect(store.getState().refreshGithub).toHaveBeenCalledTimes(2);
     // …and so are the delegations it runs: events missed while away are gone.
     expect(store.getState().loadDelegations).toHaveBeenCalledTimes(2);
+    expect(store.getState().loadAutopilot).toHaveBeenCalledTimes(2);
+    // …and the PR badges, which only the watcher's events keep current.
+    expect(store.getState().loadAllPrStatus).toHaveBeenCalledTimes(2);
   });
 
   it("leaves a background host's handshake alone", async () => {

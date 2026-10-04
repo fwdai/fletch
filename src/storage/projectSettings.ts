@@ -1,57 +1,13 @@
 import { api } from "@/api";
-import { dbDelete, dbSelect, dbUpsert } from "./db";
 
-// Per-project settings. Two homes, by who reads the key:
-//
-// - The HOST's keys (run commands, env sharing, verify, roadmap autonomy, the
-//   Linear team, …; `hostOwnedKeys.ts`) live in the host's `project_settings`
-//   and are read and written only through `api.getProjectSettings` /
-//   `api.setProjectSetting` (or `useProjectSettings`), so a project page edits
-//   the engine the UI is driving (docs/remote-protocol.md, "Settings").
-// - THIS desktop's own keys — autopilot's opt-out, which this Mac's autopilot
-//   loop reads — stay in this Mac's table through the generic bridge below.
-
-export interface ProjectSettingRow {
-  project_id: string;
-  key: string;
-  value: string;
-}
-
-/** Write a client-owned key in THIS Mac's table. Never for a host-owned key
- *  (`hostOwnedKeys.test.ts` fails the build if one is passed here). */
-export async function setProjectSetting(
-  projectId: string,
-  key: string,
-  value: string,
-): Promise<void> {
-  await dbUpsert("project_settings", { project_id: projectId, key, value }, "project_id,key");
-}
-
-/** Delete a client-owned key from THIS Mac's table. */
-export async function deleteProjectSetting(projectId: string, key: string): Promise<void> {
-  await dbDelete("project_settings", { project_id: projectId, key });
-}
-
-/** Per-project switch for autopilot (set in Project Settings). Autopilot is ON
- *  by default for every project, so the row exists only when it has been turned
- *  off: `"0"` = off, absent = on. Turning it back on deletes the row. */
-export const AUTOPILOT_ENABLED_KEY = "autopilot.enabled";
-
-/** Whether a stored `autopilot.enabled` value means off. Anything other than an
- *  explicit off reads as on — a loop that is on by default must not switch off
- *  on a typo. */
-export function autopilotDisabledValue(value: string | undefined): boolean {
-  return value === "0" || value === "false";
-}
-
-/** Ids of every project whose autopilot has been switched off, in one query
- *  over the settings table (there is one row per project, keyed by project id). */
-export async function loadAutopilotDisabledProjects(): Promise<string[]> {
-  const rows = await dbSelect<ProjectSettingRow>("project_settings", {
-    where: { key: AUTOPILOT_ENABLED_KEY },
-  });
-  return rows.filter((r) => autopilotDisabledValue(r.value)).map((r) => r.project_id);
-}
+// Per-project settings are the HOST's: run commands, env sharing, verify,
+// roadmap autonomy, autopilot's switch, the Linear team, … (`hostOwnedKeys.ts`)
+// live in the host's `project_settings` and are read and written only through
+// `api.getProjectSettings` / `api.setProjectSetting` (or `useProjectSettings`)
+// and autopilot's own `autopilot_set`, so a project page edits the engine the
+// UI is driving (docs/remote-protocol.md, "Settings"). Nothing writes the
+// table through the generic bridge any more (`hostOwnedKeys.test.ts` fails the
+// build if something starts to).
 
 /** Per-project keys for the Linear integration (set in Project Settings).
  *  The id scopes which team's issues feed the inbox + composer picker; the

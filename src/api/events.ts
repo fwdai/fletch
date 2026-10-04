@@ -20,7 +20,12 @@ import type {
   DictationStateEvent,
   DictationTranscriptEvent,
 } from "./types/dictation";
-import type { DelegationEvent } from "./types/git";
+import type {
+  AutopilotCheckout,
+  AutopilotLogEntry,
+  AutopilotSwitches,
+  DelegationEvent,
+} from "./types/git";
 import type { PrChecksChangedEvent, PrStateChangedEvent, PrThreadsChangedEvent } from "./types/pr";
 import type {
   AgentInstallEvent,
@@ -314,6 +319,23 @@ export function onAgentRepoAdded(cb: (e: AgentRepoAddedEvent) => void): Promise<
  *  running, or over with an outcome notice. */
 export function onDelegationChanged(cb: (e: DelegationEvent) => void): Promise<UnlistenFn> {
   return on<DelegationEvent>("delegation:changed", cb);
+}
+
+/** A checkout's autopilot row changed on the host: enrollment, pause, project
+ *  switch or cycle. Replaces the row it names. */
+export function onAutopilotState(cb: (e: AutopilotCheckout) => void): Promise<UnlistenFn> {
+  return on<AutopilotCheckout>("autopilot:state", cb);
+}
+
+/** An autopilot switch was written on the host — by any client, even for a
+ *  project with no agents. Carries both opt-out lists whole. */
+export function onAutopilotSwitches(cb: (e: AutopilotSwitches) => void): Promise<UnlistenFn> {
+  return on<AutopilotSwitches>("autopilot:switches", cb);
+}
+
+/** The host's autopilot did something worth recording on a checkout. */
+export function onAutopilotEvent(cb: (e: AutopilotLogEntry) => void): Promise<UnlistenFn> {
+  return on<AutopilotLogEntry>("autopilot:event", cb);
 }
 
 export function onWorkspaceChanged(cb: () => void): Promise<UnlistenFn> {

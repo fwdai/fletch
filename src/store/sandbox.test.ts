@@ -1,20 +1,12 @@
-// The publish pre-authorization policy is pure, so it is covered here as a
-// function of its inputs.
-//
-// The load-bearing case is the *unattended* one. If `publishPreAuthorized` fails
-// to recognise an autopilot-driven push, the backend prompt goes unanswered, its
-// 120s timeout denies it, the rung fails, autopilot retries it to its budget and
-// then gives up — a run nobody was watching, spent for nothing. So the
-// autopilot ground is asserted from both directions.
+// The publish-approval queue: what reaches the prompt, what takes it down, and
+// how a resync replaces it. What the user already authorized (a delegation's or
+// an autopilot-enrolled checkout's own pushes) the host approves without
+// asking, so it never arrives here — that policy is the host's, tested there.
 
 import { describe, expect, it, vi } from "vitest";
 import { create } from "zustand";
 import type { PublishApproval, PublishApprovalResolved } from "@/api";
-import type { AutopilotState } from "@/autopilot";
-import { newEnrollment } from "@/autopilot";
 import { type EnvironmentEntry, LOCAL_ENVIRONMENT_ID, setEnvironmentsSource } from "./environments";
-import { checkoutKey } from "./git";
-import { type PublishAuthorityState, publishPreAuthorized } from "./publishApproval";
 import { createSandboxSlice } from "./sandbox";
 
 const { answerPublishApproval, listPublishApprovals } = vi.hoisted(() => ({
@@ -23,71 +15,18 @@ const { answerPublishApproval, listPublishApprovals } = vi.hoisted(() => ({
 }));
 vi.mock("@/api", () => ({ api: { answerPublishApproval, listPublishApprovals } }));
 
-/** The slice creator and the action, loosely typed: the test store carries only
- *  the sandbox slice plus the two maps the policy reads, not the whole AppState. */
+/** The slice creator and the actions, loosely typed: the test store carries
+ *  only the sandbox slice, not the whole AppState. */
 type SliceFn = (set: unknown, get: unknown) => Record<string, unknown>;
 type Recv = (r: PublishApproval) => void;
 type Resolve = (e: PublishApprovalResolved) => void;
 type Load = () => Promise<void>;
 
-const KEY = checkoutKey("a1");
-const SECOND_REPO = checkoutKey("a1", "web");
-
-function state(over: Partial<PublishAuthorityState> = {}): PublishAuthorityState {
-  return { autopilot: {}, ...over };
-}
-
-function enrolled(over: Partial<AutopilotState> = {}): AutopilotState {
-  return { ...newEnrollment(), ...over };
-}
-
-describe("autopilot's standing authorization", () => {
-  it("covers a push on the checkout it is driving", () => {
-    const s = state({ autopilot: { [KEY]: enrolled() } });
-    expect(publishPreAuthorized("git_push", KEY, s)).toBe(true);
-  });
-
-  it("does not cover opening a pull request", () => {
-    // Every autopilot rung works on a PR that already exists, so needing this
-    // would mean the rung set changed — and creating a public artifact under the
-    // user's identity should not ride on an enrollment made for CI fixes.
-    const s = state({ autopilot: { [KEY]: enrolled() } });
-    expect(publishPreAuthorized("open_pr", KEY, s)).toBe(false);
-  });
-
-  it("does not leak across checkouts of the same agent", () => {
-    const s = state({ autopilot: { [KEY]: enrolled() } });
-    expect(publishPreAuthorized("git_push", SECOND_REPO, s)).toBe(false);
-  });
-});
-
-// A live delegation's half of the policy moved to the host with the delegations
-// themselves (`supervisor::delegation::pre_authorizes`, tested there): the gate
-// answers it without ever raising the prompt this client would have seen.
-
-describe("with no authority at all", () => {
-  it("authorizes nothing", () => {
-    // An agent that decided to publish by itself: exactly what the prompt is for.
-    for (const op of ["git_push", "open_pr"]) {
-      expect(publishPreAuthorized(op, KEY, state())).toBe(false);
-    }
-  });
-});
-
-// ── the wiring, end to end ──────────────────────────────────────────────────
-//
-// The policy being right is necessary but not sufficient: the slice has to consult
-// it and answer the backend. These drive the REAL `receivePublishApproval` (an
-// earlier version of this block re-implemented its body, which would have passed
-// against broken code) and assert what the backend observes — an answer, or a
-// queued prompt. That is what decides whether an unattended run proceeds.
-
 describe("receivePublishApproval", () => {
-  function store(over: Partial<PublishAuthorityState> = {}) {
+  function store() {
     answerPublishApproval.mockClear();
     return create<Record<string, unknown>>((set, get) => ({
       ...(createSandboxSlice as unknown as SliceFn)(set, get),
-      ...state(over),
     }));
   }
 
@@ -99,50 +38,15 @@ describe("receivePublishApproval", () => {
     ...over,
   });
 
-  it("answers an autopilot push without ever queueing a prompt", async () => {
-    const s = store({ autopilot: { [KEY]: enrolled() } });
-    (s.getState().receivePublishApproval as Recv)(request());
-    await Promise.resolve();
-    expect(answerPublishApproval).toHaveBeenCalledWith("r1", true);
-    expect(
-      s.getState().pendingPublishApprovals,
-      "an unattended run must never wait on a prompt",
-    ).toEqual([]);
-  });
-
-  it("queues a prompt for a publish the agent chose by itself", () => {
+  it("queues each prompt, oldest first, and answers nothing by itself", () => {
     const s = store();
     (s.getState().receivePublishApproval as Recv)(request());
+    (s.getState().receivePublishApproval as Recv)(request({ id: "r2", op: "open_pr" }));
     expect(answerPublishApproval).not.toHaveBeenCalled();
-    expect(s.getState().pendingPublishApprovals).toHaveLength(1);
-  });
-
-  it("answers a primary-checkout push, which arrives with no repo", () => {
-    // The regression this guards: the backend used to send the primary's own
-    // subdir name, while the UI keys the primary WITHOUT a suffix. The resulting
-    // key matched no enrollment, so every single-repo autopilot push would have
-    // waited on a prompt. `approval_repo` normalises it to absent.
-    const s = store({ autopilot: { [KEY]: enrolled() } });
-    (s.getState().receivePublishApproval as Recv)(request({ repo: undefined }));
-    expect(answerPublishApproval).toHaveBeenCalledWith("r1", true);
-    expect(s.getState().pendingPublishApprovals).toEqual([]);
-  });
-
-  it("scopes to a secondary checkout when one is named", () => {
-    const s = store({ autopilot: { [SECOND_REPO]: enrolled() } });
-    (s.getState().receivePublishApproval as Recv)(request({ repo: "web" }));
-    expect(answerPublishApproval).toHaveBeenCalledWith("r1", true);
-    // ...and the primary's own enrollment must not cover it.
-    const other = store({ autopilot: { [KEY]: enrolled() } });
-    (other.getState().receivePublishApproval as Recv)(request({ repo: "web" }));
-    expect(other.getState().pendingPublishApprovals).toHaveLength(1);
-  });
-
-  it("queues a pull request even while autopilot is driving", () => {
-    const s = store({ autopilot: { [KEY]: enrolled() } });
-    (s.getState().receivePublishApproval as Recv)(request({ op: "open_pr" }));
-    expect(answerPublishApproval).not.toHaveBeenCalled();
-    expect(s.getState().pendingPublishApprovals).toHaveLength(1);
+    expect((s.getState().pendingPublishApprovals as PublishApproval[]).map((r) => r.id)).toEqual([
+      "r1",
+      "r2",
+    ]);
   });
 
   // `publish:approval-resolved`: the question ended somewhere else, so the

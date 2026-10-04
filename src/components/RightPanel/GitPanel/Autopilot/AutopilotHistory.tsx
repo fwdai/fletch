@@ -1,8 +1,8 @@
 import { useState } from "react";
+import type { AutopilotLogEntry } from "@/api";
 import { Icon } from "@/components/Icon";
 import { gaveUpLabel, rungNoun } from "@/helpers/autopilotCopy";
 import { useAppStore } from "@/store";
-import type { AutopilotLogEntry } from "@/store/autopilotLog";
 import { checkoutKey } from "@/store/git";
 
 // ── What the agent did on this PR by itself ───────────────────────────────────
@@ -29,7 +29,7 @@ export function eventLabel(entry: AutopilotLogEntry): string {
   }
 }
 
-/** Clock time of the event. Formats the timestamp the driver recorded — the
+/** Clock time of the event. Formats the timestamp the host recorded — the
  *  entry's own `at` — rather than reading a clock here, so a row can't drift or
  *  disagree with the moment it describes. */
 const clock = (at: number) =>
@@ -65,21 +65,13 @@ export function AutopilotHistory({ agentId, subdir }: { agentId: string; subdir?
         // asked about.
         <ol className="ap-log-list text-xs">
           {log.map((entry) => (
-            <li
-              // The driver applies at most one effect per checkout per tick, so
-              // the stamp plus what happened identifies the row — and unlike the
-              // array index it survives the oldest entry being pruned.
-              key={`${entry.at}-${entry.outcome}-${entry.rung}`}
-              className={`ap-log-row o-${entry.outcome}`}
-            >
+            <li key={entry.id} className={`ap-log-row o-${entry.outcome}`}>
               <span className="ap-log-time">{clock(entry.at)}</span>
               <span className="ap-log-what">{eventLabel(entry)}</span>
-              {entry.rung && <span className="ap-log-rung">{rungNoun(entry.rung)}</span>}
+              <span className="ap-log-rung">{rungNoun(entry.rung)}</span>
               {/* The attempt number is the budget being spent — the number that
                *  explains why it eventually gave up. */}
-              {entry.attempt != null && entry.attempt > 1 && (
-                <span className="ap-attempt">#{entry.attempt}</span>
-              )}
+              {entry.attempt > 1 && <span className="ap-attempt">#{entry.attempt}</span>}
             </li>
           ))}
         </ol>

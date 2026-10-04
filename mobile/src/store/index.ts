@@ -1,7 +1,14 @@
 import type { BackgroundTaskMap } from "@desktop/adapters/shared/backgroundTasks";
 import type { AgentManagedEvent, AgentRecord, Workspace } from "@desktop/api/types/agent";
 import type { CheckoutFile, DirListing } from "@desktop/api/types/checkout";
-import type { DelegationEvent, GitState, ShortStats } from "@desktop/api/types/git";
+import type {
+  AutopilotCheckout,
+  AutopilotLogEntry,
+  AutopilotSwitches,
+  DelegationEvent,
+  GitState,
+  ShortStats,
+} from "@desktop/api/types/git";
 import type { PrChecks, PrComments, PrState } from "@desktop/api/types/pr";
 import type { GhRepoSummary, GhStatus } from "@desktop/api/types/providers";
 import type { PublishApproval } from "@desktop/api/types/sandbox";
@@ -9,6 +16,12 @@ import type { LiveTurn } from "@desktop/api/types/session";
 import type { VerificationReport } from "@desktop/api/types/verify";
 import { appActionMessage } from "@desktop/delegation";
 import { reconcileSending, whileSending } from "@desktop/helpers/sending";
+import {
+  acceptPrWrite,
+  fencePrWrites,
+  issuePrWrite,
+  stampPrWrite,
+} from "@desktop/store/prWriteOrder";
 import { newestWins } from "@desktop/util/newestWins";
 import { type ApprovalEvent, replayApprovalEvents } from "@desktop/util/publishApprovals";
 import { create } from "zustand";
@@ -31,16 +44,19 @@ import {
   type Via,
 } from "../remote";
 import type { PushFletch } from "../remote/push";
+import { type AutopilotMap, autopilotFromSnapshot, checkoutKey, switchesOf } from "./autopilot";
 import { type ChatsSlice, createChatsSlice } from "./chats";
 import { registerRemoteEvents } from "./events";
 import { replayLiveTurn, runningTurnStart, withPendingTurns } from "./liveTurn";
 import { clearHost, loadDestParent, loadSettings, saveDestParent, saveSettings } from "./persist";
 import { createProposalsSlice, type ProposalsSlice } from "./proposals";
-import { forgetPush, startPush, syncPush } from "./push";
+import { forgetPush, pushTab, startPush, syncPush } from "./push";
 import {
   appendActivity,
   askedText,
+  autopilotActivity,
   delegationActivityText,
+  mergeActivity,
   type ShipActivityMap,
 } from "./shipActivity";
 import { applyUserTurns, reduceRecords } from "./transcript";
@@ -69,10 +85,6 @@ export interface NavItem {
 
 /** The agent screen's tabs, as its `tab` nav prop names them. */
 export type AgentTab = "chat" | "changes" | "ship";
-
-/** Push `kind`s about the agent's PR (docs/remote-protocol.md, "Push
- *  notifications"): a tap on one of these opens the Ship tab. */
-const SHIP_PUSH_KINDS = new Set(["checks_settled", "review_comment", "pr_merged", "pr_closed"]);
 
 export interface SheetState {
   name: SheetName;
@@ -146,20 +158,37 @@ export interface MobileState extends ChatsSlice, ProposalsSlice {
   shortstats: Record<string, ShortStats>;
   prStates: Record<string, PrState | null>;
   prChecks: Record<string, PrChecks | null>;
-  /** Unresolved review threads per agent, from `get_pr_threads`. Never set on
-   *  a host without the op, so a missing key means "unknown", not "none". */
+  /** Unresolved review threads per agent: one `get_pr_threads` when the Ship
+   *  tab opens with none cached, then `pr:threads_changed`. Never set on a host
+   *  without the op, so a missing key means "unknown", not "none". Emptied on
+   *  every handshake — an event missed while the socket was down has no other
+   *  way back — so an open tab reads again. */
   prComments: Record<string, PrComments | null>;
   /** The latest turn-end verification per agent (`verify:report`). Absent =
    *  never verified since this launch. Not persisted. */
   verificationReports: Record<string, VerificationReport>;
   /** The Ship tab's activity list per agent, newest first (store/shipActivity).
-   *  Live only: empty after every handshake, like `backgroundTasks`. */
+   *  Empty after every handshake, like `backgroundTasks`, then refilled with
+   *  the autopilot log the host keeps (`autopilot_log`). */
   shipActivity: ShipActivityMap;
+  /** Names of the workspaces the host's idle sweep archived
+   *  (`workspace:auto-archived`) since the user last dismissed the notice on
+   *  Home. Null when there is nothing to say. Not persisted. */
+  autoArchived: string[] | null;
   /** The host's live delegation per agent (`delegation:changed`), primary repo
    *  only — the phone is single-repo for now. A mirror: the host decides when
    *  one starts, runs and ends; the Ship strip reads `working` off it. Re-read
    *  with `get_delegations` on every handshake. */
   delegations: Record<string, DelegationEvent>;
+  /** The host's autopilot per checkout (store/autopilot), every checkout of
+   *  every live agent. A mirror like `delegations`: `autopilot:state` replaces
+   *  a row, a snapshot (`autopilot_state` on every handshake, `autopilot_set`'s
+   *  answer) replaces them all. Empty on a host without the ops. */
+  autopilot: AutopilotMap;
+  /** The host's two autopilot opt-out lists, whole: from every snapshot, and
+   *  replaced by `autopilot:switches` — which every `autopilot_set` fires, even
+   *  on a project with no agents (so no row changes). `null` until read. */
+  autopilotSwitches: AutopilotSwitches | null;
   trees: Record<string, CheckoutFile[]>;
 
   theme: ThemeMode;
@@ -212,21 +241,28 @@ export interface MobileState extends ChatsSlice, ProposalsSlice {
    *  turn is replayed on top from `read_live_turn` (see store/liveTurn). */
   rebuildLog(agentId: string, opts?: { liveTurn?: boolean }): Promise<void>;
   loadGit(agentId: string): Promise<void>;
-  /** The Ship tab's live tick: PR state and CI from one `get_pr_live` pass, so
-   *  both are from the same moment. A null `checks` means the CI read didn't
-   *  resolve (see `PrLive`), so the last tint is kept rather than blanked. */
+  /** The Ship tab's one read when it opens with no checks cached: PR state and
+   *  CI from one `get_pr_live` pass, so both are from the same moment. The
+   *  host's `pr:*` events keep them current after that. A null `checks` means
+   *  the CI read didn't resolve (see `PrLive`), so the last tint is kept rather
+   *  than blanked. */
   loadPrLive(agentId: string): Promise<void>;
-  /** Re-read the PR's unresolved review threads. A no-op on a host without
+  /** Read the PR's unresolved review threads — once, when the Ship tab opens
+   *  with none cached; `pr:threads_changed` follows. A no-op on a host without
    *  `get_pr_threads`. */
   loadPrThreads(agentId: string): Promise<void>;
   /** Refresh the fleet-wide working-tree stats behind the agent rows. */
   loadShortstats(): Promise<void>;
-  /** Refresh the fleet-wide PR state behind the agent rows from one
-   *  `get_all_pr_status` sweep. Primary-repo entries only (the phone is
-   *  single-repo for now); a null `checks` keeps the last tint, as in
-   *  `loadPrLive`, and an agent absent from the map keeps everything — absence
-   *  means "nothing to say", not "no PR". A no-op on a host without the op. */
+  /** Seed the fleet-wide PR state behind the agent rows from one
+   *  `get_all_pr_status` read, on every handshake and return to the
+   *  foreground; the host watcher's `pr:*` events keep it current between.
+   *  Primary-repo entries only (the phone is single-repo for now); a null
+   *  `checks` keeps the last tint, as in `loadPrLive`, and an agent absent from
+   *  the map keeps everything — absence means "nothing to say", not "no PR". A
+   *  no-op on a host without the op. */
   loadPrStatus(): Promise<void>;
+  /** Clear the auto-archive notice on Home. */
+  dismissAutoArchived(): void;
   loadTree(agentId: string): Promise<void>;
 
   /** `attachments` are host paths staged through the `attachment_*` ops; a
@@ -268,6 +304,19 @@ export interface MobileState extends ChatsSlice, ProposalsSlice {
   /** Replace `delegations` with the host's table. A no-op on a host without
    *  `get_delegations`. */
   loadDelegations(): Promise<void>;
+  /** Fold one `autopilot:state` into `autopilot`. */
+  applyAutopilotState(row: AutopilotCheckout): void;
+  /** Take one `autopilot:switches`: both lists, replaced whole. */
+  applyAutopilotSwitches(switches: AutopilotSwitches): void;
+  /** Fold one `autopilot:event` into the agent's activity list. */
+  applyAutopilotEvent(entry: AutopilotLogEntry): void;
+  /** Re-read autopilot from the host: its state into `autopilot`, its log into
+   *  the activity lists. Each half is a no-op on a host without its op. */
+  loadAutopilot(): Promise<void>;
+  /** Pause (`false`) or resume an agent's autopilot (`autopilot_set`), taking
+   *  the host's answer as the new state. The project's switch is the Mac's to
+   *  flip. A no-op on a host — or a pairing — without the op. */
+  setAgentAutopilot(agentId: string, enabled: boolean): Promise<void>;
   /** Manual path: commit + push + open a PR with the user's own text. */
   publish(agentId: string, title: string, body: string): Promise<void>;
   pushToPr(agentId: string): Promise<void>;
@@ -539,7 +588,10 @@ export const useStore = create<MobileState>()((set, get) => ({
   prComments: {},
   verificationReports: {},
   shipActivity: {},
+  autoArchived: null,
   delegations: {},
+  autopilot: {},
+  autopilotSwitches: null,
   trees: {},
 
   theme: "dark",
@@ -597,6 +649,10 @@ export const useStore = create<MobileState>()((set, get) => ({
       // — this is the path that clears a flag stranded by a reconnect.
       if (ws) set((s) => ({ workspace: ws, sending: reconcileSending(s.sending, ws.agents) }));
       else void get().refreshWorkspace();
+      // A PR read still out was asked of the socket before this one — perhaps
+      // of another host, whose agent ids recur here — so none of them may land.
+      // The reads below are issued after the fence and outrank it.
+      fencePrWrites();
       // Planning chats are absent from that snapshot; their records, and their
       // flags, settle through their own list.
       refreshChats();
@@ -604,10 +660,21 @@ export const useStore = create<MobileState>()((set, get) => ({
       // task held as running could never be seen ending — so the maps start
       // over on every handshake and refill from whatever the host emits next.
       // The replay watermarks go with them: a restarted host counts from zero,
-      // and so does the Ship tab's activity list.
-      set({ backgroundTasks: {}, liveSeq: {}, shipActivity: {}, delegations: {} });
-      // The snapshot carries no stats or PR state, so the rows get both from
-      // the first poll of every handshake rather than waiting out its interval.
+      // and so does the Ship tab's activity list. Review threads too: they
+      // follow `pr:threads_changed`, so a missed one would linger — emptied,
+      // an open Ship tab reads them again.
+      set({
+        backgroundTasks: {},
+        liveSeq: {},
+        shipActivity: {},
+        delegations: {},
+        autopilot: {},
+        autopilotSwitches: null,
+        prComments: {},
+      });
+      // The snapshot carries no stats or PR state, so the rows get both on
+      // every handshake: stats from the first tick of their poll, PR state
+      // from the one seed the watcher's events then keep current.
       void get().loadShortstats();
       void get().loadPrStatus();
       // The publishes this host is blocked on. Every handshake, because the
@@ -617,6 +684,9 @@ export const useStore = create<MobileState>()((set, get) => ({
       // …and the delegations it is running: the strip's `working` state is
       // the host's, and the events that built it were lost with the socket.
       void get().loadDelegations().catch(ignore);
+      // …and its autopilot, for the same reason: state and log are host facts,
+      // and the events are only the deltas.
+      void get().loadAutopilot().catch(ignore);
       refreshOpenAgent();
       // Every handshake — the first pairing and every reconnect — is when the
       // host is told the APNs token again.
@@ -643,6 +713,8 @@ export const useStore = create<MobileState>()((set, get) => ({
         return;
       }
       void get().loadShortstats();
+      // A `pr:*` event that reached a suspended app may never have been read.
+      void get().loadPrStatus();
       refreshOpenAgent();
       refreshChats();
     };
@@ -773,6 +845,8 @@ export const useStore = create<MobileState>()((set, get) => ({
     // Before the link drops: the host keeps the push token until told otherwise.
     await forgetPush();
     client.disconnect();
+    // A PR read still out describes the host being forgotten.
+    fencePrWrites();
     await clearHost();
     set({
       hostKey: null,
@@ -790,7 +864,10 @@ export const useStore = create<MobileState>()((set, get) => ({
       liveSeq: {},
       verificationReports: {},
       shipActivity: {},
+      autoArchived: null,
       delegations: {},
+      autopilot: {},
+      autopilotSwitches: null,
       // The chats belong to the host that holds their checkouts, and the ghosts
       // to the boards those chats propose onto.
       chats: {},
@@ -870,7 +947,7 @@ export const useStore = create<MobileState>()((set, get) => ({
     if (!fletch.agentId || !hostKey || fletch.hostId !== hostKey) return;
     // An alert about the PR is answered on the Ship tab; a turn ending or a
     // held prompt, in the chat.
-    get().openAgent(fletch.agentId, SHIP_PUSH_KINDS.has(fletch.kind ?? "") ? "ship" : undefined);
+    get().openAgent(fletch.agentId, pushTab(fletch.kind));
   },
 
   openSheet(name, props = {}) {
@@ -980,14 +1057,19 @@ export const useStore = create<MobileState>()((set, get) => ({
   },
 
   async loadGit(agentId) {
+    // The PR halves are ordered against the watcher's events like every PR
+    // read here (see `loadPrLive`); the git state has no event to race.
+    const ticket = issuePrWrite();
     try {
       const [git, pr] = await Promise.all([api.getGitState(agentId), api.getPrState(agentId)]);
+      const takeState = acceptPrWrite("prStates", agentId, ticket);
       set((s) => ({
         gitStates: { ...s.gitStates, [agentId]: git },
-        prStates: { ...s.prStates, [agentId]: pr },
+        ...(takeState ? { prStates: { ...s.prStates, [agentId]: pr } } : {}),
       }));
       if (pr) {
         const checks = await api.getPrChecks(agentId);
+        if (!acceptPrWrite("prChecks", agentId, ticket)) return;
         set((s) => ({ prChecks: { ...s.prChecks, [agentId]: checks } }));
       }
     } catch {
@@ -996,13 +1078,21 @@ export const useStore = create<MobileState>()((set, get) => ({
   },
 
   async loadPrLive(agentId) {
+    // Claimed before asking: a `pr:*` event that lands while the read is out
+    // is newer than what the read saw, and the watcher, having sent it, will
+    // not send it again — so the reply must not land on top of it
+    // (@desktop/store/prWriteOrder).
+    const ticket = issuePrWrite();
     try {
       const live = await api.getPrLive(agentId);
       // Null means the host had nothing to say this round, not "no PR".
       if (!live) return;
+      // One ticket, checked per slice: a checks event outranks only the checks.
+      const takeState = acceptPrWrite("prStates", agentId, ticket);
+      const takeChecks = !!live.checks && acceptPrWrite("prChecks", agentId, ticket);
       set((s) => ({
-        prStates: { ...s.prStates, [agentId]: live.state },
-        ...(live.checks ? { prChecks: { ...s.prChecks, [agentId]: live.checks } } : {}),
+        ...(takeState ? { prStates: { ...s.prStates, [agentId]: live.state } } : {}),
+        ...(takeChecks ? { prChecks: { ...s.prChecks, [agentId]: live.checks } } : {}),
       }));
     } catch {
       // Advisory, like loadGit: keep the last-known state.
@@ -1011,8 +1101,11 @@ export const useStore = create<MobileState>()((set, get) => ({
 
   async loadPrThreads(agentId) {
     if (!get().hostSupports("get_pr_threads")) return;
+    // Ordered against `pr:threads_changed`, as `loadPrLive` is against the rest.
+    const ticket = issuePrWrite();
     try {
       const comments = await api.getPrThreads(agentId);
+      if (!acceptPrWrite("prComments", agentId, ticket)) return;
       set((s) => ({ prComments: { ...s.prComments, [agentId]: comments } }));
     } catch {
       // Advisory, like loadGit: keep the last-known threads.
@@ -1033,23 +1126,31 @@ export const useStore = create<MobileState>()((set, get) => ({
 
   async loadPrStatus() {
     if (!get().hostSupports("get_all_pr_status")) return;
+    // Ordered per agent, row by row: an event for one agent while the sweep is
+    // out outranks that agent's row and nobody else's (see `loadPrLive`).
+    const ticket = issuePrWrite();
     try {
       const all = await api.getAllPrStatus();
-      set((s) => {
-        const prStates = { ...s.prStates };
-        const prChecks = { ...s.prChecks };
-        for (const [key, entry] of Object.entries(all)) {
-          // `"{agentId}::{subdir}"` keys are secondary repos, which no screen
-          // here shows yet.
-          if (key.includes("::")) continue;
-          prStates[key] = entry.state;
-          if (entry.checks) prChecks[key] = entry.checks;
-        }
-        return { prStates, prChecks };
-      });
+      const states: Record<string, PrState | null> = {};
+      const checks: Record<string, PrChecks> = {};
+      for (const [key, entry] of Object.entries(all)) {
+        // `"{agentId}::{subdir}"` keys are secondary repos, which no screen
+        // here shows yet.
+        if (key.includes("::")) continue;
+        if (acceptPrWrite("prStates", key, ticket)) states[key] = entry.state;
+        if (entry.checks && acceptPrWrite("prChecks", key, ticket)) checks[key] = entry.checks;
+      }
+      set((s) => ({
+        prStates: { ...s.prStates, ...states },
+        prChecks: { ...s.prChecks, ...checks },
+      }));
     } catch {
       // Advisory, like loadShortstats: keep the last-known state.
     }
+  },
+
+  dismissAutoArchived() {
+    set({ autoArchived: null });
   },
 
   async loadTree(agentId) {
@@ -1127,8 +1228,9 @@ export const useStore = create<MobileState>()((set, get) => ({
   },
 
   receivePublishApproval(request) {
-    // No pre-authorization to consult, unlike the desktop's autopilot: the
-    // phone has no standing per-checkout grant, so every prompt is shown.
+    // Nothing to pre-authorize here: the host approves an enrolled checkout's
+    // autopilot pushes itself and never raises those, so every prompt that
+    // does arrive is one for a person to answer.
     approvalsInFlight?.push({ kind: "requested", request });
     set((s) => ({ pendingPublishApprovals: [...s.pendingPublishApprovals, request] }));
   },
@@ -1249,11 +1351,61 @@ export const useStore = create<MobileState>()((set, get) => ({
     });
   },
 
+  applyAutopilotState(row) {
+    set((s) => ({ autopilot: { ...s.autopilot, [checkoutKey(row.agent_id, row.subdir)]: row } }));
+  },
+
+  applyAutopilotSwitches(switches) {
+    set({ autopilotSwitches: switchesOf(switches) });
+  },
+
+  applyAutopilotEvent(entry) {
+    set((s) => ({
+      shipActivity: mergeActivity(s.shipActivity, entry.agent_id, [autopilotActivity(entry)]),
+    }));
+  },
+
+  async loadAutopilot() {
+    await Promise.all([
+      get().hostSupports("autopilot_state") &&
+        api.getAutopilotState().then((snapshot) => {
+          set({
+            autopilot: autopilotFromSnapshot(snapshot),
+            autopilotSwitches: switchesOf(snapshot),
+          });
+        }),
+      // Merged rather than replaced: a live event may have landed first, and
+      // it is the same row by id.
+      get().hostSupports("autopilot_log") &&
+        api.getAutopilotLog().then((rows) => {
+          set((s) => ({
+            shipActivity: rows.reduce(
+              (map, row) => mergeActivity(map, row.agent_id, [autopilotActivity(row)]),
+              s.shipActivity,
+            ),
+          }));
+        }),
+    ]);
+  },
+
+  async setAgentAutopilot(agentId, enabled) {
+    if (!get().hostSupports("autopilot_set")) return;
+    await guard(set, async () => {
+      // The whole host's state after the change — the pause, and the cycle it
+      // dropped — so the switch settles on the host's word, not the tap's.
+      const snapshot = await api.setAutopilot({ agentId }, enabled);
+      set({ autopilot: autopilotFromSnapshot(snapshot), autopilotSwitches: switchesOf(snapshot) });
+    });
+  },
+
   async publish(agentId, title, body) {
     const git = get().gitStates[agentId];
     if (git?.files.length) await api.commitAgent(agentId, title);
     await api.pushAgent(agentId);
     const pr = await api.createPr(agentId, title, body);
+    // The host's own answer: a read that went out before the PR existed must
+    // not land after it and say there is none.
+    stampPrWrite("prStates", agentId);
     set((s) => ({ prStates: { ...s.prStates, [agentId]: pr } }));
     await get().loadGit(agentId);
   },

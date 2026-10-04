@@ -21,17 +21,6 @@
 //     survive a switch untouched.
 //   - `drafts` are stashed but need no namespacing: a draft id is a generated
 //     `draft-<ts>-<rand>`, and nothing persists them.
-//   - The persisted per-agent and per-project autopilot opt-outs
-//     (`autopilotPausedAgents`, `autopilotDisabledProjects`) live in THIS Mac's
-//     database and describe its own engine. They are neither stashed nor reset,
-//     because autopilot never runs against a remote environment: its rungs need
-//     `run_verification` and the local `project_settings` table, neither of
-//     which is on the wire (docs/remote-protocol.md's op table).
-//     What autopilot builds *per checkout* — `autopilot`, `autopilotVerdicts`,
-//     `autopilotLog` — IS stashed, for the reason above: those maps are keyed by
-//     `agentId::subdir`, so a local checkout's enrolment would otherwise answer
-//     for the same-named agent on a host (and `publishPreAuthorized` reads it to
-//     auto-approve a push).
 //   - Provider versions, model catalogs, installs, container builds, the custom
 //     agent / skill / MCP libraries, the account profile, the Linear connection
 //     and the appearance settings are properties of this desktop, keyed by
@@ -98,11 +87,13 @@ const STASH_KEYS = [
   "delegations",
   "delegationNotices",
   "verificationReports",
-  // Per-checkout autopilot: what it is tracking, the verdict it is judging the
-  // open cycle by, and the history it wrote.
+  // Autopilot as each host runs it: its rows and history per checkout, and its
+  // two opt-out lists (a project or agent id means something on one host only).
+  // Mirrors like `delegations`, so `loadAutopilot` re-reads them on entry.
   "autopilot",
-  "autopilotVerdicts",
   "autopilotLog",
+  "autopilotDisabledProjects",
+  "autopilotPausedAgents",
   // Publishes waiting on an answer. They belong to the engine that is blocked
   // on one, and `loadPendingPublishApprovals` re-reads the entered
   // environment's queue rather than trusting what was parked.
@@ -168,8 +159,9 @@ const BLANK: Pick<AppState, StashKey> = {
   delegationNotices: {},
   verificationReports: {},
   autopilot: {},
-  autopilotVerdicts: {},
   autopilotLog: {},
+  autopilotDisabledProjects: null,
+  autopilotPausedAgents: [],
   pendingPublishApprovals: [],
   github: null,
   composerSeeds: {},
@@ -238,11 +230,22 @@ export const createEnvironmentSwitchSlice: SliceCreator<EnvironmentSwitchSlice> 
     await get()
       .loadDelegations()
       .catch(() => {});
+    // Its autopilot likewise: switches, open cycles and history are all its own.
+    await get()
+      .loadAutopilot()
+      .catch(() => {});
     // …and whose GitHub login gates its push / PR / clone affordances:
     // `store.github` is the ACTIVE environment's answer, so it is this Mac's
     // until something re-probes it here.
     await get()
       .refreshGithub()
+      .catch(() => {});
+    // Its PR badges, once that login is known (the read is GitHub-gated). The
+    // host watcher's events keep them current from here, but they only reach a
+    // client connected when they fired; closed PRs get a live look too, since
+    // nothing else re-checks one that reopened.
+    await get()
+      .loadAllPrStatus(true)
       .catch(() => {});
     // …and the settings it reads: Settings › General, Git, Sandbox and the
     // provider binary paths show (and edit) the engine on screen. Not awaited:

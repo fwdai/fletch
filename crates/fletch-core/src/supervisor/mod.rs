@@ -1,6 +1,7 @@
 //! Coordinator between Tauri IPC commands and the running agents.
 
 pub mod auto_archive;
+pub mod base_freshness;
 mod checkpoints;
 pub mod delegation;
 mod disposition;
@@ -21,6 +22,7 @@ mod shell;
 
 pub use checkpoints::{PinnedCheckout, PinnedCode, RepoCheckpoint, RepoRestore, RestoreReport};
 pub use disposition::ArchiveTrigger;
+pub(crate) use events::emit_verification;
 pub use events::emit_workspace_changed;
 pub use fork::{ForkCode, ForkContext};
 pub use lifecycle::{SpawnHandoff, SpawnRequest};

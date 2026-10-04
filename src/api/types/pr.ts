@@ -17,6 +17,9 @@ export interface PrState {
 
 export interface PrStateChangedEvent {
   agent_id: string;
+  /** Which checkout: `null` (or absent, from a host that predates the field)
+   *  is the primary repo, a subdir names a secondary. */
+  subdir?: string | null;
   state: PrState | null;
 }
 

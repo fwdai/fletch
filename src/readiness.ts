@@ -11,12 +11,12 @@
 // surfaces came to disagree about what "checks failing" even counts (see
 // `checksFailed` below). One classification, many renderings.
 //
-// ── Deliberately portable to Rust ────────────────────────────────────────────
-// The plan is for this loop to eventually run in the supervisor rather than the
-// webview, because frontend polling stops when the window is hidden
-// (`usePoll` clears its interval on `document.hidden`) — so autopilot pauses
-// exactly when nobody is watching. To keep that move mechanical rather than a
-// rewrite, this module obeys these rules, enforced by `readiness.test.ts`:
+// ── Mirrored in Rust ─────────────────────────────────────────────────────────
+// Autopilot runs this same ladder on the host, so a window that is closed (or
+// hidden, where `usePoll` stops) doesn't stop it. Here it only decides what the
+// Git panel and Mission Control show; to keep the two copies a mechanical
+// translation of each other, this module obeys these rules, enforced by
+// `readiness.test.ts`:
 //
 //   1. Imports nothing but types from `@/api` and its sibling pure modules. No
 //      React, no store, no Tauri, no IO.

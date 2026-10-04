@@ -35,7 +35,7 @@ vi.mock("@tauri-apps/api/event", async (importOriginal) => ({
 import { MOCK_HOST_KEY } from "../src/remote/mock";
 import { api, client, useStore } from "../src/store";
 import { loadSettings, saveSettings } from "../src/store/persist";
-import { FORGET_PUSH_TIMEOUT_MS } from "../src/store/push";
+import { FORGET_PUSH_TIMEOUT_MS, pushTab } from "../src/store/push";
 
 // `inTauri()` gates the whole feature and the plugin below is faked, so say we
 // are inside the app.
@@ -105,6 +105,22 @@ describe("a tapped alert", () => {
       expect(top.screen).toBe("agent");
       expect(top.props.agentId).toBe("arabia");
     });
+  });
+
+  it("lands an autopilot give-up on the agent's Ship tab, like the PR alerts", async () => {
+    emit("push://opened", {
+      fletch: { hostId: MOCK_HOST_KEY, agentId: "kamakura", kind: "autopilot_gave_up" },
+    });
+    await vi.waitFor(() => {
+      const top = state().nav[state().nav.length - 1];
+      expect(top.screen).toBe("agent");
+      expect(top.props).toEqual({ agentId: "kamakura", tab: "ship" });
+    });
+    expect(pushTab("autopilot_gave_up")).toBe("ship");
+    expect(pushTab("checks_settled")).toBe("ship");
+    // A turn ending or a held prompt is answered in the chat.
+    expect(pushTab("turn_complete")).toBeUndefined();
+    expect(pushTab(undefined)).toBeUndefined();
   });
 
   it("goes no further than Home when it came from another host", () => {

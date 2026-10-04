@@ -18,7 +18,7 @@ import {
 } from "@/storage/preferences";
 import { setSetting } from "@/storage/settings";
 import { newestWins } from "@/util/newestWins";
-import { activeEnvironment, forActiveEnvironment } from "./environments";
+import { activeEnvironment, activeEnvironmentId, forActiveEnvironment } from "./environments";
 import { gateReason } from "./gates";
 import { acceptPrWrite, issuePrWrite, stampPrWrite } from "./prWriteOrder";
 import type { SliceCreator } from "./types";
@@ -48,16 +48,18 @@ export interface GitSlice {
    *  own cadence. Drives the "base moved" staleness chips and overlap hints. */
   gitMeta: Record<string, GitMeta>;
   /** PR state, keyed by `checkoutKey(agentId, subdir?)` — plain agent_id for the
-   *  primary repo (updated by the pr:state_changed watcher event + bulk
-   *  polls), `agentId::subdir` for a secondary repo. */
+   *  primary repo, `agentId::subdir` for a secondary repo. Seeded by
+   *  `loadAllPrStatus` and the focused checkouts' one-shot `fetchPrLive`, then
+   *  kept current by the host watcher's `pr:state_changed`. */
   prStates: Record<string, PrState | null>;
   /** Rich PR merge-gate + checks, keyed by `checkoutKey(agentId, subdir?)`. Absent
    *  key = not yet fetched; `null` = confirmed unavailable (no PR / gh
-   *  failure). */
+   *  failure). Seeded like `prStates`, then followed via `pr:checks_changed`. */
   prChecks: Record<string, PrChecks | null>;
   /** Unresolved PR review comments, keyed by `checkoutKey(agentId, subdir?)`.
    *  Absent = not yet fetched; `null` = confirmed unavailable (no PR / gh
-   *  failure). */
+   *  failure). Read once per focused checkout (`fetchPrThreads`), then followed
+   *  via `pr:threads_changed`. */
   prComments: Record<string, PrComments | null>;
   /** Live host delegations per checkout, keyed by `checkoutKey(agentId,
    *  subdir?)` (absent = none). A MIRROR: the host owns the lifecycle
@@ -102,27 +104,23 @@ export interface GitSlice {
   /** Fetch advisory git metadata (base staleness + file paths) for every live
    *  checkout in one round-trip (app-wide background poll, local git only). */
   fetchAllGitMeta: () => Promise<void>;
-  /** Slow-cadence host-side fetch of each project's base branch on its source
-   *  repo, so `fetchAllGitMeta` can measure staleness against a moved base.
-   *  Network + GitHub-gated; silent (never surfaces an error). */
-  refreshBaseFreshness: () => Promise<void>;
   fetchPrState: (agentId: string, subdir?: string) => Promise<void>;
-  /** The app-wide sidebar sweep: PR state + CI for every repo with a known PR
-   *  across every agent, in one batched round-trip. Keyed by `checkoutKey`, so a
-   *  multi-repo agent's secondary-repo PRs land in the store too and the sidebar
-   *  badge updates without opening the panel. Replaces the former separate
-   *  state and checks sweeps — one query costs what either did alone, and both
-   *  halves now come from the same instant. */
-  refreshAllPrStatus: () => Promise<void>;
+  /** Seed the fleet's PR state + CI from one `get_all_pr_status` read: every
+   *  repo with a known PR across every agent, keyed by `checkoutKey`, so the
+   *  sidebar badges are right without opening a panel. A seed, not a poll —
+   *  run on GitHub connecting, environment switch / reconnect and window
+   *  focus; between those the host watcher's `pr:*` events keep it current.
+   *  `reverifyClosed` asks for a live look at closed PRs (they can reopen). */
+  loadAllPrStatus: (reverifyClosed?: boolean) => Promise<void>;
   fetchPrChecks: (agentId: string, subdir?: string) => Promise<void>;
-  /** PR state + CI in one backend pass over ETag-conditional REST. Free at
-   *  GitHub whenever nothing changed, so it can run at a tight cadence, and both
-   *  slices come from the same moment so they can't disagree. Driven by
-   *  `gitSync` for the focused agent — not called from components. */
+  /** PR state + CI in one backend pass over ETag-conditional REST, both from
+   *  the same moment so they can't disagree. `gitSync` reads it once for a
+   *  focused checkout with nothing cached (or a PR that just changed); the
+   *  watcher's events take it from there. */
   fetchPrLive: (agentId: string, subdir?: string) => Promise<void>;
-  /** Unresolved review threads. Stays on GraphQL (thread resolution has no REST
-   *  equivalent) and so does cost points — hence the gentler cadence. Driven by
-   *  `gitSync`. */
+  /** Unresolved review threads (GraphQL — thread resolution has no REST
+   *  equivalent). Read once like `fetchPrLive`; `pr:threads_changed` keeps it
+   *  current. */
   fetchPrThreads: (agentId: string, subdir?: string) => Promise<void>;
   /** Hand the playbook `action` to the agent through the host's `delegate_git`
    *  (which composes the trigger, holds it while the agent is mid-turn and
@@ -288,6 +286,44 @@ function mirrorOf(e: DelegationEvent): Delegation | null {
   };
 }
 
+/** The fleet PR seed in flight, and the environment it is reading. */
+let allPrStatusLoad: { env: string; done: Promise<void> } | null = null;
+
+/** One `get_all_pr_status` read, merged into `prStates` / `prChecks`. */
+async function readAllPrStatus(set: GitSet, reverifyClosed: boolean): Promise<void> {
+  const ticket = issuePrWrite();
+  try {
+    // The reply is the seed itself: the host's watcher emits only on a change,
+    // so nothing else would ever tell this window the current state. Dropped if
+    // the user switched environment mid-read (agent ids recur across hosts).
+    const map = await forActiveEnvironment(() => api.getAllPrStatus(reverifyClosed));
+    if (!map) return;
+    set((s) => {
+      // Merge, never replace: agents absent from the reply keep whatever the
+      // focused-panel / per-trigger paths recorded. `checks` is only written
+      // when the read resolved one (open PR, live fetch) — a null there means
+      // "nothing to say this round", so the last-known tint survives instead of
+      // being wiped by a snapshot-served or merged entry.
+      //
+      // Ticket-checked per key: this read can be slower than a focused
+      // fetchPrLive or land after a watcher event, so it must not roll a key
+      // back to what it saw earlier.
+      const prStates = { ...s.prStates };
+      const prChecks = { ...s.prChecks };
+      for (const [key, entry] of Object.entries(map)) {
+        if (acceptPrWrite("prStates", key, ticket)) prStates[key] = entry.state;
+        if (entry.checks != null && acceptPrWrite("prChecks", key, ticket)) {
+          prChecks[key] = entry.checks;
+        }
+      }
+      return { prStates, prChecks };
+    });
+  } catch {
+    // Non-fatal: the badges keep their last state, the watcher's events keep
+    // moving them, and the next resync (focus, reconnect) reads again.
+  }
+}
+
 /** The `started_at` of the last delegation that ended on each checkout, so the
  *  `delegate_git` reply landing after its own `done` cannot put it back. */
 const endedDelegations = new Map<string, number>();
@@ -362,15 +398,6 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
     }
   },
 
-  refreshBaseFreshness: async () => {
-    if (!githubReady(get)) return;
-    try {
-      await api.refreshBaseFreshness();
-    } catch {
-      // Background fetch — silent by contract; the next tick retries.
-    }
-  },
-
   fetchPrState: async (agentId, subdir) => {
     const mapKey = checkoutKey(agentId, subdir);
     const ticket = issuePrWrite();
@@ -386,37 +413,21 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
     }
   },
 
-  refreshAllPrStatus: async () => {
-    if (!githubReady(get)) return;
-    const ticket = issuePrWrite();
-    try {
-      // Set state directly from the reply (rather than via `pr:state_changed`
-      // events) so the very first poll — which usePoll fires immediately on
-      // mount — can't race the store's event listener finishing its async
-      // attach during init().
-      const map = await api.refreshAllPrStatus();
-      set((s) => {
-        // Merge, never replace: agents absent from the reply keep whatever the
-        // focused-panel / per-trigger paths recorded. `checks` is only written
-        // when the sweep resolved one (open PR, live fetch) — a null there means
-        // "nothing to say this round", so the last-known tint survives instead
-        // of being wiped by a snapshot-served or merged entry.
-        //
-        // Ticket-checked per key: this sweep can be slower than a focused
-        // fetchPrLive, so it must not roll a key back to what it saw earlier.
-        const prStates = { ...s.prStates };
-        const prChecks = { ...s.prChecks };
-        for (const [key, entry] of Object.entries(map)) {
-          if (acceptPrWrite("prStates", key, ticket)) prStates[key] = entry.state;
-          if (entry.checks != null && acceptPrWrite("prChecks", key, ticket)) {
-            prChecks[key] = entry.checks;
-          }
-        }
-        return { prStates, prChecks };
-      });
-    } catch {
-      // non-fatal — next poll tick will retry
+  loadAllPrStatus: (reverifyClosed = false) => {
+    if (!githubReady(get)) return Promise.resolve();
+    const env = activeEnvironment();
+    if (env.kind === "remote" && !hostSupports(env.protocol, "get_all_pr_status")) {
+      return Promise.resolve();
     }
+    // GitHub connecting, an environment switch and a focus can all ask at once
+    // (a switch flips `github` as it re-probes); one read answers them all.
+    const envId = activeEnvironmentId();
+    if (allPrStatusLoad?.env === envId) return allPrStatusLoad.done;
+    const done = readAllPrStatus(set, reverifyClosed).finally(() => {
+      if (allPrStatusLoad?.done === done) allPrStatusLoad = null;
+    });
+    allPrStatusLoad = { env: envId, done };
+    return done;
   },
 
   fetchPrChecks: (agentId, subdir) => fetchPrAux(set, agentId, "prChecks", api.getPrChecks, subdir),
@@ -427,9 +438,9 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
     const ticket = issuePrWrite();
     try {
       const live = await api.getPrLive(agentId, subdir);
-      // One ticket, checked per slice: the 20s fleet sweep writes these same
-      // keys for the focused agent, so an older response must not land on top of
-      // a newer one (nor on top of the post-merge refresh).
+      // One ticket, checked per slice: the fleet seed and the watcher's events
+      // write these same keys, so an older response must not land on top of a
+      // newer one (nor on top of the post-merge refresh).
       const takeState = acceptPrWrite("prStates", mapKey, ticket);
       const takeChecks =
         (live?.checks != null || live == null) && acceptPrWrite("prChecks", mapKey, ticket);
@@ -478,9 +489,9 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
       );
       if (!recorded) return;
       // The host's `delegation:changed` says the same and may land either side
-      // of this reply. Writing now is what lets a caller that re-reads
-      // `delegations` on its next tick (autopilot) see it; the one thing it must
-      // not do is resurrect a delegation whose end already arrived.
+      // of this reply. Writing now shows the label without waiting for the
+      // event; the one thing it must not do is resurrect a delegation whose end
+      // already arrived.
       const key = checkoutKey(recorded.agent_id, recorded.subdir ?? undefined);
       const live = mirrorOf(recorded);
       if (!live || endedDelegations.get(key) === recorded.started_at) return;

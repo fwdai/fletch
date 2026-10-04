@@ -1,18 +1,19 @@
 /** Write ordering for the PR store slices.
  *
- *  `prStates` / `prChecks` have several concurrent writers, and centralizing the
- *  polling into `gitSync` did not reduce them to one:
+ *  The PR slices have several concurrent writers:
  *
- *    - the fleet sweep (`refreshAllPrStatus`, 20s) writes *every* agent's keys,
- *    - the focused-agent poller (`fetchPrLive`, 5s) writes the selected one's,
- *    - `createPr` / `commitAndOpenPr` and the pushed `pr:state_changed` event
- *      write authoritatively at arbitrary moments.
+ *    - the fleet seed (`loadAllPrStatus`, on connect / switch / focus) writes
+ *      *every* agent's keys,
+ *    - the focused checkouts' one-shot reads (`fetchPrLive`, `fetchPrThreads`)
+ *      write the selected agent's,
+ *    - `createPr` / `commitAndOpenPr` and the host watcher's pushed
+ *      `pr:state_changed` / `pr:checks_changed` / `pr:threads_changed` write
+ *      authoritatively at arbitrary moments.
  *
- *  The first two overlap on the focused agent's keys at different cadences, so
- *  an older request can still resolve *last* and overwrite newer data. That
- *  regressed the UI: a merged badge flipping back to open because a request
- *  issued before the merge landed after it, or a stale CI tint persisting until
- *  the next tick.
+ *  The reads overlap on the focused agent's keys, so an older request can still
+ *  resolve *last* and overwrite newer data. That regressed the UI: a merged
+ *  badge flipping back to open because a request issued before the merge
+ *  landed after it, or a stale CI tint persisting until the next event.
  *
  *  Every write claims a ticket from one monotonic counter *before* its request,
  *  then applies only if no later-issued write has already landed for the same
@@ -21,12 +22,19 @@
  *  A consequence worth naming: a response that was issued earlier but observed
  *  fresher data is discarded rather than reordered — there is no server-side
  *  freshness signal to compare, and issue order is the only total order we own.
- *  The next tick re-reads it, so the effect is at most one cadence of staleness,
- *  never a regression. */
+ *  The watcher's next event (or the next resync) carries it, so the effect is
+ *  brief staleness, never a regression.
+ *
+ *  The phone's store (mobile/src/store) follows the same watcher and orders its
+ *  one-shot reads against its events through this module too. */
 
 export type PrSlice = "prStates" | "prChecks" | "prComments";
 
 let ticket = 0;
+
+/** Tickets at or below this were issued against a host the store has since
+ *  left (see `fencePrWrites`). */
+let floor = 0;
 
 /** Highest ticket applied, per slice then per store key. Nested rather than a
  *  composite string key so no separator can collide with an agent id or subdir. */
@@ -43,6 +51,7 @@ export const issuePrWrite = (): number => ++ticket;
  *  it as applied, so re-checking the same ticket reports false the second time —
  *  call it once per (slice, key) at the point of writing. */
 export const acceptPrWrite = (slice: PrSlice, key: string, issued: number): boolean => {
+  if (issued <= floor) return false;
   const seen = applied[slice];
   if (issued <= (seen.get(key) ?? 0)) return false;
   seen.set(key, issued);
@@ -61,8 +70,20 @@ export const stampPrWrite = (slice: PrSlice, key: string): void => {
   applied[slice].set(key, issuePrWrite());
 };
 
+/** Refuse every write issued so far, for every key — for a store that has just
+ *  moved to another host (the phone's handshake), where an answer still in
+ *  flight describes the host it left, and agent ids recur across hosts. Per-key
+ *  marks cannot do this: a key the new host never stamped would take it.
+ *
+ *  Nothing issued afterwards is affected: the counter keeps rising, so the new
+ *  host's first read outranks the fence and every stamp the old host left. */
+export const fencePrWrites = (): void => {
+  floor = issuePrWrite();
+};
+
 /** Tests only — the counter and applied maps are module-global. */
 export const resetPrWriteOrder = (): void => {
   ticket = 0;
+  floor = 0;
   for (const seen of Object.values(applied)) seen.clear();
 };

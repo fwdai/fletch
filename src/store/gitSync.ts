@@ -1,170 +1,85 @@
-// The app's single owner of git + GitHub polling.
+// What this window polls about git, and what it only listens to.
 //
-// Everything git-shaped is fetched here, written into the store, and read from
-// the store by components. No component polls: `useGitPanelData`,
-// `useCapsuleData`, `CodeLivePanel` and the sidebar are all pure views over
-// `gitStates` / `prStates` / `prChecks` / `prComments`.
+// The rule: the host emits facts on change, and a client polls only the local
+// reads it is rendering right now. GitHub is the host's to read — its PR watcher
+// (`supervisor::pr_watch`) sweeps every bound PR once a minute and emits
+// `pr:state_changed` / `pr:checks_changed` / `pr:threads_changed` on change, and
+// it fetches every project's base every five minutes (`supervisor::base_freshness`)
+// — so it is read once however many windows and phones are open.
 //
-// It used to be the other way round — each component polled what it rendered —
-// which meant four independent pollers for one agent's git state and two for its
-// PR, racing each other into the same store keys. `GitPanel`'s `pollDormant`
-// existed purely to cover repos no section happened to be rendering.
+// Polled here (local git on the host; no GitHub), paused while the document is
+// hidden (`usePoll`):
+//   - fleet shortstats, 5 s — the sidebar numbers;
+//   - fleet git meta, 15 s — the "base moved" chips and overlap hints, measured
+//     against the base the host's loop keeps fetched;
+//   - the focused agent's full git state, 1 s with the panel showing, 10 s not.
 //
-// Two scopes, because they genuinely differ:
-//
-//   fleet    — every agent, cheap projections for the sidebar.
-//   tracked  — the selected agent's repos (the panel and title capsule render
-//              them). Delegations need no polling of their own: the host reads
-//              their checkouts itself and reports the outcome
-//              (`delegation:changed`).
-//
-// Cadences differ per domain on purpose: 1s is right for a diff the user is
-// watching and absurd for a fleet-wide PR sweep. What's centralized is *who
-// fetches*, not how often.
+// Listened to (folded by `eventListeners`), with one read to seed:
+//   - the fleet's PR state + CI: `loadAllPrStatus` when GitHub connects (below),
+//     and on environment switch / reconnect (`environmentSwitch`) and window
+//     focus (`setupResync`);
+//   - the focused checkouts' PR state, checks and review threads: one
+//     `get_pr_live` + `get_pr_threads` when a checkout comes into focus with
+//     nothing cached for it, or when its PR changes under it (see
+//     `focusedPrReads`).
 
-import { useCallback } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { useAppStore } from "@/store";
 import { usePoll } from "@/util/hooks";
+import { focusedPrReads, parsePrSignature, prSignature } from "./focusedPrReads";
 import { checkoutKey, splitCheckoutKey } from "./git";
+import type { AppState } from "./types";
 
 /** Mount once, at the app root. */
 export function useGitSync() {
   const fetchAllShortstats = useAppStore((s) => s.fetchAllShortstats);
   const fetchAllGitMeta = useAppStore((s) => s.fetchAllGitMeta);
-  const refreshBaseFreshness = useAppStore((s) => s.refreshBaseFreshness);
-  const refreshAllPrStatus = useAppStore((s) => s.refreshAllPrStatus);
   const fetchGitState = useAppStore((s) => s.fetchGitState);
-  const fetchPrLive = useAppStore((s) => s.fetchPrLive);
-  const fetchPrThreads = useAppStore((s) => s.fetchPrThreads);
+  const loadAllPrStatus = useAppStore((s) => s.loadAllPrStatus);
 
-  // ── fleet ─────────────────────────────────────────────────────────────────
-
-  // Compact shortstats for every live agent, so sidebar and right-rail badges
-  // stay current without a focused panel. Local git; no network.
   usePoll(fetchAllShortstats, 5000, [fetchAllShortstats]);
 
-  // Advisory metadata — base staleness + changed-file paths for overlap hints.
-  // Local git too, so it runs regardless of GitHub; slower because a fleet's
-  // base moves far less often than its diffs.
   usePoll(fetchAllGitMeta, 15000, [fetchAllGitMeta]);
 
-  // Whether GitHub is reachable is enforced *in the store* — see `githubReady`
-  // in `git.ts` — so nothing below re-checks it. It is still listed as a
-  // dependency of the two slow polls: that re-arms them (and fires one tick)
-  // the moment a connection appears. `github` hydrates asynchronously after
-  // launch, so without this a cold start would no-op its first tick and then
-  // wait out the 5-minute idle interval before trying again.
-  const githubConnected = useAppStore((s) => s.github?.authenticated ?? false);
-
-  // Fetches each project's base branch on its source repo so the staleness
-  // chips track a base that moved on GitHub. A git fetch, not an API call.
-  // Silent by contract — a background fetch never raises a user-facing error.
-  usePoll(refreshBaseFreshness, 300000, [refreshBaseFreshness, githubConnected]);
-
-  // Remote PR status for every repo with a known PR: state plus the CI rollup
-  // that tints each sidebar pill. One batched query for the whole fleet, 1
-  // GraphQL point for up to 50 PRs. 20s while any PR is open, backing off hard
-  // once everything has settled — merged PRs answer from the local snapshot, so
-  // the slow tick only watches for a rare reopen.
-  //
-  // Deliberately derived from the store rather than passed in: the cadence
-  // reacts to the data it fetches.
-  const anyOpenPr = useAppStore((s) => Object.values(s.prStates).some((p) => p?.state === "open"));
-  usePoll(refreshAllPrStatus, anyOpenPr ? 20000 : 300000, [refreshAllPrStatus, githubConnected]);
-
-  // ── tracked checkouts ─────────────────────────────────────────────────────
-
-  // Full git state — branch, ahead/behind, file list. 1s while the right pane is
-  // showing it (the user is watching a diff); slower when it's collapsed, where
-  // only the title capsule reads it. Local git, but each call forks a process,
-  // so the distinction is worth one ternary.
   const panelVisible = useAppStore((s) => !s.rightCollapsed && !s.activeDraftId);
   useTrackedRepoPoll(fetchGitState, panelVisible ? 1000 : 10000);
 
-  // PR state + CI in one backend pass over ETag-conditional REST. Unchanged
-  // reads are 304s GitHub doesn't bill, so there's nothing to back off from.
-  useTrackedRepoPoll(fetchPrLive, 5000);
+  // The fleet seed on launch: GitHub is probed asynchronously, so this runs
+  // when it reports connected rather than at mount (and again if it
+  // reconnects). Closed PRs get a live look here, as nothing else re-checks one
+  // that reopened.
+  const githubConnected = useAppStore((s) => s.github?.authenticated ?? false);
+  useEffect(() => {
+    if (githubConnected) void loadAllPrStatus(true);
+  }, [githubConnected, loadAllPrStatus]);
 
-  // Unresolved review threads — the one read still costing GraphQL points (thread
-  // resolution has no REST equivalent), so it keeps the gentlest cadence and the
-  // narrowest scope: the focused agent's repos, plus any checkout autopilot is
-  // enrolled on, because the comments rung can't act on threads it can't see.
-  // Deliberately NOT fleet-wide: that would bill points for every agent whether
-  // anything was going to use them or not. Not filtered by PR state either — the
-  // backend returns nothing for a repo whose PR isn't open, and keeping that rule
-  // in one place beats mirroring it in the poller.
-  useCommentPoll(fetchPrThreads, 30000);
+  useFocusedPrReads(githubConnected);
 }
 
-/** The checkouts needing detail reads this tick, as `checkoutKey`s: every repo of
- *  the focused agent. Sorted so the shallow compare sees a stable array across
- *  unrelated store writes — `usePoll` holds whatever callback it was last given,
- *  so an unstable one would keep firing a stale closure. */
-function useTrackedCheckoutKeys(): string[] {
-  return useAppStore(useShallow((s) => [...withFocusedRepos(s, [])].sort()));
-}
-
-/** The focused agent's repo keys unioned into `keys`. Shared by the checkout
- *  pollers so "focused plus X" is expressed once. */
-function withFocusedRepos(
-  s: {
-    workspace: { agents: { id: string; repos: { subdir: string }[] }[] } | null;
-    selectedAgentId: string | null;
-  },
-  keys: Iterable<string>,
-): Set<string> {
-  const out = new Set<string>(keys);
+/** The focused agent's checkouts as `checkoutKey`s — every one of its repos —
+ *  sorted, so a shallow compare sees a stable array across unrelated writes. */
+function focusedCheckoutKeys(s: AppState): string[] {
   const agent = s.workspace?.agents.find((a) => a.id === s.selectedAgentId);
-  if (agent) {
-    for (const [i, repo] of agent.repos.entries()) {
-      out.add(checkoutKey(agent.id, i === 0 ? undefined : repo.subdir));
-    }
-  }
-  return out;
+  if (!agent) return [];
+  return agent.repos
+    .map((repo, i) => checkoutKey(agent.id, i === 0 ? undefined : repo.subdir))
+    .sort();
 }
 
-/** Run `fetch` for the focused agent's repos plus every autopilot-enrolled
- *  checkout — the scope for reads too expensive to run fleet-wide but useless if
- *  the thing that acts on them can't see them. */
-function useCommentPoll(
-  fetch: (agentId: string, subdir?: string) => Promise<void>,
-  intervalMs: number,
-) {
-  const keys = useAppStore(
-    useShallow((s) =>
-      [
-        ...withFocusedRepos(
-          s,
-          Object.entries(s.autopilot)
-            .filter(([, a]) => a.enrolled)
-            .map(([key]) => key),
-        ),
-      ].sort(),
-    ),
-  );
-  const tick = useCallback(async () => {
-    await Promise.all(
-      keys.map((key) => {
-        const { agentId, subdir } = splitCheckoutKey(key);
-        return fetch(agentId, subdir);
-      }),
-    );
-  }, [keys, fetch]);
-  usePoll(tick, intervalMs, [tick]);
-}
-
-/** Run `fetch` for every tracked checkout, on `intervalMs`.
+/** Run `fetch` for every focused checkout, on `intervalMs`.
  *
  *  Covering *all* of the focused agent's repos — not just the ones a panel
  *  section happens to render — is what retired `GitPanel`'s `pollDormant`.
  *  No-ops when there's nothing to track, so callers need no guard of their
- *  own. */
+ *  own. The keys are shallow-compared because `usePoll` holds whatever
+ *  callback it was last given, so an unstable one would keep firing a stale
+ *  closure. */
 function useTrackedRepoPoll(
   fetch: (agentId: string, subdir?: string) => Promise<void>,
   intervalMs: number,
 ) {
-  const keys = useTrackedCheckoutKeys();
+  const keys = useAppStore(useShallow(focusedCheckoutKeys));
   const tick = useCallback(async () => {
     await Promise.all(
       keys.map((key) => {
@@ -174,4 +89,41 @@ function useTrackedRepoPoll(
     );
   }, [keys, fetch]);
   usePoll(tick, intervalMs, [tick]);
+}
+
+/** The focused checkouts' PR signatures (see `prSignature`). */
+function focusedPrSignatures(s: AppState): string[] {
+  return focusedCheckoutKeys(s).map((key) => prSignature(s, key));
+}
+
+/** The focused checkouts' one-shot PR reads (see `focusedPrReads`). No timer:
+ *  once a checkout's PR is in the store, the host watcher's events move it. */
+function useFocusedPrReads(githubConnected: boolean) {
+  const fetchPrLive = useAppStore((s) => s.fetchPrLive);
+  const fetchPrThreads = useAppStore((s) => s.fetchPrThreads);
+  const signatures = useAppStore(useShallow(focusedPrSignatures));
+  const seen = useRef(new Map<string, number | null>());
+  // Reads still out, by kind: one landing changes the signatures while the
+  // other is in flight, and that must not issue the other a second time.
+  const inFlight = useRef({ live: new Set<string>(), threads: new Set<string>() });
+  useEffect(() => {
+    // The reads gate on GitHub themselves; waiting here as well keeps a cold
+    // checkout cold until they can run, so connecting later still reads it.
+    if (!githubConnected) return;
+    const owed = focusedPrReads(signatures.map(parsePrSignature), seen.current);
+    const issue = (
+      kind: "live" | "threads",
+      read: (agentId: string, subdir?: string) => Promise<void>,
+    ) => {
+      const pending = inFlight.current[kind];
+      for (const key of owed[kind]) {
+        if (pending.has(key)) continue;
+        pending.add(key);
+        const { agentId, subdir } = splitCheckoutKey(key);
+        void read(agentId, subdir).finally(() => pending.delete(key));
+      }
+    };
+    issue("live", fetchPrLive);
+    issue("threads", fetchPrThreads);
+  }, [signatures, githubConnected, fetchPrLive, fetchPrThreads]);
 }

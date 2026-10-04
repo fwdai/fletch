@@ -623,7 +623,7 @@ pass), which need a real machine and a phone.
 - [x] The ignored `seatbelt_denies_appsupport_auto_exec` test was vacuous (unquoted path with a space in `sh -c`); quoted. PR #773.
 - [x] Desktop's own `git-dist` was read-denied inside the agent sandbox (pre-existing): on a fresh Mac with no Command Line Tools the bundled git sat first on the agent's PATH but the shell could not `stat` it, so `git` fell through to the Xcode shim. The read-only `git-dist` exception is now emitted against whichever data dir the engine published — desktop release, desktop debug (`dev/`), or a host `--data-dir` — and the ignored acceptance test checks PATH resolution, not just exec by absolute path.
 - [o] Linux hardening (2026-09-25): a uid-mapped launch binds a generated two-line `/etc/passwd` (`<writable_root>/.fletch-passwd`, read-only, `no-new-privileges`) so a mapped uid ≠ 1000 resolves for `os.userInfo()`/`whoami`; the Cursor image installs under `/opt/cursor-agent` instead of `/root` so it runs under `--user`. Unit gates green; the Docker-backed tests and test-plan rows 5.2/5.7 still need a machine with Docker (none on this Mac), ideally rootful Linux. PR #817.
-- [ ] Known small gaps, not started: `~/.fletch/tools` is shared by every engine on a machine (assessed 2026-09-25: only the codegraph bundle lives there, it is never installed on Linux, and the install is a staged rename, so two engines on one Mac can at worst fail one silent install that retries — left as is); `refresh_base_freshness` is silent remotely. (The missing gate reason on disabled Git panel buttons is in the polish PR below.)
+- [ ] Known small gaps, not started: `~/.fletch/tools` is shared by every engine on a machine (assessed 2026-09-25: only the codegraph bundle lives there, it is never installed on Linux, and the install is a staged rename, so two engines on one Mac can at worst fail one silent install that retries — left as is). (`refresh_base_freshness` being silent remotely is gone: the host fetches project bases on its own five-minute loop, `supervisor::base_freshness`.) (The missing gate reason on disabled Git panel buttons is in the polish PR below.)
 
 **Desktop as client (reduced Phase 6)**
 - [x] Shared TS protocol client moved to `src/remote/`. PR #749.
@@ -647,8 +647,9 @@ purpose: the plan is an own secure pairing procedure later, not a tailnet.
   `roadmap` gate re-pointed at `roadmap_create_item` (a board *write*, since
   `roadmap_list_items` has been on the wire since the phone's planning chat),
   and autopilot moved from a hard `kind === "remote"` rule to a
-  `GATES.autopilot` row with `op: null` (its opt-outs are this Mac's local
-  tables). Nothing withheld inside the two families; what stays off is what
+  `GATES.autopilot` row with `op: null` (its opt-outs were this Mac's local
+  tables; since M2 autopilot runs on the host and the gate is an ordinary op
+  gate on `autopilot_set`). Nothing withheld inside the two families; what stays off is what
   those flows borrow from other families (`list_repo_tree`/`list_repo_prs`,
   `run_verification`, `fork_agent`), recorded in
   `dispatch::WITHHELD_WF_ROADMAP_OPS`. No protocol version bump: additive.

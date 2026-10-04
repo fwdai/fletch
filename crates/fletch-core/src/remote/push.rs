@@ -24,6 +24,8 @@
 //! - `review_comment` when unresolved review threads gain one not seen before.
 //! - `pr_merged` / `pr_closed` when a PR this process saw open leaves `open`,
 //!   so a cold start's first stale snapshot of a merged PR alerts nobody.
+//! - `autopilot_gave_up` when the host's autopilot gives up on a rung (an
+//!   `autopilot:event` with outcome `give-up`), under the same opt-out.
 //! - None of them while the desktop's own window has focus: the user is right
 //!   here.
 //!
@@ -63,7 +65,8 @@ use crate::workspace::{AgentStatus, AgentView};
 /// surface. Mirrored in memory because the taps run without a DB handle.
 pub const TURN_COMPLETE_SETTING: &str = "notify_turn_complete";
 /// Settings key: alert on the ship loop at all — `checks_settled`,
-/// `review_comment`, `pr_merged` and `pr_closed` under one switch. Opt-out,
+/// `review_comment`, `pr_merged`, `pr_closed` and `autopilot_gave_up` under
+/// one switch. Opt-out,
 /// same mechanics as `notify_turn_complete`.
 pub const PR_ACTIVITY_SETTING: &str = "notify_pr_activity";
 
@@ -101,6 +104,7 @@ const KIND_CHECKS_SETTLED: &str = "checks_settled";
 const KIND_REVIEW_COMMENT: &str = "review_comment";
 const KIND_PR_MERGED: &str = "pr_merged";
 const KIND_PR_CLOSED: &str = "pr_closed";
+const KIND_AUTOPILOT_GAVE_UP: &str = "autopilot_gave_up";
 const TITLE_TURN_COMPLETE: &str = "Turn complete";
 const TITLE_NEEDS_INPUT: &str = "Needs your input";
 const TITLE_CHECKS_PASSED: &str = "Checks passed";
@@ -108,6 +112,8 @@ const TITLE_CHECKS_FAILED: &str = "Checks failed";
 const TITLE_REVIEW_COMMENT: &str = "New review comment";
 const TITLE_PR_MERGED: &str = "PR merged";
 const TITLE_PR_CLOSED: &str = "PR closed";
+/// Followed by ` · <rung>`.
+const TITLE_AUTOPILOT_GAVE_UP: &str = "Autopilot gave up";
 
 /// Doc cap on the tokens in one NOTIFY. The relay caps device links per host at
 /// 8 too, so this can only bite if that ever grows; truncating is defensive.
@@ -188,7 +194,9 @@ pub(super) struct PushTriggers {
     /// is — and the next PR on the same checkout starts with no memory. Entries
     /// go when their PR leaves `open`.
     last_rollup: Mutex<HashMap<String, String>>,
-    /// The state each agent's last `pr:state_changed` carried. A merge or close
+    /// The state each checkout's last `pr:state_changed` carried, keyed like
+    /// the client stores (`agent` for the primary repo, `agent::subdir` for a
+    /// secondary) so one repo's merge is not read as another's. A merge or close
     /// alerts only when this saw the PR open: a cold start's first event may be
     /// a stale snapshot of a PR that merged last week.
     last_pr_state: Mutex<HashMap<String, String>>,
@@ -253,7 +261,7 @@ impl PushTriggers {
         );
     }
 
-    /// Route one event off the sink. These five names are the whole surface;
+    /// Route one event off the sink. These six names are the whole surface;
     /// every other event the engine emits passes through untouched.
     pub(super) fn on_event(&self, agents: &dyn AgentLookup, event: &str, payload: &Value) {
         match event {
@@ -266,8 +274,30 @@ impl PushTriggers {
             "pr:checks_changed" => self.on_checks_changed(agents, payload),
             "pr:threads_changed" => self.on_threads_changed(agents, payload),
             "pr:state_changed" => self.on_pr_state_changed(agents, payload),
+            "autopilot:event" => self.on_autopilot_event(agents, payload),
             _ => {}
         }
+    }
+
+    /// One `autopilot:event`. Only a `give-up` alerts: it is the one thing
+    /// autopilot did that someone has to act on, and the rest is the loop
+    /// working as it should.
+    fn on_autopilot_event(&self, agents: &dyn AgentLookup, payload: &Value) {
+        let Ok(payload) = AutopilotEventPayload::deserialize(payload) else {
+            return;
+        };
+        if payload.outcome != "give-up" || !pr_activity_enabled() {
+            return;
+        }
+        let title = format!("{TITLE_AUTOPILOT_GAVE_UP} · {}", payload.rung);
+        let reason = payload.reason.as_deref().map(|r| r.replace('-', " "));
+        self.alert(
+            agents,
+            &payload.agent_id,
+            KIND_AUTOPILOT_GAVE_UP,
+            &title,
+            reason.as_deref(),
+        );
     }
 
     /// One `pr:checks_changed`. Alerts when the rollup *settles* — lands on
@@ -280,10 +310,11 @@ impl PushTriggers {
         };
         // Keyed by PR, not just by checkout: the next PR on the same branch
         // settling green is its own news, not a repeat of the last one's.
-        let key = match &payload.subdir {
-            Some(subdir) => format!("{}::{subdir}#{}", payload.agent_id, payload.number),
-            None => format!("{}#{}", payload.agent_id, payload.number),
-        };
+        let key = format!(
+            "{}#{}",
+            checkout_key(&payload.agent_id, payload.subdir.as_deref()),
+            payload.number
+        );
         let rollup = payload.checks.rollup;
         let previous = self.last_rollup.lock().insert(key, rollup.clone());
         let settled = matches!(rollup.as_str(), "passing" | "failing");
@@ -339,26 +370,32 @@ impl PushTriggers {
 
     /// One `pr:state_changed`. The event fires from several paths (a turn end,
     /// a push, the watcher) and each reports the state it found, not a
-    /// transition — so the transition is reconstructed here, and only an
-    /// `open → merged|closed` this process witnessed is a merge or a close.
+    /// transition — so the transition is reconstructed here, per checkout, and
+    /// only an `open → merged|closed` this process witnessed is a merge or a
+    /// close. Becoming open is never an alert: the watcher reports every open
+    /// PR on its first look, a host restart included.
+    ///
+    /// Two repos of one agent merging are two alerts, but they share the
+    /// agent's `collapseId`, so the phone shows the later banner in place of
+    /// the earlier one rather than stacking them.
     fn on_pr_state_changed(&self, agents: &dyn AgentLookup, payload: &Value) {
         let Ok(payload) = PrStateChangedPayload::deserialize(payload) else {
             return;
         };
+        let checkout = checkout_key(&payload.agent_id, payload.subdir.as_deref());
         let previous = {
             let mut last = self.last_pr_state.lock();
             match &payload.state {
-                Some(state) => last.insert(payload.agent_id.clone(), state.state.clone()),
-                None => last.remove(&payload.agent_id),
+                Some(state) => last.insert(checkout.clone(), state.state.clone()),
+                None => last.remove(&checkout),
             }
         };
         // A PR that is no longer open takes its rollup memory with it, so the
-        // map stays bounded by the PRs still being watched.
+        // map stays bounded by the PRs still being watched. Only this
+        // checkout's: the agent's other repos are still open.
         if payload.state.as_ref().map(|s| s.state.as_str()) != Some("open") {
-            let agent = payload.agent_id.as_str();
             self.last_rollup.lock().retain(|key, _| {
-                let own = key.strip_prefix(agent);
-                !matches!(own, Some(rest) if rest.starts_with('#') || rest.starts_with("::"))
+                !matches!(key.strip_prefix(checkout.as_str()), Some(rest) if rest.starts_with('#'))
             });
         }
         let Some(state) = payload.state else {
@@ -461,6 +498,11 @@ impl PushTriggers {
             );
         }
     }
+}
+
+/// One checkout's key from an event's `subdir` (`None` = the primary repo).
+fn checkout_key(agent_id: &str, subdir: Option<&str>) -> String {
+    crate::supervisor::pr_map_key(agent_id, subdir.unwrap_or_default(), subdir.is_none())
 }
 
 /// Trim to the doc's 200-character cap, on a character boundary.
@@ -586,6 +628,9 @@ struct ThreadSummary {
 #[derive(Deserialize)]
 struct PrStateChangedPayload {
     agent_id: String,
+    /// Absent from a host that predates it, which only ever meant the primary.
+    #[serde(default)]
+    subdir: Option<String>,
     state: Option<PrStateSummary>,
 }
 
@@ -593,4 +638,14 @@ struct PrStateChangedPayload {
 struct PrStateSummary {
     number: u64,
     state: String,
+}
+
+/// `autopilot::LogEntry`, the part of it this needs.
+#[derive(Deserialize)]
+struct AutopilotEventPayload {
+    agent_id: String,
+    outcome: String,
+    rung: String,
+    #[serde(default)]
+    reason: Option<String>,
 }

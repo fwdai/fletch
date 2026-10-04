@@ -229,23 +229,6 @@ export function parseShortcutOverrides(raw: string | undefined): ShortcutOverrid
   }
 }
 
-// ---- Autopilot per-workspace pause -------------------------------------------
-
-/** Agents (workspaces) whose autopilot the user switched off from the Git
- *  panel. Stored as one JSON array of agent ids under `autopilotPausedAgents`;
- *  a corrupt or missing blob reads as "nothing paused" — the project switch is
- *  the safety net that fails closed, this one is an extra off-switch. */
-export function parseAutopilotPausedAgents(raw: string | undefined): string[] {
-  if (!raw) return [];
-  try {
-    const saved = JSON.parse(raw) as unknown;
-    if (!Array.isArray(saved)) return [];
-    return saved.filter((v): v is string => typeof v === "string");
-  } catch {
-    return [];
-  }
-}
-
 // ---- Pane widths --------------------------------------------------------------
 
 /** Default pane widths (px); also the fallback when a stored value is missing

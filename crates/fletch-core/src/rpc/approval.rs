@@ -2,8 +2,10 @@
 //!
 //! Every path that does not produce an explicit approval — no window listening,
 //! a timeout, a dropped channel — resolves to denied, so the gate cannot fail
-//! open. Autopilot and live Git-panel delegations are answered without a prompt
-//! by the UI (`store/publishApproval.ts`), which owns the state that decides it.
+//! open. Two standing authorizations are answered here without a prompt, both
+//! host facts: a live delegation's own publishes
+//! (`supervisor::delegation::pre_authorizes`) and an autopilot-enrolled
+//! checkout's pushes (`autopilot::pre_authorizes`).
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -138,6 +140,14 @@ pub async fn refuse_unless_approved(
             ?repo,
             "publish pre-authorized by a delegation"
         );
+        return None;
+    }
+    // Autopilot is driving this checkout: switching it on is the user's
+    // standing consent to its pushes, and a prompt nobody is watching would
+    // stall the run until the wait refuses it. `git_push` only (see
+    // `autopilot::pre_authorizes`).
+    if crate::autopilot::pre_authorizes(agent_id, repo, op) {
+        tracing::debug!(agent_id, op, ?repo, "publish pre-authorized by autopilot");
         return None;
     }
     let (id, answer) = register(agent_id, op, repo, detail);

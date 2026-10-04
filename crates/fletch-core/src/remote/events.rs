@@ -34,6 +34,9 @@ pub const FORWARDED_EVENTS: &[&str] = &[
     "turn:sent",
     "turn:started",
     "workspace:changed",
+    // The idle sweep's notice (`supervisor::auto_archive`): agent ids and
+    // names only, so any client can say what went to History.
+    "workspace:auto-archived",
     "pr:state_changed",
     // The host-side PR watcher's two (`supervisor::pr_watch`): CI and review
     // threads reach the phone without its Git tab polling for them.
@@ -45,6 +48,11 @@ pub const FORWARDED_EVENTS: &[&str] = &[
     // Delegations are a host fact (`supervisor::delegation`): every client
     // mirrors the same lifecycle instead of tracking its own.
     "delegation:changed",
+    // Autopilot runs on the host (`autopilot`): every client renders the same
+    // per-checkout state and history, and the same switches.
+    "autopilot:state",
+    "autopilot:event",
+    "autopilot:switches",
     // The whole workflow and roadmap stream (multi-host plan §5.3, item 2): the
     // run monitor, the board and the PM's three proposal kinds all update live
     // on a remote host, as they do locally. `wf:event` carries addressing only

@@ -1,15 +1,12 @@
 //! Git state surfaces: a single checkout's full state, and the fleet-wide
-//! shortstats / git-meta / base-freshness polls the sidebar reads.
+//! shortstats / git-meta polls the sidebar reads, and an on-demand
+//! base-freshness fetch.
 
-use std::collections::BTreeSet;
-use std::path::PathBuf;
 use std::sync::Arc;
 use tauri::State;
 
 use crate::error::Result;
-use crate::git;
 use crate::git_state::{self, GitState, ShortStats};
-use crate::github as gh;
 use crate::supervisor::Supervisor;
 
 /// Returns git state for one of the agent's checkouts — the repo whose
@@ -51,7 +48,7 @@ pub async fn get_all_shortstats(
 ///
 /// Purely local git — no network. Each checkout's `behind` is measured against
 /// its resolved base tip (`git::resolve_base`), preferring the SOURCE repo's
-/// `refs/remotes/origin/<base>` that the slow `refresh_base_freshness` poll
+/// `refs/remotes/origin/<base>` that the host's base-freshness loop
 /// advances, whenever that commit is readable from the checkout. Without a
 /// GitHub connection the source ref never advances, so `behind` stays
 /// unknown/zero and no chip shows — the intended silent degrade. File paths always resolve (local status), so overlap
@@ -66,40 +63,14 @@ pub async fn get_all_git_meta(
     fletch_core::commands::get_all_git_meta_impl(&supervisor).await
 }
 
-/// Slow-cadence background fetch that advances each project's base branch on its
-/// SOURCE repo, so `get_all_git_meta` can measure staleness against a base that
-/// moved on GitHub (a sibling's PR merging, a teammate's push). One fetch per
-/// distinct `(source repo, base)` — deduped so a multi-agent project pays a
-/// single fetch, and the shared object store propagates it to every clone.
-///
-/// Best-effort and silent by contract: a paused rate-limit backoff skips the
-/// whole sweep, and each fetch failure is logged and stepped over — a background
-/// fetch must never raise a user-facing error. Returns nothing; the next
-/// `get_all_git_meta` tick reflects whatever landed.
+/// Fetch each project's base branch on its SOURCE repo now, so
+/// `get_all_git_meta` can measure staleness against a base that moved on
+/// GitHub. The host already runs this pass every five minutes on its own
+/// (`supervisor::base_freshness`); this is the same pass on demand, for a
+/// manual refresh. Silent by contract: no GitHub credential, a rate-limit
+/// backoff or a failed fetch all answer `Ok`.
 #[tauri::command]
 pub async fn refresh_base_freshness(supervisor: State<'_, Arc<Supervisor>>) -> Result<()> {
-    // Paused → touch no network; the last-fetched base tips still serve.
-    if gh::client::is_backing_off() {
-        return Ok(());
-    }
-    let Some(workspace) = supervisor.workspace.current() else {
-        return Ok(());
-    };
-    // Distinct (source repo, base) across every live agent's repos — one fetch
-    // covers all clones that share that source's objects.
-    let mut seen: BTreeSet<(PathBuf, String)> = BTreeSet::new();
-    for agent in &workspace.agents {
-        if agent.archive.is_some() {
-            continue;
-        }
-        for repo in &agent.repos {
-            seen.insert((repo.repo_path.clone(), repo.base_branch().await));
-        }
-    }
-    for (source, base) in seen {
-        if let Err(e) = git::fetch_base(&source, &base).await {
-            tracing::debug!(error = %e, source = %source.display(), base, "base freshness fetch skipped");
-        }
-    }
+    fletch_core::commands::refresh_base_freshness_impl(&supervisor).await;
     Ok(())
 }

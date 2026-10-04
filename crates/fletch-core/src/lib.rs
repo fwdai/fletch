@@ -16,6 +16,7 @@ pub mod agent_install;
 pub mod agent_profile;
 pub mod attachments;
 pub mod attribution;
+pub mod autopilot;
 pub mod bin_resolve;
 pub mod child_io;
 pub mod codegraph;

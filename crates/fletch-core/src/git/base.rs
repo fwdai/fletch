@@ -37,7 +37,8 @@ pub struct ResolvedBase {
 /// source's refs can point at objects this checkout has never seen):
 ///
 /// 1. the source repo's `refs/remotes/origin/<name>` — the freshest, because
-///    the background `refresh_base_freshness` sweep advances it;
+///    the host's base-freshness loop (`supervisor::base_freshness`)
+///    advances it;
 /// 2. the clone's own `refs/remotes/origin/<name>`, as fetched at spawn;
 /// 3. the clone's `refs/heads/<name>`, which is stale by construction but is
 ///    still the base for a local-only repo that has no origin at all.

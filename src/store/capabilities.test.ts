@@ -40,12 +40,11 @@ const host = (ops?: string[]): EnvironmentEntry => ({
  *  added later cannot quietly fall out of the fixtures below. */
 const GATED_OPS: string[] = (Object.keys(GATES) as GateName[]).flatMap((g) => [...requiredOps(g)]);
 
-/** The gates a host from before the descriptor closes by itself: op-backed, and
- *  needing something the v2 set it answers does not carry. */
-const OLD_HOST_CLOSED = (Object.keys(GATES) as GateName[]).filter((g) => {
-  const ops = requiredOps(g);
-  return ops.length > 0 && !ops.every((op) => V2_DEFAULT_OPS.includes(op));
-}).length;
+/** The gates a host from before the descriptor closes by itself: those needing
+ *  something the v2 set it answers does not carry. */
+const OLD_HOST_CLOSED = (Object.keys(GATES) as GateName[]).filter(
+  (g) => !requiredOps(g).every((op) => V2_DEFAULT_OPS.includes(op)),
+).length;
 
 describe("gateReason", () => {
   it("never gates the local environment", () => {
@@ -54,19 +53,10 @@ describe("gateReason", () => {
     }
   });
 
-  it("gates the local-only affordances on any remote host, however capable", () => {
-    // Autopilot's opt-outs are this Mac's rows and its verify rung is a local
-    // script, so no descriptor opens it.
-    const generous = host([
-      ...V2_DEFAULT_OPS,
-      "open_agent_shell",
-      "run_start",
-      "run_verification",
-      "fork_agent",
-    ]);
-
-    expect(GATES.autopilot.op).toBeNull();
-    expect(gateReason(generous, "autopilot")).toBe(GATES.autopilot.reason);
+  it("opens autopilot on a host that runs it, like any other op", () => {
+    // The loop runs on the host, so the switches are an ordinary op there.
+    expect(gateReason(host([...V2_DEFAULT_OPS]), "autopilot")).toBe(GATES.autopilot.reason);
+    expect(gateReason(host([...V2_DEFAULT_OPS, "autopilot_set"]), "autopilot")).toBeNull();
   });
 
   it("opens the add-project flows a host can see through to the end", () => {
@@ -274,12 +264,11 @@ describe("closedGates", () => {
   it("lists every closed gate with the reason its control shows", () => {
     const old = host();
 
-    // A host from before the descriptor answers the v2 set: everything this
-    // side gates, plus every gate needing an op that landed after that set.
-    const expected = (Object.keys(GATES) as GateName[]).filter((name) => {
-      const ops = requiredOps(name);
-      return ops.length === 0 || !ops.every((op) => V2_DEFAULT_OPS.includes(op));
-    });
+    // A host from before the descriptor answers the v2 set: every gate needing
+    // an op that landed after that set is closed.
+    const expected = (Object.keys(GATES) as GateName[]).filter(
+      (name) => !requiredOps(name).every((op) => V2_DEFAULT_OPS.includes(op)),
+    );
     expect(expected.length).toBeGreaterThan(0);
     expect(closedGates(old).map((g) => g.name)).toEqual(expected);
     for (const gate of closedGates(old)) {
@@ -288,14 +277,8 @@ describe("closedGates", () => {
     }
   });
 
-  it("leaves only the local-only gates closed on a host that answers everything", () => {
-    const every = host([...V2_DEFAULT_OPS, ...GATED_OPS]);
-
-    // The gates naming no op — the blocker is on this side, so no host can open
-    // them — derived from the table so adding one does not silently break this.
-    const localOnly = (Object.keys(GATES) as GateName[]).filter((g) => requiredOps(g).length === 0);
-    expect(localOnly.length).toBeGreaterThan(0);
-    expect(closedGates(every).map((g) => g.name)).toEqual(localOnly);
+  it("closes nothing on a host that answers every gated op", () => {
+    expect(closedGates(host([...V2_DEFAULT_OPS, ...GATED_OPS]))).toEqual([]);
   });
 });
 
@@ -318,12 +301,7 @@ describe("hostSkew", () => {
   });
 
   it("says nothing about a connected host that answers every gated op", () => {
-    // `autopilot` is still closed — it runs on this Mac — but that is not this
-    // host's shortcoming, so the row stays quiet.
-    const every = host([...V2_DEFAULT_OPS, ...GATED_OPS]);
-
-    expect(gateReason(every, "autopilot")).not.toBeNull();
-    expect(hostSkew(every, CLIENT)).toBeNull();
+    expect(hostSkew(host([...V2_DEFAULT_OPS, ...GATED_OPS]), CLIENT)).toBeNull();
   });
 
   it("names the gaps while there are few of them", () => {
@@ -342,12 +320,11 @@ describe("hostSkew", () => {
   it("counts them once a list would be too long, and reports both versions", () => {
     const skew = hostSkew(withVersion(host(), "0.7.30"), CLIENT);
 
-    // Every op-backed gate whose op landed after the v2 set this host answers.
-    // `autopilot` is this side's and is left out.
+    // Every gate whose op landed after the v2 set this host answers.
     expect(skew?.closed).toHaveLength(OLD_HOST_CLOSED);
     expect(skew?.summary).toBe(`${OLD_HOST_CLOSED} features unavailable on this host`);
     expect(skew?.tip).toContain(`Merging a PR: ${GATES.mergePr.reason}`);
-    expect(skew?.tip).not.toContain(GATES.autopilot.reason);
+    expect(skew?.tip).toContain(`Autopilot: ${GATES.autopilot.reason}`);
     // Reported side by side, never compared: the list above is the op table's
     // answer, not this line's.
     expect(skew?.tip.split("\n").at(-1)).toBe("Host 0.7.30 · this app 0.7.32");

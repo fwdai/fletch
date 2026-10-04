@@ -17,8 +17,23 @@ import {
   registerPush,
   requestPushPermission,
 } from "../remote/push";
-import type { MobileState } from "./index";
+import type { AgentTab, MobileState } from "./index";
 import { loadSettings, saveSettings } from "./persist";
+
+/** Push `kind`s about the agent's PR (docs/remote-protocol.md, "Push
+ *  notifications"): the ship loop's, and autopilot giving up on one. */
+const SHIP_PUSH_KINDS = new Set([
+  "checks_settled",
+  "review_comment",
+  "pr_merged",
+  "pr_closed",
+  "autopilot_gave_up",
+]);
+
+/** The agent tab a tapped alert of `kind` opens on: Ship for an alert about the
+ *  PR, the chat (undefined) for a turn ending or a held prompt. */
+export const pushTab = (kind: string | undefined): AgentTab | undefined =>
+  SHIP_PUSH_KINDS.has(kind ?? "") ? "ship" : undefined;
 
 export interface PushDeps {
   client: RemoteClient;

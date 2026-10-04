@@ -1,21 +1,18 @@
 import type { AgentRecord } from "@desktop/api/types/agent";
+import { useEffect } from "react";
 import { baseOf } from "../../../lib/agents";
-import { usePoll } from "../../../lib/hooks";
 import { useStore } from "../../../store";
 import { Activity } from "./Activity";
+import { AutopilotBar } from "./AutopilotBar";
 import { Evidence } from "./Evidence";
 import { ShipFooter } from "./ShipFooter";
 import { StatusHeader } from "./StatusHeader";
 import { useShipView } from "./useShipView";
 
-/** `get_pr_live` is one conditional REST pass on the host; the threads read is
- *  GraphQL, so it runs at half the cadence (docs/remote-protocol.md). */
-const LIVE_MS = 30_000;
-const THREADS_MS = 60_000;
-
 /** Where the work stands on its way to landing, and the one thing to do about
- *  it: a tinted strip off the desktop's remediation ladder, the evidence behind
- *  it (diff, tests, PR, checks, review), what happened lately, and the footer. */
+ *  it: a tinted strip off the desktop's remediation ladder, the host's autopilot
+ *  under it, the evidence behind it (diff, tests, PR, checks, review), what
+ *  happened lately, and the footer. */
 export function ShipTab({
   agent,
   onDelegated,
@@ -39,16 +36,25 @@ export function ShipTab({
   const loadPrThreads = useStore((s) => s.loadPrThreads);
   const view = useShipView(agent);
 
-  // Live while the tab is open and there is a PR to be live about. Each poll
-  // runs once on activation, which is the mount-time load.
+  // No timer: the host's PR watcher pushes state, checks and threads as they
+  // change (store/events). What it cannot push is a PR this phone has nothing
+  // for yet, so the tab reads each half once when it opens on a cold cache — or
+  // goes cold under it (a handshake empties the threads).
   const live = !!pr && connected;
-  usePoll(() => void loadPrLive(agent.id), LIVE_MS, live);
-  usePoll(() => void loadPrThreads(agent.id), THREADS_MS, live);
+  const checksCold = checks === undefined;
+  const threadsCold = comments === undefined;
+  useEffect(() => {
+    if (live && checksCold) void loadPrLive(agent.id);
+  }, [live, checksCold, agent.id, loadPrLive]);
+  useEffect(() => {
+    if (live && threadsCold) void loadPrThreads(agent.id);
+  }, [live, threadsCold, agent.id, loadPrThreads]);
 
   return (
     <>
       <div className="scroll">
         <StatusHeader strip={view.strip} git={git} pr={pr} />
+        <AutopilotBar agentId={agent.id} />
         <div className="ship-body">
           <Evidence
             agent={agent}

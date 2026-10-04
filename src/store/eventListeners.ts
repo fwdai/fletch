@@ -19,6 +19,9 @@ import {
   onAgentTask,
   onAgentTitle,
   onAgentView,
+  onAutopilotEvent,
+  onAutopilotState,
+  onAutopilotSwitches,
   onDelegationChanged,
   onDockerBuildProgress,
   onPrChecksChanged,
@@ -64,7 +67,6 @@ import { getOrCreateAccount, toProfile } from "@/storage/accounts";
 import {
   DEFAULT_LEFT_WIDTH,
   DEFAULT_RIGHT_WIDTH,
-  parseAutopilotPausedAgents,
   parseDraftBaseBranches,
   parseFeatures,
   parseNewDraftSelection,
@@ -79,10 +81,9 @@ import { getAllSettings } from "@/storage/settings";
 import { notify } from "@/util/notify";
 import { playSound, type SoundKind } from "@/util/sound";
 import { reduceInstallEvent } from "./agentInstall";
-import { checkoutKey } from "./git";
 import { applyHostSettingChange, hydrateHostSettings } from "./hostSettings";
 import { erroredAgents, interruptedAgents } from "./interrupted";
-import { stampPrWrite } from "./prWriteOrder";
+import { applyPrChecksChanged, applyPrStateChanged, applyPrThreadsChanged } from "./prEvents";
 import { refreshWorkspace } from "./refreshWorkspace";
 import { applyBuildEvent } from "./sandbox";
 import type { AppSlice, SliceCreator } from "./types";
@@ -125,7 +126,7 @@ const patchAgent = (_get: AppGet, set: AppSet, agentId: string, patch: AgentPatc
 
 // Load persisted settings from the DB and hydrate the matching UI state.
 // First launch / DB-not-ready is non-fatal — defaults stand in.
-export const hydrateSettings = async (set: AppSet, get: AppGet) => {
+export const hydrateSettings = async (set: AppSet) => {
   try {
     const s = await getAllSettings();
     const {
@@ -180,8 +181,6 @@ export const hydrateSettings = async (set: AppSet, get: AppGet) => {
       reviewDismissed: parseReviewDismissed(s.reviewDismissed),
       // Keyboard rebindings; an id missing from the map is on its defaults.
       shortcutOverrides: parseShortcutOverrides(s.shortcutOverrides),
-      // Workspaces whose autopilot the user switched off from the Git panel.
-      autopilotPausedAgents: parseAutopilotPausedAgents(s.autopilotPausedAgents),
       // Admin unlocks the Developer settings section in production. Opt-in:
       // only an explicit "true" in the `admin` settings row grants it.
       admin: s.admin === "true",
@@ -194,10 +193,6 @@ export const hydrateSettings = async (set: AppSet, get: AppGet) => {
   // apart from the client's own preferences above, and again on every switch
   // and reconnect (`resyncEnvironment`).
   await hydrateHostSettings(set).catch(() => {});
-  // Autopilot's per-project opt-outs live in `project_settings`, not the global
-  // table above, and the slice owns their loading (it fails closed and is
-  // re-runnable from the settings section) — so just kick it off here.
-  await get().loadAutopilotProjects();
 };
 
 // Load (or lazily create) the single local account profile. Non-fatal — the
@@ -427,6 +422,24 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
     }),
   );
 
+  // Autopilot runs on the host too; its rows, its switches and its history are
+  // mirrored the same way.
+  await bind(
+    onAutopilotState((e) => {
+      get().applyAutopilotState(e);
+    }),
+  );
+  await bind(
+    onAutopilotSwitches((e) => {
+      get().applyAutopilotSwitches(e);
+    }),
+  );
+  await bind(
+    onAutopilotEvent((e) => {
+      get().applyAutopilotEvent(e);
+    }),
+  );
+
   await bind(
     onAgentTask((e) => {
       patchAgent(get, set, e.agent_id, { task: e.task });
@@ -629,34 +642,14 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
     }),
   );
 
-  await bind(
-    onPrStateChanged((e) => {
-      // A backend-pushed change is the freshest thing we have. Stamp it so a poll
-      // already in flight — which observed the PR before this transition — can't
-      // land afterwards and roll the badge back (merged flipping to open).
-      stampPrWrite("prStates", e.agent_id);
-      set((s) => ({ prStates: { ...s.prStates, [e.agent_id]: e.state } }));
-    }),
-  );
-
-  // The host-side PR watcher's reads land here the same way, so the Git panel's
-  // checks and comments move between its own polls — and keep moving for an
-  // agent whose panel is not open. Same stamp rule: a poll already in flight
-  // must not roll these back.
-  await bind(
-    onPrChecksChanged((e) => {
-      const key = checkoutKey(e.agent_id, e.subdir ?? undefined);
-      stampPrWrite("prChecks", key);
-      set((s) => ({ prChecks: { ...s.prChecks, [key]: e.checks } }));
-    }),
-  );
-  await bind(
-    onPrThreadsChanged((e) => {
-      const key = checkoutKey(e.agent_id, e.subdir ?? undefined);
-      stampPrWrite("prComments", key);
-      set((s) => ({ prComments: { ...s.prComments, [key]: e.comments } }));
-    }),
-  );
+  // The host-side PR watcher's events (and a push's or turn end's state read).
+  // These are what keep the PR badges, checks and comments current — the
+  // webview no longer polls them (store/gitSync) — for every agent and each of
+  // its repos, panel open or not. Each lands on its checkout's key, stamped so
+  // a read already in flight can't roll it back (store/prEvents).
+  await bind(onPrStateChanged((e) => set((s) => applyPrStateChanged(s, e))));
+  await bind(onPrChecksChanged((e) => set((s) => applyPrChecksChanged(s, e))));
+  await bind(onPrThreadsChanged((e) => set((s) => applyPrThreadsChanged(s, e))));
 
   // A host-owned setting was written — here, on another desktop, or from a
   // phone. Folded over what was read, so Settings follows without a refetch.
@@ -755,7 +748,13 @@ export const setupResync = (set: AppSet, get: AppGet) => {
     if (resyncInFlight) return;
     resyncInFlight = true;
     try {
-      await Promise.all([refreshWorkspace(set), refreshOffSidebarAgents()]);
+      // The PR badges too: they follow the host watcher's events, and an event
+      // missed while the window was in the background has no other way back.
+      await Promise.all([
+        refreshWorkspace(set),
+        refreshOffSidebarAgents(),
+        get().loadAllPrStatus(),
+      ]);
     } catch {
       // Best-effort; the next event or resync recovers.
     } finally {

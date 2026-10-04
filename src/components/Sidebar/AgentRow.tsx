@@ -60,10 +60,11 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
   const usage = useAppStore((s) => s.usage[agent.id]);
   // Every PR across the agent's repos (live state with the persisted database
   // snapshot as fallback, so a merged badge survives restarts, offline
-  // stretches, and broken checkouts), each with the CI rollup the app-wide
-  // refreshAllPrStatus sweep recorded for it. Single-repo agents yield at most
-  // one entry — exactly the old primary-only read; a multi-repo agent whose
-  // only PR lives on a secondary repo still gets its badge.
+  // stretches, and broken checkouts), each with the CI rollup the fleet seed
+  // (loadAllPrStatus) or the host watcher's events recorded for it.
+  // Single-repo agents yield at most one entry — exactly the old primary-only
+  // read; a multi-repo agent whose only PR lives on a secondary repo still
+  // gets its badge.
   const agentPrs = useAgentPrs(agent);
   const shortstats = useAppStore((s) => s.gitShortstats[agent.id]);
   // Base-staleness across the agent's checkouts (stalest wins — a behind

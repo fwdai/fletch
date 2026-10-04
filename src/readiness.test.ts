@@ -8,6 +8,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import type { GitState, PrChecks, PrComment, PrComments, PrState } from "@/api";
+import { appActionMessage } from "@/delegation";
 import { detectBlockers, type LadderContext, nextRung, type ReadinessInput } from "@/readiness";
 
 function git(over: Partial<GitState> = {}): GitState {
@@ -380,11 +381,41 @@ describe("nextRung ordering", () => {
   });
 });
 
+describe("the trigger each rung produces", () => {
+  // The shared fixture: the host's autopilot ladder is pinned against these same
+  // strings (`each_rung_composes_the_typescript_trigger` in
+  // crates/fletch-core/src/autopilot/readiness_tests.rs), so the trigger it
+  // sends for a situation is the one the Git panel's button sends.
+  const ctx: LadderContext = { base: "trunk", commitMode: "commit-pr" };
+  const open = (c: PrChecks, threads: number) =>
+    input({ pr: pr(), checks: c, comments: comments(threads) });
+  const cases: [ReadinessInput, string][] = [
+    [input({ git: git({ files: [file("conflicted")] }) }), "[app-action] resolve-conflicts"],
+    [input({ git: git({ files: [file("modified")] }) }), '[app-action] commit-pr base="trunk"'],
+    [input({ git: git({ files: [file("modified")] }), pr: pr() }), "[app-action] commit-push"],
+    [input({ git: git({ unpushed: 2 }) }), '[app-action] open-pr base="trunk"'],
+    [input({ git: git({ unpushed: 2 }), pr: pr(), checks: checks() }), "[app-action] push"],
+    [open(checks({ merge_state: "behind" }), 0), '[app-action] update-branch base="trunk"'],
+    [
+      open(checks({ merge_state: "blocked", required_failing: ["build", "test"] }), 0),
+      '[app-action] fix-checks failing="build, test"',
+    ],
+    [open(checks({ merge_state: "clean" }), 2), '[app-action] resolve-comments count="2"'],
+  ];
+
+  it("composes the same trigger the host's ladder does", () => {
+    for (const [i, expected] of cases) {
+      const r = nextRung(i, ctx);
+      if (r.do !== "delegate") throw new Error(`expected a delegate rung, got ${r.do}`);
+      expect(appActionMessage(r.action, r.params)).toBe(expected);
+    }
+  });
+});
+
 describe("portability to Rust", () => {
-  // The loop is meant to move into the supervisor later (frontend polling stops
-  // on `document.hidden`, so autopilot would pause exactly when unwatched). That
-  // move stays mechanical only while this module imports no runtime, so assert it
-  // rather than trusting a comment at the top of the file.
+  // The host's autopilot runs a Rust copy of this ladder. The two stay a
+  // mechanical translation of each other only while this module imports no
+  // runtime, so assert it rather than trusting a comment at the top of the file.
   const source = readFileSync(fileURLToPath(new URL("./readiness.ts", import.meta.url)), "utf8");
   const imports = [...source.matchAll(/^import\s[\s\S]*?from\s+"([^"]+)";$/gm)].map((m) => m[1]);
   // Assert against code, not prose — the header documents these very rules, and

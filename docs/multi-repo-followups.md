@@ -222,6 +222,13 @@ compatibility dance as the branch events.
 **Acceptance.** Agent opens PR on secondary via RPC → that section's card
 flips to "PR open" within ~1s (event path), not 5s (poll).
 
+**Status.** Partly done: `pr:state_changed` carries an optional `subdir`, the
+host PR watcher emits it for secondaries, and the desktop reducer
+(`src/store/prEvents.ts`) keys it by checkout. The push's
+`fetch_and_emit_pr_state` nudges the watcher, which picks up the secondary's PR
+on that sweep; threading the subdir through `fetch_and_emit_pr_state` itself is
+still open.
+
 ## 6. `publish_agent` repo-awareness  ·  priority: low  ·  size: S
 
 **Problem.** "Publish to GitHub" (local-only repo, no origin) publishes the

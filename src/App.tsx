@@ -19,7 +19,6 @@ import { UsageScreen } from "./components/UsageScreen";
 import { Workspace } from "./components/Workspace";
 import { ACCENT_VALUES } from "./data/providers";
 import { useAppStore } from "./store";
-import { useAutopilotSync } from "./store/autopilotSync";
 import { useGitSync } from "./store/gitSync";
 import { useGlobalShortcuts } from "./util/shortcuts";
 import { useSplitter } from "./util/splitter";
@@ -71,8 +70,6 @@ export function App() {
 
   // All git / GitHub polling lives in one place.
   useGitSync();
-  // …and the autopilot loop for checkouts the user enrolled.
-  useAutopilotSync();
 
   // Apply theme via html class; accent via CSS vars.
   useEffect(() => {

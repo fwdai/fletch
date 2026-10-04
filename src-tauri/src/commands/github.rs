@@ -1,5 +1,5 @@
 //! GitHub connection, repo clone/create/publish, and per-agent PR handlers
-//! (state, checks, comments, issues) plus the app-wide PR polling sweeps.
+//! (state, checks, comments, issues) plus the app-wide PR status read.
 
 use std::sync::Arc;
 use tauri::State;
@@ -233,56 +233,29 @@ pub async fn get_pr_threads(
     fletch_core::commands::get_pr_threads_impl(&supervisor, &agent_id, subdir.as_deref()).await
 }
 
-/// App-wide background poll that refreshes PR state for every repo with a
-/// recorded PR across every agent, so the sidebar badge (and any open Git
-/// panel) reflects merges / closes / mergeability changes that happen on
-/// GitHub — without the user having to open the panel. Returns a map keyed by
-/// the frontend's `gitKey` convention: the agent's primary repo under the
-/// plain agent id (what every existing consumer reads) and each secondary
-/// repo under `"{agent_id}::{subdir}"` — so a multi-repo agent's PR on a
-/// secondary repo reaches the sidebar too.
+/// PR state + CI for every repo with a recorded PR across every agent, in one
+/// batched round-trip: the sidebar's seed, read on launch, environment switch,
+/// reconnect and window focus. Between those the host's PR watcher
+/// (`supervisor::pr_watch`) sweeps the same resolver once a minute and emits
+/// `pr:state_changed` / `pr:checks_changed` on change, so no client polls it.
+/// The remote op of the same name answers the same thing (docs/remote-protocol.md).
 ///
-/// Unlike the per-trigger `fetch_and_emit_pr_state` path (which emits an event),
-/// this returns the states directly so the caller folds them into the store
-/// synchronously. That avoids a startup race: `usePoll` fires immediately, and
-/// routing through `pr:state_changed` would drop results emitted before the
-/// store's listener finishes attaching during `init()`.
-///
-/// Only repos with a known PR *number* are polled: discovery of a brand-new PR
-/// still rides the existing turn-end / push / git-action triggers, so this poll
-/// never fans a call out to a repo that has no PR. Resolution goes through
-/// `resolve_all_pr_status`, which collapses every live lookup into a single
-/// batched GraphQL query rather than a per-repo fan-out: by number (never
-/// branch), served straight from the persisted snapshot for merged PRs (and
-/// closed ones except on the slow re-verify tick), and degrading to that
-/// snapshot when GitHub is unreachable or a rate-limit backoff is active. A
-/// repo that resolves to nothing is *omitted* from the map — not written as
-/// null — so the frontend merge keeps its last-known badge instead of wiping it.
-///
-/// State and CI arrive together. They used to be two commands on two clocks
-/// (`refresh_all_pr_states` at 45s, `refresh_all_pr_checks` at 60s) polling the
-/// same PRs, which cost two GraphQL points per cycle and let the sidebar render
-/// a freshly-merged badge beside a CI tint from a cadence ago. Selecting both
-/// off the same aliased node costs the same as either alone — measured at 1
-/// point for a full 50-alias chunk — so this is strictly cheaper *and*
-/// self-consistent.
+/// Keyed by the frontend's `checkoutKey` convention: the agent's primary repo
+/// under the plain agent id and each secondary repo under
+/// `"{agent_id}::{subdir}"`. Only repos with a known PR *number* are read, by
+/// number (never branch), in one GraphQL query; merged PRs are served from the
+/// persisted snapshot, closed ones too unless `reverify_closed` asks for a live
+/// look (a closed PR can reopen), and everything degrades to the snapshot when
+/// GitHub is unreachable or a rate-limit backoff is active. A repo that resolves
+/// to nothing is *omitted*, so the frontend merge keeps its last-known badge.
 #[tauri::command]
-pub async fn refresh_all_pr_status(
+pub async fn get_all_pr_status(
     supervisor: State<'_, Arc<Supervisor>>,
+    reverify_closed: Option<bool>,
 ) -> Result<std::collections::HashMap<String, crate::supervisor::AgentPrStatus>> {
-    // Closed PRs are served from the DB snapshot most cycles and only re-verified
-    // live on every Nth tick (they can reopen) — cheap coverage of a rare event.
-    // Tick 0 (first poll after launch) re-verifies so freshly-adopted state is
-    // confirmed right away.
-    let tick = PR_STATUS_TICK.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let reverify_closed = tick % CLOSED_REVERIFY_EVERY == 0;
-    Ok(crate::supervisor::resolve_all_pr_status(&supervisor.workspace, reverify_closed).await)
+    Ok(crate::supervisor::resolve_all_pr_status(
+        &supervisor.workspace,
+        reverify_closed.unwrap_or(false),
+    )
+    .await)
 }
-
-/// Monotonic tick for `refresh_all_pr_status`, driving the slow closed-PR
-/// re-verify cadence.
-static PR_STATUS_TICK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-/// Re-verify closed PRs live on every Nth `refresh_all_pr_status` tick. Sized
-/// against the sweep's active cadence (20s) to keep the wall-clock interval at
-/// roughly five minutes, as it was at the old 45s cadence with a divisor of 6.
-const CLOSED_REVERIFY_EVERY: u64 = 15;

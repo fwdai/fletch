@@ -5,6 +5,7 @@ import { useOrderedProjects } from "../../lib/activeProjects";
 import { agentsOfProject, baseOf, isActive, isBusy } from "../../lib/agents";
 import { type Project, repoLabel } from "../../lib/projects";
 import { useStore } from "../../store";
+import { AutoArchivedNotice } from "./AutoArchivedNotice";
 import { ConnectionBanner } from "./ConnectionBanner";
 import { EmptyProjects } from "./EmptyProjects";
 import { HostState } from "./HostState";
@@ -128,6 +129,7 @@ export function HomeScreen() {
         </button>
       </div>
       {showList && <ConnectionBanner />}
+      {showList && <AutoArchivedNotice />}
       <div className={`scroll home-body${showList && projects.length > 0 ? "" : " is-blank"}`}>
         {showList && projects.length > 0 && (
           <div className="sect">

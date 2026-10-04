@@ -527,7 +527,7 @@ fn begin_pairing_names_the_preset_and_refuses_an_unknown_one() {
 
 #[test]
 fn allowlist_matches_the_protocol_table() {
-    // The 138 rows of docs/remote-protocol.md's op table, spelled out here so a
+    // The 141 rows of docs/remote-protocol.md's op table, spelled out here so a
     // silent widening of the wire surface fails this test. `register_push` is
     // the one the session layer answers itself (it needs the connection's
     // device identity), so it lives in `SESSION_OPS`; the two together are what
@@ -574,6 +574,9 @@ fn allowlist_matches_the_protocol_table() {
         "get_pr_threads",
         "delegate_git",
         "get_delegations",
+        "autopilot_state",
+        "autopilot_set",
+        "autopilot_log",
         "list_repo_branches",
         "repo_default_branch",
         "discover_supported_models",
@@ -716,10 +719,11 @@ fn every_op_has_exactly_one_scope() {
 
 /// The ops that spend the user's GitHub credential or let an agent out of the
 /// sandbox (`delegate_git` is on it because a live delegation's own pushes and
-/// PRs skip the approval prompt), and the five settings that decide how they do
-/// it — the approval gate above all, which a device that may not publish must
-/// not be able to switch off. Named here so narrowing or widening `publish` is
-/// a deliberate edit of this list, not a side effect of moving a row.
+/// PRs skip the approval prompt, and `autopilot_set` because an enrolled
+/// checkout's pushes do), and the five settings that decide how they do it —
+/// the approval gate above all, which a device that may not publish must not
+/// be able to switch off. Named here so narrowing or widening `publish` is a
+/// deliberate edit of this list, not a side effect of moving a row.
 #[test]
 fn the_publish_scope_is_what_leaves_the_machine_and_how() {
     let publish: Vec<&str> = dispatch::ops_for(&[Scope::Publish]);
@@ -731,6 +735,7 @@ fn the_publish_scope_is_what_leaves_the_machine_and_how() {
             "create_pr",
             "merge_pr",
             "delegate_git",
+            "autopilot_set",
             "roadmap_merge_item_pr",
             "set_branch_prefix",
             "set_draft_prs",
@@ -929,6 +934,28 @@ fn delegations_are_on_the_wire() {
     let control = dispatch::preset_scopes("control").expect("control");
     assert!(!dispatch::allows(&control, "delegate_git"));
     assert!(dispatch::allows(&control, "get_delegations"));
+}
+
+/// Autopilot runs on the host and every client mirrors it: its events are
+/// forwarded and advertised, its state and history are readable by any device
+/// that can observe, and flipping its switches is a publish (an enrolled
+/// checkout's pushes skip the approval prompt).
+#[test]
+fn autopilot_is_on_the_wire() {
+    for event in ["autopilot:state", "autopilot:event", "autopilot:switches"] {
+        assert!(super::events::FORWARDED_EVENTS.contains(&event), "{event}");
+        assert!(
+            super::protocol_descriptor().events.contains(&event),
+            "{event}"
+        );
+    }
+    assert_eq!(dispatch::scope_of("autopilot_state"), Some(Scope::Observe));
+    assert_eq!(dispatch::scope_of("autopilot_log"), Some(Scope::Observe));
+    assert_eq!(dispatch::scope_of("autopilot_set"), Some(Scope::Publish));
+    let control = dispatch::preset_scopes("control").expect("control");
+    assert!(!dispatch::allows(&control, "autopilot_set"));
+    assert!(dispatch::allows(&control, "autopilot_state"));
+    assert!(dispatch::allows(&control, "autopilot_log"));
 }
 
 /// Per-stage spawn progress rides the wire too: a remote client watches the
@@ -3331,6 +3358,62 @@ fn a_merge_or_close_after_a_seen_open_alerts_with_the_pr_number() {
     assert_eq!(h.sent()[1]["collapseId"], "dolomites");
 }
 
+/// A secondary repo's PR state is its own checkout's: one repo merging does not
+/// stand in for the other's state, so each repo's witnessed merge alerts once.
+/// Both share the agent's `collapseId`, so the phone keeps one banner.
+#[test]
+fn each_repo_of_an_agent_alerts_on_its_own_merge() {
+    let _prefs = pr_prefs();
+    let h = Triggers::boot(false, &[("a1b2", "sandbox")]);
+    let agents = Agents::named("Fix login crash");
+    let secondary = |state: &str| {
+        let mut payload = pr_state_of("arabia", state);
+        payload["subdir"] = json!("api");
+        payload
+    };
+    h.triggers
+        .on_event(&agents, "pr:state_changed", &pr_state_of("arabia", "open"));
+    h.triggers
+        .on_event(&agents, "pr:state_changed", &secondary("open"));
+    assert!(h.sent().is_empty(), "opening is not an alert");
+    h.triggers
+        .on_event(&agents, "pr:state_changed", &secondary("merged"));
+    // The primary's re-reported open is not a transition, and the secondary's
+    // merge did not overwrite what the primary was last seen as.
+    h.triggers
+        .on_event(&agents, "pr:state_changed", &pr_state_of("arabia", "open"));
+    h.triggers.on_event(
+        &agents,
+        "pr:state_changed",
+        &pr_state_of("arabia", "merged"),
+    );
+    assert_eq!(h.kinds(), ["pr_merged", "pr_merged"]);
+    assert!(h.sent().iter().all(|s| s["collapseId"] == "arabia"));
+}
+
+/// A secondary merging forgets that checkout's rollup and nobody else's.
+#[test]
+fn a_secondary_merge_keeps_the_primary_rollup() {
+    let _prefs = pr_prefs();
+    let h = Triggers::boot(false, &[("a1b2", "sandbox")]);
+    let agents = Agents::named("Fix login crash");
+    h.triggers.on_event(
+        &agents,
+        "pr:checks_changed",
+        &checks_changed("arabia", "passing", &[]),
+    );
+    let mut merged = pr_state_of("arabia", "merged");
+    merged["subdir"] = json!("api");
+    h.triggers.on_event(&agents, "pr:state_changed", &merged);
+    // Still passing on the primary is still not a second settle.
+    h.triggers.on_event(
+        &agents,
+        "pr:checks_changed",
+        &checks_changed("arabia", "passing", &[]),
+    );
+    assert_eq!(h.kinds(), ["checks_settled"]);
+}
+
 /// The event reports a state, not a transition, and fires from a turn end as
 /// readily as from the watcher. A first `merged` is a stale snapshot of a PR
 /// that landed while this process was not running — nobody needs telling.
@@ -3448,6 +3531,85 @@ fn a_focused_window_suppresses_the_ship_loop_alerts() {
         &pr_state_of("arabia", "merged"),
     );
     assert!(h.sent().is_empty(), "{:?}", h.sent());
+}
+
+/// An `autopilot:event` as `autopilot::record` emits it.
+fn autopilot_event(agent_id: &str, outcome: &str, reason: Option<&str>) -> Value {
+    let mut payload = json!({
+        "id": "e1",
+        "agent_id": agent_id,
+        "subdir": null,
+        "at": 1,
+        "outcome": outcome,
+        "rung": "fix-checks",
+        "attempt": 3,
+    });
+    if let Some(reason) = reason {
+        payload["reason"] = json!(reason);
+    }
+    payload
+}
+
+/// Autopilot giving up is the one thing it did that someone has to act on —
+/// and with the loop on the host, nobody may be at the Mac to see it.
+#[test]
+fn autopilot_giving_up_alerts_with_the_rung_and_the_reason() {
+    let _prefs = pr_prefs();
+    let h = Triggers::boot(false, &[("a1b2", "sandbox")]);
+    let agents = Agents::named("Fix login crash");
+    h.triggers.on_event(
+        &agents,
+        "autopilot:event",
+        &autopilot_event("arabia", "give-up", Some("budget-spent")),
+    );
+    let sent = h.sent();
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    assert_eq!(
+        sent[0],
+        json!({
+            "tokens": [{ "token": "a1b2", "environment": "sandbox" }],
+            "title": "Autopilot gave up · fix-checks",
+            "body": "Fix login crash · budget spent",
+            "kind": "autopilot_gave_up",
+            "agentId": "arabia",
+            "collapseId": "arabia",
+        })
+    );
+}
+
+/// The rest of the loop working as it should is not news.
+#[test]
+fn every_other_autopilot_event_is_quiet() {
+    let _prefs = pr_prefs();
+    let h = Triggers::boot(false, &[("a1b2", "sandbox")]);
+    let agents = Agents::named("Fix login crash");
+    for outcome in ["dispatch", "settle", "retry"] {
+        h.triggers.on_event(
+            &agents,
+            "autopilot:event",
+            &autopilot_event("arabia", outcome, None),
+        );
+    }
+    assert!(h.sent().is_empty(), "{:?}", h.sent());
+}
+
+/// Under the ship loop's one switch, and quiet while the user is at the Mac.
+#[test]
+fn autopilot_giving_up_honours_notify_pr_activity_and_focus() {
+    let _prefs = pr_prefs();
+    let agents = Agents::named("Fix login crash");
+    let give_up = autopilot_event("arabia", "give-up", Some("no-progress"));
+    {
+        let h = Triggers::boot(false, &[("a1b2", "sandbox")]);
+        let _muted = Muted::new();
+        h.triggers.on_event(&agents, "autopilot:event", &give_up);
+        assert!(h.sent().is_empty(), "{:?}", h.sent());
+    }
+    let focused = Triggers::boot(true, &[("a1b2", "sandbox")]);
+    focused
+        .triggers
+        .on_event(&agents, "autopilot:event", &give_up);
+    assert!(focused.sent().is_empty(), "{:?}", focused.sent());
 }
 
 /// The two watcher events are on the wire and advertised, so a phone can gate
@@ -3575,4 +3737,14 @@ fn the_settings_ops_did_not_bring_the_db_bridge_with_them() {
     ] {
         assert!(!dispatch::is_allowed(op), "{op} must not be dispatchable");
     }
+}
+
+/// The idle sweep runs on the host, so its notice reaches every client rather
+/// than only the window that happens to share the host's process.
+#[test]
+fn the_auto_archive_notice_is_forwarded_and_advertised() {
+    assert!(super::events::FORWARDED_EVENTS.contains(&"workspace:auto-archived"));
+    assert!(super::protocol_descriptor()
+        .events
+        .contains(&"workspace:auto-archived"));
 }

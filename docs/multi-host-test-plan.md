@@ -53,7 +53,7 @@ keyed by environment. None of this should be visible.
 | 1.7 | Publish approval dialog | `publish_confirmation` on; agent pushes | Dialog appears; Approve/Deny works; a Deny refuses the push. **Changed behaviour:** if the webview cannot show it, the push now waits out `publish_approval_wait` (120 s) then refuses, instead of refusing instantly (`crates/fletch-core/src/rpc/approval.rs:132-178`, `host/sink.rs:79-85`). |
 | 1.8 | Workflows locally | Launch, approve, reject, retry, cancel, resolve a conflict, delete a run; save/import/export a YAML definition | All work. These now go through `*_impl` (`crates/fletch-core/src/commands/`). |
 | 1.9 | Roadmap locally | Create item, rank, hand off, review, hold/release item and project, proposals (accept/reject), brief proposal, delete | Same reason as 1.8; 31 commands split. |
-| 1.10 | Autopilot locally | Enable on a project; wait for a pass | Runs. Autopilot is now a `GATES` row with `op: null`; local must be ungated (`src/store/capabilities.ts:73,145-150`). |
+| 1.10 | Autopilot locally | Enable on a project; wait for a pass | Runs on the host (`autopilot::driver`, 10 s tick), with or without a window. `GATES.autopilot` is an op gate on `autopilot_set`. |
 | 1.11 | Git panel locally | Every action: commit, push, open PR, update branch, resolve conflicts, fix checks, comments, pull, rebase, stash, discard, abort merge, delete branch, merge PR; also Cmd/Ctrl+Enter from the commit composer | No action disabled, no gate notice. The dispatch-level gate (`useGitActions.ts:130-134`) must be a no-op locally. |
 | 1.12 | Seatbelt unchanged | From an agent shell: `touch ~/.gitconfig.x`, `ls "$HOME/Library/Application Support/com.fletch.desktop"`, `ls ~/.fletch/tools`, write in the checkout | Denied, denied, allowed, allowed. Profile text is meant to be byte-identical; only the empty-string case is unit-tested (`seatbelt.rs:200-210, 1796`). If `~/Library/Application Support` is a **symlink** on your machine, the host deny block would leak into the desktop profile; check `ls ~/.fletch/rpc/<agent>` still works either way. |
 | 1.13 | Secrets on release build | GitHub connected → restart | Still connected (keychain path unchanged, `secrets.rs:54-55`). Debug builds always used the settings table. |
@@ -94,14 +94,14 @@ Paired hosts.
 | 3.3 | Skew line | Hover "N features unavailable on this host" on the row and in the switcher | Tooltip lists each closed gate with its reason plus "Host vA · this app vB". Against a current host expect 5: Terminals, Running the app, Native view, Forking, Deleting a branch (`capabilities.ts:191-213`). |
 | 3.4 | Switch to the host | Sidebar header switcher → host | Projects/agents from the host; local UI state disappears. Switch back → **exact** local state: selected agent, drafts, right panel tab, history open, PR states (`environmentSwitch.ts:47-92`). |
 | 3.5 | PTY buffers per env | Local agent in native view with output; switch to host; switch back | Native view replays the local scrollback (buffer key `local:<agent>` vs `<hostKey>:<agent>`). |
-| 3.6 | Gates on the remote env | Look at every gated surface | Add project CTA disabled with tooltip; Home "Add a project" card hidden; **Run and Terminal tabs absent**; Workflows nav present and working (host exposes `wf_*`); Project settings gear present; roadmap pill enabled; autopilot does nothing; ViewToggle Native disabled with reason; ForkMenu gone; History restore works; Git panel merge/pull/rebase/stash/discard/abort work, delete-branch disabled with reason; Cmd+Enter on a gated action shows the notice line instead of running. |
+| 3.6 | Gates on the remote env | Look at every gated surface | Add project CTA disabled with tooltip; Home "Add a project" card hidden; **Run and Terminal tabs absent**; Workflows nav present and working (host exposes `wf_*`); Project settings gear present; roadmap pill enabled; autopilot switches work against the host (gated on `autopilot_set`); ViewToggle Native disabled with reason; ForkMenu gone; History restore works; Git panel merge/pull/rebase/stash/discard/abort work, delete-branch disabled with reason; Cmd+Enter on a gated action shows the notice line instead of running. |
 | 3.7 | Drive an agent remotely | Spawn, send a message, answer tool use, stop, archive/restore, commit/push/PR/merge, resolve conflicts, update branch | All work end to end; the host's own UI (if a desktop) shows the same. |
-| 3.8 | Workflows and roadmap remotely | Launch a workflow on the host from the client; approve/reject; roadmap board ops; autopilot stays off | Live via the 16 forwarded `wf:*`/`roadmap:*` events. `wf_run_agents`, `run_verification`-backed steps: verification is withheld remotely; note what a workflow that needs it does (expect a clear failure, not a hang). |
+| 3.8 | Workflows and roadmap remotely | Launch a workflow on the host from the client; approve/reject; roadmap board ops; autopilot runs on the host and its state mirrors on the client | Live via the 16 forwarded `wf:*`/`roadmap:*` events. `wf_run_agents`, `run_verification`-backed steps: verification is withheld remotely; note what a workflow that needs it does (expect a clear failure, not a hang). |
 | 3.9 | Host goes away | Kill the host mid-use; restart it | Dot amber (retrying) with backoff up to 30 s; stale workspace stays on screen; `invoke`s fail quietly. On return: reconnect, `get_workspace` refetch, selected agent's transcript resyncs (mid-turn transcript preserved). If the host was never loaded, the pane shows "<name> · reconnecting…" placeholder. |
 | 3.10 | Revoked by the host | `fletch-host devices revoke <id>` or the host desktop's revoke | Dot red, "This device is not paired with the host any more", **no retry**. Forget → switches to local first; switcher disappears when the last host is gone. |
 | 3.11 | Saved hosts on relaunch | Relaunch with a saved host; also edit `remote.hosts` to an undialable `addr` | Dial starts after first paint; undialable → error row "Saved address … cannot be dialled. Pair this host again." |
 | 3.12 | Local agents while remote is active | Start a local agent turn; switch to the host; let it finish; switch back | Status and transcript are correct on return (listeners were detached; `refreshWorkspace` catches up). Desktop notifications for the local agent during that window: note what happens. |
-| 3.13 | Agent-name collision | Hard to force (names from a recycled pool). Proxy test: same agent selected on both envs, switch back and forth while one is mid-turn | No cross-contamination of `managedLogs`/`sending`. **Known:** `autopilot` enrolment map and local DB prefs are keyed by bare agent id and not stashed (`environmentSwitch.ts:18-35`). |
+| 3.13 | Agent-name collision | Hard to force (names from a recycled pool). Proxy test: same agent selected on both envs, switch back and forth while one is mid-turn | No cross-contamination of `managedLogs`/`sending`. **Known:** local DB prefs are keyed by bare agent id and not stashed (`environmentSwitch.ts`); the autopilot mirrors are stashed per environment. |
 
 ### 3.14 Unknown-op paths (P1) — expected to degrade, must not crash or spin
 
@@ -124,7 +124,8 @@ leaves a spinner, a stuck state, or a wrong-host side effect is a bug.
   (`github_disconnect` is env-routed, `store/account.ts:92`). Should
   disconnect this Mac, will instead fail. Bug.
 - **Slash commands** discovery and `run_claude_command`.
-- **Sidebar PR badge sweep** (`refresh_all_pr_status`) — check console noise.
+- **Sidebar PR badge seed** (`get_all_pr_status`, on switch/reconnect/focus;
+  the host's PR watcher events keep it current) — check console noise.
 - **Live records for Cursor/Codex agents** (`append_live_record` fires per
   event): watch for an error flood in the console.
 - **Agent already in native view on the host** opened from the client:
@@ -185,5 +186,5 @@ Debug on purpose: `data_dir_under` only appends `dev` under `debug_assertions`
 3. Publish approval no longer fails closed instantly when the webview emit fails; it waits out the timeout (§1.7). Intentional per the sink docs, but changes desktop behaviour.
 4. A phone that connects after a publish approval was requested never sees it (§2.4).
 5. Pairing a second host on the phone silently replaces the first (§2.12).
-6. `autopilot` enrolment and per-agent local DB prefs are keyed by bare agent id across environments (§3.13).
+6. Per-agent local DB prefs are keyed by bare agent id across environments (§3.13).
 7. A symlinked `~/Library/Application Support` would emit the host deny block into the desktop seatbelt profile (§1.12).

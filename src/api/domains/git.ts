@@ -1,5 +1,12 @@
 import { invoke } from "../invoke";
-import type { DelegationEvent, GitMeta, GitState, ShortStats } from "../types/git";
+import type {
+  AutopilotLogEntry,
+  AutopilotSnapshot,
+  DelegationEvent,
+  GitMeta,
+  GitState,
+  ShortStats,
+} from "../types/git";
 
 export const gitApi = {
   /** The current HEAD commit SHA of an agent's checkout (primary repo). The
@@ -12,7 +19,6 @@ export const gitApi = {
     invoke<GitState | null>("get_git_state", { agentId, subdir }),
   getAllShortstats: () => invoke<Record<string, ShortStats>>("get_all_shortstats"),
   getAllGitMeta: () => invoke<Record<string, GitMeta>>("get_all_git_meta"),
-  refreshBaseFreshness: () => invoke<void>("refresh_base_freshness"),
   /** Hand a git playbook (`action`) to the agent. The host composes the
    *  trigger, holds it while the agent is mid-turn and watches it to its end;
    *  resolves to the delegation as recorded (`queued` or `started`). */
@@ -24,6 +30,15 @@ export const gitApi = {
   ) => invoke<DelegationEvent>("delegate_git", { agentId, subdir, action, params }),
   /** Every delegation the host is tracking, to resync the mirror. */
   getDelegations: () => invoke<DelegationEvent[]>("get_delegations"),
+  /** Autopilot as the host runs it — every live agent's checkouts and the two
+   *  opt-out lists — to resync the mirror. */
+  getAutopilotState: () => invoke<AutopilotSnapshot>("autopilot_state", {}),
+  /** What autopilot did on every checkout, newest first. */
+  getAutopilotLog: () => invoke<AutopilotLogEntry[]>("autopilot_log", {}),
+  /** Flip a project's autopilot switch, or pause / resume one agent. Answers
+   *  with the whole host's state after the change. */
+  setAutopilot: (target: { projectId: string } | { agentId: string }, enabled: boolean) =>
+    invoke<AutopilotSnapshot>("autopilot_set", { ...target, enabled }),
   pushAgent: (agentId: string, subdir?: string) =>
     invoke<string>("push_agent", { agentId, subdir }),
   pullAgent: (agentId: string, subdir?: string) => invoke<void>("pull_agent", { agentId, subdir }),

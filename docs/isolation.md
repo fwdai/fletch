@@ -226,9 +226,9 @@ wait", 120s by default) — resolves to *denied*, so the gate cannot fail open.
 
 Turning it on does not disturb what you already asked for. A push from a checkout
 enrolled in autopilot, and any publish covered by a Git-panel action you clicked,
-are recognised as already authorized and answered without a prompt
-(`store/publishApproval.ts`) — so an unattended run keeps running and a button
-press doesn't ask twice. Only a publish the agent decided on by itself prompts.
+are recognised as already authorized and approved by the host without a prompt
+(`autopilot::pre_authorizes`, `supervisor::delegation::pre_authorizes`) — so an
+unattended run keeps running and a button press doesn't ask twice. Only a publish the agent decided on by itself prompts.
 
 It is off by default as a product choice rather than a technical limit, and it is
 worth being clear that it is a *secondary* control: with network egress
