@@ -628,7 +628,7 @@ fn set_notify_turn_complete(enabled: bool, state: tauri::State<'_, DbState>) -> 
 }
 
 /// Whether the ship loop alerts the phone at all — checks settling, a review
-/// comment, a PR merging or closing. Same shape as `set_notify_turn_complete`:
+/// comment, a PR merging or closing, autopilot giving up. Same shape as `set_notify_turn_complete`:
 /// one backend-owned key, `notify_pr_activity`, mirrored for the push triggers.
 #[tauri::command]
 fn set_notify_pr_activity(enabled: bool, state: tauri::State<'_, DbState>) -> Result<(), String> {
@@ -1746,6 +1746,9 @@ pub fn run() {
             commands::push_agent,
             commands::delegate_git,
             commands::get_delegations,
+            commands::autopilot_state,
+            commands::autopilot_set,
+            commands::autopilot_log,
             commands::pull_agent,
             commands::rebase_agent,
             commands::commit_agent,

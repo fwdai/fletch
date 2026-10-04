@@ -24,17 +24,15 @@ export const rungNoun = (kind: DelegationKind): string => RUNG_NOUN[kind] ?? kin
 /** Why autopilot gave up on a rung — the one history row a returning user is
  *  looking for. Past tense: this already happened, and autopilot is simply
  *  waiting for the situation to change. */
-export function gaveUpLabel(reason: GiveUpReason, rung: DelegationKind | null): string {
-  const noun = rung ? rungNoun(rung) : null;
+export function gaveUpLabel(reason: GiveUpReason, rung: DelegationKind): string {
+  const noun = rungNoun(rung);
   switch (reason) {
     case "budget-spent": {
-      const tries = rung ? RUNG_BUDGET[rung] : undefined;
-      return noun && tries
-        ? `Gave up on the ${noun} after ${tries} tries`
-        : "Gave up after several tries";
+      const tries = RUNG_BUDGET[rung];
+      return tries ? `Gave up on the ${noun} after ${tries} tries` : `Gave up on the ${noun}`;
     }
     case "no-progress":
-      return noun ? `Last attempt on the ${noun} changed nothing` : "Last attempt changed nothing";
+      return `Last attempt on the ${noun} changed nothing`;
     case "no-evidence":
       return "No CI result came back";
   }

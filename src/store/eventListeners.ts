@@ -19,6 +19,9 @@ import {
   onAgentTask,
   onAgentTitle,
   onAgentView,
+  onAutopilotEvent,
+  onAutopilotState,
+  onAutopilotSwitches,
   onDelegationChanged,
   onDockerBuildProgress,
   onPrChecksChanged,
@@ -64,7 +67,6 @@ import {
   DEFAULT_LEFT_WIDTH,
   DEFAULT_RIGHT_WIDTH,
   parseAutoArchiveIdleDays,
-  parseAutopilotPausedAgents,
   parseDraftBaseBranches,
   parseFeatures,
   parseNewDraftSelection,
@@ -127,7 +129,7 @@ const patchAgent = (_get: AppGet, set: AppSet, agentId: string, patch: AgentPatc
 
 // Load persisted settings from the DB and hydrate the matching UI state.
 // First launch / DB-not-ready is non-fatal — defaults stand in.
-export const hydrateSettings = async (set: AppSet, get: AppGet) => {
+export const hydrateSettings = async (set: AppSet) => {
   try {
     const s = await getAllSettings();
     const {
@@ -185,10 +187,9 @@ export const hydrateSettings = async (set: AppSet, get: AppGet) => {
       // Backend-owned like telemetry_enabled (snake_case, written by the
       // `set_sandbox_engine` Rust command) — read it, never setSetting it.
       sandboxEngine: parseSandboxEngine(s.sandbox_engine),
-      // Publish approval is opt-*in*, unlike the two above: autopilot publishes
-      // unattended, so defaulting it on would hang every unattended run until
-      // the decision timeout. Backend-owned (`set_publish_confirmation`), so only
-      // an explicit "true" enables — matching `rpc::approval::parse_enabled`.
+      // Publish approval is opt-*in*, unlike the two above. Backend-owned
+      // (`set_publish_confirmation`), so only an explicit "true" enables —
+      // matching `rpc::approval::parse_enabled`.
       publishConfirmation: s.publish_confirmation === "true",
       // Publishing preferences, all backend-owned (snake_case, written by
       // `set_publish_approval_wait` / `set_branch_prefix` / `set_draft_prs`).
@@ -221,8 +222,6 @@ export const hydrateSettings = async (set: AppSet, get: AppGet) => {
       reviewDismissed: parseReviewDismissed(s.reviewDismissed),
       // Keyboard rebindings; an id missing from the map is on its defaults.
       shortcutOverrides: parseShortcutOverrides(s.shortcutOverrides),
-      // Workspaces whose autopilot the user switched off from the Git panel.
-      autopilotPausedAgents: parseAutopilotPausedAgents(s.autopilotPausedAgents),
       // Admin unlocks the Developer settings section in production. Opt-in:
       // only an explicit "true" in the `admin` settings row grants it.
       admin: s.admin === "true",
@@ -230,10 +229,6 @@ export const hydrateSettings = async (set: AppSet, get: AppGet) => {
   } catch {
     // First launch or DB not ready — defaults are fine.
   }
-  // Autopilot's per-project opt-outs live in `project_settings`, not the global
-  // table above, and the slice owns their loading (it fails closed and is
-  // re-runnable from the settings section) — so just kick it off here.
-  await get().loadAutopilotProjects();
 };
 
 // Load (or lazily create) the single local account profile. Non-fatal — the
@@ -460,6 +455,24 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
   await bind(
     onDelegationChanged((e) => {
       get().applyDelegationChange(e);
+    }),
+  );
+
+  // Autopilot runs on the host too; its rows, its switches and its history are
+  // mirrored the same way.
+  await bind(
+    onAutopilotState((e) => {
+      get().applyAutopilotState(e);
+    }),
+  );
+  await bind(
+    onAutopilotSwitches((e) => {
+      get().applyAutopilotSwitches(e);
+    }),
+  );
+  await bind(
+    onAutopilotEvent((e) => {
+      get().applyAutopilotEvent(e);
     }),
   );
 

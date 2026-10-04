@@ -556,6 +556,11 @@ pub fn boot(cfg: BootConfig) -> Result<Engine, BootError> {
     // trigger is delivered when the agent settles, and the outcome is decided
     // here once rather than by whichever windows happen to be open.
     crate::supervisor::delegation::spawn(ctx.clone(), supervisor.clone());
+    // Autopilot nurses every enrolled open PR to mergeable — fix the checks,
+    // update the branch, answer the review — through the delegations above.
+    // On the host because it has to keep going with every window shut, and
+    // act once however many clients are watching.
+    crate::autopilot::spawn(ctx.clone(), supervisor.clone());
     // Archive sidebar workspaces left idle past the user's threshold — only
     // ones that are clean and fully pushed, so nothing unrecoverable goes.
     crate::supervisor::auto_archive::spawn(ctx.clone(), supervisor.clone(), db.clone());

@@ -21,6 +21,7 @@ mod shell;
 
 pub use checkpoints::{PinnedCheckout, PinnedCode, RepoCheckpoint, RepoRestore, RestoreReport};
 pub use disposition::ArchiveTrigger;
+pub(crate) use events::emit_verification;
 pub use events::emit_workspace_changed;
 pub use fork::{ForkCode, ForkContext};
 pub use lifecycle::{SpawnHandoff, SpawnRequest};

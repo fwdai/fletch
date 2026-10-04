@@ -3,6 +3,7 @@
 // vite.config.ts puts this file in mock mode (see `mockEnabled`).
 
 import { type AgentManagedEvent, ROADMAP_PM_PURPOSE } from "@desktop/api/types/agent";
+import type { AutopilotLogEntry } from "@desktop/api/types/git";
 import type { LiveTurn } from "@desktop/api/types/session";
 import { PROJECT_MANAGER_PRESET } from "@desktop/starterPack/presets";
 import { beforeAll, describe, expect, it, vi } from "vitest";
@@ -1158,6 +1159,130 @@ describe("delegations", () => {
     } finally {
       useStore.setState({ protocol, delegations: {} });
       spy.mockRestore();
+    }
+  });
+});
+
+/** Autopilot is the host's (docs/remote-protocol.md, "Autopilot"): the phone
+ *  mirrors its state and log, re-read on every handshake, and flips only an
+ *  agent's pause. The mock host has kamakura's PR mid-cycle. */
+describe("autopilot", () => {
+  const AGENT = "kamakura";
+  const lines = () => (state().shipActivity[AGENT] ?? []).map((e) => e.text);
+  const entry = (over: Partial<AutopilotLogEntry>): AutopilotLogEntry => ({
+    id: "ap-live",
+    agent_id: AGENT,
+    subdir: null,
+    at: Date.now(),
+    outcome: "dispatch",
+    rung: "fix-checks",
+    attempt: 1,
+    ...over,
+  });
+
+  it("re-reads the host's state and log on every handshake", async () => {
+    useStore.setState({ autopilot: {}, shipActivity: {} });
+    await state().reconnect();
+    await vi.waitFor(() => expect(state().autopilot[AGENT]?.cycle).not.toBeNull());
+    expect(state().autopilot[AGENT]).toMatchObject({
+      enrolled: true,
+      paused: false,
+      project_enabled: true,
+      cycle: { rung: "fix-checks", attempt: 2, phase: "awaiting-evidence" },
+    });
+    // Every live agent has a row, on by default.
+    expect(state().autopilot.arabia).toMatchObject({ enrolled: true, cycle: null });
+    await vi.waitFor(() =>
+      expect(lines()).toEqual([
+        "Autopilot started on the failing checks, try 2",
+        "Autopilot's try 1 on the failing checks didn't work",
+        "Autopilot started on the failing checks",
+      ]),
+    );
+  });
+
+  it("folds the live events, a seeded row and its event being one line", () => {
+    // The row the handshake already read, arriving late as its event.
+    hostEvent("autopilot:event", entry({ id: "ap-kamakura-3", attempt: 2 }));
+    expect(lines().filter((l) => l.startsWith("Autopilot started"))).toHaveLength(2);
+
+    hostEvent(
+      "autopilot:event",
+      entry({ id: "ap-live", outcome: "give-up", attempt: 3, reason: "budget-spent" }),
+    );
+    expect(lines()[0]).toBe("Autopilot gave up on the failing checks after 3 tries");
+
+    const row = state().autopilot[AGENT];
+    hostEvent("autopilot:state", { ...row, cycle: null });
+    expect(state().autopilot[AGENT]?.cycle).toBeNull();
+    // A secondary checkout is a row of its own, beside the primary's.
+    hostEvent("autopilot:state", { ...row, subdir: "api" });
+    expect(state().autopilot[`${AGENT}::api`]?.cycle?.rung).toBe("fix-checks");
+    expect(state().autopilot[AGENT]?.cycle).toBeNull();
+  });
+
+  it("takes the host's switches whole, though no row changed", () => {
+    const rows = state().autopilot;
+    useStore.setState({ autopilotSwitches: { disabled_projects: [], paused_agents: [AGENT] } });
+
+    // A project with no agents switched off on the Mac: no `autopilot:state`.
+    hostEvent("autopilot:switches", { disabled_projects: ["empty"], paused_agents: [] });
+
+    expect(state().autopilotSwitches).toEqual({ disabled_projects: ["empty"], paused_agents: [] });
+    expect(state().autopilot).toBe(rows);
+  });
+
+  it("pauses and resumes an agent through the host, taking its answer as the state", async () => {
+    const spy = vi.spyOn(api, "setAutopilot");
+    try {
+      await state().reconnect();
+      await vi.waitFor(() => expect(state().autopilot[AGENT]?.cycle).not.toBeNull());
+
+      await state().setAgentAutopilot(AGENT, false);
+      expect(spy).toHaveBeenCalledWith({ agentId: AGENT }, false);
+      // The pause drops the cycle on the host, and the answer says so.
+      expect(state().autopilot[AGENT]).toMatchObject({
+        paused: true,
+        enrolled: false,
+        cycle: null,
+      });
+      expect(state().autopilot.arabia?.paused).toBe(false);
+      expect(state().autopilotSwitches?.paused_agents).toEqual([AGENT]);
+
+      await state().setAgentAutopilot(AGENT, true);
+      expect(spy).toHaveBeenLastCalledWith({ agentId: AGENT }, true);
+      expect(state().autopilot[AGENT]).toMatchObject({
+        paused: false,
+        enrolled: true,
+        cycle: null,
+      });
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("asks nothing of a host, or a pairing, without the ops", async () => {
+    const protocol = state().protocol;
+    const read = vi.spyOn(api, "getAutopilotState");
+    const log = vi.spyOn(api, "getAutopilotLog");
+    const flip = vi.spyOn(api, "setAutopilot");
+    useStore.setState({
+      protocol: protocol && {
+        ...protocol,
+        ops: protocol.ops.filter((o) => !o.startsWith("autopilot_")),
+      },
+    });
+    try {
+      await state().loadAutopilot();
+      await state().setAgentAutopilot(AGENT, false);
+      expect(read).not.toHaveBeenCalled();
+      expect(log).not.toHaveBeenCalled();
+      expect(flip).not.toHaveBeenCalled();
+    } finally {
+      useStore.setState({ protocol });
+      read.mockRestore();
+      log.mockRestore();
+      flip.mockRestore();
     }
   });
 });

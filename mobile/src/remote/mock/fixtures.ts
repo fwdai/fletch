@@ -9,7 +9,7 @@ import {
   type Workspace,
 } from "@desktop/api/types/agent";
 import type { CheckoutFile, CheckoutFileContents, DirEntry } from "@desktop/api/types/checkout";
-import type { GitState } from "@desktop/api/types/git";
+import type { AutopilotCycle, AutopilotLogEntry, GitState } from "@desktop/api/types/git";
 import type { PrChecks, PrState } from "@desktop/api/types/pr";
 import type { GhRepoSummary, GhStatus } from "@desktop/api/types/providers";
 import type { RoadmapItem } from "@desktop/api/types/roadmap";
@@ -621,6 +621,9 @@ export const protocol: HostProtocol = {
     "get_all_pr_status",
     "delegate_git",
     "get_delegations",
+    "autopilot_state",
+    "autopilot_set",
+    "autopilot_log",
   ],
   events: [
     "agent:event",
@@ -642,6 +645,9 @@ export const protocol: HostProtocol = {
     "publish:approval-requested",
     "publish:approval-resolved",
     "delegation:changed",
+    "autopilot:state",
+    "autopilot:event",
+    "autopilot:switches",
     "roadmap:item",
     "roadmap:item-deleted",
   ],
@@ -661,6 +667,54 @@ export const delegationDone: Record<string, string> = {
   "fix-checks": "Agent finished — checks are re-running",
   "resolve-comments": "Review comments addressed",
 };
+
+const MINUTE = 60_000;
+
+/** Autopilot on the fake host as of `now`: everything on (the host's default),
+ *  and kamakura's open PR mid-cycle — the agent's second go at its checks has
+ *  ended and the host is waiting on the verdict. The log is newest first, as
+ *  `autopilot_log` answers. */
+export const autopilot = (
+  now: number,
+): { cycles: Record<string, AutopilotCycle>; log: AutopilotLogEntry[] } => ({
+  cycles: {
+    kamakura: {
+      rung: "fix-checks",
+      attempt: 2,
+      phase: "awaiting-evidence",
+      since: now - 2 * MINUTE,
+    },
+  },
+  log: [
+    {
+      id: "ap-kamakura-3",
+      agent_id: "kamakura",
+      subdir: null,
+      at: now - 9 * MINUTE,
+      outcome: "dispatch",
+      rung: "fix-checks",
+      attempt: 2,
+    },
+    {
+      id: "ap-kamakura-2",
+      agent_id: "kamakura",
+      subdir: null,
+      at: now - 10 * MINUTE,
+      outcome: "retry",
+      rung: "fix-checks",
+      attempt: 1,
+    },
+    {
+      id: "ap-kamakura-1",
+      agent_id: "kamakura",
+      subdir: null,
+      at: now - 24 * MINUTE,
+      outcome: "dispatch",
+      rung: "fix-checks",
+      attempt: 1,
+    },
+  ],
+});
 
 /** What `~` expands to on the fake host. */
 export const HOME = "/Users/alex";

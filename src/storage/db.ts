@@ -1,5 +1,5 @@
 // The desktop's own SQLite bridge: this app's local rows (accounts, drafts,
-// autopilot log), not an engine's workspace. Always the local transport.
+// settings), not an engine's workspace. Always the local transport.
 import { invokeLocal } from "@/api/invoke";
 
 export async function dbInsert(table: string, data: Record<string, unknown>): Promise<string> {

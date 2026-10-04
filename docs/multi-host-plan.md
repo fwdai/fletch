@@ -647,8 +647,9 @@ purpose: the plan is an own secure pairing procedure later, not a tailnet.
   `roadmap` gate re-pointed at `roadmap_create_item` (a board *write*, since
   `roadmap_list_items` has been on the wire since the phone's planning chat),
   and autopilot moved from a hard `kind === "remote"` rule to a
-  `GATES.autopilot` row with `op: null` (its opt-outs are this Mac's local
-  tables). Nothing withheld inside the two families; what stays off is what
+  `GATES.autopilot` row with `op: null` (its opt-outs were this Mac's local
+  tables; since M2 autopilot runs on the host and the gate is an ordinary op
+  gate on `autopilot_set`). Nothing withheld inside the two families; what stays off is what
   those flows borrow from other families (`list_repo_tree`/`list_repo_prs`,
   `run_verification`, `fork_agent`), recorded in
   `dispatch::WITHHELD_WF_ROADMAP_OPS`. No protocol version bump: additive.

@@ -478,9 +478,9 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
       );
       if (!recorded) return;
       // The host's `delegation:changed` says the same and may land either side
-      // of this reply. Writing now is what lets a caller that re-reads
-      // `delegations` on its next tick (autopilot) see it; the one thing it must
-      // not do is resurrect a delegation whose end already arrived.
+      // of this reply. Writing now shows the label without waiting for the
+      // event; the one thing it must not do is resurrect a delegation whose end
+      // already arrived.
       const key = checkoutKey(recorded.agent_id, recorded.subdir ?? undefined);
       const live = mirrorOf(recorded);
       if (!live || endedDelegations.get(key) === recorded.started_at) return;

@@ -1,7 +1,14 @@
 import type { BackgroundTaskMap } from "@desktop/adapters/shared/backgroundTasks";
 import type { AgentManagedEvent, AgentRecord, Workspace } from "@desktop/api/types/agent";
 import type { CheckoutFile, DirListing } from "@desktop/api/types/checkout";
-import type { DelegationEvent, GitState, ShortStats } from "@desktop/api/types/git";
+import type {
+  AutopilotCheckout,
+  AutopilotLogEntry,
+  AutopilotSwitches,
+  DelegationEvent,
+  GitState,
+  ShortStats,
+} from "@desktop/api/types/git";
 import type { PrChecks, PrComments, PrState } from "@desktop/api/types/pr";
 import type { GhRepoSummary, GhStatus } from "@desktop/api/types/providers";
 import type { PublishApproval } from "@desktop/api/types/sandbox";
@@ -31,16 +38,19 @@ import {
   type Via,
 } from "../remote";
 import type { PushFletch } from "../remote/push";
+import { type AutopilotMap, autopilotFromSnapshot, checkoutKey, switchesOf } from "./autopilot";
 import { type ChatsSlice, createChatsSlice } from "./chats";
 import { registerRemoteEvents } from "./events";
 import { replayLiveTurn, runningTurnStart, withPendingTurns } from "./liveTurn";
 import { clearHost, loadDestParent, loadSettings, saveDestParent, saveSettings } from "./persist";
 import { createProposalsSlice, type ProposalsSlice } from "./proposals";
-import { forgetPush, startPush, syncPush } from "./push";
+import { forgetPush, pushTab, startPush, syncPush } from "./push";
 import {
   appendActivity,
   askedText,
+  autopilotActivity,
   delegationActivityText,
+  mergeActivity,
   type ShipActivityMap,
 } from "./shipActivity";
 import { applyUserTurns, reduceRecords } from "./transcript";
@@ -69,10 +79,6 @@ export interface NavItem {
 
 /** The agent screen's tabs, as its `tab` nav prop names them. */
 export type AgentTab = "chat" | "changes" | "ship";
-
-/** Push `kind`s about the agent's PR (docs/remote-protocol.md, "Push
- *  notifications"): a tap on one of these opens the Ship tab. */
-const SHIP_PUSH_KINDS = new Set(["checks_settled", "review_comment", "pr_merged", "pr_closed"]);
 
 export interface SheetState {
   name: SheetName;
@@ -153,13 +159,23 @@ export interface MobileState extends ChatsSlice, ProposalsSlice {
    *  never verified since this launch. Not persisted. */
   verificationReports: Record<string, VerificationReport>;
   /** The Ship tab's activity list per agent, newest first (store/shipActivity).
-   *  Live only: empty after every handshake, like `backgroundTasks`. */
+   *  Empty after every handshake, like `backgroundTasks`, then refilled with
+   *  the autopilot log the host keeps (`autopilot_log`). */
   shipActivity: ShipActivityMap;
   /** The host's live delegation per agent (`delegation:changed`), primary repo
    *  only — the phone is single-repo for now. A mirror: the host decides when
    *  one starts, runs and ends; the Ship strip reads `working` off it. Re-read
    *  with `get_delegations` on every handshake. */
   delegations: Record<string, DelegationEvent>;
+  /** The host's autopilot per checkout (store/autopilot), every checkout of
+   *  every live agent. A mirror like `delegations`: `autopilot:state` replaces
+   *  a row, a snapshot (`autopilot_state` on every handshake, `autopilot_set`'s
+   *  answer) replaces them all. Empty on a host without the ops. */
+  autopilot: AutopilotMap;
+  /** The host's two autopilot opt-out lists, whole: from every snapshot, and
+   *  replaced by `autopilot:switches` — which every `autopilot_set` fires, even
+   *  on a project with no agents (so no row changes). `null` until read. */
+  autopilotSwitches: AutopilotSwitches | null;
   trees: Record<string, CheckoutFile[]>;
 
   theme: ThemeMode;
@@ -268,6 +284,19 @@ export interface MobileState extends ChatsSlice, ProposalsSlice {
   /** Replace `delegations` with the host's table. A no-op on a host without
    *  `get_delegations`. */
   loadDelegations(): Promise<void>;
+  /** Fold one `autopilot:state` into `autopilot`. */
+  applyAutopilotState(row: AutopilotCheckout): void;
+  /** Take one `autopilot:switches`: both lists, replaced whole. */
+  applyAutopilotSwitches(switches: AutopilotSwitches): void;
+  /** Fold one `autopilot:event` into the agent's activity list. */
+  applyAutopilotEvent(entry: AutopilotLogEntry): void;
+  /** Re-read autopilot from the host: its state into `autopilot`, its log into
+   *  the activity lists. Each half is a no-op on a host without its op. */
+  loadAutopilot(): Promise<void>;
+  /** Pause (`false`) or resume an agent's autopilot (`autopilot_set`), taking
+   *  the host's answer as the new state. The project's switch is the Mac's to
+   *  flip. A no-op on a host — or a pairing — without the op. */
+  setAgentAutopilot(agentId: string, enabled: boolean): Promise<void>;
   /** Manual path: commit + push + open a PR with the user's own text. */
   publish(agentId: string, title: string, body: string): Promise<void>;
   pushToPr(agentId: string): Promise<void>;
@@ -540,6 +569,8 @@ export const useStore = create<MobileState>()((set, get) => ({
   verificationReports: {},
   shipActivity: {},
   delegations: {},
+  autopilot: {},
+  autopilotSwitches: null,
   trees: {},
 
   theme: "dark",
@@ -605,7 +636,14 @@ export const useStore = create<MobileState>()((set, get) => ({
       // over on every handshake and refill from whatever the host emits next.
       // The replay watermarks go with them: a restarted host counts from zero,
       // and so does the Ship tab's activity list.
-      set({ backgroundTasks: {}, liveSeq: {}, shipActivity: {}, delegations: {} });
+      set({
+        backgroundTasks: {},
+        liveSeq: {},
+        shipActivity: {},
+        delegations: {},
+        autopilot: {},
+        autopilotSwitches: null,
+      });
       // The snapshot carries no stats or PR state, so the rows get both from
       // the first poll of every handshake rather than waiting out its interval.
       void get().loadShortstats();
@@ -617,6 +655,9 @@ export const useStore = create<MobileState>()((set, get) => ({
       // …and the delegations it is running: the strip's `working` state is
       // the host's, and the events that built it were lost with the socket.
       void get().loadDelegations().catch(ignore);
+      // …and its autopilot, for the same reason: state and log are host facts,
+      // and the events are only the deltas.
+      void get().loadAutopilot().catch(ignore);
       refreshOpenAgent();
       // Every handshake — the first pairing and every reconnect — is when the
       // host is told the APNs token again.
@@ -791,6 +832,8 @@ export const useStore = create<MobileState>()((set, get) => ({
       verificationReports: {},
       shipActivity: {},
       delegations: {},
+      autopilot: {},
+      autopilotSwitches: null,
       // The chats belong to the host that holds their checkouts, and the ghosts
       // to the boards those chats propose onto.
       chats: {},
@@ -870,7 +913,7 @@ export const useStore = create<MobileState>()((set, get) => ({
     if (!fletch.agentId || !hostKey || fletch.hostId !== hostKey) return;
     // An alert about the PR is answered on the Ship tab; a turn ending or a
     // held prompt, in the chat.
-    get().openAgent(fletch.agentId, SHIP_PUSH_KINDS.has(fletch.kind ?? "") ? "ship" : undefined);
+    get().openAgent(fletch.agentId, pushTab(fletch.kind));
   },
 
   openSheet(name, props = {}) {
@@ -1127,8 +1170,9 @@ export const useStore = create<MobileState>()((set, get) => ({
   },
 
   receivePublishApproval(request) {
-    // No pre-authorization to consult, unlike the desktop's autopilot: the
-    // phone has no standing per-checkout grant, so every prompt is shown.
+    // Nothing to pre-authorize here: the host approves an enrolled checkout's
+    // autopilot pushes itself and never raises those, so every prompt that
+    // does arrive is one for a person to answer.
     approvalsInFlight?.push({ kind: "requested", request });
     set((s) => ({ pendingPublishApprovals: [...s.pendingPublishApprovals, request] }));
   },
@@ -1246,6 +1290,53 @@ export const useStore = create<MobileState>()((set, get) => ({
     const rows = await api.getDelegations();
     set({
       delegations: Object.fromEntries(rows.filter((r) => !r.subdir).map((r) => [r.agent_id, r])),
+    });
+  },
+
+  applyAutopilotState(row) {
+    set((s) => ({ autopilot: { ...s.autopilot, [checkoutKey(row.agent_id, row.subdir)]: row } }));
+  },
+
+  applyAutopilotSwitches(switches) {
+    set({ autopilotSwitches: switchesOf(switches) });
+  },
+
+  applyAutopilotEvent(entry) {
+    set((s) => ({
+      shipActivity: mergeActivity(s.shipActivity, entry.agent_id, [autopilotActivity(entry)]),
+    }));
+  },
+
+  async loadAutopilot() {
+    await Promise.all([
+      get().hostSupports("autopilot_state") &&
+        api.getAutopilotState().then((snapshot) => {
+          set({
+            autopilot: autopilotFromSnapshot(snapshot),
+            autopilotSwitches: switchesOf(snapshot),
+          });
+        }),
+      // Merged rather than replaced: a live event may have landed first, and
+      // it is the same row by id.
+      get().hostSupports("autopilot_log") &&
+        api.getAutopilotLog().then((rows) => {
+          set((s) => ({
+            shipActivity: rows.reduce(
+              (map, row) => mergeActivity(map, row.agent_id, [autopilotActivity(row)]),
+              s.shipActivity,
+            ),
+          }));
+        }),
+    ]);
+  },
+
+  async setAgentAutopilot(agentId, enabled) {
+    if (!get().hostSupports("autopilot_set")) return;
+    await guard(set, async () => {
+      // The whole host's state after the change — the pause, and the cycle it
+      // dropped — so the switch settles on the host's word, not the tap's.
+      const snapshot = await api.setAutopilot({ agentId }, enabled);
+      set({ autopilot: autopilotFromSnapshot(snapshot), autopilotSwitches: switchesOf(snapshot) });
     });
   },
 

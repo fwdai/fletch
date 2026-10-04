@@ -16,7 +16,12 @@ import type {
   AgentTitleEvent,
   Workspace,
 } from "@desktop/api/types/agent";
-import type { DelegationEvent } from "@desktop/api/types/git";
+import type {
+  AutopilotCheckout,
+  AutopilotLogEntry,
+  AutopilotSwitches,
+  DelegationEvent,
+} from "@desktop/api/types/git";
 import type {
   PrChecksChangedEvent,
   PrStateChangedEvent,
@@ -246,6 +251,20 @@ export function registerRemoteEvents(client: RemoteClient, set: Set, get: Get): 
   // when nothing here is driving it.
   on<DelegationEvent>("delegation:changed", (e) => {
     get().applyDelegation(e);
+  });
+
+  // The host's autopilot: a checkout's row changed (enrollment, pause, project
+  // switch, cycle), a switch was written (both lists, whole), or it did
+  // something worth a line in the activity list. All are deltas over what every
+  // handshake re-reads (`loadAutopilot`).
+  on<AutopilotCheckout>("autopilot:state", (row) => {
+    get().applyAutopilotState(row);
+  });
+  on<AutopilotSwitches>("autopilot:switches", (switches) => {
+    get().applyAutopilotSwitches(switches);
+  });
+  on<AutopilotLogEntry>("autopilot:event", (entry) => {
+    get().applyAutopilotEvent(entry);
   });
 
   on<PrStateChangedEvent>("pr:state_changed", (e) => {

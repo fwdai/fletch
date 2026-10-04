@@ -24,6 +24,8 @@
 //! - `review_comment` when unresolved review threads gain one not seen before.
 //! - `pr_merged` / `pr_closed` when a PR this process saw open leaves `open`,
 //!   so a cold start's first stale snapshot of a merged PR alerts nobody.
+//! - `autopilot_gave_up` when the host's autopilot gives up on a rung (an
+//!   `autopilot:event` with outcome `give-up`), under the same opt-out.
 //! - None of them while the desktop's own window has focus: the user is right
 //!   here.
 //!
@@ -63,7 +65,8 @@ use crate::workspace::{AgentStatus, AgentView};
 /// surface. Mirrored in memory because the taps run without a DB handle.
 pub const TURN_COMPLETE_SETTING: &str = "notify_turn_complete";
 /// Settings key: alert on the ship loop at all — `checks_settled`,
-/// `review_comment`, `pr_merged` and `pr_closed` under one switch. Opt-out,
+/// `review_comment`, `pr_merged`, `pr_closed` and `autopilot_gave_up` under
+/// one switch. Opt-out,
 /// same mechanics as `notify_turn_complete`.
 pub const PR_ACTIVITY_SETTING: &str = "notify_pr_activity";
 
@@ -101,6 +104,7 @@ const KIND_CHECKS_SETTLED: &str = "checks_settled";
 const KIND_REVIEW_COMMENT: &str = "review_comment";
 const KIND_PR_MERGED: &str = "pr_merged";
 const KIND_PR_CLOSED: &str = "pr_closed";
+const KIND_AUTOPILOT_GAVE_UP: &str = "autopilot_gave_up";
 const TITLE_TURN_COMPLETE: &str = "Turn complete";
 const TITLE_NEEDS_INPUT: &str = "Needs your input";
 const TITLE_CHECKS_PASSED: &str = "Checks passed";
@@ -108,6 +112,8 @@ const TITLE_CHECKS_FAILED: &str = "Checks failed";
 const TITLE_REVIEW_COMMENT: &str = "New review comment";
 const TITLE_PR_MERGED: &str = "PR merged";
 const TITLE_PR_CLOSED: &str = "PR closed";
+/// Followed by ` · <rung>`.
+const TITLE_AUTOPILOT_GAVE_UP: &str = "Autopilot gave up";
 
 /// Doc cap on the tokens in one NOTIFY. The relay caps device links per host at
 /// 8 too, so this can only bite if that ever grows; truncating is defensive.
@@ -253,7 +259,7 @@ impl PushTriggers {
         );
     }
 
-    /// Route one event off the sink. These five names are the whole surface;
+    /// Route one event off the sink. These six names are the whole surface;
     /// every other event the engine emits passes through untouched.
     pub(super) fn on_event(&self, agents: &dyn AgentLookup, event: &str, payload: &Value) {
         match event {
@@ -266,8 +272,30 @@ impl PushTriggers {
             "pr:checks_changed" => self.on_checks_changed(agents, payload),
             "pr:threads_changed" => self.on_threads_changed(agents, payload),
             "pr:state_changed" => self.on_pr_state_changed(agents, payload),
+            "autopilot:event" => self.on_autopilot_event(agents, payload),
             _ => {}
         }
+    }
+
+    /// One `autopilot:event`. Only a `give-up` alerts: it is the one thing
+    /// autopilot did that someone has to act on, and the rest is the loop
+    /// working as it should.
+    fn on_autopilot_event(&self, agents: &dyn AgentLookup, payload: &Value) {
+        let Ok(payload) = AutopilotEventPayload::deserialize(payload) else {
+            return;
+        };
+        if payload.outcome != "give-up" || !pr_activity_enabled() {
+            return;
+        }
+        let title = format!("{TITLE_AUTOPILOT_GAVE_UP} · {}", payload.rung);
+        let reason = payload.reason.as_deref().map(|r| r.replace('-', " "));
+        self.alert(
+            agents,
+            &payload.agent_id,
+            KIND_AUTOPILOT_GAVE_UP,
+            &title,
+            reason.as_deref(),
+        );
     }
 
     /// One `pr:checks_changed`. Alerts when the rollup *settles* — lands on
@@ -593,4 +621,14 @@ struct PrStateChangedPayload {
 struct PrStateSummary {
     number: u64,
     state: String,
+}
+
+/// `autopilot::LogEntry`, the part of it this needs.
+#[derive(Deserialize)]
+struct AutopilotEventPayload {
+    agent_id: String,
+    outcome: String,
+    rung: String,
+    #[serde(default)]
+    reason: Option<String>,
 }

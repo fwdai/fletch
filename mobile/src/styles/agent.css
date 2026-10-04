@@ -1433,6 +1433,32 @@
   padding: 4px;
   color: var(--fg-2);
 }
+/* Autopilot, under the strip: one quiet line and the agent's pause switch. The
+   line reads in the accent while a cycle is open — motion the user didn't start. */
+.ship-auto {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  padding: 6px 16px;
+  flex-shrink: 0;
+  font-size: 12.5px;
+  color: var(--fg-2);
+  border-bottom: 1px solid var(--bd-soft);
+}
+.ship-auto .txt {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ship-auto.busy .txt {
+  color: var(--accent);
+}
+.ship-auto .toggle:disabled {
+  opacity: 0.6;
+}
 .ship-body {
   display: flex;
   flex-direction: column;
