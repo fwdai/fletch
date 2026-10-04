@@ -197,7 +197,7 @@ repo); anyone can run their own and point both apps at it.
 The phone cannot keep a socket open in the background, so the out-of-app
 signals the desktop already raises — a turn finishing, an agent waiting on a
 tool-use approval — and the ship loop's — checks settling, a review comment, a
-PR merging or closing — reach it as APNs alerts. Content stays minimal: a fixed
+PR merging or closing, autopilot giving up — reach it as APNs alerts. Content stays minimal: a fixed
 title and the agent's name, at most joined by a check name, a reviewer's login
 or a PR number. Transcript text never leaves the Mac.
 
@@ -232,15 +232,20 @@ or a PR number. Transcript text never leaves the Mac.
   `closed` for a PR this host process had seen `open` — the event reports a
   state, not a transition, so a first event of `merged` after a cold start is a
   stale snapshot and alerts nobody. Title `PR merged` / `PR closed`; body the
-  agent's name ` · #<number>`.
+  agent's name ` · #<number>`. `autopilot_gave_up`: the host's autopilot gave
+  up on a rung (an `autopilot:event` with outcome `give-up`, see "Autopilot").
+  Title `Autopilot gave up · <rung>` (`fix-checks`, `resolve`, `update-branch`,
+  `resolve-comments`); body the agent's name ` · ` the reason (`budget spent`,
+  `no progress`, `no evidence`).
   The host skips every trigger while its own main window has focus (the user
   is at the Mac); otherwise it sends to every device with a token, and iOS
   itself hides the banner when the app is in the foreground. Every alert's
   `collapseId` is the agent id, so a later alert for the same agent replaces
   the banner rather than stacking.
   Opt-outs are host settings, both default on, only `"false"` disables:
-  `notify_turn_complete` (`turn_complete`) and `notify_pr_activity` (all four
-  ship-loop kinds under one switch); `needs_input` is always sent. The desktop
+  `notify_turn_complete` (`turn_complete`) and `notify_pr_activity` (the four
+  ship-loop kinds and `autopilot_gave_up` under one switch); `needs_input` is
+  always sent. The desktop
   writes them with the Tauri commands `set_notify_turn_complete` and
   `set_notify_pr_activity`, both `{ enabled }`.
 - **NOTIFY frame (host → relay).** Mux type `0x05`, `connId` 0, payload UTF-8 JSON:
@@ -250,8 +255,8 @@ or a PR number. Transcript text never leaves the Mac.
   ```
 
   `kind` is one of `turn_complete`, `needs_input`, `checks_settled`,
-  `review_comment`, `pr_merged`, `pr_closed`; the same payload shape for all
-  six, e.g. `{ …, "title": "Checks failed", "body": "Fix login crash · unit", "kind": "checks_settled", … }`.
+  `review_comment`, `pr_merged`, `pr_closed`, `autopilot_gave_up`; the same
+  payload shape for all seven, e.g. `{ …, "title": "Checks failed", "body": "Fix login crash · unit", "kind": "checks_settled", … }`.
   One to 8 tokens; `title`, `body`, `kind` and `agentId` at most 200
   characters each (Apple caps the whole payload at 4 KB). `collapseId` is
   optional and at most 64 bytes, Apple's limit for `apns-collapse-id`; a
@@ -281,7 +286,8 @@ or a PR number. Transcript text never leaves the Mac.
   never asked again. Tapping an alert opens the app on that agent when
   `fletch.hostId` equals the paired host's key (the host ID *is* the host public
   key, the value the phone stores as `hostKey`), otherwise Home — on the Ship
-  tab for the four ship-loop kinds, the chat for the rest; the plugin
+  tab for the four ship-loop kinds and `autopilot_gave_up`, the chat for the
+  rest; the plugin
   delivers the payload to the webview as event `push://opened` and the token as
   `push://token`, holding both until the app's listeners are attached so a
   cold-start tap is not lost. The token comes from
@@ -459,7 +465,7 @@ The six scopes, and what each one covers:
 | `projects` | add, clone, create, rename, relocate, label, attach/detach and delete projects and their repos |
 | `workflows` | launch, cancel, resume, retry, approve, reject and delete runs; save, delete and import stored definitions |
 | `roadmap` | create, edit, rank, hand off, hold, release, reject, reopen and delete items; accept or reject the PM's proposals |
-| `publish` | the ops that leave this machine under the user's name: `push_agent`, `create_pr`, `merge_pr`, `roadmap_merge_item_pr`, `answer_publish_approval`, and `delegate_git` — a delegation's own pushes and PRs are approved by the host without a prompt (see "Delegations"), so starting one is as much a publish as answering the prompt would be |
+| `publish` | the ops that leave this machine under the user's name: `push_agent`, `create_pr`, `merge_pr`, `roadmap_merge_item_pr`, `answer_publish_approval`, `delegate_git` — a delegation's own pushes and PRs are approved by the host without a prompt (see "Delegations"), so starting one is as much a publish as answering the prompt would be — and `autopilot_set`, for the same reason: an enrolled checkout's pushes skip the prompt (see "Autopilot"), so switching autopilot on is a standing publish grant |
 
 Every op in the table below has exactly one scope. `register_push` is outside
 the scheme and always allowed: it writes the calling device's own APNs token
@@ -582,6 +588,9 @@ allowlist; any op not listed returns `{ ok: false, error: "unknown op" }`.
 | `get_pr_threads` | as command — unresolved review threads; GraphQL, so polled well below the `get_pr_live` cadence | `PrComments \| null` |
 | `delegate_git` | `{ agentId, subdir?, action, params? }` — hands a git playbook to the agent (see "Delegations"). `action` is a playbook name (`commit`, `commit-push`, `commit-pr`, `open-pr`, `push`, `resolve-conflicts`, `update-branch`, `fix-checks`, `resolve-comments`); anything else is refused. `params` is a `{ [key]: string }` of the playbook's dynamic context (`base`, `failing`); empty values are dropped and `repo` is the host's to set from `subdir`. The host composes the `[app-action]` trigger, records the delegation and either sends it now as a user turn (`turn:sent` fires as for any send) or, while the agent is `running`, holds it until the agent goes idle | `Delegation` |
 | `get_delegations` | `{}` — every delegation the host is tracking, for a client that connected mid-flight | `Delegation[]` |
+| `autopilot_state` | `{ agentId? }` — autopilot as the host runs it (see "Autopilot"): one row per checkout of `agentId`, or of every live agent when it is absent, plus the two opt-out lists | `AutopilotSnapshot` |
+| `autopilot_set` | `{ projectId, enabled }` or `{ agentId, enabled }` — exactly one of the two ids. On a project it is the project's switch (default on); on an agent `enabled: false` pauses that agent's checkouts and `true` resumes them. Persists the host setting, takes effect before the call returns, and emits `autopilot:state` for every checkout it changed | `AutopilotSnapshot` (the whole host's, as `autopilot_state {}` would answer) |
+| `autopilot_log` | `{ agentId?, subdir? }` — what autopilot did, newest first: one agent's checkouts (only the one named when `subdir` is given; the primary's own subdir names the primary), or every agent's when `agentId` is absent. At most the newest 50 rows per checkout are kept | `AutopilotLogEntry[]` |
 | `list_repo_branches` | `{ repoPath }` | `string[]` |
 | `repo_default_branch` | `{ repoPath }` | `string` |
 | `discover_supported_models` | as command | `AgentModels[]` |
@@ -672,7 +681,9 @@ editor/log/telemetry ops, the provider install/login ops (`install_agent`,
 `open_provider_login`) and the two desktop provider probes behind Settings ›
 Providers (`probe_provider_versions`, `probe_provider_auth`, which answer with
 resolved binary paths), and the `run_*` family (`run_start`, `run_stop`,
-`run_verification` — this machine's own scripts). `host_providers` above is the
+`run_verification` — this machine's own scripts). Autopilot's `fix-checks`
+verdict needs no `run_verification` on the wire: the ladder runs on the host,
+which calls its own verifier and reports it as `verify:report`. `host_providers` above is the
 read-only half of the provider surface and the only part of it on the wire:
 state and the command that would change it, never the change itself and never a
 path. Adding an op means adding a row here and a match arm in the dispatcher.
@@ -931,6 +942,7 @@ pr:state_changed       pr:checks_changed      pr:threads_changed
 verify:report          publish:approval-requested
 publish:approval-resolved
 delegation:changed
+autopilot:state        autopilot:event
 wf:event               wf:run                 wf:run-deleted
 roadmap:item           roadmap:item-deleted   roadmap:item-event
 roadmap:proposal       roadmap:proposal-deleted
@@ -1017,6 +1029,14 @@ client keeps the live ones keyed by `(agent_id, subdir)`, drops the entry on
 `done`/`abandoned`, and replaces its set with `get_delegations` after every
 handshake — an event reaches only the clients connected when it fired.
 
+`autopilot:state` is one `AutopilotCheckout` (see "Autopilot") whenever a
+checkout's enrollment, pause, project switch or cycle changes; a client replaces
+its row for `(agent_id, subdir)` with it. `autopilot:event` is one
+`AutopilotLogEntry`, the row `autopilot_log` will answer from then on; a client
+prepends it to that checkout's history. Both are host facts: a client seeds them
+with `autopilot_state {}` and `autopilot_log {}` after every handshake and
+treats the events as the deltas.
+
 The whole `wf:*` and `roadmap:*` stream is forwarded, so a remote run monitor
 and a remote board stay live instead of rendering once and going stale. Three
 of them carry an id rather than a row and are named for what they address:
@@ -1083,6 +1103,59 @@ every client. The host:
 "started" | "running", started_at }` — the `delegation:changed` payload without
 a `notice`. The table is in memory: a host restart forgets its delegations,
 which then read to a client as simply having ended.
+
+## Autopilot
+
+Autopilot nurses an open PR to mergeable without being asked: failing checks,
+a branch behind or conflicting with its base, unaddressed review threads. It
+runs on the host, so it keeps going with every window closed and acts once
+however many clients are connected; clients render its state and flip its
+switches.
+
+- **What it touches.** Every checkout of every live (non-archived) agent whose
+  project's switch is on and that is not paused. **On by default**: a project
+  is on until switched off, and an agent until paused. Nothing happens on a
+  checkout until it has an open PR, and autopilot never commits, pushes or
+  opens a PR for work that was not already proposed — those stay the user's.
+- **What it does.** Every 10 s the host reads each such checkout (git state;
+  PR state and CI; review threads, which are GraphQL and read at most once a
+  minute per checkout unless a cycle is waiting on them) and runs the ladder
+  the Git panel shows. A rung it drives (`fix-checks`, `resolve`,
+  `update-branch`, `resolve-comments`) opens a **cycle**: the host delegates it
+  exactly as `delegate_git` would (a `delegation:changed` and a `turn:sent`
+  follow), waits for the agent's turn to end, then judges it — `fix-checks` by
+  running the project's own verify commands on the host (reported as
+  `verify:report`), the others by the PR state alone. Never while the agent is
+  mid-turn or another delegation is live on the checkout, and never two
+  dispatches to one agent in one pass.
+- **When it stops.** Each rung gets a budget per situation (`fix-checks` 3,
+  the others 2); a cycle that changes nothing at all, a spent budget, or no CI
+  verdict within 15 minutes ends in a `give-up`, after which autopilot waits
+  until the situation changes. A give-up is pushed to the phone
+  (`autopilot_gave_up`, see "Push notifications").
+- **Publishing.** While a checkout is enrolled, its `git_push` is approved
+  without a `publish:approval-requested` prompt — nobody is watching to answer
+  it. `open_pr` always prompts: every rung works on a PR that already exists.
+
+The switches are host settings, written only through `autopilot_set` (never the
+desktop's generic table bridge): `project_settings` key `autopilot.enabled` per
+project (`"0"` off, anything else or no row on) and `settings` key
+`autopilotPausedAgents` (a JSON array of agent ids). A pause or a switched-off
+project takes effect at once: the checkout's cycle is dropped, its pushes
+prompt again, and its turn already running is left to finish.
+
+`AutopilotSnapshot` is `{ checkouts: AutopilotCheckout[], disabled_projects:
+string[], paused_agents: string[] }`. `AutopilotCheckout` is `{ agent_id,
+subdir: string | null, project_id, enrolled, paused, project_enabled, cycle }`,
+where `subdir` is `null` for the agent's primary repo, `enrolled` is
+`project_enabled && !paused`, and `cycle` is `null` or `{ rung, attempt, phase:
+"working" | "awaiting-evidence", since }` — `rung` a delegation kind, `attempt`
+1-based, `since` epoch milliseconds the phase began. `AutopilotLogEntry` is
+`{ id, agent_id, subdir, at, outcome: "dispatch" | "settle" | "retry" |
+"give-up", rung, attempt, reason? }`, `reason` being `budget-spent`,
+`no-progress` or `no-evidence` and present only on a `give-up`. Cycles are in
+memory, so a host restart drops them (the next tick starts over from the live
+PR); the log is durable.
 
 ## Errors
 
