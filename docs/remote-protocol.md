@@ -454,12 +454,12 @@ The six scopes, and what each one covers:
 
 | scope | covers |
 |---|---|
-| `observe` | every read: the workspace, transcripts, diffs, PR state, the workflow and roadmap boards, `gh_status`, `list_dir`, `dictation_status`, `host_providers`, `scan_usage_transcripts`, `approvals_list` |
+| `observe` | every read: the workspace, transcripts, diffs, PR state, the workflow and roadmap boards, `gh_status`, `list_dir`, `dictation_status`, `host_providers`, `scan_usage_transcripts`, `approvals_list`, `get_settings`, `get_project_settings` |
 | `agents` | spawn, message, answer a tool-use prompt, stop/resume/archive/restore/discard, set model and effort, dictation capture, attachment upload, and the working-tree moves that never leave the machine (`commit_agent`, `pull_agent`, `rebase_agent`, `stash_agent`, `discard_agent_changes`, `abort_merge_agent`, `clear_checkout_config`) |
-| `projects` | add, clone, create, rename, relocate, label, attach/detach and delete projects and their repos |
+| `projects` | add, clone, create, rename, relocate, label, attach/detach and delete projects and their repos; every project setting (`set_project_setting`); and the host's own configuration — alerts, the idle sweep, code indexing, the sandbox engine and its launch knobs, provider binary overrides |
 | `workflows` | launch, cancel, resume, retry, approve, reject and delete runs; save, delete and import stored definitions |
 | `roadmap` | create, edit, rank, hand off, hold, release, reject, reopen and delete items; accept or reject the PM's proposals |
-| `publish` | the five ops that leave this machine under the user's name: `push_agent`, `create_pr`, `merge_pr`, `roadmap_merge_item_pr`, `answer_publish_approval` |
+| `publish` | the five ops that leave this machine under the user's name — `push_agent`, `create_pr`, `merge_pr`, `roadmap_merge_item_pr`, `answer_publish_approval` — and the five settings that decide how that happens: `set_publish_confirmation`, `set_publish_approval_wait`, `set_branch_prefix`, `set_draft_prs`, `set_agent_attribution_removed` |
 
 Every op in the table below has exactly one scope. `register_push` is outside
 the scheme and always allowed: it writes the calling device's own APNs token
@@ -471,7 +471,9 @@ Two presets are offered at pairing:
   named.
 - **`control`** — every scope except `publish`. Watch and steer agents, approve
   tool use, add projects, drive workflows and the roadmap; but no push, no PR
-  opened or merged, and no publish approved.
+  opened or merged, no publish approved, and no change to the publishing
+  settings — a device that may not publish may not switch off the approval
+  gate either.
 
 Because `protocol.ops` is already narrowed to the device's scopes, a client
 needs no scope-specific gating: the actions it hides for "this host does not
@@ -661,6 +663,22 @@ allowlist; any op not listed returns `{ ok: false, error: "unknown op" }`.
 | `roadmap_reject_brief_proposal` | `{ projectId }` | `null` |
 | `host_providers` | `{}` — which provider CLIs this host has and which of them are signed in, so a client never offers to spawn one the host cannot run (see "Which providers a host can run"). Read-only; no desktop command of this name | `{ id, label, installed, version: string \| null, auth: "signed_in" \| "signed_out" \| "unknown" \| null, loginCommand: string \| null }[]` |
 | `scan_usage_transcripts` | `{ sinceMs, untilMs }` — token counts read off *this host's* Claude Code and Codex transcripts over the half-open window, bucketed by local hour, provider and model, plus a span per contributing session. Uncached and slow (seconds over 90 days): ask for the widest window once and slice shorter ranges out of the answer. Read-only; the hours are the host's local hours and the ids are unique within the host only, so a client aggregating several hosts must tag each answer with the host it came from | `UsageScan` — `{ buckets: { hourStartMs, provider, model, tokens: { input, output, cacheRead, cacheWrite }, requests }[], sessions: { provider, id, firstMs, lastMs }[], scannedFiles, filesRead, bytesRead, sinceMs, untilMs }` |
+| `get_settings` | `{}` — the host-owned global settings, and only those (see "Settings"): absent keys are unset and read as their default. No secret is ever in the answer | `Record<key, string>` |
+| `set_notify_turn_complete` | `{ enabled: boolean }` — `notify_turn_complete`: a finished turn alerts at all (chime, banner, phone push) | `null` |
+| `set_notify_pr_activity` | `{ enabled: boolean }` — `notify_pr_activity`: the ship-loop alerts (checks settled, review comment, PR merged or closed) | `null` |
+| `set_auto_archive_idle_days` | `{ days: number }` — `auto_archive_idle_days`; `0` turns the idle sweep off | `null` |
+| `set_code_indexing_enabled` | `{ enabled: boolean }` — `code_indexing_enabled`; turning it on also installs codegraph and warms the index for every pinned repo, in the background on the host | `null` |
+| `set_sandbox_engine` | `{ engine: "sandbox-exec" \| "docker" \| "podman" }` — `sandbox_engine` for *new* agents; a container engine is probed live on the host first and refused when its runtime is unreachable or cannot launch | `null` |
+| `set_docker_launch_settings` | `{ image: string \| null, memory: string \| null, cpus: string \| null }` — `docker_image` / `docker_memory` / `docker_cpus`, written together; blank or `null` clears one back to the launch default | `null` |
+| `set_podman_launch_settings` | `{ image, memory, cpus }` — the podman twin over `podman_image` / `podman_memory` / `podman_cpus` | `null` |
+| `set_agent_bin_override` | `{ id, path: string \| null }` — `agent_bin_path_<id>`, a path *on the host*; blank or `null` clears it. Live agents on that provider are respawned so they exec the new binary | `null` |
+| `set_branch_prefix` | `{ prefix }` — `git_branch_prefix`; validated and trimmed on the host, empty clears it | `string` (the prefix as stored) |
+| `set_draft_prs` | `{ enabled: boolean }` — `github_draft_prs` | `null` |
+| `set_publish_confirmation` | `{ enabled: boolean }` — `publish_confirmation`: an agent's own push or PR waits for `answer_publish_approval` | `null` |
+| `set_publish_approval_wait` | `{ secs: number }` — `publish_approval_wait`; `0` waits until answered | `null` |
+| `set_agent_attribution_removed` | `{ removed: boolean }` — `agent_attribution_removed`: strip agents' co-author trailers and "Generated with" lines from the next spawn or resume on | `null` |
+| `get_project_settings` | `{ projectId }` — the project's client-writable settings, and only those (see "Settings"); absent keys read as their default | `Record<key, string>` |
+| `set_project_setting` | `{ projectId, key, value: string \| null }` — writes one key, `null` deletes the row (back to the default). A key outside the project allowlist is refused | `null` |
 | `register_push` | `{ token: string \| null, environment?: "sandbox" \| "production" }` — `environment` required with a token, ignored on clear (remote-only, see "Push notifications") | `null` |
 
 Never exposed, by design: the generic `db_*` table bridge, every file mutation
@@ -808,6 +826,88 @@ scripts. The host's autonomous loop is the roadmap *queue*, which runs on the
 host and is driven by the board ops above — holding a project or an item is how
 a client stops it.
 
+## Settings
+
+A setting the *host* reads — its loops, its spawn path, its alerts — is the
+host's, and a client changes it through an op, never through a table. The
+generic `db_*` bridge stays off the wire, and a client never writes one of these
+keys into its own database to mean "the host's".
+
+**Global settings.** `get_settings` answers the host-owned keys and nothing
+else, as raw strings (an absent key is unset; the client applies the same
+default the host does):
+
+| key | written by | scope |
+|---|---|---|
+| `notify_turn_complete` | `set_notify_turn_complete` | `projects` |
+| `notify_pr_activity` | `set_notify_pr_activity` | `projects` |
+| `auto_archive_idle_days` | `set_auto_archive_idle_days` | `projects` |
+| `code_indexing_enabled` | `set_code_indexing_enabled` | `projects` |
+| `sandbox_engine` | `set_sandbox_engine` | `projects` |
+| `docker_image`, `docker_memory`, `docker_cpus` | `set_docker_launch_settings` | `projects` |
+| `podman_image`, `podman_memory`, `podman_cpus` | `set_podman_launch_settings` | `projects` |
+| `agent_bin_path_<id>` | `set_agent_bin_override` | `projects` |
+| `git_branch_prefix` | `set_branch_prefix` | `publish` |
+| `github_draft_prs` | `set_draft_prs` | `publish` |
+| `publish_confirmation` | `set_publish_confirmation` | `publish` |
+| `publish_approval_wait` | `set_publish_approval_wait` | `publish` |
+| `agent_attribution_removed` | `set_agent_attribution_removed` | `publish` |
+
+Each setter is the desktop command of the same name, so it does what the
+desktop's Settings pane does: it persists the key *and* updates the in-memory
+mirror the host's spawn and publish paths read, so a change applies without a
+restart. Nothing secret is on the list and nothing secret is ever answered —
+`github_token`, `linear_token`, `claude_container_token`, the `remote.*` keys,
+`telemetry_*` and every client-side preference (theme, pane widths, shortcuts,
+dictation) stay where they are, off the wire.
+
+The scope split follows the line `publish` already draws. The five settings
+that decide whether and how an agent's work leaves the machine — the approval
+gate and its wait, the branch prefix, draft PRs, attribution — are `publish`,
+so a `control` device cannot switch the approval gate off on its way to a
+publish it is not allowed to approve. Everything else is the host's own
+configuration and sits under `projects`, the scope that already rewrites what
+the host holds; note that it includes the sandbox engine and the provider
+binary paths, so a device paired without `projects` cannot change how the host
+runs agents either.
+
+**Project settings.** `get_project_settings` / `set_project_setting` address
+one project's rows through an allowlist the host enforces on both sides — the
+read answers only these keys, the write refuses any other with an error naming
+it:
+
+| key | read by | value |
+|---|---|---|
+| `verify.on_turn_end` | the turn-end verifier | `"1"` on; absent off |
+| `run.<row>` (`run.install`, `run.test`, `run.lint`, `run.dev`, …) | the Run panel, the verifier, workflow checks | the command |
+| `run.agent.<agentId>.<row>` | the same, for one agent, over the project's | the command |
+| `run_env` | the Run panel's env membrane | the `RunEnvDoc` JSON; values never live here |
+| `workflow.default`, `composer.mode` | the roadmap queue, the composer | a definition id; `"agent"` \| `"workflow"` |
+| `roadmap.autoqueue` | the roadmap queue | `"1"` on; absent off |
+| `roadmap.max_concurrent` | the roadmap queue | an integer; absent is one |
+| `roadmap.settle_review`, `roadmap.midrun_awareness` | the PM's review | `"0"` off; absent on |
+| `roadmap.declined_issues` | the issue funnel | JSON array of issue URLs |
+| `linear.team_id`, `linear.team_name` | the issue inbox and picker | a Linear team id; its display name |
+
+Every `run.` key is allowed, which is what lets the per-agent overrides through.
+The roadmap's code allocator (`roadmap.code_prefix`, `roadmap.code_seq`) is the
+host's alone and is neither answered nor writable; autopilot's switch is the
+desktop's own loop and has no row here.
+
+**`null` deletes.** `set_project_setting` with `value: null` removes the row,
+and an absent row is how every key above spells its default — so "set back to
+the default" and "never set" are the same state, and a later change of default
+reaches every project that never chose otherwise. An empty string is stored as
+given.
+
+**Live.** Every write emits one event per key it wrote, forwarded like any
+other: `settings:changed { key, value }` and
+`project_settings:changed { project_id, key, value }`, where `value` is the
+stored string or `null` for a deleted row. A client applies it over what it read
+and needs no refetch; a second desktop's Settings pane and project page follow
+the first's edits this way. A client still reads the whole set again on every
+handshake, since an event only reaches the clients connected when it fired.
+
 ## Dictation
 
 The phone has a mic button too, but no speech model: it captures, and the Mac
@@ -935,6 +1035,7 @@ roadmap:order-proposal roadmap:order-proposal-deleted
 roadmap:project-hold   roadmap:project-hold-released
 roadmap:brief          roadmap:brief-proposal roadmap:brief-proposal-deleted
 roadmap:queue-note
+settings:changed       project_settings:changed
 ```
 
 `agent:event` is forwarded unfiltered, including the provider's
@@ -1013,6 +1114,12 @@ a client that wants the payload pages it back with `wf_events` from the `seq` it
 last saw. `wf:run` carries the full run row, so the sidebar and the monitor
 update without a round-trip. `roadmap:queue-note` is transient and never
 persisted: it explains why an item is not moving, and nothing reads it back.
+
+`settings:changed` `{ key, value: string | null }` and
+`project_settings:changed` `{ project_id, key, value: string | null }` follow a
+write to a host-owned setting, one event per key written, and only ever for a
+key on the allowlists in "Settings" — so a secret cannot ride one. `value` is
+the stored string, `null` for a deleted row.
 
 Never forwarded: `agent:output`, `shell:output`, `run:output` (raw PTY bytes),
 the rest of `run:*`, `dictation:*`, `docker:*` and `agent-install:*`.
