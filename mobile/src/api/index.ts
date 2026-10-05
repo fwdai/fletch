@@ -26,10 +26,10 @@ import type {
   RoadmapItemUpdate,
 } from "@desktop/api/types/roadmap";
 import type { PublishApproval } from "@desktop/api/types/sandbox";
-import type { LiveTurn, SessionRecord, UserTurn } from "@desktop/api/types/session";
+import type { LiveTurn, SessionPage, SessionRecord, UserTurn } from "@desktop/api/types/session";
 import type { AgentModels } from "@desktop/data/modelCatalog/types";
 import type { CustomAgent } from "@desktop/storage/customAgents";
-import type { HostProvider, RemoteClient } from "../remote";
+import { type HostProvider, READ_TIMEOUT_MS, type RemoteClient } from "../remote";
 
 /** The extras a preset-backed spawn carries. All optional: a plain spawn sends
  *  null for each, exactly as before. */
@@ -67,8 +67,14 @@ export interface RoadmapItemDiscard {
 
 export function createApi(client: RemoteClient) {
   const call = <T>(op: string, args?: Record<string, unknown>) => client.call<T>(op, args);
+  // Reads are bounded, writes are not: a read the host never answers would
+  // leave its screen waiting for ever, while a write the client gave up on is
+  // still running on the Mac and must not be reported failed (see
+  // `CallOptions.timeoutMs`). Which is which is this facade's knowledge.
+  const read = <T>(op: string, args?: Record<string, unknown>) =>
+    client.call<T>(op, args, { timeoutMs: READ_TIMEOUT_MS });
   return {
-    getWorkspace: () => call<Workspace | null>("get_workspace"),
+    getWorkspace: () => read<Workspace | null>("get_workspace"),
     allocateDraftName: (drafts: string[]) => call<string>("allocate_draft_name", { drafts }),
     /** Host forces `view: "custom"`. `skills`/`mcpServers` go null because the
      *  phone never chooses them: it names the preset in `customAgentId` and the
@@ -105,15 +111,15 @@ export function createApi(client: RemoteClient) {
      *  `get_workspace` snapshot by design (see `AgentRecord.purpose`), so this
      *  is the only way the phone learns about them. */
     listProjectChats: (projectId: string, purpose: string) =>
-      call<AgentRecord[]>("list_project_chats", { projectId, purpose }),
+      read<AgentRecord[]>("list_project_chats", { projectId, purpose }),
     /** One record by id, purpose-tagged chats included — the read that resolves
      *  an agent nothing has listed yet, which is all a phone launched by a
      *  notification tap has. Gated on `hostSupports("get_agent")`. */
-    getAgent: (agentId: string) => call<AgentRecord | null>("get_agent", { agentId }),
+    getAgent: (agentId: string) => read<AgentRecord | null>("get_agent", { agentId }),
     /** The Mac's custom-agent library, as raw rows. The phone only reads the
      *  spawn profile off them (base/model/effort/instructions); the two JSON id
      *  columns are passed over — the host resolves skills and MCP servers. */
-    listCustomAgents: () => call<CustomAgentRow[]>("list_custom_agents"),
+    listCustomAgents: () => read<CustomAgentRow[]>("list_custom_agents"),
     sendUserMessage: (agentId: string, turnId: string, text: string, attachments: string[] = []) =>
       call<boolean>("send_user_message", { agentId, turnId, text, attachments }),
     answerToolUse: (
@@ -138,7 +144,7 @@ export function createApi(client: RemoteClient) {
     /** The prompts still waiting, oldest first — what a phone that connected
      *  after the event fired has no other way to learn. Gated on
      *  `hostSupports("approvals_list")`. */
-    listPublishApprovals: () => call<PublishApproval[]>("approvals_list"),
+    listPublishApprovals: () => read<PublishApproval[]>("approvals_list"),
     stopAgent: (agentId: string) => call<null>("stop_agent", { agentId }),
     resumeAgent: (agentId: string) => call<null>("resume_agent", { agentId }),
     archiveAgent: (agentId: string) => call<null>("archive_agent", { agentId }),
@@ -152,26 +158,31 @@ export function createApi(client: RemoteClient) {
     setAgentEffort: (agentId: string, effort: string | null) =>
       call<null>("set_agent_effort", { agentId, effort }),
     readSessionRecords: (agentId: string) =>
-      call<SessionRecord[]>("read_session_records", { agentId }),
-    readUserTurns: (agentId: string) => call<UserTurn[]>("read_user_turns", { agentId }),
+      read<SessionRecord[]>("read_session_records", { agentId }),
+    /** The same history a page at a time, newest first: `before` is the
+     *  previous page's `older` cursor, and an omitted `limit` is the host's
+     *  default page. Gated on `hostSupports("read_session_page")`. */
+    readSessionPage: (agentId: string, before: string | null = null, limit?: number) =>
+      read<SessionPage>("read_session_page", { agentId, before, limit }),
+    readUserTurns: (agentId: string) => read<UserTurn[]>("read_user_turns", { agentId }),
     syncSession: (agentId: string) => call<null>("sync_session", { agentId }),
     /** The running turn's events, which the records lack until it ends. Gated
      *  on `hostSupports("read_live_turn")`. */
-    readLiveTurn: (agentId: string) => call<LiveTurn>("read_live_turn", { agentId }),
+    readLiveTurn: (agentId: string) => read<LiveTurn>("read_live_turn", { agentId }),
     getGitState: (agentId: string, subdir?: string) =>
-      call<GitState | null>("get_git_state", { agentId, subdir }),
+      read<GitState | null>("get_git_state", { agentId, subdir }),
     /** Uncommitted working-tree stats for the whole fleet, keyed by agent id —
      *  the same fleet-wide poll the desktop sidebar reads. */
-    getAllShortstats: () => call<Record<string, ShortStats>>("get_all_shortstats"),
+    getAllShortstats: () => read<Record<string, ShortStats>>("get_all_shortstats"),
     /** Bound PR state (and CI while open) for the whole fleet, keyed like the
      *  desktop's PR maps — the sweep behind its sidebar tints. Gated on
      *  `hostSupports("get_all_pr_status")`. */
-    getAllPrStatus: () => call<Record<string, AgentPrStatus>>("get_all_pr_status"),
-    listCheckoutTree: (agentId: string) => call<CheckoutFile[]>("list_checkout_tree", { agentId }),
+    getAllPrStatus: () => read<Record<string, AgentPrStatus>>("get_all_pr_status"),
+    listCheckoutTree: (agentId: string) => read<CheckoutFile[]>("list_checkout_tree", { agentId }),
     readCheckoutFile: (agentId: string, path: string, baseMode?: DiffBaseMode) =>
-      call<CheckoutFileContents>("read_checkout_file", { agentId, path, baseMode }),
+      read<CheckoutFileContents>("read_checkout_file", { agentId, path, baseMode }),
     getFileDiff: (agentId: string, path: string, baseMode?: DiffBaseMode) =>
-      call<string>("get_file_diff", { agentId, path, baseMode }),
+      read<string>("get_file_diff", { agentId, path, baseMode }),
     commitAgent: (agentId: string, message: string, subdir?: string) =>
       call<null>("commit_agent", { agentId, message, subdir }),
     /** Hand a git playbook to the agent; the host composes the trigger, holds
@@ -181,13 +192,13 @@ export function createApi(client: RemoteClient) {
       call<DelegationEvent>("delegate_git", { agentId, action, params }),
     /** Every delegation the host is tracking. Gated on
      *  `hostSupports("get_delegations")`. */
-    getDelegations: () => call<DelegationEvent[]>("get_delegations"),
+    getDelegations: () => read<DelegationEvent[]>("get_delegations"),
     /** Autopilot as the host runs it: every live agent's checkouts and the two
      *  opt-out lists. Gated on `hostSupports("autopilot_state")`. */
-    getAutopilotState: () => call<AutopilotSnapshot>("autopilot_state", {}),
+    getAutopilotState: () => read<AutopilotSnapshot>("autopilot_state", {}),
     /** What autopilot did on every checkout, newest first. Gated on
      *  `hostSupports("autopilot_log")`. */
-    getAutopilotLog: () => call<AutopilotLogEntry[]>("autopilot_log", {}),
+    getAutopilotLog: () => read<AutopilotLogEntry[]>("autopilot_log", {}),
     /** Flip a project's autopilot switch, or pause / resume one agent; answers
      *  with the whole host's state after the change. A `publish` scope op, so
      *  gated on `hostSupports("autopilot_set")` — a Control pairing lacks it. */
@@ -198,40 +209,40 @@ export function createApi(client: RemoteClient) {
     createPr: (agentId: string, title: string, body: string, subdir?: string) =>
       call<PrState>("create_pr", { agentId, title, body, subdir }),
     getPrState: (agentId: string, subdir?: string) =>
-      call<PrState | null>("get_pr_state", { agentId, subdir }),
+      read<PrState | null>("get_pr_state", { agentId, subdir }),
     getPrChecks: (agentId: string, subdir?: string) =>
-      call<PrChecks | null>("get_pr_checks", { agentId, subdir }),
+      read<PrChecks | null>("get_pr_checks", { agentId, subdir }),
     getPrLive: (agentId: string, subdir?: string) =>
-      call<PrLive | null>("get_pr_live", { agentId, subdir }),
+      read<PrLive | null>("get_pr_live", { agentId, subdir }),
     /** The PR's unresolved review threads. GraphQL on the host, so polled well
      *  below the `get_pr_live` cadence. Gated on `hostSupports("get_pr_threads")`. */
     getPrThreads: (agentId: string, subdir?: string) =>
-      call<PrComments | null>("get_pr_threads", { agentId, subdir }),
+      read<PrComments | null>("get_pr_threads", { agentId, subdir }),
     /** Merge the open PR on the checkout's branch, under the host's GitHub
      *  identity. Gated on `hostSupports("merge_pr")`. */
     mergePr: (agentId: string, subdir?: string) => call<null>("merge_pr", { agentId, subdir }),
-    listRepoBranches: (repoPath: string) => call<string[]>("list_repo_branches", { repoPath }),
-    repoDefaultBranch: (repoPath: string) => call<string>("repo_default_branch", { repoPath }),
-    discoverSupportedModels: () => call<AgentModels[]>("discover_supported_models"),
+    listRepoBranches: (repoPath: string) => read<string[]>("list_repo_branches", { repoPath }),
+    repoDefaultBranch: (repoPath: string) => read<string>("repo_default_branch", { repoPath }),
+    discoverSupportedModels: () => read<AgentModels[]>("discover_supported_models"),
     /** Which provider CLIs the host has, and which of them are signed in — the
      *  agent runs there, so this and not the static `PROVIDERS` list decides
      *  what can be spawned. Gated on `hostSupports("host_providers")`; a host
      *  without it says nothing and the picker offers everything, as before. */
-    hostProviders: () => call<HostProvider[]>("host_providers"),
+    hostProviders: () => read<HostProvider[]>("host_providers"),
     /** `path` may be `~`-relative; the host expands it and reports the
      *  absolute `base` it read, which is what the picker navigates from. */
-    listDir: (path: string) => call<DirListing>("list_dir", { path }),
+    listDir: (path: string) => read<DirListing>("list_dir", { path }),
     addWorkspaceRepo: (repoPath: string) => call<Workspace>("add_workspace_repo", { repoPath }),
     cloneRepo: (spec: string, destParent: string) =>
       call<Workspace>("clone_repo", { spec, destParent }),
-    ghStatus: () => call<GhStatus>("gh_status"),
-    ghRepoList: () => call<GhRepoSummary[]>("gh_repo_list"),
+    ghStatus: () => read<GhStatus>("gh_status"),
+    ghRepoList: () => read<GhRepoSummary[]>("gh_repo_list"),
 
     /** A project's whole roadmap. The phone reads it for one thing — the PM's
      *  `proposed` ghosts, which a planning chat draws as decision cards — so the
      *  filtering is the caller's, not a second op. */
     roadmapListItems: (projectId: string) =>
-      call<RoadmapItem[]>("roadmap_list_items", { projectId }),
+      read<RoadmapItem[]>("roadmap_list_items", { projectId }),
     /** Patch an item and get the stored row back. `expectStatus` makes it a
      *  *conditional* transition: the patch lands only while the row still says
      *  that status, and a miss comes back as `applied: false` with the row as it
@@ -274,7 +285,7 @@ export function createApi(client: RemoteClient) {
      *  the Mac transcribes with its local whisper engine. `pcm` is base64 of
      *  16-bit little-endian mono samples at `rate` Hz; the transcript is the
      *  reply to `dictationEnd`. */
-    dictationStatus: () => call<DictationStatus>("dictation_status"),
+    dictationStatus: () => read<DictationStatus>("dictation_status"),
     dictationBegin: () => call<DictationBegun>("dictation_begin"),
     dictationAudio: (session: string, rate: number, pcm: string) =>
       call<null>("dictation_audio", { session, rate, pcm }),

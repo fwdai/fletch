@@ -6,6 +6,7 @@ import { fmtElapsed, useElapsed } from "../../lib/hooks";
 import { useStickyScroll } from "../../lib/useStickyScroll";
 import { useStore } from "../../store";
 import { ApprovalCard, ErrorCard, PublishApprovalCard } from "./ApprovalCard";
+import { LoadOlder } from "./LoadOlder";
 import { ProposalCard } from "./ProposalCard";
 import { SubagentStrip } from "./SubagentStrip";
 import { type TasksByToolUse, Transcript } from "./Transcript";
@@ -82,6 +83,7 @@ export function ChatTab({
     <>
       <SubagentStrip tasks={tasks} onJump={jumpTo} />
       <div className="scroll chat" ref={scroller} onScroll={onScroll}>
+        <LoadOlder agentId={agent.id} scroller={scroller} />
         <Transcript items={visible} tasks={tasksByToolUse} policy={policy} />
         {pendingIds.map((toolUseId) => (
           <ApprovalCard

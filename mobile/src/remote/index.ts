@@ -9,7 +9,7 @@ export {
   LAN_OPEN_TIMEOUT_MS,
   RELAY_OPEN_TIMEOUT_MS,
 } from "@desktop/remote/candidates";
-export { ProtocolClient } from "@desktop/remote/client";
+export { ProtocolClient, READ_TIMEOUT_MS } from "@desktop/remote/client";
 export { parseAddress, parsePairUrl, relayDeviceUrl, wsUrl } from "@desktop/remote/pairing";
 export * from "@desktop/remote/types";
 

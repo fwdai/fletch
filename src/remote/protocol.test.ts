@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { backoffDelay } from "./backoff";
 import { candidatesFor, LAN_OPEN_TIMEOUT_MS, RELAY_OPEN_TIMEOUT_MS } from "./candidates";
-import { HANDSHAKE_TIMEOUT_MS, ProtocolClient } from "./client";
+import { HANDSHAKE_TIMEOUT_MS, MAX_IN_FLIGHT, ProtocolClient, READ_TIMEOUT_MS } from "./client";
 import { parseAddress, parsePairUrl, relayDeviceUrl, wsUrl } from "./pairing";
 import type { Socket, SocketHandlers, SocketOptions } from "./socket";
 import {
@@ -573,6 +573,137 @@ describe("reconnect", () => {
     const pending = client.call("get_workspace");
     fake.hangup(1006);
     await expect(pending).rejects.toThrow();
+  });
+
+  it("dials at once when asked to reconnect while a retry is scheduled", async () => {
+    const fake = fakeSocket();
+    const { timers, setTimer, clearTimer } = captureTimers();
+    const client = new ProtocolClient({
+      openSocket: fake.factory,
+      device: DEVICE,
+      setTimer,
+      clearTimer,
+    });
+    const connected = client.connect({ host: "h", port: 1, hostKey: HOST_KEY });
+    await vi.waitFor(() => expect(fake.sent.length).toBe(1));
+    fake.reply(helloOk(fake.sent[0].id as string));
+    await connected;
+
+    fake.hangup(1006);
+    expect(client.retrying).toBe(true);
+    const again = client.reconnect();
+    // The scheduled retry is gone, not left to fire a second dial later.
+    expect(client.retrying).toBe(false);
+    await vi.waitFor(() => expect(fake.sent.length).toBe(2));
+    expect(fake.urls).toHaveLength(2);
+    expect(timers.map((t) => t.ms)).toEqual([HANDSHAKE_TIMEOUT_MS]);
+    fake.reply(helloOk(fake.sent[1].id as string));
+    await expect(again).resolves.toMatchObject({ host: { name: "Mac" } });
+  });
+});
+
+describe("request flow", () => {
+  /** A connected client over a fake socket, with its timers captured. */
+  async function connected() {
+    const fake = fakeSocket();
+    const clock = captureTimers();
+    const client = new ProtocolClient({
+      openSocket: fake.factory,
+      device: DEVICE,
+      setTimer: clock.setTimer,
+      clearTimer: clock.clearTimer,
+    });
+    const ready = client.connect({ host: "h", port: 1, hostKey: HOST_KEY });
+    await vi.waitFor(() => expect(fake.sent.length).toBe(1));
+    fake.reply(helloOk(fake.sent[0].id as string));
+    await ready;
+    fake.sent.length = 0;
+    return { fake, client, timers: clock.timers };
+  }
+
+  it(`holds a request beyond ${MAX_IN_FLIGHT} back until one in flight is answered`, async () => {
+    const { fake, client } = await connected();
+    const calls = Array.from({ length: MAX_IN_FLIGHT + 1 }, (_, i) =>
+      client.call<number>("get_git_state", { agentId: `a${i}` }),
+    );
+    await vi.waitFor(() => expect(fake.sent).toHaveLength(MAX_IN_FLIGHT));
+    // The host would refuse a ninth outright; it is not sent until a slot frees.
+    await new Promise((r) => setTimeout(r, 10));
+    expect(fake.sent).toHaveLength(MAX_IN_FLIGHT);
+
+    fake.reply({ id: fake.sent[3].id, ok: true, result: 3 });
+    await expect(calls[3]).resolves.toBe(3);
+    await vi.waitFor(() => expect(fake.sent).toHaveLength(MAX_IN_FLIGHT + 1));
+    expect(fake.sent[MAX_IN_FLIGHT].args).toEqual({ agentId: `a${MAX_IN_FLIGHT}` });
+    fake.reply({ id: fake.sent[MAX_IN_FLIGHT].id, ok: true, result: 8 });
+    await expect(calls[MAX_IN_FLIGHT]).resolves.toBe(8);
+  });
+
+  it("rejects queued requests when the socket drops, and never sends them", async () => {
+    const { fake, client } = await connected();
+    const calls = Array.from({ length: MAX_IN_FLIGHT + 2 }, () => client.call("get_workspace"));
+    await vi.waitFor(() => expect(fake.sent).toHaveLength(MAX_IN_FLIGHT));
+    fake.hangup(1006);
+    const settled = await Promise.allSettled(calls);
+    expect(settled.every((s) => s.status === "rejected")).toBe(true);
+    expect(fake.sent).toHaveLength(MAX_IN_FLIGHT);
+  });
+
+  it("gives up on a read the host never answers, and keeps the socket", async () => {
+    const { fake, client, timers } = await connected();
+    const read = client.call("get_workspace", {}, { timeoutMs: READ_TIMEOUT_MS });
+    await vi.waitFor(() => expect(fake.sent).toHaveLength(1));
+    expect(timers.map((t) => t.ms)).toEqual([READ_TIMEOUT_MS]);
+    timers[0].fn();
+    await expect(read).rejects.toThrow("did not answer get_workspace");
+    expect(client.state).toBe("connected");
+    // The late answer is dropped, not delivered to anyone.
+    fake.reply({ id: fake.sent[0].id, ok: true, result: null });
+    const next = client.call<number>("get_workspace");
+    await vi.waitFor(() => expect(fake.sent).toHaveLength(2));
+    fake.reply({ id: fake.sent[1].id, ok: true, result: 1 });
+    await expect(next).resolves.toBe(1);
+  });
+
+  it("keeps a timed-out request's slot until the host answers it", async () => {
+    const { fake, client, timers } = await connected();
+    // Eight reads the host is slow on: the client gives up on all of them,
+    // but the host is still running them and counting them against the cap.
+    const slow = Array.from({ length: MAX_IN_FLIGHT }, () =>
+      client.call("get_git_state", {}, { timeoutMs: READ_TIMEOUT_MS }),
+    );
+    await vi.waitFor(() => expect(fake.sent).toHaveLength(MAX_IN_FLIGHT));
+    for (const t of timers.splice(0)) t.fn();
+    await Promise.allSettled(slow);
+    // A ninth sent now would come back "too many in-flight requests".
+    const ninth = client.call<number>("get_workspace");
+    await new Promise((r) => setTimeout(r, 10));
+    expect(fake.sent).toHaveLength(MAX_IN_FLIGHT);
+    // The host finishing one of them is what frees the slot.
+    fake.reply({ id: fake.sent[2].id, ok: true, result: null });
+    await vi.waitFor(() => expect(fake.sent).toHaveLength(MAX_IN_FLIGHT + 1));
+    fake.reply({ id: fake.sent[MAX_IN_FLIGHT].id, ok: true, result: 9 });
+    await expect(ninth).resolves.toBe(9);
+  });
+
+  it("gives a request no timeout unless its caller asks for one", async () => {
+    const { fake, client, timers } = await connected();
+    const push = client.call<string>("push_agent", { agentId: "a" });
+    await vi.waitFor(() => expect(fake.sent).toHaveLength(1));
+    expect(timers).toHaveLength(0);
+    fake.reply({ id: fake.sent[0].id, ok: true, result: "pushed" });
+    await expect(push).resolves.toBe("pushed");
+  });
+
+  it("takes a caller's own timeout, and 0 as none", async () => {
+    const { fake, client, timers } = await connected();
+    const quick = client.call("get_workspace", {}, { timeoutMs: 500 });
+    void client.call("push_agent", { agentId: "a" }, { timeoutMs: 1_000 });
+    void client.call("get_workspace", {}, { timeoutMs: 0 });
+    await vi.waitFor(() => expect(fake.sent).toHaveLength(3));
+    expect(timers.map((t) => t.ms)).toEqual([500, 1_000]);
+    timers[0].fn();
+    await expect(quick).rejects.toThrow("did not answer");
   });
 });
 

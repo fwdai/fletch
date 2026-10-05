@@ -33,7 +33,9 @@ adapters (`src/adapters/*`) unchanged.
   without its own pings the client would learn nothing until TCP gave up. The
   phone additionally probes on returning to the foreground: its workspace
   refresh doubles as a liveness check, and one unanswered for 6 s forces a
-  reconnect. Client reconnects with exponential backoff (1 s, 2 s, 4 s … 30 s).
+  reconnect. Client reconnects with exponential backoff (1 s, 2 s, 4 s … 30 s);
+  a phone returning to the foreground with a retry pending dials at once
+  rather than wait it out.
 - WebSocket messages larger than 4 MiB are rejected (close code 1009). A
   protocol frame is not bound by that cap: on a connection whose two ends
   negotiated fragmentation (see "Secure channel"), a frame over 256 KiB
@@ -52,6 +54,22 @@ adapters (`src/adapters/*`) unchanged.
   flight per connection; further requests are answered immediately with
   `{ ok: false, error: "too many in-flight requests" }` and never dispatched.
   Requests still running when the socket goes away are abandoned.
+- The client keeps to the same cap: beyond 8 outstanding requests it queues
+  the rest in order and sends each as an earlier one is answered, so the burst
+  of reads that follows every handshake is never refused. It counts every
+  request, `pair`/`hello` and `register_push` included, although the host
+  answers those inline outside its count. A dropped socket rejects queued
+  requests along with in-flight ones.
+- A request has no timeout unless its caller sets one, and only a read should:
+  an op that changes something on the Mac is still running there after the
+  client gives up on it, and reporting it failed invites a retry of work that
+  is happening. The phone's reads ask for 30 s. A request that times out is
+  rejected and the socket is left alone, but its in-flight slot stays taken
+  until the host's answer arrives (and is then ignored) or the socket goes —
+  the host is still counting it against the 8, and handing the slot on early
+  would only get the next request refused. The clock starts when the request
+  is sent, not while it waits in the queue. `pair`/`hello` have the
+  handshake's own 15 s bound (see "Relay" → "Phone side").
 
 ## Secure channel
 
@@ -226,14 +244,19 @@ repo); anyone can run their own and point both apps at it.
   accepts messages up to 4 MiB + 5 bytes, so a legal 4 MiB device message fits
   inside a DATA frame. DATA carries WebSocket messages, not protocol frames: a
   fragmented frame is several DATA frames, and the relay neither knows nor
-  needs to. The host serves each virtual connection through the
+  needs to. A larger DATA frame for a live connId costs only that
+  device: the relay drops the frame, closes the device link with `1009` and
+  sends the host the matching CLOSE. Only an oversized message that names no
+  device (unknown connId, NOTIFY, too short to decode, any frame before
+  `ready`) closes the host link itself with `1009`, which drops every device
+  with `4404` as any host departure does. The host serves each virtual connection through the
   same code path as a LAN socket; WebSocket ping/pong is per hop (host↔relay
   and relay↔device), never forwarded, and the host answers its own liveness
   pings to a virtual connection locally. The relay originates no pings of its
   own (they would keep the Durable Object awake); the host pings the relay,
   and the runtime answers device pings without waking the object.
 - **Host side.** The Mac keeps the host link up whenever remote access is
-  enabled and a relay URL is set, reconnecting with backoff (1 s … 60 s) when
+  enabled and a relay URL is set, reconnecting with backoff (1 s … 15 s) when
   it drops, `4409` included: two Macs sharing one host key is a
   misconfiguration, and the alternating link surfaces it in `relay.error`
   rather than silently picking a winner. `remote_status.relay` reports the
@@ -647,6 +670,7 @@ allowlist; any op not listed returns `{ ok: false, error: "unknown op" }`.
 | `set_agent_model` | `{ agentId, model }` | `null` |
 | `set_agent_effort` | `{ agentId, effort }` | `null` |
 | `read_session_records` | `{ agentId }` — the agent's display history: what its session inherits through lineage (a fork's parent conversation, `inherited: true`), then its own records | `SessionRecord[]` |
+| `read_session_page` | `{ agentId, before?: string \| null, limit?: number }` — the same history one page at a time, newest page first: the last `limit` records before the cursor `before` (from the end when absent), crossing into inherited history exactly as `read_session_records` does. `limit` defaults to 200 and is clamped to 1–500. `records` are in display order (oldest first within the page); `older` is the cursor for the page before this one, `null` once nothing older is left. The cursor is opaque (`"<chainIndex>:<seq>"`, parsed strictly — a malformed or out-of-range one is an error) and belongs to the history it was read from: after a turn ends, start again from the newest page. Lets a phone open a long session without shipping every tool result it ever read. No desktop command of this name | `{ records: SessionRecord[], older: string \| null }` |
 | `read_user_turns` | `{ agentId }` — the user turns of the same history, in the same order | `UserTurn[]` |
 | `sync_session` | `{ agentId }` | `null` |
 | `read_live_turn` | `{ agentId }` — the `event` payloads of the agent's current turn, oldest first, as they were forwarded on `agent:event`; `dropped` counts events cut from the head when the turn outgrew the host's buffer; `next_seq` is the `seq` the agent's next `agent:event` will carry, so a frame with `seq >= next_seq` is one the snapshot does not hold. Empty for a turn that ran under a previous host process or in the native view. No desktop command of this name yet | `{ events: object[], dropped: number, next_seq: number }` |
@@ -1273,11 +1297,15 @@ the rest of `run:*`, `dictation:*`, `docker:*` and `agent-install:*`.
 
 Delivery is best effort, exactly like the desktop frontend: the phone must
 refetch `get_workspace` on reconnect and on returning to the foreground, and
-`read_session_records` when it opens an agent. A list with no records of the
-agent's own (empty, or only `inherited` ones) is not proof of an empty
-conversation — the turn-end ingest can lag or miss — so the phone then asks the
-host to `sync_session` and reads once more, and keeps whatever log it already
-rendered from live events if that is still empty.
+`read_session_records` when it opens an agent — or, on a host that lists it,
+the newest `read_session_page`, reading older pages only when the user scrolls
+back for them. A list with no records of the agent's own (empty, or only
+`inherited` ones) is not proof of an empty conversation — the turn-end ingest
+can lag or miss — so the phone then asks the host to `sync_session` and reads
+once more, and keeps whatever log it already rendered from live events if that
+is still empty. The newest page settles the question as well as the whole list
+would: an agent's own records are the newest in its history, so a newest page
+with none of them means the session has none.
 
 Records stop at the last *finished* turn: the running one is ingested only when
 it ends. A phone that opens a busy agent therefore also asks for

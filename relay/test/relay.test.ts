@@ -6,6 +6,7 @@ import {
   decodeClose,
   encode,
   encodeClose,
+  FRAME_CLOSE,
   FRAME_DATA,
   FRAME_NOTIFY,
   FRAME_OPEN,
@@ -431,6 +432,41 @@ describe("limits", () => {
     // And back, as a DATA frame of 4 MiB + the 5-byte header.
     hostLink.ws.send(encode(FRAME_DATA, connId, new Uint8Array(MAX_MESSAGE_BYTES)));
     expect((await device.nextBinary()).length).toBe(MAX_MESSAGE_BYTES);
+  });
+
+  it("closes only the addressed device for an oversized host DATA frame", async () => {
+    const host = await newHost();
+    const hostLink = await attachHost(host);
+    const target = await attachDevice(host);
+    const targetId = decode(await hostLink.nextBinary())?.connId as number;
+    const bystander = await attachDevice(host);
+    const bystanderId = decode(await hostLink.nextBinary())?.connId as number;
+
+    hostLink.ws.send(encode(FRAME_DATA, targetId, new Uint8Array(MAX_MESSAGE_BYTES + 1)));
+    expect((await target.closed()).code).toBe(1009);
+    const close = decode(await hostLink.nextBinary());
+    expect(close?.type).toBe(FRAME_CLOSE);
+    expect(close?.connId).toBe(targetId);
+    expect(decodeClose(close?.payload as Uint8Array)?.code).toBe(1009);
+
+    // The host link and the other device carry on, both ways.
+    hostLink.ws.send(encode(FRAME_DATA, bystanderId, new Uint8Array([1])));
+    expect([...(await bystander.nextBinary())]).toEqual([1]);
+    bystander.ws.send(new Uint8Array([2]));
+    const data = decode(await hostLink.nextBinary());
+    expect(data?.connId).toBe(bystanderId);
+    expect(data && [...data.payload]).toEqual([2]);
+  });
+
+  it("closes the host link for an oversized frame that names no device", async () => {
+    const host = await newHost();
+    const hostLink = await attachHost(host);
+    const device = await attachDevice(host);
+    const connId = decode(await hostLink.nextBinary())?.connId as number;
+
+    hostLink.ws.send(encode(FRAME_DATA, connId + 999, new Uint8Array(MAX_MESSAGE_BYTES + 1)));
+    expect((await hostLink.closed()).code).toBe(1009);
+    expect((await device.closed()).code).toBe(4404);
   });
 
   it("closes 1008 after more than 100 messages in 10 s", async () => {

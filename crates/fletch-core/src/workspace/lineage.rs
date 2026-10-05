@@ -17,9 +17,59 @@
 
 use rusqlite::OptionalExtension;
 
-use super::sessions::{current_session_id, query_records};
+use super::sessions::{current_session_id, query_newest_records};
 use super::turns::query_turns;
 use super::*;
+
+/// The records a history page holds when the caller names no `limit`: enough
+/// for a phone to show the last few turns, a sliver of a long session.
+pub const HISTORY_PAGE_DEFAULT: usize = 200;
+/// The most a history page holds whatever the caller asks for, so no request
+/// can turn the page read back into the whole-history one.
+pub const HISTORY_PAGE_MAX: usize = 500;
+
+/// One page of a display history, newest page first: its records in display
+/// order, and the cursor naming the page before it — `None` once nothing
+/// older is left. The cursor is opaque to callers.
+#[derive(Debug, Clone, Serialize)]
+pub struct HistoryPage {
+    pub records: Vec<SessionRecord>,
+    pub older: Option<String>,
+}
+
+/// Where the next older page ends: link `index` of the history chain (root
+/// first) and the exclusive seq, in that link's own seq space, below which it
+/// reads. Seqs are per session, so a seq alone could not name a position in a
+/// stitched history. Indexed from the root because records appended to the
+/// current session leave every link's index alone; a session switch between
+/// two page reads changes the chain itself, and the client starts over from
+/// the newest page then anyway. Spelled `"<index>:<below>"` on the wire.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Cursor {
+    index: usize,
+    below: i64,
+}
+
+impl Cursor {
+    /// Strict: digits on both sides of one colon and nothing else, so a cursor
+    /// that was mangled or made up is an error rather than some other page.
+    fn parse(text: &str) -> Result<Self> {
+        let bad = || Error::Other(format!("bad history cursor {text:?}"));
+        let digits = |part: &str| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit());
+        let (index, below) = text.split_once(':').ok_or_else(bad)?;
+        if !digits(index) || !digits(below) {
+            return Err(bad());
+        }
+        Ok(Self {
+            index: index.parse().map_err(|_| bad())?,
+            below: below.parse().map_err(|_| bad())?,
+        })
+    }
+
+    fn encode(self) -> String {
+        format!("{}:{}", self.index, self.below)
+    }
+}
 
 /// Where a session's history branches off: its parent session, and the
 /// exclusive `session_records.seq` (in the parent's own seq space) below which
@@ -74,17 +124,32 @@ fn history_chain(conn: &Connection, session_id: &str) -> Result<Vec<Link>> {
     Ok(links)
 }
 
+impl Link {
+    /// What the chain shows of this session below `below`: its records under
+    /// both `below` and its bound, tagged `inherited` when it has a bound (an
+    /// ancestor) — the newest `limit` of them, or all for `None`, in seq order.
+    fn records(
+        &self,
+        conn: &Connection,
+        below: i64,
+        limit: Option<usize>,
+    ) -> Result<Vec<SessionRecord>> {
+        query_newest_records(
+            conn,
+            &self.session_id,
+            self.bound.map_or(below, |bound| bound.min(below)),
+            self.bound.is_some(),
+            limit,
+        )
+    }
+}
+
 /// The records a chain shows, root first: each session's below its bound,
 /// tagged `inherited`, and all of an unbounded one's (the chain's own).
 fn chain_records(conn: &Connection, links: &[Link]) -> Result<Vec<SessionRecord>> {
     let mut records = Vec::new();
     for link in links {
-        records.extend(query_records(
-            conn,
-            &link.session_id,
-            link.bound.unwrap_or(i64::MAX),
-            link.bound.is_some(),
-        )?);
+        records.extend(link.records(conn, i64::MAX, None)?);
     }
     Ok(records)
 }
@@ -236,6 +301,83 @@ impl WorkspaceManager {
             return Ok(vec![]);
         };
         chain_records(&conn, &history_chain(&conn, &current)?)
+    }
+
+    /// One page of [`Self::read_history_records`], walking back from the
+    /// newest: the last `limit` records before `before` (from the end when
+    /// `None`), in the same order and with the same `inherited` tags, crossing
+    /// into the previous link of the chain when one runs out. `limit` defaults
+    /// to [`HISTORY_PAGE_DEFAULT`] and is clamped to `1..=`[`HISTORY_PAGE_MAX`].
+    /// What lets a phone show the last turn of a session tens of MB long
+    /// without shipping the rest of it.
+    pub fn read_history_page(
+        &self,
+        workspace_id: &str,
+        before: Option<&str>,
+        limit: Option<usize>,
+    ) -> Result<HistoryPage> {
+        let limit = limit
+            .unwrap_or(HISTORY_PAGE_DEFAULT)
+            .clamp(1, HISTORY_PAGE_MAX);
+        let before = before.map(Cursor::parse).transpose()?;
+        let conn = self.db.lock();
+        let empty = HistoryPage {
+            records: vec![],
+            older: None,
+        };
+        let Some(current) = current_session_id(&conn, workspace_id) else {
+            return Ok(empty);
+        };
+        let links = history_chain(&conn, &current)?;
+        let Some(last) = links.len().checked_sub(1) else {
+            return Ok(empty);
+        };
+        let start = match before {
+            None => Cursor {
+                index: last,
+                below: i64::MAX,
+            },
+            Some(cursor) if cursor.index <= last => cursor,
+            Some(cursor) => {
+                return Err(Error::Other(format!(
+                    "history cursor {:?} is past {workspace_id}'s chain",
+                    cursor.encode()
+                )))
+            }
+        };
+
+        // Newest first, one past the page: the extra record is how a full
+        // page knows whether anything older is left to point at.
+        let mut newest_first: Vec<(usize, SessionRecord)> = Vec::new();
+        for index in (0..=start.index).rev() {
+            let below = if index == start.index {
+                start.below
+            } else {
+                i64::MAX
+            };
+            let want = limit + 1 - newest_first.len();
+            let records = links[index].records(&conn, below, Some(want))?;
+            newest_first.extend(records.into_iter().rev().map(|r| (index, r)));
+            if newest_first.len() > limit {
+                break;
+            }
+        }
+        let older = if newest_first.len() > limit {
+            newest_first.truncate(limit);
+            newest_first.last().map(|(index, r)| {
+                Cursor {
+                    index: *index,
+                    below: r.seq,
+                }
+                .encode()
+            })
+        } else {
+            None
+        };
+        Ok(HistoryPage {
+            records: newest_first.into_iter().rev().map(|(_, r)| r).collect(),
+            older,
+        })
     }
 
     /// The history a session continuing `lineage` shows before it has records
@@ -590,6 +732,142 @@ mod tests {
         // The root's history is just its own.
         assert_eq!(history(&wm, "a").len(), 6);
         assert!(history(&wm, "a").iter().all(|(_, inh)| !inh));
+    }
+
+    // ── history pages ────────────────────────────────────────────────────
+
+    /// `(native_id, inherited)` of one page, and its cursor.
+    fn page(
+        wm: &WorkspaceManager,
+        ws: &str,
+        before: Option<&str>,
+        limit: usize,
+    ) -> (Vec<(String, bool)>, Option<String>) {
+        let page = wm.read_history_page(ws, before, Some(limit)).unwrap();
+        let ids = page
+            .records
+            .into_iter()
+            .map(|r| (r.native_id, r.inherited))
+            .collect();
+        (ids, page.older)
+    }
+
+    #[test]
+    fn a_single_sessions_history_pages_back_from_the_newest() {
+        let wm = three_level_chain();
+        let (newest, older) = page(&wm, "a", None, 4);
+        assert_eq!(newest, owned(&["a2-u", "a2-a", "a3-u", "a3-a"]));
+        assert_eq!(older.as_deref(), Some("0:3"));
+        let (rest, older) = page(&wm, "a", older.as_deref(), 4);
+        assert_eq!(rest, owned(&["a1-u", "a1-a"]));
+        assert_eq!(older, None, "nothing precedes the first record");
+    }
+
+    #[test]
+    fn a_page_that_ends_exactly_at_the_start_has_no_older_cursor() {
+        let wm = three_level_chain();
+        let (all, older) = page(&wm, "a", None, 6);
+        assert_eq!(all.len(), 6);
+        assert_eq!(older, None);
+    }
+
+    /// `b` shows `a` only below its cut (a1), then its own: a page straddling
+    /// the boundary walks into `a`, stops at the cut and tags `a`'s records.
+    #[test]
+    fn a_page_straddles_a_cut_and_tags_the_ancestors_records() {
+        let wm = three_level_chain();
+        let (newest, older) = page(&wm, "b", None, 3);
+        assert_eq!(newest, owned(&["b1-a", "b2-u", "b2-a"]));
+        // Link 1 (b itself, root first), below b1-a's seq in b's own space.
+        assert_eq!(older.as_deref(), Some("1:2"));
+        let (straddle, older) = page(&wm, "b", older.as_deref(), 3);
+        assert_eq!(
+            straddle,
+            concat(&[inherited(&["a1-u", "a1-a"]), owned(&["b1-u"])])
+        );
+        assert_eq!(older, None, "a2 and later lie past b's cut");
+    }
+
+    /// However the history is cut into pages, the pages put back together are
+    /// the whole read, across every link of a three-level chain.
+    #[test]
+    fn pages_put_back_together_are_the_whole_history() {
+        let wm = three_level_chain();
+        for ws in ["a", "b", "c"] {
+            for limit in 1..=7 {
+                let mut stitched = Vec::new();
+                let mut before = None;
+                loop {
+                    let (records, older) = page(&wm, ws, before.as_deref(), limit);
+                    assert!(records.len() <= limit);
+                    stitched.splice(0..0, records);
+                    if older.is_none() {
+                        break;
+                    }
+                    before = older;
+                }
+                assert_eq!(stitched, history(&wm, ws), "{ws} by {limit}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_bad_cursor_is_an_error_not_some_other_page() {
+        let wm = three_level_chain();
+        for cursor in [
+            "", "0", "x:1", "0:x", "0:-1", "+0:1", "0:+1", "0: 1", "0:1:2", ":1", "0:",
+        ] {
+            assert!(
+                wm.read_history_page("a", Some(cursor), None).is_err(),
+                "{cursor:?}"
+            );
+        }
+        // Well formed, but `a`'s chain has one link.
+        let err = wm
+            .read_history_page("a", Some("1:3"), None)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("past"), "{err}");
+    }
+
+    #[test]
+    fn the_page_size_defaults_and_clamps() {
+        let db = test_db();
+        seed_repo(&db, "/r");
+        let wm = WorkspaceManager::new(db);
+        agent(&wm, "long", "/r", None);
+        let body = json!({"type": "assistant"});
+        let ids: Vec<String> = (0..HISTORY_PAGE_MAX + 10)
+            .map(|i| format!("r{i}"))
+            .collect();
+        let rows: Vec<(&str, &serde_json::Value)> =
+            ids.iter().map(|id| (id.as_str(), &body)).collect();
+        wm.append_session_records("long", "claude", "transcript", None, &rows)
+            .unwrap();
+
+        let read = |limit| wm.read_history_page("long", None, limit).unwrap();
+        assert_eq!(read(None).records.len(), HISTORY_PAGE_DEFAULT);
+        let capped = read(Some(usize::MAX));
+        assert_eq!(capped.records.len(), HISTORY_PAGE_MAX);
+        assert_eq!(
+            capped.records.last().map(|r| r.native_id.as_str()),
+            Some(ids.last().unwrap().as_str()),
+            "the newest page ends at the newest record"
+        );
+        assert!(capped.older.is_some());
+        assert_eq!(
+            read(Some(0)).records.len(),
+            1,
+            "a page is never empty by asking"
+        );
+    }
+
+    #[test]
+    fn a_workspace_without_a_session_has_an_empty_last_page() {
+        let wm = three_level_chain();
+        let page = wm.read_history_page("nope", None, None).unwrap();
+        assert!(page.records.is_empty());
+        assert_eq!(page.older, None);
     }
 
     #[test]

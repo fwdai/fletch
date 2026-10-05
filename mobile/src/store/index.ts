@@ -59,7 +59,7 @@ import {
   mergeActivity,
   type ShipActivityMap,
 } from "./shipActivity";
-import { applyUserTurns, reduceRecords } from "./transcript";
+import { applyUserTurns, type LoadedHistory, reduceRecords } from "./transcript";
 
 export const client = createClient();
 export const api = createApi(client);
@@ -131,6 +131,10 @@ export interface MobileState extends ChatsSlice, ProposalsSlice {
 
   workspace: Workspace | null;
   logs: Record<string, ChatItem[]>;
+  /** Per agent, the records its log was last reduced from and the cursor for
+   *  older ones (store/transcript). What `loadOlderLog` extends; a set `older`
+   *  is what offers the chat's "Load older messages". */
+  histories: Record<string, LoadedHistory>;
   /** Agents with a send from this device that the host has not answered with
    *  a status yet. The agent's `status` is the busy signal (`isAgentBusy`);
    *  this only bridges the gap between the tap and the `running` it produces —
@@ -240,6 +244,9 @@ export interface MobileState extends ChatsSlice, ProposalsSlice {
   /** Rebuild the log from the host's records. With `liveTurn`, the running
    *  turn is replayed on top from `read_live_turn` (see store/liveTurn). */
   rebuildLog(agentId: string, opts?: { liveTurn?: boolean }): Promise<void>;
+  /** Read the page before the oldest one loaded and put it at the head of the
+   *  log. A no-op when there is no older page to read. */
+  loadOlderLog(agentId: string): Promise<void>;
   loadGit(agentId: string): Promise<void>;
   /** The Ship tab's one read when it opens with no checks cached: PR state and
    *  CI from one `get_pr_live` pass, so both are from the same moment. The
@@ -490,6 +497,11 @@ export const agentOf = (s: AgentSource, id: string): AgentRecord | undefined =>
 export const projectOf = (s: AgentSource, agentId: string) =>
   projectById(s.workspace, agentOf(s, agentId)?.project_id);
 
+/** Whether `agentId`'s screen is on the stack — the one case a transcript read
+ *  for it has anyone to show it to. */
+export const isAgentOpen = (s: Pick<MobileState, "nav">, agentId: string): boolean =>
+  s.nav.some((n) => n.props.agentId === agentId);
+
 /** Wait for a freshly spawned agent to leave `spawning` before the first
  *  message is sent — the spawn flow in docs/remote-protocol.md. */
 function waitForSpawn(get: () => MobileState, agentId: string, timeoutMs = 30_000) {
@@ -575,6 +587,7 @@ export const useStore = create<MobileState>()((set, get) => ({
 
   workspace: null,
   logs: {},
+  histories: {},
   sending: {},
   pendingToolUse: {},
   pendingPublishApprovals: [],
@@ -720,7 +733,14 @@ export const useStore = create<MobileState>()((set, get) => ({
     };
     if (typeof document !== "undefined") {
       document.addEventListener("visibilitychange", () => {
-        if (document.hidden || client.state !== "connected") return;
+        if (document.hidden) return;
+        // A retry waiting out its backoff was scheduled while the phone was
+        // away; the user looking at the app is reason enough to dial now.
+        if (client.retrying) {
+          void get().reconnect().catch(ignore);
+          return;
+        }
+        if (client.state !== "connected") return;
         void resume();
       });
     }
@@ -860,6 +880,7 @@ export const useStore = create<MobileState>()((set, get) => ({
       // on this device for an answer.
       pendingPublishApprovals: [],
       logs: {},
+      histories: {},
       backgroundTasks: {},
       liveSeq: {},
       verificationReports: {},
@@ -1001,22 +1022,31 @@ export const useStore = create<MobileState>()((set, get) => ({
 
   async rebuildLog(agentId, opts = {}) {
     return guard(set, async () => {
-      let [records, turns] = await Promise.all([
-        api.readSessionRecords(agentId),
-        api.readUserTurns(agentId),
-      ]);
+      // Only the newest page, where the host has pages: a long session's
+      // history runs to tens of MB of tool results, and the phone needs the
+      // last turns to paint. Every rebuild starts over from it, the turn-end
+      // one included — so older pages the user had loaded are dropped then
+      // and read again on demand. Simpler than splicing the new records onto
+      // pages whose cursors the turn may have outdated, and cheap: it is one
+      // page either way.
+      const readNewest = async (): Promise<LoadedHistory> =>
+        get().hostSupports("read_session_page")
+          ? api.readSessionPage(agentId)
+          : { records: await api.readSessionRecords(agentId), older: null };
+      let [history, turns] = await Promise.all([readNewest(), api.readUserTurns(agentId)]);
       // The host ingests a turn's transcript into session_records only at
       // turn-end, and that ingest can insert nothing (session id not captured
       // yet, transcript not located). Mirror the desktop's readHistory: with no
       // records of the agent's own (a fork may still show inherited ones), ask
       // for a backfill and read again before concluding there is no history.
-      if (records.every((r) => r.inherited)) {
+      // The newest page answers that as well as the whole list: an agent's own
+      // records are the newest in its history.
+      if (history.records.every((r) => r.inherited)) {
         await api.syncSession(agentId);
-        [records, turns] = await Promise.all([
-          api.readSessionRecords(agentId),
-          api.readUserTurns(agentId),
-        ]);
+        [history, turns] = await Promise.all([readNewest(), api.readUserTurns(agentId)]);
       }
+      const { records } = history;
+      set((s) => ({ histories: { ...s.histories, [agentId]: history } }));
       // Still nothing stored and no running turn to replay: keep the log the
       // live events built rather than wiping the conversation the user was
       // just looking at (the desktop's records-appended handler makes the same
@@ -1052,6 +1082,32 @@ export const useStore = create<MobileState>()((set, get) => ({
         ...(startedAt === undefined
           ? {}
           : { turnStartedAt: { ...s.turnStartedAt, [agentId]: startedAt } }),
+      }));
+    });
+  },
+
+  async loadOlderLog(agentId) {
+    const loaded = get().histories[agentId];
+    if (!loaded?.older) return;
+    return guard(set, async () => {
+      const [page, turns] = await Promise.all([
+        api.readSessionPage(agentId, loaded.older),
+        api.readUserTurns(agentId),
+      ]);
+      // A rebuild that landed meanwhile replaced the pages this one extends;
+      // its log is the newer, and the cursor it holds is the one to follow.
+      if (get().histories[agentId] !== loaded) return;
+      const provider = agentOf(get(), agentId)?.provider;
+      const records = [...page.records, ...loaded.records];
+      // Re-reduced whole rather than prepended, so a call on this page pairs
+      // with its result on the next. The log opens with what the loaded records
+      // reduced to; everything after that (a replayed running turn, live
+      // frames, a queued send) is not in them and is carried over as it is.
+      const head = reduceRecords(provider, loaded.records).length;
+      const items = applyUserTurns(reduceRecords(provider, records), turns);
+      set((s) => ({
+        histories: { ...s.histories, [agentId]: { records, older: page.older } },
+        logs: { ...s.logs, [agentId]: [...items, ...(s.logs[agentId] ?? []).slice(head)] },
       }));
     });
   },
