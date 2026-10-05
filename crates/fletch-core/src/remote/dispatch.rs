@@ -130,6 +130,7 @@ pub const OPS: &[&str] = &[
     "set_agent_model",
     "set_agent_effort",
     "read_session_records",
+    "read_session_page",
     "read_user_turns",
     "sync_session",
     "read_live_turn",
@@ -396,6 +397,7 @@ const OP_SCOPES: &[(&str, Scope)] = &[
     ("set_agent_model", Scope::Agents),
     ("set_agent_effort", Scope::Agents),
     ("read_session_records", Scope::Observe),
+    ("read_session_page", Scope::Observe),
     ("read_user_turns", Scope::Observe),
     ("sync_session", Scope::Observe),
     ("read_live_turn", Scope::Observe),
@@ -765,6 +767,17 @@ impl Dispatch for SupervisorDispatch {
                 "read_session_records" => {
                     let a: AgentArgs = parse(args)?;
                     res(sup.workspace.read_history_records(&a.agent_id))
+                }
+
+                // The same history a page at a time, newest first, so a phone
+                // opening a long session ships its last turns rather than
+                // every tool result it ever read. Remote-only: the desktop
+                // reads the whole history off its own disk.
+                "read_session_page" => {
+                    let a: SessionPageArgs = parse(args)?;
+                    res(sup
+                        .workspace
+                        .read_history_page(&a.agent_id, a.before.as_deref(), a.limit))
                 }
 
                 "read_user_turns" => {
@@ -2110,6 +2123,16 @@ mod approval_tests {
 #[serde(rename_all = "camelCase")]
 struct AgentArgs {
     agent_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SessionPageArgs {
+    agent_id: String,
+    #[serde(default)]
+    before: Option<String>,
+    #[serde(default)]
+    limit: Option<usize>,
 }
 
 #[derive(Deserialize)]

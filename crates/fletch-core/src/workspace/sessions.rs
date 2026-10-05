@@ -119,12 +119,28 @@ pub(super) fn query_records(
     below: i64,
     inherited: bool,
 ) -> Result<Vec<SessionRecord>> {
+    query_newest_records(conn, session_id, below, inherited, None)
+}
+
+/// [`query_records`] cut to the newest `limit` of them (all for `None`), still
+/// in seq order. Read newest first so a transcript page costs its own size,
+/// not the session's.
+pub(super) fn query_newest_records(
+    conn: &Connection,
+    session_id: &str,
+    below: i64,
+    inherited: bool,
+    limit: Option<usize>,
+) -> Result<Vec<SessionRecord>> {
+    // SQLite reads a negative LIMIT as none.
+    let limit = limit.map_or(-1, |n| i64::try_from(n).unwrap_or(i64::MAX));
     let mut stmt = conn.prepare(
         "SELECT seq, provider, source, native_id, agent_version, body
-         FROM transcripts.session_records WHERE session_id = ?1 AND seq < ?2 ORDER BY seq ASC",
+         FROM transcripts.session_records WHERE session_id = ?1 AND seq < ?2
+         ORDER BY seq DESC LIMIT ?3",
     )?;
-    let rows: Vec<(i64, String, String, String, Option<String>, String)> = stmt
-        .query_map(rusqlite::params![session_id, below], |r| {
+    let mut rows: Vec<(i64, String, String, String, Option<String>, String)> = stmt
+        .query_map(rusqlite::params![session_id, below, limit], |r| {
             Ok((
                 r.get(0)?,
                 r.get(1)?,
@@ -135,6 +151,7 @@ pub(super) fn query_records(
             ))
         })?
         .collect::<std::result::Result<_, rusqlite::Error>>()?;
+    rows.reverse();
 
     rows.into_iter()
         .map(
