@@ -9,6 +9,17 @@
 import type { SessionRecord, UserTurn } from "@desktop/api/types/session";
 import { type ChatItem, getAdapter, type RawEvent } from "../adapters";
 
+/** The part of an agent's history the phone holds: every page loaded so far,
+ *  concatenated oldest first, and the cursor for the page before them (null
+ *  once there is none, or on a host that served the history whole). Kept as
+ *  records rather than items because a page can start mid-turn: a tool result
+ *  whose call is on the page before only pairs with it once both are reduced
+ *  together. */
+export interface LoadedHistory {
+  records: SessionRecord[];
+  older: string | null;
+}
+
 /** Render canonical session records exactly as on-disk replay does:
  *  `normalizeTranscript` → `reduce`. Adapter throws degrade to a partial log
  *  rather than an empty screen. */

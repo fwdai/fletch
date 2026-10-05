@@ -17,6 +17,14 @@ export interface SessionRecord {
   inherited?: boolean;
 }
 
+/** One page of an agent's display history, as `read_session_page` answers:
+ *  `records` in display order, and `older` the cursor naming the page before
+ *  it — null once nothing older is left. Opaque: pass it back as `before`. */
+export interface SessionPage {
+  records: SessionRecord[];
+  older: string | null;
+}
+
 /** A session the agent's workspace superseded (a rewind's abandoned branch),
  *  with its own records — empty when the caller named it as already known. */
 export interface SupersededSession {
