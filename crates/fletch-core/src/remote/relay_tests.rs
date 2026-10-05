@@ -35,9 +35,17 @@ use fletch_proto::noise::FRAGMENT_PLAINTEXT;
 /// Every await in these tests is bounded: a link that never arrives should fail
 /// the test, not hang the suite.
 const PATIENCE: Duration = Duration::from_secs(5);
+/// For the first frame of a multi-MiB answer, which the host only sends once it
+/// has serialized and encrypted the whole run. In a debug build on a loaded CI
+/// runner that alone has taken longer than `PATIENCE`.
+const LARGE_PATIENCE: Duration = Duration::from_secs(30);
 
 async fn within<F: Future>(what: &str, f: F) -> F::Output {
-    tokio::time::timeout(PATIENCE, f)
+    within_for(PATIENCE, what, f).await
+}
+
+async fn within_for<F: Future>(patience: Duration, what: &str, f: F) -> F::Output {
+    tokio::time::timeout(patience, f)
         .await
         .unwrap_or_else(|_| panic!("timed out waiting for {what}"))
 }
@@ -182,6 +190,7 @@ async fn accept_loop(
                 ws,
                 path,
                 pending: VecDeque::new(),
+                patience: PATIENCE,
             })
             .await
             .is_err()
@@ -209,6 +218,9 @@ struct HostLink {
     /// Frames for a connection other than the one currently being read, kept
     /// so two devices can be driven in any order.
     pending: VecDeque<Frame>,
+    /// How long one read waits for the next frame. `PATIENCE`, unless a test
+    /// is waiting on a large answer (see `LARGE_PATIENCE`).
+    patience: Duration,
 }
 
 impl HostLink {
@@ -222,7 +234,7 @@ impl HostLink {
     /// The next frame, or `None` once the link is over.
     async fn read(&mut self) -> Option<Frame> {
         loop {
-            match within("a link frame", self.ws.next()).await {
+            match within_for(self.patience, "a link frame", self.ws.next()).await {
                 Some(Ok(Message::Binary(bytes))) => {
                     return Some(Frame::decode(&bytes).expect("a decodable frame"))
                 }
@@ -239,7 +251,7 @@ impl HostLink {
     /// it. `None` once the link is over.
     async fn read_raw(&mut self) -> Option<Bytes> {
         loop {
-            match within("a link frame", self.ws.next()).await {
+            match within_for(self.patience, "a link frame", self.ws.next()).await {
                 Some(Ok(Message::Binary(bytes))) => return Some(bytes),
                 Some(Ok(Message::Ping(_))) | Some(Ok(Message::Pong(_))) => continue,
                 Some(Ok(Message::Close(_))) | None => return None,
@@ -535,10 +547,13 @@ async fn a_large_answer_crosses_the_relay_as_data_frames_under_the_cap() {
     conn.request(&mut link, "0", "hello", json!({})).await;
     assert_eq!(conn.next_json(&mut link).await["ok"], true);
 
-    let bytes = 20 << 20;
+    // Over the 4 MiB cap, which is all this needs to prove.
+    let bytes = 5 << 20;
     conn.request(&mut link, "1", "get_git_state", json!({ "bytes": bytes }))
         .await;
+    link.patience = LARGE_PATIENCE;
     let (reply, sizes) = conn.next_json_sized(&mut link).await;
+    link.patience = PATIENCE;
     assert_eq!(reply["id"], "1");
     assert_eq!(reply["result"]["pad"].as_str().map(str::len), Some(bytes));
     assert!(sizes.len() > 1, "fragmented, not one message");
@@ -574,11 +589,12 @@ async fn a_large_answer_does_not_hold_up_another_device() {
         assert_eq!(conn.next_json(&mut link).await["ok"], true);
     }
 
-    // Far more than the socket buffers between host and relay hold, so most of
-    // the run is still on the host when the second request lands.
-    let bytes: usize = 32 << 20;
+    // A 32-message run against a per-connection share of 4, so most of it is
+    // still on the host when the second request lands.
+    let bytes: usize = 8 << 20;
     big.request(&mut link, "a1", "get_git_state", json!({ "bytes": bytes }))
         .await;
+    link.patience = LARGE_PATIENCE;
     let first = link.read_for(1).await;
     small
         .request(&mut link, "b1", "get_workspace", json!({}))
