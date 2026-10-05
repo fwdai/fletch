@@ -10,12 +10,15 @@ use tokio_tungstenite::WebSocketStream;
 
 use super::auth::DeviceRecord;
 use super::dispatch::{
-    self, Dispatch, DispatchFuture, Scope, FORBIDDEN, TOO_MANY_IN_FLIGHT, UNKNOWN_OP,
+    self, Dispatch, DispatchFuture, Scope, FORBIDDEN, RESPONSE_TOO_LARGE, TOO_MANY_IN_FLIGHT,
+    UNKNOWN_OP,
 };
 use super::push::{AgentLookup, PushTriggers};
 use super::secure::{self, Handshake, SecureChannel};
+use super::server::{response_frame, LEGACY_MAX_OUTBOUND_FRAME_BYTES};
 use super::{DeviceStore, PairingTokens, RemoteState};
 use crate::workspace::AgentStatus;
+use fletch_proto::noise::FRAGMENT_PLAINTEXT;
 
 // ---------------------------------------------------------------------------
 // Pairing tokens
@@ -1698,10 +1701,24 @@ struct SecureWs {
 }
 
 /// Connect and run the initiator's half of `Noise_XX_25519_ChaChaPoly_BLAKE2s`:
-/// three binary messages, empty payloads, `-> e`, `<- e, ee, s, es`, `-> s, se`.
+/// three binary messages, `-> e`, `<- e, ee, s, es`, `-> s, se`, advertising
+/// what a current phone does.
 async fn secure_connect(port: u16, device: &Device) -> SecureWs {
+    handshake_over(port, Handshake::new(&device.key, true).unwrap()).await
+}
+
+/// [`secure_connect`] as a phone from before fragmentation: empty handshake
+/// payloads, so the host must never send it a fragment.
+async fn legacy_connect(port: u16, device: &Device) -> SecureWs {
+    handshake_over(
+        port,
+        Handshake::with_capabilities(&device.key, true, 0).unwrap(),
+    )
+    .await
+}
+
+async fn handshake_over(port: u16, mut handshake: Handshake) -> SecureWs {
     let mut ws = connect_plain(port).await;
-    let mut handshake = Handshake::new(&device.key, true).unwrap();
 
     ws.send(Message::Binary(Bytes::from(handshake.write().unwrap())))
         .await
@@ -1739,6 +1756,8 @@ impl SecureWs {
         self.send_json(frame.as_bytes()).await;
     }
 
+    /// Send `plaintext` as one message whatever its size, which is what a test
+    /// probing the host's message cap needs.
     async fn send_json(&mut self, plaintext: &[u8]) {
         let frame = self.channel.encrypt_frame(plaintext).unwrap();
         self.ws
@@ -1747,11 +1766,32 @@ impl SecureWs {
             .unwrap();
     }
 
+    /// Send `plaintext` the way a fragmenting peer would: as a run of fragment
+    /// messages when it is over 256 KiB.
+    async fn send_fragmented(&mut self, plaintext: &[u8]) {
+        for message in self.channel.encrypt_messages(plaintext).unwrap() {
+            self.ws
+                .send(Message::Binary(Bytes::from(message)))
+                .await
+                .unwrap();
+        }
+    }
+
     /// Next application frame, skipping the ping/pong keepalive traffic.
     async fn next_json(&mut self) -> Value {
-        let frame = next_binary(&mut self.ws).await;
-        let plaintext = self.channel.decrypt_frame(&frame).unwrap();
-        serde_json::from_slice(&plaintext).unwrap()
+        self.next_json_counted().await.0
+    }
+
+    /// [`SecureWs::next_json`], plus how many WebSocket messages carried it.
+    async fn next_json_counted(&mut self) -> (Value, usize) {
+        let mut messages = 0;
+        loop {
+            let message = next_binary(&mut self.ws).await;
+            messages += 1;
+            if let Some(plaintext) = self.channel.decrypt_message(&message).unwrap() {
+                return (serde_json::from_slice(&plaintext).unwrap(), messages);
+            }
+        }
     }
 
     async fn close_code(&mut self) -> u16 {
@@ -2477,6 +2517,168 @@ async fn requests_past_the_in_flight_cap_are_refused_without_dispatching() {
     assert_eq!(refused["id"], "9");
     assert_eq!(refused["ok"], false);
     assert_eq!(refused["error"], TOO_MANY_IN_FLIGHT);
+}
+
+/// Answers `get_git_state` with a `pad` of `args.bytes` bytes, so a test picks
+/// how large the answer is.
+pub(super) struct PaddedDispatch;
+
+impl Dispatch for PaddedDispatch {
+    fn dispatch<'a>(&'a self, op: &'a str, args: Value) -> DispatchFuture<'a> {
+        Box::pin(async move {
+            match op {
+                "get_workspace" => Ok(json!({ "projects": [], "agents": [] })),
+                "get_git_state" => {
+                    let bytes = args["bytes"].as_u64().unwrap_or(0) as usize;
+                    Ok(json!({ "pad": "x".repeat(bytes) }))
+                }
+                _ => Err(UNKNOWN_OP.to_string()),
+            }
+        })
+    }
+}
+
+/// A host answering through [`PaddedDispatch`], with `phone` registered and
+/// connected through `connect`, past `hello`.
+async fn padded_session<F, Fut>(connect: F) -> (Host, SecureWs)
+where
+    F: FnOnce(u16, Device) -> Fut,
+    Fut: std::future::Future<Output = SecureWs>,
+{
+    let host = boot_with(Arc::new(PaddedDispatch));
+    let phone = device();
+    host.state
+        .devices()
+        .register("phone", "ios", &phone.public, &Scope::ALL)
+        .unwrap();
+    let mut ws = connect(host.port, phone).await;
+    ws.request("0", "hello", json!({})).await;
+    assert_eq!(ws.next_json().await["ok"], true);
+    (host, ws)
+}
+
+/// The fix for a long session's history killing the relay link: an answer far
+/// over the 4 MiB message cap crosses as a run of 256 KiB fragments.
+#[tokio::test]
+async fn a_large_answer_crosses_fragmented_and_intact() {
+    let (_host, mut ws) =
+        padded_session(|port, phone| async move { secure_connect(port, &phone).await }).await;
+    let bytes = 20 << 20;
+    ws.request("1", "get_git_state", json!({ "bytes": bytes }))
+        .await;
+    let (reply, messages) = ws.next_json_counted().await;
+    assert_eq!(reply["id"], "1");
+    assert_eq!(reply["ok"], true);
+    assert_eq!(reply["result"]["pad"].as_str().map(str::len), Some(bytes));
+    assert_eq!(messages, (bytes + 64).div_ceil(FRAGMENT_PLAINTEXT));
+
+    // The run left the channel in step: the next answer reads as usual.
+    ws.request("2", "get_workspace", json!({})).await;
+    let (reply, messages) = ws.next_json_counted().await;
+    assert_eq!((reply["id"].as_str(), messages), (Some("2"), 1));
+}
+
+/// The handshake proves a key, not a paired device, so until `pair` or `hello`
+/// has authenticated the peer the host reassembles no run past 64 KiB. A run
+/// over it is closed like any other malformed frame.
+#[tokio::test]
+async fn a_fragment_run_before_authentication_closes_4001() {
+    let host = boot();
+    let mut ws = secure_connect(host.port, &device()).await;
+    let hello =
+        json!({ "id": "1", "op": "hello", "args": { "pad": "x".repeat(2 * FRAGMENT_PLAINTEXT) } });
+    ws.send_fragmented(hello.to_string().as_bytes()).await;
+    assert_eq!(ws.close_code().await, 4001);
+}
+
+/// Once authenticated, the same peer may send a run up to the full cap.
+#[tokio::test]
+async fn a_fragment_run_after_authentication_is_reassembled() {
+    let (_host, mut ws) =
+        padded_session(|port, phone| async move { secure_connect(port, &phone).await }).await;
+    let request =
+        json!({ "id": "1", "op": "get_workspace", "args": { "pad": "x".repeat(2 << 20) } });
+    ws.send_fragmented(request.to_string().as_bytes()).await;
+    let reply = ws.next_json().await;
+    assert_eq!(reply["id"], "1");
+    assert_eq!(reply["ok"], true);
+}
+
+/// A phone from before fragmentation cannot take a run, and the relay would
+/// close the whole host link for the one message it could take, so it keeps
+/// the 4 MiB cap: an answer under it arrives whole, one over it is refused.
+#[tokio::test]
+async fn a_client_without_fragmentation_keeps_the_legacy_cap() {
+    let (_host, mut ws) =
+        padded_session(|port, phone| async move { legacy_connect(port, &phone).await }).await;
+
+    ws.request("1", "get_git_state", json!({ "bytes": 1 << 20 }))
+        .await;
+    let (reply, messages) = ws.next_json_counted().await;
+    assert_eq!((reply["ok"].as_bool(), messages), (Some(true), 1));
+
+    // The op ran; its answer is what could not be carried.
+    ws.request(
+        "2",
+        "get_git_state",
+        json!({ "bytes": LEGACY_MAX_OUTBOUND_FRAME_BYTES }),
+    )
+    .await;
+    let refused = ws.next_json().await;
+    assert_eq!(refused["id"], "2");
+    assert_eq!(refused["ok"], false);
+    assert_eq!(refused["error"], RESPONSE_TOO_LARGE);
+
+    // Nothing happened to the connection: the next request answers as usual.
+    ws.request("3", "get_workspace", json!({})).await;
+    let reply = ws.next_json().await;
+    assert_eq!(reply["id"], "3");
+    assert_eq!(reply["ok"], true);
+}
+
+/// The last resort past fragmentation: an answer over what any peer will
+/// reassemble is refused, not sent. Driven through the cap the function is
+/// handed rather than a 64 MiB answer.
+#[test]
+fn an_answer_over_the_frame_cap_is_refused() {
+    let fits = response_frame("1", Ok(json!("1234")), 64);
+    let over = response_frame("1", Ok(json!("x".repeat(64))), 64);
+    let text = |m: Message| serde_json::from_str::<Value>(m.to_text().unwrap()).unwrap();
+    assert_eq!(text(fits)["result"], "1234");
+    assert_eq!(text(over)["error"], RESPONSE_TOO_LARGE);
+}
+
+#[tokio::test]
+async fn an_event_over_a_connections_frame_cap_is_dropped_for_it_alone() {
+    let host = boot();
+    let (new, old) = (device(), device());
+    for (name, d) in [("new", &new), ("old", &old)] {
+        host.state
+            .devices()
+            .register(name, "ios", &d.public, &Scope::ALL)
+            .unwrap();
+    }
+    let mut new_ws = secure_connect(host.port, &new).await;
+    let mut old_ws = legacy_connect(host.port, &old).await;
+    for ws in [&mut new_ws, &mut old_ws] {
+        ws.request("0", "hello", json!({})).await;
+        assert_eq!(ws.next_json().await["ok"], true);
+    }
+
+    let pad = "x".repeat(LEGACY_MAX_OUTBOUND_FRAME_BYTES);
+    host.state
+        .forward_event("agent:event", &json!({ "pad": pad }));
+    host.state.forward_event(
+        "agent:status",
+        &json!({ "agentId": "arabia", "status": "idle" }),
+    );
+    // Too big for one message, so the old phone never sees it — best-effort
+    // delivery — while the new one gets it fragmented.
+    let (event, messages) = new_ws.next_json_counted().await;
+    assert_eq!(event["event"], "agent:event");
+    assert!(messages > 1);
+    assert_eq!(new_ws.next_json().await["event"], "agent:status");
+    assert_eq!(old_ws.next_json().await["event"], "agent:status");
 }
 
 #[tokio::test]

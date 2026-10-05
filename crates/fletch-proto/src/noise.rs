@@ -7,8 +7,9 @@
 //! passive observer of the LAN does.
 //!
 //! Everything in this module is fixed by `docs/remote-protocol.md` → "Secure
-//! channel": the pattern string, the prologue, empty handshake payloads, the
-//! client as initiator, and the chunked frame format. Both roles live here:
+//! channel": the pattern string, the prologue, the capability byte the
+//! handshake payloads carry, the client as initiator, and the chunked and
+//! fragmented frame formats. Both roles live here:
 //! [`respond`] is the host's half, [`initiate`] the client's, and both are the
 //! same three messages driven by the same [`Handshake`].
 
@@ -34,6 +35,37 @@ const TAG_LEN: usize = 16;
 /// Plaintext bytes per chunk: Noise's cap minus the tag (protocol doc).
 pub const MAX_CHUNK_PLAINTEXT: usize = MAX_NOISE_MESSAGE - TAG_LEN;
 
+/// Capability bit: this end reassembles fragmented frames. In force on a
+/// connection only when both ends advertised it (protocol doc, "Handshake
+/// payloads carry capabilities").
+pub const CAP_FRAGMENTS: u8 = 0x01;
+/// What this build advertises in its handshake payloads.
+pub const CAPABILITIES: u8 = CAP_FRAGMENTS;
+
+/// Frame bytes per fragment message. Small enough that one device's large
+/// answer interleaves with every other device's traffic on the shared relay
+/// link, large enough that the per-message overhead is noise.
+pub const FRAGMENT_PLAINTEXT: usize = 256 * 1024;
+/// Largest frame a run of fragments may reassemble to, and so the largest a
+/// fragmenting end will send. It is also what ends a run that never ends: the
+/// receiver gives up once the run passes it, with no timer needed. A channel
+/// starts at this limit and may be held to less (see
+/// [`Channel::set_frame_limit`]), never more.
+pub const MAX_FRAME_PLAINTEXT: usize = 64 * 1024 * 1024;
+/// Largest frame that still fits one message under the 4 MiB message cap the
+/// host and the relay enforce. The margin covers the chunk overhead (18 bytes
+/// per 64 KiB) and the relay's mux header, with room to spare.
+pub const MAX_MESSAGE_PLAINTEXT: usize = 4 * 1024 * 1024 - 64 * 1024;
+
+/// Opens a fragment message: a zero-length chunk, which can never start an
+/// ordinary message (a chunk shorter than its tag is malformed), so the two
+/// forms cannot be mistaken for each other.
+const FRAGMENT_MARKER: [u8; 2] = [0, 0];
+/// A fragment's flag, the first byte of its plaintext. Inside the ciphertext
+/// on purpose: anyone in the path who could flip it could cut a frame short.
+const MORE: u8 = 0x01;
+const LAST: u8 = 0x00;
+
 /// Marker a client matches on to tell a pinned-key mismatch (which no retry can
 /// fix) from a transport failure (which one might).
 pub const HOST_KEY_MISMATCH: &str = "host-key-mismatch";
@@ -55,10 +87,25 @@ pub(crate) fn builder() -> Result<Builder<'static>> {
 pub struct Handshake {
     state: HandshakeState,
     buf: Vec<u8>,
+    /// What this end advertises, and what the peer did. The connection gets
+    /// the intersection.
+    capabilities: u8,
+    peer_capabilities: u8,
+    /// Handshake messages written or read so far. Message 1 is the one sent
+    /// before any key exists, which is why it carries no capabilities.
+    messages: u8,
 }
 
 impl Handshake {
+    /// One side of the handshake, advertising everything this build supports.
     pub fn new(key: &StaticKey, initiator: bool) -> Result<Self> {
+        Self::with_capabilities(key, initiator, CAPABILITIES)
+    }
+
+    /// [`Handshake::new`] advertising `capabilities` instead. `0` sends the
+    /// empty payloads of an end from before capabilities existed, which is
+    /// how a test plays an old peer.
+    pub fn with_capabilities(key: &StaticKey, initiator: bool, capabilities: u8) -> Result<Self> {
         let builder = builder()?
             .local_private_key(key.private_bytes())
             .map_err(|e| format!("cannot start the handshake: {e}"))?;
@@ -68,26 +115,50 @@ impl Handshake {
             builder.build_responder()
         }
         .map_err(|e| format!("cannot start the handshake: {e}"))?;
-        Ok(Self {
-            state,
-            buf: vec![0u8; MAX_NOISE_MESSAGE],
-        })
+        Ok(Self::from_state(state, capabilities))
     }
 
-    /// The next outgoing handshake message. Payloads are empty by contract.
+    fn from_state(state: HandshakeState, capabilities: u8) -> Self {
+        Self {
+            state,
+            buf: vec![0u8; MAX_NOISE_MESSAGE],
+            capabilities,
+            peer_capabilities: 0,
+            messages: 0,
+        }
+    }
+
+    /// The next outgoing handshake message. Messages 2 and 3 carry this end's
+    /// capability byte; message 1 would carry it in the clear and
+    /// unauthenticated, so it stays empty.
     pub fn write(&mut self) -> Result<Vec<u8>> {
+        let capabilities = [self.capabilities];
+        let payload: &[u8] = if self.messages == 0 || self.capabilities == 0 {
+            &[]
+        } else {
+            &capabilities
+        };
         let n = self
             .state
-            .write_message(&[], &mut self.buf)
+            .write_message(payload, &mut self.buf)
             .map_err(|e| format!("handshake failed: {e}"))?;
+        self.messages += 1;
         Ok(self.buf[..n].to_vec())
     }
 
+    /// Read the peer's next handshake message. Only the first payload byte of
+    /// messages 2 and 3 means anything: an empty payload is an old peer with no
+    /// capabilities, and trailing bytes are left for a later revision.
     pub fn read(&mut self, message: &[u8]) -> Result<()> {
         let mut out = vec![0u8; MAX_NOISE_MESSAGE];
-        self.state
+        let n = self
+            .state
             .read_message(message, &mut out)
             .map_err(|e| format!("handshake failed: {e}"))?;
+        if self.messages > 0 {
+            self.peer_capabilities = out[..n].first().copied().unwrap_or(0);
+        }
+        self.messages += 1;
         Ok(())
     }
 
@@ -112,12 +183,17 @@ impl Handshake {
         Ok(Channel {
             state,
             buf: self.buf,
+            fragments: self.capabilities & self.peer_capabilities & CAP_FRAGMENTS != 0,
+            partial: None,
+            frame_limit: MAX_FRAME_PLAINTEXT,
         })
     }
 }
 
 /// A live connection: one JSON document per frame, encrypted as repeated
-/// `u16 big-endian ciphertext length || ciphertext` chunks.
+/// `u16 big-endian ciphertext length || ciphertext` chunks — one WebSocket
+/// message per frame, or a run of fragment messages for a large frame when both
+/// ends negotiated it.
 ///
 /// Both directions live in one object because `snow` keeps them in one object.
 /// Encryption and decryption must each happen in exactly one place per
@@ -126,6 +202,16 @@ impl Handshake {
 pub struct Channel {
     state: TransportState,
     buf: Vec<u8>,
+    /// Both ends advertised [`CAP_FRAGMENTS`]. Decides both directions: this
+    /// end fragments only to a peer that reassembles, and accepts fragments
+    /// only from a peer it told it would.
+    fragments: bool,
+    /// The frame a fragment run has delivered so far, `None` between frames.
+    partial: Option<Vec<u8>>,
+    /// The most a fragment run may reassemble to on this channel. Ordinary
+    /// messages are not held to it: the transport's 4 MiB message cap already
+    /// bounds each one, and nothing accumulates across them.
+    frame_limit: usize,
 }
 
 impl Channel {
@@ -135,15 +221,134 @@ impl Channel {
         remote_static_base64(self.state.get_remote_static())
     }
 
-    /// One protocol frame as the bytes of one WebSocket binary message:
-    /// repeated `u16` big-endian ciphertext length followed by that ciphertext,
-    /// each chunk covering at most [`MAX_CHUNK_PLAINTEXT`] bytes of `plaintext`.
+    /// Whether large frames travel fragmented on this connection, in either
+    /// direction: both ends advertised [`CAP_FRAGMENTS`].
+    pub fn fragments(&self) -> bool {
+        self.fragments
+    }
+
+    /// Hold fragment runs on this channel to `bytes`, at most
+    /// [`MAX_FRAME_PLAINTEXT`], which is where every channel starts.
     ///
-    /// Empty plaintext is one chunk holding just the tag, so a frame is never
-    /// zero bytes and the two ends' nonces advance together — hence `loop`, not
-    /// `chunks()`, which yields nothing for empty input.
+    /// Reassembly begins as soon as the handshake is done, but the handshake
+    /// only proves the peer holds *a* key, not one its owner trusts. The host
+    /// keeps the limit small until the first frame has authenticated the peer,
+    /// so a stranger cannot make it buffer 64 MiB per connection; a client
+    /// whose peer is the pinned host has no reason to lower it.
+    pub fn set_frame_limit(&mut self, bytes: usize) {
+        self.frame_limit = bytes.min(MAX_FRAME_PLAINTEXT);
+    }
+
+    /// One protocol frame as the WebSocket binary messages that carry it, in
+    /// order: one ordinary message, unless fragmentation was negotiated and the
+    /// frame is over [`FRAGMENT_PLAINTEXT`], in which case a run of fragment
+    /// messages. A frame over [`MAX_FRAME_PLAINTEXT`] is refused before
+    /// anything is encrypted, since the peer would refuse the run.
+    ///
+    /// The whole run is encrypted in this one call, under whatever lock the
+    /// caller holds on the channel, so no other frame's encryption can land
+    /// between two of its fragments. The caller still has to write the
+    /// messages back to back, which a connection's single writer does.
+    pub fn encrypt_messages(&mut self, frame: &[u8]) -> Result<Vec<Vec<u8>>> {
+        if !self.fragments || frame.len() <= FRAGMENT_PLAINTEXT {
+            return Ok(vec![self.encrypt_frame(frame)?]);
+        }
+        if frame.len() > MAX_FRAME_PLAINTEXT {
+            return Err(format!(
+                "a {} byte frame is over the {MAX_FRAME_PLAINTEXT} byte cap",
+                frame.len()
+            ));
+        }
+        // Every piece but the last is exactly `FRAGMENT_PLAINTEXT`, and the
+        // last is not empty since the frame is over it: the only shape
+        // `decrypt_message` accepts.
+        let mut pieces = frame.chunks(FRAGMENT_PLAINTEXT).peekable();
+        let mut messages = Vec::with_capacity(frame.len().div_ceil(FRAGMENT_PLAINTEXT));
+        let mut plaintext = Vec::with_capacity(1 + FRAGMENT_PLAINTEXT);
+        while let Some(piece) = pieces.next() {
+            plaintext.clear();
+            plaintext.push(if pieces.peek().is_some() { MORE } else { LAST });
+            plaintext.extend_from_slice(piece);
+            let mut message = FRAGMENT_MARKER.to_vec();
+            self.encrypt_chunks(&plaintext, &mut message)?;
+            messages.push(message);
+        }
+        Ok(messages)
+    }
+
+    /// One WebSocket binary message in; a whole frame out once its last
+    /// message has arrived, `None` while a fragment run is still open.
+    ///
+    /// Anything that breaks the fragment rules — a fragment on a connection
+    /// that did not negotiate them, an ordinary message inside a run, a bad
+    /// flag, a piece of the wrong size, a run past this channel's frame
+    /// limit — is an error exactly like
+    /// a frame that does not decrypt, and the caller closes the connection.
+    pub fn decrypt_message(&mut self, message: &[u8]) -> Result<Option<Vec<u8>>> {
+        // Without the capability a marker is just the malformed zero-length
+        // chunk it always was, and `decrypt_frame` says so.
+        let fragment = message
+            .strip_prefix(&FRAGMENT_MARKER)
+            .filter(|_| self.fragments);
+        let Some(chunks) = fragment else {
+            if self.partial.is_some() {
+                return Err("malformed frame: an ordinary message inside a fragment run".into());
+            }
+            return self.decrypt_frame(message).map(Some);
+        };
+        let plaintext = self.decrypt_frame(chunks)?;
+        let (&flag, piece) = plaintext
+            .split_first()
+            .ok_or_else(|| "malformed fragment: no flag".to_string())?;
+        // Only the shape the encoder produces. Without it the byte limit alone
+        // would not end a run: empty or tiny pieces could keep one open for
+        // ever. With it a run is at most `frame_limit / FRAGMENT_PLAINTEXT`
+        // messages, and no counter or timer is needed.
+        let sized = match flag {
+            MORE => piece.len() == FRAGMENT_PLAINTEXT,
+            LAST => (1..=FRAGMENT_PLAINTEXT).contains(&piece.len()),
+            other => return Err(format!("malformed fragment: flag {other:#04x}")),
+        };
+        if !sized {
+            let which = if flag == MORE { "middle" } else { "last" };
+            return Err(format!(
+                "malformed fragment: a {} byte {which} piece",
+                piece.len()
+            ));
+        }
+        let mut frame = self.partial.take().unwrap_or_default();
+        if frame.len() + piece.len() > self.frame_limit {
+            return Err(format!(
+                "malformed frame: fragments past the {} byte cap",
+                self.frame_limit
+            ));
+        }
+        frame.extend_from_slice(piece);
+        if flag == MORE {
+            self.partial = Some(frame);
+            return Ok(None);
+        }
+        Ok(Some(frame))
+    }
+
+    /// One protocol frame as the bytes of one ordinary WebSocket binary
+    /// message: repeated `u16` big-endian ciphertext length followed by that
+    /// ciphertext, each chunk covering at most [`MAX_CHUNK_PLAINTEXT`] bytes of
+    /// `plaintext`. What [`Channel::encrypt_messages`] sends for a frame it
+    /// does not fragment, and the whole format toward a peer without the
+    /// capability.
     pub fn encrypt_frame(&mut self, plaintext: &[u8]) -> Result<Vec<u8>> {
         let mut out = Vec::with_capacity(plaintext.len() + TAG_LEN + 2);
+        self.encrypt_chunks(plaintext, &mut out)?;
+        Ok(out)
+    }
+
+    /// Append `plaintext` to `out` as chunks.
+    ///
+    /// Empty plaintext is one chunk holding just the tag, so a message is never
+    /// zero bytes and the two ends' nonces advance together — hence `loop`, not
+    /// `chunks()`, which yields nothing for empty input.
+    fn encrypt_chunks(&mut self, plaintext: &[u8], out: &mut Vec<u8>) -> Result<()> {
         let mut rest = plaintext;
         loop {
             let (chunk, tail) = rest.split_at(rest.len().min(MAX_CHUNK_PLAINTEXT));
@@ -156,13 +361,15 @@ impl Channel {
             out.extend_from_slice(&self.buf[..n]);
             rest = tail;
             if rest.is_empty() {
-                return Ok(out);
+                return Ok(());
             }
         }
     }
 
-    /// The inverse: decrypt the chunks in order and concatenate the plaintext.
-    /// Anything malformed — a truncated header or body, a chunk too short to
+    /// The inverse of [`Channel::encrypt_frame`]: decrypt one ordinary
+    /// message's chunks in order and concatenate the plaintext. A fragment
+    /// message is not one; a caller on a connection that may fragment uses
+    /// [`Channel::decrypt_message`] instead. Anything malformed — a truncated header or body, a chunk too short to
     /// hold a tag, a tag that does not verify — is an error, and the caller
     /// closes the connection rather than trying to resynchronize.
     pub fn decrypt_frame(&mut self, frame: &[u8]) -> Result<Vec<u8>> {
@@ -205,8 +412,8 @@ fn remote_static_bytes(key: Option<&[u8]>) -> Result<[u8; KEY_LEN]> {
 }
 
 /// Drive the responder's half of the handshake over `ws`: read `-> e`, write
-/// `<- e, ee, s, es`, read `-> s, se`. Three WebSocket **binary** messages with
-/// empty Noise payloads.
+/// `<- e, ee, s, es`, read `-> s, se`. Three WebSocket **binary** messages, the
+/// last two carrying each end's capability byte.
 ///
 /// Returns the channel and the initiator's static public key, which is the only
 /// device identity a host ever trusts. Any non-binary message, or any Noise
@@ -302,10 +509,46 @@ mod tests {
     /// without real transport states, since the tag and the nonce counter are
     /// what it has to get right.
     fn pair() -> (Channel, Channel) {
+        pair_advertising(CAPABILITIES, CAPABILITIES)
+    }
+
+    /// [`pair`] with each end advertising what it is given: (initiator,
+    /// responder).
+    fn pair_advertising(phone_caps: u8, host_caps: u8) -> (Channel, Channel) {
         let phone = fresh_key();
         let host = fresh_key();
-        let mut a = Handshake::new(&phone, true).unwrap();
-        let mut b = Handshake::new(&host, false).unwrap();
+        let a = Handshake::with_capabilities(&phone, true, phone_caps).unwrap();
+        let b = Handshake::with_capabilities(&host, false, host_caps).unwrap();
+        complete(a, b, &phone)
+    }
+
+    /// [`pair_advertising`] with every key fixed, statics and ephemerals both.
+    /// Two pairs built from the same keys derive the same transport keys
+    /// whatever they advertise — the payloads feed the handshake hash, never
+    /// the keys — so their output can be compared byte for byte.
+    fn fixed_pair(phone_caps: u8, host_caps: u8) -> (Channel, Channel) {
+        let phone = StaticKey::from_private([1; KEY_LEN]).unwrap();
+        let host = StaticKey::from_private([2; KEY_LEN]).unwrap();
+        let start = |key: &StaticKey, ephemeral: &[u8], initiator: bool, caps: u8| {
+            let builder = builder()
+                .unwrap()
+                .local_private_key(key.private_bytes())
+                .unwrap()
+                .fixed_ephemeral_key_for_testing_only(ephemeral);
+            let state = if initiator {
+                builder.build_initiator()
+            } else {
+                builder.build_responder()
+            };
+            Handshake::from_state(state.unwrap(), caps)
+        };
+        let a = start(&phone, &[3; KEY_LEN], true, phone_caps);
+        let b = start(&host, &[4; KEY_LEN], false, host_caps);
+        complete(a, b, &phone)
+    }
+
+    /// Run the three messages between `a` (initiator) and `b`.
+    fn complete(mut a: Handshake, mut b: Handshake, phone: &StaticKey) -> (Channel, Channel) {
         let e = a.write().unwrap();
         b.read(&e).unwrap();
         let ees = b.write().unwrap();
@@ -459,5 +702,192 @@ mod tests {
         let (_, mut other) = pair();
         let frame = phone.encrypt_frame(b"{\"id\":\"1\"}").unwrap();
         assert!(other.decrypt_frame(&frame).is_err());
+    }
+
+    // --- fragmentation -------------------------------------------------------
+
+    /// A fragment message as a sender that breaks the rules would build it:
+    /// the marker, then `flag || piece` as chunks.
+    fn raw_fragment(channel: &mut Channel, flag: u8, piece: &[u8]) -> Vec<u8> {
+        let mut plaintext = vec![flag];
+        plaintext.extend_from_slice(piece);
+        let mut message = FRAGMENT_MARKER.to_vec();
+        channel.encrypt_chunks(&plaintext, &mut message).unwrap();
+        message
+    }
+
+    #[test]
+    fn both_ends_must_advertise_for_fragmentation_to_be_on() {
+        for (phone_caps, host_caps, on) in [
+            (CAPABILITIES, CAPABILITIES, true),
+            (CAPABILITIES, 0, false),
+            (0, CAPABILITIES, false),
+            (0, 0, false),
+            // Reserved bits are ignored, not refused.
+            (0xff, CAPABILITIES, true),
+        ] {
+            let (phone, host) = pair_advertising(phone_caps, host_caps);
+            assert_eq!(phone.fragments(), on, "{phone_caps:#x} / {host_caps:#x}");
+            assert_eq!(host.fragments(), on, "{phone_caps:#x} / {host_caps:#x}");
+        }
+    }
+
+    #[test]
+    fn a_small_frame_is_byte_identical_to_the_old_format() {
+        let (mut new, _) = fixed_pair(CAPABILITIES, CAPABILITIES);
+        let (mut old, _) = fixed_pair(0, 0);
+        assert!(new.fragments() && !old.fragments());
+        for len in [0, 1, MAX_CHUNK_PLAINTEXT + 1, FRAGMENT_PLAINTEXT] {
+            let plaintext = body(len);
+            assert_eq!(
+                new.encrypt_messages(&plaintext).unwrap(),
+                vec![old.encrypt_frame(&plaintext).unwrap()],
+                "a {len} byte frame is one message, exactly as before"
+            );
+        }
+    }
+
+    #[test]
+    fn a_large_frame_splits_into_fragments_and_reassembles() {
+        for (len, fragments) in [
+            (FRAGMENT_PLAINTEXT + 1, 2),
+            (2 * FRAGMENT_PLAINTEXT, 2),
+            (3 * FRAGMENT_PLAINTEXT + 5, 4),
+        ] {
+            let (mut phone, mut host) = pair();
+            let frame = body(len);
+            let messages = host.encrypt_messages(&frame).unwrap();
+            assert_eq!(messages.len(), fragments, "{len} bytes");
+            let chunks = (1 + FRAGMENT_PLAINTEXT).div_ceil(MAX_CHUNK_PLAINTEXT);
+            for message in &messages {
+                assert_eq!(message[..2], FRAGMENT_MARKER);
+                assert!(message.len() <= 2 + 1 + FRAGMENT_PLAINTEXT + chunks * (2 + TAG_LEN));
+            }
+            let (last, run) = messages.split_last().unwrap();
+            for message in run {
+                assert_eq!(phone.decrypt_message(message).unwrap(), None);
+            }
+            assert_eq!(phone.decrypt_message(last).unwrap(), Some(frame));
+
+            // The run left the channel in step: the next frame reads as usual.
+            let next = host.encrypt_messages(b"{}").unwrap();
+            assert_eq!(phone.decrypt_message(&next[0]).unwrap().unwrap(), b"{}");
+        }
+    }
+
+    #[test]
+    fn the_total_bound_is_enforced_on_both_ends() {
+        let (mut phone, mut host) = pair();
+        let err = host
+            .encrypt_messages(&vec![0; MAX_FRAME_PLAINTEXT + 1])
+            .unwrap_err();
+        assert!(err.contains("cap"), "{err}");
+        // Nothing was encrypted, so the channel is still usable.
+        let ok = host.encrypt_messages(b"{}").unwrap();
+        assert_eq!(phone.decrypt_message(&ok[0]).unwrap().unwrap(), b"{}");
+
+        // A run that never ends is cut off at the bound rather than buffered.
+        // Seeded directly: pushing 64 MiB through the cipher proves nothing
+        // more about the check.
+        phone.partial = Some(vec![0; MAX_FRAME_PLAINTEXT]);
+        let last = raw_fragment(&mut host, LAST, b"x");
+        let err = phone.decrypt_message(&last).unwrap_err();
+        assert!(err.contains("cap"), "{err}");
+    }
+
+    /// Every middle piece is exactly `FRAGMENT_PLAINTEXT` and the last one 1
+    /// to `FRAGMENT_PLAINTEXT`, which is what keeps a run to a bounded number
+    /// of messages: no empty or tiny pieces to hold it open with.
+    #[test]
+    fn a_piece_of_the_wrong_size_is_malformed() {
+        for (flag, len) in [
+            (MORE, FRAGMENT_PLAINTEXT - 1),
+            (MORE, 0),
+            (MORE, FRAGMENT_PLAINTEXT + 1),
+            (LAST, 0),
+            (LAST, FRAGMENT_PLAINTEXT + 1),
+        ] {
+            let (mut phone, mut host) = pair();
+            let fragment = raw_fragment(&mut host, flag, &body(len));
+            let err = phone.decrypt_message(&fragment).unwrap_err();
+            assert!(err.contains("piece"), "{flag:#04x} / {len}: {err}");
+        }
+
+        // The sizes at the edges of what is allowed, as one run.
+        let (mut phone, mut host) = pair();
+        let middle = raw_fragment(&mut host, MORE, &body(FRAGMENT_PLAINTEXT));
+        let last = raw_fragment(&mut host, LAST, b"x");
+        assert_eq!(phone.decrypt_message(&middle).unwrap(), None);
+        let frame = phone.decrypt_message(&last).unwrap().unwrap();
+        assert_eq!(frame.len(), FRAGMENT_PLAINTEXT + 1);
+    }
+
+    #[test]
+    fn the_frame_limit_can_be_lowered_and_raised_but_not_past_the_cap() {
+        let frame = body(2 * FRAGMENT_PLAINTEXT);
+        let (mut phone, mut host) = pair();
+        assert_eq!(host.frame_limit, MAX_FRAME_PLAINTEXT, "the default");
+
+        host.set_frame_limit(64 * 1024);
+        // An ordinary message is not a run, and the message cap bounds it.
+        let ordinary = phone.encrypt_frame(&body(FRAGMENT_PLAINTEXT)).unwrap();
+        assert_eq!(
+            host.decrypt_message(&ordinary).unwrap().unwrap().len(),
+            FRAGMENT_PLAINTEXT
+        );
+        // A run is refused on its first fragment, before anything piles up.
+        let messages = phone.encrypt_messages(&frame).unwrap();
+        let err = host.decrypt_message(&messages[0]).unwrap_err();
+        assert!(err.contains("65536 byte cap"), "{err}");
+
+        let (mut phone, mut host) = pair();
+        host.set_frame_limit(64 * 1024);
+        host.set_frame_limit(usize::MAX);
+        assert_eq!(host.frame_limit, MAX_FRAME_PLAINTEXT, "the ceiling");
+        let messages = phone.encrypt_messages(&frame).unwrap();
+        let (last, run) = messages.split_last().unwrap();
+        for message in run {
+            assert_eq!(host.decrypt_message(message).unwrap(), None);
+        }
+        assert_eq!(host.decrypt_message(last).unwrap(), Some(frame));
+    }
+
+    #[test]
+    fn a_peer_without_the_capability_never_receives_fragments() {
+        for (phone_caps, host_caps) in [(0, CAPABILITIES), (CAPABILITIES, 0)] {
+            let (mut phone, mut host) = pair_advertising(phone_caps, host_caps);
+            let frame = body(3 * FRAGMENT_PLAINTEXT);
+            let messages = host.encrypt_messages(&frame).unwrap();
+            assert_eq!(messages.len(), 1, "one ordinary message, as before");
+            // Today's decoder, which knows nothing of fragments, reads it.
+            assert_eq!(phone.decrypt_frame(&messages[0]).unwrap(), frame);
+        }
+    }
+
+    #[test]
+    fn a_fragment_on_a_connection_without_the_capability_is_malformed() {
+        let (mut phone, mut host) = pair_advertising(0, CAPABILITIES);
+        let fragment = raw_fragment(&mut host, LAST, b"{}");
+        assert!(phone.decrypt_message(&fragment).is_err());
+    }
+
+    #[test]
+    fn an_ordinary_message_inside_a_run_is_malformed() {
+        let (mut phone, mut host) = pair();
+        let first = raw_fragment(&mut host, MORE, &body(FRAGMENT_PLAINTEXT));
+        let ordinary = host.encrypt_frame(b"{}").unwrap();
+        assert_eq!(phone.decrypt_message(&first).unwrap(), None);
+        let err = phone.decrypt_message(&ordinary).unwrap_err();
+        assert!(err.contains("inside a fragment run"), "{err}");
+    }
+
+    #[test]
+    fn a_bad_flag_or_a_bare_marker_is_malformed() {
+        let (mut phone, mut host) = pair();
+        let bad = raw_fragment(&mut host, 0x02, b"{}");
+        assert!(phone.decrypt_message(&bad).unwrap_err().contains("flag"));
+
+        let (mut phone, _) = pair();
+        assert!(phone.decrypt_message(&FRAGMENT_MARKER).is_err());
     }
 }

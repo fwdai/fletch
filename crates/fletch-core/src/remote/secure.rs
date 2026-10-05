@@ -11,7 +11,9 @@
 //! phone runs, and what the tests here drive through [`Handshake`].
 
 pub use fletch_proto::keys::{encode_key, StaticKey as HostKey, HOST_KEY_FILE};
-pub use fletch_proto::noise::{respond, Channel as SecureChannel};
+pub use fletch_proto::noise::{
+    respond, Channel as SecureChannel, MAX_FRAME_PLAINTEXT, MAX_MESSAGE_PLAINTEXT,
+};
 
 /// The initiator half. Production never runs it on this end — the phone does —
 /// so only the tests here reach for it.

@@ -25,18 +25,27 @@ use tokio_tungstenite::tungstenite::protocol::CloseFrame;
 use tokio_tungstenite::tungstenite::{Bytes, Message};
 use tokio_tungstenite::WebSocketStream;
 
-use super::dispatch::Scope;
+use super::dispatch::{Dispatch, Scope};
 use super::relay::{Frame, RelayState, RelayTiming};
 use super::secure::{Handshake, HostKey, SecureChannel};
-use super::tests::{device, Device, StubDispatch};
+use super::tests::{device, Device, PaddedDispatch, StubDispatch};
 use super::{RemoteState, DEFAULT_RELAY_URL};
+use fletch_proto::noise::FRAGMENT_PLAINTEXT;
 
 /// Every await in these tests is bounded: a link that never arrives should fail
 /// the test, not hang the suite.
 const PATIENCE: Duration = Duration::from_secs(5);
+/// For the first frame of a multi-MiB answer, which the host only sends once it
+/// has serialized and encrypted the whole run. In a debug build on a loaded CI
+/// runner that alone has taken longer than `PATIENCE`.
+const LARGE_PATIENCE: Duration = Duration::from_secs(30);
 
 async fn within<F: Future>(what: &str, f: F) -> F::Output {
-    tokio::time::timeout(PATIENCE, f)
+    within_for(PATIENCE, what, f).await
+}
+
+async fn within_for<F: Future>(patience: Duration, what: &str, f: F) -> F::Output {
+    tokio::time::timeout(patience, f)
         .await
         .unwrap_or_else(|_| panic!("timed out waiting for {what}"))
 }
@@ -181,6 +190,7 @@ async fn accept_loop(
                 ws,
                 path,
                 pending: VecDeque::new(),
+                patience: PATIENCE,
             })
             .await
             .is_err()
@@ -208,6 +218,9 @@ struct HostLink {
     /// Frames for a connection other than the one currently being read, kept
     /// so two devices can be driven in any order.
     pending: VecDeque<Frame>,
+    /// How long one read waits for the next frame. `PATIENCE`, unless a test
+    /// is waiting on a large answer (see `LARGE_PATIENCE`).
+    patience: Duration,
 }
 
 impl HostLink {
@@ -221,7 +234,7 @@ impl HostLink {
     /// The next frame, or `None` once the link is over.
     async fn read(&mut self) -> Option<Frame> {
         loop {
-            match within("a link frame", self.ws.next()).await {
+            match within_for(self.patience, "a link frame", self.ws.next()).await {
                 Some(Ok(Message::Binary(bytes))) => {
                     return Some(Frame::decode(&bytes).expect("a decodable frame"))
                 }
@@ -238,7 +251,7 @@ impl HostLink {
     /// it. `None` once the link is over.
     async fn read_raw(&mut self) -> Option<Bytes> {
         loop {
-            match within("a link frame", self.ws.next()).await {
+            match within_for(self.patience, "a link frame", self.ws.next()).await {
                 Some(Ok(Message::Binary(bytes))) => return Some(bytes),
                 Some(Ok(Message::Ping(_))) | Some(Ok(Message::Pong(_))) => continue,
                 Some(Ok(Message::Close(_))) | None => return None,
@@ -337,9 +350,20 @@ impl Phone {
     }
 
     async fn next_json(&mut self, link: &mut HostLink) -> Value {
-        let payload = link.data_for(self.conn).await;
-        let plaintext = self.channel.decrypt_frame(&payload).unwrap();
-        serde_json::from_slice(&plaintext).unwrap()
+        self.next_json_sized(link).await.0
+    }
+
+    /// [`Phone::next_json`], plus the size of every DATA payload that carried
+    /// it — what the relay's per-message cap applies to.
+    async fn next_json_sized(&mut self, link: &mut HostLink) -> (Value, Vec<usize>) {
+        let mut sizes = Vec::new();
+        loop {
+            let payload = link.data_for(self.conn).await;
+            sizes.push(payload.len());
+            if let Some(plaintext) = self.channel.decrypt_message(&payload).unwrap() {
+                return (serde_json::from_slice(&plaintext).unwrap(), sizes);
+            }
+        }
     }
 }
 
@@ -354,8 +378,12 @@ struct Host {
 
 /// A started host pointed at `url`, with the relay's waits shortened.
 fn boot(url: &str) -> Host {
+    boot_with(url, Arc::new(StubDispatch))
+}
+
+fn boot_with(url: &str, dispatch: Arc<dyn Dispatch>) -> Host {
     let dir = tempfile::tempdir().unwrap();
-    let state = RemoteState::new(dir.path(), Arc::new(StubDispatch));
+    let state = RemoteState::new(dir.path(), dispatch);
     state.set_relay_timing(fast());
     state.set_relay(Some(url.to_string())).unwrap();
     state.start(0).unwrap();
@@ -500,6 +528,91 @@ async fn a_relayed_device_handshakes_and_says_hello() {
     let reply = conn.next_json(&mut link).await;
     assert_eq!(reply["id"], "2");
     assert_eq!(reply["result"]["agents"], json!([]));
+}
+
+/// The failure this exists for: one answer over the relay's 4 MiB message cap
+/// used to make the relay close the whole host link, every device with it. It
+/// now crosses as DATA frames each far under the cap, and the link carries on.
+#[tokio::test]
+async fn a_large_answer_crosses_the_relay_as_data_frames_under_the_cap() {
+    let mut relay = FakeRelay::start(Verdict::Accept).await;
+    let host = boot_with(&relay.url, Arc::new(PaddedDispatch));
+    let mut link = relay.next_link().await;
+    let phone = device();
+    host.state
+        .devices()
+        .register("phone", "ios", &phone.public, &Scope::ALL)
+        .unwrap();
+    let mut conn = Phone::open(&mut link, 1, &phone).await;
+    conn.request(&mut link, "0", "hello", json!({})).await;
+    assert_eq!(conn.next_json(&mut link).await["ok"], true);
+
+    // Over the 4 MiB cap, which is all this needs to prove.
+    let bytes = 5 << 20;
+    conn.request(&mut link, "1", "get_git_state", json!({ "bytes": bytes }))
+        .await;
+    link.patience = LARGE_PATIENCE;
+    let (reply, sizes) = conn.next_json_sized(&mut link).await;
+    link.patience = PATIENCE;
+    assert_eq!(reply["id"], "1");
+    assert_eq!(reply["result"]["pad"].as_str().map(str::len), Some(bytes));
+    assert!(sizes.len() > 1, "fragmented, not one message");
+    assert!(
+        sizes.iter().all(|&n| n < 4 << 20),
+        "every DATA payload fits the relay's cap: {sizes:?}"
+    );
+
+    conn.request(&mut link, "2", "get_workspace", json!({}))
+        .await;
+    assert_eq!(conn.next_json(&mut link).await["id"], "2");
+}
+
+/// The shared link stays fair: once one device's large answer is on its way, a
+/// small answer for another device overtakes the rest of the run instead of
+/// waiting behind all of it.
+#[tokio::test]
+async fn a_large_answer_does_not_hold_up_another_device() {
+    let mut relay = FakeRelay::start(Verdict::Accept).await;
+    let host = boot_with(&relay.url, Arc::new(PaddedDispatch));
+    let mut link = relay.next_link().await;
+    let (one, two) = (device(), device());
+    for (name, d) in [("phone", &one), ("tablet", &two)] {
+        host.state
+            .devices()
+            .register(name, "ios", &d.public, &Scope::ALL)
+            .unwrap();
+    }
+    let mut big = Phone::open(&mut link, 1, &one).await;
+    let mut small = Phone::open(&mut link, 2, &two).await;
+    for (conn, id) in [(&mut big, "a"), (&mut small, "b")] {
+        conn.request(&mut link, id, "hello", json!({})).await;
+        assert_eq!(conn.next_json(&mut link).await["ok"], true);
+    }
+
+    // A 32-message run against a per-connection share of 4, so most of it is
+    // still on the host when the second request lands.
+    let bytes: usize = 8 << 20;
+    big.request(&mut link, "a1", "get_git_state", json!({ "bytes": bytes }))
+        .await;
+    link.patience = LARGE_PATIENCE;
+    let first = link.read_for(1).await;
+    small
+        .request(&mut link, "b1", "get_workspace", json!({}))
+        .await;
+    let answer = link.data_for(2).await;
+    let behind = link.pending.iter().filter(|f| f.conn() == 1).count();
+    let run = (bytes + 64).div_ceil(FRAGMENT_PLAINTEXT);
+    assert!(
+        1 + behind < run,
+        "the small answer waited for the whole {run}-message run"
+    );
+
+    // Both still read intact, in their own order.
+    let reply = small.channel.decrypt_message(&answer).unwrap().unwrap();
+    assert_eq!(serde_json::from_slice::<Value>(&reply).unwrap()["id"], "b1");
+    link.pending.push_front(first);
+    let (reply, _) = big.next_json_sized(&mut link).await;
+    assert_eq!(reply["result"]["pad"].as_str().map(str::len), Some(bytes));
 }
 
 #[tokio::test]
