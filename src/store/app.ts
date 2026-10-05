@@ -1,4 +1,5 @@
 import { checkForUpdate, type UpdateProgress } from "@/util/autoUpdate";
+import { type BootStatus, INITIAL_BOOT_STATUS } from "@/util/boot";
 import {
   hydrateAccount,
   hydrateSettings,
@@ -13,6 +14,9 @@ export interface AppSlice {
   busy: boolean;
   lastError: string | null;
   initialized: boolean;
+  /** Where the engine is in starting. `App` renders the boot screen until it
+   *  is `ready`; nothing may call an engine command before then. */
+  bootStatus: BootStatus;
   /** Version string of an update that's been downloaded + staged and is
    *  waiting for a restart to take effect. `null` = none pending. */
   updateReadyVersion: string | null;
@@ -28,6 +32,7 @@ export interface AppSlice {
   updateDownload: UpdateProgress | null;
 
   init: () => Promise<void>;
+  setBootStatus: (status: BootStatus) => void;
   clearError: () => void;
   /** Surface a message in the global error banner. For components (which can't
    *  call `set`) to report a failure they'd otherwise have to swallow. */
@@ -49,6 +54,9 @@ export const createAppSlice: SliceCreator<AppSlice> = (set, get) => ({
   updateCheckStatus: null,
   updateDownload: null,
   initialized: false,
+  bootStatus: INITIAL_BOOT_STATUS,
+
+  setBootStatus: (bootStatus) => set({ bootStatus }),
 
   init: async () => {
     if (get().initialized) return;

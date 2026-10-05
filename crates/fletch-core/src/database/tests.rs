@@ -620,6 +620,30 @@ fn fresh_init_creates_no_backup() {
     assert!(backup_files(dir.path()).is_empty());
 }
 
+/// What a host shows while a large database comes up: the backup is announced
+/// before it runs, and only when `backup_before_upgrade` will actually run one.
+#[test]
+fn init_reports_its_phases_in_order() {
+    let phases_of = |dir: &Path| {
+        let phases = std::cell::RefCell::new(Vec::new());
+        init_with_progress(dir, &|p| phases.borrow_mut().push(p)).unwrap();
+        phases.into_inner()
+    };
+
+    let fresh = tempfile::tempdir().unwrap();
+    assert_eq!(phases_of(fresh.path()), [DbPhase::Migrating]);
+
+    let upgrading = tempfile::tempdir().unwrap();
+    let mut conn = open_db(&upgrading.path().join(DB_FILENAME)).unwrap();
+    get_migrations().to_version(&mut conn, 1).unwrap();
+    drop(conn);
+    assert_eq!(
+        phases_of(upgrading.path()),
+        [DbPhase::BackingUp, DbPhase::Migrating]
+    );
+    assert_eq!(backup_files(upgrading.path()).len(), 1);
+}
+
 fn make_project(conn: &Connection) -> String {
     db_insert(conn, "projects", json!({ "name": "test-project" })).unwrap()
 }

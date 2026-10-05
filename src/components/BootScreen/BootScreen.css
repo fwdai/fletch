@@ -1,0 +1,38 @@
+/* Fixed colors on purpose — see BootScreen/index.tsx. The background is the
+ * window's own (tauri.conf.json), so the first frame changes nothing. */
+.boot-screen {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  background: #0e1011;
+  color: #8a9096;
+  font-size: var(--fs-sm);
+  --accent: #c2906a;
+}
+.boot-mark {
+  width: 36px;
+  height: 36px;
+  color: #e6e8ea;
+  margin-bottom: 10px;
+}
+.boot-step {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+.boot-title {
+  color: #e6e8ea;
+  font-size: var(--fs-lg);
+  font-weight: 500;
+}
+.boot-message {
+  max-width: 440px;
+  text-align: center;
+  line-height: var(--lh-normal);
+  white-space: pre-wrap;
+  word-break: break-word;
+}

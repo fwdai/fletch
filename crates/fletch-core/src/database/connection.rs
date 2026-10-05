@@ -86,13 +86,34 @@ pub(crate) fn get_migrations() -> Migrations<'static> {
     Migrations::new(MIGRATIONS.iter().map(|&sql| M::up(sql)).collect())
 }
 
+/// The steps of [`init`] that can take real time on a large database, for a
+/// host that shows startup progress. Each is reported just before it starts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DbPhase {
+    /// The pre-upgrade snapshot. Only when an existing schema is being
+    /// upgraded — see `backup_before_upgrade`.
+    BackingUp,
+    Migrating,
+}
+
 pub fn init(data_dir: &Path) -> Result<Arc<Mutex<Connection>>> {
+    init_with_progress(data_dir, &|_| {})
+}
+
+pub fn init_with_progress(
+    data_dir: &Path,
+    on_phase: &dyn Fn(DbPhase),
+) -> Result<Arc<Mutex<Connection>>> {
     std::fs::create_dir_all(data_dir)?;
     migrate_legacy_db_name(data_dir)?;
     quarantine_orphaned_wal(data_dir)?;
     let db_path = data_dir.join(DB_FILENAME);
     let mut conn = open_db(&db_path)?;
+    if upgrade_pending(&conn)? {
+        on_phase(DbPhase::BackingUp);
+    }
     backup_before_upgrade(&conn, &db_path)?;
+    on_phase(DbPhase::Migrating);
     // Foreign-key enforcement must be OFF while migrations run, and that is the
     // caller's job — rusqlite_migration never touches the pragma. With it on, a
     // table-rebuild migration (CREATE new / INSERT SELECT / DROP old / RENAME,
@@ -209,6 +230,14 @@ fn map_migration_error(e: rusqlite_migration::Error) -> Error {
         ME::MigrationDefinition(MDE::DatabaseTooFarAhead) => Error::SchemaTooNew,
         other => Error::Other(format!("migration failed: {other}")),
     }
+}
+
+/// Whether `backup_before_upgrade` will snapshot: an existing schema below the
+/// current migration count. Kept beside it as the same rule, so the progress
+/// report and the backup agree on when there is one.
+fn upgrade_pending(conn: &Connection) -> Result<bool> {
+    let applied: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    Ok(applied > 0 && (applied as usize) < MIGRATIONS.len())
 }
 
 /// Snapshot the DB aside before applying migrations, but only when an existing

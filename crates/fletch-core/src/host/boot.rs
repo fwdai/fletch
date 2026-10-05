@@ -4,15 +4,17 @@
 //! lives here: the database, the in-process setting mirrors the spawn path reads
 //! without a DB handle, the supervisor, the workflow scheduler, the roadmap
 //! loops, the startup sweeps and (on a unix host) the termination handler. The
-//! desktop calls [`boot`] from `setup` and then does its own UI work with the
-//! handles [`Engine`] hands back; a headless host calls the same function and
-//! has nothing to add.
+//! desktop calls [`boot`] on a thread of its own (so its window stays live while
+//! a large database is backed up and migrated) and then does its own UI work
+//! with the handles [`Engine`] hands back; a headless host calls the same
+//! function and has nothing to add.
 //!
 //! No `tauri::` anywhere below, by design — that is the whole point of the
 //! module. What genuinely needs the desktop is passed in as a closure
 //! ([`BootConfig::focus`], [`BootConfig::on_supervisor`],
 //! [`BootConfig::recover_db`], [`BootConfig::signals`]) or done by the caller
-//! after [`boot`] returns.
+//! after [`boot`] returns. Every closure is `Send`, so the whole [`BootConfig`]
+//! can be moved onto that thread.
 //!
 //! The order of the steps is the order `setup` ran them in, down to the
 //! interleaving that looks arbitrary: several of these mirrors are read by
@@ -41,16 +43,41 @@ use crate::{
 /// it has a live handle or the user quits, which is why this returns a [`Db`]
 /// rather than a `Result`. A host with nobody to ask passes `None` and gets
 /// [`BootError::Database`].
-pub type DbRecovery = Box<dyn Fn(crate::error::Error) -> Db>;
+pub type DbRecovery = Box<dyn Fn(crate::error::Error) -> Db + Send>;
 
 /// Host work that has to happen inside the boot sequence rather than after it;
 /// see [`BootConfig::on_supervisor`].
-pub type SupervisorHook = Box<dyn FnOnce(&Arc<Supervisor>)>;
+pub type SupervisorHook = Box<dyn FnOnce(&Arc<Supervisor>) + Send>;
 
 /// Builds the host's local speech engine once the engine context exists; see
 /// [`BootConfig::dictation`]. A closure because the dispatcher it returns reads
 /// the ctx's DB handle, and the ctx is made inside [`boot`].
-pub type DictationHook = Box<dyn FnOnce(Arc<EngineCtx>) -> Arc<dyn crate::remote::Dispatch>>;
+pub type DictationHook = Box<dyn FnOnce(Arc<EngineCtx>) -> Arc<dyn crate::remote::Dispatch> + Send>;
+
+/// Where [`boot`] is, for a host that shows startup progress; see
+/// [`BootConfig::on_progress`]. The database phases are the ones that can take
+/// seconds to minutes on a large install.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BootPhase {
+    OpeningDatabase,
+    BackingUpDatabase,
+    MigratingDatabase,
+    /// The database is open; everything after it is quick.
+    StartingEngine,
+}
+
+impl From<database::DbPhase> for BootPhase {
+    fn from(phase: database::DbPhase) -> Self {
+        match phase {
+            database::DbPhase::BackingUp => Self::BackingUpDatabase,
+            database::DbPhase::Migrating => Self::MigratingDatabase,
+        }
+    }
+}
+
+/// Called from the booting thread, once per phase, in order.
+pub type BootProgress = Box<dyn Fn(BootPhase) + Send + Sync>;
 
 /// What a caught SIGINT/SIGTERM does once the children are dead; see
 /// [`BootConfig::signals`].
@@ -130,6 +157,9 @@ pub struct BootConfig {
     pub dictation: Option<DictationHook>,
     /// Recovery for a failed `database::init`; `None` boots no further.
     pub recover_db: Option<DbRecovery>,
+    /// Told which [`BootPhase`] is starting, for a host with something to show
+    /// it on. `None` for a host with no screen.
+    pub on_progress: Option<BootProgress>,
     /// Run once the supervisor exists and before anything resumes work. The
     /// desktop arms its activity monitor here rather than after [`boot`]: the
     /// monitor subscribes to the supervisor's status broadcast, and
@@ -240,10 +270,16 @@ pub fn boot(cfg: BootConfig) -> Result<Engine, BootError> {
         remote,
         dictation,
         recover_db,
+        on_progress,
         on_supervisor,
         #[cfg(unix)]
         signals,
     } = cfg;
+    let report = |phase: BootPhase| {
+        if let Some(on_progress) = &on_progress {
+            on_progress(phase);
+        }
+    };
 
     let headless = matches!(remote, RemoteBoot::Headless { .. });
     // Before the first secret is read (the seeds a few steps below): a headless
@@ -253,13 +289,15 @@ pub fn boot(cfg: BootConfig) -> Result<Engine, BootError> {
         secrets::use_settings_store_only();
     }
 
-    let db = match database::init(&data_dir) {
+    report(BootPhase::OpeningDatabase);
+    let db = match database::init_with_progress(&data_dir, &|phase| report(phase.into())) {
         Ok(db) => db,
         Err(e) => match recover_db {
             Some(recover) => recover(e),
             None => return Err(BootError::Database(e)),
         },
     };
+    report(BootPhase::StartingEngine);
 
     // The runtime the engine's background tasks belong to. Published before
     // anything below can spawn, so the engine never has to reach for `tauri::`
@@ -843,6 +881,7 @@ mod tests {
         runtime.block_on(async {
             let dir = tempfile::tempdir().unwrap();
             let sink = Arc::new(crate::host::sink::RecordingSink::new());
+            let phases = Arc::new(parking_lot::Mutex::new(Vec::new()));
             let engine = boot(BootConfig {
                 data_dir: dir.path().to_path_buf(),
                 // Not `Owned`: this test's database is empty, so an owned boot
@@ -856,11 +895,25 @@ mod tests {
                 remote: RemoteBoot::Off,
                 dictation: None,
                 recover_db: None,
+                on_progress: Some({
+                    let phases = phases.clone();
+                    Box::new(move |phase| phases.lock().push(phase))
+                }),
                 on_supervisor: None,
                 #[cfg(unix)]
                 signals: None,
             })
             .expect("boot");
+
+            // A fresh database has nothing to back up, so no backup phase.
+            assert_eq!(
+                *phases.lock(),
+                [
+                    BootPhase::OpeningDatabase,
+                    BootPhase::MigratingDatabase,
+                    BootPhase::StartingEngine
+                ]
+            );
 
             assert!(engine.ctx.supervisor().is_some());
             assert!(engine.ctx.workflows().is_some());
@@ -901,6 +954,13 @@ mod tests {
                 "the event never reached the boot broadcast"
             );
         });
+    }
+
+    /// The desktop moves its whole config onto the boot thread.
+    #[test]
+    fn a_boot_config_can_cross_threads() {
+        fn assert_send<T: Send>() {}
+        assert_send::<BootConfig>();
     }
 
     /// A headless host can be handed its GitHub token instead of storing one.

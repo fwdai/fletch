@@ -442,7 +442,12 @@ fn catalog_entry(id: &str) -> Result<&'static whisper::models::WhisperModel> {
 fn engine(app: &AppHandle) -> Engine {
     use tauri::Manager;
 
-    let (enabled, model) = engine_settings(&app.state::<DbState>());
+    // Before the engine is up there is no setting to read and no model can have
+    // been chosen; the system engine is what a fresh install gets anyway.
+    let Some(db) = app.try_state::<DbState>() else {
+        return Engine::Apple;
+    };
+    let (enabled, model) = engine_settings(&db);
     if enabled && whisper::models::installed_path(model).is_some() {
         Engine::Whisper
     } else {
