@@ -328,12 +328,16 @@ impl WorkspaceManager {
                 .collect::<rusqlite::Result<Vec<_>>>()?;
             ids
         };
-        lineage::detach_children(&tx, &doomed)?;
+        let cleanup = sessions::TranscriptCleanup {
+            trims: lineage::detach_children(&tx, &doomed)?,
+            sessions: sessions::session_ids_for_workspaces(&tx, &doomed)?,
+        };
         let changed = tx.execute("DELETE FROM projects WHERE id = ?1", [project_id])?;
         if changed == 0 {
             return Err(Error::Other(format!("project not found: {project_id}")));
         }
         tx.commit()?;
+        cleanup.apply(&conn);
         Ok(())
     }
 

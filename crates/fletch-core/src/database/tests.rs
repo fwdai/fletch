@@ -6,8 +6,9 @@ use std::path::Path;
 use std::sync::Arc;
 
 use crate::database::connection::{
-    get_migrations, migrate_legacy_db_name, open_db, prune_backups, quarantine_orphaned_wal,
-    BACKUPS_TO_KEEP, MIGRATIONS, MIN_READER_VERSION, MIN_READER_VERSION_KEY,
+    get_migrations, get_transcript_migrations, migrate_legacy_db_name, open_db, prune_backups,
+    quarantine_orphaned_wal, relocate_batch, BACKUPS_TO_KEEP, MIGRATIONS, MIN_READER_VERSION,
+    MIN_READER_VERSION_KEY, TRANSCRIPT_MIGRATIONS,
 };
 use crate::database::*;
 use crate::error::Error;
@@ -1046,7 +1047,6 @@ fn schema_has_split_entities() {
         "workspaces",
         "sessions",
         "worktrees",
-        "session_records",
         "repos",
         "projects",
         "project_settings",
@@ -1055,6 +1055,10 @@ fn schema_has_split_entities() {
     ] {
         assert!(names.contains(t), "missing table {t}");
     }
+    assert!(
+        !names.contains("session_records"),
+        "session_records belongs to transcripts.db, not the main database"
+    );
     assert!(
         !names.contains("agents"),
         "stale table agents still present"
@@ -1089,17 +1093,302 @@ fn workspace_hierarchy_cascades() {
     // session_records is written via dedicated functions, not the generic
     // layer, so it isn't in ALLOWED_TABLES — insert/count with raw SQL.
     conn.execute(
-            "INSERT INTO session_records (session_id, seq, provider, source, native_id, body, created_at)
+            "INSERT INTO transcripts.session_records (session_id, seq, provider, source, native_id, body, created_at)
              VALUES (?1, 1, 'claude', 'transcript', 'x', '{}', 0)",
             [&sess],
         )
         .unwrap();
     db_delete(&conn, "workspaces", json!({ "where": { "id": ws } })).unwrap();
     assert_eq!(db_count(&conn, "sessions", json!({})).unwrap(), 0);
-    let records: i64 = conn
-        .query_row("SELECT COUNT(*) FROM session_records", [], |r| r.get(0))
+    // The cascade stops at the file boundary: transcript rows go through
+    // `WorkspaceManager`'s explicit deletes and the startup sweep instead.
+    assert_eq!(transcript_rows(&conn), 1);
+}
+
+fn transcript_rows(conn: &Connection) -> i64 {
+    conn.query_row(
+        "SELECT COUNT(*) FROM transcripts.session_records",
+        [],
+        |r| r.get(0),
+    )
+    .unwrap()
+}
+
+/// A `data.db` at the last schema with `session_records` in it (0046), holding
+/// `sessions` sessions of `per_session` records each, with native ids shared
+/// across sessions and ~4 KB bodies. Returns the ids of its sessions.
+fn seed_pre_relocation_db(dir: &Path, sessions: usize, per_session: usize) -> Vec<String> {
+    let mut conn = open_db(&dir.join(DB_FILENAME)).unwrap();
+    get_migrations()
+        .to_version(&mut conn, V_SESSION_RECORDS_IN_MAIN)
         .unwrap();
-    assert_eq!(records, 0);
+    let pid = db_insert(&conn, "projects", json!({ "name": "p" })).unwrap();
+    let body = json!({ "text": "x".repeat(4000) }).to_string();
+    let mut ids = Vec::new();
+    for s in 0..sessions {
+        let ws = db_insert(
+            &conn,
+            "workspaces",
+            json!({ "project_id": pid, "name": format!("ws{s}") }),
+        )
+        .unwrap();
+        let sess = db_insert(
+            &conn,
+            "sessions",
+            json!({ "workspace_id": ws, "provider": "claude" }),
+        )
+        .unwrap();
+        let tx = conn.unchecked_transaction().unwrap();
+        for seq in 1..=per_session {
+            tx.execute(
+                "INSERT INTO session_records
+                    (session_id, seq, provider, source, native_id, body, created_at)
+                 VALUES (?1, ?2, 'claude', 'transcript', ?3, ?4, ?2)",
+                rusqlite::params![sess, seq as i64, format!("n{seq}"), body],
+            )
+            .unwrap();
+        }
+        tx.commit().unwrap();
+        ids.push(sess);
+    }
+    ids
+}
+
+/// The last schema version with `session_records` in `data.db`; 0047 drops it.
+const V_SESSION_RECORDS_IN_MAIN: usize = 46;
+
+fn file_size(path: &Path) -> u64 {
+    std::fs::metadata(path).unwrap().len()
+}
+
+#[test]
+fn fresh_init_creates_both_files_with_records_only_in_transcripts() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = init(dir.path()).unwrap();
+    assert!(dir.path().join(DB_FILENAME).exists());
+    assert!(dir.path().join(TRANSCRIPTS_DB_FILENAME).exists());
+    let conn = db.lock();
+    let has = |schema: &str| -> bool {
+        conn.query_row(
+            &format!(
+                "SELECT COUNT(*) FROM {schema}.sqlite_master WHERE type = 'table' AND name = 'session_records'"
+            ),
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .unwrap()
+            > 0
+    };
+    assert!(!has("main"));
+    assert!(has("transcripts"));
+    let version: i64 = conn
+        .query_row("PRAGMA transcripts.user_version", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(version as usize, TRANSCRIPT_MIGRATIONS.len());
+}
+
+#[test]
+fn relocation_moves_every_record_and_shrinks_main() {
+    let dir = tempfile::tempdir().unwrap();
+    let sessions = seed_pre_relocation_db(dir.path(), 3, 2500);
+    let main_before = file_size(&dir.path().join(DB_FILENAME));
+
+    let db = init(dir.path()).unwrap();
+
+    let conn = db.lock();
+    assert_eq!(transcript_rows(&conn), 7500);
+    for sess in &sessions {
+        let (rows, max_seq): (i64, i64) = conn
+            .query_row(
+                "SELECT COUNT(*), MAX(seq) FROM transcripts.session_records WHERE session_id = ?1",
+                [sess],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((rows, max_seq), (2500, 2500));
+    }
+    let in_main: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM main.sqlite_master WHERE name = 'session_records'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(in_main, 0, "0047 drops the main copy");
+    let version: i64 = conn
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(version as usize, MIGRATIONS.len());
+    drop(conn);
+    drop(db);
+    let main_after = file_size(&dir.path().join(DB_FILENAME));
+    let transcripts = file_size(&dir.path().join(TRANSCRIPTS_DB_FILENAME));
+    assert!(
+        main_after * 10 < main_before,
+        "main did not shrink: {main_before} -> {main_after}"
+    );
+    assert!(transcripts > main_after, "{transcripts} vs {main_after}");
+}
+
+#[test]
+fn interrupted_relocation_resumes_without_duplicates() {
+    let dir = tempfile::tempdir().unwrap();
+    seed_pre_relocation_db(dir.path(), 2, 3000);
+    // One batch landed, then the process died before 0047 could run.
+    {
+        let mut transcripts = open_db(&dir.path().join(TRANSCRIPTS_DB_FILENAME)).unwrap();
+        get_transcript_migrations()
+            .to_latest(&mut transcripts)
+            .unwrap();
+        drop(transcripts);
+        let conn = open_db(&dir.path().join(DB_FILENAME)).unwrap();
+        conn.execute(
+            "ATTACH DATABASE ?1 AS transcripts",
+            [dir.path().join(TRANSCRIPTS_DB_FILENAME).to_str().unwrap()],
+        )
+        .unwrap();
+        assert_eq!(relocate_batch(&conn, 0, 1000).unwrap(), Some((1000, 1000)));
+        assert_eq!(transcript_rows(&conn), 1000);
+    }
+
+    let phases = std::cell::RefCell::new(Vec::new());
+    let db = init_with_progress(dir.path(), &|p| phases.borrow_mut().push(p)).unwrap();
+
+    let conn = db.lock();
+    assert_eq!(transcript_rows(&conn), 6000);
+    let distinct: i64 = conn
+        .query_row(
+            "SELECT COUNT(DISTINCT id) FROM transcripts.session_records",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(distinct, 6000);
+    // Resumed past the landed batch rather than restarted.
+    assert_eq!(
+        phases.borrow().first(),
+        Some(&DbPhase::BackingUp),
+        "{:?}",
+        phases.borrow()
+    );
+    assert!(phases.borrow().contains(&DbPhase::Relocating {
+        done: 1000,
+        total: 6000
+    }));
+    assert!(!phases.borrow().contains(&DbPhase::Relocating {
+        done: 0,
+        total: 6000
+    }));
+}
+
+#[test]
+fn init_reports_relocation_progress_up_to_total() {
+    let dir = tempfile::tempdir().unwrap();
+    seed_pre_relocation_db(dir.path(), 2, 6000);
+    let phases = std::cell::RefCell::new(Vec::new());
+    init_with_progress(dir.path(), &|p| phases.borrow_mut().push(p)).unwrap();
+
+    let phases = phases.into_inner();
+    let dones: Vec<u64> = phases
+        .iter()
+        .filter_map(|p| match p {
+            DbPhase::Relocating { done, total } => {
+                assert_eq!(*total, 12000);
+                Some(*done)
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(dones, [0, 5000, 10000, 12000]);
+    // Relocation precedes the main migrations that drop the source table.
+    let relocating_at = phases
+        .iter()
+        .position(|p| matches!(p, DbPhase::Relocating { .. }))
+        .unwrap();
+    let migrating_at = phases
+        .iter()
+        .position(|p| *p == DbPhase::Migrating)
+        .unwrap();
+    assert!(relocating_at < migrating_at, "{phases:?}");
+}
+
+#[test]
+fn orphan_sweep_removes_rows_of_missing_sessions_only() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let db = init(dir.path()).unwrap();
+        let conn = db.lock();
+        let pid = db_insert(&conn, "projects", json!({ "name": "p" })).unwrap();
+        let ws = db_insert(
+            &conn,
+            "workspaces",
+            json!({ "project_id": pid, "name": "ws" }),
+        )
+        .unwrap();
+        let sess = db_insert(
+            &conn,
+            "sessions",
+            json!({ "workspace_id": ws, "provider": "claude" }),
+        )
+        .unwrap();
+        for (session, native) in [(&sess, "live"), (&"gone".to_string(), "orphan")] {
+            conn.execute(
+                "INSERT INTO transcripts.session_records
+                    (session_id, seq, provider, source, native_id, body, created_at)
+                 VALUES (?1, 1, 'claude', 'transcript', ?2, '{}', 0)",
+                [session, &native.to_string()],
+            )
+            .unwrap();
+        }
+    }
+    let db = init(dir.path()).unwrap();
+    let conn = db.lock();
+    let kept: Vec<String> = conn
+        .prepare("SELECT session_id FROM transcripts.session_records")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+    assert_eq!(kept.len(), 1);
+    assert_ne!(kept[0], "gone");
+}
+
+#[test]
+fn orphan_sweep_is_a_noop_when_there_are_no_sessions() {
+    let dir = tempfile::tempdir().unwrap();
+    {
+        let db = init(dir.path()).unwrap();
+        db.lock()
+            .execute(
+                "INSERT INTO transcripts.session_records
+                    (session_id, seq, provider, source, native_id, body, created_at)
+                 VALUES ('gone', 1, 'claude', 'transcript', 'x', '{}', 0)",
+                [],
+            )
+            .unwrap();
+    }
+    // The main database vanished (moved aside, or never there): the log is
+    // not evidence of anything and must survive untouched.
+    std::fs::remove_file(dir.path().join(DB_FILENAME)).unwrap();
+    let db = init(dir.path()).unwrap();
+    assert_eq!(transcript_rows(&db.lock()), 1);
+}
+
+#[test]
+fn transcripts_sidecars_without_their_main_file_are_quarantined() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join(format!("{TRANSCRIPTS_DB_FILENAME}-wal")),
+        b"orphan",
+    )
+    .unwrap();
+    init(dir.path()).unwrap();
+    let orphaned = all_files(dir.path())
+        .into_iter()
+        .filter(|n| n.starts_with(TRANSCRIPTS_DB_FILENAME) && n.contains(".orphaned-"))
+        .count();
+    assert_eq!(orphaned, 1);
 }
 
 #[test]
@@ -1484,32 +1773,45 @@ fn table_counts(conn: &Connection) -> BTreeMap<String, i64> {
         .collect()
 }
 
-/// The per-migration tests above upgrade near-empty databases, which is how
-/// 0035's rebuild could cascade-delete child rows and still pass. This upgrades
-/// a populated install from `V_FIXTURE` the way `init` does (FK enforcement
-/// off, `to_latest`, then `foreign_key_check`) and requires every table to
-/// keep every row unless an allowlist above says which migration shrinks it.
-/// Driven directly rather than through `init` so the only writes between the
-/// two counts are the migrations' own: `init` also records the reader floor
-/// in `settings`.
+/// The generic guard against a 0035-class bug (a migration that succeeds and
+/// silently loses rows): upgrade a populated install from `V_FIXTURE` through
+/// the real `init` path and compare per-table row counts. `session_records`
+/// is counted in `transcripts.db`, where 0047 moved it. The fixture carries
+/// the reader-floor row so `init`'s upsert of it doesn't change `settings`.
 #[test]
 fn upgrading_a_populated_database_keeps_every_row() {
     let dir = tempfile::tempdir().unwrap();
-    let mut conn = open_db(&dir.path().join(DB_FILENAME)).unwrap();
-    get_migrations().to_version(&mut conn, V_FIXTURE).unwrap();
-    conn.execute_batch(FIXTURE_AT_V30).unwrap();
-    let before = table_counts(&conn);
+    let before = {
+        let mut conn = open_db(&dir.path().join(DB_FILENAME)).unwrap();
+        get_migrations().to_version(&mut conn, V_FIXTURE).unwrap();
+        conn.execute_batch(FIXTURE_AT_V30).unwrap();
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES (?1, ?2)",
+            [MIN_READER_VERSION_KEY, "30"],
+        )
+        .unwrap();
+        table_counts(&conn)
+    };
     assert!(before["session_records"] >= 300, "{before:?}");
 
-    conn.pragma_update(None, "foreign_keys", false).unwrap();
-    get_migrations().to_latest(&mut conn).unwrap();
+    let db = init(dir.path()).unwrap();
+    let conn = db.lock();
     let violations: i64 = conn
         .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check()", [], |r| {
             r.get(0)
         })
         .unwrap();
     assert_eq!(violations, 0);
-    let after = table_counts(&conn);
+    let mut after = table_counts(&conn);
+    after.insert(
+        "session_records".into(),
+        conn.query_row(
+            "SELECT COUNT(*) FROM transcripts.session_records",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap(),
+    );
 
     for (table, rows) in &before {
         if TABLES_SHRUNK_BY_MIGRATIONS.iter().any(|(t, _)| t == table) {

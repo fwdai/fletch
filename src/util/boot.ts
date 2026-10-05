@@ -10,11 +10,13 @@ export type BootPhase =
   | "opening_database"
   | "backing_up_database"
   | "migrating_database"
+  | "relocating_transcripts"
   | "starting_engine";
 
-/** The `boot_state` command's answer, and the `boot:state` event's payload. */
+/** The `boot_state` command's answer, and the `boot:state` event's payload.
+ *  `progress` is a percent, present only for a step that reports one. */
 export type BootStatus =
-  | { phase: "booting"; step: BootPhase }
+  | { phase: "booting"; step: BootPhase; progress?: number }
   | { phase: "ready" }
   | { phase: "failed"; message: string };
 
@@ -24,8 +26,17 @@ export const BOOT_PHASE_LABELS: Record<BootPhase, string> = {
   opening_database: "Opening database",
   backing_up_database: "Backing up database",
   migrating_database: "Updating database",
+  relocating_transcripts: "Moving transcripts",
   starting_engine: "Starting",
 };
+
+/** The boot screen's line for a status: the step's label, with the percent
+ *  when the step reports one. */
+export function bootStepLabel(status: BootStatus): string {
+  if (status.phase !== "booting") return "Starting";
+  const label = BOOT_PHASE_LABELS[status.step];
+  return status.progress === undefined ? label : `${label} ${status.progress}%`;
+}
 
 /**
  * Resolve once the engine is ready; reject with the message when boot failed.

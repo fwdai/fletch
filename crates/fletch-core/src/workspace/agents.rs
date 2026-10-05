@@ -29,8 +29,9 @@ impl WorkspaceManager {
     pub fn add_agent(&self, record: &mut AgentRecord) -> Result<()> {
         let conn = self.db.lock();
         let tx = conn.unchecked_transaction()?;
-        Self::insert_agent(&tx, record)?;
+        let cleanup = Self::insert_agent(&tx, record)?;
         tx.commit()?;
+        cleanup.apply(&conn);
         Ok(())
     }
 
@@ -67,8 +68,9 @@ impl WorkspaceManager {
         let id = names::allocate(&live);
         record.name = id.clone();
         record.id = id;
-        Self::insert_agent(&tx, record)?;
+        let cleanup = Self::insert_agent(&tx, record)?;
         tx.commit()?;
+        cleanup.apply(&conn);
         Ok(())
     }
 
@@ -76,7 +78,10 @@ impl WorkspaceManager {
     /// inside the caller's transaction — which also scopes name allocation in
     /// `add_agent_allocating` — so the recycle-delete and every insert commit
     /// (or roll back) as one unit.
-    fn insert_agent(tx: &rusqlite::Transaction, record: &mut AgentRecord) -> Result<()> {
+    fn insert_agent(
+        tx: &rusqlite::Transaction,
+        record: &mut AgentRecord,
+    ) -> Result<sessions::TranscriptCleanup> {
         // Look up project_id from the primary repo path.
         let project_id = if let Some(primary) = record.repos.first() {
             let path_str = primary.repo_path.to_string_lossy().to_string();
@@ -94,9 +99,10 @@ impl WorkspaceManager {
         // Recycling a freed name: the allocator only hands back ids held by
         // *archived* agents (live ones and on-disk checkouts are excluded), but
         // the archived row still owns this primary key. Evict it so the INSERT
-        // below doesn't trip the PK constraint. Cascades clear its sessions,
-        // worktrees, and session records, once any fork still inheriting from
-        // them is detached. A *live* row with this id would be a genuine bug,
+        // below doesn't trip the PK constraint. Cascades clear its sessions and
+        // worktrees, once any fork still inheriting from them is detached; its
+        // transcript rows are returned for the caller to delete after commit.
+        // A *live* row with this id would be a genuine bug,
         // so we deliberately don't touch those — the INSERT will surface the
         // conflict instead of silently clobbering a running agent.
         let archived = tx
@@ -106,8 +112,11 @@ impl WorkspaceManager {
                 |r| r.get::<_, String>(0),
             )
             .optional()?;
+        let mut cleanup = sessions::TranscriptCleanup::default();
         if let Some(evicted) = archived {
-            lineage::detach_children(tx, std::slice::from_ref(&evicted))?;
+            let doomed = std::slice::from_ref(&evicted);
+            cleanup.trims = lineage::detach_children(tx, doomed)?;
+            cleanup.sessions = sessions::session_ids_for_workspaces(tx, doomed)?;
             tx.execute("DELETE FROM workspaces WHERE id = ?1", [&evicted])?;
             tracing::info!(
                 agent_id = %record.id,
@@ -170,7 +179,7 @@ impl WorkspaceManager {
             Self::insert_worktree(tx, &record.id, repo)?;
         }
 
-        Ok(())
+        Ok(cleanup)
     }
 
     pub fn update_agent_status(
@@ -704,11 +713,17 @@ impl WorkspaceManager {
     pub fn remove_agent(&self, id: &str) -> Result<()> {
         let conn = self.db.lock();
         let tx = conn.unchecked_transaction()?;
-        // Cascades to the workspace's sessions, worktrees, and session_records,
-        // once any fork still inheriting from those sessions is detached.
-        lineage::detach_children(&tx, &[id.to_string()])?;
+        // Cascades to the workspace's sessions and worktrees, once any fork
+        // still inheriting from those sessions is detached; the transcript
+        // rows are in another file and go once this has committed.
+        let doomed = [id.to_string()];
+        let cleanup = sessions::TranscriptCleanup {
+            trims: lineage::detach_children(&tx, &doomed)?,
+            sessions: sessions::session_ids_for_workspaces(&tx, &doomed)?,
+        };
         tx.execute("DELETE FROM workspaces WHERE id = ?1", [id])?;
         tx.commit()?;
+        cleanup.apply(&conn);
         Ok(())
     }
 }

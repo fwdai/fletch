@@ -2239,7 +2239,7 @@ fn a_superseded_session_is_invisible_to_current_session_reads() {
     let old_records: i64 = db
         .lock()
         .query_row(
-            "SELECT COUNT(*) FROM session_records WHERE session_id = 'old'",
+            "SELECT COUNT(*) FROM transcripts.session_records WHERE session_id = 'old'",
             [],
             |r| r.get(0),
         )
@@ -2471,7 +2471,7 @@ fn associate_never_matches_a_record_stored_before_the_turn() {
     // All within one millisecond: the order of the rows decides, not time.
     {
         let conn = wm.db.lock();
-        conn.execute("UPDATE session_records SET created_at = 1", [])
+        conn.execute("UPDATE transcripts.session_records SET created_at = 1", [])
             .unwrap();
         conn.execute("UPDATE session_user_turns SET created_at = 1", [])
             .unwrap();
@@ -2897,4 +2897,66 @@ fn live_agent_ids_covers_live_agents_and_frees_archived_ones() {
     // The archived agent is still readable (History shows it) — it just no
     // longer reserves its name.
     assert!(wm.agent("dolomites").unwrap().archive.is_some());
+}
+
+// ── Transcript rows live in another file: every workspace deletion removes
+// them explicitly, where the sessions cascade used to ─────────────────────
+
+fn transcript_rows(db: &Arc<Mutex<Connection>>) -> i64 {
+    db.lock()
+        .query_row(
+            "SELECT COUNT(*) FROM transcripts.session_records",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap()
+}
+
+#[test]
+fn remove_agent_deletes_its_transcript_rows() {
+    let db = test_db();
+    seed_repo(&db, "/r");
+    let wm = WorkspaceManager::new(db.clone());
+    agent(&wm, "doomed", "/r", None);
+    agent(&wm, "kept", "/r", None);
+    exchange(&wm, "doomed", "t1", "hello");
+    exchange(&wm, "kept", "t2", "hi");
+    assert_eq!(transcript_rows(&db), 4);
+
+    wm.remove_agent("doomed").unwrap();
+
+    assert_eq!(transcript_rows(&db), 2);
+    assert_eq!(wm.read_session_records("kept").unwrap().len(), 2);
+}
+
+#[test]
+fn reusing_an_archived_name_deletes_the_evicted_agents_transcript_rows() {
+    let db = test_db();
+    seed_repo(&db, "/r");
+    let wm = WorkspaceManager::new(db.clone());
+    agent(&wm, "everest", "/r", None);
+    exchange(&wm, "everest", "t1", "first life");
+    mark_archived(&db, "everest");
+
+    agent(&wm, "everest", "/r", None);
+
+    assert_eq!(transcript_rows(&db), 0);
+    assert!(wm.read_session_records("everest").unwrap().is_empty());
+}
+
+#[test]
+fn delete_project_deletes_its_agents_transcript_rows() {
+    let db = test_db();
+    let td = tempfile::tempdir().unwrap();
+    let repo = init_repo(td.path());
+    let wm = WorkspaceManager::new(db.clone());
+    wm.add_workspace_repo(repo.clone()).unwrap();
+    let pid = wm.current().unwrap().projects[0].project_id.clone();
+    agent(&wm, "yosemite", repo.to_str().unwrap(), None);
+    exchange(&wm, "yosemite", "t1", "hello");
+    assert_eq!(transcript_rows(&db), 2);
+
+    wm.delete_project(&pid, &[]).unwrap();
+
+    assert_eq!(transcript_rows(&db), 0);
 }

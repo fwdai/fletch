@@ -17,7 +17,7 @@ pub(super) fn query_turns(
     let mut stmt = conn.prepare(
         "SELECT t.turn_id, t.seq, t.text, t.attachments, t.native_id, t.started_at, t.ended_at
          FROM session_user_turns t
-         LEFT JOIN session_records r ON r.session_id = t.session_id AND r.native_id = t.native_id
+         LEFT JOIN transcripts.session_records r ON r.session_id = t.session_id AND r.native_id = t.native_id
          WHERE t.session_id = ?1 AND (?2 IS NULL OR r.seq < ?2)
          ORDER BY t.seq ASC",
     )?;
@@ -100,7 +100,7 @@ impl WorkspaceManager {
                 (turn_id, session_id, seq, text, attachments, native_id, record_watermark,
                  created_at)
              VALUES (?1, ?2, ?3, ?4, ?5, NULL,
-                     (SELECT COALESCE(MAX(seq), 0) FROM session_records WHERE session_id = ?2),
+                     (SELECT COALESCE(MAX(seq), 0) FROM transcripts.session_records WHERE session_id = ?2),
                      ?6)",
             rusqlite::params![turn_id, sid, seq, text, attachments_json, now_millis()],
         )?;
@@ -180,7 +180,7 @@ impl WorkspaceManager {
         // Records land before the terminal event that trips turn-end detection,
         // so the window is complete by the time we get here.
         let record_count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM session_records
+            "SELECT COUNT(*) FROM transcripts.session_records
              WHERE session_id = ?1 AND created_at BETWEEN ?2 AND ?3",
             rusqlite::params![sid, started_at, now],
             |r| r.get(0),
@@ -231,7 +231,7 @@ impl WorkspaceManager {
         // Transcript records, oldest first.
         let records: Vec<(i64, String, String)> = {
             let mut stmt = conn.prepare(
-                "SELECT seq, native_id, body FROM session_records
+                "SELECT seq, native_id, body FROM transcripts.session_records
                  WHERE session_id = ?1 AND source = 'transcript' ORDER BY seq ASC",
             )?;
             let v = stmt

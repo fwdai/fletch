@@ -92,7 +92,7 @@ fn chain_records(conn: &Connection, links: &[Link]) -> Result<Vec<SessionRecord>
 /// One past the session's last record: the cut that keeps all of it.
 fn end_of(conn: &Connection, session_id: &str) -> Result<i64> {
     Ok(conn.query_row(
-        "SELECT COALESCE(MAX(seq), 0) + 1 FROM session_records WHERE session_id = ?1",
+        "SELECT COALESCE(MAX(seq), 0) + 1 FROM transcripts.session_records WHERE session_id = ?1",
         [session_id],
         |r| r.get(0),
     )?)
@@ -134,7 +134,7 @@ impl WorkspaceManager {
             .query_row(
                 "SELECT t.session_id, r.seq
                    FROM session_user_turns t
-                   LEFT JOIN session_records r
+                   LEFT JOIN transcripts.session_records r
                           ON r.session_id = t.session_id AND r.native_id = t.native_id
                   WHERE t.turn_id = ?1",
                 [turn_id],
@@ -164,7 +164,7 @@ impl WorkspaceManager {
             let next_prompt: Option<i64> = conn.query_row(
                 "SELECT MIN(r.seq)
                    FROM session_user_turns t
-                   JOIN session_records r
+                   JOIN transcripts.session_records r
                      ON r.session_id = t.session_id AND r.native_id = t.native_id
                   WHERE t.session_id = ?1 AND r.seq > ?2",
                 rusqlite::params![origin, prompt_seq],
@@ -285,15 +285,16 @@ impl WorkspaceManager {
 /// survivor points into the doomed set, so a doomed chain moves whole. What no
 /// child shows goes with the deletion as it would have: the moved session's
 /// records at or past every child's cut, its turns left without a record, and
-/// its queued messages, which have no agent left to deliver to.
-pub(super) fn detach_children(conn: &Connection, doomed: &[String]) -> Result<()> {
+/// its queued messages, which have no agent left to deliver to. The records
+/// are in the attached file and are not touched here: the returned
+/// `(session, cut)` pairs are for `TranscriptCleanup`, once the caller's
+/// transaction has committed.
+pub(super) fn detach_children(conn: &Connection, doomed: &[String]) -> Result<Vec<(String, i64)>> {
+    let mut trims = Vec::new();
     if doomed.is_empty() {
-        return Ok(());
+        return Ok(trims);
     }
-    let ids = (1..=doomed.len())
-        .map(|i| format!("?{i}"))
-        .collect::<Vec<_>>()
-        .join(",");
+    let ids = sessions::placeholders(doomed.len());
     let inherited_from_doomed = format!(
         "SELECT parent.id, child.workspace_id
            FROM sessions parent
@@ -311,24 +312,29 @@ pub(super) fn detach_children(conn: &Connection, doomed: &[String]) -> Result<()
             )
             .optional()?;
         let Some((session, heir)) = next else {
-            return Ok(());
+            return Ok(trims);
         };
         conn.execute(
             "UPDATE sessions SET workspace_id = ?2, superseded_at = COALESCE(superseded_at, ?3)
              WHERE id = ?1",
             rusqlite::params![session, heir, now_millis()],
         )?;
-        conn.execute(
-            "DELETE FROM session_records WHERE session_id = ?1
-               AND seq >= (SELECT MAX(parent_cut_seq) FROM sessions WHERE parent_session_id = ?1)",
+        let cut: Option<i64> = conn.query_row(
+            "SELECT MAX(parent_cut_seq) FROM sessions WHERE parent_session_id = ?1",
             [&session],
+            |r| r.get(0),
         )?;
+        // Turns are judged against the records that will survive the trim.
         conn.execute(
             "DELETE FROM session_user_turns WHERE session_id = ?1
                AND (native_id IS NULL
-                    OR native_id NOT IN (SELECT native_id FROM session_records WHERE session_id = ?1))",
-            [&session],
+                    OR native_id NOT IN (SELECT native_id FROM transcripts.session_records
+                                          WHERE session_id = ?1 AND seq < ?2))",
+            rusqlite::params![session, cut.unwrap_or(i64::MAX)],
         )?;
+        if let Some(cut) = cut {
+            trims.push((session.clone(), cut));
+        }
         conn.execute(
             "DELETE FROM pending_messages WHERE session_id = ?1",
             [&session],
@@ -647,6 +653,46 @@ mod tests {
         assert!(err.to_string().contains("FOREIGN KEY"), "{err}");
     }
 
+    /// The trim of a handed-over session's records happens through
+    /// `TranscriptCleanup` after the moving transaction has committed, never
+    /// inside it: a WAL commit is atomic per file, so an in-transaction delete
+    /// in the attached file could outlive a rolled-back move.
+    #[test]
+    fn detach_children_leaves_the_record_trim_to_cleanup_after_commit() {
+        let wm = three_level_chain();
+        let b = session_of(&wm, "b");
+        let count = |conn: &Connection| {
+            conn.query_row(
+                "SELECT COUNT(*) FROM transcripts.session_records WHERE session_id = ?1",
+                [&b],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap()
+        };
+        let conn = wm.db.lock();
+        let before = count(&conn);
+        let tx = conn.unchecked_transaction().unwrap();
+        let trims = detach_children(&tx, &["b".to_string()]).unwrap();
+        assert_eq!(
+            count(&tx),
+            before,
+            "the attached file is untouched in the transaction"
+        );
+        tx.commit().unwrap();
+        assert_eq!(trims.len(), 1);
+        assert_eq!(trims[0].0, b);
+        sessions::TranscriptCleanup {
+            sessions: Vec::new(),
+            trims,
+        }
+        .apply(&conn);
+        assert_eq!(
+            count(&conn),
+            2,
+            "rows at or past every child's cut are gone"
+        );
+    }
+
     #[test]
     fn discarding_an_ancestor_leaves_its_descendants_whole() {
         let wm = three_level_chain();
@@ -674,7 +720,7 @@ mod tests {
             wm.db
                 .lock()
                 .query_row(
-                    "SELECT COUNT(*) FROM session_records WHERE session_id = ?1",
+                    "SELECT COUNT(*) FROM transcripts.session_records WHERE session_id = ?1",
                     [&b],
                     |r| r.get::<_, i64>(0),
                 )
