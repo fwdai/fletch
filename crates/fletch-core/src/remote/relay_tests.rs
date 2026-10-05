@@ -30,6 +30,7 @@ use super::relay::{Frame, RelayState, RelayTiming};
 use super::secure::{Handshake, HostKey, SecureChannel};
 use super::tests::{device, Device, PaddedDispatch, StubDispatch};
 use super::{RemoteState, DEFAULT_RELAY_URL};
+use fletch_proto::noise::FRAGMENT_PLAINTEXT;
 
 /// Every await in these tests is bounded: a link that never arrives should fail
 /// the test, not hang the suite.
@@ -549,6 +550,53 @@ async fn a_large_answer_crosses_the_relay_as_data_frames_under_the_cap() {
     conn.request(&mut link, "2", "get_workspace", json!({}))
         .await;
     assert_eq!(conn.next_json(&mut link).await["id"], "2");
+}
+
+/// The shared link stays fair: once one device's large answer is on its way, a
+/// small answer for another device overtakes the rest of the run instead of
+/// waiting behind all of it.
+#[tokio::test]
+async fn a_large_answer_does_not_hold_up_another_device() {
+    let mut relay = FakeRelay::start(Verdict::Accept).await;
+    let host = boot_with(&relay.url, Arc::new(PaddedDispatch));
+    let mut link = relay.next_link().await;
+    let (one, two) = (device(), device());
+    for (name, d) in [("phone", &one), ("tablet", &two)] {
+        host.state
+            .devices()
+            .register(name, "ios", &d.public, &Scope::ALL)
+            .unwrap();
+    }
+    let mut big = Phone::open(&mut link, 1, &one).await;
+    let mut small = Phone::open(&mut link, 2, &two).await;
+    for (conn, id) in [(&mut big, "a"), (&mut small, "b")] {
+        conn.request(&mut link, id, "hello", json!({})).await;
+        assert_eq!(conn.next_json(&mut link).await["ok"], true);
+    }
+
+    // Far more than the socket buffers between host and relay hold, so most of
+    // the run is still on the host when the second request lands.
+    let bytes: usize = 32 << 20;
+    big.request(&mut link, "a1", "get_git_state", json!({ "bytes": bytes }))
+        .await;
+    let first = link.read_for(1).await;
+    small
+        .request(&mut link, "b1", "get_workspace", json!({}))
+        .await;
+    let answer = link.data_for(2).await;
+    let behind = link.pending.iter().filter(|f| f.conn() == 1).count();
+    let run = (bytes + 64).div_ceil(FRAGMENT_PLAINTEXT);
+    assert!(
+        1 + behind < run,
+        "the small answer waited for the whole {run}-message run"
+    );
+
+    // Both still read intact, in their own order.
+    let reply = small.channel.decrypt_message(&answer).unwrap().unwrap();
+    assert_eq!(serde_json::from_slice::<Value>(&reply).unwrap()["id"], "b1");
+    link.pending.push_front(first);
+    let (reply, _) = big.next_json_sized(&mut link).await;
+    assert_eq!(reply["result"]["pad"].as_str().map(str::len), Some(bytes));
 }
 
 #[tokio::test]

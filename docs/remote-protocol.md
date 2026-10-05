@@ -227,7 +227,11 @@ repo); anyone can run their own and point both apps at it.
   link (see host commands). The host hashes the nonce it is given whatever its
   length (the relay always sends 32 bytes), ignores frames for a connId it
   does not know, and closes a single virtual connection with `1008` if that
-  device outruns the host's inbound queue for it. Disabling
+  device outruns the host's inbound queue for it. The host keeps the link fair:
+  each virtual connection may have at most 4 messages waiting in the link's
+  outbound queue, so a device's fragmented answer goes out a few fragments at a
+  time and another device's frame waits behind those, not behind the whole
+  run. Disabling
   remote access drops the link, which closes every relayed device with `4404`
   from the relay's side; the host's own `4004` goes out first over the virtual
   connections, as on the LAN.

@@ -32,7 +32,7 @@ use futures_util::stream::SplitSink;
 use futures_util::{Sink, SinkExt, Stream, StreamExt};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::{broadcast, mpsc, AcquireError, OwnedSemaphorePermit, Semaphore};
 use tokio::task::JoinSet;
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 use tokio_tungstenite::tungstenite::protocol::{CloseFrame, WebSocketConfig};
@@ -136,6 +136,14 @@ const MAX_MISSED_PONGS: u32 = 2;
 /// connection already has its own 64-frame outbox inside `serve`; this is the
 /// one hop after it, so it only fills when the relay itself stops reading.
 const LINK_OUTBOUND_BUFFER: usize = 256;
+/// Messages one virtual connection may have in that queue at once. A large
+/// answer is a run of fragments that its `serve` writes as fast as the queue
+/// takes them; without a share, the whole run would sit in the queue and every
+/// other device's frames would wait behind all of it, and a run near the 64 MiB
+/// cap could fill the queue outright — leaving no room for the link's own pings
+/// and NOTIFYs, which `try_send`. With it, another device waits behind at most
+/// this many of each busy connection's messages.
+const CONN_LINK_SHARE: usize = 4;
 /// Messages queued *into* one virtual connection. `serve` reads continuously
 /// and dispatches off its reader loop, so this only fills for a device that is
 /// flooding, which costs that device its link and nothing else.
@@ -161,7 +169,22 @@ pub(super) struct RelayLink {
 }
 
 /// The slot [`RelayLink::outbound`] lives in, shared with the link task.
-type Outgoing = Arc<Mutex<Option<mpsc::Sender<Message>>>>;
+type Outgoing = Arc<Mutex<Option<mpsc::Sender<Queued>>>>;
+
+/// One message on the link's outbound queue. A virtual connection's DATA and
+/// CLOSE carry that connection's share permit (see `CONN_LINK_SHARE`), which
+/// the writer releases once the message is on the socket; the link's own
+/// frames carry none.
+struct Queued {
+    msg: Message,
+    share: Option<OwnedSemaphorePermit>,
+}
+
+impl From<Message> for Queued {
+    fn from(msg: Message) -> Self {
+        Self { msg, share: None }
+    }
+}
 
 impl RelayLink {
     /// Dial `url` and keep the link up until this handle is dropped.
@@ -211,7 +234,8 @@ impl RelayLink {
             Frame::Notify {
                 payload: Bytes::from(payload),
             }
-            .into_message(),
+            .into_message()
+            .into(),
         )
         .is_ok()
     }
@@ -448,7 +472,7 @@ async fn demux(
     shutdown: &mut broadcast::Receiver<()>,
 ) -> Outcome {
     let (sink, mut stream) = ws.split();
-    let (out_tx, out_rx) = mpsc::channel::<Message>(LINK_OUTBOUND_BUFFER);
+    let (out_tx, out_rx) = mpsc::channel::<Queued>(LINK_OUTBOUND_BUFFER);
     let writer = tokio::spawn(write_loop(sink, out_rx));
     // Published only for the life of this attempt: a NOTIFY enqueued against a
     // link that has gone away would sit in a queue nothing is writing. The
@@ -478,7 +502,7 @@ async fn demux(
                 // `try_send`, not `send`: a full queue means the relay has
                 // stopped reading, and awaiting a slot here would park the
                 // demux — pongs included — so the link could never time out.
-                if out_tx.try_send(Message::Ping(Bytes::new())).is_err() {
+                if out_tx.try_send(Message::Ping(Bytes::new()).into()).is_err() {
                     break retry("the relay stopped reading");
                 }
             }
@@ -531,11 +555,13 @@ async fn demux(
 
 /// Serialize the link's outbound queue onto the socket. One task, so the frames
 /// of every virtual connection interleave in exactly the order they were queued.
-async fn write_loop(mut sink: SplitSink<LinkWs, Message>, mut rx: mpsc::Receiver<Message>) {
-    while let Some(msg) = rx.recv().await {
+async fn write_loop(mut sink: SplitSink<LinkWs, Message>, mut rx: mpsc::Receiver<Queued>) {
+    while let Some(Queued { msg, share }) = rx.recv().await {
         if sink.send(msg).await.is_err() {
             return;
         }
+        // Written, so the connection it belongs to may queue another.
+        drop(share);
     }
     let _ = sink.close().await;
 }
@@ -549,7 +575,7 @@ fn route(
     frame: Frame,
     conns: &mut HashMap<u32, Registered>,
     serving: &mut JoinSet<()>,
-    out_tx: &mpsc::Sender<Message>,
+    out_tx: &mpsc::Sender<Queued>,
 ) {
     let conn = frame.conn();
     match frame {
@@ -567,6 +593,7 @@ fn route(
                 inbound: inbound_rx,
                 self_inbound: inbound_tx.clone(),
                 out: Outbound::Idle(out_tx.clone()),
+                share: Arc::new(Semaphore::new(CONN_LINK_SHARE)),
                 shared: shared.clone(),
                 done: false,
             };
@@ -600,7 +627,8 @@ fn route(
                                 code: 1000,
                                 reason: String::new(),
                             }
-                            .into_message(),
+                            .into_message()
+                            .into(),
                         )
                         .await;
                 }
@@ -640,7 +668,7 @@ fn route(
 fn deliver(
     conns: &mut HashMap<u32, Registered>,
     conn: u32,
-    out_tx: &mpsc::Sender<Message>,
+    out_tx: &mpsc::Sender<Queued>,
     msg: std::result::Result<Message, WsError>,
 ) {
     let Some(registered) = conns.get(&conn) else {
@@ -663,7 +691,8 @@ fn deliver(
                         code: 1008,
                         reason: "inbound backlog".to_string(),
                     }
-                    .into_message(),
+                    .into_message()
+                    .into(),
                 );
             }
         }
@@ -688,6 +717,9 @@ struct VirtualConn {
     /// connection must never reach the relay.
     self_inbound: mpsc::Sender<std::result::Result<Message, WsError>>,
     out: Outbound,
+    /// This connection's `CONN_LINK_SHARE` permits: one is held by each of its
+    /// messages still in the link's queue.
+    share: Arc<Semaphore>,
     shared: Arc<ConnShared>,
     /// Set once a CLOSE has been queued: the sink is finished, and anything
     /// after it is dropped rather than reordered past the close.
@@ -697,22 +729,30 @@ struct VirtualConn {
 /// The outbound half's permit machinery. `tokio_util::sync::PollSender` is
 /// exactly this, but `tokio-util` is not a direct dependency of this crate and
 /// one small `Sink` impl is cheaper than one more crate.
+///
+/// A message needs two things before it may be sent: one of this connection's
+/// share permits, then a slot in the link's queue — in that order, so a
+/// connection that has used up its share holds no slot while it waits.
 enum Outbound {
-    Idle(mpsc::Sender<Message>),
-    Reserving(Reserving),
-    Ready(mpsc::OwnedPermit<Message>),
+    Idle(mpsc::Sender<Queued>),
+    Sharing(mpsc::Sender<Queued>, Sharing),
+    Reserving(OwnedSemaphorePermit, Reserving),
+    Ready(OwnedSemaphorePermit, mpsc::OwnedPermit<Queued>),
     Gone,
 }
 
-/// `Sender::reserve_owned` in flight: the one thing that can be `Pending` here,
-/// and the whole reason this is a state machine rather than a `try_send`.
+/// `Semaphore::acquire_owned` in flight: waiting for one of this connection's
+/// messages to leave the link's queue.
+type Sharing =
+    Pin<Box<dyn Future<Output = std::result::Result<OwnedSemaphorePermit, AcquireError>> + Send>>;
+
+/// `Sender::reserve_owned` in flight: waiting for the link's queue itself.
+/// Either wait can be `Pending`, which is the whole reason this is a state
+/// machine rather than a `try_send`.
 type Reserving = Pin<
     Box<
         dyn Future<
-                Output = std::result::Result<
-                    mpsc::OwnedPermit<Message>,
-                    mpsc::error::SendError<()>,
-                >,
+                Output = std::result::Result<mpsc::OwnedPermit<Queued>, mpsc::error::SendError<()>>,
             > + Send,
     >,
 >;
@@ -735,20 +775,34 @@ impl Sink<Message> for VirtualConn {
     fn poll_ready(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), WsError>> {
         loop {
             match std::mem::replace(&mut self.out, Outbound::Gone) {
-                Outbound::Idle(tx) => self.out = Outbound::Reserving(Box::pin(tx.reserve_owned())),
-                Outbound::Reserving(mut reserving) => match reserving.as_mut().poll(cx) {
+                Outbound::Idle(tx) => {
+                    let share = self.share.clone();
+                    self.out = Outbound::Sharing(tx, Box::pin(share.acquire_owned()));
+                }
+                Outbound::Sharing(tx, mut sharing) => match sharing.as_mut().poll(cx) {
+                    Poll::Ready(Ok(share)) => {
+                        self.out = Outbound::Reserving(share, Box::pin(tx.reserve_owned()));
+                    }
+                    // The semaphore is never closed; this arm is for the type.
+                    Poll::Ready(Err(_)) => return Poll::Ready(Err(link_gone())),
+                    Poll::Pending => {
+                        self.out = Outbound::Sharing(tx, sharing);
+                        return Poll::Pending;
+                    }
+                },
+                Outbound::Reserving(share, mut reserving) => match reserving.as_mut().poll(cx) {
                     Poll::Ready(Ok(permit)) => {
-                        self.out = Outbound::Ready(permit);
+                        self.out = Outbound::Ready(share, permit);
                         return Poll::Ready(Ok(()));
                     }
                     Poll::Ready(Err(_)) => return Poll::Ready(Err(link_gone())),
                     Poll::Pending => {
-                        self.out = Outbound::Reserving(reserving);
+                        self.out = Outbound::Reserving(share, reserving);
                         return Poll::Pending;
                     }
                 },
-                Outbound::Ready(permit) => {
-                    self.out = Outbound::Ready(permit);
+                Outbound::Ready(share, permit) => {
+                    self.out = Outbound::Ready(share, permit);
                     return Poll::Ready(Ok(()));
                 }
                 Outbound::Gone => return Poll::Ready(Err(link_gone())),
@@ -798,8 +852,11 @@ impl Sink<Message> for VirtualConn {
             }
         };
         match std::mem::replace(&mut self.out, Outbound::Gone) {
-            Outbound::Ready(permit) => {
-                self.out = Outbound::Idle(permit.send(frame.into_message()));
+            Outbound::Ready(share, permit) => {
+                self.out = Outbound::Idle(permit.send(Queued {
+                    msg: frame.into_message(),
+                    share: Some(share),
+                }));
                 Ok(())
             }
             // `Sink`'s contract is `poll_ready` before every `start_send`; being
