@@ -259,6 +259,9 @@ impl Channel {
                 frame.len()
             ));
         }
+        // Every piece but the last is exactly `FRAGMENT_PLAINTEXT`, and the
+        // last is not empty since the frame is over it: the only shape
+        // `decrypt_message` accepts.
         let mut pieces = frame.chunks(FRAGMENT_PLAINTEXT).peekable();
         let mut messages = Vec::with_capacity(frame.len().div_ceil(FRAGMENT_PLAINTEXT));
         let mut plaintext = Vec::with_capacity(1 + FRAGMENT_PLAINTEXT);
@@ -278,7 +281,8 @@ impl Channel {
     ///
     /// Anything that breaks the fragment rules — a fragment on a connection
     /// that did not negotiate them, an ordinary message inside a run, a bad
-    /// flag, a run past this channel's frame limit — is an error exactly like
+    /// flag, a piece of the wrong size, a run past this channel's frame
+    /// limit — is an error exactly like
     /// a frame that does not decrypt, and the caller closes the connection.
     pub fn decrypt_message(&mut self, message: &[u8]) -> Result<Option<Vec<u8>>> {
         // Without the capability a marker is just the malformed zero-length
@@ -296,6 +300,22 @@ impl Channel {
         let (&flag, piece) = plaintext
             .split_first()
             .ok_or_else(|| "malformed fragment: no flag".to_string())?;
+        // Only the shape the encoder produces. Without it the byte limit alone
+        // would not end a run: empty or tiny pieces could keep one open for
+        // ever. With it a run is at most `frame_limit / FRAGMENT_PLAINTEXT`
+        // messages, and no counter or timer is needed.
+        let sized = match flag {
+            MORE => piece.len() == FRAGMENT_PLAINTEXT,
+            LAST => (1..=FRAGMENT_PLAINTEXT).contains(&piece.len()),
+            other => return Err(format!("malformed fragment: flag {other:#04x}")),
+        };
+        if !sized {
+            let which = if flag == MORE { "middle" } else { "last" };
+            return Err(format!(
+                "malformed fragment: a {} byte {which} piece",
+                piece.len()
+            ));
+        }
         let mut frame = self.partial.take().unwrap_or_default();
         if frame.len() + piece.len() > self.frame_limit {
             return Err(format!(
@@ -304,14 +324,11 @@ impl Channel {
             ));
         }
         frame.extend_from_slice(piece);
-        match flag {
-            MORE => {
-                self.partial = Some(frame);
-                Ok(None)
-            }
-            LAST => Ok(Some(frame)),
-            other => Err(format!("malformed fragment: flag {other:#04x}")),
+        if flag == MORE {
+            self.partial = Some(frame);
+            return Ok(None);
         }
+        Ok(Some(frame))
     }
 
     /// One protocol frame as the bytes of one ordinary WebSocket binary
@@ -773,9 +790,36 @@ mod tests {
         // Seeded directly: pushing 64 MiB through the cipher proves nothing
         // more about the check.
         phone.partial = Some(vec![0; MAX_FRAME_PLAINTEXT]);
-        let more = raw_fragment(&mut host, MORE, b"x");
-        let err = phone.decrypt_message(&more).unwrap_err();
+        let last = raw_fragment(&mut host, LAST, b"x");
+        let err = phone.decrypt_message(&last).unwrap_err();
         assert!(err.contains("cap"), "{err}");
+    }
+
+    /// Every middle piece is exactly `FRAGMENT_PLAINTEXT` and the last one 1
+    /// to `FRAGMENT_PLAINTEXT`, which is what keeps a run to a bounded number
+    /// of messages: no empty or tiny pieces to hold it open with.
+    #[test]
+    fn a_piece_of_the_wrong_size_is_malformed() {
+        for (flag, len) in [
+            (MORE, FRAGMENT_PLAINTEXT - 1),
+            (MORE, 0),
+            (MORE, FRAGMENT_PLAINTEXT + 1),
+            (LAST, 0),
+            (LAST, FRAGMENT_PLAINTEXT + 1),
+        ] {
+            let (mut phone, mut host) = pair();
+            let fragment = raw_fragment(&mut host, flag, &body(len));
+            let err = phone.decrypt_message(&fragment).unwrap_err();
+            assert!(err.contains("piece"), "{flag:#04x} / {len}: {err}");
+        }
+
+        // The sizes at the edges of what is allowed, as one run.
+        let (mut phone, mut host) = pair();
+        let middle = raw_fragment(&mut host, MORE, &body(FRAGMENT_PLAINTEXT));
+        let last = raw_fragment(&mut host, LAST, b"x");
+        assert_eq!(phone.decrypt_message(&middle).unwrap(), None);
+        let frame = phone.decrypt_message(&last).unwrap().unwrap();
+        assert_eq!(frame.len(), FRAGMENT_PLAINTEXT + 1);
     }
 
     #[test]
@@ -830,7 +874,7 @@ mod tests {
     #[test]
     fn an_ordinary_message_inside_a_run_is_malformed() {
         let (mut phone, mut host) = pair();
-        let first = raw_fragment(&mut host, MORE, b"{\"id\":");
+        let first = raw_fragment(&mut host, MORE, &body(FRAGMENT_PLAINTEXT));
         let ordinary = host.encrypt_frame(b"{}").unwrap();
         assert_eq!(phone.decrypt_message(&first).unwrap(), None);
         let err = phone.decrypt_message(&ordinary).unwrap_err();

@@ -109,10 +109,14 @@ ciphertext.
   message is `0x00 0x00` followed by the usual chunks; the zero-length marker
   cannot open an ordinary message (a chunk shorter than its tag is malformed),
   so the two forms never collide. The chunks' plaintext is one flag byte and
-  then the next at most 262 144 bytes of the frame: `0x01` means more
-  fragments of this frame follow, `0x00` that this is the last one; any other
-  flag is malformed. The flag is inside the ciphertext, so a run cannot be cut
-  short or extended undetected. A frame at or under 256 KiB, a larger frame a
+  then the frame's next *piece*: `0x01` means more fragments of this frame
+  follow, and its piece is exactly 262 144 bytes; `0x00` that this is the last
+  one, and its piece is 1 to 262 144 bytes. Any other flag, and a piece of any
+  other size, is malformed. That is the only shape an encoder ever produces,
+  and it means a run of at most 64 MiB is at most 256 messages, with no
+  counter or timer: a run cannot be kept open with empty or tiny pieces. The
+  flag is inside the ciphertext, so a run cannot be cut short or extended
+  undetected. A frame at or under 256 KiB, a larger frame a
   client sends whole, and every frame on a connection without the capability
   is one ordinary message exactly as above; a receiver accepts either form
   whatever the frame's size. The fragments of one frame are consecutive messages on the
@@ -133,9 +137,9 @@ ciphertext.
   decrypt (truncated header or body, a chunk shorter than a tag, a bad tag)
   closes the connection with `4001`. So does a fragment that breaks the rules:
   a fragment message on a connection without the capability, an ordinary
-  message in the middle of a run, a bad flag, or a run that passes 64 MiB, or
-  64 KiB before authentication (which is also what ends a run that never
-  ends). The secure channel failing
+  message in the middle of a run, a bad flag, a piece of the wrong size, or a
+  run that passes 64 MiB, or 64 KiB before authentication (which, with the
+  piece sizes, is what ends a run that never ends). The secure channel failing
   is the same class of failure as never having established it.
 - Host authentication: when the phone knows the host's public key (it came in
   the QR) it aborts the handshake if the responder's static key differs. The
