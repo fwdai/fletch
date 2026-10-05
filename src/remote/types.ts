@@ -215,6 +215,14 @@ export const MAX_FRAME_BYTES = 4 * 1024 * 1024;
  *  name cannot tell any of that apart from a hang. */
 export type PairStep = "connecting" | "lan" | "relay" | "registering" | "greeting" | "workspace";
 
+export interface CallOptions {
+  /** How long to wait for the answer, in ms; absent or 0 waits for ever. For
+   *  reads only (`READ_TIMEOUT_MS` is the usual value): the host keeps running
+   *  a request the client gave up on, and keeps its in-flight slot taken until
+   *  it answers, so a mutation must never be abandoned by a timer. */
+  timeoutMs?: number;
+}
+
 export type EventHandler = (payload: unknown) => void;
 export type StateHandler = (state: ConnectionState, error?: string) => void;
 export type StepHandler = (step: PairStep) => void;
@@ -227,7 +235,7 @@ export interface RemoteClient {
   reconnect(): Promise<HelloResult>;
   /** Stop and forget the target — used when unpairing. */
   disconnect(): void;
-  call<T>(op: string, args?: Record<string, unknown>): Promise<T>;
+  call<T>(op: string, args?: Record<string, unknown>, opts?: CallOptions): Promise<T>;
   /** Subscribe to one host event name. Returns an unsubscribe function. */
   on(event: string, cb: EventHandler): () => void;
   /** Subscribe to connection-state changes; fires immediately with current. */

@@ -733,7 +733,14 @@ export const useStore = create<MobileState>()((set, get) => ({
     };
     if (typeof document !== "undefined") {
       document.addEventListener("visibilitychange", () => {
-        if (document.hidden || client.state !== "connected") return;
+        if (document.hidden) return;
+        // A retry waiting out its backoff was scheduled while the phone was
+        // away; the user looking at the app is reason enough to dial now.
+        if (client.retrying) {
+          void get().reconnect().catch(ignore);
+          return;
+        }
+        if (client.state !== "connected") return;
         void resume();
       });
     }

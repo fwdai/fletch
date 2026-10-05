@@ -33,7 +33,9 @@ adapters (`src/adapters/*`) unchanged.
   without its own pings the client would learn nothing until TCP gave up. The
   phone additionally probes on returning to the foreground: its workspace
   refresh doubles as a liveness check, and one unanswered for 6 s forces a
-  reconnect. Client reconnects with exponential backoff (1 s, 2 s, 4 s … 30 s).
+  reconnect. Client reconnects with exponential backoff (1 s, 2 s, 4 s … 30 s);
+  a phone returning to the foreground with a retry pending dials at once
+  rather than wait it out.
 - WebSocket messages larger than 4 MiB are rejected (close code 1009).
 - Everything the host holds for a connection is bounded, and ends with it. The
   outbound queue holds 64 frames: a client that stops reading while the host
@@ -42,6 +44,22 @@ adapters (`src/adapters/*`) unchanged.
   flight per connection; further requests are answered immediately with
   `{ ok: false, error: "too many in-flight requests" }` and never dispatched.
   Requests still running when the socket goes away are abandoned.
+- The client keeps to the same cap: beyond 8 outstanding requests it queues
+  the rest in order and sends each as an earlier one is answered, so the burst
+  of reads that follows every handshake is never refused. It counts every
+  request, `pair`/`hello` and `register_push` included, although the host
+  answers those inline outside its count. A dropped socket rejects queued
+  requests along with in-flight ones.
+- A request has no timeout unless its caller sets one, and only a read should:
+  an op that changes something on the Mac is still running there after the
+  client gives up on it, and reporting it failed invites a retry of work that
+  is happening. The phone's reads ask for 30 s. A request that times out is
+  rejected and the socket is left alone, but its in-flight slot stays taken
+  until the host's answer arrives (and is then ignored) or the socket goes —
+  the host is still counting it against the 8, and handing the slot on early
+  would only get the next request refused. The clock starts when the request
+  is sent, not while it waits in the queue. `pair`/`hello` have the
+  handshake's own 15 s bound (see "Relay" → "Phone side").
 
 ## Secure channel
 
@@ -156,14 +174,19 @@ repo); anyone can run their own and point both apps at it.
   Frames the relay does not understand (unknown connId, truncated, a text
   frame on the host link after `ready`) are ignored, not fatal. The host link
   accepts messages up to 4 MiB + 5 bytes, so a legal 4 MiB device message fits
-  inside a DATA frame. The host serves each virtual connection through the
+  inside a DATA frame. A larger DATA frame for a live connId costs only that
+  device: the relay drops the frame, closes the device link with `1009` and
+  sends the host the matching CLOSE. Only an oversized message that names no
+  device (unknown connId, NOTIFY, too short to decode, any frame before
+  `ready`) closes the host link itself with `1009`, which drops every device
+  with `4404` as any host departure does. The host serves each virtual connection through the
   same code path as a LAN socket; WebSocket ping/pong is per hop (host↔relay
   and relay↔device), never forwarded, and the host answers its own liveness
   pings to a virtual connection locally. The relay originates no pings of its
   own (they would keep the Durable Object awake); the host pings the relay,
   and the runtime answers device pings without waking the object.
 - **Host side.** The Mac keeps the host link up whenever remote access is
-  enabled and a relay URL is set, reconnecting with backoff (1 s … 60 s) when
+  enabled and a relay URL is set, reconnecting with backoff (1 s … 15 s) when
   it drops, `4409` included: two Macs sharing one host key is a
   misconfiguration, and the alternating link surfaces it in `relay.error`
   rather than silently picking a winner. `remote_status.relay` reports the

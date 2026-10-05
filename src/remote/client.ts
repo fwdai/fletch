@@ -7,6 +7,7 @@ import { backoffDelay } from "./backoff";
 import { type Candidate, candidatesFor } from "./candidates";
 import type { Socket, SocketFactory, SocketHandlers } from "./socket";
 import {
+  type CallOptions,
   CLOSE_REASONS,
   CLOSE_REMOTE_DISABLED,
   CLOSE_UNAUTHENTICATED,
@@ -43,8 +44,31 @@ const FATAL_CLOSE = new Set([CLOSE_UNAUTHENTICATED, CLOSE_REMOTE_DISABLED]);
 export const HANDSHAKE_TIMEOUT_MS = 15_000;
 const HANDSHAKE_TIMED_OUT = "The Mac did not answer. Check that it is awake and connected.";
 
+/** The host dispatches at most this many requests per connection and refuses
+ *  the rest (`MAX_IN_FLIGHT` in crates/fletch-core/src/remote/server.rs), so
+ *  the client holds the overflow back rather than have it bounced. */
+export const MAX_IN_FLIGHT = 8;
+
+/** The timeout a *read* asks for (`CallOptions.timeoutMs`): long enough for
+ *  any read the host answers from its disk, the network or `gh`, short enough
+ *  that a screen waiting on a dropped request learns so. No request has a
+ *  timeout unless its caller asks: an op that changes something on the Mac is
+ *  still running there after the client gives up on it, and reporting it
+ *  failed invites a retry of work that is happening — only a read is safe to
+ *  abandon. */
+export const READ_TIMEOUT_MS = 30_000;
+
+const ignore = () => {};
+
 interface Pending {
   resolve: (v: unknown) => void;
+  reject: (e: Error) => void;
+  timer: unknown;
+}
+
+/** A request held back by `MAX_IN_FLIGHT`, waiting for a slot. */
+interface Queued {
+  send: () => void;
   reject: (e: Error) => void;
 }
 
@@ -94,6 +118,7 @@ const randomId = () =>
 export class ProtocolClient implements RemoteClient {
   private socket: Socket | null = null;
   private pending = new Map<string, Pending>();
+  private queue: Queued[] = [];
   private listeners = new Map<string, Set<EventHandler>>();
   private stateListeners = new Set<StateHandler>();
   private stepListeners = new Set<StepHandler>();
@@ -217,10 +242,18 @@ export class ProtocolClient implements RemoteClient {
     this.setState("disconnected");
   }
 
-  async call<T>(op: string, args: Record<string, unknown> = {}): Promise<T> {
+  async call<T>(
+    op: string,
+    args: Record<string, unknown> = {},
+    opts: CallOptions = {},
+  ): Promise<T> {
     if (!this.socket) throw new Error("not connected");
-    return this.request<T>(op, args);
+    return this.request<T>(op, args, opts.timeoutMs ?? 0);
   }
+
+  // `pair` and `hello` run under the handshake's own bound (`attemptConnect`),
+  // which turns a silent host into a failed attempt rather than one failed
+  // request, so they carry no timeout of their own.
 
   async pair(token: string, device: DeviceInfo): Promise<PairResult> {
     const result = await this.request<PairResult>("pair", { token, device });
@@ -250,18 +283,48 @@ export class ProtocolClient implements RemoteClient {
     for (const cb of this.stepListeners) cb(step);
   }
 
-  private request<T>(op: string, args: Record<string, unknown>): Promise<T> {
+  /** Send a request, or queue it while `MAX_IN_FLIGHT` are outstanding. The
+   *  timeout starts once it is sent: time spent queued is the client's own. */
+  private request<T>(op: string, args: Record<string, unknown>, timeoutMs = 0): Promise<T> {
     const socket = this.socket;
     if (!socket) return Promise.reject(new Error("not connected"));
-    const id = this.newId();
-    const frame: RequestFrame = { id, op, args };
     return new Promise<T>((resolve, reject) => {
-      this.pending.set(id, { resolve: resolve as (v: unknown) => void, reject });
-      void Promise.resolve(socket.send(JSON.stringify(frame))).catch((e) => {
-        this.pending.delete(id);
-        reject(e instanceof Error ? e : new Error(String(e)));
-      });
+      const send = () => {
+        const id = this.newId();
+        const frame: RequestFrame = { id, op, args };
+        const timer =
+          timeoutMs > 0
+            ? this.setTimer(() => {
+                const waiter = this.pending.get(id);
+                if (!waiter) return;
+                waiter.reject(new Error(`The Mac did not answer ${op} in time.`));
+                // The slot stays taken. The host is still running the request
+                // and counts it against this connection's eight until it
+                // answers, so handing the slot on now would only get the next
+                // request refused as over the cap. The late answer releases
+                // it; a socket that drops first releases everything.
+                this.pending.set(id, { resolve: ignore, reject: ignore, timer: null });
+              }, timeoutMs)
+            : null;
+        this.pending.set(id, { resolve: resolve as (v: unknown) => void, reject, timer });
+        void Promise.resolve(socket.send(JSON.stringify(frame))).catch((e) => {
+          this.settle(id)?.reject(e instanceof Error ? e : new Error(String(e)));
+        });
+      };
+      if (this.pending.size < MAX_IN_FLIGHT) send();
+      else this.queue.push({ send, reject });
     });
+  }
+
+  /** Take request `id` off the books, however it ended, and hand its slot to
+   *  the next queued request. Undefined when it was already settled. */
+  private settle(id: string): Pending | undefined {
+    const waiter = this.pending.get(id);
+    if (!waiter) return undefined;
+    this.pending.delete(id);
+    if (waiter.timer !== null) this.clearTimer(waiter.timer);
+    this.queue.shift()?.send();
+    return waiter;
   }
 
   /** One connection attempt: open the socket, then run the first frame
@@ -440,9 +503,10 @@ export class ProtocolClient implements RemoteClient {
       this.dispatchEvent(frame);
       return;
     }
-    const waiter = this.pending.get(frame.id);
-    if (!waiter) return; // Late response to a request we already gave up on.
-    this.pending.delete(frame.id);
+    const waiter = this.settle(frame.id);
+    if (!waiter) return; // A response to a request this socket never sent.
+    // A request already given up on (`timeoutMs`) has `ignore` handlers: the
+    // answer only frees its slot.
     if (frame.ok) waiter.resolve(frame.result);
     else waiter.reject(new Error(frame.error));
   }
@@ -472,7 +536,12 @@ export class ProtocolClient implements RemoteClient {
       this.clearTimer(this.retryHandle);
       this.retryHandle = null;
     }
-    for (const [, waiter] of this.pending) waiter.reject(new Error(reason));
+    for (const waiter of this.queue) waiter.reject(new Error(reason));
+    this.queue = [];
+    for (const [, waiter] of this.pending) {
+      if (waiter.timer !== null) this.clearTimer(waiter.timer);
+      waiter.reject(new Error(reason));
+    }
     this.pending.clear();
     const socket = this.socket;
     this.socket = null;
