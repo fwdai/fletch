@@ -10,6 +10,8 @@ use std::time::Duration;
 
 use crate::error::{Error, Result};
 
+use super::settings::{get_setting, set_setting};
+
 /// Base name of the on-disk SQLite database within the app data dir. Neutral
 /// (not tied to the product name) so a future rebrand never needs another file
 /// migration. Shared by `init` and the recovery `move_db_aside` so both agree.
@@ -83,6 +85,23 @@ pub(crate) const MIGRATIONS: &[&str] = &[
     include_str!("../../migrations/0046_autopilot_log.sql"),
 ];
 
+/// Smallest `MIGRATIONS.len()` a build needs to read the schema these
+/// migrations produce. Stored in `settings` under `MIN_READER_VERSION_KEY` by
+/// every build at or ahead of the database, so an older build opening a newer
+/// database can tell an additive change it can live with from one it can't.
+///
+/// Rule: bump to the new `MIGRATIONS.len()` whenever a migration drops,
+/// renames or rebuilds something older code reads (a column, a table, a
+/// constraint it relies on); leave it alone for additive migrations (new
+/// nullable columns, new tables, new indexes). 46 because nothing before it
+/// knew the rule.
+pub(crate) const MIN_READER_VERSION: usize = 46;
+const _: () = assert!(MIN_READER_VERSION >= 1 && MIN_READER_VERSION <= MIGRATIONS.len());
+
+/// `settings` key holding `MIN_READER_VERSION` of the build that last
+/// migrated the database.
+pub(crate) const MIN_READER_VERSION_KEY: &str = "schema.min_reader_version";
+
 pub(crate) fn get_migrations() -> Migrations<'static> {
     Migrations::new(MIGRATIONS.iter().map(|&sql| M::up(sql)).collect())
 }
@@ -123,9 +142,27 @@ pub fn init_with_progress(
     // transaction, so it has to be set here, outside the per-migration
     // transactions the runner opens.
     conn.pragma_update(None, "foreign_keys", false)?;
-    get_migrations()
-        .to_latest(&mut conn)
-        .map_err(map_migration_error)?;
+    let applied = user_version(&conn)?;
+    if applied > MIGRATIONS.len() && schema_readable_by_this_build(&conn) {
+        tracing::info!(
+            applied,
+            known = MIGRATIONS.len(),
+            "schema is ahead of this build but within its reader floor; not migrating"
+        );
+    } else {
+        // A database ahead of this build without a floor that admits it fails
+        // here as `DatabaseTooFarAhead`.
+        get_migrations()
+            .to_latest(&mut conn)
+            .map_err(map_migration_error)?;
+        // Reached only when this build is at or ahead of the database, so a
+        // compatible older reader never lowers the floor a newer build wrote.
+        set_setting(
+            &conn,
+            MIN_READER_VERSION_KEY,
+            &MIN_READER_VERSION.to_string(),
+        )?;
+    }
     // The other half of running with enforcement off (SQLite's documented
     // rebuild procedure): verify no migration left a dangling reference before
     // trusting the schema.
@@ -219,6 +256,23 @@ pub(crate) fn open_db(db_path: &Path) -> Result<Connection> {
          PRAGMA busy_timeout = 5000;",
     )?;
     Ok(conn)
+}
+
+/// Number of migrations applied to the database (SQLite's `user_version`,
+/// which rusqlite_migration uses as its schema version).
+fn user_version(conn: &Connection) -> Result<usize> {
+    let applied: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    Ok(usize::try_from(applied).unwrap_or(0))
+}
+
+/// Whether the floor the last migrating build stored admits this build. A
+/// missing or unparsable floor (a database written before the rule existed, or
+/// a schema that moved `settings` itself) is not readable: nothing vouched
+/// for it.
+fn schema_readable_by_this_build(conn: &Connection) -> bool {
+    get_setting(conn, MIN_READER_VERSION_KEY)
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .is_some_and(|floor| MIGRATIONS.len() >= floor)
 }
 
 /// A migration failure where the DB's `user_version` exceeds our migration count
