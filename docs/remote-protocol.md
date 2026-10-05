@@ -50,16 +50,16 @@ adapters (`src/adapters/*`) unchanged.
   request, `pair`/`hello` and `register_push` included, although the host
   answers those inline outside its count. A dropped socket rejects queued
   requests along with in-flight ones.
-- The client gives up on a request the host has not answered within 30 s,
-  rejecting it and leaving the socket alone; an answer that arrives later is
-  ignored. Ops that legitimately run longer (`commit_agent`, `pull_agent`,
-  `rebase_agent`, `push_agent`, `delegate_git`, `create_pr`, `merge_pr`,
-  `clone_repo`, `spawn_agent`, `send_user_message`, `dictation_end`,
-  `attachment_end`) have no limit, `pair`/`hello` have the handshake's own 15 s bound (see
-  "Relay" → "Phone side"), and a caller can set its own per call. The clock
-  starts when the request is sent, not while it waits in the queue. A
-  request the client gave up on may still be running on the host and holding
-  one of its 8 slots; the next request may then be refused as above.
+- A request has no timeout unless its caller sets one, and only a read should:
+  an op that changes something on the Mac is still running there after the
+  client gives up on it, and reporting it failed invites a retry of work that
+  is happening. The phone's reads ask for 30 s. A request that times out is
+  rejected and the socket is left alone, but its in-flight slot stays taken
+  until the host's answer arrives (and is then ignored) or the socket goes —
+  the host is still counting it against the 8, and handing the slot on early
+  would only get the next request refused. The clock starts when the request
+  is sent, not while it waits in the queue. `pair`/`hello` have the
+  handshake's own 15 s bound (see "Relay" → "Phone side").
 
 ## Secure channel
 

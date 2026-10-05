@@ -216,8 +216,10 @@ export const MAX_FRAME_BYTES = 4 * 1024 * 1024;
 export type PairStep = "connecting" | "lan" | "relay" | "registering" | "greeting" | "workspace";
 
 export interface CallOptions {
-  /** How long to wait for the answer, in ms; 0 waits for ever. Defaults to
-   *  `REQUEST_TIMEOUT_MS`, or no limit for an op in `LONG_RUNNING_OPS`. */
+  /** How long to wait for the answer, in ms; absent or 0 waits for ever. For
+   *  reads only (`READ_TIMEOUT_MS` is the usual value): the host keeps running
+   *  a request the client gave up on, and keeps its in-flight slot taken until
+   *  it answers, so a mutation must never be abandoned by a timer. */
   timeoutMs?: number;
 }
 

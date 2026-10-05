@@ -49,27 +49,16 @@ const HANDSHAKE_TIMED_OUT = "The Mac did not answer. Check that it is awake and 
  *  the client holds the overflow back rather than have it bounced. */
 export const MAX_IN_FLIGHT = 8;
 
-/** How long a request waits for its answer. Without a bound, a request the
- *  host dropped would hang until the socket itself went away. */
-export const REQUEST_TIMEOUT_MS = 30_000;
+/** The timeout a *read* asks for (`CallOptions.timeoutMs`): long enough for
+ *  any read the host answers from its disk, the network or `gh`, short enough
+ *  that a screen waiting on a dropped request learns so. No request has a
+ *  timeout unless its caller asks: an op that changes something on the Mac is
+ *  still running there after the client gives up on it, and reporting it
+ *  failed invites a retry of work that is happening — only a read is safe to
+ *  abandon. */
+export const READ_TIMEOUT_MS = 30_000;
 
-/** Ops that do real work on the Mac — git, the network, an agent's turn,
- *  transcribing audio — and can take minutes when everything is fine, so a
- *  timeout would only report a healthy op as failed. */
-export const LONG_RUNNING_OPS: ReadonlySet<string> = new Set([
-  "commit_agent",
-  "pull_agent",
-  "rebase_agent",
-  "push_agent",
-  "delegate_git",
-  "create_pr",
-  "merge_pr",
-  "clone_repo",
-  "spawn_agent",
-  "send_user_message",
-  "dictation_end",
-  "attachment_end",
-]);
+const ignore = () => {};
 
 interface Pending {
   resolve: (v: unknown) => void;
@@ -259,8 +248,7 @@ export class ProtocolClient implements RemoteClient {
     opts: CallOptions = {},
   ): Promise<T> {
     if (!this.socket) throw new Error("not connected");
-    const timeoutMs = opts.timeoutMs ?? (LONG_RUNNING_OPS.has(op) ? 0 : REQUEST_TIMEOUT_MS);
-    return this.request<T>(op, args, timeoutMs);
+    return this.request<T>(op, args, opts.timeoutMs ?? 0);
   }
 
   // `pair` and `hello` run under the handshake's own bound (`attemptConnect`),
@@ -307,7 +295,15 @@ export class ProtocolClient implements RemoteClient {
         const timer =
           timeoutMs > 0
             ? this.setTimer(() => {
-                this.settle(id)?.reject(new Error(`The Mac did not answer ${op} in time.`));
+                const waiter = this.pending.get(id);
+                if (!waiter) return;
+                waiter.reject(new Error(`The Mac did not answer ${op} in time.`));
+                // The slot stays taken. The host is still running the request
+                // and counts it against this connection's eight until it
+                // answers, so handing the slot on now would only get the next
+                // request refused as over the cap. The late answer releases
+                // it; a socket that drops first releases everything.
+                this.pending.set(id, { resolve: ignore, reject: ignore, timer: null });
               }, timeoutMs)
             : null;
         this.pending.set(id, { resolve: resolve as (v: unknown) => void, reject, timer });
@@ -508,7 +504,9 @@ export class ProtocolClient implements RemoteClient {
       return;
     }
     const waiter = this.settle(frame.id);
-    if (!waiter) return; // Late response to a request we already gave up on.
+    if (!waiter) return; // A response to a request this socket never sent.
+    // A request already given up on (`timeoutMs`) has `ignore` handlers: the
+    // answer only frees its slot.
     if (frame.ok) waiter.resolve(frame.result);
     else waiter.reject(new Error(frame.error));
   }
