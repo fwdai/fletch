@@ -14,10 +14,13 @@
   --accent: #c2906a;
 }
 .boot-mark {
-  width: 36px;
-  height: 36px;
-  color: #e6e8ea;
-  margin-bottom: 10px;
+  width: 30px;
+  height: 44px;
+  color: #f2f3f5;
+  margin-bottom: 6px;
+  /* soft glow lifts the mark off the flat boot background, like the icon's
+   * own drop shadow */
+  filter: drop-shadow(0 2px 8px rgba(0, 0, 0, 0.45));
 }
 .boot-step {
   display: inline-flex;
