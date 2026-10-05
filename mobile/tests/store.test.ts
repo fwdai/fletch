@@ -6,7 +6,7 @@ import { type AgentManagedEvent, ROADMAP_PM_PURPOSE } from "@desktop/api/types/a
 import type { AutopilotLogEntry } from "@desktop/api/types/git";
 import type { LiveTurn } from "@desktop/api/types/session";
 import { PROJECT_MANAGER_PRESET } from "@desktop/starterPack/presets";
-import { beforeAll, describe, expect, it, vi } from "vitest";
+import { beforeAll, describe, expect, it, type MockInstance, vi } from "vitest";
 import type { ChatItem } from "../src/adapters";
 import { MOCK_HOST_KEY } from "../src/remote/mock";
 import {
@@ -228,6 +228,170 @@ describe("transcripts through the desktop adapters", () => {
     const log = state().logs.caspian ?? [];
     expect(log.some((i) => i.kind === "user_message")).toBe(true);
     expect(log.some((i) => i.kind === "tool_call")).toBe(true);
+  });
+
+  it("re-reads a turn-end transcript only for an agent whose screen is open", async () => {
+    const read = vi.spyOn(api, "readSessionPage");
+    const home = { key: Date.now(), screen: "home" as const, props: {}, phase: "idle" as const };
+    try {
+      useStore.setState({ nav: [home] });
+      hostEvent("session:records-appended", { agent_id: "pamukkale" });
+      await new Promise((r) => setTimeout(r, 20));
+      expect(read).not.toHaveBeenCalled();
+
+      state().openAgent("pamukkale");
+      await vi.waitFor(() => expect(read).toHaveBeenCalledWith("pamukkale"));
+      read.mockClear();
+      hostEvent("session:records-appended", { agent_id: "pamukkale" });
+      await vi.waitFor(() => expect(read).toHaveBeenCalledWith("pamukkale"));
+    } finally {
+      read.mockRestore();
+      useStore.setState({ nav: [home] });
+    }
+  });
+});
+
+describe("paged transcripts", () => {
+  // caspian's fixture is seven codex rollout lines, which no earlier test
+  // sends to. Pages of three cut it mid-turn: the newest opens on the tool
+  // call, the prompt is a page back and the session's header two.
+  const PAGE = 3;
+  const RECORDS = 7;
+  const realPage = api.readSessionPage;
+
+  /** Run `fn` against pages of `PAGE` records, end to end through the mock. */
+  async function withSmallPages(fn: (read: MockInstance<typeof realPage>) => Promise<void>) {
+    const read = vi
+      .spyOn(api, "readSessionPage")
+      .mockImplementation((agentId, before) => realPage(agentId, before, PAGE));
+    try {
+      await fn(read);
+    } finally {
+      read.mockRestore();
+    }
+  }
+
+  /** The log a host without pages builds: the whole history, read at once. */
+  async function wholeLog(agentId: string): Promise<ChatItem[]> {
+    const protocol = state().protocol;
+    useStore.setState({
+      protocol: protocol && {
+        ...protocol,
+        ops: protocol.ops.filter((o) => o !== "read_session_page"),
+      },
+    });
+    try {
+      await state().rebuildLog(agentId);
+    } finally {
+      useStore.setState({ protocol });
+    }
+    return state().logs[agentId] ?? [];
+  }
+
+  it("opens an agent on its newest page, with a cursor for the rest", async () => {
+    const whole = vi.spyOn(api, "readSessionRecords");
+    try {
+      await withSmallPages(async (read) => {
+        await state().rebuildLog("caspian");
+        expect(read).toHaveBeenCalledTimes(1);
+      });
+      expect(whole).not.toHaveBeenCalled();
+    } finally {
+      whole.mockRestore();
+    }
+    const history = state().histories.caspian;
+    expect(history?.records).toHaveLength(PAGE);
+    expect(history?.older).not.toBeNull();
+    const log = state().logs.caspian ?? [];
+    // The newest turn's tail is there; its prompt is still on an older page.
+    expect(log.some((i) => i.kind === "tool_call")).toBe(true);
+    expect(log.some((i) => i.kind === "user_message")).toBe(false);
+  });
+
+  it("prepends older pages until the log is the whole history, in order", async () => {
+    const whole = await wholeLog("caspian");
+    expect(state().histories.caspian?.older).toBeNull();
+
+    await withSmallPages(async () => {
+      await state().rebuildLog("caspian");
+      const sizes = [state().logs.caspian?.length ?? 0];
+      while (state().histories.caspian?.older) {
+        await state().loadOlderLog("caspian");
+        sizes.push(state().logs.caspian?.length ?? 0);
+      }
+      // Seven records by three: the newest page and two older ones. The
+      // oldest holds only the session header, which renders nothing.
+      expect(sizes).toHaveLength(3);
+      expect(sizes[1]).toBeGreaterThan(sizes[0]);
+      expect(sizes[2]).toBeGreaterThanOrEqual(sizes[1]);
+    });
+    // Re-reduced across the page boundaries, the pages render exactly what the
+    // whole read does: the call with its output, the prompt before both.
+    expect(state().histories.caspian?.records).toHaveLength(RECORDS);
+    expect(state().logs.caspian).toEqual(whole);
+    expect(whole.findIndex((i) => i.kind === "user_message")).toBeLessThan(
+      whole.findIndex((i) => i.kind === "tool_call"),
+    );
+  });
+
+  it("offers nothing older once the history is exhausted", async () => {
+    await withSmallPages(async (read) => {
+      await state().rebuildLog("caspian");
+      while (state().histories.caspian?.older) await state().loadOlderLog("caspian");
+      read.mockClear();
+      await state().loadOlderLog("caspian");
+      expect(read).not.toHaveBeenCalled();
+    });
+    expect(state().histories.caspian?.older).toBeNull();
+  });
+
+  it("keeps a running turn's live tail when an older page is prepended", async () => {
+    await withSmallPages(async () => {
+      await state().rebuildLog("caspian");
+      const live: ChatItem = { kind: "queued_message", text: "and the docs", turnId: "t-live" };
+      useStore.setState((s) => ({
+        logs: { ...s.logs, caspian: [...(s.logs.caspian ?? []), live] },
+      }));
+      await state().loadOlderLog("caspian");
+      expect(state().logs.caspian?.at(-1)).toEqual(live);
+      expect(state().logs.caspian?.filter((i) => i.kind === "queued_message")).toHaveLength(1);
+    });
+  });
+
+  it("drops an older page a rebuild overtook", async () => {
+    await withSmallPages(async (read) => {
+      await state().rebuildLog("caspian");
+      let release = () => {};
+      read.mockImplementationOnce(async (agentId, before) => {
+        await new Promise<void>((r) => {
+          release = r;
+        });
+        return realPage(agentId, before, PAGE);
+      });
+      const older = state().loadOlderLog("caspian");
+      await state().rebuildLog("caspian");
+      const rebuilt = state().logs.caspian;
+      release();
+      await older;
+      expect(state().logs.caspian).toBe(rebuilt);
+      expect(state().histories.caspian?.records).toHaveLength(PAGE);
+    });
+  });
+
+  it("reads the whole history from a host without the op", async () => {
+    const page = vi.spyOn(api, "readSessionPage");
+    const records = vi.spyOn(api, "readSessionRecords");
+    try {
+      const log = await wholeLog("caspian");
+      expect(page).not.toHaveBeenCalled();
+      expect(records).toHaveBeenCalledWith("caspian");
+      expect(state().histories.caspian).toMatchObject({ older: null });
+      expect(state().histories.caspian?.records).toHaveLength(RECORDS);
+      expect(log.some((i) => i.kind === "user_message")).toBe(true);
+    } finally {
+      page.mockRestore();
+      records.mockRestore();
+    }
   });
 });
 
@@ -740,7 +904,7 @@ describe("spawn flow", () => {
       native_id: null,
       ended_at: null,
     }));
-    const read = vi.spyOn(api, "readSessionRecords").mockResolvedValue([]);
+    const read = vi.spyOn(api, "readSessionPage").mockResolvedValue({ records: [], older: null });
     const readTurns = vi.spyOn(api, "readUserTurns").mockResolvedValue(turns);
     useStore.setState((s) => ({ logs: { ...s.logs, [id]: [] } }));
     try {
@@ -772,8 +936,10 @@ describe("spawn flow", () => {
     const id = await spawnMidTurn("senja", "Add the relay setting to the host sheet");
     const live = state().logs[id] ?? [];
     const protocol = state().protocol;
-    const records = await api.readSessionRecords(id);
-    const read = vi.spyOn(api, "readSessionRecords").mockResolvedValue(records.slice(0, 1));
+    const { records } = await api.readSessionPage(id);
+    const read = vi
+      .spyOn(api, "readSessionPage")
+      .mockResolvedValue({ records: records.slice(0, 1), older: null });
     const readLive = vi.spyOn(api, "readLiveTurn");
     useStore.setState({
       protocol: protocol && {

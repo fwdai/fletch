@@ -527,7 +527,7 @@ fn begin_pairing_names_the_preset_and_refuses_an_unknown_one() {
 
 #[test]
 fn allowlist_matches_the_protocol_table() {
-    // The 141 rows of docs/remote-protocol.md's op table, spelled out here so a
+    // The 142 rows of docs/remote-protocol.md's op table, spelled out here so a
     // silent widening of the wire surface fails this test. `register_push` is
     // the one the session layer answers itself (it needs the connection's
     // device identity), so it lives in `SESSION_OPS`; the two together are what
@@ -548,6 +548,7 @@ fn allowlist_matches_the_protocol_table() {
         "set_agent_model",
         "set_agent_effort",
         "read_session_records",
+        "read_session_page",
         "read_user_turns",
         "sync_session",
         "read_live_turn",
@@ -3747,4 +3748,82 @@ fn the_auto_archive_notice_is_forwarded_and_advertised() {
     assert!(super::protocol_descriptor()
         .events
         .contains(&"workspace:auto-archived"));
+}
+
+// ---------------------------------------------------------------------------
+// Transcript pages
+// ---------------------------------------------------------------------------
+
+/// `read_session_page` over the wire arm with the phone's argument keys: an
+/// Observe read, the newest page first, its cursor handed back for the page
+/// before it, and a mangled cursor an error rather than `unknown op`.
+#[tokio::test]
+async fn read_session_page_pages_back_through_the_dispatcher() {
+    use crate::workspace::tests::{agent, exchange, seed_repo, test_db};
+
+    assert_eq!(
+        dispatch::scope_of("read_session_page"),
+        Some(Scope::Observe)
+    );
+    let db = test_db();
+    seed_repo(&db, "/r");
+    let wm = Arc::new(crate::workspace::WorkspaceManager::new(db.clone()));
+    agent(&wm, "fuji", "/r", None);
+    exchange(&wm, "fuji", "t1", "alpha");
+    exchange(&wm, "fuji", "t2", "bravo");
+    let ctx = Arc::new(crate::host::EngineCtx::new(
+        Arc::new(crate::host::sink::NullSink),
+        db,
+        Box::new(|| false),
+    ));
+    let sup = Arc::new(crate::supervisor::Supervisor::new(wm));
+    let d = dispatch::SupervisorDispatch::new(ctx, sup);
+
+    let ids = |page: &Value| -> Vec<String> {
+        page["records"]
+            .as_array()
+            .expect("records")
+            .iter()
+            .map(|r| r["native_id"].as_str().unwrap().to_string())
+            .collect()
+    };
+    let newest = d
+        .dispatch(
+            "read_session_page",
+            json!({ "agentId": "fuji", "limit": 3 }),
+        )
+        .await
+        .expect("newest page");
+    assert_eq!(ids(&newest), ["t1-a", "t2-u", "t2-a"]);
+    let older = newest["older"].as_str().expect("a cursor").to_string();
+
+    let rest = d
+        .dispatch(
+            "read_session_page",
+            json!({ "agentId": "fuji", "before": older, "limit": 3 }),
+        )
+        .await
+        .expect("older page");
+    assert_eq!(ids(&rest), ["t1-u"]);
+    assert_eq!(rest["older"], Value::Null);
+
+    // No limit is the default page, which holds this whole history.
+    let whole = d
+        .dispatch(
+            "read_session_page",
+            json!({ "agentId": "fuji", "before": null }),
+        )
+        .await
+        .expect("default page");
+    assert_eq!(ids(&whole).len(), 4);
+
+    let bad = d
+        .dispatch(
+            "read_session_page",
+            json!({ "agentId": "fuji", "before": "not-a-cursor" }),
+        )
+        .await
+        .expect_err("a bad cursor");
+    assert_ne!(bad, dispatch::UNKNOWN_OP);
+    assert!(bad.contains("cursor"), "{bad}");
 }

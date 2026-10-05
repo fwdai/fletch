@@ -26,7 +26,7 @@ import type {
   RoadmapItemUpdate,
 } from "@desktop/api/types/roadmap";
 import type { PublishApproval } from "@desktop/api/types/sandbox";
-import type { LiveTurn, SessionRecord, UserTurn } from "@desktop/api/types/session";
+import type { LiveTurn, SessionPage, SessionRecord, UserTurn } from "@desktop/api/types/session";
 import type { AgentModels } from "@desktop/data/modelCatalog/types";
 import type { CustomAgent } from "@desktop/storage/customAgents";
 import type { HostProvider, RemoteClient } from "../remote";
@@ -153,6 +153,11 @@ export function createApi(client: RemoteClient) {
       call<null>("set_agent_effort", { agentId, effort }),
     readSessionRecords: (agentId: string) =>
       call<SessionRecord[]>("read_session_records", { agentId }),
+    /** The same history a page at a time, newest first: `before` is the
+     *  previous page's `older` cursor, and an omitted `limit` is the host's
+     *  default page. Gated on `hostSupports("read_session_page")`. */
+    readSessionPage: (agentId: string, before: string | null = null, limit?: number) =>
+      call<SessionPage>("read_session_page", { agentId, before, limit }),
     readUserTurns: (agentId: string) => call<UserTurn[]>("read_user_turns", { agentId }),
     syncSession: (agentId: string) => call<null>("sync_session", { agentId }),
     /** The running turn's events, which the records lack until it ends. Gated

@@ -375,6 +375,10 @@
   overflow: auto;
   animation: fade 0.25s var(--ease-out);
 }
+/* Sized to its label rather than stretched across the log like the rows. */
+.load-older {
+  align-self: center;
+}
 .working {
   display: flex;
   align-items: center;
