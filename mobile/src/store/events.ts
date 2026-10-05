@@ -44,7 +44,7 @@ import { ignore } from "../lib/ignore";
 import type { RemoteClient } from "../remote";
 import { dropTasks, foldTaskEvent } from "./backgroundTasks";
 import { patchChatIn } from "./chats";
-import { agentOf, type MobileState } from "./index";
+import { agentOf, isAgentOpen, type MobileState } from "./index";
 import { isReplayed } from "./liveTurn";
 import {
   appendActivity,
@@ -133,8 +133,12 @@ export function registerRemoteEvents(client: RemoteClient, set: Set, get: Get): 
   });
 
   // The canonical transcript for a finished turn — richer than the live render
-  // (tool results the live stream dropped), so rebuild from it.
+  // (tool results the live stream dropped), so rebuild from it. Only for an
+  // agent whose screen is open: the transcript is the heaviest read on the
+  // wire, every turn that ends on the Mac raises this whether or not the phone
+  // is looking, and opening an agent re-reads its history anyway (`loadAgent`).
   on<SessionRecordsAppendedEvent>("session:records-appended", (e) => {
+    if (!isAgentOpen(get(), e.agent_id)) return;
     void get().rebuildLog(e.agent_id).catch(ignore);
   });
 
