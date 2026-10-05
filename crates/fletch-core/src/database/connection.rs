@@ -217,8 +217,8 @@ fn map_migration_error(e: rusqlite_migration::Error) -> Error {
 pub(crate) const BACKUPS_TO_KEEP: usize = 2;
 
 /// Pages copied per `sqlite3_backup_step` call: 16 MB at the 4 KB default page
-/// size. Backups run on the main thread before the window exists, so the loop
-/// is tuned for throughput, not for yielding to concurrent writers.
+/// size. The backup runs during startup with no concurrent writer, so the loop
+/// is tuned for throughput, not for yielding.
 const SNAPSHOT_PAGES_PER_STEP: i32 = 4096;
 
 /// Suffix a backup carries while it is still being written. `prune_backups`
@@ -240,7 +240,10 @@ fn backup_before_upgrade(conn: &Connection, db_path: &Path) -> Result<()> {
     let backup = backup_path(db_path, applied);
     snapshot_to(conn, &backup)?;
     tracing::info!(backup = %backup.display(), "backed up DB before schema upgrade");
-    prune_backups(db_path, BACKUPS_TO_KEEP)?;
+    // Housekeeping only: a leftover we cannot delete must not block the launch.
+    if let Err(e) = prune_backups(db_path, BACKUPS_TO_KEEP) {
+        tracing::warn!(error = %e, "pruning old DB backups failed");
+    }
     Ok(())
 }
 
