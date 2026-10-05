@@ -44,6 +44,22 @@ adapters (`src/adapters/*`) unchanged.
   flight per connection; further requests are answered immediately with
   `{ ok: false, error: "too many in-flight requests" }` and never dispatched.
   Requests still running when the socket goes away are abandoned.
+- The client keeps to the same cap: beyond 8 outstanding requests it queues
+  the rest in order and sends each as an earlier one is answered, so the burst
+  of reads that follows every handshake is never refused. It counts every
+  request, `pair`/`hello` and `register_push` included, although the host
+  answers those inline outside its count. A dropped socket rejects queued
+  requests along with in-flight ones.
+- The client gives up on a request the host has not answered within 30 s,
+  rejecting it and leaving the socket alone; an answer that arrives later is
+  ignored. Ops that legitimately run longer (`commit_agent`, `pull_agent`,
+  `rebase_agent`, `push_agent`, `delegate_git`, `create_pr`, `merge_pr`,
+  `clone_repo`, `spawn_agent`, `send_user_message`, `dictation_end`,
+  `attachment_end`) have no limit, `pair`/`hello` have the handshake's own 15 s bound (see
+  "Relay" → "Phone side"), and a caller can set its own per call. The clock
+  starts when the request is sent, not while it waits in the queue. A
+  request the client gave up on may still be running on the host and holding
+  one of its 8 slots; the next request may then be refused as above.
 
 ## Secure channel
 
