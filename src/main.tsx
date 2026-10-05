@@ -6,6 +6,7 @@ import { startSavedHosts } from "./remote/hosts";
 import { useAppStore } from "./store";
 import { setupAppMenu } from "./util/appMenu";
 import { runStartupUpdateCheck } from "./util/autoUpdate";
+import { waitForEngineReady } from "./util/boot";
 import { revealAppWindow } from "./util/window";
 import "@fontsource/geist-sans/400.css";
 import "@fontsource/geist-sans/600.css";
@@ -21,7 +22,8 @@ ReactDOM.createRoot(root).render(
 );
 
 // Reveal the (initially hidden) window after first paint, so the white webview
-// flash never shows. See `revealAppWindow`.
+// flash never shows. See `revealAppWindow`. That first paint is the boot
+// screen: the engine is still coming up behind it (see `waitForEngineReady`).
 revealAppWindow();
 
 // Check for and download updates on launch (no-op in dev). Fire-and-forget so
@@ -39,5 +41,9 @@ void setupAppMenu();
 // before the first paint: they are a second engine this window happens to know
 // about, and the local one — which is what every pixel on screen is about — must
 // not wait behind a socket to a machine that may be asleep. With no saved hosts
-// this is one keyed settings read and then nothing.
-whenIdle(() => void startSavedHosts());
+// this is one keyed settings read and then nothing. And not before the engine
+// is ready: the dialer they connect through is managed only then. A failed
+// boot is already on screen through the store, so there is nothing to add.
+waitForEngineReady((status) => useAppStore.getState().setBootStatus(status))
+  .then(() => whenIdle(() => void startSavedHosts()))
+  .catch(() => {});

@@ -655,9 +655,23 @@ async fn stop_session(app: AppHandle, expect: Option<u64>) -> Result<()> {
             emit_state(&app, generation, State::Transcribing, None);
             // The model is read here, at the stop, so the choice a session
             // transcribes with is the one showing in Settings when it ended.
-            let (_, model) = {
+            let model = {
                 use tauri::Manager;
-                super::engine_settings(&app.state::<crate::DbState>())
+                match app.try_state::<crate::DbState>() {
+                    Some(db) => super::engine_settings(&db).1,
+                    // A whisper session cannot start before the engine is up
+                    // (see `engine`), so this is a guard rather than a path.
+                    None => {
+                        tracing::warn!("dictation: engine not booted at stop; dropping the clip");
+                        emit_state(
+                            &app,
+                            generation,
+                            State::Error,
+                            Some("Fletch is still starting".into()),
+                        );
+                        return Ok(());
+                    }
+                }
             };
             tokio::spawn(async move {
                 match super::capture::transcribe(pcm, model).await {

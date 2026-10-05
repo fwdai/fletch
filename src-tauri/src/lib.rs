@@ -12,6 +12,7 @@
 // This Mac as a client of *other* Fletch hosts: desktop glue over
 // `fletch_proto::client::Dialer`, so it stays a real module here rather than
 // joining the engine re-exports below.
+mod boot;
 mod client;
 mod commands;
 mod dictation;
@@ -194,16 +195,16 @@ enum DbErrorChoice {
 /// reveal the logs and re-prompt, or quit. If the move-aside recovery itself
 /// fails, we re-prompt with that error rather than quitting silently — the user
 /// asked to recover and deserves to see why it didn't work. Only ever resolves
-/// by returning a live DB or exiting, so it's total. Runs in `setup` on the
-/// main thread — hence rfd's synchronous dialog, not the tauri plugin's, which
-/// needs the not-yet-running event loop.
+/// by returning a live DB or exiting, so it's total. Runs on the boot thread
+/// (inside `host::boot`); only the dialog itself hops to the main thread.
 fn recover_from_db_init_failure(
+    app: &tauri::AppHandle,
     data_dir: &std::path::Path,
     mut err: crate::error::Error,
 ) -> DbState {
     loop {
         tracing::error!(error = %err, "database init failed; prompting for recovery");
-        match show_db_error_dialog(&err) {
+        match show_db_error_dialog(app, &err) {
             DbErrorChoice::MoveAside => {
                 match move_db_aside(data_dir).and_then(|()| database::init(data_dir)) {
                     Ok(db) => return db,
@@ -218,18 +219,31 @@ fn recover_from_db_init_failure(
     }
 }
 
-fn show_db_error_dialog(err: &crate::error::Error) -> DbErrorChoice {
+fn show_db_error_dialog(app: &tauri::AppHandle, err: &crate::error::Error) -> DbErrorChoice {
     let (title, body) = db_error_message(err);
-    let result = rfd::MessageDialog::new()
-        .set_level(rfd::MessageLevel::Error)
-        .set_title(title)
-        .set_description(body)
-        .set_buttons(rfd::MessageButtons::YesNoCancelCustom(
-            DB_ERR_MOVE_ASIDE.into(),
-            DB_ERR_REVEAL_LOGS.into(),
-            DB_ERR_QUIT.into(),
-        ))
-        .show();
+    // rfd's blocking dialog is an NSAlert, and AppKit presents those from the
+    // main thread only. This runs on the boot thread, so the dialog is handed
+    // to the event loop and its answer waited for here.
+    let (tx, rx) = std::sync::mpsc::channel();
+    let shown = app.run_on_main_thread(move || {
+        let result = rfd::MessageDialog::new()
+            .set_level(rfd::MessageLevel::Error)
+            .set_title(title)
+            .set_description(body)
+            .set_buttons(rfd::MessageButtons::YesNoCancelCustom(
+                DB_ERR_MOVE_ASIDE.into(),
+                DB_ERR_REVEAL_LOGS.into(),
+                DB_ERR_QUIT.into(),
+            ))
+            .show();
+        let _ = tx.send(result);
+    });
+    let result = match shown.map(|()| rx.recv()) {
+        Ok(Ok(result)) => result,
+        // The event loop is gone (or dropped the closure unrun): nobody is
+        // left to ask, and nothing to keep the process alive for.
+        Ok(Err(_)) | Err(_) => return DbErrorChoice::Quit,
+    };
     match result {
         rfd::MessageDialogResult::Custom(l) if l == DB_ERR_MOVE_ASIDE => DbErrorChoice::MoveAside,
         rfd::MessageDialogResult::Custom(l) if l == DB_ERR_REVEAL_LOGS => DbErrorChoice::RevealLogs,
@@ -884,6 +898,143 @@ fn setup_tray(app: &tauri::AppHandle, status_slot: &TrayStatusSlot) -> tauri::Re
     Ok(())
 }
 
+/// Run `host::boot` off the main thread, then finish on it. `setup` used to
+/// call `boot` inline, which held the event loop — and so the first paint of an
+/// already-created window — for as long as a backup and migration of a large
+/// database took. Nothing after `boot` can fail the app any more: an error is
+/// shown on the boot screen through `BootStatus` rather than ending the process
+/// with a window that never appeared.
+fn spawn_boot(
+    app: tauri::AppHandle,
+    cfg: host::BootConfig,
+    status: boot::BootStatus,
+    data_dir: std::path::PathBuf,
+) -> std::io::Result<()> {
+    std::thread::Builder::new()
+        .name("fletch-boot".into())
+        .spawn(move || {
+            // Dev aid: `FLETCH_BOOT_DELAY_MS=4000 bun run tauri dev` holds the
+            // boot screen long enough to look at it.
+            #[cfg(debug_assertions)]
+            if let Some(ms) = std::env::var("FLETCH_BOOT_DELAY_MS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+            {
+                std::thread::sleep(std::time::Duration::from_millis(ms));
+            }
+
+            let engine = match host::boot(cfg) {
+                Ok(engine) => engine,
+                Err(e) => return status.fail(&app, e.to_string()),
+            };
+            let main = app.clone();
+            let finish = {
+                let status = status.clone();
+                move || {
+                    finish_boot(&main, engine, &data_dir);
+                    status.set(&main, boot::BootSnapshot::Ready);
+                }
+            };
+            if let Err(e) = app.run_on_main_thread(finish) {
+                status.fail(&app, format!("could not finish startup: {e}"));
+            }
+        })?;
+    Ok(())
+}
+
+/// The desktop's half of startup, once the engine is up: what `setup` did
+/// after `boot` returned, in the same order, on the same (main) thread.
+fn finish_boot(app: &tauri::AppHandle, engine: host::Engine, data_dir: &std::path::Path) {
+    let host::Engine {
+        ctx: engine_ctx,
+        db,
+        supervisor,
+        workflows: wf_service,
+        remote: remote_state,
+        ..
+    } = engine;
+
+    // Anonymous product telemetry. Mint (or read) the install's random
+    // distinct id, read the opt-out consent flag, and detect a version
+    // change since the last launch — all from `settings`, before any
+    // event fires. No-op in unconfigured builds (no PostHog key baked
+    // in), so dev sends nothing.
+    let version = app.package_info().version.to_string();
+    let (distinct_id, telemetry_enabled, onboarding_complete, prev_version) = {
+        let conn = db.lock();
+        let distinct_id = match database::get_setting(&conn, "telemetry_distinct_id") {
+            Some(id) if !id.trim().is_empty() => id,
+            _ => {
+                let id = uuid::Uuid::new_v4().to_string();
+                let _ = database::set_setting(&conn, "telemetry_distinct_id", &id);
+                id
+            }
+        };
+        // Opt-out: anything but an explicit "false" means enabled.
+        let enabled = database::get_setting(&conn, "telemetry_enabled").as_deref() != Some("false");
+        // Frontend-owned flag (camelCase), written when the user finishes
+        // the first-run onboarding — the flow that carries the data-sharing
+        // disclosure. Absent on a brand-new install.
+        let onboarded =
+            database::get_setting(&conn, "onboardingComplete").as_deref() == Some("true");
+        let prev = database::get_setting(&conn, "last_seen_version");
+        let _ = database::set_setting(&conn, "last_seen_version", &version);
+        (distinct_id, enabled, onboarded, prev)
+    };
+    telemetry::init(distinct_id, telemetry_enabled, version.clone());
+    // On a fresh install the first `app_opened` is deferred until the
+    // onboarding overlay is on screen (see the `track_app_opened`
+    // command) — its welcome step carries the data-sharing disclosure,
+    // so no event is sent before the user has been told. Once onboarded,
+    // every launch reports `app_opened` here as usual.
+    if onboarding_complete {
+        send_app_opened();
+    }
+    if let Some(prev) = prev_version {
+        if !prev.is_empty() && prev != version {
+            telemetry::track(
+                "app_updated",
+                json!({ "from_version": prev, "to_version": version }),
+            );
+        }
+    }
+
+    // Dictation's auto-stop opt-out, mirrored in-process for the
+    // capture threads that have no DB handle. Desktop-side: it belongs
+    // to a capture session, not to the engine.
+    dictation::set_auto_stop(dictation::parse_auto_stop(
+        database::get_setting(&db.lock(), dictation::AUTO_STOP_SETTING).as_deref(),
+    ));
+
+    // Everything the 212 commands read back out of managed state. The
+    // engine reaches these through its `EngineCtx` instead; `manage` is
+    // the desktop's own lookup table.
+    app.manage(db);
+    app.manage(engine_ctx);
+    app.manage(supervisor);
+    app.manage(wf_service);
+    // At most one `claude setup-token` capture runs at a time; the
+    // code-submit / cancel commands reach it through this slot.
+    app.manage(ClaudeSetupState::default());
+    // Live provider sign-in PTYs (Settings → Providers), one per
+    // provider. Empty until the user starts one.
+    app.manage(provider_login::ProviderLoginSessions::default());
+    // Paired-device remote access, as `boot` left it: the taps are in
+    // and the listener is running if the user had it on.
+    #[cfg(desktop)]
+    if let Some(state) = remote_state {
+        app.manage(state);
+    }
+
+    // The other direction: this Mac as a client of other Fletch hosts.
+    // Independent of the block above — no listener, no device store,
+    // its own key — and unconditional, because the four commands are
+    // registered unconditionally and a command whose state is not
+    // managed fails with an invoke error (a rejected promise in the
+    // webview) when called.
+    app.manage(client::dialer(app, &data_dir.join("remote")));
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // rustls has two crypto backends compiled in (see `rustls` in Cargo.toml)
@@ -980,17 +1131,16 @@ pub fn run() {
             // inside `boot`, see `on_supervisor` below — writes through it.
             let tray_status_slot: TrayStatusSlot = Arc::new(Mutex::new(None));
 
+            // Managed before anything else: the webview asks `boot_state` as
+            // soon as it is up, which is long before the engine is.
+            let status = boot::BootStatus::default();
+            app.manage(status.clone());
+
             // The engine: everything that is not about a window. The same
-            // function a headless host calls, in-process here (see `host::boot`
-            // for the step order, which is unchanged from when it lived inline).
-            let host::Engine {
-                ctx: engine_ctx,
-                db,
-                supervisor,
-                workflows: wf_service,
-                remote: remote_state,
-                ..
-            } = host::boot(host::BootConfig {
+            // function a headless host calls, on its own thread here (see
+            // `spawn_boot`) so the window is up and answering while a large
+            // database is backed up and migrated.
+            let cfg = host::BootConfig {
                 data_dir: data_dir.clone(),
                 // The desktop's checkout and mailbox roots are its own
                 // `~/.fletch` — unless a parent Fletch redirected this process
@@ -1020,11 +1170,17 @@ pub fn run() {
                 dictation: Some(Box::new(|ctx| {
                     Arc::new(dictation::dispatch::DictationDispatch::new(ctx))
                 })),
-                // A failed `database::init` is a native dialog and a retry loop
-                // on the main thread, not an error the engine can resolve.
+                // A failed `database::init` is a native dialog and a retry
+                // loop, not an error the engine can resolve.
                 recover_db: Some({
                     let data_dir = data_dir.clone();
-                    Box::new(move |e| recover_from_db_init_failure(&data_dir, e))
+                    let handle = app.handle().clone();
+                    Box::new(move |e| recover_from_db_init_failure(&handle, &data_dir, e))
+                }),
+                on_progress: Some({
+                    let status = status.clone();
+                    let handle = app.handle().clone();
+                    Box::new(move |step| status.set(&handle, boot::BootSnapshot::Booting { step }))
                 }),
                 // Arm the activity monitor (idle-sleep assertion + activity
                 // tracking) *before* any work is resumed inside `boot`, so the
@@ -1050,96 +1206,16 @@ pub fn run() {
                         handle.exit(0);
                     })
                 }),
-            })?;
-
-            // Anonymous product telemetry. Mint (or read) the install's random
-            // distinct id, read the opt-out consent flag, and detect a version
-            // change since the last launch — all from `settings`, before any
-            // event fires. No-op in unconfigured builds (no PostHog key baked
-            // in), so dev sends nothing.
-            let version = app.package_info().version.to_string();
-            let (distinct_id, telemetry_enabled, onboarding_complete, prev_version) = {
-                let conn = db.lock();
-                let distinct_id = match database::get_setting(&conn, "telemetry_distinct_id") {
-                    Some(id) if !id.trim().is_empty() => id,
-                    _ => {
-                        let id = uuid::Uuid::new_v4().to_string();
-                        let _ = database::set_setting(&conn, "telemetry_distinct_id", &id);
-                        id
-                    }
-                };
-                // Opt-out: anything but an explicit "false" means enabled.
-                let enabled =
-                    database::get_setting(&conn, "telemetry_enabled").as_deref() != Some("false");
-                // Frontend-owned flag (camelCase), written when the user finishes
-                // the first-run onboarding — the flow that carries the data-sharing
-                // disclosure. Absent on a brand-new install.
-                let onboarded =
-                    database::get_setting(&conn, "onboardingComplete").as_deref() == Some("true");
-                let prev = database::get_setting(&conn, "last_seen_version");
-                let _ = database::set_setting(&conn, "last_seen_version", &version);
-                (distinct_id, enabled, onboarded, prev)
             };
-            telemetry::init(distinct_id, telemetry_enabled, version.clone());
-            // On a fresh install the first `app_opened` is deferred until the
-            // onboarding overlay is on screen (see the `track_app_opened`
-            // command) — its welcome step carries the data-sharing disclosure,
-            // so no event is sent before the user has been told. Once onboarded,
-            // every launch reports `app_opened` here as usual.
-            if onboarding_complete {
-                send_app_opened();
-            }
-            if let Some(prev) = prev_version {
-                if !prev.is_empty() && prev != version {
-                    telemetry::track(
-                        "app_updated",
-                        json!({ "from_version": prev, "to_version": version }),
-                    );
-                }
-            }
-
-            // Dictation's auto-stop opt-out, mirrored in-process for the
-            // capture threads that have no DB handle. Desktop-side: it belongs
-            // to a capture session, not to the engine.
-            dictation::set_auto_stop(dictation::parse_auto_stop(
-                database::get_setting(&db.lock(), dictation::AUTO_STOP_SETTING).as_deref(),
-            ));
-
-            // Everything the 212 commands read back out of managed state. The
-            // engine reaches these through its `EngineCtx` instead; `manage` is
-            // the desktop's own lookup table.
-            app.manage(db);
-            app.manage(engine_ctx);
-            app.manage(supervisor);
-            app.manage(wf_service);
-            // At most one `claude setup-token` capture runs at a time; the
-            // code-submit / cancel commands reach it through this slot.
-            app.manage(ClaudeSetupState::default());
-            // Live provider sign-in PTYs (Settings → Providers), one per
-            // provider. Empty until the user starts one.
-            app.manage(provider_login::ProviderLoginSessions::default());
-            // Paired-device remote access, as `boot` left it: the taps are in
-            // and the listener is running if the user had it on.
-            #[cfg(desktop)]
-            if let Some(state) = remote_state {
-                app.manage(state);
-            }
-
-            // The other direction: this Mac as a client of other Fletch hosts.
-            // Independent of the block above — no listener, no device store,
-            // its own key — and unconditional, because the four commands are
-            // registered unconditionally and a command whose state is not
-            // managed panics when the webview calls it.
-            app.manage(client::dialer(app.handle(), &data_dir.join("remote")));
+            spawn_boot(app.handle().clone(), cfg, status, data_dir)?;
 
             // Menu-bar tray (close-to-tray + status line) — the second half of
             // the laptop-GUI hardening feature; the first half (the activity
-            // monitor) was already armed above, before any work resumed.
+            // monitor) is armed inside `boot`, before any work resumes.
             // Best-effort: a failure logs and continues — the app still starts
-            // and the monitor stays armed. The tray publishes its status item
-            // into `tray_status_slot` for the monitor's status-line callback,
-            // then `setup_tray` refreshes the line to reflect activity that may
-            // already have been counted before the tray appeared.
+            // and the monitor still arms. The tray publishes its status item
+            // into `tray_status_slot` for the monitor's status-line callback;
+            // whichever of the two comes second renders the line.
             if let Err(e) = setup_tray(app.handle(), &tray_status_slot) {
                 tracing::error!(error = %e, "menu-bar tray setup failed; continuing without it");
             }
@@ -1208,6 +1284,7 @@ pub fn run() {
             _ => {}
         })
         .invoke_handler(tauri::generate_handler![
+            boot::boot_state,
             db_insert,
             db_select,
             db_update,

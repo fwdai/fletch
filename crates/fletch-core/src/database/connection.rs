@@ -87,13 +87,34 @@ pub(crate) fn get_migrations() -> Migrations<'static> {
     Migrations::new(MIGRATIONS.iter().map(|&sql| M::up(sql)).collect())
 }
 
+/// The steps of [`init`] that can take real time on a large database, for a
+/// host that shows startup progress. Each is reported just before it starts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DbPhase {
+    /// The pre-upgrade snapshot. Only when an existing schema is being
+    /// upgraded — see `backup_before_upgrade`.
+    BackingUp,
+    Migrating,
+}
+
 pub fn init(data_dir: &Path) -> Result<Arc<Mutex<Connection>>> {
+    init_with_progress(data_dir, &|_| {})
+}
+
+pub fn init_with_progress(
+    data_dir: &Path,
+    on_phase: &dyn Fn(DbPhase),
+) -> Result<Arc<Mutex<Connection>>> {
     std::fs::create_dir_all(data_dir)?;
     migrate_legacy_db_name(data_dir)?;
     quarantine_orphaned_wal(data_dir)?;
     let db_path = data_dir.join(DB_FILENAME);
     let mut conn = open_db(&db_path)?;
+    if pending_upgrade_from(&conn)?.is_some() {
+        on_phase(DbPhase::BackingUp);
+    }
     backup_before_upgrade(&conn, &db_path)?;
+    on_phase(DbPhase::Migrating);
     // Foreign-key enforcement must be OFF while migrations run, and that is the
     // caller's job — rusqlite_migration never touches the pragma. With it on, a
     // table-rebuild migration (CREATE new / INSERT SELECT / DROP old / RENAME,
@@ -212,6 +233,15 @@ fn map_migration_error(e: rusqlite_migration::Error) -> Error {
     }
 }
 
+/// The applied schema version when `backup_before_upgrade` will snapshot: an
+/// existing schema (`user_version > 0`) below the current migration count. A
+/// fresh DB has nothing to lose and a current or schema-ahead DB isn't
+/// migrated. Shared by the backup and the progress report so they agree.
+fn pending_upgrade_from(conn: &Connection) -> Result<Option<i64>> {
+    let applied: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    Ok((applied > 0 && (applied as usize) < MIGRATIONS.len()).then_some(applied))
+}
+
 /// Complete pre-upgrade backups retained per database file; older ones are
 /// deleted once a new backup lands.
 pub(crate) const BACKUPS_TO_KEEP: usize = 2;
@@ -225,18 +255,15 @@ const SNAPSHOT_PAGES_PER_STEP: i32 = 4096;
 /// treats any file with it as an interrupted copy.
 const PARTIAL_SUFFIX: &str = ".partial";
 
-/// Snapshot the DB aside before applying migrations, but only when an existing
-/// schema is genuinely being upgraded: a fresh DB (`user_version == 0`) has
-/// nothing to lose, and an already-current or schema-ahead DB isn't migrated.
-/// Gives the user a restore point if a forward migration goes wrong or they
-/// later downgrade. Older backups and leftovers from interrupted copies are
+/// Snapshot the DB aside before applying migrations (see `pending_upgrade_from`
+/// for when). Gives the user a restore point if a forward migration goes wrong
+/// or they later downgrade. Older backups and leftovers from interrupted copies are
 /// pruned only after the new one is complete, so a failed backup never costs
 /// an existing restore point.
 fn backup_before_upgrade(conn: &Connection, db_path: &Path) -> Result<()> {
-    let applied: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-    if applied <= 0 || applied as usize >= MIGRATIONS.len() {
+    let Some(applied) = pending_upgrade_from(conn)? else {
         return Ok(());
-    }
+    };
     let backup = backup_path(db_path, applied);
     snapshot_to(conn, &backup)?;
     tracing::info!(backup = %backup.display(), "backed up DB before schema upgrade");

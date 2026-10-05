@@ -160,6 +160,8 @@ pub async fn start(config: Config) -> Result<Arc<Admin>, String> {
         // Nobody to prompt. A database that will not open is an exit code and a
         // log line, not a dialog.
         recover_db: None,
+        // No screen to show progress on; the log carries the phases that matter.
+        on_progress: None,
         on_supervisor: None,
         signals: handle_signals.then(|| -> host::boot::ExitHook {
             Box::new(move || {
