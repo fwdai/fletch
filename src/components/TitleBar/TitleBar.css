@@ -26,14 +26,16 @@
   pointer-events: none;
 }
 .tb-mark {
-  width: 1.12em;
-  height: 1.12em;
+  /* the bolt is a tall ~2:3 shape; it sits just above the wordmark's
+   * ascender height so it reads as a mark on the same line, not a glyph */
+  width: 0.57em;
+  height: 0.85em;
   flex-shrink: 0;
-  margin-right: 6px;
-  /* the wordmark has ascenders but no descenders, so its ink sits above the
-   * line-box center; lift the mark half a pixel onto that optical center */
+  margin-right: 7px;
+  /* the bolt's visual weight is in its upper blade, so centering the box
+   * leaves it looking high; nudge it down onto the wordmark's optical center */
   position: relative;
-  top: -0.5px;
+  top: 0.5px;
 }
 .tb-wordmark {
   font-family: var(--font-geist);
