@@ -3,13 +3,14 @@ import { type MutableRefObject, useEffect, useMemo } from "react";
 import { applyPolicy, type ChatItem, getAdapter } from "../../adapters";
 import { isAgentBusy, providerLabel } from "../../lib/agents";
 import { fmtElapsed, useElapsed } from "../../lib/hooks";
+import { tasksByToolUse } from "../../lib/thread";
 import { useStickyScroll } from "../../lib/useStickyScroll";
 import { useStore } from "../../store";
 import { ApprovalCard, ErrorCard, PublishApprovalCard } from "./ApprovalCard";
 import { LoadOlder } from "./LoadOlder";
 import { ProposalCard } from "./ProposalCard";
 import { SubagentStrip } from "./SubagentStrip";
-import { type TasksByToolUse, Transcript } from "./Transcript";
+import { Transcript } from "./Transcript";
 
 export function ChatTab({
   agent,
@@ -33,6 +34,7 @@ export function ChatTab({
   // not a decision *this* conversation raised.
   const proposals = useStore((s) => s.proposals[agent.project_id]);
   const loadProposals = useStore((s) => s.loadProposals);
+  const push = useStore((s) => s.push);
   const connected = useStore((s) => s.connection === "connected");
   const planning = !!agent.purpose;
   const busy = useStore((s) => isAgentBusy(s, agent));
@@ -57,13 +59,7 @@ export function ChatTab({
     for (const it of log ?? []) if (it.kind === "tool_call") map.set(it.id, it);
     return map;
   }, [log]);
-  // A task's `toolUseId` is the id of the Agent/Bash tool_call that launched
-  // it — the key a tool row looks itself up by.
-  const tasksByToolUse = useMemo(() => {
-    const map: TasksByToolUse = {};
-    for (const t of Object.values(tasks ?? {})) if (t.toolUseId) map[t.toolUseId] = t;
-    return map;
-  }, [tasks]);
+  const byToolUse = useMemo(() => tasksByToolUse(tasks), [tasks]);
 
   // `log` is the signal that matters: a streaming message is extended in
   // place, so the item count stays put while the rendered height grows. The
@@ -74,17 +70,17 @@ export function ChatTab({
     pinRef,
   );
 
-  const jumpTo = (toolUseId: string) =>
-    scroller.current
-      ?.querySelector(`[data-tool-use-id="${toolUseId}"]`)
-      ?.scrollIntoView({ behavior: "smooth", block: "center" });
+  // A sub-agent's thread is its own screen (screens/Subagent), reached from the
+  // strip and from its card in the log alike.
+  const openThread = (toolUseId: string) =>
+    push("subagent", { agentId: agent.id, path: toolUseId });
 
   return (
     <>
-      <SubagentStrip tasks={tasks} onJump={jumpTo} />
+      <SubagentStrip tasks={tasks} onOpen={openThread} />
       <div className="scroll chat" ref={scroller} onScroll={onScroll}>
         <LoadOlder agentId={agent.id} scroller={scroller} />
-        <Transcript items={visible} tasks={tasksByToolUse} policy={policy} />
+        <Transcript items={visible} tasks={byToolUse} busy={busy} openThread={openThread} />
         {pendingIds.map((toolUseId) => (
           <ApprovalCard
             key={toolUseId}

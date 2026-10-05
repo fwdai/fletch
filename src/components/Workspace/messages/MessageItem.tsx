@@ -1,28 +1,20 @@
 import { memo, useMemo } from "react";
-import { applyPolicy, getAdapter } from "@/adapters";
 import { AttachmentList } from "@/components/Composer/AttachmentList";
 import { Markdown } from "@/components/Markdown";
 import { CopyButton } from "@/components/ui/CopyButton";
 import { APP_ACTION_PREFIX } from "@/delegation";
 import { expandedCommandInvocation } from "@/helpers";
-import {
-  type BackgroundTask,
-  type ChatItem,
-  QUIET_AFTER_MS,
-  quietForMs,
-  taskForToolUse,
-  useAppStore,
-} from "@/store";
-import { formatDuration } from "@/util/format";
-import { useMinuteClock } from "@/util/hooks";
+import { type ChatItem, taskForToolUse, useAppStore } from "@/store";
 import {
   isSystemTurn,
   stripInjectedInstructions,
   stripSystemTurnMarker,
 } from "@/util/instructions";
 import { RewindMenu } from "../RewindMenu";
-import { pairToolItems, rowKey, type ViewItem } from "./pair";
+import { isSubagentCall } from "../SubagentThread/thread";
+import type { ViewItem } from "./pair";
 import { getPresenter } from "./presenters";
+import { SubagentCard } from "./SubagentCard";
 import { ToolResultItem } from "./ToolResultItem";
 import { ToolRow } from "./ToolRow";
 import { UserInput } from "./UserInput";
@@ -30,9 +22,9 @@ import { isUserInputTool } from "./UserInput/parse";
 
 /** Dispatcher for one rendered row. Accepts either a raw ChatItem or
  *  the derived `tool_pair` from pairToolItems(). `provider` carries the
- *  agent's adapter id down so nested subagent threads filter/pair their
- *  rows with the same display policy as the main log. `agentId` lets the
- *  user-input widget route its answer back to this agent's stdin.
+ *  agent's adapter id down for the app-expanded slash-command chip. `agentId`
+ *  lets the user-input widget route its answer back to this agent's stdin,
+ *  and a sub-agent card open its thread in this agent's pane.
  *
  *  Memoized: ChatView re-renders on every streaming delta, but the reducer
  *  preserves item identity for settled rows and ChatView caches tool_pair
@@ -49,10 +41,10 @@ export const MessageItem = memo(function MessageItem({
   provider?: string;
   agentId?: string;
   /** This row's turn is live: the agent is mid-turn AND the row is part of the
-   *  currently-open turn (top-level) or of a still-running parent tool (nested
-   *  subagent). Lets a tool still awaiting its result show a "running" spinner
-   *  (and a subagent step count) rather than looking settled — while keeping
-   *  dangling tool_calls from interrupted/earlier turns quiet. */
+   *  currently-open turn (top-level), or the thread it sits in is still
+   *  running. Lets a tool still awaiting its result show a "running" spinner
+   *  rather than looking settled — while keeping dangling tool_calls from
+   *  interrupted/earlier turns quiet. */
   busy?: boolean;
   /** Ordinal of this user turn, used by ChatNav to locate the bubble in the
    *  DOM. Set only for top-level navigable user prompts. */
@@ -131,14 +123,24 @@ export const MessageItem = memo(function MessageItem({
           />
         );
       }
+      // A sub-agent launch is a thread entry, not a tool row: its own card,
+      // whose primary action opens the thread (see SubagentCard).
+      if (isSubagentCall(item.call)) {
+        return (
+          <SubagentCard
+            call={item.call}
+            result={item.result}
+            task={task}
+            agentId={agentId}
+            busy={busy}
+          />
+        );
+      }
       const presenter = getPresenter(item.call.name);
-      const children = item.call.children ?? [];
       // In flight: the agent is busy and this call has no result yet (a long
-      // Bash, or a subagent still working), or the backgrounded task it
-      // launched is still running — its launch result ("Async agent launched…")
-      // lands at once, so `busy && !result` alone would settle the row too
-      // early. Kept collapsed — the spinner plus a live subagent step count
-      // signal activity without expanding the row.
+      // Bash), or the background task it launched (background Bash) is still
+      // running — its launch result lands at once, so `busy && !result` alone
+      // would settle the row too early.
       const taskRunning = task?.status === "running";
       const taskFailed = task?.status === "failed";
       const running = (Boolean(busy) && !item.result) || taskRunning;
@@ -153,7 +155,6 @@ export const MessageItem = memo(function MessageItem({
           summary={
             <>
               {presenter.summary(item.call, item.result)}
-              {running && <SubagentProgress items={children} task={task} />}
               {taskFailed && (
                 <span style={{ color: "var(--danger)", marginLeft: 8 }}>
                   · {task.failureStatus ?? "failed"}
@@ -161,19 +162,7 @@ export const MessageItem = memo(function MessageItem({
               )}
             </>
           }
-          expanded={
-            <>
-              {presenter.expanded(item.call, item.result)}
-              {children.length > 0 && (
-                <SubagentThread
-                  items={children}
-                  provider={provider}
-                  agentId={agentId}
-                  busy={running}
-                />
-              )}
-            </>
-          }
+          expanded={presenter.expanded(item.call, item.result)}
         />
       );
     }
@@ -255,71 +244,6 @@ function UserBubble({
           )}
         </div>
       )}
-    </div>
-  );
-}
-
-/** Live progress hint for a running tool call that has spawned a subagent:
- *  a dim "· N steps · Bash · quiet 4m" next to the collapsed row summary, so
- *  activity is visible without expanding the thread. Steps count the
- *  subagent's meaningful rows so far (assistant messages + tool calls); the
- *  last tool name and the quiet hint come from the background task's own
- *  reports, so they hold up after the main turn has ended. "Quiet" is a
- *  heuristic — a long step goes quiet too. Renders nothing for an ordinary
- *  tool call (no children, no task) — that just gets the spinner. */
-function SubagentProgress({ items, task }: { items: ChatItem[]; task?: BackgroundTask }) {
-  // Only live rows mount this, so the minute tick stays a handful of timers.
-  const now = useMinuteClock();
-  const steps = items.filter((c) => c.kind === "tool_call" || c.kind === "agent_message").length;
-  const parts: string[] = [];
-  if (steps > 0) parts.push(`${steps} step${steps === 1 ? "" : "s"}`);
-  if (task?.lastToolName) parts.push(task.lastToolName);
-  const quiet = task?.status === "running" ? quietForMs(task, now) : 0;
-  if (quiet > QUIET_AFTER_MS) parts.push(`quiet ${formatDuration(quiet)}`);
-  if (parts.length === 0) return null;
-  return <span style={{ color: "var(--fg-3)", marginLeft: 8 }}>· {parts.join(" · ")}</span>;
-}
-
-/** A subagent's threaded sub-conversation, rendered inside its spawning
- *  tool row's expanded body. Runs the children through the same
- *  policy → pairing → MessageItem pipeline as the main log (so tool calls
- *  pair with their results and hidden notices stay hidden), nested under a
- *  quiet left rail. Recurses for subagents that spawn their own subagents. */
-function SubagentThread({
-  items,
-  provider,
-  agentId,
-  busy,
-}: {
-  items: ChatItem[];
-  provider?: string;
-  agentId?: string;
-  busy?: boolean;
-}) {
-  // Re-derive only when the children or provider change — not on every parent
-  // re-render (e.g. a streaming token elsewhere in the main log).
-  const rows = useMemo(
-    () => pairToolItems(applyPolicy(items, getAdapter(provider).policy)),
-    [items, provider],
-  );
-  if (rows.length === 0) return null;
-  return (
-    <div
-      style={{
-        marginTop: 8,
-        paddingLeft: 12,
-        borderLeft: "2px solid var(--accent-line)",
-      }}
-    >
-      {rows.map((row, i) => (
-        <MessageItem
-          key={rowKey(row, i)}
-          item={row}
-          provider={provider}
-          agentId={agentId}
-          busy={busy}
-        />
-      ))}
     </div>
   );
 }

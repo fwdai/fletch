@@ -13,6 +13,7 @@ import { EmptyWorkspace } from "./EmptyWorkspace";
 import { Home } from "./Home";
 import { MissionControl } from "./MissionControl";
 import { NativeView } from "./NativeView";
+import { SubagentThreadView } from "./SubagentThread";
 import { TranscriptRail } from "./TranscriptRail";
 import { WorkspaceHeader } from "./WorkspaceHeader";
 
@@ -29,6 +30,7 @@ export function Workspace() {
   const activeDraftId = useAppStore((s) => s.activeDraftId);
   const missionControl = useAppStore((s) => s.features.missionControl);
   const nativeView = useAppStore((s) => s.features.nativeView);
+  const openThread = useAppStore((s) => s.openThread);
 
   const draft = activeDraftId ? drafts.find((d) => d.id === activeDraftId) : null;
   // Only surface the draft while its repo is still pinned; a draft stranded on a
@@ -66,6 +68,18 @@ export function Workspace() {
     );
   }
   if (!agent) return missionControl ? <MissionControl /> : <Home />;
+
+  // A sub-agent thread of this agent takes the pane over — header and body —
+  // and is keyed by its path so stepping between threads remounts the log
+  // (fresh bottom-pin, fresh fade) the way switching agents does.
+  const thread = openThread?.agentId === agent.id ? openThread : null;
+  if (thread) {
+    return (
+      <div className="pane center fade-in" key={agent.id}>
+        <SubagentThreadView key={thread.path.join("/")} agent={agent} path={thread.path} />
+      </div>
+    );
+  }
 
   return (
     <div className="pane center fade-in" key={agent.id}>

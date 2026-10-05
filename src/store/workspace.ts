@@ -333,6 +333,8 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
         activeDraftId: null,
         historyOpen: false,
         selectedHistoryAgentId: null,
+        // A sub-agent thread belongs to the agent it was opened in.
+        openThread: null,
         unseenResults,
       };
     }),
@@ -346,6 +348,7 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
       activeDraftId: null,
       historyOpen: false,
       selectedHistoryAgentId: null,
+      openThread: null,
       settingsScreenOpen: false,
       usageScreenOpen: false,
     }),
@@ -362,6 +365,7 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
       activeDraftId: null,
       historyOpen: false,
       selectedHistoryAgentId: null,
+      openThread: null,
       settingsScreenOpen: false,
       usageScreenOpen: false,
     }),

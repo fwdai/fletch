@@ -289,25 +289,110 @@
 .tool .chev {
   transition: transform 0.25s var(--ease-out);
 }
-/* A sub-agent's own turns, threaded under the tool row that launched it. */
-.tool-sub {
+/* A sub-agent launch in the log (Transcript's SubagentCard): a thread entry,
+   not a tool row — a status rail, two lines (name; type · status) and a
+   disclosure chevron. Tapping pushes the thread's own screen. Sits inside the
+   `.tools` card with the rows around it, so a run of launches reads as one
+   group. */
+.subcard {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 50px;
+  padding: 8px 12px 8px 14px;
+  text-align: left;
+  position: relative;
+  transition: background 0.15s;
+}
+.subcard:active {
+  background: var(--bg-3);
+}
+.subcard + .subcard,
+.tool-wrap + .subcard,
+.subcard + .tool-wrap {
+  border-top: 1px solid var(--bd-soft);
+}
+.subcard::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 9px;
+  bottom: 9px;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: var(--merged);
+}
+.subcard.running::before {
+  background: var(--success);
+}
+.subcard.failed::before {
+  background: var(--danger);
+}
+.subcard .ic {
+  flex-shrink: 0;
+  display: flex;
+  color: var(--merged);
+}
+.subcard.failed .ic {
+  color: var(--danger);
+}
+.subcard .body {
+  flex: 1;
+  min-width: 0;
   display: flex;
   flex-direction: column;
+  gap: 2px;
+}
+.subcard .nm {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--fg-0);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.subcard .mt {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--fg-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.subcard.failed .mt {
+  color: var(--danger);
+}
+.subcard .working-dots {
+  flex-shrink: 0;
+}
+.subcard .go {
+  flex-shrink: 0;
+  color: var(--fg-3);
+}
+/* The thread screen (screens/Subagent): the chat's rows, and where the
+   composer would be, a line saying who directs the sub-agent. */
+.thread-foot {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
   gap: 8px;
-  padding: 8px 10px 8px 12px;
+  padding: 10px 16px calc(env(safe-area-inset-bottom) + 10px);
   border-top: 1px solid var(--bd-soft);
-  border-left: 2px solid color-mix(in oklch, var(--merged), transparent 50%);
-  background: var(--tool-out);
-  animation: fade 0.25s var(--ease-out);
+  background: var(--bg-0);
+  font-size: 12.5px;
+  color: var(--fg-2);
 }
-.tool-sub .tools {
-  border-radius: 10px;
+.thread-foot svg {
+  flex-shrink: 0;
+  color: var(--merged);
 }
-.tool-sub .msg-text {
-  font-size: 13px;
+.thread-foot b {
+  font-weight: 500;
+  color: var(--fg-0);
 }
 /* Sub-agents still working after the turn (or failed lately), pinned above
-   the transcript. Each entry jumps to the tool row that launched it. */
+   the transcript. Each entry opens the sub-agent's thread. */
 .subagents {
   flex-shrink: 0;
   display: flex;
@@ -350,6 +435,10 @@
 }
 .subagent .quiet {
   color: var(--warn);
+}
+.subagent .go {
+  flex-shrink: 0;
+  color: var(--fg-3);
 }
 .subagent.err {
   color: var(--danger);

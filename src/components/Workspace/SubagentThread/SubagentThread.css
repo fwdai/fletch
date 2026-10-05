@@ -1,0 +1,103 @@
+/* ── Sub-agent thread view ───────────────────────────────────────────────────
+   Same pane, same header skeleton (`.center-h`, Workspace.css) and same rows
+   as the conversation; what marks it as a thread is the breadcrumb in the
+   title slot, the accent rail down the log, and the read-only foot where the
+   composer would be. */
+
+/* header — the title line is a breadcrumb; its first crumb (the agent's
+   title, where the conversation's header shows it) is the way back */
+.thread-crumbs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
+}
+.crumb {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  color: var(--fg-2);
+  font-weight: 500;
+  font-size: var(--fs-base);
+  border-radius: 4px;
+}
+.crumb-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+button.crumb:hover {
+  color: var(--fg-0);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+/* the thread's own name gives way last: it only truncates past most of the
+   line, so the agent title ahead of it is what shortens first */
+.crumb.current {
+  flex-shrink: 0;
+  max-width: 70%;
+  color: var(--fg-0);
+}
+.crumb-sep {
+  flex-shrink: 0;
+  color: var(--fg-3);
+}
+.thread-status.running {
+  color: var(--success);
+}
+.thread-status.failed {
+  color: var(--danger);
+}
+.thread-nav {
+  gap: 2px;
+  flex-shrink: 0;
+}
+.thread-count {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--fg-3);
+  min-width: 40px;
+  text-align: center;
+}
+
+/* body — the chat column with a rail down the log */
+.chat.thread .chat-inner {
+  border-left: 2px solid var(--accent-line);
+  margin-top: 16px;
+  padding-left: 24px;
+}
+.thread-state {
+  margin: 40px auto;
+  max-width: 360px;
+}
+.thread-state.writing {
+  justify-content: center;
+  border-left: none;
+  padding-left: 0;
+}
+
+/* foot */
+.thread-foot {
+  flex-shrink: 0;
+  gap: 10px;
+  padding: 10px 16px;
+  border-top: 1px solid var(--bd-soft);
+  background: var(--bg-1);
+  color: var(--fg-2);
+  font-size: var(--fs-sm);
+}
+.thread-foot-icon {
+  flex-shrink: 0;
+  color: var(--accent);
+}
+.thread-foot-text {
+  flex: 1;
+  min-width: 0;
+}
+.thread-foot-text b {
+  font-weight: 500;
+  color: var(--fg-0);
+}

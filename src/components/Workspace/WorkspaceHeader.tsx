@@ -4,16 +4,25 @@ import { PanelToggle } from "@/components/PanelToggle";
 import { IconButton } from "@/components/ui/IconButton";
 import { useAppStore } from "@/store";
 import { useGate } from "@/store/capabilities";
-import { formatAge } from "@/util/format";
+import { firstLine, formatAge } from "@/util/format";
 import { useMinuteClock } from "@/util/hooks";
 import { ForkMenu } from "./ForkMenu";
 import { ViewToggle } from "./ViewToggle";
 
-/** Header strip above the workspace body. Houses the left-sidebar
- *  toggle, the agent task + meta line, the Custom/Native view
- *  switcher, and the right-panel toggle. */
+/** Header strip above the workspace body. Houses the left-sidebar toggle, the
+ *  agent's title over its codename + branch + diff + age, the Custom/Native
+ *  view switcher, and the right-panel toggle. A sub-agent thread's header
+ *  (SubagentThread/ThreadHeader) keeps this exact skeleton — dot, title line,
+ *  meta line — so stepping into and out of a thread moves nothing but the
+ *  words. */
 interface Props {
   agent: AgentRecord;
+}
+
+/** What the agent is working on, as the sidebar names it: its own title once
+ *  it has set one, else the first line of the prompt. */
+export function agentTitle(agent: Pick<AgentRecord, "title" | "task">): string {
+  return agent.title || firstLine(agent.task, 80) || "Untitled";
 }
 
 export function WorkspaceHeader({ agent }: Props) {
@@ -44,18 +53,13 @@ export function WorkspaceHeader({ agent }: Props) {
 
       <div className="task">
         <div className="t-name">
-          <StatusDot status={agent.status} />
-          <span>{agent.name}</span>
+          <StatusDot tone={dotTone(agent.status)} />
+          <span title={agentTitle(agent)}>{agentTitle(agent)}</span>
         </div>
         <div className="t-meta">
-          {branch && <>{branch} · </>}
-          <DiffLabel stats={shortstats} />
-          {age && (
-            <>
-              {" "}
-              · <span>{age}</span>
-            </>
-          )}
+          {agent.name}
+          {branch && <> · {branch}</>} · <DiffLabel stats={shortstats} />
+          {age && <> · {age}</>}
         </div>
       </div>
 
@@ -110,24 +114,34 @@ function DiffLabel({ stats }: { stats: DiffStats | null }) {
   );
 }
 
-function StatusDot({ status }: { status: AgentStatus }) {
+/** The header dot's vocabulary: live green, starting amber, failed red, else
+ *  quiet grey. Shared with the thread header, which maps a thread's state
+ *  onto the same four. */
+export type DotTone = "running" | "spawning" | "error" | "idle";
+
+function dotTone(status: AgentStatus): DotTone {
+  return status === "running" || status === "spawning" || status === "error" ? status : "idle";
+}
+
+export function StatusDot({ tone }: { tone: DotTone }) {
   const bg =
-    status === "running"
+    tone === "running"
       ? "var(--success)"
-      : status === "spawning"
+      : tone === "spawning"
         ? "var(--warn)"
-        : status === "error"
+        : tone === "error"
           ? "var(--danger)"
           : "var(--fg-3)";
   return (
     <span
+      aria-hidden="true"
       style={{
         width: 7,
         height: 7,
         borderRadius: "50%",
         background: bg,
         boxShadow:
-          status === "running"
+          tone === "running"
             ? "0 0 0 2px color-mix(in oklch, var(--success), transparent 78%)"
             : "none",
         flexShrink: 0,

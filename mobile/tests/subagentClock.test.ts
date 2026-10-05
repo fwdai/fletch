@@ -81,7 +81,7 @@ describe("rendered expiry", () => {
 
   it("drops a failed sub-agent from the strip once its moment has passed", async () => {
     await act(async () => {
-      root.render(createElement(SubagentStrip, { tasks: map(failed()), onJump: () => {} }));
+      root.render(createElement(SubagentStrip, { tasks: map(failed()), onOpen: () => {} }));
     });
     expect(host.querySelector(".subagent.err")).not.toBeNull();
     expect(vi.getTimerCount()).toBe(1);

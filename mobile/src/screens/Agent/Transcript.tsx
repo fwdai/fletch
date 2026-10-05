@@ -1,14 +1,22 @@
 // The chat log as blocks: messages, notices and cards of tool rows. A tool row
-// that launched a sub-agent holds that sub-agent's own turns as `children`,
-// rendered with this same component under the row — which is why the row and
-// the log live in one module.
+// that launched a sub-agent is a different thing — a thread entry rather than
+// something the agent did — so it renders as a card that opens that thread on
+// its own screen (`openThread`) instead of expanding in place.
 
 import type { BackgroundTask } from "@desktop/adapters/shared/backgroundTasks";
+import {
+  isSubagentCall,
+  threadLabel,
+  threadState,
+  threadType,
+} from "@desktop/adapters/shared/subagents";
 import { Icon } from "@desktop/components/Icon";
 import { useMemo, useState } from "react";
-import { applyPolicy, type ChatItem, type DisplayPolicy } from "../../adapters";
+import type { ChatItem, DisplayPolicy } from "../../adapters";
 import { SentChips } from "../../attachments";
 import { Md } from "../../components/Md";
+import { useTick } from "../../lib/hooks";
+import { threadStatus } from "../../lib/thread";
 import { resultSummary, resultText, TOOL_HUE, TOOL_ICON, toolArg } from "../../lib/tools";
 
 type ToolCall = Extract<ChatItem, { kind: "tool_call" }>;
@@ -81,7 +89,7 @@ function Item({ item }: { item: ChatItem }) {
   }
 }
 
-const Dots = () => (
+export const Dots = () => (
   <span className="working-dots">
     <i />
     <i />
@@ -89,29 +97,81 @@ const Dots = () => (
   </span>
 );
 
+/** A sub-agent launch: two lines (its name; its type and status) and a
+ *  disclosure chevron. Tapping opens the thread on its own screen. */
+function SubagentCard({
+  call,
+  result,
+  task,
+  busy,
+  openThread,
+}: {
+  call: ToolCall;
+  result: ToolResult | null;
+  task?: BackgroundTask;
+  busy: boolean;
+  openThread?: (toolUseId: string) => void;
+}) {
+  const state = threadState(result, task, busy);
+  // A running card's "quiet Nm" hint is a function of the clock, not of any
+  // event — a sub-agent that outlives its idle parent gets no other render —
+  // so running cards tick once a minute, the desktop card's cadence.
+  useTick(60_000, state === "running");
+  const label = threadLabel(call);
+  const type = threadType(call);
+  const status = threadStatus(state, task, Date.now());
+  return (
+    <button
+      type="button"
+      className={`subcard ${state}`}
+      data-tool-use-id={call.id}
+      onClick={() => openThread?.(call.id)}
+      disabled={!openThread}
+      aria-label={`Open sub-agent thread: ${label}`}
+    >
+      <span className="ic">
+        <Icon name="subagent" size={14} />
+      </span>
+      <span className="body">
+        <span className="nm">{label}</span>
+        <span className="mt">
+          {type && <>{type} · </>}
+          {status}
+        </span>
+      </span>
+      {state === "running" && <Dots />}
+      <Icon name="chevR" size={16} className="go" />
+    </button>
+  );
+}
+
 /** One tool call. Runs (dots) while it streams or while the background task
  *  it launched is still going; reads as failed when that task did. Expands to
- *  the sub-agent's threaded turns and/or the raw result. */
+ *  the raw result. */
 function ToolRow({
   call,
   result,
   tasks,
-  policy,
+  busy,
+  openThread,
 }: {
   call: ToolCall;
   result: ToolResult | null;
   tasks?: TasksByToolUse;
-  policy: DisplayPolicy;
+  busy: boolean;
+  openThread?: (toolUseId: string) => void;
 }) {
   const [open, setOpen] = useState(false);
-  const out = result ? resultText(result.content) : "";
   const task = tasks?.[call.id];
-  // The sub-agent's turns go through the same display policy as the main
-  // log, so its turn_end divider and other hidden notices stay hidden here too.
-  const children = useMemo(() => applyPolicy(call.children ?? [], policy), [call.children, policy]);
+  if (isSubagentCall(call)) {
+    return (
+      <SubagentCard call={call} result={result} task={task} busy={busy} openThread={openThread} />
+    );
+  }
+  const out = result ? resultText(result.content) : "";
   const running = !!call.streaming || task?.status === "running";
   const failed = task?.status === "failed";
-  const expandable = !!out || children.length > 0;
+  const expandable = !!out;
   const tone = TOOL_HUE[call.name] ?? "var(--fg-2)";
   return (
     <div className="tool-wrap" data-tool-use-id={call.id}>
@@ -137,27 +197,26 @@ function ToolRow({
         )}
         {expandable && <Icon name="chevR" size={14} className="chev" />}
       </button>
-      {open && children.length > 0 && (
-        <div className="tool-sub">
-          <Transcript items={children} tasks={tasks} policy={policy} />
-        </div>
-      )}
       {open && out && <div className="tool-out">{out}</div>}
     </div>
   );
 }
 
-/** `items` are expected to have been through `policy` already (the chat tab
- *  does that once for the main log); the policy is carried for the nested
- *  sub-agent logs, which are filtered on the way in. */
+/** `items` are expected to have been through `policy` already. `busy` is the
+ *  owning agent's (or thread's) liveness, which a sub-agent card without a
+ *  background task reads its running state from. `openThread` opens a
+ *  sub-agent's thread; without it the cards are inert. */
 export function Transcript({
   items,
   tasks,
-  policy,
+  busy = false,
+  openThread,
 }: {
   items: ChatItem[];
   tasks?: TasksByToolUse;
-  policy: DisplayPolicy;
+  policy?: DisplayPolicy;
+  busy?: boolean;
+  openThread?: (toolUseId: string) => void;
 }) {
   const blocks = useMemo(() => toBlocks(items), [items]);
   return (
@@ -166,7 +225,14 @@ export function Transcript({
         b.kind === "tools" ? (
           <div key={b.key} className="tools rise">
             {b.calls.map(({ call, result }) => (
-              <ToolRow key={call.id} call={call} result={result} tasks={tasks} policy={policy} />
+              <ToolRow
+                key={call.id}
+                call={call}
+                result={result}
+                tasks={tasks}
+                busy={busy}
+                openThread={openThread}
+              />
             ))}
           </div>
         ) : (
