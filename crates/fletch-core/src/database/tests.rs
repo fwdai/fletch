@@ -5,7 +5,8 @@ use std::path::Path;
 use std::sync::Arc;
 
 use crate::database::connection::{
-    get_migrations, migrate_legacy_db_name, open_db, quarantine_orphaned_wal, MIGRATIONS,
+    get_migrations, migrate_legacy_db_name, open_db, prune_backups, quarantine_orphaned_wal,
+    BACKUPS_TO_KEEP, MIGRATIONS,
 };
 use crate::database::*;
 use crate::error::Error;
@@ -22,6 +23,20 @@ fn backup_files(dir: &Path) -> Vec<String> {
         .map(|e| e.file_name().to_string_lossy().into_owned())
         .filter(|n| n.contains(".db.bak-"))
         .collect()
+}
+
+fn all_files(dir: &Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    names
+}
+
+fn touch(dir: &Path, name: &str) {
+    std::fs::write(dir.join(name), b"x").unwrap();
 }
 
 #[test]
@@ -159,6 +174,19 @@ fn upgrading_an_older_schema_backs_it_up_first() {
 
     let backups = backup_files(dir.path());
     assert_eq!(backups.len(), 1);
+    assert!(
+        !backups[0].ends_with(".partial"),
+        "backup was not renamed into place: {backups:?}"
+    );
+    // The in-progress file and its journal must be gone once the copy lands.
+    let leftovers: Vec<String> = all_files(dir.path())
+        .into_iter()
+        .filter(|n| n.ends_with(".partial") || n.ends_with("-journal"))
+        .collect();
+    assert!(
+        leftovers.is_empty(),
+        "leftovers after backup: {leftovers:?}"
+    );
     // The snapshot must be a complete, readable DB frozen at the pre-upgrade
     // version — proving the online backup captured real content, not a
     // truncated copy.
@@ -642,6 +670,104 @@ fn init_reports_its_phases_in_order() {
         [DbPhase::BackingUp, DbPhase::Migrating]
     );
     assert_eq!(backup_files(upgrading.path()).len(), 1);
+}
+
+#[test]
+fn prune_keeps_newest_complete_backups_by_millis_suffix() {
+    let dir = tempfile::tempdir().unwrap();
+    // Written out of chronological order so the test proves ordering comes
+    // from the suffix, not from directory listing order or mtime.
+    for name in [
+        "data.db.bak-v3-3000",
+        "data.db.bak-v1-1000",
+        "data.db.bak-v4-4000",
+        "data.db.bak-v2-2000",
+    ] {
+        touch(dir.path(), name);
+    }
+
+    prune_backups(&dir.path().join(DB_FILENAME), 2).unwrap();
+
+    assert_eq!(
+        all_files(dir.path()),
+        vec!["data.db.bak-v3-3000", "data.db.bak-v4-4000"]
+    );
+}
+
+#[test]
+fn prune_removes_partial_copies_and_journals() {
+    let dir = tempfile::tempdir().unwrap();
+    for name in [
+        "data.db.bak-v45-5000",
+        "data.db.bak-v45-6000.partial",
+        "data.db.bak-v45-6000.partial-journal",
+        "data.db.bak-v45-7000-journal",
+    ] {
+        touch(dir.path(), name);
+    }
+
+    prune_backups(&dir.path().join(DB_FILENAME), 2).unwrap();
+
+    assert_eq!(all_files(dir.path()), vec!["data.db.bak-v45-5000"]);
+}
+
+#[test]
+fn prune_ignores_other_files_and_moved_aside_databases() {
+    let dir = tempfile::tempdir().unwrap();
+    let untouched = [
+        "data.db",
+        "data.db-wal",
+        "data.db.moved-1000",
+        "data.db-wal.moved-1000",
+        "quorum.db.moved-1000",
+        "other.db.bak-v1-1000",
+        "other.db.bak-v1-2000.partial",
+    ];
+    for name in untouched {
+        touch(dir.path(), name);
+    }
+    touch(dir.path(), "data.db.bak-v1-1000");
+    touch(dir.path(), "data.db.bak-v2-2000");
+
+    prune_backups(&dir.path().join(DB_FILENAME), 1).unwrap();
+
+    let mut expected: Vec<&str> = untouched.to_vec();
+    expected.push("data.db.bak-v2-2000");
+    expected.sort_unstable();
+    assert_eq!(all_files(dir.path()), expected);
+}
+
+#[test]
+fn upgrade_prunes_old_backups_and_interrupted_copies() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut conn = open_db(&dir.path().join(DB_FILENAME)).unwrap();
+    get_migrations().to_version(&mut conn, 1).unwrap();
+    drop(conn);
+    // Debris from earlier launches: two complete backups plus a copy that was
+    // force-quit mid-way (its hot journal still beside it).
+    for name in [
+        "data.db.bak-v1-1000",
+        "data.db.bak-v1-2000",
+        "data.db.bak-v1-3000.partial",
+        "data.db.bak-v1-3000.partial-journal",
+    ] {
+        touch(dir.path(), name);
+    }
+
+    init(dir.path()).unwrap();
+
+    let backups = backup_files(dir.path());
+    assert_eq!(backups.len(), BACKUPS_TO_KEEP, "{backups:?}");
+    assert!(backups.iter().any(|n| n == "data.db.bak-v1-2000"));
+    let fresh: Vec<&String> = backups
+        .iter()
+        .filter(|n| *n != "data.db.bak-v1-2000")
+        .collect();
+    assert_eq!(fresh.len(), 1);
+    assert!(
+        fresh[0].starts_with("data.db.bak-v1-") && !fresh[0].ends_with(".partial"),
+        "newest backup should be the one just taken: {backups:?}"
+    );
 }
 
 fn make_project(conn: &Connection) -> String {

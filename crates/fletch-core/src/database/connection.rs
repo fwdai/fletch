@@ -4,8 +4,9 @@
 use parking_lot::Mutex;
 use rusqlite::Connection;
 use rusqlite_migration::{Migrations, M};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::error::{Error, Result};
 
@@ -109,7 +110,7 @@ pub fn init_with_progress(
     quarantine_orphaned_wal(data_dir)?;
     let db_path = data_dir.join(DB_FILENAME);
     let mut conn = open_db(&db_path)?;
-    if upgrade_pending(&conn)? {
+    if pending_upgrade_from(&conn)?.is_some() {
         on_phase(DbPhase::BackingUp);
     }
     backup_before_upgrade(&conn, &db_path)?;
@@ -232,28 +233,52 @@ fn map_migration_error(e: rusqlite_migration::Error) -> Error {
     }
 }
 
-/// Whether `backup_before_upgrade` will snapshot: an existing schema below the
-/// current migration count. Kept beside it as the same rule, so the progress
-/// report and the backup agree on when there is one.
-fn upgrade_pending(conn: &Connection) -> Result<bool> {
+/// The applied schema version when `backup_before_upgrade` will snapshot: an
+/// existing schema (`user_version > 0`) below the current migration count. A
+/// fresh DB has nothing to lose and a current or schema-ahead DB isn't
+/// migrated. Shared by the backup and the progress report so they agree.
+fn pending_upgrade_from(conn: &Connection) -> Result<Option<i64>> {
     let applied: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-    Ok(applied > 0 && (applied as usize) < MIGRATIONS.len())
+    Ok((applied > 0 && (applied as usize) < MIGRATIONS.len()).then_some(applied))
 }
 
-/// Snapshot the DB aside before applying migrations, but only when an existing
-/// schema is genuinely being upgraded: a fresh DB (`user_version == 0`) has
-/// nothing to lose, and an already-current or schema-ahead DB isn't migrated.
-/// Gives the user a restore point if a forward migration goes wrong or they
-/// later downgrade.
+/// Complete pre-upgrade backups retained per database file; older ones are
+/// deleted once a new backup lands.
+pub(crate) const BACKUPS_TO_KEEP: usize = 2;
+
+/// Pages copied per `sqlite3_backup_step` call: 16 MB at the 4 KB default page
+/// size. The backup runs during startup with no concurrent writer, so the loop
+/// is tuned for throughput, not for yielding.
+const SNAPSHOT_PAGES_PER_STEP: i32 = 4096;
+
+/// Suffix a backup carries while it is still being written. `prune_backups`
+/// treats any file with it as an interrupted copy.
+const PARTIAL_SUFFIX: &str = ".partial";
+
+/// Snapshot the DB aside before applying migrations (see `pending_upgrade_from`
+/// for when). Gives the user a restore point if a forward migration goes wrong
+/// or they later downgrade. Older backups and leftovers from interrupted copies are
+/// pruned only after the new one is complete, so a failed backup never costs
+/// an existing restore point.
 fn backup_before_upgrade(conn: &Connection, db_path: &Path) -> Result<()> {
-    let applied: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-    if applied <= 0 || applied as usize >= MIGRATIONS.len() {
+    let Some(applied) = pending_upgrade_from(conn)? else {
         return Ok(());
-    }
-    let backup = db_path.with_extension(format!("db.bak-v{applied}-{}", now_millis()));
+    };
+    let backup = backup_path(db_path, applied);
     snapshot_to(conn, &backup)?;
     tracing::info!(backup = %backup.display(), "backed up DB before schema upgrade");
+    // Housekeeping only: a leftover we cannot delete must not block the launch.
+    if let Err(e) = prune_backups(db_path, BACKUPS_TO_KEEP) {
+        tracing::warn!(error = %e, "pruning old DB backups failed");
+    }
     Ok(())
+}
+
+/// `<db>.bak-v<applied>-<now_millis>`, next to the database. The millisecond
+/// suffix is what `prune_backups` orders by.
+fn backup_path(db_path: &Path, applied: i64) -> PathBuf {
+    let name = db_path.file_name().unwrap_or_default().to_string_lossy();
+    db_path.with_file_name(format!("{name}.bak-v{applied}-{}", now_millis()))
 }
 
 /// Write a consistent snapshot of `conn` to `dest` via SQLite's online backup
@@ -261,10 +286,82 @@ fn backup_before_upgrade(conn: &Connection, db_path: &Path) -> Result<()> {
 /// so it always captures committed WAL frames — a plain copy would silently
 /// omit them whenever an external reader (Spotlight, Time Machine, a backup
 /// agent) holds the WAL and leaves the checkpoint incomplete (`busy != 0`).
+///
+/// The copy lands in `<dest>.partial` and is renamed into place only once
+/// complete, so a file under the final name is always a whole database and an
+/// interrupted copy (force-quit mid-backup) is identifiable by its suffix.
+/// Steps run back to back: `Backup::run_to_completion` sleeps after every step
+/// including successful ones, which turned a ~1 GB copy into minutes of pure
+/// waiting. Only `Busy`/`Locked` (another writer holds the source) pause.
 fn snapshot_to(conn: &Connection, dest: &Path) -> Result<()> {
-    let mut dst = Connection::open(dest)?;
-    let backup = rusqlite::backup::Backup::new(conn, &mut dst)?;
-    backup.run_to_completion(100, std::time::Duration::from_millis(50), None)?;
+    use rusqlite::backup::StepResult;
+
+    let partial = partial_path(dest);
+    {
+        let mut dst = Connection::open(&partial)?;
+        let backup = rusqlite::backup::Backup::new(conn, &mut dst)?;
+        loop {
+            match backup.step(SNAPSHOT_PAGES_PER_STEP)? {
+                StepResult::Done => break,
+                StepResult::Busy | StepResult::Locked => {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                _ => {}
+            }
+        }
+    }
+    std::fs::rename(&partial, dest)?;
+    Ok(())
+}
+
+fn partial_path(dest: &Path) -> PathBuf {
+    let mut name = dest.file_name().unwrap_or_default().to_os_string();
+    name.push(PARTIAL_SUFFIX);
+    dest.with_file_name(name)
+}
+
+/// Delete stale pre-upgrade backups of `db_path`: every `<db>.bak-*` file that
+/// is a `.partial` copy or a `-journal` sidecar (debris from an interrupted
+/// `snapshot_to`), then all complete backups beyond the newest `keep`, ordered
+/// by the millisecond suffix in the name and falling back to mtime for names
+/// that don't parse. Files moved aside by fresh-start recovery (`.moved-*`)
+/// don't match the prefix and are never touched.
+pub(crate) fn prune_backups(db_path: &Path, keep: usize) -> Result<()> {
+    let (Some(dir), Some(name)) = (db_path.parent(), db_path.file_name()) else {
+        return Ok(());
+    };
+    let prefix = format!("{}.bak-", name.to_string_lossy());
+    let mut complete: Vec<(i64, PathBuf)> = Vec::new();
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let file_name = entry.file_name();
+        let file_name = file_name.to_string_lossy();
+        if !file_name.starts_with(&prefix) {
+            continue;
+        }
+        let path = entry.path();
+        if file_name.ends_with(PARTIAL_SUFFIX) || file_name.ends_with("-journal") {
+            std::fs::remove_file(&path)?;
+            tracing::info!(file = %path.display(), "removed interrupted DB backup");
+            continue;
+        }
+        let stamp = file_name
+            .rsplit('-')
+            .next()
+            .and_then(|s| s.parse::<i64>().ok())
+            .or_else(|| {
+                let modified = entry.metadata().ok()?.modified().ok()?;
+                let since_epoch = modified.duration_since(std::time::UNIX_EPOCH).ok()?;
+                Some(since_epoch.as_millis() as i64)
+            })
+            .unwrap_or(0);
+        complete.push((stamp, path));
+    }
+    complete.sort_by_key(|(stamp, _)| std::cmp::Reverse(*stamp));
+    for (_, path) in complete.into_iter().skip(keep) {
+        std::fs::remove_file(&path)?;
+        tracing::info!(file = %path.display(), "pruned old DB backup");
+    }
     Ok(())
 }
 
