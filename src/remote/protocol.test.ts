@@ -1,12 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { backoffDelay } from "./backoff";
 import { candidatesFor, LAN_OPEN_TIMEOUT_MS, RELAY_OPEN_TIMEOUT_MS } from "./candidates";
-import {
-  HANDSHAKE_TIMEOUT_MS,
-  MAX_IN_FLIGHT,
-  ProtocolClient,
-  READ_TIMEOUT_MS,
-} from "./client";
+import { HANDSHAKE_TIMEOUT_MS, MAX_IN_FLIGHT, ProtocolClient, READ_TIMEOUT_MS } from "./client";
 import { parseAddress, parsePairUrl, relayDeviceUrl, wsUrl } from "./pairing";
 import type { Socket, SocketHandlers, SocketOptions } from "./socket";
 import {
