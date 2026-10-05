@@ -104,15 +104,15 @@
   color: var(--accent);
   text-underline-offset: 3px;
 }
+.sa-cta svg {
+  transition: transform 0.15s var(--ease);
+}
 .sa-open:hover .sa-cta,
 .sa-open:focus-visible .sa-cta {
   text-decoration: underline;
 }
 .sa-open:hover .sa-cta svg {
   transform: translateX(2px);
-}
-.sa-cta svg {
-  transition: transform 0.15s var(--ease);
 }
 /* expand/collapse at the far right, where every tool row keeps its chevron */
 .sa-toggle {

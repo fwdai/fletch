@@ -42,6 +42,13 @@ describe("tasksByToolUse", () => {
     expect(tasksByToolUse({ a, b })).toEqual({ toolu_a: a });
     expect(tasksByToolUse(undefined)).toEqual({});
   });
+
+  it("lets a running task win over a stale duplicate for the same launch, either order", () => {
+    const stale = task({ taskId: "old", toolUseId: "toolu_a", status: "completed" });
+    const live = task({ taskId: "new", toolUseId: "toolu_a", status: "running" });
+    expect(tasksByToolUse({ old: stale, new: live }).toolu_a).toBe(live);
+    expect(tasksByToolUse({ new: live, old: stale }).toolu_a).toBe(live);
+  });
 });
 
 describe("threadStatus", () => {

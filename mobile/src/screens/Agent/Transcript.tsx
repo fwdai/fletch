@@ -15,6 +15,7 @@ import { useMemo, useState } from "react";
 import type { ChatItem, DisplayPolicy } from "../../adapters";
 import { SentChips } from "../../attachments";
 import { Md } from "../../components/Md";
+import { useTick } from "../../lib/hooks";
 import { threadStatus } from "../../lib/thread";
 import { resultSummary, resultText, TOOL_HUE, TOOL_ICON, toolArg } from "../../lib/tools";
 
@@ -112,6 +113,10 @@ function SubagentCard({
   openThread?: (toolUseId: string) => void;
 }) {
   const state = threadState(result, task, busy);
+  // A running card's "quiet Nm" hint is a function of the clock, not of any
+  // event — a sub-agent that outlives its idle parent gets no other render —
+  // so running cards tick once a minute, the desktop card's cadence.
+  useTick(60_000, state === "running");
   const label = threadLabel(call);
   const type = threadType(call);
   const status = threadStatus(state, task, Date.now());

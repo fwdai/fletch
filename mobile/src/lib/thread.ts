@@ -18,12 +18,18 @@ export const splitThreadPath = (prop: string | undefined): string[] =>
   prop ? prop.split(SEP).filter(Boolean) : [];
 
 /** Background tasks keyed by the tool_use id that launched them — the key a
- *  transcript row looks itself up by. */
+ *  transcript row looks itself up by. Same rule as the shared `taskForToolUse`:
+ *  a running task wins over a stale duplicate for the same launch, so a
+ *  resumed sub-agent never reads as finished because an older entry came first. */
 export function tasksByToolUse(
   tasks: BackgroundTaskMap | undefined,
 ): Record<string, BackgroundTask> {
   const map: Record<string, BackgroundTask> = {};
-  for (const t of Object.values(tasks ?? {})) if (t.toolUseId) map[t.toolUseId] = t;
+  for (const t of Object.values(tasks ?? {})) {
+    if (!t.toolUseId) continue;
+    const held = map[t.toolUseId];
+    if (!held || (t.status === "running" && held.status !== "running")) map[t.toolUseId] = t;
+  }
   return map;
 }
 
