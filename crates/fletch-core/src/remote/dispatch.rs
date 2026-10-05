@@ -78,6 +78,12 @@ pub const DICTATION_UNAVAILABLE: &str =
 /// answered without being dispatched; the client retries.
 pub const TOO_MANY_IN_FLIGHT: &str = "too many in-flight requests";
 
+/// The error text a request gets when its answer would not fit in one
+/// protocol frame (`server::MAX_OUTBOUND_FRAME_BYTES`). The op ran; only the
+/// reply was too big to carry. Not a transport fault: the connection is fine
+/// and nothing warrants a retry — the client needs a smaller read.
+pub const RESPONSE_TOO_LARGE: &str = "response too large";
+
 /// The error a `wf_*` op gets on a host whose scheduler was never published —
 /// a boot that stopped short, or a test ctx. The ops stay on [`OPS`] (the
 /// scheduler is part of every real boot, desktop or headless), so this is a

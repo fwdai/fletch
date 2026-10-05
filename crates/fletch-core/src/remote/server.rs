@@ -63,6 +63,15 @@ impl<T> WsTransport for T where
 /// Largest frame/message the host accepts. tungstenite answers anything larger
 /// with close code 1009 on its own.
 const MAX_FRAME_BYTES: usize = 4 * 1024 * 1024;
+/// Largest plaintext protocol frame the host will *send*. The same 4 MiB cap
+/// applies in the other direction — the relay closes the whole host link with
+/// `1009` for a message over it, which drops every relayed device at once, and
+/// a phone enforces its own cap on what it reads — so a frame that would exceed
+/// it is replaced before it reaches the wire: a response by
+/// `dispatch::RESPONSE_TOO_LARGE`, an event by nothing (the phone refetches).
+/// The margin under the cap covers the secure channel's per-chunk overhead
+/// (18 bytes per 64 KiB) and the relay's mux header, with room to spare.
+pub(super) const MAX_OUTBOUND_FRAME_BYTES: usize = MAX_FRAME_BYTES - 64 * 1024;
 /// Ping cadence, and how many may go unanswered before the socket is dropped.
 const PING_INTERVAL: Duration = Duration::from_secs(20);
 const MAX_MISSED_PONGS: u32 = 2;
@@ -496,7 +505,7 @@ async fn read_loop<S: WsTransport>(
                                     // Reply last: the phone must not be able to
                                     // observe itself as authenticated before it
                                     // is on the fan-out and in the registry.
-                                    out.send(json_frame(ok_frame(&frame.id, result)));
+                                    out.send(response_frame(&frame.id, Ok(result)));
                                     tracing::info!(
                                         device = %record.name,
                                         platform = %record.platform,
@@ -587,11 +596,7 @@ async fn read_loop<S: WsTransport>(
                         let RequestFrame { id, op, args } = frame;
                         in_flight.spawn(async move {
                             let outcome = state.dispatch(&op, args).await;
-                            let frame = match outcome {
-                                Ok(result) => ok_frame(&id, result),
-                                Err(error) => err_frame(&id, &error),
-                            };
-                            out.send(json_frame(frame));
+                            out.send(response_frame(&id, outcome));
                         });
                     }
                     _ => {}
@@ -753,6 +758,28 @@ fn register_push(
 /// it on the wire as a binary message.
 fn json_frame(frame: String) -> Message {
     Message::Text(frame.into())
+}
+
+/// The frame that answers request `id` with `outcome` — unless the answer
+/// would not fit on the wire, in which case the request is answered with
+/// `RESPONSE_TOO_LARGE` instead. Sending it anyway is never an option: over the
+/// relay that costs the host link and every device on it (see
+/// `MAX_OUTBOUND_FRAME_BYTES`), and the request would hang unanswered either
+/// way. An error the client can read is the one outcome that ends well.
+fn response_frame(id: &str, outcome: super::dispatch::DispatchResult) -> Message {
+    let frame = match outcome {
+        Ok(result) => ok_frame(id, result),
+        Err(error) => err_frame(id, &error),
+    };
+    if frame.len() > MAX_OUTBOUND_FRAME_BYTES {
+        tracing::warn!(
+            bytes = frame.len(),
+            cap = MAX_OUTBOUND_FRAME_BYTES,
+            "remote: an answer is over the frame cap and was refused"
+        );
+        return json_frame(err_frame(id, super::dispatch::RESPONSE_TOO_LARGE));
+    }
+    json_frame(frame)
 }
 
 fn close_frame(code: CloseCode, reason: &str) -> Message {

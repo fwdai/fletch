@@ -34,7 +34,13 @@ adapters (`src/adapters/*`) unchanged.
   phone additionally probes on returning to the foreground: its workspace
   refresh doubles as a liveness check, and one unanswered for 6 s forces a
   reconnect. Client reconnects with exponential backoff (1 s, 2 s, 4 s … 30 s).
-- WebSocket messages larger than 4 MiB are rejected (close code 1009).
+- WebSocket messages larger than 4 MiB are rejected (close code 1009). The
+  host holds itself to the same cap in the other direction, since the relay
+  closes the whole *host link* with `1009` for a message over it — every
+  relayed device goes with it: a response that would exceed the cap is
+  answered with `{ ok: false, error: "response too large" }` instead, and an
+  event that would is dropped (delivery is best effort; the turn-end refetch
+  carries what it would have).
 - Everything the host holds for a connection is bounded, and ends with it. The
   outbound queue holds 64 frames: a client that stops reading while the host
   still has frames for it has its socket dropped (no close frame — the queue is
@@ -1296,10 +1302,12 @@ PR); the log is durable.
 
 ## Errors
 
-Host errors are strings (the `Display` of the Rust `Error`). Three are
+Host errors are strings (the `Display` of the Rust `Error`). Four are
 reserved: `"unknown op"` for anything off the allowlist, `"forbidden"` for an op
 this host has but this *device's* pairing scopes do not reach (see "Scopes"),
-and `"too many in-flight requests"` for a connection over its concurrency cap.
+`"too many in-flight requests"` for a connection over its concurrency cap, and
+`"response too large"` for an answer that would not fit in one 4 MiB frame (the
+op ran and the connection is fine; the client needs a smaller read).
 
 `"forbidden"` is deliberately distinct from `"unknown op"`: the op exists here,
 so a client should say "re-pair this device with more access" rather than "this

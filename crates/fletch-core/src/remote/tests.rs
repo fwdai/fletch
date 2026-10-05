@@ -10,7 +10,8 @@ use tokio_tungstenite::WebSocketStream;
 
 use super::auth::DeviceRecord;
 use super::dispatch::{
-    self, Dispatch, DispatchFuture, Scope, FORBIDDEN, TOO_MANY_IN_FLIGHT, UNKNOWN_OP,
+    self, Dispatch, DispatchFuture, Scope, FORBIDDEN, RESPONSE_TOO_LARGE, TOO_MANY_IN_FLIGHT,
+    UNKNOWN_OP,
 };
 use super::push::{AgentLookup, PushTriggers};
 use super::secure::{self, Handshake, SecureChannel};
@@ -2476,6 +2477,73 @@ async fn requests_past_the_in_flight_cap_are_refused_without_dispatching() {
     assert_eq!(refused["id"], "9");
     assert_eq!(refused["ok"], false);
     assert_eq!(refused["error"], TOO_MANY_IN_FLIGHT);
+}
+
+/// Answers `get_git_state` with more than one frame can carry.
+struct OversizedDispatch;
+
+impl Dispatch for OversizedDispatch {
+    fn dispatch<'a>(&'a self, op: &'a str, _args: Value) -> DispatchFuture<'a> {
+        Box::pin(async move {
+            match op {
+                "get_workspace" => Ok(json!({ "projects": [], "agents": [] })),
+                "get_git_state" => Ok(json!({ "pad": "x".repeat(5 << 20) })),
+                _ => Err(UNKNOWN_OP.to_string()),
+            }
+        })
+    }
+}
+
+#[tokio::test]
+async fn an_answer_over_the_frame_cap_is_refused_and_the_connection_kept() {
+    let host = boot_with(Arc::new(OversizedDispatch));
+    let phone = device();
+    host.state
+        .devices()
+        .register("phone", "ios", &phone.public, &Scope::ALL)
+        .unwrap();
+    let mut ws = secure_connect(host.port, &phone).await;
+    ws.request("0", "hello", json!({})).await;
+    assert_eq!(ws.next_json().await["ok"], true);
+
+    // The op ran; its answer is what could not be carried. Over the relay the
+    // frame would have cost the host link and every device on it (the relay
+    // closes the link with 1009), so the request is answered with the reserved
+    // error instead.
+    ws.request("1", "get_git_state", json!({})).await;
+    let refused = ws.next_json().await;
+    assert_eq!(refused["id"], "1");
+    assert_eq!(refused["ok"], false);
+    assert_eq!(refused["error"], RESPONSE_TOO_LARGE);
+
+    // Nothing happened to the connection: the next request answers as usual.
+    ws.request("2", "get_workspace", json!({})).await;
+    let reply = ws.next_json().await;
+    assert_eq!(reply["id"], "2");
+    assert_eq!(reply["ok"], true);
+}
+
+#[tokio::test]
+async fn an_event_over_the_frame_cap_is_dropped_rather_than_sent() {
+    let host = boot();
+    let phone = device();
+    host.state
+        .devices()
+        .register("phone", "ios", &phone.public, &Scope::ALL)
+        .unwrap();
+    let mut ws = secure_connect(host.port, &phone).await;
+    ws.request("0", "hello", json!({})).await;
+    assert_eq!(ws.next_json().await["ok"], true);
+
+    host.state
+        .forward_event("agent:event", &json!({ "pad": "x".repeat(5 << 20) }));
+    host.state.forward_event(
+        "agent:status",
+        &json!({ "agentId": "arabia", "status": "idle" }),
+    );
+    // Best-effort delivery: the oversized one is gone and the next arrives.
+    let event = ws.next_json().await;
+    assert_eq!(event["event"], "agent:status");
 }
 
 #[tokio::test]
