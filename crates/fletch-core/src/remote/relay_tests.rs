@@ -25,10 +25,10 @@ use tokio_tungstenite::tungstenite::protocol::CloseFrame;
 use tokio_tungstenite::tungstenite::{Bytes, Message};
 use tokio_tungstenite::WebSocketStream;
 
-use super::dispatch::Scope;
+use super::dispatch::{Dispatch, Scope};
 use super::relay::{Frame, RelayState, RelayTiming};
 use super::secure::{Handshake, HostKey, SecureChannel};
-use super::tests::{device, Device, StubDispatch};
+use super::tests::{device, Device, PaddedDispatch, StubDispatch};
 use super::{RemoteState, DEFAULT_RELAY_URL};
 
 /// Every await in these tests is bounded: a link that never arrives should fail
@@ -337,9 +337,20 @@ impl Phone {
     }
 
     async fn next_json(&mut self, link: &mut HostLink) -> Value {
-        let payload = link.data_for(self.conn).await;
-        let plaintext = self.channel.decrypt_frame(&payload).unwrap();
-        serde_json::from_slice(&plaintext).unwrap()
+        self.next_json_sized(link).await.0
+    }
+
+    /// [`Phone::next_json`], plus the size of every DATA payload that carried
+    /// it — what the relay's per-message cap applies to.
+    async fn next_json_sized(&mut self, link: &mut HostLink) -> (Value, Vec<usize>) {
+        let mut sizes = Vec::new();
+        loop {
+            let payload = link.data_for(self.conn).await;
+            sizes.push(payload.len());
+            if let Some(plaintext) = self.channel.decrypt_message(&payload).unwrap() {
+                return (serde_json::from_slice(&plaintext).unwrap(), sizes);
+            }
+        }
     }
 }
 
@@ -354,8 +365,12 @@ struct Host {
 
 /// A started host pointed at `url`, with the relay's waits shortened.
 fn boot(url: &str) -> Host {
+    boot_with(url, Arc::new(StubDispatch))
+}
+
+fn boot_with(url: &str, dispatch: Arc<dyn Dispatch>) -> Host {
     let dir = tempfile::tempdir().unwrap();
-    let state = RemoteState::new(dir.path(), Arc::new(StubDispatch));
+    let state = RemoteState::new(dir.path(), dispatch);
     state.set_relay_timing(fast());
     state.set_relay(Some(url.to_string())).unwrap();
     state.start(0).unwrap();
@@ -500,6 +515,40 @@ async fn a_relayed_device_handshakes_and_says_hello() {
     let reply = conn.next_json(&mut link).await;
     assert_eq!(reply["id"], "2");
     assert_eq!(reply["result"]["agents"], json!([]));
+}
+
+/// The failure this exists for: one answer over the relay's 4 MiB message cap
+/// used to make the relay close the whole host link, every device with it. It
+/// now crosses as DATA frames each far under the cap, and the link carries on.
+#[tokio::test]
+async fn a_large_answer_crosses_the_relay_as_data_frames_under_the_cap() {
+    let mut relay = FakeRelay::start(Verdict::Accept).await;
+    let host = boot_with(&relay.url, Arc::new(PaddedDispatch));
+    let mut link = relay.next_link().await;
+    let phone = device();
+    host.state
+        .devices()
+        .register("phone", "ios", &phone.public, &Scope::ALL)
+        .unwrap();
+    let mut conn = Phone::open(&mut link, 1, &phone).await;
+    conn.request(&mut link, "0", "hello", json!({})).await;
+    assert_eq!(conn.next_json(&mut link).await["ok"], true);
+
+    let bytes = 20 << 20;
+    conn.request(&mut link, "1", "get_git_state", json!({ "bytes": bytes }))
+        .await;
+    let (reply, sizes) = conn.next_json_sized(&mut link).await;
+    assert_eq!(reply["id"], "1");
+    assert_eq!(reply["result"]["pad"].as_str().map(str::len), Some(bytes));
+    assert!(sizes.len() > 1, "fragmented, not one message");
+    assert!(
+        sizes.iter().all(|&n| n < 4 << 20),
+        "every DATA payload fits the relay's cap: {sizes:?}"
+    );
+
+    conn.request(&mut link, "2", "get_workspace", json!({}))
+        .await;
+    assert_eq!(conn.next_json(&mut link).await["id"], "2");
 }
 
 #[tokio::test]

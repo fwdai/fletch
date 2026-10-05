@@ -34,13 +34,17 @@ adapters (`src/adapters/*`) unchanged.
   phone additionally probes on returning to the foreground: its workspace
   refresh doubles as a liveness check, and one unanswered for 6 s forces a
   reconnect. Client reconnects with exponential backoff (1 s, 2 s, 4 s … 30 s).
-- WebSocket messages larger than 4 MiB are rejected (close code 1009). The
-  host holds itself to the same cap in the other direction, since the relay
-  closes the whole *host link* with `1009` for a message over it — every
-  relayed device goes with it: a response that would exceed the cap is
-  answered with `{ ok: false, error: "response too large" }` instead, and an
-  event that would is dropped (delivery is best effort; the turn-end refetch
-  carries what it would have).
+- WebSocket messages larger than 4 MiB are rejected (close code 1009). A
+  protocol frame is not bound by that cap: on a connection whose two ends
+  negotiated fragmentation (see "Secure channel"), a frame over 256 KiB
+  travels as a run of messages of 256 KiB each, up to 64 MiB in total. The
+  host holds itself to the matching cap in the other direction — 4 MiB toward
+  a peer that did not negotiate fragmentation, since the relay closes the
+  whole *host link* with `1009` for a message over it and every relayed device
+  goes with it, and 64 MiB toward one that did: a response that would exceed
+  it is answered with `{ ok: false, error: "response too large" }` instead,
+  and an event that would is dropped for that connection (delivery is best
+  effort; the turn-end refetch carries what it would have).
 - Everything the host holds for a connection is bounded, and ends with it. The
   outbound queue holds 64 frames: a client that stops reading while the host
   still has frames for it has its socket dropped (no close frame — the queue is
@@ -56,9 +60,21 @@ frames afterwards. The WebSocket, and any relay between the two ends, sees
 ciphertext.
 
 - Pattern `Noise_XX_25519_ChaChaPoly_BLAKE2s`, prologue the ASCII bytes
-  `fletch-remote-v2`, empty handshake payloads. The phone is the initiator and
-  the host the responder. The three handshake messages travel as three
-  WebSocket **binary** messages: `-> e`, `<- e, ee, s, es`, `-> s, se`.
+  `fletch-remote-v2`. The phone is the initiator and the host the responder.
+  The three handshake messages travel as three WebSocket **binary** messages:
+  `-> e`, `<- e, ee, s, es`, `-> s, se`.
+- **Handshake payloads carry capabilities.** Message 1 has an empty payload
+  (nothing is encrypted yet). Messages 2 (the host's) and 3 (the client's)
+  each carry one capability byte, a bit set: `0x01` = "I reassemble
+  fragmented frames" (see below); every other bit is reserved and ignored. A
+  reader looks at the first payload byte only and ignores any bytes after it;
+  an empty payload means no capabilities. Both payloads are encrypted and
+  authenticated by the handshake, so nobody between the two ends can strip
+  them. Ends that predate capabilities send empty payloads and discard the
+  payloads they receive, which is why adding the byte changed nothing for
+  them. A capability is in force on a connection only when **both** ends
+  advertised it; each end computes that the same way once the handshake is
+  done.
 - Identities are static X25519 keys. The host generates its keypair on first
   use and keeps the 32-byte private key at `<app_data_dir>/remote/host_key`
   (mode 0600). The phone generates a device keypair on first use and keeps it
@@ -81,10 +97,37 @@ ciphertext.
   plaintext. Empty plaintext is one chunk holding only the tag; a zero-byte
   frame is malformed. Ping/pong stay at the WebSocket level, unencrypted, and
   are tolerated during the handshake, which the host times out after 10 s.
+- **Fragmentation.** On a connection where both ends advertised `0x01`, a
+  frame over 262 144 bytes (256 KiB) of plaintext may be sent as a run of
+  *fragment messages* instead, one per 256 KiB of the frame. The host always
+  fragments such a frame: its messages to every relayed device share one host
+  link, and a small message for one phone should not wait behind megabytes for
+  another. A client fragments only a frame that would not fit one message
+  under the 4 MiB cap, because the relay's rate limit counts the messages a
+  device sends (see "Relay"); every frame a client sends today fits, so its
+  traffic is unchanged. A fragment
+  message is `0x00 0x00` followed by the usual chunks; the zero-length marker
+  cannot open an ordinary message (a chunk shorter than its tag is malformed),
+  so the two forms never collide. The chunks' plaintext is one flag byte and
+  then the next at most 262 144 bytes of the frame: `0x01` means more
+  fragments of this frame follow, `0x00` that this is the last one; any other
+  flag is malformed. The flag is inside the ciphertext, so a run cannot be cut
+  short or extended undetected. A frame at or under 256 KiB, a larger frame a
+  client sends whole, and every frame on a connection without the capability
+  is one ordinary message exactly as above; a receiver accepts either form
+  whatever the frame's size. The fragments of one frame are consecutive messages on the
+  connection — no other frame between them — which is also what keeps the
+  Noise nonces in step, since every fragment is an encryption on the
+  connection's one channel. A WebSocket is ordered and reliable, so there are
+  no fragment ids, no reordering and no timers. A reassembled frame is capped
+  at 64 MiB.
 - A handshake that fails, a text frame at any point, or a frame that does not
   decrypt (truncated header or body, a chunk shorter than a tag, a bad tag)
-  closes the connection with `4001`. The secure channel failing is the same
-  class of failure as never having established it.
+  closes the connection with `4001`. So does a fragment that breaks the rules:
+  a fragment message on a connection without the capability, an ordinary
+  message in the middle of a run, a bad flag, or a run that passes 64 MiB
+  (which is also what ends a run that never ends). The secure channel failing
+  is the same class of failure as never having established it.
 - Host authentication: when the phone knows the host's public key (it came in
   the QR) it aborts the handshake if the responder's static key differs. The
   check happens on message 2, before message 3 is sent, so an impostor never
@@ -142,7 +185,13 @@ repo); anyone can run their own and point both apps at it.
   from the host. The relay closes a device link with `4404` ("host offline")
   when no host link is attached, `4429` when the host already has 8 device
   links, `1009` for a message over 4 MiB, and `1008` for more than 100
-  messages in 10 s.
+  messages in 10 s. That rate limit counts what the *device* sends, so the
+  host's fragments of a large answer cost it nothing. It is also why a client
+  sends a frame whole whenever it fits one message: fragmenting a 1.4 MiB
+  attachment chunk would spend six messages of the budget instead of one. A
+  frame too big for one message would spend one per 256 KiB (a 25 MiB frame is
+  the whole budget); no client sends one today, since attachments travel in
+  chunked ops (see "Attachments").
 - **Multiplexing on the host link.** Every device link becomes a numbered
   virtual connection on the one host link. Binary frames on the host link are
   `type (1 byte) || connId (u32 big-endian) || payload`:
@@ -162,7 +211,9 @@ repo); anyone can run their own and point both apps at it.
   Frames the relay does not understand (unknown connId, truncated, a text
   frame on the host link after `ready`) are ignored, not fatal. The host link
   accepts messages up to 4 MiB + 5 bytes, so a legal 4 MiB device message fits
-  inside a DATA frame. The host serves each virtual connection through the
+  inside a DATA frame. DATA carries WebSocket messages, not protocol frames: a
+  fragmented frame is several DATA frames, and the relay neither knows nor
+  needs to. The host serves each virtual connection through the
   same code path as a LAN socket; WebSocket ping/pong is per hop (host↔relay
   and relay↔device), never forwarded, and the host answers its own liveness
   pings to a virtual connection locally. The relay originates no pings of its
@@ -520,6 +571,11 @@ older than the other. The rules that make that safe:
 
 - **The prologue stays `fletch-remote-v2`.** It is the transport's version, not
   the surface's, and it does not change for an added op, event or feature.
+- **Transport capabilities ride in the handshake, not in `protocol`.** They
+  change how bytes are framed, so both ends have to know before the first
+  frame — `protocol` arrives inside one. An end from before capabilities sends
+  empty payloads and ignores the ones it receives, so it never gets a fragment
+  and is never expected to read one (see "Secure channel").
 - **Changes within v2 are additive.** New ops, new forwarded events and new
   `features` flags are added; an existing op's name, argument keys or result
   shape is not repurposed. A client may therefore ignore anything it does not
@@ -1306,8 +1362,10 @@ Host errors are strings (the `Display` of the Rust `Error`). Four are
 reserved: `"unknown op"` for anything off the allowlist, `"forbidden"` for an op
 this host has but this *device's* pairing scopes do not reach (see "Scopes"),
 `"too many in-flight requests"` for a connection over its concurrency cap, and
-`"response too large"` for an answer that would not fit in one 4 MiB frame (the
-op ran and the connection is fine; the client needs a smaller read).
+`"response too large"` for an answer over the frame cap — 64 MiB on a
+connection that negotiated fragmentation, 4 MiB on one that did not (see
+"Transport"; the op ran and the connection is fine; the client needs a smaller
+read).
 
 `"forbidden"` is deliberately distinct from `"unknown op"`: the op exists here,
 so a client should say "re-pair this device with more access" rather than "this

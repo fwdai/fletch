@@ -32,7 +32,7 @@ use tokio_tungstenite::tungstenite::{Bytes, Message};
 
 use crate::dial::{self, Ws};
 use crate::keys::{StaticKey, DEVICE_KEY_FILE};
-use crate::noise::{initiate, Channel};
+use crate::noise::{initiate, Channel, MAX_MESSAGE_PLAINTEXT};
 use crate::Result;
 
 type Writer = SplitSink<Ws, Message>;
@@ -262,19 +262,36 @@ impl Dialer {
         })
     }
 
-    /// Encrypt one JSON document and send it as a single binary message on
-    /// `id`. "not connected" if that connection is gone.
+    /// Encrypt one JSON document and send it on `id`. "not connected" if that
+    /// connection is gone.
+    ///
+    /// A frame that fits one message goes as one, fragmentation or not: the
+    /// relay rate-limits the messages a device sends, so splitting a frame the
+    /// wire could carry whole would only spend that budget faster. Only a frame
+    /// too big for one message is fragmented, and only to a host that
+    /// negotiated it.
+    ///
+    /// The connection's lock is held from the first encryption to the last
+    /// write, so a fragment run reaches the socket with nothing between its
+    /// messages and the nonces stay in the order the bytes travel.
     pub async fn send(&self, id: ConnectionId, text: &str) -> Result<()> {
         let conn = self
             .conn(id)
             .await
             .ok_or_else(|| "not connected".to_string())?;
         let mut conn = conn.lock().await;
-        let frame = conn.channel.encrypt_frame(text.as_bytes())?;
-        conn.writer
-            .send(Message::binary(frame))
-            .await
-            .map_err(|e| e.to_string())
+        let messages = if text.len() <= MAX_MESSAGE_PLAINTEXT {
+            vec![conn.channel.encrypt_frame(text.as_bytes())?]
+        } else {
+            conn.channel.encrypt_messages(text.as_bytes())?
+        };
+        for message in messages {
+            conn.writer
+                .send(Message::binary(message))
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(())
     }
 
     /// Close `id` with 1000. A no-op if it is already gone, and it never
@@ -334,12 +351,15 @@ impl Dialer {
                 match message {
                     Ok(Message::Binary(bytes)) => {
                         let plaintext = match self.conn(id).await {
-                            Some(conn) => conn.lock().await.channel.decrypt_frame(&bytes),
+                            Some(conn) => conn.lock().await.channel.decrypt_message(&bytes),
                             // Closed while this frame was in flight: stay quiet.
                             None => return,
                         };
-                        match plaintext.and_then(text_of) {
-                            Ok(text) => (self.events)(ClientEvent::Message(TextPayload {
+                        match plaintext.and_then(|frame| frame.map(text_of).transpose()) {
+                            // A fragment run is still open; the frame comes
+                            // with its last message.
+                            Ok(None) => {}
+                            Ok(Some(text)) => (self.events)(ClientEvent::Message(TextPayload {
                                 connection_id: id,
                                 text,
                             })),

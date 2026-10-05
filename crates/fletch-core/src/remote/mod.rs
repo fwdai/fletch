@@ -667,10 +667,11 @@ impl RemoteState {
         let payload = serde_json::to_string(payload).unwrap_or_else(|_| "null".to_string());
         let name = serde_json::to_string(name).unwrap_or_else(|_| "\"\"".to_string());
         let frame = format!("{{\"event\":{name},\"payload\":{payload}}}");
-        // An event the wire cannot carry is dropped rather than sent: over the
-        // relay it would cost the host link and every device on it (see
-        // `server::MAX_OUTBOUND_FRAME_BYTES`). Delivery is best effort by
-        // contract, and the turn-end refetch carries what the event would have.
+        // An event no peer could take is dropped here, once, rather than by
+        // every connection's forwarder (which still drops what is too big for
+        // a peer without fragmentation; see `server::MAX_OUTBOUND_FRAME_BYTES`).
+        // Delivery is best effort by contract, and the turn-end refetch carries
+        // what the event would have.
         if frame.len() > server::MAX_OUTBOUND_FRAME_BYTES {
             tracing::warn!(
                 event = %name,

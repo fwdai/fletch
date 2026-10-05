@@ -63,15 +63,17 @@ impl<T> WsTransport for T where
 /// Largest frame/message the host accepts. tungstenite answers anything larger
 /// with close code 1009 on its own.
 const MAX_FRAME_BYTES: usize = 4 * 1024 * 1024;
-/// Largest plaintext protocol frame the host will *send*. The same 4 MiB cap
-/// applies in the other direction — the relay closes the whole host link with
-/// `1009` for a message over it, which drops every relayed device at once, and
-/// a phone enforces its own cap on what it reads — so a frame that would exceed
-/// it is replaced before it reaches the wire: a response by
+/// Largest plaintext protocol frame the host will *send* to a peer that
+/// negotiated fragmentation: the most the peer will reassemble. A frame over it
+/// is replaced before it reaches the wire — a response by
 /// `dispatch::RESPONSE_TOO_LARGE`, an event by nothing (the phone refetches).
-/// The margin under the cap covers the secure channel's per-chunk overhead
-/// (18 bytes per 64 KiB) and the relay's mux header, with room to spare.
-pub(super) const MAX_OUTBOUND_FRAME_BYTES: usize = MAX_FRAME_BYTES - 64 * 1024;
+/// At 64 MiB that is a last resort, not a limit a real answer meets.
+pub(super) const MAX_OUTBOUND_FRAME_BYTES: usize = secure::MAX_FRAME_PLAINTEXT;
+/// The same cap toward a peer from before fragmentation, which can only take a
+/// frame as one message. The relay closes the whole host link with `1009` for
+/// a message over 4 MiB, dropping every relayed device at once, so such a peer
+/// is held to what fits in one.
+pub(super) const LEGACY_MAX_OUTBOUND_FRAME_BYTES: usize = secure::MAX_MESSAGE_PLAINTEXT;
 /// Ping cadence, and how many may go unanswered before the socket is dropped.
 const PING_INTERVAL: Duration = Duration::from_secs(20);
 const MAX_MISSED_PONGS: u32 = 2;
@@ -177,9 +179,15 @@ pub(super) async fn serve<S: WsTransport>(
 
     let (sink, stream) = ws.split();
     let (tx, rx) = mpsc::channel::<Message>(OUTBOUND_BUFFER);
+    let frame_cap = if secured.channel.lock().fragments() {
+        MAX_OUTBOUND_FRAME_BYTES
+    } else {
+        LEGACY_MAX_OUTBOUND_FRAME_BYTES
+    };
     let out = Outbox {
         tx,
         close: close_tx,
+        frame_cap,
     };
     let writer = tokio::spawn(pump(sink, rx, secured.channel.clone()));
 
@@ -315,6 +323,11 @@ fn check_path(req: &Request, response: Response) -> std::result::Result<Response
 struct Outbox {
     tx: mpsc::Sender<Message>,
     close: mpsc::Sender<CloseRequest>,
+    /// The largest frame this peer can take: `MAX_OUTBOUND_FRAME_BYTES` if the
+    /// handshake negotiated fragmentation, `LEGACY_MAX_OUTBOUND_FRAME_BYTES`
+    /// otherwise. Checked by whoever produces a frame, since only they know
+    /// what to do instead (answer with an error, or drop an event).
+    frame_cap: usize,
 }
 
 impl Outbox {
@@ -341,6 +354,11 @@ impl Outbox {
 /// Ping/pong and Close stay in the clear: they are the transport's own
 /// business, by contract, and a close code has to be readable by a peer whose
 /// channel has just failed.
+///
+/// A large frame becomes a run of fragment messages (see `secure`). This task
+/// is the connection's only writer and writes the whole run before it takes the
+/// next queued message, so the run reaches the socket with no other frame in
+/// it — which the peer's reassembly and the Noise nonce order both rely on.
 async fn pump<S: WsTransport>(
     mut sink: SplitSink<S, Message>,
     mut rx: mpsc::Receiver<Message>,
@@ -348,19 +366,24 @@ async fn pump<S: WsTransport>(
 ) -> SplitSink<S, Message> {
     while let Some(msg) = rx.recv().await {
         let closing = matches!(msg, Message::Close(_));
-        let msg = match msg {
-            Message::Text(json) => match channel.lock().encrypt_frame(json.as_bytes()) {
-                Ok(frame) => Message::Binary(Bytes::from(frame)),
+        let messages = match msg {
+            Message::Text(json) => match channel.lock().encrypt_messages(json.as_bytes()) {
+                Ok(messages) => messages
+                    .into_iter()
+                    .map(|bytes| Message::Binary(Bytes::from(bytes)))
+                    .collect(),
                 Err(e) => {
                     // Nothing can be said on a channel that cannot encrypt.
                     tracing::warn!(error = %e, "remote: encrypting a frame failed");
                     return sink;
                 }
             },
-            other => other,
+            other => vec![other],
         };
-        if sink.send(msg).await.is_err() {
-            return sink;
+        for msg in messages {
+            if sink.send(msg).await.is_err() {
+                return sink;
+            }
         }
         if closing {
             let _ = sink.close().await;
@@ -446,8 +469,12 @@ async fn read_loop<S: WsTransport>(
                         break;
                     }
                     Message::Binary(payload) => {
-                        let plaintext = match secured.channel.lock().decrypt_frame(&payload) {
-                            Ok(plaintext) => plaintext,
+                        let decrypted = secured.channel.lock().decrypt_message(&payload);
+                        let plaintext = match decrypted {
+                            Ok(Some(plaintext)) => plaintext,
+                            // Inside a fragment run: the frame is whole only
+                            // with its last message.
+                            Ok(None) => continue,
                             Err(e) => {
                                 // The channel is the authentication: a frame
                                 // that does not decrypt cannot be answered, and
@@ -505,7 +532,7 @@ async fn read_loop<S: WsTransport>(
                                     // Reply last: the phone must not be able to
                                     // observe itself as authenticated before it
                                     // is on the fan-out and in the registry.
-                                    out.send(response_frame(&frame.id, Ok(result)));
+                                    out.send(response_frame(&frame.id, Ok(result), out.frame_cap));
                                     tracing::info!(
                                         device = %record.name,
                                         platform = %record.platform,
@@ -596,7 +623,7 @@ async fn read_loop<S: WsTransport>(
                         let RequestFrame { id, op, args } = frame;
                         in_flight.spawn(async move {
                             let outcome = state.dispatch(&op, args).await;
-                            out.send(response_frame(&id, outcome));
+                            out.send(response_frame(&id, outcome, out.frame_cap));
                         });
                     }
                     _ => {}
@@ -627,6 +654,16 @@ fn spawn_event_forwarder(state: &Arc<RemoteState>, out: Outbox) -> tokio::task::
     tokio::spawn(async move {
         loop {
             match rx.recv().await {
+                // Events over every peer's cap never reach the fan-out (see
+                // `RemoteState::forward_event`); this is the one only a peer
+                // that cannot take fragments is too small for.
+                Ok(frame) if frame.len() > out.frame_cap => {
+                    tracing::debug!(
+                        bytes = frame.len(),
+                        cap = out.frame_cap,
+                        "remote: an event is over this connection's frame cap and was dropped"
+                    );
+                }
                 Ok(frame) => {
                     if !out.send(Message::Text(frame.as_ref().into())) {
                         return;
@@ -760,21 +797,26 @@ fn json_frame(frame: String) -> Message {
     Message::Text(frame.into())
 }
 
-/// The frame that answers request `id` with `outcome` — unless the answer
-/// would not fit on the wire, in which case the request is answered with
-/// `RESPONSE_TOO_LARGE` instead. Sending it anyway is never an option: over the
-/// relay that costs the host link and every device on it (see
-/// `MAX_OUTBOUND_FRAME_BYTES`), and the request would hang unanswered either
-/// way. An error the client can read is the one outcome that ends well.
-fn response_frame(id: &str, outcome: super::dispatch::DispatchResult) -> Message {
+/// The frame that answers request `id` with `outcome` — unless the answer is
+/// over `cap` (the connection's `Outbox::frame_cap`), in which case the request
+/// is answered with `RESPONSE_TOO_LARGE` instead. Sending it anyway is never an
+/// option: the peer would refuse it, or, for a peer that cannot take fragments,
+/// the relay would close the host link and every device on it (see
+/// `LEGACY_MAX_OUTBOUND_FRAME_BYTES`). An error the client can read is the one
+/// outcome that ends well.
+pub(super) fn response_frame(
+    id: &str,
+    outcome: super::dispatch::DispatchResult,
+    cap: usize,
+) -> Message {
     let frame = match outcome {
         Ok(result) => ok_frame(id, result),
         Err(error) => err_frame(id, &error),
     };
-    if frame.len() > MAX_OUTBOUND_FRAME_BYTES {
+    if frame.len() > cap {
         tracing::warn!(
             bytes = frame.len(),
-            cap = MAX_OUTBOUND_FRAME_BYTES,
+            cap,
             "remote: an answer is over the frame cap and was refused"
         );
         return json_frame(err_frame(id, super::dispatch::RESPONSE_TOO_LARGE));

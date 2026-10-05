@@ -4,7 +4,7 @@
 // new — that the connections are independent — so nothing here mocks the wire.
 
 use super::*;
-use crate::noise::respond;
+use crate::noise::{respond, FRAGMENT_PLAINTEXT};
 use std::net::Ipv4Addr;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
@@ -18,18 +18,32 @@ struct HostEnd {
 }
 
 impl HostEnd {
-    async fn send(&mut self, text: &str) {
-        let frame = self.channel.encrypt_frame(text.as_bytes()).unwrap();
-        self.ws.send(Message::binary(frame)).await.unwrap();
+    /// Send one frame as the host does, fragmented when it is large. Returns
+    /// how many WebSocket messages it took.
+    async fn send(&mut self, text: &str) -> usize {
+        let messages = self.channel.encrypt_messages(text.as_bytes()).unwrap();
+        let count = messages.len();
+        for message in messages {
+            self.ws.send(Message::binary(message)).await.unwrap();
+        }
+        count
     }
 
     /// The next plaintext the dialer sent on this connection.
     async fn next_text(&mut self) -> String {
+        self.next_text_counted().await.0
+    }
+
+    /// [`HostEnd::next_text`], plus how many WebSocket messages carried it.
+    async fn next_text_counted(&mut self) -> (String, usize) {
+        let mut count = 0;
         loop {
             match self.ws.next().await.unwrap().unwrap() {
                 Message::Binary(bytes) => {
-                    let plaintext = self.channel.decrypt_frame(&bytes).unwrap();
-                    return String::from_utf8(plaintext).unwrap();
+                    count += 1;
+                    if let Some(plaintext) = self.channel.decrypt_message(&bytes).unwrap() {
+                        return (String::from_utf8(plaintext).unwrap(), count);
+                    }
                 }
                 Message::Ping(_) | Message::Pong(_) => continue,
                 other => panic!("expected a binary frame, got {other:?}"),
@@ -174,6 +188,43 @@ async fn two_connections_are_independent_and_carry_their_own_ids() {
     let from_a = next_message(&mut events).await;
     assert_eq!(from_a.connection_id, first.connection_id);
     assert_eq!(from_a.text, "{\"from\":\"a\"}");
+}
+
+/// A large frame from the host arrives as one message event however many
+/// fragments carried it, and the dialer sends whole every frame that fits one
+/// message — the relay counts a device's messages against its rate limit.
+#[tokio::test]
+async fn large_frames_cross_both_ways_and_only_the_host_fragments_what_fits() {
+    let key = Arc::new(StaticKey::generate().unwrap());
+    let (url, mut accepted) = host(key.clone()).await;
+    let (dialer, mut events, _dir) = dialer();
+    let conn = dialer.connect(target(&url, None)).await.unwrap();
+    let mut host_end = accepted.recv().await.unwrap();
+    assert!(host_end.channel.fragments(), "both ends advertise it");
+
+    let big = format!("{{\"pad\":\"{}\"}}", "x".repeat(3 * FRAGMENT_PLAINTEXT));
+    assert_eq!(host_end.send(&big).await, 4);
+    let received = next_message(&mut events).await;
+    assert_eq!(received.connection_id, conn.connection_id);
+    assert_eq!(received.text, big);
+
+    // Sent and read side by side: a write this size outgrows the socket
+    // buffers, so it only finishes while the other end is reading.
+    let (sent, read) = tokio::join!(
+        dialer.send(conn.connection_id, &big),
+        host_end.next_text_counted()
+    );
+    sent.unwrap();
+    assert_eq!(read, (big, 1));
+
+    let huge = "x".repeat(MAX_MESSAGE_PLAINTEXT + 1);
+    let (sent, read) = tokio::join!(
+        dialer.send(conn.connection_id, &huge),
+        host_end.next_text_counted()
+    );
+    sent.unwrap();
+    let expected = (MAX_MESSAGE_PLAINTEXT + 1).div_ceil(FRAGMENT_PLAINTEXT);
+    assert_eq!(read, (huge, expected));
 }
 
 #[tokio::test]
