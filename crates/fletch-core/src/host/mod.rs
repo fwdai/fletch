@@ -7,8 +7,8 @@ pub mod runtime;
 pub mod sink;
 
 pub use boot::{
-    boot, BootConfig, BootError, BootPhase, BootProgress, Engine, HeadlessRelay, RemoteBoot,
-    StateRoots,
+    boot, BootConfig, BootError, BootPhase, BootProgress, BootStep, Engine, HeadlessRelay,
+    RemoteBoot, StateRoots,
 };
 pub use ctx::EngineCtx;
 pub use runtime::spawn;

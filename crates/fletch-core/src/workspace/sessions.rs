@@ -33,6 +33,37 @@ pub(super) fn current_session_id(conn: &Connection, workspace_id: &str) -> Optio
     .ok()
 }
 
+/// Delete the transcript rows of every session of `workspace_ids`. Runs right
+/// before `DELETE FROM workspaces` in the same transaction, in place of the
+/// cascade that used to reach them: `session_records` lives in the attached
+/// `transcripts` file, and SQLite enforces no foreign key across files. The
+/// startup sweep in `database::connection` covers a crash between the two.
+pub(super) fn delete_session_records_for_workspaces(
+    conn: &Connection,
+    workspace_ids: &[String],
+) -> Result<()> {
+    if workspace_ids.is_empty() {
+        return Ok(());
+    }
+    conn.execute(
+        &format!(
+            "DELETE FROM transcripts.session_records WHERE session_id IN
+               (SELECT id FROM sessions WHERE workspace_id IN ({}))",
+            placeholders(workspace_ids.len())
+        ),
+        rusqlite::params_from_iter(workspace_ids),
+    )?;
+    Ok(())
+}
+
+/// `?1,?2,…,?n`, for an `IN` list bound from a slice.
+pub(super) fn placeholders(n: usize) -> String {
+    (1..=n)
+        .map(|i| format!("?{i}"))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
 /// One session's own records with `seq < below`, in seq order, each tagged
 /// `inherited` as given — the single row decoder behind both the own-session
 /// read and the stitched history read (`lineage`).
@@ -44,7 +75,7 @@ pub(super) fn query_records(
 ) -> Result<Vec<SessionRecord>> {
     let mut stmt = conn.prepare(
         "SELECT seq, provider, source, native_id, agent_version, body
-         FROM session_records WHERE session_id = ?1 AND seq < ?2 ORDER BY seq ASC",
+         FROM transcripts.session_records WHERE session_id = ?1 AND seq < ?2 ORDER BY seq ASC",
     )?;
     let rows: Vec<(i64, String, String, String, Option<String>, String)> = stmt
         .query_map(rusqlite::params![session_id, below], |r| {
@@ -107,14 +138,14 @@ impl WorkspaceManager {
         let now = now_millis();
         let tx = conn.unchecked_transaction()?;
         let mut seq: i64 = tx.query_row(
-            "SELECT COALESCE(MAX(seq), 0) FROM session_records WHERE session_id = ?1",
+            "SELECT COALESCE(MAX(seq), 0) FROM transcripts.session_records WHERE session_id = ?1",
             [&sid],
             |r| r.get(0),
         )?;
         let mut inserted = 0usize;
         {
             let mut stmt = tx.prepare(
-                "INSERT OR IGNORE INTO session_records
+                "INSERT OR IGNORE INTO transcripts.session_records
                     (session_id, seq, provider, source, native_id, agent_version, body, created_at)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             )?;
@@ -363,7 +394,7 @@ impl WorkspaceManager {
             return Ok(0);
         };
         let count: i64 = conn.query_row(
-            "SELECT COALESCE(MAX(seq), 0) FROM session_records WHERE session_id = ?1",
+            "SELECT COALESCE(MAX(seq), 0) FROM transcripts.session_records WHERE session_id = ?1",
             [&sid],
             |r| r.get(0),
         )?;
@@ -380,7 +411,7 @@ impl WorkspaceManager {
         // MAX over an empty set is SQL NULL, so decode into an Option and let a
         // session with no records yet report `None` rather than 0.
         conn.query_row(
-            "SELECT MAX(created_at) FROM session_records WHERE session_id = ?1",
+            "SELECT MAX(created_at) FROM transcripts.session_records WHERE session_id = ?1",
             [&sid],
             |r| r.get::<_, Option<i64>>(0),
         )
@@ -403,7 +434,7 @@ impl WorkspaceManager {
             return Ok(vec![]);
         };
         let mut stmt = conn.prepare(
-            "SELECT body FROM session_records
+            "SELECT body FROM transcripts.session_records
              WHERE session_id = ?1 AND instr(body, ?2) > 0
              ORDER BY seq ASC",
         )?;

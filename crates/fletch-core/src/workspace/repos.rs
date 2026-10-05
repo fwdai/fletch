@@ -329,6 +329,7 @@ impl WorkspaceManager {
             ids
         };
         lineage::detach_children(&tx, &doomed)?;
+        sessions::delete_session_records_for_workspaces(&tx, &doomed)?;
         let changed = tx.execute("DELETE FROM projects WHERE id = ?1", [project_id])?;
         if changed == 0 {
             return Err(Error::Other(format!("project not found: {project_id}")));

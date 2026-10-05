@@ -92,7 +92,7 @@ fn chain_records(conn: &Connection, links: &[Link]) -> Result<Vec<SessionRecord>
 /// One past the session's last record: the cut that keeps all of it.
 fn end_of(conn: &Connection, session_id: &str) -> Result<i64> {
     Ok(conn.query_row(
-        "SELECT COALESCE(MAX(seq), 0) + 1 FROM session_records WHERE session_id = ?1",
+        "SELECT COALESCE(MAX(seq), 0) + 1 FROM transcripts.session_records WHERE session_id = ?1",
         [session_id],
         |r| r.get(0),
     )?)
@@ -134,7 +134,7 @@ impl WorkspaceManager {
             .query_row(
                 "SELECT t.session_id, r.seq
                    FROM session_user_turns t
-                   LEFT JOIN session_records r
+                   LEFT JOIN transcripts.session_records r
                           ON r.session_id = t.session_id AND r.native_id = t.native_id
                   WHERE t.turn_id = ?1",
                 [turn_id],
@@ -164,7 +164,7 @@ impl WorkspaceManager {
             let next_prompt: Option<i64> = conn.query_row(
                 "SELECT MIN(r.seq)
                    FROM session_user_turns t
-                   JOIN session_records r
+                   JOIN transcripts.session_records r
                      ON r.session_id = t.session_id AND r.native_id = t.native_id
                   WHERE t.session_id = ?1 AND r.seq > ?2",
                 rusqlite::params![origin, prompt_seq],
@@ -290,10 +290,7 @@ pub(super) fn detach_children(conn: &Connection, doomed: &[String]) -> Result<()
     if doomed.is_empty() {
         return Ok(());
     }
-    let ids = (1..=doomed.len())
-        .map(|i| format!("?{i}"))
-        .collect::<Vec<_>>()
-        .join(",");
+    let ids = sessions::placeholders(doomed.len());
     let inherited_from_doomed = format!(
         "SELECT parent.id, child.workspace_id
            FROM sessions parent
@@ -319,14 +316,14 @@ pub(super) fn detach_children(conn: &Connection, doomed: &[String]) -> Result<()
             rusqlite::params![session, heir, now_millis()],
         )?;
         conn.execute(
-            "DELETE FROM session_records WHERE session_id = ?1
+            "DELETE FROM transcripts.session_records WHERE session_id = ?1
                AND seq >= (SELECT MAX(parent_cut_seq) FROM sessions WHERE parent_session_id = ?1)",
             [&session],
         )?;
         conn.execute(
             "DELETE FROM session_user_turns WHERE session_id = ?1
                AND (native_id IS NULL
-                    OR native_id NOT IN (SELECT native_id FROM session_records WHERE session_id = ?1))",
+                    OR native_id NOT IN (SELECT native_id FROM transcripts.session_records WHERE session_id = ?1))",
             [&session],
         )?;
         conn.execute(
@@ -674,7 +671,7 @@ mod tests {
             wm.db
                 .lock()
                 .query_row(
-                    "SELECT COUNT(*) FROM session_records WHERE session_id = ?1",
+                    "SELECT COUNT(*) FROM transcripts.session_records WHERE session_id = ?1",
                     [&b],
                     |r| r.get::<_, i64>(0),
                 )

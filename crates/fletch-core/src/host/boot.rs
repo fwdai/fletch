@@ -63,6 +63,9 @@ pub enum BootPhase {
     OpeningDatabase,
     BackingUpDatabase,
     MigratingDatabase,
+    /// The one-time move of the transcript log into its own file; the only
+    /// phase that reports progress.
+    RelocatingTranscripts,
     /// The database is open; everything after it is quick.
     StartingEngine,
 }
@@ -72,12 +75,46 @@ impl From<database::DbPhase> for BootPhase {
         match phase {
             database::DbPhase::BackingUp => Self::BackingUpDatabase,
             database::DbPhase::Migrating => Self::MigratingDatabase,
+            database::DbPhase::Relocating { .. } => Self::RelocatingTranscripts,
         }
     }
 }
 
-/// Called from the booting thread, once per phase, in order.
-pub type BootProgress = Box<dyn Fn(BootPhase) + Send + Sync>;
+/// A [`BootPhase`] plus how far along it is, in percent, where the phase can
+/// say (the engine's default is `None`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BootStep {
+    pub phase: BootPhase,
+    pub progress: Option<u8>,
+}
+
+impl From<BootPhase> for BootStep {
+    fn from(phase: BootPhase) -> Self {
+        Self {
+            phase,
+            progress: None,
+        }
+    }
+}
+
+impl From<database::DbPhase> for BootStep {
+    fn from(phase: database::DbPhase) -> Self {
+        let progress = match phase {
+            database::DbPhase::Relocating { done, total } => {
+                Some((done * 100 / total.max(1)).min(100) as u8)
+            }
+            _ => None,
+        };
+        Self {
+            phase: phase.into(),
+            progress,
+        }
+    }
+}
+
+/// Called from the booting thread, once per phase in order, and again for
+/// each progress update within a phase.
+pub type BootProgress = Box<dyn Fn(BootStep) + Send + Sync>;
 
 /// What a caught SIGINT/SIGTERM does once the children are dead; see
 /// [`BootConfig::signals`].
@@ -275,9 +312,9 @@ pub fn boot(cfg: BootConfig) -> Result<Engine, BootError> {
         #[cfg(unix)]
         signals,
     } = cfg;
-    let report = |phase: BootPhase| {
+    let report = |step: BootStep| {
         if let Some(on_progress) = &on_progress {
-            on_progress(phase);
+            on_progress(step);
         }
     };
 
@@ -289,7 +326,7 @@ pub fn boot(cfg: BootConfig) -> Result<Engine, BootError> {
         secrets::use_settings_store_only();
     }
 
-    report(BootPhase::OpeningDatabase);
+    report(BootPhase::OpeningDatabase.into());
     let db = match database::init_with_progress(&data_dir, &|phase| report(phase.into())) {
         Ok(db) => db,
         Err(e) => match recover_db {
@@ -297,7 +334,7 @@ pub fn boot(cfg: BootConfig) -> Result<Engine, BootError> {
             None => return Err(BootError::Database(e)),
         },
     };
-    report(BootPhase::StartingEngine);
+    report(BootPhase::StartingEngine.into());
 
     // The runtime the engine's background tasks belong to. Published before
     // anything below can spawn, so the engine never has to reach for `tauri::`
@@ -897,7 +934,7 @@ mod tests {
                 recover_db: None,
                 on_progress: Some({
                     let phases = phases.clone();
-                    Box::new(move |phase| phases.lock().push(phase))
+                    Box::new(move |step| phases.lock().push(step.phase))
                 }),
                 on_supervisor: None,
                 #[cfg(unix)]

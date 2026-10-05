@@ -3,14 +3,30 @@ use serde::Serialize;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, State};
 
-use crate::host::BootPhase;
+use crate::host::{BootPhase, BootStep};
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "phase", rename_all = "snake_case")]
 pub enum BootSnapshot {
-    Booting { step: BootPhase },
+    Booting {
+        step: BootPhase,
+        /// Percent through `step`, for the one that reports it.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        progress: Option<u8>,
+    },
     Ready,
-    Failed { message: String },
+    Failed {
+        message: String,
+    },
+}
+
+impl From<BootStep> for BootSnapshot {
+    fn from(step: BootStep) -> Self {
+        Self::Booting {
+            step: step.phase,
+            progress: step.progress,
+        }
+    }
 }
 
 /// Where startup is, as the webview sees it. Managed before anything else in
@@ -23,9 +39,9 @@ pub struct BootStatus(Arc<Mutex<BootSnapshot>>);
 
 impl Default for BootStatus {
     fn default() -> Self {
-        Self(Arc::new(Mutex::new(BootSnapshot::Booting {
-            step: BootPhase::OpeningDatabase,
-        })))
+        Self(Arc::new(Mutex::new(
+            BootStep::from(BootPhase::OpeningDatabase).into(),
+        )))
     }
 }
 

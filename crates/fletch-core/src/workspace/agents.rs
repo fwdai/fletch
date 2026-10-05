@@ -107,7 +107,9 @@ impl WorkspaceManager {
             )
             .optional()?;
         if let Some(evicted) = archived {
-            lineage::detach_children(tx, std::slice::from_ref(&evicted))?;
+            let doomed = std::slice::from_ref(&evicted);
+            lineage::detach_children(tx, doomed)?;
+            sessions::delete_session_records_for_workspaces(tx, doomed)?;
             tx.execute("DELETE FROM workspaces WHERE id = ?1", [&evicted])?;
             tracing::info!(
                 agent_id = %record.id,
@@ -704,9 +706,12 @@ impl WorkspaceManager {
     pub fn remove_agent(&self, id: &str) -> Result<()> {
         let conn = self.db.lock();
         let tx = conn.unchecked_transaction()?;
-        // Cascades to the workspace's sessions, worktrees, and session_records,
-        // once any fork still inheriting from those sessions is detached.
-        lineage::detach_children(&tx, &[id.to_string()])?;
+        // Cascades to the workspace's sessions and worktrees, once any fork
+        // still inheriting from those sessions is detached; the transcript
+        // rows are in another file, so they go explicitly.
+        let doomed = [id.to_string()];
+        lineage::detach_children(&tx, &doomed)?;
+        sessions::delete_session_records_for_workspaces(&tx, &doomed)?;
         tx.execute("DELETE FROM workspaces WHERE id = ?1", [id])?;
         tx.commit()?;
         Ok(())

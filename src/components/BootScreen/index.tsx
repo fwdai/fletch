@@ -2,7 +2,7 @@ import { miscApi } from "@/api/domains/misc";
 import { FletchMark } from "@/components/FletchMark";
 import { Button } from "@/components/ui/Button";
 import { Loader } from "@/components/ui/Loader";
-import { BOOT_PHASE_LABELS, type BootStatus } from "@/util/boot";
+import { type BootStatus, bootStepLabel } from "@/util/boot";
 
 /** What the window shows until the engine is up (or has given up). Styled in
  *  fixed colors: the theme class is a setting, and settings live behind the
@@ -22,7 +22,7 @@ export function BootScreen({ status }: { status: BootStatus }) {
       ) : (
         <div className="boot-step">
           <Loader variant="inherit" aria-hidden />
-          {status.phase === "booting" ? BOOT_PHASE_LABELS[status.step] : "Starting"}
+          {bootStepLabel(status)}
         </div>
       )}
     </div>

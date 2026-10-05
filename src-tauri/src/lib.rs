@@ -69,29 +69,50 @@ mod tests {
     fn db_basenames_lists_current_before_legacy() {
         // move_db_aside processes DB_BASENAMES.rev() so the legacy name is moved
         // aside FIRST — the contract that stops migrate from resurrecting the
-        // legacy db once the current one is gone. Pin the order this relies on.
+        // legacy db once the current one is gone — and the transcript log
+        // before the main file that owns its sessions. Pin the order this
+        // relies on.
         assert_eq!(
             database::DB_BASENAMES,
-            &[database::DB_FILENAME, database::LEGACY_DB_FILENAME]
+            &[
+                database::DB_FILENAME,
+                database::TRANSCRIPTS_DB_FILENAME,
+                database::LEGACY_DB_FILENAME
+            ]
         );
     }
 
     #[test]
     fn recovery_does_not_resurrect_a_leftover_legacy_db() {
-        // A stray `quorum.db` sits next to the live `data.db`. Fresh-start
-        // recovery must move BOTH aside; otherwise the retried init() would
-        // rename the legacy file back into place and reopen it.
+        // A stray `quorum.db` sits next to the live `data.db` and its
+        // `transcripts.db`. Fresh-start recovery must move ALL aside; otherwise
+        // the retried init() would rename the legacy file back into place and
+        // reopen it, or pair a fresh main database with the old transcripts.
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join(database::DB_FILENAME), b"current").unwrap();
+        std::fs::write(dir.path().join(database::TRANSCRIPTS_DB_FILENAME), b"log").unwrap();
         std::fs::write(dir.path().join(database::LEGACY_DB_FILENAME), b"legacy").unwrap();
 
         move_db_aside(dir.path()).unwrap();
 
-        // Neither base name survives, so init() starts truly fresh.
+        // No base name survives, so init() starts truly fresh.
         assert!(!dir.path().join(database::DB_FILENAME).exists());
+        assert!(!dir.path().join(database::TRANSCRIPTS_DB_FILENAME).exists());
         assert!(!dir.path().join(database::LEGACY_DB_FILENAME).exists());
+        let moved = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter(|e| {
+                e.as_ref()
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .contains(".moved-")
+            })
+            .count();
+        assert_eq!(moved, 3);
         database::init(dir.path()).unwrap();
         assert!(dir.path().join(database::DB_FILENAME).exists());
+        assert!(dir.path().join(database::TRANSCRIPTS_DB_FILENAME).exists());
     }
 }
 
@@ -284,6 +305,11 @@ fn db_error_message(err: &crate::error::Error) -> (&'static str, String) {
 ///   whenever `quorum.db` exists and `data.db` does not. Moving the legacy main
 ///   file before `data.db` ever disappears means that trigger state is never
 ///   produced, so a half-finished recovery can't rename the old db back.
+/// * **Transcripts before the main database.** `data.db` owns the sessions the
+///   transcript rows belong to, and `init` only sweeps orphaned transcript rows
+///   when it has sessions to check them against. Moving `transcripts.db` first
+///   means an interruption leaves the failed main db in place for the retry,
+///   never a fresh main db beside a log it would silently keep.
 /// * **Main file first within each basename** (`DB_SIDECAR_SUFFIXES` in order —
 ///   the empty suffix leads). An interruption then leaves the main file gone
 ///   with its WAL still live-named, which `quarantine_orphaned_wal` sweeps aside
@@ -298,7 +324,8 @@ fn move_db_aside(data_dir: &std::path::Path) -> crate::error::Result<()> {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis())
         .unwrap_or(0);
-    // `DB_BASENAMES` is [current, legacy]; `.rev()` processes legacy first.
+    // `DB_BASENAMES` is [current, transcripts, legacy]; `.rev()` processes
+    // legacy first and the main file last.
     for base in database::DB_BASENAMES.iter().rev() {
         for suffix in database::DB_SIDECAR_SUFFIXES {
             let name = format!("{base}{suffix}");
@@ -1180,7 +1207,7 @@ pub fn run() {
                 on_progress: Some({
                     let status = status.clone();
                     let handle = app.handle().clone();
-                    Box::new(move |step| status.set(&handle, boot::BootSnapshot::Booting { step }))
+                    Box::new(move |step| status.set(&handle, step.into()))
                 }),
                 // Arm the activity monitor (idle-sleep assertion + activity
                 // tracking) *before* any work is resumed inside `boot`, so the

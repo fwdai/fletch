@@ -23,10 +23,25 @@ pub const DB_FILENAME: &str = "data.db";
 /// separate constant so the one-time migration is self-documenting.
 pub const LEGACY_DB_FILENAME: &str = "quorum.db";
 
+/// The append-only transcript log (`session_records`), next to `DB_FILENAME`
+/// and attached to its connection as schema `transcripts`. Its own file so the
+/// hot operational database stays small: every whole-database operation on
+/// `data.db` (pre-upgrade backup, VACUUM, a migration rewriting a table) would
+/// otherwise pay for hundreds of megabytes of log that rarely changes shape.
+pub const TRANSCRIPTS_DB_FILENAME: &str = "transcripts.db";
+
+/// Schema name `TRANSCRIPTS_DB_FILENAME` is attached under; every statement
+/// touching `session_records` qualifies it with this.
+pub const TRANSCRIPTS_SCHEMA: &str = "transcripts";
+
 /// Every on-disk database base name the app may have used, current and legacy.
 /// Fresh-start recovery moves all of these aside so a leftover legacy file can't
-/// be resurrected by `migrate_legacy_db_name` on the retried `init`.
-pub const DB_BASENAMES: &[&str] = &[DB_FILENAME, LEGACY_DB_FILENAME];
+/// be resurrected by `migrate_legacy_db_name` on the retried `init`, and so the
+/// transcript log never outlives the `sessions` rows that own it.
+pub const DB_BASENAMES: &[&str] = &[DB_FILENAME, TRANSCRIPTS_DB_FILENAME, LEGACY_DB_FILENAME];
+
+/// The database files `init` opens, each with its own schema and migrations.
+const LIVE_DB_BASENAMES: &[&str] = &[DB_FILENAME, TRANSCRIPTS_DB_FILENAME];
 
 /// The SQLite database's WAL/SHM sidecar suffixes. The main file plus these
 /// three names are the complete on-disk footprint that must move together.
@@ -83,7 +98,15 @@ pub(crate) const MIGRATIONS: &[&str] = &[
     include_str!("../../migrations/0044_user_turn_record_watermark.sql"),
     include_str!("../../migrations/0045_session_transcript_prefix.sql"),
     include_str!("../../migrations/0046_autopilot_log.sql"),
+    include_str!("../../migrations/0047_drop_session_records.sql"),
 ];
+
+/// The transcript log's own migrations, tracked by `transcripts.db`'s
+/// `user_version`. Kept apart from `MIGRATIONS` so the operational schema can
+/// move without ever touching the log.
+pub(crate) const TRANSCRIPT_MIGRATIONS: &[&str] = &[include_str!(
+    "../../migrations_transcripts/0001_session_records.sql"
+)];
 
 /// Smallest `MIGRATIONS.len()` a build needs to read the schema these
 /// migrations produce. Stored in `settings` under `MIN_READER_VERSION_KEY` by
@@ -93,9 +116,10 @@ pub(crate) const MIGRATIONS: &[&str] = &[
 /// Rule: bump to the new `MIGRATIONS.len()` whenever a migration drops,
 /// renames or rebuilds something older code reads (a column, a table, a
 /// constraint it relies on); leave it alone for additive migrations (new
-/// nullable columns, new tables, new indexes). 46 because nothing before it
-/// knew the rule.
-pub(crate) const MIN_READER_VERSION: usize = 46;
+/// nullable columns, new tables, new indexes). 47: migration 0047 dropped
+/// `session_records` from this file (it lives in `transcripts.db` now), which
+/// no earlier build can read around.
+pub(crate) const MIN_READER_VERSION: usize = 47;
 const _: () = assert!(MIN_READER_VERSION >= 1 && MIN_READER_VERSION <= MIGRATIONS.len());
 
 /// `settings` key holding `MIN_READER_VERSION` of the build that last
@@ -106,6 +130,15 @@ pub(crate) fn get_migrations() -> Migrations<'static> {
     Migrations::new(MIGRATIONS.iter().map(|&sql| M::up(sql)).collect())
 }
 
+pub(crate) fn get_transcript_migrations() -> Migrations<'static> {
+    Migrations::new(
+        TRANSCRIPT_MIGRATIONS
+            .iter()
+            .map(|&sql| M::up(sql))
+            .collect(),
+    )
+}
+
 /// The steps of [`init`] that can take real time on a large database, for a
 /// host that shows startup progress. Each is reported just before it starts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -114,6 +147,13 @@ pub enum DbPhase {
     /// upgraded — see `backup_before_upgrade`.
     BackingUp,
     Migrating,
+    /// `session_records` rows being copied from `data.db` into
+    /// `transcripts.db`, reported after every batch; see
+    /// `relocate_session_records`.
+    Relocating {
+        done: u64,
+        total: u64,
+    },
 }
 
 pub fn init(data_dir: &Path) -> Result<Arc<Mutex<Connection>>> {
@@ -128,44 +168,87 @@ pub fn init_with_progress(
     migrate_legacy_db_name(data_dir)?;
     quarantine_orphaned_wal(data_dir)?;
     let db_path = data_dir.join(DB_FILENAME);
+    let transcripts_path = data_dir.join(TRANSCRIPTS_DB_FILENAME);
     let mut conn = open_db(&db_path)?;
-    if pending_upgrade_from(&conn)?.is_some() {
-        on_phase(DbPhase::BackingUp);
-    }
-    backup_before_upgrade(&conn, &db_path)?;
+    backup_before_upgrade(&conn, &db_path, MIGRATIONS.len(), on_phase)?;
+    prepare_transcripts_db(&transcripts_path, on_phase)?;
+    attach_transcripts(&conn, &transcripts_path)?;
+    let relocated = relocate_session_records(&conn, on_phase)?;
     on_phase(DbPhase::Migrating);
-    // Foreign-key enforcement must be OFF while migrations run, and that is the
-    // caller's job — rusqlite_migration never touches the pragma. With it on, a
-    // table-rebuild migration (CREATE new / INSERT SELECT / DROP old / RENAME,
-    // e.g. 0035) fires ON DELETE CASCADE at the DROP and silently deletes every
-    // child row pointing at the rebuilt table. The pragma is a no-op inside a
-    // transaction, so it has to be set here, outside the per-migration
-    // transactions the runner opens.
-    conn.pragma_update(None, "foreign_keys", false)?;
-    let applied = user_version(&conn)?;
-    if applied > MIGRATIONS.len() && schema_readable_by_this_build(&conn) {
+    migrate_main(&mut conn)?;
+    if relocated {
+        // The table 0047 dropped only moved to the freelist; this hands its
+        // pages back to the filesystem. Without a schema name VACUUM rewrites
+        // `main` alone, and it must run outside any transaction.
+        conn.execute_batch("VACUUM")?;
+    }
+    sweep_orphaned_transcripts(&conn)?;
+    Ok(Arc::new(Mutex::new(conn)))
+}
+
+/// Bring `transcripts.db` to its schema on a connection of its own, so its
+/// migrations and pre-upgrade backup are the same code path as `data.db`'s.
+/// Closed before the file is attached to the main connection.
+fn prepare_transcripts_db(path: &Path, on_phase: &dyn Fn(DbPhase)) -> Result<()> {
+    let mut conn = open_db(path)?;
+    backup_before_upgrade(&conn, path, TRANSCRIPT_MIGRATIONS.len(), on_phase)?;
+    migrate(&mut conn, &get_transcript_migrations())
+}
+
+fn attach_transcripts(conn: &Connection, path: &Path) -> Result<()> {
+    let path = path
+        .to_str()
+        .ok_or_else(|| Error::Other(format!("non-UTF-8 database path: {}", path.display())))?;
+    conn.execute(
+        &format!("ATTACH DATABASE ?1 AS {TRANSCRIPTS_SCHEMA}"),
+        [path],
+    )?;
+    // Per-database, unlike the connection-wide pragmas `open_db` sets; the
+    // attached file would otherwise run at the WAL default of FULL.
+    conn.execute_batch(&format!("PRAGMA {TRANSCRIPTS_SCHEMA}.synchronous = NORMAL"))?;
+    Ok(())
+}
+
+/// `data.db`'s migrations, or none when the file was written by a newer build
+/// whose stored reader floor admits this one. The floor lives in `settings`,
+/// so only this file has one; `transcripts.db` goes through `migrate` alone.
+fn migrate_main(conn: &mut Connection) -> Result<()> {
+    let applied = user_version(conn)?;
+    if applied > MIGRATIONS.len() && schema_readable_by_this_build(conn) {
         tracing::info!(
             applied,
             known = MIGRATIONS.len(),
             "schema is ahead of this build but within its reader floor; not migrating"
         );
-    } else {
-        // A database ahead of this build without a floor that admits it fails
-        // here as `DatabaseTooFarAhead`.
-        get_migrations()
-            .to_latest(&mut conn)
-            .map_err(map_migration_error)?;
-        // Reached only when this build is at or ahead of the database, so a
-        // compatible older reader never lowers the floor a newer build wrote.
-        set_setting(
-            &conn,
-            MIN_READER_VERSION_KEY,
-            &MIN_READER_VERSION.to_string(),
-        )?;
+        return Ok(());
     }
-    // The other half of running with enforcement off (SQLite's documented
-    // rebuild procedure): verify no migration left a dangling reference before
-    // trusting the schema.
+    // A database ahead of this build without a floor that admits it fails in
+    // here as `DatabaseTooFarAhead`.
+    migrate(conn, &get_migrations())?;
+    // Reached only when this build is at or ahead of the database, so a
+    // compatible older reader never lowers the floor a newer build wrote.
+    set_setting(
+        conn,
+        MIN_READER_VERSION_KEY,
+        &MIN_READER_VERSION.to_string(),
+    )?;
+    Ok(())
+}
+
+/// Apply `migrations`, leaving the connection with foreign keys enforced.
+///
+/// Foreign-key enforcement must be OFF while migrations run, and that is the
+/// caller's job — rusqlite_migration never touches the pragma. With it on, a
+/// table-rebuild migration (CREATE new / INSERT SELECT / DROP old / RENAME,
+/// e.g. 0035) fires ON DELETE CASCADE at the DROP and silently deletes every
+/// child row pointing at the rebuilt table. The pragma is a no-op inside a
+/// transaction, so it has to be set here, outside the per-migration
+/// transactions the runner opens. The other half of running with enforcement
+/// off (SQLite's documented rebuild procedure): verify no migration left a
+/// dangling reference before trusting the schema.
+fn migrate(conn: &mut Connection, migrations: &Migrations<'static>) -> Result<()> {
+    conn.pragma_update(None, "foreign_keys", false)?;
+    migrations.to_latest(conn).map_err(map_migration_error)?;
     let violations: i64 =
         conn.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check()", [], |r| {
             r.get(0)
@@ -176,7 +259,114 @@ pub fn init_with_progress(
         )));
     }
     conn.pragma_update(None, "foreign_keys", true)?;
-    Ok(Arc::new(Mutex::new(conn)))
+    Ok(())
+}
+
+/// Rows copied per transaction by `relocate_session_records`: ~20 MB at the
+/// observed ~4 KB average body, small enough that an interrupted run loses
+/// under a second of work and the progress report moves visibly.
+const RELOCATE_BATCH: i64 = 5000;
+
+/// Copy `main.session_records` into `transcripts.session_records`, rowid
+/// ordered in `RELOCATE_BATCH`-row transactions, resuming past whatever an
+/// interrupted run already landed. Returns whether there was a table to copy.
+/// The main table is dropped by migration 0047, which runs after this: that
+/// is what records the move in `user_version` and lets a half-done copy pick
+/// up on the next launch instead of starting over.
+fn relocate_session_records(conn: &Connection, on_phase: &dyn Fn(DbPhase)) -> Result<bool> {
+    if !table_exists(conn, "main", "session_records")? {
+        return Ok(false);
+    }
+    let total: u64 = conn.query_row("SELECT COUNT(*) FROM main.session_records", [], |r| {
+        r.get(0)
+    })?;
+    let mut last_id: i64 = conn.query_row(
+        &format!("SELECT COALESCE(MAX(id), 0) FROM {TRANSCRIPTS_SCHEMA}.session_records"),
+        [],
+        |r| r.get(0),
+    )?;
+    let mut done: u64 = conn.query_row(
+        "SELECT COUNT(*) FROM main.session_records WHERE id <= ?1",
+        [last_id],
+        |r| r.get(0),
+    )?;
+    on_phase(DbPhase::Relocating { done, total });
+    while let Some((copied, end_id)) = relocate_batch(conn, last_id, RELOCATE_BATCH)? {
+        done += copied;
+        last_id = end_id;
+        on_phase(DbPhase::Relocating { done, total });
+    }
+    tracing::info!(
+        rows = total,
+        "relocated session_records into transcripts.db"
+    );
+    Ok(true)
+}
+
+/// One transaction of `relocate_session_records`: the `limit` rows after
+/// `after_id`. Returns how many there were and the last id copied, or `None`
+/// when nothing is left.
+pub(crate) fn relocate_batch(
+    conn: &Connection,
+    after_id: i64,
+    limit: i64,
+) -> Result<Option<(u64, i64)>> {
+    let tx = conn.unchecked_transaction()?;
+    let (count, end_id): (u64, Option<i64>) = tx.query_row(
+        "SELECT COUNT(*), MAX(id) FROM
+           (SELECT id FROM main.session_records WHERE id > ?1 ORDER BY id LIMIT ?2)",
+        [after_id, limit],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+    let Some(end_id) = end_id else {
+        return Ok(None);
+    };
+    tx.execute(
+        &format!(
+            "INSERT OR IGNORE INTO {TRANSCRIPTS_SCHEMA}.session_records
+                (id, session_id, seq, provider, source, native_id, agent_version, body, created_at)
+             SELECT id, session_id, seq, provider, source, native_id, agent_version, body, created_at
+               FROM main.session_records WHERE id > ?1 AND id <= ?2 ORDER BY id"
+        ),
+        [after_id, end_id],
+    )?;
+    tx.commit()?;
+    Ok(Some((count, end_id)))
+}
+
+fn table_exists(conn: &Connection, schema: &str, table: &str) -> Result<bool> {
+    let n: i64 = conn.query_row(
+        &format!("SELECT COUNT(*) FROM {schema}.sqlite_master WHERE type = 'table' AND name = ?1"),
+        [table],
+        |r| r.get(0),
+    )?;
+    Ok(n > 0)
+}
+
+/// Drop transcript rows whose session no longer exists. A WAL commit is atomic
+/// per file, not across the two, so a crash between the explicit transcript
+/// delete and the `sessions` cascade it precedes can leave rows behind; this
+/// is what makes that window benign. Skipped when `main.sessions` is empty: a
+/// fresh or moved-aside main database must never wipe a transcripts file.
+fn sweep_orphaned_transcripts(conn: &Connection) -> Result<()> {
+    let sessions: i64 = conn.query_row("SELECT COUNT(*) FROM main.sessions", [], |r| r.get(0))?;
+    if sessions == 0 {
+        return Ok(());
+    }
+    // Distinct session ids come off the (session_id, seq) index, so this reads
+    // the index rather than every body.
+    let removed = conn.execute(
+        &format!(
+            "DELETE FROM {TRANSCRIPTS_SCHEMA}.session_records WHERE session_id IN
+               (SELECT DISTINCT session_id FROM {TRANSCRIPTS_SCHEMA}.session_records
+                EXCEPT SELECT id FROM main.sessions)"
+        ),
+        [],
+    )?;
+    if removed > 0 {
+        tracing::info!(rows = removed, "swept orphaned session_records");
+    }
+    Ok(())
 }
 
 /// Move aside any WAL/SHM sidecars that have no companion main database file.
@@ -192,18 +382,22 @@ pub fn init_with_progress(
 /// every rename path: no matter how the main file went missing, its stray WAL is
 /// never replayed into a supposedly fresh database.
 pub(crate) fn quarantine_orphaned_wal(data_dir: &Path) -> Result<()> {
-    if data_dir.join(DB_FILENAME).exists() {
+    for basename in LIVE_DB_BASENAMES {
+        quarantine_orphaned_wal_of(data_dir, basename)?;
+    }
+    Ok(())
+}
+
+fn quarantine_orphaned_wal_of(data_dir: &Path, basename: &str) -> Result<()> {
+    if data_dir.join(basename).exists() {
         return Ok(());
     }
-    let stamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis())
-        .unwrap_or(0);
+    let stamp = now_millis();
     for suffix in DB_SIDECAR_SUFFIXES {
         if suffix.is_empty() {
             continue; // the main file itself — its absence is what we guarded on
         }
-        let name = format!("{DB_FILENAME}{suffix}");
+        let name = format!("{basename}{suffix}");
         let src = data_dir.join(&name);
         if src.exists() {
             std::fs::rename(&src, data_dir.join(format!("{name}.orphaned-{stamp}")))?;
@@ -288,12 +482,12 @@ fn map_migration_error(e: rusqlite_migration::Error) -> Error {
 }
 
 /// The applied schema version when `backup_before_upgrade` will snapshot: an
-/// existing schema (`user_version > 0`) below the current migration count. A
-/// fresh DB has nothing to lose and a current or schema-ahead DB isn't
-/// migrated. Shared by the backup and the progress report so they agree.
-fn pending_upgrade_from(conn: &Connection) -> Result<Option<i64>> {
+/// existing schema (`user_version > 0`) below `migration_count`, the file's
+/// target version. A fresh DB has nothing to lose and a current or
+/// schema-ahead DB isn't migrated.
+fn pending_upgrade_from(conn: &Connection, migration_count: usize) -> Result<Option<i64>> {
     let applied: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-    Ok((applied > 0 && (applied as usize) < MIGRATIONS.len()).then_some(applied))
+    Ok((applied > 0 && (applied as usize) < migration_count).then_some(applied))
 }
 
 /// Complete pre-upgrade backups retained per database file; older ones are
@@ -310,14 +504,22 @@ const SNAPSHOT_PAGES_PER_STEP: i32 = 4096;
 const PARTIAL_SUFFIX: &str = ".partial";
 
 /// Snapshot the DB aside before applying migrations (see `pending_upgrade_from`
-/// for when). Gives the user a restore point if a forward migration goes wrong
-/// or they later downgrade. Older backups and leftovers from interrupted copies are
-/// pruned only after the new one is complete, so a failed backup never costs
-/// an existing restore point.
-fn backup_before_upgrade(conn: &Connection, db_path: &Path) -> Result<()> {
-    let Some(applied) = pending_upgrade_from(conn)? else {
+/// for when), announcing `DbPhase::BackingUp` first. Gives the user a restore
+/// point if a forward migration goes wrong or they later downgrade. Older
+/// backups and leftovers from interrupted copies are pruned only after the new
+/// one is complete, so a failed backup never costs an existing restore point.
+/// Per file: `data.db` and `transcripts.db` each pass their own path and
+/// migration count.
+fn backup_before_upgrade(
+    conn: &Connection,
+    db_path: &Path,
+    migration_count: usize,
+    on_phase: &dyn Fn(DbPhase),
+) -> Result<()> {
+    let Some(applied) = pending_upgrade_from(conn, migration_count)? else {
         return Ok(());
     };
+    on_phase(DbPhase::BackingUp);
     let backup = backup_path(db_path, applied);
     snapshot_to(conn, &backup)?;
     tracing::info!(backup = %backup.display(), "backed up DB before schema upgrade");
