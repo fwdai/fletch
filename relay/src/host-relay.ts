@@ -297,7 +297,11 @@ export class HostRelay {
     // message is 4 MiB + 5, so the host link's cap includes the frame header.
     const limit = state.role === "host" ? MAX_MESSAGE_BYTES + HEADER_BYTES : MAX_MESSAGE_BYTES;
     if (messageBytes(message) > limit) {
-      this.closeLink(ws, state, CLOSE_TOO_BIG, "message too large");
+      // An oversized DATA frame is one device's message gone wrong, so it
+      // costs that device link, not the host link every device rides on.
+      const device = state.role === "host" ? this.oversizedTarget(state, message) : null;
+      if (device) this.closeLink(device.ws, device.state, CLOSE_TOO_BIG, "message too large");
+      else this.closeLink(ws, state, CLOSE_TOO_BIG, "message too large");
       return;
     }
 
@@ -376,6 +380,21 @@ export class HostRelay {
     const host = this.hostSocket();
     if (host) trySend(host, toBuffer(encodeClose(state.connId, code, reason)));
     closeSocket(ws, code, reason);
+  }
+
+  /** The live device an oversized host message was addressed to, or null when
+   *  it names none. Only the header is decoded: copying a payload that is
+   *  about to be dropped would be wasted work at this size. */
+  private oversizedTarget(
+    state: HostState,
+    message: string | ArrayBuffer,
+  ): { ws: WebSocket; state: DeviceState } | null {
+    if (state.stage !== "ready" || typeof message === "string") return null;
+    const header = decode(new Uint8Array(message, 0, HEADER_BYTES));
+    if (header?.type !== FRAME_DATA) return null;
+    const ws = this.deviceSocket(header.connId);
+    const deviceState = ws ? readState(ws) : null;
+    return ws && deviceState?.role === "device" ? { ws, state: deviceState } : null;
   }
 
   private routeHostFrame(ws: WebSocket, state: HostState, message: ArrayBuffer): void {

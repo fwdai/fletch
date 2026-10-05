@@ -156,7 +156,12 @@ repo); anyone can run their own and point both apps at it.
   Frames the relay does not understand (unknown connId, truncated, a text
   frame on the host link after `ready`) are ignored, not fatal. The host link
   accepts messages up to 4 MiB + 5 bytes, so a legal 4 MiB device message fits
-  inside a DATA frame. The host serves each virtual connection through the
+  inside a DATA frame. A larger DATA frame for a live connId costs only that
+  device: the relay drops the frame, closes the device link with `1009` and
+  sends the host the matching CLOSE. Only an oversized message that names no
+  device (unknown connId, NOTIFY, too short to decode, any frame before
+  `ready`) closes the host link itself with `1009`, which drops every device
+  with `4404` as any host departure does. The host serves each virtual connection through the
   same code path as a LAN socket; WebSocket ping/pong is per hop (host↔relay
   and relay↔device), never forwarded, and the host answers its own liveness
   pings to a virtual connection locally. The relay originates no pings of its
