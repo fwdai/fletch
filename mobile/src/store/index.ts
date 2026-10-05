@@ -490,6 +490,11 @@ export const agentOf = (s: AgentSource, id: string): AgentRecord | undefined =>
 export const projectOf = (s: AgentSource, agentId: string) =>
   projectById(s.workspace, agentOf(s, agentId)?.project_id);
 
+/** Whether `agentId`'s screen is on the stack — the one case a transcript read
+ *  for it has anyone to show it to. */
+export const isAgentOpen = (s: Pick<MobileState, "nav">, agentId: string): boolean =>
+  s.nav.some((n) => n.props.agentId === agentId);
+
 /** Wait for a freshly spawned agent to leave `spawning` before the first
  *  message is sent — the spawn flow in docs/remote-protocol.md. */
 function waitForSpawn(get: () => MobileState, agentId: string, timeoutMs = 30_000) {

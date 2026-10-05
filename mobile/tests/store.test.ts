@@ -229,6 +229,26 @@ describe("transcripts through the desktop adapters", () => {
     expect(log.some((i) => i.kind === "user_message")).toBe(true);
     expect(log.some((i) => i.kind === "tool_call")).toBe(true);
   });
+
+  it("re-reads a turn-end transcript only for an agent whose screen is open", async () => {
+    const read = vi.spyOn(api, "readSessionRecords");
+    const home = { key: Date.now(), screen: "home" as const, props: {}, phase: "idle" as const };
+    try {
+      useStore.setState({ nav: [home] });
+      hostEvent("session:records-appended", { agent_id: "pamukkale" });
+      await new Promise((r) => setTimeout(r, 20));
+      expect(read).not.toHaveBeenCalled();
+
+      state().openAgent("pamukkale");
+      await vi.waitFor(() => expect(read).toHaveBeenCalledWith("pamukkale"));
+      read.mockClear();
+      hostEvent("session:records-appended", { agent_id: "pamukkale" });
+      await vi.waitFor(() => expect(read).toHaveBeenCalledWith("pamukkale"));
+    } finally {
+      read.mockRestore();
+      useStore.setState({ nav: [home] });
+    }
+  });
 });
 
 describe("git and PR state", () => {
