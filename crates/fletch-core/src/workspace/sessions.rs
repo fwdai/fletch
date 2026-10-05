@@ -71,7 +71,17 @@ pub(super) struct TranscriptCleanup {
 }
 
 impl TranscriptCleanup {
-    pub(super) fn apply(self, conn: &Connection) -> Result<()> {
+    /// Best-effort: the authoritative transaction has already committed, so a
+    /// failure here (busy, full, I/O) must not be reported as a failed
+    /// deletion. What it leaves behind is exactly what a crash would, and is
+    /// handled the same way.
+    pub(super) fn apply(self, conn: &Connection) {
+        if let Err(e) = self.run(conn) {
+            tracing::warn!(error = %e, "transcript cleanup failed; rows left for the startup sweep");
+        }
+    }
+
+    fn run(&self, conn: &Connection) -> Result<()> {
         // Chunked to stay under SQLite's bound-parameter limit.
         for chunk in self.sessions.chunks(500) {
             conn.execute(

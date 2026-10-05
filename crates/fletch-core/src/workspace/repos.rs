@@ -337,7 +337,7 @@ impl WorkspaceManager {
             return Err(Error::Other(format!("project not found: {project_id}")));
         }
         tx.commit()?;
-        cleanup.apply(&conn)?;
+        cleanup.apply(&conn);
         Ok(())
     }
 

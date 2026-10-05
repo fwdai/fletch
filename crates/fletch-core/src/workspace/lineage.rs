@@ -685,8 +685,7 @@ mod tests {
             sessions: Vec::new(),
             trims,
         }
-        .apply(&conn)
-        .unwrap();
+        .apply(&conn);
         assert_eq!(
             count(&conn),
             2,

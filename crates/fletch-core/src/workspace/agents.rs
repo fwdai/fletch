@@ -31,7 +31,7 @@ impl WorkspaceManager {
         let tx = conn.unchecked_transaction()?;
         let cleanup = Self::insert_agent(&tx, record)?;
         tx.commit()?;
-        cleanup.apply(&conn)?;
+        cleanup.apply(&conn);
         Ok(())
     }
 
@@ -70,7 +70,7 @@ impl WorkspaceManager {
         record.id = id;
         let cleanup = Self::insert_agent(&tx, record)?;
         tx.commit()?;
-        cleanup.apply(&conn)?;
+        cleanup.apply(&conn);
         Ok(())
     }
 
@@ -723,7 +723,7 @@ impl WorkspaceManager {
         };
         tx.execute("DELETE FROM workspaces WHERE id = ?1", [id])?;
         tx.commit()?;
-        cleanup.apply(&conn)?;
+        cleanup.apply(&conn);
         Ok(())
     }
 }
