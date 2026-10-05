@@ -112,6 +112,16 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
   const subagents = deriveSubagentChildren(tasks, now);
   const subRunning = subagents.filter((c) => c.running).length;
   const subFailed = subagents.filter((c) => c.failed).length;
+  // One highlight per selection: while the pane shows a sub-agent thread that
+  // has a child row here, that row is the active one and this row steps back.
+  // A thread with no child row (a finished sub-agent opened from the chat)
+  // leaves the highlight on this row — the selection is still this agent.
+  const openThreadRoot = useAppStore((s) =>
+    s.openThread?.agentId === agent.id ? s.openThread.path[0] : undefined,
+  );
+  const childActive =
+    openThreadRoot !== undefined && subagents.some((c) => c.task.toolUseId === openThreadRoot);
+  const highlighted = active && !childActive;
 
   // The row leads with what the agent is doing: its own title once it has set
   // one (see the `set_title` mailbox op), else the first line of the user's
@@ -188,10 +198,10 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
   return (
     <>
       <div
-        className={`agent ${active ? "active" : ""} ${awaiting ? "awaiting" : ""}`}
+        className={`agent ${highlighted ? "active" : ""} ${awaiting ? "awaiting" : ""}`}
         role="button"
         tabIndex={0}
-        aria-current={active ? "page" : undefined}
+        aria-current={highlighted ? "page" : undefined}
         onClick={onClick}
         onKeyDown={(e) => activateOnKey(e, onClick)}
       >

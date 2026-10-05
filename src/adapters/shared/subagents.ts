@@ -8,8 +8,12 @@
 // through here, so the nesting logic exists once.
 
 import type { ChatItem, RawEvent } from "@/adapters/types";
+import type { BackgroundTask } from "./backgroundTasks";
 
 type Reducer = (prev: ChatItem[], ev: RawEvent) => ChatItem[];
+
+export type ToolCall = Extract<ChatItem, { kind: "tool_call" }>;
+export type ToolResult = Extract<ChatItem, { kind: "tool_result" }>;
 
 /** The spawning tool_use id an event is tagged with; null for the main agent. */
 export function parentToolUseId(ev: RawEvent): string | null {
@@ -57,4 +61,121 @@ export function withSubagentRouting(reduceTop: Reducer): Reducer {
     const parentId = parentToolUseId(ev);
     return parentId ? routeToChild(prev, parentId, ev, reduceTop) : reduceTop(prev, ev);
   };
+}
+
+// ── Reading a thread back out ───────────────────────────────────────────────
+//
+// A sub-agent thread is addressed by the chain of tool_use ids that launched
+// it: the first names a tool_call in the main log, each later one a tool_call
+// among the previous call's `children`. Pure and framework-free, so the
+// desktop's thread pane and the phone's thread screen resolve the same thread
+// the same way.
+
+/** The tool names that launch a sub-agent, lowercased: Claude's Agent (and
+ *  its former name Task, which Cursor still uses). */
+const SUBAGENT_TOOLS = new Set(["agent", "task"]);
+
+/** A tool call that stands for a sub-agent run: a known spawn tool, or any
+ *  call the reducer has threaded sidechain events under (a provider whose
+ *  spawn tool goes by another name still gets its children). */
+export function isSubagentCall(item: ChatItem): boolean {
+  if (item.kind !== "tool_call") return false;
+  return SUBAGENT_TOOLS.has(item.name.toLowerCase()) || (item.children?.length ?? 0) > 0;
+}
+
+export interface ResolvedThread {
+  /** The call that launched this thread (the last one on the path). */
+  call: ToolCall;
+  /** The thread's own log: the launching call's children. */
+  items: ChatItem[];
+  /** Every launching call along the path, main log first — the breadcrumb. */
+  trail: ToolCall[];
+  /** The log `call` sits in (the main log, or the parent thread's items):
+   *  where its result and its siblings are. */
+  parent: ChatItem[];
+  /** Sub-agent calls in `parent`, in launch order. */
+  siblings: ToolCall[];
+  /** `call`'s position among `siblings`. */
+  index: number;
+}
+
+/** Walk `path` down from `log`. Null when any id on the path is not a tool
+ *  call where it should be — the history is not loaded yet, or a rewind took
+ *  the launch away. */
+export function resolveThread(log: ChatItem[] | undefined, path: string[]): ResolvedThread | null {
+  if (path.length === 0) return null;
+  let parent: ChatItem[] = log ?? [];
+  const trail: ToolCall[] = [];
+  let call: ToolCall | undefined;
+  for (const id of path) {
+    if (call) parent = call.children ?? [];
+    call = parent.find((it): it is ToolCall => it.kind === "tool_call" && it.id === id);
+    if (!call) return null;
+    trail.push(call);
+  }
+  if (!call) return null;
+  const siblings = parent.filter((it): it is ToolCall => isSubagentCall(it));
+  return {
+    call,
+    items: call.children ?? [],
+    trail,
+    parent,
+    siblings,
+    index: siblings.indexOf(call),
+  };
+}
+
+function inputField(input: unknown, key: string): string {
+  if (input && typeof input === "object" && key in input) {
+    const v = (input as Record<string, unknown>)[key];
+    if (typeof v === "string") return v;
+  }
+  return "";
+}
+
+/** What a thread is called: the launch description, else the sub-agent type,
+ *  else a generic label — the same precedence as a sidebar child row. */
+export function threadLabel(call: ToolCall): string {
+  return (
+    inputField(call.input, "description") || inputField(call.input, "subagent_type") || "sub-agent"
+  );
+}
+
+export function threadType(call: ToolCall): string {
+  return inputField(call.input, "subagent_type");
+}
+
+/** The thread's result as the sub-agent reported it (its tool_result in the
+ *  parent log), or null while it is still running / before it was recorded. */
+export function threadResult(parent: ChatItem[], call: ToolCall): ToolResult | null {
+  for (const it of parent) {
+    if (it.kind === "tool_result" && it.tool_use_id === call.id) return it;
+  }
+  return null;
+}
+
+export type ThreadState = "running" | "failed" | "done";
+
+/** Live state of a thread. `parentBusy` is the launching agent's own liveness:
+ *  a foreground sub-agent has no background task, so until its result lands
+ *  the parent being mid-turn is the only sign it is still going. A
+ *  backgrounded one reports through its task after the launch result ("Async
+ *  agent launched…") has already landed, so the task outranks the result. */
+export function threadState(
+  result: ToolResult | null,
+  task: BackgroundTask | undefined,
+  parentBusy: boolean,
+): ThreadState {
+  if (task?.status === "running") return "running";
+  if (task?.status === "failed") return "failed";
+  if (!result) return parentBusy ? "running" : "done";
+  return result.is_error ? "failed" : "done";
+}
+
+/** Rows that count as the sub-agent doing something: its prose and its tool
+ *  calls. Notices and results ride along with those. */
+export function threadSteps(items: ChatItem[]): number {
+  let n = 0;
+  for (const it of items) if (it.kind === "tool_call" || it.kind === "agent_message") n += 1;
+  return n;
 }

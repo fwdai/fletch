@@ -21,6 +21,8 @@
 @import "./components/Workspace/Home/Home.css";
 @import "./components/Workspace/Chat.css";
 @import "./components/Workspace/messages/UserInput/UserInput.css";
+@import "./components/Workspace/messages/SubagentCard.css";
+@import "./components/Workspace/SubagentThread/SubagentThread.css";
 @import "./components/Composer/Composer.css";
 @import "./components/Composer/PrimaryControl/PrimaryControl.css";
 @import "./styles/shared/dropdown.css";

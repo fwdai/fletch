@@ -7,17 +7,23 @@ import { failedTip, type SubagentChild } from "./subagentChildren";
 /** One of an agent's backgrounded sub-agents as a sidebar child of its
  *  AgentRow — the same indented, quieter row a workflow run's step agents get
  *  (StepAgentRow), speaking the same rail / shimmer / loader vocabulary.
- *  Clicking selects the agent and reveals the Task row that launched it in the
- *  chat. The task's lifecycle is Claude's, so the row carries no actions. */
+ *  Clicking opens the sub-agent's thread in the center pane (the agent's
+ *  conversation is one "back" away). Reads active while that thread — or a
+ *  thread nested under it — is open. The task's lifecycle is Claude's, so the
+ *  row carries no actions. */
 export function SubagentRow({ agentId, child }: { agentId: string; child: SubagentChild }) {
-  const focusToolCall = useAppStore((s) => s.focusToolCall);
-  const onSelect = () => focusToolCall(agentId, child.task.toolUseId);
+  const openSubagentThread = useAppStore((s) => s.openSubagentThread);
+  const active = useAppStore(
+    (s) => s.openThread?.agentId === agentId && s.openThread.path[0] === child.task.toolUseId,
+  );
+  const onSelect = () => openSubagentThread(agentId, [child.task.toolUseId]);
 
   return (
     <div
-      className="agent run-step subagent no-actions"
+      className={`agent run-step subagent no-actions ${active ? "active" : ""}`}
       role="button"
       tabIndex={0}
+      aria-current={active ? "page" : undefined}
       onClick={onSelect}
       onKeyDown={(e: KeyboardEvent) => {
         if (e.target !== e.currentTarget) return;

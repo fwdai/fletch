@@ -1,6 +1,6 @@
-// The body of ToolRow's `chatFocus` effect, kept free of React so it can be
-// tested without a DOM: open the row now, scroll it into view on the next
-// frame, and only then consume the request.
+// The body of the `chatFocus` effect (useChatFocus), kept free of React so it
+// can be tested without a DOM: open the row now, scroll it into view on the
+// next frame, and only then consume the request.
 //
 // The order matters. Consuming the request flips the row's `focused` selector
 // to false, which re-runs the effect and runs the previous cleanup — so a

@@ -8,6 +8,7 @@ import { FileScreen } from "./screens/File";
 import { HomeScreen } from "./screens/Home";
 import { PairScreen } from "./screens/Pair";
 import { ProjectScreen } from "./screens/Project";
+import { SubagentScreen } from "./screens/Subagent";
 import { AddProjectSheet } from "./sheets/AddProjectSheet";
 import { AgentMoreSheet } from "./sheets/AgentMoreSheet";
 import { HostSheet } from "./sheets/HostSheet";
@@ -32,6 +33,8 @@ function Screen({ item }: { item: NavItem }) {
       return <ProjectScreen projectId={item.props.projectId} />;
     case "agent":
       return <AgentScreen agentId={item.props.agentId} tab={item.props.tab} />;
+    case "subagent":
+      return <SubagentScreen agentId={item.props.agentId} path={item.props.path} />;
     case "code":
       return <CodeScreen agentId={item.props.agentId} />;
     case "file":

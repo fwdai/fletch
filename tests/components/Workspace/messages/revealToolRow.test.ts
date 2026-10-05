@@ -1,5 +1,6 @@
-// ToolRow answers a sidebar `chatFocus` request by opening, scrolling into
-// view on the next frame, and consuming the request. The repo has no DOM test
+// A chat row answers a `chatFocus` request (back from a sub-agent thread) by
+// opening, scrolling into view on the next frame, and consuming the request.
+// The repo has no DOM test
 // environment, so the effect body lives in revealToolRow and is driven here
 // with a fake frame scheduler and the real ui slice — the regression this
 // guards is a clear issued before the frame, which re-ran the effect and let

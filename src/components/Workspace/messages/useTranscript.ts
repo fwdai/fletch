@@ -9,7 +9,7 @@ import { useEffect, useMemo, useRef } from "react";
 import { applyPolicy, getAdapter } from "@/adapters";
 import type { AgentRecord } from "@/api";
 import { APP_ACTION_PREFIX } from "@/delegation";
-import { useAppStore } from "@/store";
+import { type ChatItem, useAppStore } from "@/store";
 import { stripInjectedInstructions } from "@/util/instructions";
 import type { ChatTurn } from "../ChatNav";
 import { type PairCache, pairToolItems, type ViewItem } from "./pair";
@@ -51,7 +51,19 @@ export interface Transcript {
   log: unknown;
 }
 
+/** An agent's own conversation: its log from the store, loaded from history
+ *  on first sight (useHistoryLoad), derived for display (useTranscriptFrom). */
 export function useTranscript(agent: AgentRecord): Transcript {
+  const log = useAppStore((s) => s.managedLogs[agent.id]);
+  const transcriptLoading = useAppStore((s) => s.transcriptLoading[agent.id] ?? false);
+  useHistoryLoad(agent);
+  return useTranscriptFrom(agent, log, transcriptLoading);
+}
+
+/** Kick off the lazy history load for an agent whose log is not in the store
+ *  yet. Called by every surface that reads the log (the chat, the native rail,
+ *  a sub-agent thread) so whichever mounts first after a reload gets it. */
+export function useHistoryLoad(agent: AgentRecord): void {
   const log = useAppStore((s) => s.managedLogs[agent.id]);
   const transcriptLoading = useAppStore((s) => s.transcriptLoading[agent.id] ?? false);
   const transcriptLoaded = useAppStore((s) => s.transcriptLoaded[agent.id] ?? false);
@@ -82,6 +94,16 @@ export function useTranscript(agent: AgentRecord): Transcript {
     transcriptLoaded,
     transcriptLoading,
   ]);
+}
+
+/** Derive a display transcript from any log rendered as `agent`'s — its own,
+ *  or one of its sub-agent threads (a tool_call's children). */
+export function useTranscriptFrom(
+  agent: Pick<AgentRecord, "provider" | "task">,
+  log: ChatItem[] | undefined,
+  transcriptLoading: boolean,
+): Transcript {
+  const hasPriorConversation = agent.task.trim().length > 0;
 
   // Persist tool_pair wrapper identity across renders so memoized rows survive
   // streaming deltas (see PairCache). Self-evicts stale ids each pass, so it

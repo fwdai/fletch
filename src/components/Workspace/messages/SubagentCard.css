@@ -1,0 +1,133 @@
+/* ── Sub-agent card (SubagentCard) ──────────────────────────────────────────
+   A thread entry in the transcript, deliberately unlike the mono tool rows
+   around it: boxed, with a status rail on the left that speaks the sidebar's
+   rail colors (grey settled, green running, red failed). */
+.m-subagent {
+  position: relative;
+  padding: 7px 12px 7px 10px;
+  border: 1px solid var(--bd-soft);
+  border-radius: var(--r-md);
+  background: color-mix(in oklch, var(--accent) 4%, var(--bg-1));
+  transition: border-color 0.12s;
+}
+.m-subagent::before {
+  content: "";
+  position: absolute;
+  left: -1px;
+  top: 6px;
+  bottom: 6px;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: var(--accent-line);
+}
+.m-subagent.running::before {
+  background: var(--success);
+}
+.m-subagent.failed::before {
+  background: var(--danger);
+}
+.m-subagent:hover {
+  border-color: var(--bd);
+}
+/* a reveal (back from the thread) rings the card once, then settles */
+.m-subagent.flash {
+  animation: saFlash 1.4s var(--ease);
+}
+@keyframes saFlash {
+  0% {
+    box-shadow: 0 0 0 3px color-mix(in oklch, var(--accent), transparent 30%);
+  }
+  100% {
+    box-shadow: 0 0 0 3px transparent;
+  }
+}
+
+.sa-row {
+  gap: 10px;
+  min-width: 0;
+}
+.sa-open {
+  flex: 1;
+  min-width: 0;
+  gap: 10px;
+  text-align: left;
+  font-size: var(--fs-sm);
+  color: var(--fg-1);
+  border-radius: 4px;
+}
+.sa-open:disabled {
+  cursor: default;
+}
+.sa-icon {
+  flex-shrink: 0;
+  display: inline-flex;
+  color: var(--accent);
+}
+.m-subagent.failed .sa-icon {
+  color: var(--danger);
+}
+.sa-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-0);
+  font-weight: 500;
+}
+.sa-status {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--fg-3);
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.m-subagent.failed .sa-status {
+  color: var(--danger);
+}
+/* the row's action, set apart from the mono status beside it: the UI face in
+   the accent color, underlined on hover like a link */
+.sa-cta {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: 4px;
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  color: var(--accent);
+  text-underline-offset: 3px;
+}
+.sa-open:hover .sa-cta,
+.sa-open:focus-visible .sa-cta {
+  text-decoration: underline;
+}
+.sa-open:hover .sa-cta svg {
+  transform: translateX(2px);
+}
+.sa-cta svg {
+  transition: transform 0.15s var(--ease);
+}
+/* expand/collapse at the far right, where every tool row keeps its chevron */
+.sa-toggle {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  font-size: var(--fs-xs);
+  color: var(--fg-3);
+}
+.sa-toggle:hover {
+  background: var(--bg-3);
+  color: var(--fg-0);
+}
+.sa-details {
+  margin-top: 8px;
+  padding: 0 4px 4px 23px;
+}

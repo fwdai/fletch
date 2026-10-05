@@ -80,11 +80,19 @@ export interface UiSlice {
    *  whichever board next happened to hold that code. A refusal is said out loud
    *  on that board's error bar instead — see `useRoadmap`. */
   roadmapFocusCode: string | null;
-  /** A chat tool row to reveal — scrolled into view and expanded — once the
-   *  agent's transcript has rendered it (the sidebar's sub-agent child rows
-   *  set this together with the agent selection). Consumed and cleared by the
-   *  matching `ToolRow`, so it survives a lazy history load and fires once. */
+  /** A chat row to reveal — scrolled into view, opened or ringed — once the
+   *  agent's transcript has rendered it: the card that launched a sub-agent
+   *  thread the user just left (`closeSubagentThread`). Consumed and cleared by
+   *  the matching row (useChatFocus), so it survives a lazy history load and
+   *  fires once. */
   chatFocus: { agentId: string; toolUseId: string } | null;
+  /** The sub-agent thread the center pane shows in place of `agentId`'s own
+   *  conversation: the chain of launching tool_use ids from the main log down
+   *  to the thread — one id for a direct sub-agent, more for a sub-agent's
+   *  sub-agent. Null (the normal case) shows the conversation itself. Any
+   *  agent or run selection clears it; a thread belongs to the agent it was
+   *  opened in. */
+  openThread: { agentId: string; path: string[] } | null;
   leftCollapsed: boolean;
   rightCollapsed: boolean;
   /** Show the structured transcript rail beside the native view's terminal.
@@ -151,9 +159,15 @@ export interface UiSlice {
   focusRoadmapItem: (repoPath: string, code: string) => void;
   /** Drop a consumed (or abandoned) focus request. */
   clearRoadmapFocus: () => void;
-  /** Select `agentId` and reveal the tool row for `toolUseId` in its chat. */
-  focusToolCall: (agentId: string, toolUseId: string) => void;
   clearChatFocus: () => void;
+  /** Select `agentId` and show the sub-agent thread at `path` (launching
+   *  tool_use ids, main log first) instead of its conversation. An empty path
+   *  is the conversation itself, so it closes any open thread. */
+  openSubagentThread: (agentId: string, path: string[]) => void;
+  /** Back to the conversation. Reveals the card that launched the thread —
+   *  the top-level one, even from a nested thread — so the user lands where
+   *  they left. */
+  closeSubagentThread: () => void;
   toggleLeft: () => void;
   toggleRight: () => void;
   toggleTranscriptRail: () => void;
@@ -195,6 +209,7 @@ export const createUiSlice: SliceCreator<UiSlice> = (set, get) => ({
   projectScreenTab: "roadmap",
   roadmapFocusCode: null,
   chatFocus: null,
+  openThread: null,
   leftCollapsed: false,
   rightCollapsed: false,
   transcriptRailOpen: true,
@@ -291,11 +306,23 @@ export const createUiSlice: SliceCreator<UiSlice> = (set, get) => ({
     set({ roadmapFocusCode: code });
   },
   clearRoadmapFocus: () => set({ roadmapFocusCode: null }),
-  focusToolCall: (agentId, toolUseId) => {
-    get().selectAgent(agentId);
-    set({ chatFocus: { agentId, toolUseId } });
-  },
   clearChatFocus: () => set({ chatFocus: null }),
+  openSubagentThread: (agentId, path) => {
+    if (path.length === 0) {
+      get().closeSubagentThread();
+      return;
+    }
+    // selectAgent clears any open thread (and a stale reveal request) first,
+    // so the thread is set after it.
+    get().selectAgent(agentId);
+    set({ openThread: { agentId, path }, chatFocus: null });
+  },
+  closeSubagentThread: () =>
+    set((s) => {
+      if (!s.openThread) return s;
+      const { agentId, path } = s.openThread;
+      return { openThread: null, chatFocus: { agentId, toolUseId: path[0] } };
+    }),
   toggleLeft: () =>
     set((s) => {
       const leftCollapsed = !s.leftCollapsed;

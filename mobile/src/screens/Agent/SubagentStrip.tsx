@@ -5,14 +5,15 @@ import { quietHint, subagentName, visibleSubagents } from "../../lib/subagents";
 import { useSubagentClock } from "../../lib/useSubagentClock";
 
 /** Sub-agents still working after the turn (or failed lately), pinned above
- *  the transcript so they stay in view while the log scrolls. Tapping one
- *  jumps to the tool row that launched it. */
+ *  the transcript so they stay in view while the log scrolls — the phone's
+ *  stand-in for the desktop sidebar's child rows. Tapping one opens its
+ *  thread. Finished sub-agents drop off; their cards in the chat still open. */
 export function SubagentStrip({
   tasks,
-  onJump,
+  onOpen,
 }: {
   tasks: BackgroundTaskMap | undefined;
-  onJump: (toolUseId: string) => void;
+  onOpen: (toolUseId: string) => void;
 }) {
   const { now } = useSubagentClock(tasks);
   const list = visibleSubagents(tasks, now);
@@ -27,7 +28,7 @@ export function SubagentStrip({
             type="button"
             key={t.taskId}
             className={`subagent${failed ? " err" : ""}`}
-            onClick={() => onJump(t.toolUseId)}
+            onClick={() => onOpen(t.toolUseId)}
           >
             {failed ? (
               <Icon name="alert" size={12} />
@@ -47,6 +48,7 @@ export function SubagentStrip({
                   )}`}
               {quiet && <span className="quiet"> · {quiet}</span>}
             </span>
+            <Icon name="chevR" size={14} className="go" />
           </button>
         );
       })}
