@@ -108,6 +108,9 @@ pub(super) struct RelayTiming {
     /// First reconnect delay, doubled per failure up to `backoff_max` and reset
     /// by a successful `ready`.
     pub backoff_initial: Duration,
+    /// Kept short: the usual reason the link drops is the Mac's own network
+    /// blipping, and every relayed phone reads the gap as "Your Mac is
+    /// offline" until the next attempt lands, long after the network is back.
     pub backoff_max: Duration,
     /// How long the relay has to complete challenge → proof → ready.
     pub auth_timeout: Duration,
@@ -122,7 +125,7 @@ impl Default for RelayTiming {
     fn default() -> Self {
         Self {
             backoff_initial: Duration::from_secs(1),
-            backoff_max: Duration::from_secs(60),
+            backoff_max: Duration::from_secs(15),
             auth_timeout: Duration::from_secs(10),
             ping_interval: Duration::from_secs(20),
             shutdown_grace: Duration::from_secs(2),

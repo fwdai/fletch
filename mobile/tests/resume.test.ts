@@ -67,4 +67,18 @@ describe("returning to the foreground", () => {
     expect(read).not.toHaveBeenCalled();
     connected.mockRestore();
   });
+
+  it("dials at once instead of waiting out a scheduled retry", async () => {
+    const read = vi.spyOn(api, "getWorkspace");
+    vi.spyOn(client, "state", "get").mockReturnValue("error");
+    vi.spyOn(client, "retrying", "get").mockReturnValue(true);
+    const reconnect = vi.spyOn(client, "reconnect").mockResolvedValue({
+      host: client.host ?? { name: "", appVersion: "", os: "" },
+      workspace: state().workspace,
+      protocol: client.protocol ?? undefined,
+    });
+    foreground();
+    await vi.waitFor(() => expect(reconnect).toHaveBeenCalledTimes(1));
+    expect(read).not.toHaveBeenCalled();
+  });
 });

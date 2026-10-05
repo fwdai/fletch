@@ -33,7 +33,9 @@ adapters (`src/adapters/*`) unchanged.
   without its own pings the client would learn nothing until TCP gave up. The
   phone additionally probes on returning to the foreground: its workspace
   refresh doubles as a liveness check, and one unanswered for 6 s forces a
-  reconnect. Client reconnects with exponential backoff (1 s, 2 s, 4 s … 30 s).
+  reconnect. Client reconnects with exponential backoff (1 s, 2 s, 4 s … 30 s);
+  a phone returning to the foreground with a retry pending dials at once
+  rather than wait it out.
 - WebSocket messages larger than 4 MiB are rejected (close code 1009).
 - Everything the host holds for a connection is bounded, and ends with it. The
   outbound queue holds 64 frames: a client that stops reading while the host
@@ -168,7 +170,7 @@ repo); anyone can run their own and point both apps at it.
   own (they would keep the Durable Object awake); the host pings the relay,
   and the runtime answers device pings without waking the object.
 - **Host side.** The Mac keeps the host link up whenever remote access is
-  enabled and a relay URL is set, reconnecting with backoff (1 s … 60 s) when
+  enabled and a relay URL is set, reconnecting with backoff (1 s … 15 s) when
   it drops, `4409` included: two Macs sharing one host key is a
   misconfiguration, and the alternating link surfaces it in `relay.error`
   rather than silently picking a winner. `remote_status.relay` reports the
