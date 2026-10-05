@@ -33,27 +33,63 @@ pub(super) fn current_session_id(conn: &Connection, workspace_id: &str) -> Optio
     .ok()
 }
 
-/// Delete the transcript rows of every session of `workspace_ids`. Runs right
-/// before `DELETE FROM workspaces` in the same transaction, in place of the
-/// cascade that used to reach them: `session_records` lives in the attached
-/// `transcripts` file, and SQLite enforces no foreign key across files. The
-/// startup sweep in `database::connection` covers a crash between the two.
-pub(super) fn delete_session_records_for_workspaces(
+/// The sessions of `workspace_ids`, read inside the transaction that is about
+/// to delete them, so `delete_transcripts_for_sessions` can run once it has
+/// committed.
+pub(super) fn session_ids_for_workspaces(
     conn: &Connection,
     workspace_ids: &[String],
-) -> Result<()> {
+) -> Result<Vec<String>> {
     if workspace_ids.is_empty() {
-        return Ok(());
+        return Ok(Vec::new());
     }
-    conn.execute(
-        &format!(
-            "DELETE FROM transcripts.session_records WHERE session_id IN
-               (SELECT id FROM sessions WHERE workspace_id IN ({}))",
-            placeholders(workspace_ids.len())
-        ),
-        rusqlite::params_from_iter(workspace_ids),
-    )?;
-    Ok(())
+    let mut stmt = conn.prepare(&format!(
+        "SELECT id FROM sessions WHERE workspace_id IN ({})",
+        placeholders(workspace_ids.len())
+    ))?;
+    let ids = stmt
+        .query_map(rusqlite::params_from_iter(workspace_ids), |r| r.get(0))?
+        .collect::<rusqlite::Result<Vec<String>>>()?;
+    Ok(ids)
+}
+
+/// Transcript rows a workspace deletion owes, applied only after the
+/// transaction that removed or handed over their sessions has committed.
+/// `session_records` lives in the attached `transcripts` file, where no
+/// foreign key reaches and a WAL commit is atomic per file, not across the
+/// two: deleting inside that transaction could leave a session durable with
+/// its transcript gone. In this order a crash leaves rows behind instead —
+/// orphans the startup sweep in `database::connection` removes, or rows past
+/// a handed-over session's cut, which no read ever reaches.
+#[derive(Default)]
+pub(super) struct TranscriptCleanup {
+    /// Sessions deleted outright: every row goes.
+    pub(super) sessions: Vec<String>,
+    /// Sessions handed over to an heir (`lineage::detach_children`): rows at
+    /// or past the cut go.
+    pub(super) trims: Vec<(String, i64)>,
+}
+
+impl TranscriptCleanup {
+    pub(super) fn apply(self, conn: &Connection) -> Result<()> {
+        // Chunked to stay under SQLite's bound-parameter limit.
+        for chunk in self.sessions.chunks(500) {
+            conn.execute(
+                &format!(
+                    "DELETE FROM transcripts.session_records WHERE session_id IN ({})",
+                    placeholders(chunk.len())
+                ),
+                rusqlite::params_from_iter(chunk),
+            )?;
+        }
+        for (session, cut) in &self.trims {
+            conn.execute(
+                "DELETE FROM transcripts.session_records WHERE session_id = ?1 AND seq >= ?2",
+                rusqlite::params![session, cut],
+            )?;
+        }
+        Ok(())
+    }
 }
 
 /// `?1,?2,…,?n`, for an `IN` list bound from a slice.

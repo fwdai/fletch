@@ -7,8 +7,8 @@
 --
 -- `session_id` names a row of `main.sessions`, but SQLite enforces no foreign
 -- key into an attached database, so ownership is kept by explicit deletes
--- (`workspace::sessions::delete_session_records_for_workspaces`) plus the
--- startup orphan sweep in `database::connection`.
+-- after the owning transaction commits (`workspace::sessions::TranscriptCleanup`)
+-- plus the startup orphan sweep in `database::connection`.
 CREATE TABLE session_records (
     id            INTEGER PRIMARY KEY,
     session_id    TEXT NOT NULL,

@@ -344,9 +344,9 @@ fn table_exists(conn: &Connection, schema: &str, table: &str) -> Result<bool> {
 }
 
 /// Drop transcript rows whose session no longer exists. A WAL commit is atomic
-/// per file, not across the two, so a crash between the explicit transcript
-/// delete and the `sessions` cascade it precedes can leave rows behind; this
-/// is what makes that window benign. Skipped when `main.sessions` is empty: a
+/// per file, not across the two, so the workspace code deletes transcript rows
+/// only after the transaction that removed their sessions has committed; a
+/// crash between the two leaves rows behind, and this is what removes them. Skipped when `main.sessions` is empty: a
 /// fresh or moved-aside main database must never wipe a transcripts file.
 fn sweep_orphaned_transcripts(conn: &Connection) -> Result<()> {
     let sessions: i64 = conn.query_row("SELECT COUNT(*) FROM main.sessions", [], |r| r.get(0))?;
