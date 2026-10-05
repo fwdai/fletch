@@ -589,6 +589,7 @@ allowlist; any op not listed returns `{ ok: false, error: "unknown op" }`.
 | `set_agent_model` | `{ agentId, model }` | `null` |
 | `set_agent_effort` | `{ agentId, effort }` | `null` |
 | `read_session_records` | `{ agentId }` — the agent's display history: what its session inherits through lineage (a fork's parent conversation, `inherited: true`), then its own records | `SessionRecord[]` |
+| `read_session_page` | `{ agentId, before?: string \| null, limit?: number }` — the same history one page at a time, newest page first: the last `limit` records before the cursor `before` (from the end when absent), crossing into inherited history exactly as `read_session_records` does. `limit` defaults to 200 and is clamped to 1–500. `records` are in display order (oldest first within the page); `older` is the cursor for the page before this one, `null` once nothing older is left. The cursor is opaque (`"<chainIndex>:<seq>"`, parsed strictly — a malformed or out-of-range one is an error) and belongs to the history it was read from: after a turn ends, start again from the newest page. Lets a phone open a long session without shipping every tool result it ever read. No desktop command of this name | `{ records: SessionRecord[], older: string \| null }` |
 | `read_user_turns` | `{ agentId }` — the user turns of the same history, in the same order | `UserTurn[]` |
 | `sync_session` | `{ agentId }` | `null` |
 | `read_live_turn` | `{ agentId }` — the `event` payloads of the agent's current turn, oldest first, as they were forwarded on `agent:event`; `dropped` counts events cut from the head when the turn outgrew the host's buffer; `next_seq` is the `seq` the agent's next `agent:event` will carry, so a frame with `seq >= next_seq` is one the snapshot does not hold. Empty for a turn that ran under a previous host process or in the native view. No desktop command of this name yet | `{ events: object[], dropped: number, next_seq: number }` |
@@ -1215,11 +1216,15 @@ the rest of `run:*`, `dictation:*`, `docker:*` and `agent-install:*`.
 
 Delivery is best effort, exactly like the desktop frontend: the phone must
 refetch `get_workspace` on reconnect and on returning to the foreground, and
-`read_session_records` when it opens an agent. A list with no records of the
-agent's own (empty, or only `inherited` ones) is not proof of an empty
-conversation — the turn-end ingest can lag or miss — so the phone then asks the
-host to `sync_session` and reads once more, and keeps whatever log it already
-rendered from live events if that is still empty.
+`read_session_records` when it opens an agent — or, on a host that lists it,
+the newest `read_session_page`, reading older pages only when the user scrolls
+back for them. A list with no records of the agent's own (empty, or only
+`inherited` ones) is not proof of an empty conversation — the turn-end ingest
+can lag or miss — so the phone then asks the host to `sync_session` and reads
+once more, and keeps whatever log it already rendered from live events if that
+is still empty. The newest page settles the question as well as the whole list
+would: an agent's own records are the newest in its history, so a newest page
+with none of them means the session has none.
 
 Records stop at the last *finished* turn: the running one is ingested only when
 it ends. A phone that opens a busy agent therefore also asks for

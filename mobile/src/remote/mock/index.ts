@@ -13,7 +13,7 @@ import type {
 } from "@desktop/api/types/git";
 import type { PrChecks } from "@desktop/api/types/pr";
 import type { RoadmapItem, RoadmapItemPatch } from "@desktop/api/types/roadmap";
-import type { SessionRecord, UserTurn } from "@desktop/api/types/session";
+import type { SessionPage, SessionRecord, UserTurn } from "@desktop/api/types/session";
 import { appActionMessage, DELEGATION_KINDS, type DelegationKind } from "@desktop/delegation";
 import type { Socket, SocketFactory } from "@desktop/remote/socket";
 import {
@@ -268,6 +268,22 @@ export class MockHost {
         body,
       },
     ];
+  }
+
+  /** `read_session_page` over a mock session, which has no lineage: the
+   *  host's cursor shape with a chain of one link (`"0:<seq>"`), the same
+   *  default and cap, and the same strictness about a cursor it never issued. */
+  private sessionPage(id: string, before: unknown, limit: unknown): SessionPage {
+    const size = Math.min(Math.max(Math.trunc(Number(limit ?? 200)) || 1, 1), 500);
+    let below = Number.POSITIVE_INFINITY;
+    if (before != null) {
+      const cursor = /^0:(\d+)$/.exec(String(before));
+      if (!cursor) throw new Error(`bad history cursor "${String(before)}"`);
+      below = Number(cursor[1]);
+    }
+    const head = (this.state.records[id] ?? []).filter((r) => r.seq < below);
+    const records = head.slice(-size);
+    return { records, older: head.length > size ? `0:${records[0].seq}` : null };
   }
 
   /** A directory exists if it has a row of its own or its parent names it as
@@ -745,6 +761,8 @@ export class MockHost {
         return null;
       case "read_session_records":
         return this.state.records[id] ?? [];
+      case "read_session_page":
+        return this.sessionPage(id, args.before, args.limit);
       case "read_user_turns":
         return this.state.turns[id] ?? [];
       case "sync_session":
