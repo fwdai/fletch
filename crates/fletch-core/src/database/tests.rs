@@ -1,12 +1,13 @@
 use parking_lot::Mutex;
 use rusqlite::Connection;
 use serde_json::json;
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
 
 use crate::database::connection::{
     get_migrations, migrate_legacy_db_name, open_db, prune_backups, quarantine_orphaned_wal,
-    BACKUPS_TO_KEEP, MIGRATIONS,
+    BACKUPS_TO_KEEP, MIGRATIONS, MIN_READER_VERSION, MIN_READER_VERSION_KEY,
 };
 use crate::database::*;
 use crate::error::Error;
@@ -156,12 +157,87 @@ fn init_errors_when_schema_is_from_a_newer_build() {
     let dir = tempfile::tempdir().unwrap();
     init(dir.path()).unwrap();
     // Simulate an app downgrade: a newer build left user_version ahead of
-    // the migrations this binary knows about.
+    // the migrations this binary knows about, and stored no reader floor
+    // (written before the rule existed).
     let conn = Connection::open(dir.path().join(DB_FILENAME)).unwrap();
     conn.pragma_update(None, "user_version", (MIGRATIONS.len() + 5) as i64)
         .unwrap();
+    conn.execute(
+        "DELETE FROM settings WHERE key = ?1",
+        [MIN_READER_VERSION_KEY],
+    )
+    .unwrap();
     drop(conn);
     assert!(matches!(init(dir.path()), Err(Error::SchemaTooNew)));
+}
+
+/// A database left at `user_version = ahead` whose stored floor is `floor`:
+/// what a newer build leaves behind for this one to open.
+fn schema_ahead_with_floor(dir: &Path, ahead: usize, floor: usize) {
+    init(dir).unwrap();
+    let conn = Connection::open(dir.join(DB_FILENAME)).unwrap();
+    db_insert(&conn, "projects", json!({ "name": "marker" })).unwrap();
+    set_setting(&conn, MIN_READER_VERSION_KEY, &floor.to_string()).unwrap();
+    conn.pragma_update(None, "user_version", ahead as i64)
+        .unwrap();
+}
+
+#[test]
+fn init_opens_a_newer_schema_within_its_reader_floor() {
+    let dir = tempfile::tempdir().unwrap();
+    schema_ahead_with_floor(dir.path(), MIGRATIONS.len() + 5, MIGRATIONS.len());
+
+    let db = init(dir.path()).unwrap();
+    let conn = db.lock();
+    let rows = db_select(&conn, "projects", json!({ "name": "marker" })).unwrap();
+    assert_eq!(rows.len(), 1);
+    let fk_on: bool = conn
+        .query_row("PRAGMA foreign_keys", [], |r| r.get(0))
+        .unwrap();
+    assert!(fk_on);
+}
+
+#[test]
+fn init_refuses_a_newer_schema_above_its_reader_floor() {
+    let dir = tempfile::tempdir().unwrap();
+    schema_ahead_with_floor(dir.path(), MIGRATIONS.len() + 5, MIGRATIONS.len() + 1);
+    assert!(matches!(init(dir.path()), Err(Error::SchemaTooNew)));
+}
+
+/// An older build that was admitted must leave the newer build's floor and
+/// version in place: lowering either would let a still older build in that the
+/// newer schema never vouched for.
+#[test]
+fn compatible_older_reader_leaves_floor_and_version_untouched() {
+    let dir = tempfile::tempdir().unwrap();
+    let (ahead, floor) = (MIGRATIONS.len() + 5, MIGRATIONS.len() - 1);
+    schema_ahead_with_floor(dir.path(), ahead, floor);
+
+    let db = init(dir.path()).unwrap();
+    let conn = db.lock();
+    assert_eq!(
+        get_setting(&conn, MIN_READER_VERSION_KEY).as_deref(),
+        Some(floor.to_string().as_str())
+    );
+    let version: i64 = conn
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(version as usize, ahead);
+}
+
+#[test]
+fn upgrading_writes_this_builds_reader_floor() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut conn = open_db(&dir.path().join(DB_FILENAME)).unwrap();
+    get_migrations().to_version(&mut conn, 1).unwrap();
+    assert_eq!(get_setting(&conn, MIN_READER_VERSION_KEY), None);
+    drop(conn);
+
+    let db = init(dir.path()).unwrap();
+    assert_eq!(
+        get_setting(&db.lock(), MIN_READER_VERSION_KEY).as_deref(),
+        Some(MIN_READER_VERSION.to_string().as_str())
+    );
 }
 
 #[test]
@@ -1232,6 +1308,201 @@ fn dormant_column_drop_preserves_rows_and_rebinds_references() {
         (0, 0, 0),
         "cascade must survive the rebuild"
     );
+}
+
+/// Schema version the populated-upgrade fixture is written against: before
+/// every rebuild, rename and data transform the later migrations perform
+/// (0035 roadmap_items rebuild, 0041 sessions backfill + unique index, 0043
+/// column rename, 0045 column drops). Pinned like `V_WORKTREE_PRS`.
+const V_FIXTURE: usize = 30;
+
+/// Tables a migration after `V_FIXTURE` intentionally drops or whose rows it
+/// filters, with the migration that does it. Empty: 0031..0046 drop and filter
+/// nothing. An entry here is a reviewed decision, never a fix for a failing
+/// count.
+const TABLES_SHRUNK_BY_MIGRATIONS: &[(&str, u32)] = &[];
+
+/// Tables a migration after `V_FIXTURE` renames, as (old, new, migration): the
+/// new name must hold every row the old one had. Empty for the same reason.
+const TABLES_RENAMED_BY_MIGRATIONS: &[(&str, &str, u32)] = &[];
+
+/// A populated install at `V_FIXTURE`: two projects with repos, checkouts and
+/// PRs; a workspace holding two sessions (0041 must supersede the older one);
+/// a roadmap parent/child pair populating the columns 0035 drops, with events
+/// pointing at both; a workflow run with a sub-run; and a few hundred
+/// `session_records` plus turns and queued messages under every session.
+const FIXTURE_AT_V30: &str = "
+INSERT INTO accounts (id, name, email, created_at, oauth_provider, oauth_id)
+    VALUES ('acct', 'Ada', 'ada@example.com', 1, 'github', 'gh-1');
+INSERT INTO settings (key, value) VALUES ('telemetry_enabled', 'false'), ('last_seen_version', '0.9.0');
+
+INSERT INTO projects (id, name, created_at) VALUES ('p1', 'alpha', 1), ('p2', 'beta', 2);
+INSERT INTO project_settings (project_id, key, value)
+    VALUES ('p1', 'default_branch', 'main'), ('p2', 'default_branch', 'trunk');
+INSERT INTO repos (id, project_id, path, created_at, label)
+    VALUES ('r1', 'p1', '/code/alpha', 1, NULL), ('r1b', 'p1', '/code/alpha-docs', 1, 'docs'),
+           ('r2', 'p2', '/code/beta', 2, NULL);
+
+INSERT INTO workspaces (id, project_id, name, task, created_at, setup_completed_at, stopped_at, archived_at,
+                        sandbox_engine, owner_run_id, issue_ref, purpose)
+    VALUES ('w1', 'p1', 'olympus', 'ship the thing', 10, 11, NULL, NULL, NULL, NULL, 'GH-1', NULL),
+           ('w2', 'p1', 'hermes', 'fix the bug', 20, 21, 22, NULL, 'docker', NULL, NULL, 'pm'),
+           ('w3', 'p1', 'argos', 'archived work', 30, 31, 32, 33, NULL, NULL, NULL, NULL),
+           ('w4', 'p2', 'triton', 'run step', 40, 41, NULL, NULL, NULL, 'run1', NULL, NULL);
+INSERT INTO worktrees (id, workspace_id, repo_id, subdir, branch, parent_branch, branch_tip_sha, parent_branch_sha,
+                       diff_additions, diff_deletions, created_at, base_sha,
+                       pr_number, pr_opened_at, pr_merged_at, pr_url, pr_title, pr_state)
+    VALUES ('wt1', 'w1', 'r1', 'alpha', 'olympus', 'main', 'aaa', 'bbb', 10, 2, 10, 'bbb',
+            7, 100, 200, 'https://x/7', 'feat: one', 'merged'),
+           ('wt1b', 'w1', 'r1b', 'alpha-docs', 'olympus', 'main', NULL, NULL, 0, 0, 10, 'ccc',
+            NULL, NULL, NULL, NULL, NULL, NULL),
+           ('wt2', 'w2', 'r1', 'alpha', 'hermes', 'main', 'ddd', 'bbb', 3, 1, 20, 'bbb',
+            8, 300, NULL, 'https://x/8', 'fix: two', 'open'),
+           ('wt3', 'w3', 'r1', 'alpha', 'argos', 'main', NULL, NULL, 0, 0, 30, 'bbb',
+            NULL, NULL, NULL, NULL, NULL, NULL),
+           ('wt4', 'w4', 'r2', 'beta', 'wf/step', 'trunk', 'eee', 'fff', 1, 1, 40, 'fff',
+            NULL, NULL, NULL, NULL, NULL, NULL);
+INSERT INTO worktree_prs (workspace_id, subdir, number, url, title, state, opened_at, merged_at)
+    VALUES ('w1', 'alpha', 7, 'https://x/7', 'feat: one', 'merged', 100, 200),
+           ('w1', 'alpha', 6, 'https://x/6', 'feat: zero', 'closed', 50, NULL),
+           ('w2', 'alpha', 8, 'https://x/8', 'fix: two', 'open', 300, NULL);
+INSERT INTO usage_daily (workspace_id, project_id, day, input_tokens, output_tokens, cost_usd, updated_at)
+    VALUES ('w1', 'p1', '2026-01-01', 1000, 200, 0.5, 1), ('w1', 'p1', '2026-01-02', 500, 100, 0.2, 2),
+           ('w2', 'p1', '2026-01-02', 800, 300, 0, 3), ('w4', 'p2', '2026-01-03', 10, 1, 0, 4);
+
+INSERT INTO sessions (id, workspace_id, provider, provider_session_id, last_error, created_at, ingest_offset,
+                      effort, model, instructions, custom_agent_id, skills, mcp_servers, forked_context)
+    VALUES ('s1a', 'w1', 'claude', 'ps-1a', NULL, 10, 4096, 'high', 'opus', NULL, NULL, NULL, NULL, NULL),
+           ('s1b', 'w1', 'claude', 'ps-1b', NULL, 15, 0, 'high', 'opus', NULL, 'ca1', '[\"sk1\"]', '[\"m1\"]',
+            'summary of s1a'),
+           ('s2', 'w2', 'codex', 'ps-2', 'exit 1', 20, 100, NULL, NULL, 'be brief', NULL, NULL, NULL, NULL),
+           ('s3', 'w3', 'claude', NULL, NULL, 30, 0, NULL, NULL, NULL, NULL, NULL, NULL, NULL),
+           ('s4', 'w4', 'claude', 'ps-4', NULL, 40, 0, NULL, 'sonnet', NULL, NULL, NULL, NULL, NULL);
+WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 120)
+INSERT INTO session_records (session_id, seq, provider, source, native_id, agent_version, body, created_at)
+    SELECT s.id, n.i, s.provider, CASE WHEN n.i % 7 = 0 THEN 'live_compiled' ELSE 'transcript' END,
+           'ln:' || n.i, '1.2.3', json_object('type', 'assistant', 'seq', n.i), 1000 + n.i
+      FROM n, sessions s;
+WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 12)
+INSERT INTO session_user_turns (turn_id, session_id, seq, text, attachments, native_id, created_at, started_at, ended_at)
+    SELECT s.id || '-t' || n.i, s.id, n.i, 'turn ' || n.i, '[]',
+           CASE WHEN n.i % 3 = 0 THEN NULL ELSE 'ln:' || (n.i * 10) END, 1000 + n.i, 1001 + n.i, 1002 + n.i
+      FROM n, sessions s;
+INSERT INTO pending_messages (session_id, seq, turn_id, text, attachments, created_at)
+    VALUES ('s1b', 1, 'pm-1', 'and then this', '[]', 2000), ('s1b', 2, 'pm-2', 'and this', '[\"/tmp/a\"]', 2001),
+           ('s4', 1, 'pm-3', 'queued', '[]', 2002);
+
+INSERT INTO custom_agents (id, name, description, color, base, model, effort, instructions, created_at, updated_at,
+                           skill_ids, mcp_server_ids)
+    VALUES ('ca1', 'Reviewer', 'reviews', 200, 'claude', 'opus', 'high', 'review carefully', 1, 1,
+            '[\"sk1\"]', '[\"m1\"]');
+INSERT INTO skills (id, name, description, body, created_at, updated_at)
+    VALUES ('sk1', 'tests', 'write tests', '# tests', 1, 1), ('sk2', 'docs', '', '', 1, 1);
+INSERT INTO mcp_servers (id, name, transport, command, created_at, updated_at)
+    VALUES ('m1', 'fs', 'stdio', 'npx fs-server', 1, 1);
+
+INSERT INTO wf_definition (id, name, description, hue, spec_json, run_count, created_at, updated_at)
+    VALUES ('wd1', 'ship', 'plan then build', 120, '{}', 1, 1, 1);
+INSERT INTO wf_run (id, definition_id, parent_run_id, name, spec_json, task, project_id, repo_path, run_dir, branch,
+                    base_sha, status, paused_reason, cursor_json, budgets_json, spent_json, error, created_at,
+                    updated_at, base_branch, issue_ref, roadmap_item_id, pr_number, pr_url)
+    VALUES ('run1', 'wd1', NULL, 'ship', '{}', 'build it', 'p2', '/code/beta', '/runs/run1', 'wf/ship-1', 'fff',
+            'running', NULL, '{}', '{}', '{}', NULL, 40, 41, 'trunk', 'GH-9', 'ri3', 12, 'https://x/12'),
+           ('run2', NULL, 'run1', 'ship/review', '{}', 'review it', 'p2', '/code/beta', '/runs/run1', 'wf/ship-1',
+            'fff', 'paused', 'approval', NULL, '{}', '{}', NULL, 42, 43, 'trunk', NULL, NULL, NULL, NULL);
+INSERT INTO wf_step_exec (id, run_id, step_id, attempt, iteration, agent_id, status, gate_mode, head_start, head_end,
+                          verdict_json, error, started_at, ended_at)
+    VALUES ('se1', 'run1', 'plan', 1, 0, 'w4', 'done', 'auto', 'fff', 'eee', '{\"ok\":true}', NULL, 40, 41),
+           ('se2', 'run1', 'build', 1, 0, NULL, 'running', 'auto', 'eee', NULL, NULL, NULL, 41, NULL),
+           ('se3', 'run2', 'review', 1, 0, NULL, 'waiting', 'manual', NULL, NULL, NULL, NULL, NULL, NULL);
+INSERT INTO wf_event (run_id, seq, ts, step_exec_id, type, payload_json)
+    VALUES ('run1', 1, 40, NULL, 'run_started', '{}'), ('run1', 2, 40, 'se1', 'step_started', '{}'),
+           ('run1', 3, 41, 'se1', 'step_done', '{}'), ('run2', 1, 42, 'se3', 'paused', '{}');
+INSERT INTO wf_message (id, run_id, from_step_exec_id, to_step_exec_id, kind, body_json, status, created_at,
+                        delivered_at)
+    VALUES ('msg1', 'run1', 'se1', NULL, 'report', '{}', 'delivered', 41, 41),
+           ('msg2', 'run2', 'se3', NULL, 'ask', '{}', 'queued', 42, NULL);
+
+INSERT INTO roadmap_items (id, project_id, code, parent_id, title, why, horizon, status, size, area, source, epic,
+                           accept_json, deps_json, agent_id, workflow_def_id, run_id, pr_url, pr_number,
+                           created_at, updated_at)
+    VALUES ('ri1', 'p1', 'ALP-1', NULL, 'parent item', 'because', 'now', 'open', 'L', 'core', 'user', 'launch',
+            '[\"a\"]', NULL, NULL, NULL, NULL, NULL, NULL, 1, 1),
+           ('ri2', 'p1', 'ALP-2', 'ri1', 'child item', '', 'next', 'proposed', 'S', NULL, 'pm', 'launch',
+            NULL, '[\"ALP-1\"]', NULL, NULL, NULL, NULL, NULL, 2, 2),
+           ('ri3', 'p2', 'BET-1', NULL, 'beta item', 'ship', 'now', 'active', NULL, NULL, 'github', NULL,
+            NULL, NULL, 'w4', 'wd1', 'run1', 'https://x/12', 12, 3, 3);
+INSERT INTO roadmap_item_events (id, item_id, project_id, actor, kind, detail, created_at)
+    VALUES ('ev1', 'ri1', 'p1', 'user', 'created', NULL, 1), ('ev2', 'ri2', 'p1', 'pm', 'proposed', 'split', 2),
+           ('ev3', 'ri3', 'p2', 'drainer', 'claimed', NULL, 3), ('ev4', 'ri3', 'p2', 'drainer', 'pr_opened', '#12', 4);
+";
+
+/// Row count per user table, for comparing a database before and after an
+/// upgrade.
+fn table_counts(conn: &Connection) -> BTreeMap<String, i64> {
+    let tables: Vec<String> = conn
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    tables
+        .into_iter()
+        .map(|table| {
+            let n = conn
+                .query_row(&format!("SELECT COUNT(*) FROM \"{table}\""), [], |r| {
+                    r.get(0)
+                })
+                .unwrap();
+            (table, n)
+        })
+        .collect()
+}
+
+/// The per-migration tests above upgrade near-empty databases, which is how
+/// 0035's rebuild could cascade-delete child rows and still pass. This upgrades
+/// a populated install from `V_FIXTURE` the way `init` does (FK enforcement
+/// off, `to_latest`, then `foreign_key_check`) and requires every table to
+/// keep every row unless an allowlist above says which migration shrinks it.
+/// Driven directly rather than through `init` so the only writes between the
+/// two counts are the migrations' own: `init` also records the reader floor
+/// in `settings`.
+#[test]
+fn upgrading_a_populated_database_keeps_every_row() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut conn = open_db(&dir.path().join(DB_FILENAME)).unwrap();
+    get_migrations().to_version(&mut conn, V_FIXTURE).unwrap();
+    conn.execute_batch(FIXTURE_AT_V30).unwrap();
+    let before = table_counts(&conn);
+    assert!(before["session_records"] >= 300, "{before:?}");
+
+    conn.pragma_update(None, "foreign_keys", false).unwrap();
+    get_migrations().to_latest(&mut conn).unwrap();
+    let violations: i64 = conn
+        .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check()", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(violations, 0);
+    let after = table_counts(&conn);
+
+    for (table, rows) in &before {
+        if TABLES_SHRUNK_BY_MIGRATIONS.iter().any(|(t, _)| t == table) {
+            continue;
+        }
+        let name = TABLES_RENAMED_BY_MIGRATIONS
+            .iter()
+            .find(|(old, _, _)| old == table)
+            .map_or(table.as_str(), |(_, new, _)| new);
+        assert_eq!(
+            after.get(name),
+            Some(rows),
+            "{table}: row count changed across migrations {}..{}",
+            V_FIXTURE + 1,
+            MIGRATIONS.len()
+        );
+    }
 }
 
 /// `init` turns FK enforcement off around the migration run (so table rebuilds
