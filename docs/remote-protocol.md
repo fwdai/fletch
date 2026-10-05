@@ -121,12 +121,21 @@ ciphertext.
   connection's one channel. A WebSocket is ordered and reliable, so there are
   no fragment ids, no reordering and no timers. A reassembled frame is capped
   at 64 MiB.
+- **Reassembly before authentication.** The host reassembles at most 64 KiB
+  of fragment run until the connection's first frame has authenticated the
+  peer, and the full 64 MiB from the moment `pair` or `hello` succeeds. Both
+  frames are a few hundred bytes, so no legitimate client fragments before
+  then, and a stranger who completed the handshake cannot make the host hold
+  megabytes for it. The client takes the full 64 MiB from the start: its peer
+  is the pinned host. An ordinary message needs no such rule, since the 4 MiB
+  message cap already bounds it.
 - A handshake that fails, a text frame at any point, or a frame that does not
   decrypt (truncated header or body, a chunk shorter than a tag, a bad tag)
   closes the connection with `4001`. So does a fragment that breaks the rules:
   a fragment message on a connection without the capability, an ordinary
-  message in the middle of a run, a bad flag, or a run that passes 64 MiB
-  (which is also what ends a run that never ends). The secure channel failing
+  message in the middle of a run, a bad flag, or a run that passes 64 MiB, or
+  64 KiB before authentication (which is also what ends a run that never
+  ends). The secure channel failing
   is the same class of failure as never having established it.
 - Host authentication: when the phone knows the host's public key (it came in
   the QR) it aborts the handshake if the responder's static key differs. The
@@ -391,8 +400,10 @@ or forge frames, and it cannot impersonate a host, because attaching a host
 link requires the host's private key. Anyone who learns a host ID can open
 device links to that host and make it run Noise handshakes that fail, which is
 why device links per host are capped and rate-limited; a host ID is a random
-public key, so it cannot be guessed or enumerated. A hostile relay operator
-can deny service and nothing more.
+public key, so it cannot be guessed or enumerated. A handshake that succeeds,
+here or on the LAN, buys a stranger little more: until `pair` or `hello` authenticates it, the host
+holds at most 64 KiB of fragment run for it, not 64 MiB. A hostile relay
+operator can deny service and nothing more.
 
 Push notifications add Apple as a party and hand the relay a little content: a
 fixed title, the agent's name and its ID, nothing from the transcript. A token

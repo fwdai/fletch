@@ -74,6 +74,11 @@ pub(super) const MAX_OUTBOUND_FRAME_BYTES: usize = secure::MAX_FRAME_PLAINTEXT;
 /// a message over 4 MiB, dropping every relayed device at once, so such a peer
 /// is held to what fits in one.
 pub(super) const LEGACY_MAX_OUTBOUND_FRAME_BYTES: usize = secure::MAX_MESSAGE_PLAINTEXT;
+/// The most a fragment run may reassemble to before the peer has authenticated.
+/// The first frame must be `pair` or `hello`, both a few hundred bytes, so no
+/// legitimate client fragments before then; this only stops a stranger who
+/// finished the handshake from making the host buffer 64 MiB per connection.
+const PRE_AUTH_FRAME_BYTES: usize = 64 * 1024;
 /// Ping cadence, and how many may go unanswered before the socket is dropped.
 const PING_INTERVAL: Duration = Duration::from_secs(20);
 const MAX_MISSED_PONGS: u32 = 2;
@@ -252,10 +257,14 @@ async fn open_channel<S: WsTransport>(
             Err(close_frame(CloseCode::Library(reason.code), reason.reason))
         }
         outcome = tokio::time::timeout(HANDSHAKE_TIMEOUT, secure::respond(ws, host)) => match outcome {
-            Ok(Ok((channel, remote_static))) => Ok(Secured {
-                channel: Arc::new(Mutex::new(channel)),
-                remote_static,
-            }),
+            Ok(Ok((mut channel, remote_static))) => {
+                // Raised in `read_loop` once `pair` or `hello` succeeds.
+                channel.set_frame_limit(PRE_AUTH_FRAME_BYTES);
+                Ok(Secured {
+                    channel: Arc::new(Mutex::new(channel)),
+                    remote_static,
+                })
+            }
             Ok(Err(e)) => {
                 tracing::debug!(error = %e, %peer, "remote: noise handshake failed");
                 Err(refused())
@@ -511,6 +520,9 @@ async fn read_loop<S: WsTransport>(
                             }
                             match authenticate(state, &frame, &secured.remote_static).await {
                                 Some((record, result)) => {
+                                    // Before the reply: the phone may send a
+                                    // fragmented frame the moment it reads it.
+                                    secured.channel.lock().set_frame_limit(secure::MAX_FRAME_PLAINTEXT);
                                     // Subscribe before the reply goes out: an
                                     // event emitted in the gap would otherwise
                                     // be lost, and the phone would render a

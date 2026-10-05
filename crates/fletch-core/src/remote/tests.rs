@@ -1765,6 +1765,17 @@ impl SecureWs {
             .unwrap();
     }
 
+    /// Send `plaintext` the way a fragmenting peer would: as a run of fragment
+    /// messages when it is over 256 KiB.
+    async fn send_fragmented(&mut self, plaintext: &[u8]) {
+        for message in self.channel.encrypt_messages(plaintext).unwrap() {
+            self.ws
+                .send(Message::Binary(Bytes::from(message)))
+                .await
+                .unwrap();
+        }
+    }
+
     /// Next application frame, skipping the ping/pong keepalive traffic.
     async fn next_json(&mut self) -> Value {
         self.next_json_counted().await.0
@@ -2564,6 +2575,32 @@ async fn a_large_answer_crosses_fragmented_and_intact() {
     ws.request("2", "get_workspace", json!({})).await;
     let (reply, messages) = ws.next_json_counted().await;
     assert_eq!((reply["id"].as_str(), messages), (Some("2"), 1));
+}
+
+/// The handshake proves a key, not a paired device, so until `pair` or `hello`
+/// has authenticated the peer the host reassembles no run past 64 KiB. A run
+/// over it is closed like any other malformed frame.
+#[tokio::test]
+async fn a_fragment_run_before_authentication_closes_4001() {
+    let host = boot();
+    let mut ws = secure_connect(host.port, &device()).await;
+    let hello =
+        json!({ "id": "1", "op": "hello", "args": { "pad": "x".repeat(2 * FRAGMENT_PLAINTEXT) } });
+    ws.send_fragmented(hello.to_string().as_bytes()).await;
+    assert_eq!(ws.close_code().await, 4001);
+}
+
+/// Once authenticated, the same peer may send a run up to the full cap.
+#[tokio::test]
+async fn a_fragment_run_after_authentication_is_reassembled() {
+    let (_host, mut ws) =
+        padded_session(|port, phone| async move { secure_connect(port, &phone).await }).await;
+    let request =
+        json!({ "id": "1", "op": "get_workspace", "args": { "pad": "x".repeat(2 << 20) } });
+    ws.send_fragmented(request.to_string().as_bytes()).await;
+    let reply = ws.next_json().await;
+    assert_eq!(reply["id"], "1");
+    assert_eq!(reply["ok"], true);
 }
 
 /// A phone from before fragmentation cannot take a run, and the relay would

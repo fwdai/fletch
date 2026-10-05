@@ -48,7 +48,9 @@ pub const CAPABILITIES: u8 = CAP_FRAGMENTS;
 pub const FRAGMENT_PLAINTEXT: usize = 256 * 1024;
 /// Largest frame a run of fragments may reassemble to, and so the largest a
 /// fragmenting end will send. It is also what ends a run that never ends: the
-/// receiver gives up once the run passes it, with no timer needed.
+/// receiver gives up once the run passes it, with no timer needed. A channel
+/// starts at this limit and may be held to less (see
+/// [`Channel::set_frame_limit`]), never more.
 pub const MAX_FRAME_PLAINTEXT: usize = 64 * 1024 * 1024;
 /// Largest frame that still fits one message under the 4 MiB message cap the
 /// host and the relay enforce. The margin covers the chunk overhead (18 bytes
@@ -183,6 +185,7 @@ impl Handshake {
             buf: self.buf,
             fragments: self.capabilities & self.peer_capabilities & CAP_FRAGMENTS != 0,
             partial: None,
+            frame_limit: MAX_FRAME_PLAINTEXT,
         })
     }
 }
@@ -205,6 +208,10 @@ pub struct Channel {
     fragments: bool,
     /// The frame a fragment run has delivered so far, `None` between frames.
     partial: Option<Vec<u8>>,
+    /// The most a fragment run may reassemble to on this channel. Ordinary
+    /// messages are not held to it: the transport's 4 MiB message cap already
+    /// bounds each one, and nothing accumulates across them.
+    frame_limit: usize,
 }
 
 impl Channel {
@@ -218,6 +225,18 @@ impl Channel {
     /// direction: both ends advertised [`CAP_FRAGMENTS`].
     pub fn fragments(&self) -> bool {
         self.fragments
+    }
+
+    /// Hold fragment runs on this channel to `bytes`, at most
+    /// [`MAX_FRAME_PLAINTEXT`], which is where every channel starts.
+    ///
+    /// Reassembly begins as soon as the handshake is done, but the handshake
+    /// only proves the peer holds *a* key, not one its owner trusts. The host
+    /// keeps the limit small until the first frame has authenticated the peer,
+    /// so a stranger cannot make it buffer 64 MiB per connection; a client
+    /// whose peer is the pinned host has no reason to lower it.
+    pub fn set_frame_limit(&mut self, bytes: usize) {
+        self.frame_limit = bytes.min(MAX_FRAME_PLAINTEXT);
     }
 
     /// One protocol frame as the WebSocket binary messages that carry it, in
@@ -259,8 +278,8 @@ impl Channel {
     ///
     /// Anything that breaks the fragment rules — a fragment on a connection
     /// that did not negotiate them, an ordinary message inside a run, a bad
-    /// flag, a run past [`MAX_FRAME_PLAINTEXT`] — is an error exactly like a
-    /// frame that does not decrypt, and the caller closes the connection.
+    /// flag, a run past this channel's frame limit — is an error exactly like
+    /// a frame that does not decrypt, and the caller closes the connection.
     pub fn decrypt_message(&mut self, message: &[u8]) -> Result<Option<Vec<u8>>> {
         // Without the capability a marker is just the malformed zero-length
         // chunk it always was, and `decrypt_frame` says so.
@@ -278,9 +297,10 @@ impl Channel {
             .split_first()
             .ok_or_else(|| "malformed fragment: no flag".to_string())?;
         let mut frame = self.partial.take().unwrap_or_default();
-        if frame.len() + piece.len() > MAX_FRAME_PLAINTEXT {
+        if frame.len() + piece.len() > self.frame_limit {
             return Err(format!(
-                "malformed frame: fragments past the {MAX_FRAME_PLAINTEXT} byte cap"
+                "malformed frame: fragments past the {} byte cap",
+                self.frame_limit
             ));
         }
         frame.extend_from_slice(piece);
@@ -756,6 +776,36 @@ mod tests {
         let more = raw_fragment(&mut host, MORE, b"x");
         let err = phone.decrypt_message(&more).unwrap_err();
         assert!(err.contains("cap"), "{err}");
+    }
+
+    #[test]
+    fn the_frame_limit_can_be_lowered_and_raised_but_not_past_the_cap() {
+        let frame = body(2 * FRAGMENT_PLAINTEXT);
+        let (mut phone, mut host) = pair();
+        assert_eq!(host.frame_limit, MAX_FRAME_PLAINTEXT, "the default");
+
+        host.set_frame_limit(64 * 1024);
+        // An ordinary message is not a run, and the message cap bounds it.
+        let ordinary = phone.encrypt_frame(&body(FRAGMENT_PLAINTEXT)).unwrap();
+        assert_eq!(
+            host.decrypt_message(&ordinary).unwrap().unwrap().len(),
+            FRAGMENT_PLAINTEXT
+        );
+        // A run is refused on its first fragment, before anything piles up.
+        let messages = phone.encrypt_messages(&frame).unwrap();
+        let err = host.decrypt_message(&messages[0]).unwrap_err();
+        assert!(err.contains("65536 byte cap"), "{err}");
+
+        let (mut phone, mut host) = pair();
+        host.set_frame_limit(64 * 1024);
+        host.set_frame_limit(usize::MAX);
+        assert_eq!(host.frame_limit, MAX_FRAME_PLAINTEXT, "the ceiling");
+        let messages = phone.encrypt_messages(&frame).unwrap();
+        let (last, run) = messages.split_last().unwrap();
+        for message in run {
+            assert_eq!(host.decrypt_message(message).unwrap(), None);
+        }
+        assert_eq!(host.decrypt_message(last).unwrap(), Some(frame));
     }
 
     #[test]
