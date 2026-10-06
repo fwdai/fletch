@@ -72,6 +72,7 @@ fn pr(state: PrStatus, mergeable: MergeableState) -> PrState {
         mergeable,
         opened_at: None,
         merged_at: None,
+        branch: None,
     }
 }
 

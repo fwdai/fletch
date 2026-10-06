@@ -13,6 +13,9 @@ export interface PrState {
   state: PrStatus;
   title: string;
   mergeable: Mergeable;
+  /** The PR's head branch. A checkout can hold several PRs, each from its own
+   *  branch. Absent when the host didn't know it (an older snapshot / host). */
+  branch?: string | null;
 }
 
 export interface PrStateChangedEvent {
@@ -20,6 +23,12 @@ export interface PrStateChangedEvent {
   /** Which checkout: `null` (or absent, from a host that predates the field)
    *  is the primary repo, a subdir names a secondary. */
   subdir?: string | null;
+  /** The PR `state` describes (null with it). Absent from an older host. */
+  number?: number | null;
+  /** Whether this is the checkout's focused PR — the one the legacy single-PR
+   *  maps hold. Absent (an older host, which only reported the focused PR)
+   *  means focused. */
+  focused?: boolean;
   state: PrState | null;
 }
 
@@ -94,8 +103,8 @@ export interface PrComments {
   unresolved: PrComment[];
 }
 
-/** The host-side PR watcher saw a bound open PR's CI rollup, or its set of
- *  failing checks, change. `subdir` is null for the agent's primary repo. */
+/** The host-side PR watcher saw an open PR's CI rollup, or its set of failing
+ *  checks, change. `subdir` is null for the agent's primary repo. */
 export interface PrChecksChangedEvent {
   agent_id: string;
   subdir: string | null;
@@ -105,22 +114,34 @@ export interface PrChecksChangedEvent {
   checks: PrChecks;
 }
 
-/** The host-side PR watcher saw new unresolved review threads on a bound open
- *  PR: the whole current set, plus the ids it had not seen before. */
+/** The host-side PR watcher saw an open PR's unresolved review threads change:
+ *  the whole current set, plus the ids it had not seen before. */
 export interface PrThreadsChangedEvent {
   agent_id: string;
   subdir: string | null;
+  /** The PR these threads belong to. Absent from a host that predates PR sets,
+   *  which only ever reported the focused PR. */
+  number?: number;
   comments: PrComments;
   new_thread_ids: string[];
 }
 
-/** One agent-repo's entry in the app-wide sidebar sweep: PR state, plus the CI
- *  rollup when the PR is open. `checks: null` means "nothing to say this round"
- *  — served from a snapshot, not open, or the lookup degraded — so the store
- *  leaves the last-known tint alone rather than wiping it. */
+/** One PR of a checkout's set: its state, plus the CI rollup when it is open.
+ *  `checks: null` means "nothing to say this round" — served from a snapshot,
+ *  not open, or the lookup degraded — so the store leaves the last-known tint
+ *  alone rather than wiping it. */
+export interface PrSetEntry {
+  state: PrState;
+  checks: PrChecks | null;
+}
+
+/** One agent-repo's entry in the app-wide sidebar sweep. `state`/`checks` are
+ *  the checkout's focused PR; `prs` is its whole PR set, focused included,
+ *  newest number first — absent from a host that predates PR sets. */
 export interface AgentPrStatus {
   state: PrState;
   checks: PrChecks | null;
+  prs?: PrSetEntry[];
 }
 
 /** The Git panel's fast-tick PR read — state + CI from one backend pass over

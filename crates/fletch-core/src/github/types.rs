@@ -59,6 +59,11 @@ pub struct PrState {
     pub opened_at: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub merged_at: Option<i64>,
+    /// The PR's head branch. A checkout can hold several PRs, each from its
+    /// own branch, so the checkout's current branch doesn't name it. `None`
+    /// when the source didn't report it (an older snapshot row).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
 }
 
 /// Lightweight PR summary for the composer's "#" mention autocomplete —

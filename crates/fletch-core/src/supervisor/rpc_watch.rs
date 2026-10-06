@@ -130,10 +130,17 @@ fn handle_rpc_event(sup: &Supervisor, ctx: &Arc<EngineCtx>, agent_id: &str, even
             };
             if let Ok(record) = sup.workspace.agent(agent_id) {
                 if let Some(subdir) = event_subdir(&record, &payload) {
-                    if let Err(e) =
-                        sup.workspace
-                            .set_repo_pr_number(agent_id, subdir, number as i64)
-                    {
+                    // Older dispatchers sent only the number; the row then
+                    // fills in from the first fetch.
+                    let field = |k: &str| payload.get(k).and_then(|v| v.as_str());
+                    if let Err(e) = sup.workspace.set_repo_pr_number(
+                        agent_id,
+                        subdir,
+                        number as i64,
+                        field("url").unwrap_or_default(),
+                        field("title").unwrap_or_default(),
+                        field("branch"),
+                    ) {
                         tracing::warn!(
                             error = %e,
                             agent_id = %agent_id,

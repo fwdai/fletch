@@ -194,11 +194,12 @@ pub(super) struct PushTriggers {
     /// is — and the next PR on the same checkout starts with no memory. Entries
     /// go when their PR leaves `open`.
     last_rollup: Mutex<HashMap<String, String>>,
-    /// The state each checkout's last `pr:state_changed` carried, keyed like
-    /// the client stores (`agent` for the primary repo, `agent::subdir` for a
-    /// secondary) so one repo's merge is not read as another's. A merge or close
-    /// alerts only when this saw the PR open: a cold start's first event may be
-    /// a stale snapshot of a PR that merged last week.
+    /// The PRs whose last `pr:state_changed` said `open`, keyed by checkout
+    /// like the client stores (`agent` for the primary repo, `agent::subdir`
+    /// for a secondary) plus `#number`, so one repo's — or one PR's — merge is
+    /// not read as another's. A merge or close alerts only when this saw the
+    /// PR open: a cold start's first event may be a stale snapshot of a PR
+    /// that merged last week.
     last_pr_state: Mutex<HashMap<String, String>>,
 }
 
@@ -370,7 +371,7 @@ impl PushTriggers {
 
     /// One `pr:state_changed`. The event fires from several paths (a turn end,
     /// a push, the watcher) and each reports the state it found, not a
-    /// transition — so the transition is reconstructed here, per checkout, and
+    /// transition — so the transition is reconstructed here, per PR, and
     /// only an `open → merged|closed` this process witnessed is a merge or a
     /// close. Becoming open is never an alert: the watcher reports every open
     /// PR on its first look, a host restart included.
@@ -383,23 +384,25 @@ impl PushTriggers {
             return;
         };
         let checkout = checkout_key(&payload.agent_id, payload.subdir.as_deref());
-        let previous = {
-            let mut last = self.last_pr_state.lock();
-            match &payload.state {
-                Some(state) => last.insert(checkout.clone(), state.state.clone()),
-                None => last.remove(&checkout),
-            }
-        };
-        // A PR that is no longer open takes its rollup memory with it, so the
-        // map stays bounded by the PRs still being watched. Only this
-        // checkout's: the agent's other repos are still open.
-        if payload.state.as_ref().map(|s| s.state.as_str()) != Some("open") {
-            self.last_rollup.lock().retain(|key, _| {
-                !matches!(key.strip_prefix(checkout.as_str()), Some(rest) if rest.starts_with('#'))
-            });
-        }
         let Some(state) = payload.state else {
+            // "No bound PR": nothing of this checkout's is watched any more.
+            // Only this checkout's: the agent's other repos are still open.
+            let prefix = format!("{checkout}#");
+            let of_checkout = |key: &String| key.starts_with(&prefix);
+            self.last_pr_state.lock().retain(|key, _| !of_checkout(key));
+            self.last_rollup.lock().retain(|key, _| !of_checkout(key));
             return;
+        };
+        // Per PR, not per checkout: a checkout holds several PRs at once, and
+        // one merging says nothing about whether another was open.
+        let key = format!("{checkout}#{}", state.number);
+        // A PR that is no longer open takes its memory with it, so the maps
+        // stay bounded by the PRs still being watched.
+        let previous = if state.state == "open" {
+            self.last_pr_state.lock().insert(key, state.state.clone())
+        } else {
+            self.last_rollup.lock().remove(&key);
+            self.last_pr_state.lock().remove(&key)
         };
         if previous.as_deref() != Some("open") {
             return;

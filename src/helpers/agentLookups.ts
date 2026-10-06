@@ -125,6 +125,7 @@ export function dropAgentEntries(state: AppState, id: string): Partial<AppState>
   const prStates = dropScopedEntries(state.prStates, id);
   const prChecks = dropScopedEntries(state.prChecks, id);
   const prComments = dropScopedEntries(state.prComments, id);
+  const prSets = dropScopedEntries(state.prSets, id);
   const delegations = dropScopedEntries(state.delegations, id);
   const delegationNotices = dropScopedEntries(state.delegationNotices, id);
   const autopilot = dropScopedEntries(state.autopilot, id);
@@ -167,6 +168,7 @@ export function dropAgentEntries(state: AppState, id: string): Partial<AppState>
     prStates,
     prChecks,
     prComments,
+    prSets,
     composerSeeds,
     composerDrafts,
     delegations,

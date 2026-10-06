@@ -28,7 +28,7 @@
  *  The phone's store (mobile/src/store) follows the same watcher and orders its
  *  one-shot reads against its events through this module too. */
 
-export type PrSlice = "prStates" | "prChecks" | "prComments";
+export type PrSlice = "prStates" | "prChecks" | "prComments" | "prSets";
 
 let ticket = 0;
 
@@ -42,6 +42,7 @@ const applied: Record<PrSlice, Map<string, number>> = {
   prStates: new Map(),
   prChecks: new Map(),
   prComments: new Map(),
+  prSets: new Map(),
 };
 
 /** Claim an issue order. Call once per write, *before* awaiting the request. */

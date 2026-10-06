@@ -530,7 +530,7 @@ fn begin_pairing_names_the_preset_and_refuses_an_unknown_one() {
 
 #[test]
 fn allowlist_matches_the_protocol_table() {
-    // The 142 rows of docs/remote-protocol.md's op table, spelled out here so a
+    // The 143 rows of docs/remote-protocol.md's op table, spelled out here so a
     // silent widening of the wire surface fails this test. `register_push` is
     // the one the session layer answers itself (it needs the connection's
     // device identity), so it lives in `SESSION_OPS`; the two together are what
@@ -572,6 +572,7 @@ fn allowlist_matches_the_protocol_table() {
         "clear_checkout_config",
         "create_pr",
         "merge_pr",
+        "set_focused_pr",
         "get_pr_state",
         "get_pr_checks",
         "get_pr_live",
@@ -3450,13 +3451,21 @@ fn the_next_pr_on_the_same_checkout_alerts_on_its_own_settle() {
     assert_eq!(h.kinds(), ["checks_settled", "checks_settled"]);
 
     // #8 merges: its memory goes, so a #8 that somehow reports green again
-    // reads as a fresh settle rather than a duplicate.
+    // reads as a fresh settle rather than a duplicate — while #7, still open
+    // beside it on the same checkout, keeps its own.
+    let eight = |state: &str| {
+        let mut payload = pr_state_of("arabia", state);
+        payload["state"]["number"] = json!(8);
+        payload
+    };
     h.triggers
-        .on_event(&agents, "pr:state_changed", &pr_state_of("arabia", "open"));
+        .on_event(&agents, "pr:state_changed", &eight("open"));
+    h.triggers
+        .on_event(&agents, "pr:state_changed", &eight("merged"));
     h.triggers.on_event(
         &agents,
-        "pr:state_changed",
-        &pr_state_of("arabia", "merged"),
+        "pr:checks_changed",
+        &checks_changed_on(7, "arabia", "passing", &[]),
     );
     h.triggers.on_event(
         &agents,
@@ -3592,6 +3601,34 @@ fn each_repo_of_an_agent_alerts_on_its_own_merge() {
     );
     assert_eq!(h.kinds(), ["pr_merged", "pr_merged"]);
     assert!(h.sent().iter().all(|s| s["collapseId"] == "arabia"));
+}
+
+/// A checkout holds several PRs at once: each PR's witnessed merge alerts on
+/// its own, and one landing does not make the other look already settled.
+#[test]
+fn each_pr_of_a_checkout_alerts_on_its_own_merge() {
+    let _prefs = pr_prefs();
+    let h = Triggers::boot(false, &[("a1b2", "sandbox")]);
+    let agents = Agents::named("Fix login crash");
+    let second = |state: &str| {
+        let mut payload = pr_state_of("arabia", state);
+        payload["state"]["number"] = json!(651);
+        payload
+    };
+    h.triggers
+        .on_event(&agents, "pr:state_changed", &pr_state_of("arabia", "open"));
+    h.triggers
+        .on_event(&agents, "pr:state_changed", &second("open"));
+    h.triggers
+        .on_event(&agents, "pr:state_changed", &second("merged"));
+    h.triggers.on_event(
+        &agents,
+        "pr:state_changed",
+        &pr_state_of("arabia", "merged"),
+    );
+    assert_eq!(h.kinds(), ["pr_merged", "pr_merged"]);
+    assert_eq!(h.sent()[0]["body"], "Fix login crash · #651");
+    assert_eq!(h.sent()[1]["body"], "Fix login crash · #650");
 }
 
 /// A secondary merging forgets that checkout's rollup and nobody else's.
@@ -3902,7 +3939,7 @@ async fn every_settings_op_has_an_arm() {
         (op.starts_with("set_") || op.ends_with("_settings"))
             && !matches!(
                 **op,
-                "set_agent_model" | "set_agent_effort" | "set_repo_label"
+                "set_agent_model" | "set_agent_effort" | "set_repo_label" | "set_focused_pr"
             )
     });
     let mut seen = 0;

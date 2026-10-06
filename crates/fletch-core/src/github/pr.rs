@@ -14,7 +14,8 @@ use super::query::{
 };
 use super::types::*;
 
-pub(crate) const PR_STATE_FIELDS: &str = "number url title mergeable createdAt mergedAt";
+pub(crate) const PR_STATE_FIELDS: &str =
+    "number url title mergeable createdAt mergedAt headRefName";
 
 pub(crate) fn parse_pr_state(node: &Value) -> PrState {
     PrState {
@@ -40,6 +41,7 @@ pub(crate) fn parse_pr_state(node: &Value) -> PrState {
         },
         opened_at: gh_time_ms(node, "createdAt"),
         merged_at: gh_time_ms(node, "mergedAt"),
+        branch: node["headRefName"].as_str().map(str::to_string),
     }
 }
 

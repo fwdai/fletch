@@ -110,11 +110,46 @@ impl Supervisor {
             let state = resolve_pr_state(&workspace, &agent_id, None, Discovery::Forced)
                 .await
                 .and_then(|(pr, bound)| bound.then_some(pr));
-            emit_pr_state(ctx.sink.as_ref(), &agent_id, None, state);
+            emit_pr_state(ctx.sink.as_ref(), &agent_id, None, state, true);
             // The PR may be brand new: let the host-side watcher seed it now,
             // while its checks are still pending, rather than at its next tick.
             super::pr_watch::nudge();
         });
+    }
+
+    /// Make PR `number` the focused PR of one checkout (`subdir`, the primary
+    /// when `None`): the PR every single-PR reader — badge, panel header, the
+    /// focused reads — follows. `number` must already be one of the checkout's
+    /// PRs; focus moves within the set, it never adopts a PR from outside it.
+    ///
+    /// Announces the new focus at once (from the PR's snapshot, so no network)
+    /// and nudges the watcher, which re-reads it live on the same sweep as
+    /// every other PR.
+    pub fn set_focused_pr(
+        &self,
+        ctx: &EngineCtx,
+        agent_id: &str,
+        subdir: Option<&str>,
+        number: u32,
+    ) -> crate::error::Result<PrState> {
+        use crate::error::Error;
+        let record = self.workspace.agent(agent_id)?;
+        let repo = match subdir {
+            Some(s) => record.repos.iter().find(|r| r.subdir == s),
+            None => record.repos.first(),
+        }
+        .ok_or_else(|| Error::Other(format!("{agent_id} has no checkout {subdir:?}")))?;
+        let pr = self
+            .workspace
+            .set_focused_pr(agent_id, &repo.subdir, number)?
+            .ok_or_else(|| Error::Other(format!("#{number} is not one of this checkout's PRs")))?;
+        // Addressed the way the watcher addresses it: `None` for the primary,
+        // whatever spelling the caller used for it.
+        let primary = record.repos.first().map(|r| r.subdir.as_str()) == Some(repo.subdir.as_str());
+        let subdir = (!primary).then_some(repo.subdir.as_str());
+        emit_pr_state(ctx.sink.as_ref(), agent_id, subdir, Some(pr.clone()), true);
+        super::pr_watch::nudge();
+        Ok(pr)
     }
 
     /// Fire-and-forget turn-end verification for an ad-hoc agent, gated on the
@@ -213,6 +248,7 @@ pub(crate) fn pr_snapshot(repo: &TrackedRepo) -> Option<PrState> {
         mergeable: MergeableState::Unknown,
         opened_at: None,
         merged_at: None,
+        branch: None,
     })
 }
 
@@ -426,31 +462,48 @@ pub fn pr_map_key(agent_id: &str, subdir: &str, primary: bool) -> String {
     }
 }
 
-/// One agent-repo's sidebar status: PR state, plus the CI rollup when the PR is
-/// open. `checks: None` means "nothing to say this round" — served from a
-/// snapshot, not open, or the alias didn't resolve — and the frontend leaves the
+/// One PR of a checkout's set: its state, plus the CI rollup when it is open.
+/// `checks: None` means "nothing to say this round" — served from a snapshot,
+/// not open, or the alias didn't resolve — and the frontend leaves the
 /// last-known tint alone rather than wiping it.
 #[derive(Debug, Clone, serde::Serialize)]
-pub struct AgentPrStatus {
+pub struct PrSetEntry {
     pub state: PrState,
     pub checks: Option<crate::github::PrChecks>,
+    /// The open PR's unresolved review threads, when the sweep was asked for
+    /// them. In-process only — the host watcher diffs them into
+    /// `pr:threads_changed`; clients never receive them in this shape.
+    #[serde(skip)]
+    pub threads: Option<crate::github::PrComments>,
 }
 
-impl AgentPrStatus {
+impl PrSetEntry {
     /// A state-only entry (persisted snapshot, terminal PR, or degraded fetch).
     fn from_snapshot(state: PrState) -> Self {
         Self {
             state,
             checks: None,
+            threads: None,
         }
     }
 }
 
-/// Resolve PR state *and* CI for every bound repo of every agent in one batched
-/// round-trip — behind `get_all_pr_status` (the clients' sidebar seed) and the
-/// host's own PR watcher (`pr_watch`). Same
-/// per-repo policy as [`resolve_pr_state`], but the live lookups are collapsed
-/// into a single aliased GraphQL query instead of a per-agent fan-out:
+/// One checkout's sidebar status. `state`/`checks` are the *focused* PR's —
+/// the one the checkout is bound to, which is all a single-PR client reads —
+/// and `prs` is the whole set, focused PR included, newest number first.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct AgentPrStatus {
+    pub state: PrState,
+    pub checks: Option<crate::github::PrChecks>,
+    pub prs: Vec<PrSetEntry>,
+}
+
+/// Resolve PR state *and* CI for every PR of every checkout of every agent in
+/// one batched round-trip — behind `get_all_pr_status` (the clients' sidebar
+/// seed) and the host's own PR watcher (`pr_watch`). Same per-PR policy as
+/// [`resolve_pr_state`], but the live lookups are collapsed into a single
+/// aliased GraphQL query (one per 50 PRs) instead of a per-agent fan-out — a
+/// checkout with several open PRs adds aliases, never requests:
 ///
 /// - **Merged** PRs are served from the persisted snapshot (terminal — never
 ///   re-fetched).
@@ -460,131 +513,180 @@ impl AgentPrStatus {
 ///   it on every read.
 /// - Everything else is fetched live by number and its snapshot refreshed.
 ///
+/// `with_threads` folds each open PR's review threads into the same aliases
+/// (the watcher's every-other-tick read), so they cost no request of their own.
+///
 /// A paused backoff, an unresolvable slug, a not-found alias, or a whole-batch
 /// failure all degrade to the last persisted snapshot rather than wiping the
-/// badge. Repos that resolve to nothing are omitted from the map (never
+/// badge. Checkouts that resolve to nothing are omitted from the map (never
 /// written as absent state), matching the command's contract. Keys follow
 /// [`pr_map_key`]: plain agent id for the primary, `"{agent_id}::{subdir}"`
 /// for secondaries — so single-repo agents produce exactly one plain-keyed
-/// entry, byte-identical to before.
+/// entry, as before.
 pub async fn resolve_all_pr_status(
     workspace: &WorkspaceManager,
     reverify_closed: bool,
-) -> std::collections::HashMap<String, AgentPrStatus> {
-    use crate::github::{client, PrRef};
-    use std::collections::HashMap;
+    with_threads: bool,
+) -> HashMap<String, AgentPrStatus> {
+    use crate::github::{client, PrBatchRow, PrRef};
 
     let mut out: HashMap<String, AgentPrStatus> = HashMap::new();
     let Some(ws) = workspace.current() else {
         return out;
     };
-    // Paused → touch no network; every bound PR renders from its snapshot.
+    // Paused → touch no network; every PR renders from its snapshot.
     let paused = client::is_backing_off();
+    // Every checkout's PR set in one read, rather than a query per checkout.
+    let mut sets = workspace.all_pr_sets().unwrap_or_else(|e| {
+        tracing::warn!(error = %e, "PR sweep: failed to read PR sets");
+        HashMap::new()
+    });
 
-    // A network-bound repo: what to fetch, plus the snapshot to fall back to.
-    struct Pending {
+    /// One PR of a checkout: the snapshot to fall back to (`None` = never
+    /// fetched) and, once the batch ran, what it returned.
+    struct Slot {
+        number: u32,
+        snapshot: Option<PrState>,
+        fetched: Option<PrBatchRow>,
+    }
+    struct Checkout {
         agent_id: String,
         subdir: String,
         key: String,
-        snapshot: Option<PrState>,
-        pr_ref: PrRef,
+        bound: Option<u32>,
+        slots: Vec<Slot>,
     }
-    let mut pending: Vec<Pending> = Vec::new();
+    let mut checkouts: Vec<Checkout> = Vec::new();
+    // (checkout index, slot index) for each ref, aligned with `refs`.
+    let mut targets: Vec<(usize, usize)> = Vec::new();
+    let mut refs: Vec<PrRef> = Vec::new();
 
     for agent in ws.agents {
         if agent.archive.is_some() {
             continue;
         }
         for (i, repo) in agent.repos.iter().enumerate() {
-            let key = pr_map_key(&agent.id, &repo.subdir, i == 0);
-            // No branch → nothing pushed; no number → discovery isn't this poll's job.
+            // No branch → nothing pushed, so no PR; discovery isn't this poll's job.
             if repo.branch.is_none() {
                 continue;
             }
-            let Some(number) = repo.pr_number else {
-                continue;
-            };
-            let snapshot = pr_snapshot(repo);
-
-            let terminal = repo.pr_state.as_deref() == Some(PrStatus::Merged.as_str());
-            let closed = repo.pr_state.as_deref() == Some(PrStatus::Closed.as_str());
-            // Merged never re-fetches; closed only on the slow re-verify tick.
-            let fetch = !paused && !terminal && (!closed || reverify_closed);
-            if !fetch {
-                if let Some(snap) = snapshot {
-                    out.insert(key, AgentPrStatus::from_snapshot(snap));
-                }
+            let bound = repo.pr_number.map(|n| n as u32);
+            let mut slots: Vec<Slot> = sets
+                .remove(&(agent.id.clone(), repo.subdir.clone()))
+                .unwrap_or_default()
+                .into_iter()
+                .map(|pr| Slot {
+                    number: pr.number,
+                    snapshot: Some(pr),
+                    fetched: None,
+                })
+                .collect();
+            // A binding older than its log row (bound before binds were logged)
+            // still has to be watched: fall back to the binding's own snapshot.
+            if let Some(n) = bound.filter(|n| !slots.iter().any(|s| s.number == *n)) {
+                slots.push(Slot {
+                    number: n,
+                    snapshot: pr_snapshot(repo),
+                    fetched: None,
+                });
+                slots.sort_by_key(|s| std::cmp::Reverse(s.number));
+            }
+            if slots.is_empty() {
                 continue;
             }
 
-            // Resolve the slug now (local git); the network cost is deferred to the
-            // one batched query below. A broken checkout / non-GitHub origin can't
-            // be fetched — hold the snapshot instead.
-            let slug = match repo.checkout_path(&agent.id) {
-                Ok(checkout) => crate::github::resolve_slug(&checkout, Some(&repo.repo_path)).await,
-                Err(_) => None,
-            };
-            match slug {
-                Some((owner, repo_name)) => pending.push(Pending {
-                    agent_id: agent.id.clone(),
-                    subdir: repo.subdir.clone(),
-                    key,
-                    snapshot,
-                    pr_ref: PrRef {
-                        owner,
-                        repo: repo_name,
-                        number: number as u32,
-                    },
-                }),
-                None => {
-                    if let Some(snap) = snapshot {
-                        out.insert(key, AgentPrStatus::from_snapshot(snap));
-                    }
+            let checkout_idx = checkouts.len();
+            // Resolved at most once per checkout, and only if a PR needs the
+            // network: local git, but not free. A broken checkout / non-GitHub
+            // origin can't be fetched — its PRs hold their snapshots.
+            let mut slug: Option<Option<(String, String)>> = None;
+            for (slot_idx, slot) in slots.iter().enumerate() {
+                let settled = match slot.snapshot.as_ref().map(|s| s.state) {
+                    Some(PrStatus::Merged) => true,
+                    Some(PrStatus::Closed) => !reverify_closed,
+                    _ => false,
+                };
+                if paused || settled {
+                    continue;
                 }
-            }
-        }
-    }
-
-    if pending.is_empty() {
-        return out;
-    }
-
-    let refs: Vec<PrRef> = pending.iter().map(|p| p.pr_ref.clone()).collect();
-    match crate::github::pr_status_batch(&refs).await {
-        Ok(results) => {
-            for (p, res) in pending.into_iter().zip(results) {
-                match res {
-                    Some((pr, checks)) => {
-                        persist_pr_snapshot(workspace, &p.agent_id, &p.subdir, &pr);
-                        // Checks only ride along while the PR is open — that's
-                        // the only state the sidebar tints, and a PR that just
-                        // merged shouldn't ship its run list to no one.
-                        let open = matches!(pr.state, PrStatus::Open);
-                        out.insert(
-                            p.key,
-                            AgentPrStatus {
-                                state: pr,
-                                checks: open.then_some(checks),
-                            },
-                        );
-                    }
-                    // Not found this round / partial error — keep last-known.
-                    None => {
-                        if let Some(snap) = p.snapshot {
-                            out.insert(p.key, AgentPrStatus::from_snapshot(snap));
+                if slug.is_none() {
+                    slug = Some(match repo.checkout_path(&agent.id) {
+                        Ok(checkout) => {
+                            crate::github::resolve_slug(&checkout, Some(&repo.repo_path)).await
                         }
-                    }
+                        Err(_) => None,
+                    });
                 }
+                let Some(Some((owner, repo_name))) = &slug else {
+                    break;
+                };
+                targets.push((checkout_idx, slot_idx));
+                refs.push(PrRef {
+                    owner: owner.clone(),
+                    repo: repo_name.clone(),
+                    number: slot.number,
+                });
             }
+            checkouts.push(Checkout {
+                agent_id: agent.id.clone(),
+                subdir: repo.subdir.clone(),
+                key: pr_map_key(&agent.id, &repo.subdir, i == 0),
+                bound,
+                slots,
+            });
         }
-        // Whole-batch failure — degrade every bound repo to its snapshot.
-        Err(_) => {
-            for p in pending {
-                if let Some(snap) = p.snapshot {
-                    out.insert(p.key, AgentPrStatus::from_snapshot(snap));
+    }
+
+    // A whole-batch failure leaves every slot unfetched, so each PR degrades
+    // to its snapshot below.
+    if let Ok(results) = crate::github::pr_status_batch(&refs, with_threads).await {
+        for ((c, s), res) in targets.into_iter().zip(results) {
+            // `None` = not found this round / partial error — keep last-known.
+            let Some(row) = res else { continue };
+            let checkout = &checkouts[c];
+            // Only the focused PR moves the checkout's binding; the rest of the
+            // set refresh their log rows alone.
+            if checkout.bound == Some(row.state.number) {
+                persist_pr_snapshot(workspace, &checkout.agent_id, &checkout.subdir, &row.state);
+            } else if let Err(e) =
+                workspace.record_repo_pr(&checkout.agent_id, &checkout.subdir, &row.state)
+            {
+                tracing::warn!(error = %e, agent_id = %checkout.agent_id, pr = row.state.number, "failed to persist PR snapshot");
+            }
+            checkouts[c].slots[s].fetched = Some(row);
+        }
+    }
+
+    for checkout in checkouts {
+        let prs: Vec<PrSetEntry> = checkout
+            .slots
+            .into_iter()
+            .filter_map(|slot| match slot.fetched {
+                // Checks and threads only ride along while the PR is open —
+                // that's the only state anything renders them for, and a PR
+                // that just merged shouldn't ship its run list to no one.
+                Some(row) => {
+                    let open = matches!(row.state.state, PrStatus::Open);
+                    Some(PrSetEntry {
+                        state: row.state,
+                        checks: open.then_some(row.checks),
+                        threads: row.threads.filter(|_| open),
+                    })
                 }
-            }
-        }
+                None => slot.snapshot.map(PrSetEntry::from_snapshot),
+            })
+            .collect();
+        // The bound PR; failing that the newest open one, else the newest.
+        let focused = checkout
+            .bound
+            .and_then(|n| prs.iter().find(|e| e.state.number == n))
+            .or_else(|| prs.iter().find(|e| matches!(e.state.state, PrStatus::Open)))
+            .or_else(|| prs.first());
+        let Some(focused) = focused else {
+            continue;
+        };
+        let (state, checks) = (focused.state.clone(), focused.checks.clone());
+        out.insert(checkout.key, AgentPrStatus { state, checks, prs });
     }
     out
 }
@@ -1797,6 +1899,7 @@ pub(super) mod tests {
             mergeable: MergeableState::Unknown,
             opened_at: None,
             merged_at: None,
+            branch: None,
         };
         assert!(
             supersedes_merged(&pr(43, PrStatus::Open), 42),
@@ -1814,6 +1917,58 @@ pub(super) mod tests {
             !supersedes_merged(&pr(43, PrStatus::Merged), 42),
             "a second merged PR is history too, not the current state"
         );
+    }
+
+    /// The sweep reports a checkout's whole PR set, with `state` the focused
+    /// PR's whichever number that is. Every PR here is settled (closed is not
+    /// re-verified), so this runs with no network at all — the same zero-cost
+    /// path a fleet of merged PRs takes every tick.
+    #[tokio::test]
+    async fn the_sweep_reports_the_set_with_the_focused_pr_as_state() {
+        use crate::workspace::tests::{mk_repo, seed_repo, test_db};
+        let db = test_db();
+        let wm = WorkspaceManager::new(db.clone());
+        seed_repo(&db, "/r");
+        let mut rec = crate::workspace::new_agent_record(
+            "denali".into(),
+            "a".into(),
+            "claude".into(),
+            mk_repo("/r"),
+            "task".into(),
+            AgentView::Custom,
+        );
+        let id = rec.id.clone();
+        wm.add_agent(&mut rec).unwrap();
+        let subdir = wm.agent(&id).unwrap().repos[0].subdir.clone();
+        wm.set_repo_branch(&id, &subdir, "feat/x").unwrap();
+        let pr = |number: u32, state: PrStatus| PrState {
+            number,
+            url: format!("https://github.com/o/r/pull/{number}"),
+            title: format!("PR {number}"),
+            state,
+            mergeable: MergeableState::Unknown,
+            opened_at: None,
+            merged_at: None,
+            branch: None,
+        };
+        wm.set_repo_pr_snapshot(&id, &subdir, &pr(42, PrStatus::Merged))
+            .unwrap();
+        wm.set_repo_pr_snapshot(&id, &subdir, &pr(43, PrStatus::Closed))
+            .unwrap();
+
+        let numbers = |s: &AgentPrStatus| s.prs.iter().map(|p| p.state.number).collect::<Vec<_>>();
+        let all = resolve_all_pr_status(&wm, false, false).await;
+        let status = &all[&id];
+        assert_eq!(status.state.number, 43, "the bound PR is the focused one");
+        assert_eq!(numbers(status), [43, 42]);
+
+        // Focus moves to the older PR: `state` follows it, the set is unchanged.
+        wm.set_focused_pr(&id, &subdir, 42).unwrap();
+        let all = resolve_all_pr_status(&wm, false, false).await;
+        let status = &all[&id];
+        assert_eq!(status.state.number, 42);
+        assert_eq!(status.state.state, PrStatus::Merged);
+        assert_eq!(numbers(status), [43, 42]);
     }
 
     /// Binding a PR clears the record: the repo is owed no further throttled

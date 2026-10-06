@@ -367,6 +367,7 @@ describe("dropAgentEntries", () => {
         prStates: {},
         prChecks: {},
         prComments: {},
+        prSets: {},
         gitShortstats: {},
         composerSeeds: {},
         composerDrafts: {},

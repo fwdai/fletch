@@ -316,7 +316,7 @@ or a PR number. Transcript text never leaves the Mac.
   turn ends. Both mirror `signalAway` in `src/store/eventListeners.ts`.
   The ship-loop kinds read the host-side PR watcher's events (see "Events",
   `pr:checks_changed` / `pr:threads_changed`), so they fire with the Mac's
-  window shut. `checks_settled`: a bound open PR's CI rollup lands on `passing`
+  window shut. `checks_settled`: an open PR's CI rollup lands on `passing`
   or `failing` from anything else — `pending`, `none`, unseen, or the other of
   the two; a `failing → failing` with a different set of failing names is not
   a second alert. Title `Checks passed` or `Checks failed`; body the agent's
@@ -326,8 +326,8 @@ or a PR number. Transcript text never leaves the Mac.
   host restart does not re-raise old threads). Title `New review comment`;
   body the agent's name, ` · ` plus the new thread's author when known.
   `pr_merged` / `pr_closed`: a `pr:state_changed` whose state is `merged` /
-  `closed` for a checkout (primary or secondary repo) whose PR this host
-  process had seen `open` — the event reports a state, not a transition, so a
+  `closed` for a PR (of a primary or secondary repo) this host process had
+  seen `open` — the event reports a state, not a transition, so a
   first event of `merged` after a cold start is a stale snapshot and alerts
   nobody, and becoming `open` never alerts. Title `PR merged` / `PR closed`;
   body the agent's name ` · #<number>`. Two repos of one agent merging are two
@@ -562,7 +562,7 @@ The six scopes, and what each one covers:
 | scope | covers |
 |---|---|
 | `observe` | every read: the workspace, transcripts, diffs, PR state, the workflow and roadmap boards, `gh_status`, `list_dir`, `dictation_status`, `host_providers`, `scan_usage_transcripts`, `approvals_list`, `get_settings`, `get_project_settings` |
-| `agents` | spawn, message, answer a tool-use prompt, stop/resume/archive/restore/discard, set model and effort, dictation capture, attachment upload, and the working-tree moves that never leave the machine (`commit_agent`, `pull_agent`, `rebase_agent`, `stash_agent`, `discard_agent_changes`, `abort_merge_agent`, `clear_checkout_config`) |
+| `agents` | spawn, message, answer a tool-use prompt, stop/resume/archive/restore/discard, set model and effort, dictation capture, attachment upload, and the working-tree moves that never leave the machine (`commit_agent`, `pull_agent`, `rebase_agent`, `stash_agent`, `discard_agent_changes`, `abort_merge_agent`, `clear_checkout_config`), and choosing which of a checkout's PRs is focused (`set_focused_pr`) |
 | `projects` | add, clone, create, rename, relocate, label, attach/detach and delete projects and their repos; every project setting (`set_project_setting`); and the host's own configuration — alerts, the idle sweep, code indexing, the sandbox engine and its launch knobs, provider binary overrides |
 | `workflows` | launch, cancel, resume, retry, approve, reject and delete runs; save, delete and import stored definitions |
 | `roadmap` | create, edit, rank, hand off, hold, release, reject, reopen and delete items; accept or reject the PM's proposals |
@@ -677,7 +677,7 @@ allowlist; any op not listed returns `{ ok: false, error: "unknown op" }`.
 | `get_git_state` | `{ agentId }` — a checkout whose config Fletch refuses to run git over comes back as a zero-state with the keys in `blocked_config` | `GitState \| null` |
 | `get_all_shortstats` | `{}` — uncommitted working-tree stats for every live agent; archived and still-cloning agents are omitted | `Record<agentId, ShortStats>` |
 | `get_all_git_meta` | `{}` — advisory local-git metadata per checkout (base staleness, changed paths), keyed like the PR maps (`agentId` for the primary repo, `"{agentId}::{subdir}"` for secondaries); no network. Staleness is measured against the source repo's `origin/<base>`, which the host itself fetches every five minutes when it has a GitHub credential — no client asks for that fetch | `Record<gitKey, GitMeta>` |
-| `get_all_pr_status` | `{ reverifyClosed?: boolean }` — every live agent-repo's bound PR state plus the CI rollup when open, keyed like `get_all_git_meta`; `checks: null` means "nothing to say this round" so a client keeps its last value; merged PRs are served from the snapshot, closed ones re-verified live only when `reverifyClosed`. A seed, not a poll: read it after a handshake (and on returning to the foreground), then follow `pr:state_changed` / `pr:checks_changed`, which the host's PR watcher emits on every change it sees in its once-a-minute sweep of the same resolver | `Record<gitKey, AgentPrStatus>` |
+| `get_all_pr_status` | `{ reverifyClosed?: boolean }` — every live agent-repo's PRs, keyed like `get_all_git_meta`. `AgentPrStatus` is `{ state: PrState, checks: PrChecks \| null, prs: { state, checks }[] }`: `state`/`checks` are the checkout's *focused* PR (the one it is bound to, which is all a single-PR client reads) and `prs` is the checkout's whole PR set, the focused PR included, newest number first (absent from a host that predates PR sets — read it as `[{ state, checks }]`). `checks: null` means "nothing to say this round" so a client keeps its last value; merged PRs are served from the snapshot, closed ones re-verified live only when `reverifyClosed`. Every open PR of every checkout is read in the same batched query. A seed, not a poll: read it after a handshake (and on returning to the foreground), then follow `pr:state_changed` / `pr:checks_changed`, which the host's PR watcher emits on every change it sees in its once-a-minute sweep of the same resolver | `Record<gitKey, AgentPrStatus>` |
 | `list_checkout_tree` | as command | `CheckoutFile[]` |
 | `read_checkout_file` | `{ agentId, path, baseMode? }` | `CheckoutFileContents` |
 | `get_file_diff` | as command | `string` |
@@ -691,6 +691,7 @@ allowlist; any op not listed returns `{ ok: false, error: "unknown op" }`.
 | `clear_checkout_config` | as command — unsets the config keys a `GitState.blocked_config` names, in the checkout's own `.git/config`; fails naming any key it could not reach | `null` |
 | `create_pr` | as command | `PrState` |
 | `merge_pr` | as command — merges the open PR on the targeted repo's branch | `null` |
+| `set_focused_pr` | `{ agentId, subdir?, number }` — makes `number`, which must already be one of the checkout's PRs (`prs` above), its focused PR: the one `state`/`checks`, the badge and the focused reads follow. Local only, no GitHub call; emits `pr:state_changed` with `focused: true` for it | `PrState` |
 | `get_pr_state` | as command | `PrState \| null` |
 | `get_pr_checks` | as command | `PrChecks \| null` |
 | `get_pr_live` | as command — read once when a screen showing the PR opens with nothing cached for it; `pr:state_changed` / `pr:checks_changed` keep it current after that | `PrLive \| null` |
@@ -1201,32 +1202,41 @@ it on `protocol.events` never emits it, and a client that has no handler for it
 behaves as it did before the event existed — the prompt stays until answered,
 which is what every client did until this event.
 
-`pr:state_changed` `{ agent_id, subdir?: string | null, state: PrState | null }`
-is one checkout's bound PR as found now — a state, not a transition; `null` is
-"no bound PR". It fires after a push or a turn end (primary repo) and from the
-host-side PR watcher below, for the primary and every secondary repo. `subdir`
-is `null` (or absent, from a host that predates it) for the agent's primary
-repo and the repo's subdir for a secondary, so a client keys the write by
-checkout as it does `get_all_pr_status`; a client that keeps only the primary's
-PR ignores an event with `subdir` set rather than writing it to the primary.
-The same state may be reported again — the watcher re-reports every open PR on
-its first look after a host restart — so a client derives "opened" / "merged"
-from the record it replaces and treats a same-state event as a refresh.
+`pr:state_changed` `{ agent_id, subdir?: string | null, number?: number | null, focused?: boolean, state: PrState | null }`
+is one PR of one checkout as found now — a state, not a transition; `null` is
+"no bound PR". It fires after a push or a turn end (primary repo), from
+`set_focused_pr`, and from the host-side PR watcher below, for the primary and
+every secondary repo. `subdir` is `null` (or absent, from a host that predates
+it) for the agent's primary repo and the repo's subdir for a secondary, so a
+client keys the write by checkout as it does `get_all_pr_status`; a client that
+keeps only the primary's PR ignores an event with `subdir` set rather than
+writing it to the primary. A checkout holds a set of PRs: `number` names the
+one `state` describes, and `focused` says whether it is the checkout's focused
+PR. A client that keeps one PR per checkout ignores `focused: false`; absent
+(a host that predates PR sets) means focused. The same state may be reported
+again — the watcher re-reports every open PR on its first look after a host
+restart — so a client derives "opened" / "merged" from the record it replaces
+and treats a same-state event as a refresh.
 
 `pr:checks_changed` `{ agent_id, subdir: string | null, number, checks: PrChecks }` and
-`pr:threads_changed` `{ agent_id, subdir, comments: PrComments, new_thread_ids: string[] }`
+`pr:threads_changed` `{ agent_id, subdir, number?, comments: PrComments, new_thread_ids: string[] }`
 come from the host-side PR watcher, which runs the sidebar's batched sweep
-(`get_all_pr_status`'s resolver — state and CI for every bound PR in one query)
-once a minute, reads the open PRs' review threads every other tick through
-`get_pr_threads`'s resolver, and emits only on a change: the
+(`get_all_pr_status`'s resolver — state and CI for every open PR of every
+checkout, one GraphQL query per 50 PRs) once a minute, folds the open PRs'
+review threads into that same query every other tick, and emits only on a
+change: the
 first fires when the normalized `rollup` (`none | pending | passing |
 failing`), the set of failing check names or the merge gate (`merge_state`,
 ignoring GitHub's transient `unknown`) moves, the second whenever the
 unresolved thread set changes, naming in `new_thread_ids` the ids the watcher
 had not seen beside the whole current set — an empty `new_thread_ids` is a
 thread resolved, which a client applies and does not announce. `subdir` is
-`null` for the agent's primary repo and the repo's subdir for a secondary. The
-watcher's first read of an open PR seeds its memory and emits only its
+`null` for the agent's primary repo and the repo's subdir for a secondary;
+`number` is the PR (absent on `pr:threads_changed` from a host that predates
+PR sets, which only ever meant the focused PR), so a client that keeps one PR
+per checkout drops an event whose `number` is not its focused PR's. The
+watcher keeps its memory per PR, so each of a checkout's PRs is watched on its
+own. Its first read of an open PR seeds its memory and emits only its
 `pr:state_changed` — so a PR reopened or opened outside Fletch reaches every
 client — and no checks or threads, so a host restart announces no old thread;
 a PR that leaves `open` gets one final `pr:state_changed` and is then

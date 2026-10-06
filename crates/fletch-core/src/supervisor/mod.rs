@@ -32,7 +32,7 @@ pub use rewind::{RewindOutcome, RewindScope};
 pub use run::ProjectRunConfig;
 pub use session_sync::{
     persist_pr_snapshot, pr_map_key, resolve_all_pr_status, resolve_pr_state, AgentPrStatus,
-    Discovery,
+    Discovery, PrSetEntry,
 };
 
 use parking_lot::Mutex;

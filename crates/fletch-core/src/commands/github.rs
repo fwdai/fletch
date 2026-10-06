@@ -97,6 +97,21 @@ pub async fn merge_pr_impl(
     gh::pr_merge(&checkout).await
 }
 
+/// Focus one of a checkout's PRs: rebind the checkout to PR `number`, which
+/// must already be in its set. Local only — no GitHub call; the watcher
+/// re-reads the newly focused PR on its next sweep.
+///
+/// Shared with the remote dispatcher.
+pub fn set_focused_pr_impl(
+    supervisor: &Supervisor,
+    ctx: &crate::host::EngineCtx,
+    agent_id: &str,
+    subdir: Option<&str>,
+    number: u32,
+) -> Result<PrState> {
+    supervisor.set_focused_pr(ctx, agent_id, subdir, number)
+}
+
 /// Fetch and return the current PR state for the agent's primary repo: by
 /// bound number when one is recorded (with the persisted snapshot as the
 /// fallback when GitHub is unreachable), else discovered by branch. Unbound

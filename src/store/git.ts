@@ -5,6 +5,7 @@ import {
   type GitState,
   type PrChecks,
   type PrComments,
+  type PrSetEntry,
   type PrState,
   type ShortStats,
   type VerificationReport,
@@ -61,6 +62,12 @@ export interface GitSlice {
    *  failure). Read once per focused checkout (`fetchPrThreads`), then followed
    *  via `pr:threads_changed`. */
   prComments: Record<string, PrComments | null>;
+  /** Every PR of the checkout, focused included, newest number first, keyed by
+   *  `checkoutKey(agentId, subdir?)`. A checkout holds a set of PRs (sub-agents
+   *  each open their own); the legacy three maps above hold the focused PR.
+   *  Seeded by `loadAllPrStatus`, then followed via `pr:state_changed` /
+   *  `pr:checks_changed`. Threads are only kept for the focused PR. */
+  prSets: Record<string, PrSetEntry[]>;
   /** Live host delegations per checkout, keyed by `checkoutKey(agentId,
    *  subdir?)` (absent = none). A MIRROR: the host owns the lifecycle
    *  (`supervisor::delegation`), and this is fed by `delegation:changed` and by
@@ -289,7 +296,20 @@ function mirrorOf(e: DelegationEvent): Delegation | null {
 /** The fleet PR seed in flight, and the environment it is reading. */
 let allPrStatusLoad: { env: string; done: Promise<void> } | null = null;
 
-/** One `get_all_pr_status` read, merged into `prStates` / `prChecks`. */
+/** `next` as a checkout's PR set, each PR keeping its last-known checks where
+ *  `next` has nothing to say about them (`checks: null`) — the same rule the
+ *  seed applies to `prChecks`. */
+function withKnownChecks(prev: PrSetEntry[] | undefined, next: PrSetEntry[]): PrSetEntry[] {
+  if (!prev) return next;
+  return next.map((p) =>
+    p.checks != null
+      ? p
+      : { ...p, checks: prev.find((q) => q.state.number === p.state.number)?.checks ?? null },
+  );
+}
+
+/** One `get_all_pr_status` read, merged into `prStates` / `prChecks` /
+ *  `prSets`. */
 async function readAllPrStatus(set: GitSet, reverifyClosed: boolean): Promise<void> {
   const ticket = issuePrWrite();
   try {
@@ -310,13 +330,20 @@ async function readAllPrStatus(set: GitSet, reverifyClosed: boolean): Promise<vo
       // back to what it saw earlier.
       const prStates = { ...s.prStates };
       const prChecks = { ...s.prChecks };
+      const prSets = { ...s.prSets };
       for (const [key, entry] of Object.entries(map)) {
         if (acceptPrWrite("prStates", key, ticket)) prStates[key] = entry.state;
         if (entry.checks != null && acceptPrWrite("prChecks", key, ticket)) {
           prChecks[key] = entry.checks;
         }
+        // A host from before PR sets reports the focused PR alone, which is
+        // its whole set as far as it knows.
+        if (acceptPrWrite("prSets", key, ticket)) {
+          const next = entry.prs ?? [{ state: entry.state, checks: entry.checks }];
+          prSets[key] = withKnownChecks(s.prSets[key], next);
+        }
       }
-      return { prStates, prChecks };
+      return { prStates, prChecks, prSets };
     });
   } catch {
     // Non-fatal: the badges keep their last state, the watcher's events keep
@@ -344,6 +371,7 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
   prStates: {},
   prChecks: {},
   prComments: {},
+  prSets: {},
   delegations: {},
   delegationNotices: {},
   verificationReports: {},

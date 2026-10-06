@@ -25,6 +25,7 @@ import type {
 } from "@desktop/api/types/git";
 import type {
   PrChecksChangedEvent,
+  PrState,
   PrStateChangedEvent,
   PrThreadsChangedEvent,
 } from "@desktop/api/types/pr";
@@ -65,6 +66,12 @@ const patchAgent = (
   ...ws,
   agents: ws.agents.map((a) => (a.id === agentId ? { ...a, ...patch } : a)),
 });
+
+/** Whether a checks/threads event is about the agent's focused PR. No
+ *  `number` is a host from before PR sets, which only reported the focused PR;
+ *  with no focused PR known the event is taken as its, as it always was. */
+const isFocusedPr = (focused: PrState | null | undefined, number: number | undefined): boolean =>
+  number === undefined || focused == null || focused.number === number;
 
 /** A held `can_use_tool` prompt: control plane, not transcript. Record
  *  tool_use id → request id so the approval card can answer it, and never feed
@@ -273,13 +280,16 @@ export function registerRemoteEvents(client: RemoteClient, set: Set, get: Get): 
     get().applyAutopilotEvent(entry);
   });
 
-  // The phone keeps one PR per agent — the primary repo's — so a secondary's
-  // event (`subdir` set) has nowhere to land, here or below; writing it to the
-  // agent would show another repo's merge as this PR's. Each one stamps its
-  // slice, so a read issued before it cannot land after it with what it saw
-  // earlier (@desktop/store/prWriteOrder).
+  // The phone keeps one PR per agent — the primary repo's focused PR — so a
+  // secondary's event (`subdir` set) has nowhere to land, here or below;
+  // writing it to the agent would show another repo's merge as this PR's. Nor
+  // does an event about another PR of the same checkout (`focused: false`, or
+  // a `number` that is not the focused one's): a host watching every PR of a
+  // checkout reports each. Each one stamps its slice, so a read issued before
+  // it cannot land after it with what it saw earlier
+  // (@desktop/store/prWriteOrder).
   on<PrStateChangedEvent>("pr:state_changed", (e) => {
-    if (e.subdir) return;
+    if (e.subdir || e.focused === false) return;
     stampPrWrite("prStates", e.agent_id);
     set((s) => {
       // The transition is read against the record being replaced, so the line
@@ -297,7 +307,7 @@ export function registerRemoteEvents(client: RemoteClient, set: Set, get: Get): 
 
   // The host-side PR watcher's reads.
   on<PrChecksChangedEvent>("pr:checks_changed", (e) => {
-    if (e.subdir) return;
+    if (e.subdir || !isFocusedPr(get().prStates[e.agent_id], e.number)) return;
     stampPrWrite("prChecks", e.agent_id);
     set((s) => {
       const line = checksSettledText(s.prChecks[e.agent_id], e.checks);
@@ -309,7 +319,7 @@ export function registerRemoteEvents(client: RemoteClient, set: Set, get: Get): 
   });
 
   on<PrThreadsChangedEvent>("pr:threads_changed", (e) => {
-    if (e.subdir) return;
+    if (e.subdir || !isFocusedPr(get().prStates[e.agent_id], e.number)) return;
     stampPrWrite("prComments", e.agent_id);
     set((s) => {
       const line = newThreadsText(e.comments, e.new_thread_ids);

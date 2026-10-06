@@ -43,6 +43,7 @@ pub(crate) fn pr() -> PrState {
         mergeable: MergeableState::Mergeable,
         opened_at: None,
         merged_at: None,
+        branch: None,
     }
 }
 

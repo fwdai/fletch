@@ -426,15 +426,25 @@ struct PrStateChangedPayload {
     /// `pr:checks_changed`. Added after the fact, so a client that predates it
     /// reads every event as the primary's.
     subdir: Option<String>,
+    /// The PR `state` describes (`None` with it), so a client can file the
+    /// event under the right entry of the checkout's PR set.
+    number: Option<u32>,
+    /// Whether this is the checkout's focused (bound) PR — the one single-PR
+    /// readers show. A checkout holds a set of PRs and the watcher reports
+    /// each; a client that keeps only the focused one ignores `false`. Added
+    /// after the fact, so a client that predates it reads every event as the
+    /// focused PR's, which is all a host before PR sets ever sent.
+    focused: bool,
     state: Option<PrState>,
 }
 
-/// The bound PR of one checkout, as found now — a state, not a transition.
+/// One PR of one checkout, as found now — a state, not a transition.
 pub(super) fn emit_pr_state(
     sink: &dyn EventSink,
     agent_id: &str,
     subdir: Option<&str>,
     state: Option<PrState>,
+    focused: bool,
 ) {
     emit(
         sink,
@@ -442,6 +452,8 @@ pub(super) fn emit_pr_state(
         PrStateChangedPayload {
             agent_id: agent_id.to_string(),
             subdir: subdir.map(str::to_string),
+            number: state.as_ref().map(|s| s.number),
+            focused,
             state,
         },
     );
@@ -459,8 +471,8 @@ struct PrChecksChangedPayload {
     checks: PrChecks,
 }
 
-/// The host-side PR watcher saw a bound open PR's CI rollup, or its set of
-/// failing checks, change (`supervisor::pr_watch`).
+/// The host-side PR watcher saw an open PR's CI rollup, or its set of failing
+/// checks, change (`supervisor::pr_watch`).
 pub(super) fn emit_pr_checks(
     sink: &dyn EventSink,
     agent_id: &str,
@@ -484,18 +496,22 @@ pub(super) fn emit_pr_checks(
 struct PrThreadsChangedPayload {
     agent_id: String,
     subdir: Option<String>,
+    /// Which of the checkout's PRs these threads belong to, as on
+    /// `pr:checks_changed`.
+    number: u32,
     comments: PrComments,
     /// The unresolved thread ids the watcher had not seen before this read.
     new_thread_ids: Vec<String>,
 }
 
-/// The host-side PR watcher saw new unresolved review threads on a bound open
-/// PR. Carries the whole unresolved set so a client replaces its copy, plus the
-/// ids that are new so it can announce exactly those.
+/// The host-side PR watcher saw the unresolved review threads of an open PR
+/// change. Carries the whole unresolved set so a client replaces its copy, plus
+/// the ids that are new so it can announce exactly those.
 pub(super) fn emit_pr_threads(
     sink: &dyn EventSink,
     agent_id: &str,
     subdir: Option<&str>,
+    number: u32,
     comments: PrComments,
     new_thread_ids: Vec<String>,
 ) {
@@ -505,6 +521,7 @@ pub(super) fn emit_pr_threads(
         PrThreadsChangedPayload {
             agent_id: agent_id.to_string(),
             subdir: subdir.map(str::to_string),
+            number,
             comments,
             new_thread_ids,
         },

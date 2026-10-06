@@ -9,6 +9,7 @@ use crate::error::{Error, Result};
 
 use super::checks::{pr_checks_from_node, PR_CHECKS_FIELDS};
 use super::client;
+use super::comments::{pr_comments_from_node, PR_COMMENTS_FIELDS};
 use super::pr::{parse_pr_state, PR_STATE_FIELDS};
 use super::types::*;
 
@@ -216,8 +217,10 @@ const BATCH_CHUNK: usize = 50;
 
 /// Build an aliased multi-PR query with a trailing `rateLimit` probe. Values
 /// ride in as variables (`$oN/$rN/$nN`) so nothing user-derived is interpolated
-/// into the query text.
-fn build_batch_query(chunk: &[PrRef], inner_fields: &str) -> (String, Value) {
+/// into the query text. `with_viewer` adds one top-level `viewer{ login }` for
+/// the whole query — what thread parsing needs to judge `we_replied_last` —
+/// rather than a lookup per PR.
+fn build_batch_query(chunk: &[PrRef], inner_fields: &str, with_viewer: bool) -> (String, Value) {
     let mut decls = Vec::with_capacity(chunk.len());
     let mut aliases = Vec::with_capacity(chunk.len());
     let mut vars = serde_json::Map::new();
@@ -230,8 +233,9 @@ fn build_batch_query(chunk: &[PrRef], inner_fields: &str) -> (String, Value) {
         vars.insert(format!("r{i}"), json!(r.repo));
         vars.insert(format!("n{i}"), json!(r.number));
     }
+    let viewer = if with_viewer { "viewer{login} " } else { "" };
     let query = format!(
-        "query({}){{{} rateLimit{{cost remaining resetAt}}}}",
+        "query({}){{{viewer}{} rateLimit{{cost remaining resetAt}}}}",
         decls.join(","),
         aliases.join(" "),
     );
@@ -251,14 +255,16 @@ fn note_budget(data: &Value) {
 }
 
 /// Run `refs` through one or more batched queries, mapping each alias's
-/// `pullRequest` node with `parse`. Results align 1:1 with `refs`; a
+/// `pullRequest` node with `parse` (which also gets the `viewer` login when
+/// `with_viewer` selected it). Results align 1:1 with `refs`; a
 /// missing/inaccessible PR yields `None` for its slot (partial-error tolerant).
 /// `Ok(vec![])` for empty input; an active backoff short-circuits to all-`None`
 /// so callers fall back to the persisted snapshot without spending a request.
 async fn pr_batch<T>(
     refs: &[PrRef],
     inner_fields: &str,
-    parse: impl Fn(&Value) -> T,
+    with_viewer: bool,
+    parse: impl Fn(&Value, Option<&str>) -> T,
 ) -> Result<Vec<Option<T>>> {
     if refs.is_empty() {
         return Ok(Vec::new());
@@ -269,12 +275,13 @@ async fn pr_batch<T>(
     let client = client::Client::new()?;
     let mut out = Vec::with_capacity(refs.len());
     for chunk in refs.chunks(BATCH_CHUNK) {
-        let (query, vars) = build_batch_query(chunk, inner_fields);
+        let (query, vars) = build_batch_query(chunk, inner_fields, with_viewer);
         let data = client.graphql_partial(&query, vars).await?;
         note_budget(&data);
+        let viewer = data["viewer"]["login"].as_str();
         for i in 0..chunk.len() {
             let node = &data[format!("a{i}")]["pullRequest"];
-            out.push((!node.is_null()).then(|| parse(node)));
+            out.push((!node.is_null()).then(|| parse(node, viewer)));
         }
         // A signal in this chunk's response — the budget crossing its floor, a
         // Retry-After, or a RATE_LIMITED error — armed the gate. Stop before the
@@ -288,6 +295,16 @@ async fn pr_batch<T>(
     Ok(out)
 }
 
+/// One PR's slot in [`pr_status_batch`].
+#[derive(Debug, Clone)]
+pub struct PrBatchRow {
+    pub state: PrState,
+    pub checks: PrChecks,
+    /// The unresolved review threads; `None` unless the batch was asked for
+    /// them.
+    pub threads: Option<PrComments>,
+}
+
 /// Fetch PR state *and* the merge gate + checks for many PRs by number in one
 /// (chunked) round-trip — the app-wide sidebar sweep.
 ///
@@ -297,11 +314,26 @@ async fn pr_batch<T>(
 /// halves the sweep's cost and — more importantly — means the sidebar's badge
 /// and its CI tint always come from the same instant instead of drifting up to
 /// a cadence apart.
-pub async fn pr_status_batch(refs: &[PrRef]) -> Result<Vec<Option<(PrState, PrChecks)>>> {
+///
+/// `with_threads` folds the review threads into the same aliases (plus one
+/// `viewer{ login }` for the query). Threads used to be a separate read per
+/// open PR — a conditional REST resolve and a GraphQL call each — so riding
+/// along here spends the same points on one request per 50 PRs instead of two
+/// per PR.
+pub async fn pr_status_batch(
+    refs: &[PrRef],
+    with_threads: bool,
+) -> Result<Vec<Option<PrBatchRow>>> {
+    let threads = if with_threads { PR_COMMENTS_FIELDS } else { "" };
     pr_batch(
         refs,
-        &format!("state {PR_STATE_FIELDS} {PR_CHECKS_FIELDS}"),
-        |node| (parse_pr_state(node), pr_checks_from_node(node)),
+        &format!("state {PR_STATE_FIELDS} {PR_CHECKS_FIELDS} {threads}"),
+        with_threads,
+        |node, viewer| PrBatchRow {
+            state: parse_pr_state(node),
+            checks: pr_checks_from_node(node),
+            threads: with_threads.then(|| pr_comments_from_node(node, viewer)),
+        },
     )
     .await
 }
@@ -358,7 +390,7 @@ mod tests {
                 number: 12,
             },
         ];
-        let (query, vars) = build_batch_query(&refs, "state number");
+        let (query, vars) = build_batch_query(&refs, "state number", false);
         // One aliased repository/pullRequest per ref, values via variables.
         assert!(
             query.contains("a0:repository(owner:$o0,name:$r0)"),
@@ -374,5 +406,22 @@ mod tests {
         assert_eq!(vars["o0"], json!("acme"));
         assert_eq!(vars["r1"], json!("api"));
         assert_eq!(vars["n1"], json!(12));
+        assert!(!query.contains("viewer"), "{query}");
+    }
+
+    /// Threads need the viewer's login, and a batch asks for it once for the
+    /// whole query — never once per alias.
+    #[test]
+    fn batch_query_selects_the_viewer_once_when_asked() {
+        let refs: Vec<PrRef> = (1..=3)
+            .map(|n| PrRef {
+                owner: "acme".into(),
+                repo: "web".into(),
+                number: n,
+            })
+            .collect();
+        let (query, _) = build_batch_query(&refs, "state number", true);
+        assert_eq!(query.matches("viewer{login}").count(), 1, "{query}");
+        assert_eq!(query.matches(":repository(").count(), 3, "{query}");
     }
 }

@@ -38,7 +38,7 @@ export const githubApi = {
   githubDisconnect: () => invokeLocal<void>("github_disconnect"),
   getPrState: (agentId: string, subdir?: string) =>
     invoke<PrState | null>("get_pr_state", { agentId, subdir }),
-  /** PR state + CI for every bound repo in one batched read — the sidebar's
+  /** PR state + CI for every PR of every checkout in one batched read — the sidebar's
    *  seed. `reverifyClosed` asks for a live look at closed PRs too (they can
    *  reopen); otherwise they are served from their snapshot like merged ones. */
   getAllPrStatus: (reverifyClosed = false) =>
@@ -54,6 +54,10 @@ export const githubApi = {
   createPr: (agentId: string, title: string, body: string, subdir?: string) =>
     invoke<PrState>("create_pr", { agentId, title, body, subdir }),
   mergePr: (agentId: string, subdir?: string) => invoke<void>("merge_pr", { agentId, subdir }),
+  /** Focus one of a checkout's PRs (`number` must already be in its set). The
+   *  host answers with the PR and emits `pr:state_changed` for it. */
+  setFocusedPr: (agentId: string, number: number, subdir?: string) =>
+    invoke<PrState>("set_focused_pr", { agentId, subdir, number }),
   listPrs: (agentId: string) => invoke<PrSummary[]>("list_prs", { agentId }),
   listRepoPrs: (repoPath: string) => invoke<PrSummary[]>("list_repo_prs", { repoPath }),
 };
