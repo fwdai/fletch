@@ -7,6 +7,7 @@ import {
   type AnchorHTMLAttributes,
   createContext,
   type MouseEvent,
+  type TableHTMLAttributes,
   useContext,
   useMemo,
 } from "react";
@@ -30,7 +31,21 @@ function ExternalLink({ href, children, ...rest }: AnchorHTMLAttributes<HTMLAnch
   );
 }
 
-const components: Components = { a: ExternalLink };
+/** Tables get a scroll container: columns keep their natural minimum width
+ *  (the longest word in them), so a wide table scrolls on its own instead of
+ *  crushing columns into a letter per line or widening the whole surface. */
+function ScrollTable({
+  node: _node,
+  ...props
+}: TableHTMLAttributes<HTMLTableElement> & { node?: unknown }) {
+  return (
+    <div className="md-table">
+      <table {...props} />
+    </div>
+  );
+}
+
+const components: Components = { a: ExternalLink, table: ScrollTable };
 
 /** Tokens the surrounding surface wants rendered as clickable chips instead of
  *  prose — provided by the roadmap's PM chat, where the project's item codes
