@@ -34,13 +34,22 @@ describe("focusedPrReads", () => {
   it("reads a PR that opened under a checkout seen without one", () => {
     const seen = new Map();
     focusedPrReads([pr({ number: null, open: false })], seen);
-    // `createPr` or a `pr:state_changed` brought the new PR: its checks and
-    // threads are not in the store, and the watcher's seed emits only its state.
+    // `createPr` or a `pr:state_changed` brought the new PR: the focus change
+    // dropped the checkout's checks (the set has none for a PR just opened) and
+    // its threads, and the watcher's seed emits only its state.
+    const opened = pr({ number: 651, checks: false, threads: false });
+    expect(focusedPrReads([opened], seen)).toEqual({ live: ["fuji"], threads: ["fuji"] });
+    expect(focusedPrReads([pr({ number: 651 })], seen)).toEqual({ live: [], threads: [] });
+  });
+
+  it("owes a switch to a PR the set has checks for only its threads", () => {
+    // The focus event already brought the set's checks; the host's watcher
+    // re-reads the PR on the same nudge.
+    const seen = new Map([["fuji", 650]]);
     expect(focusedPrReads([pr({ number: 651 })], seen)).toEqual({
-      live: ["fuji"],
+      live: [],
       threads: ["fuji"],
     });
-    expect(focusedPrReads([pr({ number: 651 })], seen)).toEqual({ live: [], threads: [] });
   });
 
   it("does not take a PR going away for a new one", () => {

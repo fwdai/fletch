@@ -1232,41 +1232,18 @@
   border-bottom: 1px solid var(--bd-soft);
 }
 
-/* ── PR-set strip: "one task, N PRs" summary above the sections ──
-   Rendered only when ≥2 repos hold a PR; each chip links out to its PR. */
-.git-pr-set {
+/* ── PR switcher: a checkout's PRs as chips under the status header ─────────
+   The focused PR's chip is filled, the rest outlined in their own tint, so the
+   row says both "which PR is this panel" and "what state is each in". */
+.git-pr-switch {
   flex-shrink: 0;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 6px;
   padding: 6px 14px;
   background: var(--bg-1);
   border-bottom: 1px solid var(--bd-soft);
-}
-.git-pr-set-label {
-  font-weight: 700;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-  color: var(--fg-3);
-}
-.git-pr-set-chip {
-  display: inline-flex;
-  padding: 0;
-  border: none;
-  background: none;
-  cursor: pointer;
-}
-.git-pr-set-chip:hover .ag-badge {
-  filter: brightness(1.15);
-}
-
-/* ── PR switcher: a checkout's PRs as tabs under the status header ──────────
-   The `.git-pr-set` strip with the same tinted badges, but the chips are tabs:
-   the focused PR's is filled, the rest outlined in their own tint, so the row
-   says both "which PR is this panel" and "what state is each in". */
-.git-pr-switch-tabs {
-  gap: 6px;
-  min-width: 0;
 }
 .git-pr-switch-chip {
   display: inline-flex;
@@ -1280,80 +1257,18 @@
   outline: none;
   box-shadow: 0 0 0 1px var(--accent-line);
 }
-.git-pr-switch-chip:disabled {
-  cursor: not-allowed;
-  opacity: 0.5;
-}
 .git-pr-switch .git-pr-switch-chip .ag-badge {
   background: transparent;
   box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--badge-color), transparent 55%);
 }
-.git-pr-switch .git-pr-switch-chip[aria-selected="true"] .ag-badge {
+.git-pr-switch .git-pr-switch-chip[aria-pressed="true"] .ag-badge {
   background: var(--badge-color);
   box-shadow: none;
   color: var(--bg-0);
   cursor: default;
 }
-.git-pr-switch .git-pr-switch-chip[aria-selected="false"]:not(:disabled):hover .ag-badge {
+.git-pr-switch .git-pr-switch-chip[aria-pressed="false"]:hover .ag-badge {
   background: color-mix(in oklch, var(--badge-color), transparent 86%);
-}
-/* the `+N` overflow trigger: an outlined pill in the strip's muted ink */
-.git-pr-switch-more {
-  height: 16px;
-  padding: 0 5px;
-  border: 1px solid var(--bd);
-  border-radius: 4px;
-  background: none;
-  color: var(--fg-2);
-  font-family: var(--font-mono);
-  font-weight: 600;
-  cursor: pointer;
-}
-.git-pr-switch-more:hover,
-.git-pr-switch-more[aria-expanded="true"] {
-  background: var(--hover);
-  color: var(--fg-0);
-}
-/* The overflow menu opens from the left edge of its trigger (the strip starts
-   at the panel's left), as wide as a title needs but never wider than the
-   panel. Rows are buttons for keyboard use; reset their chrome. */
-.dd-anchor > .dd.git-pr-menu {
-  left: 0;
-  right: auto;
-  max-width: 360px;
-}
-.git-pr-menu .dd-item {
-  width: 100%;
-  background: none;
-  border: 0;
-  font: inherit;
-  text-align: left;
-}
-.git-pr-menu .dd-item:hover,
-.git-pr-menu .dd-item:focus-visible {
-  outline: none;
-  background: var(--hover);
-}
-.git-pr-menu .dd-item:disabled {
-  opacity: 0.5;
-  background: none;
-}
-.git-pr-menu .di-m {
-  max-width: 140px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.git-pr-menu-num {
-  font-family: var(--font-mono);
-  color: var(--fg-2);
-}
-/* the row's state tint: a badge variant (for its color) drawn as a dot */
-.dd-item .git-pr-dot.ag-badge {
-  width: 8px;
-  height: 8px;
-  padding: 0;
-  border-radius: 50%;
-  background: var(--badge-color);
 }
 
 /* ── Autopilot's mark in the status slot ───────────────────────────────────

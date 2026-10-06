@@ -3,9 +3,7 @@ import type { Delegation } from "@/delegation";
 import { useAppStore } from "@/store";
 import { checkoutKey } from "@/store/git";
 import { basename } from "@/util/format";
-import { prSnapshot } from "@/util/prState";
 import { GitRepoSection } from "./GitRepoSection";
-import { type PrSetEntry, PrSetStrip } from "./PrSetStrip";
 
 /** A repo of the agent plus the scope its section reads/writes under:
  *  `subdir` is undefined for the primary repo (index 0 — plain agent-keyed
@@ -52,8 +50,6 @@ export function GitPanel({ agent }: { agent: AgentRecord }) {
 
 function MultiRepoGitPanel({ agent }: { agent: AgentRecord }) {
   const gitStates = useAppStore((s) => s.gitStates);
-  const prStates = useAppStore((s) => s.prStates);
-  const prChecks = useAppStore((s) => s.prChecks);
   // Delegations are keyed per checkout, so a section just looks up its own —
   // no sentinel needed to tell "no delegation" from "targets the primary".
   const delegations = useAppStore((s) => s.delegations);
@@ -64,30 +60,8 @@ function MultiRepoGitPanel({ agent }: { agent: AgentRecord }) {
   // with no section header.
   const sections = active.length > 0 ? active : [scopes[0]];
 
-  // The task's PR set, one entry per repo with a PR — resolved with the same
-  // per-repo policy as each section (a present store key, even a confirmed
-  // null, is authoritative; only a never-fetched key falls back to the repo's
-  // own persisted snapshot), so the strip and the sections always agree.
-  const prSet: PrSetEntry[] = scopes.flatMap((sc) => {
-    const key = checkoutKey(agent.id, sc.subdir);
-    const live = prStates[key];
-    const pr = live !== undefined ? live : prSnapshot(sc.repo);
-    return pr
-      ? [
-          {
-            key: sc.repo.subdir,
-            context: sc.repo.label ?? basename(sc.repo.repo_path),
-            pr,
-            checks: prChecks[key] ?? null,
-          },
-        ]
-      : [];
-  });
-
   return (
     <div className="git-multi">
-      {/* ≥2 PRs → the "one task, N PRs" strip presents the set as a unit. */}
-      {prSet.length >= 2 && <PrSetStrip heading={`${prSet.length} PRs`} entries={prSet} />}
       {sections.map((sc, i) => (
         <section key={sc.repo.subdir} className="git-repo-sect">
           {active.length > 0 && (

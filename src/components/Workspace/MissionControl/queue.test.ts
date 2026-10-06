@@ -315,6 +315,23 @@ describe("buildReviewQueue", () => {
     expect(q[0].pr?.number).toBe(8);
   });
 
+  it("signs a dismissal by the PRs carrying an issue, not their calm siblings", () => {
+    const failing = checks({ rollup: "failing", failed: 1 });
+    const withSibling = (rollup: "passing" | "pending") =>
+      buildReviewQueue(
+        input({
+          agents: [agent({ id: "a" })],
+          prSets: {
+            a: [
+              { state: openPr(9), checks: failing },
+              { state: openPr(8), checks: checks({ rollup, failed: 0, required_failing: [] }) },
+            ],
+          },
+        }),
+      )[0].signature;
+    expect(withSibling("pending")).toBe(withSibling("passing"));
+  });
+
   it("orders approval < conflict < pr < unseen", () => {
     const q = buildReviewQueue(
       input({

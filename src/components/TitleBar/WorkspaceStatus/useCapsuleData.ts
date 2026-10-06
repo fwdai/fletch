@@ -1,6 +1,7 @@
 import { useMemo } from "react";
 import { useAppStore } from "@/store";
-import { checkoutPrs, usePrState } from "@/util/prState";
+import { usePrState } from "@/util/prState";
+import { checkoutPrs } from "@/util/prSummary";
 
 /** The title-bar capsule's view of the active agent's git/PR state.
  *
@@ -17,11 +18,10 @@ export function useCapsuleData(agentId: string) {
   const prOpen = prState?.state === "open";
   const focusedChecks = prOpen ? checks : null;
 
-  const prs = useMemo(() => {
-    const all = checkoutPrs(prSet, prState, focusedChecks);
-    const focused = all.filter((e) => e.state.number === prState?.number);
-    return [...focused, ...all.filter((e) => e.state.number !== prState?.number)];
-  }, [prSet, prState, focusedChecks]);
+  const prs = useMemo(
+    () => checkoutPrs(prSet, prState, focusedChecks),
+    [prSet, prState, focusedChecks],
+  );
 
   return { shortstats, gitState, prState, checks: focusedChecks, prs };
 }

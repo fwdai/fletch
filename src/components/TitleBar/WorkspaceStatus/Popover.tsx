@@ -81,7 +81,7 @@ export function Popover({ agent, git, pr, prs, status, onViewPr, onOpenDiff }: P
         )}
       </div>
 
-      {pr && <PrBlock prs={prs} focused={pr.number} git={git} />}
+      {pr && <PrBlock prs={prs} git={git} />}
 
       {showActions && (
         <>

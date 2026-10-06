@@ -25,7 +25,6 @@ import type {
 } from "@desktop/api/types/git";
 import type {
   PrChecksChangedEvent,
-  PrState,
   PrStateChangedEvent,
   PrThreadsChangedEvent,
 } from "@desktop/api/types/pr";
@@ -39,6 +38,7 @@ import type {
 import type { VerificationReportEvent } from "@desktop/api/types/verify";
 import { mirrorSentTurn } from "@desktop/helpers/mirrorTurn";
 import { dischargeSending } from "@desktop/helpers/sending";
+import { isFocusedEvent } from "@desktop/store/prEvents";
 import { stampPrWrite } from "@desktop/store/prWriteOrder";
 import { getAdapter, type RawEvent } from "../adapters";
 import { ignore } from "../lib/ignore";
@@ -66,12 +66,6 @@ const patchAgent = (
   ...ws,
   agents: ws.agents.map((a) => (a.id === agentId ? { ...a, ...patch } : a)),
 });
-
-/** Whether a checks/threads event is about the agent's focused PR. No
- *  `number` is a host from before PR sets, which only reported the focused PR;
- *  with no focused PR known the event is taken as its, as it always was. */
-const isFocusedPr = (focused: PrState | null | undefined, number: number | undefined): boolean =>
-  number === undefined || focused == null || focused.number === number;
 
 /** A held `can_use_tool` prompt: control plane, not transcript. Record
  *  tool_use id → request id so the approval card can answer it, and never feed
@@ -289,7 +283,7 @@ export function registerRemoteEvents(client: RemoteClient, set: Set, get: Get): 
   // it cannot land after it with what it saw earlier
   // (@desktop/store/prWriteOrder).
   on<PrStateChangedEvent>("pr:state_changed", (e) => {
-    if (e.subdir || e.focused === false) return;
+    if (e.subdir || !isFocusedEvent(e.focused, undefined, undefined)) return;
     stampPrWrite("prStates", e.agent_id);
     set((s) => {
       // The transition is read against the record being replaced, so the line
@@ -307,7 +301,8 @@ export function registerRemoteEvents(client: RemoteClient, set: Set, get: Get): 
 
   // The host-side PR watcher's reads.
   on<PrChecksChangedEvent>("pr:checks_changed", (e) => {
-    if (e.subdir || !isFocusedPr(get().prStates[e.agent_id], e.number)) return;
+    if (e.subdir || !isFocusedEvent(undefined, e.number, get().prStates[e.agent_id]?.number))
+      return;
     stampPrWrite("prChecks", e.agent_id);
     set((s) => {
       const line = checksSettledText(s.prChecks[e.agent_id], e.checks);
@@ -319,7 +314,8 @@ export function registerRemoteEvents(client: RemoteClient, set: Set, get: Get): 
   });
 
   on<PrThreadsChangedEvent>("pr:threads_changed", (e) => {
-    if (e.subdir || !isFocusedPr(get().prStates[e.agent_id], e.number)) return;
+    if (e.subdir || !isFocusedEvent(undefined, e.number, get().prStates[e.agent_id]?.number))
+      return;
     stampPrWrite("prComments", e.agent_id);
     set((s) => {
       const line = newThreadsText(e.comments, e.new_thread_ids);

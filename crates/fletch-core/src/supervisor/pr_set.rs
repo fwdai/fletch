@@ -3,6 +3,9 @@
 //! set ("Part of a multi-repo change in <project>: owner/frontend#12,
 //! owner/backend#34"), so a reviewer landing on any one PR can find the rest.
 //!
+//! Not the per-checkout PR set (`worktree_prs`, one checkout's PRs with one
+//! focused — `session_sync::AgentPrStatus::prs`): this set spans an agent's repos.
+//!
 //! The trailer is wrapped in HTML-comment sentinels and *replaced* between
 //! them on every sync — never string-appended — so re-running (a third PR
 //! opening, a retried sync) can't duplicate it, and it composes safely with

@@ -17,7 +17,7 @@ import type {
   WfPausedReason,
   WfRun,
 } from "@/api";
-import { checkoutPrs, worstOpenPr } from "@/util/prSummary";
+import { checkoutPrs } from "@/util/prSummary";
 
 /** A card's tests-evidence chip state, derived from a turn-end
  *  [`VerificationReport`]. Only ever a definitive verdict — `undefined` while
@@ -206,8 +206,8 @@ interface PrSignal extends PrSetEntry {
 }
 
 /** Collect the agent's open-PR signals across every repo key, primary first
- *  then secondaries in stable (sorted) order, each checkout's PRs newest
- *  first. */
+ *  then secondaries in stable (sorted) order, each checkout's focused PR
+ *  first and then the rest of its set, newest first. */
 function collectPrSignals(agentId: string, input: QueueInput): PrSignal[] {
   const prefix = `${agentId}::`;
   const secondaries = new Set(
@@ -239,8 +239,9 @@ function collectPrSignals(agentId: string, input: QueueInput): PrSignal[] {
   return out;
 }
 
-/** The agent item's signature: only the volatile review signals (across every
- *  repo's PR), so dismissing it holds until one of them changes. */
+/** The agent item's signature: only the volatile review signals (of the PRs
+ *  passed, across every repo), so dismissing it holds until one of them
+ *  changes. */
 function agentSignature(p: {
   unseen: boolean;
   stats: ShortStats | undefined;
@@ -478,17 +479,23 @@ export function buildReviewQueue(input: QueueInput): ReviewItem[] {
     if (unresolved > 0) reasons.push("unresolved-comments");
     if (reasons.length === 0) continue;
 
-    // The evidence chips show one PR: the one carrying the issue — the worst
-    // failing PR (the shared worst-wins precedence), else the one with
-    // unresolved threads the card is about, else the worst open PR.
-    const shown =
-      worstOpenPr(failing) ?? signals.find((s) => s.unresolved > 0) ?? worstOpenPr(signals);
+    // The evidence chips show one PR: the one carrying the issue (a failing
+    // one first, focused before its siblings, then one with unresolved
+    // threads, then the primary's focused PR).
+    const shown = failing[0] ?? signals.find((s) => s.unresolved > 0) ?? signals[0];
     const isPr = reasons.includes("checks-failing") || reasons.includes("unresolved-comments");
     items.push({
       id: `agent:${agent.id}`,
       kind: "agent",
       bucket: isPr ? BUCKET.pr : BUCKET.unseen,
-      signature: agentSignature({ unseen, stats, signals, tests }),
+      // Signed by the PRs carrying an issue only, so a calm sibling's CI
+      // churning never resurfaces a dismissed card.
+      signature: agentSignature({
+        unseen,
+        stats,
+        signals: signals.filter((s) => s.checks?.rollup === "failing" || s.unresolved > 0),
+        tests,
+      }),
       activityAt: parseCreated(agent.created_at),
       title: agent.name,
       goal: firstLine(agent.task) || "—",

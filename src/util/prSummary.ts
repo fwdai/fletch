@@ -4,7 +4,7 @@
 // "failing" in one place and "open" in another.
 //
 // Pure — no store, no React — so the queue selector (which must stay free of
-// the store) can share it. `prState.ts` re-exports it for everyone else.
+// the store) shares it with every component.
 
 import type { PrChecks, PrSetEntry, PrState } from "@/api";
 import type { BadgeVariant } from "@/components/ui/Badge";
@@ -22,10 +22,16 @@ export interface PrTint {
 const RANK = { failing: 0, conflicting: 1, pending: 2, passing: 3 } as const;
 type OpenRank = (typeof RANK)[keyof typeof RANK];
 
-function openRank({ state, checks }: PrSetEntry): OpenRank {
-  if (checks?.rollup === "failing") return RANK.failing;
-  if (state.mergeable === "conflicting") return RANK.conflicting;
-  if (checks?.rollup === "passing") return RANK.passing;
+/** A conflict by either reading: the PR's own `mergeable`, or the checks
+ *  read's merge state (the one the title bar's merge gate goes by). */
+function conflicting({ state, checks }: PrSetEntry): boolean {
+  return state.mergeable === "conflicting" || checks?.merge_state === "dirty";
+}
+
+function openRank(e: PrSetEntry): OpenRank {
+  if (e.checks?.rollup === "failing") return RANK.failing;
+  if (conflicting(e)) return RANK.conflicting;
+  if (e.checks?.rollup === "passing") return RANK.passing;
   return RANK.pending;
 }
 
@@ -47,10 +53,10 @@ export function prTint(state: PrState, checks: PrChecks | null): PrTint {
   }
 }
 
-/** The open PR most in need of attention (first wins a tie, so callers keep
- *  their own order — focused or primary first), or null when none is open. */
-export function worstOpenPr<T extends PrSetEntry>(entries: readonly T[]): T | null {
-  let worst: T | null = null;
+/** The open PR most in need of attention (first wins a tie), or null when
+ *  none is open. */
+function worstOpenPr(entries: readonly PrSetEntry[]): PrSetEntry | null {
+  let worst: PrSetEntry | null = null;
   for (const e of entries) {
     if (e.state.state !== "open") continue;
     if (!worst || openRank(e) < openRank(worst)) worst = e;
@@ -84,20 +90,16 @@ export function summarizePrSet(entries: readonly PrSetEntry[]): PrSetSummary {
   };
 }
 
-/** One checkout's PRs to show: its set, with the focused PR's entry taken from
- *  the legacy focused maps — the panel's one-shot reads land there first, so
- *  they are the fresher copy. Without a set (an older host, or before the first
- *  sweep) the focused PR stands alone. Newest number first, like the set. */
+/** One checkout's PRs to show, focused first, then the rest in set order
+ *  (newest number first). The focused reads upsert their PR into the set, so
+ *  the set is the whole story; without one (an older host, or before the first
+ *  sweep) the focused PR stands alone. */
 export function checkoutPrs(
   set: readonly PrSetEntry[] | undefined,
   focused: PrState | null | undefined,
   focusedChecks: PrChecks | null | undefined,
 ): PrSetEntry[] {
-  const own = focused ? { state: focused, checks: focusedChecks ?? null } : null;
-  if (!set) return own ? [own] : [];
-  if (!own) return [...set];
-  const known = set.find((e) => e.state.number === own.state.number);
-  const merged = { state: own.state, checks: own.checks ?? known?.checks ?? null };
-  const rest = set.filter((e) => e.state.number !== own.state.number);
-  return [...rest, merged].sort((a, b) => b.state.number - a.state.number);
+  if (!set) return focused ? [{ state: focused, checks: focusedChecks ?? null }] : [];
+  const isFocused = (e: PrSetEntry) => e.state.number === focused?.number;
+  return [...set.filter(isFocused), ...set.filter((e) => !isFocused(e))];
 }

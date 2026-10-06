@@ -13,7 +13,8 @@ export interface PrOrigin {
  *  `prOrigins`), or null when the main agent opened it, the log isn't loaded,
  *  or there's no PR. */
 export function usePrOrigin(agentId: string, number: number | null | undefined): PrOrigin | null {
-  const log = useAppStore((s) => s.managedLogs[agentId]);
+  // No PR, nothing to attribute: don't re-render on every streamed event.
+  const log = useAppStore((s) => (number == null ? undefined : s.managedLogs[agentId]));
   const openSubagentThread = useAppStore((s) => s.openSubagentThread);
   return useMemo(() => {
     if (number == null || !log) return null;
