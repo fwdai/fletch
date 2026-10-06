@@ -110,7 +110,17 @@ impl Supervisor {
             let state = resolve_pr_state(&workspace, &agent_id, None, Discovery::Forced)
                 .await
                 .and_then(|(pr, bound)| bound.then_some(pr));
-            emit_pr_state(ctx.sink.as_ref(), &agent_id, None, state, true);
+            // The focus may have moved while the read was in flight: the PR
+            // still updates its set entry, but only claims focus if it is
+            // still the bound one.
+            let focused = state.as_ref().map_or(true, |pr| {
+                let bound = workspace
+                    .agent(&agent_id)
+                    .ok()
+                    .and_then(|r| r.repos.first()?.pr_number);
+                bound == Some(pr.number as i64)
+            });
+            emit_pr_state(ctx.sink.as_ref(), &agent_id, None, state, focused);
             // The PR may be brand new: let the host-side watcher seed it now,
             // while its checks are still pending, rather than at its next tick.
             super::pr_watch::nudge();
@@ -252,18 +262,37 @@ pub(crate) fn pr_snapshot(repo: &TrackedRepo) -> Option<PrState> {
     })
 }
 
-/// Persist a freshly-fetched PR state to its repo's snapshot columns, logging
-/// (never propagating) a write failure. Every path that learns a PR's state —
-/// the single and batched polls and `create_pr` — funnels through here so the
-/// persistence contract lives in one place.
-pub fn persist_pr_snapshot(
-    workspace: &WorkspaceManager,
-    agent_id: &str,
-    subdir: &str,
-    pr: &PrState,
-) {
-    if let Err(e) = workspace.set_repo_pr_snapshot(agent_id, subdir, pr) {
+/// Persist a freshly-fetched PR state into its checkout's set (and, when it is
+/// the bound PR, the binding's snapshot columns), logging (never propagating) a
+/// write failure. Every path that learns a PR's state — the single and batched
+/// polls — funnels through here so the persistence contract lives in one place.
+/// Never moves the binding: see [`WorkspaceManager::record_repo_pr`].
+fn persist_pr_snapshot(workspace: &WorkspaceManager, agent_id: &str, subdir: &str, pr: &PrState) {
+    if let Err(e) = workspace.record_repo_pr(agent_id, subdir, pr) {
         tracing::warn!(error = %e, agent_id, pr = pr.number, "failed to persist PR snapshot");
+    }
+}
+
+/// Persist a PR and bind it as the checkout's focused PR — for a PR the app
+/// just created or adopted, never for a refresh. Logs (never propagates) a
+/// write failure.
+pub fn bind_pr_snapshot(workspace: &WorkspaceManager, agent_id: &str, subdir: &str, pr: &PrState) {
+    let bound = workspace
+        .record_repo_pr(agent_id, subdir, pr)
+        .and_then(|()| workspace.set_focused_pr(agent_id, subdir, pr.number));
+    if let Err(e) = bound {
+        tracing::warn!(error = %e, agent_id, pr = pr.number, "failed to bind PR");
+    }
+}
+
+/// Whether a PR's last-known state is final enough to serve from its snapshot
+/// with no network. Merged is terminal; closed can be reopened, so it is only
+/// settled when the caller isn't asking to re-verify closed PRs.
+fn settled(state: PrStatus, reverify_closed: bool) -> bool {
+    match state {
+        PrStatus::Merged => true,
+        PrStatus::Closed => !reverify_closed,
+        _ => false,
     }
 }
 
@@ -323,17 +352,18 @@ fn may_discover(agent_id: &str, subdir: &str, discovery: Discovery) -> bool {
 }
 
 /// Whether a branch scan's result supersedes a merged binding — i.e. it is a
-/// genuine follow-up PR rather than the merged one we already hold.
+/// genuine follow-up PR opened outside the app, rather than one the checkout
+/// already holds.
 ///
 /// Only an OPEN PR qualifies. `pick_branch_pr` prefers the newest open PR and
 /// falls back to the newest of any state, so a branch with a follow-up scans to
 /// that follow-up, and a branch without one scans back to the merged PR itself.
-/// The number guard makes the second case explicit rather than relying on "a
-/// merged PR can never read OPEN" — an adoption that re-bound the number we
-/// already have would clear its own snapshot columns (see
-/// `set_repo_pr_number`'s identity rule) for no reason.
-fn supersedes_merged(scanned: &PrState, bound: i64) -> bool {
-    matches!(scanned.state, PrStatus::Open) && scanned.number as i64 != bound
+/// And only a PR that isn't already in the checkout's set (`known`, which holds
+/// the bound PR too): an agent-opened PR is logged the moment it binds, so a
+/// known open PR is one the user focused away from — re-adopting it would undo
+/// that choice on every push.
+fn supersedes_merged(scanned: &PrState, known: &[PrState]) -> bool {
+    matches!(scanned.state, PrStatus::Open) && !known.iter().any(|k| k.number == scanned.number)
 }
 
 /// Drop a repo's discovery record — called once it binds a PR, so the entry
@@ -355,10 +385,12 @@ fn clear_discovery(agent_id: &str, subdir: &str) {
 ///   git access is spent re-confirming them. The one exception is a `Forced`
 ///   resolve, which scans the branch for a *follow-up* PR: a merged PR ends
 ///   that PR, not the workspace, and an open one found there is adopted in its
-///   place. Otherwise fetch by number (resolving owner/repo from the checkout,
-///   or from the source repo when the checkout is broken), persist the result,
-///   and on failure degrade to the last persisted snapshot — a failed fetch
-///   must never erase state GitHub already confirmed.
+///   place unless it is already one of the checkout's PRs (see
+///   [`supersedes_merged`]). Otherwise fetch by number (resolving owner/repo
+///   from the checkout, or from the source repo when the checkout is broken),
+///   persist the result (a refresh: it never moves the binding), and on
+///   failure degrade to the last persisted snapshot — a failed fetch must
+///   never erase state GitHub already confirmed.
 /// - **No bound PR**: discover one by branch name, subject to `discovery` (see
 ///   [`Discovery`] — background polls scan on an interval, event-driven paths
 ///   scan immediately). An OPEN PR is adopted (persisted, becoming bound); a
@@ -392,7 +424,7 @@ pub async fn resolve_pr_state(
         // Closed is deliberately NOT short-circuited: a closed PR can be
         // reopened, so it stays on the live-fetch path (and keeps costing a
         // poll per cycle) to catch that transition.
-        if repo.pr_state.as_deref() == Some(PrStatus::Merged.as_str()) {
+        if pr_snapshot(repo).is_some_and(|pr| settled(pr.state, true)) {
             // …unless a follow-up PR may have appeared. A merged PR doesn't end
             // the workspace: the agent keeps working in the same worktree and
             // opens further PRs, and without this the repo stays bound to the
@@ -407,8 +439,11 @@ pub async fn resolve_pr_state(
             // in a merged workspace, not a timer.
             if discovery == Discovery::Forced {
                 if let Some(found) = crate::github::pr_view(&checkout).await.unwrap_or(None) {
-                    if supersedes_merged(&found, number) {
-                        persist_pr_snapshot(workspace, agent_id, &repo.subdir, &found);
+                    // A failed set read adopts nothing: it can't rule out a PR
+                    // the user focused away from.
+                    let known = workspace.repo_pr_history(agent_id, &repo.subdir).ok();
+                    if known.is_some_and(|known| supersedes_merged(&found, &known)) {
+                        bind_pr_snapshot(workspace, agent_id, &repo.subdir, &found);
                         return Some((found, true));
                     }
                 }
@@ -438,7 +473,7 @@ pub async fn resolve_pr_state(
         }
         match crate::github::pr_view(&checkout).await.unwrap_or(None) {
             Some(pr) if matches!(pr.state, PrStatus::Open) => {
-                persist_pr_snapshot(workspace, agent_id, &repo.subdir, &pr);
+                bind_pr_snapshot(workspace, agent_id, &repo.subdir, &pr);
                 clear_discovery(agent_id, &repo.subdir);
                 Some((pr, true))
             }
@@ -518,8 +553,9 @@ pub struct AgentPrStatus {
 ///
 /// A paused backoff, an unresolvable slug, a not-found alias, or a whole-batch
 /// failure all degrade to the last persisted snapshot rather than wiping the
-/// badge. Checkouts that resolve to nothing are omitted from the map (never
-/// written as absent state), matching the command's contract. Keys follow
+/// badge. Only bound checkouts are reported, and the focused entry is always
+/// the bound PR's row; checkouts with nothing bound are omitted from the map
+/// (never written as absent state), matching the command's contract. Keys follow
 /// [`pr_map_key`]: plain agent id for the primary, `"{agent_id}::{subdir}"`
 /// for secondaries — so single-repo agents produce exactly one plain-keyed
 /// entry, as before.
@@ -542,18 +578,17 @@ pub async fn resolve_all_pr_status(
         HashMap::new()
     });
 
-    /// One PR of a checkout: the snapshot to fall back to (`None` = never
-    /// fetched) and, once the batch ran, what it returned.
+    /// One PR of a checkout: its row, the snapshot to fall back to, and, once
+    /// the batch ran, what it returned.
     struct Slot {
-        number: u32,
-        snapshot: Option<PrState>,
+        snapshot: PrState,
         fetched: Option<PrBatchRow>,
     }
     struct Checkout {
         agent_id: String,
         subdir: String,
         key: String,
-        bound: Option<u32>,
+        bound: u32,
         slots: Vec<Slot>,
     }
     let mut checkouts: Vec<Checkout> = Vec::new();
@@ -570,28 +605,25 @@ pub async fn resolve_all_pr_status(
             if repo.branch.is_none() {
                 continue;
             }
-            let bound = repo.pr_number.map(|n| n as u32);
-            let mut slots: Vec<Slot> = sets
+            // The focused PR is the bound one; an unbound checkout has nothing
+            // to report (discovery isn't this poll's job either).
+            let Some(bound) = repo.pr_number.map(|n| n as u32) else {
+                continue;
+            };
+            let slots: Vec<Slot> = sets
                 .remove(&(agent.id.clone(), repo.subdir.clone()))
                 .unwrap_or_default()
                 .into_iter()
                 .map(|pr| Slot {
-                    number: pr.number,
-                    snapshot: Some(pr),
+                    snapshot: pr,
                     fetched: None,
                 })
                 .collect();
-            // A binding older than its log row (bound before binds were logged)
-            // still has to be watched: fall back to the binding's own snapshot.
-            if let Some(n) = bound.filter(|n| !slots.iter().any(|s| s.number == *n)) {
-                slots.push(Slot {
-                    number: n,
-                    snapshot: pr_snapshot(repo),
-                    fetched: None,
-                });
-                slots.sort_by_key(|s| std::cmp::Reverse(s.number));
-            }
-            if slots.is_empty() {
+            // Every bind logs its row (and migration 0048 backfilled the older
+            // bindings), so a binding without one is a bug — not a case to
+            // paper over with a synthesized slot.
+            if !slots.iter().any(|s| s.snapshot.number == bound) {
+                tracing::warn!(agent_id = %agent.id, subdir = %repo.subdir, pr = bound, "PR sweep: bound PR has no row in its checkout's set; skipping");
                 continue;
             }
 
@@ -601,12 +633,7 @@ pub async fn resolve_all_pr_status(
             // origin can't be fetched — its PRs hold their snapshots.
             let mut slug: Option<Option<(String, String)>> = None;
             for (slot_idx, slot) in slots.iter().enumerate() {
-                let settled = match slot.snapshot.as_ref().map(|s| s.state) {
-                    Some(PrStatus::Merged) => true,
-                    Some(PrStatus::Closed) => !reverify_closed,
-                    _ => false,
-                };
-                if paused || settled {
+                if paused || settled(slot.snapshot.state, reverify_closed) {
                     continue;
                 }
                 if slug.is_none() {
@@ -624,7 +651,7 @@ pub async fn resolve_all_pr_status(
                 refs.push(PrRef {
                     owner: owner.clone(),
                     repo: repo_name.clone(),
-                    number: slot.number,
+                    number: slot.snapshot.number,
                 });
             }
             checkouts.push(Checkout {
@@ -643,16 +670,10 @@ pub async fn resolve_all_pr_status(
         for ((c, s), res) in targets.into_iter().zip(results) {
             // `None` = not found this round / partial error — keep last-known.
             let Some(row) = res else { continue };
+            // A refresh: the row, plus the binding's snapshot when it is the
+            // bound PR. Never moves the binding.
             let checkout = &checkouts[c];
-            // Only the focused PR moves the checkout's binding; the rest of the
-            // set refresh their log rows alone.
-            if checkout.bound == Some(row.state.number) {
-                persist_pr_snapshot(workspace, &checkout.agent_id, &checkout.subdir, &row.state);
-            } else if let Err(e) =
-                workspace.record_repo_pr(&checkout.agent_id, &checkout.subdir, &row.state)
-            {
-                tracing::warn!(error = %e, agent_id = %checkout.agent_id, pr = row.state.number, "failed to persist PR snapshot");
-            }
+            persist_pr_snapshot(workspace, &checkout.agent_id, &checkout.subdir, &row.state);
             checkouts[c].slots[s].fetched = Some(row);
         }
     }
@@ -661,28 +682,23 @@ pub async fn resolve_all_pr_status(
         let prs: Vec<PrSetEntry> = checkout
             .slots
             .into_iter()
-            .filter_map(|slot| match slot.fetched {
+            .map(|slot| match slot.fetched {
                 // Checks and threads only ride along while the PR is open —
                 // that's the only state anything renders them for, and a PR
                 // that just merged shouldn't ship its run list to no one.
                 Some(row) => {
                     let open = matches!(row.state.state, PrStatus::Open);
-                    Some(PrSetEntry {
+                    PrSetEntry {
                         state: row.state,
                         checks: open.then_some(row.checks),
                         threads: row.threads.filter(|_| open),
-                    })
+                    }
                 }
-                None => slot.snapshot.map(PrSetEntry::from_snapshot),
+                None => PrSetEntry::from_snapshot(slot.snapshot),
             })
             .collect();
-        // The bound PR; failing that the newest open one, else the newest.
-        let focused = checkout
-            .bound
-            .and_then(|n| prs.iter().find(|e| e.state.number == n))
-            .or_else(|| prs.iter().find(|e| matches!(e.state.state, PrStatus::Open)))
-            .or_else(|| prs.first());
-        let Some(focused) = focused else {
+        // Checked when the slots were built: the bound PR has a slot.
+        let Some(focused) = prs.iter().find(|e| e.state.number == checkout.bound) else {
             continue;
         };
         let (state, checks) = (focused.state.clone(), focused.checks.clone());
@@ -1884,13 +1900,13 @@ pub(super) mod tests {
         clear_discovery("ag-1", "backend");
     }
 
-    /// Only an OPEN PR takes a merged binding's place. `pick_branch_pr` scans a
-    /// branch back to its merged PR when there's no follow-up, and adopting that
-    /// would re-bind the number we already hold — clearing its own snapshot
-    /// columns (see `set_repo_pr_number`) to replace merged state with merged
-    /// state.
+    /// Only an OPEN PR the checkout doesn't already hold takes a merged
+    /// binding's place. `pick_branch_pr` scans a branch back to its merged PR
+    /// when there's no follow-up, and an agent-opened PR is in the set from the
+    /// moment it binds — so an open PR the set already holds is one the user
+    /// focused away from, and re-adopting it would undo that on every push.
     #[test]
-    fn only_an_open_follow_up_supersedes_a_merged_binding() {
+    fn only_an_unknown_open_follow_up_supersedes_a_merged_binding() {
         let pr = |number: u32, state: PrStatus| PrState {
             number,
             url: format!("https://github.com/o/r/pull/{number}"),
@@ -1901,21 +1917,28 @@ pub(super) mod tests {
             merged_at: None,
             branch: None,
         };
+        let held = [pr(42, PrStatus::Merged)];
         assert!(
-            supersedes_merged(&pr(43, PrStatus::Open), 42),
-            "an open follow-up is the workspace's current PR"
+            supersedes_merged(&pr(43, PrStatus::Open), &held),
+            "an open follow-up opened outside the app is the workspace's current PR"
         );
         assert!(
-            !supersedes_merged(&pr(42, PrStatus::Merged), 42),
+            !supersedes_merged(&pr(42, PrStatus::Merged), &held),
             "the scan found the PR we already hold"
         );
         assert!(
-            !supersedes_merged(&pr(43, PrStatus::Closed), 42),
+            !supersedes_merged(&pr(43, PrStatus::Closed), &held),
             "a closed follow-up is never claimed as the binding"
         );
         assert!(
-            !supersedes_merged(&pr(43, PrStatus::Merged), 42),
+            !supersedes_merged(&pr(43, PrStatus::Merged), &held),
             "a second merged PR is history too, not the current state"
+        );
+        // The user focused the merged #42 away from the open #43 in its set.
+        let set = [pr(43, PrStatus::Open), pr(42, PrStatus::Merged)];
+        assert!(
+            !supersedes_merged(&pr(43, PrStatus::Open), &set),
+            "an open PR already in the set is never re-adopted over the user's focus"
         );
     }
 
@@ -1951,10 +1974,8 @@ pub(super) mod tests {
             merged_at: None,
             branch: None,
         };
-        wm.set_repo_pr_snapshot(&id, &subdir, &pr(42, PrStatus::Merged))
-            .unwrap();
-        wm.set_repo_pr_snapshot(&id, &subdir, &pr(43, PrStatus::Closed))
-            .unwrap();
+        bind_pr_snapshot(&wm, &id, &subdir, &pr(42, PrStatus::Merged));
+        bind_pr_snapshot(&wm, &id, &subdir, &pr(43, PrStatus::Closed));
 
         let numbers = |s: &AgentPrStatus| s.prs.iter().map(|p| p.state.number).collect::<Vec<_>>();
         let all = resolve_all_pr_status(&wm, false, false).await;

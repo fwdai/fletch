@@ -136,7 +136,7 @@ pub async fn get_pr_state(
 
 /// Every PR this checkout has held, newest number first — the panel's earlier-PRs
 /// strip. A pure database read (no network, no git): the history log is written
-/// by `set_repo_pr_snapshot`, so this only reports what a fetch already confirmed.
+/// by `record_repo_pr`, so this only reports what a fetch already confirmed.
 /// An unknown subdir or a repo-less agent reads as an empty history rather than
 /// an error — the strip simply doesn't render.
 #[tauri::command]

@@ -1394,6 +1394,13 @@ fn recorded_base_follows_a_redirected_pr_base() {
     assert_eq!(repo.base_sha.as_deref(), Some("cafebabe"));
 }
 
+/// Log `pr` into the checkout's set and bind it — what `create_pr` and an
+/// adoption do (`supervisor::bind_pr_snapshot`).
+fn bind(wm: &WorkspaceManager, id: &str, subdir: &str, pr: &crate::github::PrState) {
+    wm.record_repo_pr(id, subdir, pr).unwrap();
+    wm.set_focused_pr(id, subdir, pr.number).unwrap().unwrap();
+}
+
 /// A checkout accumulates every PR it has held, not just the current binding:
 /// a workspace that keeps working after a merge opens follow-ups, and the
 /// merged PR's identity is cleared off the `worktrees` row when the next one
@@ -1432,7 +1439,7 @@ fn pr_history_accumulates_across_rebinds() {
         merged_at: None,
         branch: None,
     };
-    wm.set_repo_pr_snapshot(&id, &subdir, &first_open).unwrap();
+    bind(&wm, &id, &subdir, &first_open);
 
     // The same PR merging updates its row in place rather than adding one.
     let first_merged = crate::github::PrState {
@@ -1441,8 +1448,7 @@ fn pr_history_accumulates_across_rebinds() {
         merged_at: Some(2_000),
         ..first_open.clone()
     };
-    wm.set_repo_pr_snapshot(&id, &subdir, &first_merged)
-        .unwrap();
+    wm.record_repo_pr(&id, &subdir, &first_merged).unwrap();
     let history = wm.repo_pr_history(&id, &subdir).unwrap();
     assert_eq!(history.len(), 1, "one PR seen twice is one row");
     assert!(matches!(history[0].state, crate::github::PrStatus::Merged));
@@ -1464,7 +1470,7 @@ fn pr_history_accumulates_across_rebinds() {
         merged_at: None,
         branch: None,
     };
-    wm.set_repo_pr_snapshot(&id, &subdir, &second).unwrap();
+    bind(&wm, &id, &subdir, &second);
 
     let history = wm.repo_pr_history(&id, &subdir).unwrap();
     assert_eq!(history.len(), 2);
@@ -1514,7 +1520,7 @@ fn pr_history_is_scoped_to_its_checkout() {
         merged_at: Some(2_000),
         branch: None,
     };
-    wm.set_repo_pr_snapshot(&id, &subdir, &pr).unwrap();
+    wm.record_repo_pr(&id, &subdir, &pr).unwrap();
 
     assert_eq!(wm.repo_pr_history(&id, &subdir).unwrap().len(), 1);
     assert!(
@@ -1558,7 +1564,7 @@ fn pr_set_members_refresh_without_stealing_focus() {
         merged_at: None,
         branch: Some("feat/first".into()),
     };
-    wm.set_repo_pr_snapshot(&id, &subdir, &first).unwrap();
+    bind(&wm, &id, &subdir, &first);
     // A sub-agent opens a second PR from the same checkout; it takes the focus.
     wm.set_repo_pr_number(&id, &subdir, 43, "u43", "feat: second", Some("feat/second"))
         .unwrap();
@@ -1590,6 +1596,35 @@ fn pr_set_members_refresh_without_stealing_focus() {
     // …and never outside it.
     assert!(wm.set_focused_pr(&id, &subdir, 99).unwrap().is_none());
     assert_eq!(wm.agent(&id).unwrap().repos[0].pr_number, Some(42));
+
+    // A fetch of #43 that was in flight across the focus change lands: it
+    // refreshes #43's row and leaves the focus — and its snapshot — alone.
+    let late = crate::github::PrState {
+        number: 43,
+        url: "u43".into(),
+        title: "feat: second (late)".into(),
+        state: crate::github::PrStatus::Closed,
+        mergeable: crate::github::MergeableState::Unknown,
+        opened_at: None,
+        merged_at: None,
+        branch: None,
+    };
+    wm.record_repo_pr(&id, &subdir, &late).unwrap();
+    let repo = wm.agent(&id).unwrap().repos[0].clone();
+    assert_eq!(repo.pr_number, Some(42), "a refresh never moves the focus");
+    assert_eq!(repo.pr_title.as_deref(), Some("feat: first (renamed)"));
+    assert_eq!(repo.pr_state.as_deref(), Some("open"));
+
+    // A refresh of the focused PR keeps the binding's snapshot current.
+    let merged = crate::github::PrState {
+        state: crate::github::PrStatus::Merged,
+        merged_at: Some(2_000),
+        ..refreshed.clone()
+    };
+    wm.record_repo_pr(&id, &subdir, &merged).unwrap();
+    let repo = wm.agent(&id).unwrap().repos[0].clone();
+    assert_eq!(repo.pr_number, Some(42));
+    assert_eq!(repo.pr_state.as_deref(), Some("merged"));
 
     // An archived workspace's PRs are nobody's to sweep.
     wm.begin_archive(&id).unwrap();
@@ -1628,7 +1663,7 @@ fn pr_snapshot_persists_and_loads() {
         merged_at: None,
         branch: None,
     };
-    wm.set_repo_pr_snapshot(&id, &subdir, &open).unwrap();
+    bind(&wm, &id, &subdir, &open);
     let repo = wm.agent(&id).unwrap().repos[0].clone();
     assert_eq!(repo.pr_number, Some(42));
     assert_eq!(
@@ -1647,7 +1682,7 @@ fn pr_snapshot_persists_and_loads() {
         branch: None,
         ..open
     };
-    wm.set_repo_pr_snapshot(&id, &subdir, &merged).unwrap();
+    wm.record_repo_pr(&id, &subdir, &merged).unwrap();
     let repo = wm.agent(&id).unwrap().repos[0].clone();
     assert_eq!(repo.pr_state.as_deref(), Some("merged"));
     let conn = db.lock();
@@ -1667,12 +1702,13 @@ fn pr_snapshot_persists_and_loads() {
 }
 
 /// A merged PR doesn't end the workspace: the agent keeps working in the same
-/// worktree and opens a follow-up PR. Binding that new number must drop the
-/// merged PR's display snapshot and stamps, or `resolve_pr_state` short-circuits
-/// the inherited `merged` state and renders "merged #<new>" — with the previous
-/// PR's url and title — with no fetch left to correct it.
+/// worktree and opens a follow-up PR. Binding that new number must replace the
+/// merged PR's display snapshot and stamps with the new PR's own row, or
+/// `resolve_pr_state` short-circuits the inherited `merged` state and renders
+/// "merged #<new>" — with the previous PR's url and title — with no fetch left
+/// to correct it.
 #[test]
-fn binding_a_follow_up_pr_clears_the_merged_snapshot() {
+fn binding_a_follow_up_pr_takes_its_own_snapshot() {
     let db = test_db();
     let wm = WorkspaceManager::new(db.clone());
     seed_repo(&db, "/r");
@@ -1699,7 +1735,7 @@ fn binding_a_follow_up_pr_clears_the_merged_snapshot() {
         merged_at: Some(2_000),
         branch: None,
     };
-    wm.set_repo_pr_snapshot(&id, &subdir, &merged).unwrap();
+    bind(&wm, &id, &subdir, &merged);
 
     // Re-binding the SAME number is the ordinary path — it must keep the
     // snapshot, so a poll never blanks a badge it just confirmed.
@@ -1732,11 +1768,16 @@ fn binding_a_follow_up_pr_clears_the_merged_snapshot() {
     assert_eq!(history[0].branch.as_deref(), Some("feat/second"));
     assert_eq!(history[1].state, crate::github::PrStatus::Merged);
     assert_eq!(
-        repo.pr_state, None,
+        repo.pr_state.as_deref(),
+        Some("open"),
         "the new PR must not inherit 'merged' — that state is served with no network"
     );
-    assert_eq!(repo.pr_url, None, "url would link to the previous PR");
-    assert_eq!(repo.pr_title, None, "title would name the previous PR");
+    assert_eq!(
+        repo.pr_url.as_deref(),
+        Some("https://github.com/o/r/pull/43"),
+        "never the previous PR's url"
+    );
+    assert_eq!(repo.pr_title.as_deref(), Some("feat: second"));
     let conn = db.lock();
     let (opened, merged_at): (Option<i64>, Option<i64>) = conn
         .query_row(
@@ -1752,9 +1793,9 @@ fn binding_a_follow_up_pr_clears_the_merged_snapshot() {
     );
 }
 
-/// The direct in-app path (`create_pr` → `set_repo_pr_snapshot`) opens a
-/// follow-up PR without going through `set_repo_pr_number`, so the times must
-/// not COALESCE across the identity change either.
+/// The direct in-app path (`create_pr` → `bind_pr_snapshot`) opens a follow-up
+/// PR without going through `set_repo_pr_number`, so the times must not carry
+/// across the identity change either.
 #[test]
 fn a_follow_up_snapshot_does_not_inherit_the_previous_merge_stamp() {
     let db = test_db();
@@ -1783,7 +1824,7 @@ fn a_follow_up_snapshot_does_not_inherit_the_previous_merge_stamp() {
         merged_at: Some(2_000),
         branch: None,
     };
-    wm.set_repo_pr_snapshot(&id, &subdir, &merged).unwrap();
+    bind(&wm, &id, &subdir, &merged);
 
     let follow_up = crate::github::PrState {
         number: 43,
@@ -1795,7 +1836,7 @@ fn a_follow_up_snapshot_does_not_inherit_the_previous_merge_stamp() {
         merged_at: None,
         branch: None,
     };
-    wm.set_repo_pr_snapshot(&id, &subdir, &follow_up).unwrap();
+    bind(&wm, &id, &subdir, &follow_up);
 
     let repo = wm.agent(&id).unwrap().repos[0].clone();
     assert_eq!(repo.pr_number, Some(43));

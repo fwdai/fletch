@@ -21,6 +21,7 @@ import { setSetting } from "@/storage/settings";
 import { newestWins } from "@/util/newestWins";
 import { activeEnvironment, activeEnvironmentId, forActiveEnvironment } from "./environments";
 import { gateReason } from "./gates";
+import { upsertState } from "./prEvents";
 import { acceptPrWrite, issuePrWrite, stampPrWrite } from "./prWriteOrder";
 import type { SliceCreator } from "./types";
 
@@ -241,24 +242,59 @@ const runGitMutation = async (
   }
 };
 
+/** A focused-PR read folded into its checkout's set (`prSets`): the entry
+ *  upserted with `state` (and `checks`, when the read resolved them), or null
+ *  when it must not land there. A merged/closed PR the set doesn't hold is the
+ *  display-only answer `resolve_pr_state` gives an unbound checkout (a recycled
+ *  branch's old PR), never a member; an open one it found was adopted, i.e.
+ *  bound, so it is. */
+function focusedIntoSet(
+  set: PrSetEntry[] | undefined,
+  state: PrState,
+  checks?: PrChecks | null,
+): PrSetEntry[] | null {
+  if (state.state !== "open" && !set?.some((p) => p.state.number === state.number)) return null;
+  return upsertState(set, state, checks);
+}
+
+/** `prSets` with `next` written for `mapKey`, ticket permitting — or nothing,
+ *  for a `set()` to spread. Accepted inside the write, so a read that has
+ *  nothing to fold in doesn't claim the slice. */
+function setsWrite(
+  s: GitSlice,
+  mapKey: string,
+  ticket: number,
+  next: PrSetEntry[] | null,
+): Partial<GitSlice> {
+  if (!next || !acceptPrWrite("prSets", mapKey, ticket)) return {};
+  return { prSets: { ...s.prSets, [mapKey]: next } };
+}
+
 // fetchPrChecks/fetchPrComments are identical except for the slice key and the
 // backend call: write the value (including null = "confirmed unavailable") on
 // success; on a *first* failure degrade the absent key to null so the panel
 // drops the "checking…" placeholder, while a later transient error keeps the
-// last good value.
+// last good value. `toSet` folds an accepted value into the checkout's PR set.
 const fetchPrAux = async <K extends "prChecks" | "prComments">(
   set: GitSet,
   agentId: string,
   key: K,
   fetch: (agentId: string, subdir?: string) => Promise<GitSlice[K][string]>,
   subdir?: string,
+  toSet?: (s: GitSlice, mapKey: string, value: GitSlice[K][string]) => PrSetEntry[] | null,
 ): Promise<void> => {
   const mapKey = checkoutKey(agentId, subdir);
   const ticket = issuePrWrite();
   try {
     const value = await fetch(agentId, subdir);
     if (!acceptPrWrite(key, mapKey, ticket)) return;
-    set((s) => ({ [key]: { ...s[key], [mapKey]: value } }) as Partial<GitSlice>);
+    set(
+      (s) =>
+        ({
+          [key]: { ...s[key], [mapKey]: value },
+          ...setsWrite(s, mapKey, ticket, toSet?.(s, mapKey, value) ?? null),
+        }) as Partial<GitSlice>,
+    );
   } catch {
     set((s) =>
       mapKey in s[key] ? {} : ({ [key]: { ...s[key], [mapKey]: null } } as Partial<GitSlice>),
@@ -435,7 +471,12 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
       // Always write (including null) to distinguish "confirmed: no PR" from
       // "not yet fetched" (absent key). Unlike fetchGitState which guards the
       // write, PR state being null is meaningful.
-      set((s) => ({ prStates: { ...s.prStates, [mapKey]: state } }));
+      // The set's entry for it moves too, so it isn't stale until the next
+      // sweep; a confirmed "no PR" names no entry to touch.
+      set((s) => ({
+        prStates: { ...s.prStates, [mapKey]: state },
+        ...setsWrite(s, mapKey, ticket, state && focusedIntoSet(s.prSets[mapKey], state)),
+      }));
     } catch {
       // non-fatal
     }
@@ -458,7 +499,13 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
     return done;
   },
 
-  fetchPrChecks: (agentId, subdir) => fetchPrAux(set, agentId, "prChecks", api.getPrChecks, subdir),
+  fetchPrChecks: (agentId, subdir) =>
+    fetchPrAux(set, agentId, "prChecks", api.getPrChecks, subdir, (s, mapKey, checks) => {
+      // Checks are the focused PR's; with none known (or none resolved) there
+      // is no entry to write them to.
+      const focused = s.prStates[mapKey];
+      return focused && checks ? focusedIntoSet(s.prSets[mapKey], focused, checks) : null;
+    }),
 
   fetchPrLive: async (agentId, subdir) => {
     if (!githubReady(get)) return;
@@ -484,9 +531,20 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
       // present PR means the CI reads degraded (or the PR isn't open), and
       // overwriting a good rollup there would blank the pill on a transient
       // error.
+      //
+      // The set's entry for the PR moves with the state (and its checks, when
+      // those were taken too), so it isn't stale until the next sweep.
       set((s) => ({
         prStates: takeState ? { ...s.prStates, [mapKey]: live?.state ?? null } : s.prStates,
         prChecks: takeChecks ? { ...s.prChecks, [mapKey]: live?.checks ?? null } : s.prChecks,
+        ...setsWrite(
+          s,
+          mapKey,
+          ticket,
+          takeState && live
+            ? focusedIntoSet(s.prSets[mapKey], live.state, takeChecks ? live.checks : null)
+            : null,
+        ),
       }));
     } catch {
       // Mirror fetchPrAux's failure contract: degrade an absent key to null so

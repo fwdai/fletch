@@ -50,7 +50,7 @@ pub(crate) fn nudge() {
     signal().notify_one();
 }
 
-/// What the watcher last saw of one PR, keyed by [`seen_key`].
+/// What the watcher last saw of one PR, keyed by [`PrKey`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Seen {
     state: PrStatus,
@@ -76,13 +76,11 @@ impl Seen {
     }
 }
 
-type Last = Mutex<HashMap<String, Seen>>;
-
-/// The watcher's memory key for one PR: its checkout's [`pr_map_key`] plus its
+/// The watcher's memory key for one PR: its checkout's [`pr_map_key`] and its
 /// number. A checkout holds several PRs at once, each watched on its own.
-pub(crate) fn seen_key(checkout_key: &str, number: u32) -> String {
-    format!("{checkout_key}#{number}")
-}
+pub(crate) type PrKey = (String, u32);
+
+type Last = Mutex<HashMap<PrKey, Seen>>;
 
 /// One tick's read of a PR. `checks: None` is "the CI read did not resolve"
 /// and `threads: None` "not polled this tick" — both leave the last value
@@ -133,12 +131,12 @@ fn thread_ids(comments: &PrComments) -> BTreeSet<String> {
 ///   seen before — none when a thread was only resolved. Clients follow these
 ///   events instead of polling, so a resolution has to reach them too; the
 ///   alerts key off the new ids and stay quiet for it.
-pub(crate) fn diff(last: &mut HashMap<String, Seen>, key: &str, read: &Read) -> Vec<Change> {
+pub(crate) fn diff(last: &mut HashMap<PrKey, Seen>, key: &PrKey, read: &Read) -> Vec<Change> {
     let Some(seen) = last.get_mut(key) else {
         if read.state.state != PrStatus::Open {
             return Vec::new();
         }
-        last.insert(key.to_string(), Seen::first(read));
+        last.insert(key.clone(), Seen::first(read));
         return vec![Change::State(read.state.clone())];
     };
     if read.state.state != seen.state {
@@ -244,7 +242,7 @@ async fn tick(ctx: &Arc<EngineCtx>, supervisor: &Arc<Supervisor>, last: &Last, w
                 checks: pr.checks,
                 threads: pr.threads,
             };
-            let changes = diff(&mut last.lock(), &seen_key(&key, number), &read);
+            let changes = diff(&mut last.lock(), &(key.clone(), number), &read);
             publish(
                 ctx.sink.as_ref(),
                 agent_id,
@@ -316,9 +314,14 @@ mod tests {
         }
     }
 
-    /// Diff one read of PR #650 of the primary repo of agent `arabia`.
-    fn step(last: &mut HashMap<String, Seen>, read: &Read) -> Vec<Change> {
-        diff(last, &seen_key(&pr_map_key("arabia", "", true), 650), read)
+    /// PR #650 of the primary repo of agent `arabia`.
+    fn primary() -> PrKey {
+        (pr_map_key("arabia", "", true), 650)
+    }
+
+    /// Diff one read of [`primary`].
+    fn step(last: &mut HashMap<PrKey, Seen>, read: &Read) -> Vec<Change> {
+        diff(last, &primary(), read)
     }
 
     /// Like [`read`], for another PR of the same checkout.
@@ -348,7 +351,7 @@ mod tests {
         );
         // A second identical read is nothing.
         assert!(step(&mut last, &first).is_empty());
-        let seen = &last["arabia#650"];
+        let seen = &last[&primary()];
         assert_eq!(seen.rollup.as_deref(), Some("failing"));
         assert_eq!(seen.required_failing, BTreeSet::from(["unit".to_string()]));
         assert_eq!(seen.threads, BTreeSet::from(["t1".to_string()]));
@@ -377,7 +380,7 @@ mod tests {
         );
         assert_eq!(changes.len(), 1, "{changes:?}");
         assert!(matches!(&changes[0], Change::Checks(c) if c.rollup == "failing"));
-        assert_eq!(last["arabia#650"].rollup.as_deref(), Some("failing"));
+        assert_eq!(last[&primary()].rollup.as_deref(), Some("failing"));
     }
 
     /// The names matter as much as the colour: a second check joining the
@@ -410,7 +413,7 @@ mod tests {
             &read(PrStatus::Open, Some(checks("passing", &[])), None),
         );
         assert!(step(&mut last, &read(PrStatus::Open, None, None)).is_empty());
-        assert_eq!(last["arabia#650"].rollup.as_deref(), Some("passing"));
+        assert_eq!(last[&primary()].rollup.as_deref(), Some("passing"));
     }
 
     #[test]
@@ -530,7 +533,7 @@ mod tests {
     fn two_prs_of_one_checkout_are_watched_independently() {
         let mut last = HashMap::new();
         let checkout = pr_map_key("arabia", "", true);
-        let (first, second) = (seen_key(&checkout, 650), seen_key(&checkout, 651));
+        let (first, second) = ((checkout.clone(), 650), (checkout, 651));
         let pending = |n| read_pr(n, PrStatus::Open, Some(checks("pending", &[])));
         assert!(matches!(
             &diff(&mut last, &first, &pending(650))[..],
@@ -580,7 +583,7 @@ mod tests {
             &mut last,
             &read(PrStatus::Open, Some(checks("pending", &[])), None),
         );
-        let secondary = seen_key(&pr_map_key("arabia", "api", false), 650);
+        let secondary = (pr_map_key("arabia", "api", false), 650);
         let pending = read(PrStatus::Open, Some(checks("pending", &[])), None);
         assert!(matches!(
             &diff(&mut last, &secondary, &pending)[..],
@@ -592,8 +595,8 @@ mod tests {
             &read(PrStatus::Open, Some(checks("passing", &[])), None),
         );
         assert!(matches!(&changes[..], [Change::Checks(_)]));
-        assert_eq!(last["arabia#650"].rollup.as_deref(), Some("pending"));
-        assert_eq!(last["arabia::api#650"].rollup.as_deref(), Some("passing"));
+        assert_eq!(last[&primary()].rollup.as_deref(), Some("pending"));
+        assert_eq!(last[&secondary].rollup.as_deref(), Some("passing"));
     }
 
     /// A secondary's PR settling is reported under its own key, like the
@@ -601,7 +604,7 @@ mod tests {
     #[test]
     fn a_secondary_pr_merging_emits_state_under_its_key() {
         let mut last = HashMap::new();
-        let secondary = seen_key(&pr_map_key("arabia", "api", false), 650);
+        let secondary = (pr_map_key("arabia", "api", false), 650);
         step(&mut last, &read(PrStatus::Open, None, None));
         diff(&mut last, &secondary, &read(PrStatus::Open, None, None));
         let changes = diff(&mut last, &secondary, &read(PrStatus::Merged, None, None));
@@ -609,9 +612,9 @@ mod tests {
             matches!(&changes[..], [Change::State(s)] if s.state == PrStatus::Merged),
             "{changes:?}"
         );
-        assert!(!last.contains_key("arabia::api#650"));
+        assert!(!last.contains_key(&secondary));
         assert!(
-            last.contains_key("arabia#650"),
+            last.contains_key(&primary()),
             "the primary is still watched"
         );
     }
@@ -648,7 +651,8 @@ mod tests {
                 assert_eq!(name, "pr:state_changed");
                 assert_eq!(payload["agent_id"], "arabia");
                 assert_eq!(payload["state"]["state"], "merged");
-                assert_eq!(payload["number"], 650);
+                assert_eq!(payload["state"]["number"], 650);
+                assert!(payload.get("number").is_none(), "the PR is `state.number`");
                 (payload["subdir"].clone(), payload["focused"].clone())
             })
             .collect();

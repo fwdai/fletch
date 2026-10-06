@@ -10,6 +10,7 @@
 // there. Only the slices actually written are stamped.
 
 import type {
+  PrChecks,
   PrChecksChangedEvent,
   PrSetEntry,
   PrState,
@@ -22,14 +23,34 @@ import { stampPrWrite } from "./prWriteOrder";
 const keyOf = (e: { agent_id: string; subdir?: string | null }): string =>
   checkoutKey(e.agent_id, e.subdir ?? undefined);
 
-/** `set` with `state` written into its entry (keeping that entry's checks),
- *  newest number first. */
-function upsertState(set: PrSetEntry[] | undefined, state: PrState): PrSetEntry[] {
+/** `set` with `state` written into its entry, newest number first. The entry
+ *  keeps its last-known checks unless `checks` brings new ones (null or absent
+ *  is "nothing to say this round"). */
+export function upsertState(
+  set: PrSetEntry[] | undefined,
+  state: PrState,
+  checks?: PrChecks | null,
+): PrSetEntry[] {
   const prev = set?.find((p) => p.state.number === state.number);
   const rest = (set ?? []).filter((p) => p.state.number !== state.number);
-  return [...rest, { state, checks: prev?.checks ?? null }].sort(
+  return [...rest, { state, checks: checks ?? prev?.checks ?? null }].sort(
     (a, b) => b.state.number - a.state.number,
   );
+}
+
+/** Whether a PR event is about the checkout's focused PR — the one the legacy
+ *  single-PR maps (and the phone) hold. An explicit `focused` flag decides
+ *  (`pr:state_changed`). Otherwise the event's PR `number` is compared with the
+ *  focused one's: no `number` is a host from before PR sets, which only ever
+ *  reported the focused PR, and with no focused PR known the event is taken as
+ *  its, as it always was. */
+export function isFocusedEvent(
+  focused: boolean | undefined,
+  number: number | undefined,
+  focusedNumber: number | null | undefined,
+): boolean {
+  if (focused !== undefined) return focused;
+  return number === undefined || focusedNumber == null || number === focusedNumber;
 }
 
 type StateSlices = Pick<GitSlice, "prStates" | "prSets">;
@@ -38,15 +59,21 @@ export function applyPrStateChanged(s: StateSlices, e: PrStateChangedEvent): Par
   const key = keyOf(e);
   const out: Partial<StateSlices> = {};
   // A null state ("no bound PR") names no PR, so there is no set entry to touch.
-  if (e.state) {
+  const state = e.state;
+  if (state) {
     stampPrWrite("prSets", key);
-    out.prSets = { ...s.prSets, [key]: upsertState(s.prSets[key], e.state) };
+    // Absent `focused` is a host from before PR sets: it binds one PR per
+    // checkout, so its latest report is the whole set (that entry keeping its
+    // checks) — upserting would keep a PR it has since replaced as a phantom
+    // sibling.
+    const prev = s.prSets[key];
+    const base =
+      e.focused === undefined ? prev?.filter((p) => p.state.number === state.number) : prev;
+    out.prSets = { ...s.prSets, [key]: upsertState(base, state) };
   }
-  // Absent `focused` is a host from before PR sets, which only ever reported
-  // the focused PR.
-  if (e.focused !== false) {
+  if (isFocusedEvent(e.focused, undefined, undefined)) {
     stampPrWrite("prStates", key);
-    out.prStates = { ...s.prStates, [key]: e.state };
+    out.prStates = { ...s.prStates, [key]: state };
   }
   return out;
 }
@@ -67,9 +94,7 @@ export function applyPrChecksChanged(
       [key]: set.map((p) => (p.state.number === e.number ? { ...p, checks: e.checks } : p)),
     };
   }
-  // With no focused PR known the checks are taken as its, as they always were.
-  const focused = s.prStates[key];
-  if (focused == null || focused.number === e.number) {
+  if (isFocusedEvent(undefined, e.number, s.prStates[key]?.number)) {
     stampPrWrite("prChecks", key);
     out.prChecks = { ...s.prChecks, [key]: e.checks };
   }
@@ -81,11 +106,8 @@ export function applyPrThreadsChanged(
   e: PrThreadsChangedEvent,
 ): Partial<Pick<GitSlice, "prComments">> {
   const key = keyOf(e);
-  // Threads are kept for the focused PR alone. No `number` is a host from
-  // before PR sets, which only reported the focused PR; with no focused PR
-  // known they are taken as its, like checks.
-  const focused = s.prStates[key];
-  if (e.number !== undefined && focused != null && e.number !== focused.number) return {};
+  // Threads are kept for the focused PR alone.
+  if (!isFocusedEvent(undefined, e.number, s.prStates[key]?.number)) return {};
   stampPrWrite("prComments", key);
   return { prComments: { ...s.prComments, [key]: e.comments } };
 }
