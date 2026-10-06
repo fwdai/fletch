@@ -12,6 +12,8 @@ checkout the action targets. Run the playbook **in that checkout** (`cd` into
 every host RPC op you use (`git_push`, `open_pr`, `git_fetch`). No `repo`
 param means your starting (primary) checkout, as always.
 
+A trigger about a pull request may carry `branch="<name>"` — that PR's head branch. If the checkout is on a different branch, switch to `branch` first (commit or stash your local work so nothing is lost), then follow the playbook.
+
 **Local git is yours to run directly.** Your workspace is a real checkout with a writable `.git`, so run plain git for local work: `git status`, `git add`, `git commit`, `git merge`, and conflict resolution all work in-place. What Fletch runs *for* you are the actions that need your GitHub credentials — and those stay on the host, never in your sandbox. So for anything that talks to the remote, use the file-RPC ops:
 
 - **`git_push`** — push the current branch to `origin`. Pass `args.force=true` to push a rewritten history (e.g. after a rebase); it uses `--force-with-lease`, which rewrites the remote branch but refuses if the remote has moved in a way you haven't seen.

@@ -182,6 +182,14 @@ export const GATES = {
     label: "Merging a PR",
     reason: "This host is too old to merge a PR — merge it on GitHub.",
   },
+  /** Switching which of a checkout's PRs the Git panel follows. A local write on
+   *  the host (no GitHub call), so it closes only against a host from before
+   *  checkouts held a set of PRs. */
+  focusPr: {
+    op: "set_focused_pr",
+    label: "Switching PRs",
+    reason: "This host is too old to switch between PRs — update it.",
+  },
   /** Bringing an archived session back. Also only closed by an older host. */
   restore: {
     op: "restore_agent",

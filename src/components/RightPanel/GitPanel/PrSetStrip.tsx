@@ -4,8 +4,8 @@ import { Icon } from "@/components/Icon";
 import { Badge, type BadgeVariant } from "@/components/ui/Badge";
 
 /** One PR chip in the strip. `context` names what this PR belongs to — the repo
- *  for a multi-repo set ("Frontend"), the PR's own title for a checkout's
- *  history — and is what the tooltip and screen-reader label lead with. */
+ *  of a multi-repo set ("Frontend") — and is what the tooltip and screen-reader
+ *  label lead with. */
 export interface PrSetEntry {
   key: string;
   context: string;
@@ -14,8 +14,12 @@ export interface PrSetEntry {
 }
 
 /** The status pill for one PR of the set: state first, refined by the CI
- *  rollup while open (same tint semantics as the sidebar's PR pill). */
-function chipStatus(pr: PrState, checks: PrChecks | null): { variant: BadgeVariant; word: string } {
+ *  rollup while open (same tint semantics as the sidebar's PR pill). Shared
+ *  with the per-checkout `PrSwitcher`, so a PR reads the same in both. */
+export function chipStatus(
+  pr: PrState,
+  checks: PrChecks | null,
+): { variant: BadgeVariant; word: string } {
   if (pr.state === "merged") return { variant: "pr-merged", word: "merged" };
   if (pr.state === "closed") return { variant: "pr-closed", word: "closed" };
   switch (checks?.rollup) {
@@ -30,14 +34,9 @@ function chipStatus(pr: PrState, checks: PrChecks | null): { variant: BadgeVaria
   }
 }
 
-/** Slim strip of linked PR pills above the panel body, under a short heading.
- *
- *  Two callers, one shape — a row of PRs that belong together, each one click
- *  away:
- *  - `MultiRepoGitPanel`: one task's PRs across two or more repos ("3 PRs").
- *  - `GitRepoSection`: the PRs this checkout held before its current one
- *    ("Earlier"), which a workspace that kept working after a merge accumulates.
- */
+/** Slim strip of linked PR pills above a multi-repo panel, under a short
+ *  heading: one task's PRs across two or more repos ("3 PRs"), each one click
+ *  from GitHub. A single checkout's own PRs are the `PrSwitcher`'s. */
 export function PrSetStrip({ heading, entries }: { heading: string; entries: PrSetEntry[] }) {
   return (
     <div className="git-pr-set text-xs">

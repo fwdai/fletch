@@ -26,12 +26,17 @@ const CARD_GATE_BY_SITUATION: Record<
 
 export function PRCard({
   pr,
+  branch,
   base,
   checks,
   comments,
   onAddToChat,
 }: {
   pr: PrState;
+  /** The PR's head branch, as a provenance line under the meta. The caller
+   *  passes it once the checkout holds several PRs — each from its own branch,
+   *  not necessarily the one checked out — so a one-PR card stays as it was. */
+  branch?: string | null;
   base: string;
   checks: PrChecks | null;
   comments: PrComments | null;
@@ -52,6 +57,12 @@ export function PRCard({
       <div className="git-card-h text-xs">Pull request</div>
       <div className="git-card-title text-base">{pr.title}</div>
       <div className="git-card-meta text-sm">#{pr.number} · open</div>
+      {branch && (
+        <div className="git-card-branch text-xs flex-center" title={branch}>
+          <Icon name="branch" size={11} />
+          <span className="git-card-branch-name">{branch}</span>
+        </div>
+      )}
       <div className="git-card-row text-sm">
         <span className={gate.cls}>{gate.text(base)}</span>
       </div>

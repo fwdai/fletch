@@ -1394,10 +1394,19 @@ fn recorded_base_follows_a_redirected_pr_base() {
     assert_eq!(repo.base_sha.as_deref(), Some("cafebabe"));
 }
 
+/// One checkout's PR set as the sweep reads it (`all_pr_sets`), empty when it
+/// has none.
+fn pr_set(wm: &WorkspaceManager, agent_id: &str, subdir: &str) -> Vec<crate::github::PrState> {
+    wm.all_pr_sets()
+        .unwrap()
+        .remove(&(agent_id.to_string(), subdir.to_string()))
+        .unwrap_or_default()
+}
+
 /// A checkout accumulates every PR it has held, not just the current binding:
 /// a workspace that keeps working after a merge opens follow-ups, and the
 /// merged PR's identity is cleared off the `worktrees` row when the next one
-/// binds. The history log is what keeps it — the panel's "Earlier" strip and
+/// binds. The history log is what keeps it — the Git panel's PR switcher and
 /// the Pulse "PRs opened" series both read it.
 #[test]
 fn pr_history_accumulates_across_rebinds() {
@@ -1418,7 +1427,7 @@ fn pr_history_accumulates_across_rebinds() {
     let subdir = wm.agent(&id).unwrap().repos[0].subdir.clone();
 
     assert!(
-        wm.repo_pr_history(&id, &subdir).unwrap().is_empty(),
+        pr_set(&wm, &id, &subdir).is_empty(),
         "a fresh checkout has proposed nothing"
     );
 
@@ -1443,7 +1452,7 @@ fn pr_history_accumulates_across_rebinds() {
     };
     wm.set_repo_pr_snapshot(&id, &subdir, &first_merged)
         .unwrap();
-    let history = wm.repo_pr_history(&id, &subdir).unwrap();
+    let history = pr_set(&wm, &id, &subdir);
     assert_eq!(history.len(), 1, "one PR seen twice is one row");
     assert!(matches!(history[0].state, crate::github::PrStatus::Merged));
     assert_eq!(
@@ -1466,7 +1475,7 @@ fn pr_history_accumulates_across_rebinds() {
     };
     wm.set_repo_pr_snapshot(&id, &subdir, &second).unwrap();
 
-    let history = wm.repo_pr_history(&id, &subdir).unwrap();
+    let history = pr_set(&wm, &id, &subdir);
     assert_eq!(history.len(), 2);
     // Newest number first, so the panel's strip reads most-recent-first.
     assert_eq!(history[0].number, 43);
@@ -1516,13 +1525,13 @@ fn pr_history_is_scoped_to_its_checkout() {
     };
     wm.set_repo_pr_snapshot(&id, &subdir, &pr).unwrap();
 
-    assert_eq!(wm.repo_pr_history(&id, &subdir).unwrap().len(), 1);
+    assert_eq!(pr_set(&wm, &id, &subdir).len(), 1);
     assert!(
-        wm.repo_pr_history(&id, "other-repo").unwrap().is_empty(),
+        pr_set(&wm, &id, "other-repo").is_empty(),
         "a sibling checkout has its own history"
     );
     assert!(
-        wm.repo_pr_history("ag-other", &subdir).unwrap().is_empty(),
+        pr_set(&wm, "ag-other", &subdir).is_empty(),
         "another agent's checkout has its own history"
     );
 }
@@ -1562,6 +1571,10 @@ fn pr_set_members_refresh_without_stealing_focus() {
     // A sub-agent opens a second PR from the same checkout; it takes the focus.
     wm.set_repo_pr_number(&id, &subdir, 43, "u43", "feat: second", Some("feat/second"))
         .unwrap();
+    assert_eq!(
+        wm.focused_pr_branch(&id, &subdir).unwrap().as_deref(),
+        Some("feat/second")
+    );
 
     // The sweep refreshes #42 from a payload without a branch: its row moves,
     // the binding doesn't, and the known branch survives.
@@ -1586,6 +1599,12 @@ fn pr_set_members_refresh_without_stealing_focus() {
     assert_eq!(repo.pr_number, Some(42));
     assert_eq!(repo.pr_title.as_deref(), Some("feat: first (renamed)"));
     assert_eq!(repo.pr_state.as_deref(), Some("open"));
+    // A delegation about the focused PR names its branch, which the refresh
+    // without one did not erase.
+    assert_eq!(
+        wm.focused_pr_branch(&id, &subdir).unwrap().as_deref(),
+        Some("feat/first")
+    );
 
     // …and never outside it.
     assert!(wm.set_focused_pr(&id, &subdir, 99).unwrap().is_none());
@@ -1724,7 +1743,7 @@ fn binding_a_follow_up_pr_clears_the_merged_snapshot() {
     assert_eq!(repo.pr_number, Some(43));
     // The bind logs the PR into the checkout's set straight away, so the sweep
     // watches it before any fetch has run — and the merged one stays merged.
-    let history = wm.repo_pr_history(&id, &subdir).unwrap();
+    let history = pr_set(&wm, &id, &subdir);
     assert_eq!(history.len(), 2);
     assert_eq!(history[0].number, 43);
     assert_eq!(history[0].state, crate::github::PrStatus::Open);

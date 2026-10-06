@@ -324,36 +324,36 @@ impl WorkspaceManager {
         Ok(())
     }
 
-    /// Every PR this checkout has held, newest number first — the append-only
-    /// log `set_repo_pr_snapshot` maintains beside the current binding. Includes
-    /// the currently-bound PR; callers that want only the earlier ones filter by
-    /// number (the panel does, so the strip never repeats the header's PR).
-    ///
-    /// `mergeable` reads `Unknown` for the same reason it does in `pr_snapshot`:
-    /// it isn't persisted, and a stored merge verdict would be stale anyway.
-    pub fn repo_pr_history(
-        &self,
-        agent_id: &str,
-        subdir: &str,
-    ) -> Result<Vec<crate::github::PrState>> {
+    /// The head branch of the checkout's focused PR while that PR is open, or
+    /// `None` (no PR, a settled one, or a branch nobody has learned yet). Once
+    /// the user focuses an older PR this can differ from the branch the checkout
+    /// is on, so a delegation about the PR names it (see
+    /// `supervisor::delegation`). `mergeable` and friends are irrelevant here,
+    /// hence one column rather than a `PrState`.
+    pub fn focused_pr_branch(&self, agent_id: &str, subdir: &str) -> Result<Option<String>> {
         let conn = self.db.lock();
-        let mut stmt = conn.prepare(&format!(
-            "SELECT {PR_ROW_COLUMNS} FROM worktree_prs
-              WHERE workspace_id = ?1 AND subdir = ?2
-              ORDER BY number DESC"
-        ))?;
-        let rows = stmt.query_map(rusqlite::params![agent_id, subdir], |row| pr_row(row, 0))?;
-        let mut out = Vec::new();
-        for row in rows {
-            out.extend(row?);
-        }
-        Ok(out)
+        let branch = conn
+            .query_row(
+                "SELECT p.branch FROM worktrees w
+                   JOIN worktree_prs p ON p.workspace_id = w.workspace_id
+                                      AND p.subdir = w.subdir AND p.number = w.pr_number
+                  WHERE w.workspace_id = ?1 AND w.subdir = ?2 AND p.state = 'open'",
+                rusqlite::params![agent_id, subdir],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()?
+            .flatten()
+            .filter(|b| !b.is_empty());
+        Ok(branch)
     }
 
     /// Every checkout's PR set, for every non-archived workspace, keyed by
-    /// `(workspace_id, subdir)` and newest number first — `repo_pr_history` for
-    /// the whole fleet in one query, so the PR sweep reads its working set
-    /// without a query per checkout.
+    /// `(workspace_id, subdir)` and newest number first, so the PR sweep reads
+    /// its working set without a query per checkout. Each set includes the
+    /// focused PR.
+    ///
+    /// `mergeable` reads `Unknown` for the same reason it does in `pr_snapshot`:
+    /// it isn't persisted, and a stored merge verdict would be stale anyway.
     pub fn all_pr_sets(
         &self,
     ) -> Result<std::collections::HashMap<(String, String), Vec<crate::github::PrState>>> {

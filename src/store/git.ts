@@ -179,6 +179,12 @@ export interface GitSlice {
     subdir?: string,
   ) => Promise<PrState | null>;
   mergePr: (agentId: string, subdir?: string) => Promise<void>;
+  /** Make `number`, one of the checkout's PRs (`prSets`), its focused PR — the
+   *  one the legacy maps, and so the whole Git panel, follow. Optimistic: the
+   *  maps take the set's copy of that PR at once, and the focus change itself
+   *  triggers the one-shot live/threads reads (`gitSync`). A refusal lands in
+   *  `lastError` and re-reads the host's focus. */
+  focusPr: (agentId: string, number: number, subdir?: string) => Promise<void>;
   /** Publish a local-only project (no origin) to GitHub, then refresh git
    *  state so the panel switches out of the no-origin affordances. Resolves
    *  the repo web URL on success, null on error. */
@@ -701,6 +707,43 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
       await get().fetchPrLive(agentId, subdir);
     } catch (e) {
       set({ lastError: String(e) });
+    }
+  },
+
+  focusPr: async (agentId, number, subdir) => {
+    // The chips are disabled on a host without the op; this refuses a click
+    // that slips past them rather than send a call it would answer `unknown op`.
+    const gated = gateReason(activeEnvironment(), "focusPr");
+    if (gated) {
+      get().setLastError(gated);
+      return;
+    }
+    const key = checkoutKey(agentId, subdir);
+    const entry = get().prSets[key]?.find((p) => p.state.number === number);
+    if (entry) {
+      // Stamped so a read already in flight for the previous focus cannot land
+      // on top and switch the panel back.
+      stampPrWrite("prStates", key);
+      stampPrWrite("prChecks", key);
+      set((s) => {
+        // Threads are only ever held for the focused PR: dropping them makes
+        // the focused one-shot read the new PR's. Checks the set doesn't know
+        // are dropped too — the previous PR's would read as this one's until
+        // that same read lands.
+        const { [key]: _threads, ...prComments } = s.prComments;
+        const { [key]: _checks, ...rest } = s.prChecks;
+        return {
+          prStates: { ...s.prStates, [key]: entry.state },
+          prChecks: entry.checks ? { ...rest, [key]: entry.checks } : rest,
+          prComments,
+        };
+      });
+    }
+    try {
+      await api.setFocusedPr(agentId, number, subdir);
+    } catch (e) {
+      get().setLastError(String(e));
+      await get().fetchPrLive(agentId, subdir);
     }
   },
 

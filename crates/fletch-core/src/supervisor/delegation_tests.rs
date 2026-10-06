@@ -156,6 +156,61 @@ fn the_trigger_matches_the_typescript_fixture() {
     }
 }
 
+/// A playbook about the focused PR names its head branch, so an agent whose
+/// checkout is on another branch (the user focused an older PR) switches first.
+/// Kinds that commit or publish the checkout never carry it, and `branch` /
+/// `repo` are the host's to set whatever the caller passed.
+#[test]
+fn a_pr_trigger_names_the_focused_prs_branch() {
+    let params = BTreeMap::from([
+        ("failing".to_string(), "unit".to_string()),
+        ("branch".to_string(), "spoofed".to_string()),
+        ("repo".to_string(), "elsewhere".to_string()),
+    ]);
+    assert_eq!(
+        delegation_trigger(
+            DelegationKind::FixChecks,
+            &params,
+            Some("web"),
+            Some("feat/first")
+        ),
+        r#"[app-action] fix-checks failing="unit" branch="feat/first" repo="web""#
+    );
+    for kind in [
+        DelegationKind::ResolveComments,
+        DelegationKind::UpdateBranch,
+    ] {
+        assert_eq!(
+            delegation_trigger(kind, &BTreeMap::new(), None, Some("feat/first")),
+            format!(r#"[app-action] {} branch="feat/first""#, kind.action()),
+        );
+    }
+    // Committing and publishing act on whatever the checkout is on: switching
+    // to an older PR's branch first would push the wrong work.
+    for kind in [
+        DelegationKind::Commit,
+        DelegationKind::CommitPush,
+        DelegationKind::CommitPr,
+        DelegationKind::OpenPr,
+        DelegationKind::Push,
+    ] {
+        assert_eq!(
+            delegation_trigger(kind, &BTreeMap::new(), None, Some("feat/first")),
+            format!("[app-action] {}", kind.action()),
+        );
+    }
+    // …and a caller's own `branch` is dropped there too.
+    assert_eq!(
+        delegation_trigger(DelegationKind::Push, &params, None, Some("feat/first")),
+        r#"[app-action] push failing="unit""#
+    );
+    // No open focused PR with a known branch: the trigger as it always was.
+    assert_eq!(
+        delegation_trigger(DelegationKind::FixChecks, &params, None, None),
+        r#"[app-action] fix-checks failing="unit""#
+    );
+}
+
 #[test]
 fn every_kind_round_trips_through_its_playbook_name() {
     for kind in DelegationKind::ALL {
