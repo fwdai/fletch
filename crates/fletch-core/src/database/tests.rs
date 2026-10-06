@@ -306,11 +306,12 @@ fn pr_history_migration_backfills_existing_bindings() {
               VALUES ('wt2', 'w2', 'r', 'repo', 0, 99, NULL);",
     )
     .unwrap();
-    drop(conn);
 
-    init(dir.path()).unwrap();
+    // Only this migration: 0048 later backfills every binding, state or not.
+    get_migrations()
+        .to_version(&mut conn, V_WORKTREE_PRS)
+        .unwrap();
 
-    let conn = Connection::open(dir.path().join(DB_FILENAME)).unwrap();
     let (n, url, state, opened, merged): (i64, String, String, i64, i64) = conn
         .query_row(
             "SELECT number, url, state, opened_at, merged_at FROM worktree_prs
@@ -334,6 +335,66 @@ fn pr_history_migration_backfills_existing_bindings() {
         )
         .unwrap();
     assert_eq!(count, 0, "no persisted state means no renderable snapshot");
+}
+
+/// Schema version just before `worktree_prs.branch` and the bindings backfill
+/// (0048). Pinned for the same reason as `V_WORKTREE_PRS`.
+const V_BEFORE_PR_SETS: usize = 47;
+
+/// Every binding gets a row in its checkout's PR set, because the sweep and
+/// `set_focused_pr` read the focused PR from that row. A binding already logged
+/// keeps its row untouched; one never logged (no fetch ever succeeded, which
+/// 0025 skipped) gets one, reading 'open' until its next fetch.
+#[test]
+fn pr_set_migration_backfills_every_binding() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut conn = open_db(&dir.path().join(DB_FILENAME)).unwrap();
+    get_migrations()
+        .to_version(&mut conn, V_BEFORE_PR_SETS)
+        .unwrap();
+    conn.execute_batch(
+        "INSERT INTO projects (id, name, created_at) VALUES ('p', 'proj', 0);
+         INSERT INTO repos (id, project_id, path, created_at) VALUES ('r', 'p', '/r', 0);
+         INSERT INTO workspaces (id, project_id, name, created_at) VALUES ('w', 'p', 'ws', 0);
+         INSERT INTO worktrees (id, workspace_id, repo_id, subdir, created_at,
+                                pr_number, pr_url, pr_title, pr_state)
+              VALUES ('wt1', 'w', 'r', 'repo', 0, 42, 'https://x/42', 'stale', 'open');
+         INSERT INTO worktree_prs (workspace_id, subdir, number, url, title, state)
+              VALUES ('w', 'repo', 42, 'https://x/42', 'logged', 'merged');
+         INSERT INTO workspaces (id, project_id, name, created_at) VALUES ('w2', 'p', 'ws2', 0);
+         INSERT INTO worktrees (id, workspace_id, repo_id, subdir, created_at, pr_number, pr_state)
+              VALUES ('wt2', 'w2', 'r', 'repo', 0, 99, NULL);
+         INSERT INTO workspaces (id, project_id, name, created_at) VALUES ('w3', 'p', 'ws3', 0);
+         INSERT INTO worktrees (id, workspace_id, repo_id, subdir, created_at)
+              VALUES ('wt3', 'w3', 'r', 'repo', 0);",
+    )
+    .unwrap();
+    drop(conn);
+
+    init(dir.path()).unwrap();
+
+    let conn = Connection::open(dir.path().join(DB_FILENAME)).unwrap();
+    let rows: Vec<(String, i64, String, String, String)> = conn
+        .prepare("SELECT workspace_id, number, url, title, state FROM worktree_prs ORDER BY workspace_id")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(
+        rows,
+        [
+            (
+                "w".into(),
+                42,
+                "https://x/42".into(),
+                "logged".into(),
+                "merged".into()
+            ),
+            ("w2".into(), 99, String::new(), String::new(), "open".into()),
+        ],
+        "a logged binding keeps its row; an unlogged one gets one; no binding, no row"
+    );
 }
 
 /// Schema version at which session lineage and the one-current-session index

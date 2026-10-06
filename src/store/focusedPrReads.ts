@@ -21,10 +21,12 @@ export interface FocusedPr {
  *  seen with (`seen`, updated in place).
  *
  *  A read is owed when the cache is cold — no state; no checks for an open PR
- *  (a settled one has none to show); no threads — or when the PR under a
- *  checkout changed since it was last seen: a PR just opened has neither checks
- *  nor threads in the store yet, and the watcher's first sight of it emits
- *  nothing. Everything else the watcher's events keep current. */
+ *  (a settled one has none to show); no threads. A change of the PR under a
+ *  checkout (a switch, or a PR just opened) owes only its threads: the focus
+ *  event already brought the set's checks for it, and a PR the set has no
+ *  checks for (one just opened) is an open PR without checks, so it gets its
+ *  live read by the first rule. Everything else the watcher's events keep
+ *  current. */
 export function focusedPrReads(
   prs: FocusedPr[],
   seen: Map<string, number | null>,
@@ -36,7 +38,7 @@ export function focusedPrReads(
     const changed =
       before !== undefined && pr.number !== undefined && pr.number !== null && pr.number !== before;
     if (pr.number !== undefined) seen.set(pr.key, pr.number);
-    if (pr.number === undefined || (pr.open && !pr.checks) || changed) live.push(pr.key);
+    if (pr.number === undefined || (pr.open && !pr.checks)) live.push(pr.key);
     if (!pr.threads || changed) threads.push(pr.key);
   }
   return { live, threads };

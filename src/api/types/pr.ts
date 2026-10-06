@@ -23,8 +23,6 @@ export interface PrStateChangedEvent {
   /** Which checkout: `null` (or absent, from a host that predates the field)
    *  is the primary repo, a subdir names a secondary. */
   subdir?: string | null;
-  /** The PR `state` describes (null with it). Absent from an older host. */
-  number?: number | null;
   /** Whether this is the checkout's focused PR — the one the legacy single-PR
    *  maps hold. Absent (an older host, which only reported the focused PR)
    *  means focused. */

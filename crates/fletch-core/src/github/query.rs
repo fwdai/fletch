@@ -217,10 +217,10 @@ const BATCH_CHUNK: usize = 50;
 
 /// Build an aliased multi-PR query with a trailing `rateLimit` probe. Values
 /// ride in as variables (`$oN/$rN/$nN`) so nothing user-derived is interpolated
-/// into the query text. `with_viewer` adds one top-level `viewer{ login }` for
-/// the whole query — what thread parsing needs to judge `we_replied_last` —
-/// rather than a lookup per PR.
-fn build_batch_query(chunk: &[PrRef], inner_fields: &str, with_viewer: bool) -> (String, Value) {
+/// into the query text. One top-level `viewer{ login }` rides along for the
+/// whole query — what thread parsing needs to judge `we_replied_last` — rather
+/// than a lookup per PR; `viewer` is a single node, so it costs nothing.
+fn build_batch_query(chunk: &[PrRef], inner_fields: &str) -> (String, Value) {
     let mut decls = Vec::with_capacity(chunk.len());
     let mut aliases = Vec::with_capacity(chunk.len());
     let mut vars = serde_json::Map::new();
@@ -233,9 +233,8 @@ fn build_batch_query(chunk: &[PrRef], inner_fields: &str, with_viewer: bool) -> 
         vars.insert(format!("r{i}"), json!(r.repo));
         vars.insert(format!("n{i}"), json!(r.number));
     }
-    let viewer = if with_viewer { "viewer{login} " } else { "" };
     let query = format!(
-        "query({}){{{viewer}{} rateLimit{{cost remaining resetAt}}}}",
+        "query({}){{viewer{{login}} {} rateLimit{{cost remaining resetAt}}}}",
         decls.join(","),
         aliases.join(" "),
     );
@@ -252,47 +251,6 @@ fn note_budget(data: &Value) {
             .map(|t| t.timestamp_millis());
         client::note_rate_budget(remaining, reset);
     }
-}
-
-/// Run `refs` through one or more batched queries, mapping each alias's
-/// `pullRequest` node with `parse` (which also gets the `viewer` login when
-/// `with_viewer` selected it). Results align 1:1 with `refs`; a
-/// missing/inaccessible PR yields `None` for its slot (partial-error tolerant).
-/// `Ok(vec![])` for empty input; an active backoff short-circuits to all-`None`
-/// so callers fall back to the persisted snapshot without spending a request.
-async fn pr_batch<T>(
-    refs: &[PrRef],
-    inner_fields: &str,
-    with_viewer: bool,
-    parse: impl Fn(&Value, Option<&str>) -> T,
-) -> Result<Vec<Option<T>>> {
-    if refs.is_empty() {
-        return Ok(Vec::new());
-    }
-    if client::is_backing_off() {
-        return Ok(refs.iter().map(|_| None).collect());
-    }
-    let client = client::Client::new()?;
-    let mut out = Vec::with_capacity(refs.len());
-    for chunk in refs.chunks(BATCH_CHUNK) {
-        let (query, vars) = build_batch_query(chunk, inner_fields, with_viewer);
-        let data = client.graphql_partial(&query, vars).await?;
-        note_budget(&data);
-        let viewer = data["viewer"]["login"].as_str();
-        for i in 0..chunk.len() {
-            let node = &data[format!("a{i}")]["pullRequest"];
-            out.push((!node.is_null()).then(|| parse(node, viewer)));
-        }
-        // A signal in this chunk's response — the budget crossing its floor, a
-        // Retry-After, or a RATE_LIMITED error — armed the gate. Stop before the
-        // next chunk spends the reserve, padding the unfetched refs with `None`
-        // so the result stays aligned 1:1 with `refs` (callers zip on that).
-        if client::is_backing_off() {
-            out.resize_with(refs.len(), || None);
-            break;
-        }
-    }
-    Ok(out)
 }
 
 /// One PR's slot in [`pr_status_batch`].
@@ -315,27 +273,53 @@ pub struct PrBatchRow {
 /// and its CI tint always come from the same instant instead of drifting up to
 /// a cadence apart.
 ///
-/// `with_threads` folds the review threads into the same aliases (plus one
-/// `viewer{ login }` for the query). Threads used to be a separate read per
-/// open PR — a conditional REST resolve and a GraphQL call each — so riding
-/// along here spends the same points on one request per 50 PRs instead of two
-/// per PR.
+/// `with_threads` folds the review threads into the same aliases (the query's
+/// `viewer{ login }` judges who replied last). Threads used to be a separate
+/// read per open PR — a conditional REST resolve and a GraphQL call each — so
+/// riding along here spends the same points on one request per 50 PRs instead
+/// of two per PR.
+///
+/// Results align 1:1 with `refs`; a missing/inaccessible PR yields `None` for
+/// its slot (partial-error tolerant). `Ok(vec![])` for empty input; an active
+/// backoff short-circuits to all-`None` so callers fall back to the persisted
+/// snapshot without spending a request.
 pub async fn pr_status_batch(
     refs: &[PrRef],
     with_threads: bool,
 ) -> Result<Vec<Option<PrBatchRow>>> {
+    if refs.is_empty() {
+        return Ok(Vec::new());
+    }
+    if client::is_backing_off() {
+        return Ok(refs.iter().map(|_| None).collect());
+    }
     let threads = if with_threads { PR_COMMENTS_FIELDS } else { "" };
-    pr_batch(
-        refs,
-        &format!("state {PR_STATE_FIELDS} {PR_CHECKS_FIELDS} {threads}"),
-        with_threads,
-        |node, viewer| PrBatchRow {
-            state: parse_pr_state(node),
-            checks: pr_checks_from_node(node),
-            threads: with_threads.then(|| pr_comments_from_node(node, viewer)),
-        },
-    )
-    .await
+    let inner_fields = format!("state {PR_STATE_FIELDS} {PR_CHECKS_FIELDS} {threads}");
+    let client = client::Client::new()?;
+    let mut out = Vec::with_capacity(refs.len());
+    for chunk in refs.chunks(BATCH_CHUNK) {
+        let (query, vars) = build_batch_query(chunk, &inner_fields);
+        let data = client.graphql_partial(&query, vars).await?;
+        note_budget(&data);
+        let viewer = data["viewer"]["login"].as_str();
+        for i in 0..chunk.len() {
+            let node = &data[format!("a{i}")]["pullRequest"];
+            out.push((!node.is_null()).then(|| PrBatchRow {
+                state: parse_pr_state(node),
+                checks: pr_checks_from_node(node),
+                threads: with_threads.then(|| pr_comments_from_node(node, viewer)),
+            }));
+        }
+        // A signal in this chunk's response — the budget crossing its floor, a
+        // Retry-After, or a RATE_LIMITED error — armed the gate. Stop before the
+        // next chunk spends the reserve, padding the unfetched refs with `None`
+        // so the result stays aligned 1:1 with `refs` (callers zip on that).
+        if client::is_backing_off() {
+            out.resize_with(refs.len(), || None);
+            break;
+        }
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -390,7 +374,7 @@ mod tests {
                 number: 12,
             },
         ];
-        let (query, vars) = build_batch_query(&refs, "state number", false);
+        let (query, vars) = build_batch_query(&refs, "state number");
         // One aliased repository/pullRequest per ref, values via variables.
         assert!(
             query.contains("a0:repository(owner:$o0,name:$r0)"),
@@ -406,13 +390,12 @@ mod tests {
         assert_eq!(vars["o0"], json!("acme"));
         assert_eq!(vars["r1"], json!("api"));
         assert_eq!(vars["n1"], json!(12));
-        assert!(!query.contains("viewer"), "{query}");
     }
 
     /// Threads need the viewer's login, and a batch asks for it once for the
     /// whole query — never once per alias.
     #[test]
-    fn batch_query_selects_the_viewer_once_when_asked() {
+    fn batch_query_selects_the_viewer_once() {
         let refs: Vec<PrRef> = (1..=3)
             .map(|n| PrRef {
                 owner: "acme".into(),
@@ -420,7 +403,7 @@ mod tests {
                 number: n,
             })
             .collect();
-        let (query, _) = build_batch_query(&refs, "state number", true);
+        let (query, _) = build_batch_query(&refs, "state number");
         assert_eq!(query.matches("viewer{login}").count(), 1, "{query}");
         assert_eq!(query.matches(":repository(").count(), 3, "{query}");
     }

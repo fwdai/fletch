@@ -75,7 +75,7 @@ pub async fn create_pr_impl(
     // don't rely on the (recyclable) branch name. A failure here isn't fatal —
     // the next idle/push poll re-binds it via guarded discovery once the PR
     // shows OPEN — but the helper logs it so the gap is observable, not silent.
-    crate::supervisor::persist_pr_snapshot(&supervisor.workspace, &agent_id, &repo.subdir, &pr);
+    crate::supervisor::bind_pr_snapshot(&supervisor.workspace, &agent_id, &repo.subdir, &pr);
     // If the agent now has PRs in two or more repos, cross-link the whole set
     // in each PR's body (best-effort, off the command's critical path).
     let workspace = supervisor.workspace.clone();

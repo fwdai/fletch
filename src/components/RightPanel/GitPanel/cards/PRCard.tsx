@@ -34,8 +34,8 @@ export function PRCard({
 }: {
   pr: PrState;
   /** The PR's head branch, as a provenance line under the meta. The caller
-   *  passes it once the checkout holds several PRs — each from its own branch,
-   *  not necessarily the one checked out — so a one-PR card stays as it was. */
+   *  passes it only when the checkout is on another branch (the focused PR is
+   *  not necessarily the one checked out), so the usual card stays as it was. */
   branch?: string | null;
   base: string;
   checks: PrChecks | null;
