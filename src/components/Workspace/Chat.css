@@ -594,11 +594,21 @@
   border: 0;
   white-space: pre-wrap;
 }
+/* The one place we do scroll horizontally: a table can't fold like prose. */
+.m-agent .md-table {
+  margin: 12px 0 16px;
+  overflow-x: auto;
+}
+/* `anywhere` (inherited from the prose root) also shrinks each cell's
+   min-content width to a single character, so auto layout squeezes short
+   columns into one letter per line and splits code spans mid-word.
+   `break-word` wraps the same overflowing tokens but keeps a column at least
+   as wide as its longest word; anything wider scrolls in `.md-table`. */
 .m-agent table {
   width: 100%;
-  margin: 12px 0 16px;
   border-collapse: collapse;
   font-size: var(--fs-base);
+  overflow-wrap: break-word;
 }
 .m-agent th,
 .m-agent td {
