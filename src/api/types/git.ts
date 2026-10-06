@@ -60,6 +60,15 @@ export interface GitState {
    *  means every other field is a zero-state; the panel offers to remove them.
    *  Absent from hosts that predate the field. */
   blocked_config?: string[];
+  /** Linked worktrees inside the checkout — sub-agents working in isolation.
+   *  Listed, never status-read. Absent from hosts that predate the field. */
+  worktrees?: LinkedWorktree[];
+}
+
+/** One linked worktree of a checkout; `branch` is null when it is detached. */
+export interface LinkedWorktree {
+  path: string;
+  branch: string | null;
 }
 
 /** One delegation as the host reports it: a row of `get_delegations` (a live

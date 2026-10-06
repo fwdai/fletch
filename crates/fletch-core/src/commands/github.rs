@@ -149,9 +149,20 @@ pub async fn get_pr_checks_impl(
     let Some((repo, checkout)) = agent_repo_checkout_opt(supervisor, agent_id, subdir)? else {
         return Ok(None);
     };
-    if repo.branch.is_none() {
-        return Ok(None);
+    // A bound PR is read by number — the same conditional REST read the panel's
+    // fast tick (`get_pr_live_impl`) makes, so it shares that tick's ETag cache
+    // — whatever branch the checkout is on or has recorded: the focused PR need
+    // not be the checked-out branch's, and an agent that branched on its own
+    // records none.
+    if let Some(number) = repo.pr_number {
+        return Ok(
+            gh::pr_checks_live(&checkout, Some(&repo.repo_path), number as u32)
+                .await
+                .unwrap_or(None),
+        );
     }
+    // Unbound: the checked-out branch's PR, if any. A detached HEAD (never
+    // pushed) answers `None` before any request.
     Ok(gh::pr_checks(&checkout).await.unwrap_or(None))
 }
 

@@ -382,8 +382,10 @@ pub async fn resolve_pr_state(
         // Default: the primary — the app-wide badge/poll shape.
         None => record.repos.first()?,
     };
-    // No branch yet → nothing pushed, so no PR to find or bind.
-    repo.branch.as_ref()?;
+    // No gate on the recorded branch here: it only names a branch the host
+    // created, and agents also branch with their own `git checkout -b` and then
+    // `open_pr` without `args.branch`, which binds a number but records no
+    // branch. A bound PR is fetched by number and needs no branch at all.
     let checkout = repo.checkout_path(agent_id).ok()?;
 
     if let Some(number) = repo.pr_number {
@@ -433,6 +435,15 @@ pub async fn resolve_pr_state(
         // Unbound: a branch scan is the only way to find a PR, and it costs a
         // point every time. Background polls take it on an interval; push- and
         // turn-triggered paths take it immediately.
+        //
+        // With no recorded branch, a scan is owed only once the live branch has
+        // been pushed: a PR cannot exist for a branch origin never saw. Until
+        // then (detached, or an agent's own `checkout -b` not yet pushed) skip
+        // before the throttle clock and the network. Both reads are local, and
+        // an error (a broken checkout) counts as nothing to scan.
+        if repo.branch.is_none() && !live_branch_pushed(&checkout).await {
+            return None;
+        }
         if !may_discover(agent_id, &repo.subdir, discovery) {
             return None;
         }
@@ -446,6 +457,18 @@ pub async fn resolve_pr_state(
             None => None,
         }
     }
+}
+
+/// Whether the checkout is on a branch this checkout has seen on `origin`
+/// (`refs/remotes/origin/<branch>`, written by a push from here). Local reads
+/// only — `symbolic-ref` and `show-ref` — so it costs no request.
+async fn live_branch_pushed(checkout: &std::path::Path) -> bool {
+    let Ok(Some(branch)) = crate::git::current_branch(checkout).await else {
+        return false;
+    };
+    crate::git::has_origin_tracking_ref(checkout, &branch)
+        .await
+        .unwrap_or(false)
 }
 
 /// Store key for one repo's PR state in the app-wide maps, mirroring the
@@ -566,10 +589,10 @@ pub async fn resolve_all_pr_status(
             continue;
         }
         for (i, repo) in agent.repos.iter().enumerate() {
-            // No branch → nothing pushed, so no PR; discovery isn't this poll's job.
-            if repo.branch.is_none() {
-                continue;
-            }
+            // Whatever `repo.branch` says: an agent that branched on its own has
+            // a bound PR and set rows but no recorded branch. A checkout with
+            // neither rows nor a binding is skipped below (`slots.is_empty()`)
+            // before any slug read; discovery isn't this poll's job.
             let bound = repo.pr_number.map(|n| n as u32);
             let mut slots: Vec<Slot> = sets
                 .remove(&(agent.id.clone(), repo.subdir.clone()))
@@ -1969,6 +1992,143 @@ pub(super) mod tests {
         assert_eq!(status.state.number, 42);
         assert_eq!(status.state.state, PrStatus::Merged);
         assert_eq!(numbers(status), [43, 42]);
+    }
+
+    /// An agent on `/r` whose checkout is `checkout` (adopted, so tests can
+    /// point it at a real repo) — or the derived, nonexistent path when `None`.
+    /// No branch is ever recorded: the host created none.
+    fn branchless_agent(
+        wm: &WorkspaceManager,
+        db: &std::sync::Arc<parking_lot::Mutex<rusqlite::Connection>>,
+        checkout: Option<&std::path::Path>,
+    ) -> (String, String) {
+        use crate::workspace::tests::{mk_repo, seed_repo};
+        seed_repo(db, "/r");
+        let mut repo = mk_repo("/r");
+        repo.adopted_checkout = checkout.map(std::path::Path::to_path_buf);
+        let mut rec = crate::workspace::new_agent_record(
+            "denali".into(),
+            "a".into(),
+            "claude".into(),
+            repo,
+            "task".into(),
+            AgentView::Custom,
+        );
+        let id = rec.id.clone();
+        wm.add_agent(&mut rec).unwrap();
+        let subdir = wm.agent(&id).unwrap().repos[0].subdir.clone();
+        (id, subdir)
+    }
+
+    /// The agent branched with its own `git checkout -b` and called `open_pr`
+    /// without `args.branch`: the PR is bound but no branch was ever recorded.
+    /// Both the panel's resolver and the sweep must still serve it — here from
+    /// the merged snapshot, which also keeps the test off the network.
+    #[tokio::test]
+    async fn a_bound_pr_is_served_with_no_recorded_branch() {
+        let db = crate::workspace::tests::test_db();
+        let wm = WorkspaceManager::new(db.clone());
+        let (id, subdir) = branchless_agent(&wm, &db, None);
+        wm.set_repo_pr_number(&id, &subdir, 7, "", "", Some("feat/own"))
+            .unwrap();
+        wm.set_repo_pr_snapshot(
+            &id,
+            &subdir,
+            &PrState {
+                number: 7,
+                url: "https://github.com/o/r/pull/7".into(),
+                title: "feat: own".into(),
+                state: PrStatus::Merged,
+                mergeable: MergeableState::Unknown,
+                opened_at: None,
+                merged_at: None,
+                branch: Some("feat/own".into()),
+            },
+        )
+        .unwrap();
+        assert_eq!(wm.agent(&id).unwrap().repos[0].branch, None);
+
+        let (pr, bound) = resolve_pr_state(&wm, &id, None, Discovery::Throttled)
+            .await
+            .expect("a bound PR resolves without a recorded branch");
+        assert_eq!((pr.number, pr.state, bound), (7, PrStatus::Merged, true));
+
+        let all = resolve_all_pr_status(&wm, false, false).await;
+        let status = all.get(&id).expect("the sweep must not skip the checkout");
+        assert_eq!(status.state.number, 7);
+        assert_eq!(status.prs.len(), 1);
+    }
+
+    /// A never-pushed checkout with no PR and nothing recorded costs no request
+    /// — detached, or on the agent's own unpushed branch: the resolver returns
+    /// before the discovery clock (so before any scan), and the sweep omits it.
+    /// Once that branch has a remote-tracking ref the scan is owed again. (No
+    /// `origin` URL, so that scan answers locally too.)
+    #[tokio::test]
+    async fn a_detached_checkout_with_no_pr_spends_nothing() {
+        let td = tempfile::tempdir().unwrap();
+        let checkout = td.path().join("checkout");
+        std::fs::create_dir_all(&checkout).unwrap();
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .current_dir(&checkout)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {args:?}");
+        };
+        git(&["init", "-q", "-b", "main"]);
+        git(&[
+            "-c",
+            "user.email=t@e",
+            "-c",
+            "user.name=T",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "c",
+        ]);
+        git(&["checkout", "-q", "--detach"]);
+
+        let db = crate::workspace::tests::test_db();
+        let wm = WorkspaceManager::new(db.clone());
+        let (id, subdir) = branchless_agent(&wm, &db, Some(&checkout));
+        clear_discovery(&id, &subdir);
+
+        assert!(resolve_pr_state(&wm, &id, None, Discovery::Throttled)
+            .await
+            .is_none());
+        assert!(
+            may_discover(&id, &subdir, Discovery::Throttled),
+            "a detached checkout must skip before the scan's clock"
+        );
+        assert!(resolve_all_pr_status(&wm, false, false).await.is_empty());
+
+        // The agent's own `checkout -b`, not pushed yet: still nothing to find.
+        // (Each probe above records the clock, so reset it before the next.)
+        clear_discovery(&id, &subdir);
+        git(&["checkout", "-q", "-b", "feat/own"]);
+        assert!(resolve_pr_state(&wm, &id, None, Discovery::Throttled)
+            .await
+            .is_none());
+        assert!(
+            may_discover(&id, &subdir, Discovery::Throttled),
+            "an unpushed branch must skip before the scan's clock"
+        );
+
+        // Pushed (the remote-tracking ref a push from here writes): owed now,
+        // with no branch recorded.
+        clear_discovery(&id, &subdir);
+        git(&["update-ref", "refs/remotes/origin/feat/own", "HEAD"]);
+        assert!(resolve_pr_state(&wm, &id, None, Discovery::Throttled)
+            .await
+            .is_none());
+        assert!(
+            !may_discover(&id, &subdir, Discovery::Throttled),
+            "a pushed branch is scanned even though none was recorded"
+        );
+        clear_discovery(&id, &subdir);
     }
 
     /// Binding a PR clears the record: the repo is owed no further throttled

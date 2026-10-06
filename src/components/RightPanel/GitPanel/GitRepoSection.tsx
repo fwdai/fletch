@@ -18,6 +18,7 @@ import { usePrOrigin } from "./hooks/usePrOrigin";
 import { useTransientFeedback } from "./hooks/useTransientFeedback";
 import { PrSwitcher } from "./PrSwitcher";
 import { StatusHeader } from "./StatusHeader";
+import { WorktreesNote } from "./WorktreesNote";
 
 /** One repo's worth of git panel: the full header / body / footer stack,
  *  scoped to a single checkout of the agent. For a single-repo agent this IS
@@ -177,6 +178,8 @@ export function GitRepoSection({
           autopilotSwitch && <AutopilotSwitch agentId={agent.id} projectId={agent.project_id} />
         }
       />
+
+      <WorktreesNote worktrees={gitState?.worktrees} />
 
       {/* Two or more PRs → switch between them; the panel below follows the
           focused one. One PR keeps the panel exactly as it was. */}

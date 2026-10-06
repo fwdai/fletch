@@ -21,6 +21,7 @@ pub(crate) fn git() -> GitState {
         has_origin: true,
         head_sha: None,
         blocked_config: Vec::new(),
+        worktrees: Vec::new(),
     }
 }
 

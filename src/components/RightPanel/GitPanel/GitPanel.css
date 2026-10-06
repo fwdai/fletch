@@ -195,6 +195,18 @@
   color: var(--fg-2);
 }
 
+/* the one quiet line under the header while sub-agents work in their own
+   worktrees — informational, so muted and untinted whatever the state */
+.git-wt-note {
+  flex-shrink: 0;
+  padding: 5px 14px;
+  border-bottom: 1px solid var(--bd-soft);
+  color: var(--fg-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* main content — the changes are the focus */
 .git-body {
   flex: 1;
