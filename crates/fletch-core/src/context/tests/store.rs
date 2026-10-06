@@ -1074,15 +1074,17 @@ fn proposals_land_by_relation_kind() {
             .unwrap(),
         head
     );
-    let s = store
-        .accept_proposal(&p_sup.id, ProposalStatus::Accepted, Author::user())
-        .unwrap();
+    // Confirm while the proposal's target still stands. Once a supersession
+    // lands, accepting this same parked confirmation must be rejected as stale.
     assert_eq!(
         store
             .accept_proposal(&p_conf.id, ProposalStatus::Accepted, Author::user())
             .unwrap(),
         head
     );
+    let s = store
+        .accept_proposal(&p_sup.id, ProposalStatus::Accepted, Author::user())
+        .unwrap();
     store
         .dismiss_proposal(&p_dismiss.id, DismissReason::Trivial, Author::user())
         .unwrap();
