@@ -787,6 +787,7 @@ allowlist; any op not listed returns `{ ok: false, error: "unknown op" }`.
 | `set_notify_pr_activity` | `{ enabled: boolean }` — `notify_pr_activity`: the ship-loop alerts (checks settled, review comment, PR merged or closed) | `null` |
 | `set_auto_archive_idle_days` | `{ days: number }` — `auto_archive_idle_days`; `0` turns the idle sweep off | `null` |
 | `set_code_indexing_enabled` | `{ enabled: boolean }` — `code_indexing_enabled`; turning it on also installs codegraph and warms the index for every pinned repo, in the background on the host | `null` |
+| `set_context_layer_enabled` | `{ enabled: boolean }` — `context_layer_enabled`: the project context layer's developer gate; off, the layer's ops, instruction block, ingesters and extractor are inert and the project page shows no Context tab | `null` |
 | `set_sandbox_engine` | `{ engine: "sandbox-exec" \| "docker" \| "podman" }` — `sandbox_engine` for *new* agents; a container engine is probed live on the host first and refused when its runtime is unreachable or cannot launch | `null` |
 | `set_docker_launch_settings` | `{ image: string \| null, memory: string \| null, cpus: string \| null }` — `docker_image` / `docker_memory` / `docker_cpus`, written together; blank or `null` clears one back to the launch default | `null` |
 | `set_podman_launch_settings` | `{ image, memory, cpus }` — the podman twin over `podman_image` / `podman_memory` / `podman_cpus` | `null` |
@@ -798,6 +799,15 @@ allowlist; any op not listed returns `{ ok: false, error: "unknown op" }`.
 | `set_agent_attribution_removed` | `{ removed: boolean }` — `agent_attribution_removed`: strip agents' co-author trailers and "Generated with" lines from the next spawn or resume on | `null` |
 | `get_project_settings` | `{ projectId }` — the project's client-writable settings, and only those (see "Settings"); absent keys read as their default | `Record<key, string>` |
 | `set_project_setting` | `{ projectId, key, value: string \| null }` — writes one key, `null` deletes the row (back to the default). A key outside the project allowlist is refused | `null` |
+| `context_overview` | `{ projectId }` — the project's whole context in one read: the two toggles as the host reads them, the graph (entities, assertions, relations), the *pending* proposals and the stats (see "Project context") | `ContextOverview` |
+| `context_preview` | `{ projectId, query: CompileQuery }` — what an agent would be served for `query`, rendered as markdown; the roadmap brief stands in for a vision nobody has recorded | `string` |
+| `context_record_entity` | `{ projectId, input: EntityInput }` — creates, or records a revision when `input.id` is set. Stamped user / UI | `string` (the entity id) |
+| `context_record_assertion` | `{ projectId, input: AssertionInput }` — always lands `confirmed` (the user saying it is the confirmation); `input.supersedes` with reasoning is how a decision is changed | `string` (the assertion id) |
+| `context_retract` | `{ projectId, assertionId, reason }` — hides an assertion that was never right; a blank reason is refused | `null` |
+| `context_archive_entity` | `{ projectId, entityId }` | `null` |
+| `context_merge_entities` | `{ projectId, from, into }` — `from`'s edges move to `into`; `from` stays behind as `merged` | `null` |
+| `context_link` | `{ projectId, change: { from, to, rel, add } }` — `add: false` unlinks | `null` |
+| `context_rule_proposal` | `{ projectId, proposalId, verdict: "accept" \| "dismiss", dismissReason?: "wrong" \| "trivial" \| "duplicate" \| "already_known" }` — accepting lands the proposal as events; dismissing needs a reason | `string \| null` (the recorded id on accept) |
 | `register_push` | `{ token: string \| null, environment?: "sandbox" \| "production" }` — `environment` required with a token, ignored on clear (remote-only, see "Push notifications") | `null` |
 
 Never exposed, by design: the generic `db_*` table bridge, every file mutation
@@ -961,6 +971,7 @@ default the host does):
 | `notify_pr_activity` | `set_notify_pr_activity` | `projects` |
 | `auto_archive_idle_days` | `set_auto_archive_idle_days` | `projects` |
 | `code_indexing_enabled` | `set_code_indexing_enabled` | `projects` |
+| `context_layer_enabled` | `set_context_layer_enabled` | `projects` |
 | `sandbox_engine` | `set_sandbox_engine` | `projects` |
 | `docker_image`, `docker_memory`, `docker_cpus` | `set_docker_launch_settings` | `projects` |
 | `podman_image`, `podman_memory`, `podman_cpus` | `set_podman_launch_settings` | `projects` |
@@ -1006,6 +1017,7 @@ it:
 | `roadmap.settle_review`, `roadmap.midrun_awareness` | the PM's review | `"0"` off; absent on |
 | `roadmap.declined_issues` | the issue funnel | JSON array of issue URLs |
 | `linear.team_id`, `linear.team_name` | the issue inbox and picker | a Linear team id; its display name |
+| `context.enabled`, `context.extract` | the context layer (its ops, instruction block, ingesters) and its background extractor | `"false"` off; absent on |
 
 Every `run.` key is allowed, which is what lets the per-agent overrides through.
 The roadmap's code allocator (`roadmap.code_prefix`, `roadmap.code_seq`) is the
@@ -1025,6 +1037,25 @@ stored string or `null` for a deleted row. A client applies it over what it read
 and needs no refetch; a second desktop's Settings pane and project page follow
 the first's edits this way. A client still reads the whole set again on every
 handshake, since an event only reaches the clients connected when it fired.
+
+## Project context
+
+The context layer (`crates/fletch-core/src/context`) is what a project is made
+of and what has been decided about it, served to agents so they do not
+re-explore the project to reconstruct it. The `context_*` ops are the human
+side of it — the project page's Context tab — and every op addresses the
+project by its host-local `projects.id`; the host resolves the project's
+context id itself. The reads are `observe`; every write is `projects`, since
+it rewrites what the host knows.
+
+`context_overview` is the one read the tab needs: `{ enabled, extract, graph:
+{ project_id, entities, assertions, relations }, proposals, stats }`, where
+`proposals` is the pending review queue only. Every type is the serde form of
+the Rust model (`context::model`, snake_case enums). Writes are stamped user /
+UI; an assertion recorded here is always `confirmed`, and changing one is a
+new assertion with `supersedes: { id, reasoning }` rather than an edit —
+assertions are immutable. After every write the host emits
+`context:changed { project_id }` and the tab reloads the overview.
 
 ## Dictation
 
@@ -1158,6 +1189,7 @@ roadmap:project-hold   roadmap:project-hold-released
 roadmap:brief          roadmap:brief-proposal roadmap:brief-proposal-deleted
 roadmap:queue-note
 settings:changed       project_settings:changed
+context:changed
 ```
 
 `agent:event` is forwarded unfiltered, including the provider's
@@ -1320,6 +1352,10 @@ persisted: it explains why an item is not moving, and nothing reads it back.
 write to a host-owned setting, one event per key written, and only ever for a
 key on the allowlists in "Settings" — so a secret cannot ride one. `value` is
 the stored string, `null` for a deleted row.
+
+`context:changed { project_id }` follows every `context_*` write (and any other
+write to the project's context on the host). It carries no row: a client
+re-reads `context_overview`, which is small by design.
 
 Never forwarded: `agent:output`, `shell:output`, `run:output` (raw PTY bytes),
 the rest of `run:*`, `dictation:*`, `docker:*` and `agent-install:*`.

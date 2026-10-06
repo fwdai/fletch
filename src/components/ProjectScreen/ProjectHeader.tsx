@@ -1,11 +1,13 @@
 import { Icon, type IconName } from "@/components/Icon";
 import { CountUp, Stat } from "@/components/Stats";
+import { useAppStore } from "@/store";
 import type { ProjectScreenTab } from "@/store/ui";
 import type { RoadmapState } from "./Roadmap";
 
 const TABS: { id: ProjectScreenTab; label: string; icon: IconName }[] = [
   { id: "roadmap", label: "Roadmap", icon: "map" },
   { id: "activity", label: "Activity", icon: "activity" },
+  { id: "context", label: "Context", icon: "graph" },
   { id: "settings", label: "Settings", icon: "settings" },
 ];
 
@@ -27,6 +29,9 @@ export function ProjectHeader({
   onClose: () => void;
 }) {
   const { counts, shipped } = roadmap;
+  // The Context tab exists only while the layer's developer gate is open.
+  const contextLayerEnabled = useAppStore((s) => s.contextLayerEnabled);
+  const tabs = TABS.filter((t) => t.id !== "context" || contextLayerEnabled);
 
   return (
     <div className="ps-head">
@@ -36,7 +41,7 @@ export function ProjectHeader({
       </button>
 
       <nav className="ps-tabs">
-        {TABS.map((t) => (
+        {tabs.map((t) => (
           <button
             key={t.id}
             type="button"

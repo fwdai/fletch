@@ -668,6 +668,7 @@ fn allowlist_matches_the_protocol_table() {
         "set_notify_pr_activity",
         "set_auto_archive_idle_days",
         "set_code_indexing_enabled",
+        "set_context_layer_enabled",
         "set_sandbox_engine",
         "set_docker_launch_settings",
         "set_podman_launch_settings",
@@ -679,6 +680,15 @@ fn allowlist_matches_the_protocol_table() {
         "set_agent_attribution_removed",
         "get_project_settings",
         "set_project_setting",
+        "context_overview",
+        "context_preview",
+        "context_record_entity",
+        "context_record_assertion",
+        "context_retract",
+        "context_archive_entity",
+        "context_merge_entities",
+        "context_link",
+        "context_rule_proposal",
         "register_push",
     ];
     assert_eq!(
@@ -3979,7 +3989,7 @@ async fn every_settings_op_has_an_arm() {
             assert_ne!(e, dispatch::UNKNOWN_OP, "{op} has no arm");
         }
     }
-    assert_eq!(seen, 16, "the settings family is 16 ops");
+    assert_eq!(seen, 17, "the settings family is 17 ops");
 }
 
 /// The two settings events are forwarded and advertised, so a second desktop

@@ -20,7 +20,7 @@ export type RightPanelTab = "code" | "git" | "run" | "term";
  *  built, and how the project is run. Kept here (like `RightPanelTab`) so
  *  callers of `openProjectScreen` can pick the tab without the store importing
  *  a component. */
-export type ProjectScreenTab = "roadmap" | "activity" | "settings";
+export type ProjectScreenTab = "roadmap" | "activity" | "context" | "settings";
 
 export interface UiSlice {
   /** Quick-settings popover (gear / ⌘,). */

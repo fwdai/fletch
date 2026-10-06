@@ -10,6 +10,7 @@
 //! `commands::commit_agent_impl` resolves without naming the submodule.
 
 pub mod agent;
+pub mod context;
 pub mod files;
 pub mod git_ops;
 pub mod git_state;
@@ -20,6 +21,7 @@ pub mod verify;
 pub mod workspace;
 
 pub use agent::*;
+pub use context::*;
 pub use files::*;
 pub use git_ops::*;
 pub use git_state::*;

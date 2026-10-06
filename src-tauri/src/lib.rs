@@ -69,14 +69,15 @@ mod tests {
     fn db_basenames_lists_current_before_legacy() {
         // move_db_aside processes DB_BASENAMES.rev() so the legacy name is moved
         // aside FIRST — the contract that stops migrate from resurrecting the
-        // legacy db once the current one is gone — and the transcript log
-        // before the main file that owns its sessions. Pin the order this
-        // relies on.
+        // legacy db once the current one is gone — and the transcript and
+        // context logs before the main file that owns their sessions and
+        // project ids. Pin the order this relies on.
         assert_eq!(
             database::DB_BASENAMES,
             &[
                 database::DB_FILENAME,
                 database::TRANSCRIPTS_DB_FILENAME,
+                database::CONTEXT_DB_FILENAME,
                 database::LEGACY_DB_FILENAME
             ]
         );
@@ -1330,6 +1331,7 @@ pub fn run() {
             commands::get_settings,
             commands::set_agent_bin_override,
             commands::set_code_indexing_enabled,
+            commands::set_context_layer_enabled,
             commands::set_sandbox_engine,
             commands::set_publish_confirmation,
             commands::set_publish_approval_wait,
@@ -1343,6 +1345,16 @@ pub fn run() {
             commands::set_podman_launch_settings,
             commands::get_project_settings,
             commands::set_project_setting,
+            // The project context layer, shared with the remote dispatcher.
+            commands::context_overview,
+            commands::context_preview,
+            commands::context_record_entity,
+            commands::context_record_assertion,
+            commands::context_retract,
+            commands::context_archive_entity,
+            commands::context_merge_entities,
+            commands::context_link,
+            commands::context_rule_proposal,
             probe_docker_engine,
             probe_podman_engine,
             get_container_auth_status,

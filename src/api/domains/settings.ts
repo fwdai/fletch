@@ -23,6 +23,9 @@ export const settingsApi = {
   /** Code indexing (codegraph); enabling warms the index in the background. */
   setCodeIndexingEnabled: (enabled: boolean) =>
     invoke<void>("set_code_indexing_enabled", { enabled }),
+  /** The project context layer's developer gate (`context_layer_enabled`). */
+  setContextLayerEnabled: (enabled: boolean) =>
+    invoke<void>("set_context_layer_enabled", { enabled }),
   /** The engine new agents are stamped with. The host probes a container
    *  engine live and refuses one whose runtime is unreachable. */
   setSandboxEngine: (engine: SandboxEngine) => invoke<void>("set_sandbox_engine", { engine }),

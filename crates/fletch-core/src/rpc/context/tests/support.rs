@@ -1,0 +1,80 @@
+use super::*;
+
+use serde_json::{json, Value};
+
+pub(super) const PROJECT: &str = "ctx-p1";
+pub(super) const FLETCH_PROJECT: &str = "p1";
+pub(super) const AGENT: &str = "agent-1";
+
+/// Answers `ping` and nothing else: enough to prove delegation.
+pub(super) struct Inner;
+
+impl RpcDispatcher for Inner {
+    fn dispatch<'a>(
+        &'a self,
+        id: &'a str,
+        op: &'a str,
+        _args: &'a Value,
+    ) -> RpcFuture<'a, (Response, Vec<RpcEvent>)> {
+        Box::pin(async move {
+            let resp = match op {
+                "ping" => Response::ok(id, 0, "pong".to_string(), String::new()),
+                other => Response::err(id, format!("unknown op: {other}")),
+            };
+            (resp, Vec::new())
+        })
+    }
+}
+
+/// A dispatcher over a fresh store; the temp dir is the (non-git) checkout,
+/// so provenance comes back without a branch or commit.
+pub(super) fn dispatcher() -> (ContextDispatcher, tempfile::TempDir) {
+    let (store, dir) = ContextStore::temp().unwrap();
+    let d = ContextDispatcher {
+        inner: Arc::new(Inner),
+        db: store.db().clone(),
+        store,
+        project_id: PROJECT.into(),
+        fletch_project_id: FLETCH_PROJECT.into(),
+        agent_id: AGENT.into(),
+        provider: "claude".into(),
+        cwd: dir.path().to_path_buf(),
+        session_id: Some("sess-1".into()),
+    };
+    (d, dir)
+}
+
+pub(super) async fn call(d: &ContextDispatcher, op: &str, args: Value) -> Response {
+    d.dispatch("r1", op, &args).await.0
+}
+
+pub(super) fn payload(resp: &Response) -> Value {
+    assert!(resp.ok, "{:?}", resp.error);
+    serde_json::from_str(resp.stdout.as_ref().unwrap()).unwrap()
+}
+
+pub(super) fn error(resp: &Response) -> String {
+    assert!(!resp.ok, "expected a refusal, got {:?}", resp.stdout);
+    resp.error.clone().unwrap()
+}
+
+/// Records a feature entity and returns its id.
+pub(super) async fn entity(d: &ContextDispatcher, slug: &str) -> String {
+    let resp = call(
+        d,
+        "context_record_entity",
+        json!({ "slug": slug, "kind": "feature", "name": slug, "summary": format!("the {slug} feature") }),
+    )
+    .await;
+    payload(&resp)["id"].as_str().unwrap().to_string()
+}
+
+/// An adopted architectural decision about `about`, with the given statement.
+pub(super) fn decision(about: &str, statement: &str) -> Value {
+    json!({
+        "domain": "architectural",
+        "statement": statement,
+        "rationale": "because",
+        "about": [about],
+    })
+}

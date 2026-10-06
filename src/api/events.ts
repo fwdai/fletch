@@ -14,6 +14,7 @@ import type {
   ShellOutputEvent,
   WorkspaceAutoArchivedEvent,
 } from "./types/agent";
+import type { ContextChangedEvent } from "./types/context";
 import type {
   DictationLevelEvent,
   DictationModelProgressEvent,
@@ -426,6 +427,13 @@ export function onProjectSettingsChanged(
   cb: (e: ProjectSettingsChangedEvent) => void,
 ): Promise<UnlistenFn> {
   return on<ProjectSettingsChangedEvent>("project_settings:changed", cb);
+}
+
+/** A write landed on one project's context, from any client or the host's own
+ *  pipeline. Carries no row: reload `context_overview`. Fires for every
+ *  project — a listener scoped to one tab filters on `project_id`. */
+export function onContextChanged(cb: (e: ContextChangedEvent) => void): Promise<UnlistenFn> {
+  return on<ContextChangedEvent>("context:changed", cb);
 }
 
 /** Raw PTY bytes from a provider's in-app sign-in (Settings → Providers). */

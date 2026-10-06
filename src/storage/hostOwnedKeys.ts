@@ -12,6 +12,7 @@ export const HOST_SETTING_KEYS = [
   "notify_pr_activity",
   "auto_archive_idle_days",
   "code_indexing_enabled",
+  "context_layer_enabled",
   "sandbox_engine",
   "docker_image",
   "docker_memory",
@@ -49,6 +50,8 @@ export const HOST_PROJECT_SETTING_KEYS = [
   "roadmap.declined_issues",
   "linear.team_id",
   "linear.team_name",
+  "context.enabled",
+  "context.extract",
 ] as const;
 
 /** `run.<row>` and `run.agent.<agentId>.<row>`. */

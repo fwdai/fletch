@@ -49,6 +49,7 @@
    primitives (`.act-key` matches the `.mb-bar` ramp, the shipped skeleton
    reuses its `stat-shimmer` keyframes). */
 @import "./components/ProjectScreen/Activity/Activity.css";
+@import "./components/ProjectContext/ProjectContext.css";
 @import "./components/RightPanel/FilePanel/FilePanel.css";
 /* Ahead of SettingsScreen.css (its former home) and of CustomAgents.css /
    Feedback.css, whose prose-box classes compose on top of `.ui-input`. */

@@ -305,7 +305,8 @@ pub fn effective_instructions(
         .roadmap_pm
         .then(|| crate::instructions::roadmap_block(blocks.product_context))
         .flatten();
-    let parts: Vec<String> = [codegraph, roadmap, clean(brief), handoff, index]
+    let context = crate::instructions::context_block(blocks.context);
+    let parts: Vec<String> = [codegraph, roadmap, context, clean(brief), handoff, index]
         .into_iter()
         .flatten()
         .collect();
@@ -333,6 +334,11 @@ pub struct Blocks<'a> {
     /// because it is a *conditional* layer like the two flags above: ignored
     /// unless `roadmap_pm`, since no other session has the ops that maintain it.
     pub product_context: Option<&'a str>,
+    /// The project context layer's spawn-time entity index
+    /// (`rpc::context::spawn_index`): `None` when the layer is off for the
+    /// project, so the session has no `context_*` ops and must not be told
+    /// about them; `Some` — possibly empty — when it does.
+    pub context: Option<&'a str>,
 }
 
 /// The subagent type Fletch defines when codegraph is available, as claude's
@@ -558,6 +564,7 @@ mod tests {
         codegraph: true,
         roadmap_pm: false,
         product_context: None,
+        context: None,
     };
 
     /// A roadmap project-manager chat, without codegraph, whose project has no
@@ -566,6 +573,7 @@ mod tests {
         codegraph: false,
         roadmap_pm: true,
         product_context: None,
+        context: None,
     };
 
     fn skill(name: &str, desc: &str, body: &str) -> SkillSnapshot {
@@ -698,6 +706,7 @@ mod tests {
                 codegraph: true,
                 roadmap_pm: true,
                 product_context: None,
+                context: None,
             },
         )
         .unwrap()
@@ -747,6 +756,34 @@ mod tests {
         .unwrap()
         .unwrap();
         assert_eq!(plain, "Be terse.");
+    }
+
+    #[test]
+    fn the_context_block_rides_only_when_the_layer_is_on() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // Off (`None`): never mentioned, even with an index-shaped brief around.
+        let off =
+            effective_instructions(Some("Be terse."), None, &[], dir.path(), Blocks::default())
+                .unwrap()
+                .unwrap();
+        assert!(!off.contains("context_get"), "{off}");
+
+        // On with nothing recorded yet: the playbook alone, ahead of the brief.
+        let on = effective_instructions(
+            Some("Be terse."),
+            None,
+            &[],
+            dir.path(),
+            Blocks {
+                context: Some(""),
+                ..Blocks::default()
+            },
+        )
+        .unwrap()
+        .unwrap();
+        let block = crate::instructions::context_block(Some("")).unwrap();
+        assert_eq!(on, format!("{block}\n\nBe terse."));
     }
 
     #[test]

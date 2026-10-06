@@ -271,6 +271,13 @@ async fn tick(ctx: &Arc<EngineCtx>, supervisor: &Arc<Supervisor>, last: &Last, w
                 threads: pr.threads,
             };
             let changes = diff(&mut last.lock(), &(key.clone(), number), &read);
+            if changes
+                .iter()
+                .any(|c| matches!(c, Change::State(s) if s.state == PrStatus::Merged))
+            {
+                crate::context::ingest::on_pr_merged_by_number(ctx, agent_id, subdir, &read.state)
+                    .await;
+            }
             publish(
                 ctx.sink.as_ref(),
                 agent_id,

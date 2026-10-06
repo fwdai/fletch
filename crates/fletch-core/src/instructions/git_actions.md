@@ -24,6 +24,13 @@ Your workspace starts with no branch (detached HEAD) — that's expected. The br
 
 **Choosing the PR base.** The `base` a trigger carries is the branch this workspace was created against — the default, not a constraint. If you built your work on a different branch (the user asked you to stack on a feature branch, you branched off it, or you can see from `git log` that that's where your commits sit), pass that branch as `args.base` to `open_pr` so the PR targets it. Do that whenever the honest base differs from the trigger's `base`: a PR opened into the wrong branch shows every commit of the intervening work as if it were yours. The base you open against replaces the workspace's recorded base, so the app's behind-count and its `update-branch` action follow your PR from then on.
 
+**The PR body ends with a `## Decisions` section.** Fletch reads it when the PR merges and records each line as project knowledge, so later agents don't rediscover it. One line per decision, rule, or fact the work established, in exactly this shape — `- <adopted|rejected|constraint|fact> · <business|architectural|implementation> · [<entity slug>, …] — <statement> — <rationale>` — where the slugs name entities from the project context you were given; `- none` when there are none:
+
+    ## Decisions
+    - adopted · implementation · [auth-session, login] — Sessions refresh server-side. — Client refresh raced the token cache.
+    - rejected · architectural · [auth-session] — Refresh in the client. — Races the cache; see #41.
+    - constraint · business · [billing] — Invoices are never deleted, only voided. — Accounting requirement.
+
 ### commit
 
 Review the uncommitted changes (`git status`, `git diff HEAD`), write a clear, conventional commit message, and commit with plain git — `git add -A` then `git commit -m "…"`. Commit ONLY — do not push and do not open a pull request.
@@ -34,11 +41,11 @@ Commit with plain git as in `commit`, then push by calling the `git_push` op —
 
 ### commit-pr — params: `base`
 
-Commit with plain git as in `commit`, then write a concise PR title and description covering ALL changes versus the `base` branch, and open the PR by calling the `open_pr` op with that title and body — plus `args.branch` (your chosen conventional name) if you don't have a branch yet, and `args.base` if your work is stacked on a branch other than the trigger's `base`.
+Commit with plain git as in `commit`, then write a concise PR title and description covering ALL changes versus the `base` branch (ending with the `## Decisions` section described above), and open the PR by calling the `open_pr` op with that title and body — plus `args.branch` (your chosen conventional name) if you don't have a branch yet, and `args.base` if your work is stacked on a branch other than the trigger's `base`.
 
 ### open-pr — params: `base`
 
-Everything is already committed. Review the work versus `base` (`git log <base>..HEAD`, `git diff <base>...HEAD`), write a concise, descriptive PR title and body, and open the PR by calling the `open_pr` op with them — plus `args.branch` (your chosen conventional name) if you don't have a branch yet, and `args.base` if your work is stacked on a branch other than the trigger's `base`. If that review shows commits you didn't write, `base` is the wrong target — find the branch your work actually sits on and pass it as `args.base`.
+Everything is already committed. Review the work versus `base` (`git log <base>..HEAD`, `git diff <base>...HEAD`), write a concise, descriptive PR title and body (ending with the `## Decisions` section described above), and open the PR by calling the `open_pr` op with them — plus `args.branch` (your chosen conventional name) if you don't have a branch yet, and `args.base` if your work is stacked on a branch other than the trigger's `base`. If that review shows commits you didn't write, `base` is the wrong target — find the branch your work actually sits on and pass it as `args.base`.
 
 ### push
 
