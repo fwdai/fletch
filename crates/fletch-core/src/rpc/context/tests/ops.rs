@@ -158,14 +158,48 @@ async fn coexists_records_alongside_the_head() {
     assert_eq!(d.store.load(PROJECT).unwrap().assertions.len(), 2);
 }
 
+/// A workspace with one live session, so the dispatcher can read the user's
+/// turns. The rows the lineage reader needs and nothing more.
+fn seed_session(d: &ContextDispatcher) {
+    let conn = d.db.lock();
+    let now = crate::database::now_millis();
+    conn.execute(
+        "INSERT INTO projects (id, name, created_at) VALUES (?1, 'p', ?2)",
+        rusqlite::params![FLETCH_PROJECT, now],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO workspaces (id, project_id, name, created_at) VALUES (?1, ?2, ?1, ?3)",
+        rusqlite::params![AGENT, FLETCH_PROJECT, now],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO sessions (id, workspace_id, provider, created_at) VALUES ('sess-1', ?1, 'claude', ?2)",
+        rusqlite::params![AGENT, now],
+    )
+    .unwrap();
+}
+
+fn user_said(d: &ContextDispatcher, turn_id: &str, text: &str) {
+    assert!(crate::workspace::WorkspaceManager::new(d.db.clone())
+        .insert_user_turn(AGENT, turn_id, text, &[])
+        .unwrap());
+}
+
 #[tokio::test]
 async fn the_user_s_word_lands_confirmed_and_the_agent_s_provisional() {
     let (d, _dir) = dispatcher();
+    seed_session(&d);
+    user_said(
+        &d,
+        "t1",
+        "One rule for billing: never store card numbers, anywhere.",
+    );
     entity(&d, "billing").await;
 
     let mut args = decision("billing", "Never store card numbers");
     args["kind"] = json!("constraint");
-    args["stated_by_user"] = json!(true);
+    args["user_quote"] = json!("“Never store card numbers, anywhere.”");
     let user = payload(&call(&d, "context_record_decision", args).await);
     assert_eq!(user["status"], "confirmed");
 
@@ -178,12 +212,33 @@ async fn the_user_s_word_lands_confirmed_and_the_agent_s_provisional() {
     let user = graph.assertion(user["id"].as_str().unwrap()).unwrap();
     assert_eq!(user.status, AssertionStatus::Confirmed);
     assert_eq!(user.source.kind, SourceKind::UserTurn);
+    assert_eq!(user.source.reference.as_deref(), Some("t1"));
     assert_eq!(user.author.kind, AuthorKind::Agent);
     let agent = graph.assertion(agent["id"].as_str().unwrap()).unwrap();
     assert_eq!(agent.status, AssertionStatus::Provisional);
     assert_eq!(agent.source.kind, SourceKind::AgentTurn);
     assert_eq!(agent.provenance.workspace_id.as_deref(), Some(AGENT));
     assert_eq!(agent.provenance.session_id.as_deref(), Some("sess-1"));
+}
+
+#[tokio::test]
+async fn a_user_quote_the_user_never_wrote_is_refused() {
+    let (d, _dir) = dispatcher();
+    seed_session(&d);
+    user_said(&d, "t1", "Let's keep invoices immutable.");
+    entity(&d, "billing").await;
+
+    // A paraphrase, the agent's own words, and no session at all: all refused,
+    // nothing written. The claim is never taken from the caller.
+    let mut args = decision("billing", "Invoices are immutable");
+    args["user_quote"] = json!("invoices can never change");
+    let e = error(&call(&d, "context_record_decision", args.clone()).await);
+    assert!(e.contains("not found in the user's messages"), "{e}");
+    assert!(d.store.load(PROJECT).unwrap().assertions.is_empty());
+
+    args["user_quote"] = json!("immutable");
+    let e = error(&call(&d, "context_record_decision", args).await);
+    assert!(e.contains("not found"), "{e}");
 }
 
 #[tokio::test]

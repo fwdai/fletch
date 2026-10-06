@@ -3,24 +3,24 @@ use crate::context::model::*;
 
 use super::{
     agent_stamp, extracted_at, run, run_as, run_row, seed_decision, seed_entity, store, user_stamp,
-    Canned, Failing, PROJECT,
+    Canned, Failing, AGENT_QUOTE, PROJECT, USER_QUOTE,
 };
 
 fn entity_json(slug: &str) -> String {
     format!(r#"{{"slug": "{slug}", "kind": "feature", "name": "{slug}", "summary": "s"}}"#)
 }
 
-fn assertion_json(
-    about: &str,
-    kind: &str,
-    statement: &str,
-    by_user: bool,
-    relation: &str,
-) -> String {
+/// An assertion whose one piece of evidence is `quote`; `""` for none.
+fn assertion_json(about: &str, kind: &str, statement: &str, quote: &str, relation: &str) -> String {
+    let evidence = if quote.is_empty() {
+        String::new()
+    } else {
+        format!(r#"{{"quote": "{quote}"}}"#)
+    };
     format!(
         r#"{{"about": ["{about}"], "kind": "{kind}", "domain": "architectural", "stance": "adopted",
-            "statement": "{statement}", "rationale": "because", "stated_by_user": {by_user},
-            "relation": {relation}, "evidence": [{{"quote": "{statement}"}}]}}"#
+            "statement": "{statement}", "rationale": "because",
+            "relation": {relation}, "evidence": [{evidence}]}}"#
     )
 }
 
@@ -111,10 +111,16 @@ fn an_archive_run_lands_agent_stated_assertions_with_the_settled_outcome() {
                         "auth",
                         "fact",
                         "Tokens expire hourly",
-                        false,
+                        AGENT_QUOTE,
                         r#"{"kind": "new"}"#,
                     ),
-                    assertion_json("auth", "decision", "Use JWT", true, r#"{"kind": "new"}"#),
+                    assertion_json(
+                        "auth",
+                        "decision",
+                        "Use JWT",
+                        USER_QUOTE,
+                        r#"{"kind": "new"}"#,
+                    ),
                 ],
             )),
             outcome,
@@ -144,8 +150,11 @@ fn an_existing_entity_is_skipped_and_a_new_one_lands() {
     assert!(slugs.contains(&"billing"));
 }
 
+/// A quote found in the user's text is what makes an assertion the user's:
+/// `user_turn` source naming that turn, confirmed, and the quote kept as
+/// evidence against the turn.
 #[test]
-fn a_user_stated_assertion_lands_confirmed_by_rule() {
+fn a_quote_from_the_users_turn_lands_confirmed_as_user_stated() {
     let (store, _dir) = store();
     let auth = seed_entity(&store, "auth");
     let summary = run(
@@ -156,12 +165,13 @@ fn a_user_stated_assertion_lands_confirmed_by_rule() {
                 "auth",
                 "decision",
                 "Use JWT",
-                true,
+                USER_QUOTE,
                 r#"{"kind": "new"}"#,
             )],
         )),
     );
     assert_eq!(summary.auto, 1);
+    assert_eq!(summary.unverified, 0);
     let graph = store.load(PROJECT).unwrap();
     let a = &graph.assertions[0];
     assert_eq!(a.status, AssertionStatus::Confirmed);
@@ -172,12 +182,16 @@ fn a_user_stated_assertion_lands_confirmed_by_rule() {
     assert_eq!(a.provenance.workspace_id.as_deref(), Some("ws-1"));
     let auto = proposals(&store, ProposalStatus::Auto);
     assert_eq!(auto.len(), 1);
-    assert_eq!(auto[0].evidence[0].quote, "Use JWT");
+    assert_eq!(auto[0].evidence.len(), 1);
+    assert_eq!(auto[0].evidence[0].quote, USER_QUOTE);
     assert_eq!(auto[0].evidence[0].turn_id.as_deref(), Some("t1"));
+    assert_eq!(auto[0].evidence[0].session_id.as_deref(), Some("sess-1"));
 }
 
+/// A quote found only in the agent's reply is evidence, but not the user's
+/// word: the assertion is agent-stated and gets the run's status.
 #[test]
-fn an_agent_stated_new_assertion_lands_provisional_by_rule() {
+fn a_quote_from_the_agents_reply_lands_provisional_as_agent_stated() {
     let (store, _dir) = store();
     seed_entity(&store, "auth");
     let summary = run(
@@ -188,15 +202,203 @@ fn an_agent_stated_new_assertion_lands_provisional_by_rule() {
                 "auth",
                 "fact",
                 "Tokens expire hourly",
-                false,
+                AGENT_QUOTE,
                 r#"{"kind": "new"}"#,
             )],
         )),
     );
     assert_eq!(summary.auto, 1);
+    assert_eq!(summary.unverified, 0);
     let graph = store.load(PROJECT).unwrap();
     assert_eq!(graph.assertions[0].status, AssertionStatus::Provisional);
     assert_eq!(graph.assertions[0].source.kind, SourceKind::AgentTurn);
+    let auto = proposals(&store, ProposalStatus::Auto);
+    assert_eq!(auto[0].evidence[0].quote, AGENT_QUOTE);
+    assert_eq!(auto[0].evidence[0].turn_id.as_deref(), Some("t1"));
+}
+
+/// The model cannot claim the user said it: `stated_by_user` in its answer
+/// is ignored, and only a quote from the user's text would do.
+#[test]
+fn stated_by_user_in_the_answer_does_not_make_it_user_stated() {
+    let (store, _dir) = store();
+    seed_entity(&store, "auth");
+    let forged = format!(
+        r#"{{"about": ["auth"], "kind": "decision", "domain": "architectural", "stance": "adopted",
+            "statement": "Use JWT", "rationale": "because", "stated_by_user": true,
+            "relation": {{"kind": "new"}}, "evidence": [{{"quote": "{AGENT_QUOTE}"}}]}}"#
+    );
+    let summary = run(&store, &Canned(answer(&[], &[forged])));
+    assert_eq!(summary.auto, 1);
+    let graph = store.load(PROJECT).unwrap();
+    assert_eq!(graph.assertions[0].source.kind, SourceKind::AgentTurn);
+    assert_eq!(graph.assertions[0].status, AssertionStatus::Provisional);
+}
+
+/// No quote found anywhere in the turns: the statement may be invented, so
+/// it waits for review with no evidence attached, whatever the rule says.
+#[test]
+fn an_assertion_without_a_verifiable_quote_is_held_for_review() {
+    let (store, _dir) = store();
+    seed_entity(&store, "auth");
+    let summary = run(
+        &store,
+        &Canned(answer(
+            &[],
+            &[
+                assertion_json(
+                    "auth",
+                    "fact",
+                    "Sessions last a week",
+                    "sessions last a week or so",
+                    r#"{"kind": "new"}"#,
+                ),
+                assertion_json("auth", "fact", "Nothing cited", "", r#"{"kind": "new"}"#),
+            ],
+        )),
+    );
+    assert_eq!(summary.unverified, 2);
+    assert_eq!(summary.pending, 2);
+    assert_eq!(summary.auto, 0);
+    assert!(store.load(PROJECT).unwrap().assertions.is_empty());
+    let pending = proposals(&store, ProposalStatus::Pending);
+    assert_eq!(pending.len(), 2);
+    assert!(pending.iter().all(|p| p.evidence.is_empty()));
+    // Held, but still agent-stated with the run's status for when it is accepted.
+    match &pending[0].payload {
+        ProposalPayload::Assertion { input, stamp, .. } => {
+            assert_eq!(stamp.source.kind, SourceKind::AgentTurn);
+            assert_eq!(input.status, AssertionStatus::Provisional);
+        }
+        other => panic!("expected an assertion proposal, got {other:?}"),
+    }
+}
+
+/// A held assertion still goes through classify: a duplicate of a head is
+/// dismissed rather than left in the queue.
+#[test]
+fn a_held_duplicate_is_still_dismissed() {
+    let (store, _dir) = store();
+    let auth = seed_entity(&store, "auth");
+    seed_decision(&store, &auth, "Use JWT.", user_stamp());
+    let summary = run(
+        &store,
+        &Canned(answer(
+            &[],
+            &[assertion_json(
+                "auth",
+                "decision",
+                "use jwt",
+                "",
+                r#"{"kind": "new"}"#,
+            )],
+        )),
+    );
+    assert_eq!(summary.unverified, 1);
+    assert_eq!(summary.dismissed, 1);
+    assert_eq!(summary.pending, 0);
+    assert_eq!(proposals(&store, ProposalStatus::Pending).len(), 0);
+}
+
+/// Case, whitespace and the quote marks a model wraps a citation in do not
+/// stop a verbatim quote from matching; a short or paraphrased one does not.
+#[test]
+fn quotes_are_matched_after_normalisation() {
+    let (store, _dir) = store();
+    seed_entity(&store, "auth");
+    let summary = run(
+        &store,
+        &Canned(answer(
+            &[],
+            &[
+                assertion_json(
+                    "auth",
+                    "decision",
+                    "Use JWT",
+                    r#"\"  USE jwt   for Sessions, \""#,
+                    r#"{"kind": "new"}"#,
+                ),
+                assertion_json(
+                    "auth",
+                    "fact",
+                    "Tokens expire",
+                    "'TOKENS   expire hourly.'",
+                    r#"{"kind": "new"}"#,
+                ),
+                assertion_json(
+                    "auth",
+                    "fact",
+                    "Paraphrased",
+                    "tokens go stale every hour",
+                    r#"{"kind": "new"}"#,
+                ),
+                assertion_json("auth", "fact", "Too short", "JWT", r#"{"kind": "new"}"#),
+            ],
+        )),
+    );
+    assert_eq!(summary.auto, 2);
+    assert_eq!(summary.unverified, 2);
+    let graph = store.load(PROJECT).unwrap();
+    let by_statement = |s: &str| graph.assertions.iter().find(|a| a.statement == s).unwrap();
+    assert_eq!(by_statement("Use JWT").source.kind, SourceKind::UserTurn);
+    assert_eq!(
+        by_statement("Tokens expire").source.kind,
+        SourceKind::AgentTurn
+    );
+    // The evidence keeps the quote as the model gave it, on one line.
+    let auto = proposals(&store, ProposalStatus::Auto);
+    let quotes: Vec<&str> = auto
+        .iter()
+        .flat_map(|p| p.evidence.iter().map(|e| e.quote.as_str()))
+        .collect();
+    assert!(
+        quotes.contains(&r#"" USE jwt for Sessions, ""#),
+        "{quotes:?}"
+    );
+}
+
+/// Slugs are the store's to refuse, so they are normalised first: lowercase,
+/// runs of other characters to `-`, 64 at most. One with nothing left is
+/// skipped; the texts around it are cleaned by the store.
+#[test]
+fn an_entity_slug_is_normalised_and_an_empty_one_is_skipped() {
+    let (store, _dir) = store();
+    let long = "x".repeat(80);
+    let entities = [
+        r#"{"slug": " Auth  Service! ", "kind": "feature", "name": "Auth\u0001\nService", "summary": "Sign\tin\u0007 flow"}"#.to_string(),
+        r#"{"slug": "Billing.v2_API", "kind": "module", "name": "Billing", "summary": "s"}"#.to_string(),
+        format!(r#"{{"slug": "{long}--", "kind": "topic", "name": "Long", "summary": "s"}}"#),
+        r#"{"slug": "!!!", "kind": "topic", "name": "Nameless", "summary": "s"}"#.to_string(),
+    ];
+    let summary = run(&store, &Canned(answer(&entities, &[])));
+    assert_eq!(summary.entities_landed, 3);
+    assert_eq!(summary.entities_skipped, 1);
+    let graph = store.load(PROJECT).unwrap();
+    let by_slug = |s: &str| graph.entities.iter().find(|e| e.slug == s);
+    let auth = by_slug("auth-service").expect("auth-service");
+    assert_eq!(auth.name, "Auth Service");
+    assert_eq!(auth.summary, "Sign in flow");
+    assert!(by_slug("billing.v2_api").is_some());
+    assert!(by_slug(&"x".repeat(64)).is_some());
+    assert_eq!(graph.entities.len(), 3);
+}
+
+/// Control characters and newlines in what the model wrote never reach the
+/// graph (the store cleans every line it writes).
+#[test]
+fn control_characters_are_stripped_from_statements() {
+    let (store, _dir) = store();
+    seed_entity(&store, "auth");
+    let text = format!(
+        r#"{{"about": ["auth"], "kind": "decision", "domain": "architectural", "stance": "adopted",
+            "statement": "Use\u0007 JWT\nnow", "rationale": "first line\nsecond\u0000line",
+            "relation": {{"kind": "new"}}, "evidence": [{{"quote": "{USER_QUOTE}"}}]}}"#
+    );
+    let summary = run(&store, &Canned(answer(&[], &[text])));
+    assert_eq!(summary.auto, 1);
+    let graph = store.load(PROJECT).unwrap();
+    assert_eq!(graph.assertions[0].statement, "Use JWT now");
+    assert_eq!(graph.assertions[0].rationale, "first line second line");
 }
 
 /// Two different decisions about one entity are not a supersession on their
@@ -214,7 +416,7 @@ fn a_different_statement_is_new_unless_the_model_relates_it() {
                 "auth",
                 "decision",
                 "Use JWT",
-                false,
+                AGENT_QUOTE,
                 r#"{"kind": "new"}"#,
             )],
         )),
@@ -238,12 +440,17 @@ fn an_agent_stated_supersession_of_a_user_stated_head_waits_for_review() {
         &Canned(answer(
             &[],
             &[assertion_json(
-                "auth", "decision", "Use JWT", false, &relation,
+                "auth",
+                "decision",
+                "Use JWT",
+                AGENT_QUOTE,
+                &relation,
             )],
         )),
     );
     assert_eq!(summary.pending, 1);
     assert_eq!(summary.auto, 0);
+    assert_eq!(summary.unverified, 0);
     let pending = proposals(&store, ProposalStatus::Pending);
     assert_eq!(pending.len(), 1);
     match &pending[0].payload {
@@ -272,7 +479,7 @@ fn a_user_stated_supersession_of_a_user_stated_head_lands() {
         &Canned(answer(
             &[],
             &[assertion_json(
-                "auth", "decision", "Use JWT", true, &relation,
+                "auth", "decision", "Use JWT", USER_QUOTE, &relation,
             )],
         )),
     );
@@ -284,10 +491,11 @@ fn a_user_stated_supersession_of_a_user_stated_head_lands() {
     assert_eq!(new.source.kind, SourceKind::UserTurn);
 }
 
-/// The model's `supersedes` is honoured only against a live head: a superseded
-/// one, an abandoned one or an unknown id leave the candidate `New`.
+/// The model's `supersedes` is honoured only against a current head: a
+/// superseded one, an abandoned one or an unknown id leave the candidate
+/// `New`.
 #[test]
-fn a_relation_whose_target_is_not_a_live_head_falls_back_to_new() {
+fn a_relation_whose_target_is_not_a_current_head_falls_back_to_new() {
     let (store, _dir) = store();
     let auth = seed_entity(&store, "auth");
     let old = seed_decision(&store, &auth, "Use cookies", agent_stamp());
@@ -334,7 +542,7 @@ fn a_relation_whose_target_is_not_a_live_head_falls_back_to_new() {
                     "auth",
                     "fact",
                     &format!("Fact about {target}"),
-                    false,
+                    AGENT_QUOTE,
                     &relation,
                 )],
             )),
@@ -362,7 +570,7 @@ fn the_models_supersedes_target_is_kept_when_it_is_a_head() {
         &Canned(answer(
             &[],
             &[assertion_json(
-                "auth", "decision", "Use JWT", true, &relation,
+                "auth", "decision", "Use JWT", USER_QUOTE, &relation,
             )],
         )),
     );
@@ -393,7 +601,7 @@ fn a_contradiction_waits_for_review() {
                 "auth",
                 "fact",
                 "Auth uses JWT today",
-                true,
+                USER_QUOTE,
                 &relation,
             )],
         )),
@@ -423,7 +631,7 @@ fn a_duplicate_is_dismissed_for_the_trail() {
                 "auth",
                 "decision",
                 "use jwt",
-                true,
+                USER_QUOTE,
                 r#"{"kind": "new"}"#,
             )],
         )),
@@ -448,8 +656,14 @@ fn an_unknown_slug_is_skipped_and_the_rest_proceeds() {
         &Canned(answer(
             &[],
             &[
-                assertion_json("nonesuch", "fact", "Orphan", false, r#"{"kind": "new"}"#),
-                assertion_json("auth", "fact", "Kept", false, r#"{"kind": "new"}"#),
+                assertion_json(
+                    "nonesuch",
+                    "fact",
+                    "Orphan",
+                    AGENT_QUOTE,
+                    r#"{"kind": "new"}"#,
+                ),
+                assertion_json("auth", "fact", "Kept", AGENT_QUOTE, r#"{"kind": "new"}"#),
             ],
         )),
     );
@@ -471,7 +685,7 @@ fn a_new_entity_can_carry_an_assertion_in_the_same_run() {
                 "billing",
                 "constraint",
                 "Never store card numbers",
-                true,
+                "never store tokens in local storage",
                 r#"{"kind": "new"}"#,
             )],
         )),

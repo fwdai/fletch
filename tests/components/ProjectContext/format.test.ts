@@ -55,8 +55,26 @@ function assertion(over: Partial<ContextAssertion> & { id: string }): ContextAss
   };
 }
 
+/** `current` as the host derives it: live, and nothing live further down the
+ *  supersession chain (`compile::is_current`). */
 function graph(entities: ContextEntity[], assertions: ContextAssertion[]): ContextGraph {
-  return { project_id: "p", entities, assertions, relations: [] };
+  const live = (a: ContextAssertion) => a.status !== "retracted" && a.status !== "abandoned";
+  const isCurrent = (a: ContextAssertion): boolean => {
+    if (!live(a)) return false;
+    let next = assertions.find((s) => s.id === a.superseded_by);
+    while (next) {
+      if (live(next)) return false;
+      next = assertions.find((s) => s.id === next?.superseded_by);
+    }
+    return true;
+  };
+  return {
+    project_id: "p",
+    entities,
+    assertions,
+    relations: [],
+    current: assertions.filter(isCurrent).map((a) => a.id),
+  };
 }
 
 describe("flagOn", () => {
@@ -141,6 +159,7 @@ describe("contradictedBy", () => {
         assertion({ id: "me", contradicts: ["live", "gone", "retracted", "missing"] }),
         assertion({ id: "live" }),
         assertion({ id: "gone", superseded_by: "x" }),
+        assertion({ id: "x", supersedes: { id: "gone", reasoning: "moved on" } }),
         assertion({ id: "retracted", status: "retracted" }),
       ],
     );

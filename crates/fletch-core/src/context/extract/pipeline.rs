@@ -2,18 +2,32 @@
 //! model, keep the run, then turn the answer into proposals — entities land at
 //! once (they are cheap and the assertions need subjects), assertions go
 //! through `resolve::classify` (duplicates), the model's own `supersedes` /
-//! `contradicts` relation when it names a live head, and the auto rule. Pure
-//! over its arguments apart from the store, so tests drive it with a fake
+//! `contradicts` relation when it names a current head, and the auto rule.
+//! Pure over its arguments apart from the store, so tests drive it with a fake
 //! extractor. The observation is marked extracted only when the run landed,
 //! so the turns of a failed one are picked up again by the next.
+//!
+//! Nothing the model says about itself is trusted. Whether the user stated an
+//! assertion follows from its evidence: each quote is looked for verbatim in
+//! the turns the model was shown, and only one found in the user's own text
+//! (`trust::find_user_quote`) makes the assertion user-stated — `user_turn`
+//! source, confirmed. A quote found in the agent's text is evidence too, but
+//! leaves the assertion agent-stated. One with no quote found anywhere is
+//! held for review, never landed by rule. The store cleans every text it
+//! writes; only slugs are normalised here, since the store refuses a bad one.
 
 use std::time::Instant;
 
 use super::super::model::*;
-use super::super::{resolve, ContextStore, Result};
+use super::super::trust::{self, UserStated, UserTurnText};
+use super::super::{compile, resolve, store, ContextStore, Result};
 use super::input::ExtractInput;
-use super::{prompt, Extractor};
+use super::prompt::{self, ProposedEntity, Quote};
+use super::Extractor;
 use crate::database::now_millis;
+
+/// The store's limit on a slug.
+const MAX_SLUG: usize = 64;
 
 /// What one run did, for the log.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -25,9 +39,21 @@ pub struct Summary {
     pub pending: usize,
     pub dismissed: usize,
     pub assertions_skipped: usize,
+    /// Assertions none of whose quotes were found in the turns; held for
+    /// review (counted in `pending` too, unless dismissed as duplicates).
+    pub unverified: usize,
     /// Set when the run failed or its output could not be read; nothing was
     /// proposed then.
     pub error: Option<String>,
+}
+
+/// A model quote found verbatim in the turns, and where.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct VerifiedQuote {
+    turn_id: String,
+    /// Set when it was found in the user's text; `None` means the agent's.
+    user: Option<UserStated>,
+    quote: String,
 }
 
 /// Run `extractor` over `input` for `project_id` and apply what it proposes.
@@ -45,11 +71,13 @@ pub fn process(
     extractor: &dyn Extractor,
 ) -> Result<Summary> {
     let text = prompt::render(&input);
+    // The observation is of the conversation as a whole, agent's replies
+    // included; a `user_turn` source is reserved for what the user said.
     let observation = Observation {
         id: new_id(),
         project_id: project_id.to_string(),
         source: Source::new(
-            SourceKind::UserTurn,
+            SourceKind::AgentTurn,
             input.last_turn_id().map(str::to_string),
         ),
         provenance: provenance.clone(),
@@ -99,9 +127,9 @@ pub fn process(
         );
     }
 
-    let stamp = |kind: SourceKind| Stamp {
+    let agent_stamp = || Stamp {
         author: author.clone(),
-        source: Source::new(kind, observation.source.reference.clone()),
+        source: observation.source.clone(),
         provenance: provenance.clone(),
     };
     let proposal = |payload: ProposalPayload, evidence: Vec<Evidence>| Proposal {
@@ -119,27 +147,22 @@ pub fn process(
 
     let mut graph = store.load(project_id)?;
     for entity in parsed.entities {
-        let known = std::iter::once(&entity.slug)
-            .chain(std::iter::once(&entity.name))
-            .chain(&entity.aliases)
+        let Some(input) = entity_input(entity) else {
+            summary.entities_skipped += 1;
+            continue;
+        };
+        let known = std::iter::once(&input.slug)
+            .chain(std::iter::once(&input.name))
+            .chain(&input.aliases)
             .any(|reference| resolve::entity(&graph, reference).is_ok());
         if known {
             summary.entities_skipped += 1;
             continue;
         }
-        let input = EntityInput {
-            id: None,
-            slug: entity.slug,
-            kind: entity.kind,
-            name: entity.name,
-            summary: entity.summary,
-            aliases: entity.aliases,
-            paths: entity.paths,
-        };
         let p = proposal(
             ProposalPayload::Entity {
                 input,
-                stamp: stamp(SourceKind::AgentTurn),
+                stamp: agent_stamp(),
             },
             Vec::new(),
         );
@@ -156,6 +179,25 @@ pub fn process(
         graph = store.load(project_id)?;
     }
 
+    let user_turns: Vec<UserTurnText> = input
+        .turns
+        .iter()
+        .map(|t| UserTurnText {
+            turn_id: t.turn_id.clone(),
+            text: t.user.clone(),
+        })
+        .collect();
+    let agent_turns: Vec<(&str, String)> = input
+        .turns
+        .iter()
+        .filter_map(|t| {
+            Some((
+                t.turn_id.as_str(),
+                trust::normalise(t.assistant.as_deref()?),
+            ))
+        })
+        .collect();
+
     for assertion in parsed.assertions {
         let (found, unknown) = resolve::entities(&graph, &assertion.about);
         if !unknown.is_empty() {
@@ -167,7 +209,8 @@ pub fn process(
             summary.assertions_skipped += 1;
             continue;
         }
-        let stated_by_user = assertion.stated_by_user;
+        let verified = verify(&user_turns, &agent_turns, &assertion.evidence);
+        let user_stated = verified.iter().find_map(|q| q.user.clone());
         let input = AssertionInput {
             kind: assertion.kind,
             domain: assertion.domain,
@@ -179,7 +222,7 @@ pub fn process(
             about,
             supersedes: None,
             contradicts: Vec::new(),
-            status: if stated_by_user {
+            status: if user_stated.is_some() {
                 AssertionStatus::Confirmed
             } else {
                 agent_status
@@ -187,18 +230,18 @@ pub fn process(
         };
         // Text alone only tells duplicates apart; whether the statement
         // replaces or contradicts a head is the model's call, kept when it
-        // names a live head.
+        // names a current head.
         let mut relation = resolve::classify(&graph, &input);
         if let (RelationKind::New, Some(proposed)) = (relation.kind, assertion.relation) {
-            let targets_a_live_head = proposed
+            let targets_a_current_head = proposed
                 .target
                 .as_deref()
                 .and_then(|id| graph.assertion(id))
-                .is_some_and(|a| a.is_head() && resolve::is_live(a.status));
+                .is_some_and(|a| compile::is_current(&graph, a));
             if matches!(
                 proposed.kind,
                 RelationKind::Supersedes | RelationKind::Contradicts
-            ) && targets_a_live_head
+            ) && targets_a_current_head
             {
                 relation = proposed;
             }
@@ -212,22 +255,34 @@ pub fn process(
                 input.rationale.clone()
             });
         }
-        let evidence = assertion
-            .evidence
+        let stamp = match &user_stated {
+            Some(found) => Stamp {
+                source: found.source(),
+                ..agent_stamp()
+            },
+            None => agent_stamp(),
+        };
+        // No quote found in the turns: the model may have made the statement
+        // up, so it waits for a human whatever the rule would say.
+        let held = verified.is_empty();
+        if held {
+            summary.unverified += 1;
+            tracing::info!(
+                observation = %observation.id,
+                statement = %input.statement,
+                quotes = assertion.evidence.len(),
+                "context extract: no quote found in the turns; held for review"
+            );
+        }
+        let lands_by_rule = !held && resolve::auto_rule(&graph, &relation, &stamp);
+        let evidence = verified
             .into_iter()
-            .filter(|q| !q.quote.trim().is_empty())
             .map(|q| Evidence {
                 session_id: provenance.session_id.clone(),
-                turn_id: observation.source.reference.clone(),
+                turn_id: Some(q.turn_id),
                 quote: q.quote,
             })
             .collect();
-        let stamp = stamp(if stated_by_user {
-            SourceKind::UserTurn
-        } else {
-            SourceKind::AgentTurn
-        });
-        let lands_by_rule = resolve::auto_rule(&graph, &relation, &stamp);
         let p = proposal(
             ProposalPayload::Assertion {
                 input,
@@ -258,6 +313,83 @@ pub fn process(
 
     store.mark_extracted(&observation.id)?;
     Ok(summary)
+}
+
+/// A proposed entity ready for the store, or `None` (with a warning) when
+/// nothing usable is left of its slug. The texts are the store's to clean.
+fn entity_input(entity: ProposedEntity) -> Option<EntityInput> {
+    let Some(slug) = slug(&entity.slug) else {
+        tracing::warn!(slug = %entity.slug, "context extract: entity skipped; no usable slug");
+        return None;
+    };
+    Some(EntityInput {
+        id: None,
+        slug,
+        kind: entity.kind,
+        name: entity.name,
+        summary: entity.summary,
+        aliases: entity.aliases,
+        paths: entity.paths,
+    })
+}
+
+/// The model's quotes that are in the turns, each with the turn it was found
+/// in. The user's turns are searched first, so a quote the agent echoed back
+/// is still the user's; `agent_turns` hold the agents' replies already
+/// normalised the way `trust` matches. Quotes found nowhere are dropped.
+fn verify(
+    user_turns: &[UserTurnText],
+    agent_turns: &[(&str, String)],
+    quotes: &[Quote],
+) -> Vec<VerifiedQuote> {
+    quotes
+        .iter()
+        .filter_map(|q| {
+            let quote = store::clean_line(&q.quote);
+            if let Some(found) = trust::find_user_quote(user_turns, &quote) {
+                return Some(VerifiedQuote {
+                    turn_id: found.turn_id().to_string(),
+                    user: Some(found),
+                    quote,
+                });
+            }
+            let needle = trust::normalise(&quote);
+            if needle.chars().count() < trust::MIN_QUOTE_CHARS {
+                return None;
+            }
+            let (turn_id, _) = agent_turns
+                .iter()
+                .rev()
+                .find(|(_, reply)| reply.contains(&needle))?;
+            Some(VerifiedQuote {
+                turn_id: turn_id.to_string(),
+                user: None,
+                quote,
+            })
+        })
+        .collect()
+}
+
+/// `raw` as a slug the store accepts: `[a-z0-9][a-z0-9._-]*`, at most
+/// [`MAX_SLUG`] characters. Lowercased; any run of other characters becomes
+/// one `-`; leading non-alphanumerics and trailing `-` go. `None` when
+/// nothing is left.
+fn slug(raw: &str) -> Option<String> {
+    let mut out = String::new();
+    for c in raw.to_lowercase().chars() {
+        if c.is_ascii_alphanumeric() {
+            out.push(c);
+        } else if out.is_empty() {
+            continue;
+        } else if matches!(c, '.' | '_' | '-') {
+            out.push(c);
+        } else if !out.ends_with('-') {
+            out.push('-');
+        }
+    }
+    let out: String = out.chars().take(MAX_SLUG).collect();
+    let out = out.trim_end_matches('-');
+    (!out.is_empty()).then(|| out.to_string())
 }
 
 fn sha256(text: &str) -> String {

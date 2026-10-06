@@ -24,7 +24,6 @@ impl ContextDispatcher {
                 .filter(|q| !q.is_empty()),
             paths: clean_list(&a.paths),
             include_history: a.include_history,
-            as_of: None,
             budget_chars: 0,
         };
         let graph = self

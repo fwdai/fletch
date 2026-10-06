@@ -411,6 +411,9 @@ pub struct Assertion {
 }
 
 impl Assertion {
+    /// No successor at all — the structural fact. Whether an assertion
+    /// *stands now* is `compile::is_current`, which also looks at status along
+    /// the chain; use that for any current-view decision.
     pub fn is_head(&self) -> bool {
         self.superseded_by.is_none()
     }
@@ -432,6 +435,11 @@ pub struct Graph {
     pub entities: Vec<Entity>,
     pub assertions: Vec<Assertion>,
     pub relations: Vec<Relation>,
+    /// The ids of the assertions that stand now, per `compile::current_heads`
+    /// — derived at `ContextStore::load` so the UI applies the same rule as
+    /// compile without reimplementing it. Empty on a hand-built graph.
+    #[serde(default)]
+    pub current: Vec<Id>,
 }
 
 impl Graph {
@@ -467,9 +475,6 @@ pub struct CompileQuery {
     pub paths: Vec<String>,
     #[serde(default)]
     pub include_history: bool,
-    /// Compile the picture as of this instant (millis); `None` is now.
-    #[serde(default)]
-    pub as_of: Option<i64>,
     /// Character budget for the rendered bundle; 0 means the default.
     #[serde(default)]
     pub budget_chars: usize,

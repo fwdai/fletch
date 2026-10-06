@@ -8,7 +8,7 @@
 use serde_json::Value;
 
 use super::super::model::*;
-use super::super::{compile, render, resolve};
+use super::super::{compile, render};
 use crate::workspace::{SessionRecord, UserTurn};
 
 /// Budget for the turns' text; the oldest turns go first when it is over.
@@ -160,14 +160,14 @@ fn truncate(text: &mut String, max: usize) {
     text.truncate(end);
 }
 
-/// `slug: [kind/domain/stance] statement (id)` per live head: every one when
-/// that fits [`MAX_HEADS_CHARS`], else only those about entities whose slug,
-/// alias or name appears in `text`.
+/// `slug: [kind/domain/stance] statement (id)` per current head: every one
+/// when that fits [`MAX_HEADS_CHARS`], else only those about entities whose
+/// slug, alias or name appears in `text`.
 fn heads_text(graph: &Graph, text: &str) -> String {
     let all: Vec<String> = graph
         .assertions
         .iter()
-        .filter(|a| a.is_head() && resolve::is_live(a.status))
+        .filter(|a| compile::is_current(graph, a))
         .map(|a| head_line(graph, a))
         .collect();
     let full = all.join("\n");
@@ -189,7 +189,7 @@ fn heads_text(graph: &Graph, text: &str) -> String {
         .iter()
         .filter(|e| e.status == EntityStatus::Active && mentioned(e))
     {
-        for head in compile::heads_about(graph, &entity.id, None) {
+        for head in compile::heads_about(graph, &entity.id) {
             if seen.insert(head.id.clone()) {
                 lines.push(head_line(graph, head));
             }

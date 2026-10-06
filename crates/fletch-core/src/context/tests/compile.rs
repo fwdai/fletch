@@ -14,12 +14,20 @@ fn reasons(bundle: &Bundle) -> Vec<(&str, EntryReason)> {
 }
 
 #[test]
-fn heads_as_of_picks_the_link_in_force() {
+fn heads_are_the_live_end_of_each_chain() {
     let g = chain();
-    assert_eq!(ids(heads_about(&g, "f1", None)), ["a3"]);
-    assert_eq!(ids(heads_about(&g, "f1", Some(250))), ["a2"]);
-    assert_eq!(ids(heads_about(&g, "f1", Some(100))), ["a1"]);
-    assert!(heads_about(&g, "f1", Some(50)).is_empty());
+    assert_eq!(ids(heads_about(&g, "f1")), ["a3"]);
+    assert_eq!(current_heads(&g).len(), 1);
+}
+
+#[test]
+fn a_live_successor_further_down_still_replaces() {
+    // Retracting the middle link does not resurrect the first: the chain
+    // ends in a live assertion, and that is what stands.
+    let mut g = chain();
+    g.assertions[1].status = AssertionStatus::Retracted;
+    assert_eq!(ids(heads_about(&g, "f1")), ["a3"]);
+    assert!(!is_current(&g, &g.assertions[0]));
 }
 
 #[test]
@@ -28,12 +36,12 @@ fn heads_skip_retracted_abandoned_and_other_entities() {
     for a in &mut g.assertions {
         a.status = AssertionStatus::Retracted;
     }
-    assert!(heads_about(&g, "f1", None).is_empty());
+    assert!(heads_about(&g, "f1").is_empty());
     g.assertions[2].status = AssertionStatus::Abandoned;
-    assert!(heads_about(&g, "f1", None).is_empty());
+    assert!(heads_about(&g, "f1").is_empty());
     g.assertions[2].status = AssertionStatus::Provisional;
-    assert_eq!(ids(heads_about(&g, "f1", None)), ["a3"]);
-    assert!(heads_about(&g, "f2", None).is_empty());
+    assert_eq!(ids(heads_about(&g, "f1")), ["a3"]);
+    assert!(heads_about(&g, "f2").is_empty());
 }
 
 #[test]
@@ -42,9 +50,9 @@ fn a_dead_superseder_replaces_nothing() {
     // head it rewrote.
     let mut g = chain();
     g.assertions[2].status = AssertionStatus::Abandoned;
-    assert_eq!(ids(heads_about(&g, "f1", None)), ["a2"]);
+    assert_eq!(ids(heads_about(&g, "f1")), ["a2"]);
     g.assertions[2].status = AssertionStatus::Retracted;
-    assert_eq!(ids(heads_about(&g, "f1", None)), ["a2"]);
+    assert_eq!(ids(heads_about(&g, "f1")), ["a2"]);
 }
 
 #[test]

@@ -129,6 +129,14 @@ pub fn seed_decision_in(
         .unwrap()
 }
 
+/// What the user says in the one turn [`run`] extracts over.
+pub const USER_TEXT: &str = "Let's use JWT for sessions, and never store tokens in local storage.";
+/// The agent's reply in that turn.
+pub const AGENT_TEXT: &str = "Done. Tokens expire hourly, so the refresh job runs each hour.";
+/// A quote found in the user's text, and one found only in the agent's.
+pub const USER_QUOTE: &str = "use JWT for sessions";
+pub const AGENT_QUOTE: &str = "Tokens expire hourly";
+
 /// One turn's worth of input over the store's current graph.
 pub fn input(store: &ContextStore, user: &str) -> ExtractInput {
     let graph = store.load(PROJECT).unwrap();
@@ -137,7 +145,7 @@ pub fn input(store: &ContextStore, user: &str) -> ExtractInput {
         vec![TurnText {
             turn_id: "t1".into(),
             user: user.into(),
-            assistant: Some("Done.".into()),
+            assistant: Some(AGENT_TEXT.into()),
         }],
         &graph,
     )
@@ -171,10 +179,7 @@ pub fn run_as(
         Author::extractor("ws-1", "claude"),
         provenance(),
         agent_status,
-        input(
-            store,
-            "Let's use JWT for sessions, and never store tokens in local storage.",
-        ),
+        input(store, USER_TEXT),
         extractor,
     )
     .unwrap()

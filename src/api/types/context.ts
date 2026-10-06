@@ -141,6 +141,8 @@ export interface ContextGraph {
   entities: ContextEntity[];
   assertions: ContextAssertion[];
   relations: ContextRelation[];
+  /** Ids of the assertions that stand now (`compile::current_heads`), derived by the host. */
+  current: string[];
 }
 
 export interface CompileQuery {
@@ -148,7 +150,6 @@ export interface CompileQuery {
   query?: string;
   paths: string[];
   include_history: boolean;
-  as_of?: number;
   budget_chars: number;
 }
 

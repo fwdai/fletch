@@ -85,6 +85,7 @@ pub fn graph(entities: Vec<Entity>, assertions: Vec<Assertion>, relations: Vec<R
         entities,
         assertions,
         relations,
+        current: Vec::new(),
     }
 }
 

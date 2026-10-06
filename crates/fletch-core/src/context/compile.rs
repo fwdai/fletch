@@ -10,10 +10,9 @@
 //!    to `misses`. An empty query (nothing named, no text, no paths) means
 //!    the whole map: every active entity.
 //! 2. Expand one hop over `relates` (both directions).
-//! 3. Assertions: heads `about` the assembled entities, current as of
-//!    `query.as_of` (`valid_from <= as_of` and no superseder with
-//!    `valid_from <= as_of`), excluding `retracted` and `abandoned` and
-//!    those about archived entities only. Flag `provisional`, contradictions
+//! 3. Assertions: the current heads `about` the assembled entities
+//!    (`is_current`: live, and nothing live further down the supersession
+//!    chain), excluding those about archived entities only. Flag `provisional`, contradictions
 //!    among heads, and `has_history`. With `include_history`, attach
 //!    predecessors newest first.
 //! 4. Rank entities (named/path > query > neighbour; then edge count, then
@@ -97,16 +96,23 @@ pub fn compile(graph: &Graph, query: &CompileQuery, vision_fallback: Option<Stri
     }
 }
 
-/// Head assertions about `entity_id`, current as of `as_of` (`None` = now).
-pub fn heads_about<'a>(
-    graph: &'a Graph,
-    entity_id: &str,
-    as_of: Option<i64>,
-) -> Vec<&'a Assertion> {
+/// Current assertions about `entity_id`.
+pub fn heads_about<'a>(graph: &'a Graph, entity_id: &str) -> Vec<&'a Assertion> {
     graph
         .assertions
         .iter()
-        .filter(|a| a.about.iter().any(|id| id == entity_id) && is_current(graph, a, as_of))
+        .filter(|a| a.about.iter().any(|id| id == entity_id) && is_current(graph, a))
+        .collect()
+}
+
+/// The ids of every current assertion — the one answer to "what stands now"
+/// that compile, the conflict check, the stats and the UI all share.
+pub fn current_heads(graph: &Graph) -> HashSet<Id> {
+    graph
+        .assertions
+        .iter()
+        .filter(|a| is_current(graph, a))
+        .map(|a| a.id.clone())
         .collect()
 }
 
@@ -127,18 +133,37 @@ pub fn history<'a>(graph: &'a Graph, assertion_id: &str) -> Vec<&'a Assertion> {
     chain
 }
 
-/// Live, in force at `as_of`, and not yet replaced at `as_of`. A superseder
-/// that is itself retracted or abandoned replaces nothing: the head it stood
-/// on stays current, so an abandoned branch's rewrite cannot erase what it
-/// rewrote.
-fn is_current(graph: &Graph, a: &Assertion, as_of: Option<i64>) -> bool {
-    let as_of = as_of.unwrap_or(i64::MAX);
-    let replaced = a
+/// Whether an assertion stands now: it is live (not retracted or abandoned)
+/// and nothing live has replaced it. "Replaced" follows the supersession
+/// chain forward: a retracted or abandoned superseder replaces nothing on its
+/// own (an abandoned branch's rewrite cannot erase what it rewrote), but a
+/// live assertion further down the chain does.
+///
+/// This is the single definition of a current head. `Assertion::is_head`
+/// is the structural fact (no successor at all) and must not stand in for it.
+pub fn is_current(graph: &Graph, a: &Assertion) -> bool {
+    if !is_live(a.status) {
+        return false;
+    }
+    let mut next = a
         .superseded_by
         .as_deref()
-        .and_then(|id| graph.assertion(id))
-        .is_some_and(|s| is_live(s.status) && s.valid_from <= as_of);
-    is_live(a.status) && a.valid_from <= as_of && !replaced
+        .and_then(|id| graph.assertion(id));
+    let mut hops = 0;
+    while let Some(s) = next {
+        if is_live(s.status) {
+            return false;
+        }
+        hops += 1;
+        if hops > graph.assertions.len() {
+            break;
+        }
+        next = s
+            .superseded_by
+            .as_deref()
+            .and_then(|id| graph.assertion(id));
+    }
+    true
 }
 
 // ---------------------------------------------------------------------------
@@ -251,7 +276,7 @@ fn by_text<'a>(graph: &'a Graph, query: &CompileQuery) -> Vec<&'a Entity> {
             let about = graph
                 .assertions
                 .iter()
-                .filter(|a| a.is_head() && is_live(a.status) && a.about.contains(&e.id))
+                .filter(|a| is_current(graph, a) && a.about.contains(&e.id))
                 .map(|a| hits(&format!("{} {}", a.statement, a.rationale)))
                 .sum::<usize>();
             (e, own + about)
@@ -283,7 +308,7 @@ fn by_paths<'a>(graph: &'a Graph, paths: &[String]) -> Vec<&'a Entity> {
     for a in graph
         .assertions
         .iter()
-        .filter(|a| a.is_head() && is_live(a.status) && anchored(&a.paths))
+        .filter(|a| is_current(graph, a) && anchored(&a.paths))
     {
         for e in a.about.iter().filter_map(|id| graph.entity(id)) {
             if e.status == EntityStatus::Active && !out.iter().any(|o| o.id == e.id) {
@@ -337,7 +362,7 @@ fn assemble(
 
     let mut heads: Vec<&Assertion> = Vec::new();
     for (e, _) in ranked {
-        for a in heads_about(graph, &e.id, query.as_of) {
+        for a in heads_about(graph, &e.id) {
             if !heads.iter().any(|h| h.id == a.id) {
                 heads.push(a);
             }
@@ -349,7 +374,7 @@ fn assemble(
     let assertions: Vec<BundleAssertion> = heads
         .iter()
         .map(|a| {
-            let contradicted_by = contradicted_by(graph, a, query.as_of);
+            let contradicted_by = contradicted_by(graph, a);
             for other in &contradicted_by {
                 let (x, y) = if a.id < *other {
                     (&a.id, other)
@@ -397,7 +422,7 @@ fn assemble(
 }
 
 /// Current heads `a` is in tension with, whichever side recorded the link.
-fn contradicted_by(graph: &Graph, a: &Assertion, as_of: Option<i64>) -> Vec<Id> {
+fn contradicted_by(graph: &Graph, a: &Assertion) -> Vec<Id> {
     let mut out: Vec<Id> = Vec::new();
     let linked = a.contradicts.iter().cloned().chain(
         graph
@@ -407,9 +432,7 @@ fn contradicted_by(graph: &Graph, a: &Assertion, as_of: Option<i64>) -> Vec<Id> 
             .map(|o| o.id.clone()),
     );
     for id in linked {
-        let current = graph
-            .assertion(&id)
-            .is_some_and(|o| is_current(graph, o, as_of));
+        let current = graph.assertion(&id).is_some_and(|o| is_current(graph, o));
         if id != a.id && current && !out.contains(&id) {
             out.push(id);
         }

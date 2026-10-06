@@ -56,10 +56,19 @@ fn ui_stamp() -> Stamp {
     }
 }
 
-/// The project's context id, minted on first use. Takes and releases the
-/// connection lock itself so the store's own locking can follow.
+/// The project's context id, minted on first use — and the gate: a client
+/// talking straight to the host (an older remote, a stale window) must not
+/// read or rewrite context the layer is off for, so every command resolves
+/// its project through here. The overview is the one deliberate exception
+/// (it reports the toggles), and reads the id itself. Takes and releases the
+/// connection lock so the store's own locking can follow.
 fn context_id(ctx: &EngineCtx, project_id: &str) -> Result<String> {
     let conn = ctx.db.lock();
+    if !context::enabled(&conn, project_id) {
+        return Err(Error::Other(
+            "the project context layer is off for this project".into(),
+        ));
+    }
     Ok(context::context_project_id(&conn, project_id)?)
 }
 
@@ -94,13 +103,8 @@ pub fn context_preview_impl(
     project_id: &str,
     query: CompileQuery,
 ) -> Result<String> {
-    let (id, brief) = {
-        let conn = ctx.db.lock();
-        (
-            context::context_project_id(&conn, project_id)?,
-            crate::roadmap::memory::load(&conn, project_id)?.map(|b| b.content),
-        )
-    };
+    let id = context_id(ctx, project_id)?;
+    let brief = crate::roadmap::memory::load(&ctx.db.lock(), project_id)?.map(|b| b.content);
     let graph = ctx.context()?.load(&id)?;
     Ok(render::render_markdown(&compile::compile(
         &graph, &query, brief,
@@ -200,7 +204,7 @@ pub fn context_rule_proposal_impl(
     dismiss_reason: Option<DismissReason>,
 ) -> Result<Option<Id>> {
     let store = ctx.context()?;
-    let context_id = context::context_project_id(&ctx.db.lock(), project_id)?;
+    let context_id = context_id(ctx, project_id)?;
     match store.proposal(proposal_id)? {
         Some(p) if p.project_id == context_id => {}
         _ => return Err(Error::Other("no such proposal in this project".into())),

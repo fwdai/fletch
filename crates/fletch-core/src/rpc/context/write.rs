@@ -5,8 +5,8 @@
 use serde_json::{json, Value};
 
 use crate::context::{
-    resolve, Assertion, AssertionInput, AssertionKind, AssertionStatus, Contradict, EntityInput,
-    Graph, LinkChange, RelationKind, Stamp, Stance,
+    resolve, trust, Assertion, AssertionInput, AssertionKind, AssertionStatus, Contradict,
+    EntityInput, Graph, LinkChange, RelationKind, Stamp, Stance,
 };
 use crate::rpc::Response;
 
@@ -24,7 +24,7 @@ impl ContextDispatcher {
     pub(super) async fn record_entity(&self, id: &str, args: &Value) -> Response {
         let result = match entity_input(args) {
             Ok((input, relates)) => {
-                let stamp = self.stamp(false).await;
+                let stamp = self.stamp(None).await;
                 self.write_entity(input, relates, stamp)
             }
             Err(e) => Err(e),
@@ -34,10 +34,13 @@ impl ContextDispatcher {
 
     pub(super) async fn record_decision(&self, id: &str, args: &Value) -> Response {
         let result = match parse_required::<RecordDecisionArgs>(args) {
-            Ok(a) => {
-                let stamp = self.stamp(a.stated_by_user).await;
-                self.write_decision(a, stamp)
-            }
+            Ok(a) => match self.verify_user_quote(a.user_quote.as_deref()) {
+                Ok(user) => {
+                    let stamp = self.stamp(user.as_ref()).await;
+                    self.write_decision(a, user.is_some(), stamp)
+                }
+                Err(e) => Err(e),
+            },
             Err(e) => Err(e),
         };
         reply(id, "context_record_decision", result)
@@ -46,7 +49,7 @@ impl ContextDispatcher {
     pub(super) async fn link(&self, id: &str, args: &Value) -> Response {
         let result = match parse_required::<LinkArgs>(args) {
             Ok(a) => {
-                let stamp = self.stamp(false).await;
+                let stamp = self.stamp(None).await;
                 self.write_link(a, stamp)
             }
             Err(e) => Err(e),
@@ -104,7 +107,30 @@ impl ContextDispatcher {
         }
     }
 
-    fn write_decision(&self, a: RecordDecisionArgs, stamp: Stamp) -> Result<Value, String> {
+    /// A `user_quote` must be found verbatim in the user's own turns; the
+    /// claim is never taken from the caller (`context::trust`).
+    fn verify_user_quote(&self, quote: Option<&str>) -> Result<Option<trust::UserStated>, String> {
+        let Some(quote) = quote.map(str::trim).filter(|q| !q.is_empty()) else {
+            return Ok(None);
+        };
+        let turns = self.user_turns()?;
+        match trust::find_user_quote(&turns, quote) {
+            Some(found) => Ok(Some(found)),
+            None => Err(format!(
+                "`user_quote` was not found in the user's messages of this workspace (quote at \
+                 least {} characters of what they wrote, verbatim). Leave it out to record this \
+                 as your own, provisional, statement.",
+                trust::MIN_QUOTE_CHARS
+            )),
+        }
+    }
+
+    fn write_decision(
+        &self,
+        a: RecordDecisionArgs,
+        user_stated: bool,
+        stamp: Stamp,
+    ) -> Result<Value, String> {
         let statement = text("statement", &a.statement, MAX_STATEMENT)?;
         let rationale = text("rationale", &a.rationale, MAX_RATIONALE)?;
         let about = clean_list(&a.about);
@@ -142,7 +168,7 @@ impl ContextDispatcher {
                     reasoning: None,
                 })
                 .collect(),
-            status: if a.stated_by_user {
+            status: if user_stated {
                 AssertionStatus::Confirmed
             } else {
                 AssertionStatus::Provisional

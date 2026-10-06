@@ -169,20 +169,34 @@ impl ContextStore {
             }
             None => new_id(),
         };
-        if slug_taken(conn, project_id, &input.slug, &id)? {
-            return Err(ContextError::SlugTaken(input.slug));
+        let slug = clean_slug(&input.slug)?;
+        if slug_taken(conn, project_id, &slug, &id)? {
+            return Err(ContextError::SlugTaken(slug));
         }
         if input.kind == EntityKind::Vision && vision_exists(conn, project_id, &id)? {
             return Err(ContextError::VisionExists);
         }
+        let name = capped("name", clean_line(&input.name), MAX_NAME)?;
+        let name = if name.is_empty() { slug.clone() } else { name };
+        let summary = capped("summary", clean_line(&input.summary), MAX_SUMMARY)?;
         let payload = EventPayload::EntityRecorded {
             id: id.clone(),
-            slug: input.slug,
+            slug,
             kind: input.kind,
-            name: input.name,
-            summary: input.summary,
-            aliases: input.aliases,
-            paths: input.paths,
+            name,
+            summary,
+            aliases: input
+                .aliases
+                .iter()
+                .map(|a| clean_line(a))
+                .filter(|a| !a.is_empty())
+                .collect(),
+            paths: input
+                .paths
+                .iter()
+                .map(|p| clean_line(p))
+                .filter(|p| !p.is_empty())
+                .collect(),
         };
         self.append(conn, project_id, stamp, now_millis(), payload)?;
         Ok(id)
@@ -211,6 +225,13 @@ impl ContextStore {
         if input.about.is_empty() {
             return Err(ContextError::NoSubject);
         }
+        let statement = capped("statement", clean_line(&input.statement), MAX_STATEMENT)?;
+        if statement.is_empty() {
+            return Err(ContextError::Invalid(
+                "an assertion needs a statement".into(),
+            ));
+        }
+        let rationale = capped("rationale", clean_line(&input.rationale), MAX_RATIONALE)?;
         for entity_id in &input.about {
             require_entity(conn, project_id, entity_id)?;
         }
@@ -233,8 +254,8 @@ impl ContextStore {
             kind: input.kind,
             domain: input.domain,
             stance: input.stance,
-            statement: input.statement,
-            rationale: input.rationale,
+            statement,
+            rationale,
             valid_from: input.valid_from.unwrap_or(recorded_at),
             paths: input.paths,
             about: input.about,
@@ -364,12 +385,16 @@ impl ContextStore {
     /// The whole projection for one project.
     pub fn load(&self, project_id: &str) -> Result<Graph> {
         let conn = self.db.lock();
-        Ok(Graph {
+        let mut graph = Graph {
             project_id: project_id.to_string(),
             entities: load_entities(&conn, project_id)?,
             assertions: load_assertions(&conn, project_id)?,
             relations: load_relations(&conn, project_id)?,
-        })
+            current: Vec::new(),
+        };
+        graph.current = super::compile::current_heads(&graph).into_iter().collect();
+        graph.current.sort();
+        Ok(graph)
     }
 
     /// Every event of one project in `(host_id, seq)` order.
@@ -634,6 +659,8 @@ impl ContextStore {
     }
 
     pub fn stats(&self, project_id: &str) -> Result<Stats> {
+        // Before the lock: `load` takes it too, and the mutex is not reentrant.
+        let heads = super::compile::current_heads(&self.load(project_id)?).len();
         let conn = self.db.lock();
         let count = |sql: &str| -> Result<usize> {
             let n: i64 = conn.query_row(sql, [project_id], |r| r.get(0))?;
@@ -655,10 +682,7 @@ impl ContextStore {
                 "SELECT COUNT(*) FROM context.entities WHERE project_id = ?1 AND status = 'active'",
             )?,
             assertions: count("SELECT COUNT(*) FROM context.assertions WHERE project_id = ?1")?,
-            heads: count(
-                "SELECT COUNT(*) FROM context.assertions a WHERE a.project_id = ?1
-                   AND NOT EXISTS (SELECT 1 FROM context.supersedes s WHERE s.old_id = a.id)",
-            )?,
+            heads,
             provisional: count(
                 "SELECT COUNT(*) FROM context.assertions
                  WHERE project_id = ?1 AND status = 'provisional'",
@@ -895,6 +919,58 @@ fn is_head(conn: &Connection, assertion_id: &str) -> Result<bool> {
 }
 
 /// Whether another entity of the project (not `entity_id` itself) holds `slug`.
+/// Text caps, enforced here so every writer — agent op, extractor, ingester,
+/// UI — lands the same shape; a writer that wants a friendlier message checks
+/// the same numbers first.
+pub const MAX_NAME: usize = 120;
+pub const MAX_SUMMARY: usize = 600;
+pub const MAX_STATEMENT: usize = 300;
+pub const MAX_RATIONALE: usize = 1000;
+
+fn capped(field: &str, value: String, max: usize) -> Result<String> {
+    if value.chars().count() > max {
+        return Err(ContextError::Invalid(format!(
+            "`{field}` is over {max} characters; keep it short, this is read by every agent"
+        )));
+    }
+    Ok(value)
+}
+
+/// Slugs are identifiers that end up inside every agent's instruction block,
+/// so they are one token of `[a-z0-9._-]`, lowercase, at most 64 characters.
+/// Anything else is refused rather than quietly rewritten: a writer that
+/// cannot spell a slug has no business naming an entity.
+fn clean_slug(raw: &str) -> Result<String> {
+    let slug = raw.trim().to_lowercase();
+    let ok = !slug.is_empty()
+        && slug.len() <= 64
+        && slug
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+        && slug
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphanumeric());
+    if ok {
+        Ok(slug)
+    } else {
+        Err(ContextError::Invalid(format!(
+            "slug `{raw}` must be one lowercase token of letters, digits, `-`, `_` or `.` \
+             (64 characters at most)"
+        )))
+    }
+}
+
+/// Free text that is rendered into prompts and the UI: control characters
+/// (newlines included) become spaces and whitespace collapses, so a value is
+/// always one line and cannot shape the markdown around it.
+pub(crate) fn clean_line(raw: &str) -> String {
+    raw.split(|c: char| c.is_control() || c.is_whitespace())
+        .filter(|w| !w.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 fn slug_taken(conn: &Connection, project_id: &str, slug: &str, entity_id: &str) -> Result<bool> {
     let n: i64 = conn.query_row(
         "SELECT COUNT(*) FROM context.entities

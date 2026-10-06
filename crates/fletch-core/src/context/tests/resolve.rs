@@ -152,14 +152,20 @@ fn classify_new_when_nothing_shares_entity_or_domain() {
 }
 
 #[test]
-fn classify_ignores_retracted_and_superseded() {
+fn classify_sees_only_what_stands_now() {
+    // d1 replaced by a live d2: a restatement of d1 is new, not a duplicate.
     let mut g = heads();
     g.assertions[0].superseded_by = Some("d2".into());
-    g.assertions[1].status = AssertionStatus::Retracted;
     assert_eq!(
         classify(&g, &input(&["f1"], "Use Postgres")).kind,
         RelationKind::New
     );
+    // Retract d2 and d1 stands again (compile::is_current), so the same
+    // restatement is now a duplicate of d1.
+    g.assertions[1].status = AssertionStatus::Retracted;
+    let r = classify(&g, &input(&["f1"], "Use Postgres"));
+    assert_eq!(r.kind, RelationKind::Duplicate);
+    assert_eq!(r.target.as_deref(), Some("d1"));
 }
 
 // ---------------------------------------------------------------------------

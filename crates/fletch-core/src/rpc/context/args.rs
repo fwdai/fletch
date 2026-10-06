@@ -73,10 +73,11 @@ pub(super) struct RecordDecisionArgs {
     pub(super) supersedes: Option<Supersede>,
     #[serde(default)]
     pub(super) contradicts: Vec<String>,
-    /// The user said it in their own words: the source is a user turn and the
-    /// assertion lands confirmed rather than provisional.
+    /// The user's own words, verbatim. Fletch looks for them in the user's
+    /// turns of this workspace (`context::trust`); found, the record is
+    /// user-stated and lands confirmed; not found, the call is refused.
     #[serde(default)]
-    pub(super) stated_by_user: bool,
+    pub(super) user_quote: Option<String>,
     /// The second step of the conflict protocol: record alongside the head
     /// `classify` found, without replacing or contradicting it.
     #[serde(default)]

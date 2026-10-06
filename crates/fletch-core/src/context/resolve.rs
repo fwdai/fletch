@@ -79,7 +79,7 @@ pub fn related_heads<'a>(graph: &'a Graph, candidate: &AssertionInput) -> Vec<&'
     graph
         .assertions
         .iter()
-        .filter(|a| a.is_head() && is_live(a.status) && a.domain == candidate.domain)
+        .filter(|a| super::compile::is_current(graph, a) && a.domain == candidate.domain)
         .filter(|a| a.about.iter().any(|id| candidate.about.contains(id)))
         .collect()
 }

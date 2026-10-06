@@ -4,7 +4,11 @@
 //! Provisional and contradicted assertions are marked inline, never dropped.
 //!
 //! Also the compact *index* the instruction block carries at spawn: every
-//! active entity as `slug (name)`, grouped by kind, capped.
+//! active entity as `slug ("name")`, grouped by kind, capped. The index goes
+//! into every agent's instructions, so names travel as quoted data and an
+//! entity the extractor minted on its own is left out until a person, an
+//! agent or a merged PR has revised it: model output never writes itself
+//! into the next model's instructions.
 
 use super::model::*;
 
@@ -161,8 +165,12 @@ pub fn render_index(graph: &Graph, max_chars: usize) -> String {
             let items = graph
                 .entities
                 .iter()
-                .filter(|e| e.status == EntityStatus::Active && e.kind == *kind)
-                .map(|e| format!("{} ({})", e.slug, e.name))
+                .filter(|e| {
+                    e.status == EntityStatus::Active
+                        && e.kind == *kind
+                        && e.author.kind != AuthorKind::Extractor
+                })
+                .map(|e| format!("{} ({})", e.slug, quoted(&e.name)))
                 .collect::<Vec<_>>();
             (entity_kind_label(*kind), items)
         })
@@ -217,6 +225,11 @@ fn index_text_counted(
         out.push('\n');
     }
     (out, emitted)
+}
+
+/// A name as a quoted string: whatever it contains reads as data.
+fn quoted(name: &str) -> String {
+    format!("\"{}\"", name.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
 fn short(id: &str) -> &str {

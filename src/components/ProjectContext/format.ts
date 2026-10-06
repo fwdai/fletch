@@ -73,11 +73,20 @@ export function matchesSearch(entity: ContextEntity, query: string): boolean {
   );
 }
 
-/** The current assertions about one entity: heads only (a superseded one
- *  shows up under its successor's history). Retracted and abandoned heads stay,
- *  badged, so the user can see what was ruled out. */
+/** Whether an assertion stands now — the host's answer (`graph.current`),
+ *  the same rule compile applies, so the tab never disagrees with what an
+ *  agent is served. */
+export function isCurrent(graph: ContextGraph, assertion: ContextAssertion): boolean {
+  return graph.current.includes(assertion.id);
+}
+
+/** The assertions shown under one entity: everything current, plus retracted
+ *  and abandoned ones that nothing replaced — badged, so the user can see what
+ *  was ruled out. A superseded one shows up under its successor's history. */
 export function headsAbout(graph: ContextGraph, entityId: string): ContextAssertion[] {
-  return graph.assertions.filter((a) => a.about.includes(entityId) && !a.superseded_by);
+  return graph.assertions.filter(
+    (a) => a.about.includes(entityId) && (isCurrent(graph, a) || !a.superseded_by),
+  );
 }
 
 export interface AssertionGroup {
@@ -151,11 +160,7 @@ export function contradictedBy(
 ): ContextAssertion[] {
   return assertion.contradicts
     .map((id) => graph.assertions.find((a) => a.id === id))
-    .filter((a): a is ContextAssertion => !!a && !a.superseded_by && isLive(a.status));
-}
-
-function isLive(status: AssertionStatus): boolean {
-  return status !== "retracted" && status !== "abandoned";
+    .filter((a): a is ContextAssertion => !!a && isCurrent(graph, a));
 }
 
 /** The supersession chain behind an assertion, newest predecessor first,

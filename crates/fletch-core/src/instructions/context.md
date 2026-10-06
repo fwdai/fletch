@@ -23,7 +23,7 @@ the product is and why it is built this way.
 ```json
 {"op":"context_record_decision","args":{"kind":"constraint","domain":"architectural",
  "statement":"Payments never touch the main database","rationale":"PCI scope stays in one service",
- "about":["payments"],"stated_by_user":true}}
+ "about":["payments"],"user_quote":"payments must never touch the main database"}}
 ```
 
 - `kind` is `decision | constraint | fact` (default `decision`); `domain` is
@@ -31,7 +31,10 @@ the product is and why it is built this way.
   or `rejected`; `about` names at least one entity by slug; `paths` anchors it
   to code. Statement up to 300 characters, rationale up to 1000.
 - When the **user** states a constraint, a decision, or a fact about the
-  business, record it with `stated_by_user: true` — it lands confirmed.
+  business, pass `user_quote`: their words, verbatim. Fletch checks the quote
+  against the user's own messages in this workspace; a match lands the record
+  confirmed as user-stated, a miss refuses the call. Never paraphrase into
+  `user_quote` and never put your own words there.
 - When **you** decide something non-obvious or deviate from the plan, record
   that too. It lands provisional until this branch merges.
 - **Related decisions are a two-step.** If current decisions already exist

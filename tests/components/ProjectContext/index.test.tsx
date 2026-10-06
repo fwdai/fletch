@@ -52,6 +52,7 @@ const overview: ContextOverview = {
     ],
     assertions: [],
     relations: [],
+  current: [],
   },
   proposals: [
     {

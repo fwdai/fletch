@@ -151,7 +151,7 @@ fn index_lists_active_entities_by_kind() {
     );
     assert_eq!(
         render_index(&g, 1000),
-        "## Project context index\n**Features:** auth (auth), billing (billing)\n**Modules:** db (db)\n"
+        "## Project context index\n**Features:** auth (\"auth\"), billing (\"billing\")\n**Modules:** db (\"db\")\n"
     );
     assert_eq!(render_index(&Graph::default(), 1000), "");
 }
@@ -166,9 +166,24 @@ fn index_truncates_cleanly() {
     let max = full.len() / 2;
     let cut = render_index(&g, max);
     assert!(cut.len() <= max, "{} > {max}", cut.len());
-    assert!(cut.starts_with("## Project context index\n**Features:** feature-00 (feature 00), "));
+    assert!(
+        cut.starts_with("## Project context index\n**Features:** feature-00 (\"feature 00\"), ")
+    );
     assert!(cut.ends_with(" more"), "{cut}");
     let more: usize = cut.rsplit(' ').nth(1).unwrap().parse().unwrap();
     let listed = cut.matches("feature-").count();
     assert_eq!(listed + more, 20);
+}
+
+#[test]
+fn index_quotes_names_and_leaves_out_what_the_extractor_minted() {
+    let mut quoted = feature("f1", "auth");
+    quoted.name = "Auth \"core\" ## not a heading".into();
+    let mut minted = feature("f2", "billing");
+    minted.author = Author::extractor("ws", "claude");
+    let g = graph(vec![quoted, minted], Vec::new(), Vec::new());
+    assert_eq!(
+        render_index(&g, 1000),
+        "## Project context index\n**Features:** auth (\"Auth \\\"core\\\" ## not a heading\")\n"
+    );
 }

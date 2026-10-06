@@ -27,6 +27,7 @@ pub mod model;
 pub mod render;
 pub mod resolve;
 pub mod store;
+pub mod trust;
 
 /// Hand-built graphs shared by the pure-logic tests (compile, render).
 #[cfg(test)]
@@ -97,6 +98,78 @@ pub fn enabled(conn: &rusqlite::Connection, fletch_project_id: &str) -> bool {
 /// Whether the background extractor runs for a project. Implies [`enabled`].
 pub fn extract_enabled(conn: &rusqlite::Connection, fletch_project_id: &str) -> bool {
     enabled(conn, fletch_project_id) && project_flag(conn, fletch_project_id, EXTRACT_KEY)
+}
+
+/// Two rules a reading of the code cannot be trusted to keep: a `user_turn`
+/// source is minted only by `trust`, and "what stands now" is only ever
+/// `compile::is_current` — the structural `Assertion::is_head` is not a stand-in.
+#[cfg(test)]
+mod invariants {
+    use std::path::Path;
+
+    fn sources(dir: &Path, out: &mut Vec<(String, String)>) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                sources(&path, out);
+            } else if path.extension().is_some_and(|e| e == "rs")
+                && !path.components().any(|c| c.as_os_str() == "tests")
+            {
+                out.push((
+                    path.to_string_lossy().into_owned(),
+                    std::fs::read_to_string(&path).unwrap(),
+                ));
+            }
+        }
+    }
+
+    fn crate_sources() -> Vec<(String, String)> {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut out = Vec::new();
+        for dir in ["context", "rpc/context", "commands"] {
+            sources(&root.join(dir), &mut out);
+        }
+        out
+    }
+
+    #[test]
+    fn a_user_turn_source_comes_only_from_trust() {
+        for (path, text) in crate_sources() {
+            if path.ends_with("/trust.rs")
+                || path.ends_with("/model.rs")
+                || path.ends_with("/context/mod.rs")
+            {
+                continue;
+            }
+            let code: String = text
+                .lines()
+                .filter(|l| !l.trim_start().starts_with("//"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            let minted = code.contains("kind: SourceKind::UserTurn")
+                || code.contains("Source::new(SourceKind::UserTurn");
+            assert!(
+                !minted,
+                "{path} mints a user_turn source; only trust::UserStated may (matching the kind is fine)"
+            );
+        }
+    }
+
+    #[test]
+    fn current_view_decisions_never_use_is_head() {
+        for (path, text) in crate_sources() {
+            if path.ends_with("/compile.rs")
+                || path.ends_with("/model.rs")
+                || path.ends_with("/context/mod.rs")
+            {
+                continue;
+            }
+            assert!(
+                !text.contains(".is_head()"),
+                "{path} uses Assertion::is_head; use compile::is_current / current_heads"
+            );
+        }
+    }
 }
 
 #[derive(Debug, thiserror::Error)]

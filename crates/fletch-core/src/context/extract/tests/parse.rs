@@ -18,7 +18,7 @@ fn strict_json_parses_whole() {
     assert_eq!(parsed.assertions.len(), 1);
     let a = &parsed.assertions[0];
     assert_eq!(a.kind, AssertionKind::Decision);
-    assert!(a.stated_by_user);
+    // `stated_by_user` is no longer in the schema; an unknown field is ignored.
     assert_eq!(a.relation.as_ref().map(|r| r.kind), Some(RelationKind::New));
     assert_eq!(a.evidence[0].quote, "Let's use JWT");
     assert_eq!(parsed.malformed, 0);

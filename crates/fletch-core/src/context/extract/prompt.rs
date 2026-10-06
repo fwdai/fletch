@@ -12,7 +12,7 @@ use super::input::ExtractInput;
 
 /// Bump when the instructions change in a way that alters what gets
 /// proposed; recorded on every run so outputs can be compared across versions.
-pub const PROMPT_VERSION: &str = "1";
+pub const PROMPT_VERSION: &str = "2";
 
 const INSTRUCTIONS: &str = "\
 You maintain a project's context graph: the entities a product is made of (vision, goals, \
@@ -35,8 +35,10 @@ What does not count:
 Rules:
 - Reuse existing slugs from <entities> for `about`. Propose a new entity only when no \
 existing one fits; give it a short kebab-case slug.
-- Quote evidence verbatim from the turns; never paraphrase a quote.
-- `stated_by_user` is true only when the user said it in their own words.
+- Give every assertion at least one `evidence` quote copied verbatim from the turns — the \
+user's own words or the agent's; never paraphrase a quote. Quotes are checked against the \
+turns: an assertion whose quotes are not found there is held for review instead of being \
+recorded, and only a quote from the user's own message marks a statement as the user's.
 - When a head changed, use relation `supersedes` with the head's `target` id and say why in \
 `reasoning`. When a fact disagrees with a recorded decision, use `contradicts` with the id. \
 Use `duplicate` when the head already says the same thing; `new` otherwise.
@@ -48,7 +50,7 @@ Reply with strict JSON only, no prose and no code fence, in exactly this shape:
 \"name\": \"\", \"summary\": \"\", \"aliases\": [], \"paths\": []}], \
 \"assertions\": [{\"about\": [\"slug\"], \"kind\": \"decision|constraint|fact\", \
 \"domain\": \"business|architectural|implementation\", \"stance\": \"adopted|rejected\", \
-\"statement\": \"\", \"rationale\": \"\", \"stated_by_user\": false, \
+\"statement\": \"\", \"rationale\": \"\", \
 \"relation\": {\"kind\": \"new|confirms|supersedes|contradicts|duplicate\", \"target\": \"id\", \
 \"reasoning\": \"\"}, \"evidence\": [{\"quote\": \"\"}]}]}";
 
@@ -107,8 +109,9 @@ pub struct ProposedAssertion {
     pub statement: String,
     #[serde(default)]
     pub rationale: String,
-    #[serde(default)]
-    pub stated_by_user: bool,
+    /// Whether the user said it is not the model's to claim: it follows from
+    /// which turn its `evidence` is found in (see `pipeline`). An unknown
+    /// field such as the old `stated_by_user` is ignored.
     #[serde(default)]
     pub relation: Option<ProposedRelation>,
     #[serde(default)]

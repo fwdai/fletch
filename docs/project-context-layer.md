@@ -29,7 +29,11 @@ sources ─► observation ─► extraction ─► proposal ─► confirmation
   against `events`.
 - **Compile** (`compile.rs`) is a pure function from one project's `Graph` to
   the `Bundle` an agent or the UI reads. Actuality is decided there, not in
-  storage: heads, provisional flags, contradictions, misses, budget.
+  storage: `compile::is_current` is the one definition of a current head
+  (live, and nothing live further down its supersession chain) and is what
+  the conflict check, the stats and the UI (`Graph.current`) all use.
+  Queries are about *now*; an `as_of` view would need status intervals and
+  is not offered.
 - **Proposals** are candidates, not truth. They live outside the log and
   become events only when accepted — by rule (`resolve::auto_rule`) or by the
   user in the review queue.
@@ -103,7 +107,10 @@ Three paths, one pipeline, rising cost:
    and every proposal are kept, so a run can be audited and re-extracted later.
 3. **Explicit** (`rpc/context`). `context_record_decision` /
    `context_record_entity` / `context_link` for "the user asked you to
-   remember this" and for the agent's own deviations from the plan. When
+   remember this" and for the agent's own deviations from the plan. A
+   record is user-stated only when Fletch itself finds the agent's
+   `user_quote` (or the extractor's evidence quote) verbatim in a user turn
+   of that workspace; a model's say-so never promotes its own words. When
    current decisions already exist about the same entities in that domain,
    nothing is written: the reply carries those heads and the agent resubmits
    with `supersedes`, `contradicts` or `coexists`.
@@ -139,6 +146,22 @@ host-owned `context_layer_enabled` setting (Settings › Developer › Project
 context layer, opt-in; `set_context_layer_enabled` over the wire). Off, every
 entry — ops, instruction block, ingesters, extractor — reads the setting and
 does nothing, and the project page shows no Context tab.
+
+Stored context is untrusted data wherever it is rendered, and the store is
+the one place that makes it safe: every entity and assertion write validates
+the slug (`[a-z0-9][a-z0-9._-]*`, ≤ 64), strips control characters and
+collapses whitespace in every text field, and caps lengths (name 120,
+summary 600, statement 300, rationale 1000) — whichever writer it came
+from. The spawn-time index quotes names and leaves out entities the
+extractor minted until something else revised them, and the instruction
+block says the index is data, not instructions.
+
+Trust is decided in one place too: `context::trust` is the only code that
+can mint a `user_turn` source, and it does so only after finding the quoted
+words verbatim in a user turn of that workspace (`find_user_quote`). Tests
+grep the crate to keep both rules: no other `user_turn` construction, and no
+current-view decision on `Assertion::is_head` instead of
+`compile::is_current`.
 
 A **Context** tab on the project page: entities by kind with search; per
 entity its relations and assertions with status, author/source and

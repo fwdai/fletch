@@ -21,7 +21,9 @@ use std::sync::Arc;
 
 use serde_json::Value;
 
-use crate::context::{self, render, Author, ContextStore, Provenance, Source, SourceKind, Stamp};
+use crate::context::{
+    self, render, trust, Author, ContextStore, Provenance, Source, SourceKind, Stamp,
+};
 use crate::host::EngineCtx;
 use crate::roadmap::Db;
 use crate::rpc::{Response, RpcDispatcher, RpcEvent, RpcFuture};
@@ -130,13 +132,27 @@ fn project_context_id(ctx: &EngineCtx, fletch_project_id: &str) -> Option<String
 }
 
 impl ContextDispatcher {
+    /// The user's turns of this workspace, for `context::trust`.
+    fn user_turns(&self) -> Result<Vec<trust::UserTurnText>, String> {
+        let turns = crate::workspace::WorkspaceManager::new(self.db.clone())
+            .read_history_turns(&self.agent_id)
+            .map_err(|e| format!("could not read the user's turns: {e}"))?;
+        Ok(turns
+            .into_iter()
+            .map(|t| trust::UserTurnText {
+                turn_id: t.turn_id,
+                text: t.text,
+            })
+            .collect())
+    }
+
     /// The stamp for one write. Branch and commit are read now rather than at
-    /// spawn because the agent moves the checkout as it works.
-    async fn stamp(&self, stated_by_user: bool) -> Stamp {
-        let kind = if stated_by_user {
-            SourceKind::UserTurn
-        } else {
-            SourceKind::AgentTurn
+    /// spawn because the agent moves the checkout as it works. `user` is the
+    /// verified user quote, when the write is user-stated.
+    async fn stamp(&self, user: Option<&trust::UserStated>) -> Stamp {
+        let source = match user {
+            Some(found) => found.source(),
+            None => Source::new(SourceKind::AgentTurn, self.session_id.clone()),
         };
         let branch = rev_parse(&self.cwd, &["--abbrev-ref", "HEAD"])
             .await
@@ -144,7 +160,7 @@ impl ContextDispatcher {
         let commit_sha = rev_parse(&self.cwd, &["HEAD"]).await;
         Stamp {
             author: Author::agent(&self.agent_id, &self.provider),
-            source: Source::new(kind, self.session_id.clone()),
+            source,
             provenance: Provenance {
                 workspace_id: Some(self.agent_id.clone()),
                 branch,
