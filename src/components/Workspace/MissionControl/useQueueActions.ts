@@ -14,7 +14,7 @@ import { type LadderContext, nextRung } from "@/readiness";
 import { useAppStore } from "@/store";
 import { useGate } from "@/store/capabilities";
 import { checkoutKey } from "@/store/git";
-import type { ReviewItem } from "./queue";
+import { BUCKET, type ReviewItem } from "./queue";
 
 /** Composer scaffold seeded for "request changes" on an ad-hoc agent item — an
  *  editable starting point (like the PR-comment "→ chat" seed), not a sent
@@ -82,9 +82,9 @@ export function useQueueActions(openReview: (runId: string) => void): QueueActio
   // cannot disagree about what's wrong — they used to, each having its own copy.
   // `subdir` scopes everything to the repo whose signal the card shows — a
   // secondary repo's failing PR must never dispatch an action on the primary.
-  // `prNumber` is the PR the card shows, which may be a sibling of the
-  // checkout's focused one (the worst of its set): the ladder reads, and the
-  // host's delegations target, the focused PR, so focus moves to it first.
+  // `prNumber` is the PR a PR card shows, which may be a sibling of the
+  // checkout's focused one (a failing one): the ladder reads, and the host's
+  // delegations target, the focused PR, so focus moves to it first.
   const approveAgent = useCallback(
     async (agentId: string, subdir: string | undefined, prNumber: number | undefined) => {
       const key = checkoutKey(agentId, subdir);
@@ -179,7 +179,10 @@ export function useQueueActions(openReview: (runId: string) => void): QueueActio
         void api.wfApprove(item.runId).catch((e) => setLastError(`Approve failed: ${e}`));
         return;
       }
-      if (item.agent) void approveAgent(item.agent.id, item.prSubdir, item.pr?.number);
+      // Only a PR card's PR is worth moving the focus for: approving a card
+      // about unseen results never moves the Git panel's focus.
+      const prNumber = item.bucket === BUCKET.pr ? item.pr?.number : undefined;
+      if (item.agent) void approveAgent(item.agent.id, item.prSubdir, prNumber);
     },
     [approveAgent, updateAll, setLastError],
   );

@@ -1,18 +1,14 @@
 import type { LinkedWorktree } from "@/api";
 import { basename } from "@/util/format";
 
-/** How many worktree names the line spells out before folding the rest into "+K". */
-const MAX_NAMES = 3;
-
-/** "2 sub-agent worktrees working · feat/a, feat/b" — each worktree by its
- *  branch, or its directory name when detached; null when there are none. */
+/** "2 sub-agent worktrees · feat/a, feat/b" — each worktree by its branch, or
+ *  its directory name when detached; null when there are none. A long list
+ *  ellipsizes in CSS, with every path in the line's tooltip. */
 export function worktreesLine(worktrees: LinkedWorktree[]): string | null {
   if (worktrees.length === 0) return null;
-  const names = worktrees.map((wt) => wt.branch ?? basename(wt.path));
-  const shown = names.slice(0, MAX_NAMES).join(", ");
-  const more = names.length > MAX_NAMES ? ` +${names.length - MAX_NAMES}` : "";
+  const names = worktrees.map((wt) => wt.branch ?? basename(wt.path)).join(", ");
   const noun = worktrees.length === 1 ? "worktree" : "worktrees";
-  return `${worktrees.length} sub-agent ${noun} working · ${shown}${more}`;
+  return `${worktrees.length} sub-agent ${noun} · ${names}`;
 }
 
 /** One quiet line under the status header while sub-agents work in their own

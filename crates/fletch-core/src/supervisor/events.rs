@@ -426,9 +426,6 @@ struct PrStateChangedPayload {
     /// `pr:checks_changed`. Added after the fact, so a client that predates it
     /// reads every event as the primary's.
     subdir: Option<String>,
-    /// The PR `state` describes (`None` with it), so a client can file the
-    /// event under the right entry of the checkout's PR set.
-    number: Option<u32>,
     /// Whether this is the checkout's focused (bound) PR — the one single-PR
     /// readers show. A checkout holds a set of PRs and the watcher reports
     /// each; a client that keeps only the focused one ignores `false`. Added
@@ -452,7 +449,6 @@ pub(super) fn emit_pr_state(
         PrStateChangedPayload {
             agent_id: agent_id.to_string(),
             subdir: subdir.map(str::to_string),
-            number: state.as_ref().map(|s| s.number),
             focused,
             state,
         },

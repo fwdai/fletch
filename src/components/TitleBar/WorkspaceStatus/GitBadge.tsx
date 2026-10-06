@@ -1,7 +1,7 @@
 import type { GitState, PrChecks, PrSetEntry, PrState, ShortStats } from "@/api";
 import { Icon } from "@/components/Icon";
-import { summarizePrSet } from "@/util/prState";
-import { PR_META, prBadge, setBadgeCls } from "./derive";
+import { summarizePrSet } from "@/util/prSummary";
+import { PR_META, prBadge } from "./derive";
 
 interface Props {
   pr: PrState | null;
@@ -21,7 +21,10 @@ export function GitBadge({ pr, git, checks, stats, prs }: Props) {
     const badge = prBadge(pr, git, checks);
     const meta = PR_META[badge];
     const others = prs.length - 1;
-    const cls = others > 0 ? setBadgeCls(badge, summarizePrSet(prs).variant) : meta.cls;
+    // A set takes its worst tint when that is failing CI or a conflict, so a
+    // sibling in trouble never hides behind a calm focused PR.
+    const set = others > 0 ? summarizePrSet(prs).variant : null;
+    const cls = set === "pr-fail" ? "failing" : set === "warn" ? "conflicts" : meta.cls;
     return (
       <span className={`ws-badge pr-${cls}`}>
         <Icon name={meta.icon} size={11} />

@@ -1,4 +1,5 @@
-import type { KeyboardEvent } from "react";
+import { type KeyboardEvent, useMemo } from "react";
+import { prOrigins } from "@/adapters/shared/subagents";
 import { Icon } from "@/components/Icon";
 import { useAppStore } from "@/store";
 import { formatDuration } from "@/util/format";
@@ -12,22 +13,33 @@ import { failedTip, type SubagentChild } from "./subagentChildren";
  *  Clicking opens the sub-agent's thread in the center pane (the agent's
  *  conversation is one "back" away). Reads active while that thread — or a
  *  thread nested under it — is open. The task's lifecycle is Claude's, so the
- *  row carries no actions. `prs` are the agent's PRs this sub-agent opened
- *  (`prOrigins`): its own pill, while the agent's row keeps the aggregate. */
+ *  row carries no actions. Of the agent's PRs (`agentPrs`), the ones this
+ *  sub-agent opened get their own pill, while the agent's row keeps the
+ *  aggregate. */
 export function SubagentRow({
   agentId,
   child,
-  prs,
+  agentPrs,
 }: {
   agentId: string;
   child: SubagentChild;
-  prs: readonly AgentPr[];
+  agentPrs: readonly AgentPr[];
 }) {
   const openSubagentThread = useAppStore((s) => s.openSubagentThread);
   const active = useAppStore(
     (s) => s.openThread?.agentId === agentId && s.openThread.path[0] === child.task.toolUseId,
   );
   const onSelect = () => openSubagentThread(agentId, [child.task.toolUseId]);
+  // Which sub-agent opened which PR, read back out of the log (the host records
+  // PRs per checkout, not per thread). Read only while the agent has PRs, so a
+  // streaming log re-renders no row that has nothing to attribute; the log
+  // only exists once the agent has been opened this session.
+  const log = useAppStore((s) => (agentPrs.length > 0 ? s.managedLogs[agentId] : undefined));
+  const prs = useMemo(() => {
+    if (!log) return [];
+    const origins = prOrigins(log);
+    return agentPrs.filter((e) => origins.get(e.state.number) === child.task.toolUseId);
+  }, [log, agentPrs, child.task.toolUseId]);
 
   return (
     <div

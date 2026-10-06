@@ -556,6 +556,9 @@ async fn query_origin(checkout_path: &Path) -> (bool, Option<String>) {
 /// worktree (a workflow run's adopted tree) its siblings too — none of which
 /// are this workspace's sub-agents. A registration whose directory is gone
 /// fails to canonicalize and drops out. Empty on any failure.
+///
+/// A list of one is just the checkout itself — the common case, which the 1 s
+/// panel poll then answers with no filesystem calls.
 async fn query_worktrees(checkout_path: &Path) -> Vec<LinkedWorktree> {
     let Ok(out) = read_command(checkout_path)
         .args(["worktree", "list", "--porcelain"])
@@ -567,11 +570,14 @@ async fn query_worktrees(checkout_path: &Path) -> Vec<LinkedWorktree> {
     if !out.status.success() {
         return vec![];
     }
+    let all = parse_worktree_list(&String::from_utf8_lossy(&out.stdout));
+    if all.len() <= 1 {
+        return vec![];
+    }
     let Ok(root) = std::fs::canonicalize(checkout_path) else {
         return vec![];
     };
-    parse_worktree_list(&String::from_utf8_lossy(&out.stdout))
-        .into_iter()
+    all.into_iter()
         .filter(|wt| {
             std::fs::canonicalize(&wt.path).is_ok_and(|p| p != root && p.starts_with(&root))
         })

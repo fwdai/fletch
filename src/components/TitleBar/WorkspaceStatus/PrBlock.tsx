@@ -4,25 +4,16 @@ import { PR_META, prBadge, repoSlug } from "./derive";
 
 /** The popover's PR block: every PR of the checkout, focused first. Each row is
  *  a state tag, `#N` and title, with the check breakdown while it is open. */
-export function PrBlock({
-  prs,
-  focused,
-  git,
-}: {
-  prs: readonly PrSetEntry[];
-  focused: number;
-  git: GitState | null;
-}) {
+export function PrBlock({ prs, git }: { prs: readonly PrSetEntry[]; git: GitState | null }) {
   const slug = repoSlug(git?.remote_url);
   return (
     <>
       <div className="ws-pop-div" />
-      <div className={`ws-pop-prs ${prs.length > 1 ? "many" : ""}`}>
+      <div className="ws-pop-prs">
         {prs.map(({ state, checks }, i) => {
-          const isFocused = state.number === focused;
           // Local conflict markers belong to the checkout, which only the
-          // focused PR's tint should read.
-          const meta = PR_META[prBadge(state, isFocused ? git : null, checks)];
+          // focused PR's (the first) tint should read.
+          const meta = PR_META[prBadge(state, i === 0 ? git : null, checks)];
           return (
             <div key={state.number} className="ws-pop-pr">
               <div className="ws-pr-head">

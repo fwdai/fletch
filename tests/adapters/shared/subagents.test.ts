@@ -49,7 +49,7 @@ describe("prOrigins", () => {
     `{"id":"x","ok":true,"exit_code":0,"stdout":"${url(n)}","stderr":""}`;
 
   it("credits the PR in a sub-agent's mailbox response to its launching call", () => {
-    const log = [call("a", [result(response(12))]), call("b", [result(`${url(13)}\n`)])];
+    const log = [call("a", [result(response(12))]), call("b", [result(response(13))])];
     expect([...prOrigins(log)]).toEqual([
       [12, "a"],
       [13, "b"],
@@ -66,26 +66,26 @@ describe("prOrigins", () => {
     expect(prOrigins(log).size).toBe(0);
   });
 
-  it("reads structured content: text blocks and JSON objects", () => {
+  it("reads Claude's text blocks", () => {
     const blocks = [{ type: "text", text: response(21) }];
-    const object = { output: response(22) };
-    const log = [call("a", [result(blocks)]), call("b", [result(object)])];
-    expect(prOrigins(log).get(21)).toBe("a");
-    expect(prOrigins(log).get(22)).toBe("b");
+    expect(prOrigins([call("a", [result(blocks)])]).get(21)).toBe("a");
   });
 
-  it("does not credit a URL merely mentioned in other output", () => {
+  it("does not credit a URL merely printed by other output", () => {
+    // `gh pr list` / `gh pr view` print a sibling's URL, alone on its line too.
     const listed = `#9\tfix: thing\tOPEN\nsee ${url(9)} for details`;
-    expect(prOrigins([call("a", [result(listed)])]).size).toBe(0);
+    const viewed = `${url(10)}\n`;
+    const log = [call("a", [result(listed)]), call("b", [result(viewed)])];
+    expect(prOrigins(log).size).toBe(0);
   });
 
-  it("keeps the first opener when a later thread repeats the URL", () => {
-    const log = [call("a", [result(response(5))]), call("b", [result(url(5))])];
+  it("keeps the first opener when a later thread repeats the response", () => {
+    const log = [call("a", [result(response(5))]), call("b", [result(response(5))])];
     expect(prOrigins(log).get(5)).toBe("a");
   });
 
-  it("survives content it cannot stringify", () => {
-    const circular: Record<string, unknown> = {};
+  it("reads nothing from content that is neither text nor text blocks", () => {
+    const circular: Record<string, unknown> = { output: response(6) };
     circular.self = circular;
     expect(prOrigins([call("a", [result(circular)])]).size).toBe(0);
   });

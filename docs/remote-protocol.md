@@ -1202,7 +1202,7 @@ it on `protocol.events` never emits it, and a client that has no handler for it
 behaves as it did before the event existed — the prompt stays until answered,
 which is what every client did until this event.
 
-`pr:state_changed` `{ agent_id, subdir?: string | null, number?: number | null, focused?: boolean, state: PrState | null }`
+`pr:state_changed` `{ agent_id, subdir?: string | null, focused?: boolean, state: PrState | null }`
 is one PR of one checkout as found now — a state, not a transition; `null` is
 "no bound PR". It fires after a push or a turn end (primary repo), from
 `set_focused_pr`, and from the host-side PR watcher below, for the primary and
@@ -1210,10 +1210,11 @@ every secondary repo. `subdir` is `null` (or absent, from a host that predates
 it) for the agent's primary repo and the repo's subdir for a secondary, so a
 client keys the write by checkout as it does `get_all_pr_status`; a client that
 keeps only the primary's PR ignores an event with `subdir` set rather than
-writing it to the primary. A checkout holds a set of PRs: `number` names the
-one `state` describes, and `focused` says whether it is the checkout's focused
-PR. A client that keeps one PR per checkout ignores `focused: false`; absent
-(a host that predates PR sets) means focused. The same state may be reported
+writing it to the primary. A checkout holds a set of PRs: `state.number` names
+the one the event describes, and `focused` says whether it is the checkout's
+focused PR. A client that keeps one PR per checkout ignores `focused: false`;
+absent (a host that predates PR sets, which binds one PR per checkout) means
+focused, and that PR is the checkout's whole set. The same state may be reported
 again — the watcher re-reports every open PR on its first look after a host
 restart — so a client derives "opened" / "merged" from the record it replaces
 and treats a same-state event as a refresh.

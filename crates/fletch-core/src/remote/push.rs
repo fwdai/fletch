@@ -193,14 +193,14 @@ pub(super) struct PushTriggers {
     /// different set of names is not a second alert while `failing → passing`
     /// is — and the next PR on the same checkout starts with no memory. Entries
     /// go when their PR leaves `open`.
-    last_rollup: Mutex<HashMap<String, String>>,
+    last_rollup: Mutex<HashMap<PrKey, String>>,
     /// The PRs whose last `pr:state_changed` said `open`, keyed by checkout
     /// like the client stores (`agent` for the primary repo, `agent::subdir`
-    /// for a secondary) plus `#number`, so one repo's — or one PR's — merge is
-    /// not read as another's. A merge or close alerts only when this saw the
-    /// PR open: a cold start's first event may be a stale snapshot of a PR
-    /// that merged last week.
-    last_pr_state: Mutex<HashMap<String, String>>,
+    /// for a secondary) and number, so one repo's — or one PR's — merge is not
+    /// read as another's. A merge or close alerts only when this saw the PR
+    /// open: a cold start's first event may be a stale snapshot of a PR that
+    /// merged last week.
+    open_prs: Mutex<HashSet<PrKey>>,
 }
 
 impl PushTriggers {
@@ -212,7 +212,7 @@ impl PushTriggers {
             running: Mutex::new(HashSet::new()),
             pending_input: Mutex::new(HashSet::new()),
             last_rollup: Mutex::new(HashMap::new()),
-            last_pr_state: Mutex::new(HashMap::new()),
+            open_prs: Mutex::new(HashSet::new()),
         }
     }
 
@@ -311,10 +311,9 @@ impl PushTriggers {
         };
         // Keyed by PR, not just by checkout: the next PR on the same branch
         // settling green is its own news, not a repeat of the last one's.
-        let key = format!(
-            "{}#{}",
+        let key = (
             checkout_key(&payload.agent_id, payload.subdir.as_deref()),
-            payload.number
+            payload.number,
         );
         let rollup = payload.checks.rollup;
         let previous = self.last_rollup.lock().insert(key, rollup.clone());
@@ -387,24 +386,21 @@ impl PushTriggers {
         let Some(state) = payload.state else {
             // "No bound PR": nothing of this checkout's is watched any more.
             // Only this checkout's: the agent's other repos are still open.
-            let prefix = format!("{checkout}#");
-            let of_checkout = |key: &String| key.starts_with(&prefix);
-            self.last_pr_state.lock().retain(|key, _| !of_checkout(key));
-            self.last_rollup.lock().retain(|key, _| !of_checkout(key));
+            self.open_prs.lock().retain(|(c, _)| *c != checkout);
+            self.last_rollup.lock().retain(|(c, _), _| *c != checkout);
             return;
         };
         // Per PR, not per checkout: a checkout holds several PRs at once, and
         // one merging says nothing about whether another was open.
-        let key = format!("{checkout}#{}", state.number);
+        let key = (checkout, state.number);
         // A PR that is no longer open takes its memory with it, so the maps
         // stay bounded by the PRs still being watched.
-        let previous = if state.state == "open" {
-            self.last_pr_state.lock().insert(key, state.state.clone())
-        } else {
-            self.last_rollup.lock().remove(&key);
-            self.last_pr_state.lock().remove(&key)
-        };
-        if previous.as_deref() != Some("open") {
+        if state.state == "open" {
+            self.open_prs.lock().insert(key);
+            return;
+        }
+        self.last_rollup.lock().remove(&key);
+        if !self.open_prs.lock().remove(&key) {
             return;
         }
         let (kind, title) = match state.state.as_str() {
@@ -502,6 +498,9 @@ impl PushTriggers {
         }
     }
 }
+
+/// One PR's memory key: its checkout's [`checkout_key`] and its number.
+type PrKey = (String, u32);
 
 /// One checkout's key from an event's `subdir` (`None` = the primary repo).
 fn checkout_key(agent_id: &str, subdir: Option<&str>) -> String {
@@ -639,7 +638,7 @@ struct PrStateChangedPayload {
 
 #[derive(Deserialize)]
 struct PrStateSummary {
-    number: u64,
+    number: u32,
     state: String,
 }
 

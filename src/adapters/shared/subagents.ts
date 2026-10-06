@@ -188,32 +188,24 @@ export function threadSteps(items: ChatItem[]): number {
 // as a tool_result inside the sub-agent's thread.
 
 const PR_URL = String.raw`https://github\.com/[^/\s"]+/[^/\s"]+/pull/(\d+)`;
-/** Only the shapes an `open_pr` answer takes: the mailbox response JSON
- *  (`"stdout":"<url>"`, as `cat` prints it) or the URL alone on its line (the
- *  same stdout pulled out with `jq -r .stdout`). Any URL anywhere would also
- *  credit a sub-agent that merely listed or viewed a sibling's PR. */
-const OPENED_PR = new RegExp(String.raw`"stdout"\s*:\s*"${PR_URL}|^\s*${PR_URL}\s*$`, "gm");
+/** Only the shape an `open_pr` answer takes: the mailbox response JSON
+ *  (`"stdout":"<url>"`). A bare URL is not enough — `gh pr view` / `gh pr list`
+ *  print one too, which would credit a sub-agent that merely looked at a
+ *  sibling's PR. */
+const OPENED_PR = new RegExp(String.raw`"stdout"\s*:\s*"${PR_URL}`, "g");
 
 /** A tool_result's content as text: a string as-is, Claude's content blocks by
- *  their text, anything else as JSON with its inner quotes unescaped (so a
- *  response JSON nested in a string field still reads `"stdout":"…"`). Never
- *  throws — a circular value reads as nothing. */
+ *  their text, anything else as nothing. */
 function resultText(content: unknown): string {
   if (typeof content === "string") return content;
-  if (Array.isArray(content)) {
-    return content
-      .map((b) =>
-        b && typeof b === "object" && typeof (b as { text?: unknown }).text === "string"
-          ? (b as { text: string }).text
-          : "",
-      )
-      .join("\n");
-  }
-  try {
-    return (JSON.stringify(content) ?? "").replaceAll('\\"', '"');
-  } catch {
-    return "";
-  }
+  if (!Array.isArray(content)) return "";
+  return content
+    .map((b) =>
+      b && typeof b === "object" && typeof (b as { text?: unknown }).text === "string"
+        ? (b as { text: string }).text
+        : "",
+    )
+    .join("\n");
 }
 
 /** Results are immutable once logged and the reducer keeps their identity
@@ -223,7 +215,7 @@ const opened = new WeakMap<ToolResult, number[]>();
 function openedPrs(result: ToolResult): number[] {
   let found = opened.get(result);
   if (!found) {
-    found = [...resultText(result.content).matchAll(OPENED_PR)].map((m) => Number(m[1] ?? m[2]));
+    found = [...resultText(result.content).matchAll(OPENED_PR)].map((m) => Number(m[1]));
     opened.set(result, found);
   }
   return found;

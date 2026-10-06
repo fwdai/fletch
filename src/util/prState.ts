@@ -6,19 +6,10 @@
 
 import { useMemo } from "react";
 import { useShallow } from "zustand/react/shallow";
-import type { AgentRecord, PrChecks, PrState, PrStatus, TrackedRepo } from "@/api";
+import type { AgentRecord, PrSetEntry, PrState, PrStatus, TrackedRepo } from "@/api";
 import { useAppStore } from "@/store";
 import { checkoutKey } from "@/store/git";
-import { checkoutPrs, type PrSetSummary, summarizePrSet } from "./prSummary";
-
-export {
-  checkoutPrs,
-  type PrSetSummary,
-  type PrTint,
-  prTint,
-  summarizePrSet,
-  worstOpenPr,
-} from "./prSummary";
+import { checkoutPrs } from "./prSummary";
 
 const PR_STATUSES: readonly PrStatus[] = ["open", "merged", "closed"];
 
@@ -40,38 +31,23 @@ export function prSnapshot(repo: TrackedRepo | undefined): PrState | null {
 }
 
 /** The PR state to render for an agent: live store value, else the database
- *  snapshot from the agent's primary repo.
- *
- *  Callers that already hold the agent record (the sidebar mounts one row per
- *  agent) should pass its primary repo — the selector then skips the O(n)
- *  agents scan that would otherwise run in every mounted row on every store
- *  update. Singleton consumers (title-bar capsule, Git panel) can omit it and
- *  let the selector look the repo up. */
-export function usePrState(agentId: string, repo?: TrackedRepo): PrState | null {
+ *  snapshot from the agent's primary repo. */
+export function usePrState(agentId: string): PrState | null {
   const live = useAppStore((s) => s.prStates[agentId] ?? null);
-  const found = useAppStore(
-    (s) => repo ?? s.workspace?.agents.find((a) => a.id === agentId)?.repos[0],
-  );
+  const found = useAppStore((s) => s.workspace?.agents.find((a) => a.id === agentId)?.repos[0]);
   return useMemo(() => live ?? prSnapshot(found), [live, found]);
 }
 
 /** One PR within an agent's set, with its CI rollup (null until the app-wide
  *  checks poll lands or when there's no rollup) and the repo it lives in. */
-export interface AgentPr {
-  pr: PrState;
-  checks: PrChecks | null;
+export interface AgentPr extends PrSetEntry {
   repo: TrackedRepo;
 }
 
-/** [`summarizePrSet`] over an agent's PRs. */
-export function summarizeAgentPrs(prs: readonly AgentPr[]): PrSetSummary {
-  return summarizePrSet(prs.map((e) => ({ state: e.pr, checks: e.checks })));
-}
-
 /** Every PR across an agent's repos: repo order (primary first), each
- *  checkout's PRs newest first. A checkout holds a set — sub-agents each open
- *  their own — read from `prSets`, its focused entry refreshed from the focused
- *  maps (see `checkoutPrs`). Each repo reads its own keys — plain agent id for
+ *  checkout's focused PR first, then the rest of its set (see `checkoutPrs`).
+ *  A checkout holds a set — sub-agents each open their own — read from
+ *  `prSets`. Each repo reads its own keys — plain agent id for
  *  the primary, the suffixed `checkoutKey` for secondaries. With no set known
  *  (an older host) the checkout's focused PR stands alone, resolved with the
  *  panel's per-repo policy: a present key, even a confirmed `null` (a fetch
@@ -93,11 +69,7 @@ export function useAgentPrs(agent: AgentRecord): AgentPr[] {
     () =>
       agent.repos.flatMap((repo, i) => {
         const focused = live[i] !== undefined ? live[i] : prSnapshot(repo);
-        return checkoutPrs(sets[i], focused, checks[i]).map((e) => ({
-          pr: e.state,
-          checks: e.checks,
-          repo,
-        }));
+        return checkoutPrs(sets[i], focused, checks[i]).map((e) => ({ ...e, repo }));
       }),
     [agent.repos, live, checks, sets],
   );

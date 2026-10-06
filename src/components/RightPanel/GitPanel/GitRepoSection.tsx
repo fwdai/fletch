@@ -159,6 +159,11 @@ export function GitRepoSection({
   // that kept working after a merge holds the merged one too.
   const prSet = useAppStore((s) => s.prSets[key]);
   const hasPrSet = (prSet?.length ?? 0) >= 2;
+  // The focused PR's head branch, said on its card when the checkout is on
+  // another one — the same rule that gates the actions bound to that branch.
+  // Not before the git state loads, so the line doesn't flash on every open.
+  const prBranch =
+    gitState && prState?.branch && prState.branch !== gitState.branch ? prState.branch : null;
   // Which sub-agent opened the focused PR, when one did — the card says so.
   const prOrigin = usePrOrigin(agent.id, prState?.number);
 
@@ -214,7 +219,7 @@ export function GitRepoSection({
             {panelState === "pr-open" && prState && (
               <PRCard
                 pr={prState}
-                branch={hasPrSet ? prState.branch : null}
+                branch={prBranch}
                 origin={prOrigin}
                 base={base}
                 checks={checks}

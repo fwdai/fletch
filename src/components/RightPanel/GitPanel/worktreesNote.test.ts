@@ -12,11 +12,11 @@ describe("worktreesLine", () => {
   });
 
   it("names a detached worktree by its directory", () => {
-    expect(worktreesLine([wt("agent-a", null)])).toBe("1 sub-agent worktree working · agent-a");
+    expect(worktreesLine([wt("agent-a", null)])).toBe("1 sub-agent worktree · agent-a");
   });
 
-  it("spells out three names and folds the rest", () => {
-    const line = worktreesLine([wt("feat/a"), wt("feat/b"), wt("feat/c"), wt("x"), wt("y")]);
-    expect(line).toBe("5 sub-agent worktrees working · feat/a, feat/b, feat/c +2");
+  it("names every worktree", () => {
+    const line = worktreesLine([wt("feat/a"), wt("feat/b"), wt("feat/c"), wt("x")]);
+    expect(line).toBe("4 sub-agent worktrees · feat/a, feat/b, feat/c, x");
   });
 });

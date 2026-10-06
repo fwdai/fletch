@@ -193,8 +193,8 @@
 .theme-light .ws-badge.pr-merged {
   color: oklch(0.45 0.16 295);
 }
-/* only ever a set's tint: a sibling PR's CI is failing (the focused PR's own
- * failures already show in the checks chip) */
+/* only ever a set's tint: the checkout holds several PRs and one of them,
+ * focused or not, is failing CI (a lone PR's failures show in the checks chip) */
 .ws-badge.pr-failing {
   color: var(--danger);
   border-color: color-mix(in oklch, var(--danger), transparent 60%);
@@ -414,12 +414,11 @@
   display: flex;
   flex-direction: column;
   gap: 12px;
-}
-/* several PRs: cap the list so the popover stays a glance, not a page */
-.ws-pop-prs.many {
+  /* capped so several PRs keep the popover a glance, not a page */
   max-height: 260px;
   overflow-y: auto;
 }
+
 .ws-pop-pr {
   display: flex;
   flex-direction: column;

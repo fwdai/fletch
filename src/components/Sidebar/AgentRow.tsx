@@ -1,6 +1,5 @@
 import type { KeyboardEvent, MouseEvent } from "react";
-import { useMemo, useState } from "react";
-import { prOrigins } from "@/adapters/shared/subagents";
+import { useState } from "react";
 import { contextPercent, resolveContextWindow } from "@/adapters/usage";
 import type { AgentRecord, AgentStatus, ShortStats } from "@/api";
 import { AgentIdentityChip } from "@/components/AgentIdentityChip";
@@ -15,7 +14,7 @@ import { useGate } from "@/store/capabilities";
 import { maxBehind } from "@/store/git";
 import { formatAge } from "@/util/format";
 import { useMinuteClock } from "@/util/hooks";
-import { summarizeAgentPrs, useAgentPrs } from "@/util/prState";
+import { useAgentPrs } from "@/util/prState";
 import { type AgentStats, AgentStatsPopover } from "./AgentStatsPopover";
 import { type AutopilotSignal, autopilotSignal, autopilotTip } from "./autopilotSignal";
 import { PrPill } from "./PrPill";
@@ -66,11 +65,6 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
   // broken checkouts. Each carries the CI rollup the fleet seed
   // (loadAllPrStatus) or the host watcher's events recorded for it.
   const agentPrs = useAgentPrs(agent);
-  // Which sub-agent opened which of those PRs, read back out of the log (the
-  // host records PRs per checkout, not per thread). The log only exists once
-  // the agent has been opened this session; until then nothing is attributed.
-  const log = useAppStore((s) => s.managedLogs[agent.id]);
-  const origins = useMemo(() => prOrigins(log ?? []), [log]);
   const shortstats = useAppStore((s) => s.gitShortstats[agent.id]);
   // Base-staleness across the agent's checkouts (stalest wins — a behind
   // secondary must surface even when the primary is fresh). A quiet "base
@@ -171,10 +165,10 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
     agent.status === "idle" || agent.status === "stopped" || agent.status === "error";
 
   // The status rail doubles as the left spine: colored for live/terminal
-  // states, purple once the PR pill reads merged (every PR of the set merged),
-  // everything else is a faint grey. A pending question outranks the plain
-  // running green — amber says "you".
-  const allMerged = agentPrs.length > 0 && summarizeAgentPrs(agentPrs).variant === "pr-merged";
+  // states, purple once every PR of the set merged, everything else is a
+  // faint grey. A pending question outranks the plain running green — amber
+  // says "you".
+  const allMerged = agentPrs.length > 0 && agentPrs.every((e) => e.state.state === "merged");
   const railClass = awaiting
     ? "wait"
     : working
@@ -352,7 +346,7 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
               key={child.task.taskId}
               agentId={agent.id}
               child={child}
-              prs={agentPrs.filter((e) => origins.get(e.pr.number) === child.task.toolUseId)}
+              agentPrs={agentPrs}
             />
           ))}
         </div>

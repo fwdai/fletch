@@ -1,6 +1,6 @@
 // The panel's one "disabled with a reason" rule: five things can kill the split
-// button's main click, and only the capability gate and a PR playbook aimed at
-// a branch the checkout is not on are worth words.
+// button's main click, and only the capability gate and an action bound to a PR
+// branch the checkout is not on are worth words.
 //
 // Which key maps to which gate is `actionGates.test.ts`'s subject; the reasons
 // here are read through `actionGateReason` rather than spelled out, so this file
@@ -129,6 +129,21 @@ describe("mainActionState", () => {
       expect(mainActionState({ ...older, ...over, effectiveKey: "agent-fix" }).disabled).toBe(
         false,
       );
+    }
+  });
+
+  it("will not archive or delete the branch for a merged PR the checkout has moved on from", () => {
+    // The user focused the merged #1 while the checkout works on the open #2:
+    // the panel reads `merged` and offers archive / delete-branch, which would
+    // end #2's work, not #1's.
+    const merged = { ...live, prBranch: "feat/first", checkoutBranch: "feat/second" };
+    const reason = "Checkout is on feat/second; this PR's branch is feat/first";
+
+    for (const key of ["archive", "delete-branch"]) {
+      expect(mainActionState({ ...merged, effectiveKey: key })).toEqual({ disabled: true, reason });
+      expect(
+        mainActionState({ ...merged, prBranch: "feat/second", effectiveKey: key }).disabled,
+      ).toBe(false);
     }
   });
 
