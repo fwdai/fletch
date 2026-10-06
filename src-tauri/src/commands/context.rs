@@ -103,3 +103,16 @@ pub fn context_rule_proposal(
 ) -> Result<Option<Id>> {
     engine::context_rule_proposal_impl(&ctx, &project_id, &proposal_id, verdict, dismiss_reason)
 }
+
+/// Close the tension between two assertions with a ruling (reasoning
+/// required); neither side changes.
+#[tauri::command]
+pub fn context_resolve_contradiction(
+    ctx: State<'_, Arc<EngineCtx>>,
+    project_id: String,
+    a: String,
+    b: String,
+    reasoning: String,
+) -> Result<()> {
+    engine::context_resolve_contradiction_impl(&ctx, &project_id, &a, &b, &reasoning)
+}

@@ -40,6 +40,9 @@ export interface Provenance {
   commit_sha?: string;
   session_id?: string;
   turn_id?: string;
+  /** The checkout (repo subdir) the record was made in; absent means the
+   *  workspace's primary repo. */
+  repo?: string;
 }
 
 export interface Stamp {
@@ -136,6 +139,22 @@ export interface ContextRelation {
   rel: Rel;
 }
 
+/** The ruling that closed a `contradicts` edge. Neither side changes. */
+export interface Resolution {
+  reasoning: string;
+  at: number;
+  by: Author;
+}
+
+/** A `contradicts` edge as loaded: both sides, the reasoning it was recorded
+ *  with, and the ruling that closed it, if any. */
+export interface ContradictionEdge {
+  a: string;
+  b: string;
+  reasoning?: string;
+  resolution?: Resolution;
+}
+
 export interface ContextGraph {
   project_id: string;
   entities: ContextEntity[];
@@ -143,6 +162,9 @@ export interface ContextGraph {
   relations: ContextRelation[];
   /** Ids of the assertions that stand now (`compile::current_heads`), derived by the host. */
   current: string[];
+  /** Every `contradicts` edge with its reasoning and ruling — the record;
+   *  `ContextAssertion.contradicts` only keeps the ids. */
+  contradictions: ContradictionEdge[];
 }
 
 export interface CompileQuery {
@@ -169,7 +191,15 @@ export interface ProposedRelation {
 
 export type ProposalPayload =
   | { type: "entity"; input: EntityInput; stamp: Stamp }
-  | { type: "assertion"; input: AssertionInput; stamp: Stamp; relation: ProposedRelation };
+  | {
+      type: "assertion";
+      input: AssertionInput;
+      stamp: Stamp;
+      relation: ProposedRelation;
+      /** Slugs of subjects that were only proposed when this was made; one
+       *  without an accepted entity yet means "accept that entity first". */
+      about_pending: string[];
+    };
 
 export type ProposalStatus = "pending" | "auto" | "accepted" | "dismissed";
 export type DismissReason = "wrong" | "trivial" | "duplicate" | "already_known";

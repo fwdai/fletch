@@ -1,8 +1,8 @@
 //! Where "the user said it" is decided — and the only place it can be.
 //!
 //! Trust in the context layer lives in an assertion's `source`: a `user_turn`
-//! source lands confirmed and is never auto-overridden by an agent
-//! (`resolve::auto_rule`). That makes the claim worth forging, so no writer
+//! source lands confirmed, as the user's own word. That makes the claim
+//! worth forging, so no writer
 //! may assert it: a model's `stated_by_user: true` is just more model output.
 //! Instead a writer hands over the user's words and this module looks for
 //! them, verbatim, in the user's own turns. Only a match yields a

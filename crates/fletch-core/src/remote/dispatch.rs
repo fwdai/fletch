@@ -291,6 +291,7 @@ pub const OPS: &[&str] = &[
     "context_merge_entities",
     "context_link",
     "context_rule_proposal",
+    "context_resolve_contradiction",
 ];
 
 pub const REGISTER_PUSH: &str = "register_push";
@@ -576,6 +577,7 @@ const OP_SCOPES: &[(&str, Scope)] = &[
     ("context_merge_entities", Scope::Projects),
     ("context_link", Scope::Projects),
     ("context_rule_proposal", Scope::Projects),
+    ("context_resolve_contradiction", Scope::Projects),
 ];
 
 /// The one scope that reaches `op`. `None` for a name outside [`OPS`] —
@@ -1716,7 +1718,8 @@ impl Dispatch for SupervisorDispatch {
                 | "context_archive_entity"
                 | "context_merge_entities"
                 | "context_link"
-                | "context_rule_proposal" => context_op(ctx, op, args),
+                | "context_rule_proposal"
+                | "context_resolve_contradiction" => context_op(ctx, op, args),
 
                 // Unreachable while `OPS` and the arms above agree; kept so a
                 // name added to one and not the other fails closed.
@@ -1984,6 +1987,16 @@ fn context_op(ctx: &EngineCtx, op: &str, args: Value) -> DispatchResult {
                 &a.proposal_id,
                 a.verdict,
                 a.dismiss_reason,
+            ))
+        }
+        "context_resolve_contradiction" => {
+            let a: ContextResolveArgs = parse(args)?;
+            res(c::context_resolve_contradiction_impl(
+                ctx,
+                &a.project_id,
+                &a.a,
+                &a.b,
+                &a.reasoning,
             ))
         }
         _ => Err(UNKNOWN_OP.to_string()),
@@ -2572,6 +2585,15 @@ struct ContextRuleArgs {
     verdict: crate::commands::ProposalVerdict,
     #[serde(default)]
     dismiss_reason: Option<crate::context::DismissReason>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ContextResolveArgs {
+    project_id: String,
+    a: String,
+    b: String,
+    reasoning: String,
 }
 
 #[derive(Deserialize)]

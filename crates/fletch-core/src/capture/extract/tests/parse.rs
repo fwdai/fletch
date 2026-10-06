@@ -1,4 +1,4 @@
-use crate::context::extract::prompt::parse;
+use crate::capture::extract::prompt::parse;
 use crate::context::model::*;
 
 const GOOD: &str = r#"{

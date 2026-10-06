@@ -7,8 +7,8 @@
 use serde::Deserialize;
 use serde_json::Value;
 
-use super::super::model::*;
 use super::input::ExtractInput;
+use crate::context::model::*;
 
 /// Bump when the instructions change in a way that alters what gets
 /// proposed; recorded on every run so outputs can be compared across versions.

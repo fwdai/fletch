@@ -18,6 +18,7 @@ pub mod attachments;
 pub mod attribution;
 pub mod autopilot;
 pub mod bin_resolve;
+pub mod capture;
 pub mod child_io;
 pub mod codegraph;
 /// The engine halves of the desktop's Tauri commands. Each `*_impl` is the

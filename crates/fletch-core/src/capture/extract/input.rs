@@ -7,8 +7,8 @@
 
 use serde_json::Value;
 
-use super::super::model::*;
-use super::super::{compile, render};
+use crate::context::model::*;
+use crate::context::{compile, render};
 use crate::workspace::{SessionRecord, UserTurn};
 
 /// Budget for the turns' text; the oldest turns go first when it is over.

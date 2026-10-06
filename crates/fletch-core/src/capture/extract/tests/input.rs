@@ -1,9 +1,9 @@
 use serde_json::{json, Value};
 
-use crate::context::extract::input::{
+use crate::capture::extract::input::{
     assistant_text, turns_since, MAX_HEADS_CHARS, MAX_TURNS_CHARS,
 };
-use crate::context::extract::{ExtractInput, TurnText};
+use crate::capture::extract::{ExtractInput, TurnText};
 use crate::context::fixtures;
 use crate::workspace::{SessionRecord, UserTurn};
 

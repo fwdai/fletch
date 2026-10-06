@@ -21,11 +21,10 @@
 //!   status, contradictions and ranking are flags computed there.
 
 pub mod compile;
-pub mod extract;
-pub mod ingest;
 pub mod model;
 pub mod render;
 pub mod resolve;
+pub mod service;
 pub mod store;
 pub mod trust;
 
@@ -35,6 +34,7 @@ pub mod trust;
 pub(crate) mod fixtures;
 
 pub use model::*;
+pub use service::{ContextService, Project};
 pub use store::{context_project_id, ContextStore};
 
 /// Schema name `context.db` is attached under on the main connection.
@@ -126,7 +126,7 @@ mod invariants {
     fn crate_sources() -> Vec<(String, String)> {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         let mut out = Vec::new();
-        for dir in ["context", "rpc/context", "commands"] {
+        for dir in ["context", "capture", "rpc/context", "commands"] {
             sources(&root.join(dir), &mut out);
         }
         out
@@ -174,6 +174,8 @@ mod invariants {
 
 #[derive(Debug, thiserror::Error)]
 pub enum ContextError {
+    #[error("the project context layer is off for this project")]
+    Disabled,
     #[error("assertion {0} is not a head: it has already been superseded")]
     NotHead(Id),
     #[error("superseding an assertion needs non-empty reasoning")]

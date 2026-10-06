@@ -10,8 +10,9 @@
 use serde::{Deserialize, Serialize};
 
 use crate::context::{
-    self, compile, render, AssertionInput, AssertionStatus, Author, CompileQuery, DismissReason,
-    EntityInput, Graph, Id, LinkChange, Proposal, ProposalStatus, Provenance, Source, Stamp, Stats,
+    self, compile, render, AssertionInput, AssertionStatus, Author, Candidate, CompileQuery,
+    DismissReason, EntityInput, Graph, Id, Landing, LinkChange, Proposal, ProposalStatus,
+    Provenance, Source, Stamp, Stats,
 };
 use crate::error::{Error, Result};
 use crate::host::EngineCtx;
@@ -62,14 +63,8 @@ fn ui_stamp() -> Stamp {
 /// its project through here. The overview is the one deliberate exception
 /// (it reports the toggles), and reads the id itself. Takes and releases the
 /// connection lock so the store's own locking can follow.
-fn context_id(ctx: &EngineCtx, project_id: &str) -> Result<String> {
-    let conn = ctx.db.lock();
-    if !context::enabled(&conn, project_id) {
-        return Err(Error::Other(
-            "the project context layer is off for this project".into(),
-        ));
-    }
-    Ok(context::context_project_id(&conn, project_id)?)
+fn open(ctx: &EngineCtx, project_id: &str) -> Result<context::Project> {
+    Ok(ctx.context()?.open(project_id)?)
 }
 
 fn emit_changed(ctx: &EngineCtx, project_id: &str) {
@@ -85,7 +80,7 @@ pub fn context_overview_impl(ctx: &EngineCtx, project_id: &str) -> Result<Contex
             context::context_project_id(&conn, project_id)?,
         )
     };
-    let store = ctx.context()?;
+    let store = ctx.context()?.store();
     Ok(ContextOverview {
         enabled,
         extract,
@@ -103,9 +98,9 @@ pub fn context_preview_impl(
     project_id: &str,
     query: CompileQuery,
 ) -> Result<String> {
-    let id = context_id(ctx, project_id)?;
+    let project = open(ctx, project_id)?;
     let brief = crate::roadmap::memory::load(&ctx.db.lock(), project_id)?.map(|b| b.content);
-    let graph = ctx.context()?.load(&id)?;
+    let graph = ctx.context()?.store().load(&project.id)?;
     Ok(render::render_markdown(&compile::compile(
         &graph, &query, brief,
     )))
@@ -117,8 +112,8 @@ pub fn context_record_entity_impl(
     project_id: &str,
     input: EntityInput,
 ) -> Result<Id> {
-    let id = context_id(ctx, project_id)?;
-    let recorded = ctx.context()?.record_entity(&id, input, ui_stamp())?;
+    let project = open(ctx, project_id)?;
+    let recorded = ctx.context()?.record_entity(&project, input, ui_stamp())?;
     emit_changed(ctx, project_id);
     Ok(recorded)
 }
@@ -132,8 +127,24 @@ pub fn context_record_assertion_impl(
     mut input: AssertionInput,
 ) -> Result<Id> {
     input.status = AssertionStatus::Confirmed;
-    let id = context_id(ctx, project_id)?;
-    let recorded = ctx.context()?.record_assertion(&id, input, ui_stamp())?;
+    let project = open(ctx, project_id)?;
+    let candidate = Candidate {
+        input,
+        relation: None,
+        evidence: Vec::new(),
+        about_pending: Vec::new(),
+        observation_id: None,
+    };
+    // A user write always lands (or names the head it restates).
+    let recorded = match ctx
+        .context()?
+        .record_decision(&project, candidate, ui_stamp())?
+    {
+        Landing::Recorded { id, .. } | Landing::Duplicate { id } => id,
+        Landing::Related { .. } | Landing::Held { .. } => {
+            return Err(Error::Other("a user write cannot be held".into()))
+        }
+    };
     emit_changed(ctx, project_id);
     Ok(recorded)
 }
@@ -146,14 +157,9 @@ pub fn context_retract_impl(
     assertion_id: &str,
     reason: &str,
 ) -> Result<()> {
-    if reason.trim().is_empty() {
-        return Err(Error::Other(
-            "retracting an assertion needs a reason".into(),
-        ));
-    }
-    let id = context_id(ctx, project_id)?;
+    let project = open(ctx, project_id)?;
     ctx.context()?
-        .retract(&id, assertion_id, reason, ui_stamp())?;
+        .retract(&project, assertion_id, reason, ui_stamp())?;
     emit_changed(ctx, project_id);
     Ok(())
 }
@@ -163,8 +169,9 @@ pub fn context_archive_entity_impl(
     project_id: &str,
     entity_id: &str,
 ) -> Result<()> {
-    let id = context_id(ctx, project_id)?;
-    ctx.context()?.archive_entity(&id, entity_id, ui_stamp())?;
+    let project = open(ctx, project_id)?;
+    ctx.context()?
+        .archive_entity(&project, entity_id, ui_stamp())?;
     emit_changed(ctx, project_id);
     Ok(())
 }
@@ -176,20 +183,32 @@ pub fn context_merge_entities_impl(
     from: &str,
     into: &str,
 ) -> Result<()> {
-    if from == into {
-        return Err(Error::Other(
-            "an entity cannot be merged into itself".into(),
-        ));
-    }
-    let id = context_id(ctx, project_id)?;
-    ctx.context()?.merge_entities(&id, from, into, ui_stamp())?;
+    let project = open(ctx, project_id)?;
+    ctx.context()?
+        .merge_entities(&project, from, into, ui_stamp())?;
     emit_changed(ctx, project_id);
     Ok(())
 }
 
 pub fn context_link_impl(ctx: &EngineCtx, project_id: &str, change: LinkChange) -> Result<()> {
-    let id = context_id(ctx, project_id)?;
-    ctx.context()?.link(&id, change, ui_stamp())?;
+    let project = open(ctx, project_id)?;
+    ctx.context()?.link(&project, change, ui_stamp())?;
+    emit_changed(ctx, project_id);
+    Ok(())
+}
+
+/// Close the tension between `a` and `b` with a ruling. Neither side
+/// changes; retract or supersede one of them for that.
+pub fn context_resolve_contradiction_impl(
+    ctx: &EngineCtx,
+    project_id: &str,
+    a: &str,
+    b: &str,
+    reasoning: &str,
+) -> Result<()> {
+    let project = open(ctx, project_id)?;
+    ctx.context()?
+        .resolve_contradiction(&project, a, b, reasoning, ui_stamp())?;
     emit_changed(ctx, project_id);
     Ok(())
 }
@@ -203,20 +222,16 @@ pub fn context_rule_proposal_impl(
     verdict: ProposalVerdict,
     dismiss_reason: Option<DismissReason>,
 ) -> Result<Option<Id>> {
-    let store = ctx.context()?;
-    let context_id = context_id(ctx, project_id)?;
-    match store.proposal(proposal_id)? {
-        Some(p) if p.project_id == context_id => {}
-        _ => return Err(Error::Other("no such proposal in this project".into())),
-    }
+    let service = ctx.context()?;
+    let project = open(ctx, project_id)?;
     let recorded = match verdict {
         ProposalVerdict::Accept => {
-            Some(store.accept_proposal(proposal_id, ProposalStatus::Accepted, Author::user())?)
+            Some(service.accept_proposal(&project, proposal_id, Author::user())?)
         }
         ProposalVerdict::Dismiss => {
             let reason = dismiss_reason
                 .ok_or_else(|| Error::Other("dismissing a proposal needs a reason".into()))?;
-            store.dismiss_proposal(proposal_id, reason, Author::user())?;
+            service.dismiss_proposal(&project, proposal_id, reason, Author::user())?;
             None
         }
     };
@@ -243,8 +258,8 @@ mod tests {
         assert!(serde_json::from_value::<ProposalVerdict>(json!("Accept")).is_err());
     }
 
-    /// A UI write is the user's own words through the UI: that is what lets a
-    /// later user-stated supersession land without review (`resolve::auto_rule`).
+    /// A UI write is the user's own words through the UI: `trust` treats it
+    /// as user-stated, and `land` lets it land outright.
     #[test]
     fn ui_writes_are_user_stated() {
         let stamp = ui_stamp();
@@ -261,6 +276,91 @@ mod tests {
         crate::database::set_setting(&ctx.db.lock(), context::DEV_SETTING, "true").unwrap();
         assert!(context_retract_impl(&ctx, "p1", "a1", "  ").is_err());
         assert!(context_merge_entities_impl(&ctx, "p1", "e1", "e1").is_err());
+        assert!(context_resolve_contradiction_impl(&ctx, "p1", "a1", "a2", " ").is_err());
         assert!(sink.events().is_empty());
+    }
+
+    /// With the gate shut every write is refused with the layer's own
+    /// message, before any store is touched.
+    #[test]
+    fn a_closed_gate_refuses_writes_by_name() {
+        let (ctx, sink, _dir) = crate::host::ctx::test_ctx();
+        let e = context_resolve_contradiction_impl(&ctx, "p1", "a1", "a2", "both hold")
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("context layer is off"), "{e}");
+        assert!(sink.events().is_empty());
+    }
+
+    /// A ruling on a tension between two recorded heads is one event and one
+    /// `context:changed` pulse.
+    #[test]
+    fn resolving_a_contradiction_emits_a_change() {
+        let (ctx, sink, _dir) = crate::host::ctx::test_ctx();
+        {
+            let conn = ctx.db.lock();
+            crate::database::set_setting(&conn, context::DEV_SETTING, "true").unwrap();
+            conn.execute(
+                "INSERT INTO projects (id, name, created_at) VALUES ('p1', 'p', 0)",
+                [],
+            )
+            .unwrap();
+        }
+        let entity = context_record_entity_impl(
+            &ctx,
+            "p1",
+            EntityInput {
+                slug: "billing".into(),
+                name: "Billing".into(),
+                summary: "invoices".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let assertion = |statement: &str, contradicts: Vec<Id>| AssertionInput {
+            kind: context::AssertionKind::Decision,
+            domain: context::Domain::Architectural,
+            stance: context::Stance::Adopted,
+            statement: statement.into(),
+            rationale: "because".into(),
+            valid_from: None,
+            paths: vec![],
+            about: vec![entity.clone()],
+            supersedes: None,
+            contradicts: contradicts
+                .into_iter()
+                .map(|id| context::Contradict {
+                    id,
+                    reasoning: None,
+                })
+                .collect(),
+            status: AssertionStatus::Provisional,
+        };
+        let a =
+            context_record_assertion_impl(&ctx, "p1", assertion("Invoices are immutable", vec![]))
+                .unwrap();
+        let b = context_record_assertion_impl(
+            &ctx,
+            "p1",
+            assertion("Invoices may be voided", vec![a.clone()]),
+        )
+        .unwrap();
+        let before = sink.events().len();
+
+        context_resolve_contradiction_impl(&ctx, "p1", &a, &b, "voids are a new invoice").unwrap();
+
+        let events = sink.events();
+        assert_eq!(events.len(), before + 1);
+        assert_eq!(events.last().unwrap().0, CONTEXT_CHANGED);
+        let project = open(&ctx, "p1").unwrap();
+        let graph = ctx.context().unwrap().store().load(&project.id).unwrap();
+        let edge = graph
+            .contradictions
+            .iter()
+            .find(|c| (c.a == a && c.b == b) || (c.a == b && c.b == a))
+            .expect("the edge is loaded");
+        let ruling = edge.resolution.as_ref().expect("ruled");
+        assert_eq!(ruling.reasoning, "voids are a new invoice");
+        assert_eq!(ruling.by, Author::user());
     }
 }

@@ -275,7 +275,7 @@ async fn tick(ctx: &Arc<EngineCtx>, supervisor: &Arc<Supervisor>, last: &Last, w
                 .iter()
                 .any(|c| matches!(c, Change::State(s) if s.state == PrStatus::Merged))
             {
-                crate::context::ingest::on_pr_merged_by_number(ctx, agent_id, subdir, &read.state)
+                crate::capture::ingest::on_pr_merged_by_number(ctx, agent_id, subdir, &read.state)
                     .await;
             }
             publish(

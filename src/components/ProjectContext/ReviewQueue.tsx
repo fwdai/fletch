@@ -2,12 +2,19 @@ import { useState } from "react";
 import { api, type ContextGraph, type ContextProposal, type DismissReason } from "@/api";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
-import { authorLabel, entityName, sourceLabel, summarizeProposal } from "./format";
+import {
+  entityName,
+  provenanceLabel,
+  sourceLabel,
+  summarizeProposal,
+  unacceptedPending,
+} from "./format";
 
 const DISMISS_REASONS: DismissReason[] = ["wrong", "trivial", "duplicate", "already_known"];
 
 /** The pending proposals — what agents, the extractor and the ingesters want
- *  to record — each with its evidence and an Accept / Dismiss. */
+ *  to record, entities and assertions alike — each with its evidence and an
+ *  Accept / Dismiss. */
 export function ReviewQueue({
   proposals,
   graph,
@@ -44,6 +51,10 @@ function ProposalCard({
   const { payload } = proposal;
   const relation = payload.type === "assertion" ? payload.relation : null;
   const target = relation?.target ? graph.assertions.find((a) => a.id === relation.target) : null;
+  const pending = payload.type === "assertion" ? payload.about_pending : [];
+  // A subject that is still only a proposal blocks Accept until it lands.
+  const blocked = unacceptedPending(graph, pending);
+  const detail = payload.type === "assertion" ? payload.input.rationale : payload.input.summary;
 
   const rule = (verdict: "accept" | "dismiss") => {
     setBusy(true);
@@ -64,17 +75,23 @@ function ProposalCard({
   return (
     <div className="pc-proposal">
       <div className="text-sm">{summarizeProposal(proposal)}</div>
-      {payload.type === "assertion" && payload.input.rationale && (
-        <div className="pc-meta text-xs">{payload.input.rationale}</div>
-      )}
+      {detail && <div className="pc-meta text-xs">{detail}</div>}
       <div className="pc-badges text-xs">
         <Badge>{payload.type}</Badge>
-        <Badge>
-          {authorLabel(payload.stamp.author)} · {sourceLabel(payload.stamp.source)}
+        <Badge hint={sourceLabel(payload.stamp.source)}>
+          {provenanceLabel(payload.stamp.author, payload.stamp.provenance)} ·{" "}
+          {sourceLabel(payload.stamp.source)}
         </Badge>
-        {payload.type === "assertion" && payload.input.about.length > 0 && (
+        {payload.type === "assertion" && (payload.input.about.length > 0 || pending.length > 0) && (
           <span className="pc-meta">
             about {payload.input.about.map((id) => entityName(graph, id)).join(", ")}
+            {payload.input.about.length > 0 && pending.length > 0 && ", "}
+            {pending.map((slug, i) => (
+              <span key={slug}>
+                {i > 0 && ", "}
+                <span className="pc-chip">{slug}</span> (pending entity)
+              </span>
+            ))}
           </span>
         )}
       </div>
@@ -93,9 +110,17 @@ function ProposalCard({
         </blockquote>
       ))}
       <div className="pc-inline-form text-sm">
-        <Button variant="primary" size="sm" disabled={busy} onClick={() => rule("accept")}>
+        <Button
+          variant="primary"
+          size="sm"
+          disabled={busy || blocked.length > 0}
+          onClick={() => rule("accept")}
+        >
           Accept
         </Button>
+        {blocked.length > 0 && (
+          <span className="pc-meta text-xs">accept the entity `{blocked[0]}` first</span>
+        )}
         <select
           className="ps-input text-sm"
           value={reason}

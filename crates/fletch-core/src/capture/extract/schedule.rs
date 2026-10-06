@@ -8,7 +8,7 @@
 
 use rusqlite::OptionalExtension;
 
-use super::super::{ContextStore, Result};
+use crate::context::{ContextStore, Result};
 
 /// The least time between two runs for one workspace. A turn-end that comes
 /// sooner waits for a later one (or the archive) to carry its turns.

@@ -31,7 +31,8 @@ use std::time::Duration;
 
 use parking_lot::Mutex;
 
-use super::model::*;
+use crate::context::model::*;
+use crate::context::ContextError;
 use crate::error::{Error, Result};
 use crate::host::EngineCtx;
 use crate::workspace::WorkspaceManager;
@@ -156,30 +157,26 @@ async fn wait_for_claim(agent_id: &str, limit: Duration) -> bool {
 
 /// Turn-end hook: run when the debounce allows and there is something new.
 pub fn on_turn_completed(ctx: Arc<EngineCtx>, agent_id: String) {
-    trigger(ctx, agent_id, None);
+    trigger(ctx, agent_id, false);
 }
 
-/// Archive hook: whatever is unextracted goes now, debounce or not. The
-/// branch's outcome is known here, so what the run records is stamped
-/// `confirmed` (merged) or `abandoned` rather than `provisional`. A turn-end
-/// run still in flight is waited for (up to [`CLAIM_WAIT`]) rather than
-/// dropped, and whatever the workspace has left provisional once this run is
-/// done is settled the same way — `ingest::on_workspace_archived` settles
-/// synchronously during the archive, and a provisional landed by that
-/// in-flight run after it would otherwise never be settled.
-pub fn on_archive(ctx: Arc<EngineCtx>, agent_id: String, merged: bool) {
-    trigger(ctx, agent_id, Some(merged));
+/// Archive hook: whatever is unextracted goes now, debounce or not. A
+/// turn-end run still in flight is waited for (up to [`CLAIM_WAIT`]) rather
+/// than dropped. The run only proposes, so it settles nothing: the branch's
+/// fate is the ingester's to apply (`ingest::on_workspace_archived`).
+pub fn on_archive(ctx: Arc<EngineCtx>, agent_id: String) {
+    trigger(ctx, agent_id, true);
 }
 
-/// `archive`: `None` for a turn-end run, `Some(merged)` for an archive run.
-fn trigger(ctx: Arc<EngineCtx>, agent_id: String, archive: Option<bool>) {
+fn trigger(ctx: Arc<EngineCtx>, agent_id: String, is_archive: bool) {
     crate::host::spawn(async move {
-        let claimed = match archive {
-            None => claim(&agent_id),
-            Some(_) => wait_for_claim(&agent_id, CLAIM_WAIT).await,
+        let claimed = if is_archive {
+            wait_for_claim(&agent_id, CLAIM_WAIT).await
+        } else {
+            claim(&agent_id)
         };
         if !claimed {
-            if archive.is_some() {
+            if is_archive {
                 tracing::warn!(
                     agent_id,
                     "context extract: archive gave up waiting for the run in flight"
@@ -189,81 +186,31 @@ fn trigger(ctx: Arc<EngineCtx>, agent_id: String, archive: Option<bool>) {
             }
             return;
         }
-        if let Err(e) = run_for_workspace(ctx.clone(), agent_id.clone(), archive).await {
+        if let Err(e) = run_for_workspace(ctx, agent_id.clone(), is_archive).await {
             tracing::warn!(agent_id, error = %e, "context extract: run failed");
-        }
-        if let Some(merged) = archive {
-            match settle_after_archive(&ctx, &agent_id, merged) {
-                Ok(0) => {}
-                Ok(settled) => {
-                    tracing::info!(
-                        agent_id,
-                        merged,
-                        settled,
-                        "context extract: archived workspace settled"
-                    )
-                }
-                Err(e) => {
-                    tracing::warn!(agent_id, merged, error = %e, "context extract: archived workspace not settled")
-                }
-            }
         }
         release(&agent_id);
     });
-}
-
-/// Confirm (`merged`) or abandon what the workspace still has provisional
-/// after its archive run: the in-flight run the archive waited for may have
-/// landed provisionals after `ingest::on_workspace_archived` settled. Returns
-/// how many were settled.
-fn settle_after_archive(ctx: &EngineCtx, agent_id: &str, merged: bool) -> Result<usize> {
-    let record = WorkspaceManager::new(ctx.db.clone()).agent(agent_id)?;
-    if record.project_id.is_empty() || !super::enabled(&ctx.db.lock(), &record.project_id) {
-        return Ok(0);
-    }
-    let store = ctx.context()?;
-    let project_id = super::context_project_id(&ctx.db.lock(), &record.project_id)?;
-    let stamp = Stamp {
-        author: Author::extractor(agent_id, &record.provider),
-        source: Source::new(SourceKind::AgentTurn, None),
-        provenance: Provenance {
-            workspace_id: Some(agent_id.to_string()),
-            ..Default::default()
-        },
-    };
-    Ok(super::ingest::settle_workspace(
-        store,
-        &project_id,
-        agent_id,
-        merged,
-        &stamp,
-    )?)
 }
 
 /// Decide, gather and run for one workspace. The debounce is checked first,
 /// off the watermark alone, so a turn-end inside it costs no transcript read;
 /// the rest of the gathering is a few short reads on the engine thread, and
 /// the model run goes to a blocking thread.
-async fn run_for_workspace(
-    ctx: Arc<EngineCtx>,
-    agent_id: String,
-    archive: Option<bool>,
-) -> Result<()> {
-    let is_archive = archive.is_some();
-    let agent_status = match archive {
-        None => AssertionStatus::Provisional,
-        Some(true) => AssertionStatus::Confirmed,
-        Some(false) => AssertionStatus::Abandoned,
-    };
+async fn run_for_workspace(ctx: Arc<EngineCtx>, agent_id: String, is_archive: bool) -> Result<()> {
     let workspace = WorkspaceManager::new(ctx.db.clone());
     let record = workspace.agent(&agent_id)?;
-    if record.project_id.is_empty() || !super::extract_enabled(&ctx.db.lock(), &record.project_id) {
+    if record.project_id.is_empty() {
         return Ok(());
     }
-    let store = ctx.context()?.clone();
-    let project_id = super::context_project_id(&ctx.db.lock(), &record.project_id)?;
+    let service = ctx.context()?.clone();
+    let project = match service.open_for_extraction(&record.project_id) {
+        Ok(Some(project)) => project,
+        Ok(None) | Err(ContextError::Disabled) => return Ok(()),
+        Err(e) => return Err(e.into()),
+    };
 
-    let watermark = schedule::watermark(&store, &project_id, &agent_id)?;
+    let watermark = schedule::watermark(service.store(), &project.id, &agent_id)?;
     let last_run_at = watermark.as_ref().map(|w| w.last_run_at);
     if !schedule::due(last_run_at, crate::database::now_millis(), is_archive) {
         return Ok(());
@@ -279,7 +226,7 @@ async fn run_for_workspace(
         return Ok(());
     }
 
-    let graph = store.load(&project_id)?;
+    let graph = service.store().load(&project.id)?;
     let plan = (!record.task.trim().is_empty()).then(|| record.task.clone());
     let input = ExtractInput::new(plan, new_turns, &graph);
     if input.user_chars() < MIN_USER_CHARS {
@@ -302,6 +249,7 @@ async fn run_for_workspace(
         commit_sha,
         session_id: record.session_id.clone(),
         turn_id: input.last_turn_id().map(str::to_string),
+        repo: primary.map(|r| r.subdir.clone()),
     };
     let author = Author::extractor(&agent_id, &record.provider);
     let extractor = OneShotExtractor::new(
@@ -316,15 +264,7 @@ async fn run_for_workspace(
         "context extract: running"
     );
     let summary = tokio::task::spawn_blocking(move || {
-        pipeline::process(
-            &store,
-            &project_id,
-            author,
-            provenance,
-            agent_status,
-            input,
-            &extractor,
-        )
+        pipeline::process(&service, &project, author, provenance, input, &extractor)
     })
     .await
     .map_err(|e| Error::Other(format!("extraction task failed: {e}")))??;

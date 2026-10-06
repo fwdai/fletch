@@ -19,7 +19,7 @@ async fn an_entity_lands_once_per_slug() {
     assert_eq!(p["slug"], "billing");
     let id = p["id"].as_str().unwrap();
 
-    let graph = d.store.load(PROJECT).unwrap();
+    let graph = graph(&d);
     let e = graph.entity(id).unwrap();
     assert_eq!(e.author.agent_id.as_deref(), Some(AGENT));
     assert_eq!(e.source.kind, SourceKind::AgentTurn);
@@ -52,7 +52,7 @@ async fn relates_links_the_new_entity_to_resolved_ones() {
     .await;
     let billing = payload(&resp)["id"].as_str().unwrap().to_string();
 
-    let graph = d.store.load(PROJECT).unwrap();
+    let graph = graph(&d);
     assert!(graph
         .relations
         .iter()
@@ -95,7 +95,7 @@ async fn a_restatement_is_not_recorded_twice() {
         .await,
     );
     assert_eq!(again["already_recorded"], first["id"]);
-    assert_eq!(d.store.load(PROJECT).unwrap().assertions.len(), 1);
+    assert_eq!(graph(&d).assertions.len(), 1);
 }
 
 #[tokio::test]
@@ -125,7 +125,7 @@ async fn a_conflicting_decision_is_a_two_step() {
     assert_eq!(conflict["heads"][0]["statement"], "Invoices are immutable");
     assert_eq!(conflict["heads"][0]["author_kind"], "agent");
     assert!(conflict["hint"].as_str().unwrap().contains("supersedes"));
-    assert_eq!(d.store.load(PROJECT).unwrap().assertions.len(), 1);
+    assert_eq!(graph(&d).assertions.len(), 1);
 
     // Step two: the agent says how the two relate.
     let mut args = decision("billing", "Invoices may be voided");
@@ -133,12 +133,14 @@ async fn a_conflicting_decision_is_a_two_step() {
     let second = payload(&call(&d, "context_record_decision", args).await);
     assert_eq!(second["status"], "provisional");
 
-    let graph = d.store.load(PROJECT).unwrap();
+    let graph = graph(&d);
     assert_eq!(graph.assertions.len(), 2);
     let old = graph.assertion(first["id"].as_str().unwrap()).unwrap();
     assert_eq!(old.superseded_by.as_deref(), second["id"].as_str());
 }
 
+/// `coexists` reaches the store as an explicit `New` relation: the same
+/// statement is `Related` (nothing written) without it and lands with it.
 #[tokio::test]
 async fn coexists_records_alongside_the_head() {
     let (d, _dir) = dispatcher();
@@ -152,10 +154,19 @@ async fn coexists_records_alongside_the_head() {
         .await,
     );
 
-    let mut args = decision("billing", "Invoices are numbered per tenant");
+    let args = decision("billing", "Invoices are numbered per tenant");
+    let related = payload(&call(&d, "context_record_decision", args.clone()).await);
+    assert_eq!(related["conflict"], "related");
+    assert_eq!(graph(&d).assertions.len(), 1);
+
+    let mut args = args;
     args["coexists"] = json!(true);
-    payload(&call(&d, "context_record_decision", args).await);
-    assert_eq!(d.store.load(PROJECT).unwrap().assertions.len(), 2);
+    let landed = payload(&call(&d, "context_record_decision", args).await);
+    assert_eq!(landed["status"], "provisional");
+    let graph = graph(&d);
+    assert_eq!(graph.assertions.len(), 2);
+    let new = graph.assertion(landed["id"].as_str().unwrap()).unwrap();
+    assert!(new.supersedes.is_none() && new.contradicts.is_empty());
 }
 
 /// A workspace with one live session, so the dispatcher can read the user's
@@ -208,7 +219,7 @@ async fn the_user_s_word_lands_confirmed_and_the_agent_s_provisional() {
     let agent = payload(&call(&d, "context_record_decision", args).await);
     assert_eq!(agent["status"], "provisional");
 
-    let graph = d.store.load(PROJECT).unwrap();
+    let graph = graph(&d);
     let user = graph.assertion(user["id"].as_str().unwrap()).unwrap();
     assert_eq!(user.status, AssertionStatus::Confirmed);
     assert_eq!(user.source.kind, SourceKind::UserTurn);
@@ -219,6 +230,9 @@ async fn the_user_s_word_lands_confirmed_and_the_agent_s_provisional() {
     assert_eq!(agent.source.kind, SourceKind::AgentTurn);
     assert_eq!(agent.provenance.workspace_id.as_deref(), Some(AGENT));
     assert_eq!(agent.provenance.session_id.as_deref(), Some("sess-1"));
+    // The primary checkout, so a merge or an archive can settle it.
+    assert_eq!(agent.provenance.repo.as_deref(), Some(REPO));
+    assert_eq!(user.provenance.repo.as_deref(), Some(REPO));
 }
 
 #[tokio::test]
@@ -234,7 +248,7 @@ async fn a_user_quote_the_user_never_wrote_is_refused() {
     args["user_quote"] = json!("invoices can never change");
     let e = error(&call(&d, "context_record_decision", args.clone()).await);
     assert!(e.contains("not found in the user's messages"), "{e}");
-    assert!(d.store.load(PROJECT).unwrap().assertions.is_empty());
+    assert!(graph(&d).assertions.is_empty());
 
     args["user_quote"] = json!("immutable");
     let e = error(&call(&d, "context_record_decision", args).await);
@@ -255,7 +269,7 @@ async fn long_statements_are_refused_with_the_cap() {
         .await,
     );
     assert!(e.contains("`statement`") && e.contains("300"), "{e}");
-    assert_eq!(d.store.load(PROJECT).unwrap().assertions.len(), 0);
+    assert_eq!(graph(&d).assertions.len(), 0);
 }
 
 #[tokio::test]
@@ -272,7 +286,7 @@ async fn context_get_serves_markdown_and_logs_the_misses() {
     assert!(resp.ok, "{:?}", resp.error);
     assert!(resp.stdout.unwrap().contains("billing"));
 
-    let stats = d.store.stats(PROJECT).unwrap();
+    let stats = d.service.store().stats(PROJECT).unwrap();
     assert_eq!(stats.reads, 1);
     assert_eq!(stats.top_misses, vec![("shipping".to_string(), 1)]);
 
@@ -295,8 +309,7 @@ async fn link_and_unlink_resolve_slugs() {
         .await,
     );
     assert_eq!(p["linked"], true);
-    let graph = d.store.load(PROJECT).unwrap();
-    assert!(graph
+    assert!(graph(&d)
         .relations
         .iter()
         .any(|r| r.from == billing && r.to == payments));
@@ -309,7 +322,7 @@ async fn link_and_unlink_resolve_slugs() {
         )
         .await,
     );
-    assert!(d.store.load(PROJECT).unwrap().relations.is_empty());
+    assert!(graph(&d).relations.is_empty());
 
     let e = error(
         &call(

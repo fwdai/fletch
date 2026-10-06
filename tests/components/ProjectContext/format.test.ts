@@ -1,19 +1,23 @@
 import { describe, expect, it } from "vitest";
-import type { ContextAssertion, ContextEntity, ContextGraph } from "@/api";
+import type { ContextAssertion, ContextEntity, ContextGraph, ContradictionEdge } from "@/api";
 import {
   authorLabel,
-  contradictedBy,
   flagOn,
   groupAssertions,
   groupEntitiesByKind,
   headsAbout,
   historyOf,
   matchesSearch,
+  openTensions,
+  provenanceLabel,
+  resolutionLabel,
+  resolvedTensions,
   slugify,
   sourceLabel,
   splitList,
   statusVariant,
   summarizeProposal,
+  unacceptedPending,
 } from "@/components/ProjectContext/format";
 
 const user = { kind: "user" as const };
@@ -57,7 +61,11 @@ function assertion(over: Partial<ContextAssertion> & { id: string }): ContextAss
 
 /** `current` as the host derives it: live, and nothing live further down the
  *  supersession chain (`compile::is_current`). */
-function graph(entities: ContextEntity[], assertions: ContextAssertion[]): ContextGraph {
+function graph(
+  entities: ContextEntity[],
+  assertions: ContextAssertion[],
+  contradictions: ContradictionEdge[] = [],
+): ContextGraph {
   const live = (a: ContextAssertion) => a.status !== "retracted" && a.status !== "abandoned";
   const isCurrent = (a: ContextAssertion): boolean => {
     if (!live(a)) return false;
@@ -74,6 +82,7 @@ function graph(entities: ContextEntity[], assertions: ContextAssertion[]): Conte
     assertions,
     relations: [],
     current: assertions.filter(isCurrent).map((a) => a.id),
+    contradictions,
   };
 }
 
@@ -151,19 +160,65 @@ describe("historyOf", () => {
   });
 });
 
-describe("contradictedBy", () => {
-  it("counts only live heads", () => {
-    const g = graph(
-      [],
-      [
-        assertion({ id: "me", contradicts: ["live", "gone", "retracted", "missing"] }),
-        assertion({ id: "live" }),
-        assertion({ id: "gone", superseded_by: "x" }),
-        assertion({ id: "x", supersedes: { id: "gone", reasoning: "moved on" } }),
-        assertion({ id: "retracted", status: "retracted" }),
-      ],
+describe("openTensions / resolvedTensions", () => {
+  const resolution = { reasoning: "both hold in their own scope", at: 0, by: user };
+  const g = graph(
+    [],
+    [
+      assertion({ id: "me" }),
+      assertion({ id: "live" }),
+      assertion({ id: "flipped" }),
+      assertion({ id: "gone", superseded_by: "x" }),
+      assertion({ id: "x", supersedes: { id: "gone", reasoning: "moved on" } }),
+      assertion({ id: "retracted", status: "retracted" }),
+      assertion({ id: "ruled" }),
+    ],
+    [
+      { a: "me", b: "live", reasoning: "one says yes, one says no" },
+      // The other orientation counts the same.
+      { a: "flipped", b: "me" },
+      { a: "me", b: "gone" },
+      { a: "me", b: "retracted" },
+      { a: "me", b: "missing" },
+      { a: "ruled", b: "me", reasoning: "scope", resolution },
+    ],
+  );
+
+  it("opens on unresolved edges whose other side is current, either way round", () => {
+    const open = openTensions(g, "me");
+    expect(open.map((t) => t.otherId)).toEqual(["live", "flipped"]);
+    expect(open[0].edge.reasoning).toBe("one says yes, one says no");
+    expect(open[0].other?.id).toBe("live");
+    // Seen from the other side, the same edge.
+    expect(openTensions(g, "flipped").map((t) => t.otherId)).toEqual(["me"]);
+    // The resolved edge never opens, from either side.
+    expect(openTensions(g, "ruled")).toEqual([]);
+  });
+
+  it("lists resolved edges for the history drawer, with the ruling", () => {
+    const resolved = resolvedTensions(g, "me");
+    expect(resolved.map((t) => t.otherId)).toEqual(["ruled"]);
+    expect(resolutionLabel(resolved[0].edge)).toMatch(
+      /^resolved: both hold in their own scope, by user, /,
     );
-    expect(contradictedBy(g, g.assertions[0]).map((a) => a.id)).toEqual(["live"]);
+    expect(resolutionLabel({ a: "me", b: "live" })).toBe("");
+  });
+});
+
+describe("unacceptedPending", () => {
+  it("keeps the slugs no active entity carries, case-insensitively", () => {
+    const g = graph(
+      [
+        entity({ id: "q", slug: "Roadmap-Queue" }),
+        entity({ id: "gone", slug: "drainer", status: "archived" }),
+      ],
+      [],
+    );
+    expect(unacceptedPending(g, ["roadmap-queue", "drainer", "sweeper"])).toEqual([
+      "drainer",
+      "sweeper",
+    ]);
+    expect(unacceptedPending(g, [])).toEqual([]);
   });
 });
 
@@ -175,6 +230,12 @@ describe("labels", () => {
     expect(sourceLabel({ kind: "user_turn" })).toBe("from user turn");
     expect(sourceLabel({ kind: "pr", reference: "#12" })).toBe("from PR #12");
     expect(sourceLabel({ kind: "ui" })).toBe("from UI");
+  });
+
+  it("adds the checkout to the provenance label when the record names one", () => {
+    const fuji = { kind: "agent" as const, agent_id: "fuji" };
+    expect(provenanceLabel(fuji, { repo: "quorum" })).toBe("agent fuji · quorum");
+    expect(provenanceLabel(fuji, {})).toBe("agent fuji");
   });
 
   it("maps every status to a badge tone", () => {
@@ -215,6 +276,7 @@ describe("labels", () => {
           type: "assertion",
           stamp,
           relation: { kind: "new" },
+          about_pending: [],
           input: {
             kind: "constraint",
             domain: "business",

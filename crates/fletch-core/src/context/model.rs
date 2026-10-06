@@ -188,6 +188,10 @@ pub struct Provenance {
     pub session_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turn_id: Option<String>,
+    /// The checkout (repo subdir) the record was made in: the unit a merge
+    /// or an archive settles. `None` means the workspace's primary repo.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo: Option<String>,
 }
 
 /// The caller-supplied half of every event's stamp. The store adds `id`,
@@ -281,6 +285,13 @@ pub enum EventPayload {
     Abandoned {
         assertion_id: Id,
     },
+    /// A ruling on a `contradicts` edge: the tension is closed with this
+    /// reasoning. Neither side changes; retract or supersede do that.
+    ContradictionResolved {
+        a: Id,
+        b: Id,
+        reasoning: String,
+    },
 }
 
 impl EventPayload {
@@ -296,6 +307,7 @@ impl EventPayload {
             Self::Retracted { .. } => "retracted",
             Self::Confirmed { .. } => "confirmed",
             Self::Abandoned { .. } => "abandoned",
+            Self::ContradictionResolved { .. } => "contradiction_resolved",
         }
     }
 }
@@ -426,6 +438,25 @@ pub struct Relation {
     pub rel: Rel,
 }
 
+/// A `contradicts` edge as loaded: both sides, the reasoning it was recorded
+/// with, and the ruling that closed it, if any.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContradictionEdge {
+    pub a: Id,
+    pub b: Id,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolution: Option<Resolution>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Resolution {
+    pub reasoning: String,
+    pub at: i64,
+    pub by: Author,
+}
+
 /// One project's whole projection, loaded in one go. Small by design (a
 /// project has tens to hundreds of entities), so compile and resolve are pure
 /// functions over it.
@@ -440,6 +471,10 @@ pub struct Graph {
     /// compile without reimplementing it. Empty on a hand-built graph.
     #[serde(default)]
     pub current: Vec<Id>,
+    /// Every `contradicts` edge with its reasoning and ruling. `Assertion
+    /// .contradicts` keeps the ids for cheap lookups; this is the record.
+    #[serde(default)]
+    pub contradictions: Vec<ContradictionEdge>,
 }
 
 impl Graph {
@@ -624,7 +659,52 @@ pub enum ProposalPayload {
         input: AssertionInput,
         stamp: Stamp,
         relation: ProposedRelation,
+        /// Slugs of entities this is about that were only *proposed* when
+        /// the proposal was made. Resolved when it is accepted; an unresolved
+        /// one means "accept that entity first".
+        #[serde(default)]
+        about_pending: Vec<String>,
     },
+}
+
+/// What a writer hands to `ContextStore::land`: the assertion, how the
+/// writer says it relates to what is already recorded (if it says), and the
+/// evidence and pending subjects a held proposal keeps.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Candidate {
+    pub input: AssertionInput,
+    /// An explicit relation from the writer (an agent's `supersedes`, the
+    /// extractor's model relation). `None` means "the store decides".
+    #[serde(default)]
+    pub relation: Option<ProposedRelation>,
+    #[serde(default)]
+    pub evidence: Vec<Evidence>,
+    #[serde(default)]
+    pub about_pending: Vec<String>,
+    /// The observation a held proposal links back to (the extractor's run),
+    /// so the trail from turn to proposal survives being held.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observation_id: Option<Id>,
+}
+
+/// The outcome of `ContextStore::land`, decided by one policy for every
+/// writer (the stamp's author kind):
+/// - `User` writes land, confirmed;
+/// - `Agent` writes land unless current heads about the same entities and
+///   domain exist and the candidate names no relation — then `Related`
+///   (the two-step: nothing written);
+/// - `Ingester` writes (a merged PR's lines) land next to what is there;
+/// - `Extractor` writes are always held (the pilot gives model output no
+///   durable authority), duplicates aside.
+///
+/// A restatement of a current head is `Duplicate` for everyone.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+pub enum Landing {
+    Recorded { id: Id, status: AssertionStatus },
+    Duplicate { id: Id },
+    Related { heads: Vec<Assertion> },
+    Held { proposal_id: Id },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]

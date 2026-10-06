@@ -8,9 +8,11 @@ it does not re-explore the project to reconstruct it.
 This is the first, deliberately small version. It replaces nothing yet (the
 roadmap brief still stands and is shown as the vision until a `vision` entity
 exists) and is built so the later pieces — search, code anchors, multi-host —
-are extensions, not rewrites. Everything lives in `crates/fletch-core/src/context/`,
-the `context_*` RPC ops in `src/rpc/context/`, the host commands in
-`src/commands/context.rs`, and the UI in `src/components/ProjectContext/`.
+are extensions, not rewrites. The core lives in `crates/fletch-core/src/context/`
+(model, store, service, compile, render, resolve, trust), the capture paths —
+the extractor and the PR ingester — in `src/capture/`, the `context_*` RPC ops
+in `src/rpc/context/`, the host commands in `src/commands/context.rs`, and the
+UI in `src/components/ProjectContext/`.
 
 ## Shape
 
@@ -37,6 +39,26 @@ sources ─► observation ─► extraction ─► proposal ─► confirmation
 - **Proposals** are candidates, not truth. They live outside the log and
   become events only when accepted — by rule (`resolve::auto_rule`) or by the
   user in the review queue.
+- **One front door, one write policy.** Everything outside the module —
+  agent ops, host commands, ingesters, the extractor — goes through
+  `ContextService` (`service.rs`): it owns the gate (`open`), trust
+  (`verify_user_quote`), settlement and proposal rulings, and hands every
+  assertion to `ContextStore::land`, which classifies the candidate against
+  what stands now and applies the rule for the writer's author kind *inside
+  one transaction*: a user write lands; an agent write lands unless current
+  heads exist about the same entities and domain and it named no relation
+  (then the heads come back and nothing is written); an ingester write (a
+  merged PR's lines, reviewed by a person before merging) lands next to what
+  is there; an extractor write is always held. A restatement is a duplicate
+  for everyone — except the very head a candidate explicitly revises. The
+  store's write methods are visible only inside `context`, so nothing
+  outside the service can reach them: the compiler keeps the rule.
+
+The store enforces identity and graph shape whatever the caller: slugs are
+one case-insensitive identity (`COLLATE NOCASE`); a supersession must target
+an assertion of the same kind and domain about a shared entity; an entity
+cannot relate to itself; a merge needs an active target, refuses cycles and
+compresses paths so every old id points at the final one.
 
 ## Data model (`model.rs`)
 
@@ -76,33 +98,41 @@ log can leave this host without rewriting a key.
   observed fact ("X works like B") disagreeing is *drift*, not supersession.
   Only a decision supersedes a decision and a fact a fact; across kinds the
   pipeline records a `contradicts` edge and the user's ruling closes it.
-- **Provisional vs confirmed.** Anything an agent records from a workspace is
-  provisional until that workspace's PR merges (`confirmed`) or it is
-  archived without merging (`abandoned`). What the user says is confirmed on
-  arrival. Branch drift is solved by construction.
+- **Provisional vs confirmed.** Anything an agent records from a checkout is
+  provisional until that checkout's PR merges (`confirmed`) or the workspace
+  is archived without it merging (`abandoned`). The unit is the checkout:
+  `provenance.repo` names it, and `settle` touches only the records made in
+  it, so one merged repo of a multi-repo workspace never confirms another's
+  work. What the user says is confirmed on arrival.
+- **Contradictions have a lifecycle.** A `contradicts` edge carries the
+  reasoning it was recorded with and, once a person rules on it
+  (`contradiction_resolved`), the ruling. Compile flags only unresolved
+  edges whose other side still stands; the sides themselves change through
+  retract or supersede like any other assertion.
 
 ## Capture
 
 Three paths, one pipeline, rising cost:
 
-1. **Deterministic** (`ingest/`). The PR body's `## Decisions` section
+1. **Deterministic** (`capture/ingest/`). The PR body's `## Decisions` section
    (format in `instructions/git_actions.md`) is parsed when the watcher sees
    the PR merge (`supervisor::pr_watch`) or at archive for a PR that merged
    while the host was down. Lines land confirmed with source `pr`, next to
    whatever is already said about those entities (a restatement is skipped
    as a duplicate). The merge also confirms the workspace's provisionals;
    archive-without-merge abandons them.
-2. **Background extraction** (`extract/`). After a turn settles
+2. **Background extraction** (`capture/extract/`). After a turn settles
    (`session_sync`) — debounced to one run per workspace per 10 minutes, with
    ≥1 new user turn and ≥200 chars of user text — and always at archive, a
    one-shot, tool-less run of the session's own provider
    (`handoff::run::once`) reads the new user turns and the agent's final
    message per turn, the workspace task as the *plan*, the entity index and
-   the current heads, and returns strict JSON. Each item is resolved against
-   existing entities; the model's own `relation` (supersedes / contradicts a
-   named head) is kept when its target is a live head, a restatement is
-   dropped as a duplicate (`resolve::classify`), and the result either lands
-   (`auto_rule`) or waits in the review queue. The
+   the current heads, and returns strict JSON. Nothing it says lands:
+   entities become pending entity proposals, assertions are held by
+   `land` (a restatement is dropped as a duplicate), and an assertion about
+   a proposed entity carries its slug as `about_pending` until that entity
+   is accepted. The pilot gives model output no durable authority before its
+   precision is known; the user's acceptance is what lands it, confirmed. The
    observation, the run (model, prompt version, raw output, timing, error)
    and every proposal are kept, so a run can be audited and re-extracted later.
 3. **Explicit** (`rpc/context`). `context_record_decision` /
@@ -118,12 +148,11 @@ Three paths, one pipeline, rising cost:
 Whether a statement *replaces* or *contradicts* a head is never decided from
 text alone — two decisions about one entity are usually both true — so
 `resolve::classify` only detects restatements; supersession and
-contradiction come from the agent's or the model's explicit relation. The
-rule table (`resolve::auto_rule`): `new` / `confirms` / `duplicate` land
-without review (duplicates are dropped); `supersedes` lands unless the target
-is user-stated (source `user_turn` or `ui`) and the candidate is not;
-`contradicts` never lands without a ruling. A user's acceptance in the review
-queue confirms what it lands.
+contradiction come from the agent's or the model's explicit relation, and
+`land` honours one only against a head that stands now. Who may land what
+is the policy table on `Landing`; a user's acceptance in the review queue
+confirms what it lands, and a ruling is scoped to the project the gate
+opened.
 
 ## Reading
 
@@ -173,6 +202,11 @@ of exactly what an agent would be served for a query. Two project toggles:
 All of it goes through host ops (`context_*` in `remote::dispatch`), so a
 remote-controlled host behaves the same.
 
+A note for anyone who ran the gated feature before this branch merges:
+`migrations_context/0001_context.sql` was edited in place (it had never
+shipped), so a `context.db` created earlier must be deleted; it is recreated
+empty on the next start.
+
 ## Pilot
 
 Dogfood on this repo with the layer on. What to look at, all from SQL over
@@ -197,10 +231,10 @@ correct it in the tab.
 |---|---|
 | Text search beyond token match (FTS5, then embeddings) | `compile::by_text`; an embedding column is derived data, rebuilt on replay |
 | Symbol anchors and staleness against the code graph | `paths[]` already; a resolver over the checkout's `.codegraph/codegraph.db` at retrieval time (the host never queries it today) |
-| Roadmap rulings and `wf_report` as deterministic sources | `ingest/`, same `MergedPr`-style entry |
+| Roadmap rulings and `wf_report` as deterministic sources | `capture/ingest/`, same `MergedPr`-style entry |
 | Gap mining (what did the agent discover that it was not served) | A second question in the extractor prompt; same proposal pipeline |
 | Host-side injection at turn start | The index block is step one; no per-turn mechanism exists yet |
-| Multi-host | Exchange `events` rows by `(host_id, seq)` watermark; no shared database needed |
+| Multi-host | Not an extension of what is here. The log replays by `(recorded_at, host_id, seq)` and fails loudly on an out-of-order status event, which is honest, not sufficient: two hosts need causal ordering (vector clock or HLC on every event), a fold that tolerates a status event arriving before its assertion, and a rule for forked supersession chains. Writer-minted ids and the stamp keep the door open; the fold is a redesign. |
 | Replacing the roadmap brief | A `vision` entity takes over the moment one exists |
 
 ## Decisions made while building

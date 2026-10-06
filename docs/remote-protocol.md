@@ -808,6 +808,7 @@ allowlist; any op not listed returns `{ ok: false, error: "unknown op" }`.
 | `context_merge_entities` | `{ projectId, from, into }` — `from`'s edges move to `into`; `from` stays behind as `merged` | `null` |
 | `context_link` | `{ projectId, change: { from, to, rel, add } }` — `add: false` unlinks | `null` |
 | `context_rule_proposal` | `{ projectId, proposalId, verdict: "accept" \| "dismiss", dismissReason?: "wrong" \| "trivial" \| "duplicate" \| "already_known" }` — accepting lands the proposal as events; dismissing needs a reason | `string \| null` (the recorded id on accept) |
+| `context_resolve_contradiction` | `{ projectId, a, b, reasoning }` — closes the `contradicts` edge between assertions `a` and `b` with a ruling; neither side changes (retract or supersede one for that). Blank reasoning is refused | `null` |
 | `register_push` | `{ token: string \| null, environment?: "sandbox" \| "production" }` — `environment` required with a token, ignored on clear (remote-only, see "Push notifications") | `null` |
 
 Never exposed, by design: the generic `db_*` table bridge, every file mutation

@@ -1,9 +1,9 @@
 //! Entity resolution and the conflict check: pure over a [`Graph`].
 //!
 //! `entity` turns what a caller wrote (an id, a slug, an alias, a name — any
-//! case) into one active entity or an error. `classify` says how a candidate
-//! assertion relates to the heads already recorded about the same entities,
-//! and `auto_rule` says whether that relation may land without review.
+//! case) into one active entity or an error. `classify` says whether a
+//! candidate assertion restates a head already recorded about the same
+//! entities; `related_heads` lists what a writer must look at first.
 
 use super::model::*;
 use super::{ContextError, Result};
@@ -46,17 +46,25 @@ pub fn entity<'a>(graph: &'a Graph, reference: &str) -> Result<&'a Entity> {
     Err(ContextError::UnknownEntity(reference.to_string()))
 }
 
-/// A merged entity stands for the one it was merged into; followed once.
+/// A merged entity stands for the one it was merged into. The store keeps a
+/// chain one hop long (it compresses on merge); the bound is for a
+/// projection it did not get to.
 fn redirect<'a>(graph: &'a Graph, e: &'a Entity) -> Result<&'a Entity> {
-    let target = match (e.status, &e.merged_into) {
-        (EntityStatus::Active, _) => Some(e),
-        (EntityStatus::Merged, Some(into)) => graph
-            .entity(into)
-            .filter(|t| t.status == EntityStatus::Active),
-        _ => None,
-    };
-    target.ok_or_else(|| ContextError::UnknownEntity(e.slug.clone()))
+    let mut current = e;
+    for _ in 0..MAX_MERGE_HOPS {
+        match (current.status, &current.merged_into) {
+            (EntityStatus::Active, _) => return Ok(current),
+            (EntityStatus::Merged, Some(into)) => match graph.entity(into) {
+                Some(next) => current = next,
+                None => break,
+            },
+            _ => break,
+        }
+    }
+    Err(ContextError::UnknownEntity(e.slug.clone()))
 }
+
+const MAX_MERGE_HOPS: usize = 8;
 
 /// Resolve many; unknown references are returned in the second list rather
 /// than failing the call (the caller reports them as misses).
@@ -135,39 +143,6 @@ fn normalise(statement: &str) -> String {
         .to_lowercase()
         .trim_end_matches(['.', '!'])
         .to_string()
-}
-
-/// Whether a proposal with this `relation`, written under `stamp`, may land
-/// without a human ruling. The rule table:
-/// - `New`, `Confirms`, `Duplicate`: yes (duplicates are dropped, not landed);
-/// - `Supersedes`: yes when the candidate is user-stated or the target is not;
-///   a user decision is replaced automatically only by what the user said;
-/// - `Contradicts`: never.
-pub fn auto_rule(graph: &Graph, relation: &ProposedRelation, stamp: &Stamp) -> bool {
-    match relation.kind {
-        RelationKind::New | RelationKind::Confirms | RelationKind::Duplicate => true,
-        RelationKind::Contradicts => false,
-        RelationKind::Supersedes => {
-            if user_source(&stamp.source) {
-                return true;
-            }
-            let target = relation
-                .target
-                .as_deref()
-                .and_then(|id| graph.assertion(id));
-            target.map_or(true, |t| !user_stated(t))
-        }
-    }
-}
-
-/// Said by the user, in their own words. Trust lives in the source, not the
-/// author: an agent relaying `stated_by_user` stamps a `user_turn` source.
-fn user_stated(a: &Assertion) -> bool {
-    user_source(&a.source)
-}
-
-fn user_source(source: &Source) -> bool {
-    matches!(source.kind, SourceKind::UserTurn | SourceKind::Ui)
 }
 
 #[cfg(test)]

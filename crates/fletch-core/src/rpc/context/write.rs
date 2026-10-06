@@ -1,12 +1,13 @@
 //! The three writes. An entity lands as soon as its slug is free; a decision
-//! is first classified against the heads about the same entities, and lands
-//! only when it is new or the agent has said how it relates to what is there.
+//! is handed to the service as a [`Candidate`] and the store's one policy
+//! decides whether it lands, is a restatement, or sits next to heads the
+//! agent must first say how it relates to.
 
 use serde_json::{json, Value};
 
 use crate::context::{
-    resolve, trust, Assertion, AssertionInput, AssertionKind, AssertionStatus, Contradict,
-    EntityInput, Graph, LinkChange, RelationKind, Stamp, Stance,
+    resolve, Assertion, AssertionInput, AssertionKind, AssertionStatus, Candidate, Contradict,
+    EntityInput, Graph, Landing, LinkChange, ProposedRelation, RelationKind, Stamp, Stance,
 };
 use crate::rpc::Response;
 
@@ -34,12 +35,15 @@ impl ContextDispatcher {
 
     pub(super) async fn record_decision(&self, id: &str, args: &Value) -> Response {
         let result = match parse_required::<RecordDecisionArgs>(args) {
-            Ok(a) => match self.verify_user_quote(a.user_quote.as_deref()) {
+            Ok(a) => match self
+                .service
+                .verify_user_quote(&self.agent_id, a.user_quote.as_deref())
+            {
                 Ok(user) => {
                     let stamp = self.stamp(user.as_ref()).await;
                     self.write_decision(a, user.is_some(), stamp)
                 }
-                Err(e) => Err(e),
+                Err(e) => Err(e.to_string()),
             },
             Err(e) => Err(e),
         };
@@ -58,7 +62,10 @@ impl ContextDispatcher {
     }
 
     fn graph(&self) -> Result<Graph, String> {
-        self.store.load(&self.project_id).map_err(|e| e.to_string())
+        self.service
+            .store()
+            .load(&self.project.id)
+            .map_err(|e| e.to_string())
     }
 
     /// The entity is recorded before its relations are resolved, so a bad
@@ -71,8 +78,8 @@ impl ContextDispatcher {
     ) -> Result<Value, String> {
         let slug = input.slug.clone();
         let id = self
-            .store
-            .record_entity(&self.project_id, input, stamp.clone())
+            .service
+            .record_entity(&self.project, input, stamp.clone())
             .map_err(explain)?;
         if relates.is_empty() {
             return Ok(json!({ "id": id, "slug": slug }));
@@ -90,8 +97,8 @@ impl ContextDispatcher {
                             rel: r.rel,
                             add: true,
                         };
-                        self.store
-                            .link(&self.project_id, change, stamp.clone())
+                        self.service
+                            .link(&self.project, change, stamp.clone())
                             .map_err(explain)
                     })
                     .err()
@@ -104,24 +111,6 @@ impl ContextDispatcher {
                 "recorded `{slug}` as {id}, but could not link it: {}",
                 failed.join("; ")
             ))
-        }
-    }
-
-    /// A `user_quote` must be found verbatim in the user's own turns; the
-    /// claim is never taken from the caller (`context::trust`).
-    fn verify_user_quote(&self, quote: Option<&str>) -> Result<Option<trust::UserStated>, String> {
-        let Some(quote) = quote.map(str::trim).filter(|q| !q.is_empty()) else {
-            return Ok(None);
-        };
-        let turns = self.user_turns()?;
-        match trust::find_user_quote(&turns, quote) {
-            Some(found) => Ok(Some(found)),
-            None => Err(format!(
-                "`user_quote` was not found in the user's messages of this workspace (quote at \
-                 least {} characters of what they wrote, verbatim). Leave it out to record this \
-                 as your own, provisional, statement.",
-                trust::MIN_QUOTE_CHARS
-            )),
         }
     }
 
@@ -149,7 +138,6 @@ impl ContextDispatcher {
         let mut about: Vec<String> = found.iter().map(|e| e.id.clone()).collect();
         about.dedup();
 
-        let explicit = a.supersedes.is_some() || !a.contradicts.is_empty() || a.coexists;
         let input = AssertionInput {
             kind: a.kind.unwrap_or(AssertionKind::Decision),
             domain: a.domain,
@@ -174,26 +162,34 @@ impl ContextDispatcher {
                 AssertionStatus::Provisional
             },
         };
-
-        let relation = resolve::classify(&graph, &input);
-        if relation.kind == RelationKind::Duplicate {
-            return Ok(json!({ "already_recorded": relation.target }));
+        // `coexists` is the agent saying "I looked, they all hold": an
+        // explicit `New` relation, so the store does not hold the write for
+        // the heads it sits next to. `supersedes` / `contradicts` ride on
+        // the input itself.
+        let candidate = Candidate {
+            input,
+            relation: a.coexists.then_some(ProposedRelation {
+                kind: RelationKind::New,
+                target: None,
+                reasoning: None,
+            }),
+            evidence: Vec::new(),
+            about_pending: Vec::new(),
+            observation_id: None,
+        };
+        match self
+            .service
+            .record_decision(&self.project, candidate, stamp)
+            .map_err(explain)?
+        {
+            Landing::Recorded { id, status } => Ok(json!({ "id": id, "status": status })),
+            Landing::Duplicate { id } => Ok(json!({ "already_recorded": id })),
+            Landing::Related { heads } => Ok(conflict(&heads)),
+            Landing::Held { proposal_id } => Err(format!(
+                "the store held an agent write as proposal {proposal_id}; this is a bug in the \
+                 write policy"
+            )),
         }
-        if !explicit {
-            // Whether the new statement replaces, contradicts or joins what
-            // is already said about these entities is the agent's call, made
-            // once it has seen the heads.
-            let related = resolve::related_heads(&graph, &input);
-            if !related.is_empty() {
-                return Ok(conflict(&related));
-            }
-        }
-        let status = input.status;
-        let id = self
-            .store
-            .record_assertion(&self.project_id, input, stamp)
-            .map_err(explain)?;
-        Ok(json!({ "id": id, "status": status }))
     }
 
     fn write_link(&self, a: LinkArgs, stamp: Stamp) -> Result<Value, String> {
@@ -206,8 +202,8 @@ impl ContextDispatcher {
             rel: a.rel,
             add: !a.remove,
         };
-        self.store
-            .link(&self.project_id, change, stamp)
+        self.service
+            .link(&self.project, change, stamp)
             .map_err(explain)?;
         Ok(json!({ "from": from.slug, "to": to.slug, "rel": a.rel, "linked": !a.remove }))
     }
@@ -233,8 +229,8 @@ fn entity_input(args: &Value) -> Result<(EntityInput, Vec<RelatesArg>), String> 
 
 /// The first step of the two-step protocol: nothing written, the heads the
 /// statement sits next to named.
-fn conflict(related: &[&Assertion]) -> Value {
-    let heads: Vec<Value> = related.iter().map(|a| head(a)).collect();
+fn conflict(related: &[Assertion]) -> Value {
+    let heads: Vec<Value> = related.iter().map(head).collect();
     json!({ "conflict": "related", "heads": heads, "hint": HINT })
 }
 

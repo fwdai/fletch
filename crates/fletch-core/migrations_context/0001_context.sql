@@ -29,13 +29,14 @@ CREATE TABLE events (
     payload     TEXT NOT NULL,           -- JSON `EventPayload`, carries `v`
     UNIQUE (host_id, seq)
 );
-CREATE INDEX idx_events_project_order ON events(project_id, host_id, seq);
+-- Replay order: wall clock, then (host, seq) to break ties.
+CREATE INDEX idx_events_project_order ON events(project_id, recorded_at, host_id, seq);
 
 -- Projection: the nouns.
 CREATE TABLE entities (
     id          TEXT PRIMARY KEY,
     project_id  TEXT NOT NULL,
-    slug        TEXT NOT NULL,
+    slug        TEXT NOT NULL COLLATE NOCASE,  -- one identity per spelling, whatever the case
     kind        TEXT NOT NULL,           -- vision | goal | capability | feature | module | topic
     name        TEXT NOT NULL,
     summary     TEXT NOT NULL,
@@ -89,9 +90,14 @@ CREATE TABLE supersedes (
 CREATE INDEX idx_supersedes_old ON supersedes(old_id);
 
 CREATE TABLE contradicts (
-    a_id      TEXT NOT NULL,
-    b_id      TEXT NOT NULL,
-    reasoning TEXT,
+    a_id                TEXT NOT NULL,
+    b_id                TEXT NOT NULL,
+    reasoning           TEXT,
+    -- A ruling closes the tension without touching either side; the sides
+    -- change through retract / supersede like any other assertion.
+    resolved_at         INTEGER,
+    resolution          TEXT,            -- the ruling's reasoning
+    resolved_by         TEXT,            -- JSON `Author`
     PRIMARY KEY (a_id, b_id)
 );
 

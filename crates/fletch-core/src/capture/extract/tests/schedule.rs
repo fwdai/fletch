@@ -1,4 +1,4 @@
-use crate::context::extract::schedule::{due, watermark, DEBOUNCE_MS};
+use crate::capture::extract::schedule::{due, watermark, DEBOUNCE_MS};
 use crate::context::model::*;
 
 use super::{store, PROJECT};

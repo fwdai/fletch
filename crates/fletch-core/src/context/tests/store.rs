@@ -12,12 +12,65 @@ fn stamp() -> Stamp {
 }
 
 fn stamp_in(workspace_id: &str) -> Stamp {
+    stamp_in_repo(workspace_id, None)
+}
+
+fn stamp_in_repo(workspace_id: &str, repo: Option<&str>) -> Stamp {
     Stamp {
         provenance: Provenance {
             workspace_id: Some(workspace_id.into()),
+            repo: repo.map(String::from),
             ..Default::default()
         },
         ..stamp()
+    }
+}
+
+fn stamp_by(author: Author, source: SourceKind) -> Stamp {
+    Stamp {
+        author,
+        source: Source::new(source, None),
+        provenance: Provenance::default(),
+    }
+}
+
+fn agent() -> Stamp {
+    stamp_by(Author::agent("claude", "anthropic"), SourceKind::AgentTurn)
+}
+
+fn ingester() -> Stamp {
+    stamp_by(Author::ingester(), SourceKind::Pr)
+}
+
+fn extractor() -> Stamp {
+    stamp_by(
+        Author::extractor("claude", "anthropic"),
+        SourceKind::AgentTurn,
+    )
+}
+
+fn candidate(input: AssertionInput) -> Candidate {
+    Candidate {
+        input,
+        relation: None,
+        evidence: vec![],
+        about_pending: vec![],
+        observation_id: None,
+    }
+}
+
+fn related(kind: RelationKind, target: Option<&str>, reasoning: Option<&str>) -> ProposedRelation {
+    ProposedRelation {
+        kind,
+        target: target.map(String::from),
+        reasoning: reasoning.map(String::from),
+    }
+}
+
+fn saying(about: &[&str], statement: &str) -> AssertionInput {
+    AssertionInput {
+        statement: statement.into(),
+        ..assertion(about)
     }
 }
 
@@ -98,11 +151,13 @@ fn assertion_proposal(about: &str, relation: ProposedRelation) -> Proposal {
         input: assertion(&[about]),
         stamp: stamp(),
         relation,
+        about_pending: Vec::new(),
     })
 }
 
-/// Entities, a revision, assertions, a supersession, link / unlink, retract,
-/// confirm and a merge: one of everything the projector handles.
+/// Entities, a revision, assertions, a supersession, link / unlink, a
+/// contradiction and its ruling, retract, confirm and a merge: one of
+/// everything the projector handles.
 fn varied_history(store: &ContextStore) {
     let a = store
         .record_entity(P, entity("a", EntityKind::Vision), stamp())
@@ -148,6 +203,9 @@ fn varied_history(store: &ContextStore) {
     link(store, &c, &a, true);
     link(store, &c, &a, false);
     link(store, &c, &b, true);
+    store
+        .resolve_contradiction(P, &s2, &s3, "s2 wins", stamp())
+        .unwrap();
     store.retract(P, &s3, "never right", stamp()).unwrap();
     store.confirm(P, &s2, stamp()).unwrap();
     store.merge_entities(P, &c, &b, stamp()).unwrap();
@@ -180,7 +238,7 @@ fn rebuild_replays_to_the_same_projection() {
     varied_history(&store);
     let graph = store.load(P).unwrap();
     let events = store.events(P).unwrap();
-    assert_eq!(events.len(), 14);
+    assert_eq!(events.len(), 15);
 
     store.rebuild_projection(P).unwrap();
 
@@ -308,19 +366,6 @@ fn status_events_change_only_status() {
         .unwrap();
     let before = store.load(P).unwrap();
 
-    assert_eq!(
-        store.provisional_for_workspace(P, "ws-a").unwrap(),
-        vec![a.clone(), c.clone()]
-    );
-    assert_eq!(
-        store.provisional_for_workspace(P, "ws-b").unwrap(),
-        vec![b.clone()]
-    );
-    assert!(store
-        .provisional_for_workspace(P, "ws-z")
-        .unwrap()
-        .is_empty());
-
     store.retract(P, &a, "wrong", stamp()).unwrap();
     store.confirm(P, &b, stamp()).unwrap();
     store.abandon(P, &c, stamp()).unwrap();
@@ -349,10 +394,567 @@ fn status_events_change_only_status() {
             was
         );
     }
-    assert!(store
-        .provisional_for_workspace(P, "ws-a")
+}
+
+#[test]
+fn settle_confirms_or_abandons_one_checkout() {
+    let (store, _dir) = ContextStore::temp().unwrap();
+    let e = store
+        .record_entity(P, entity("e", EntityKind::Module), stamp())
+        .unwrap();
+    let record = |ws: &str, repo: Option<&str>| {
+        store
+            .record_assertion(P, assertion(&[&e]), stamp_in_repo(ws, repo))
+            .unwrap()
+    };
+    let unstamped = record("ws-1", None);
+    let api = record("ws-1", Some("api"));
+    let web = record("ws-1", Some("web"));
+    let other = record("ws-2", None);
+    let status = |id: &str| store.load(P).unwrap().assertion(id).unwrap().status;
+
+    assert_eq!(
+        store
+            .settle(P, "ws-1", "api", false, AssertionStatus::Confirmed, stamp())
+            .unwrap(),
+        1
+    );
+    assert_eq!(status(&api), AssertionStatus::Confirmed);
+    assert_eq!(status(&unstamped), AssertionStatus::Provisional);
+
+    assert_eq!(
+        store
+            .settle(P, "ws-1", "web", true, AssertionStatus::Abandoned, stamp())
+            .unwrap(),
+        2,
+        "the primary checkout also settles records stamped with no repo"
+    );
+    assert_eq!(status(&web), AssertionStatus::Abandoned);
+    assert_eq!(status(&unstamped), AssertionStatus::Abandoned);
+    assert_eq!(status(&other), AssertionStatus::Provisional);
+    assert_eq!(
+        store
+            .settle(P, "ws-1", "web", true, AssertionStatus::Abandoned, stamp())
+            .unwrap(),
+        0
+    );
+    assert!(matches!(
+        store.settle(P, "ws-2", "x", true, AssertionStatus::Retracted, stamp()),
+        Err(ContextError::Invalid(_))
+    ));
+}
+
+#[test]
+fn land_applies_one_policy_per_author_kind() {
+    let (store, _dir) = ContextStore::temp().unwrap();
+    let e = store
+        .record_entity(P, entity("e", EntityKind::Module), stamp())
+        .unwrap();
+    let f = store
+        .record_entity(P, entity("f", EntityKind::Module), stamp())
+        .unwrap();
+    let count = || store.load(P).unwrap().assertions.len();
+    let pending = || store.proposals(P, Some(ProposalStatus::Pending)).unwrap();
+
+    // A user lands, with the status the caller set.
+    let mut input = saying(&[&e], "we do it this way");
+    input.status = AssertionStatus::Confirmed;
+    let Landing::Recorded { id: head, status } = store.land(P, candidate(input), stamp()).unwrap()
+    else {
+        panic!("a user write lands")
+    };
+    assert_eq!(status, AssertionStatus::Confirmed);
+
+    // A restatement is a duplicate for everyone, before any holding.
+    for by in [stamp(), agent(), ingester(), extractor()] {
+        let dup = saying(&[&e], "We do it this way.");
+        assert_eq!(
+            store.land(P, candidate(dup), by).unwrap(),
+            Landing::Duplicate { id: head.clone() }
+        );
+    }
+    assert_eq!(count(), 1);
+    assert!(pending().is_empty());
+
+    // An agent with no relation next to a related head: the two-step.
+    let landing = store
+        .land(P, candidate(saying(&[&e], "we do it another way")), agent())
+        .unwrap();
+    let Landing::Related { heads } = landing else {
+        panic!("{landing:?}")
+    };
+    assert_eq!(heads.len(), 1);
+    assert_eq!(heads[0].id, head);
+    assert_eq!(count(), 1);
+
+    // `coexists` arrives as an explicit `New`; a `supersedes` is honoured.
+    let coexisting = Candidate {
+        relation: Some(related(RelationKind::New, None, None)),
+        ..candidate(saying(&[&e], "we do it another way"))
+    };
+    let Landing::Recorded { id: n, .. } = store.land(P, coexisting, agent()).unwrap() else {
+        panic!("an explicit relation lands")
+    };
+    let superseding = Candidate {
+        relation: Some(related(
+            RelationKind::Supersedes,
+            Some(&head),
+            Some("moved on"),
+        )),
+        ..candidate(saying(&[&e], "we moved on"))
+    };
+    let Landing::Recorded { id: s, .. } = store.land(P, superseding, agent()).unwrap() else {
+        panic!("an agent supersession lands")
+    };
+    let g = store.load(P).unwrap();
+    assert_eq!(
+        g.assertion(&s).unwrap().supersedes.as_ref().unwrap().id,
+        head
+    );
+    assert_eq!(
+        g.assertion(&s)
+            .unwrap()
+            .supersedes
+            .as_ref()
+            .unwrap()
+            .reasoning,
+        "moved on"
+    );
+    assert!(g.assertion(&n).unwrap().supersedes.is_none());
+
+    // A relation whose target no longer stands is ignored: back to the two-step.
+    let stale = Candidate {
+        relation: Some(related(RelationKind::Supersedes, Some(&head), Some("late"))),
+        ..candidate(saying(&[&e], "a late rewrite"))
+    };
+    assert!(matches!(
+        store.land(P, stale, agent()).unwrap(),
+        Landing::Related { .. }
+    ));
+
+    // The ingester (a merged PR's lines) lands next to what is there — even
+    // with an explicit relation against a user-stated head, since a person
+    // reviews the PR before it merges; what it says is not held.
+    let user_head = match store
+        .land(P, candidate(saying(&[&f], "the user said so")), stamp())
         .unwrap()
-        .is_empty());
+    {
+        Landing::Recorded { id, .. } => id,
+        other => panic!("{other:?}"),
+    };
+    let revising = Candidate {
+        relation: Some(related(
+            RelationKind::Supersedes,
+            Some(&user_head),
+            Some("the PR says otherwise"),
+        )),
+        ..candidate(saying(&[&f], "the pr says otherwise"))
+    };
+    let Landing::Recorded { id: pr_head, .. } = store.land(P, revising, ingester()).unwrap() else {
+        panic!("an ingester supersession lands")
+    };
+    let g = store.load(P).unwrap();
+    assert_eq!(
+        g.assertion(&pr_head)
+            .unwrap()
+            .supersedes
+            .as_ref()
+            .unwrap()
+            .id,
+        user_head
+    );
+    let before = count();
+    let Landing::Recorded { .. } = store
+        .land(P, candidate(saying(&[&f], "the pr adds this")), ingester())
+        .unwrap()
+    else {
+        panic!("an ingester write with no relation lands")
+    };
+    assert_eq!(count(), before + 1);
+
+    // The extractor is always held, evidence and all.
+    let evidence = vec![Evidence {
+        session_id: None,
+        turn_id: Some("t1".into()),
+        quote: "we should do it this way".into(),
+    }];
+    let extracted = Candidate {
+        evidence: evidence.clone(),
+        about_pending: vec!["later".into()],
+        observation_id: Some("obs-1".into()),
+        ..candidate(saying(&[&f], "the model thinks so"))
+    };
+    let Landing::Held { proposal_id } = store.land(P, extracted, extractor()).unwrap() else {
+        panic!("extractor writes are held")
+    };
+    let p = store.proposal(&proposal_id).unwrap().unwrap();
+    assert_eq!(p.evidence, evidence);
+    assert_eq!(p.observation_id.as_deref(), Some("obs-1"));
+    let ProposalPayload::Assertion {
+        relation,
+        about_pending,
+        ..
+    } = &p.payload
+    else {
+        panic!("{:?}", p.payload)
+    };
+    assert_eq!(relation.kind, RelationKind::New);
+    assert_eq!(about_pending, &["later".to_string()]);
+    assert_eq!(count(), before + 1);
+    assert_eq!(
+        pending().len(),
+        1,
+        "only the extractor's proposal is pending"
+    );
+}
+
+#[test]
+fn land_is_atomic() {
+    let (store, _dir) = ContextStore::temp().unwrap();
+    let e = store
+        .record_entity(P, entity("e", EntityKind::Module), stamp())
+        .unwrap();
+    let events = store.events(P).unwrap().len();
+    store
+        .db()
+        .lock()
+        .execute_batch(
+            "CREATE TRIGGER context.fail_event BEFORE INSERT ON events
+               WHEN NEW.payload LIKE '%boom%'
+             BEGIN SELECT RAISE(ABORT, 'simulated write failure'); END;
+             CREATE TRIGGER context.fail_proposal BEFORE INSERT ON proposals
+             BEGIN SELECT RAISE(ABORT, 'simulated write failure'); END;",
+        )
+        .unwrap();
+
+    assert!(store
+        .land(P, candidate(saying(&[&e], "boom")), stamp())
+        .is_err());
+    assert!(store
+        .land(P, candidate(saying(&[&e], "held")), extractor())
+        .is_err());
+
+    assert_eq!(store.events(P).unwrap().len(), events);
+    assert!(store.load(P).unwrap().assertions.is_empty());
+    assert!(store.proposals(P, None).unwrap().is_empty());
+}
+
+#[test]
+fn a_supersession_shares_kind_domain_and_a_subject() {
+    let (store, _dir) = ContextStore::temp().unwrap();
+    let e = store
+        .record_entity(P, entity("e", EntityKind::Module), stamp())
+        .unwrap();
+    let f = store
+        .record_entity(P, entity("f", EntityKind::Module), stamp())
+        .unwrap();
+    let s1 = store
+        .record_assertion(P, assertion(&[&e]), stamp())
+        .unwrap();
+    let refused = |input: AssertionInput| {
+        assert!(
+            matches!(
+                store.record_assertion(P, input, stamp()),
+                Err(ContextError::Invalid(msg)) if msg.contains("same entity in the same domain")
+            ),
+            "refused"
+        );
+    };
+    refused(AssertionInput {
+        kind: AssertionKind::Constraint,
+        ..superseding(&s1, &[&e], "kind")
+    });
+    refused(AssertionInput {
+        domain: Domain::Business,
+        ..superseding(&s1, &[&e], "domain")
+    });
+    refused(superseding(&s1, &[&f], "subject"));
+    store
+        .record_assertion(P, superseding(&s1, &[&f, &e], "shares e"), stamp())
+        .unwrap();
+}
+
+#[test]
+fn link_refuses_self() {
+    let (store, _dir) = ContextStore::temp().unwrap();
+    let a = store
+        .record_entity(P, entity("a", EntityKind::Module), stamp())
+        .unwrap();
+    assert!(matches!(
+        store.link(
+            P,
+            LinkChange {
+                from: a.clone(),
+                to: a,
+                rel: Rel::DependsOn,
+                add: true
+            },
+            stamp()
+        ),
+        Err(ContextError::Invalid(_))
+    ));
+    assert!(store.load(P).unwrap().relations.is_empty());
+}
+
+#[test]
+fn merge_refuses_self_inactive_and_cycles() {
+    let (store, _dir) = ContextStore::temp().unwrap();
+    let a = store
+        .record_entity(P, entity("a", EntityKind::Module), stamp())
+        .unwrap();
+    let b = store
+        .record_entity(P, entity("b", EntityKind::Module), stamp())
+        .unwrap();
+    let c = store
+        .record_entity(P, entity("c", EntityKind::Module), stamp())
+        .unwrap();
+    store.archive_entity(P, &c, stamp()).unwrap();
+    let invalid = |r: Result<()>| assert!(matches!(r, Err(ContextError::Invalid(_))), "{r:?}");
+
+    invalid(store.merge_entities(P, &a, &a, stamp()));
+    invalid(store.merge_entities(P, &a, &c, stamp()));
+    assert!(matches!(
+        store.merge_entities(P, &a, "ghost", stamp()),
+        Err(ContextError::UnknownEntity(_))
+    ));
+    store.merge_entities(P, &a, &b, stamp()).unwrap();
+    invalid(store.merge_entities(P, &b, &a, stamp()));
+    invalid(store.merge_entities(P, &c, &a, stamp()));
+}
+
+#[test]
+fn merge_compresses_the_chain() {
+    let (store, _dir) = ContextStore::temp().unwrap();
+    let a = store
+        .record_entity(P, entity("a", EntityKind::Module), stamp())
+        .unwrap();
+    let b = store
+        .record_entity(P, entity("b", EntityKind::Module), stamp())
+        .unwrap();
+    let c = store
+        .record_entity(P, entity("c", EntityKind::Module), stamp())
+        .unwrap();
+    link(&store, &b, &c, true);
+    store.merge_entities(P, &a, &b, stamp()).unwrap();
+    store.merge_entities(P, &b, &c, stamp()).unwrap();
+
+    let g = store.load(P).unwrap();
+    assert_eq!(
+        g.entity(&a).unwrap().merged_into.as_deref(),
+        Some(c.as_str())
+    );
+    assert_eq!(
+        g.entity(&b).unwrap().merged_into.as_deref(),
+        Some(c.as_str())
+    );
+    assert_eq!(crate::context::resolve::entity(&g, "a").unwrap().id, c);
+    assert_eq!(crate::context::resolve::entity(&g, &a).unwrap().id, c);
+    assert!(
+        g.relations.is_empty(),
+        "the b -> c relation would be c -> c: dropped"
+    );
+    store.rebuild_projection(P).unwrap();
+    assert_eq!(store.load(P).unwrap(), g);
+}
+
+#[test]
+fn contradictions_are_a_record_with_a_ruling() {
+    let (store, _dir) = ContextStore::temp().unwrap();
+    let e = store
+        .record_entity(P, entity("e", EntityKind::Module), stamp())
+        .unwrap();
+    let s1 = store
+        .record_assertion(P, assertion(&[&e]), stamp())
+        .unwrap();
+    let s2 = store
+        .record_assertion(
+            P,
+            AssertionInput {
+                contradicts: vec![Contradict {
+                    id: s1.clone(),
+                    reasoning: Some("tension".into()),
+                }],
+                ..saying(&[&e], "we do it the other way")
+            },
+            stamp(),
+        )
+        .unwrap();
+    let s3 = store
+        .record_assertion(P, saying(&[&e], "unrelated"), stamp())
+        .unwrap();
+
+    let g = store.load(P).unwrap();
+    assert_eq!(
+        g.contradictions,
+        vec![ContradictionEdge {
+            a: s2.clone(),
+            b: s1.clone(),
+            reasoning: Some("tension".into()),
+            resolution: None,
+        }]
+    );
+    assert_eq!(g.assertion(&s1).unwrap().contradicts, vec![s2.clone()]);
+
+    assert!(matches!(
+        store.resolve_contradiction(P, &s1, &s2, " ", stamp()),
+        Err(ContextError::Invalid(_))
+    ));
+    assert!(matches!(
+        store.resolve_contradiction(P, &s1, "ghost", "why", stamp()),
+        Err(ContextError::UnknownAssertion(_))
+    ));
+    assert!(matches!(
+        store.resolve_contradiction(P, &s1, &s3, "why", stamp()),
+        Err(ContextError::Invalid(_))
+    ));
+    // Either orientation names the edge.
+    store
+        .resolve_contradiction(P, &s1, &s2, "s2 is what we do", stamp())
+        .unwrap();
+
+    let g = store.load(P).unwrap();
+    let edge = &g.contradictions[0];
+    let ruling = edge.resolution.as_ref().unwrap();
+    assert_eq!(ruling.reasoning, "s2 is what we do");
+    assert_eq!(ruling.by, Author::user());
+    assert!(ruling.at > 0);
+    assert_eq!(
+        g.assertion(&s1).unwrap().status,
+        AssertionStatus::Provisional
+    );
+    assert_eq!(
+        g.assertion(&s2).unwrap().status,
+        AssertionStatus::Provisional
+    );
+    store.rebuild_projection(P).unwrap();
+    assert_eq!(store.load(P).unwrap(), g);
+}
+
+#[test]
+fn replay_follows_the_clock_across_hosts() {
+    let (store, _dir) = ContextStore::temp().unwrap();
+    // Sorts before any UUIDv7 host id, so a `(host_id, seq)` replay would
+    // apply its confirmation before the assertion it confirms.
+    let other = ContextStore {
+        db: store.db().clone(),
+        host_id: "0-other-host".into(),
+    };
+    let e = store
+        .record_entity(P, entity("e", EntityKind::Module), stamp())
+        .unwrap();
+    let s = store
+        .record_assertion(P, assertion(&[&e]), stamp())
+        .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(2));
+    other.confirm(P, &s, stamp()).unwrap();
+
+    let events = store.events(P).unwrap();
+    assert_eq!(events.last().unwrap().host_id, "0-other-host");
+    assert!(events
+        .windows(2)
+        .all(|w| w[0].recorded_at <= w[1].recorded_at));
+    let graph = store.load(P).unwrap();
+    store.rebuild_projection(P).unwrap();
+    assert_eq!(store.load(P).unwrap(), graph);
+    assert_eq!(
+        graph.assertion(&s).unwrap().status,
+        AssertionStatus::Confirmed
+    );
+}
+
+#[test]
+fn replay_of_an_event_for_a_missing_row_fails() {
+    let (store, _dir) = ContextStore::temp().unwrap();
+    let raw = |project: &str, seq: i64, type_name: &str, payload: &str| {
+        store
+            .db()
+            .lock()
+            .execute(
+                "INSERT INTO context.events
+                   (id, project_id, host_id, seq, recorded_at, author, source, provenance, type, payload)
+                 VALUES (?1, ?2, 'h2', ?3, ?4, '{\"kind\":\"user\"}', '{\"kind\":\"ui\"}', '{}', ?5, ?6)",
+                params![new_id(), project, seq, crate::database::now_millis(), type_name, payload],
+            )
+            .unwrap();
+    };
+    raw(
+        P,
+        1,
+        "confirmed",
+        r#"{"type":"confirmed","assertion_id":"ghost","v":1}"#,
+    );
+    assert!(matches!(
+        store.rebuild_projection(P),
+        Err(ContextError::UnknownAssertion(id)) if id == "ghost"
+    ));
+    raw(
+        "proj-ctx-2",
+        2,
+        "linked",
+        r#"{"type":"linked","from":"ghost","to":"ghost","rel":"part_of","v":1}"#,
+    );
+    assert!(matches!(
+        store.rebuild_projection("proj-ctx-2"),
+        Err(ContextError::UnknownEntity(id)) if id == "ghost"
+    ));
+}
+
+#[test]
+fn pending_subjects_resolve_when_the_proposal_is_accepted() {
+    let (store, _dir) = ContextStore::temp().unwrap();
+    let mut input = assertion(&[]);
+    input.statement = "about something not yet accepted".into();
+    let p = proposal(ProposalPayload::Assertion {
+        input,
+        stamp: stamp(),
+        relation: related(RelationKind::New, None, None),
+        about_pending: vec!["Feat".into()],
+    });
+    store.add_proposal(&p).unwrap();
+    assert!(matches!(
+        store.accept_proposal(&p.id, ProposalStatus::Accepted, Author::user()),
+        Err(ContextError::Invalid(msg)) if msg == "accept the entity `Feat` first"
+    ));
+    assert_eq!(
+        store.proposal(&p.id).unwrap().unwrap().status,
+        ProposalStatus::Pending
+    );
+
+    let feat = store
+        .record_entity(P, entity("feat", EntityKind::Feature), stamp())
+        .unwrap();
+    let id = store
+        .accept_proposal(&p.id, ProposalStatus::Accepted, Author::user())
+        .unwrap();
+    assert_eq!(
+        store.load(P).unwrap().assertion(&id).unwrap().about,
+        vec![feat]
+    );
+}
+
+#[test]
+fn slugs_are_one_identity_whatever_the_case() {
+    let (store, _dir) = ContextStore::temp().unwrap();
+    let id = store
+        .record_entity(P, entity("billing", EntityKind::Module), stamp())
+        .unwrap();
+    assert!(matches!(
+        store.record_entity(P, entity("Billing", EntityKind::Topic), stamp()),
+        Err(ContextError::SlugTaken(s)) if s == "billing"
+    ));
+    // The column's collation, not just the store's lowercasing.
+    store
+        .db()
+        .lock()
+        .execute(
+            "UPDATE context.entities SET slug = 'Billing' WHERE id = ?1",
+            [&id],
+        )
+        .unwrap();
+    assert!(matches!(
+        store.record_entity(P, entity("billing", EntityKind::Topic), stamp()),
+        Err(ContextError::SlugTaken(_))
+    ));
 }
 
 #[test]
@@ -719,6 +1321,7 @@ fn a_confirmed_restatement_settles_its_target() {
         proposal(ProposalPayload::Assertion {
             input,
             stamp: stamp(),
+            about_pending: Vec::new(),
             relation: ProposedRelation {
                 kind: RelationKind::Confirms,
                 target: Some(head.clone()),

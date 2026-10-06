@@ -4,13 +4,17 @@
 //! layer is one wrapper regardless of the agent's purpose.
 //!
 //! Every write is stamped here, never from `args`: the agent and provider from
-//! the spawn, the session as the source reference, and the branch and commit
-//! of the checkout at call time (best effort) as provenance — which is what
-//! later turns an assertion from provisional to confirmed or abandoned.
+//! the spawn, the session as the source reference, and the primary checkout
+//! plus its branch and commit at call time (best effort) as provenance —
+//! which is what later turns an assertion from provisional to confirmed or
+//! abandoned.
 //!
-//! A decision that collides with a current head is not written on the first
-//! call; the reply names the head and the agent resubmits saying how the two
-//! relate. Nothing here can retract, confirm or archive — those are rulings.
+//! Every write goes through [`ContextService`]; the policy for what lands is
+//! `ContextStore::land`'s ([`context::Landing`]), and this module only maps
+//! its outcome onto the wire. A decision that sits next to current heads is
+//! not written on the first call; the reply names the heads and the agent
+//! resubmits saying how they relate. Nothing here can retract, confirm or
+//! archive — those are rulings.
 
 mod args;
 mod read;
@@ -22,7 +26,7 @@ use std::sync::Arc;
 use serde_json::Value;
 
 use crate::context::{
-    self, render, trust, Author, ContextStore, Provenance, Source, SourceKind, Stamp,
+    self, render, trust, Author, ContextService, Provenance, Source, SourceKind, Stamp,
 };
 use crate::host::EngineCtx;
 use crate::roadmap::Db;
@@ -46,25 +50,26 @@ fn is_context_op(op: &str) -> bool {
 
 pub struct ContextDispatcher {
     inner: Arc<dyn RpcDispatcher>,
-    store: ContextStore,
-    /// The project's context id (`context::context_project_id`), never the
-    /// host-local `projects.id`.
-    project_id: String,
-    /// The host-local `projects.id`, for the roadmap brief the vision falls
-    /// back to.
-    fletch_project_id: String,
+    service: ContextService,
+    /// The project as the gate let it through at spawn.
+    project: context::Project,
     agent_id: String,
     provider: String,
     /// The checkout the branch and commit are read from at call time.
     cwd: PathBuf,
+    /// The primary checkout's repo subdir: the unit a merge or an archive
+    /// settles, stamped into every write's provenance.
+    repo: Option<String>,
     session_id: Option<String>,
     db: Db,
 }
 
 /// Wraps `inner` in a [`ContextDispatcher`] when the layer is on for the
-/// project. Off, or anything failing on the way to the store, leaves `inner`
-/// as it was: an agent without the ops is worth more than a spawn that fails,
-/// and the instruction block is gated on the same path (see [`spawn_index`]).
+/// project. Off, or anything failing on the way to the service, leaves
+/// `inner` as it was: an agent without the ops is worth more than a spawn
+/// that fails, and the instruction block is gated on the same path (see
+/// [`spawn_index`]). `repo` is the workspace's primary checkout subdir.
+#[allow(clippy::too_many_arguments)]
 pub fn wrap(
     ctx: &EngineCtx,
     inner: Arc<dyn RpcDispatcher>,
@@ -72,28 +77,20 @@ pub fn wrap(
     agent_id: &str,
     provider: &str,
     cwd: &Path,
+    repo: Option<String>,
     session_id: Option<&str>,
 ) -> Arc<dyn RpcDispatcher> {
-    let Some(project_id) = project_context_id(ctx, fletch_project_id) else {
+    let Some((service, project)) = open(ctx, fletch_project_id) else {
         return inner;
-    };
-    let store = match ctx.context() {
-        Ok(store) => store.clone(),
-        Err(e) => {
-            tracing::warn!(
-                "context: store unavailable, agent {agent_id} runs without the ops: {e}"
-            );
-            return inner;
-        }
     };
     Arc::new(ContextDispatcher {
         inner,
-        store,
-        project_id,
-        fletch_project_id: fletch_project_id.to_string(),
+        service,
+        project,
         agent_id: agent_id.to_string(),
         provider: provider.to_string(),
         cwd: cwd.to_path_buf(),
+        repo,
         session_id: session_id.map(str::to_string),
         db: ctx.db.clone(),
     })
@@ -102,11 +99,8 @@ pub fn wrap(
 /// The index the instruction block carries at spawn: `None` when the layer is
 /// off for the project (or unreachable), `Some` — possibly empty — when on.
 pub fn spawn_index(ctx: &EngineCtx, fletch_project_id: &str) -> Option<String> {
-    let project_id = project_context_id(ctx, fletch_project_id)?;
-    let graph = ctx
-        .context()
-        .and_then(|store| store.load(&project_id).map_err(Into::into));
-    match graph {
+    let (service, project) = open(ctx, fletch_project_id)?;
+    match service.store().load(&project.id) {
         Ok(graph) => Some(render::render_index(&graph, INDEX_CHARS)),
         Err(e) => {
             tracing::warn!("context: index unavailable for project {fletch_project_id}: {e}");
@@ -115,15 +109,19 @@ pub fn spawn_index(ctx: &EngineCtx, fletch_project_id: &str) -> Option<String> {
     }
 }
 
-/// The project's context id when the layer is on for it. Holds the connection
-/// only for the two settings reads, never across a store call.
-fn project_context_id(ctx: &EngineCtx, fletch_project_id: &str) -> Option<String> {
-    let conn = ctx.db.lock();
-    if !context::enabled(&conn, fletch_project_id) {
-        return None;
-    }
-    match context::context_project_id(&conn, fletch_project_id) {
-        Ok(id) => Some(id),
+/// The service and the project through its gate; `None` when the layer is
+/// off for the project (quietly) or unreachable (with a warning).
+fn open(ctx: &EngineCtx, fletch_project_id: &str) -> Option<(ContextService, context::Project)> {
+    let service = match ctx.context() {
+        Ok(service) => service.clone(),
+        Err(e) => {
+            tracing::warn!("context: service unavailable for project {fletch_project_id}: {e}");
+            return None;
+        }
+    };
+    match service.open(fletch_project_id) {
+        Ok(project) => Some((service, project)),
+        Err(context::ContextError::Disabled) => None,
         Err(e) => {
             tracing::warn!("context: no context id for project {fletch_project_id}: {e}");
             None
@@ -132,20 +130,6 @@ fn project_context_id(ctx: &EngineCtx, fletch_project_id: &str) -> Option<String
 }
 
 impl ContextDispatcher {
-    /// The user's turns of this workspace, for `context::trust`.
-    fn user_turns(&self) -> Result<Vec<trust::UserTurnText>, String> {
-        let turns = crate::workspace::WorkspaceManager::new(self.db.clone())
-            .read_history_turns(&self.agent_id)
-            .map_err(|e| format!("could not read the user's turns: {e}"))?;
-        Ok(turns
-            .into_iter()
-            .map(|t| trust::UserTurnText {
-                turn_id: t.turn_id,
-                text: t.text,
-            })
-            .collect())
-    }
-
     /// The stamp for one write. Branch and commit are read now rather than at
     /// spawn because the agent moves the checkout as it works. `user` is the
     /// verified user quote, when the write is user-stated.
@@ -167,6 +151,7 @@ impl ContextDispatcher {
                 commit_sha,
                 session_id: self.session_id.clone(),
                 turn_id: None,
+                repo: self.repo.clone(),
             },
         }
     }

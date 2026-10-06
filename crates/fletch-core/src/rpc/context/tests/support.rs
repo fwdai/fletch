@@ -26,22 +26,34 @@ impl RpcDispatcher for Inner {
     }
 }
 
+pub(super) const REPO: &str = "quorum";
+
 /// A dispatcher over a fresh store; the temp dir is the (non-git) checkout,
-/// so provenance comes back without a branch or commit.
+/// so provenance comes back without a branch or commit. The gate is open in
+/// `ContextStore::temp`, so the project is built directly.
 pub(super) fn dispatcher() -> (ContextDispatcher, tempfile::TempDir) {
-    let (store, dir) = ContextStore::temp().unwrap();
+    let (store, dir) = crate::context::ContextStore::temp().unwrap();
+    let db = store.db().clone();
     let d = ContextDispatcher {
         inner: Arc::new(Inner),
-        db: store.db().clone(),
-        store,
-        project_id: PROJECT.into(),
-        fletch_project_id: FLETCH_PROJECT.into(),
+        service: ContextService::new(db.clone()).unwrap(),
+        project: context::Project {
+            id: PROJECT.into(),
+            fletch_id: FLETCH_PROJECT.into(),
+        },
         agent_id: AGENT.into(),
         provider: "claude".into(),
         cwd: dir.path().to_path_buf(),
+        repo: Some(REPO.into()),
         session_id: Some("sess-1".into()),
+        db,
     };
     (d, dir)
+}
+
+/// The project's graph as the store holds it.
+pub(super) fn graph(d: &ContextDispatcher) -> crate::context::Graph {
+    d.service.store().load(PROJECT).unwrap()
 }
 
 pub(super) async fn call(d: &ContextDispatcher, op: &str, args: Value) -> Response {

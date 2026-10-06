@@ -689,6 +689,7 @@ fn allowlist_matches_the_protocol_table() {
         "context_merge_entities",
         "context_link",
         "context_rule_proposal",
+        "context_resolve_contradiction",
         "register_push",
     ];
     assert_eq!(

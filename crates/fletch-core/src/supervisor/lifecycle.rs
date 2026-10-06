@@ -1119,6 +1119,7 @@ impl Supervisor {
             agent_id,
             &record.provider,
             &cwd,
+            record.repos.first().map(|r| r.subdir.clone()),
             session_id.as_deref(),
         );
 

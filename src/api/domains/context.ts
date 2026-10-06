@@ -30,6 +30,10 @@ export const contextApi = {
   /** Hide an assertion that was never right; the reason is required. */
   contextRetract: (projectId: string, assertionId: string, reason: string) =>
     invoke<void>("context_retract", { projectId, assertionId, reason }),
+  /** Close a `contradicts` edge between `a` and `b` with a ruling; the
+   *  reasoning is required. Neither side changes — retract or Change do that. */
+  contextResolveContradiction: (projectId: string, a: string, b: string, reasoning: string) =>
+    invoke<void>("context_resolve_contradiction", { projectId, a, b, reasoning }),
   contextArchiveEntity: (projectId: string, entityId: string) =>
     invoke<void>("context_archive_entity", { projectId, entityId }),
   /** `from`'s edges move to `into`; `from` stays behind as `merged`. */

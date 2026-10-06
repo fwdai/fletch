@@ -9,8 +9,10 @@ import type {
   ContextEntity,
   ContextGraph,
   ContextProposal,
+  ContradictionEdge,
   Domain,
   EntityKind,
+  Provenance,
   Source,
 } from "@/api";
 import type { BadgeVariant } from "@/components/ui/Badge";
@@ -152,15 +154,62 @@ export function sourceLabel(source: Source): string {
   return `from ${name} ${source.reference}`;
 }
 
-/** Live heads this assertion is in tension with — the "contradicted" marker.
- *  A retracted, abandoned or superseded counterpart no longer counts. */
-export function contradictedBy(
-  graph: ContextGraph,
-  assertion: ContextAssertion,
-): ContextAssertion[] {
-  return assertion.contradicts
-    .map((id) => graph.assertions.find((a) => a.id === id))
-    .filter((a): a is ContextAssertion => !!a && isCurrent(graph, a));
+/** "agent fuji · quorum" — the author, then the checkout when the record
+ *  names one. */
+export function provenanceLabel(author: Author, provenance: Provenance): string {
+  const who = authorLabel(author);
+  return provenance.repo ? `${who} · ${provenance.repo}` : who;
+}
+
+/** One `contradicts` edge seen from one of its sides. `other` is missing when
+ *  the graph no longer carries the counterpart. */
+export interface Tension {
+  edge: ContradictionEdge;
+  otherId: string;
+  other?: ContextAssertion;
+}
+
+function tensionsTouching(graph: ContextGraph, assertionId: string): Tension[] {
+  return graph.contradictions
+    .filter((e) => e.a === assertionId || e.b === assertionId)
+    .map((edge) => {
+      const otherId = edge.a === assertionId ? edge.b : edge.a;
+      return { edge, otherId, other: graph.assertions.find((x) => x.id === otherId) };
+    });
+}
+
+/** The open tensions behind the "contradicted" marker: unresolved edges, in
+ *  either orientation, whose other side still stands (`graph.current`). */
+export function openTensions(graph: ContextGraph, assertionId: string): Tension[] {
+  return tensionsTouching(graph, assertionId).filter(
+    (t) => !t.edge.resolution && !!t.other && isCurrent(graph, t.other),
+  );
+}
+
+/** The tensions a ruling closed, for the history drawer. */
+export function resolvedTensions(graph: ContextGraph, assertionId: string): Tension[] {
+  return tensionsTouching(graph, assertionId).filter((t) => !!t.edge.resolution);
+}
+
+/** "resolved: <reasoning>, by <author>, <date>". */
+export function resolutionLabel(edge: ContradictionEdge): string {
+  const r = edge.resolution;
+  if (!r) return "";
+  const date = new Date(r.at).toLocaleDateString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+  });
+  return `resolved: ${r.reasoning}, by ${authorLabel(r.by)}, ${date}`;
+}
+
+/** Of a proposal's pending subjects, the slugs no active entity carries yet
+ *  (case-insensitive) — each one blocks Accept until its entity lands. */
+export function unacceptedPending(graph: ContextGraph, slugs: string[]): string[] {
+  const active = new Set(
+    graph.entities.filter((e) => e.status === "active").map((e) => e.slug.toLowerCase()),
+  );
+  return slugs.filter((s) => !active.has(s.toLowerCase()));
 }
 
 /** The supersession chain behind an assertion, newest predecessor first,

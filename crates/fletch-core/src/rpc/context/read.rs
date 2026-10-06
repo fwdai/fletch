@@ -26,15 +26,13 @@ impl ContextDispatcher {
             include_history: a.include_history,
             budget_chars: 0,
         };
-        let graph = self
-            .store
-            .load(&self.project_id)
-            .map_err(|e| e.to_string())?;
+        let store = self.service.store();
+        let graph = store.load(&self.project.id).map_err(|e| e.to_string())?;
         let bundle = compile::compile(&graph, &query, self.vision_fallback());
         let markdown = render::render_markdown(&bundle);
 
         let read = ReadRecord {
-            project_id: self.project_id.clone(),
+            project_id: self.project.id.clone(),
             agent_id: Some(self.agent_id.clone()),
             workspace_id: Some(self.agent_id.clone()),
             session_id: self.session_id.clone(),
@@ -52,7 +50,7 @@ impl ContextDispatcher {
             misses: bundle.misses.clone(),
             chars: markdown.chars().count(),
         };
-        if let Err(e) = self.store.log_read(&read) {
+        if let Err(e) = store.log_read(&read) {
             tracing::warn!("context: read not logged for agent {}: {e}", self.agent_id);
         }
         Ok(markdown)
@@ -62,7 +60,7 @@ impl ContextDispatcher {
     /// read failure is no fallback, not a failed `context_get`.
     fn vision_fallback(&self) -> Option<String> {
         let conn = self.db.lock();
-        match crate::roadmap::memory::load(&conn, &self.fletch_project_id) {
+        match crate::roadmap::memory::load(&conn, &self.project.fletch_id) {
             Ok(brief) => brief.map(|b| b.content),
             Err(e) => {
                 tracing::warn!("context: roadmap brief unavailable as vision fallback: {e}");

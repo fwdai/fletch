@@ -95,7 +95,7 @@ impl Supervisor {
                     diag,
                 );
             }
-            crate::context::extract::on_turn_completed(ctx.clone(), agent_id.clone());
+            crate::capture::extract::on_turn_completed(ctx.clone(), agent_id.clone());
         });
     }
 

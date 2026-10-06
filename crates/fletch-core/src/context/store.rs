@@ -17,7 +17,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use super::model::*;
-use super::{ContextError, Result, HOST_ID_KEY, PROJECT_ID_KEY};
+use super::{compile, resolve, ContextError, Result, HOST_ID_KEY, PROJECT_ID_KEY};
 use crate::database::{get_setting, now_millis, set_setting};
 
 #[cfg(test)]
@@ -151,7 +151,12 @@ impl ContextStore {
     /// Appends `entity_recorded`. `input.id == None` creates (the slug must be
     /// free; a second active `vision` is `VisionExists`); `Some` records a
     /// revision of that entity (the slug may change if the new one is free).
-    pub fn record_entity(&self, project_id: &str, input: EntityInput, stamp: Stamp) -> Result<Id> {
+    pub(super) fn record_entity(
+        &self,
+        project_id: &str,
+        input: EntityInput,
+        stamp: Stamp,
+    ) -> Result<Id> {
         self.write(|conn| self.record_entity_in(conn, project_id, input, stamp))
     }
 
@@ -205,8 +210,11 @@ impl ContextStore {
     /// Appends `assertion_recorded` with its `about`, `supersedes` and
     /// `contradicts` edges. Errors: `NoSubject`, `MissingReasoning`, `NotHead`
     /// (the superseded assertion is not a head), `UnknownEntity`,
-    /// `UnknownAssertion`.
-    pub fn record_assertion(
+    /// `UnknownAssertion`, `Invalid` (a supersession across kinds, domains
+    /// or subjects). The raw primitive: writers go through [`Self::land`];
+    /// only the store's own tests seed with it.
+    #[cfg(test)]
+    pub(super) fn record_assertion(
         &self,
         project_id: &str,
         input: AssertionInput,
@@ -243,6 +251,15 @@ impl ContextStore {
             if !is_head(conn, &sup.id)? {
                 return Err(ContextError::NotHead(sup.id.clone()));
             }
+            let (kind, domain, about) = assertion_shape(conn, &sup.id)?;
+            let shared = about.iter().any(|e| input.about.contains(e));
+            if kind != input.kind || domain != input.domain || !shared {
+                return Err(ContextError::Invalid(
+                    "a decision supersedes a decision about the same entity in the same domain: \
+                     the superseded assertion must share the kind, the domain and a subject"
+                        .into(),
+                ));
+            }
         }
         for c in &input.contradicts {
             require_assertion(conn, project_id, &c.id)?;
@@ -269,7 +286,12 @@ impl ContextStore {
 
     /// Appends `linked` / `unlinked`. Linking an edge that exists, or
     /// unlinking one that does not, is a no-op that still records the event.
-    pub fn link(&self, project_id: &str, change: LinkChange, stamp: Stamp) -> Result<()> {
+    pub(super) fn link(&self, project_id: &str, change: LinkChange, stamp: Stamp) -> Result<()> {
+        if change.from == change.to {
+            return Err(ContextError::Invalid(
+                "an entity cannot relate to itself".into(),
+            ));
+        }
         self.write(|conn| {
             require_entity(conn, project_id, &change.from)?;
             require_entity(conn, project_id, &change.to)?;
@@ -284,7 +306,7 @@ impl ContextStore {
         })
     }
 
-    pub fn retract(
+    pub(super) fn retract(
         &self,
         project_id: &str,
         assertion_id: &str,
@@ -307,7 +329,181 @@ impl ContextStore {
         )
     }
 
-    pub fn confirm(&self, project_id: &str, assertion_id: &str, stamp: Stamp) -> Result<()> {
+    /// The one write policy: classify the candidate against what stands now,
+    /// apply the rule for the stamp's author kind, and record, park or refuse
+    /// — all under one transaction, so no writer can race the check. See
+    /// [`Landing`] for the policy table.
+    pub(super) fn land(
+        &self,
+        project_id: &str,
+        candidate: Candidate,
+        stamp: Stamp,
+    ) -> Result<Landing> {
+        self.write(|conn| {
+            let Candidate {
+                mut input,
+                relation,
+                evidence,
+                about_pending,
+                observation_id,
+            } = candidate;
+            let about_pending = resolve_pending(conn, project_id, &mut input, about_pending)?;
+            let graph = load_graph(conn, project_id)?;
+            // A restatement is a duplicate — unless it is the very head the
+            // candidate revises (same words, new rationale or stance).
+            if let ProposedRelation {
+                kind: RelationKind::Duplicate,
+                target: Some(id),
+                ..
+            } = resolve::classify(&graph, &input)
+            {
+                let revising_it = input.supersedes.as_ref().is_some_and(|s| s.id == id);
+                if !revising_it {
+                    return Ok(Landing::Duplicate { id });
+                }
+            }
+            // An explicit relation is honoured only against a head that
+            // stands now; anything else is "the store decides".
+            let relation = relation.filter(|r| match r.kind {
+                RelationKind::Supersedes | RelationKind::Contradicts => r
+                    .target
+                    .as_deref()
+                    .and_then(|id| graph.assertion(id))
+                    .is_some_and(|t| compile::is_current(&graph, t)),
+                _ => true,
+            });
+            let held = match stamp.author.kind {
+                AuthorKind::User => false,
+                AuthorKind::Agent => {
+                    if relation.is_none()
+                        && input.supersedes.is_none()
+                        && input.contradicts.is_empty()
+                    {
+                        let heads = resolve::related_heads(&graph, &input);
+                        if !heads.is_empty() {
+                            return Ok(Landing::Related {
+                                heads: heads.into_iter().cloned().collect(),
+                            });
+                        }
+                    }
+                    false
+                }
+                // Deterministic sources land next to what is there; only a
+                // person decides what replaces what.
+                AuthorKind::Ingester => false,
+                AuthorKind::Extractor => true,
+            };
+            if held {
+                let proposal = Proposal {
+                    id: new_id(),
+                    project_id: project_id.to_string(),
+                    observation_id,
+                    payload: ProposalPayload::Assertion {
+                        input,
+                        stamp,
+                        relation: relation.unwrap_or(ProposedRelation {
+                            kind: RelationKind::New,
+                            target: None,
+                            reasoning: None,
+                        }),
+                        about_pending,
+                    },
+                    evidence,
+                    status: ProposalStatus::Pending,
+                    dismiss_reason: None,
+                    created_at: now_millis(),
+                    ruled_at: None,
+                    ruled_by: None,
+                };
+                insert_proposal(conn, &proposal)?;
+                return Ok(Landing::Held {
+                    proposal_id: proposal.id,
+                });
+            }
+            require_accepted(&about_pending)?;
+            if let Some(relation) = &relation {
+                with_relation(&mut input, relation)?;
+            }
+            let status = input.status;
+            let id = self.record_assertion_in(conn, project_id, input, stamp)?;
+            Ok(Landing::Recorded { id, status })
+        })
+    }
+
+    /// Settle the provisional assertions one checkout of a workspace made:
+    /// `outcome` is `Confirmed` (its PR merged) or `Abandoned` (archived
+    /// without merging). Matches `provenance.repo == repo`; the primary
+    /// checkout (`is_primary`) also settles records stamped with no repo.
+    /// Returns how many.
+    pub(super) fn settle(
+        &self,
+        project_id: &str,
+        workspace_id: &str,
+        repo: &str,
+        is_primary: bool,
+        outcome: AssertionStatus,
+        stamp: Stamp,
+    ) -> Result<usize> {
+        let payload = |assertion_id: String| match outcome {
+            AssertionStatus::Confirmed => Ok(EventPayload::Confirmed { assertion_id }),
+            AssertionStatus::Abandoned => Ok(EventPayload::Abandoned { assertion_id }),
+            other => Err(ContextError::Invalid(format!(
+                "a checkout settles to confirmed or abandoned, not {}",
+                tag(&other)?
+            ))),
+        };
+        self.write(|conn| {
+            let ids = provisional_in_checkout(conn, project_id, workspace_id, repo, is_primary)?;
+            for id in &ids {
+                self.append(
+                    conn,
+                    project_id,
+                    stamp.clone(),
+                    now_millis(),
+                    payload(id.clone())?,
+                )?;
+            }
+            Ok(ids.len())
+        })
+    }
+
+    /// Close a `contradicts` edge with a ruling. Both sides stay as they are.
+    /// The edge must exist (in either orientation); a later ruling replaces
+    /// an earlier one.
+    pub(super) fn resolve_contradiction(
+        &self,
+        project_id: &str,
+        a: &str,
+        b: &str,
+        reasoning: &str,
+        stamp: Stamp,
+    ) -> Result<()> {
+        let reasoning = clean_line(reasoning);
+        if reasoning.is_empty() {
+            return Err(ContextError::Invalid(
+                "resolving a contradiction needs reasoning".into(),
+            ));
+        }
+        self.write(|conn| {
+            require_assertion(conn, project_id, a)?;
+            require_assertion(conn, project_id, b)?;
+            if !contradiction_exists(conn, a, b)? {
+                return Err(no_contradiction(a, b));
+            }
+            let payload = EventPayload::ContradictionResolved {
+                a: a.to_string(),
+                b: b.to_string(),
+                reasoning,
+            };
+            self.append(conn, project_id, stamp, now_millis(), payload)?;
+            Ok(())
+        })
+    }
+
+    /// One assertion's settlement; writers settle a checkout at a time
+    /// through [`Self::settle`], so these two are the store's tests' only.
+    #[cfg(test)]
+    pub(super) fn confirm(&self, project_id: &str, assertion_id: &str, stamp: Stamp) -> Result<()> {
         self.assertion_event(
             project_id,
             assertion_id,
@@ -318,7 +514,8 @@ impl ContextStore {
         )
     }
 
-    pub fn abandon(&self, project_id: &str, assertion_id: &str, stamp: Stamp) -> Result<()> {
+    #[cfg(test)]
+    pub(super) fn abandon(&self, project_id: &str, assertion_id: &str, stamp: Stamp) -> Result<()> {
         self.assertion_event(
             project_id,
             assertion_id,
@@ -343,7 +540,12 @@ impl ContextStore {
         })
     }
 
-    pub fn archive_entity(&self, project_id: &str, entity_id: &str, stamp: Stamp) -> Result<()> {
+    pub(super) fn archive_entity(
+        &self,
+        project_id: &str,
+        entity_id: &str,
+        stamp: Stamp,
+    ) -> Result<()> {
         self.write(|conn| {
             require_entity(conn, project_id, entity_id)?;
             let payload = EventPayload::EntityArchived {
@@ -355,8 +557,10 @@ impl ContextStore {
     }
 
     /// Redirects every `about` and `relates` edge of `entity_id` to `into`
-    /// and leaves `entity_id` in `merged` status.
-    pub fn merge_entities(
+    /// and leaves `entity_id` in `merged` status; entities already merged
+    /// into `entity_id` are pointed at `into` too, so a chain stays one hop.
+    /// `into` must be active and must not lead back to `entity_id`.
+    pub(super) fn merge_entities(
         &self,
         project_id: &str,
         entity_id: &str,
@@ -369,8 +573,18 @@ impl ContextStore {
             ));
         }
         self.write(|conn| {
-            require_entity(conn, project_id, entity_id)?;
-            require_entity(conn, project_id, into)?;
+            // Both sides active: an archived or already-merged source has
+            // nothing left to move, and an inactive target cannot be
+            // reached — which is also what rules out a cycle.
+            for (which, id) in [("source", entity_id), ("target", into)] {
+                let (status, _) = entity_state(conn, project_id, id)?;
+                if status != EntityStatus::Active {
+                    return Err(ContextError::Invalid(format!(
+                        "`{id}` is {}; the merge {which} must be an active entity",
+                        tag(&status)?
+                    )));
+                }
+            }
             let payload = EventPayload::EntityMerged {
                 id: entity_id.to_string(),
                 into: into.to_string(),
@@ -384,20 +598,11 @@ impl ContextStore {
 
     /// The whole projection for one project.
     pub fn load(&self, project_id: &str) -> Result<Graph> {
-        let conn = self.db.lock();
-        let mut graph = Graph {
-            project_id: project_id.to_string(),
-            entities: load_entities(&conn, project_id)?,
-            assertions: load_assertions(&conn, project_id)?,
-            relations: load_relations(&conn, project_id)?,
-            current: Vec::new(),
-        };
-        graph.current = super::compile::current_heads(&graph).into_iter().collect();
-        graph.current.sort();
-        Ok(graph)
+        load_graph(&self.db.lock(), project_id)
     }
 
-    /// Every event of one project in `(host_id, seq)` order.
+    /// Every event of one project in `(recorded_at, host_id, seq)` order —
+    /// the order a replay applies them in.
     pub fn events(&self, project_id: &str) -> Result<Vec<Event>> {
         let conn = self.db.lock();
         load_events(&conn, project_id)
@@ -413,23 +618,6 @@ impl ContextStore {
             }
             Ok(())
         })
-    }
-
-    /// Provisional assertions recorded from `workspace_id` (by provenance).
-    pub fn provisional_for_workspace(
-        &self,
-        project_id: &str,
-        workspace_id: &str,
-    ) -> Result<Vec<Id>> {
-        let conn = self.db.lock();
-        let mut stmt = conn.prepare(
-            "SELECT id FROM context.assertions
-             WHERE project_id = ?1 AND status = 'provisional'
-               AND json_extract(provenance, '$.workspace_id') = ?2
-             ORDER BY recorded_at, id",
-        )?;
-        let ids = stmt.query_map([project_id, workspace_id], |r| r.get(0))?;
-        Ok(ids.collect::<rusqlite::Result<_>>()?)
     }
 
     // -- pipeline ----------------------------------------------------------
@@ -486,27 +674,8 @@ impl ContextStore {
         Ok(())
     }
 
-    pub fn add_proposal(&self, proposal: &Proposal) -> Result<()> {
-        let conn = self.db.lock();
-        conn.execute(
-            "INSERT INTO context.proposals
-               (id, project_id, observation_id, payload, evidence, status, dismiss_reason,
-                created_at, ruled_at, ruled_by)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-            params![
-                proposal.id,
-                proposal.project_id,
-                proposal.observation_id,
-                json(&proposal.payload)?,
-                json(&proposal.evidence)?,
-                tag(&proposal.status)?,
-                proposal.dismiss_reason.map(|r| tag(&r)).transpose()?,
-                proposal.created_at,
-                proposal.ruled_at,
-                proposal.ruled_by.as_ref().map(json).transpose()?,
-            ],
-        )?;
-        Ok(())
+    pub(super) fn add_proposal(&self, proposal: &Proposal) -> Result<()> {
+        insert_proposal(&self.db.lock(), proposal)
     }
 
     pub fn proposals(
@@ -532,8 +701,10 @@ impl ContextStore {
 
     /// Lands a proposal: applies its payload as events (`record_entity` /
     /// `record_assertion`, honouring `relation`) and marks it `status`
-    /// (`Accepted` by the user, `Auto` by rule). Returns the recorded id.
-    pub fn accept_proposal(
+    /// (`Accepted` by the user, `Auto` by rule). Subjects that were only
+    /// proposed (`about_pending`) are resolved now; one still missing is
+    /// `Invalid("accept the entity … first")`. Returns the recorded id.
+    pub(super) fn accept_proposal(
         &self,
         proposal_id: &str,
         status: ProposalStatus,
@@ -550,44 +721,20 @@ impl ContextStore {
                     mut input,
                     stamp,
                     relation,
+                    about_pending,
                 } => {
-                    let target = |relation: &ProposedRelation| {
-                        relation.target.clone().ok_or_else(|| {
-                            ContextError::Invalid(format!(
-                                "a `{}` proposal needs a target assertion",
-                                tag(&relation.kind).unwrap_or_default()
-                            ))
-                        })
-                    };
+                    let missing = resolve_pending(conn, project_id, &mut input, about_pending)?;
+                    require_accepted(&missing)?;
                     // A human ruling is a confirmation: what the user accepts
                     // is not waiting on any branch.
                     if status == ProposalStatus::Accepted {
                         input.status = AssertionStatus::Confirmed;
                     }
                     match relation.kind {
-                        RelationKind::New => {}
-                        RelationKind::Supersedes => {
-                            // The proposer's reasoning when it gave one; the
-                            // candidate's own rationale otherwise, so a parked
-                            // supersession can still be accepted.
-                            let reasoning = relation
-                                .reasoning
-                                .clone()
-                                .filter(|r| !r.trim().is_empty())
-                                .unwrap_or_else(|| input.rationale.clone());
-                            input.supersedes = Some(Supersede {
-                                id: target(&relation)?,
-                                reasoning,
-                            });
-                        }
-                        RelationKind::Contradicts => input.contradicts.push(Contradict {
-                            id: target(&relation)?,
-                            reasoning: relation.reasoning.clone(),
-                        }),
                         RelationKind::Confirms => {
                             // Nothing new is said; a confirmed restatement
                             // settles a provisional target.
-                            let id = target(&relation)?;
+                            let id = relation_target(&relation)?;
                             if input.status == AssertionStatus::Confirmed {
                                 let event = EventPayload::Confirmed {
                                     assertion_id: id.clone(),
@@ -598,10 +745,11 @@ impl ContextStore {
                             return Ok(id);
                         }
                         RelationKind::Duplicate => {
-                            let id = target(&relation)?;
+                            let id = relation_target(&relation)?;
                             rule_proposal(conn, proposal_id, status, None, &ruled_by)?;
                             return Ok(id);
                         }
+                        _ => with_relation(&mut input, &relation)?,
                     }
                     self.record_assertion_in(conn, project_id, input, stamp)?
                 }
@@ -611,7 +759,7 @@ impl ContextStore {
         })
     }
 
-    pub fn dismiss_proposal(
+    pub(super) fn dismiss_proposal(
         &self,
         proposal_id: &str,
         reason: DismissReason,
@@ -659,9 +807,8 @@ impl ContextStore {
     }
 
     pub fn stats(&self, project_id: &str) -> Result<Stats> {
-        // Before the lock: `load` takes it too, and the mutex is not reentrant.
-        let heads = super::compile::current_heads(&self.load(project_id)?).len();
         let conn = self.db.lock();
+        let heads = load_graph(&conn, project_id)?.current.len();
         let count = |sql: &str| -> Result<usize> {
             let n: i64 = conn.query_row(sql, [project_id], |r| r.get(0))?;
             Ok(n as usize)
@@ -689,7 +836,8 @@ impl ContextStore {
             )?,
             contradictions: count(
                 "SELECT COUNT(*) FROM context.contradicts c
-                 WHERE c.a_id IN (SELECT id FROM context.assertions WHERE project_id = ?1)",
+                 WHERE c.resolved_at IS NULL
+                   AND c.a_id IN (SELECT id FROM context.assertions WHERE project_id = ?1)",
             )?,
             pending_proposals: count(
                 "SELECT COUNT(*) FROM context.proposals
@@ -706,7 +854,9 @@ impl ContextStore {
 
 /// Applies one event to the projection. The only code that writes
 /// `entities`, `assertions` and the edge tables, for live writes and replay
-/// alike.
+/// alike. An event that targets a row that is not there is an error, not a
+/// zero-row update: live writes validate first, so this bites only a bad
+/// replay, which must be loud.
 fn apply(conn: &Connection, event: &Event) -> Result<()> {
     match &event.payload {
         EventPayload::EntityRecorded {
@@ -744,12 +894,16 @@ fn apply(conn: &Connection, event: &Event) -> Result<()> {
             )?;
         }
         EventPayload::EntityArchived { id } => {
-            conn.execute(
+            let n = conn.execute(
                 "UPDATE context.entities SET status = 'archived' WHERE id = ?1",
                 [id],
             )?;
+            if n == 0 {
+                return Err(ContextError::UnknownEntity(id.clone()));
+            }
         }
         EventPayload::EntityMerged { id, into } => {
+            require_entity(conn, &event.project_id, into)?;
             conn.execute(
                 "INSERT OR IGNORE INTO context.about (assertion_id, entity_id)
                  SELECT assertion_id, ?2 FROM context.about WHERE entity_id = ?1",
@@ -768,8 +922,21 @@ fn apply(conn: &Connection, event: &Event) -> Result<()> {
                 [id, into],
             )?;
             conn.execute("DELETE FROM context.relates WHERE to_id = ?1", [id])?;
+            // A relation between the two becomes a self-relation: drop it.
             conn.execute(
+                "DELETE FROM context.relates WHERE from_id = ?1 AND to_id = ?1",
+                [into],
+            )?;
+            let n = conn.execute(
                 "UPDATE context.entities SET status = 'merged', merged_into = ?2 WHERE id = ?1",
+                [id, into],
+            )?;
+            if n == 0 {
+                return Err(ContextError::UnknownEntity(id.clone()));
+            }
+            // Path compression: whatever pointed at `id` now points at `into`.
+            conn.execute(
+                "UPDATE context.entities SET merged_into = ?2 WHERE merged_into = ?1",
                 [id, into],
             )?;
         }
@@ -810,12 +977,14 @@ fn apply(conn: &Connection, event: &Event) -> Result<()> {
                 ],
             )?;
             for entity_id in about {
+                require_entity(conn, &event.project_id, entity_id)?;
                 conn.execute(
                     "INSERT OR IGNORE INTO context.about (assertion_id, entity_id) VALUES (?1, ?2)",
                     [id, entity_id],
                 )?;
             }
             if let Some(sup) = supersedes {
+                require_assertion(conn, &event.project_id, &sup.id)?;
                 conn.execute(
                     "INSERT OR IGNORE INTO context.supersedes (new_id, old_id, reasoning)
                      VALUES (?1, ?2, ?3)",
@@ -823,6 +992,7 @@ fn apply(conn: &Connection, event: &Event) -> Result<()> {
                 )?;
             }
             for c in contradicts {
+                require_assertion(conn, &event.project_id, &c.id)?;
                 conn.execute(
                     "INSERT OR IGNORE INTO context.contradicts (a_id, b_id, reasoning)
                      VALUES (?1, ?2, ?3)",
@@ -831,6 +1001,8 @@ fn apply(conn: &Connection, event: &Event) -> Result<()> {
             }
         }
         EventPayload::Linked { from, to, rel } => {
+            require_entity(conn, &event.project_id, from)?;
+            require_entity(conn, &event.project_id, to)?;
             conn.execute(
                 "INSERT OR IGNORE INTO context.relates (from_id, to_id, rel) VALUES (?1, ?2, ?3)",
                 params![from, to, tag(rel)?],
@@ -851,16 +1023,38 @@ fn apply(conn: &Connection, event: &Event) -> Result<()> {
         EventPayload::Abandoned { assertion_id } => {
             set_status(conn, assertion_id, AssertionStatus::Abandoned)?;
         }
+        EventPayload::ContradictionResolved { a, b, reasoning } => {
+            require_assertion(conn, &event.project_id, a)?;
+            require_assertion(conn, &event.project_id, b)?;
+            let n = conn.execute(
+                "UPDATE context.contradicts
+                 SET resolved_at = ?3, resolution = ?4, resolved_by = ?5
+                 WHERE (a_id = ?1 AND b_id = ?2) OR (a_id = ?2 AND b_id = ?1)",
+                params![
+                    a,
+                    b,
+                    event.recorded_at,
+                    reasoning,
+                    json(&event.stamp.author)?
+                ],
+            )?;
+            if n == 0 {
+                return Err(no_contradiction(a, b));
+            }
+        }
     }
     Ok(())
 }
 
 /// The one mutation an assertion row ever sees.
 fn set_status(conn: &Connection, assertion_id: &str, status: AssertionStatus) -> Result<()> {
-    conn.execute(
+    let n = conn.execute(
         "UPDATE context.assertions SET status = ?2 WHERE id = ?1",
         params![assertion_id, tag(&status)?],
     )?;
+    if n == 0 {
+        return Err(ContextError::UnknownAssertion(assertion_id.to_string()));
+    }
     Ok(())
 }
 
@@ -918,7 +1112,158 @@ fn is_head(conn: &Connection, assertion_id: &str) -> Result<bool> {
     Ok(n == 0)
 }
 
-/// Whether another entity of the project (not `entity_id` itself) holds `slug`.
+/// What a supersession must match: the assertion's kind, domain and subjects.
+fn assertion_shape(
+    conn: &Connection,
+    assertion_id: &str,
+) -> Result<(AssertionKind, Domain, Vec<Id>)> {
+    let (kind, domain) = conn.query_row(
+        "SELECT kind, domain FROM context.assertions WHERE id = ?1",
+        [assertion_id],
+        |r| {
+            Ok((
+                from_tag(&r.get::<_, String>(0)?)?,
+                from_tag(&r.get::<_, String>(1)?)?,
+            ))
+        },
+    )?;
+    let mut stmt = conn.prepare("SELECT entity_id FROM context.about WHERE assertion_id = ?1")?;
+    let about = stmt
+        .query_map([assertion_id], |r| r.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    Ok((kind, domain, about))
+}
+
+/// `(status, merged_into)` of an entity of the project.
+fn entity_state(
+    conn: &Connection,
+    project_id: &str,
+    id: &str,
+) -> Result<(EntityStatus, Option<Id>)> {
+    conn.query_row(
+        "SELECT status, merged_into FROM context.entities WHERE id = ?1 AND project_id = ?2",
+        [id, project_id],
+        |r| Ok((from_tag(&r.get::<_, String>(0)?)?, r.get(1)?)),
+    )
+    .optional()?
+    .ok_or_else(|| ContextError::UnknownEntity(id.to_string()))
+}
+
+fn active_entity_by_slug(conn: &Connection, project_id: &str, slug: &str) -> Result<Option<Id>> {
+    Ok(conn
+        .query_row(
+            "SELECT id FROM context.entities
+             WHERE project_id = ?1 AND slug = ?2 AND status = 'active'",
+            [project_id, slug.trim()],
+            |r| r.get(0),
+        )
+        .optional()?)
+}
+
+/// Resolve the subjects that were only proposed when the candidate was made
+/// (slugs, any case) against the project's active entities now, adding the
+/// found ones to `input.about`; the ones still missing come back.
+fn resolve_pending(
+    conn: &Connection,
+    project_id: &str,
+    input: &mut AssertionInput,
+    pending: Vec<String>,
+) -> Result<Vec<String>> {
+    let mut missing = Vec::new();
+    for slug in pending {
+        match active_entity_by_slug(conn, project_id, &slug)? {
+            Some(id) if input.about.contains(&id) => {}
+            Some(id) => input.about.push(id),
+            None => missing.push(slug),
+        }
+    }
+    Ok(missing)
+}
+
+fn require_accepted(missing: &[String]) -> Result<()> {
+    match missing.first() {
+        Some(slug) => Err(ContextError::Invalid(format!(
+            "accept the entity `{slug}` first"
+        ))),
+        None => Ok(()),
+    }
+}
+
+fn relation_target(relation: &ProposedRelation) -> Result<Id> {
+    relation.target.clone().ok_or_else(|| {
+        ContextError::Invalid(format!(
+            "a `{}` proposal needs a target assertion",
+            tag(&relation.kind).unwrap_or_default()
+        ))
+    })
+}
+
+/// Sets the edges an honoured relation implies on the input. `Confirms` and
+/// `Duplicate` imply none: nothing new is recorded for those, and the
+/// callers settle them before getting here.
+fn with_relation(input: &mut AssertionInput, relation: &ProposedRelation) -> Result<()> {
+    match relation.kind {
+        RelationKind::New | RelationKind::Confirms | RelationKind::Duplicate => {}
+        RelationKind::Supersedes => {
+            // The proposer's reasoning when it gave one; the candidate's own
+            // rationale otherwise, so a parked supersession can still land.
+            let reasoning = relation
+                .reasoning
+                .clone()
+                .filter(|r| !r.trim().is_empty())
+                .unwrap_or_else(|| input.rationale.clone());
+            input.supersedes = Some(Supersede {
+                id: relation_target(relation)?,
+                reasoning,
+            });
+        }
+        RelationKind::Contradicts => input.contradicts.push(Contradict {
+            id: relation_target(relation)?,
+            reasoning: relation.reasoning.clone(),
+        }),
+    }
+    Ok(())
+}
+
+fn contradiction_exists(conn: &Connection, a: &str, b: &str) -> Result<bool> {
+    let n: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM context.contradicts
+         WHERE (a_id = ?1 AND b_id = ?2) OR (a_id = ?2 AND b_id = ?1)",
+        [a, b],
+        |r| r.get(0),
+    )?;
+    Ok(n > 0)
+}
+
+fn no_contradiction(a: &str, b: &str) -> ContextError {
+    ContextError::Invalid(format!(
+        "no contradiction is recorded between `{a}` and `{b}`"
+    ))
+}
+
+/// Provisional assertions one checkout of a workspace made; the primary
+/// checkout also owns records stamped with no repo.
+fn provisional_in_checkout(
+    conn: &Connection,
+    project_id: &str,
+    workspace_id: &str,
+    repo: &str,
+    is_primary: bool,
+) -> Result<Vec<Id>> {
+    let mut stmt = conn.prepare(
+        "SELECT id FROM context.assertions
+         WHERE project_id = ?1 AND status = 'provisional'
+           AND json_extract(provenance, '$.workspace_id') = ?2
+           AND (json_extract(provenance, '$.repo') = ?3
+                OR (?4 AND json_extract(provenance, '$.repo') IS NULL))
+         ORDER BY recorded_at, id",
+    )?;
+    let ids = stmt.query_map(params![project_id, workspace_id, repo, is_primary], |r| {
+        r.get(0)
+    })?;
+    Ok(ids.collect::<rusqlite::Result<_>>()?)
+}
+
 /// Text caps, enforced here so every writer — agent op, extractor, ingester,
 /// UI — lands the same shape; a writer that wants a friendlier message checks
 /// the same numbers first.
@@ -971,6 +1316,8 @@ pub(crate) fn clean_line(raw: &str) -> String {
         .join(" ")
 }
 
+/// Whether another entity of the project (not `entity_id` itself) holds
+/// `slug`. The column is `COLLATE NOCASE`, so `=` compares case-insensitively.
 fn slug_taken(conn: &Connection, project_id: &str, slug: &str, entity_id: &str) -> Result<bool> {
     let n: i64 = conn.query_row(
         "SELECT COUNT(*) FROM context.entities
@@ -994,6 +1341,23 @@ fn vision_exists(conn: &Connection, project_id: &str, entity_id: &str) -> Result
 
 // ---------------------------------------------------------------------------
 // Reading the projection
+
+/// One project's projection off a connection: `load` reads it under the
+/// lock, `land` reads it inside its transaction.
+fn load_graph(conn: &Connection, project_id: &str) -> Result<Graph> {
+    let contradictions = load_contradictions(conn, project_id)?;
+    let mut graph = Graph {
+        project_id: project_id.to_string(),
+        entities: load_entities(conn, project_id)?,
+        assertions: load_assertions(conn, project_id, &contradictions)?,
+        relations: load_relations(conn, project_id)?,
+        current: Vec::new(),
+        contradictions,
+    };
+    graph.current = compile::current_heads(&graph).into_iter().collect();
+    graph.current.sort();
+    Ok(graph)
+}
 
 fn load_entities(conn: &Connection, project_id: &str) -> Result<Vec<Entity>> {
     let mut stmt = conn.prepare(
@@ -1020,8 +1384,42 @@ fn load_entities(conn: &Connection, project_id: &str) -> Result<Vec<Entity>> {
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
-fn load_assertions(conn: &Connection, project_id: &str) -> Result<Vec<Assertion>> {
-    const OF_PROJECT: &str = "SELECT id FROM context.assertions WHERE project_id = ?1";
+fn load_contradictions(conn: &Connection, project_id: &str) -> Result<Vec<ContradictionEdge>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT a_id, b_id, reasoning, resolved_at, resolution, resolved_by
+         FROM context.contradicts
+         WHERE a_id IN ({OF_PROJECT}) OR b_id IN ({OF_PROJECT}) ORDER BY rowid"
+    ))?;
+    let rows = stmt.query_map([project_id], |r| {
+        let resolution = match (
+            r.get::<_, Option<i64>>(3)?,
+            r.get::<_, Option<String>>(4)?,
+            r.get::<_, Option<String>>(5)?,
+        ) {
+            (Some(at), Some(reasoning), Some(by)) => Some(Resolution {
+                reasoning,
+                at,
+                by: from_json(&by)?,
+            }),
+            _ => None,
+        };
+        Ok(ContradictionEdge {
+            a: r.get(0)?,
+            b: r.get(1)?,
+            reasoning: r.get(2)?,
+            resolution,
+        })
+    })?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+const OF_PROJECT: &str = "SELECT id FROM context.assertions WHERE project_id = ?1";
+
+fn load_assertions(
+    conn: &Connection,
+    project_id: &str,
+    contradictions: &[ContradictionEdge],
+) -> Result<Vec<Assertion>> {
     let mut about: HashMap<Id, Vec<Id>> = HashMap::new();
     for (a, e) in pairs(
         conn,
@@ -1053,13 +1451,15 @@ fn load_assertions(conn: &Connection, project_id: &str) -> Result<Vec<Assertion>
         );
     }
     let mut contradicts: HashMap<Id, Vec<Id>> = HashMap::new();
-    for (a, b) in pairs(
-        conn,
-        &format!("SELECT a_id, b_id FROM context.contradicts WHERE a_id IN ({OF_PROJECT}) OR b_id IN ({OF_PROJECT}) ORDER BY rowid"),
-        project_id,
-    )? {
-        contradicts.entry(a.clone()).or_default().push(b.clone());
-        contradicts.entry(b).or_default().push(a);
+    for edge in contradictions {
+        contradicts
+            .entry(edge.a.clone())
+            .or_default()
+            .push(edge.b.clone());
+        contradicts
+            .entry(edge.b.clone())
+            .or_default()
+            .push(edge.a.clone());
     }
 
     let mut stmt = conn.prepare(
@@ -1115,10 +1515,12 @@ fn pairs(conn: &Connection, sql: &str, project_id: &str) -> Result<Vec<(Id, Id)>
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
+/// In replay order: wall clock first, so a host's event lands after the one
+/// from another host it builds on; `(host_id, seq)` breaks ties.
 fn load_events(conn: &Connection, project_id: &str) -> Result<Vec<Event>> {
     let mut stmt = conn.prepare(
         "SELECT id, project_id, host_id, seq, recorded_at, author, source, provenance, payload
-         FROM context.events WHERE project_id = ?1 ORDER BY host_id, seq",
+         FROM context.events WHERE project_id = ?1 ORDER BY recorded_at, host_id, seq",
     )?;
     let rows = stmt.query_map([project_id], |r| {
         let (v, payload) = payload_from_json(&r.get::<_, String>(8)?)?;
@@ -1165,6 +1567,28 @@ fn proposal_from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Proposal> {
             .map(|s| from_json(&s))
             .transpose()?,
     })
+}
+
+fn insert_proposal(conn: &Connection, proposal: &Proposal) -> Result<()> {
+    conn.execute(
+        "INSERT INTO context.proposals
+           (id, project_id, observation_id, payload, evidence, status, dismiss_reason,
+            created_at, ruled_at, ruled_by)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        params![
+            proposal.id,
+            proposal.project_id,
+            proposal.observation_id,
+            json(&proposal.payload)?,
+            json(&proposal.evidence)?,
+            tag(&proposal.status)?,
+            proposal.dismiss_reason.map(|r| tag(&r)).transpose()?,
+            proposal.created_at,
+            proposal.ruled_at,
+            proposal.ruled_by.as_ref().map(json).transpose()?,
+        ],
+    )?;
+    Ok(())
 }
 
 fn get_proposal(conn: &Connection, proposal_id: &str) -> Result<Option<Proposal>> {
