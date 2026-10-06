@@ -1,23 +1,36 @@
-import type { GitState, PrChecks, PrState, ShortStats } from "@/api";
+import type { GitState, PrChecks, PrSetEntry, PrState, ShortStats } from "@/api";
 import { Icon } from "@/components/Icon";
-import { PR_META, prBadge } from "./derive";
+import { summarizePrSet } from "@/util/prState";
+import { PR_META, prBadge, setBadgeCls } from "./derive";
 
 interface Props {
   pr: PrState | null;
   git: GitState | null;
   checks: PrChecks | null;
   stats: ShortStats | null;
+  /** The checkout's whole PR set, focused included. */
+  prs: readonly PrSetEntry[];
 }
 
 /** The one badge that summarizes the checkout: PR (state-tinted, with number)
- *  once one exists, else the uncommitted diff, else a clean-tree check. */
-export function GitBadge({ pr, git, checks, stats }: Props) {
+ *  once one exists, else the uncommitted diff, else a clean-tree check. With
+ *  several PRs it keeps the focused `#N`, adds a quiet `+K` for the rest, and
+ *  takes the set's worst tint — the popover lists them all. */
+export function GitBadge({ pr, git, checks, stats, prs }: Props) {
   if (pr) {
-    const meta = PR_META[prBadge(pr, git, checks)];
+    const badge = prBadge(pr, git, checks);
+    const meta = PR_META[badge];
+    const others = prs.length - 1;
+    const cls = others > 0 ? setBadgeCls(badge, summarizePrSet(prs).variant) : meta.cls;
     return (
-      <span className={`ws-badge pr-${meta.cls}`}>
+      <span className={`ws-badge pr-${cls}`}>
         <Icon name={meta.icon} size={11} />
         <span className="mono">#{pr.number}</span>
+        {others > 0 && (
+          <span className="ws-badge-more mono" aria-label={`and ${others} more`}>
+            +{others}
+          </span>
+        )}
       </span>
     );
   }

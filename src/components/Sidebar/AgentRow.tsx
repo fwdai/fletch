@@ -1,11 +1,12 @@
 import type { KeyboardEvent, MouseEvent } from "react";
-import { useState } from "react";
+import { useMemo, useState } from "react";
+import { prOrigins } from "@/adapters/shared/subagents";
 import { contextPercent, resolveContextWindow } from "@/adapters/usage";
-import type { AgentRecord, AgentStatus, PrChecks, PrState, ShortStats } from "@/api";
+import type { AgentRecord, AgentStatus, ShortStats } from "@/api";
 import { AgentIdentityChip } from "@/components/AgentIdentityChip";
 import { Icon } from "@/components/Icon";
 import { ProviderIcon } from "@/components/ProviderIcon";
-import { Badge, type BadgeVariant } from "@/components/ui/Badge";
+import { Badge } from "@/components/ui/Badge";
 import { providerChip, providerLabel } from "@/data/providers";
 import { spawnStageLabel } from "@/data/spawnStage";
 import type { DraftAgent } from "@/store";
@@ -14,9 +15,10 @@ import { useGate } from "@/store/capabilities";
 import { maxBehind } from "@/store/git";
 import { formatAge } from "@/util/format";
 import { useMinuteClock } from "@/util/hooks";
-import { type AgentPr, useAgentPrs } from "@/util/prState";
+import { summarizeAgentPrs, useAgentPrs } from "@/util/prState";
 import { type AgentStats, AgentStatsPopover } from "./AgentStatsPopover";
 import { type AutopilotSignal, autopilotSignal, autopilotTip } from "./autopilotSignal";
+import { PrPill } from "./PrPill";
 import { SubagentRow } from "./SubagentRow";
 import { deriveSubagentChildren, failedTip, runningTip } from "./subagentChildren";
 
@@ -58,14 +60,17 @@ export function AgentRow(props: Props) {
 
 function RealRow({ agent, active, onClick }: RealRowProps) {
   const usage = useAppStore((s) => s.usage[agent.id]);
-  // Every PR across the agent's repos (live state with the persisted database
-  // snapshot as fallback, so a merged badge survives restarts, offline
-  // stretches, and broken checkouts), each with the CI rollup the fleet seed
+  // Every PR across the agent's repos — each checkout's whole set, since
+  // sub-agents each open their own — with the persisted database snapshot as
+  // fallback, so a merged badge survives restarts, offline stretches, and
+  // broken checkouts. Each carries the CI rollup the fleet seed
   // (loadAllPrStatus) or the host watcher's events recorded for it.
-  // Single-repo agents yield at most one entry — exactly the old primary-only
-  // read; a multi-repo agent whose only PR lives on a secondary repo still
-  // gets its badge.
   const agentPrs = useAgentPrs(agent);
+  // Which sub-agent opened which of those PRs, read back out of the log (the
+  // host records PRs per checkout, not per thread). The log only exists once
+  // the agent has been opened this session; until then nothing is attributed.
+  const log = useAppStore((s) => s.managedLogs[agent.id]);
+  const origins = useMemo(() => prOrigins(log ?? []), [log]);
   const shortstats = useAppStore((s) => s.gitShortstats[agent.id]);
   // Base-staleness across the agent's checkouts (stalest wins — a behind
   // secondary must surface even when the primary is fresh). A quiet "base
@@ -166,10 +171,10 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
     agent.status === "idle" || agent.status === "stopped" || agent.status === "error";
 
   // The status rail doubles as the left spine: colored for live/terminal
-  // states, a merged PR claims purple (every PR of the set, for multi-repo),
+  // states, purple once the PR pill reads merged (every PR of the set merged),
   // everything else is a faint grey. A pending question outranks the plain
   // running green — amber says "you".
-  const allMerged = agentPrs.length > 0 && agentPrs.every((e) => e.pr.state === "merged");
+  const allMerged = agentPrs.length > 0 && summarizeAgentPrs(agentPrs).variant === "pr-merged";
   const railClass = awaiting
     ? "wait"
     : working
@@ -294,10 +299,8 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
         <div className="agent-sub flex-center">
           <AgentIdentityChip agent={agent} size={12} />
           <span className="a-task a-codename">{agent.name}</span>
-          {agentPrs.length === 1 ? (
-            <PrBadge pr={agentPrs[0].pr} checks={agentPrs[0].checks} />
-          ) : agentPrs.length > 1 ? (
-            <MultiPrBadge prs={agentPrs} />
+          {agentPrs.length > 0 ? (
+            <PrPill prs={agentPrs} />
           ) : hasChanges ? (
             <DiffStat stats={shortstats} />
           ) : null}
@@ -345,7 +348,12 @@ function RealRow({ agent, active, onClick }: RealRowProps) {
       {subagents.length > 0 && (
         <div className="run-steps">
           {subagents.map((child) => (
-            <SubagentRow key={child.task.taskId} agentId={agent.id} child={child} />
+            <SubagentRow
+              key={child.task.taskId}
+              agentId={agent.id}
+              child={child}
+              prs={agentPrs.filter((e) => origins.get(e.pr.number) === child.task.toolUseId)}
+            />
           ))}
         </div>
       )}
@@ -402,97 +410,6 @@ function DraftRow({ draft, active, onClick }: DraftRowProps) {
 }
 
 // ── pieces ─────────────────────────────────────────────────────────────────
-
-/** Compact PR pill mirroring the git-panel status. An open PR is tinted by its
- *  CI rollup (green pass / red fail) once `checks` land from the app-wide poll;
- *  merged / closed / pending / no-checks keep their own neutral tones. */
-function PrBadge({ pr, checks }: { pr: PrState; checks: PrChecks | null }) {
-  if (pr.state === "merged") {
-    return (
-      <Badge variant="pr-merged" tip={`PR #${pr.number} · merged`}>
-        <Icon name="merge" size={10} />#{pr.number}
-      </Badge>
-    );
-  }
-  if (pr.state === "closed") {
-    return (
-      <Badge variant="pr-closed" tip={`PR #${pr.number} · closed`}>
-        <Icon name="pr" size={10} />
-        PR
-      </Badge>
-    );
-  }
-  const ci = ciTint(checks);
-  return (
-    <Badge variant={ci.variant} tip={`PR #${pr.number} · open${ci.tip}`}>
-      <Icon name="pr" size={10} />
-      PR
-    </Badge>
-  );
-}
-
-/** Aggregate pill for a multi-repo agent with PRs on several repos: `N PRs`,
- *  tinted by the worst status across the set — any open PR with failing checks
- *  → red; any open PR still pending/unchecked → the neutral open blue; all
- *  open PRs passing → green; no open PRs → closed grey over merged purple.
- *  The tooltip itemizes each PR so the pill stays glanceable. */
-function MultiPrBadge({ prs }: { prs: AgentPr[] }) {
-  const open = prs.filter((e) => e.pr.state === "open");
-  let variant: BadgeVariant;
-  let icon: "pr" | "merge" = "pr";
-  if (open.length > 0) {
-    const tints = open.map((e) => ciTint(e.checks).variant);
-    variant = tints.includes("pr-fail")
-      ? "pr-fail"
-      : tints.includes("pr-open")
-        ? "pr-open"
-        : "pr-pass";
-  } else if (prs.some((e) => e.pr.state === "closed")) {
-    variant = "pr-closed";
-  } else {
-    variant = "pr-merged";
-    icon = "merge";
-  }
-  const tip = prs.map((e) => `#${e.pr.number} ${prStatusWord(e)}`).join(" · ");
-  return (
-    <Badge variant={variant} tip={tip}>
-      <Icon name={icon} size={10} />
-      {prs.length} PRs
-    </Badge>
-  );
-}
-
-/** One PR's status for the aggregate tooltip: its state, refined by the CI
- *  rollup while open. */
-function prStatusWord({ pr, checks }: AgentPr): string {
-  if (pr.state !== "open") return pr.state;
-  switch (checks?.rollup) {
-    case "passing":
-      return "open, checks passing";
-    case "failing":
-      return "open, checks failing";
-    case "pending":
-      return "open, checks running";
-    default:
-      return "open";
-  }
-}
-
-/** Map an open PR's CI rollup to a pill variant + tooltip suffix. Pending and
- *  "no checks configured" stay on the neutral pr-open blue — only a settled
- *  pass/fail earns a color. */
-function ciTint(checks: PrChecks | null): { variant: BadgeVariant; tip: string } {
-  switch (checks?.rollup) {
-    case "passing":
-      return { variant: "pr-pass", tip: ` · checks passing (${checks.passed}/${checks.total})` };
-    case "failing":
-      return { variant: "pr-fail", tip: ` · checks failing (${checks.failed} failed)` };
-    case "pending":
-      return { variant: "pr-open", tip: ` · checks running (${checks.pending} pending)` };
-    default:
-      return { variant: "pr-open", tip: "" };
-  }
-}
 
 /** Autopilot's mark on the row — advisory, so it decorates the sub-row it shares
  *  with the stale/diff hints and never claims space of its own.

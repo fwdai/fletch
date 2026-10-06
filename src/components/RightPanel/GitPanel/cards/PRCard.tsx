@@ -2,6 +2,7 @@ import { open } from "@tauri-apps/plugin-shell";
 import type { PrChecks, PrComment, PrComments, PrState } from "@/api";
 import { Icon } from "@/components/Icon";
 import { describeMergeGate, type MergeGateSituation } from "@/mergeGate";
+import type { PrOrigin } from "../hooks/usePrOrigin";
 import { ChecksSection } from "./ChecksSection";
 import { CommentsSection } from "./CommentsSection";
 
@@ -27,6 +28,7 @@ const CARD_GATE_BY_SITUATION: Record<
 export function PRCard({
   pr,
   branch,
+  origin,
   base,
   checks,
   comments,
@@ -37,6 +39,9 @@ export function PRCard({
    *  passes it once the checkout holds several PRs — each from its own branch,
    *  not necessarily the one checked out — so a one-PR card stays as it was. */
   branch?: string | null;
+  /** The sub-agent that opened this PR, when one did — said on the branch
+   *  line, one click from its thread. */
+  origin?: PrOrigin | null;
   base: string;
   checks: PrChecks | null;
   comments: PrComments | null;
@@ -57,10 +62,18 @@ export function PRCard({
       <div className="git-card-h text-xs">Pull request</div>
       <div className="git-card-title text-base">{pr.title}</div>
       <div className="git-card-meta text-sm">#{pr.number} · open</div>
-      {branch && (
-        <div className="git-card-branch text-xs flex-center" title={branch}>
-          <Icon name="branch" size={11} />
-          <span className="git-card-branch-name">{branch}</span>
+      {(branch || origin) && (
+        <div className="git-card-branch text-xs flex-center" title={branch ?? undefined}>
+          <Icon name={branch ? "branch" : "subagent"} size={11} />
+          {branch && <span className="git-card-branch-name">{branch}</span>}
+          {origin && (
+            <span className="git-card-origin">
+              {branch ? "· " : ""}opened by{" "}
+              <button type="button" className="git-card-origin-link" onClick={origin.open}>
+                {origin.label}
+              </button>
+            </span>
+          )}
         </div>
       )}
       <div className="git-card-row text-sm">

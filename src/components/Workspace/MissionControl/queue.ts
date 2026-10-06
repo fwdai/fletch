@@ -10,12 +10,15 @@ import type {
   GitMeta,
   PrChecks,
   PrComments,
+  PrSetEntry,
   PrState,
   ShortStats,
   VerificationReport,
   WfPausedReason,
   WfRun,
 } from "@/api";
+import { checkoutPrs, worstOpenPr } from "@/util/prSummary";
+
 /** A card's tests-evidence chip state, derived from a turn-end
  *  [`VerificationReport`]. Only ever a definitive verdict — `undefined` while
  *  unknown/running/skipped, so the card never shows a fake state. */
@@ -143,6 +146,9 @@ export interface QueueInput {
   prStates: Record<string, PrState | null>;
   prChecks: Record<string, PrChecks | null>;
   prComments: Record<string, PrComments | null>;
+  /** Every checkout's PR set (focused included), keyed like the maps above.
+   *  A key without one (an older host) falls back to its focused PR. */
+  prSets: Record<string, PrSetEntry[]>;
   /** Latest turn-end verification report per agent (keyed by agent_id). Absent
    *  = never verified. */
   verificationReports: Record<string, VerificationReport>;
@@ -186,45 +192,49 @@ function parseCreated(iso: string): number {
   return Number.isNaN(t) ? 0 : t;
 }
 
-/** One repo's open-PR signals for an agent. The PR maps are keyed `agentId`
- *  for the primary repo and `agentId::subdir` for secondaries (store/git.ts
- *  `checkoutKey`) — a multi-repo agent's failing check must surface no matter which
- *  repo it's on. */
-interface PrSignal {
+/** One open PR's signals for an agent. The PR maps are keyed `agentId` for the
+ *  primary repo and `agentId::subdir` for secondaries (store/git.ts
+ *  `checkoutKey`) — a multi-repo agent's failing check must surface no matter
+ *  which repo it's on — and each checkout holds a set of PRs, so a failing
+ *  sibling must surface however calm the focused one is. */
+interface PrSignal extends PrSetEntry {
   /** "" for the primary repo, the subdir for a secondary. */
   repo: string;
-  pr: PrState;
-  checks: PrChecks | null;
+  /** Unresolved threads — only read for a checkout's focused PR, so 0 for
+   *  the rest of its set. */
   unresolved: number;
 }
 
 /** Collect the agent's open-PR signals across every repo key, primary first
- *  then secondaries in stable (sorted) order. */
+ *  then secondaries in stable (sorted) order, each checkout's PRs newest
+ *  first. */
 function collectPrSignals(agentId: string, input: QueueInput): PrSignal[] {
   const prefix = `${agentId}::`;
-  const keys = [
-    agentId,
-    ...Object.keys(input.prStates)
-      .filter((k) => k.startsWith(prefix))
-      .sort(),
-  ];
+  const secondaries = new Set(
+    [...Object.keys(input.prStates), ...Object.keys(input.prSets)].filter((k) =>
+      k.startsWith(prefix),
+    ),
+  );
+  const keys = [agentId, ...[...secondaries].sort()];
   const out: PrSignal[] = [];
   for (const key of keys) {
-    const pr = input.prStates[key] ?? null;
-    // Signals only count against an open PR — a merged/closed PR's stale
-    // rollup must never nag.
-    if (pr?.state !== "open") continue;
-    out.push({
-      repo: key === agentId ? "" : key.slice(prefix.length),
-      pr,
-      checks: input.prChecks[key] ?? null,
-      // Threads where WE had the last word are waiting on a person, not on
-      // anyone doing more work — counting them would leave a card sitting under
-      // an "unresolved comments" chip that nobody can clear by acting.
-      unresolved: ((input.prComments[key] ?? null)?.unresolved ?? []).filter(
-        (t) => !t.we_replied_last,
-      ).length,
-    });
+    const focused = input.prStates[key] ?? null;
+    // Threads where WE had the last word are waiting on a person, not on
+    // anyone doing more work — counting them would leave a card sitting under
+    // an "unresolved comments" chip that nobody can clear by acting.
+    const unresolved = ((input.prComments[key] ?? null)?.unresolved ?? []).filter(
+      (t) => !t.we_replied_last,
+    ).length;
+    for (const e of checkoutPrs(input.prSets[key], focused, input.prChecks[key])) {
+      // Signals only count against an open PR — a merged/closed PR's stale
+      // rollup must never nag.
+      if (e.state.state !== "open") continue;
+      out.push({
+        ...e,
+        repo: key === agentId ? "" : key.slice(prefix.length),
+        unresolved: e.state.number === focused?.number ? unresolved : 0,
+      });
+    }
   }
   return out;
 }
@@ -241,7 +251,7 @@ function agentSignature(p: {
   const c = p.signals
     .map((s) => {
       const checks = s.checks ? `${s.checks.rollup}:${s.checks.failed}` : "-";
-      return `${s.repo}=${checks}:${s.unresolved}`;
+      return `${s.repo}#${s.state.number}=${checks}:${s.unresolved}`;
     })
     .join(",");
   // Include the tests verdict so a fresh verification resurfaces a dismissed
@@ -468,9 +478,11 @@ export function buildReviewQueue(input: QueueInput): ReviewItem[] {
     if (unresolved > 0) reasons.push("unresolved-comments");
     if (reasons.length === 0) continue;
 
-    // The evidence chips show one PR: the one carrying the issue (a failing
-    // repo first, then one with unresolved threads, then the primary).
-    const shown = failing[0] ?? signals.find((s) => s.unresolved > 0) ?? signals[0];
+    // The evidence chips show one PR: the one carrying the issue — the worst
+    // failing PR (the shared worst-wins precedence), else the one with
+    // unresolved threads the card is about, else the worst open PR.
+    const shown =
+      worstOpenPr(failing) ?? signals.find((s) => s.unresolved > 0) ?? worstOpenPr(signals);
     const isPr = reasons.includes("checks-failing") || reasons.includes("unresolved-comments");
     items.push({
       id: `agent:${agent.id}`,
@@ -483,7 +495,7 @@ export function buildReviewQueue(input: QueueInput): ReviewItem[] {
       reasons,
       agent,
       diff: hasDiff ? stats : undefined,
-      pr: shown ? { number: shown.pr.number, url: shown.pr.url } : undefined,
+      pr: shown ? { number: shown.state.number, url: shown.state.url } : undefined,
       prSubdir: shown?.repo ? shown.repo : undefined,
       checks: shown?.checks ?? undefined,
       unresolvedComments: unresolved > 0 ? unresolved : undefined,

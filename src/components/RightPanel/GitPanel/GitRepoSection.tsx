@@ -14,6 +14,7 @@ import { useActionBarModel } from "./hooks/useActionBarModel";
 import { useCommitDraft } from "./hooks/useCommitDraft";
 import { useGitActions } from "./hooks/useGitActions";
 import { useGitPanelData } from "./hooks/useGitPanelData";
+import { usePrOrigin } from "./hooks/usePrOrigin";
 import { useTransientFeedback } from "./hooks/useTransientFeedback";
 import { PrSwitcher } from "./PrSwitcher";
 import { StatusHeader } from "./StatusHeader";
@@ -157,6 +158,8 @@ export function GitRepoSection({
   // that kept working after a merge holds the merged one too.
   const prSet = useAppStore((s) => s.prSets[key]);
   const hasPrSet = (prSet?.length ?? 0) >= 2;
+  // Which sub-agent opened the focused PR, when one did — the card says so.
+  const prOrigin = usePrOrigin(agent.id, prState?.number);
 
   return (
     <div className="git-wrap">
@@ -209,6 +212,7 @@ export function GitRepoSection({
               <PRCard
                 pr={prState}
                 branch={hasPrSet ? prState.branch : null}
+                origin={prOrigin}
                 base={base}
                 checks={checks}
                 comments={comments}

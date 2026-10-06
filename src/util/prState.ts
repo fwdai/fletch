@@ -9,6 +9,16 @@ import { useShallow } from "zustand/react/shallow";
 import type { AgentRecord, PrChecks, PrState, PrStatus, TrackedRepo } from "@/api";
 import { useAppStore } from "@/store";
 import { checkoutKey } from "@/store/git";
+import { checkoutPrs, type PrSetSummary, summarizePrSet } from "./prSummary";
+
+export {
+  checkoutPrs,
+  type PrSetSummary,
+  type PrTint,
+  prTint,
+  summarizePrSet,
+  worstOpenPr,
+} from "./prSummary";
 
 const PR_STATUSES: readonly PrStatus[] = ["open", "merged", "closed"];
 
@@ -45,34 +55,50 @@ export function usePrState(agentId: string, repo?: TrackedRepo): PrState | null 
   return useMemo(() => live ?? prSnapshot(found), [live, found]);
 }
 
-/** One repo's PR within an agent's set, with its CI rollup (null until the
- *  app-wide checks poll lands or when there's no rollup). */
+/** One PR within an agent's set, with its CI rollup (null until the app-wide
+ *  checks poll lands or when there's no rollup) and the repo it lives in. */
 export interface AgentPr {
   pr: PrState;
   checks: PrChecks | null;
   repo: TrackedRepo;
 }
 
-/** Every PR across an agent's repos, in repo order (primary first). Each repo
- *  reads its own store entry — plain agent id for the primary, the suffixed
- *  `checkoutKey` for secondaries, both fed by the app-wide bulk polls — resolved
- *  with the same per-repo policy as the panel sections and the PR-set strip:
- *  a present key, even a confirmed `null` (a fetch that found no PR), is
- *  authoritative; only a never-fetched key (absent = `undefined`) falls back
- *  to that repo's own persisted snapshot (a secondary never inherits the
- *  primary's). Repos without a PR drop out. */
+/** [`summarizePrSet`] over an agent's PRs. */
+export function summarizeAgentPrs(prs: readonly AgentPr[]): PrSetSummary {
+  return summarizePrSet(prs.map((e) => ({ state: e.pr, checks: e.checks })));
+}
+
+/** Every PR across an agent's repos: repo order (primary first), each
+ *  checkout's PRs newest first. A checkout holds a set — sub-agents each open
+ *  their own — read from `prSets`, its focused entry refreshed from the focused
+ *  maps (see `checkoutPrs`). Each repo reads its own keys — plain agent id for
+ *  the primary, the suffixed `checkoutKey` for secondaries. With no set known
+ *  (an older host) the checkout's focused PR stands alone, resolved with the
+ *  panel's per-repo policy: a present key, even a confirmed `null` (a fetch
+ *  that found no PR), is authoritative; only a never-fetched key falls back to
+ *  that repo's own persisted snapshot (a secondary never inherits the
+ *  primary's). Repos without a PR drop out.
+ *
+ *  Runs in every mounted sidebar row on every store update, so the selectors
+ *  only pick per-key references (shallow-compared) and the work happens in the
+ *  memo, once per actual change. */
 export function useAgentPrs(agent: AgentRecord): AgentPr[] {
   const keys = agent.repos.map((r, i) => checkoutKey(agent.id, i === 0 ? undefined : r.subdir));
   const live = useAppStore(
     useShallow((s) => keys.map((k) => (k in s.prStates ? s.prStates[k] : undefined))),
   );
   const checks = useAppStore(useShallow((s) => keys.map((k) => s.prChecks[k] ?? null)));
+  const sets = useAppStore(useShallow((s) => keys.map((k) => s.prSets[k])));
   return useMemo(
     () =>
       agent.repos.flatMap((repo, i) => {
-        const pr = live[i] !== undefined ? live[i] : prSnapshot(repo);
-        return pr ? [{ pr, checks: checks[i], repo }] : [];
+        const focused = live[i] !== undefined ? live[i] : prSnapshot(repo);
+        return checkoutPrs(sets[i], focused, checks[i]).map((e) => ({
+          pr: e.state,
+          checks: e.checks,
+          repo,
+        }));
       }),
-    [agent.repos, live, checks],
+    [agent.repos, live, checks, sets],
   );
 }

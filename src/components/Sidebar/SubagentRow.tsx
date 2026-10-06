@@ -2,6 +2,8 @@ import type { KeyboardEvent } from "react";
 import { Icon } from "@/components/Icon";
 import { useAppStore } from "@/store";
 import { formatDuration } from "@/util/format";
+import type { AgentPr } from "@/util/prState";
+import { PrPill } from "./PrPill";
 import { failedTip, type SubagentChild } from "./subagentChildren";
 
 /** One of an agent's backgrounded sub-agents as a sidebar child of its
@@ -10,8 +12,17 @@ import { failedTip, type SubagentChild } from "./subagentChildren";
  *  Clicking opens the sub-agent's thread in the center pane (the agent's
  *  conversation is one "back" away). Reads active while that thread — or a
  *  thread nested under it — is open. The task's lifecycle is Claude's, so the
- *  row carries no actions. */
-export function SubagentRow({ agentId, child }: { agentId: string; child: SubagentChild }) {
+ *  row carries no actions. `prs` are the agent's PRs this sub-agent opened
+ *  (`prOrigins`): its own pill, while the agent's row keeps the aggregate. */
+export function SubagentRow({
+  agentId,
+  child,
+  prs,
+}: {
+  agentId: string;
+  child: SubagentChild;
+  prs: readonly AgentPr[];
+}) {
   const openSubagentThread = useAppStore((s) => s.openSubagentThread);
   const active = useAppStore(
     (s) => s.openThread?.agentId === agentId && s.openThread.path[0] === child.task.toolUseId,
@@ -46,6 +57,7 @@ export function SubagentRow({ agentId, child }: { agentId: string; child: Subage
             quiet {formatDuration(child.quietMs)}
           </span>
         )}
+        <PrPill prs={prs} />
         <span className="ag-slot iflex-center">
           <span className="ag-meta">
             {child.running && <span className="ag-loader" aria-label="Working" />}

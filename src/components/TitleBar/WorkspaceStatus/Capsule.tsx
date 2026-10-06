@@ -28,7 +28,7 @@ export function Capsule({ agent, repoPath, projectName }: Props) {
   const rightCollapsed = useAppStore((s) => s.rightCollapsed);
   const toggleRight = useAppStore((s) => s.toggleRight);
   const setRightPanelTab = useAppStore((s) => s.setRightPanelTab);
-  const { shortstats, gitState, prState, checks } = useCapsuleData(agent.id);
+  const { shortstats, gitState, prState, checks, prs } = useCapsuleData(agent.id);
 
   const status = agentDotStatus(agent.status, pending);
 
@@ -53,7 +53,7 @@ export function Capsule({ agent, repoPath, projectName }: Props) {
             <SandboxBadge engine={agent.sandbox_engine} />
           </span>
           <span className="ws-cap-git">
-            <GitBadge pr={prState} git={gitState} checks={checks} stats={shortstats} />
+            <GitBadge pr={prState} git={gitState} checks={checks} stats={shortstats} prs={prs} />
             {prState?.state === "open" && <ChecksChip checks={checks} />}
           </span>
           <Icon name="chevD" size={11} className="ws-caret" />
@@ -63,7 +63,7 @@ export function Capsule({ agent, repoPath, projectName }: Props) {
           status={status}
           git={gitState}
           pr={prState}
-          checks={checks}
+          prs={prs}
           onViewPr={viewPr}
           onOpenDiff={openDiff}
         />

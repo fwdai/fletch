@@ -2,7 +2,7 @@ import { useRef, useState } from "react";
 import type { PrSetEntry } from "@/api";
 import { DropdownItem, DropdownMenu } from "@/components/ui/Dropdown";
 import { usePlacement } from "@/components/ui/usePlacement";
-import { chipStatus } from "../PrSetStrip";
+import { prTint } from "@/util/prState";
 import { prSummary } from "./PrChip";
 
 /** The `+N` button after the chips, and the menu it opens: every PR of the
@@ -49,7 +49,7 @@ export function PrOverflowMenu({
           <DropdownMenu ref={menuRef} role="menu" className={`git-pr-menu ${placement}`}>
             {entries.map((entry) => {
               const { state } = entry;
-              const { variant, word } = chipStatus(state, entry.checks);
+              const { variant, word } = prTint(state, entry.checks);
               const selected = state.number === focused;
               return (
                 <DropdownItem

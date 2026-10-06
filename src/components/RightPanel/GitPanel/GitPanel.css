@@ -398,6 +398,28 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* "opened by <sub-agent>" — provenance on the branch line; the branch name
+ * truncates first, the sub-agent label after it. */
+.git-card-origin {
+  flex-shrink: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-sans);
+}
+.git-card-origin-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--fg-2);
+  font: inherit;
+  cursor: pointer;
+}
+.git-card-origin-link:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}
 .git-card-row {
   display: flex;
   gap: 12px;

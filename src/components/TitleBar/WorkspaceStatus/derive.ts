@@ -1,5 +1,6 @@
 import type { AgentStatus, GitState, PrChecks, PrState } from "@/api";
 import type { IconName } from "@/components/Icon";
+import type { BadgeVariant } from "@/components/ui/Badge";
 
 /** The four glanceable states the capsule dot collapses to. Distinct from
  *  AgentStatus: `waiting` is derived (running + a pending question), and
@@ -54,6 +55,19 @@ export function prBadge(pr: PrState, git: GitState | null, checks: PrChecks | nu
   if (conflicted) return "conflicts";
   if (checks?.merge_state === "draft") return "draft";
   return "open";
+}
+
+/** The capsule badge's tint class once the checkout holds several PRs. A
+ *  failing or conflicting PR anywhere in the set colours it (`set` is the
+ *  set's `summarizePrSet` variant, worst-wins), so a sibling in trouble is never
+ *  hidden behind a calm focused PR; otherwise the badge reads the set's state,
+ *  keeping the focused PR's local nuance (conflict markers, draft). */
+export function setBadgeCls(focused: PrBadge, set: BadgeVariant): string {
+  if (set === "pr-fail") return "failing";
+  if (set === "warn" || focused === "conflicts") return PR_META.conflicts.cls;
+  if (set === "pr-merged") return PR_META.merged.cls;
+  if (set === "pr-closed") return PR_META.closed.cls;
+  return PR_META[focused === "draft" ? "draft" : "open"].cls;
 }
 
 /** "owner/repo" from a github remote URL (https or ssh form), else null. */

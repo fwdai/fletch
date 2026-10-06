@@ -2,12 +2,12 @@ import type { KeyboardEvent, Ref } from "react";
 import type { PrSetEntry } from "@/api";
 import { Icon } from "@/components/Icon";
 import { Badge } from "@/components/ui/Badge";
-import { chipStatus } from "../PrSetStrip";
+import { prTint } from "@/util/prState";
 
 /** `#N · title · branch · status`, skipping what the host doesn't know — the
  *  chip's native tooltip, and the menu row's accessible name. */
 export function prSummary({ state, checks }: PrSetEntry): string {
-  return [`#${state.number}`, state.title, state.branch, chipStatus(state, checks).word]
+  return [`#${state.number}`, state.title, state.branch, prTint(state, checks).word]
     .filter(Boolean)
     .join(" · ");
 }
@@ -35,7 +35,7 @@ export function PrChip({
   onKeyDown: (e: KeyboardEvent<HTMLButtonElement>) => void;
 }) {
   const { state, checks } = entry;
-  const { variant } = chipStatus(state, checks);
+  const { variant } = prTint(state, checks);
   const summary = prSummary(entry);
   return (
     <button
