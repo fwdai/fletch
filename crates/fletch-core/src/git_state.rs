@@ -40,6 +40,20 @@ pub struct GitState {
     /// (`git::hardening`). Non-empty means every other field is a zero-state:
     /// the panel names these keys and offers to remove them instead.
     pub blocked_config: Vec<String>,
+    /// Linked worktrees inside this checkout — sub-agents working in isolation
+    /// (Claude Code's `isolation: worktree` puts them under
+    /// `.claude/worktrees/<name>`). Their changes never show in this checkout's
+    /// status, so without this a busy workspace reads as a clean tree. Listed
+    /// only, never status-read: that would multiply the focused 1 s poll.
+    pub worktrees: Vec<LinkedWorktree>,
+}
+
+/// One linked worktree of a checkout: where it is, and the branch it has
+/// checked out (`None` when detached).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct LinkedWorktree {
+    pub path: String,
+    pub branch: Option<String>,
 }
 
 impl GitState {
@@ -59,6 +73,7 @@ impl GitState {
             has_origin: false,
             head_sha: None,
             blocked_config: vec![],
+            worktrees: vec![],
         }
     }
 
@@ -196,6 +211,7 @@ pub async fn query(checkout_path: &Path, base: &crate::git::ResolvedBase) -> Res
     //    non-fatal (the UI just omits the link).
     let (has_origin, remote_url) = query_origin(checkout_path).await;
     let head_sha = query_head_sha(checkout_path).await;
+    let worktrees = query_worktrees(checkout_path).await;
 
     Ok(GitState {
         branch,
@@ -210,6 +226,7 @@ pub async fn query(checkout_path: &Path, base: &crate::git::ResolvedBase) -> Res
         has_origin,
         head_sha,
         blocked_config: vec![],
+        worktrees,
     })
 }
 
@@ -531,6 +548,60 @@ async fn query_origin(checkout_path: &Path) -> (bool, Option<String>) {
         true,
         github_web_url(String::from_utf8_lossy(&out.stdout).trim()),
     )
+}
+
+/// The checkout's linked worktrees that live inside it, from one `git worktree
+/// list --porcelain`. Inside-only, because the list is the whole repository's:
+/// it names the main worktree, and when the checkout is itself a linked
+/// worktree (a workflow run's adopted tree) its siblings too — none of which
+/// are this workspace's sub-agents. A registration whose directory is gone
+/// fails to canonicalize and drops out. Empty on any failure.
+///
+/// A list of one is just the checkout itself — the common case, which the 1 s
+/// panel poll then answers with no filesystem calls.
+async fn query_worktrees(checkout_path: &Path) -> Vec<LinkedWorktree> {
+    let Ok(out) = read_command(checkout_path)
+        .args(["worktree", "list", "--porcelain"])
+        .output()
+        .await
+    else {
+        return vec![];
+    };
+    if !out.status.success() {
+        return vec![];
+    }
+    let all = parse_worktree_list(&String::from_utf8_lossy(&out.stdout));
+    if all.len() <= 1 {
+        return vec![];
+    }
+    let Ok(root) = std::fs::canonicalize(checkout_path) else {
+        return vec![];
+    };
+    all.into_iter()
+        .filter(|wt| {
+            std::fs::canonicalize(&wt.path).is_ok_and(|p| p != root && p.starts_with(&root))
+        })
+        .collect()
+}
+
+/// Every worktree `git worktree list --porcelain` names: one blank-line
+/// separated block each, `worktree <path>` first, then `branch refs/heads/<b>`
+/// or `detached`. Callers decide which ones count.
+fn parse_worktree_list(output: &str) -> Vec<LinkedWorktree> {
+    let mut out: Vec<LinkedWorktree> = Vec::new();
+    for line in output.lines() {
+        if let Some(path) = line.strip_prefix("worktree ") {
+            out.push(LinkedWorktree {
+                path: path.to_string(),
+                branch: None,
+            });
+        } else if let Some(full) = line.strip_prefix("branch ") {
+            if let Some(wt) = out.last_mut() {
+                wt.branch = Some(full.strip_prefix("refs/heads/").unwrap_or(full).to_string());
+            }
+        }
+    }
+    out
 }
 
 /// Normalize a git remote URL to its GitHub web base (`https://github.com/
@@ -919,6 +990,99 @@ mod tests {
         std::fs::create_dir_all(&empty).unwrap();
         git(&empty, &["init", "-q"]);
         assert!(check_for_disposal(&empty).await.is_err());
+    }
+
+    // --- linked worktrees ---
+
+    #[test]
+    fn parse_worktree_list_reads_paths_and_branches() {
+        let out = "worktree /c\nHEAD aaa\ndetached\n\n\
+                   worktree /c/.claude/worktrees/a\nHEAD bbb\nbranch refs/heads/feat/a\n\n\
+                   worktree /c/.claude/worktrees/b\nHEAD ccc\ndetached\n";
+        assert_eq!(
+            parse_worktree_list(out),
+            [
+                LinkedWorktree {
+                    path: "/c".into(),
+                    branch: None
+                },
+                LinkedWorktree {
+                    path: "/c/.claude/worktrees/a".into(),
+                    branch: Some("feat/a".into())
+                },
+                LinkedWorktree {
+                    path: "/c/.claude/worktrees/b".into(),
+                    branch: None
+                },
+            ]
+        );
+    }
+
+    /// The panel's list is the sub-agents' worktrees inside the checkout: not
+    /// the checkout itself, not one elsewhere, not one whose directory is gone.
+    #[tokio::test]
+    async fn query_lists_only_live_worktrees_inside_the_checkout() {
+        let td = tempfile::tempdir().unwrap();
+        let repo = pushed_repo(td.path());
+        assert!(query_worktrees(&repo).await.is_empty());
+
+        let inside = repo.join(".claude/worktrees/a");
+        git(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "feat/a",
+                inside.to_str().unwrap(),
+            ],
+        );
+        let detached = repo.join(".claude/worktrees/b");
+        git(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "--detach",
+                detached.to_str().unwrap(),
+            ],
+        );
+        let outside = td.path().join("elsewhere");
+        git(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "--detach",
+                outside.to_str().unwrap(),
+            ],
+        );
+        let gone = repo.join(".claude/worktrees/gone");
+        git(
+            &repo,
+            &["worktree", "add", "-q", "--detach", gone.to_str().unwrap()],
+        );
+        std::fs::remove_dir_all(&gone).unwrap();
+
+        let mut found: Vec<(String, Option<String>)> = query_worktrees(&repo)
+            .await
+            .into_iter()
+            .map(|wt| {
+                let name = Path::new(&wt.path).file_name().unwrap();
+                (name.to_string_lossy().into_owned(), wt.branch)
+            })
+            .collect();
+        found.sort();
+        assert_eq!(
+            found,
+            [
+                ("a".to_string(), Some("feat/a".to_string())),
+                ("b".to_string(), None)
+            ]
+        );
     }
 
     // --- untracked_additions (read budget) ---

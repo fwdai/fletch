@@ -193,13 +193,14 @@ pub(super) struct PushTriggers {
     /// different set of names is not a second alert while `failing → passing`
     /// is — and the next PR on the same checkout starts with no memory. Entries
     /// go when their PR leaves `open`.
-    last_rollup: Mutex<HashMap<String, String>>,
-    /// The state each checkout's last `pr:state_changed` carried, keyed like
-    /// the client stores (`agent` for the primary repo, `agent::subdir` for a
-    /// secondary) so one repo's merge is not read as another's. A merge or close
-    /// alerts only when this saw the PR open: a cold start's first event may be
-    /// a stale snapshot of a PR that merged last week.
-    last_pr_state: Mutex<HashMap<String, String>>,
+    last_rollup: Mutex<HashMap<PrKey, String>>,
+    /// The PRs whose last `pr:state_changed` said `open`, keyed by checkout
+    /// like the client stores (`agent` for the primary repo, `agent::subdir`
+    /// for a secondary) and number, so one repo's — or one PR's — merge is not
+    /// read as another's. A merge or close alerts only when this saw the PR
+    /// open: a cold start's first event may be a stale snapshot of a PR that
+    /// merged last week.
+    open_prs: Mutex<HashSet<PrKey>>,
 }
 
 impl PushTriggers {
@@ -211,7 +212,7 @@ impl PushTriggers {
             running: Mutex::new(HashSet::new()),
             pending_input: Mutex::new(HashSet::new()),
             last_rollup: Mutex::new(HashMap::new()),
-            last_pr_state: Mutex::new(HashMap::new()),
+            open_prs: Mutex::new(HashSet::new()),
         }
     }
 
@@ -261,7 +262,7 @@ impl PushTriggers {
         );
     }
 
-    /// Route one event off the sink. These six names are the whole surface;
+    /// Route one event off the sink. These seven names are the whole surface;
     /// every other event the engine emits passes through untouched.
     pub(super) fn on_event(&self, agents: &dyn AgentLookup, event: &str, payload: &Value) {
         match event {
@@ -274,6 +275,7 @@ impl PushTriggers {
             "pr:checks_changed" => self.on_checks_changed(agents, payload),
             "pr:threads_changed" => self.on_threads_changed(agents, payload),
             "pr:state_changed" => self.on_pr_state_changed(agents, payload),
+            "pr:set_entry_changed" => self.on_set_entry_changed(agents, payload),
             "autopilot:event" => self.on_autopilot_event(agents, payload),
             _ => {}
         }
@@ -308,14 +310,28 @@ impl PushTriggers {
         let Ok(payload) = ChecksChangedPayload::deserialize(payload) else {
             return;
         };
+        self.checks_changed(
+            agents,
+            &payload.agent_id,
+            payload.subdir.as_deref(),
+            payload.number,
+            payload.checks,
+        );
+    }
+
+    /// One PR's checks moved, from either event that reports them.
+    fn checks_changed(
+        &self,
+        agents: &dyn AgentLookup,
+        agent_id: &str,
+        subdir: Option<&str>,
+        number: u32,
+        checks: ChecksSummary,
+    ) {
         // Keyed by PR, not just by checkout: the next PR on the same branch
         // settling green is its own news, not a repeat of the last one's.
-        let key = format!(
-            "{}#{}",
-            checkout_key(&payload.agent_id, payload.subdir.as_deref()),
-            payload.number
-        );
-        let rollup = payload.checks.rollup;
+        let key = (checkout_key(agent_id, subdir), number);
+        let rollup = checks.rollup;
         let previous = self.last_rollup.lock().insert(key, rollup.clone());
         let settled = matches!(rollup.as_str(), "passing" | "failing");
         if !settled || previous.as_deref() == Some(rollup.as_str()) {
@@ -329,16 +345,10 @@ impl PushTriggers {
         } else {
             (
                 TITLE_CHECKS_FAILED,
-                payload.checks.required_failing.first().map(String::as_str),
+                checks.required_failing.first().map(String::as_str),
             )
         };
-        self.alert(
-            agents,
-            &payload.agent_id,
-            KIND_CHECKS_SETTLED,
-            title,
-            detail,
-        );
+        self.alert(agents, agent_id, KIND_CHECKS_SETTLED, title, detail);
     }
 
     /// One `pr:threads_changed`. The watcher already did the diffing — the
@@ -370,7 +380,7 @@ impl PushTriggers {
 
     /// One `pr:state_changed`. The event fires from several paths (a turn end,
     /// a push, the watcher) and each reports the state it found, not a
-    /// transition — so the transition is reconstructed here, per checkout, and
+    /// transition — so the transition is reconstructed here, per PR, and
     /// only an `open → merged|closed` this process witnessed is a merge or a
     /// close. Becoming open is never an alert: the watcher reports every open
     /// PR on its first look, a host restart included.
@@ -382,26 +392,57 @@ impl PushTriggers {
         let Ok(payload) = PrStateChangedPayload::deserialize(payload) else {
             return;
         };
-        let checkout = checkout_key(&payload.agent_id, payload.subdir.as_deref());
-        let previous = {
-            let mut last = self.last_pr_state.lock();
-            match &payload.state {
-                Some(state) => last.insert(checkout.clone(), state.state.clone()),
-                None => last.remove(&checkout),
-            }
-        };
-        // A PR that is no longer open takes its rollup memory with it, so the
-        // map stays bounded by the PRs still being watched. Only this
-        // checkout's: the agent's other repos are still open.
-        if payload.state.as_ref().map(|s| s.state.as_str()) != Some("open") {
-            self.last_rollup.lock().retain(|key, _| {
-                !matches!(key.strip_prefix(checkout.as_str()), Some(rest) if rest.starts_with('#'))
-            });
-        }
-        let Some(state) = payload.state else {
+        self.pr_state(
+            agents,
+            &payload.agent_id,
+            payload.subdir.as_deref(),
+            payload.state,
+        );
+    }
+
+    /// One `pr:set_entry_changed`: a PR of the checkout's set that is not its
+    /// focused one. The same alerts as the focused PR's own events — its merge,
+    /// its close, its checks settling — read the same way; its threads are
+    /// never reported, so there is no comment alert for it.
+    fn on_set_entry_changed(&self, agents: &dyn AgentLookup, payload: &Value) {
+        let Ok(payload) = SetEntryChangedPayload::deserialize(payload) else {
             return;
         };
-        if previous.as_deref() != Some("open") {
+        let subdir = payload.subdir.as_deref();
+        let number = payload.entry.state.number;
+        self.pr_state(agents, &payload.agent_id, subdir, Some(payload.entry.state));
+        if let Some(checks) = payload.entry.checks {
+            self.checks_changed(agents, &payload.agent_id, subdir, number, checks);
+        }
+    }
+
+    /// One PR's state, from either event that reports it.
+    fn pr_state(
+        &self,
+        agents: &dyn AgentLookup,
+        agent_id: &str,
+        subdir: Option<&str>,
+        state: Option<PrStateSummary>,
+    ) {
+        let checkout = checkout_key(agent_id, subdir);
+        let Some(state) = state else {
+            // "No bound PR": nothing of this checkout's is watched any more.
+            // Only this checkout's: the agent's other repos are still open.
+            self.open_prs.lock().retain(|(c, _)| *c != checkout);
+            self.last_rollup.lock().retain(|(c, _), _| *c != checkout);
+            return;
+        };
+        // Per PR, not per checkout: a checkout holds several PRs at once, and
+        // one merging says nothing about whether another was open.
+        let key = (checkout, state.number);
+        // A PR that is no longer open takes its memory with it, so the maps
+        // stay bounded by the PRs still being watched.
+        if state.state == "open" {
+            self.open_prs.lock().insert(key);
+            return;
+        }
+        self.last_rollup.lock().remove(&key);
+        if !self.open_prs.lock().remove(&key) {
             return;
         }
         let (kind, title) = match state.state.as_str() {
@@ -413,7 +454,7 @@ impl PushTriggers {
             return;
         }
         let number = format!("#{}", state.number);
-        self.alert(agents, &payload.agent_id, kind, title, Some(&number));
+        self.alert(agents, agent_id, kind, title, Some(&number));
     }
 
     /// One `agent:event` payload. Only held `can_use_tool` control requests are
@@ -499,6 +540,9 @@ impl PushTriggers {
         }
     }
 }
+
+/// One PR's memory key: its checkout's [`checkout_key`] and its number.
+type PrKey = (String, u32);
 
 /// One checkout's key from an event's `subdir` (`None` = the primary repo).
 fn checkout_key(agent_id: &str, subdir: Option<&str>) -> String {
@@ -634,9 +678,25 @@ struct PrStateChangedPayload {
     state: Option<PrStateSummary>,
 }
 
+/// `supervisor::events::PrSetEntryChangedPayload`, the part of it this needs.
+#[derive(Deserialize)]
+struct SetEntryChangedPayload {
+    agent_id: String,
+    #[serde(default)]
+    subdir: Option<String>,
+    entry: SetEntrySummary,
+}
+
+#[derive(Deserialize)]
+struct SetEntrySummary {
+    state: PrStateSummary,
+    #[serde(default)]
+    checks: Option<ChecksSummary>,
+}
+
 #[derive(Deserialize)]
 struct PrStateSummary {
-    number: u64,
+    number: u32,
     state: String,
 }
 

@@ -26,7 +26,12 @@ import type {
   AutopilotSwitches,
   DelegationEvent,
 } from "./types/git";
-import type { PrChecksChangedEvent, PrStateChangedEvent, PrThreadsChangedEvent } from "./types/pr";
+import type {
+  PrChecksChangedEvent,
+  PrSetEntryChangedEvent,
+  PrStateChangedEvent,
+  PrThreadsChangedEvent,
+} from "./types/pr";
 import type {
   AgentInstallEvent,
   ProviderLoginExitEvent,
@@ -361,6 +366,11 @@ export function onPrChecksChanged(cb: (e: PrChecksChangedEvent) => void): Promis
 /** The host-side PR watcher found new unresolved review threads. */
 export function onPrThreadsChanged(cb: (e: PrThreadsChangedEvent) => void): Promise<UnlistenFn> {
   return on<PrThreadsChangedEvent>("pr:threads_changed", cb);
+}
+
+/** The host-side PR watcher saw a non-focused PR of a checkout's set change. */
+export function onPrSetEntryChanged(cb: (e: PrSetEntryChangedEvent) => void): Promise<UnlistenFn> {
+  return on<PrSetEntryChangedEvent>("pr:set_entry_changed", cb);
 }
 
 export function onVerificationReport(

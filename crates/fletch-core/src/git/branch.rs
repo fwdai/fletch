@@ -193,13 +193,16 @@ pub async fn branch_name_taken(checkout: &Path, branch: &str) -> Result<bool> {
     if branch_exists(checkout, branch).await? {
         return Ok(true);
     }
+    has_origin_tracking_ref(checkout, branch).await
+}
+
+/// Whether this checkout knows `branch` on `origin`: a remote-tracking ref
+/// `refs/remotes/origin/<branch>`, which a fetch or a push from here writes.
+/// Local only — as of the last fetch/push, never a live `ls-remote`.
+pub async fn has_origin_tracking_ref(checkout: &Path, branch: &str) -> Result<bool> {
     let refname = format!("refs/remotes/origin/{branch}");
     let out = git_output(checkout, &["show-ref", "--verify", "--quiet", &refname]).await?;
-    match out.status.code() {
-        Some(0) => Ok(true),
-        Some(1) => Ok(false),
-        _ => Ok(false),
-    }
+    Ok(out.status.code() == Some(0))
 }
 
 /// Materialize a branch on a (typically detached) checkout at its current

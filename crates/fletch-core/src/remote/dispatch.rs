@@ -157,6 +157,7 @@ pub const OPS: &[&str] = &[
     "clear_checkout_config",
     "create_pr",
     "merge_pr",
+    "set_focused_pr",
     "get_pr_state",
     "get_pr_checks",
     "get_pr_live",
@@ -426,6 +427,7 @@ const OP_SCOPES: &[(&str, Scope)] = &[
     ("clear_checkout_config", Scope::Agents),
     ("create_pr", Scope::Publish),
     ("merge_pr", Scope::Publish),
+    ("set_focused_pr", Scope::Agents),
     ("get_pr_state", Scope::Observe),
     ("get_pr_checks", Scope::Observe),
     ("get_pr_live", Scope::Observe),
@@ -825,10 +827,12 @@ impl Dispatch for SupervisorDispatch {
                 // look. Between seeds the PR watcher's events keep it current.
                 "get_all_pr_status" => {
                     let a: AllPrStatusArgs = parse(args)?;
-                    ok(
-                        crate::supervisor::resolve_all_pr_status(&sup.workspace, a.reverify_closed)
-                            .await,
+                    ok(crate::supervisor::resolve_all_pr_status(
+                        &sup.workspace,
+                        a.reverify_closed,
+                        false,
                     )
+                    .await)
                 }
 
                 "list_checkout_tree" => {
@@ -954,6 +958,17 @@ impl Dispatch for SupervisorDispatch {
                 "merge_pr" => {
                     let a: AgentSubdirArgs = parse(args)?;
                     res(crate::commands::merge_pr_impl(sup, &a.agent_id, a.subdir.as_deref()).await)
+                }
+
+                "set_focused_pr" => {
+                    let a: SetFocusedPrArgs = parse(args)?;
+                    res(crate::commands::set_focused_pr_impl(
+                        sup,
+                        ctx,
+                        &a.agent_id,
+                        a.subdir.as_deref(),
+                        a.number,
+                    ))
                 }
 
                 "get_pr_state" => {
@@ -2147,6 +2162,15 @@ struct AgentSubdirArgs {
     agent_id: String,
     #[serde(default)]
     subdir: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SetFocusedPrArgs {
+    agent_id: String,
+    #[serde(default)]
+    subdir: Option<String>,
+    number: u32,
 }
 
 #[derive(Deserialize)]

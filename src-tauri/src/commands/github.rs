@@ -134,31 +134,6 @@ pub async fn get_pr_state(
     fletch_core::commands::get_pr_state_impl(&supervisor, &agent_id, subdir.as_deref()).await
 }
 
-/// Every PR this checkout has held, newest number first — the panel's earlier-PRs
-/// strip. A pure database read (no network, no git): the history log is written
-/// by `set_repo_pr_snapshot`, so this only reports what a fetch already confirmed.
-/// An unknown subdir or a repo-less agent reads as an empty history rather than
-/// an error — the strip simply doesn't render.
-#[tauri::command]
-pub fn get_pr_history(
-    supervisor: State<'_, Arc<Supervisor>>,
-    agent_id: String,
-    subdir: Option<String>,
-) -> Result<Vec<PrState>> {
-    let record = supervisor.workspace.agent(&agent_id)?;
-    let repo = match subdir.as_deref() {
-        Some(s) => record.repos.iter().find(|r| r.subdir == s),
-        // Default to the primary, matching every other PR command's shape.
-        None => record.repos.first(),
-    };
-    let Some(repo) = repo else {
-        return Ok(vec![]);
-    };
-    supervisor
-        .workspace
-        .repo_pr_history(&agent_id, &repo.subdir)
-}
-
 /// List the open PRs for the agent's repo, for the composer's "#" mention
 /// autocomplete. Capped at 50 — the picker filters and shows a handful.
 #[tauri::command]
@@ -242,8 +217,9 @@ pub async fn get_pr_threads(
 ///
 /// Keyed by the frontend's `checkoutKey` convention: the agent's primary repo
 /// under the plain agent id and each secondary repo under
-/// `"{agent_id}::{subdir}"`. Only repos with a known PR *number* are read, by
-/// number (never branch), in one GraphQL query; merged PRs are served from the
+/// `"{agent_id}::{subdir}"`. Each entry's `state`/`checks` are the checkout's
+/// focused PR and `prs` its whole PR set. Only PRs with a known *number* are
+/// read, by number (never branch), in one GraphQL query; merged PRs are served from the
 /// persisted snapshot, closed ones too unless `reverify_closed` asks for a live
 /// look (a closed PR can reopen), and everything degrades to the snapshot when
 /// GitHub is unreachable or a rate-limit backoff is active. A repo that resolves
@@ -256,6 +232,27 @@ pub async fn get_all_pr_status(
     Ok(crate::supervisor::resolve_all_pr_status(
         &supervisor.workspace,
         reverify_closed.unwrap_or(false),
+        false,
     )
     .await)
+}
+
+/// Focus one of a checkout's PRs (`number` must be in its set): the PR the
+/// badge, panel header and focused reads follow. Emits `pr:state_changed` for
+/// it at once. The remote op of the same name answers the same thing.
+#[tauri::command]
+pub fn set_focused_pr(
+    ctx: State<'_, Arc<EngineCtx>>,
+    supervisor: State<'_, Arc<Supervisor>>,
+    agent_id: String,
+    subdir: Option<String>,
+    number: u32,
+) -> Result<PrState> {
+    fletch_core::commands::set_focused_pr_impl(
+        &supervisor,
+        &ctx,
+        &agent_id,
+        subdir.as_deref(),
+        number,
+    )
 }

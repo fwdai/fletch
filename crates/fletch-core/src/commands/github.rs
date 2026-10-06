@@ -75,7 +75,7 @@ pub async fn create_pr_impl(
     // don't rely on the (recyclable) branch name. A failure here isn't fatal —
     // the next idle/push poll re-binds it via guarded discovery once the PR
     // shows OPEN — but the helper logs it so the gap is observable, not silent.
-    crate::supervisor::persist_pr_snapshot(&supervisor.workspace, &agent_id, &repo.subdir, &pr);
+    crate::supervisor::bind_pr_snapshot(&supervisor.workspace, &agent_id, &repo.subdir, &pr);
     // If the agent now has PRs in two or more repos, cross-link the whole set
     // in each PR's body (best-effort, off the command's critical path).
     let workspace = supervisor.workspace.clone();
@@ -95,6 +95,21 @@ pub async fn merge_pr_impl(
 ) -> Result<()> {
     let (_repo, checkout) = agent_repo_checkout(supervisor, agent_id, subdir)?;
     gh::pr_merge(&checkout).await
+}
+
+/// Focus one of a checkout's PRs: rebind the checkout to PR `number`, which
+/// must already be in its set. Local only — no GitHub call; the watcher
+/// re-reads the newly focused PR on its next sweep.
+///
+/// Shared with the remote dispatcher.
+pub fn set_focused_pr_impl(
+    supervisor: &Supervisor,
+    ctx: &crate::host::EngineCtx,
+    agent_id: &str,
+    subdir: Option<&str>,
+    number: u32,
+) -> Result<PrState> {
+    supervisor.set_focused_pr(ctx, agent_id, subdir, number)
 }
 
 /// Fetch and return the current PR state for the agent's primary repo: by
@@ -134,9 +149,20 @@ pub async fn get_pr_checks_impl(
     let Some((repo, checkout)) = agent_repo_checkout_opt(supervisor, agent_id, subdir)? else {
         return Ok(None);
     };
-    if repo.branch.is_none() {
-        return Ok(None);
+    // A bound PR is read by number — the same conditional REST read the panel's
+    // fast tick (`get_pr_live_impl`) makes, so it shares that tick's ETag cache
+    // — whatever branch the checkout is on or has recorded: the focused PR need
+    // not be the checked-out branch's, and an agent that branched on its own
+    // records none.
+    if let Some(number) = repo.pr_number {
+        return Ok(
+            gh::pr_checks_live(&checkout, Some(&repo.repo_path), number as u32)
+                .await
+                .unwrap_or(None),
+        );
     }
+    // Unbound: the checked-out branch's PR, if any. A detached HEAD (never
+    // pushed) answers `None` before any request.
     Ok(gh::pr_checks(&checkout).await.unwrap_or(None))
 }
 

@@ -14,10 +14,11 @@ import { useActionBarModel } from "./hooks/useActionBarModel";
 import { useCommitDraft } from "./hooks/useCommitDraft";
 import { useGitActions } from "./hooks/useGitActions";
 import { useGitPanelData } from "./hooks/useGitPanelData";
-import { usePrHistory } from "./hooks/usePrHistory";
+import { usePrOrigin } from "./hooks/usePrOrigin";
 import { useTransientFeedback } from "./hooks/useTransientFeedback";
-import { PrSetStrip } from "./PrSetStrip";
+import { PrSwitcher } from "./PrSwitcher";
 import { StatusHeader } from "./StatusHeader";
+import { WorktreesNote } from "./WorktreesNote";
 
 /** One repo's worth of git panel: the full header / body / footer stack,
  *  scoped to a single checkout of the agent. For a single-repo agent this IS
@@ -154,10 +155,17 @@ export function GitRepoSection({
   const blockedConfig = useAppStore((s) => s.gitBlocked[key]);
   const blocked = blockedConfig != null;
 
-  // The PRs this checkout held before the current one — a workspace that kept
-  // working after a merge has them. Each is a linked pill, so landed work stays
-  // reachable once the header has moved on to the follow-up.
-  const priorPrs = usePrHistory(agent.id, prState?.number ?? null, subdir);
+  // Every PR of this checkout — sub-agents each open their own, and a workspace
+  // that kept working after a merge holds the merged one too.
+  const prSet = useAppStore((s) => s.prSets[key]);
+  const hasPrSet = (prSet?.length ?? 0) >= 2;
+  // The focused PR's head branch, said on its card when the checkout is on
+  // another one — the same rule that gates the actions bound to that branch.
+  // Not before the git state loads, so the line doesn't flash on every open.
+  const prBranch =
+    gitState && prState?.branch && prState.branch !== gitState.branch ? prState.branch : null;
+  // Which sub-agent opened the focused PR, when one did — the card says so.
+  const prOrigin = usePrOrigin(agent.id, prState?.number);
 
   return (
     <div className="git-wrap">
@@ -176,21 +184,16 @@ export function GitRepoSection({
         }
       />
 
-      {/* Earlier PRs of this checkout, once it has any — merged work stays one
-          click away after the panel moves on to the follow-up. */}
-      {priorPrs.length > 0 && (
-        <PrSetStrip
-          heading="Earlier"
-          entries={priorPrs.map((pr) => ({
-            key: String(pr.number),
-            // Backfilled rows can carry an empty title (the pre-history schema
-            // stored no snapshot until a fetch succeeded) — fall back to the
-            // number so the tooltip never reads as a bare " · merged".
-            context: pr.title || `PR #${pr.number}`,
-            pr,
-            // Settled PRs have no live CI to show; the pill reads its state.
-            checks: null,
-          }))}
+      <WorktreesNote worktrees={gitState?.worktrees} />
+
+      {/* Two or more PRs → switch between them; the panel below follows the
+          focused one. One PR keeps the panel exactly as it was. */}
+      {prSet && hasPrSet && (
+        <PrSwitcher
+          agentId={agent.id}
+          subdir={subdir}
+          entries={prSet}
+          focused={prState?.number ?? null}
         />
       )}
 
@@ -216,6 +219,8 @@ export function GitRepoSection({
             {panelState === "pr-open" && prState && (
               <PRCard
                 pr={prState}
+                branch={prBranch}
+                origin={prOrigin}
                 base={base}
                 checks={checks}
                 comments={comments}

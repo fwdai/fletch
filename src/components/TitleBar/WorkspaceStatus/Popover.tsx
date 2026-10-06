@@ -1,8 +1,9 @@
-import type { AgentRecord, GitState, PrChecks, PrState } from "@/api";
+import type { AgentRecord, GitState, PrSetEntry, PrState } from "@/api";
 import { Icon } from "@/components/Icon";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { providerChip } from "@/data/providers";
-import { type DotStatus, PR_META, prBadge, repoSlug, STATUS_LABEL } from "./derive";
+import { type DotStatus, STATUS_LABEL } from "./derive";
+import { PrBlock } from "./PrBlock";
 import { StatusDot } from "./StatusDot";
 
 interface Props {
@@ -10,14 +11,16 @@ interface Props {
   status: DotStatus;
   git: GitState | null;
   pr: PrState | null;
-  checks: PrChecks | null;
+  /** The checkout's whole PR set, focused first. */
+  prs: readonly PrSetEntry[];
   onViewPr: () => void;
   onOpenDiff: () => void;
 }
 
-/** The hover/focus details popover: who + what, branch, diff, and the full PR
- *  block with its check breakdown, plus the two contextual actions. */
-export function Popover({ agent, git, pr, checks, status, onViewPr, onOpenDiff }: Props) {
+/** The hover/focus details popover: who + what, branch, diff, and the PR block
+ *  (every PR of the checkout, each with its check breakdown), plus the two
+ *  contextual actions. */
+export function Popover({ agent, git, pr, prs, status, onViewPr, onOpenDiff }: Props) {
   const branch = git?.branch ?? agent.repos[0]?.branch ?? null;
   const base = git?.parent_branch ?? null;
   const add = git?.additions ?? 0;
@@ -78,7 +81,7 @@ export function Popover({ agent, git, pr, checks, status, onViewPr, onOpenDiff }
         )}
       </div>
 
-      {pr && <PrBlock pr={pr} git={git} checks={checks} />}
+      {pr && <PrBlock prs={prs} git={git} />}
 
       {showActions && (
         <>
@@ -99,66 +102,6 @@ export function Popover({ agent, git, pr, checks, status, onViewPr, onOpenDiff }
           </div>
         </>
       )}
-    </div>
-  );
-}
-
-function PrBlock({
-  pr,
-  git,
-  checks,
-}: {
-  pr: PrState;
-  git: GitState | null;
-  checks: PrChecks | null;
-}) {
-  const meta = PR_META[prBadge(pr, git, checks)];
-  const slug = repoSlug(git?.remote_url);
-  return (
-    <>
-      <div className="ws-pop-div" />
-      <div className="ws-pop-pr">
-        <div className="ws-pr-head">
-          <span className={`ws-pr-tag pr-${meta.cls}`}>
-            <Icon name={meta.icon} size={11} />
-            {meta.label} PR
-          </span>
-          <span className="ws-pr-num mono">#{pr.number}</span>
-          {slug && <span className="ws-pop-repo mono">{slug}</span>}
-        </div>
-        {pr.title && <div className="ws-pr-title">{pr.title}</div>}
-        {checks && checks.total > 0 && <CheckDetail checks={checks} />}
-      </div>
-    </>
-  );
-}
-
-function CheckDetail({ checks }: { checks: PrChecks }) {
-  return (
-    <div className="ws-checkblock">
-      <div className="ws-checkbar" role="img" aria-label="check status">
-        {checks.passed > 0 && <i className="p" style={{ flex: checks.passed }} />}
-        {checks.failed > 0 && <i className="f" style={{ flex: checks.failed }} />}
-        {checks.pending > 0 && <i className="w" style={{ flex: checks.pending }} />}
-      </div>
-      <div className="ws-checkcounts">
-        <span className="ok">
-          <Icon name="check" size={10} />
-          {checks.passed} passed
-        </span>
-        {checks.failed > 0 && (
-          <span className="bad">
-            <Icon name="close" size={10} />
-            {checks.failed} failed
-          </span>
-        )}
-        {checks.pending > 0 && (
-          <span className="pend">
-            <span className="ws-spin sm" />
-            {checks.pending} running
-          </span>
-        )}
-      </div>
     </div>
   );
 }

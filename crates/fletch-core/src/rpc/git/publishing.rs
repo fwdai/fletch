@@ -125,9 +125,20 @@ impl GitDispatcher {
         match crate::github::pr_create(&t.cwd, title, body, &base).await {
             Ok(pr) => {
                 crate::telemetry::track("pr_opened", json!({ "source": "agent_rpc" }));
+                // Enough to log the PR into its checkout's set the moment it
+                // binds, before any fetch has filled in its snapshot.
                 effects.push(RpcEvent::named(
                     EVENT_PR_OPENED,
-                    with_repo(json!({ "number": pr.number, "base": base }), &t.subdir),
+                    with_repo(
+                        json!({
+                            "number": pr.number,
+                            "base": base,
+                            "branch": branch,
+                            "url": pr.url,
+                            "title": pr.title,
+                        }),
+                        &t.subdir,
+                    ),
                 ));
                 (Response::ok(id, 0, pr.url, String::new()), effects)
             }

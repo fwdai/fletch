@@ -37,6 +37,7 @@ const EMPTY_MAPS = {
   prStates: {},
   prChecks: {},
   prComments: {},
+  prSets: {},
   gitShortstats: {},
   composerSeeds: {},
   composerDrafts: {},

@@ -233,6 +233,44 @@ pub fn app_action_message(action: &str, params: &[(&str, &str)]) -> String {
     out
 }
 
+/// Kinds whose playbook works on the focused PR itself (its CI, its threads,
+/// its stale base), so the trigger names the PR's head branch: once the user
+/// focuses an older PR of the checkout, that branch is not necessarily the one
+/// checked out. `push` and `open-pr` are not among them: they publish whatever
+/// the checkout is on, and switching to an older PR's branch first would push
+/// the wrong work.
+fn acts_on_pr(kind: DelegationKind) -> bool {
+    matches!(
+        kind,
+        DelegationKind::FixChecks | DelegationKind::ResolveComments | DelegationKind::UpdateBranch
+    )
+}
+
+/// The trigger `delegate` sends: the caller's params, then the two the host
+/// owns — `branch`, the focused PR's head branch (`pr_branch`) for a kind that
+/// [`acts_on_pr`], and `repo`, the secondary checkout it targets. A caller's
+/// own value for either is dropped: both name what the delegation is keyed and
+/// judged by, so they cannot point elsewhere.
+pub fn delegation_trigger(
+    kind: DelegationKind,
+    params: &BTreeMap<String, String>,
+    subdir: Option<&str>,
+    pr_branch: Option<&str>,
+) -> String {
+    let mut pairs: Vec<(&str, &str)> = params
+        .iter()
+        .filter(|(k, _)| !matches!(k.as_str(), "repo" | "branch"))
+        .map(|(k, v)| (k.as_str(), v.as_str()))
+        .collect();
+    if let Some(b) = pr_branch.filter(|_| acts_on_pr(kind)) {
+        pairs.push(("branch", b));
+    }
+    if let Some(s) = subdir {
+        pairs.push(("repo", s));
+    }
+    app_action_message(kind.action(), &pairs)
+}
+
 /// One in-flight delegation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Delegation {
@@ -695,17 +733,19 @@ async fn delegate(
         return Err(Error::Other("agent is archived".into()));
     }
     let subdir = checkout_subdir(&record, subdir)?;
-    // `repo` is the host's to set: it names the checkout the delegation is
-    // keyed and judged by, so a caller's own value cannot point elsewhere.
-    let mut pairs: Vec<(&str, &str)> = params
-        .iter()
-        .filter(|(k, _)| k.as_str() != "repo")
-        .map(|(k, v)| (k.as_str(), v.as_str()))
-        .collect();
-    if let Some(s) = &subdir {
-        pairs.push(("repo", s));
-    }
-    let prompt = app_action_message(action, &pairs);
+    // The worktree row's own subdir: the table key spells the primary `None`.
+    let worktree = subdir
+        .as_deref()
+        .or_else(|| record.repos.first().map(|r| r.subdir.as_str()))
+        .unwrap_or_default();
+    // Best effort: a trigger without `branch` is what every delegation sent
+    // before PR sets, and the agent then works on the branch it is on.
+    let pr_branch = sup
+        .workspace
+        .focused_pr_branch(agent_id, worktree)
+        .ok()
+        .flatten();
+    let prompt = delegation_trigger(kind, params, subdir.as_deref(), pr_branch.as_deref());
     let queued = sup.status_of(agent_id) == Some(AgentStatus::Running);
     let key: Key = (agent_id.to_string(), subdir);
     // Recorded before the send, so the `Running` that delivery raises finds it.

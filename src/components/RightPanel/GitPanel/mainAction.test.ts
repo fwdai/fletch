@@ -1,5 +1,6 @@
-// The panel's one "disabled with a reason" rule: four things can kill the split
-// button's main click, and only the capability gate is worth words.
+// The panel's one "disabled with a reason" rule: five things can kill the split
+// button's main click, and only the capability gate and an action bound to a PR
+// branch the checkout is not on are worth words.
 //
 // Which key maps to which gate is `actionGates.test.ts`'s subject; the reasons
 // here are read through `actionGateReason` rather than spelled out, so this file
@@ -25,6 +26,8 @@ const live = {
   delegationActive: false,
   mergeAllowed: true,
   actionGate: null as string | null,
+  prBranch: null as string | null,
+  checkoutBranch: "feat/second" as string | null,
 };
 
 /** The button as this panel would build it for `key` against `oldHost`. */
@@ -87,6 +90,61 @@ describe("mainActionState", () => {
 
     expect(state.disabled).toBe(true);
     expect(state.reason).toBe(actionGateReason(oldHost, "agent-commit-push"));
+  });
+
+  it("explains a PR playbook that would run on another branch than its PR's", () => {
+    // The user focused an older PR: the panel describes it, the working tree is
+    // still on the newer PR's branch. Fixing that PR's checks or updating its
+    // branch from here would work on the wrong branch, so those two say why.
+    const older = { ...live, prBranch: "feat/first", checkoutBranch: "feat/second" };
+    const reason = "Checkout is on feat/second; this PR's branch is feat/first";
+
+    for (const key of ["agent-fix", "agent-update-branch"]) {
+      expect(mainActionState({ ...older, effectiveKey: key })).toEqual({ disabled: true, reason });
+    }
+    // Work on the checkout itself acts on the branch checked out, whichever PR
+    // is focused; merge and view-pr act on GitHub alone.
+    for (const key of [
+      "commit-direct",
+      "agent-commit",
+      "agent-commit-push",
+      "agent-commit-pr",
+      "agent-open-pr",
+      "push",
+      "pull",
+      "merge",
+      "view-pr",
+    ]) {
+      expect(mainActionState({ ...older, effectiveKey: key })).toEqual({
+        disabled: false,
+        reason: null,
+      });
+    }
+    // Same branch, or one side unknown: nothing to say.
+    for (const over of [
+      { prBranch: "feat/second" },
+      { prBranch: null },
+      { checkoutBranch: null },
+    ]) {
+      expect(mainActionState({ ...older, ...over, effectiveKey: "agent-fix" }).disabled).toBe(
+        false,
+      );
+    }
+  });
+
+  it("will not archive or delete the branch for a merged PR the checkout has moved on from", () => {
+    // The user focused the merged #1 while the checkout works on the open #2:
+    // the panel reads `merged` and offers archive / delete-branch, which would
+    // end #2's work, not #1's.
+    const merged = { ...live, prBranch: "feat/first", checkoutBranch: "feat/second" };
+    const reason = "Checkout is on feat/second; this PR's branch is feat/first";
+
+    for (const key of ["archive", "delete-branch"]) {
+      expect(mainActionState({ ...merged, effectiveKey: key })).toEqual({ disabled: true, reason });
+      expect(
+        mainActionState({ ...merged, prBranch: "feat/second", effectiveKey: key }).disabled,
+      ).toBe(false);
+    }
   });
 
   it("stays silent about the transient blocks the bar already narrates", () => {

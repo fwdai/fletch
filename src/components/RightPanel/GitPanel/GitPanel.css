@@ -195,6 +195,18 @@
   color: var(--fg-2);
 }
 
+/* the one quiet line under the header while sub-agents work in their own
+   worktrees — informational, so muted and untinted whatever the state */
+.git-wt-note {
+  flex-shrink: 0;
+  padding: 5px 14px;
+  border-bottom: 1px solid var(--bd-soft);
+  color: var(--fg-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* main content — the changes are the focus */
 .git-body {
   flex: 1;
@@ -384,6 +396,41 @@
   color: var(--fg-2);
   margin-top: 4px;
   font-family: var(--font-mono);
+}
+/* the PR's head branch: quiet provenance under the meta, one line however long */
+.git-card-branch {
+  gap: 5px;
+  margin-top: 3px;
+  color: var(--fg-3);
+  font-family: var(--font-mono);
+}
+.git-card-branch-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* "opened by <sub-agent>" — provenance on the branch line; the branch name
+ * truncates first, the sub-agent label after it. */
+.git-card-origin {
+  flex-shrink: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-sans);
+}
+.git-card-origin-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--fg-2);
+  font: inherit;
+  cursor: pointer;
+}
+.git-card-origin-link:hover {
+  color: var(--accent);
+  text-decoration: underline;
 }
 .git-card-row {
   display: flex;
@@ -1197,32 +1244,43 @@
   border-bottom: 1px solid var(--bd-soft);
 }
 
-/* ── PR-set strip: "one task, N PRs" summary above the sections ──
-   Rendered only when ≥2 repos hold a PR; each chip links out to its PR. */
-.git-pr-set {
+/* ── PR switcher: a checkout's PRs as chips under the status header ─────────
+   The focused PR's chip is filled, the rest outlined in their own tint, so the
+   row says both "which PR is this panel" and "what state is each in". */
+.git-pr-switch {
   flex-shrink: 0;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 6px;
   padding: 6px 14px;
   background: var(--bg-1);
   border-bottom: 1px solid var(--bd-soft);
 }
-.git-pr-set-label {
-  font-weight: 700;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-  color: var(--fg-3);
-}
-.git-pr-set-chip {
+.git-pr-switch-chip {
   display: inline-flex;
   padding: 0;
   border: none;
+  border-radius: 4px;
   background: none;
   cursor: pointer;
 }
-.git-pr-set-chip:hover .ag-badge {
-  filter: brightness(1.15);
+.git-pr-switch-chip:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 1px var(--accent-line);
+}
+.git-pr-switch .git-pr-switch-chip .ag-badge {
+  background: transparent;
+  box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--badge-color), transparent 55%);
+}
+.git-pr-switch .git-pr-switch-chip[aria-pressed="true"] .ag-badge {
+  background: var(--badge-color);
+  box-shadow: none;
+  color: var(--bg-0);
+  cursor: default;
+}
+.git-pr-switch .git-pr-switch-chip[aria-pressed="false"]:hover .ag-badge {
+  background: color-mix(in oklch, var(--badge-color), transparent 86%);
 }
 
 /* ── Autopilot's mark in the status slot ───────────────────────────────────

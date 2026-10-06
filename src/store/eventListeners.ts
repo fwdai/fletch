@@ -25,6 +25,7 @@ import {
   onDelegationChanged,
   onDockerBuildProgress,
   onPrChecksChanged,
+  onPrSetEntryChanged,
   onPrStateChanged,
   onPrThreadsChanged,
   onPublishApprovalRequested,
@@ -81,9 +82,15 @@ import { getAllSettings } from "@/storage/settings";
 import { notify } from "@/util/notify";
 import { playSound, type SoundKind } from "@/util/sound";
 import { reduceInstallEvent } from "./agentInstall";
+import { activeEnvironment } from "./environments";
 import { applyHostSettingChange, hydrateHostSettings } from "./hostSettings";
 import { erroredAgents, interruptedAgents } from "./interrupted";
-import { applyPrChecksChanged, applyPrStateChanged, applyPrThreadsChanged } from "./prEvents";
+import {
+  applyPrChecksChanged,
+  applyPrSetEntryChanged,
+  applyPrStateChanged,
+  applyPrThreadsChanged,
+} from "./prEvents";
 import { refreshWorkspace } from "./refreshWorkspace";
 import { applyBuildEvent } from "./sandbox";
 import type { AppSlice, SliceCreator } from "./types";
@@ -646,10 +653,20 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
   // These are what keep the PR badges, checks and comments current — the
   // webview no longer polls them (store/gitSync) — for every agent and each of
   // its repos, panel open or not. Each lands on its checkout's key, stamped so
-  // a read already in flight can't roll it back (store/prEvents).
-  await bind(onPrStateChanged((e) => set((s) => applyPrStateChanged(s, e))));
+  // a read already in flight can't roll it back (store/prEvents). The first
+  // three are the checkout's focused PR; `pr:set_entry_changed` is the rest of
+  // its set, and a host that does not advertise it predates PR sets.
+  await bind(
+    onPrStateChanged((e) => {
+      const env = activeEnvironment();
+      const wholeSet =
+        env.kind === "remote" && !env.protocol?.events.includes("pr:set_entry_changed");
+      set((s) => applyPrStateChanged(s, e, wholeSet));
+    }),
+  );
   await bind(onPrChecksChanged((e) => set((s) => applyPrChecksChanged(s, e))));
   await bind(onPrThreadsChanged((e) => set((s) => applyPrThreadsChanged(s, e))));
+  await bind(onPrSetEntryChanged((e) => set((s) => applyPrSetEntryChanged(s, e))));
 
   // A host-owned setting was written — here, on another desktop, or from a
   // phone. Folded over what was read, so Settings follows without a refetch.

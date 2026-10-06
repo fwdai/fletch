@@ -5,6 +5,7 @@ import {
   type GitState,
   type PrChecks,
   type PrComments,
+  type PrSetEntry,
   type PrState,
   type ShortStats,
   type VerificationReport,
@@ -20,7 +21,8 @@ import { setSetting } from "@/storage/settings";
 import { newestWins } from "@/util/newestWins";
 import { activeEnvironment, activeEnvironmentId, forActiveEnvironment } from "./environments";
 import { gateReason } from "./gates";
-import { acceptPrWrite, issuePrWrite, stampPrWrite } from "./prWriteOrder";
+import { applyPrStateChanged, upsertState } from "./prEvents";
+import { acceptPrWrite, issuePrWrite } from "./prWriteOrder";
 import type { SliceCreator } from "./types";
 
 export interface GitSlice {
@@ -61,6 +63,13 @@ export interface GitSlice {
    *  failure). Read once per focused checkout (`fetchPrThreads`), then followed
    *  via `pr:threads_changed`. */
   prComments: Record<string, PrComments | null>;
+  /** Every PR of the checkout, focused included, newest number first, keyed by
+   *  `checkoutKey(agentId, subdir?)`. A checkout holds a set of PRs (sub-agents
+   *  each open their own); the legacy three maps above hold the focused PR.
+   *  Seeded by `loadAllPrStatus`, then followed via `pr:state_changed` /
+   *  `pr:checks_changed` (the focused PR) and `pr:set_entry_changed` (the
+   *  rest). Threads are only kept for the focused PR. */
+  prSets: Record<string, PrSetEntry[]>;
   /** Live host delegations per checkout, keyed by `checkoutKey(agentId,
    *  subdir?)` (absent = none). A MIRROR: the host owns the lifecycle
    *  (`supervisor::delegation`), and this is fed by `delegation:changed` and by
@@ -172,6 +181,15 @@ export interface GitSlice {
     subdir?: string,
   ) => Promise<PrState | null>;
   mergePr: (agentId: string, subdir?: string) => Promise<void>;
+  /** Make `number`, one of the checkout's PRs (`prSets`), its focused PR — the
+   *  one the legacy maps, and so the whole Git panel, follow. The host moves
+   *  the focus and announces it with a `pr:state_changed` (only ever the
+   *  focused PR's, so a new number there is the focus moving) before it
+   *  replies; the store swaps the maps on that event (`applyPrStateChanged`),
+   *  and on the reply too — the same PR, so a no-op once the event landed — so
+   *  a caller that awaits this reads the new focus whichever arrives first. A
+   *  refusal lands in `lastError`. */
+  focusPr: (agentId: string, number: number, subdir?: string) => Promise<void>;
   /** Publish a local-only project (no origin) to GitHub, then refresh git
    *  state so the panel switches out of the no-origin affordances. Resolves
    *  the repo web URL on success, null on error. */
@@ -234,24 +252,59 @@ const runGitMutation = async (
   }
 };
 
+/** A focused-PR read folded into its checkout's set (`prSets`): the entry
+ *  upserted with `state` (and `checks`, when the read resolved them), or null
+ *  when it must not land there. A merged/closed PR the set doesn't hold is the
+ *  display-only answer `resolve_pr_state` gives an unbound checkout (a recycled
+ *  branch's old PR), never a member; an open one it found was adopted, i.e.
+ *  bound, so it is. */
+function focusedIntoSet(
+  set: PrSetEntry[] | undefined,
+  state: PrState,
+  checks?: PrChecks | null,
+): PrSetEntry[] | null {
+  if (state.state !== "open" && !set?.some((p) => p.state.number === state.number)) return null;
+  return upsertState(set, state, checks);
+}
+
+/** `prSets` with `next` written for `mapKey`, ticket permitting — or nothing,
+ *  for a `set()` to spread. Accepted inside the write, so a read that has
+ *  nothing to fold in doesn't claim the slice. */
+function setsWrite(
+  s: GitSlice,
+  mapKey: string,
+  ticket: number,
+  next: PrSetEntry[] | null,
+): Partial<GitSlice> {
+  if (!next || !acceptPrWrite("prSets", mapKey, ticket)) return {};
+  return { prSets: { ...s.prSets, [mapKey]: next } };
+}
+
 // fetchPrChecks/fetchPrComments are identical except for the slice key and the
 // backend call: write the value (including null = "confirmed unavailable") on
 // success; on a *first* failure degrade the absent key to null so the panel
 // drops the "checking…" placeholder, while a later transient error keeps the
-// last good value.
+// last good value. `toSet` folds an accepted value into the checkout's PR set.
 const fetchPrAux = async <K extends "prChecks" | "prComments">(
   set: GitSet,
   agentId: string,
   key: K,
   fetch: (agentId: string, subdir?: string) => Promise<GitSlice[K][string]>,
   subdir?: string,
+  toSet?: (s: GitSlice, mapKey: string, value: GitSlice[K][string]) => PrSetEntry[] | null,
 ): Promise<void> => {
   const mapKey = checkoutKey(agentId, subdir);
   const ticket = issuePrWrite();
   try {
     const value = await fetch(agentId, subdir);
     if (!acceptPrWrite(key, mapKey, ticket)) return;
-    set((s) => ({ [key]: { ...s[key], [mapKey]: value } }) as Partial<GitSlice>);
+    set(
+      (s) =>
+        ({
+          [key]: { ...s[key], [mapKey]: value },
+          ...setsWrite(s, mapKey, ticket, toSet?.(s, mapKey, value) ?? null),
+        }) as Partial<GitSlice>,
+    );
   } catch {
     set((s) =>
       mapKey in s[key] ? {} : ({ [key]: { ...s[key], [mapKey]: null } } as Partial<GitSlice>),
@@ -289,7 +342,20 @@ function mirrorOf(e: DelegationEvent): Delegation | null {
 /** The fleet PR seed in flight, and the environment it is reading. */
 let allPrStatusLoad: { env: string; done: Promise<void> } | null = null;
 
-/** One `get_all_pr_status` read, merged into `prStates` / `prChecks`. */
+/** `next` as a checkout's PR set, each PR keeping its last-known checks where
+ *  `next` has nothing to say about them (`checks: null`) — the same rule the
+ *  seed applies to `prChecks`. */
+function withKnownChecks(prev: PrSetEntry[] | undefined, next: PrSetEntry[]): PrSetEntry[] {
+  if (!prev) return next;
+  return next.map((p) =>
+    p.checks != null
+      ? p
+      : { ...p, checks: prev.find((q) => q.state.number === p.state.number)?.checks ?? null },
+  );
+}
+
+/** One `get_all_pr_status` read, merged into `prStates` / `prChecks` /
+ *  `prSets`. */
 async function readAllPrStatus(set: GitSet, reverifyClosed: boolean): Promise<void> {
   const ticket = issuePrWrite();
   try {
@@ -310,13 +376,20 @@ async function readAllPrStatus(set: GitSet, reverifyClosed: boolean): Promise<vo
       // back to what it saw earlier.
       const prStates = { ...s.prStates };
       const prChecks = { ...s.prChecks };
+      const prSets = { ...s.prSets };
       for (const [key, entry] of Object.entries(map)) {
         if (acceptPrWrite("prStates", key, ticket)) prStates[key] = entry.state;
         if (entry.checks != null && acceptPrWrite("prChecks", key, ticket)) {
           prChecks[key] = entry.checks;
         }
+        // A host from before PR sets reports the focused PR alone, which is
+        // its whole set as far as it knows.
+        if (acceptPrWrite("prSets", key, ticket)) {
+          const next = entry.prs ?? [{ state: entry.state, checks: entry.checks }];
+          prSets[key] = withKnownChecks(s.prSets[key], next);
+        }
       }
-      return { prStates, prChecks };
+      return { prStates, prChecks, prSets };
     });
   } catch {
     // Non-fatal: the badges keep their last state, the watcher's events keep
@@ -344,6 +417,7 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
   prStates: {},
   prChecks: {},
   prComments: {},
+  prSets: {},
   delegations: {},
   delegationNotices: {},
   verificationReports: {},
@@ -407,7 +481,12 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
       // Always write (including null) to distinguish "confirmed: no PR" from
       // "not yet fetched" (absent key). Unlike fetchGitState which guards the
       // write, PR state being null is meaningful.
-      set((s) => ({ prStates: { ...s.prStates, [mapKey]: state } }));
+      // The set's entry for it moves too, so it isn't stale until the next
+      // sweep; a confirmed "no PR" names no entry to touch.
+      set((s) => ({
+        prStates: { ...s.prStates, [mapKey]: state },
+        ...setsWrite(s, mapKey, ticket, state && focusedIntoSet(s.prSets[mapKey], state)),
+      }));
     } catch {
       // non-fatal
     }
@@ -430,7 +509,13 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
     return done;
   },
 
-  fetchPrChecks: (agentId, subdir) => fetchPrAux(set, agentId, "prChecks", api.getPrChecks, subdir),
+  fetchPrChecks: (agentId, subdir) =>
+    fetchPrAux(set, agentId, "prChecks", api.getPrChecks, subdir, (s, mapKey, checks) => {
+      // Checks are the focused PR's; with none known (or none resolved) there
+      // is no entry to write them to.
+      const focused = s.prStates[mapKey];
+      return focused && checks ? focusedIntoSet(s.prSets[mapKey], focused, checks) : null;
+    }),
 
   fetchPrLive: async (agentId, subdir) => {
     if (!githubReady(get)) return;
@@ -456,9 +541,20 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
       // present PR means the CI reads degraded (or the PR isn't open), and
       // overwriting a good rollup there would blank the pill on a transient
       // error.
+      //
+      // The set's entry for the PR moves with the state (and its checks, when
+      // those were taken too), so it isn't stale until the next sweep.
       set((s) => ({
         prStates: takeState ? { ...s.prStates, [mapKey]: live?.state ?? null } : s.prStates,
         prChecks: takeChecks ? { ...s.prChecks, [mapKey]: live?.checks ?? null } : s.prChecks,
+        ...setsWrite(
+          s,
+          mapKey,
+          ticket,
+          takeState && live
+            ? focusedIntoSet(s.prSets[mapKey], live.state, takeChecks ? live.checks : null)
+            : null,
+        ),
       }));
     } catch {
       // Mirror fetchPrAux's failure contract: degrade an absent key to null so
@@ -617,10 +713,11 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
       await api.commitAgent(agentId, message, subdir);
       await api.pushAgent(agentId, subdir);
       const pr = await api.createPr(agentId, "", "", subdir);
-      // Authoritative: we just created this PR. Stamp it so a poll that was
-      // already in flight — and saw no PR at all — can't erase the card.
-      stampPrWrite("prStates", checkoutKey(agentId, subdir));
-      set((s) => ({ prStates: { ...s.prStates, [checkoutKey(agentId, subdir)]: pr } }));
+      // Authoritative: we just created this PR, now the checkout's focused one.
+      // Applied as the host's focus event would be: stamped so a poll that was
+      // already in flight — and saw no PR at all — can't erase the card, and
+      // the "no PR" checks dropped so the new PR gets its own live read.
+      set((s) => applyPrStateChanged(s, { agent_id: agentId, subdir, state: pr }));
       await get().fetchGitState(agentId, subdir);
       return true;
     } catch (e) {
@@ -653,8 +750,7 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
     try {
       const pr = await api.createPr(agentId, title, body, subdir);
       // Authoritative (see commitAndOpenPr): outranks any in-flight poll.
-      stampPrWrite("prStates", checkoutKey(agentId, subdir));
-      set((s) => ({ prStates: { ...s.prStates, [checkoutKey(agentId, subdir)]: pr } }));
+      set((s) => applyPrStateChanged(s, { agent_id: agentId, subdir, state: pr }));
       return pr;
     } catch (e) {
       set({ lastError: String(e) });
@@ -673,6 +769,22 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
       await get().fetchPrLive(agentId, subdir);
     } catch (e) {
       set({ lastError: String(e) });
+    }
+  },
+
+  focusPr: async (agentId, number, subdir) => {
+    // The chips are disabled on a host without the op; this refuses a click
+    // that slips past them rather than send a call it would answer `unknown op`.
+    const gated = gateReason(activeEnvironment(), "focusPr");
+    if (gated) {
+      get().setLastError(gated);
+      return;
+    }
+    try {
+      const pr = await api.setFocusedPr(agentId, number, subdir);
+      set((s) => applyPrStateChanged(s, { agent_id: agentId, subdir, state: pr }));
+    } catch (e) {
+      get().setLastError(String(e));
     }
   },
 

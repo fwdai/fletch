@@ -31,8 +31,8 @@ pub use pr_set::sync_pr_set_links;
 pub use rewind::{RewindOutcome, RewindScope};
 pub use run::ProjectRunConfig;
 pub use session_sync::{
-    persist_pr_snapshot, pr_map_key, resolve_all_pr_status, resolve_pr_state, AgentPrStatus,
-    Discovery,
+    bind_pr_snapshot, pr_map_key, resolve_all_pr_status, resolve_pr_state, AgentPrStatus,
+    Discovery, PrSetEntry,
 };
 
 use parking_lot::Mutex;

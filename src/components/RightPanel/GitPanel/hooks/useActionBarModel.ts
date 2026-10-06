@@ -114,9 +114,10 @@ export function useActionBarModel(input: {
 
   // The CTA's main button is disabled while loading git state, while the agent
   // holds a delegation, when the selected action's op is not on this
-  // environment, and when Merge is selected but the merge gate isn't open. Gate
-  // semantics live in describeMergeGate (spec §6); which of the four is worth
-  // explaining to the user lives in `mainActionState`.
+  // environment, when an action bound to the focused PR's branch would run on
+  // another branch than that PR's, and when Merge is selected but the merge
+  // gate isn't open. Gate semantics live in describeMergeGate (spec §6); which
+  // of these is worth explaining to the user lives in `mainActionState`.
   const { mergeAllowed } = describeMergeGate(checks ? mergeState : null, {
     checksFailed,
     mergeable,
@@ -126,6 +127,10 @@ export function useActionBarModel(input: {
     delegationActive,
     mergeAllowed,
     actionGate,
+    // Any focused PR: the branch-bound actions only exist in the states where
+    // its branch matters (open for the playbooks, merged for archive / delete).
+    prBranch: prState?.branch ?? null,
+    checkoutBranch: gitState?.branch || null,
   });
   // Tone applies only when the selected action is the state's primary; picking
   // an alternate from the menu falls back to the neutral accent fill.

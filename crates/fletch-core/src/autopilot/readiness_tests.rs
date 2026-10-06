@@ -21,6 +21,7 @@ pub(crate) fn git() -> GitState {
         has_origin: true,
         head_sha: None,
         blocked_config: Vec::new(),
+        worktrees: Vec::new(),
     }
 }
 
@@ -43,6 +44,7 @@ pub(crate) fn pr() -> PrState {
         mergeable: MergeableState::Mergeable,
         opened_at: None,
         merged_at: None,
+        branch: None,
     }
 }
 

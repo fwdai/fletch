@@ -118,6 +118,7 @@ function input(over: Partial<QueueInput>): QueueInput {
     prStates: {},
     prChecks: {},
     prComments: {},
+    prSets: {},
     verificationReports: {},
     runs: [],
     dismissed: {},
@@ -245,6 +246,90 @@ describe("buildReviewQueue", () => {
       }),
     );
     expect(fixed).toEqual([]);
+  });
+
+  it("surfaces a failing sibling PR hidden behind a passing focused one", () => {
+    const passing = checks({ rollup: "passing", failed: 0, required_failing: [] });
+    const failing = checks({ rollup: "failing", failed: 1 });
+    const prSets = {
+      a: [
+        { state: openPr(9), checks: failing },
+        { state: openPr(8), checks: passing },
+        { state: { ...openPr(7), state: "merged" as const }, checks: failing },
+      ],
+    };
+    const q = buildReviewQueue(
+      input({
+        agents: [agent({ id: "a" })],
+        // The focused PR (#8) is green; #9 in the same checkout is not.
+        prStates: { a: openPr(8) },
+        prChecks: { a: passing },
+        prSets,
+      }),
+    );
+    expect(q).toHaveLength(1);
+    expect(q[0].reasons).toEqual(["checks-failing"]);
+    expect(q[0].pr).toEqual({ number: 9, url: "https://gh/pr/9" });
+    expect(q[0].prSubdir).toBeUndefined();
+    expect(q[0].checks?.rollup).toBe("failing");
+    // The merged #7's stale failing rollup never nags on its own.
+    const settled = buildReviewQueue(
+      input({
+        agents: [agent({ id: "a" })],
+        prStates: { a: openPr(8) },
+        prChecks: { a: passing },
+        prSets: { a: prSets.a.slice(1) },
+      }),
+    );
+    expect(settled).toEqual([]);
+  });
+
+  it("reads a secondary checkout known only through its PR set", () => {
+    const q = buildReviewQueue(
+      input({
+        agents: [agent({ id: "a" })],
+        prSets: { "a::web": [{ state: openPr(4), checks: checks({ rollup: "failing" }) }] },
+      }),
+    );
+    expect(q[0]?.pr?.number).toBe(4);
+    expect(q[0]?.prSubdir).toBe("web");
+  });
+
+  it("keeps the focused PR's threads on the focused PR alone", () => {
+    const q = buildReviewQueue(
+      input({
+        agents: [agent({ id: "a" })],
+        prStates: { a: openPr(8) },
+        prComments: { a: comments(2) },
+        prSets: {
+          a: [
+            { state: openPr(9), checks: null },
+            { state: openPr(8), checks: null },
+          ],
+        },
+      }),
+    );
+    expect(q[0].reasons).toEqual(["unresolved-comments"]);
+    expect(q[0].unresolvedComments).toBe(2);
+    // The card shows the PR the threads are on, not a sibling.
+    expect(q[0].pr?.number).toBe(8);
+  });
+
+  it("signs a dismissal by the PRs carrying an issue, not their calm siblings", () => {
+    const failing = checks({ rollup: "failing", failed: 1 });
+    const withSibling = (rollup: "passing" | "pending") =>
+      buildReviewQueue(
+        input({
+          agents: [agent({ id: "a" })],
+          prSets: {
+            a: [
+              { state: openPr(9), checks: failing },
+              { state: openPr(8), checks: checks({ rollup, failed: 0, required_failing: [] }) },
+            ],
+          },
+        }),
+      )[0].signature;
+    expect(withSibling("pending")).toBe(withSibling("passing"));
   });
 
   it("orders approval < conflict < pr < unseen", () => {

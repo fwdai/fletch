@@ -9,6 +9,7 @@ use crate::error::{Error, Result};
 
 use super::checks::{pr_checks_from_node, PR_CHECKS_FIELDS};
 use super::client;
+use super::comments::{pr_comments_from_node, PR_COMMENTS_FIELDS};
 use super::pr::{parse_pr_state, PR_STATE_FIELDS};
 use super::types::*;
 
@@ -208,6 +209,10 @@ pub struct PrRef {
     pub owner: String,
     pub repo: String,
     pub number: u32,
+    /// Fold this PR's unresolved review threads into its alias. Per alias, not
+    /// per batch: threads are the costly part of the selection and only some
+    /// PRs (a checkout's focused one) are read for them.
+    pub with_threads: bool,
 }
 
 /// Max PRs per batched request — each adds a top-level `repository` alias, so
@@ -216,22 +221,31 @@ const BATCH_CHUNK: usize = 50;
 
 /// Build an aliased multi-PR query with a trailing `rateLimit` probe. Values
 /// ride in as variables (`$oN/$rN/$nN`) so nothing user-derived is interpolated
-/// into the query text.
+/// into the query text. One top-level `viewer{ login }` rides along for the
+/// whole query — what thread parsing needs to judge `we_replied_last` — rather
+/// than a lookup per PR; `viewer` is a single node, so it costs nothing.
+/// `inner_fields` goes on every alias; [`PR_COMMENTS_FIELDS`] only on the
+/// aliases whose ref asked for threads.
 fn build_batch_query(chunk: &[PrRef], inner_fields: &str) -> (String, Value) {
     let mut decls = Vec::with_capacity(chunk.len());
     let mut aliases = Vec::with_capacity(chunk.len());
     let mut vars = serde_json::Map::new();
     for (i, r) in chunk.iter().enumerate() {
         decls.push(format!("$o{i}:String!,$r{i}:String!,$n{i}:Int!"));
+        let threads = if r.with_threads {
+            PR_COMMENTS_FIELDS
+        } else {
+            ""
+        };
         aliases.push(format!(
-            "a{i}:repository(owner:$o{i},name:$r{i}){{pullRequest(number:$n{i}){{{inner_fields}}}}}"
+            "a{i}:repository(owner:$o{i},name:$r{i}){{pullRequest(number:$n{i}){{{inner_fields} {threads}}}}}"
         ));
         vars.insert(format!("o{i}"), json!(r.owner));
         vars.insert(format!("r{i}"), json!(r.repo));
         vars.insert(format!("n{i}"), json!(r.number));
     }
     let query = format!(
-        "query({}){{{} rateLimit{{cost remaining resetAt}}}}",
+        "query({}){{viewer{{login}} {} rateLimit{{cost remaining resetAt}}}}",
         decls.join(","),
         aliases.join(" "),
     );
@@ -250,42 +264,14 @@ fn note_budget(data: &Value) {
     }
 }
 
-/// Run `refs` through one or more batched queries, mapping each alias's
-/// `pullRequest` node with `parse`. Results align 1:1 with `refs`; a
-/// missing/inaccessible PR yields `None` for its slot (partial-error tolerant).
-/// `Ok(vec![])` for empty input; an active backoff short-circuits to all-`None`
-/// so callers fall back to the persisted snapshot without spending a request.
-async fn pr_batch<T>(
-    refs: &[PrRef],
-    inner_fields: &str,
-    parse: impl Fn(&Value) -> T,
-) -> Result<Vec<Option<T>>> {
-    if refs.is_empty() {
-        return Ok(Vec::new());
-    }
-    if client::is_backing_off() {
-        return Ok(refs.iter().map(|_| None).collect());
-    }
-    let client = client::Client::new()?;
-    let mut out = Vec::with_capacity(refs.len());
-    for chunk in refs.chunks(BATCH_CHUNK) {
-        let (query, vars) = build_batch_query(chunk, inner_fields);
-        let data = client.graphql_partial(&query, vars).await?;
-        note_budget(&data);
-        for i in 0..chunk.len() {
-            let node = &data[format!("a{i}")]["pullRequest"];
-            out.push((!node.is_null()).then(|| parse(node)));
-        }
-        // A signal in this chunk's response — the budget crossing its floor, a
-        // Retry-After, or a RATE_LIMITED error — armed the gate. Stop before the
-        // next chunk spends the reserve, padding the unfetched refs with `None`
-        // so the result stays aligned 1:1 with `refs` (callers zip on that).
-        if client::is_backing_off() {
-            out.resize_with(refs.len(), || None);
-            break;
-        }
-    }
-    Ok(out)
+/// One PR's slot in [`pr_status_batch`].
+#[derive(Debug, Clone)]
+pub struct PrBatchRow {
+    pub state: PrState,
+    pub checks: PrChecks,
+    /// The unresolved review threads; `None` unless this PR's ref asked for
+    /// them.
+    pub threads: Option<PrComments>,
 }
 
 /// Fetch PR state *and* the merge gate + checks for many PRs by number in one
@@ -297,13 +283,50 @@ async fn pr_batch<T>(
 /// halves the sweep's cost and — more importantly — means the sidebar's badge
 /// and its CI tint always come from the same instant instead of drifting up to
 /// a cadence apart.
-pub async fn pr_status_batch(refs: &[PrRef]) -> Result<Vec<Option<(PrState, PrChecks)>>> {
-    pr_batch(
-        refs,
-        &format!("state {PR_STATE_FIELDS} {PR_CHECKS_FIELDS}"),
-        |node| (parse_pr_state(node), pr_checks_from_node(node)),
-    )
-    .await
+///
+/// A ref's `with_threads` folds that PR's review threads into its alias (the
+/// query's `viewer{ login }` judges who replied last). Threads used to be a
+/// separate read per open PR — a conditional REST resolve and a GraphQL call
+/// each — so riding along here spends the same points on one request per 50
+/// PRs instead of two per PR; and only the aliases that asked select them.
+///
+/// Results align 1:1 with `refs`; a missing/inaccessible PR yields `None` for
+/// its slot (partial-error tolerant). `Ok(vec![])` for empty input; an active
+/// backoff short-circuits to all-`None` so callers fall back to the persisted
+/// snapshot without spending a request.
+pub async fn pr_status_batch(refs: &[PrRef]) -> Result<Vec<Option<PrBatchRow>>> {
+    if refs.is_empty() {
+        return Ok(Vec::new());
+    }
+    if client::is_backing_off() {
+        return Ok(refs.iter().map(|_| None).collect());
+    }
+    let inner_fields = format!("state {PR_STATE_FIELDS} {PR_CHECKS_FIELDS}");
+    let client = client::Client::new()?;
+    let mut out = Vec::with_capacity(refs.len());
+    for chunk in refs.chunks(BATCH_CHUNK) {
+        let (query, vars) = build_batch_query(chunk, &inner_fields);
+        let data = client.graphql_partial(&query, vars).await?;
+        note_budget(&data);
+        let viewer = data["viewer"]["login"].as_str();
+        for (i, r) in chunk.iter().enumerate() {
+            let node = &data[format!("a{i}")]["pullRequest"];
+            out.push((!node.is_null()).then(|| PrBatchRow {
+                state: parse_pr_state(node),
+                checks: pr_checks_from_node(node),
+                threads: r.with_threads.then(|| pr_comments_from_node(node, viewer)),
+            }));
+        }
+        // A signal in this chunk's response — the budget crossing its floor, a
+        // Retry-After, or a RATE_LIMITED error — armed the gate. Stop before the
+        // next chunk spends the reserve, padding the unfetched refs with `None`
+        // so the result stays aligned 1:1 with `refs` (callers zip on that).
+        if client::is_backing_off() {
+            out.resize_with(refs.len(), || None);
+            break;
+        }
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -351,11 +374,13 @@ mod tests {
                 owner: "acme".into(),
                 repo: "web".into(),
                 number: 7,
+                with_threads: false,
             },
             PrRef {
                 owner: "acme".into(),
                 repo: "api".into(),
                 number: 12,
+                with_threads: false,
             },
         ];
         let (query, vars) = build_batch_query(&refs, "state number");
@@ -374,5 +399,53 @@ mod tests {
         assert_eq!(vars["o0"], json!("acme"));
         assert_eq!(vars["r1"], json!("api"));
         assert_eq!(vars["n1"], json!(12));
+    }
+
+    /// Threads need the viewer's login, and a batch asks for it once for the
+    /// whole query — never once per alias.
+    #[test]
+    fn batch_query_selects_the_viewer_once() {
+        let refs: Vec<PrRef> = (1..=3)
+            .map(|n| PrRef {
+                owner: "acme".into(),
+                repo: "web".into(),
+                number: n,
+                with_threads: n == 1,
+            })
+            .collect();
+        let (query, _) = build_batch_query(&refs, "state number");
+        assert_eq!(query.matches("viewer{login}").count(), 1, "{query}");
+        assert_eq!(query.matches(":repository(").count(), 3, "{query}");
+    }
+
+    /// Threads are selected per alias: the focused PR that asked for them
+    /// carries `reviewThreads`, a sibling beside it in the same request does
+    /// not — and the batch is still one query.
+    #[test]
+    fn batch_query_selects_threads_only_for_the_aliases_that_ask() {
+        let refs = vec![
+            PrRef {
+                owner: "acme".into(),
+                repo: "web".into(),
+                number: 7,
+                with_threads: true,
+            },
+            PrRef {
+                owner: "acme".into(),
+                repo: "web".into(),
+                number: 8,
+                with_threads: false,
+            },
+        ];
+        let (query, _) = build_batch_query(&refs, "state number");
+        let focused = query
+            .split("a0:repository(")
+            .nth(1)
+            .and_then(|rest| rest.split("a1:repository(").next())
+            .expect("alias a0");
+        let sibling = query.split("a1:repository(").nth(1).expect("alias a1");
+        assert!(focused.contains("reviewThreads"), "{query}");
+        assert!(!sibling.contains("reviewThreads"), "{query}");
+        assert_eq!(query.matches("reviewThreads").count(), 1, "{query}");
     }
 }

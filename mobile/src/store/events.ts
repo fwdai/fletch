@@ -275,9 +275,11 @@ export function registerRemoteEvents(client: RemoteClient, set: Set, get: Get): 
 
   // The phone keeps one PR per agent — the primary repo's — so a secondary's
   // event (`subdir` set) has nowhere to land, here or below; writing it to the
-  // agent would show another repo's merge as this PR's. Each one stamps its
-  // slice, so a read issued before it cannot land after it with what it saw
-  // earlier (@desktop/store/prWriteOrder).
+  // agent would show another repo's merge as this PR's. These three are only
+  // ever about the checkout's focused PR (the rest of its set arrives as
+  // `pr:set_entry_changed`, which the phone does not follow). Each one stamps
+  // its slice, so a read issued before it cannot land after it with what it
+  // saw earlier (@desktop/store/prWriteOrder).
   on<PrStateChangedEvent>("pr:state_changed", (e) => {
     if (e.subdir) return;
     stampPrWrite("prStates", e.agent_id);

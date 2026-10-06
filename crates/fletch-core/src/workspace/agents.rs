@@ -265,57 +265,50 @@ impl WorkspaceManager {
         Ok(())
     }
 
-    /// Record the GitHub PR number for a tracked repo, identified by subdir.
-    /// Written when a PR is created through the app or adopted from an OPEN
-    /// out-of-band PR. Overwrites unconditionally — the latest PR opened for
-    /// the branch is the one we track.
+    /// Bind PR `pr_number` to a tracked repo, identified by subdir: the
+    /// `git.pr_opened` path, and adoption of a PR opened out of band. The PR is
+    /// logged into the checkout's set (`worktree_prs`) and bound in one
+    /// transaction, so the sweep watches it from the moment it binds rather
+    /// than from its first successful fetch. Overwrites unconditionally — the
+    /// latest PR opened is the one we focus.
     ///
-    /// Binding a *different* number clears the display snapshot and lifecycle
-    /// stamps, because they describe the PR being replaced. This matters most
-    /// after a merge: `resolve_pr_state` short-circuits a `merged` snapshot with
-    /// no network (merges don't un-happen), so a follow-up PR that inherited
-    /// `pr_state = 'merged'` would render as "merged #<new>" with the previous
-    /// PR's url and title, forever, with no fetch left to correct it. Cleared
-    /// columns read as "never fetched" instead, and the next resolve fills them
-    /// in from GitHub. Re-binding the same number is a no-op, so the ordinary
-    /// path keeps its snapshot.
-    pub fn set_repo_pr_number(&self, agent_id: &str, subdir: &str, pr_number: i64) -> Result<()> {
+    /// `url`/`title` may be empty and `branch` absent when the caller doesn't
+    /// know them; an existing row keeps what it had for those, and a new row
+    /// starts `open` (a PR just opened is open; an existing row keeps its state,
+    /// which only a fetch may move). The binding's snapshot columns are copied
+    /// from that row, never kept from the PR being replaced — so a follow-up
+    /// bound after a merge can't inherit "merged" (which `resolve_pr_state`
+    /// serves with no network, forever), and `pr_snapshot` is never `None` for
+    /// a bound PR.
+    pub fn set_repo_pr_number(
+        &self,
+        agent_id: &str,
+        subdir: &str,
+        pr_number: i64,
+        url: &str,
+        title: &str,
+        branch: Option<&str>,
+    ) -> Result<()> {
         let conn = self.db.lock();
-        // SQLite evaluates SET expressions against the pre-update row, so each
-        // `pr_number IS ?1` compares the number being replaced. `IS` (not `=`)
-        // so a first bind, where the old number is NULL, also counts as a change.
-        conn.execute(
-            "UPDATE worktrees
-                SET pr_number    = ?1,
-                    pr_url       = CASE WHEN pr_number IS ?1 THEN pr_url       ELSE NULL END,
-                    pr_title     = CASE WHEN pr_number IS ?1 THEN pr_title     ELSE NULL END,
-                    pr_state     = CASE WHEN pr_number IS ?1 THEN pr_state     ELSE NULL END,
-                    pr_opened_at = CASE WHEN pr_number IS ?1 THEN pr_opened_at ELSE NULL END,
-                    pr_merged_at = CASE WHEN pr_number IS ?1 THEN pr_merged_at ELSE NULL END
-              WHERE workspace_id = ?2 AND subdir = ?3",
-            rusqlite::params![pr_number, agent_id, subdir],
+        let tx = conn.unchecked_transaction()?;
+        tx.execute(
+            "INSERT INTO worktree_prs (workspace_id, subdir, number, url, title, state, branch)
+             VALUES (?1, ?2, ?3, ?4, ?5, 'open', NULLIF(?6, ''))
+             ON CONFLICT(workspace_id, subdir, number) DO UPDATE SET
+                    url    = CASE WHEN excluded.url   <> '' THEN excluded.url   ELSE url   END,
+                    title  = CASE WHEN excluded.title <> '' THEN excluded.title ELSE title END,
+                    branch = COALESCE(excluded.branch, branch)",
+            rusqlite::params![agent_id, subdir, pr_number, url, title, branch],
         )?;
+        bind_pr(&tx, agent_id, subdir, pr_number)?;
+        tx.commit()?;
         Ok(())
     }
 
-    /// Stamp the PR's GitHub-reported open/merge times onto a tracked repo,
-    /// identified by subdir. Called from every PR-state fetch path; GitHub is
-    /// the source of truth, so values overwrite (COALESCE keeps an existing
-    /// stamp when a fetch reports none). NULL until first observed — a PR
-    /// merged while the app was closed still gets its real merge time on the
-    /// next fetch.
-    /// Persist a successful PR fetch: identity (number), the display snapshot
-    /// (url / title / state), and GitHub's own lifecycle times. One write per
-    /// fetch keeps the database the durable source of truth the UI can render
-    /// from when GitHub or the checkout is unavailable. Times COALESCE so an
-    /// earlier-observed value is never erased by a payload that omits it — but
-    /// only for the PR they describe: a follow-up PR bound into the same
-    /// checkout (the workspace kept working after a merge) takes the payload's
-    /// times as they are, so it can't inherit the previous PR's merge stamp.
-    /// Every PR this checkout has held, newest number first — the append-only
-    /// log `set_repo_pr_snapshot` maintains beside the current binding. Includes
-    /// the currently-bound PR; callers that want only the earlier ones filter by
-    /// number (the panel does, so the strip never repeats the header's PR).
+    /// One checkout's PR set — every PR it has held, the focused one included —
+    /// newest number first: `all_pr_sets` for a single checkout. Read by the
+    /// merged binding's forced rescan, which must not re-adopt a PR the set
+    /// already holds.
     ///
     /// `mergeable` reads `Unknown` for the same reason it does in `pr_snapshot`:
     /// it isn't persisted, and a stored merge verdict would be stale anyway.
@@ -325,45 +318,87 @@ impl WorkspaceManager {
         subdir: &str,
     ) -> Result<Vec<crate::github::PrState>> {
         let conn = self.db.lock();
-        let mut stmt = conn.prepare(
-            "SELECT number, url, title, state, opened_at, merged_at
-               FROM worktree_prs
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {PR_ROW_COLUMNS} FROM worktree_prs
               WHERE workspace_id = ?1 AND subdir = ?2
-              ORDER BY number DESC",
-        )?;
-        let rows = stmt.query_map(rusqlite::params![agent_id, subdir], |row| {
-            let state: String = row.get(3)?;
-            Ok((
-                row.get::<_, i64>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                state,
-                row.get::<_, Option<i64>>(4)?,
-                row.get::<_, Option<i64>>(5)?,
-            ))
-        })?;
+              ORDER BY number DESC"
+        ))?;
+        let rows = stmt.query_map(rusqlite::params![agent_id, subdir], |row| pr_row(row, 0))?;
         let mut out = Vec::new();
         for row in rows {
-            let (number, url, title, state, opened_at, merged_at) = row?;
-            // An unparseable state is a row we can't render honestly — skip it
-            // rather than fabricate a status, matching `pr_snapshot`.
-            let Some(state) = crate::github::PrStatus::parse(&state) else {
-                continue;
-            };
-            out.push(crate::github::PrState {
-                number: number as u32,
-                url,
-                title,
-                state,
-                mergeable: crate::github::MergeableState::Unknown,
-                opened_at,
-                merged_at,
-            });
+            out.extend(row?);
         }
         Ok(out)
     }
 
-    pub fn set_repo_pr_snapshot(
+    /// The head branch of the checkout's focused PR while that PR is open, or
+    /// `None` (no PR, a settled one, or a branch nobody has learned yet). Once
+    /// the user focuses an older PR this can differ from the branch the checkout
+    /// is on, so a delegation about the PR names it (see
+    /// `supervisor::delegation`). `mergeable` and friends are irrelevant here,
+    /// hence one column rather than a `PrState`.
+    pub fn focused_pr_branch(&self, agent_id: &str, subdir: &str) -> Result<Option<String>> {
+        let conn = self.db.lock();
+        let branch = conn
+            .query_row(
+                "SELECT p.branch FROM worktrees w
+                   JOIN worktree_prs p ON p.workspace_id = w.workspace_id
+                                      AND p.subdir = w.subdir AND p.number = w.pr_number
+                  WHERE w.workspace_id = ?1 AND w.subdir = ?2 AND p.state = 'open'",
+                rusqlite::params![agent_id, subdir],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()?
+            .flatten()
+            .filter(|b| !b.is_empty());
+        Ok(branch)
+    }
+
+    /// Every checkout's PR set, for every non-archived workspace, keyed by
+    /// `(workspace_id, subdir)` and newest number first, so the PR sweep reads
+    /// its working set without a query per checkout. Each set includes the
+    /// focused PR.
+    ///
+    /// `mergeable` reads `Unknown` for the same reason it does in `pr_snapshot`:
+    /// it isn't persisted, and a stored merge verdict would be stale anyway.
+    pub fn all_pr_sets(
+        &self,
+    ) -> Result<std::collections::HashMap<(String, String), Vec<crate::github::PrState>>> {
+        let conn = self.db.lock();
+        let mut stmt = conn.prepare(&format!(
+            "SELECT workspace_id, subdir, {PR_ROW_COLUMNS} FROM worktree_prs
+              WHERE workspace_id IN (SELECT id FROM workspaces WHERE archived_at IS NULL)
+              ORDER BY workspace_id, subdir, number DESC"
+        ))?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                pr_row(row, 2)?,
+            ))
+        })?;
+        let mut out: std::collections::HashMap<_, Vec<_>> = std::collections::HashMap::new();
+        for row in rows {
+            let (workspace_id, subdir, pr) = row?;
+            if let Some(pr) = pr {
+                out.entry((workspace_id, subdir)).or_default().push(pr);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Persist a successful fetch of one of the checkout's PRs: its set row
+    /// (url / title / state / branch, and GitHub's own lifecycle times), plus —
+    /// only when it is the bound PR — the binding's snapshot columns, copied
+    /// from that row. One write per fetch keeps the database the durable source
+    /// of truth the UI renders from when GitHub or the checkout is unavailable.
+    ///
+    /// A refresh never moves the binding. A fetch is a network read, and one in
+    /// flight across a `set_focused_pr` (or a `git.pr_opened` bind) would
+    /// otherwise put the old focus back when it lands; and the sweep reads every
+    /// open PR of a checkout, so the last one fetched would steal it every tick.
+    /// Binding is [`Self::set_repo_pr_number`] / [`Self::set_focused_pr`] only.
+    pub fn record_repo_pr(
         &self,
         agent_id: &str,
         subdir: &str,
@@ -371,56 +406,50 @@ impl WorkspaceManager {
     ) -> Result<()> {
         let conn = self.db.lock();
         let tx = conn.unchecked_transaction()?;
-        // The history log (spec: every PR a checkout ever held). Upserted by
-        // number so a PR's row tracks its latest state and times, and a
-        // re-bound follow-up adds a row instead of overwriting the one it
-        // replaces. Same transaction as the current-binding write below, so the
-        // two can never disagree about a PR we just learned about.
+        upsert_pr_row(&tx, agent_id, subdir, pr)?;
         tx.execute(
-            "INSERT INTO worktree_prs
-                    (workspace_id, subdir, number, url, title, state, opened_at, merged_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
-             ON CONFLICT(workspace_id, subdir, number) DO UPDATE SET
-                    url       = excluded.url,
-                    title     = excluded.title,
-                    state     = excluded.state,
-                    -- Times COALESCE for the same reason they do on the
-                    -- worktrees row: a payload that omits one must not erase an
-                    -- earlier-observed value. Identity is the PK here, so
-                    -- there's no cross-PR bleed to guard against.
-                    opened_at = COALESCE(excluded.opened_at, opened_at),
-                    merged_at = COALESCE(excluded.merged_at, merged_at)",
-            rusqlite::params![
-                agent_id,
-                subdir,
-                pr.number as i64,
-                pr.url,
-                pr.title,
-                pr.state.as_str(),
-                pr.opened_at,
-                pr.merged_at,
-            ],
-        )?;
-        tx.execute(
-            "UPDATE worktrees SET pr_number = ?1, pr_url = ?2, pr_title = ?3, pr_state = ?4,
-                                  pr_opened_at = CASE WHEN pr_number IS ?1
-                                                 THEN COALESCE(?5, pr_opened_at) ELSE ?5 END,
-                                  pr_merged_at = CASE WHEN pr_number IS ?1
-                                                 THEN COALESCE(?6, pr_merged_at) ELSE ?6 END
-             WHERE workspace_id = ?7 AND subdir = ?8",
-            rusqlite::params![
-                pr.number as i64,
-                pr.url,
-                pr.title,
-                pr.state.as_str(),
-                pr.opened_at,
-                pr.merged_at,
-                agent_id,
-                subdir,
-            ],
+            &format!(
+                "UPDATE worktrees SET {SNAPSHOT_FROM_ROW}
+                   FROM worktree_prs p
+                  WHERE worktrees.workspace_id = ?1 AND worktrees.subdir = ?2
+                    AND worktrees.pr_number = ?3
+                    AND p.workspace_id = ?1 AND p.subdir = ?2 AND p.number = ?3"
+            ),
+            rusqlite::params![agent_id, subdir, pr.number as i64],
         )?;
         tx.commit()?;
         Ok(())
+    }
+
+    /// Make `number` — already one of the checkout's PRs — its focused PR: the
+    /// binding every single-PR reader (badge, panel header, `get_pr_live`)
+    /// follows. Returns the PR as now bound; `Ok(None)` when `number` isn't in
+    /// this checkout's set (nothing is written).
+    pub fn set_focused_pr(
+        &self,
+        agent_id: &str,
+        subdir: &str,
+        number: u32,
+    ) -> Result<Option<crate::github::PrState>> {
+        let conn = self.db.lock();
+        let tx = conn.unchecked_transaction()?;
+        let pr = tx
+            .query_row(
+                &format!(
+                    "SELECT {PR_ROW_COLUMNS} FROM worktree_prs
+                      WHERE workspace_id = ?1 AND subdir = ?2 AND number = ?3"
+                ),
+                rusqlite::params![agent_id, subdir, number as i64],
+                |row| pr_row(row, 0),
+            )
+            .optional()?
+            .flatten();
+        let Some(pr) = pr else {
+            return Ok(None);
+        };
+        bind_pr(&tx, agent_id, subdir, number as i64)?;
+        tx.commit()?;
+        Ok(Some(pr))
     }
 
     pub fn append_tracked_repo(&self, agent_id: &str, repo: TrackedRepo) -> Result<()> {
@@ -726,4 +755,87 @@ impl WorkspaceManager {
         cleanup.apply(&conn);
         Ok(())
     }
+}
+
+/// The `worktree_prs` columns [`pr_row`] reads, in its order.
+const PR_ROW_COLUMNS: &str = "number, url, title, state, opened_at, merged_at, branch";
+
+/// One `worktree_prs` row (selected as [`PR_ROW_COLUMNS`] from column `at`) as
+/// a `PrState`. `None` for an unparseable state: a row we can't render
+/// honestly is skipped rather than given a fabricated status, matching
+/// `pr_snapshot`.
+fn pr_row(row: &rusqlite::Row, at: usize) -> rusqlite::Result<Option<crate::github::PrState>> {
+    let state: String = row.get(at + 3)?;
+    let Some(state) = crate::github::PrStatus::parse(&state) else {
+        return Ok(None);
+    };
+    Ok(Some(crate::github::PrState {
+        number: row.get::<_, i64>(at)? as u32,
+        url: row.get(at + 1)?,
+        title: row.get(at + 2)?,
+        state,
+        mergeable: crate::github::MergeableState::Unknown,
+        opened_at: row.get(at + 4)?,
+        merged_at: row.get(at + 5)?,
+        branch: row.get(at + 6)?,
+    }))
+}
+
+/// The binding's snapshot columns, set from a `worktree_prs` row aliased `p`.
+const SNAPSHOT_FROM_ROW: &str = "pr_url = p.url, pr_title = p.title, pr_state = p.state, \
+     pr_opened_at = p.opened_at, pr_merged_at = p.merged_at";
+
+/// Bind PR `number` — which must already have a row in the checkout's set — as
+/// the checkout's focused PR, with the snapshot columns copied from that row in
+/// the same statement, so the binding never shows one PR's number with
+/// another's title, state or times.
+fn bind_pr(conn: &rusqlite::Connection, agent_id: &str, subdir: &str, number: i64) -> Result<()> {
+    conn.execute(
+        &format!(
+            "UPDATE worktrees SET pr_number = p.number, {SNAPSHOT_FROM_ROW}
+               FROM worktree_prs p
+              WHERE worktrees.workspace_id = ?1 AND worktrees.subdir = ?2
+                AND p.workspace_id = ?1 AND p.subdir = ?2 AND p.number = ?3"
+        ),
+        rusqlite::params![agent_id, subdir, number],
+    )?;
+    Ok(())
+}
+
+/// Upsert one PR into its checkout's log (spec: every PR a checkout ever held).
+/// Upserted by number so a PR's row tracks its latest state and times, and a
+/// re-bound follow-up adds a row instead of overwriting the one it replaces.
+fn upsert_pr_row(
+    conn: &rusqlite::Connection,
+    agent_id: &str,
+    subdir: &str,
+    pr: &crate::github::PrState,
+) -> Result<()> {
+    conn.execute(
+        "INSERT INTO worktree_prs
+                (workspace_id, subdir, number, url, title, state, opened_at, merged_at, branch)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+         ON CONFLICT(workspace_id, subdir, number) DO UPDATE SET
+                url       = excluded.url,
+                title     = excluded.title,
+                state     = excluded.state,
+                -- Times and branch COALESCE: a payload that omits one must not
+                -- erase an earlier-observed value. Identity is the PK here, so
+                -- there's no cross-PR bleed to guard against.
+                opened_at = COALESCE(excluded.opened_at, opened_at),
+                merged_at = COALESCE(excluded.merged_at, merged_at),
+                branch    = COALESCE(excluded.branch, branch)",
+        rusqlite::params![
+            agent_id,
+            subdir,
+            pr.number as i64,
+            pr.url,
+            pr.title,
+            pr.state.as_str(),
+            pr.opened_at,
+            pr.merged_at,
+            pr.branch,
+        ],
+    )?;
+    Ok(())
 }
