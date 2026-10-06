@@ -18,10 +18,12 @@ pub struct UserTurnText {
     pub text: String,
 }
 
-/// Proof that a quote was found in a user turn. Constructible only here.
+/// Proof that a quote was found in a user turn, carrying the quote: the only
+/// statement a user-stated record may have. Constructible only here.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UserStated {
     turn_id: String,
+    quote: String,
 }
 
 impl UserStated {
@@ -29,8 +31,14 @@ impl UserStated {
         &self.turn_id
     }
 
-    /// The source a user-stated record carries.
-    pub fn source(&self) -> Source {
+    /// The user's words, as quoted — what the record will state.
+    pub fn quote(&self) -> &str {
+        &self.quote
+    }
+
+    /// The source a user-stated record carries. Visible to the service and
+    /// the store only: a writer hands over the proof, not the source.
+    pub(super) fn source(&self) -> Source {
         Source {
             kind: SourceKind::UserTurn,
             reference: Some(self.turn_id.clone()),
@@ -57,7 +65,27 @@ pub fn find_user_quote(turns: &[UserTurnText], quote: &str) -> Option<UserStated
         .find(|t| normalise(&t.text).contains(&needle))
         .map(|t| UserStated {
             turn_id: t.turn_id.clone(),
+            quote: clean_quote(quote),
         })
+}
+
+/// The quote as a statement: the user's words and case, single-spaced,
+/// without the quote marks and trailing punctuation a citation is wrapped in.
+fn clean_quote(text: &str) -> String {
+    let mut out = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    // Quote marks, spaces and trailing punctuation nest in any order
+    // (`"  …, "`), so peel until nothing changes.
+    loop {
+        let peeled = out
+            .trim()
+            .trim_matches(|c: char| matches!(c, '"' | '\'' | '“' | '”' | '‘' | '’' | '`'))
+            .trim_end_matches(['.', '!', '?', ',', ';', ':'])
+            .to_string();
+        if peeled == out {
+            return out;
+        }
+        out = peeled;
+    }
 }
 
 /// Lowercase, single-spaced, without the quote marks and trailing

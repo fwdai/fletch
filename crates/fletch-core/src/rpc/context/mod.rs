@@ -25,9 +25,7 @@ use std::sync::Arc;
 
 use serde_json::Value;
 
-use crate::context::{
-    self, render, trust, Author, ContextService, Provenance, Source, SourceKind, Stamp,
-};
+use crate::context::{self, render, Author, ContextService, Provenance, Source, SourceKind, Stamp};
 use crate::host::EngineCtx;
 use crate::roadmap::Db;
 use crate::rpc::{Response, RpcDispatcher, RpcEvent, RpcFuture};
@@ -57,9 +55,10 @@ pub struct ContextDispatcher {
     provider: String,
     /// The checkout the branch and commit are read from at call time.
     cwd: PathBuf,
-    /// The primary checkout's repo subdir: the unit a merge or an archive
-    /// settles, stamped into every write's provenance.
-    repo: Option<String>,
+    /// The workspace's checkouts (repo subdirs), primary first. A write is
+    /// stamped with the one it is about — the unit a merge or an archive
+    /// settles — so a workspace with several must be told which.
+    repos: Vec<String>,
     session_id: Option<String>,
     db: Db,
 }
@@ -77,7 +76,7 @@ pub fn wrap(
     agent_id: &str,
     provider: &str,
     cwd: &Path,
-    repo: Option<String>,
+    repos: Vec<String>,
     session_id: Option<&str>,
 ) -> Arc<dyn RpcDispatcher> {
     let Some((service, project)) = open(ctx, fletch_project_id) else {
@@ -90,7 +89,7 @@ pub fn wrap(
         agent_id: agent_id.to_string(),
         provider: provider.to_string(),
         cwd: cwd.to_path_buf(),
-        repo,
+        repos,
         session_id: session_id.map(str::to_string),
         db: ctx.db.clone(),
     })
@@ -130,14 +129,32 @@ fn open(ctx: &EngineCtx, fletch_project_id: &str) -> Option<(ContextService, con
 }
 
 impl ContextDispatcher {
+    /// The checkout a write is about: the one named, or the only one. With
+    /// several and none named the write is refused — a decision made while
+    /// changing one repo must not be settled by another's merge.
+    fn checkout(&self, named: Option<&str>) -> Result<Option<String>, String> {
+        let named = named.map(str::trim).filter(|r| !r.is_empty());
+        match (named, self.repos.as_slice()) {
+            (Some(r), repos) if repos.iter().any(|known| known == r) => Ok(Some(r.to_string())),
+            (Some(r), repos) => Err(format!(
+                "`repo` must be one of this workspace's checkouts ({}), not `{r}`",
+                repos.join(", ")
+            )),
+            (None, []) => Ok(None),
+            (None, [only]) => Ok(Some(only.clone())),
+            (None, repos) => Err(format!(
+                "this workspace has several checkouts ({}); say which one with `repo`",
+                repos.join(", ")
+            )),
+        }
+    }
+
     /// The stamp for one write. Branch and commit are read now rather than at
-    /// spawn because the agent moves the checkout as it works. `user` is the
-    /// verified user quote, when the write is user-stated.
-    async fn stamp(&self, user: Option<&trust::UserStated>) -> Stamp {
-        let source = match user {
-            Some(found) => found.source(),
-            None => Source::new(SourceKind::AgentTurn, self.session_id.clone()),
-        };
+    /// spawn because the agent moves the checkout as it works. The source is
+    /// the agent's turn: a user quote is applied by the service, the only
+    /// place that can turn one into a `user_turn` source.
+    async fn stamp(&self, repo: Option<String>) -> Stamp {
+        let source = Source::new(SourceKind::AgentTurn, self.session_id.clone());
         let branch = rev_parse(&self.cwd, &["--abbrev-ref", "HEAD"])
             .await
             .filter(|b| b != "HEAD");
@@ -151,7 +168,7 @@ impl ContextDispatcher {
                 commit_sha,
                 session_id: self.session_id.clone(),
                 turn_id: None,
-                repo: self.repo.clone(),
+                repo,
             },
         }
     }

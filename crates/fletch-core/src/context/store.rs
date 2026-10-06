@@ -209,7 +209,7 @@ impl ContextStore {
 
     /// Appends `assertion_recorded` with its `about`, `supersedes` and
     /// `contradicts` edges. Errors: `NoSubject`, `MissingReasoning`, `NotHead`
-    /// (the superseded assertion is not a head), `UnknownEntity`,
+    /// (the superseded assertion is not current), `UnknownEntity`,
     /// `UnknownAssertion`, `Invalid` (a supersession across kinds, domains
     /// or subjects). The raw primitive: writers go through [`Self::land`];
     /// only the store's own tests seed with it.
@@ -220,13 +220,22 @@ impl ContextStore {
         input: AssertionInput,
         stamp: Stamp,
     ) -> Result<Id> {
-        self.write(|conn| self.record_assertion_in(conn, project_id, input, stamp))
+        self.write(|conn| {
+            let graph = load_graph(conn, project_id)?;
+            self.record_assertion_in(conn, project_id, &graph, input, stamp)
+        })
     }
 
+    /// `graph` is the project's projection loaded in this transaction: the
+    /// supersession target must be current by `compile::is_current` — the
+    /// same rule the read model and the landing policy apply — not merely
+    /// without a successor row, or a head whose successor was abandoned could
+    /// never be superseded again.
     fn record_assertion_in(
         &self,
         conn: &Connection,
         project_id: &str,
+        graph: &Graph,
         input: AssertionInput,
         stamp: Stamp,
     ) -> Result<Id> {
@@ -248,12 +257,12 @@ impl ContextStore {
                 return Err(ContextError::MissingReasoning);
             }
             require_assertion(conn, project_id, &sup.id)?;
-            if !is_head(conn, &sup.id)? {
-                return Err(ContextError::NotHead(sup.id.clone()));
-            }
-            let (kind, domain, about) = assertion_shape(conn, &sup.id)?;
-            let shared = about.iter().any(|e| input.about.contains(e));
-            if kind != input.kind || domain != input.domain || !shared {
+            let target = graph
+                .assertion(&sup.id)
+                .filter(|t| compile::is_current(graph, t))
+                .ok_or_else(|| ContextError::NotHead(sup.id.clone()))?;
+            let shared = target.about.iter().any(|e| input.about.contains(e));
+            if target.kind != input.kind || target.domain != input.domain || !shared {
                 return Err(ContextError::Invalid(
                     "a decision supersedes a decision about the same entity in the same domain: \
                      the superseded assertion must share the kind, the domain and a subject"
@@ -339,95 +348,111 @@ impl ContextStore {
         candidate: Candidate,
         stamp: Stamp,
     ) -> Result<Landing> {
-        self.write(|conn| {
-            let Candidate {
-                mut input,
-                relation,
-                evidence,
-                about_pending,
-                observation_id,
-            } = candidate;
-            let about_pending = resolve_pending(conn, project_id, &mut input, about_pending)?;
-            let graph = load_graph(conn, project_id)?;
-            // A restatement is a duplicate — unless it is the very head the
-            // candidate revises (same words, new rationale or stance).
-            if let ProposedRelation {
-                kind: RelationKind::Duplicate,
-                target: Some(id),
-                ..
-            } = resolve::classify(&graph, &input)
-            {
-                let revising_it = input.supersedes.as_ref().is_some_and(|s| s.id == id);
-                if !revising_it {
-                    return Ok(Landing::Duplicate { id });
-                }
-            }
-            // An explicit relation is honoured only against a head that
-            // stands now; anything else is "the store decides".
-            let relation = relation.filter(|r| match r.kind {
-                RelationKind::Supersedes | RelationKind::Contradicts => r
-                    .target
-                    .as_deref()
-                    .and_then(|id| graph.assertion(id))
-                    .is_some_and(|t| compile::is_current(&graph, t)),
-                _ => true,
-            });
-            let held = match stamp.author.kind {
-                AuthorKind::User => false,
-                AuthorKind::Agent => {
-                    if relation.is_none()
-                        && input.supersedes.is_none()
-                        && input.contradicts.is_empty()
-                    {
-                        let heads = resolve::related_heads(&graph, &input);
-                        if !heads.is_empty() {
-                            return Ok(Landing::Related {
-                                heads: heads.into_iter().cloned().collect(),
-                            });
-                        }
-                    }
-                    false
-                }
-                // Deterministic sources land next to what is there; only a
-                // person decides what replaces what.
-                AuthorKind::Ingester => false,
-                AuthorKind::Extractor => true,
-            };
-            if held {
-                let proposal = Proposal {
-                    id: new_id(),
-                    project_id: project_id.to_string(),
-                    observation_id,
-                    payload: ProposalPayload::Assertion {
-                        input,
-                        stamp,
-                        relation: relation.unwrap_or(ProposedRelation {
-                            kind: RelationKind::New,
-                            target: None,
-                            reasoning: None,
-                        }),
-                        about_pending,
-                    },
-                    evidence,
-                    status: ProposalStatus::Pending,
-                    dismiss_reason: None,
-                    created_at: now_millis(),
-                    ruled_at: None,
-                    ruled_by: None,
-                };
-                insert_proposal(conn, &proposal)?;
-                return Ok(Landing::Held {
-                    proposal_id: proposal.id,
+        let policy_for = stamp.author.kind;
+        self.write(|conn| self.land_in(conn, project_id, candidate, stamp, policy_for))
+    }
+
+    /// [`Self::land`] inside the caller's transaction. `policy_for` is the
+    /// actor whose rule applies: a writer's own kind, or `User` when a person
+    /// accepts a proposal (the ruling is theirs; `stamp` stays the
+    /// proposer's, for provenance).
+    fn land_in(
+        &self,
+        conn: &Connection,
+        project_id: &str,
+        candidate: Candidate,
+        stamp: Stamp,
+        policy_for: AuthorKind,
+    ) -> Result<Landing> {
+        let Candidate {
+            mut input,
+            relation,
+            evidence,
+            about_pending,
+            observation_id,
+            user: _,
+        } = candidate;
+        let about_pending = resolve_pending(conn, project_id, &mut input, about_pending)?;
+        let graph = load_graph(conn, project_id)?;
+        // A restatement is a duplicate — unless it is the very head the
+        // candidate revises (same words, new rationale or stance).
+        if let ProposedRelation {
+            kind: RelationKind::Duplicate,
+            target: Some(id),
+            ..
+        } = resolve::classify(&graph, &input)
+        {
+            let revising_it = input.supersedes.as_ref().is_some_and(|s| s.id == id)
+                || relation.as_ref().is_some_and(|r| {
+                    r.kind == RelationKind::Supersedes && r.target.as_deref() == Some(&*id)
                 });
+            if !revising_it {
+                return Ok(Landing::Duplicate { id });
             }
-            require_accepted(&about_pending)?;
-            if let Some(relation) = &relation {
-                with_relation(&mut input, relation)?;
+        }
+        // An explicit relation is honoured only against a head that
+        // stands now; anything else is "the store decides".
+        let relation = relation.filter(|r| match r.kind {
+            RelationKind::Supersedes | RelationKind::Contradicts => r
+                .target
+                .as_deref()
+                .and_then(|id| graph.assertion(id))
+                .is_some_and(|t| compile::is_current(&graph, t)),
+            _ => true,
+        });
+        let held = match policy_for {
+            AuthorKind::User => false,
+            AuthorKind::Agent => {
+                if relation.is_none() && input.supersedes.is_none() && input.contradicts.is_empty()
+                {
+                    let heads = resolve::related_heads(&graph, &input);
+                    if !heads.is_empty() {
+                        return Ok(Landing::Related {
+                            heads: heads.into_iter().cloned().collect(),
+                        });
+                    }
+                }
+                false
             }
-            let status = input.status;
-            let id = self.record_assertion_in(conn, project_id, input, stamp)?;
-            Ok(Landing::Recorded { id, status })
-        })
+            // Deterministic sources land next to what is there; only a
+            // person decides what replaces what.
+            AuthorKind::Ingester => false,
+            AuthorKind::Extractor => true,
+        };
+        if held {
+            let proposal = Proposal {
+                id: new_id(),
+                project_id: project_id.to_string(),
+                observation_id,
+                payload: ProposalPayload::Assertion {
+                    input,
+                    stamp,
+                    relation: relation.unwrap_or(ProposedRelation {
+                        kind: RelationKind::New,
+                        target: None,
+                        reasoning: None,
+                    }),
+                    about_pending,
+                },
+                evidence,
+                status: ProposalStatus::Pending,
+                dismiss_reason: None,
+                created_at: now_millis(),
+                ruled_at: None,
+                ruled_by: None,
+            };
+            insert_proposal(conn, &proposal)?;
+            return Ok(Landing::Held {
+                proposal_id: proposal.id,
+            });
+        }
+        require_accepted(&about_pending)?;
+        if let Some(relation) = &relation {
+            with_relation(&mut input, relation)?;
+        }
+        let status = input.status;
+        let id = self.record_assertion_in(conn, project_id, &graph, input, stamp)?;
+        Ok(Landing::Recorded { id, status })
     }
 
     /// Settle the provisional assertions one checkout of a workspace made:
@@ -699,11 +724,17 @@ impl ContextStore {
         get_proposal(&conn, proposal_id)
     }
 
-    /// Lands a proposal: applies its payload as events (`record_entity` /
-    /// `record_assertion`, honouring `relation`) and marks it `status`
-    /// (`Accepted` by the user, `Auto` by rule). Subjects that were only
-    /// proposed (`about_pending`) are resolved now; one still missing is
-    /// `Invalid("accept the entity … first")`. Returns the recorded id.
+    /// Lands a proposal and marks it `status` (`Accepted` by the user, `Auto`
+    /// by rule). An entity proposal is recorded as is. An assertion proposal
+    /// is rebuilt as a [`Candidate`] and goes through [`Self::land_in`] under
+    /// the user's rule — classified against what stands *now*, not at
+    /// proposal time: a restatement of a current head dismisses the proposal
+    /// as `Duplicate` (returning that head); a `supersedes` / `contradicts`
+    /// target that is no longer current is `Invalid` and the proposal stays
+    /// pending. `Confirms` records nothing: when confirmed it settles its
+    /// target. Subjects that were only proposed (`about_pending`) are
+    /// resolved now; one still missing is `Invalid("accept the entity …
+    /// first")`. Returns the recorded (or duplicated) id.
     pub(super) fn accept_proposal(
         &self,
         proposal_id: &str,
@@ -713,49 +744,83 @@ impl ContextStore {
         self.write(|conn| {
             let proposal = require_pending(conn, proposal_id)?;
             let project_id = &proposal.project_id;
-            let id = match proposal.payload {
+            let (input, stamp, relation, about_pending) = match proposal.payload {
                 ProposalPayload::Entity { input, stamp } => {
-                    self.record_entity_in(conn, project_id, input, stamp)?
+                    let id = self.record_entity_in(conn, project_id, input, stamp)?;
+                    rule_proposal(conn, proposal_id, status, None, &ruled_by)?;
+                    return Ok(id);
                 }
                 ProposalPayload::Assertion {
-                    mut input,
+                    input,
                     stamp,
                     relation,
                     about_pending,
-                } => {
-                    let missing = resolve_pending(conn, project_id, &mut input, about_pending)?;
-                    require_accepted(&missing)?;
-                    // A human ruling is a confirmation: what the user accepts
-                    // is not waiting on any branch.
-                    if status == ProposalStatus::Accepted {
-                        input.status = AssertionStatus::Confirmed;
-                    }
-                    match relation.kind {
-                        RelationKind::Confirms => {
-                            // Nothing new is said; a confirmed restatement
-                            // settles a provisional target.
-                            let id = relation_target(&relation)?;
-                            if input.status == AssertionStatus::Confirmed {
-                                let event = EventPayload::Confirmed {
-                                    assertion_id: id.clone(),
-                                };
-                                self.append(conn, project_id, stamp, now_millis(), event)?;
-                            }
-                            rule_proposal(conn, proposal_id, status, None, &ruled_by)?;
-                            return Ok(id);
-                        }
-                        RelationKind::Duplicate => {
-                            let id = relation_target(&relation)?;
-                            rule_proposal(conn, proposal_id, status, None, &ruled_by)?;
-                            return Ok(id);
-                        }
-                        _ => with_relation(&mut input, &relation)?,
-                    }
-                    self.record_assertion_in(conn, project_id, input, stamp)?
-                }
+                } => (input, stamp, relation, about_pending),
             };
-            rule_proposal(conn, proposal_id, status, None, &ruled_by)?;
-            Ok(id)
+            // A human ruling is a confirmation: what the user accepts is not
+            // waiting on any branch.
+            let mut input = input;
+            if status == ProposalStatus::Accepted {
+                input.status = AssertionStatus::Confirmed;
+            }
+            match relation.kind {
+                RelationKind::Confirms => {
+                    // Nothing new is said; a confirmed restatement settles a
+                    // provisional target.
+                    let id = relation_target(&relation)?;
+                    if input.status == AssertionStatus::Confirmed {
+                        let event = EventPayload::Confirmed {
+                            assertion_id: id.clone(),
+                        };
+                        self.append(conn, project_id, stamp, now_millis(), event)?;
+                    }
+                    rule_proposal(conn, proposal_id, status, None, &ruled_by)?;
+                    return Ok(id);
+                }
+                // A duplicate's target counts too: a restatement of a head
+                // that has since been replaced must not come back as new.
+                RelationKind::Supersedes | RelationKind::Contradicts | RelationKind::Duplicate => {
+                    let target = relation_target(&relation)?;
+                    let graph = load_graph(conn, project_id)?;
+                    let current = graph
+                        .assertion(&target)
+                        .is_some_and(|t| compile::is_current(&graph, t));
+                    if !current {
+                        return Err(ContextError::Invalid(format!(
+                            "assertion `{target}` is no longer current; \
+                             dismiss this proposal or record it afresh"
+                        )));
+                    }
+                }
+                RelationKind::New => {}
+            }
+            let candidate = Candidate {
+                input,
+                user: None,
+                relation: Some(relation),
+                evidence: proposal.evidence,
+                about_pending,
+                observation_id: proposal.observation_id,
+            };
+            match self.land_in(conn, project_id, candidate, stamp, AuthorKind::User)? {
+                Landing::Recorded { id, .. } => {
+                    rule_proposal(conn, proposal_id, status, None, &ruled_by)?;
+                    Ok(id)
+                }
+                Landing::Duplicate { id } => {
+                    rule_proposal(
+                        conn,
+                        proposal_id,
+                        ProposalStatus::Dismissed,
+                        Some(DismissReason::Duplicate),
+                        &ruled_by,
+                    )?;
+                    Ok(id)
+                }
+                other => Err(ContextError::Invalid(format!(
+                    "internal: a ruling cannot be parked ({other:?})"
+                ))),
+            }
         })
     }
 
@@ -808,7 +873,18 @@ impl ContextStore {
 
     pub fn stats(&self, project_id: &str) -> Result<Stats> {
         let conn = self.db.lock();
-        let heads = load_graph(&conn, project_id)?.current.len();
+        let graph = load_graph(&conn, project_id)?;
+        // The rule compile and the UI apply: a tension counts while it is
+        // unresolved and both sides stand now.
+        let contradictions = graph
+            .contradictions
+            .iter()
+            .filter(|c| {
+                c.resolution.is_none()
+                    && graph.current.contains(&c.a)
+                    && graph.current.contains(&c.b)
+            })
+            .count();
         let count = |sql: &str| -> Result<usize> {
             let n: i64 = conn.query_row(sql, [project_id], |r| r.get(0))?;
             Ok(n as usize)
@@ -829,16 +905,12 @@ impl ContextStore {
                 "SELECT COUNT(*) FROM context.entities WHERE project_id = ?1 AND status = 'active'",
             )?,
             assertions: count("SELECT COUNT(*) FROM context.assertions WHERE project_id = ?1")?,
-            heads,
+            heads: graph.current.len(),
             provisional: count(
                 "SELECT COUNT(*) FROM context.assertions
                  WHERE project_id = ?1 AND status = 'provisional'",
             )?,
-            contradictions: count(
-                "SELECT COUNT(*) FROM context.contradicts c
-                 WHERE c.resolved_at IS NULL
-                   AND c.a_id IN (SELECT id FROM context.assertions WHERE project_id = ?1)",
-            )?,
+            contradictions,
             pending_proposals: count(
                 "SELECT COUNT(*) FROM context.proposals
                  WHERE project_id = ?1 AND status = 'pending'",
@@ -1101,37 +1173,6 @@ fn require_assertion(conn: &Connection, project_id: &str, id: &str) -> Result<()
         return Err(ContextError::UnknownAssertion(id.to_string()));
     }
     Ok(())
-}
-
-fn is_head(conn: &Connection, assertion_id: &str) -> Result<bool> {
-    let n: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM context.supersedes WHERE old_id = ?1",
-        [assertion_id],
-        |r| r.get(0),
-    )?;
-    Ok(n == 0)
-}
-
-/// What a supersession must match: the assertion's kind, domain and subjects.
-fn assertion_shape(
-    conn: &Connection,
-    assertion_id: &str,
-) -> Result<(AssertionKind, Domain, Vec<Id>)> {
-    let (kind, domain) = conn.query_row(
-        "SELECT kind, domain FROM context.assertions WHERE id = ?1",
-        [assertion_id],
-        |r| {
-            Ok((
-                from_tag(&r.get::<_, String>(0)?)?,
-                from_tag(&r.get::<_, String>(1)?)?,
-            ))
-        },
-    )?;
-    let mut stmt = conn.prepare("SELECT entity_id FROM context.about WHERE assertion_id = ?1")?;
-    let about = stmt
-        .query_map([assertion_id], |r| r.get(0))?
-        .collect::<rusqlite::Result<_>>()?;
-    Ok((kind, domain, about))
 }
 
 /// `(status, merged_into)` of an entity of the project.
@@ -1429,19 +1470,34 @@ fn load_assertions(
         about.entry(a).or_default().push(e);
     }
     let mut supersedes: HashMap<Id, Supersede> = HashMap::new();
-    let mut superseded_by: HashMap<Id, Id> = HashMap::new();
-    let mut stmt = conn.prepare(&format!(
-        "SELECT new_id, old_id, reasoning FROM context.supersedes WHERE new_id IN ({OF_PROJECT})"
-    ))?;
+    // `superseded_by` is one id, but an assertion can have several successors
+    // once an abandoned rewrite is superseded again. The pick is
+    // deterministic: a live successor (not retracted or abandoned) first,
+    // then the most recent by `recorded_at` (id breaks ties), so
+    // `compile::is_current`'s forward walk follows the branch that stands.
+    let mut superseded_by: HashMap<Id, (bool, i64, Id)> = HashMap::new();
+    let mut stmt = conn.prepare(
+        "SELECT s.new_id, s.old_id, s.reasoning, a.status, a.recorded_at
+         FROM context.supersedes s JOIN context.assertions a ON a.id = s.new_id
+         WHERE a.project_id = ?1",
+    )?;
     for row in stmt.query_map([project_id], |r| {
         Ok((
             r.get::<_, Id>(0)?,
             r.get::<_, Id>(1)?,
             r.get::<_, String>(2)?,
+            from_tag::<AssertionStatus>(&r.get::<_, String>(3)?)?,
+            r.get::<_, i64>(4)?,
         ))
     })? {
-        let (new_id, old_id, reasoning) = row?;
-        superseded_by.insert(old_id.clone(), new_id.clone());
+        let (new_id, old_id, reasoning, status, recorded_at) = row?;
+        let rank = (resolve::is_live(status), recorded_at, new_id.clone());
+        let best = superseded_by
+            .entry(old_id.clone())
+            .or_insert_with(|| rank.clone());
+        if rank > *best {
+            *best = rank;
+        }
         supersedes.insert(
             new_id,
             Supersede {
@@ -1484,7 +1540,7 @@ fn load_assertions(
             provenance: from_json(&r.get::<_, String>(12)?)?,
             about: about.remove(&id).unwrap_or_default(),
             supersedes: supersedes.remove(&id),
-            superseded_by: superseded_by.remove(&id),
+            superseded_by: superseded_by.remove(&id).map(|(_, _, by)| by),
             contradicts: contradicts.remove(&id).unwrap_or_default(),
             id,
         })

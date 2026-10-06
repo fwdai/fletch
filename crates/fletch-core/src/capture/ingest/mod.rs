@@ -307,6 +307,7 @@ fn land(
             contradicts: Vec::new(),
             status: AssertionStatus::Confirmed,
         },
+        user: None,
         relation: None,
         evidence: vec![Evidence {
             session_id: None,

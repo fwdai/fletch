@@ -211,12 +211,26 @@ pub fn process(
         }
         let verified = verify(&user_turns, &agent_turns, &assertion.evidence);
         let user_stated = verified.iter().find_map(|q| q.user.clone());
+        // A user-stated record states the user's words (the service holds
+        // every writer to that); the model's sentence is its reading and
+        // goes in the rationale when there is no other.
+        let (statement, rationale) = match &user_stated {
+            Some(found) => (
+                found.quote().to_string(),
+                if assertion.rationale.trim().is_empty() {
+                    assertion.statement
+                } else {
+                    assertion.rationale
+                },
+            ),
+            None => (assertion.statement, assertion.rationale),
+        };
         let input = AssertionInput {
             kind: assertion.kind,
             domain: assertion.domain,
             stance: assertion.stance,
-            statement: assertion.statement,
-            rationale: assertion.rationale,
+            statement,
+            rationale,
             valid_from: None,
             paths: Vec::new(),
             about,
@@ -245,13 +259,9 @@ pub fn process(
             }
             r
         });
-        let stamp = match &user_stated {
-            Some(found) => Stamp {
-                source: found.source(),
-                ..agent_stamp()
-            },
-            None => agent_stamp(),
-        };
+        // The service applies the user's quote (statement, source, status);
+        // the pipeline only hands over the proof.
+        let stamp = agent_stamp();
         if verified.is_empty() {
             summary.unverified += 1;
             tracing::info!(
@@ -271,6 +281,7 @@ pub fn process(
             .collect();
         let candidate = Candidate {
             input,
+            user: user_stated,
             relation,
             evidence,
             about_pending,

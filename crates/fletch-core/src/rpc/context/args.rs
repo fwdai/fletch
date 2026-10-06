@@ -74,10 +74,15 @@ pub(super) struct RecordDecisionArgs {
     #[serde(default)]
     pub(super) contradicts: Vec<String>,
     /// The user's own words, verbatim. Fletch looks for them in the user's
-    /// turns of this workspace (`context::trust`); found, the record is
-    /// user-stated and lands confirmed; not found, the call is refused.
+    /// turns of this workspace (`context::trust`); found, the quote *is* the
+    /// statement and the record lands confirmed as the user's; not found, the
+    /// call is refused.
     #[serde(default)]
     pub(super) user_quote: Option<String>,
+    /// The checkout (repo subdir) this decision is about. Optional with one
+    /// checkout; required with several.
+    #[serde(default)]
+    pub(super) repo: Option<String>,
     /// The second step of the conflict protocol: record alongside the head
     /// `classify` found, without replacing or contradicting it.
     #[serde(default)]

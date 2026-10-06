@@ -65,7 +65,9 @@ pub fn project() -> Project {
 pub fn user_stamp() -> Stamp {
     Stamp {
         author: Author::user(),
-        source: Source::new(SourceKind::UserTurn, Some("t0".into())),
+        // A user-stated head, as the UI records one: only the service can
+        // mint a `user_turn` source, and only from a verified quote.
+        source: Source::ui(),
         provenance: Provenance::default(),
     }
 }
@@ -140,6 +142,7 @@ pub fn seed_decision_as(
                     contradicts: Vec::new(),
                     status,
                 },
+                user: None,
                 relation: Some(ProposedRelation {
                     kind: RelationKind::New,
                     target: None,

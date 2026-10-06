@@ -176,7 +176,7 @@ mod invariants {
 pub enum ContextError {
     #[error("the project context layer is off for this project")]
     Disabled,
-    #[error("assertion {0} is not a head: it has already been superseded")]
+    #[error("assertion {0} does not stand now: it was superseded, retracted or abandoned")]
     NotHead(Id),
     #[error("superseding an assertion needs non-empty reasoning")]
     MissingReasoning,

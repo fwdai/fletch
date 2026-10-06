@@ -216,7 +216,10 @@ fn assertions_are_held_with_their_status_whoever_stated_them() {
     assert_eq!(evidence[0].quote, AGENT_QUOTE);
     assert_eq!(evidence[0].turn_id.as_deref(), Some("t1"));
 
-    let (input, stamp, _, _, evidence) = by_statement("Use JWT");
+    // The user's record states the user's words; the model's sentence is
+    // its reading and yields to a rationale the model gave.
+    let (input, stamp, _, _, evidence) = by_statement(USER_QUOTE);
+    assert_eq!(input.rationale, "because");
     assert_eq!(input.status, AssertionStatus::Confirmed);
     assert_eq!(input.about, vec![auth]);
     assert_eq!(stamp.source.kind, SourceKind::UserTurn);
@@ -286,7 +289,9 @@ fn an_assertion_without_a_verifiable_quote_is_held_without_evidence() {
 fn a_duplicate_of_a_head_is_counted_and_not_held() {
     let (service, _dir) = service();
     let auth = seed_entity(&service, "auth");
-    seed_decision(&service, &auth, "Use JWT.", user_stamp());
+    // The head is the user's own sentence; a quoted restatement (whose
+    // statement becomes the quote) and an unquoted one both duplicate it.
+    seed_decision(&service, &auth, "Use JWT for sessions.", user_stamp());
     let summary = run(
         &service,
         &Canned(answer(
@@ -299,7 +304,13 @@ fn a_duplicate_of_a_head_is_counted_and_not_held() {
                     USER_QUOTE,
                     r#"{"kind": "new"}"#,
                 ),
-                assertion_json("auth", "decision", "use jwt", "", r#"{"kind": "new"}"#),
+                assertion_json(
+                    "auth",
+                    "decision",
+                    "use JWT for sessions",
+                    "",
+                    r#"{"kind": "new"}"#,
+                ),
             ],
         )),
     );
@@ -349,7 +360,12 @@ fn quotes_are_matched_after_normalisation() {
     assert_eq!(summary.unverified, 2);
     let held = held(&service);
     let by_statement = |s: &str| held.iter().find(|(i, ..)| i.statement == s).unwrap();
-    assert_eq!(by_statement("Use JWT").1.source.kind, SourceKind::UserTurn);
+    // The statement is the quote as the user would read it: their case,
+    // single-spaced, the citation's quote marks and comma gone.
+    assert_eq!(
+        by_statement("USE jwt for Sessions").1.source.kind,
+        SourceKind::UserTurn
+    );
     assert_eq!(
         by_statement("Tokens expire").1.source.kind,
         SourceKind::AgentTurn
@@ -504,7 +520,8 @@ fn an_assertion_about_a_proposed_entity_carries_it_as_pending() {
     assert_eq!(summary.assertions_skipped, 0);
     let held = held(&service);
     let by_statement = |s: &str| held.iter().find(|(i, ..)| i.statement == s).unwrap();
-    let (input, _, _, about_pending, _) = by_statement("Never store card numbers");
+    // Quoted from the user, so the record states the quote.
+    let (input, _, _, about_pending, _) = by_statement("never store tokens in local storage");
     assert!(input.about.is_empty());
     assert_eq!(about_pending, &["billing-service"]);
     assert_eq!(input.kind, AssertionKind::Constraint);

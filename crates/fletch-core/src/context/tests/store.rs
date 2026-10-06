@@ -52,6 +52,7 @@ fn extractor() -> Stamp {
 fn candidate(input: AssertionInput) -> Candidate {
     Candidate {
         input,
+        user: None,
         relation: None,
         evidence: vec![],
         about_pending: vec![],
@@ -146,9 +147,9 @@ fn proposal(payload: ProposalPayload) -> Proposal {
     }
 }
 
-fn assertion_proposal(about: &str, relation: ProposedRelation) -> Proposal {
+fn assertion_proposal(input: AssertionInput, relation: ProposedRelation) -> Proposal {
     proposal(ProposalPayload::Assertion {
-        input: assertion(&[about]),
+        input,
         stamp: stamp(),
         relation,
         about_pending: Vec::new(),
@@ -1017,18 +1018,32 @@ fn proposals_land_by_relation_kind() {
         input: entity("f", EntityKind::Feature),
         stamp: stamp(),
     });
-    let p_new = assertion_proposal(&e, rel(RelationKind::New, None, None));
+    // Each says something of its own: acceptance classifies against what
+    // stands now, and a restatement of a current head is a duplicate.
+    let p_new = assertion_proposal(
+        saying(&[&e], "we also do this"),
+        rel(RelationKind::New, None, None),
+    );
     let p_contra = assertion_proposal(
-        &e,
+        saying(&[&e], "we do it the other way"),
         rel(RelationKind::Contradicts, Some(&head), Some("tension")),
     );
     let p_sup = assertion_proposal(
-        &e,
+        saying(&[&e], "we moved on"),
         rel(RelationKind::Supersedes, Some(&head), Some("moved on")),
     );
-    let p_dup = assertion_proposal(&e, rel(RelationKind::Duplicate, Some(&head), None));
-    let p_conf = assertion_proposal(&e, rel(RelationKind::Confirms, Some(&head), None));
-    let p_dismiss = assertion_proposal(&e, rel(RelationKind::New, None, None));
+    let p_dup = assertion_proposal(
+        assertion(&[&e]),
+        rel(RelationKind::Duplicate, Some(&head), None),
+    );
+    let p_conf = assertion_proposal(
+        assertion(&[&e]),
+        rel(RelationKind::Confirms, Some(&head), None),
+    );
+    let p_dismiss = assertion_proposal(
+        saying(&[&e], "not worth keeping"),
+        rel(RelationKind::New, None, None),
+    );
     for p in [
         &p_entity, &p_new, &p_contra, &p_sup, &p_dup, &p_conf, &p_dismiss,
     ] {
@@ -1052,15 +1067,16 @@ fn proposals_land_by_relation_kind() {
     let c = store
         .accept_proposal(&p_contra.id, ProposalStatus::Accepted, Author::user())
         .unwrap();
-    let s = store
-        .accept_proposal(&p_sup.id, ProposalStatus::Accepted, Author::user())
-        .unwrap();
+    // The head still stands: its restatement is dismissed as a duplicate.
     assert_eq!(
         store
             .accept_proposal(&p_dup.id, ProposalStatus::Accepted, Author::user())
             .unwrap(),
         head
     );
+    let s = store
+        .accept_proposal(&p_sup.id, ProposalStatus::Accepted, Author::user())
+        .unwrap();
     assert_eq!(
         store
             .accept_proposal(&p_conf.id, ProposalStatus::Accepted, Author::user())
@@ -1100,6 +1116,10 @@ fn proposals_land_by_relation_kind() {
     assert_eq!(by_id(&p_new.id).status, ProposalStatus::Auto);
     assert_eq!(by_id(&p_new.id).ruled_by, Some(Author::ingester()));
     assert!(by_id(&p_new.id).ruled_at.is_some());
+    let dup = by_id(&p_dup.id);
+    assert_eq!(dup.status, ProposalStatus::Dismissed);
+    assert_eq!(dup.dismiss_reason, Some(DismissReason::Duplicate));
+    assert_eq!(dup.ruled_by, Some(Author::user()));
     let dismissed = by_id(&p_dismiss.id);
     assert_eq!(dismissed.status, ProposalStatus::Dismissed);
     assert_eq!(dismissed.dismiss_reason, Some(DismissReason::Trivial));
@@ -1284,7 +1304,8 @@ fn a_user_ruling_confirms_and_fills_in_reasoning() {
 
     // Parked without reasoning (the ingester had none): accepting it must
     // still work, and what the user accepts is confirmed, not provisional.
-    let p_sup = assertion_proposal(&e, rel(RelationKind::Supersedes, None));
+    // Same words as the head it revises: a revision is not a duplicate.
+    let p_sup = assertion_proposal(assertion(&[&e]), rel(RelationKind::Supersedes, None));
     store.add_proposal(&p_sup).unwrap();
     let s = store
         .accept_proposal(&p_sup.id, ProposalStatus::Accepted, Author::user())
@@ -1295,7 +1316,10 @@ fn a_user_ruling_confirms_and_fills_in_reasoning() {
     assert_eq!(landed.supersedes.as_ref().unwrap().reasoning, "because");
 
     // An auto-landed one keeps the status the proposal carried.
-    let p_auto = assertion_proposal(&e, rel(RelationKind::New, None));
+    let p_auto = assertion_proposal(
+        saying(&[&e], "we also do this"),
+        rel(RelationKind::New, None),
+    );
     store.add_proposal(&p_auto).unwrap();
     let n = store
         .accept_proposal(&p_auto.id, ProposalStatus::Auto, Author::ingester())
@@ -1352,6 +1376,218 @@ fn a_confirmed_restatement_settles_its_target() {
         AssertionStatus::Confirmed
     );
     assert_eq!(g.assertions.len(), 1, "nothing new is recorded");
+}
+
+/// B supersedes A; while B stands, A cannot be superseded again. Once B is
+/// abandoned A is current again — and so it can be: C supersedes A, after
+/// which A and B are out and C stands, with A as C's history. The read model
+/// (`superseded_by` points at the live successor) and the write check agree.
+#[test]
+fn an_abandoned_rewrite_leaves_its_target_supersedable() {
+    let (store, _dir) = ContextStore::temp().unwrap();
+    let e = store
+        .record_entity(P, entity("e", EntityKind::Module), stamp())
+        .unwrap();
+    let a = store
+        .record_assertion(P, assertion(&[&e]), stamp())
+        .unwrap();
+    let b = store
+        .record_assertion(
+            P,
+            superseding(&a, &[&e], "rewrite on a branch"),
+            stamp_in("ws-b"),
+        )
+        .unwrap();
+    let is_current = |g: &Graph, id: &str| g.current.contains(&id.to_string());
+
+    // With B live, A is not current and cannot be superseded.
+    let g = store.load(P).unwrap();
+    assert!(!is_current(&g, &a));
+    assert!(is_current(&g, &b));
+    assert!(matches!(
+        store.record_assertion(P, superseding(&a, &[&e], "too early"), stamp()),
+        Err(ContextError::NotHead(id)) if id == a
+    ));
+
+    // The branch is archived without merging: A stands again.
+    assert_eq!(
+        store
+            .settle(P, "ws-b", "x", true, AssertionStatus::Abandoned, stamp())
+            .unwrap(),
+        1
+    );
+    let g = store.load(P).unwrap();
+    assert!(is_current(&g, &a));
+    assert!(!is_current(&g, &b));
+    assert!(crate::context::compile::current_heads(&g).contains(&a));
+
+    let c = store
+        .record_assertion(P, superseding(&a, &[&e], "rewrite on main"), stamp())
+        .unwrap();
+    let g = store.load(P).unwrap();
+    assert!(!is_current(&g, &a));
+    assert!(!is_current(&g, &b));
+    assert!(is_current(&g, &c));
+    assert_eq!(g.current, vec![c.clone()]);
+    assert_eq!(
+        g.assertion(&a).unwrap().superseded_by.as_deref(),
+        Some(c.as_str()),
+        "the live successor wins over the abandoned one"
+    );
+    let history: Vec<&str> = crate::context::compile::history(&g, &c)
+        .iter()
+        .map(|p| p.id.as_str())
+        .collect();
+    assert_eq!(history, vec![a.as_str()]);
+    assert!(matches!(
+        store.record_assertion(P, superseding(&a, &[&e], "again"), stamp()),
+        Err(ContextError::NotHead(id)) if id == a
+    ));
+    store.rebuild_projection(P).unwrap();
+    assert_eq!(store.load(P).unwrap(), g);
+}
+
+#[test]
+fn accepting_identical_proposals_lands_one_and_dismisses_the_other() {
+    let (store, _dir) = ContextStore::temp().unwrap();
+    let e = store
+        .record_entity(P, entity("e", EntityKind::Module), stamp())
+        .unwrap();
+    let held = || {
+        proposal(ProposalPayload::Assertion {
+            input: saying(&[&e], "the model thinks so"),
+            stamp: Stamp {
+                provenance: Provenance {
+                    workspace_id: Some("ws-x".into()),
+                    ..Default::default()
+                },
+                ..extractor()
+            },
+            relation: related(RelationKind::New, None, None),
+            about_pending: Vec::new(),
+        })
+    };
+    let (first, second) = (held(), held());
+    store.add_proposal(&first).unwrap();
+    store.add_proposal(&second).unwrap();
+
+    let id = store
+        .accept_proposal(&first.id, ProposalStatus::Accepted, Author::user())
+        .unwrap();
+    let g = store.load(P).unwrap();
+    let landed = g.assertion(&id).unwrap();
+    assert_eq!(
+        landed.status,
+        AssertionStatus::Confirmed,
+        "a ruling confirms"
+    );
+    assert_eq!(
+        landed.author,
+        Author::extractor("claude", "anthropic"),
+        "the proposer's stamp is the provenance, not the ruler's"
+    );
+    assert_eq!(landed.provenance.workspace_id.as_deref(), Some("ws-x"));
+    assert_eq!(
+        store.proposal(&first.id).unwrap().unwrap().status,
+        ProposalStatus::Accepted
+    );
+
+    assert_eq!(
+        store
+            .accept_proposal(&second.id, ProposalStatus::Accepted, Author::user())
+            .unwrap(),
+        id
+    );
+    let ruled = store.proposal(&second.id).unwrap().unwrap();
+    assert_eq!(ruled.status, ProposalStatus::Dismissed);
+    assert_eq!(ruled.dismiss_reason, Some(DismissReason::Duplicate));
+    assert_eq!(ruled.ruled_by, Some(Author::user()));
+    assert_eq!(store.load(P).unwrap().assertions.len(), 1);
+}
+
+#[test]
+fn accepting_a_proposal_against_a_stale_target_fails_and_stays_pending() {
+    let (store, _dir) = ContextStore::temp().unwrap();
+    let e = store
+        .record_entity(P, entity("e", EntityKind::Module), stamp())
+        .unwrap();
+    let head = store
+        .record_assertion(P, assertion(&[&e]), stamp())
+        .unwrap();
+    let p_sup = assertion_proposal(
+        saying(&[&e], "we moved on"),
+        related(RelationKind::Supersedes, Some(&head), Some("moved on")),
+    );
+    let p_contra = assertion_proposal(
+        saying(&[&e], "we do it the other way"),
+        related(RelationKind::Contradicts, Some(&head), Some("tension")),
+    );
+    store.add_proposal(&p_sup).unwrap();
+    store.add_proposal(&p_contra).unwrap();
+    // The head is replaced before either is ruled on.
+    store
+        .record_assertion(P, superseding(&head, &[&e], "first"), stamp())
+        .unwrap();
+    let before = store.load(P).unwrap();
+
+    for p in [&p_sup, &p_contra] {
+        assert!(matches!(
+            store.accept_proposal(&p.id, ProposalStatus::Accepted, Author::user()),
+            Err(ContextError::Invalid(msg)) if msg.contains("no longer current")
+        ));
+        assert_eq!(
+            store.proposal(&p.id).unwrap().unwrap().status,
+            ProposalStatus::Pending
+        );
+    }
+    assert_eq!(store.load(P).unwrap(), before, "nothing landed");
+}
+
+#[test]
+fn contradiction_count_ignores_resolved_edges_and_non_current_sides() {
+    let (store, _dir) = ContextStore::temp().unwrap();
+    let e = store
+        .record_entity(P, entity("e", EntityKind::Module), stamp())
+        .unwrap();
+    let contradicting = |target: &str, statement: &str| AssertionInput {
+        contradicts: vec![Contradict {
+            id: target.into(),
+            reasoning: None,
+        }],
+        ..saying(&[&e], statement)
+    };
+    let s1 = store
+        .record_assertion(P, saying(&[&e], "one"), stamp())
+        .unwrap();
+    let s2 = store
+        .record_assertion(P, contradicting(&s1, "not one"), stamp())
+        .unwrap();
+    let s3 = store
+        .record_assertion(P, saying(&[&e], "three"), stamp())
+        .unwrap();
+    let s4 = store
+        .record_assertion(P, contradicting(&s3, "not three"), stamp())
+        .unwrap();
+    let count = || store.stats(P).unwrap().contradictions;
+    assert_eq!(count(), 2);
+
+    store
+        .resolve_contradiction(P, &s1, &s2, "s2 wins", stamp())
+        .unwrap();
+    assert_eq!(count(), 1, "a ruled edge is closed");
+
+    store.abandon(P, &s4, stamp()).unwrap();
+    assert_eq!(count(), 0, "an edge with a side that no longer stands");
+
+    let s5 = store
+        .record_assertion(P, contradicting(&s3, "still not three"), stamp())
+        .unwrap();
+    assert_eq!(count(), 1);
+    store
+        .record_assertion(P, superseding(&s3, &[&e], "moved on"), stamp())
+        .unwrap();
+    assert_eq!(count(), 0, "a superseded side is not current");
+    assert!(store.load(P).unwrap().current.contains(&s5));
 }
 
 #[test]

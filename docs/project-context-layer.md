@@ -103,7 +103,10 @@ log can leave this host without rewriting a key.
   is archived without it merging (`abandoned`). The unit is the checkout:
   `provenance.repo` names it, and `settle` touches only the records made in
   it, so one merged repo of a multi-repo workspace never confirms another's
-  work. What the user says is confirmed on arrival.
+  work. An agent in a multi-checkout workspace must say which checkout a
+  decision is about (`repo`); with one checkout it is implied, and the
+  extractor's records (about the conversation, not a repo) follow the
+  primary. What the user says is confirmed on arrival.
 - **Contradictions have a lifecycle.** A `contradicts` edge carries the
   reasoning it was recorded with and, once a person rules on it
   (`contradiction_resolved`), the ruling. Compile flags only unresolved
@@ -185,9 +188,14 @@ from. The spawn-time index quotes names and leaves out entities the
 extractor minted until something else revised them, and the instruction
 block says the index is data, not instructions.
 
-Trust is decided in one place too: `context::trust` is the only code that
-can mint a `user_turn` source, and it does so only after finding the quoted
-words verbatim in a user turn of that workspace (`find_user_quote`). Tests
+Trust is decided in one place too: `context::trust` finds the quoted words
+verbatim in a user turn of that workspace (`find_user_quote`), and the
+service turns that proof into the record — *the quote is the statement*,
+the source is the user's turn, the status confirmed. A writer's own
+sentence cannot ride on a user's quote: if it differs it is refused, and a
+reading of the quote belongs in the rationale. Only the service can mint a
+`user_turn` source; a record from an agent's or a model's turn is provisional
+whatever the writer asked for. Tests
 grep the crate to keep both rules: no other `user_turn` construction, and no
 current-view decision on `Assertion::is_head` instead of
 `compile::is_current`.

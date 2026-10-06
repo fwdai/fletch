@@ -32,9 +32,12 @@ the product is and why it is built this way.
   to code. Statement up to 300 characters, rationale up to 1000.
 - When the **user** states a constraint, a decision, or a fact about the
   business, pass `user_quote`: their words, verbatim. Fletch checks the quote
-  against the user's own messages in this workspace; a match lands the record
-  confirmed as user-stated, a miss refuses the call. Never paraphrase into
-  `user_quote` and never put your own words there.
+  against the user's own messages in this workspace; a match records *the
+  quote itself* as the statement, confirmed as the user's (leave `statement`
+  out, put your reading in `rationale`); a miss refuses the call. Never
+  paraphrase into `user_quote` and never put your own words there.
+- In a workspace with several checkouts, say which one a decision is about
+  with `repo` (the checkout's folder name): it is settled by that repo's PR.
 - When **you** decide something non-obvious or deviate from the plan, record
   that too. It lands provisional until this branch merges.
 - **Related decisions are a two-step.** If current decisions already exist

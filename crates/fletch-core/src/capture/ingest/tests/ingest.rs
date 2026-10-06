@@ -90,6 +90,7 @@ fn seed_assertion(service: &ContextService, input: AssertionInput, stamp: Stamp)
             &project(),
             Candidate {
                 input,
+                user: None,
                 relation: Some(ProposedRelation {
                     kind: RelationKind::New,
                     target: None,

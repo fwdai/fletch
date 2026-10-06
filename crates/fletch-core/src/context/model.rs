@@ -667,23 +667,24 @@ pub enum ProposalPayload {
     },
 }
 
-/// What a writer hands to `ContextStore::land`: the assertion, how the
-/// writer says it relates to what is already recorded (if it says), and the
-/// evidence and pending subjects a held proposal keeps.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// What a writer hands to `ContextService::record_decision`: the assertion,
+/// how the writer says it relates to what is already recorded (if it says),
+/// the evidence and pending subjects a held proposal keeps, and — when the
+/// user said it — the verified quote, which *becomes* the statement: a quote
+/// proves the user's words, never a writer's paraphrase of them.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Candidate {
     pub input: AssertionInput,
+    /// Set only by `trust::find_user_quote`. The service replaces
+    /// `input.statement` with the quote and stamps the `user_turn` source.
+    pub user: Option<super::trust::UserStated>,
     /// An explicit relation from the writer (an agent's `supersedes`, the
     /// extractor's model relation). `None` means "the store decides".
-    #[serde(default)]
     pub relation: Option<ProposedRelation>,
-    #[serde(default)]
     pub evidence: Vec<Evidence>,
-    #[serde(default)]
     pub about_pending: Vec<String>,
     /// The observation a held proposal links back to (the extractor's run),
     /// so the trail from turn to proposal survives being held.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub observation_id: Option<Id>,
 }
 

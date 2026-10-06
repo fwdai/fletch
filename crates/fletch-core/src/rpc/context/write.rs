@@ -6,8 +6,9 @@
 use serde_json::{json, Value};
 
 use crate::context::{
-    resolve, Assertion, AssertionInput, AssertionKind, AssertionStatus, Candidate, Contradict,
-    EntityInput, Graph, Landing, LinkChange, ProposedRelation, RelationKind, Stamp, Stance,
+    resolve, trust, Assertion, AssertionInput, AssertionKind, AssertionStatus, Candidate,
+    Contradict, EntityInput, Graph, Landing, LinkChange, ProposedRelation, RelationKind, Stamp,
+    Stance,
 };
 use crate::rpc::Response;
 
@@ -25,7 +26,10 @@ impl ContextDispatcher {
     pub(super) async fn record_entity(&self, id: &str, args: &Value) -> Response {
         let result = match entity_input(args) {
             Ok((input, relates)) => {
-                let stamp = self.stamp(None).await;
+                // Entities and links are not settled by any checkout's fate,
+                // so with several the stamp stays workspace-level rather
+                // than refusing the write.
+                let stamp = self.stamp(self.checkout(None).ok().flatten()).await;
                 self.write_entity(input, relates, stamp)
             }
             Err(e) => Err(e),
@@ -35,15 +39,17 @@ impl ContextDispatcher {
 
     pub(super) async fn record_decision(&self, id: &str, args: &Value) -> Response {
         let result = match parse_required::<RecordDecisionArgs>(args) {
-            Ok(a) => match self
-                .service
-                .verify_user_quote(&self.agent_id, a.user_quote.as_deref())
-            {
-                Ok(user) => {
-                    let stamp = self.stamp(user.as_ref()).await;
-                    self.write_decision(a, user.is_some(), stamp)
+            Ok(a) => match (
+                self.checkout(a.repo.as_deref()),
+                self.service
+                    .verify_user_quote(&self.agent_id, a.user_quote.as_deref())
+                    .map_err(|e| e.to_string()),
+            ) {
+                (Ok(repo), Ok(user)) => {
+                    let stamp = self.stamp(repo).await;
+                    self.write_decision(a, user, stamp)
                 }
-                Err(e) => Err(e.to_string()),
+                (Err(e), _) | (_, Err(e)) => Err(e),
             },
             Err(e) => Err(e),
         };
@@ -53,7 +59,7 @@ impl ContextDispatcher {
     pub(super) async fn link(&self, id: &str, args: &Value) -> Response {
         let result = match parse_required::<LinkArgs>(args) {
             Ok(a) => {
-                let stamp = self.stamp(None).await;
+                let stamp = self.stamp(self.checkout(None).ok().flatten()).await;
                 self.write_link(a, stamp)
             }
             Err(e) => Err(e),
@@ -117,10 +123,15 @@ impl ContextDispatcher {
     fn write_decision(
         &self,
         a: RecordDecisionArgs,
-        user_stated: bool,
+        user: Option<trust::UserStated>,
         stamp: Stamp,
     ) -> Result<Value, String> {
-        let statement = text("statement", &a.statement, MAX_STATEMENT)?;
+        // With a user quote the quote is the statement (the service enforces
+        // it); the agent may leave `statement` out.
+        let statement = match (&user, a.statement.trim()) {
+            (Some(found), "") => text("user_quote", found.quote(), MAX_STATEMENT)?,
+            _ => text("statement", &a.statement, MAX_STATEMENT)?,
+        };
         let rationale = text("rationale", &a.rationale, MAX_RATIONALE)?;
         let about = clean_list(&a.about);
         if about.is_empty() {
@@ -156,11 +167,7 @@ impl ContextDispatcher {
                     reasoning: None,
                 })
                 .collect(),
-            status: if user_stated {
-                AssertionStatus::Confirmed
-            } else {
-                AssertionStatus::Provisional
-            },
+            status: AssertionStatus::Provisional,
         };
         // `coexists` is the agent saying "I looked, they all hold": an
         // explicit `New` relation, so the store does not hold the write for
@@ -168,6 +175,7 @@ impl ContextDispatcher {
         // the input itself.
         let candidate = Candidate {
             input,
+            user,
             relation: a.coexists.then_some(ProposedRelation {
                 kind: RelationKind::New,
                 target: None,

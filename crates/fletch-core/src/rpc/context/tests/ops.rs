@@ -208,7 +208,8 @@ async fn the_user_s_word_lands_confirmed_and_the_agent_s_provisional() {
     );
     entity(&d, "billing").await;
 
-    let mut args = decision("billing", "Never store card numbers");
+    // The quote is the statement: the agent leaves `statement` out.
+    let mut args = decision("billing", "");
     args["kind"] = json!("constraint");
     args["user_quote"] = json!("“Never store card numbers, anywhere.”");
     let user = payload(&call(&d, "context_record_decision", args).await);
@@ -222,6 +223,7 @@ async fn the_user_s_word_lands_confirmed_and_the_agent_s_provisional() {
     let graph = graph(&d);
     let user = graph.assertion(user["id"].as_str().unwrap()).unwrap();
     assert_eq!(user.status, AssertionStatus::Confirmed);
+    assert_eq!(user.statement, "Never store card numbers, anywhere");
     assert_eq!(user.source.kind, SourceKind::UserTurn);
     assert_eq!(user.source.reference.as_deref(), Some("t1"));
     assert_eq!(user.author.kind, AuthorKind::Agent);
@@ -335,5 +337,84 @@ async fn link_and_unlink_resolve_slugs() {
     assert!(
         e.contains("nope") && e.contains("context_record_entity"),
         "{e}"
+    );
+}
+
+#[tokio::test]
+async fn a_quote_cannot_carry_the_agent_s_own_statement() {
+    let (d, _dir) = dispatcher();
+    seed_session(&d);
+    user_said(&d, "t1", "Please don't change the login flow this sprint.");
+    entity(&d, "auth").await;
+
+    // A real quote next to a sentence the user never said: refused, nothing
+    // written. A restatement of the quote itself is fine.
+    let mut args = decision("auth", "Use JWT for authentication");
+    args["user_quote"] = json!("don't change the login flow");
+    let e = error(&call(&d, "context_record_decision", args).await);
+    assert!(e.contains("the user's words"), "{e}");
+    assert!(graph(&d).assertions.is_empty());
+
+    let mut args = decision("auth", "Don't change the login flow");
+    args["user_quote"] = json!("don't change the login flow");
+    let ok = payload(&call(&d, "context_record_decision", args).await);
+    assert_eq!(ok["status"], "confirmed");
+    let g = graph(&d);
+    assert_eq!(
+        g.assertion(ok["id"].as_str().unwrap()).unwrap().statement,
+        "don't change the login flow"
+    );
+}
+
+#[tokio::test]
+async fn a_decision_names_its_checkout_when_there_are_several() {
+    let (d, _dir) = dispatcher_with_repos(vec!["frontend".into(), "backend".into()]);
+    entity(&d, "billing").await;
+
+    let args = decision("billing", "Invoices render server-side");
+    let e = error(&call(&d, "context_record_decision", args.clone()).await);
+    assert!(
+        e.contains("several checkouts") && e.contains("`repo`"),
+        "{e}"
+    );
+    assert!(graph(&d).assertions.is_empty());
+
+    let mut wrong = args.clone();
+    wrong["repo"] = json!("mobile");
+    let e = error(&call(&d, "context_record_decision", wrong).await);
+    assert!(e.contains("frontend, backend"), "{e}");
+
+    let mut named = args;
+    named["repo"] = json!("backend");
+    let ok = payload(&call(&d, "context_record_decision", named).await);
+    let g = graph(&d);
+    assert_eq!(
+        g.assertion(ok["id"].as_str().unwrap())
+            .unwrap()
+            .provenance
+            .repo
+            .as_deref(),
+        Some("backend")
+    );
+
+    // With one checkout it is implied.
+    let (d, _dir) = dispatcher();
+    entity(&d, "billing").await;
+    let ok = payload(
+        &call(
+            &d,
+            "context_record_decision",
+            decision("billing", "One repo"),
+        )
+        .await,
+    );
+    assert_eq!(
+        graph(&d)
+            .assertion(ok["id"].as_str().unwrap())
+            .unwrap()
+            .provenance
+            .repo
+            .as_deref(),
+        Some(REPO)
     );
 }

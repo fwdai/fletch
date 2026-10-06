@@ -111,12 +111,51 @@ impl ContextService {
     }
 
     /// Record an assertion under the one write policy ([`Landing`]).
+    ///
+    /// Trust is applied here, once, for every writer: a candidate with a
+    /// verified user quote *states that quote* — the writer's own statement
+    /// is refused if it differs, its reading belongs in the rationale — and
+    /// carries the `user_turn` source, confirmed. Without one, the record is
+    /// confirmed only when its source is one a person stood behind (the UI,
+    /// a merged PR); an agent's or a model's turn is provisional whatever the
+    /// writer asked for.
     pub fn record_decision(
         &self,
         project: &Project,
-        candidate: Candidate,
-        stamp: Stamp,
+        mut candidate: Candidate,
+        mut stamp: Stamp,
     ) -> Result<Landing> {
+        match candidate.user.take() {
+            Some(found) => {
+                let statement = candidate.input.statement.trim();
+                if !statement.is_empty()
+                    && trust::normalise(statement) != trust::normalise(found.quote())
+                {
+                    return Err(ContextError::Invalid(
+                        "a user-stated record states the user's words: leave `statement` out (or \
+                         equal to the quote) and put your reading in `rationale`"
+                            .into(),
+                    ));
+                }
+                candidate.input.statement = found.quote().to_string();
+                candidate.input.status = AssertionStatus::Confirmed;
+                stamp.source = found.source();
+            }
+            None => {
+                let vouched = matches!(
+                    stamp.source.kind,
+                    SourceKind::Ui | SourceKind::Pr | SourceKind::Roadmap
+                );
+                if stamp.source.kind == SourceKind::UserTurn {
+                    return Err(ContextError::Invalid(
+                        "a user_turn source needs a verified quote".into(),
+                    ));
+                }
+                if !vouched && candidate.input.status == AssertionStatus::Confirmed {
+                    candidate.input.status = AssertionStatus::Provisional;
+                }
+            }
+        }
         self.store.land(&project.id, candidate, stamp)
     }
 

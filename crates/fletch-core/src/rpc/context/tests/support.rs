@@ -32,6 +32,11 @@ pub(super) const REPO: &str = "quorum";
 /// so provenance comes back without a branch or commit. The gate is open in
 /// `ContextStore::temp`, so the project is built directly.
 pub(super) fn dispatcher() -> (ContextDispatcher, tempfile::TempDir) {
+    dispatcher_with_repos(vec![REPO.into()])
+}
+
+/// A dispatcher for a workspace with these checkouts (primary first).
+pub(super) fn dispatcher_with_repos(repos: Vec<String>) -> (ContextDispatcher, tempfile::TempDir) {
     let (store, dir) = crate::context::ContextStore::temp().unwrap();
     let db = store.db().clone();
     let d = ContextDispatcher {
@@ -44,7 +49,7 @@ pub(super) fn dispatcher() -> (ContextDispatcher, tempfile::TempDir) {
         agent_id: AGENT.into(),
         provider: "claude".into(),
         cwd: dir.path().to_path_buf(),
-        repo: Some(REPO.into()),
+        repos,
         session_id: Some("sess-1".into()),
         db,
     };

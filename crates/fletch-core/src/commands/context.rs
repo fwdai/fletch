@@ -130,6 +130,7 @@ pub fn context_record_assertion_impl(
     let project = open(ctx, project_id)?;
     let candidate = Candidate {
         input,
+        user: None,
         relation: None,
         evidence: Vec::new(),
         about_pending: Vec::new(),
