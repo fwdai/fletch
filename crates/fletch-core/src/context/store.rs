@@ -731,8 +731,8 @@ impl ContextStore {
     /// proposal time: a restatement of a current head dismisses the proposal
     /// as `Duplicate` (returning that head); a `supersedes` / `contradicts`
     /// target that is no longer current is `Invalid` and the proposal stays
-    /// pending. `Confirms` records nothing: when confirmed it settles its
-    /// target. Subjects that were only proposed (`about_pending`) are
+    /// pending. `Confirms` records nothing: against a still-current target,
+    /// confirmation settles it. Subjects that were only proposed (`about_pending`) are
     /// resolved now; one still missing is `Invalid("accept the entity …
     /// first")`. Returns the recorded (or duplicated) id.
     pub(super) fn accept_proposal(
@@ -766,8 +766,9 @@ impl ContextStore {
             match relation.kind {
                 RelationKind::Confirms => {
                     // Nothing new is said; a confirmed restatement settles a
-                    // provisional target.
-                    let id = relation_target(&relation)?;
+                    // provisional target. It must still stand: confirmation is
+                    // not a way to revive a retracted or abandoned assertion.
+                    let id = require_current_relation_target(conn, project_id, &relation)?;
                     if input.status == AssertionStatus::Confirmed {
                         let event = EventPayload::Confirmed {
                             assertion_id: id.clone(),
@@ -780,17 +781,7 @@ impl ContextStore {
                 // A duplicate's target counts too: a restatement of a head
                 // that has since been replaced must not come back as new.
                 RelationKind::Supersedes | RelationKind::Contradicts | RelationKind::Duplicate => {
-                    let target = relation_target(&relation)?;
-                    let graph = load_graph(conn, project_id)?;
-                    let current = graph
-                        .assertion(&target)
-                        .is_some_and(|t| compile::is_current(&graph, t));
-                    if !current {
-                        return Err(ContextError::Invalid(format!(
-                            "assertion `{target}` is no longer current; \
-                             dismiss this proposal or record it afresh"
-                        )));
-                    }
+                    require_current_relation_target(conn, project_id, &relation)?;
                 }
                 RelationKind::New => {}
             }
@@ -1237,6 +1228,27 @@ fn relation_target(relation: &ProposedRelation) -> Result<Id> {
             tag(&relation.kind).unwrap_or_default()
         ))
     })
+}
+
+/// A parked relation is a judgment against the graph the proposer saw. Before
+/// applying it, make sure its target still stands in the current graph; no
+/// targeted relation may revive or silently attach to history.
+fn require_current_relation_target(
+    conn: &Connection,
+    project_id: &str,
+    relation: &ProposedRelation,
+) -> Result<Id> {
+    let target = relation_target(relation)?;
+    let graph = load_graph(conn, project_id)?;
+    if graph
+        .assertion(&target)
+        .is_some_and(|assertion| compile::is_current(&graph, assertion))
+    {
+        return Ok(target);
+    }
+    Err(ContextError::Invalid(format!(
+        "assertion `{target}` is no longer current; dismiss this proposal or record it afresh"
+    )))
 }
 
 /// Sets the edges an honoured relation implies on the input. `Confirms` and

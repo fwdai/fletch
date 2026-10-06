@@ -4,10 +4,10 @@
 //! layer is one wrapper regardless of the agent's purpose.
 //!
 //! Every write is stamped here, never from `args`: the agent and provider from
-//! the spawn, the session as the source reference, and the primary checkout
-//! plus its branch and commit at call time (best effort) as provenance —
-//! which is what later turns an assertion from provisional to confirmed or
-//! abandoned.
+//! the spawn, the session as the source reference, and the selected checkout
+//! plus its branch and commit at call time (best effort) as provenance. The
+//! checkout is resolved live because repositories can be added while an agent
+//! runs; its fate later turns the assertion provisional, confirmed or abandoned.
 //!
 //! Every write goes through [`ContextService`]; the policy for what lands is
 //! `ContextStore::land`'s ([`context::Landing`]), and this module only maps
@@ -29,6 +29,7 @@ use crate::context::{self, render, Author, ContextService, Provenance, Source, S
 use crate::host::EngineCtx;
 use crate::roadmap::Db;
 use crate::rpc::{Response, RpcDispatcher, RpcEvent, RpcFuture};
+use crate::workspace::WorkspaceManager;
 
 /// Pinned by a test against the instruction block so the two can't drift.
 pub const OPS: [&str; 4] = [
@@ -53,43 +54,66 @@ pub struct ContextDispatcher {
     project: context::Project,
     agent_id: String,
     provider: String,
-    /// The checkout the branch and commit are read from at call time.
-    cwd: PathBuf,
-    /// The workspace's checkouts (repo subdirs), primary first. A write is
-    /// stamped with the one it is about — the unit a merge or an archive
-    /// settles — so a workspace with several must be told which.
-    repos: Vec<String>,
+    /// Resolves the workspace's checkouts at call time. Repositories can be
+    /// added to a live agent, so spawn-time state is not authoritative.
+    checkouts: CheckoutResolver,
     session_id: Option<String>,
     db: Db,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Checkout {
+    repo: String,
+    path: PathBuf,
+}
+
+type CheckoutResolver = Arc<dyn Fn() -> Result<Vec<Checkout>, String> + Send + Sync>;
 
 /// Wraps `inner` in a [`ContextDispatcher`] when the layer is on for the
 /// project. Off, or anything failing on the way to the service, leaves
 /// `inner` as it was: an agent without the ops is worth more than a spawn
 /// that fails, and the instruction block is gated on the same path (see
-/// [`spawn_index`]). `repo` is the workspace's primary checkout subdir.
-#[allow(clippy::too_many_arguments)]
+/// [`spawn_index`]). Checkout identity and paths are deliberately resolved from
+/// the workspace record on every write: `add_repo_to_agent` can extend a live
+/// agent without rebuilding its RPC dispatcher.
 pub fn wrap(
     ctx: &EngineCtx,
     inner: Arc<dyn RpcDispatcher>,
     fletch_project_id: &str,
     agent_id: &str,
     provider: &str,
-    cwd: &Path,
-    repos: Vec<String>,
     session_id: Option<&str>,
 ) -> Arc<dyn RpcDispatcher> {
     let Some((service, project)) = open(ctx, fletch_project_id) else {
         return inner;
     };
+    let workspace = WorkspaceManager::new(ctx.db.clone());
+    let checkout_agent_id = agent_id.to_string();
+    let checkouts: CheckoutResolver = Arc::new(move || {
+        let record = workspace
+            .agent(&checkout_agent_id)
+            .map_err(|e| format!("could not read this workspace's checkouts: {e}"))?;
+        record
+            .repos
+            .into_iter()
+            .map(|repo| {
+                let path = repo
+                    .checkout_path(&checkout_agent_id)
+                    .map_err(|e| format!("could not resolve checkout `{}`: {e}", repo.subdir))?;
+                Ok(Checkout {
+                    repo: repo.subdir,
+                    path,
+                })
+            })
+            .collect()
+    });
     Arc::new(ContextDispatcher {
         inner,
         service,
         project,
         agent_id: agent_id.to_string(),
         provider: provider.to_string(),
-        cwd: cwd.to_path_buf(),
-        repos,
+        checkouts,
         session_id: session_id.map(str::to_string),
         db: ctx.db.clone(),
     })
@@ -132,33 +156,57 @@ impl ContextDispatcher {
     /// The checkout a write is about: the one named, or the only one. With
     /// several and none named the write is refused — a decision made while
     /// changing one repo must not be settled by another's merge.
-    fn checkout(&self, named: Option<&str>) -> Result<Option<String>, String> {
+    fn checkout(&self, named: Option<&str>) -> Result<Checkout, String> {
         let named = named.map(str::trim).filter(|r| !r.is_empty());
-        match (named, self.repos.as_slice()) {
-            (Some(r), repos) if repos.iter().any(|known| known == r) => Ok(Some(r.to_string())),
-            (Some(r), repos) => Err(format!(
-                "`repo` must be one of this workspace's checkouts ({}), not `{r}`",
-                repos.join(", ")
-            )),
-            (None, []) => Ok(None),
-            (None, [only]) => Ok(Some(only.clone())),
+        let checkouts = (self.checkouts)()?;
+        match (named, checkouts.as_slice()) {
+            (Some(r), repos) => repos
+                .iter()
+                .find(|known| known.repo == r)
+                .cloned()
+                .ok_or_else(|| {
+                    format!(
+                        "`repo` must be one of this workspace's checkouts ({}), not `{r}`",
+                        repos
+                            .iter()
+                            .map(|checkout| checkout.repo.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                }),
+            (None, []) => Err("this workspace has no checkouts".into()),
+            (None, [only]) => Ok(only.clone()),
             (None, repos) => Err(format!(
                 "this workspace has several checkouts ({}); say which one with `repo`",
-                repos.join(", ")
+                repos
+                    .iter()
+                    .map(|checkout| checkout.repo.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
             )),
         }
+    }
+
+    fn primary_checkout(&self) -> Option<Checkout> {
+        (self.checkouts)().ok()?.into_iter().next()
     }
 
     /// The stamp for one write. Branch and commit are read now rather than at
     /// spawn because the agent moves the checkout as it works. The source is
     /// the agent's turn: a user quote is applied by the service, the only
     /// place that can turn one into a `user_turn` source.
-    async fn stamp(&self, repo: Option<String>) -> Stamp {
+    async fn stamp(&self, checkout: Option<&Checkout>, checkout_scoped: bool) -> Stamp {
         let source = Source::new(SourceKind::AgentTurn, self.session_id.clone());
-        let branch = rev_parse(&self.cwd, &["--abbrev-ref", "HEAD"])
-            .await
-            .filter(|b| b != "HEAD");
-        let commit_sha = rev_parse(&self.cwd, &["HEAD"]).await;
+        let branch = match checkout {
+            Some(checkout) => rev_parse(&checkout.path, &["--abbrev-ref", "HEAD"])
+                .await
+                .filter(|b| b != "HEAD"),
+            None => None,
+        };
+        let commit_sha = match checkout {
+            Some(checkout) => rev_parse(&checkout.path, &["HEAD"]).await,
+            None => None,
+        };
         Stamp {
             author: Author::agent(&self.agent_id, &self.provider),
             source,
@@ -168,7 +216,9 @@ impl ContextDispatcher {
                 commit_sha,
                 session_id: self.session_id.clone(),
                 turn_id: None,
-                repo,
+                repo: checkout
+                    .filter(|_| checkout_scoped)
+                    .map(|checkout| checkout.repo.clone()),
             },
         }
     }

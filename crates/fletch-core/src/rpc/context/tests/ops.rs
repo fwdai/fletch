@@ -418,3 +418,76 @@ async fn a_decision_names_its_checkout_when_there_are_several() {
         Some(REPO)
     );
 }
+
+#[tokio::test]
+async fn a_live_repo_addition_is_seen_and_routes_to_its_own_checkout() {
+    fn checkout(path: &std::path::Path, marker: &str) -> String {
+        std::fs::create_dir_all(path).unwrap();
+        let git = |args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .current_dir(path)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            output
+        };
+        git(&["init", "-q"]);
+        std::fs::write(path.join("marker"), marker).unwrap();
+        git(&["add", "marker"]);
+        git(&[
+            "-c",
+            "user.name=Context Test",
+            "-c",
+            "user.email=context@example.test",
+            "commit",
+            "-qm",
+            "seed",
+        ]);
+        String::from_utf8(git(&["rev-parse", "HEAD"]).stdout)
+            .unwrap()
+            .trim()
+            .to_string()
+    }
+
+    let (d, dir, checkouts) = dispatcher_with_checkout_state(vec!["frontend".into()]);
+    let frontend_sha = checkout(&dir.path().join("frontend"), "frontend");
+    let backend_path = dir.path().join("backend");
+    let backend_sha = checkout(&backend_path, "backend");
+    entity(&d, "billing").await;
+
+    checkouts.lock().unwrap().push(Checkout {
+        repo: "backend".into(),
+        path: backend_path.clone(),
+    });
+
+    let args = decision("billing", "Invoices render server-side");
+    let e = error(&call(&d, "context_record_decision", args.clone()).await);
+    assert!(
+        e.contains("several checkouts") && e.contains("`repo`"),
+        "{e}"
+    );
+
+    let mut named = args;
+    named["repo"] = json!("backend");
+    let selected = d.checkout(Some("backend")).unwrap();
+    assert_eq!(selected.path, backend_path);
+    let ok = payload(&call(&d, "context_record_decision", named).await);
+    let assertion = graph(&d)
+        .assertion(ok["id"].as_str().unwrap())
+        .unwrap()
+        .clone();
+    assert_eq!(assertion.provenance.repo.as_deref(), Some("backend"));
+    assert_eq!(
+        assertion.provenance.commit_sha.as_deref(),
+        Some(&*backend_sha)
+    );
+    assert_ne!(
+        assertion.provenance.commit_sha.as_deref(),
+        Some(&*frontend_sha)
+    );
+}

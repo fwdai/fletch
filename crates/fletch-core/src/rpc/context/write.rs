@@ -29,7 +29,8 @@ impl ContextDispatcher {
                 // Entities and links are not settled by any checkout's fate,
                 // so with several the stamp stays workspace-level rather
                 // than refusing the write.
-                let stamp = self.stamp(self.checkout(None).ok().flatten()).await;
+                let checkout = self.primary_checkout();
+                let stamp = self.stamp(checkout.as_ref(), false).await;
                 self.write_entity(input, relates, stamp)
             }
             Err(e) => Err(e),
@@ -45,8 +46,8 @@ impl ContextDispatcher {
                     .verify_user_quote(&self.agent_id, a.user_quote.as_deref())
                     .map_err(|e| e.to_string()),
             ) {
-                (Ok(repo), Ok(user)) => {
-                    let stamp = self.stamp(repo).await;
+                (Ok(checkout), Ok(user)) => {
+                    let stamp = self.stamp(Some(&checkout), true).await;
                     self.write_decision(a, user, stamp)
                 }
                 (Err(e), _) | (_, Err(e)) => Err(e),
@@ -59,7 +60,8 @@ impl ContextDispatcher {
     pub(super) async fn link(&self, id: &str, args: &Value) -> Response {
         let result = match parse_required::<LinkArgs>(args) {
             Ok(a) => {
-                let stamp = self.stamp(self.checkout(None).ok().flatten()).await;
+                let checkout = self.primary_checkout();
+                let stamp = self.stamp(checkout.as_ref(), false).await;
                 self.write_link(a, stamp)
             }
             Err(e) => Err(e),

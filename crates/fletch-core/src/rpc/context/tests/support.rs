@@ -1,6 +1,7 @@
 use super::*;
 
 use serde_json::{json, Value};
+use std::sync::Mutex;
 
 pub(super) const PROJECT: &str = "ctx-p1";
 pub(super) const FLETCH_PROJECT: &str = "p1";
@@ -37,8 +38,31 @@ pub(super) fn dispatcher() -> (ContextDispatcher, tempfile::TempDir) {
 
 /// A dispatcher for a workspace with these checkouts (primary first).
 pub(super) fn dispatcher_with_repos(repos: Vec<String>) -> (ContextDispatcher, tempfile::TempDir) {
+    let (dispatcher, dir, _) = dispatcher_with_checkout_state(repos);
+    (dispatcher, dir)
+}
+
+/// A dispatcher whose live checkout list a test can extend mid-session.
+pub(super) fn dispatcher_with_checkout_state(
+    repos: Vec<String>,
+) -> (
+    ContextDispatcher,
+    tempfile::TempDir,
+    Arc<Mutex<Vec<Checkout>>>,
+) {
     let (store, dir) = crate::context::ContextStore::temp().unwrap();
     let db = store.db().clone();
+    let checkouts = Arc::new(Mutex::new(
+        repos
+            .into_iter()
+            .map(|repo| Checkout {
+                path: dir.path().join(&repo),
+                repo,
+            })
+            .collect::<Vec<_>>(),
+    ));
+    let state = checkouts.clone();
+    let resolver: CheckoutResolver = Arc::new(move || Ok(checkouts.lock().unwrap().clone()));
     let d = ContextDispatcher {
         inner: Arc::new(Inner),
         service: ContextService::new(db.clone()).unwrap(),
@@ -48,12 +72,11 @@ pub(super) fn dispatcher_with_repos(repos: Vec<String>) -> (ContextDispatcher, t
         },
         agent_id: AGENT.into(),
         provider: "claude".into(),
-        cwd: dir.path().to_path_buf(),
-        repos,
+        checkouts: resolver,
         session_id: Some("sess-1".into()),
         db,
     };
-    (d, dir)
+    (d, dir, state)
 }
 
 /// The project's graph as the store holds it.

@@ -1511,9 +1511,9 @@ fn accepting_a_proposal_against_a_stale_target_fails_and_stays_pending() {
     let e = store
         .record_entity(P, entity("e", EntityKind::Module), stamp())
         .unwrap();
-    let head = store
-        .record_assertion(P, assertion(&[&e]), stamp())
-        .unwrap();
+    let mut initial = assertion(&[&e]);
+    initial.status = AssertionStatus::Provisional;
+    let head = store.record_assertion(P, initial, stamp()).unwrap();
     let p_sup = assertion_proposal(
         saying(&[&e], "we moved on"),
         related(RelationKind::Supersedes, Some(&head), Some("moved on")),
@@ -1522,15 +1522,20 @@ fn accepting_a_proposal_against_a_stale_target_fails_and_stays_pending() {
         saying(&[&e], "we do it the other way"),
         related(RelationKind::Contradicts, Some(&head), Some("tension")),
     );
+    let p_conf = assertion_proposal(
+        assertion(&[&e]),
+        related(RelationKind::Confirms, Some(&head), None),
+    );
     store.add_proposal(&p_sup).unwrap();
     store.add_proposal(&p_contra).unwrap();
+    store.add_proposal(&p_conf).unwrap();
     // The head is replaced before either is ruled on.
     store
         .record_assertion(P, superseding(&head, &[&e], "first"), stamp())
         .unwrap();
     let before = store.load(P).unwrap();
 
-    for p in [&p_sup, &p_contra] {
+    for p in [&p_sup, &p_contra, &p_conf] {
         assert!(matches!(
             store.accept_proposal(&p.id, ProposalStatus::Accepted, Author::user()),
             Err(ContextError::Invalid(msg)) if msg.contains("no longer current")
