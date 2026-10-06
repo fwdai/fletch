@@ -8,12 +8,18 @@
 //! it runs the same batched sweep the sidebar uses
 //! ([`resolve_all_pr_status`] — one GraphQL query per 50 PRs across every PR of
 //! every checkout, snapshot persistence and the backoff gate included), every
-//! other tick with the open PRs' review threads folded into that same query,
-//! diffs each PR's read against what it last saw, and emits one event per
-//! change — `pr:state_changed`, `pr:checks_changed`, `pr:threads_changed` — for
-//! the remote forwarder and the push triggers (`remote::push`) to act on. The
-//! tick makes no other GitHub call: a checkout opening more PRs grows the
-//! query, never the request count.
+//! other tick with each checkout's focused open PR's review threads folded
+//! into that same query, diffs each PR's read against what it last saw, and
+//! emits one event per change for the remote forwarder and the push triggers
+//! (`remote::push`) to act on. The tick makes no other GitHub call: a checkout
+//! opening more PRs grows the query, never the request count.
+//!
+//! Which event depends on the PR. The checkout's *focused* PR gets the three
+//! that predate PR sets — `pr:state_changed`, `pr:checks_changed`,
+//! `pr:threads_changed` — with their old payloads, because a client from before
+//! PR sets reads each as its checkout's one PR. Every other PR of the set gets
+//! `pr:set_entry_changed` (state or checks; their threads are never read),
+//! a name such a client does not know and so ignores.
 //!
 //! Modelled on `roadmap::merge_sweep`: a `Notify` nudge, each pass on its own
 //! task so a panic cannot end the loop. The first read of an open PR seeds the
@@ -31,7 +37,7 @@ use tokio::sync::Notify;
 use crate::github::{MergeState, PrChecks, PrComments, PrState, PrStatus};
 use crate::host::{EngineCtx, EventSink};
 
-use super::events::{emit_pr_checks, emit_pr_state, emit_pr_threads};
+use super::events::{emit_pr_checks, emit_pr_set_entry, emit_pr_state, emit_pr_threads};
 use super::session_sync::resolve_all_pr_status;
 use super::Supervisor;
 
@@ -61,7 +67,10 @@ pub(crate) struct Seen {
     /// computes it lazily, and an `unknown` in between two real answers is not
     /// a change.
     merge_state: Option<MergeState>,
-    threads: BTreeSet<String>,
+    /// `None` until a read carried threads: only the focused PR's are read, so
+    /// a PR that becomes focused has none to compare with, and its first set
+    /// is the baseline rather than all-new.
+    threads: Option<BTreeSet<String>>,
 }
 
 impl Seen {
@@ -71,7 +80,7 @@ impl Seen {
             rollup: read.checks.as_ref().map(|c| c.rollup.clone()),
             required_failing: read.checks.as_ref().map(failing_set).unwrap_or_default(),
             merge_state: read.checks.as_ref().and_then(known_merge_state),
-            threads: read.threads.as_ref().map(thread_ids).unwrap_or_default(),
+            threads: read.threads.as_ref().map(thread_ids),
         }
     }
 }
@@ -130,7 +139,9 @@ fn thread_ids(comments: &PrComments) -> BTreeSet<String> {
 /// - Threads report whenever the unresolved set changes, naming the ids not
 ///   seen before — none when a thread was only resolved. Clients follow these
 ///   events instead of polling, so a resolution has to reach them too; the
-///   alerts key off the new ids and stay quiet for it.
+///   alerts key off the new ids and stay quiet for it. A PR's first threads
+///   read after it was seeded without one (it just became focused) is its
+///   baseline: reported, so clients get the set, but naming nothing new.
 pub(crate) fn diff(last: &mut HashMap<PrKey, Seen>, key: &PrKey, read: &Read) -> Vec<Change> {
     let Some(seen) = last.get_mut(key) else {
         if read.state.state != PrStatus::Open {
@@ -159,9 +170,14 @@ pub(crate) fn diff(last: &mut HashMap<PrKey, Seen>, key: &PrKey, read: &Read) ->
     }
     if let Some(comments) = &read.threads {
         let ids = thread_ids(comments);
-        if ids != seen.threads {
-            let new_ids: Vec<String> = ids.difference(&seen.threads).cloned().collect();
-            seen.threads = ids;
+        let new_ids = match &seen.threads {
+            Some(known) if *known == ids => None,
+            Some(known) => Some(ids.difference(known).cloned().collect()),
+            None if ids.is_empty() => None,
+            None => Some(Vec::new()),
+        };
+        seen.threads = Some(ids);
+        if let Some(new_ids) = new_ids {
             changes.push(Change::Threads {
                 comments: comments.clone(),
                 new_ids,
@@ -171,26 +187,38 @@ pub(crate) fn diff(last: &mut HashMap<PrKey, Seen>, key: &PrKey, read: &Read) ->
     changes
 }
 
-/// Put the changes on the wire, each addressed to its checkout and PR: `subdir`
-/// is `None` for the primary repo and names a secondary, so a secondary's merge
-/// lands on its own key rather than the agent's primary PR; `focused` says
-/// whether `number` is the checkout's focused PR, which single-PR clients keep
-/// and the rest of the set they ignore.
+/// Put the changes about PR `pr` on the wire, addressed to its checkout:
+/// `subdir` is `None` for the primary repo and names a secondary, so a
+/// secondary's merge lands on its own key rather than the agent's primary PR.
+///
+/// The checkout's focused PR goes out on the three legacy events, payloads as
+/// they were before PR sets. Any other PR goes out as `pr:set_entry_changed`
+/// alone: a client that predates PR sets would read a legacy event about it as
+/// its focused PR's. A state change carries `checks: None` ("nothing to say");
+/// a checks change carries the PR's state beside its checks.
 fn publish(
     sink: &dyn EventSink,
     agent_id: &str,
     subdir: Option<&str>,
-    number: u32,
+    pr: &PrState,
     focused: bool,
     changes: Vec<Change>,
 ) {
     for change in changes {
-        match change {
-            Change::State(state) => emit_pr_state(sink, agent_id, subdir, Some(state), focused),
-            Change::Checks(checks) => emit_pr_checks(sink, agent_id, subdir, number, checks),
-            Change::Threads { comments, new_ids } => {
-                emit_pr_threads(sink, agent_id, subdir, number, comments, new_ids)
+        match (change, focused) {
+            (Change::State(state), true) => emit_pr_state(sink, agent_id, subdir, Some(state)),
+            (Change::Checks(checks), true) => {
+                emit_pr_checks(sink, agent_id, subdir, pr.number, checks)
             }
+            (Change::Threads { comments, new_ids }, true) => {
+                emit_pr_threads(sink, agent_id, subdir, comments, new_ids)
+            }
+            (Change::State(state), false) => emit_pr_set_entry(sink, agent_id, subdir, state, None),
+            (Change::Checks(checks), false) => {
+                emit_pr_set_entry(sink, agent_id, subdir, pr.clone(), Some(checks))
+            }
+            // Never read for a PR that is not focused, so never reported.
+            (Change::Threads { .. }, false) => {}
         }
     }
 }
@@ -247,7 +275,7 @@ async fn tick(ctx: &Arc<EngineCtx>, supervisor: &Arc<Supervisor>, last: &Last, w
                 ctx.sink.as_ref(),
                 agent_id,
                 subdir,
-                number,
+                &read.state,
                 number == focused,
                 changes,
             );
@@ -354,7 +382,7 @@ mod tests {
         let seen = &last[&primary()];
         assert_eq!(seen.rollup.as_deref(), Some("failing"));
         assert_eq!(seen.required_failing, BTreeSet::from(["unit".to_string()]));
-        assert_eq!(seen.threads, BTreeSet::from(["t1".to_string()]));
+        assert_eq!(seen.threads, Some(BTreeSet::from(["t1".to_string()])));
     }
 
     /// A PR that is already settled when first read — the sweep serves merged
@@ -619,9 +647,38 @@ mod tests {
         );
     }
 
+    /// A PR seeded without threads (it was not focused) and then focused
+    /// reports its first threads read as the baseline: the set travels, so
+    /// clients get it, but nothing in it is new — no old comment alerts.
+    #[test]
+    fn a_newly_focused_prs_first_threads_are_the_baseline() {
+        let mut last = HashMap::new();
+        step(&mut last, &read(PrStatus::Open, None, None));
+        match &step(
+            &mut last,
+            &read(PrStatus::Open, None, Some(threads(&["t1", "t2"]))),
+        )[..]
+        {
+            [Change::Threads { comments, new_ids }] => {
+                assert!(new_ids.is_empty(), "{new_ids:?}");
+                assert_eq!(comments.unresolved.len(), 2);
+            }
+            other => panic!("expected one threads change: {other:?}"),
+        }
+        let changes = step(
+            &mut last,
+            &read(PrStatus::Open, None, Some(threads(&["t1", "t2", "t3"]))),
+        );
+        assert!(
+            matches!(&changes[..], [Change::Threads { new_ids, .. }] if new_ids == &["t3".to_string()]),
+            "{changes:?}"
+        );
+    }
+
     /// `publish` puts a secondary's state on the wire with its subdir and the
-    /// primary's with `subdir: null`, so a client can key each by checkout, and
-    /// says which PR of the checkout it is and whether that one is focused.
+    /// primary's with `subdir: null`, so a client can key each by checkout —
+    /// in the payload that predates PR sets: no `focused`, no `number` beside
+    /// `state.number`.
     #[test]
     fn publish_addresses_state_to_its_checkout() {
         use crate::host::sink::RecordingSink;
@@ -632,7 +689,7 @@ mod tests {
             &sink,
             "arabia",
             Some("api"),
-            650,
+            &merged,
             true,
             vec![Change::State(merged.clone())],
         );
@@ -640,9 +697,9 @@ mod tests {
             &sink,
             "arabia",
             None,
-            650,
-            false,
-            vec![Change::State(merged)],
+            &merged,
+            true,
+            vec![Change::State(merged.clone())],
         );
         let events = sink.events();
         let subdirs: Vec<_> = events
@@ -653,15 +710,89 @@ mod tests {
                 assert_eq!(payload["state"]["state"], "merged");
                 assert_eq!(payload["state"]["number"], 650);
                 assert!(payload.get("number").is_none(), "the PR is `state.number`");
-                (payload["subdir"].clone(), payload["focused"].clone())
+                assert!(payload.get("focused").is_none(), "{payload}");
+                payload["subdir"].clone()
             })
             .collect();
+        assert_eq!(subdirs, [serde_json::json!("api"), serde_json::Value::Null]);
+    }
+
+    /// The focused PR's changes go out on the legacy events, shaped as before
+    /// PR sets: `pr:checks_changed` with its `number`, `pr:threads_changed`
+    /// without one.
+    #[test]
+    fn the_focused_prs_changes_emit_the_legacy_events() {
+        use crate::host::sink::RecordingSink;
+
+        let sink = RecordingSink::new();
+        let open = pr(PrStatus::Open);
+        publish(
+            &sink,
+            "arabia",
+            None,
+            &open,
+            true,
+            vec![
+                Change::State(open.clone()),
+                Change::Checks(checks("failing", &["unit"])),
+                Change::Threads {
+                    comments: threads(&["t1"]),
+                    new_ids: vec!["t1".to_string()],
+                },
+            ],
+        );
+        let events = sink.events();
+        let names: Vec<_> = events.iter().map(|(name, _)| name.as_str()).collect();
         assert_eq!(
-            subdirs,
+            names,
             [
-                (serde_json::json!("api"), serde_json::json!(true)),
-                (serde_json::Value::Null, serde_json::json!(false)),
+                "pr:state_changed",
+                "pr:checks_changed",
+                "pr:threads_changed"
             ]
         );
+        assert_eq!(events[1].1["number"], 650);
+        assert_eq!(events[1].1["checks"]["rollup"], "failing");
+        assert!(events[2].1.get("number").is_none(), "{}", events[2].1);
+        assert_eq!(events[2].1["new_thread_ids"], serde_json::json!(["t1"]));
+    }
+
+    /// Another PR of the set never reaches a legacy event — a client from
+    /// before PR sets would read it as the focused PR's. Its state and checks
+    /// go out as `pr:set_entry_changed { agent_id, subdir, entry }`; a state
+    /// change carries no checks, a checks change carries the PR's state.
+    #[test]
+    fn a_sibling_change_emits_set_entry_changed_and_never_a_legacy_event() {
+        use crate::host::sink::RecordingSink;
+
+        let sink = RecordingSink::new();
+        let mut sibling = pr(PrStatus::Open);
+        sibling.number = 651;
+        publish(
+            &sink,
+            "arabia",
+            Some("api"),
+            &sibling,
+            false,
+            vec![
+                Change::State(sibling.clone()),
+                Change::Checks(checks("failing", &["unit"])),
+                Change::Threads {
+                    comments: threads(&["t1"]),
+                    new_ids: vec!["t1".to_string()],
+                },
+            ],
+        );
+        let events = sink.events();
+        assert_eq!(events.len(), 2, "{events:?}");
+        for (name, payload) in &events {
+            assert_eq!(name, "pr:set_entry_changed");
+            assert_eq!(payload["agent_id"], "arabia");
+            assert_eq!(payload["subdir"], "api");
+            assert_eq!(payload["entry"]["state"]["number"], 651);
+            assert!(payload["entry"].get("threads").is_none(), "{payload}");
+        }
+        assert!(events[0].1["entry"]["checks"].is_null());
+        assert_eq!(events[1].1["entry"]["checks"]["rollup"], "failing");
     }
 }

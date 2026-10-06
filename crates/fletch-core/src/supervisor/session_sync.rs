@@ -10,7 +10,8 @@ use crate::host::EngineCtx;
 use crate::workspace::{AgentRecord, AgentStatus, AgentView, TrackedRepo, WorkspaceManager};
 
 use super::events::{
-    emit_pr_state, emit_session_records_appended, emit_session_sync_health, emit_verification,
+    emit_pr_set_entry, emit_pr_state, emit_session_records_appended, emit_session_sync_health,
+    emit_verification,
 };
 use super::Supervisor;
 
@@ -111,16 +112,21 @@ impl Supervisor {
                 .await
                 .and_then(|(pr, bound)| bound.then_some(pr));
             // The focus may have moved while the read was in flight: the PR
-            // still updates its set entry, but only claims focus if it is
-            // still the bound one.
-            let focused = state.as_ref().map_or(true, |pr| {
-                let bound = workspace
-                    .agent(&agent_id)
-                    .ok()
-                    .and_then(|r| r.repos.first()?.pr_number);
-                bound == Some(pr.number as i64)
-            });
-            emit_pr_state(ctx.sink.as_ref(), &agent_id, None, state, focused);
+            // still updates its set entry, but only goes out as the focused
+            // PR's `pr:state_changed` if it is still the bound one — that
+            // event is the focused PR's alone (`emit_pr_set_entry`).
+            match state {
+                Some(pr)
+                    if workspace
+                        .agent(&agent_id)
+                        .ok()
+                        .and_then(|r| r.repos.first()?.pr_number)
+                        != Some(pr.number as i64) =>
+                {
+                    emit_pr_set_entry(ctx.sink.as_ref(), &agent_id, None, pr, None)
+                }
+                state => emit_pr_state(ctx.sink.as_ref(), &agent_id, None, state),
+            }
             // The PR may be brand new: let the host-side watcher seed it now,
             // while its checks are still pending, rather than at its next tick.
             super::pr_watch::nudge();
@@ -157,7 +163,7 @@ impl Supervisor {
         // whatever spelling the caller used for it.
         let primary = record.repos.first().map(|r| r.subdir.as_str()) == Some(repo.subdir.as_str());
         let subdir = (!primary).then_some(repo.subdir.as_str());
-        emit_pr_state(ctx.sink.as_ref(), agent_id, subdir, Some(pr.clone()), true);
+        emit_pr_state(ctx.sink.as_ref(), agent_id, subdir, Some(pr.clone()));
         super::pr_watch::nudge();
         Ok(pr)
     }
@@ -529,9 +535,10 @@ pub fn pr_map_key(agent_id: &str, subdir: &str, primary: bool) -> String {
 pub struct PrSetEntry {
     pub state: PrState,
     pub checks: Option<crate::github::PrChecks>,
-    /// The open PR's unresolved review threads, when the sweep was asked for
-    /// them. In-process only — the host watcher diffs them into
-    /// `pr:threads_changed`; clients never receive them in this shape.
+    /// The open focused PR's unresolved review threads, when the sweep was
+    /// asked for them (no other PR's are read). In-process only — the host
+    /// watcher diffs them into `pr:threads_changed`; clients never receive
+    /// them in this shape.
     #[serde(skip)]
     pub threads: Option<crate::github::PrComments>,
 }
@@ -572,8 +579,9 @@ pub struct AgentPrStatus {
 ///   it on every read.
 /// - Everything else is fetched live by number and its snapshot refreshed.
 ///
-/// `with_threads` folds each open PR's review threads into the same aliases
-/// (the watcher's every-other-tick read), so they cost no request of their own.
+/// `with_threads` folds each checkout's *focused* open PR's review threads into
+/// its alias (the watcher's every-other-tick read), so they cost no request of
+/// their own; the other PRs' aliases select none — nothing reads their threads.
 ///
 /// A paused backoff, an unresolvable slug, a not-found alias, or a whole-batch
 /// failure all degrade to the last persisted snapshot rather than wiping the
@@ -674,6 +682,10 @@ pub async fn resolve_all_pr_status(
                     owner: owner.clone(),
                     repo: repo_name.clone(),
                     number: slot.snapshot.number,
+                    // Threads are only ever read for the focused PR (the
+                    // watcher reports no one else's), so only its alias pays
+                    // for them.
+                    with_threads: with_threads && slot.snapshot.number == bound,
                 });
             }
             checkouts.push(Checkout {
@@ -688,7 +700,7 @@ pub async fn resolve_all_pr_status(
 
     // A whole-batch failure leaves every slot unfetched, so each PR degrades
     // to its snapshot below.
-    if let Ok(results) = crate::github::pr_status_batch(&refs, with_threads).await {
+    if let Ok(results) = crate::github::pr_status_batch(&refs).await {
         for ((c, s), res) in targets.into_iter().zip(results) {
             // `None` = not found this round / partial error — keep last-known.
             let Some(row) = res else { continue };

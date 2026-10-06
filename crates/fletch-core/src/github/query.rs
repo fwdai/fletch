@@ -209,6 +209,10 @@ pub struct PrRef {
     pub owner: String,
     pub repo: String,
     pub number: u32,
+    /// Fold this PR's unresolved review threads into its alias. Per alias, not
+    /// per batch: threads are the costly part of the selection and only some
+    /// PRs (a checkout's focused one) are read for them.
+    pub with_threads: bool,
 }
 
 /// Max PRs per batched request — each adds a top-level `repository` alias, so
@@ -220,14 +224,21 @@ const BATCH_CHUNK: usize = 50;
 /// into the query text. One top-level `viewer{ login }` rides along for the
 /// whole query — what thread parsing needs to judge `we_replied_last` — rather
 /// than a lookup per PR; `viewer` is a single node, so it costs nothing.
+/// `inner_fields` goes on every alias; [`PR_COMMENTS_FIELDS`] only on the
+/// aliases whose ref asked for threads.
 fn build_batch_query(chunk: &[PrRef], inner_fields: &str) -> (String, Value) {
     let mut decls = Vec::with_capacity(chunk.len());
     let mut aliases = Vec::with_capacity(chunk.len());
     let mut vars = serde_json::Map::new();
     for (i, r) in chunk.iter().enumerate() {
         decls.push(format!("$o{i}:String!,$r{i}:String!,$n{i}:Int!"));
+        let threads = if r.with_threads {
+            PR_COMMENTS_FIELDS
+        } else {
+            ""
+        };
         aliases.push(format!(
-            "a{i}:repository(owner:$o{i},name:$r{i}){{pullRequest(number:$n{i}){{{inner_fields}}}}}"
+            "a{i}:repository(owner:$o{i},name:$r{i}){{pullRequest(number:$n{i}){{{inner_fields} {threads}}}}}"
         ));
         vars.insert(format!("o{i}"), json!(r.owner));
         vars.insert(format!("r{i}"), json!(r.repo));
@@ -258,7 +269,7 @@ fn note_budget(data: &Value) {
 pub struct PrBatchRow {
     pub state: PrState,
     pub checks: PrChecks,
-    /// The unresolved review threads; `None` unless the batch was asked for
+    /// The unresolved review threads; `None` unless this PR's ref asked for
     /// them.
     pub threads: Option<PrComments>,
 }
@@ -273,28 +284,24 @@ pub struct PrBatchRow {
 /// and its CI tint always come from the same instant instead of drifting up to
 /// a cadence apart.
 ///
-/// `with_threads` folds the review threads into the same aliases (the query's
-/// `viewer{ login }` judges who replied last). Threads used to be a separate
-/// read per open PR — a conditional REST resolve and a GraphQL call each — so
-/// riding along here spends the same points on one request per 50 PRs instead
-/// of two per PR.
+/// A ref's `with_threads` folds that PR's review threads into its alias (the
+/// query's `viewer{ login }` judges who replied last). Threads used to be a
+/// separate read per open PR — a conditional REST resolve and a GraphQL call
+/// each — so riding along here spends the same points on one request per 50
+/// PRs instead of two per PR; and only the aliases that asked select them.
 ///
 /// Results align 1:1 with `refs`; a missing/inaccessible PR yields `None` for
 /// its slot (partial-error tolerant). `Ok(vec![])` for empty input; an active
 /// backoff short-circuits to all-`None` so callers fall back to the persisted
 /// snapshot without spending a request.
-pub async fn pr_status_batch(
-    refs: &[PrRef],
-    with_threads: bool,
-) -> Result<Vec<Option<PrBatchRow>>> {
+pub async fn pr_status_batch(refs: &[PrRef]) -> Result<Vec<Option<PrBatchRow>>> {
     if refs.is_empty() {
         return Ok(Vec::new());
     }
     if client::is_backing_off() {
         return Ok(refs.iter().map(|_| None).collect());
     }
-    let threads = if with_threads { PR_COMMENTS_FIELDS } else { "" };
-    let inner_fields = format!("state {PR_STATE_FIELDS} {PR_CHECKS_FIELDS} {threads}");
+    let inner_fields = format!("state {PR_STATE_FIELDS} {PR_CHECKS_FIELDS}");
     let client = client::Client::new()?;
     let mut out = Vec::with_capacity(refs.len());
     for chunk in refs.chunks(BATCH_CHUNK) {
@@ -302,12 +309,12 @@ pub async fn pr_status_batch(
         let data = client.graphql_partial(&query, vars).await?;
         note_budget(&data);
         let viewer = data["viewer"]["login"].as_str();
-        for i in 0..chunk.len() {
+        for (i, r) in chunk.iter().enumerate() {
             let node = &data[format!("a{i}")]["pullRequest"];
             out.push((!node.is_null()).then(|| PrBatchRow {
                 state: parse_pr_state(node),
                 checks: pr_checks_from_node(node),
-                threads: with_threads.then(|| pr_comments_from_node(node, viewer)),
+                threads: r.with_threads.then(|| pr_comments_from_node(node, viewer)),
             }));
         }
         // A signal in this chunk's response — the budget crossing its floor, a
@@ -367,11 +374,13 @@ mod tests {
                 owner: "acme".into(),
                 repo: "web".into(),
                 number: 7,
+                with_threads: false,
             },
             PrRef {
                 owner: "acme".into(),
                 repo: "api".into(),
                 number: 12,
+                with_threads: false,
             },
         ];
         let (query, vars) = build_batch_query(&refs, "state number");
@@ -401,10 +410,42 @@ mod tests {
                 owner: "acme".into(),
                 repo: "web".into(),
                 number: n,
+                with_threads: n == 1,
             })
             .collect();
         let (query, _) = build_batch_query(&refs, "state number");
         assert_eq!(query.matches("viewer{login}").count(), 1, "{query}");
         assert_eq!(query.matches(":repository(").count(), 3, "{query}");
+    }
+
+    /// Threads are selected per alias: the focused PR that asked for them
+    /// carries `reviewThreads`, a sibling beside it in the same request does
+    /// not — and the batch is still one query.
+    #[test]
+    fn batch_query_selects_threads_only_for_the_aliases_that_ask() {
+        let refs = vec![
+            PrRef {
+                owner: "acme".into(),
+                repo: "web".into(),
+                number: 7,
+                with_threads: true,
+            },
+            PrRef {
+                owner: "acme".into(),
+                repo: "web".into(),
+                number: 8,
+                with_threads: false,
+            },
+        ];
+        let (query, _) = build_batch_query(&refs, "state number");
+        let focused = query
+            .split("a0:repository(")
+            .nth(1)
+            .and_then(|rest| rest.split("a1:repository(").next())
+            .expect("alias a0");
+        let sibling = query.split("a1:repository(").nth(1).expect("alias a1");
+        assert!(focused.contains("reviewThreads"), "{query}");
+        assert!(!sibling.contains("reviewThreads"), "{query}");
+        assert_eq!(query.matches("reviewThreads").count(), 1, "{query}");
     }
 }
