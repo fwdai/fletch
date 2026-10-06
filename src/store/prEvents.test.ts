@@ -2,9 +2,9 @@ import { beforeEach, describe, expect, it } from "vitest";
 import type { PrChecks, PrComments, PrSetEntry, PrState } from "@/api";
 import {
   applyPrChecksChanged,
+  applyPrSetEntryChanged,
   applyPrStateChanged,
   applyPrThreadsChanged,
-  isFocusedEvent,
 } from "./prEvents";
 import { acceptPrWrite, issuePrWrite, resetPrWriteOrder } from "./prWriteOrder";
 
@@ -86,11 +86,7 @@ describe("applyPrStateChanged", () => {
       prStates: { arabia: pr("open", 650) },
       prSets: { arabia: [entry(pr("open", 651)), entry(pr("open", 650), checks("passing"))] },
     };
-    const next = applyPrStateChanged(s, {
-      agent_id: "arabia",
-      focused: true,
-      state: pr("merged", 650),
-    });
+    const next = applyPrStateChanged(s, { agent_id: "arabia", state: pr("merged", 650) });
     expect(next.prStates?.arabia?.state).toBe("merged");
     expect(next.prSets?.arabia).toEqual([
       entry(pr("open", 651)),
@@ -98,25 +94,17 @@ describe("applyPrStateChanged", () => {
     ]);
   });
 
-  it("files a non-focused PR in the set only, newest number first", () => {
-    const focused = pr("open", 650);
-    const s = { prStates: { arabia: focused }, prSets: { arabia: [entry(focused)] } };
-    const next = applyPrStateChanged(s, {
-      agent_id: "arabia",
-      focused: false,
-      state: pr("open", 651),
-    });
-    expect(next.prStates).toBeUndefined();
+  /** The event is the focused PR by definition: a number the store does not
+   *  hold yet (a PR just opened, or the focus moved) becomes the legacy map's
+   *  PR and joins the set beside the rest. */
+  it("takes a new number as the focused PR and grows the set", () => {
+    const s = {
+      prStates: { arabia: pr("open", 650) },
+      prSets: { arabia: [entry(pr("open", 650))] },
+    };
+    const next = applyPrStateChanged(s, { agent_id: "arabia", state: pr("open", 651) });
+    expect(next.prStates?.arabia?.number).toBe(651);
     expect(next.prSets?.arabia.map((p) => p.state.number)).toEqual([651, 650]);
-  });
-
-  it("does not stamp the legacy map for a non-focused PR", () => {
-    const read = issuePrWrite();
-    applyPrStateChanged(
-      { prStates: {}, prSets: {} },
-      { agent_id: "arabia", focused: false, state: pr("open", 651) },
-    );
-    expect(acceptPrWrite("prStates", "arabia", read)).toBe(true);
   });
 
   /** A host from before PR sets binds one PR per checkout, so each report is
@@ -126,18 +114,18 @@ describe("applyPrStateChanged", () => {
       prStates: { arabia: pr("open", 651) },
       prSets: { arabia: [entry(pr("open", 651), checks("passing")), entry(pr("merged", 650))] },
     };
-    const same = applyPrStateChanged(s, { agent_id: "arabia", state: pr("open", 651) });
+    const same = applyPrStateChanged(s, { agent_id: "arabia", state: pr("open", 651) }, true);
     expect(same.prSets?.arabia).toEqual([entry(pr("open", 651), checks("passing"))]);
-    const rebound = applyPrStateChanged(s, { agent_id: "arabia", state: pr("open", 652) });
+    const rebound = applyPrStateChanged(s, { agent_id: "arabia", state: pr("open", 652) }, true);
     expect(rebound.prSets?.arabia).toEqual([entry(pr("open", 652))]);
     expect(rebound.prStates?.arabia?.number).toBe(652);
   });
 
-  it("writes a focused null state to the legacy map and leaves the set alone", () => {
+  it("writes a null state to the legacy map and leaves the set alone", () => {
     const set = [entry(pr("open", 650))];
     const next = applyPrStateChanged(
       { prStates: { arabia: pr("open", 650) }, prSets: { arabia: set } },
-      { agent_id: "arabia", focused: true, state: null },
+      { agent_id: "arabia", state: null },
     );
     expect(next.prStates?.arabia).toBeNull();
     expect(next.prSets).toBeUndefined();
@@ -149,37 +137,14 @@ describe("applyPrChecksChanged", () => {
 
   it("keys checks by checkout too", () => {
     const next = applyPrChecksChanged(
-      { prStates: {}, prChecks: { arabia: null }, prSets: {} },
+      { prChecks: { arabia: null }, prSets: {} },
       { agent_id: "arabia", subdir: "api", number: 12, checks: checks("passing") },
     );
     expect(next.prChecks).toEqual({ arabia: null, "arabia::api": checks("passing") });
   });
 
-  it("does not let a non-focused PR's checks clobber the focused PR's", () => {
-    const s = {
-      prStates: { arabia: pr("open", 650) },
-      prChecks: { arabia: checks("passing") },
-      prSets: { arabia: [entry(pr("open", 651)), entry(pr("open", 650), checks("passing"))] },
-    };
-    const next = applyPrChecksChanged(s, {
-      agent_id: "arabia",
-      subdir: null,
-      number: 651,
-      checks: checks("failing"),
-    });
-    expect(next.prChecks).toBeUndefined();
-    expect(next.prSets?.arabia).toEqual([
-      entry(pr("open", 651), checks("failing")),
-      entry(pr("open", 650), checks("passing")),
-    ]);
-  });
-
   it("writes the focused PR's checks to both", () => {
-    const s = {
-      prStates: { arabia: pr("open", 650) },
-      prChecks: {},
-      prSets: { arabia: [entry(pr("open", 650))] },
-    };
+    const s = { prChecks: {}, prSets: { arabia: [entry(pr("open", 650))] } };
     const next = applyPrChecksChanged(s, {
       agent_id: "arabia",
       subdir: null,
@@ -194,49 +159,55 @@ describe("applyPrChecksChanged", () => {
 describe("applyPrThreadsChanged", () => {
   beforeEach(() => resetPrWriteOrder());
 
-  it("keeps threads for the focused PR only", () => {
-    const s = { prStates: { arabia: pr("open", 650) }, prComments: { arabia: threads("t1") } };
-    const other = applyPrThreadsChanged(s, {
-      agent_id: "arabia",
-      subdir: null,
-      number: 651,
-      comments: threads("x"),
-      new_thread_ids: ["x"],
-    });
-    expect(other.prComments).toBeUndefined();
-    const own = applyPrThreadsChanged(s, {
-      agent_id: "arabia",
-      subdir: null,
-      number: 650,
-      comments: threads("t1", "t2"),
-      new_thread_ids: ["t2"],
-    });
-    expect(own.prComments?.arabia).toEqual(threads("t1", "t2"));
-  });
-
-  it("takes a numberless event (an older host) as the focused PR's", () => {
+  it("replaces the focused PR's threads and stamps them", () => {
+    const read = issuePrWrite();
     const next = applyPrThreadsChanged(
-      { prStates: { arabia: pr("open", 650) }, prComments: {} },
-      { agent_id: "arabia", subdir: null, comments: threads("t1"), new_thread_ids: ["t1"] },
+      { prComments: { arabia: threads("t1") } },
+      { agent_id: "arabia", subdir: null, comments: threads("t1", "t2"), new_thread_ids: ["t2"] },
     );
-    expect(next.prComments?.arabia).toEqual(threads("t1"));
+    expect(next.prComments?.arabia).toEqual(threads("t1", "t2"));
+    expect(acceptPrWrite("prComments", "arabia", read)).toBe(false);
   });
 });
 
-describe("isFocusedEvent", () => {
-  it("follows an explicit focused flag", () => {
-    expect(isFocusedEvent(true, 651, 650)).toBe(true);
-    expect(isFocusedEvent(false, 650, 650)).toBe(false);
+describe("applyPrSetEntryChanged", () => {
+  beforeEach(() => resetPrWriteOrder());
+
+  const focused = pr("open", 650);
+  const s = { prSets: { arabia: [entry(pr("open", 651)), entry(focused, checks("passing"))] } };
+
+  /** Another PR of the set: its entry moves, the legacy maps (the focused
+   *  PR's) are not even in the result, and only the set is stamped. */
+  it("upserts the sibling's entry and touches nothing else", () => {
+    const read = issuePrWrite();
+    const next = applyPrSetEntryChanged(s, {
+      agent_id: "arabia",
+      subdir: null,
+      entry: entry(pr("open", 651), checks("failing")),
+    });
+    expect(Object.keys(next)).toEqual(["prSets"]);
+    expect(next.prSets.arabia).toEqual([
+      entry(pr("open", 651), checks("failing")),
+      entry(focused, checks("passing")),
+    ]);
+    expect(acceptPrWrite("prStates", "arabia", read)).toBe(true);
+    expect(acceptPrWrite("prChecks", "arabia", read)).toBe(true);
+    expect(acceptPrWrite("prSets", "arabia", read)).toBe(false);
   });
 
-  it("otherwise compares the event's PR with the focused one", () => {
-    expect(isFocusedEvent(undefined, 650, 650)).toBe(true);
-    expect(isFocusedEvent(undefined, 651, 650)).toBe(false);
-  });
-
-  it("takes a numberless event, or one with no focused PR known, as the focused PR's", () => {
-    expect(isFocusedEvent(undefined, undefined, 650)).toBe(true);
-    expect(isFocusedEvent(undefined, 651, null)).toBe(true);
-    expect(isFocusedEvent(undefined, 651, undefined)).toBe(true);
+  it("keeps the entry's checks on a state-only change and files a new PR newest first", () => {
+    const merged = applyPrSetEntryChanged(s, {
+      agent_id: "arabia",
+      subdir: null,
+      entry: entry(pr("merged", 650)),
+    });
+    expect(merged.prSets.arabia[1]).toEqual(entry(pr("merged", 650), checks("passing")));
+    const added = applyPrSetEntryChanged(s, {
+      agent_id: "arabia",
+      subdir: "api",
+      entry: entry(pr("open", 12)),
+    });
+    expect(added.prSets["arabia::api"]).toEqual([entry(pr("open", 12))]);
+    expect(added.prSets.arabia).toBe(s.prSets.arabia);
   });
 });

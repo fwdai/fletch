@@ -1,18 +1,21 @@
-// The host PR watcher's three events folded into the PR slices. Each writes
-// one checkout's key — `checkoutKey(agent_id, subdir)`, the same key the seed
+// The host PR watcher's events folded into the PR slices. Each writes one
+// checkout's key — `checkoutKey(agent_id, subdir)`, the same key the seed
 // (`loadAllPrStatus`) writes — and stamps it, so a seed or one-shot read
 // already in flight, which observed the PR before this change, can't land
 // afterwards and roll it back (a merged badge flipping back to open).
 //
-// A checkout holds a set of PRs (`prSets`) and the watcher reports each of
-// them; the legacy single-PR maps (`prStates` / `prChecks` / `prComments`) hold
-// only the focused one, so an event about another PR of the set must not land
-// there. Only the slices actually written are stamped.
+// A checkout holds a set of PRs (`prSets`); the legacy single-PR maps
+// (`prStates` / `prChecks` / `prComments`) hold its focused one. The three
+// legacy events are only ever about the focused PR, so they write the legacy
+// maps unconditionally and upsert the focused entry into the set;
+// `pr:set_entry_changed` reports the rest of the set and writes the set alone.
+// Only the slices actually written are stamped.
 
 import type {
   PrChecks,
   PrChecksChangedEvent,
   PrSetEntry,
+  PrSetEntryChangedEvent,
   PrState,
   PrStateChangedEvent,
   PrThreadsChangedEvent,
@@ -38,54 +41,39 @@ export function upsertState(
   );
 }
 
-/** Whether a PR event is about the checkout's focused PR — the one the legacy
- *  single-PR maps (and the phone) hold. An explicit `focused` flag decides
- *  (`pr:state_changed`). Otherwise the event's PR `number` is compared with the
- *  focused one's: no `number` is a host from before PR sets, which only ever
- *  reported the focused PR, and with no focused PR known the event is taken as
- *  its, as it always was. */
-export function isFocusedEvent(
-  focused: boolean | undefined,
-  number: number | undefined,
-  focusedNumber: number | null | undefined,
-): boolean {
-  if (focused !== undefined) return focused;
-  return number === undefined || focusedNumber == null || number === focusedNumber;
-}
-
 type StateSlices = Pick<GitSlice, "prStates" | "prSets">;
 
-export function applyPrStateChanged(s: StateSlices, e: PrStateChangedEvent): Partial<StateSlices> {
+/** The checkout's focused PR, as the host found it. `wholeSet` is a host from
+ *  before PR sets, which binds one PR per checkout: its PR is the whole set,
+ *  so one it has since replaced must not linger as a sibling. */
+export function applyPrStateChanged(
+  s: StateSlices,
+  e: PrStateChangedEvent,
+  wholeSet = false,
+): Partial<StateSlices> {
   const key = keyOf(e);
-  const out: Partial<StateSlices> = {};
-  // A null state ("no bound PR") names no PR, so there is no set entry to touch.
   const state = e.state;
+  stampPrWrite("prStates", key);
+  const out: Partial<StateSlices> = { prStates: { ...s.prStates, [key]: state } };
   if (state) {
     stampPrWrite("prSets", key);
-    // Absent `focused` is a host from before PR sets: it binds one PR per
-    // checkout, so its latest report is the whole set (that entry keeping its
-    // checks) — upserting would keep a PR it has since replaced as a phantom
-    // sibling.
     const prev = s.prSets[key];
-    const base =
-      e.focused === undefined ? prev?.filter((p) => p.state.number === state.number) : prev;
+    const base = wholeSet ? prev?.filter((p) => p.state.number === state.number) : prev;
     out.prSets = { ...s.prSets, [key]: upsertState(base, state) };
-  }
-  if (isFocusedEvent(e.focused, undefined, undefined)) {
-    stampPrWrite("prStates", key);
-    out.prStates = { ...s.prStates, [key]: state };
   }
   return out;
 }
 
-type ChecksSlices = Pick<GitSlice, "prStates" | "prChecks" | "prSets">;
+type ChecksSlices = Pick<GitSlice, "prChecks" | "prSets">;
 
+/** The focused PR's checks: the legacy map, and its entry in the set. */
 export function applyPrChecksChanged(
   s: ChecksSlices,
   e: PrChecksChangedEvent,
-): Partial<Pick<GitSlice, "prChecks" | "prSets">> {
+): Partial<ChecksSlices> {
   const key = keyOf(e);
-  const out: Partial<Pick<GitSlice, "prChecks" | "prSets">> = {};
+  stampPrWrite("prChecks", key);
+  const out: Partial<ChecksSlices> = { prChecks: { ...s.prChecks, [key]: e.checks } };
   const set = s.prSets[key];
   if (set?.some((p) => p.state.number === e.number)) {
     stampPrWrite("prSets", key);
@@ -94,20 +82,27 @@ export function applyPrChecksChanged(
       [key]: set.map((p) => (p.state.number === e.number ? { ...p, checks: e.checks } : p)),
     };
   }
-  if (isFocusedEvent(undefined, e.number, s.prStates[key]?.number)) {
-    stampPrWrite("prChecks", key);
-    out.prChecks = { ...s.prChecks, [key]: e.checks };
-  }
   return out;
 }
 
+/** The focused PR's threads — the only PR whose threads the host reads. */
 export function applyPrThreadsChanged(
-  s: Pick<GitSlice, "prStates" | "prComments">,
+  s: Pick<GitSlice, "prComments">,
   e: PrThreadsChangedEvent,
-): Partial<Pick<GitSlice, "prComments">> {
+): Pick<GitSlice, "prComments"> {
   const key = keyOf(e);
-  // Threads are kept for the focused PR alone.
-  if (!isFocusedEvent(undefined, e.number, s.prStates[key]?.number)) return {};
   stampPrWrite("prComments", key);
   return { prComments: { ...s.prComments, [key]: e.comments } };
+}
+
+/** Another PR of the checkout's set: its entry, never the legacy maps. */
+export function applyPrSetEntryChanged(
+  s: Pick<GitSlice, "prSets">,
+  e: PrSetEntryChangedEvent,
+): Pick<GitSlice, "prSets"> {
+  const key = keyOf(e);
+  stampPrWrite("prSets", key);
+  return {
+    prSets: { ...s.prSets, [key]: upsertState(s.prSets[key], e.entry.state, e.entry.checks) },
+  };
 }

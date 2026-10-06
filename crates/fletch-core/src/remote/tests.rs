@@ -3604,23 +3604,26 @@ fn each_repo_of_an_agent_alerts_on_its_own_merge() {
 }
 
 /// A checkout holds several PRs at once: each PR's witnessed merge alerts on
-/// its own, and one landing does not make the other look already settled.
+/// its own, and one landing does not make the other look already settled. The
+/// focused PR is reported on `pr:state_changed`, the rest of the set on
+/// `pr:set_entry_changed` — the same alert either way.
 #[test]
 fn each_pr_of_a_checkout_alerts_on_its_own_merge() {
     let _prefs = pr_prefs();
     let h = Triggers::boot(false, &[("a1b2", "sandbox")]);
     let agents = Agents::named("Fix login crash");
     let second = |state: &str| {
-        let mut payload = pr_state_of("arabia", state);
-        payload["state"]["number"] = json!(651);
-        payload
+        let pr = pr_state_of("arabia", state);
+        let mut entry = json!({ "agent_id": "arabia", "subdir": null, "entry": { "state": pr["state"], "checks": null } });
+        entry["entry"]["state"]["number"] = json!(651);
+        entry
     };
     h.triggers
         .on_event(&agents, "pr:state_changed", &pr_state_of("arabia", "open"));
     h.triggers
-        .on_event(&agents, "pr:state_changed", &second("open"));
+        .on_event(&agents, "pr:set_entry_changed", &second("open"));
     h.triggers
-        .on_event(&agents, "pr:state_changed", &second("merged"));
+        .on_event(&agents, "pr:set_entry_changed", &second("merged"));
     h.triggers.on_event(
         &agents,
         "pr:state_changed",
@@ -3629,6 +3632,28 @@ fn each_pr_of_a_checkout_alerts_on_its_own_merge() {
     assert_eq!(h.kinds(), ["pr_merged", "pr_merged"]);
     assert_eq!(h.sent()[0]["body"], "Fix login crash · #651");
     assert_eq!(h.sent()[1]["body"], "Fix login crash · #650");
+}
+
+/// A sibling's checks ride `pr:set_entry_changed` and settle like the focused
+/// PR's: one alert per settle, keyed by that PR.
+#[test]
+fn a_sibling_prs_checks_settling_alerts() {
+    let _prefs = pr_prefs();
+    let h = Triggers::boot(false, &[("a1b2", "sandbox")]);
+    let agents = Agents::named("Fix login crash");
+    let sibling = |rollup: &str| {
+        let checks = checks_changed_on(651, "arabia", rollup, &["unit"]);
+        let mut state = pr_state_of("arabia", "open")["state"].clone();
+        state["number"] = json!(651);
+        json!({ "agent_id": "arabia", "subdir": null, "entry": { "state": state, "checks": checks["checks"] } })
+    };
+    h.triggers
+        .on_event(&agents, "pr:set_entry_changed", &sibling("pending"));
+    h.triggers
+        .on_event(&agents, "pr:set_entry_changed", &sibling("failing"));
+    h.triggers
+        .on_event(&agents, "pr:set_entry_changed", &sibling("failing"));
+    assert_eq!(h.kinds(), ["checks_settled"]);
 }
 
 /// A secondary merging forgets that checkout's rollup and nobody else's.
@@ -3852,12 +3877,17 @@ fn autopilot_giving_up_honours_notify_pr_activity_and_focus() {
     assert!(focused.sent().is_empty(), "{:?}", focused.sent());
 }
 
-/// The two watcher events are on the wire and advertised, so a phone can gate
-/// its Ship tab's live updates on them.
+/// The watcher's events are on the wire and advertised, so a phone can gate
+/// its Ship tab's live updates on them — `pr:set_entry_changed` (the rest of a
+/// checkout's PR set) included.
 #[test]
 fn the_pr_watch_events_are_forwarded_and_advertised() {
     let protocol = super::protocol_descriptor();
-    for event in ["pr:checks_changed", "pr:threads_changed"] {
+    for event in [
+        "pr:checks_changed",
+        "pr:threads_changed",
+        "pr:set_entry_changed",
+    ] {
         assert!(
             super::events::FORWARDED_EVENTS.contains(&event),
             "{event} is not forwarded"

@@ -426,22 +426,18 @@ struct PrStateChangedPayload {
     /// `pr:checks_changed`. Added after the fact, so a client that predates it
     /// reads every event as the primary's.
     subdir: Option<String>,
-    /// Whether this is the checkout's focused (bound) PR — the one single-PR
-    /// readers show. A checkout holds a set of PRs and the watcher reports
-    /// each; a client that keeps only the focused one ignores `false`. Added
-    /// after the fact, so a client that predates it reads every event as the
-    /// focused PR's, which is all a host before PR sets ever sent.
-    focused: bool,
     state: Option<PrState>,
 }
 
-/// One PR of one checkout, as found now — a state, not a transition.
+/// The focused (bound) PR of one checkout, as found now — a state, not a
+/// transition. Only ever the focused PR: a client that predates PR sets reads
+/// every one as its checkout's PR, so the rest of the set goes out as
+/// [`emit_pr_set_entry`] instead.
 pub(super) fn emit_pr_state(
     sink: &dyn EventSink,
     agent_id: &str,
     subdir: Option<&str>,
     state: Option<PrState>,
-    focused: bool,
 ) {
     emit(
         sink,
@@ -449,8 +445,42 @@ pub(super) fn emit_pr_state(
         PrStateChangedPayload {
             agent_id: agent_id.to_string(),
             subdir: subdir.map(str::to_string),
-            focused,
             state,
+        },
+    );
+}
+
+#[derive(Clone, serde::Serialize)]
+struct PrSetEntryChangedPayload {
+    agent_id: String,
+    /// As on `pr:state_changed`: `None` for the primary repo.
+    subdir: Option<String>,
+    entry: super::session_sync::PrSetEntry,
+}
+
+/// A PR of a checkout's set that is *not* its focused PR changed state or
+/// checks (`supervisor::pr_watch`). Its own event, never one of the legacy
+/// three: a client that predates PR sets ignores an event name it does not
+/// know, where it would have read a `pr:state_changed` as its focused PR's.
+/// `checks: None` is "nothing to say this round", as in `get_all_pr_status`.
+pub(super) fn emit_pr_set_entry(
+    sink: &dyn EventSink,
+    agent_id: &str,
+    subdir: Option<&str>,
+    state: PrState,
+    checks: Option<PrChecks>,
+) {
+    emit(
+        sink,
+        "pr:set_entry_changed",
+        PrSetEntryChangedPayload {
+            agent_id: agent_id.to_string(),
+            subdir: subdir.map(str::to_string),
+            entry: super::session_sync::PrSetEntry {
+                state,
+                checks,
+                threads: None,
+            },
         },
     );
 }
@@ -467,8 +497,8 @@ struct PrChecksChangedPayload {
     checks: PrChecks,
 }
 
-/// The host-side PR watcher saw an open PR's CI rollup, or its set of failing
-/// checks, change (`supervisor::pr_watch`).
+/// The host-side PR watcher saw the focused open PR's CI rollup, or its set of
+/// failing checks, change (`supervisor::pr_watch`).
 pub(super) fn emit_pr_checks(
     sink: &dyn EventSink,
     agent_id: &str,
@@ -492,22 +522,18 @@ pub(super) fn emit_pr_checks(
 struct PrThreadsChangedPayload {
     agent_id: String,
     subdir: Option<String>,
-    /// Which of the checkout's PRs these threads belong to, as on
-    /// `pr:checks_changed`.
-    number: u32,
     comments: PrComments,
     /// The unresolved thread ids the watcher had not seen before this read.
     new_thread_ids: Vec<String>,
 }
 
-/// The host-side PR watcher saw the unresolved review threads of an open PR
-/// change. Carries the whole unresolved set so a client replaces its copy, plus
+/// The host-side PR watcher saw the unresolved review threads of the focused
+/// open PR change (the only PR whose threads it reads). Carries the whole unresolved set so a client replaces its copy, plus
 /// the ids that are new so it can announce exactly those.
 pub(super) fn emit_pr_threads(
     sink: &dyn EventSink,
     agent_id: &str,
     subdir: Option<&str>,
-    number: u32,
     comments: PrComments,
     new_thread_ids: Vec<String>,
 ) {
@@ -517,7 +543,6 @@ pub(super) fn emit_pr_threads(
         PrThreadsChangedPayload {
             agent_id: agent_id.to_string(),
             subdir: subdir.map(str::to_string),
-            number,
             comments,
             new_thread_ids,
         },

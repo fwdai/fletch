@@ -67,7 +67,8 @@ export interface GitSlice {
    *  `checkoutKey(agentId, subdir?)`. A checkout holds a set of PRs (sub-agents
    *  each open their own); the legacy three maps above hold the focused PR.
    *  Seeded by `loadAllPrStatus`, then followed via `pr:state_changed` /
-   *  `pr:checks_changed`. Threads are only kept for the focused PR. */
+   *  `pr:checks_changed` (the focused PR) and `pr:set_entry_changed` (the
+   *  rest). Threads are only kept for the focused PR. */
   prSets: Record<string, PrSetEntry[]>;
   /** Live host delegations per checkout, keyed by `checkoutKey(agentId,
    *  subdir?)` (absent = none). A MIRROR: the host owns the lifecycle
