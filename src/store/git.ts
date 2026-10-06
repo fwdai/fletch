@@ -67,7 +67,8 @@ export interface GitSlice {
    *  `checkoutKey(agentId, subdir?)`. A checkout holds a set of PRs (sub-agents
    *  each open their own); the legacy three maps above hold the focused PR.
    *  Seeded by `loadAllPrStatus`, then followed via `pr:state_changed` /
-   *  `pr:checks_changed`. Threads are only kept for the focused PR. */
+   *  `pr:checks_changed` (the focused PR) and `pr:set_entry_changed` (the
+   *  rest). Threads are only kept for the focused PR. */
   prSets: Record<string, PrSetEntry[]>;
   /** Live host delegations per checkout, keyed by `checkoutKey(agentId,
    *  subdir?)` (absent = none). A MIRROR: the host owns the lifecycle
@@ -182,7 +183,8 @@ export interface GitSlice {
   mergePr: (agentId: string, subdir?: string) => Promise<void>;
   /** Make `number`, one of the checkout's PRs (`prSets`), its focused PR — the
    *  one the legacy maps, and so the whole Git panel, follow. The host moves
-   *  the focus and announces it with a focused `pr:state_changed` before it
+   *  the focus and announces it with a `pr:state_changed` (only ever the
+   *  focused PR's, so a new number there is the focus moving) before it
    *  replies; the store swaps the maps on that event (`applyPrStateChanged`),
    *  and on the reply too — the same PR, so a no-op once the event landed — so
    *  a caller that awaits this reads the new focus whichever arrives first. A
@@ -715,7 +717,7 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
       // Applied as the host's focus event would be: stamped so a poll that was
       // already in flight — and saw no PR at all — can't erase the card, and
       // the "no PR" checks dropped so the new PR gets its own live read.
-      set((s) => applyPrStateChanged(s, { agent_id: agentId, subdir, focused: true, state: pr }));
+      set((s) => applyPrStateChanged(s, { agent_id: agentId, subdir, state: pr }));
       await get().fetchGitState(agentId, subdir);
       return true;
     } catch (e) {
@@ -748,7 +750,7 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
     try {
       const pr = await api.createPr(agentId, title, body, subdir);
       // Authoritative (see commitAndOpenPr): outranks any in-flight poll.
-      set((s) => applyPrStateChanged(s, { agent_id: agentId, subdir, focused: true, state: pr }));
+      set((s) => applyPrStateChanged(s, { agent_id: agentId, subdir, state: pr }));
       return pr;
     } catch (e) {
       set({ lastError: String(e) });
@@ -780,7 +782,7 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
     }
     try {
       const pr = await api.setFocusedPr(agentId, number, subdir);
-      set((s) => applyPrStateChanged(s, { agent_id: agentId, subdir, focused: true, state: pr }));
+      set((s) => applyPrStateChanged(s, { agent_id: agentId, subdir, state: pr }));
     } catch (e) {
       get().setLastError(String(e));
     }

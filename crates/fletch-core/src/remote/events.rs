@@ -42,6 +42,10 @@ pub const FORWARDED_EVENTS: &[&str] = &[
     // threads reach the phone without its Git tab polling for them.
     "pr:checks_changed",
     "pr:threads_changed",
+    // The rest of a checkout's PR set (`supervisor::pr_watch`): the three above
+    // only ever describe its focused PR, so a client from before PR sets is
+    // unaffected; this one it does not know and ignores.
+    "pr:set_entry_changed",
     "verify:report",
     "publish:approval-requested",
     "publish:approval-resolved",

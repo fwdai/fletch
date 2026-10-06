@@ -18,15 +18,14 @@ export interface PrState {
   branch?: string | null;
 }
 
+/** The checkout's focused PR as found now. Only ever the focused PR — the rest
+ *  of the set arrives as `PrSetEntryChangedEvent` — so one whose number differs
+ *  from the focused PR held is the focus moving. */
 export interface PrStateChangedEvent {
   agent_id: string;
   /** Which checkout: `null` (or absent, from a host that predates the field)
    *  is the primary repo, a subdir names a secondary. */
   subdir?: string | null;
-  /** Whether this is the checkout's focused PR — the one the legacy single-PR
-   *  maps hold. Absent (an older host, which only reported the focused PR)
-   *  means focused. */
-  focused?: boolean;
   state: PrState | null;
 }
 
@@ -101,8 +100,8 @@ export interface PrComments {
   unresolved: PrComment[];
 }
 
-/** The host-side PR watcher saw an open PR's CI rollup, or its set of failing
- *  checks, change. `subdir` is null for the agent's primary repo. */
+/** The host-side PR watcher saw the focused open PR's CI rollup, or its set of
+ *  failing checks, change. `subdir` is null for the agent's primary repo. */
 export interface PrChecksChangedEvent {
   agent_id: string;
   subdir: string | null;
@@ -112,14 +111,11 @@ export interface PrChecksChangedEvent {
   checks: PrChecks;
 }
 
-/** The host-side PR watcher saw an open PR's unresolved review threads change:
- *  the whole current set, plus the ids it had not seen before. */
+/** The host-side PR watcher saw the focused open PR's unresolved review threads
+ *  change: the whole current set, plus the ids it had not seen before. */
 export interface PrThreadsChangedEvent {
   agent_id: string;
   subdir: string | null;
-  /** The PR these threads belong to. Absent from a host that predates PR sets,
-   *  which only ever reported the focused PR. */
-  number?: number;
   comments: PrComments;
   new_thread_ids: string[];
 }
@@ -131,6 +127,17 @@ export interface PrThreadsChangedEvent {
 export interface PrSetEntry {
   state: PrState;
   checks: PrChecks | null;
+}
+
+/** The host-side PR watcher saw a PR of a checkout's set that is *not* its
+ *  focused one change state or checks (`entry.checks: null` — a state change —
+ *  is "nothing to say", keep the last). Never about the focused PR, which the
+ *  legacy events above report; never threads, which are read for the focused
+ *  PR alone. */
+export interface PrSetEntryChangedEvent {
+  agent_id: string;
+  subdir: string | null;
+  entry: PrSetEntry;
 }
 
 /** One agent-repo's entry in the app-wide sidebar sweep. `state`/`checks` are
