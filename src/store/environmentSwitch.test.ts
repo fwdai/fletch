@@ -248,7 +248,8 @@ describe("switchEnvironment", () => {
     // Blank until the probe answers, rather than the Mac's login held over.
     expect(store.getState().github).toBeNull();
     // The PR seed waits for that login, since the read is GitHub-gated, and
-    // re-checks closed PRs: nothing else would see one reopen.
+    // re-checks closed PRs immediately rather than waiting for the host's slow
+    // safety-net pass.
     const seed = vi.mocked(store.getState().loadAllPrStatus);
     expect(seed).toHaveBeenCalledOnce();
     expect(seed).toHaveBeenCalledWith(true);

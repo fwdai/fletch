@@ -1,4 +1,4 @@
-//! Host-side watch over every open PR, for the ship loop and for every client.
+//! Host-side watch over every PR, for the ship loop and for every client.
 //!
 //! Clients do not poll GitHub: they seed from one read (`get_all_pr_status`,
 //! and `get_pr_live` / `get_pr_threads` for a PR on screen with nothing
@@ -9,10 +9,11 @@
 //! ([`resolve_all_pr_status`] — one GraphQL query per 50 PRs across every PR of
 //! every checkout, snapshot persistence and the backoff gate included), every
 //! other tick with each checkout's focused open PR's review threads folded
-//! into that same query, diffs each PR's read against what it last saw, and
-//! emits one event per change for the remote forwarder and the push triggers
-//! (`remote::push`) to act on. The tick makes no other GitHub call: a checkout
-//! opening more PRs grows the query, never the request count.
+//! into that same query. Closed PRs normally come from the snapshot, but every
+//! five minutes the host reads them live too so a reopen is discovered without
+//! a client seed. Each result is diffed against what the watcher last saw and
+//! emitted for the remote forwarder and push triggers (`remote::push`) to act
+//! on. A checkout opening more PRs grows the query, never the request count.
 //!
 //! Which event depends on the PR. The checkout's *focused* PR gets the three
 //! that predate PR sets — `pr:state_changed`, `pr:checks_changed`,
@@ -29,7 +30,7 @@
 
 use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
 use tokio::sync::Notify;
@@ -42,6 +43,13 @@ use super::session_sync::resolve_all_pr_status;
 use super::Supervisor;
 
 const TICK: Duration = Duration::from_secs(60);
+/// Closed PRs are normally snapshots, but GitHub allows reopening. Recheck
+/// them slowly on the host so every client converges even with no window open.
+const CLOSED_REVERIFY_EVERY: Duration = Duration::from_secs(5 * 60);
+
+fn closed_reverify_due(last: Option<Instant>, now: Instant) -> bool {
+    last.map_or(true, |at| now.duration_since(at) >= CLOSED_REVERIFY_EVERY)
+}
 
 fn signal() -> &'static Notify {
     static SIGNAL: OnceLock<Notify> = OnceLock::new();
@@ -223,24 +231,31 @@ fn publish(
     }
 }
 
-// Background watch over every open PR. Reads once now (to seed), then every
-// minute; threads every other tick.
+// Background watch over every PR. Reads open PRs once a minute, threads every
+// other tick, and closed PRs once every five minutes so a reopen is discovered
+// without any client polling. The first pass includes closed PRs too.
 pub fn spawn(ctx: Arc<EngineCtx>, supervisor: Arc<Supervisor>) {
     crate::host::spawn(async move {
         let last: Arc<Last> = Arc::new(Mutex::new(HashMap::new()));
         let mut ticks: u64 = 0;
+        let mut last_closed_reverify: Option<Instant> = None;
         loop {
             let with_threads = ticks % 2 == 1;
+            let reverify_closed = closed_reverify_due(last_closed_reverify, Instant::now());
             ticks += 1;
             let pass = {
                 let (ctx, supervisor, last) = (ctx.clone(), supervisor.clone(), last.clone());
-                crate::host::spawn(
-                    async move { tick(&ctx, &supervisor, &last, with_threads).await },
-                )
+                crate::host::spawn(async move {
+                    tick(&ctx, &supervisor, &last, with_threads, reverify_closed).await
+                })
                 .await
             };
-            if let Err(e) = pass {
-                tracing::error!(error = %e, "pr watch tick panicked — watching continues");
+            match pass {
+                Ok(()) if reverify_closed => last_closed_reverify = Some(Instant::now()),
+                Ok(()) => {}
+                Err(e) => {
+                    tracing::error!(error = %e, "pr watch tick panicked — watching continues")
+                }
             }
             tokio::select! {
                 _ = tokio::time::sleep(TICK) => {}
@@ -254,8 +269,15 @@ pub fn spawn(ctx: Arc<EngineCtx>, supervisor: Arc<Supervisor>) {
 /// ticks, diffed PR by PR. A PR that merged through any other path comes back
 /// in the same map as `merged` (served from its snapshot), so the diff's state
 /// path announces it once and forgets it — no bookkeeping of its own.
-async fn tick(ctx: &Arc<EngineCtx>, supervisor: &Arc<Supervisor>, last: &Last, with_threads: bool) {
-    let statuses = resolve_all_pr_status(&supervisor.workspace, false, with_threads).await;
+async fn tick(
+    ctx: &Arc<EngineCtx>,
+    supervisor: &Arc<Supervisor>,
+    last: &Last,
+    with_threads: bool,
+    reverify_closed: bool,
+) {
+    let statuses =
+        resolve_all_pr_status(&supervisor.workspace, reverify_closed, with_threads).await;
     for (key, status) in statuses {
         // The inverse of `pr_map_key`: no `::` is the primary repo.
         let (agent_id, subdir) = match key.split_once("::") {
@@ -295,6 +317,20 @@ mod tests {
     use super::*;
     use crate::github::{MergeableState, PrComment};
     use crate::supervisor::pr_map_key;
+
+    #[test]
+    fn closed_prs_are_reverified_on_boot_and_then_every_five_minutes() {
+        let start = Instant::now();
+        assert!(closed_reverify_due(None, start));
+        assert!(!closed_reverify_due(
+            Some(start),
+            start + CLOSED_REVERIFY_EVERY - Duration::from_millis(1)
+        ));
+        assert!(closed_reverify_due(
+            Some(start),
+            start + CLOSED_REVERIFY_EVERY
+        ));
+    }
 
     fn pr(status: PrStatus) -> PrState {
         PrState {

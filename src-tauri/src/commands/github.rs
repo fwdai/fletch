@@ -211,8 +211,9 @@ pub async fn get_pr_threads(
 /// PR state + CI for every repo with a recorded PR across every agent, in one
 /// batched round-trip: the sidebar's seed, read on launch, environment switch,
 /// reconnect and window focus. Between those the host's PR watcher
-/// (`supervisor::pr_watch`) sweeps the same resolver once a minute and emits
-/// `pr:state_changed` / `pr:checks_changed` on change, so no client polls it.
+/// (`supervisor::pr_watch`) sweeps open PRs once a minute, rechecks closed PRs
+/// every five minutes, and emits `pr:state_changed` / `pr:checks_changed` on
+/// change, so no client polls it.
 /// The remote op of the same name answers the same thing (docs/remote-protocol.md).
 ///
 /// Keyed by the frontend's `checkoutKey` convention: the agent's primary repo

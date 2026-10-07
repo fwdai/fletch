@@ -119,7 +119,9 @@ export interface GitSlice {
    *  sidebar badges are right without opening a panel. A seed, not a poll —
    *  run on GitHub connecting, environment switch / reconnect and window
    *  focus; between those the host watcher's `pr:*` events keep it current.
-   *  `reverifyClosed` asks for a live look at closed PRs (they can reopen). */
+   *  `reverifyClosed` asks for an immediate live look at closed PRs (launch,
+   *  reconnect and environment switch); the host watcher also does that on a
+   *  slow cadence, so a reopen converges with no client at all. */
   loadAllPrStatus: (reverifyClosed?: boolean) => Promise<void>;
   fetchPrChecks: (agentId: string, subdir?: string) => Promise<void>;
   /** PR state + CI in one backend pass over ETag-conditional REST, both from
@@ -339,8 +341,10 @@ function mirrorOf(e: DelegationEvent): Delegation | null {
   };
 }
 
-/** The fleet PR seed in flight, and the environment it is reading. */
-let allPrStatusLoad: { env: string; done: Promise<void> } | null = null;
+/** The fleet PR seed in flight, the environment it is reading and whether it
+ *  includes the stronger closed-PR recheck. A strong request joining a weak
+ *  one chains its own read; it must never be silently satisfied by less work. */
+let allPrStatusLoad: { env: string; reverifyClosed: boolean; done: Promise<void> } | null = null;
 
 /** `next` as a checkout's PR set, each PR keeping its last-known checks where
  *  `next` has nothing to say about them (`checks: null`) — the same rule the
@@ -499,13 +503,23 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
       return Promise.resolve();
     }
     // GitHub connecting, an environment switch and a focus can all ask at once
-    // (a switch flips `github` as it re-probes); one read answers them all.
+    // (a switch flips `github` as it re-probes). Equal or stronger work answers
+    // a caller directly. A closed-PR recheck joining a snapshot-only read must
+    // run after it: returning the weaker promise is the race that left reopened
+    // PRs displayed as closed indefinitely.
     const envId = activeEnvironmentId();
-    if (allPrStatusLoad?.env === envId) return allPrStatusLoad.done;
-    const done = readAllPrStatus(set, reverifyClosed).finally(() => {
+    const current = allPrStatusLoad?.env === envId ? allPrStatusLoad : null;
+    if (current && (current.reverifyClosed || !reverifyClosed)) return current.done;
+    // A queued upgrade belongs to the environment that requested it. If the
+    // user switches before the weaker read settles, the entered environment's
+    // own load is authoritative; never retarget this delayed call to it.
+    const read = () =>
+      activeEnvironmentId() === envId ? readAllPrStatus(set, reverifyClosed) : Promise.resolve();
+    const pending = current ? current.done.then(read) : read();
+    const done = pending.finally(() => {
       if (allPrStatusLoad?.done === done) allPrStatusLoad = null;
     });
-    allPrStatusLoad = { env: envId, done };
+    allPrStatusLoad = { env: envId, reverifyClosed, done };
     return done;
   },
 

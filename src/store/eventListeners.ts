@@ -767,6 +767,9 @@ export const setupResync = (set: AppSet, get: AppGet) => {
     try {
       // The PR badges too: they follow the host watcher's events, and an event
       // missed while the window was in the background has no other way back.
+      // The host watcher periodically re-verifies closed PRs too, so this cheap
+      // snapshot seed still recovers a reopen even if this client missed its
+      // event; launch, reconnect and environment switch ask for a live look.
       await Promise.all([
         refreshWorkspace(set),
         refreshOffSidebarAgents(),
