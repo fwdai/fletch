@@ -527,14 +527,24 @@ export class MockHost {
         if (token.length !== MOCK_PAIRING_TOKEN_LEN) throw new Error("invalid pairing token");
         this.authed = true;
         this.later(() => this.bootstrap(), 400);
-        return { deviceId: "mock-device", host: fx.hostInfo, protocol: fx.protocol };
+        return {
+          deviceId: "mock-device",
+          host: fx.hostInfo,
+          relay: fx.relay,
+          protocol: fx.protocol,
+        };
       }
       case "hello": {
         // Device authentication is the handshake, which the mock socket
         // stands in for: anything that gets this far is a known device.
         this.authed = true;
         this.later(() => this.bootstrap(), 400);
-        return { host: fx.hostInfo, workspace: this.visibleWorkspace(), protocol: fx.protocol };
+        return {
+          host: fx.hostInfo,
+          workspace: this.visibleWorkspace(),
+          relay: fx.relay,
+          protocol: fx.protocol,
+        };
       }
       case "get_workspace":
         return this.visibleWorkspace();

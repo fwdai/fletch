@@ -12,6 +12,7 @@ import { MOCK_HOST_KEY } from "../src/remote/mock";
 import {
   prChecks as fixturePrChecks,
   prStates as fixturePrStates,
+  relay as fixtureRelay,
   PENDING_REQUEST_ID,
   PENDING_TOOL_USE_ID,
   PM_CUSTOM_AGENT_ID,
@@ -76,15 +77,11 @@ describe("relay setting", () => {
     expect(after.theme).toBe("dark");
   });
 
-  it("can be added later without re-pairing, and lands on the held target", async () => {
-    await state().setRelay(" wss://relay.test ");
-    expect(state().relay).toBe("wss://relay.test");
-    // It applies from the next attempt on; nothing reconnects here.
-    expect(client.target?.relay).toBe("wss://relay.test");
-    expect(state().connection).toBe("connected");
-    await state().setRelay(null);
-    expect(state().relay).toBeNull();
-    expect(client.target?.relay).toBeUndefined();
+  it("follows the relay the host answers, with no setting of its own", () => {
+    // The mock was dialled with no relay; the handshake supplied it.
+    expect(state().relay).toBe(fixtureRelay);
+    expect(client.target?.relay).toBe(fixtureRelay);
+    expect("setRelay" in state()).toBe(false);
   });
 });
 

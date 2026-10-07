@@ -112,9 +112,9 @@ export function PairScreen() {
         {busy ? "Pairing…" : error ? "Try again" : "Pair"}
       </button>
       <div className="hint">
-        The code is valid for five minutes and can be used once. The link is end-to-end encrypted,
-        and the app talks to your Mac directly on your network — a pasted pairing link can also
-        bring a relay URL for when you are away from it.
+        The code is valid for five minutes and can be used once. The link is end-to-end encrypted.
+        The app talks to your Mac directly on your network, and reaches it from anywhere else when
+        “Reach this Mac from anywhere” is on in its settings.
       </div>
     </div>
   );

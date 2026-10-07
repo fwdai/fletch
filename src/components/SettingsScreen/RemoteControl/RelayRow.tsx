@@ -15,8 +15,8 @@ const PILL: Record<RelayState, string> = {
  *
  *  The relay is a dumb pipe: it routes on this Mac's public key and sees only
  *  the same ciphertext the LAN path carries, so turning it on adds reach and
- *  not trust — hence one switch, the URL for anyone running their own, and the
- *  link's state in plain words. */
+ *  not trust — hence one switch and the link's state in plain words. Which
+ *  relay is `RelayUrlRow`'s, under Advanced. */
 export function RelayRow({
   relay,
   disabled,
@@ -28,6 +28,32 @@ export function RelayRow({
   onSet: (url: string | null) => void;
 }) {
   const on = relay.url !== null;
+  return (
+    <SetRow
+      title="Reach this Mac from anywhere"
+      sub="Lets your phone reach this Mac off your network via a relay. The relay only sees encrypted bytes."
+    >
+      {on && (
+        <span className="set-relay-pill text-sm" data-state={relay.state}>
+          {relay.state === "error" ? (relay.error ?? PILL.error) : PILL[relay.state]}
+        </span>
+      )}
+      <SetToggle on={on} disabled={disabled} onClick={() => onSet(on ? null : DEFAULT_RELAY_URL)} />
+    </SetRow>
+  );
+}
+
+/** The relay URL, for anyone running their own. Paired devices follow it on
+ *  their next connection, so this is the only place it is set. */
+export function RelayUrlRow({
+  relay,
+  disabled,
+  onSet,
+}: {
+  relay: RelayStatus;
+  disabled?: boolean;
+  onSet: (url: string) => void;
+}) {
   const [draft, setDraft] = useState(relay.url ?? DEFAULT_RELAY_URL);
 
   // The host is the source of truth for the URL (it normalizes what it stores,
@@ -43,40 +69,26 @@ export function RelayRow({
   };
 
   return (
-    <>
-      <SetRow
-        title="Reach this Mac from anywhere"
-        sub="Lets your phone reach this Mac off your network via a relay. The relay only sees encrypted bytes."
-      >
-        <SetToggle
-          on={on}
-          disabled={disabled}
-          onClick={() => onSet(on ? null : DEFAULT_RELAY_URL)}
-        />
-      </SetRow>
-
-      {on && (
-        <SetRow title="Relay" sub="Point this at your own relay if you run one.">
-          <input
-            className="set-relay-url mono text-sm"
-            value={draft}
-            spellCheck={false}
-            autoCapitalize="off"
-            autoCorrect="off"
-            disabled={disabled}
-            aria-label="Relay URL"
-            onChange={(e) => setDraft(e.target.value)}
-            onBlur={commit}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") commit();
-              else if (e.key === "Escape") setDraft(relay.url ?? DEFAULT_RELAY_URL);
-            }}
-          />
-          <span className="set-relay-pill text-sm" data-state={relay.state}>
-            {relay.state === "error" ? (relay.error ?? PILL.error) : PILL[relay.state]}
-          </span>
-        </SetRow>
-      )}
-    </>
+    <SetRow
+      title="Relay server"
+      sub="Point this at your own relay if you run one. Paired devices pick it up on their next connection. Push notifications only work through Fletch's relay."
+      align="start"
+    >
+      <input
+        className="set-relay-url mono text-sm"
+        value={draft}
+        spellCheck={false}
+        autoCapitalize="off"
+        autoCorrect="off"
+        disabled={disabled}
+        aria-label="Relay URL"
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") commit();
+          else if (e.key === "Escape") setDraft(relay.url ?? DEFAULT_RELAY_URL);
+        }}
+      />
+    </SetRow>
   );
 }

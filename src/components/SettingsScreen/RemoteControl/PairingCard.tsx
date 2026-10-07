@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import type { PairingInvite } from "@/api";
 import { Button } from "@/components/ui/Button";
 import { CopyButton } from "@/components/ui/CopyButton";
+import { parsePairUrl } from "@/remote/pairing";
 import { presetLabel } from "./presets";
 
 const QR_SIZE = 148;
@@ -29,18 +30,15 @@ function useCountdown(iso: string): number {
  *  do. Single use and five minutes, so the countdown is part of the affordance
  *  rather than decoration.
  *
- *  The host ID under it is this Mac's public key. The QR carries it, so a
- *  scanned pairing authenticates the host outright; a hand-typed one pins
- *  whatever key it meets, and this is the string to check it against. */
+ *  Manual entry takes the address as well as the code, so the address is shown
+ *  here — the one moment anyone needs it — exactly as the link carries it. */
 export function PairingCard({
   invite,
-  hostId,
   lanOnly,
   onRegenerate,
   onDismiss,
 }: {
   invite: PairingInvite;
-  hostId?: string;
   /** No relay link is up, so the link carries no relay and the phone can
    *  only reach this Mac from the same network. */
   lanOnly?: boolean;
@@ -50,15 +48,21 @@ export function PairingCard({
   const left = useCountdown(invite.expiresAt);
   const expired = left === 0;
   const mmss = `${Math.floor(left / 60)}:${String(left % 60).padStart(2, "0")}`;
+  const link = parsePairUrl(invite.url);
 
   return (
     <div className="set-pair" data-expired={expired ? "1" : "0"}>
       <div className="set-pair-main">
         <div className="set-pair-code mono">{invite.token}</div>
+        {!expired && link && (
+          <div className="set-pair-addr mono text-sm">
+            {link.host}:{link.port}
+          </div>
+        )}
         <div className="set-pair-copy text-sm">
           {expired
             ? "This code has expired. Generate a new one."
-            : `Enter this code in Fletch on your phone, or scan the code. It grants ${presetLabel(
+            : `Enter this address and code in Fletch on your phone, or scan the QR code. It grants ${presetLabel(
                 invite.preset,
               )} access.`}
         </div>
@@ -83,7 +87,6 @@ export function PairingCard({
             Done
           </Button>
         </div>
-        {hostId && <div className="set-pair-host mono text-xs">host {hostId}</div>}
       </div>
       {!expired && (
         <div className="set-pair-qr">
