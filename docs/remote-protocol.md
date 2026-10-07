@@ -187,7 +187,10 @@ repo); anyone can run their own and point both apps at it.
 - **Base URL.** Host setting `remote.relay_url`; absent or empty means no
   relay. The desktop's suggested default is `wss://relay.fletch.sh`. The
   pairing link carries the URL as `relay=<url-encoded>` when set, and the phone
-  persists it with the host.
+  persists it with the host. The host also answers it in every `pair` and
+  `hello` result (see "Authentication and pairing"), so a device paired by hand
+  learns it on its first connection and every device follows a change made on
+  the Mac from its next one. The host is the only place it is set.
 - **Endpoints.** `wss://<relay>/v1/host/<hostId>` for the Mac,
   `wss://<relay>/v1/device/<hostId>` for a phone. `hostId` is the host public
   key, base64url. Anything else is `404`.
@@ -284,8 +287,10 @@ repo); anyone can run their own and point both apps at it.
   holds both the relay URL and the host key, since the key is the route. A host-key mismatch on either path
   stops the list at once and is not retried: an impostor must not be able to
   steer the phone onto the other path. The relay URL arrives in the pairing
-  link and can be added or changed later in the phone's host sheet without
-  re-pairing. The Noise handshake and everything after it are identical on
+  link and is refreshed from the `relay` field of every `pair` and `hello`
+  result, so it follows the Mac's setting without re-pairing. A device that is
+  off the Mac's network when the URL changes keeps dialling the old relay until
+  it next connects over the LAN. The Noise handshake and everything after it are identical on
   both paths, so the app above the transport cannot tell which one it is on
   and does not need to.
 
@@ -500,8 +505,8 @@ fletch://pair?host=<host public key, base64url>&addr=<ip>:<port>&relay=<url-enco
 the Mac. `addr` is the best LAN address to dial right now; `relay` is present
 only when the host has a relay configured (see "Relay"). `host` stays the
 identity whichever path is used. A hand-typed pairing supplies only `addr` and
-`token`, and pins the host key it meets (see "Secure channel"); it cannot use
-the relay until a later QR pairing or manual entry supplies the relay URL.
+`token`, and pins the host key it meets (see "Secure channel"); it learns the
+relay URL from the `pair` result instead.
 
 Client request (first encrypted frame after the handshake):
 
@@ -512,8 +517,13 @@ Client request (first encrypted frame after the handshake):
 Result:
 
 ```json
-{ "deviceId": "uuid", "host": { "name": "Alex's MacBook Pro", "appVersion": "0.7.23", "os": "macos" }, "protocol": { "version": 2, "ops": [ … ], "events": [ … ], "features": [] } }
+{ "deviceId": "uuid", "host": { "name": "Alex's MacBook Pro", "appVersion": "0.7.23", "os": "macos" }, "relay": "wss://relay.fletch.sh", "protocol": { "version": 2, "ops": [ … ], "events": [ … ], "features": [] } }
 ```
+
+`relay` is the host's relay base URL (`remote.relay_url`), or `null` when it
+has none. It is the device's copy to keep: a string replaces the one the device
+holds and `null` clears it. A host older than the field sends no `relay` key,
+and a device keeps what it has — absent and `null` are different answers.
 
 `protocol` is what this host answers *this device* — `ops` is already narrowed
 to the device's scopes, so a client needs no new gate (see "Scopes" and
@@ -541,12 +551,12 @@ forwarding events. The host does NOT push a snapshot; the client issues
 Result:
 
 ```json
-{ "host": { "name": "…", "appVersion": "…", "os": "macos" }, "workspace": <Workspace | null>, "protocol": { "version": 2, "ops": [ … ], "events": [ … ], "features": [] } }
+{ "host": { "name": "…", "appVersion": "…", "os": "macos" }, "workspace": <Workspace | null>, "relay": "wss://relay.fletch.sh", "protocol": { "version": 2, "ops": [ … ], "events": [ … ], "features": [] } }
 ```
 
 The host looks up the handshake's remote static key in `devices.json`; a key
 it does not know closes with `4003`. `workspace` is the exact `get_workspace`
-result. `protocol` is the same descriptor `pair` answers with, narrowed to this
+result. `relay` is as on `pair`. `protocol` is the same descriptor `pair` answers with, narrowed to this
 device's scopes (see "Scopes" and "Compatibility"). After the response the host starts forwarding events for this
 connection.
 

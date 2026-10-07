@@ -299,6 +299,12 @@ impl RemoteState {
         &self.pairing
     }
 
+    /// The configured relay base URL, as `set_relay` normalized it. The URL is
+    /// the setting, not the link: it is answered whether or not the link is up.
+    pub fn relay_url(&self) -> Option<String> {
+        self.inner.lock().relay_url.clone()
+    }
+
     /// Start listening on `port` (0 binds an ephemeral one, which the socket
     /// tests use), and bring the relay link up if a URL is configured. Returns
     /// the bound port. Idempotent: an already-running listener is left alone.

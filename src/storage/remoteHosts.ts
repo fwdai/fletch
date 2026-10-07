@@ -20,8 +20,8 @@ export interface SavedHost {
   /** `<ip-or-name>:<port>`, exactly as the pairing link carried it. Parsed back
    *  with `parseAddress`, so a bare address (no port) is accepted too. */
   addr: string;
-  /** Relay base URL, when the host had one configured at pairing. Absent means
-   *  the LAN address is the only way in. */
+  /** Relay base URL, as the host last answered it. Absent means the LAN
+   *  address is the only way in. */
   relay?: string;
   /** RFC3339. Shown in the pane; nothing branches on it. */
   pairedAt: string;
@@ -58,6 +58,20 @@ export async function saveHost(host: SavedHost): Promise<SavedHost[]> {
   const next = [...(await loadHosts()).filter((h) => h.hostKey !== host.hostKey), host];
   await setSetting(REMOTE_HOSTS_KEY, next);
   return next;
+}
+
+/** Change fields on the record for `hostKey`. A host with no record (forgotten,
+ *  or not saved yet because its pairing is still answering) is left alone. */
+export async function updateHost(
+  hostKey: string,
+  patch: Partial<Omit<SavedHost, "hostKey">>,
+): Promise<void> {
+  const hosts = await loadHosts();
+  if (!hosts.some((h) => h.hostKey === hostKey)) return;
+  await setSetting(
+    REMOTE_HOSTS_KEY,
+    hosts.map((h) => (h.hostKey === hostKey ? { ...h, ...patch } : h)),
+  );
 }
 
 /** Drop the record for `hostKey`. Returns the list as saved. */
