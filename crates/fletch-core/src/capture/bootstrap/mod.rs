@@ -72,7 +72,9 @@ pub fn stamp(commit: &str) -> Stamp {
 
 /// Record every module whose slug the project has never had, as a `module`
 /// entity anchored at its directory, and link each new one `part_of` its
-/// parent. A slug already there is skipped, not revised.
+/// parent. A slug already there is skipped, not revised. A parent that was
+/// already there is linked to only when it is an active module: a feature
+/// or topic that happens to share the directory's slug is not that directory.
 pub fn apply(
     service: &ContextService,
     project: &Project,
@@ -85,7 +87,6 @@ pub fn apply(
             .entities
             .iter()
             .find(|e| e.slug.eq_ignore_ascii_case(slug))
-            .map(|e| (e.id.clone(), e.status))
     };
     let mut ids: Vec<(String, Id)> = Vec::new();
     let mut applied = Applied::default();
@@ -110,14 +111,25 @@ pub fn apply(
         applied.created.push(module.slug.clone());
 
         let parent = module.parent.as_deref().and_then(|slug| {
-            ids.iter()
+            let created = ids
+                .iter()
                 .find(|(s, _)| s == slug)
-                .map(|(_, id)| id.clone())
-                .or_else(|| {
-                    known(slug)
-                        .filter(|(_, status)| *status == EntityStatus::Active)
-                        .map(|(id, _)| id)
-                })
+                .map(|(_, id)| id.clone());
+            created.or_else(|| match known(slug) {
+                Some(e) if e.status == EntityStatus::Active && e.kind == EntityKind::Module => {
+                    Some(e.id.clone())
+                }
+                other => {
+                    tracing::debug!(
+                        project = %project.id,
+                        module = %module.slug,
+                        parent = slug,
+                        found = ?other.map(|e| (e.kind, e.status)),
+                        "context bootstrap: parent is not an active module; no part_of edge"
+                    );
+                    None
+                }
+            })
         });
         if let Some(parent) = parent {
             service.link(

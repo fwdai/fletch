@@ -193,6 +193,47 @@ async fn existing_slugs_are_skipped_not_revised() {
     assert!(!g.relations.iter().any(|r| r.from == child.id));
 }
 
+/// A feature that holds a parent directory's slug is not that directory: the
+/// children are recorded, unlinked.
+#[tokio::test]
+async fn a_parent_slug_held_by_another_kind_gets_no_edge() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = repo(dir.path()).await;
+    let (service, _db) = service();
+    let feature = service
+        .record_entity(
+            &project(),
+            EntityInput {
+                slug: "core".into(),
+                kind: EntityKind::Feature,
+                name: "Core".into(),
+                ..Default::default()
+            },
+            Stamp {
+                author: Author::user(),
+                source: Source::ui(),
+                provenance: Provenance::default(),
+            },
+        )
+        .unwrap();
+
+    let skeleton = derive(&root).await.unwrap();
+    apply(&service, &project(), &skeleton, stamp(&skeleton.commit)).unwrap();
+
+    let g = graph(&service);
+    assert_eq!(g.entity(&feature).unwrap().kind, EntityKind::Feature);
+    for child in ["core-store", "core-rpc"] {
+        let child = entity(&g, child);
+        assert!(
+            !g.relations.iter().any(|r| r.from == child.id),
+            "{} was linked",
+            child.slug
+        );
+    }
+    assert!(!g.relations.iter().any(|r| r.to == feature));
+    assert!(part_of(&g, "src-components", "src"));
+}
+
 /// Fletch's own repository: every crate and app directory, with no input
 /// but the tree. Skipped outside a git checkout (a source tarball).
 #[tokio::test]
