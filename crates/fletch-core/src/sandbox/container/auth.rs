@@ -144,14 +144,45 @@ fn credentials_config_dir(config_dir_env: Option<&OsStr>, home: Option<&Path>) -
 /// This is the container *launch* path, so it does read the Keychain password:
 /// the token has to be handed to the CLI inside the container. Status/probe
 /// callers must use [`host_login_present`] instead.
-pub fn resolve() -> ContainerAuth {
+///
+/// `account_dir` is the managed account (`agent::accounts`) the launch runs
+/// under, `None` for the default. An account's chain is only its own login —
+/// the Keychain item claude keeps for that dir, then its `.credentials.json` —
+/// because the stored setup-token and the shell's auth vars sign in the default
+/// account; taking either would run the agent as someone else. Only the proxy
+/// endpoint still rides along.
+pub fn resolve(account_dir: Option<&Path>) -> ContainerAuth {
     let (env, credentials_file) = chain_inputs();
-    resolve_from(
-        keychain_token(),
-        stored_token(),
+    let Some(dir) = account_dir else {
+        return resolve_from(
+            keychain_token(KEYCHAIN_SERVICE),
+            stored_token(),
+            env.as_ref(),
+            credentials_file,
+        );
+    };
+    account_chain(
+        keychain_token(&claude_keychain_service(Some(dir))),
         env.as_ref(),
-        credentials_file,
+        credentials_file_usable(std::fs::read(dir.join(".credentials.json")).ok().as_deref()),
     )
+}
+
+/// A managed account's chain, pure over its inputs: [`resolve_from`] with no
+/// stored token and only the proxy endpoints of the shell env, so neither of
+/// the default account's fallbacks can stand in for the account's own login.
+fn account_chain(
+    keychain: Option<String>,
+    shell_env: Option<&HashMap<String, String>>,
+    credentials_file: bool,
+) -> ContainerAuth {
+    let proxy_only: Option<HashMap<String, String>> = shell_env.map(|env| {
+        env.iter()
+            .filter(|(k, _)| PROXY_RIDE_ALONG.contains(&k.as_str()))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect()
+    });
+    resolve_from(keychain, None, proxy_only.as_ref(), credentials_file)
 }
 
 /// Whether the *host* has a usable claude login. Drives the providers settings'
@@ -210,13 +241,15 @@ fn chain_inputs() -> (Option<HashMap<String, String>>, bool) {
 /// there's no readable/usable login (Keychain locked or empty, non-macOS host).
 ///
 /// `-w` is what makes this *read the password*, which can raise a Keychain
-/// access prompt — acceptable once per container launch, not on a polling
-/// probe. Call this only from [`resolve`]; presence questions go to
+/// access prompt — acceptable once per container launch or explicit user
+/// action, never on a polling probe. Two callers, both of that kind:
+/// [`resolve`] (a container launch) and [`oauth_access_token`] (the Refresh
+/// button of an account's limits). Presence questions go to
 /// [`crate::keychain::item_present`].
 #[cfg(target_os = "macos")]
-fn keychain_token() -> Option<String> {
+fn keychain_token(service: &str) -> Option<String> {
     let out = std::process::Command::new("security")
-        .args(["find-generic-password", "-s", KEYCHAIN_SERVICE, "-w"])
+        .args(["find-generic-password", "-s", service, "-w"])
         .output()
         .ok()?;
     if !out.status.success() {
@@ -226,8 +259,33 @@ fn keychain_token() -> Option<String> {
 }
 
 #[cfg(not(target_os = "macos"))]
-fn keychain_token() -> Option<String> {
+fn keychain_token(_service: &str) -> Option<String> {
     None
+}
+
+/// The OAuth access token of a claude login, for the one request that needs
+/// it outside a launch: the account's limits, read from Claude's usage
+/// endpoint when the user presses Refresh (`agent::limits::oauth_usage`).
+/// Never call it from a polling path — it reads the Keychain password.
+///
+/// `account_dir` is a managed account's config dir, `None` for the default.
+/// Same sources as that account's launch chain, and only those: its Keychain
+/// item, then its `.credentials.json`. Never the setup-token or the shell's
+/// auth vars — they are API credentials of the default account, not a login
+/// whose plan has limits to read. The caller must not log or return the
+/// token.
+pub(crate) fn oauth_access_token(account_dir: Option<&Path>) -> Option<String> {
+    if let Some(token) = keychain_token(&claude_keychain_service(account_dir)) {
+        return Some(token);
+    }
+    let dir = match account_dir {
+        Some(dir) => dir.to_path_buf(),
+        None => credentials_config_dir(
+            std::env::var_os("CLAUDE_CONFIG_DIR").as_deref(),
+            dirs::home_dir().as_deref(),
+        )?,
+    };
+    usable_oauth_token(std::fs::read(dir.join(".credentials.json")).ok().as_deref())
 }
 
 /// Fold the app's own process environment together with the login-shell probe
@@ -258,8 +316,25 @@ fn merge_auth_env(
 
 /// Whether `.credentials.json` carries a credential the container can
 /// authenticate with — see [`usable_oauth_token`] for the usability bar.
-fn credentials_file_usable(contents: Option<&[u8]>) -> bool {
+pub(crate) fn credentials_file_usable(contents: Option<&[u8]>) -> bool {
     usable_oauth_token(contents).is_some()
+}
+
+/// The Keychain service claude keeps a login under for `config_dir`: the plain
+/// service for the default `~/.claude`, else the service plus the first eight
+/// hex chars of the SHA-256 of the directory path — how claude keeps one login
+/// per `CLAUDE_CONFIG_DIR`. The path is hashed exactly as the env var carries
+/// it, so callers pass the same string they set.
+pub(crate) fn claude_keychain_service(config_dir: Option<&Path>) -> String {
+    use sha2::{Digest, Sha256};
+    match config_dir {
+        None => KEYCHAIN_SERVICE.to_string(),
+        Some(dir) => {
+            let digest = Sha256::digest(dir.as_os_str().as_encoded_bytes());
+            let hex: String = digest.iter().take(4).map(|b| format!("{b:02x}")).collect();
+            format!("{KEYCHAIN_SERVICE}-{hex}")
+        }
+    }
 }
 
 /// Extract a container-usable OAuth access token from a credentials JSON blob —
@@ -357,7 +432,7 @@ pub enum ContainerAuthStatus {
 
 /// Which chain step is active right now (settings UI polling).
 pub fn status() -> ContainerAuthStatus {
-    match resolve() {
+    match resolve(None) {
         ContainerAuth::Resolved { source, .. } => match source {
             AuthSource::Keychain => ContainerAuthStatus::Keychain,
             AuthSource::StoredToken => ContainerAuthStatus::StoredToken,
@@ -606,6 +681,78 @@ mod tests {
         ));
     }
 
+    /// An account signs in with its own Keychain item or credentials file only:
+    /// the shell's keys and the stored token belong to the default account.
+    #[test]
+    fn an_account_chain_ignores_the_default_accounts_fallbacks() {
+        let shell = shell_env(&[
+            ("ANTHROPIC_API_KEY", "sk-ant-api-key"),
+            ("ANTHROPIC_BASE_URL", "https://proxy"),
+        ]);
+        assert!(matches!(
+            account_chain(None, Some(&shell), false),
+            ContainerAuth::Unavailable
+        ));
+
+        let (env, source) = resolved(account_chain(
+            Some("sk-ant-oat-account".into()),
+            Some(&shell),
+            true,
+        ));
+        assert_eq!(source, AuthSource::Keychain);
+        assert_eq!(
+            env,
+            vec![
+                (
+                    "CLAUDE_CODE_OAUTH_TOKEN".to_string(),
+                    "sk-ant-oat-account".to_string()
+                ),
+                (
+                    "ANTHROPIC_BASE_URL".to_string(),
+                    "https://proxy".to_string()
+                ),
+            ]
+        );
+
+        let (env, source) = resolved(account_chain(None, Some(&shell), true));
+        assert_eq!(source, AuthSource::CredentialsFile);
+        assert_eq!(
+            env,
+            vec![(
+                "ANTHROPIC_BASE_URL".to_string(),
+                "https://proxy".to_string()
+            )]
+        );
+    }
+
+    /// The host-side launch strips the same vars this chain treats as a
+    /// default-account login, so a managed account is isolated the same way
+    /// under every sandbox engine.
+    #[test]
+    fn host_launches_strip_the_vars_this_chain_counts_as_a_login() {
+        let mut chain = SHELL_KEY_VARS.to_vec();
+        chain.sort_unstable();
+        let mut host = crate::agent::accounts::ambient_credential_vars("claude").to_vec();
+        host.sort_unstable();
+        assert_eq!(chain, host);
+    }
+
+    /// The suffix is the first eight hex chars of SHA-256 over the directory
+    /// path as the env var carries it — verified against a live Keychain
+    /// item written by claude 2.1.x for a custom `CLAUDE_CONFIG_DIR`.
+    #[test]
+    fn keychain_service_is_suffixed_per_config_dir() {
+        assert_eq!(claude_keychain_service(None), "Claude Code-credentials");
+        assert_eq!(
+            claude_keychain_service(Some(Path::new("/cfg/eve"))),
+            "Claude Code-credentials-b634a9ea"
+        );
+        assert_eq!(
+            claude_keychain_service(Some(Path::new("/Users/u/.fletch/accounts/claude/work"))),
+            "Claude Code-credentials-98eed843"
+        );
+    }
+
     #[test]
     fn credentials_config_dir_honors_claude_config_dir() {
         let home = Path::new("/Users/u");
@@ -640,6 +787,24 @@ mod tests {
         assert!(credentials_file_usable(Some(
             br#"{"claudeAiOauth":{"accessToken":"sk-ant-oat-x","refreshToken":"r","expiresAt":1}}"#
         )));
+    }
+
+    /// A managed account's token comes from its own directory; a directory
+    /// with no login yields none. (No Keychain item exists for a temp dir, so
+    /// the Keychain step misses without a prompt.)
+    #[test]
+    fn oauth_access_token_reads_the_accounts_own_credentials_file() {
+        let td = tempfile::tempdir().unwrap();
+        assert_eq!(oauth_access_token(Some(td.path())), None);
+        std::fs::write(
+            td.path().join(".credentials.json"),
+            br#"{"claudeAiOauth":{"accessToken":"sk-ant-oat-acct","expiresAt":1893456000000}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            oauth_access_token(Some(td.path())).as_deref(),
+            Some("sk-ant-oat-acct")
+        );
     }
 
     #[test]

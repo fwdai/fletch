@@ -47,6 +47,12 @@ export interface ProviderDetail {
    *  `loginCommand()`; must mirror the pinned argv the backend runs
    *  (src-tauri/src/provider_login.rs). */
   login?: string;
+  /** The CLI keeps its whole state, login included, in one env-relocatable
+   *  directory, so Fletch can hold several sign-ins for it (Settings offers
+   *  an accounts list instead of a single Sign in). Read through
+   *  `supportsAccounts()`; must mirror `ACCOUNT_PROVIDERS` in the engine's
+   *  `agent::accounts`. */
+  accounts?: boolean;
   /** Thinking/reasoning effort levels supported by this provider's CLI.
    *  Empty means the provider has no effort flag — the picker hides. */
   thinkingLevels: ThinkingLevel[];
@@ -77,6 +83,12 @@ export function loginCommand(id: ProviderId): string | undefined {
   return PROVIDER_DETAIL[id].login;
 }
 
+/** Whether Fletch can hold several sign-ins for a provider — the gate for the
+ *  accounts list in Settings. Mirrors the engine's `ACCOUNT_PROVIDERS`. */
+export function supportsAccounts(id: ProviderId): boolean {
+  return !!PROVIDER_DETAIL[id].accounts;
+}
+
 export const PROVIDER_DETAIL: Record<ProviderId, ProviderDetail> = {
   claude: {
     path: "/opt/homebrew/bin/claude",
@@ -87,6 +99,7 @@ export const PROVIDER_DETAIL: Record<ProviderId, ProviderDetail> = {
     docs: "https://docs.anthropic.com/en/docs/claude-code",
     signIn: "Run `claude auth login` to sign in.",
     login: "claude auth login",
+    accounts: true,
     // `claude --effort <level>` is a session-level spawn flag (not per-message):
     // persisted on the session record and re-applied on every spawn. Changing it
     // mid-session restarts the process (--resume) to re-apply the flag, so it's
@@ -110,6 +123,7 @@ export const PROVIDER_DETAIL: Record<ProviderId, ProviderDetail> = {
     docs: "https://github.com/openai/codex",
     signIn: "Run `codex login` to sign in.",
     login: "codex login",
+    accounts: true,
     // `codex exec -c reasoning_effort="<value>"`
     thinkingLevels: [
       { label: "Low", value: "low" },

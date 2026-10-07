@@ -1,11 +1,12 @@
 import { api } from "@/api";
-import type { ProviderAuthStatus } from "@/api/types/providers";
+import type { ProviderAccount, ProviderAuthStatus } from "@/api/types/providers";
 import {
   loadCachedCatalog,
   type ModelMeta,
   refreshCatalog,
   type SlimCatalog,
 } from "@/data/modelCatalog";
+import { type LimitsByProvider, withLimitsChange } from "@/data/providerLimits";
 import { setSetting } from "@/storage/settings";
 import type { SliceCreator } from "./types";
 
@@ -37,6 +38,16 @@ export interface ProvidersSlice {
    *  resolves, and `"unknown"` when the backend has no cheap check for that
    *  CLI's credential store — both render as no claim either way. */
   providerAuth: Record<string, ProviderAuthStatus>;
+  /** Every sign-in Fletch knows per account-capable provider, the default
+   *  (the CLI's own login) first, each with its probe and whether it is the
+   *  one new agents use. Absent until the first list resolves. Refreshed with
+   *  `providerAuth`, so the accounts list and the row badge never disagree. */
+  providerAccounts: Record<string, ProviderAccount[]>;
+  /** Each account's last known plan limits (five-hour and weekly windows),
+   *  provider → account id → the engine's stored row. Loaded with the accounts
+   *  and kept current by `settings:changed`, which every engine write of a
+   *  row announces — a reading from an agent's stream lands without a poll. */
+  providerLimits: LimitsByProvider;
   /** Strip agents' commit/PR attribution regardless of their own settings.
    *  Mirrors the backend-owned `agent_attribution_removed`; false (the default)
    *  leaves each agent's own settings in charge. */
@@ -52,6 +63,27 @@ export interface ProvidersSlice {
    *  `refreshProviderVersions`, so every existing rescan/poll refreshes both;
    *  exposed separately for a sign-in flow that wants to re-check on its own. */
   refreshProviderAuth: () => Promise<void>;
+  /** Re-list every provider's accounts with their sign-in state. Called at
+   *  the tail of `refreshProviderAuth`; exposed for the account actions below,
+   *  which re-list once their change has landed. */
+  refreshProviderAccounts: () => Promise<void>;
+  /** Create a managed account (a fresh config dir) and re-list. Signing it in
+   *  is the row's own Sign in. Rejects with the backend's reason on a bad or
+   *  taken name, so the form can show it. */
+  addProviderAccount: (provider: string, id: string) => Promise<void>;
+  /** Delete a managed account and re-list. The backend refuses the active one. */
+  removeProviderAccount: (provider: string, id: string) => Promise<void>;
+  /** Choose which account new agents of `provider` use and re-list. */
+  setActiveProviderAccount: (provider: string, id: string | null) => Promise<void>;
+  /** Re-read `provider`'s stored limits rows. Called after every accounts
+   *  re-list, so an added or removed account's entry follows. */
+  loadProviderLimits: (provider: string) => Promise<void>;
+  /** Ask the vendor for one account's limits now and store the answer.
+   *  Rejects with the engine's reason when it couldn't ask at all. */
+  refreshProviderLimits: (provider: string, account: string) => Promise<void>;
+  /** Fold one `settings:changed` write into `providerLimits` when it is a
+   *  limits row; any other key is ignored. */
+  applyProviderLimitsChange: (key: string, value: string | null) => void;
   /** Set (path) or clear (null) a provider's custom binary path. Persists the
    *  override, updates local state, and re-probes so the version/path refresh. */
   setProviderPathOverride: (id: string, path: string | null) => Promise<void>;
@@ -73,6 +105,8 @@ export const createProvidersSlice: SliceCreator<ProvidersSlice> = (set, get) => 
   modelCatalog: cachedCatalog.byId,
   modelsByAgent: cachedCatalog.byAgent,
   providerAuth: {},
+  providerAccounts: {},
+  providerLimits: {},
   agentAttributionRemoved: false,
 
   setProviderEnabled: (id, enabled) =>
@@ -118,6 +152,57 @@ export const createProvidersSlice: SliceCreator<ProvidersSlice> = (set, get) => 
       // keeps the last-known-good map rather than claiming every provider is
       // signed out. Absent/`unknown` entries render as no claim either way.
     }
+    // Accounts ride along for the same reason the auth probe rides along with
+    // versions: one rescan, one consistent picture.
+    await get().refreshProviderAccounts();
+  },
+  refreshProviderAccounts: async () => {
+    try {
+      const accounts = await api.listProviderAccounts();
+      const byProvider: Record<string, ProviderAccount[]> = {};
+      for (const account of accounts) {
+        const list = byProvider[account.provider] ?? [];
+        list.push(account);
+        byProvider[account.provider] = list;
+      }
+      set({ providerAccounts: byProvider });
+      await Promise.all(Object.keys(byProvider).map((p) => get().loadProviderLimits(p)));
+    } catch {
+      // Non-fatal: keep the last good list rather than emptying the section.
+    }
+  },
+  loadProviderLimits: async (provider) => {
+    try {
+      const rows = await api.getProviderLimits(provider);
+      set((s) => ({ providerLimits: { ...s.providerLimits, [provider]: rows } }));
+    } catch {
+      // Non-fatal: the meters keep their last reading.
+    }
+  },
+  refreshProviderLimits: async (provider, account) => {
+    const row = await api.refreshProviderLimits(provider, account);
+    set((s) => ({
+      providerLimits: {
+        ...s.providerLimits,
+        [provider]: { ...s.providerLimits[provider], [account]: row },
+      },
+    }));
+  },
+  applyProviderLimitsChange: (key, value) => {
+    const next = withLimitsChange(get().providerLimits, key, value);
+    if (next) set({ providerLimits: next });
+  },
+  addProviderAccount: async (provider, id) => {
+    await api.addProviderAccount(provider, id);
+    await get().refreshProviderAccounts();
+  },
+  removeProviderAccount: async (provider, id) => {
+    await api.removeProviderAccount(provider, id);
+    await get().refreshProviderAccounts();
+  },
+  setActiveProviderAccount: async (provider, id) => {
+    await api.setActiveProviderAccount(provider, id);
+    await get().refreshProviderAccounts();
   },
   setProviderPathOverride: async (id, path) => {
     const trimmed = path?.trim() || null;

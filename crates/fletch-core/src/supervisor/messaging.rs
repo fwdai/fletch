@@ -1056,6 +1056,7 @@ mod tests {
                 env: &[],
                 cols: 80,
                 rows: 24,
+                env_remove: &[],
                 kill_plan: KillHandle::ProcessGroup,
             },
             |_| {},

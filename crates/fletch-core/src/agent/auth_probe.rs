@@ -80,6 +80,48 @@ pub async fn probe_all_provider_auth() -> Vec<ProviderAuthProbe> {
     results
 }
 
+/// The default account's login state — the CLI's own config dir, exactly what
+/// [`probe_all_provider_auth`] reports for the provider.
+pub(crate) fn probe_default(id: &'static str) -> ProviderAuthProbe {
+    probe_one(id)
+}
+
+/// A Fletch-managed account directory's login state (see `agent::accounts`).
+/// Claude keeps a per-directory Keychain item on macOS and `.credentials.json`
+/// elsewhere; codex keeps `auth.json`. Shell keys are deliberately *not*
+/// consulted here: an `ANTHROPIC_API_KEY` in the login shell would make every
+/// account read as signed in at once, when it only ever authenticates the
+/// default.
+pub(crate) fn probe_dir(id: &str, dir: &Path) -> ProviderAuthProbe {
+    use crate::sandbox::container::auth as container_auth;
+    match id {
+        "claude" => {
+            let keychain = crate::keychain::item_present(
+                &container_auth::claude_keychain_service(Some(dir)),
+                None,
+            );
+            let file = container_auth::credentials_file_usable(
+                read_file(&dir.join(".credentials.json")).as_deref(),
+            );
+            detailed(
+                "claude",
+                signed_in_if(keychain || file),
+                "no login in this account's Keychain item or credentials file",
+            )
+        }
+        "codex" => detailed(
+            "codex",
+            classify_codex_auth(read_file(&dir.join("auth.json")).as_deref(), false),
+            "no credential in this account's auth.json",
+        ),
+        _ => entry(
+            id,
+            AuthStatus::Unknown,
+            "provider has no account directories",
+        ),
+    }
+}
+
 fn probe_one(id: &'static str) -> ProviderAuthProbe {
     let Some(home) = dirs::home_dir() else {
         return entry(id, AuthStatus::Unknown, "no home directory");

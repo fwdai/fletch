@@ -12,6 +12,13 @@ use crate::error::{Error, Result};
 /// stable string — the frontend keys its Settings call-to-action on it.
 pub(crate) const NO_CONTAINER_AUTH_MSG: &str = "No Anthropic credentials for containers — open Settings → Sandbox and connect Claude for containers (claude setup-token).";
 
+/// Launch-blocking message when the managed provider account an agent runs
+/// under (`agent::accounts`) holds no login. Distinct from the per-provider
+/// messages: an ambient key or the containers token signs in the default
+/// account only, so the fix is that account's own sign-in.
+pub(crate) const NO_ACCOUNT_AUTH_MSG: &str =
+    "This agent's account isn't signed in — sign it in under Settings → Providers, then restart the agent.";
+
 /// Fold the claude auth-chain outcome ([`resolve`]) into the container CLI's
 /// process env. Only the [`AuthSource`] variant is logged, never a value.
 /// Nothing resolved → fail fast with [`NO_CONTAINER_AUTH_MSG`].

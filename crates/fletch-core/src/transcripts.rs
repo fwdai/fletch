@@ -43,11 +43,19 @@ pub(crate) fn find_session_jsonl(
 
 /// The `projects` directory claude keeps its sessions in when it runs in
 /// `cwd`: the per-agent dir a container sandbox mounts over it (`container`),
-/// or the active config dir's. The first place [`find_session_jsonl`] looks
-/// for each kind of agent.
-pub(crate) fn claude_projects_dir(cwd: &Path, container: bool) -> Option<PathBuf> {
+/// else the config dir it runs with — the agent's managed account dir
+/// (`account_dir`) or the active default. The first place
+/// [`find_session_jsonl`] looks for each kind of agent.
+pub(crate) fn claude_projects_dir(
+    cwd: &Path,
+    container: bool,
+    account_dir: Option<&Path>,
+) -> Option<PathBuf> {
     if container {
         return Some(cwd.parent()?.join(DOCKER_CLAUDE_PROJECTS_DIRNAME));
+    }
+    if let Some(dir) = account_dir {
+        return Some(dir.join("projects"));
     }
     claude_projects_dirs().into_iter().next()
 }
@@ -77,17 +85,27 @@ pub(crate) fn claude_project_dirname(cwd: &Path) -> Option<String> {
 ///
 /// Also the root list for the whole-disk usage scan (`usage_scan`), which walks
 /// every `<projects dir>/*/*.jsonl` rather than one known session id.
+///
+/// Every managed account dir (`agent::accounts`) is a root too: an agent
+/// stamped with an account runs claude with that dir as `CLAUDE_CONFIG_DIR`,
+/// so its transcripts live there and nowhere else.
 pub(crate) fn claude_projects_dirs() -> Vec<PathBuf> {
     projects_dirs_from(
         std::env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from),
         dirs::home_dir(),
+        crate::agent::accounts::list_account_dirs("claude"),
     )
 }
 
 /// Pure core of [`claude_projects_dirs`]: configured dir first (if any), then
-/// the default `~/.claude`, deduped so an explicit `CLAUDE_CONFIG_DIR=~/.claude`
-/// doesn't double-scan.
-fn projects_dirs_from(config_dir: Option<PathBuf>, home: Option<PathBuf>) -> Vec<PathBuf> {
+/// the default `~/.claude`, then each managed account dir, deduped so an
+/// explicit `CLAUDE_CONFIG_DIR=~/.claude` (or an account dir) doesn't
+/// double-scan.
+fn projects_dirs_from(
+    config_dir: Option<PathBuf>,
+    home: Option<PathBuf>,
+    account_dirs: Vec<PathBuf>,
+) -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = Vec::new();
     let mut push = |base: PathBuf| {
         let p = base.join("projects");
@@ -100,6 +118,9 @@ fn projects_dirs_from(config_dir: Option<PathBuf>, home: Option<PathBuf>) -> Vec
     }
     if let Some(home) = home {
         push(home.join(".claude"));
+    }
+    for dir in account_dirs {
+        push(dir);
     }
     out
 }
@@ -131,10 +152,10 @@ fn find_session_jsonl_in(
     None
 }
 
-/// Codex's session root: `$CODEX_HOME/sessions` (CODEX_HOME defaults to
-/// `~/.codex`), holding a `YYYY/MM/DD` tree of `rollout-<ts>-<id>.jsonl`.
-/// `None` only when neither CODEX_HOME nor a home dir can be resolved. Shared
-/// by the per-session locator below and the whole-disk usage scan.
+/// Codex's default session root: `$CODEX_HOME/sessions` (CODEX_HOME defaults
+/// to `~/.codex`), holding a `YYYY/MM/DD` tree of `rollout-<ts>-<id>.jsonl`.
+/// `None` only when neither CODEX_HOME nor a home dir can be resolved. Where a
+/// default-account session is written; [`codex_sessions_dirs`] is every root.
 pub(crate) fn codex_sessions_dir() -> Option<PathBuf> {
     std::env::var_os("CODEX_HOME")
         .map(PathBuf::from)
@@ -142,16 +163,42 @@ pub(crate) fn codex_sessions_dir() -> Option<PathBuf> {
         .map(|home| home.join("sessions"))
 }
 
+/// Every codex session root: the default one, then each managed account's
+/// (`agent::accounts`), whose agents run codex with that dir as `CODEX_HOME`.
+/// Shared by the per-session locator below and the whole-disk usage scan.
+pub(crate) fn codex_sessions_dirs() -> Vec<PathBuf> {
+    sessions_dirs_from(
+        codex_sessions_dir(),
+        crate::agent::accounts::list_account_dirs("codex"),
+    )
+}
+
+/// Pure core of [`codex_sessions_dirs`], deduped in first-seen order.
+fn sessions_dirs_from(default: Option<PathBuf>, account_dirs: Vec<PathBuf>) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = Vec::new();
+    for dir in default
+        .into_iter()
+        .chain(account_dirs.into_iter().map(|d| d.join("sessions")))
+    {
+        if !out.contains(&dir) {
+            out.push(dir);
+        }
+    }
+    out
+}
+
 /// All of codex's rollout files for a thread id, ordered (filenames are
 /// timestamp-prefixed, so lexical sort == chronological). Codex stores sessions
 /// at `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-<ts>-<id>.jsonl` (CODEX_HOME
 /// defaults to `~/.codex`); the id suffix is the thread id we captured. Resume
-/// normally keeps one file per session, but returning all is correct if it splits.
+/// normally keeps one file per session, but returning all is correct if it
+/// splits. Every root is searched: a thread lives under the account its agent
+/// ran under.
 pub(crate) fn find_codex_rollouts(session_id: &str, diag: &mut ReadDiagnostics) -> Vec<PathBuf> {
-    match codex_sessions_dir() {
-        Some(sessions) => find_codex_rollouts_in(&sessions, session_id, diag),
-        None => Vec::new(),
-    }
+    codex_sessions_dirs()
+        .iter()
+        .flat_map(|sessions| find_codex_rollouts_in(sessions, session_id, diag))
+        .collect()
 }
 
 /// [`find_codex_rollouts`] under the `sessions` root given.
@@ -164,7 +211,8 @@ pub(crate) fn find_codex_rollouts_in(
     // `rollout-<ts>-<id>.jsonl`) so one thread id can't match another whose
     // name merely ends with the same characters.
     let suffix = format!("-{session_id}.jsonl");
-    diag.root_exists = sessions.exists();
+    // Or-ed, not set: a scan over several roots has a live one if any is.
+    diag.root_exists |= sessions.exists();
     let out: Vec<PathBuf> = codex_rollout_files(sessions)
         .into_iter()
         .filter(|path| {
@@ -256,6 +304,7 @@ mod tests {
         let dirs = projects_dirs_from(
             Some(PathBuf::from("/home/u/.claude-eve")),
             Some(PathBuf::from("/home/u")),
+            Vec::new(),
         );
         assert_eq!(
             dirs,
@@ -272,14 +321,96 @@ mod tests {
         let dirs = projects_dirs_from(
             Some(PathBuf::from("/home/u/.claude")),
             Some(PathBuf::from("/home/u")),
+            Vec::new(),
         );
         assert_eq!(dirs, vec![PathBuf::from("/home/u/.claude/projects")]);
     }
 
     #[test]
     fn projects_dirs_falls_back_to_home_when_config_unset() {
-        let dirs = projects_dirs_from(None, Some(PathBuf::from("/home/u")));
+        let dirs = projects_dirs_from(None, Some(PathBuf::from("/home/u")), Vec::new());
         assert_eq!(dirs, vec![PathBuf::from("/home/u/.claude/projects")]);
+    }
+
+    #[test]
+    fn projects_dirs_union_the_account_dirs_after_the_default() {
+        let dirs = projects_dirs_from(
+            Some(PathBuf::from("/home/u/.fletch/accounts/claude/work")),
+            Some(PathBuf::from("/home/u")),
+            vec![
+                PathBuf::from("/home/u/.fletch/accounts/claude/personal"),
+                PathBuf::from("/home/u/.fletch/accounts/claude/work"),
+            ],
+        );
+        // The configured dir keeps its lead; an account it duplicates isn't
+        // scanned twice.
+        assert_eq!(
+            dirs,
+            vec![
+                PathBuf::from("/home/u/.fletch/accounts/claude/work/projects"),
+                PathBuf::from("/home/u/.claude/projects"),
+                PathBuf::from("/home/u/.fletch/accounts/claude/personal/projects"),
+            ],
+        );
+    }
+
+    #[test]
+    fn codex_sessions_dirs_union_the_account_homes_after_the_default() {
+        let dirs = sessions_dirs_from(
+            Some(PathBuf::from("/home/u/.codex/sessions")),
+            vec![
+                PathBuf::from("/a/codex/work"),
+                PathBuf::from("/a/codex/work"),
+            ],
+        );
+        assert_eq!(
+            dirs,
+            vec![
+                PathBuf::from("/home/u/.codex/sessions"),
+                PathBuf::from("/a/codex/work/sessions"),
+            ],
+        );
+        assert_eq!(
+            sessions_dirs_from(None, vec![PathBuf::from("/a/codex/work")]),
+            vec![PathBuf::from("/a/codex/work/sessions")],
+        );
+    }
+
+    /// End to end over a real accounts root: a transcript written under a
+    /// managed account is found by the same lookups History and the reader
+    /// use, and the account roots join the usage scan's lists.
+    #[test]
+    fn transcripts_under_a_managed_account_are_found() {
+        crate::agent::accounts::with_test_root(|root| {
+            let claude = root.join("claude").join("work");
+            let slug = claude.join("projects").join("-repo");
+            std::fs::create_dir_all(&slug).unwrap();
+            let sid = "0f0e0d0c-aaaa-bbbb-cccc-121212121212";
+            let jsonl = slug.join(format!("{sid}.jsonl"));
+            std::fs::write(&jsonl, b"{}\n").unwrap();
+            assert!(claude_projects_dirs().contains(&claude.join("projects")));
+            let found = find_session_jsonl(
+                sid,
+                Path::new("/nonexistent/agent/repo"),
+                &mut ReadDiagnostics::default(),
+            );
+            assert_eq!(found.as_deref(), Some(jsonl.as_path()));
+            assert_eq!(
+                claude_projects_dir(Path::new("/w/a/repo"), false, Some(&claude)),
+                Some(claude.join("projects"))
+            );
+
+            let codex = root.join("codex").join("work");
+            let day = codex.join("sessions").join("2026").join("10").join("07");
+            std::fs::create_dir_all(&day).unwrap();
+            let thread = "019a-account-thread";
+            let rollout = day.join(format!("rollout-2026-10-07T10-00-00-{thread}.jsonl"));
+            std::fs::write(&rollout, b"{}\n").unwrap();
+            assert!(codex_sessions_dirs().contains(&codex.join("sessions")));
+            let mut diag = ReadDiagnostics::default();
+            assert_eq!(find_codex_rollouts(thread, &mut diag), vec![rollout]);
+            assert!(diag.root_exists);
+        });
     }
 
     #[test]

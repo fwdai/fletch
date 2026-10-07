@@ -1,0 +1,666 @@
+//! Fletch-managed provider accounts: one sign-in per config directory.
+//!
+//! A CLI keeps one login per config directory — claude's `CLAUDE_CONFIG_DIR`,
+//! codex's `CODEX_HOME` — so "another account" is another directory. Fletch
+//! owns these under `~/.fletch/accounts/<provider>/<id>/`. The directory
+//! listing *is* the registry (nothing in the database to drift from the disk),
+//! and one `settings` key per provider names which account new agents use.
+//!
+//! The user's own CLI directory (`~/.claude`, `~/.codex`, or wherever their
+//! shell's env points) stays the **default** account: no directory here, no
+//! env override, so a user with one login sees nothing change. It is also the
+//! **shared source**: the config a managed directory should inherit —
+//! settings, instructions, commands, skills — is symlinked from it, so editing
+//! it from the terminal reaches every account and nothing is ever copied. The
+//! login itself, the session transcripts and the CLI's own identity file stay
+//! per directory, which is the whole point.
+
+use std::path::{Path, PathBuf};
+
+use serde::Serialize;
+
+use super::auth_probe::{self, AuthStatus};
+use crate::error::{Error, Result};
+
+/// Env var overriding the accounts root (default `~/.fletch/accounts`). Same
+/// style as `workspace::paths::TOOLS_ROOT_ENV` — set in tests so nothing
+/// touches a developer's real `~/.fletch`.
+pub const ACCOUNTS_ROOT_ENV: &str = "FLETCH_ACCOUNTS_ROOT";
+
+/// The id of the account that is the CLI's own config dir. Never a directory
+/// under the root; reserved so a managed account can't shadow it.
+pub const DEFAULT_ACCOUNT: &str = "default";
+
+/// `settings` key prefix naming the active account per provider
+/// (`provider_account_claude`). Absent, blank or [`DEFAULT_ACCOUNT`] all mean
+/// the default.
+pub const ACTIVE_SETTING_PREFIX: &str = "provider_account_";
+
+/// The providers whose CLI relocates its whole state with one env var. Only
+/// these have accounts; the rest keep their single sign-in.
+pub const ACCOUNT_PROVIDERS: [&str; 2] = ["claude", "codex"];
+
+pub fn active_setting_key(provider: &str) -> String {
+    format!("{ACTIVE_SETTING_PREFIX}{provider}")
+}
+
+/// The env var that points `provider`'s CLI at a config directory, or `None`
+/// for a provider without one.
+pub fn config_dir_env(provider: &str) -> Option<&'static str> {
+    match provider {
+        "claude" => Some("CLAUDE_CONFIG_DIR"),
+        "codex" => Some("CODEX_HOME"),
+        _ => None,
+    }
+}
+
+pub fn supports_accounts(provider: &str) -> bool {
+    config_dir_env(provider).is_some()
+}
+
+pub fn is_default(id: &str) -> bool {
+    id.is_empty() || id == DEFAULT_ACCOUNT
+}
+
+/// What a managed directory inherits from the shared source, by link. Config
+/// only — never the login, the identity file (`.claude.json`, which also holds
+/// onboarding state) or the session stores, which are exactly what differs per
+/// account.
+fn shared_items(provider: &str) -> &'static [&'static str] {
+    match provider {
+        "claude" => &[
+            "settings.json",
+            "CLAUDE.md",
+            "commands",
+            "skills",
+            "agents",
+            "plugins",
+        ],
+        "codex" => &["config.toml", "AGENTS.md", "prompts", "skills"],
+        _ => &[],
+    }
+}
+
+/// `~/.fletch/accounts/`, a sibling of the workspaces and tools roots;
+/// `$FLETCH_ACCOUNTS_ROOT` overrides it when set and non-empty.
+pub fn accounts_root() -> Result<PathBuf> {
+    if let Some(root) = std::env::var_os(ACCOUNTS_ROOT_ENV).filter(|v| !v.is_empty()) {
+        return Ok(PathBuf::from(root));
+    }
+    let home =
+        dirs::home_dir().ok_or_else(|| Error::Other("HOME directory not available".into()))?;
+    Ok(home.join(".fletch").join("accounts"))
+}
+
+/// An account id doubles as its directory name and its label: lowercase
+/// ASCII letters, digits and hyphens, starting alphanumeric, at most 32 chars,
+/// and never the reserved default.
+pub fn validate_account_id(id: &str) -> Result<()> {
+    let ok = !id.is_empty()
+        && id.len() <= 32
+        && id
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        && id.chars().next().is_some_and(|c| c.is_ascii_alphanumeric());
+    if !ok {
+        return Err(Error::Other(
+            "Account names use lowercase letters, digits and hyphens (up to 32 characters).".into(),
+        ));
+    }
+    if is_default(id) {
+        return Err(Error::Other(format!(
+            "`{DEFAULT_ACCOUNT}` is the CLI's own login."
+        )));
+    }
+    Ok(())
+}
+
+fn validate_provider(provider: &str) -> Result<()> {
+    if supports_accounts(provider) {
+        Ok(())
+    } else {
+        Err(Error::Other(format!(
+            "`{provider}` has no account directories."
+        )))
+    }
+}
+
+/// The directory of a managed account, validated but not necessarily present.
+pub fn account_dir(provider: &str, id: &str) -> Result<PathBuf> {
+    validate_provider(provider)?;
+    validate_account_id(id)?;
+    Ok(accounts_root()?.join(provider).join(id))
+}
+
+/// Every managed account of `provider`, by id, sorted. A directory whose name
+/// isn't a valid id (something the user dropped there by hand) is skipped.
+pub fn list_account_ids(provider: &str) -> Vec<String> {
+    let Ok(root) = accounts_root() else {
+        return Vec::new();
+    };
+    let Ok(entries) = std::fs::read_dir(root.join(provider)) else {
+        return Vec::new();
+    };
+    let mut ids: Vec<String> = entries
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().is_dir())
+        .filter_map(|e| e.file_name().into_string().ok())
+        .filter(|id| validate_account_id(id).is_ok())
+        .collect();
+    ids.sort();
+    ids
+}
+
+/// Every managed account directory of `provider`, in id order — the roots a
+/// transcript scan unions with the CLI's default dir, since an agent stamped
+/// with an account writes its sessions there.
+pub fn list_account_dirs(provider: &str) -> Vec<PathBuf> {
+    let Ok(root) = accounts_root() else {
+        return Vec::new();
+    };
+    list_account_ids(provider)
+        .into_iter()
+        .map(|id| root.join(provider).join(id))
+        .collect()
+}
+
+/// The account a new agent of `provider` is stamped with, given the value of
+/// its active-account setting: `None` (the default) unless the setting names
+/// a managed account whose directory still exists, so a stale setting
+/// degrades to the default rather than failing the spawn.
+pub fn account_for_new_agent(provider: &str, setting: Option<&str>) -> Option<String> {
+    let id = setting.map(str::trim).filter(|id| !is_default(id))?;
+    account_dir(provider, id)
+        .is_ok_and(|dir| dir.is_dir())
+        .then(|| id.to_string())
+}
+
+/// The directory of the account an agent was stamped with, or `None` for the
+/// default (or a stamp that no longer names a valid account). Not necessarily
+/// present: the account may have been removed since — callers about to write
+/// there use [`existing_account_dir`].
+pub fn stamped_account_dir(provider: &str, account: Option<&str>) -> Option<PathBuf> {
+    let id = account.filter(|id| !is_default(id))?;
+    account_dir(provider, id).ok()
+}
+
+/// [`stamped_account_dir`] for a caller that is about to launch into or write
+/// under the directory: a managed stamp whose directory was removed is an
+/// error, so nothing recreates the account behind the user's back (a launch
+/// would run it signed out; a transcript write would resurrect it with the
+/// Keychain login it may still hold).
+pub fn existing_account_dir(provider: &str, account: Option<&str>) -> Result<Option<PathBuf>> {
+    let Some(id) = account.filter(|id| !is_default(id)) else {
+        return Ok(None);
+    };
+    let dir = account_dir(provider, id)?;
+    if !dir.is_dir() {
+        return Err(Error::Other(format!(
+            "This agent runs under the `{id}` account, which has been removed."
+        )));
+    }
+    Ok(Some(dir))
+}
+
+/// The env vars that sign `provider`'s CLI in on their own, from the app's
+/// process or the user's login shell. They belong to the default account, so
+/// a launch under a managed account removes them from the child's env: the
+/// CLI must authenticate with that account's own login or not at all. Proxy
+/// endpoint vars (`ANTHROPIC_BASE_URL`, `OPENAI_BASE_URL`) are not here and
+/// still pass through. The container auth chain filters the same claude set.
+pub fn ambient_credential_vars(provider: &str) -> &'static [&'static str] {
+    match provider {
+        "claude" => &[
+            "ANTHROPIC_API_KEY",
+            "CLAUDE_CODE_OAUTH_TOKEN",
+            "ANTHROPIC_AUTH_TOKEN",
+        ],
+        "codex" => &["OPENAI_API_KEY"],
+        _ => &[],
+    }
+}
+
+/// The CLI's own config dir on this host — the default account, and the source
+/// every managed directory links its shared config from. Honours the user's
+/// own env override so a terminal that already relocates the dir is followed.
+pub fn shared_source_dir(provider: &str, home: &Path) -> PathBuf {
+    match provider {
+        "claude" => std::env::var_os("CLAUDE_CONFIG_DIR")
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home.join(".claude")),
+        "codex" => crate::sandbox::policy::codex_home_dir(home),
+        _ => home.to_path_buf(),
+    }
+}
+
+/// Create (or repair) a managed account directory and return it. Idempotent
+/// and cheap, so callers run it before every login and every spawn: a shared
+/// item that appeared in the source since last time gets linked now; one the
+/// CLI has since replaced with a real file (temp-then-rename does that) is left
+/// alone rather than clobbered — a forked config is the user's to resolve.
+pub fn ensure_account_dir(provider: &str, id: &str) -> Result<PathBuf> {
+    let dir = account_dir(provider, id)?;
+    std::fs::create_dir_all(&dir)?;
+    let home =
+        dirs::home_dir().ok_or_else(|| Error::Other("HOME directory not available".into()))?;
+    link_shared(
+        &shared_source_dir(provider, &home),
+        &dir,
+        shared_items(provider),
+    );
+    if provider == "claude" {
+        seed_claude_state(&dir, &home);
+    }
+    Ok(dir)
+}
+
+/// A fresh claude config dir has no `.claude.json`, so claude would open its
+/// first-run onboarding (the theme pick) in the agent's terminal — and in a
+/// container, where the account dir is mounted read-only, on every launch.
+/// Seed the one flag that skips it, plus the theme the user already chose,
+/// when the file is absent. Nothing else is copied: the identity and OAuth
+/// account live in that file too, and they are exactly what differs per
+/// account. Best-effort: a failure costs the onboarding screen, not the login.
+fn seed_claude_state(dir: &Path, home: &Path) {
+    let state = dir.join(".claude.json");
+    if state.exists() {
+        return;
+    }
+    // Claude keeps its state beside a relocated config dir, else at `~/.claude.json`.
+    let own = match std::env::var_os("CLAUDE_CONFIG_DIR").filter(|v| !v.is_empty()) {
+        Some(v) => PathBuf::from(v).join(".claude.json"),
+        None => home.join(".claude.json"),
+    };
+    let seed = claude_state_seed(std::fs::read(&own).ok().as_deref());
+    if let Err(e) = std::fs::write(&state, seed.to_string()) {
+        tracing::warn!(error = %e, "could not seed the account's claude state file");
+    }
+}
+
+/// Pure core of [`seed_claude_state`]: onboarding done, and the theme from the
+/// user's own state file when it has one.
+fn claude_state_seed(own: Option<&[u8]>) -> serde_json::Value {
+    let mut seed = serde_json::Map::new();
+    seed.insert(
+        "hasCompletedOnboarding".into(),
+        serde_json::Value::Bool(true),
+    );
+    let theme = own
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(bytes).ok())
+        .and_then(|v| v.get("theme").cloned())
+        .filter(|t| t.is_string());
+    if let Some(theme) = theme {
+        seed.insert("theme".into(), theme);
+    }
+    serde_json::Value::Object(seed)
+}
+
+/// Link each of `items` from `source` into `dir` where the source exists and
+/// nothing sits at the target yet. Best-effort per item: one failure is logged
+/// and the rest proceed, since a missing link costs a shared setting, not the
+/// login.
+fn link_shared(source: &Path, dir: &Path, items: &[&str]) {
+    for item in items {
+        let src = source.join(item);
+        let dst = dir.join(item);
+        if dst.symlink_metadata().is_ok() || !src.exists() {
+            continue;
+        }
+        if let Err(e) = symlink(&src, &dst) {
+            tracing::warn!(item, error = %e, "could not link shared config into account dir");
+        }
+    }
+}
+
+#[cfg(unix)]
+fn symlink(src: &Path, dst: &Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(src, dst)
+}
+
+#[cfg(windows)]
+fn symlink(src: &Path, dst: &Path) -> std::io::Result<()> {
+    if src.is_dir() {
+        std::os::windows::fs::symlink_dir(src, dst)
+    } else {
+        std::os::windows::fs::symlink_file(src, dst)
+    }
+}
+
+/// Delete a managed account — its directory, links and all, and the login it
+/// held. Codex's login lives in the directory; claude's lives in the macOS
+/// Keychain under the item named for this directory, which goes first, so
+/// re-adding an account of the same name starts signed out rather than
+/// inheriting the old credential. A Keychain delete that fails (a locked
+/// keychain, a denied request) stops the removal with the reason: deleting the
+/// directory anyway would leave the credential behind with nothing to show for
+/// it, and the next account of this name would inherit it.
+pub fn remove_account_dir(provider: &str, id: &str) -> Result<()> {
+    let dir = account_dir(provider, id)?;
+    if provider == "claude" {
+        let service = crate::sandbox::container::auth::claude_keychain_service(Some(&dir));
+        if let Err(reason) = crate::keychain::delete_item(&service) {
+            return Err(Error::Other(format!(
+                "Could not delete the `{id}` account's Keychain login ({reason}). \
+                 Unlock your login keychain and try again; the account was not removed."
+            )));
+        }
+    }
+    match std::fs::remove_dir_all(&dir) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// The env that points `provider`'s CLI at account `id`: empty for the
+/// default, which runs with whatever the CLI resolves on its own.
+pub fn account_env(provider: &str, id: &str) -> Result<Vec<(String, String)>> {
+    if is_default(id) {
+        return Ok(Vec::new());
+    }
+    let var = config_dir_env(provider)
+        .ok_or_else(|| Error::Other(format!("`{provider}` has no account directories.")))?;
+    let dir = account_dir(provider, id)?;
+    Ok(vec![(var.to_string(), dir.to_string_lossy().into_owned())])
+}
+
+/// One account of one provider, as Settings lists it.
+#[derive(Debug, Clone, Serialize)]
+pub struct ProviderAccount {
+    pub provider: String,
+    pub id: String,
+    /// False for the default: the CLI's own directory, which Fletch neither
+    /// created nor can remove.
+    pub managed: bool,
+    /// Whether new agents of this provider use this account.
+    pub active: bool,
+    pub status: AuthStatus,
+    /// The probe's fixed reason for a non-signed-in status; see
+    /// [`super::ProviderAuthProbe::detail`].
+    pub detail: Option<String>,
+}
+
+/// Every account of every account-capable provider, the default first, each
+/// probed for its login. `active_id` answers "which account does `provider`'s
+/// setting name?"; a name with no directory behind it falls back to the
+/// default, the same way the spawn path does. Never errors: a provider whose
+/// root can't be read just lists its default.
+pub fn list_accounts(active_id: impl Fn(&str) -> Option<String>) -> Vec<ProviderAccount> {
+    let mut out = Vec::new();
+    for provider in ACCOUNT_PROVIDERS {
+        let ids = list_account_ids(provider);
+        let active = active_id(provider)
+            .filter(|id| ids.iter().any(|known| known == id))
+            .unwrap_or_else(|| DEFAULT_ACCOUNT.to_string());
+
+        let probe = auth_probe::probe_default(provider);
+        out.push(ProviderAccount {
+            provider: provider.to_string(),
+            id: DEFAULT_ACCOUNT.to_string(),
+            managed: false,
+            active: active == DEFAULT_ACCOUNT,
+            status: probe.status,
+            detail: probe.detail,
+        });
+
+        for id in ids {
+            let Ok(dir) = account_dir(provider, &id) else {
+                continue;
+            };
+            let probe = auth_probe::probe_dir(provider, &dir);
+            out.push(ProviderAccount {
+                provider: provider.to_string(),
+                active: active == id,
+                id,
+                managed: true,
+                status: probe.status,
+                detail: probe.detail,
+            });
+        }
+    }
+    out
+}
+
+/// Run `f` with [`ACCOUNTS_ROOT_ENV`] pointed at a fresh tempdir. Serialized
+/// crate-wide: tests in one binary run in parallel, and every module whose
+/// tests touch the accounts root (this one, `transcripts`) must share one lock.
+#[cfg(test)]
+pub(crate) fn with_test_root<T>(f: impl FnOnce(&Path) -> T) -> T {
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let td = tempfile::tempdir().unwrap();
+    std::env::set_var(ACCOUNTS_ROOT_ENV, td.path());
+    let out = f(td.path());
+    std::env::remove_var(ACCOUNTS_ROOT_ENV);
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn with_root<T>(f: impl FnOnce(&Path) -> T) -> T {
+        with_test_root(f)
+    }
+
+    #[test]
+    fn a_new_agent_takes_the_active_account_only_while_its_dir_exists() {
+        with_root(|root| {
+            assert_eq!(account_for_new_agent("claude", None), None);
+            assert_eq!(account_for_new_agent("claude", Some("")), None);
+            assert_eq!(account_for_new_agent("claude", Some(DEFAULT_ACCOUNT)), None);
+            // Named but never created (or removed since): the default.
+            assert_eq!(account_for_new_agent("claude", Some("work")), None);
+            std::fs::create_dir_all(root.join("claude").join("work")).unwrap();
+            assert_eq!(
+                account_for_new_agent("claude", Some("work")).as_deref(),
+                Some("work")
+            );
+            // Another provider's directory doesn't count.
+            assert_eq!(account_for_new_agent("codex", Some("work")), None);
+            // Nor does a provider without accounts, or a malformed id.
+            assert_eq!(account_for_new_agent("cursor", Some("work")), None);
+            assert_eq!(account_for_new_agent("claude", Some("../work")), None);
+        });
+    }
+
+    #[test]
+    fn a_stamp_maps_to_its_dir_and_the_default_to_none() {
+        with_root(|root| {
+            assert_eq!(stamped_account_dir("claude", None), None);
+            assert_eq!(stamped_account_dir("claude", Some(DEFAULT_ACCOUNT)), None);
+            assert_eq!(
+                stamped_account_dir("codex", Some("work")),
+                Some(root.join("codex").join("work"))
+            );
+            assert_eq!(stamped_account_dir("cursor", Some("work")), None);
+        });
+    }
+
+    #[test]
+    fn account_dirs_list_only_the_providers_valid_accounts() {
+        with_root(|root| {
+            assert!(list_account_dirs("codex").is_empty());
+            std::fs::create_dir_all(root.join("codex").join("work")).unwrap();
+            std::fs::create_dir_all(root.join("codex").join("Stray Dir")).unwrap();
+            std::fs::create_dir_all(root.join("claude").join("other")).unwrap();
+            assert_eq!(
+                list_account_dirs("codex"),
+                vec![root.join("codex").join("work")]
+            );
+        });
+    }
+
+    #[test]
+    fn ids_are_lowercase_slugs_and_never_the_default() {
+        assert!(validate_account_id("work").is_ok());
+        assert!(validate_account_id("team-2").is_ok());
+        assert!(validate_account_id("Work").is_err());
+        assert!(validate_account_id("-x").is_err());
+        assert!(validate_account_id("a b").is_err());
+        assert!(validate_account_id("").is_err());
+        assert!(validate_account_id(DEFAULT_ACCOUNT).is_err());
+        assert!(validate_account_id(&"a".repeat(33)).is_err());
+    }
+
+    #[test]
+    fn only_env_relocatable_providers_have_accounts() {
+        assert_eq!(config_dir_env("claude"), Some("CLAUDE_CONFIG_DIR"));
+        assert_eq!(config_dir_env("codex"), Some("CODEX_HOME"));
+        assert_eq!(config_dir_env("cursor"), None);
+        assert!(account_dir("cursor", "work").is_err());
+    }
+
+    #[test]
+    fn the_default_account_sets_no_env_and_a_managed_one_points_at_its_dir() {
+        with_root(|root| {
+            assert!(account_env("claude", DEFAULT_ACCOUNT).unwrap().is_empty());
+            assert!(account_env("claude", "").unwrap().is_empty());
+            let env = account_env("codex", "work").unwrap();
+            assert_eq!(
+                env,
+                vec![(
+                    "CODEX_HOME".to_string(),
+                    root.join("codex")
+                        .join("work")
+                        .to_string_lossy()
+                        .into_owned()
+                )]
+            );
+        });
+    }
+
+    #[test]
+    fn listing_reads_the_directories_and_skips_strays() {
+        with_root(|root| {
+            assert!(list_account_ids("claude").is_empty());
+            std::fs::create_dir_all(root.join("claude").join("work")).unwrap();
+            std::fs::create_dir_all(root.join("claude").join("personal")).unwrap();
+            std::fs::create_dir_all(root.join("claude").join("Not A Slug")).unwrap();
+            std::fs::write(root.join("claude").join("stray.txt"), "x").unwrap();
+            assert_eq!(list_account_ids("claude"), vec!["personal", "work"]);
+            assert!(list_account_ids("codex").is_empty());
+        });
+    }
+
+    #[test]
+    fn linking_follows_the_source_and_never_clobbers() {
+        let td = tempfile::tempdir().unwrap();
+        let source = td.path().join("source");
+        let dir = td.path().join("account");
+        std::fs::create_dir_all(source.join("commands")).unwrap();
+        std::fs::write(source.join("settings.json"), "{}").unwrap();
+        std::fs::create_dir_all(&dir).unwrap();
+        // A fork the CLI left behind: a real file where a link would go.
+        std::fs::write(dir.join("CLAUDE.md"), "mine").unwrap();
+        std::fs::write(source.join("CLAUDE.md"), "shared").unwrap();
+
+        link_shared(&source, &dir, shared_items("claude"));
+
+        assert!(dir
+            .join("settings.json")
+            .symlink_metadata()
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert!(dir
+            .join("commands")
+            .symlink_metadata()
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        // Absent in the source: nothing to link, and no dangling link either.
+        assert!(dir.join("skills").symlink_metadata().is_err());
+        // The fork survives untouched.
+        assert!(!dir
+            .join("CLAUDE.md")
+            .symlink_metadata()
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(
+            std::fs::read_to_string(dir.join("CLAUDE.md")).unwrap(),
+            "mine"
+        );
+
+        // A source item that appears later is picked up by the next repair.
+        std::fs::create_dir_all(source.join("skills")).unwrap();
+        link_shared(&source, &dir, shared_items("claude"));
+        assert!(dir
+            .join("skills")
+            .symlink_metadata()
+            .unwrap()
+            .file_type()
+            .is_symlink());
+    }
+
+    /// A launch or a transcript write under a stamp whose directory is gone
+    /// must fail, never recreate the account; the default never fails.
+    #[test]
+    fn existing_account_dir_refuses_a_removed_account() {
+        with_root(|root| {
+            assert_eq!(existing_account_dir("claude", None).unwrap(), None);
+            assert_eq!(
+                existing_account_dir("claude", Some(DEFAULT_ACCOUNT)).unwrap(),
+                None
+            );
+            let err = existing_account_dir("claude", Some("work")).unwrap_err();
+            assert!(err.to_string().contains("has been removed"), "{err}");
+            assert!(!root.join("claude").join("work").exists());
+
+            std::fs::create_dir_all(root.join("claude").join("work")).unwrap();
+            assert_eq!(
+                existing_account_dir("claude", Some("work")).unwrap(),
+                Some(root.join("claude").join("work"))
+            );
+        });
+    }
+
+    /// Only what skips first-run onboarding is seeded: the flag, and the
+    /// theme when the user's own state has one. Never the account identity.
+    #[test]
+    fn claude_state_seed_skips_onboarding_and_keeps_the_theme_only() {
+        let own = br#"{"theme":"dark","oauthAccount":{"emailAddress":"a@b"},"hasCompletedOnboarding":true}"#;
+        assert_eq!(
+            claude_state_seed(Some(own)),
+            serde_json::json!({ "hasCompletedOnboarding": true, "theme": "dark" })
+        );
+        assert_eq!(
+            claude_state_seed(None),
+            serde_json::json!({ "hasCompletedOnboarding": true })
+        );
+        assert_eq!(
+            claude_state_seed(Some(b"not json")),
+            serde_json::json!({ "hasCompletedOnboarding": true })
+        );
+    }
+
+    /// The vars a managed launch strips are the ones that would sign the CLI
+    /// in as the default account; endpoint vars are not among them.
+    #[test]
+    fn ambient_credential_vars_name_logins_not_endpoints() {
+        for provider in ACCOUNT_PROVIDERS {
+            let vars = ambient_credential_vars(provider);
+            assert!(!vars.is_empty(), "{provider}");
+            assert!(!vars.contains(&"ANTHROPIC_BASE_URL"));
+            assert!(!vars.contains(&"OPENAI_BASE_URL"));
+        }
+        assert!(ambient_credential_vars("claude").contains(&"ANTHROPIC_API_KEY"));
+        assert!(ambient_credential_vars("codex").contains(&"OPENAI_API_KEY"));
+        assert!(ambient_credential_vars("cursor").is_empty());
+    }
+
+    #[test]
+    fn removing_is_idempotent_and_scoped_to_the_account() {
+        with_root(|root| {
+            let dir = root.join("codex").join("work");
+            std::fs::create_dir_all(dir.join("sessions")).unwrap();
+            std::fs::write(root.join("codex").join("keep"), "x").unwrap();
+            remove_account_dir("codex", "work").unwrap();
+            assert!(!dir.exists());
+            assert!(root.join("codex").join("keep").exists());
+            remove_account_dir("codex", "work").unwrap();
+        });
+    }
+}

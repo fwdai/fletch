@@ -4,6 +4,7 @@
 //! that call them. Every handler is re-exported here so `lib.rs`'s
 //! `generate_handler![commands::x, ...]` list keeps resolving unchanged.
 
+mod accounts;
 mod agent;
 mod app;
 mod context;
@@ -13,6 +14,7 @@ mod git_ops;
 mod git_state;
 mod github;
 mod issues;
+mod limits;
 mod provider_login;
 mod roadmap;
 // Paired-device remote access is a desktop feature; the module it drives is
@@ -27,6 +29,7 @@ mod tooling;
 mod workflow;
 mod workspace;
 
+pub use accounts::*;
 pub use agent::*;
 pub use app::*;
 pub use context::*;
@@ -36,6 +39,7 @@ pub use git_ops::*;
 pub use git_state::*;
 pub use github::*;
 pub use issues::*;
+pub use limits::*;
 pub use provider_login::*;
 #[cfg(desktop)]
 pub use remote::*;

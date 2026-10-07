@@ -10,12 +10,29 @@
 
 import type { ProviderLoginExitEvent } from "@/api";
 import { api, onProviderLoginExit, onProviderLoginOutput } from "@/api";
+import { DEFAULT_ACCOUNT_ID } from "@/api/types/providers";
 import { createPtyChannel, type OutputHandler } from "@/pty/channel";
 import { decodeBase64 } from "@/pty/decode";
 
 /** Sign-in output per provider id. A login flow prints a URL, a code and a
  *  confirmation — 64 KiB is far more than enough to replay. */
 const output = createPtyChannel(64 * 1024);
+
+/** The key one sign-in runs under, and the `id` its events carry: the provider
+ *  id for its default account, `<provider>:<account>` for a Fletch-managed
+ *  one. Mirrors `session_key` in src-tauri/src/commands/provider_login.rs.
+ *  Every function below takes this key, not a bare provider id. */
+export function loginKey(providerId: string, accountId?: string): string {
+  return accountId && accountId !== DEFAULT_ACCOUNT_ID ? `${providerId}:${accountId}` : providerId;
+}
+
+/** The provider and account a key names — the inverse of `loginKey`. */
+function splitKey(key: string): { providerId: string; accountId?: string } {
+  const at = key.indexOf(":");
+  return at === -1
+    ? { providerId: key }
+    : { providerId: key.slice(0, at), accountId: key.slice(at + 1) };
+}
 
 /** Everything a provider's sign-in has printed so far, to replay into a
  *  terminal that has just (re)mounted. */
@@ -152,7 +169,8 @@ async function openPty(id: string, cols: number, rows: number): Promise<void> {
     // exit must find the mark to clear it — or a later Close would wait for an
     // exit that already came.
     spawned.add(id);
-    await api.openProviderLogin(id, cols, rows);
+    const { providerId, accountId } = splitKey(id);
+    await api.openProviderLogin(providerId, cols, rows, accountId);
   } catch (err) {
     // Nothing is attached, so report it through the same channel an exit uses.
     spawned.delete(id);

@@ -35,6 +35,8 @@ use std::time::Instant;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 
+use crate::agent::accounts;
+use crate::agent::limits::ProviderLimits;
 use cache::IoStats;
 pub use cache::ScanCache;
 use parse::{local_hour_start_ms, UsageRecord};
@@ -83,7 +85,7 @@ impl TokenCounts {
     }
 }
 
-/// One hour/provider/model cell of the usage table.
+/// One hour/provider/model/account cell of the usage table.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UsageBucket {
@@ -94,6 +96,9 @@ pub struct UsageBucket {
     /// `"claude"` or `"codex"`.
     pub provider: String,
     pub model: String,
+    /// The provider account whose directory holds the transcript: a managed
+    /// id, or `"default"` (`agent::accounts::DEFAULT_ACCOUNT`).
+    pub account: String,
     pub tokens: TokenCounts,
     /// Number of usage records folded into this bucket (post-dedupe).
     pub requests: u32,
@@ -109,6 +114,8 @@ pub struct UsageSessionSpan {
     /// `"claude"` or `"codex"`.
     pub provider: String,
     pub id: String,
+    /// As [`UsageBucket::account`].
+    pub account: String,
     pub first_ms: i64,
     pub last_ms: i64,
 }
@@ -116,7 +123,7 @@ pub struct UsageSessionSpan {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UsageScan {
-    /// Sorted by (`hour_start_ms`, provider, model).
+    /// Sorted by (`hour_start_ms`, provider, model, account).
     pub buckets: Vec<UsageBucket>,
     /// Sorted by (provider, `first_ms`, id).
     pub sessions: Vec<UsageSessionSpan>,
@@ -133,6 +140,43 @@ pub struct UsageScan {
     /// the range the caller wants to slice out of it.
     pub since_ms: i64,
     pub until_ms: i64,
+    /// The newest plan-limits reading any scanned codex rollout carried, per
+    /// account id. Not part of the answer a client gets: the engine stores it
+    /// as the account's `rollout` reading (`commands::limits`).
+    #[serde(skip)]
+    pub rollout_limits: BTreeMap<String, ProviderLimits>,
+}
+
+/// A managed account's directory and id. A transcript under the directory is
+/// the account's; any other belongs to the default account.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AccountRoot {
+    pub dir: PathBuf,
+    pub id: String,
+}
+
+/// Every managed account of every account provider on this host.
+fn account_roots() -> Vec<AccountRoot> {
+    accounts::ACCOUNT_PROVIDERS
+        .iter()
+        .flat_map(|provider| {
+            accounts::list_account_ids(provider)
+                .into_iter()
+                .filter_map(move |id| {
+                    let dir = accounts::account_dir(provider, &id).ok()?;
+                    Some(AccountRoot { dir, id })
+                })
+        })
+        .collect()
+}
+
+/// The account `path` was written under: the managed one whose directory
+/// holds it, else the default.
+fn account_of<'a>(path: &Path, roots: &'a [AccountRoot]) -> &'a str {
+    roots
+        .iter()
+        .find(|root| path.starts_with(&root.dir))
+        .map_or(accounts::DEFAULT_ACCOUNT, |root| root.id.as_str())
 }
 
 /// Scan the real on-disk transcript roots for `[since_ms, until_ms)`, reusing
@@ -141,9 +185,8 @@ pub struct UsageScan {
 /// Blocking; call from `spawn_blocking`.
 pub fn scan_all(since_ms: i64, until_ms: i64) -> UsageScan {
     let claude = crate::transcripts::claude_projects_dirs();
-    let codex: Vec<PathBuf> = crate::transcripts::codex_sessions_dir()
-        .into_iter()
-        .collect();
+    let codex: Vec<PathBuf> = crate::transcripts::codex_sessions_dirs();
+    let roots = account_roots();
     static CACHE: OnceLock<Mutex<ScanCache>> = OnceLock::new();
     let path = cache_path();
     // Reading the cache is the first scan's I/O budget well spent: it replaces
@@ -163,7 +206,7 @@ pub fn scan_all(since_ms: i64, until_ms: i64) -> UsageScan {
         .lock();
 
     let before = cache.files.len();
-    let out = scan_dirs_with(&mut cache, &claude, &codex, since_ms, until_ms);
+    let out = scan_accounts_with(&mut cache, &claude, &codex, &roots, since_ms, until_ms);
     // Nothing read and nothing pruned means the file on disk still describes
     // this cache exactly — rewriting it would be pure I/O for no new state.
     if out.files_read > 0 || cache.files.len() != before {
@@ -201,16 +244,37 @@ pub fn scan_dirs(
     )
 }
 
+/// [`scan_accounts_with`] with every transcript credited to the default
+/// account.
+pub fn scan_dirs_with(
+    cache: &mut ScanCache,
+    claude_projects_dirs: &[PathBuf],
+    codex_sessions_dirs: &[PathBuf],
+    since_ms: i64,
+    until_ms: i64,
+) -> UsageScan {
+    scan_accounts_with(
+        cache,
+        claude_projects_dirs,
+        codex_sessions_dirs,
+        &[],
+        since_ms,
+        until_ms,
+    )
+}
+
 /// Core scan against a caller-owned cache, with the roots injected so tests
 /// never touch the real home dir: files unchanged since the last scan through
 /// the same cache are not re-read, and grown files are read from where that
 /// scan stopped. `claude_projects_dirs` are `.../projects` dirs (children are
 /// per-project slugs holding `<session>.jsonl`); `codex_sessions_dirs` are
 /// `.../sessions` dirs holding a `YYYY/MM/DD` tree of `rollout-*.jsonl`.
-pub fn scan_dirs_with(
+/// `account_roots` attributes each file to the account it was written under.
+pub fn scan_accounts_with(
     cache: &mut ScanCache,
     claude_projects_dirs: &[PathBuf],
     codex_sessions_dirs: &[PathBuf],
+    account_roots: &[AccountRoot],
     since_ms: i64,
     until_ms: i64,
 ) -> UsageScan {
@@ -251,7 +315,37 @@ pub fn scan_dirs_with(
         cache.files.retain(|path, _| walked.contains(path));
     }
 
-    aggregate(cache, &files, &io, since_ms, until_ms)
+    let mut out = aggregate(cache, &files, account_roots, &io, since_ms, until_ms);
+    out.rollout_limits = rollout_limits(cache, &files, account_roots);
+    out
+}
+
+/// The newest limits reading among `files`' rollouts, per account. Read off
+/// the parse state, so it costs no I/O beyond the scan's own.
+fn rollout_limits(
+    cache: &ScanCache,
+    files: &[PathBuf],
+    roots: &[AccountRoot],
+) -> BTreeMap<String, ProviderLimits> {
+    let mut newest: BTreeMap<String, ProviderLimits> = BTreeMap::new();
+    for path in files {
+        let Some(reading) = cache
+            .files
+            .get(path)
+            .and_then(|entry| entry.codex.as_ref())
+            .and_then(|state| state.rate_limits.as_ref())
+        else {
+            continue;
+        };
+        let account = account_of(path, roots);
+        if newest
+            .get(account)
+            .map_or(true, |known| known.as_of < reading.as_of)
+        {
+            newest.insert(account.to_string(), reading.clone());
+        }
+    }
+    newest
 }
 
 // ── filesystem walk ─────────────────────────────────────────────────────────
@@ -327,6 +421,7 @@ fn read_jsonl_files(dir: &Path) -> Vec<PathBuf> {
 fn aggregate(
     cache: &ScanCache,
     files: &[PathBuf],
+    account_roots: &[AccountRoot],
     io: &IoStats,
     since_ms: i64,
     until_ms: i64,
@@ -336,23 +431,31 @@ fn aggregate(
     // keep the first in file order — identical content-block repeats and resume
     // copies say nothing to choose between, and the file order is fixed.
     let mut chosen: HashMap<&str, (u64, usize)> = HashMap::new();
-    for_each_in_window(cache, files, since_ms, until_ms, |index, _, record| {
-        if let Some(key) = record.dedupe_key.as_deref() {
-            let total = record.tokens.total();
-            let best = chosen.entry(key).or_insert((total, index));
-            if total > best.0 {
-                *best = (total, index);
+    for_each_in_window(
+        cache,
+        files,
+        &[],
+        since_ms,
+        until_ms,
+        |index, _, _, record| {
+            if let Some(key) = record.dedupe_key.as_deref() {
+                let total = record.tokens.total();
+                let best = chosen.entry(key).or_insert((total, index));
+                if total > best.0 {
+                    *best = (total, index);
+                }
             }
-        }
-    });
+        },
+    );
 
     let mut acc = Accumulator::default();
     for_each_in_window(
         cache,
         files,
+        account_roots,
         since_ms,
         until_ms,
-        |index, session, record| {
+        |index, session, account, record| {
             if let Some(key) = record.dedupe_key.as_deref() {
                 if chosen.get(key).map(|&(_, at)| at) != Some(index) {
                     return;
@@ -361,11 +464,11 @@ fn aggregate(
             if record.tokens.total() == 0 {
                 return;
             }
-            acc.record(record.ts_ms, record.provider, &record.model, &record.tokens);
+            acc.record(record, account);
             // The session credited is the chosen copy's, not the first copy's:
             // what counted is what that record says happened.
             if let Some(id) = session {
-                acc.touch_session(record.provider, id, record.ts_ms);
+                acc.touch_session(record.provider, id, account, record.ts_ms);
             }
         },
     );
@@ -374,23 +477,26 @@ fn aggregate(
 }
 
 /// Visit every in-window record of `files`, in the fixed file order, with the
-/// session to credit it to and a running index that identifies it across both
-/// aggregation passes.
+/// session and account to credit it to and a running index that identifies it
+/// across both aggregation passes. With no `account_roots` every record is the
+/// default account's.
 fn for_each_in_window<'a>(
     cache: &'a ScanCache,
     files: &[PathBuf],
+    account_roots: &[AccountRoot],
     since_ms: i64,
     until_ms: i64,
     // The record outlives the walk (it is cached), so the first pass can key a
     // map by its dedupe key. The session id may not: a Codex one is built from
     // the file's path for the length of one file.
-    mut visit: impl FnMut(usize, Option<&str>, &'a UsageRecord),
+    mut visit: impl FnMut(usize, Option<&str>, &str, &'a UsageRecord),
 ) {
     let mut index = 0usize;
     for path in files {
         let Some(entry) = cache.files.get(path) else {
             continue;
         };
+        let account = account_of(path, account_roots);
         // Codex records get their session id from the file, Claude records
         // carry their own (subagent transcripts report the parent's).
         let codex_session_id = entry.codex.as_ref().map(|_| entry.codex_session_id(path));
@@ -402,51 +508,71 @@ fn for_each_in_window<'a>(
                 Provider::Codex => codex_session_id.as_deref(),
                 Provider::Claude => record.session_id.as_deref(),
             };
-            visit(index, session, record);
+            visit(index, session, account, record);
             index += 1;
         }
     }
 }
 
+/// (local hour start, provider, model, account).
+type BucketKey = (i64, Provider, String, String);
+
+/// A session's in-window span, and the account it was first seen under.
+struct SessionAcc {
+    first_ms: i64,
+    last_ms: i64,
+    account: String,
+}
+
 #[derive(Default)]
 struct Accumulator {
-    /// Keyed by (local hour start, provider, model) — a BTreeMap so the output
-    /// is sorted by exactly that tuple with no extra sort pass. `Provider`
-    /// orders `Claude` before `Codex`, i.e. the same way their wire names do.
-    buckets: BTreeMap<(i64, Provider, String), (TokenCounts, u32)>,
-    /// (provider, session id) → (first ms, last ms) over in-window records.
-    sessions: HashMap<(Provider, String), (i64, i64)>,
+    /// A BTreeMap so the output is sorted by exactly the key tuple with no
+    /// extra sort pass. `Provider` orders `Claude` before `Codex`, i.e. the
+    /// same way their wire names do.
+    buckets: BTreeMap<BucketKey, (TokenCounts, u32)>,
+    /// (provider, session id) → span over in-window records.
+    sessions: HashMap<(Provider, String), SessionAcc>,
 }
 
 impl Accumulator {
-    fn record(&mut self, ts_ms: i64, provider: Provider, model: &str, tokens: &TokenCounts) {
+    fn record(&mut self, record: &UsageRecord, account: &str) {
         let entry = self
             .buckets
-            .entry((local_hour_start_ms(ts_ms), provider, model.to_string()))
+            .entry((
+                local_hour_start_ms(record.ts_ms),
+                record.provider,
+                record.model.clone(),
+                account.to_string(),
+            ))
             .or_default();
-        entry.0.add(tokens);
+        entry.0.add(&record.tokens);
         entry.1 += 1;
     }
 
     /// Widen a session's span to include `ts_ms`, creating it on first sight.
-    fn touch_session(&mut self, provider: Provider, id: &str, ts_ms: i64) {
+    fn touch_session(&mut self, provider: Provider, id: &str, account: &str, ts_ms: i64) {
         let entry = self
             .sessions
             .entry((provider, id.to_string()))
-            .or_insert((ts_ms, ts_ms));
-        entry.0 = entry.0.min(ts_ms);
-        entry.1 = entry.1.max(ts_ms);
+            .or_insert_with(|| SessionAcc {
+                first_ms: ts_ms,
+                last_ms: ts_ms,
+                account: account.to_string(),
+            });
+        entry.first_ms = entry.first_ms.min(ts_ms);
+        entry.last_ms = entry.last_ms.max(ts_ms);
     }
 
     fn finish(self, scanned_files: u32, io: &IoStats, since_ms: i64, until_ms: i64) -> UsageScan {
         let mut sessions: Vec<UsageSessionSpan> = self
             .sessions
             .into_iter()
-            .map(|((provider, id), (first_ms, last_ms))| UsageSessionSpan {
+            .map(|((provider, id), span)| UsageSessionSpan {
                 provider: provider.as_str().to_string(),
                 id,
-                first_ms,
-                last_ms,
+                account: span.account,
+                first_ms: span.first_ms,
+                last_ms: span.last_ms,
             })
             .collect();
         sessions.sort_by(|a, b| {
@@ -458,10 +584,11 @@ impl Accumulator {
                 .buckets
                 .into_iter()
                 .map(
-                    |((hour_start_ms, provider, model), (tokens, requests))| UsageBucket {
+                    |((hour_start_ms, provider, model, account), (tokens, requests))| UsageBucket {
                         hour_start_ms,
                         provider: provider.as_str().to_string(),
                         model,
+                        account,
                         tokens,
                         requests,
                     },
@@ -473,6 +600,7 @@ impl Accumulator {
             bytes_read: io.bytes_read,
             since_ms,
             until_ms,
+            rollout_limits: BTreeMap::new(),
         }
     }
 }
@@ -872,6 +1000,106 @@ mod tests {
     }
 
     // ── codex ───────────────────────────────────────────────────────────────
+
+    #[test]
+    fn spend_is_credited_to_the_account_whose_dir_holds_the_transcript() {
+        let td = tempfile::tempdir().unwrap();
+        let line = |session: &str, msg: &str| {
+            claude_line(
+                session,
+                msg,
+                "req",
+                "2026-01-02T10:00:00Z",
+                "claude-opus-4",
+                claude_usage(10, 5, 0, 0),
+            )
+        };
+        let home = claude_file(&td.path().join("home"), "slug", "s1", &[line("s1", "m1")]);
+        let work_dir = td.path().join("accounts").join("claude").join("work");
+        let work = claude_file(&work_dir, "slug", "s2", &[line("s2", "m2")]);
+        let roots = [AccountRoot {
+            dir: work_dir,
+            id: "work".into(),
+        }];
+
+        let (since, until) = wide_window();
+        let out = scan_accounts_with(
+            &mut ScanCache::default(),
+            &[home, work],
+            &[],
+            &roots,
+            since,
+            until,
+        );
+        let buckets: Vec<&str> = out.buckets.iter().map(|b| b.account.as_str()).collect();
+        assert_eq!(buckets, ["default", "work"]);
+        let sessions: Vec<(&str, &str)> = out
+            .sessions
+            .iter()
+            .map(|s| (s.id.as_str(), s.account.as_str()))
+            .collect();
+        assert_eq!(sessions, [("s1", "default"), ("s2", "work")]);
+    }
+
+    #[test]
+    fn without_account_roots_all_spend_is_the_default_accounts() {
+        let td = tempfile::tempdir().unwrap();
+        let sessions = codex_file(
+            td.path(),
+            "a",
+            &[
+                codex_turn_context("2026-01-02T10:00:00Z", "gpt-5"),
+                codex_token_count("2026-01-02T10:00:01Z", codex_usage(10, 0, 0, 5)),
+            ],
+        );
+        let (since, until) = wide_window();
+        let out = scan_dirs(&[], &[sessions], since, until);
+        assert!(!out.buckets.is_empty());
+        assert!(out.buckets.iter().all(|b| b.account == "default"));
+        assert!(out.sessions.iter().all(|s| s.account == "default"));
+    }
+
+    #[test]
+    fn rollout_limits_are_the_newest_reading_per_account() {
+        let td = tempfile::tempdir().unwrap();
+        let default_sessions = codex_file(
+            &td.path().join("home"),
+            "a",
+            &[codex_limits_line("2026-01-02T10:00:00Z", 10.0)],
+        );
+        let work = td.path().join("accounts").join("codex").join("work");
+        let work_sessions = codex_file(
+            &work,
+            "b",
+            &[
+                codex_limits_line("2026-01-02T10:00:00Z", 20.0),
+                codex_limits_line("2026-01-02T10:30:00Z", 40.0),
+            ],
+        );
+        codex_file(
+            &work,
+            "c",
+            &[codex_limits_line("2026-01-02T10:10:00Z", 30.0)],
+        );
+        let roots = [AccountRoot {
+            dir: work,
+            id: "work".into(),
+        }];
+
+        let (since, until) = wide_window();
+        let out = scan_accounts_with(
+            &mut ScanCache::default(),
+            &[],
+            &[default_sessions, work_sessions],
+            &roots,
+            since,
+            until,
+        );
+        let percent = |account: &str| out.rollout_limits[account].five_hour.unwrap().percent;
+        assert_eq!(percent("default"), 10.0);
+        assert_eq!(percent("work"), 40.0);
+        assert_eq!(out.rollout_limits.len(), 2);
+    }
 
     #[test]
     fn codex_takes_model_from_turn_context_and_drops_repeated_usage() {
@@ -1519,9 +1747,7 @@ mod tests {
         // genuinely cold scan, and must not overwrite the installed app's
         // cache from a test run.
         let claude = crate::transcripts::claude_projects_dirs();
-        let codex: Vec<PathBuf> = crate::transcripts::codex_sessions_dir()
-            .into_iter()
-            .collect();
+        let codex: Vec<PathBuf> = crate::transcripts::codex_sessions_dirs();
         let td = tempfile::tempdir().unwrap();
         let cache_file = td.path().join(CACHE_FILE);
 

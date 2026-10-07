@@ -104,12 +104,18 @@ pub struct SubagentLayout {
 
 /// Writes `bodies` as session `session_id`'s own transcript, where the
 /// provider's CLI looks for it when it runs in `cwd` (`container`: in a
-/// container sandbox), so the CLI resumes it like any session of its own. The
+/// container sandbox; `account_dir`: under that managed account's config dir,
+/// `None` for the default), so the CLI resumes it like any session of its own. The
 /// mirror image of `locate` / `read`: the bodies go out as they are, with only
 /// the session-identity fields the format requires naming the new session.
 /// `Ok(None)` when they hold nothing the CLI can resume, so nothing is written.
-pub type TranscriptWrite =
-    fn(session_id: &str, cwd: &Path, container: bool, bodies: &[Value]) -> Result<Option<PathBuf>>;
+pub type TranscriptWrite = fn(
+    session_id: &str,
+    cwd: &Path,
+    container: bool,
+    account_dir: Option<&Path>,
+    bodies: &[Value],
+) -> Result<Option<PathBuf>>;
 
 /// How to find and parse a provider's on-disk transcript into ordered records.
 pub struct TranscriptReader {

@@ -169,6 +169,17 @@
   color: var(--fg-0);
   font-variant-numeric: tabular-nums;
 }
+/* A provider's per-account split, indented under its row past the icon. */
+.usg-prov.usg-prov-acct {
+  border-top: 0;
+  padding: 2px 0 8px 36px;
+}
+.usg-prov-acct-name {
+  color: var(--fg-1);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 
 .usg-chart-t {
   color: var(--fg-2);

@@ -175,7 +175,18 @@ describe("loginSessions", () => {
 
     exitTap.resolve(() => {});
     await run;
-    expect(openProviderLogin).toHaveBeenCalledWith(ID, 80, 24);
+    // A bare provider key is the default account: no account is named.
+    expect(openProviderLogin).toHaveBeenCalledWith(ID, 80, 24, undefined);
+  });
+
+  it("splits a managed account's key into provider and account for the backend", async () => {
+    registerTaps();
+    await sessions.runLogin(sessions.loginKey(ID, "work"), 80, 24);
+    expect(openProviderLogin).toHaveBeenCalledWith(ID, 80, 24, "work");
+    // The default account id keys the flow by the bare provider, as before.
+    expect(sessions.loginKey(ID, "default")).toBe(ID);
+    expect(sessions.loginKey(ID)).toBe(ID);
+    expect(sessions.loginKey(ID, "work")).toBe("claude:work");
   });
 
   it("applies output and an exit that arrive the instant the PTY opens", async () => {

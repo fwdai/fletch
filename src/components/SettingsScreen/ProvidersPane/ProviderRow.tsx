@@ -14,7 +14,7 @@ import { ProviderIcon } from "@/components/ProviderIcon";
 import { Button } from "@/components/ui/Button";
 import { DocsLink } from "@/components/ui/DocsLink";
 import { modelSummary } from "@/data/modelCatalog";
-import { installCommand, PROVIDER_DETAIL } from "@/data/providerDetail";
+import { installCommand, PROVIDER_DETAIL, supportsAccounts } from "@/data/providerDetail";
 import type { Provider } from "@/data/providers";
 import { useAppStore } from "@/store";
 import { activeEntry, useGate } from "@/store/capabilities";
@@ -22,6 +22,7 @@ import type { InstallState } from "@/store/types";
 import { BinaryPathRow } from "../BinaryPathRow";
 import { ProviderAuthBadge } from "../ProviderAuthBadge";
 import { SetToggle } from "../primitives";
+import { AccountsSection } from "./AccountsSection";
 import { InstallLog } from "./InstallLog";
 import { InstallOptions } from "./InstallOptions";
 import { SignInSection } from "./SignInSection";
@@ -35,7 +36,14 @@ export function ProviderRow({ provider }: { provider: Provider }) {
   const livePath = useAppStore((s) => s.providerPaths[id]);
   const override = useAppStore((s) => s.providerPathOverrides[id]);
   const install = useAppStore((s) => s.installs[id]);
-  const auth = useAppStore((s) => s.providerAuth[id]);
+  const defaultAuth = useAppStore((s) => s.providerAuth[id]);
+  // For a provider with accounts the badge speaks for the account new agents
+  // use, not for the CLI's own login — those can differ, and the former is the
+  // one that decides whether a new agent works.
+  const activeAccountAuth = useAppStore(
+    (s) => s.providerAccounts[id]?.find((a) => a.active)?.status,
+  );
+  const auth = supportsAccounts(id) ? (activeAccountAuth ?? defaultAuth) : defaultAuth;
   const liveModels = useAppStore((s) => s.modelsByAgent[id]);
   const setProviderEnabled = useAppStore((s) => s.setProviderEnabled);
   const setProviderPathOverride = useAppStore((s) => s.setProviderPathOverride);
@@ -230,7 +238,11 @@ export function ProviderRow({ provider }: { provider: Provider }) {
                     : `Installed. Flip the toggle to show ${label} in the composer's model picker.`}
                 </p>
               )}
-              <SignInSection providerId={id} providerLabel={label} />
+              {supportsAccounts(id) ? (
+                <AccountsSection providerId={id} providerLabel={label} />
+              ) : (
+                <SignInSection providerId={id} providerLabel={label} />
+              )}
             </>
           )}
         </div>

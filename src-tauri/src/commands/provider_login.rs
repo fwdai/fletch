@@ -23,19 +23,37 @@ struct LoginExitPayload {
     message: String,
 }
 
+/// The key a sign-in runs under, and the `id` its events carry: the provider
+/// alone for its default account, `<provider>:<account>` for a Fletch-managed
+/// one. The frontend builds the same string (`loginKey` in
+/// SettingsScreen/ProviderLogin/loginSessions.ts).
+pub(crate) fn session_key(id: &str, account: Option<&str>) -> String {
+    match account.filter(|a| !crate::agent::accounts::is_default(a)) {
+        Some(account) => format!("{id}:{account}"),
+        None => id.to_string(),
+    }
+}
+
 /// Run a provider's pinned sign-in command under a PTY so the user can complete
 /// it inside Settings. Output streams as `provider-login:output` (raw bytes,
-/// base64) and the end of the flow as `provider-login:exit`.
+/// base64) and the end of the flow as `provider-login:exit`, both carrying the
+/// [`session_key`] as their `id`.
 ///
-/// Idempotent: while a sign-in for `id` is live this does nothing, so
-/// re-opening the row re-attaches to the flow already in progress rather than
-/// starting a second one. Errors when the provider has no login command or its
-/// binary can't be resolved.
+/// `account` names a Fletch-managed account directory (see `agent::accounts`)
+/// to sign in: the CLI runs with its config-dir env pointed there, so the
+/// login lands in that account and not the user's own. Absent or the default
+/// signs the CLI's own directory in, as before.
+///
+/// Idempotent: while a sign-in under the same key is live this does nothing,
+/// so re-opening the row re-attaches to the flow already in progress rather
+/// than starting a second one. Errors when the provider has no login command
+/// or its binary can't be resolved.
 #[tauri::command]
 pub fn open_provider_login(
     app: AppHandle,
     sessions: State<'_, ProviderLoginSessions>,
     id: String,
+    account: Option<String>,
     cols: u16,
     rows: u16,
 ) -> Result<()> {
@@ -50,15 +68,38 @@ pub fn open_provider_login(
     let program = crate::agent::resolve_agent_bin(&id, bin, label, &home)?;
     let args: Vec<String> = args.iter().map(|a| (*a).to_string()).collect();
 
+    // A managed account's directory is (re)made right before the CLI writes
+    // into it, so its shared config links are current for the login too. The
+    // default account's ambient credentials are dropped for the same reason
+    // the spawn path drops them: an API key in the login shell would have the
+    // CLI skip (or short-circuit) the very login this flow is for.
+    let (env, env_remove): (Vec<(String, String)>, Vec<String>) = match account
+        .as_deref()
+        .filter(|a| !crate::agent::accounts::is_default(a))
+    {
+        Some(acct) => {
+            crate::agent::accounts::ensure_account_dir(&id, acct)?;
+            (
+                crate::agent::accounts::account_env(&id, acct)?,
+                crate::agent::accounts::ambient_credential_vars(&id)
+                    .iter()
+                    .map(|v| v.to_string())
+                    .collect(),
+            )
+        }
+        None => (Vec::new(), Vec::new()),
+    };
+
+    let key = session_key(&id, account.as_deref());
     let app_out = app.clone();
-    let id_out = id.clone();
-    let id_exit = id.clone();
+    let id_out = key.clone();
+    let id_exit = key.clone();
 
     // Held across the spawn so a login that dies immediately (unusable binary,
     // instant refusal) can't have its `on_exit` removal race ahead of the
     // insert below and leave a dead session parked in the map.
     let mut live = sessions.lock();
-    if live.contains_key(&id) {
+    if live.contains_key(&key) {
         return Ok(());
     }
     let session = PtySession::spawn(
@@ -68,10 +109,12 @@ pub fn open_provider_login(
             cwd: &home,
             // `PtySession` already layers the user's login-shell environment
             // (plus TERM) over the inherited one — which is what these flows
-            // need for PATH, HOME and BROWSER.
-            env: &[],
+            // need for PATH, HOME and BROWSER. Only the account's config-dir
+            // var is added on top.
+            env: &env,
             cols,
             rows,
+            env_remove: &env_remove,
             kill_plan: crate::sandbox::KillHandle::ProcessGroup,
         },
         move |bytes| {
@@ -103,11 +146,11 @@ pub fn open_provider_login(
             );
         },
     )?;
-    live.insert(id, session);
+    live.insert(key, session);
     Ok(())
 }
 
-/// Write bytes to a live sign-in PTY's stdin.
+/// Write bytes to a live sign-in PTY's stdin. `id` is the [`session_key`].
 #[tauri::command]
 pub fn write_provider_login(
     sessions: State<'_, ProviderLoginSessions>,

@@ -65,6 +65,16 @@ export interface UsageTotals extends UsageTokenTotals {
   unpricedCacheReadTokens: number;
 }
 
+/** One account's part of a provider's slice. */
+export interface UsageAccountRow extends UsageCostCoverage {
+  /** A managed account id, or `DEFAULT_ACCOUNT_ID`. */
+  account: string;
+  sessions: number;
+  tokens: number;
+  /** Fraction of all processed tokens, 0–1. */
+  share: number;
+}
+
 /** One provider's slice of the window. */
 export interface UsageProviderRow extends UsageCostCoverage {
   provider: UsageProvider;
@@ -74,6 +84,9 @@ export interface UsageProviderRow extends UsageCostCoverage {
   tokens: number;
   /** Fraction of all processed tokens, 0–1. */
   share: number;
+  /** The same slice per account, most tokens first. One entry when the
+   *  provider's usage all ran under one account. */
+  accounts: UsageAccountRow[];
 }
 
 /** One provider's slice of a single day — the chart's hover breakdown. */

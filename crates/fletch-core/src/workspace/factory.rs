@@ -55,6 +55,9 @@ pub fn new_agent_record(
         // from the live setting — callers building records directly (tests)
         // default to the pre-selection NULL, which spawns under sandbox-exec.
         sandbox_engine: None,
+        // Stamped by the same spawn path from the active-account setting;
+        // `None` runs under the CLI's own default account.
+        account: None,
         // Set by the workflow scheduler at step spawn; a plain spawn leaves it
         // unowned so the agent shows in the normal sidebar.
         owner_run_id: None,

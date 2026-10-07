@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use crate::activity::{Activity, ClaudeNativeActivity, ManagedActivity};
 use crate::agent::{
-    capabilities, claude_session_has_messages, per_turn_descriptor, Agent, PerTurnSpec,
+    accounts, capabilities, claude_session_has_messages, per_turn_descriptor, Agent, PerTurnSpec,
     SessionStart, SpawnSpec,
 };
 use crate::error::{Error, Result};
@@ -45,6 +45,18 @@ pub(super) fn stamped_engine(record: &AgentRecord) -> EngineKind {
         .as_deref()
         .and_then(EngineKind::from_setting)
         .unwrap_or(EngineKind::SandboxExec)
+}
+
+/// The account a new agent of `provider` is stamped with: the active-account
+/// setting, when it names a managed account that still exists (see
+/// `accounts::account_for_new_agent`); else the default (`None`).
+fn active_account(ctx: &EngineCtx, provider: &str) -> Option<String> {
+    if !accounts::supports_accounts(provider) {
+        return None;
+    }
+    let setting =
+        crate::database::get_setting(&ctx.db.lock(), &accounts::active_setting_key(provider));
+    accounts::account_for_new_agent(provider, setting.as_deref())
 }
 
 /// Which providers run in container sandboxes: those with a wired-up container
@@ -588,6 +600,9 @@ impl Supervisor {
         // never re-engines it — see `spawn_agent_process`, which reuses the
         // stored value instead of the live setting.
         record.sandbox_engine = Some(engine_kind.as_setting().to_string());
+        // Stamp the provider account the same way: read from the live setting
+        // only here, so switching the active account moves new agents only.
+        record.account = active_account(&ctx, &record.provider);
         // Tag the agent with its owning run (workflow step spawn) so it's
         // hidden from the normal sidebar and cascaded on run delete.
         record.owner_run_id = owner_run_id;
@@ -1406,6 +1421,7 @@ impl Supervisor {
                         cols: 120,
                         rows: 32,
                         engine,
+                        account: record.account.as_deref(),
                         blackboard: blackboard.as_deref(),
                     };
                     spawn_pty_per_turn_agent(
@@ -1435,6 +1451,7 @@ impl Supervisor {
                         mcp_servers: mcp_servers.clone(),
                         rpc_dir,
                         engine,
+                        account: record.account.clone(),
                         blackboard: blackboard.clone(),
                     },
                     ctx.clone(),
@@ -1465,6 +1482,8 @@ impl Supervisor {
                 cols: 120,
                 rows: 32,
                 engine,
+                // The account stamped at creation, never the live setting.
+                account: record.account.as_deref(),
                 blackboard: blackboard.as_deref(),
             };
             match record.view {
@@ -1976,16 +1995,22 @@ fn spawn_managed_agent(
     sup: Arc<Supervisor>,
     gen: u64,
 ) -> Result<Agent> {
-    Agent::spawn_managed(
-        spec,
-        make_event_handler(
-            sup.clone(),
-            ctx.clone(),
-            agent_id.clone(),
-            TurnClose::OnTerminalEvent,
-        ),
-        make_exit_handler(sup, ctx, agent_id, gen),
-    )
+    let on_event = make_event_handler(
+        sup.clone(),
+        ctx.clone(),
+        agent_id.clone(),
+        TurnClose::OnTerminalEvent,
+    );
+    // The stream's `rate_limit_event` is the one free, exact reading of an
+    // account's limits, and only here is it known which account the stream
+    // runs under. The event still flows on to the transcript unchanged.
+    let limits_ctx = ctx.clone();
+    let account = spec.account.map(str::to_string);
+    let on_event = move |event: Value| {
+        crate::agent::limits::observe_stream_event(&limits_ctx, account.as_deref(), &event);
+        on_event(event);
+    };
+    Agent::spawn_managed(spec, on_event, make_exit_handler(sup, ctx, agent_id, gen))
 }
 
 /// Build a per-turn agent (codex, cursor). Their process exits at the end

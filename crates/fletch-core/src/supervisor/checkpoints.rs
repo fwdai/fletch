@@ -1044,6 +1044,7 @@ mod tests {
                 env: &[],
                 cols: 80,
                 rows: 24,
+                env_remove: &[],
                 kill_plan: crate::sandbox::KillHandle::ProcessGroup,
             },
             |_| {},

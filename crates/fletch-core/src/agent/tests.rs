@@ -35,6 +35,7 @@ fn claude_spec(start: SessionStart) -> SpawnSpec<'static> {
         cols: 80,
         rows: 24,
         engine: crate::sandbox::EngineKind::SandboxExec,
+        account: None,
         blackboard: None,
     }
 }

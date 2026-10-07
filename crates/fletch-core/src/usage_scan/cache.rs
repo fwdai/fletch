@@ -34,7 +34,7 @@ use super::parse::{parse_claude_line, parse_codex_line, ClaudeState, CodexState,
 use super::Provider;
 
 /// What one file contributed, plus enough metadata to resume it.
-#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
 pub(super) struct FileEntry {
     /// File length when `records`/`offset` were last brought up to date — i.e.
     /// when a read last reached the end of the file. Left at the

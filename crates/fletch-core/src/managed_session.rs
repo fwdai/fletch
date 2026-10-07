@@ -63,6 +63,10 @@ pub struct ManagedSpawn<'a> {
     /// Extra environment variables (e.g. `FLETCH_RPC_DIR`). `Command` inherits
     /// the parent environment by default; these are layered on top.
     pub env: &'a [(String, String)],
+    /// Variables the child must *not* see, whatever the inherited or login-shell
+    /// environment holds — applied last, after `env`. A managed provider
+    /// account's launch lists the default account's credential vars here.
+    pub env_remove: &'a [String],
     /// How to terminate the child (chosen by the sandbox engine).
     pub kill_plan: KillHandle,
 }
@@ -87,6 +91,12 @@ impl ManagedSession {
         // machine with no usable system git. No-op on system git.
         for (k, v) in crate::git_dist::child_env() {
             cmd.env(k, v);
+        }
+        // Removals strip the login-shell layer, then the caller's env is set,
+        // so a value a launch plan resolved on purpose survives a removal of
+        // the same name (see `PtySession::spawn`).
+        for k in spec.env_remove {
+            cmd.env_remove(k);
         }
         for (k, v) in spec.env {
             cmd.env(k, v);

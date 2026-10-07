@@ -394,6 +394,13 @@ export function onSettingsChanged(cb: (e: SettingsChangedEvent) => void): Promis
   return on<SettingsChangedEvent>("settings:changed", cb);
 }
 
+/** A setting of THIS desktop's engine was written, whatever environment is
+ *  active — for rows about this Mac, like its provider accounts' limits
+ *  (`provider_limits_*`), which a remote host's events must not overwrite. */
+export function onLocalSettingsChanged(cb: (e: SettingsChangedEvent) => void): Promise<UnlistenFn> {
+  return onLocal<SettingsChangedEvent>("settings:changed", cb);
+}
+
 /** One project's client-writable setting was written, from any client. */
 export function onProjectSettingsChanged(
   cb: (e: ProjectSettingsChangedEvent) => void,

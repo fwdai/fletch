@@ -24,6 +24,7 @@ import {
   onAutopilotSwitches,
   onDelegationChanged,
   onDockerBuildProgress,
+  onLocalSettingsChanged,
   onPrChecksChanged,
   onPrSetEntryChanged,
   onPrStateChanged,
@@ -672,6 +673,10 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
   // phone. Folded over what was read, so Settings follows without a refetch.
   // (Project settings are per page; each section subscribes for its project.)
   await bind(onSettingsChanged((e) => applyHostSettingChange(set, e)));
+  // Provider limits are rows about this Mac, written by its own engine (an
+  // agent's stream, a usage scan, a Refresh), so they follow the local engine
+  // whichever environment is active.
+  await bind(onLocalSettingsChanged((e) => get().applyProviderLimitsChange(e.key, e.value)));
 
   // Turn-end verification result (opt-in per project) — stored per agent to
   // feed the Mission Control card's tests chip.

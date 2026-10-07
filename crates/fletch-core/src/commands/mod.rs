@@ -9,23 +9,27 @@
 //! Re-exported flat, like the shell's own `commands` module, so
 //! `commands::commit_agent_impl` resolves without naming the submodule.
 
+pub mod accounts;
 pub mod agent;
 pub mod context;
 pub mod files;
 pub mod git_ops;
 pub mod git_state;
 pub mod github;
+pub mod limits;
 pub mod project_settings;
 pub mod settings;
 pub mod verify;
 pub mod workspace;
 
+pub use accounts::*;
 pub use agent::*;
 pub use context::*;
 pub use files::*;
 pub use git_ops::*;
 pub use git_state::*;
 pub use github::*;
+pub use limits::*;
 pub use project_settings::*;
 pub use settings::*;
 pub use verify::*;

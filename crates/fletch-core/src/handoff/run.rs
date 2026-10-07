@@ -141,8 +141,30 @@ mod tests {
         reply_flag: None,
     };
 
+    /// [`once`], retried on `ETXTBSY`. The tests run in parallel threads, and
+    /// on Linux another test's fork can hold the script this one just wrote
+    /// open for the instant before its own exec; exec'ing the script in that
+    /// window fails with "Text file busy". Nothing but timing is wrong, so
+    /// trying again is the fix — the one error kind, a few times.
+    async fn once_retrying(
+        program: &str,
+        shot: &OneShot,
+        input: &str,
+        timeout: Duration,
+    ) -> Result<String> {
+        for _ in 0..20 {
+            match once(program, shot, None, input, timeout).await {
+                Err(Error::Io(e)) if e.kind() == std::io::ErrorKind::ExecutableFileBusy => {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+                other => return other,
+            }
+        }
+        once(program, shot, None, input, timeout).await
+    }
+
     async fn run(program: &str, shot: &OneShot, input: &str) -> Result<String> {
-        once(program, shot, None, input, Duration::from_secs(10)).await
+        once_retrying(program, shot, input, Duration::from_secs(10)).await
     }
 
     #[tokio::test]
@@ -190,7 +212,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let wedged = script(dir.path(), "sleep 30");
         let started = std::time::Instant::now();
-        let err = once(&wedged, &STDOUT, None, "in", Duration::from_millis(300))
+        let err = once_retrying(&wedged, &STDOUT, "in", Duration::from_millis(300))
             .await
             .unwrap_err();
         assert!(err.to_string().contains("no answer within"), "{err}");

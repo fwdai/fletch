@@ -16,7 +16,7 @@ use super::config_dir::{
 };
 use super::launch_auth::{
     apply_container_auth, prepare_codex_launch, prepare_cursor_launch, prepare_opencode_launch,
-    prepare_pi_launch, present_api_keys,
+    prepare_pi_launch, present_api_keys, NO_ACCOUNT_AUTH_MSG,
 };
 use super::run_args::{prepare_config_mount_dir, MappedUser, ProviderMounts, CREDENTIALS_FILE};
 use super::ContainerProvider;
@@ -212,7 +212,13 @@ pub(crate) fn prepare(
     let auth_start;
     match provider {
         ContainerProvider::Claude => {
-            let cfg = nondefault_claude_config_dir(ctx.home);
+            // A managed account's dir takes the place of the app env's
+            // relocation: mounted and forwarded exactly like it, and the one
+            // whose login the auth chain below reads.
+            let cfg = match ctx.account_dir {
+                Some(dir) => Some(dir.to_path_buf()),
+                None => nondefault_claude_config_dir(ctx.home),
+            };
 
             // Fail the launch with the path rather than hand `-v` a source we
             // couldn't create: the bind would either be recreated root-owned or
@@ -253,23 +259,38 @@ pub(crate) fn prepare(
             projects_src = Some(ps);
 
             auth_start = env.len();
-            apply_container_auth(&mut env, super::auth::resolve())?;
+            let auth = super::auth::resolve(ctx.account_dir);
+            if ctx.account_dir.is_some() && matches!(auth, super::auth::ContainerAuth::Unavailable)
+            {
+                return Err(Error::Other(NO_ACCOUNT_AUTH_MSG.to_string()));
+            }
+            apply_container_auth(&mut env, auth)?;
         }
         ContainerProvider::Codex => {
-            let dir = codex_home_dir(ctx.home);
-            // Forwarded only when non-default: the container already resolves
-            // `~/.codex` via HOME.
-            forward_codex_home = codex_home_is_nondefault(ctx.home);
+            // A managed account's home is always forwarded; otherwise only a
+            // non-default `$CODEX_HOME` is, since the container already
+            // resolves `~/.codex` via HOME.
+            let (dir, forward) = match ctx.account_dir {
+                Some(dir) => (dir.to_path_buf(), true),
+                None => (codex_home_dir(ctx.home), codex_home_is_nondefault(ctx.home)),
+            };
+            forward_codex_home = forward;
             if forward_codex_home {
                 env.push(("CODEX_HOME".into(), dir.to_string_lossy().into_owned()));
             }
 
             auth_start = env.len();
-            prepare_codex_launch(
-                &mut env,
-                &dir,
-                std::env::var("OPENAI_API_KEY").ok().as_deref(),
-            )?;
+            // An ambient `OPENAI_API_KEY` signs in the default account only:
+            // under a managed one it would silently replace that account's
+            // login, so only the account's own `auth.json` counts.
+            let api_key = match ctx.account_dir {
+                Some(_) => None,
+                None => std::env::var("OPENAI_API_KEY").ok(),
+            };
+            if ctx.account_dir.is_some() && !dir.join("auth.json").is_file() {
+                return Err(Error::Other(NO_ACCOUNT_AUTH_MSG.to_string()));
+            }
+            prepare_codex_launch(&mut env, &dir, api_key.as_deref())?;
             codex_config_dir = Some(dir);
         }
         ContainerProvider::Opencode => {
@@ -397,6 +418,57 @@ mod tests {
             passwd_contents("12345:12345", Path::new("/home/svc")),
             "root:x:0:0:root:/root:/bin/sh\nfletch:x:12345:12345:fletch:/home/svc:/bin/sh\n",
         );
+    }
+
+    /// A codex launch under a managed account mounts and forwards the
+    /// account's home, gates on that home's own `auth.json`, and never lets an
+    /// ambient `OPENAI_API_KEY` (the default account's) stand in for it.
+    #[test]
+    fn a_codex_account_launch_uses_the_accounts_home_and_login() {
+        let td = tempfile::tempdir().unwrap();
+        let home = td.path().join("home");
+        let root = td.path().join("w");
+        let rpc = td.path().join("rpc");
+        let account = td.path().join("accounts/codex/work");
+        for dir in [&home, &root, &rpc, &account] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        let ctx = AgentLaunchCtx {
+            agent_id: "a1",
+            provider: "codex",
+            writable_root: &root,
+            source_repos: &[],
+            rpc_dir: &rpc,
+            cwd: &root,
+            home: &home,
+            interactive: false,
+            blackboard: None,
+            account_dir: Some(&account),
+        };
+
+        let err = prepare(&ctx, ContainerProvider::Codex, None)
+            .err()
+            .expect("an account with no auth.json must not launch");
+        assert!(err.to_string().contains("account isn't signed in"), "{err}");
+
+        std::fs::write(account.join("auth.json"), "{}").unwrap();
+        let launch = prepare(&ctx, ContainerProvider::Codex, None).unwrap();
+        let account_s = account.to_string_lossy().into_owned();
+        assert!(launch
+            .env
+            .iter()
+            .any(|(k, v)| k == "CODEX_HOME" && *v == account_s));
+        assert!(launch.auth_vars().is_empty(), "{:?}", launch.auth_vars());
+        match launch.mounts() {
+            ProviderMounts::Codex {
+                config_dir,
+                forward_home,
+            } => {
+                assert_eq!(config_dir, account.as_path());
+                assert!(forward_home);
+            }
+            _ => panic!("expected codex mounts"),
+        }
     }
 
     /// The file lands under the data dir handed in — never under a path an

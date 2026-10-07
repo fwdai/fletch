@@ -22,9 +22,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::{num, parse_ts_ms, UsageRecord};
+use crate::agent::limits::{self, ProviderLimits};
 use crate::usage_scan::{Provider, TokenCounts};
 
-#[derive(Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub(crate) struct CodexState {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -37,6 +38,11 @@ pub(crate) struct CodexState {
     pub(crate) fork_anchor: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) prev_usage: Option<String>,
+    /// The plan limits on the latest `token_count` that carried them,
+    /// normalised: the newest reading of its account's limits this rollout
+    /// holds. Kept with the parse state so a resumed read still knows it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) rate_limits: Option<ProviderLimits>,
 }
 
 pub(crate) fn parse_codex_line(line: &str, state: &mut CodexState, out: &mut Vec<UsageRecord>) {
@@ -89,6 +95,25 @@ pub(crate) fn parse_codex_line(line: &str, state: &mut CodexState, out: &mut Vec
     let Some(payload) = payload else { return };
     if payload.get("type").and_then(Value::as_str) != Some("token_count") {
         return;
+    }
+    // Before the usage checks: an event that adds no spend (codex re-emits an
+    // unchanged reading, or `info` is still null) can still carry newer
+    // limits. A fork's replayed burst can't — its readings are the parent's.
+    if let (Some(rate_limits), Some(ts_ms)) = (payload.get("rate_limits"), parse_ts_ms(&v)) {
+        let replayed = state
+            .fork_anchor
+            .is_some_and(|anchor| ts_ms - anchor < 1000);
+        if !replayed {
+            if let Some(reading) = limits::from_rollout(rate_limits, ts_ms.div_euclid(1000)) {
+                if state
+                    .rate_limits
+                    .as_ref()
+                    .map_or(true, |known| known.as_of <= reading.as_of)
+                {
+                    state.rate_limits = Some(reading);
+                }
+            }
+        }
     }
     // `info` is null on the event codex emits before a turn has run.
     let Some(usage) = payload
@@ -147,6 +172,60 @@ pub(crate) fn parse_codex_line(line: &str, state: &mut CodexState, out: &mut Vec
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::limits::LimitSource;
+    use crate::usage_scan::test_support::{codex_limits_line, ms};
+
+    fn five_hour_percent(state: &CodexState) -> Option<f64> {
+        state
+            .rate_limits
+            .as_ref()
+            .and_then(|l| l.five_hour)
+            .map(|w| w.percent)
+    }
+
+    #[test]
+    fn a_token_count_without_spend_still_carries_the_limits() {
+        let mut state = CodexState::default();
+        let mut out = Vec::new();
+        parse_codex_line(
+            &codex_limits_line("2026-01-02T10:00:00Z", 12.0),
+            &mut state,
+            &mut out,
+        );
+        assert!(out.is_empty(), "no spend recorded");
+        let limits = state.rate_limits.as_ref().expect("limits kept");
+        assert_eq!(limits.source, LimitSource::Rollout);
+        assert_eq!(limits.as_of, ms("2026-01-02T10:00:00Z") / 1000);
+        assert_eq!(five_hour_percent(&state), Some(12.0));
+    }
+
+    #[test]
+    fn the_latest_limits_in_a_rollout_win() {
+        let mut state = CodexState::default();
+        let mut out = Vec::new();
+        for (ts, percent) in [
+            ("2026-01-02T10:00:00Z", 12.0),
+            ("2026-01-02T10:05:00Z", 30.0),
+        ] {
+            parse_codex_line(&codex_limits_line(ts, percent), &mut state, &mut out);
+        }
+        assert_eq!(five_hour_percent(&state), Some(30.0));
+    }
+
+    #[test]
+    fn a_forks_replayed_limits_are_not_its_own() {
+        let mut state = CodexState {
+            fork_anchor: Some(ms("2026-01-02T10:00:00Z")),
+            ..CodexState::default()
+        };
+        let mut out = Vec::new();
+        parse_codex_line(
+            &codex_limits_line("2026-01-02T10:00:00.500Z", 50.0),
+            &mut state,
+            &mut out,
+        );
+        assert_eq!(state.rate_limits, None);
+    }
 
     #[test]
     fn fresh_input_subtracts_the_cached_prefix_but_not_the_cache_writes() {

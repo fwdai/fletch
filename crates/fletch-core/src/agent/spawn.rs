@@ -12,6 +12,7 @@ use crate::pty_session::{PtyExit, PtySession, PtySpawn};
 use crate::sandbox;
 use crate::sandbox::{AgentLaunchCtx, EngineKind, LaunchPlan, SandboxEngine};
 
+use super::accounts;
 use super::args::{prepare_managed_args, prepare_pty_args};
 use super::capabilities::{mcp_delivery, per_turn_descriptor};
 use super::probe::resolve_agent_bin;
@@ -51,6 +52,9 @@ pub struct PerTurnSpec {
     /// every subsequent spawn, so a settings change never re-engines an
     /// existing agent (see `supervisor::lifecycle`).
     pub engine: EngineKind,
+    /// Provider account stamped on the agent's record at creation (see
+    /// `SpawnSpec::account`). `None` = the CLI's own default account.
+    pub account: Option<String>,
     /// The run blackboard dir to grant this per-turn step agent write access to
     /// (§8). `None` for a normal spawn.
     pub blackboard: Option<PathBuf>,
@@ -123,6 +127,10 @@ pub struct SpawnSpec<'a> {
     /// every subsequent spawn (fresh, view-switch, resume), so a settings
     /// change never re-engines an existing agent (see `supervisor::lifecycle`).
     pub engine: EngineKind,
+    /// Provider account stamped on the agent's record at creation and reused on
+    /// every spawn, like `engine`: the CLI runs pointed at that account's config
+    /// dir (`agent::accounts`). `None` = the CLI's own default account.
+    pub account: Option<&'a str>,
     /// The run blackboard dir to grant this agent write access to, when it is a
     /// workflow step agent (§8). `None` for a normal spawn. The sandbox engine
     /// turns it into the seatbelt subpath / Docker mount + `WF_BLACKBOARD`.
@@ -141,6 +149,43 @@ fn rpc_env(rpc_dir: &Path) -> Vec<(String, String)> {
     )];
     env.extend(crate::attribution::agent_env());
     env
+}
+
+/// What a launch needs from the managed account it runs under: the account's
+/// config dir for the sandbox engine, the env pointing the CLI at it, and the
+/// default account's credential vars to strip from the child so the CLI can
+/// only authenticate as that account (the container engines filter the same
+/// vars in their auth chain; host-side launches inherit the login shell, so
+/// they must drop them here). The sessions apply `unset` to the inherited
+/// layers only, before the launch plan's own env: a token a container engine
+/// resolved for *this* account under one of those names is kept, since docker
+/// forwards it from the runtime CLI's process env. All empty for the default
+/// account.
+#[derive(Default)]
+struct AccountLaunch {
+    dir: Option<PathBuf>,
+    env: Vec<(String, String)>,
+    unset: Vec<String>,
+}
+
+/// The managed account a launch of `provider` runs under: its config dir,
+/// repaired first so shared config linked since the last launch is there, and
+/// the env pointing the CLI at it. Nothing for the default account. A stamped
+/// account whose dir was removed fails the launch rather than recreating it
+/// signed out, or silently running the agent under another login.
+fn account_launch(provider: &str, account: Option<&str>) -> Result<AccountLaunch> {
+    let Some(id) = account.filter(|id| !accounts::is_default(id)) else {
+        return Ok(AccountLaunch::default());
+    };
+    accounts::existing_account_dir(provider, Some(id))?;
+    Ok(AccountLaunch {
+        dir: Some(accounts::ensure_account_dir(provider, id)?),
+        env: accounts::account_env(provider, id)?,
+        unset: accounts::ambient_credential_vars(provider)
+            .iter()
+            .map(|v| v.to_string())
+            .collect(),
+    })
 }
 
 /// Run `provider`'s MCP-delivery builder over the session's snapshot, writing
@@ -190,6 +235,7 @@ impl Agent {
         let claude = agent_bin_for("claude", "claude", "Claude Code", engine.as_ref(), &home)?;
         let mcp = resolve_mcp("claude", spec.mcp_servers, &spec.sandbox_root)?;
         let agent_args = prepare_pty_args(&spec, &mcp.args);
+        let account = account_launch("claude", spec.account)?;
 
         let ctx = AgentLaunchCtx {
             agent_id: spec.agent_id,
@@ -201,6 +247,7 @@ impl Agent {
             home: &home,
             interactive: true,
             blackboard: spec.blackboard,
+            account_dir: account.dir.as_deref(),
         };
         let LaunchPlan {
             program,
@@ -213,6 +260,7 @@ impl Agent {
         let mut env = launch_env;
         env.extend(rpc_env(&spec.rpc_dir));
         env.extend(mcp.env);
+        env.extend(account.env);
 
         tracing::info!(
             agent_id = %spec.agent_id,
@@ -232,6 +280,7 @@ impl Agent {
                 env: &env,
                 cols: spec.cols,
                 rows: spec.rows,
+                env_remove: &account.unset,
                 kill_plan: kill,
             },
             on_output,
@@ -274,6 +323,7 @@ impl Agent {
             spec.instructions,
             &mcp.args,
         );
+        let account = account_launch(provider, spec.account)?;
 
         // Unified sandbox: run the agent's TUI under the sandbox engine (the
         // agent's own sandbox is disabled in its arg builder), so per-turn
@@ -288,6 +338,7 @@ impl Agent {
             home: &home,
             interactive: true,
             blackboard: spec.blackboard,
+            account_dir: account.dir.as_deref(),
         };
         let LaunchPlan {
             program,
@@ -300,6 +351,7 @@ impl Agent {
         let mut env = launch_env;
         env.extend(rpc_env(&spec.rpc_dir));
         env.extend(mcp.env);
+        env.extend(account.env);
 
         tracing::info!(
             agent_id = %spec.agent_id,
@@ -320,6 +372,7 @@ impl Agent {
                 env: &env,
                 cols: spec.cols,
                 rows: spec.rows,
+                env_remove: &account.unset,
                 kill_plan: kill,
             },
             on_output,
@@ -340,6 +393,7 @@ impl Agent {
         let claude = agent_bin_for("claude", "claude", "Claude Code", engine.as_ref(), &home)?;
         let mcp = resolve_mcp("claude", spec.mcp_servers, &spec.sandbox_root)?;
         let agent_args = prepare_managed_args(&spec, &mcp.args);
+        let account = account_launch("claude", spec.account)?;
 
         let ctx = AgentLaunchCtx {
             agent_id: spec.agent_id,
@@ -351,6 +405,7 @@ impl Agent {
             home: &home,
             interactive: false,
             blackboard: spec.blackboard,
+            account_dir: account.dir.as_deref(),
         };
         let LaunchPlan {
             program,
@@ -363,6 +418,7 @@ impl Agent {
         let mut env = launch_env;
         env.extend(rpc_env(&spec.rpc_dir));
         env.extend(mcp.env);
+        env.extend(account.env);
 
         tracing::info!(
             agent_id = %spec.agent_id,
@@ -380,6 +436,7 @@ impl Agent {
                 args: &args,
                 cwd: &spec.cwd,
                 env: &env,
+                env_remove: &account.unset,
                 kill_plan: kill,
             },
             on_event,
@@ -489,6 +546,9 @@ impl Agent {
         let agent_bin = program
             .to_str()
             .ok_or_else(|| Error::Other("agent bin path not utf-8".into()))?;
+        // Resolved once for the session: every turn's process runs under the
+        // same account, from the env captured here.
+        let account = account_launch(provider, spec.account.as_deref())?;
 
         let ctx = AgentLaunchCtx {
             agent_id: &spec.agent_id,
@@ -500,6 +560,7 @@ impl Agent {
             home: &home,
             interactive: false,
             blackboard: spec.blackboard.as_deref(),
+            account_dir: account.dir.as_deref(),
         };
         let LaunchPlan {
             program: launch_program,
@@ -510,6 +571,7 @@ impl Agent {
         let mut env = launch_env;
         env.extend(rpc_env(&spec.rpc_dir));
         env.extend(mcp_env);
+        env.extend(account.env);
 
         tracing::info!(
             agent_bin = %program.display(),
@@ -526,6 +588,7 @@ impl Agent {
                 session_id: spec.session_id,
                 stdout_is_json,
                 env,
+                env_remove: account.unset,
                 kill_plan: kill,
             },
             build_args,

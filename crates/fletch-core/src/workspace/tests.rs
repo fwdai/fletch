@@ -486,6 +486,87 @@ fn sandbox_engine_stamp_round_trips() {
 }
 
 #[test]
+fn account_stamp_round_trips() {
+    let db = test_db();
+    seed_repo(&db, "/r");
+    seed_repo(&db, "/r2");
+    let wm = WorkspaceManager::new(db);
+
+    // Same stickiness contract as the engine stamp: every later spawn reads
+    // the account back from the record, never from the live setting.
+    let mut stamped = new_agent_record(
+        "yosemite".into(),
+        "a".into(),
+        "claude".into(),
+        mk_repo("/r"),
+        "t".into(),
+        AgentView::Custom,
+    );
+    stamped.account = Some("work".into());
+    wm.add_agent(&mut stamped).unwrap();
+    assert_eq!(
+        wm.agent("yosemite").unwrap().account.as_deref(),
+        Some("work")
+    );
+
+    // Unstamped is the default account.
+    let mut plain = new_agent_record(
+        "dolomites".into(),
+        "b".into(),
+        "claude".into(),
+        mk_repo("/r2"),
+        "t".into(),
+        AgentView::Custom,
+    );
+    wm.add_agent(&mut plain).unwrap();
+    assert_eq!(wm.agent("dolomites").unwrap().account, None);
+}
+
+/// Removing an account is gated on the live agents stamped with it — by
+/// provider too, since the same id can exist under claude and codex.
+#[test]
+fn live_agents_on_account_counts_unarchived_stamps_of_that_provider() {
+    let db = test_db();
+    seed_repo(&db, "/r");
+    seed_repo(&db, "/r2");
+    seed_repo(&db, "/r3");
+    let wm = WorkspaceManager::new(db.clone());
+
+    for (id, provider, repo) in [
+        ("yosemite", "claude", "/r"),
+        ("dolomites", "claude", "/r2"),
+        ("etna", "codex", "/r3"),
+    ] {
+        let mut rec = new_agent_record(
+            id.into(),
+            id.into(),
+            provider.into(),
+            mk_repo(repo),
+            "t".into(),
+            AgentView::Custom,
+        );
+        rec.account = Some("work".into());
+        wm.add_agent(&mut rec).unwrap();
+    }
+
+    let conn = db.lock();
+    assert_eq!(live_agents_on_account(&conn, "claude", "work").unwrap(), 2);
+    assert_eq!(live_agents_on_account(&conn, "codex", "work").unwrap(), 1);
+    assert_eq!(
+        live_agents_on_account(&conn, "claude", "personal").unwrap(),
+        0
+    );
+
+    // An archived agent has given its checkout up; it no longer holds the account.
+    conn.execute(
+        "UPDATE workspaces SET archived_at = 1 WHERE id = 'yosemite'",
+        [],
+    )
+    .unwrap();
+    assert_eq!(live_agents_on_account(&conn, "claude", "work").unwrap(), 1);
+}
+
+#[test]
 fn update_agent_effort_round_trips() {
     let db = test_db();
     seed_repo(&db, "/r");

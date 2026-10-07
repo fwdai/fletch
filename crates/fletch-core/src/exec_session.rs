@@ -55,6 +55,10 @@ pub struct ExecSpawn {
     /// Extra environment variables (e.g. `FLETCH_RPC_DIR`) set on every turn's
     /// child process, layered on top of the inherited environment.
     pub env: Vec<(String, String)>,
+    /// Variables no turn's child may see, whatever the inherited or login-shell
+    /// environment holds — applied last, after `env`. A managed provider
+    /// account's launch lists the default account's credential vars here.
+    pub env_remove: Vec<String>,
     /// How to terminate a turn's child (chosen by the sandbox engine).
     pub kill_plan: KillHandle,
 }
@@ -65,6 +69,7 @@ pub struct ExecSession {
     cwd: PathBuf,
     stdout_is_json: bool,
     env: Vec<(String, String)>,
+    env_remove: Vec<String>,
     kill_plan: KillHandle,
     session_id: Arc<Mutex<Option<String>>>,
     child: Arc<Mutex<Option<Child>>>,
@@ -118,6 +123,7 @@ impl ExecSession {
             cwd: spec.cwd,
             stdout_is_json: spec.stdout_is_json,
             env: spec.env,
+            env_remove: spec.env_remove,
             kill_plan: spec.kill_plan,
             session_id: Arc::new(Mutex::new(spec.session_id)),
             child: Arc::new(Mutex::new(None)),
@@ -178,6 +184,11 @@ impl ExecSession {
         // machine with no usable system git. No-op on system git.
         for (k, v) in crate::git_dist::child_env() {
             cmd.env(k, v);
+        }
+        // Removals before the session's own env, as in `PtySession::spawn`: a
+        // launch plan's resolved value survives a removal of the same name.
+        for k in &self.env_remove {
+            cmd.env_remove(k);
         }
         for (k, v) in &self.env {
             cmd.env(k, v);
@@ -431,6 +442,7 @@ mod tests {
                 session_id: None,
                 stdout_is_json: true,
                 env: vec![],
+                env_remove: Vec::new(),
                 kill_plan: KillHandle::ProcessGroup,
             },
             codex_args,
@@ -488,6 +500,7 @@ mod tests {
                 session_id: Some("prev-thread".into()),
                 stdout_is_json: true,
                 env: vec![],
+                env_remove: Vec::new(),
                 kill_plan: KillHandle::ProcessGroup,
             },
             codex_args,
@@ -527,6 +540,7 @@ mod tests {
                 session_id: None,
                 stdout_is_json: true,
                 env: vec![],
+                env_remove: Vec::new(),
                 kill_plan: KillHandle::ProcessGroup,
             },
             codex_args,
@@ -599,6 +613,7 @@ mod tests {
                 session_id: None,
                 stdout_is_json: true,
                 env: vec![],
+                env_remove: Vec::new(),
                 kill_plan: KillHandle::ProcessGroup,
             },
             codex_args,
