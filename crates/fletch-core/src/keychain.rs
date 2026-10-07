@@ -10,7 +10,9 @@
 //!
 //! A caller that genuinely needs the secret must ask for it explicitly and
 //! elsewhere — see [`crate::sandbox::container::auth::resolve`], which reads the
-//! credential once per container launch. Nothing on a polling path may do that.
+//! credential once per container launch, and `auth::oauth_access_token`, read
+//! once per press of an account's limits Refresh. Nothing on a polling path may
+//! do that.
 //!
 //! Off macOS there is no equally cheap check, so the answer is always `false`;
 //! callers treat that as "no Keychain login to find here", not "signed out".

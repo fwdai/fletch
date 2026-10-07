@@ -241,8 +241,10 @@ fn chain_inputs() -> (Option<HashMap<String, String>>, bool) {
 /// there's no readable/usable login (Keychain locked or empty, non-macOS host).
 ///
 /// `-w` is what makes this *read the password*, which can raise a Keychain
-/// access prompt — acceptable once per container launch, not on a polling
-/// probe. Call this only from [`resolve`]; presence questions go to
+/// access prompt — acceptable once per container launch or explicit user
+/// action, never on a polling probe. Two callers, both of that kind:
+/// [`resolve`] (a container launch) and [`oauth_access_token`] (the Refresh
+/// button of an account's limits). Presence questions go to
 /// [`crate::keychain::item_present`].
 #[cfg(target_os = "macos")]
 fn keychain_token(service: &str) -> Option<String> {
@@ -259,6 +261,31 @@ fn keychain_token(service: &str) -> Option<String> {
 #[cfg(not(target_os = "macos"))]
 fn keychain_token(_service: &str) -> Option<String> {
     None
+}
+
+/// The OAuth access token of a claude login, for the one request that needs
+/// it outside a launch: the account's limits, read from Claude's usage
+/// endpoint when the user presses Refresh (`agent::limits::oauth_usage`).
+/// Never call it from a polling path — it reads the Keychain password.
+///
+/// `account_dir` is a managed account's config dir, `None` for the default.
+/// Same sources as that account's launch chain, and only those: its Keychain
+/// item, then its `.credentials.json`. Never the setup-token or the shell's
+/// auth vars — they are API credentials of the default account, not a login
+/// whose plan has limits to read. The caller must not log or return the
+/// token.
+pub(crate) fn oauth_access_token(account_dir: Option<&Path>) -> Option<String> {
+    if let Some(token) = keychain_token(&claude_keychain_service(account_dir)) {
+        return Some(token);
+    }
+    let dir = match account_dir {
+        Some(dir) => dir.to_path_buf(),
+        None => credentials_config_dir(
+            std::env::var_os("CLAUDE_CONFIG_DIR").as_deref(),
+            dirs::home_dir().as_deref(),
+        )?,
+    };
+    usable_oauth_token(std::fs::read(dir.join(".credentials.json")).ok().as_deref())
 }
 
 /// Fold the app's own process environment together with the login-shell probe
@@ -760,6 +787,24 @@ mod tests {
         assert!(credentials_file_usable(Some(
             br#"{"claudeAiOauth":{"accessToken":"sk-ant-oat-x","refreshToken":"r","expiresAt":1}}"#
         )));
+    }
+
+    /// A managed account's token comes from its own directory; a directory
+    /// with no login yields none. (No Keychain item exists for a temp dir, so
+    /// the Keychain step misses without a prompt.)
+    #[test]
+    fn oauth_access_token_reads_the_accounts_own_credentials_file() {
+        let td = tempfile::tempdir().unwrap();
+        assert_eq!(oauth_access_token(Some(td.path())), None);
+        std::fs::write(
+            td.path().join(".credentials.json"),
+            br#"{"claudeAiOauth":{"accessToken":"sk-ant-oat-acct","expiresAt":1893456000000}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            oauth_access_token(Some(td.path())).as_deref(),
+            Some("sk-ant-oat-acct")
+        );
     }
 
     #[test]

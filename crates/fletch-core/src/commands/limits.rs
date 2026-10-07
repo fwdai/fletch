@@ -45,6 +45,7 @@ pub async fn refresh_provider_limits_impl(
 
     let outcome = match provider {
         "codex" => limits::app_server::read_limits(dir.as_deref()).await?,
+        "claude" => limits::oauth_usage::read_limits(dir).await?,
         _ => {
             return Err(Error::Other(format!(
                 "`{provider}` limits can't be refreshed on demand."

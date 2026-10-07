@@ -18,6 +18,7 @@
 //! step.
 
 pub mod app_server;
+pub mod oauth_usage;
 
 use std::collections::BTreeMap;
 
