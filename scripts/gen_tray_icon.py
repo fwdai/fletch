@@ -11,7 +11,15 @@ The bolt geometry is the two filled paths from the brand SVG (the same ones
 `src/components/FletchMark.tsx` renders), flattened to polygons here so no SVG
 rasterizer is needed.
 
-Anti-aliasing: draw at 8x on a transparent canvas, then downscale with LANCZOS.
+Menu-bar weight: the bolt is drawn thin for a 1024px app icon and vanished next
+to the solid marks of Monosnap, Cursor or 1Password. The tray-icon crate draws
+the whole 44px canvas at 18pt, so the mark is scaled to MARK_HEIGHT and each
+slab is offset outward by WEIGHT px with *mitered* corners — the geometry, slab
+angle and sharp tips are exactly the logo's; only the stroke is heavier and the
+gap correspondingly narrower. MARK_HEIGHT + 2*WEIGHT ≈ 40px → ~16pt on screen,
+the height of neighbouring status items.
+
+Anti-aliasing: draw at 16x on a transparent canvas, then downscale with LANCZOS.
 Both the ink (black) and the transparent background have RGB (0,0,0), so the
 blended edge pixels keep RGB=0 and only alpha varies — the template invariant.
 
@@ -24,14 +32,17 @@ template image to fit):
 Run: python3 scripts/gen_tray_icon.py
 """
 
+import math
 import re
 from pathlib import Path
 
 from PIL import Image, ImageDraw
 
 SIZE = 44          # @2x for a ~22pt menu bar
-SCALE = 8          # supersample factor for anti-aliasing
-MARK_HEIGHT = 30   # bolt height at 1x; leaves breathing room like system items
+SCALE = 16         # supersample factor for anti-aliasing
+MARK_HEIGHT = 38.5 # bolt height on the canvas before the weight offset
+WEIGHT = 1.0       # px (canvas scale) each slab grows on every side, mitered
+MITER_LIMIT = 3.0  # bevel a corner whose miter would run past this many WEIGHTs
 
 # Brand bolt, in the SVG's own coordinate space (see FletchMark.tsx).
 BOLT_PATHS = (
@@ -85,6 +96,47 @@ def flatten_path(d: str, segments: int = 24) -> list[tuple[float, float]]:
     return pts
 
 
+def miter_offset(
+    pts: list[tuple[float, float]], r: float, limit: float
+) -> list[tuple[float, float]]:
+    """Offset a convex polygon outward by `r`, keeping corners sharp (mitered).
+    A corner whose miter point would sit further than `limit*r` from the
+    original vertex is bevelled instead, like SVG's stroke-miterlimit."""
+    n = len(pts)
+    area = sum(
+        pts[i][0] * pts[(i + 1) % n][1] - pts[(i + 1) % n][0] * pts[i][1]
+        for i in range(n)
+    )
+    sign = 1.0 if area > 0 else -1.0
+    # Each edge shifted along its outward normal: (start, end, original end).
+    edges = []
+    for i in range(n):
+        (x1, y1), (x2, y2) = pts[i], pts[(i + 1) % n]
+        dx, dy = x2 - x1, y2 - y1
+        length = math.hypot(dx, dy)
+        if length < 1e-9:
+            continue
+        nx, ny = sign * dy / length, -sign * dx / length
+        edges.append(((x1 + nx * r, y1 + ny * r), (x2 + nx * r, y2 + ny * r), (x2, y2)))
+    out: list[tuple[float, float]] = []
+    m = len(edges)
+    for i in range(m):
+        (ax, ay), (bx, by), (vx, vy) = edges[i]
+        (cx, cy), (dx, dy), _ = edges[(i + 1) % m]
+        d1x, d1y, d2x, d2y = bx - ax, by - ay, dx - cx, dy - cy
+        den = d1x * d2y - d1y * d2x
+        if abs(den) < 1e-9:  # collinear neighbours: no corner to miter
+            out.append((bx, by))
+            continue
+        t = ((cx - ax) * d2y - (cy - ay) * d2x) / den
+        px, py = ax + t * d1x, ay + t * d1y
+        if math.hypot(px - vx, py - vy) > limit * r:
+            out.extend([(bx, by), (cx, cy)])  # bevel
+        else:
+            out.append((px, py))
+    return out
+
+
 def main() -> None:
     polys = [flatten_path(d) for d in BOLT_PATHS]
     xs = [p[0] for poly in polys for p in poly]
@@ -99,10 +151,10 @@ def main() -> None:
     img = Image.new("RGBA", (big, big), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
     for poly in polys:
-        draw.polygon(
-            [((px - min_x) * k + off_x, (py - min_y) * k + off_y) for px, py in poly],
-            fill=(0, 0, 0, 255),
-        )
+        pts = [((px - min_x) * k + off_x, (py - min_y) * k + off_y) for px, py in poly]
+        if WEIGHT > 0:
+            pts = miter_offset(pts, WEIGHT * SCALE, MITER_LIMIT)
+        draw.polygon(pts, fill=(0, 0, 0, 255))
 
     # Downscale to the target size; LANCZOS anti-aliases the edges into alpha.
     small = img.resize((SIZE, SIZE), Image.LANCZOS)
