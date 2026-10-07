@@ -124,7 +124,7 @@ pub(crate) static CLAUDE_TRANSCRIPT: TranscriptReader = TranscriptReader {
 /// Write `bodies` as claude session `session_id`, run in `cwd`: the file
 /// `--resume <session_id>` opens, `<projects>/<cwd as a dirname>/<id>.jsonl`
 /// in the projects dir claude uses there (the per-agent one in a container,
-/// [`crate::transcripts::claude_projects_dir`]). Each line's `sessionId` and
+/// else the account's config dir — [`crate::transcripts::claude_projects_dir`]). Each line's `sessionId` and
 /// `cwd`, where it has them, name the new session; the rest, `uuid` and
 /// `parentUuid` chain included, is copied as is, so claude resumes the same
 /// conversation, compactions and all.
@@ -137,12 +137,13 @@ fn claude_write(
     session_id: &str,
     cwd: &Path,
     container: bool,
+    account_dir: Option<&Path>,
     bodies: &[Value],
 ) -> Result<Option<PathBuf>> {
     if !bodies.iter().any(|b| b.get("uuid").is_some()) {
         return Ok(None);
     }
-    let projects = crate::transcripts::claude_projects_dir(cwd, container)
+    let projects = crate::transcripts::claude_projects_dir(cwd, container, account_dir)
         .ok_or_else(|| Error::Other("claude's projects directory can't be resolved".into()))?;
     // Claude goes by its working directory as the OS reports it, symlinks
     // resolved; in a container, that is the path the checkout is mounted at.
@@ -338,7 +339,9 @@ mod tests {
         let cwd = container_cwd(td.path());
         let lines = session_lines();
 
-        let path = claude_write(NEW, &cwd, true, &lines).unwrap().unwrap();
+        let path = claude_write(NEW, &cwd, true, None, &lines)
+            .unwrap()
+            .unwrap();
 
         // Claude's own dir for the new checkout, under the container's mount.
         assert_eq!(
@@ -378,8 +381,11 @@ mod tests {
         let cwd = container_cwd(td.path());
         let metadata = [json!({ "type": "mode", "mode": "normal", "sessionId": "old" })];
 
-        assert_eq!(claude_write(NEW, &cwd, true, &metadata).unwrap(), None);
-        assert_eq!(claude_write(NEW, &cwd, true, &[]).unwrap(), None);
+        assert_eq!(
+            claude_write(NEW, &cwd, true, None, &metadata).unwrap(),
+            None
+        );
+        assert_eq!(claude_write(NEW, &cwd, true, None, &[]).unwrap(), None);
         assert!(!claude_session_has_messages(NEW, &cwd));
     }
 
@@ -388,10 +394,12 @@ mod tests {
         let td = tempfile::tempdir().unwrap();
         let cwd = container_cwd(td.path());
         let lines = session_lines();
-        let path = claude_write(NEW, &cwd, true, &lines).unwrap().unwrap();
+        let path = claude_write(NEW, &cwd, true, None, &lines)
+            .unwrap()
+            .unwrap();
         let before = std::fs::read(&path).unwrap();
 
-        assert!(claude_write(NEW, &cwd, true, &lines[..2]).is_err());
+        assert!(claude_write(NEW, &cwd, true, None, &lines[..2]).is_err());
         assert_eq!(std::fs::read(&path).unwrap(), before);
     }
 

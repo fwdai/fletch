@@ -151,6 +151,38 @@ pub fn list_account_ids(provider: &str) -> Vec<String> {
     ids
 }
 
+/// Every managed account directory of `provider`, in id order — the roots a
+/// transcript scan unions with the CLI's default dir, since an agent stamped
+/// with an account writes its sessions there.
+pub fn list_account_dirs(provider: &str) -> Vec<PathBuf> {
+    let Ok(root) = accounts_root() else {
+        return Vec::new();
+    };
+    list_account_ids(provider)
+        .into_iter()
+        .map(|id| root.join(provider).join(id))
+        .collect()
+}
+
+/// The account a new agent of `provider` is stamped with, given the value of
+/// its active-account setting: `None` (the default) unless the setting names
+/// a managed account whose directory still exists, so a stale setting
+/// degrades to the default rather than failing the spawn.
+pub fn account_for_new_agent(provider: &str, setting: Option<&str>) -> Option<String> {
+    let id = setting.map(str::trim).filter(|id| !is_default(id))?;
+    account_dir(provider, id)
+        .is_ok_and(|dir| dir.is_dir())
+        .then(|| id.to_string())
+}
+
+/// The directory of the account an agent was stamped with, or `None` for the
+/// default (or a stamp that no longer names a valid account). Not necessarily
+/// present: the account may have been removed since.
+pub fn stamped_account_dir(provider: &str, account: Option<&str>) -> Option<PathBuf> {
+    let id = account.filter(|id| !is_default(id))?;
+    account_dir(provider, id).ok()
+}
+
 /// The CLI's own config dir on this host — the default account, and the source
 /// every managed directory links its shared config from. Honours the user's
 /// own env override so a terminal that already relocates the dir is followed.
@@ -294,21 +326,74 @@ pub fn list_accounts(active_id: impl Fn(&str) -> Option<String>) -> Vec<Provider
     out
 }
 
+/// Run `f` with [`ACCOUNTS_ROOT_ENV`] pointed at a fresh tempdir. Serialized
+/// crate-wide: tests in one binary run in parallel, and every module whose
+/// tests touch the accounts root (this one, `transcripts`) must share one lock.
+#[cfg(test)]
+pub(crate) fn with_test_root<T>(f: impl FnOnce(&Path) -> T) -> T {
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let td = tempfile::tempdir().unwrap();
+    std::env::set_var(ACCOUNTS_ROOT_ENV, td.path());
+    let out = f(td.path());
+    std::env::remove_var(ACCOUNTS_ROOT_ENV);
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Serializes the root env var: every test here points it at its own
-    /// tempdir, and tests in one binary run in parallel.
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
     fn with_root<T>(f: impl FnOnce(&Path) -> T) -> T {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let td = tempfile::tempdir().unwrap();
-        std::env::set_var(ACCOUNTS_ROOT_ENV, td.path());
-        let out = f(td.path());
-        std::env::remove_var(ACCOUNTS_ROOT_ENV);
-        out
+        with_test_root(f)
+    }
+
+    #[test]
+    fn a_new_agent_takes_the_active_account_only_while_its_dir_exists() {
+        with_root(|root| {
+            assert_eq!(account_for_new_agent("claude", None), None);
+            assert_eq!(account_for_new_agent("claude", Some("")), None);
+            assert_eq!(account_for_new_agent("claude", Some(DEFAULT_ACCOUNT)), None);
+            // Named but never created (or removed since): the default.
+            assert_eq!(account_for_new_agent("claude", Some("work")), None);
+            std::fs::create_dir_all(root.join("claude").join("work")).unwrap();
+            assert_eq!(
+                account_for_new_agent("claude", Some("work")).as_deref(),
+                Some("work")
+            );
+            // Another provider's directory doesn't count.
+            assert_eq!(account_for_new_agent("codex", Some("work")), None);
+            // Nor does a provider without accounts, or a malformed id.
+            assert_eq!(account_for_new_agent("cursor", Some("work")), None);
+            assert_eq!(account_for_new_agent("claude", Some("../work")), None);
+        });
+    }
+
+    #[test]
+    fn a_stamp_maps_to_its_dir_and_the_default_to_none() {
+        with_root(|root| {
+            assert_eq!(stamped_account_dir("claude", None), None);
+            assert_eq!(stamped_account_dir("claude", Some(DEFAULT_ACCOUNT)), None);
+            assert_eq!(
+                stamped_account_dir("codex", Some("work")),
+                Some(root.join("codex").join("work"))
+            );
+            assert_eq!(stamped_account_dir("cursor", Some("work")), None);
+        });
+    }
+
+    #[test]
+    fn account_dirs_list_only_the_providers_valid_accounts() {
+        with_root(|root| {
+            assert!(list_account_dirs("codex").is_empty());
+            std::fs::create_dir_all(root.join("codex").join("work")).unwrap();
+            std::fs::create_dir_all(root.join("codex").join("Stray Dir")).unwrap();
+            std::fs::create_dir_all(root.join("claude").join("other")).unwrap();
+            assert_eq!(
+                list_account_dirs("codex"),
+                vec![root.join("codex").join("work")]
+            );
+        });
     }
 
     #[test]

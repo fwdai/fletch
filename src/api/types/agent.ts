@@ -132,6 +132,10 @@ export interface AgentRecord {
    *  for the agent's life — a settings change never re-engines it. Null for
    *  agents created before engine selection existed (they run sandbox-exec). */
   sandbox_engine?: string | null;
+  /** The provider account (Settings › Providers) stamped at creation and kept
+   *  for the agent's life — switching the active account never moves it. Null
+   *  for the CLI's own default account. */
+  account?: string | null;
   /** The GitHub issue this workspace was started from (bare issue number as
    *  text), set by the Home inbox's "Start work". Null for a normal spawn. */
   issue_ref?: string | null;

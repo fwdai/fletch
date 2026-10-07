@@ -486,6 +486,43 @@ fn sandbox_engine_stamp_round_trips() {
 }
 
 #[test]
+fn account_stamp_round_trips() {
+    let db = test_db();
+    seed_repo(&db, "/r");
+    seed_repo(&db, "/r2");
+    let wm = WorkspaceManager::new(db);
+
+    // Same stickiness contract as the engine stamp: every later spawn reads
+    // the account back from the record, never from the live setting.
+    let mut stamped = new_agent_record(
+        "yosemite".into(),
+        "a".into(),
+        "claude".into(),
+        mk_repo("/r"),
+        "t".into(),
+        AgentView::Custom,
+    );
+    stamped.account = Some("work".into());
+    wm.add_agent(&mut stamped).unwrap();
+    assert_eq!(
+        wm.agent("yosemite").unwrap().account.as_deref(),
+        Some("work")
+    );
+
+    // Unstamped is the default account.
+    let mut plain = new_agent_record(
+        "dolomites".into(),
+        "b".into(),
+        "claude".into(),
+        mk_repo("/r2"),
+        "t".into(),
+        AgentView::Custom,
+    );
+    wm.add_agent(&mut plain).unwrap();
+    assert_eq!(wm.agent("dolomites").unwrap().account, None);
+}
+
+#[test]
 fn update_agent_effort_round_trips() {
     let db = test_db();
     seed_repo(&db, "/r");

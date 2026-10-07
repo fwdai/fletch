@@ -144,14 +144,45 @@ fn credentials_config_dir(config_dir_env: Option<&OsStr>, home: Option<&Path>) -
 /// This is the container *launch* path, so it does read the Keychain password:
 /// the token has to be handed to the CLI inside the container. Status/probe
 /// callers must use [`host_login_present`] instead.
-pub fn resolve() -> ContainerAuth {
+///
+/// `account_dir` is the managed account (`agent::accounts`) the launch runs
+/// under, `None` for the default. An account's chain is only its own login —
+/// the Keychain item claude keeps for that dir, then its `.credentials.json` —
+/// because the stored setup-token and the shell's auth vars sign in the default
+/// account; taking either would run the agent as someone else. Only the proxy
+/// endpoint still rides along.
+pub fn resolve(account_dir: Option<&Path>) -> ContainerAuth {
     let (env, credentials_file) = chain_inputs();
-    resolve_from(
-        keychain_token(),
-        stored_token(),
+    let Some(dir) = account_dir else {
+        return resolve_from(
+            keychain_token(KEYCHAIN_SERVICE),
+            stored_token(),
+            env.as_ref(),
+            credentials_file,
+        );
+    };
+    account_chain(
+        keychain_token(&claude_keychain_service(Some(dir))),
         env.as_ref(),
-        credentials_file,
+        credentials_file_usable(std::fs::read(dir.join(".credentials.json")).ok().as_deref()),
     )
+}
+
+/// A managed account's chain, pure over its inputs: [`resolve_from`] with no
+/// stored token and only the proxy endpoints of the shell env, so neither of
+/// the default account's fallbacks can stand in for the account's own login.
+fn account_chain(
+    keychain: Option<String>,
+    shell_env: Option<&HashMap<String, String>>,
+    credentials_file: bool,
+) -> ContainerAuth {
+    let proxy_only: Option<HashMap<String, String>> = shell_env.map(|env| {
+        env.iter()
+            .filter(|(k, _)| PROXY_RIDE_ALONG.contains(&k.as_str()))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect()
+    });
+    resolve_from(keychain, None, proxy_only.as_ref(), credentials_file)
 }
 
 /// Whether the *host* has a usable claude login. Drives the providers settings'
@@ -214,9 +245,9 @@ fn chain_inputs() -> (Option<HashMap<String, String>>, bool) {
 /// probe. Call this only from [`resolve`]; presence questions go to
 /// [`crate::keychain::item_present`].
 #[cfg(target_os = "macos")]
-fn keychain_token() -> Option<String> {
+fn keychain_token(service: &str) -> Option<String> {
     let out = std::process::Command::new("security")
-        .args(["find-generic-password", "-s", KEYCHAIN_SERVICE, "-w"])
+        .args(["find-generic-password", "-s", service, "-w"])
         .output()
         .ok()?;
     if !out.status.success() {
@@ -226,7 +257,7 @@ fn keychain_token() -> Option<String> {
 }
 
 #[cfg(not(target_os = "macos"))]
-fn keychain_token() -> Option<String> {
+fn keychain_token(_service: &str) -> Option<String> {
     None
 }
 
@@ -374,7 +405,7 @@ pub enum ContainerAuthStatus {
 
 /// Which chain step is active right now (settings UI polling).
 pub fn status() -> ContainerAuthStatus {
-    match resolve() {
+    match resolve(None) {
         ContainerAuth::Resolved { source, .. } => match source {
             AuthSource::Keychain => ContainerAuthStatus::Keychain,
             AuthSource::StoredToken => ContainerAuthStatus::StoredToken,
@@ -621,6 +652,50 @@ mod tests {
             resolve_from(None, None, Some(&shell), false),
             ContainerAuth::Unavailable
         ));
+    }
+
+    /// An account signs in with its own Keychain item or credentials file only:
+    /// the shell's keys and the stored token belong to the default account.
+    #[test]
+    fn an_account_chain_ignores_the_default_accounts_fallbacks() {
+        let shell = shell_env(&[
+            ("ANTHROPIC_API_KEY", "sk-ant-api-key"),
+            ("ANTHROPIC_BASE_URL", "https://proxy"),
+        ]);
+        assert!(matches!(
+            account_chain(None, Some(&shell), false),
+            ContainerAuth::Unavailable
+        ));
+
+        let (env, source) = resolved(account_chain(
+            Some("sk-ant-oat-account".into()),
+            Some(&shell),
+            true,
+        ));
+        assert_eq!(source, AuthSource::Keychain);
+        assert_eq!(
+            env,
+            vec![
+                (
+                    "CLAUDE_CODE_OAUTH_TOKEN".to_string(),
+                    "sk-ant-oat-account".to_string()
+                ),
+                (
+                    "ANTHROPIC_BASE_URL".to_string(),
+                    "https://proxy".to_string()
+                ),
+            ]
+        );
+
+        let (env, source) = resolved(account_chain(None, Some(&shell), true));
+        assert_eq!(source, AuthSource::CredentialsFile);
+        assert_eq!(
+            env,
+            vec![(
+                "ANTHROPIC_BASE_URL".to_string(),
+                "https://proxy".to_string()
+            )]
+        );
     }
 
     /// The suffix is the first eight hex chars of SHA-256 over the directory

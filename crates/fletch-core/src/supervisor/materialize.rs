@@ -96,7 +96,11 @@ impl Supervisor {
             .ok_or_else(|| Error::Other("agent has no tracked repos".into()))?
             .checkout_path(&record.id)?;
         let container = stamped_engine(record).is_container();
-        let Some(path) = write(session_id, &cwd, container, bodies)? else {
+        // Where the agent's CLI will look: under the account it was stamped
+        // with, which is where its launch points `CLAUDE_CONFIG_DIR`/`CODEX_HOME`.
+        let account_dir =
+            crate::agent::accounts::stamped_account_dir(provider, record.account.as_deref());
+        let Some(path) = write(session_id, &cwd, container, account_dir.as_deref(), bodies)? else {
             return Ok(None);
         };
         let mut diag = ReadDiagnostics::default();

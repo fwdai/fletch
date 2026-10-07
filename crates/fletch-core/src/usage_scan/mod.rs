@@ -141,9 +141,7 @@ pub struct UsageScan {
 /// Blocking; call from `spawn_blocking`.
 pub fn scan_all(since_ms: i64, until_ms: i64) -> UsageScan {
     let claude = crate::transcripts::claude_projects_dirs();
-    let codex: Vec<PathBuf> = crate::transcripts::codex_sessions_dir()
-        .into_iter()
-        .collect();
+    let codex: Vec<PathBuf> = crate::transcripts::codex_sessions_dirs();
     static CACHE: OnceLock<Mutex<ScanCache>> = OnceLock::new();
     let path = cache_path();
     // Reading the cache is the first scan's I/O budget well spent: it replaces
@@ -1519,9 +1517,7 @@ mod tests {
         // genuinely cold scan, and must not overwrite the installed app's
         // cache from a test run.
         let claude = crate::transcripts::claude_projects_dirs();
-        let codex: Vec<PathBuf> = crate::transcripts::codex_sessions_dir()
-            .into_iter()
-            .collect();
+        let codex: Vec<PathBuf> = crate::transcripts::codex_sessions_dirs();
         let td = tempfile::tempdir().unwrap();
         let cache_file = td.path().join(CACHE_FILE);
 

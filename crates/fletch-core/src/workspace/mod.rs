@@ -299,6 +299,12 @@ pub struct AgentRecord {
     /// existed — such agents always ran (and keep running) under sandbox-exec.
     #[serde(default)]
     pub sandbox_engine: Option<String>,
+    /// The provider account (`agent::accounts`) stamped at creation from the
+    /// active-account setting and reused on every process spawn, so switching
+    /// the active account never moves an existing agent to another login.
+    /// `None` = the CLI's own default account.
+    #[serde(default)]
+    pub account: Option<String>,
     /// The workflow run that owns this agent, when it was spawned as a
     /// workflow step (see `workflow::scheduler`). Run-owned agents are hidden
     /// from the normal sidebar (they render under their run) and are cleaned up
@@ -527,7 +533,7 @@ const AGENT_SELECT: &str = "SELECT w.id, w.project_id, w.name, w.task, w.created
             s.effort, s.model, s.instructions, s.handoff_context, s.custom_agent_id,
             s.skills, s.mcp_servers,
             w.sandbox_engine, w.owner_run_id, w.issue_ref, w.purpose, w.title,
-            s.parent_session_id, s.parent_cut_seq
+            s.parent_session_id, s.parent_cut_seq, w.provider_account
      FROM workspaces w
      LEFT JOIN sessions s ON s.workspace_id = w.id AND s.superseded_at IS NULL";
 
@@ -558,6 +564,7 @@ type AgentRow = (
     Option<String>, // w.title
     Option<String>, // s.parent_session_id
     Option<i64>,    // s.parent_cut_seq
+    Option<String>, // w.provider_account
 );
 
 impl WorkspaceManager {

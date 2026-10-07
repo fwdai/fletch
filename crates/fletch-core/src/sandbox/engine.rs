@@ -83,6 +83,13 @@ pub struct AgentLaunchCtx<'a> {
     /// export it as `WF_BLACKBOARD`. `None` for ordinary (non-workflow) agents,
     /// which is every agent until the scheduler (S4) populates it at spawn.
     pub blackboard: Option<&'a Path>,
+    /// The config dir of the managed provider account this launch runs under
+    /// (`agent::accounts`) — what the spawn path points `CLAUDE_CONFIG_DIR` /
+    /// `CODEX_HOME` at. Takes the place of any relocation in the app's own env
+    /// for this launch: seatbelt grants its writable state like the CLI's own
+    /// dir, a container engine mounts it and forwards the env var. `None` = the
+    /// CLI's own default account.
+    pub account_dir: Option<&'a Path>,
 }
 
 impl<'a> AgentLaunchCtx<'a> {
@@ -211,6 +218,7 @@ mod tests {
             home: Path::new("/home/u"),
             interactive: true,
             blackboard: None,
+            account_dir: None,
         }
     }
 

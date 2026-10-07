@@ -62,7 +62,8 @@ pub(crate) fn codex_read(paths: &[PathBuf], diag: &mut ReadDiagnostics) -> Vec<R
 }
 
 /// Write `bodies` as codex thread `session_id`, run in `cwd`: a rollout
-/// `<CODEX_HOME>/sessions/YYYY/MM/DD/rollout-<local time>-<id>.jsonl`, named
+/// `<CODEX_HOME>/sessions/YYYY/MM/DD/rollout-<local time>-<id>.jsonl` (the
+/// managed account's home when the agent runs under one), named
 /// as codex names its own (0.153.4). `codex exec resume <id>` finds it by the
 /// id at the end of its name, as [`codex_locate`] does. Its `session_meta`
 /// names the new thread (`id`, and `session_id` and `cwd` where present);
@@ -71,10 +72,14 @@ pub(crate) fn codex_write(
     session_id: &str,
     cwd: &Path,
     _container: bool,
+    account_dir: Option<&Path>,
     bodies: &[Value],
 ) -> Result<Option<PathBuf>> {
-    let sessions = crate::transcripts::codex_sessions_dir()
-        .ok_or_else(|| Error::Other("codex's sessions directory can't be resolved".into()))?;
+    let sessions = match account_dir {
+        Some(dir) => dir.join("sessions"),
+        None => crate::transcripts::codex_sessions_dir()
+            .ok_or_else(|| Error::Other("codex's sessions directory can't be resolved".into()))?,
+    };
     codex_write_in(&sessions, session_id, cwd, bodies).map(Some)
 }
 
