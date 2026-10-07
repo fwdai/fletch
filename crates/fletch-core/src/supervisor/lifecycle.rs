@@ -1995,16 +1995,22 @@ fn spawn_managed_agent(
     sup: Arc<Supervisor>,
     gen: u64,
 ) -> Result<Agent> {
-    Agent::spawn_managed(
-        spec,
-        make_event_handler(
-            sup.clone(),
-            ctx.clone(),
-            agent_id.clone(),
-            TurnClose::OnTerminalEvent,
-        ),
-        make_exit_handler(sup, ctx, agent_id, gen),
-    )
+    let on_event = make_event_handler(
+        sup.clone(),
+        ctx.clone(),
+        agent_id.clone(),
+        TurnClose::OnTerminalEvent,
+    );
+    // The stream's `rate_limit_event` is the one free, exact reading of an
+    // account's limits, and only here is it known which account the stream
+    // runs under. The event still flows on to the transcript unchanged.
+    let limits_ctx = ctx.clone();
+    let account = spec.account.map(str::to_string);
+    let on_event = move |event: Value| {
+        crate::agent::limits::observe_stream_event(&limits_ctx, account.as_deref(), &event);
+        on_event(event);
+    };
+    Agent::spawn_managed(spec, on_event, make_exit_handler(sup, ctx, agent_id, gen))
 }
 
 /// Build a per-turn agent (codex, cursor). Their process exits at the end

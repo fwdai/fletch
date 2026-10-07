@@ -744,6 +744,29 @@ mod tests {
     }
 
     #[test]
+    fn a_stream_event_is_recorded_under_the_streams_account() {
+        let (ctx, _sink, _dir) = crate::host::ctx::test_ctx();
+        let event = json!({
+            "type": "rate_limit_event",
+            "rate_limit_info": { "unifiedWindows": {
+                "five_hour": { "utilization": 0.25, "resetsAt": 1_788_265_323 },
+            } },
+        });
+        observe_stream_event(&ctx, Some("work"), &event);
+        observe_stream_event(&ctx, Some("work"), &json!({ "type": "assistant" }));
+
+        let row = load(&ctx.db.lock(), "claude", Some("work"));
+        let limits = row.limits.expect("recorded");
+        assert_eq!(limits.source, LimitSource::Stream);
+        assert_eq!(limits.five_hour, window(25.0, 1_788_265_323));
+        assert_eq!(
+            load(&ctx.db.lock(), "claude", None),
+            AccountLimits::default(),
+            "the default account is untouched"
+        );
+    }
+
+    #[test]
     fn an_unreadable_row_reads_as_empty() {
         let (ctx, _sink, _dir) = crate::host::ctx::test_ctx();
         crate::database::set_setting(&ctx.db.lock(), "provider_limits_claude_default", "{nope")
