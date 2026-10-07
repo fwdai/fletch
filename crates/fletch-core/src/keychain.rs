@@ -39,28 +39,43 @@ pub(crate) fn item_present(_service: &str, _account: Option<&str>) -> bool {
     false
 }
 
-/// Delete the generic-password item for `service`, when there is one. True
-/// when no item remains afterwards: deleted, or absent to begin with. Deleting
-/// reads no secret, so it raises no Keychain prompt; a locked keychain or an
-/// unavailable `security` reads as `false`. Only for logins Fletch owns — a
+/// `security`'s exit status for `errSecItemNotFound`: the one failure of a
+/// delete that means "nothing to delete" rather than "could not delete".
+#[cfg(target_os = "macos")]
+const ITEM_NOT_FOUND: i32 = 44;
+
+/// Delete the generic-password item for `service`. `Ok` when no item remains
+/// afterwards — deleted, or absent to begin with — and `Err` with the reason
+/// otherwise: a locked keychain, a denied request, or no `security` binary. The
+/// two are kept apart on purpose: a caller about to discard the item's owner
+/// must not read "could not check" as "already gone". Deleting reads no
+/// secret, so it raises no Keychain prompt. Only for logins Fletch owns — a
 /// managed provider account's — never the CLI's own default item.
 #[cfg(target_os = "macos")]
-pub(crate) fn delete_item(service: &str) -> bool {
-    if !item_present(service, None) {
-        return true;
-    }
-    std::process::Command::new("security")
+pub(crate) fn delete_item(service: &str) -> std::result::Result<(), String> {
+    let output = std::process::Command::new("security")
         .args(["delete-generic-password", "-s", service])
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .is_ok_and(|status| status.success())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .map_err(|e| format!("could not run `security`: {e}"))?;
+    if output.status.success() || output.status.code() == Some(ITEM_NOT_FOUND) {
+        return Ok(());
+    }
+    // `security` prints a one-line reason ("User interaction is not allowed",
+    // "The specified keychain could not be found"), never the item's contents.
+    let reason = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    Err(if reason.is_empty() {
+        format!("`security` exited with {}", output.status)
+    } else {
+        reason
+    })
 }
 
 /// Off macOS nothing is in a keychain to delete.
 #[cfg(not(target_os = "macos"))]
-pub(crate) fn delete_item(_service: &str) -> bool {
-    true
+pub(crate) fn delete_item(_service: &str) -> std::result::Result<(), String> {
+    Ok(())
 }
 
 #[cfg(test)]
@@ -81,5 +96,16 @@ mod tests {
             "fletch-keychain-probe-service-that-does-not-exist",
             Some("nobody")
         ));
+    }
+
+    /// Deleting an item nobody registered is a success, not a failure: the
+    /// caller's question is "does one remain", and none does. (`security` exits
+    /// 44 for it, which is the one code the delete must not report.)
+    #[test]
+    fn deleting_an_absent_item_is_not_an_error() {
+        assert_eq!(
+            delete_item("fletch-keychain-probe-service-that-does-not-exist"),
+            Ok(())
+        );
     }
 }

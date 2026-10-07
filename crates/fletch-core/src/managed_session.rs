@@ -92,11 +92,14 @@ impl ManagedSession {
         for (k, v) in crate::git_dist::child_env() {
             cmd.env(k, v);
         }
-        for (k, v) in spec.env {
-            cmd.env(k, v);
-        }
+        // Removals strip the login-shell layer, then the caller's env is set,
+        // so a value a launch plan resolved on purpose survives a removal of
+        // the same name (see `PtySession::spawn`).
         for k in spec.env_remove {
             cmd.env_remove(k);
+        }
+        for (k, v) in spec.env {
+            cmd.env(k, v);
         }
         cmd.stdin(Stdio::piped());
         cmd.stdout(Stdio::piped());

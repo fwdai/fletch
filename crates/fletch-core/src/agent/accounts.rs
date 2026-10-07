@@ -329,19 +329,21 @@ fn symlink(src: &Path, dst: &Path) -> std::io::Result<()> {
 
 /// Delete a managed account — its directory, links and all, and the login it
 /// held. Codex's login lives in the directory; claude's lives in the macOS
-/// Keychain under the item named for this directory, which goes too, so
+/// Keychain under the item named for this directory, which goes first, so
 /// re-adding an account of the same name starts signed out rather than
-/// inheriting the old credential. The Keychain delete is best-effort (a locked
-/// keychain refuses it): logged, and the directory is removed regardless.
+/// inheriting the old credential. A Keychain delete that fails (a locked
+/// keychain, a denied request) stops the removal with the reason: deleting the
+/// directory anyway would leave the credential behind with nothing to show for
+/// it, and the next account of this name would inherit it.
 pub fn remove_account_dir(provider: &str, id: &str) -> Result<()> {
     let dir = account_dir(provider, id)?;
     if provider == "claude" {
         let service = crate::sandbox::container::auth::claude_keychain_service(Some(&dir));
-        if !crate::keychain::delete_item(&service) {
-            tracing::warn!(
-                account = id,
-                "could not delete the account's Keychain login; it may still exist"
-            );
+        if let Err(reason) = crate::keychain::delete_item(&service) {
+            return Err(Error::Other(format!(
+                "Could not delete the `{id}` account's Keychain login ({reason}). \
+                 Unlock your login keychain and try again; the account was not removed."
+            )));
         }
     }
     match std::fs::remove_dir_all(&dir) {

@@ -109,14 +109,16 @@ impl PtySession {
         // to a line-buffered mode that doesn't match what the user expects.
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");
+        // Removals strip the inherited and login-shell layers above — exactly
+        // where an ambient credential comes from — and go before the caller's
+        // own env, so a value the launch plan set on purpose (a container
+        // engine's resolved account token) survives a removal of the same name.
+        for k in spec.env_remove {
+            cmd.env_remove(k);
+        }
         // Caller-supplied overrides (e.g. FLETCH_RPC_DIR) last, so they win.
         for (k, v) in spec.env {
             cmd.env(k, v);
-        }
-        // Removals after everything: the inherited and login-shell layers above
-        // are exactly where an ambient credential would come from.
-        for k in spec.env_remove {
-            cmd.env_remove(k);
         }
 
         let mut child = pair
@@ -498,6 +500,55 @@ mod tests {
         }
         let text = String::from_utf8_lossy(&seen);
         assert!(text.contains("secret=unset"), "{text}");
+        let exit = exit_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(exit.success, "unexpected PTY exit: {exit:?}");
+    }
+
+    /// A removal only strips what the child would have inherited: a value the
+    /// caller sets explicitly under the same name — a container launch plan's
+    /// resolved account token — reaches the child.
+    #[test]
+    fn env_remove_leaves_a_callers_own_value() {
+        let td = tempfile::tempdir().unwrap();
+        let (out_tx, out_rx) = mpsc::channel();
+        let (exit_tx, exit_rx) = mpsc::channel();
+        std::env::set_var("FLETCH_PTY_TEST_PLANNED", "inherited");
+        let _pty = PtySession::spawn(
+            PtySpawn {
+                program: std::path::Path::new("/bin/sh"),
+                args: &[
+                    "-c".to_string(),
+                    "printf \"planned=${FLETCH_PTY_TEST_PLANNED:-unset}\"".to_string(),
+                ],
+                cwd: td.path(),
+                env: &[(
+                    "FLETCH_PTY_TEST_PLANNED".to_string(),
+                    "from-plan".to_string(),
+                )],
+                cols: 80,
+                rows: 24,
+                env_remove: &["FLETCH_PTY_TEST_PLANNED".to_string()],
+                kill_plan: KillHandle::ProcessGroup,
+            },
+            move |bytes| {
+                let _ = out_tx.send(bytes);
+            },
+            move |exit| {
+                let _ = exit_tx.send(exit);
+            },
+        )
+        .unwrap();
+        std::env::remove_var("FLETCH_PTY_TEST_PLANNED");
+
+        let mut seen = Vec::new();
+        while let Ok(bytes) = out_rx.recv_timeout(Duration::from_secs(2)) {
+            seen.extend(bytes);
+            if String::from_utf8_lossy(&seen).contains("planned=") {
+                break;
+            }
+        }
+        let text = String::from_utf8_lossy(&seen);
+        assert!(text.contains("planned=from-plan"), "{text}");
         let exit = exit_rx.recv_timeout(Duration::from_secs(2)).unwrap();
         assert!(exit.success, "unexpected PTY exit: {exit:?}");
     }
