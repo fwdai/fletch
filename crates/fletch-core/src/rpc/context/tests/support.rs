@@ -65,7 +65,7 @@ pub(super) fn dispatcher_with_checkout_state(
     let resolver: CheckoutResolver = Arc::new(move || Ok(checkouts.lock().unwrap().clone()));
     let d = ContextDispatcher {
         inner: Arc::new(Inner),
-        service: ContextService::new(db.clone()).unwrap(),
+        service: ContextService::new(db.clone(), Arc::new(crate::host::sink::NullSink)).unwrap(),
         project: context::Project {
             id: PROJECT.into(),
             fletch_id: FLETCH_PROJECT.into(),

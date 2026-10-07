@@ -157,21 +157,24 @@ pub fn process(
             continue;
         }
         pending_slugs.push(input.slug.clone());
-        service.add_proposal(&Proposal {
-            id: new_id(),
-            project_id: project_id.to_string(),
-            observation_id: Some(observation.id.clone()),
-            payload: ProposalPayload::Entity {
-                input,
-                stamp: agent_stamp(),
+        service.add_proposal(
+            project,
+            &Proposal {
+                id: new_id(),
+                project_id: project_id.to_string(),
+                observation_id: Some(observation.id.clone()),
+                payload: ProposalPayload::Entity {
+                    input,
+                    stamp: agent_stamp(),
+                },
+                evidence: Vec::new(),
+                status: ProposalStatus::Pending,
+                dismiss_reason: None,
+                created_at: now_millis(),
+                ruled_at: None,
+                ruled_by: None,
             },
-            evidence: Vec::new(),
-            status: ProposalStatus::Pending,
-            dismiss_reason: None,
-            created_at: now_millis(),
-            ruled_at: None,
-            ruled_by: None,
-        })?;
+        )?;
         summary.entities_proposed += 1;
     }
 

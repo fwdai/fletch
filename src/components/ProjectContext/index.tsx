@@ -71,8 +71,11 @@ export function ContextTab({
   // the beat before it answers.
   const enabled = settings ? flagOn(settings[ENABLED_KEY]) : overview.enabled;
   const extract = settings ? flagOn(settings[EXTRACT_KEY]) : overview.extract;
+  // The tab works over active entities only: archived and merged ones are
+  // history, and the store refuses a record about them. A selection that an
+  // archive elsewhere made stale falls back to nothing.
   const active = graph.entities.filter((e) => e.status === "active");
-  const selected = graph.entities.find((e) => e.id === selectedId) ?? null;
+  const selected = active.find((e) => e.id === selectedId) ?? null;
 
   const select = (id: string) => {
     setSelectedId(id);
@@ -148,13 +151,13 @@ export function ContextTab({
               variant="outline"
               size="sm"
               disabled={active.length === 0}
-              onClick={() => setEditor({ kind: "decision", about: selectedId ? [selectedId] : [] })}
+              onClick={() => setEditor({ kind: "decision", about: selected ? [selected.id] : [] })}
             >
               Add decision
             </Button>
           </div>
           <div className="pc-split">
-            <EntityList entities={graph.entities} selectedId={selectedId} onSelect={select} />
+            <EntityList entities={active} selectedId={selectedId} onSelect={select} />
             <div className="pc-detail">
               {editor?.kind === "entity" ? (
                 <AddEntityForm

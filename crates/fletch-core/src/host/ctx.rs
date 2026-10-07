@@ -56,7 +56,7 @@ impl EngineCtx {
         if let Some(service) = self.context.get() {
             return Ok(service);
         }
-        let service = crate::context::ContextService::new(self.db.clone())?;
+        let service = crate::context::ContextService::new(self.db.clone(), self.sink.clone())?;
         Ok(self.context.get_or_init(|| service))
     }
 

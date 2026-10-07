@@ -52,7 +52,14 @@ pub fn store() -> (ContextStore, tempfile::TempDir) {
 /// The service the pipeline writes through, over a temp store.
 pub fn service() -> (ContextService, tempfile::TempDir) {
     let (store, dir) = store();
-    (ContextService::new(store.db().clone()).unwrap(), dir)
+    (
+        ContextService::new(
+            store.db().clone(),
+            std::sync::Arc::new(crate::host::sink::NullSink),
+        )
+        .unwrap(),
+        dir,
+    )
 }
 
 pub fn project() -> Project {

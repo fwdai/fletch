@@ -27,7 +27,10 @@ impl ContextDispatcher {
             budget_chars: 0,
         };
         let store = self.service.store();
-        let graph = store.load(&self.project.id).map_err(|e| e.to_string())?;
+        let graph = self
+            .service
+            .graph(&self.project)
+            .map_err(|e| e.to_string())?;
         let bundle = compile::compile(&graph, &query, self.vision_fallback());
         let markdown = render::render_markdown(&bundle);
 

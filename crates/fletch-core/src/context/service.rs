@@ -4,25 +4,36 @@
 //!
 //! What it owns, so no caller can skip it:
 //! - the gate: a project is resolved through [`ContextService::open`], which
-//!   refuses when the developer gate or the project's own flag is off;
+//!   refuses when the developer gate or the project's own flag is off — and
+//!   the gate is read again on every operation: [`ContextService::check`]
+//!   for a read, and inside every write's transaction by the store
+//!   (`require_enabled_for`), so a [`Project`] held from when the layer was
+//!   on buys nothing once it is off;
 //! - trust: `user_quote` is verified against the user's own turns by
 //!   [`super::trust`], never taken from the caller;
 //! - the write policy: every assertion goes through [`ContextStore::land`],
 //!   which classifies and decides under one transaction;
 //! - settlement: a checkout's outcome confirms or abandons exactly the
-//!   provisional records made in that checkout.
+//!   provisional records made in that checkout;
+//! - the change pulse: every write that changes what a project's context
+//!   says ends in one [`super::CHANGED_EVENT`] on the host's sink, whichever
+//!   writer made it, so every open tab — local or remote — reloads.
 //!
-//! Reads (`load`, `proposals`, `stats`, `compile`) go to the store directly
-//! through [`ContextService::store`]; they change nothing.
+//! Reads that serve context go through [`ContextService::graph`] (gated);
+//! the overview and the pipeline's own bookkeeping tables (observations,
+//! extractor runs) reach the store through [`ContextService::store`].
 
 use rusqlite::Connection;
+use serde::Serialize;
 
 use super::model::*;
 use super::store::{ContextStore, Db};
 use super::trust;
 use super::{ContextError, Result};
+use crate::host::Sink;
 
-/// A project the gate let through: its context id and its host-local id.
+/// A project the gate let through: its context id and its host-local id. A
+/// name for the project, not a lasting permission — see the module doc.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Project {
     pub id: String,
@@ -33,18 +44,27 @@ pub struct Project {
 pub struct ContextService {
     store: ContextStore,
     db: Db,
+    sink: Sink,
+}
+
+#[derive(Serialize)]
+struct Changed<'a> {
+    project_id: &'a str,
 }
 
 impl ContextService {
-    pub fn new(db: Db) -> Result<Self> {
+    pub fn new(db: Db, sink: Sink) -> Result<Self> {
         Ok(Self {
             store: ContextStore::new(db.clone())?,
             db,
+            sink,
         })
     }
 
-    /// Reads, and the pipeline's own bookkeeping tables (observations,
-    /// extractor runs). Every write to the log goes through the methods below.
+    /// The overview's whole read, and the pipeline's own bookkeeping tables
+    /// (observations, extractor runs, reads). Every write to the log goes
+    /// through the methods below; context served to an agent is read
+    /// through [`Self::graph`].
     pub fn store(&self) -> &ContextStore {
         &self.store
     }
@@ -66,6 +86,35 @@ impl ContextService {
             id: super::context_project_id(&conn, fletch_project_id)?,
             fletch_id: fletch_project_id.to_string(),
         })
+    }
+
+    /// The gate, read now, for a project resolved earlier: `Err(Disabled)`
+    /// when either switch has since been turned off. What every read of
+    /// served context goes through (writes read it again in their own
+    /// transaction).
+    pub fn check(&self, project: &Project) -> Result<()> {
+        if self.is_enabled(&project.fletch_id) {
+            Ok(())
+        } else {
+            Err(ContextError::Disabled)
+        }
+    }
+
+    /// The project's graph, for what is served to an agent: the gate first.
+    pub fn graph(&self, project: &Project) -> Result<Graph> {
+        self.check(project)?;
+        self.store.load(&project.id)
+    }
+
+    /// The one change pulse, after a write landed.
+    fn changed(&self, project: &Project) {
+        crate::host::emit(
+            self.sink.as_ref(),
+            super::CHANGED_EVENT,
+            &Changed {
+                project_id: &project.fletch_id,
+            },
+        );
     }
 
     /// The gate plus the extractor's own switch.
@@ -156,15 +205,24 @@ impl ContextService {
                 }
             }
         }
-        self.store.land(&project.id, candidate, stamp)
+        let landing = self.store.land(&project.id, candidate, stamp)?;
+        // A duplicate and a two-step reply write nothing.
+        if matches!(landing, Landing::Recorded { .. } | Landing::Held { .. }) {
+            self.changed(project);
+        }
+        Ok(landing)
     }
 
     pub fn record_entity(&self, project: &Project, input: EntityInput, stamp: Stamp) -> Result<Id> {
-        self.store.record_entity(&project.id, input, stamp)
+        let id = self.store.record_entity(&project.id, input, stamp)?;
+        self.changed(project);
+        Ok(id)
     }
 
     pub fn link(&self, project: &Project, change: LinkChange, stamp: Stamp) -> Result<()> {
-        self.store.link(&project.id, change, stamp)
+        self.store.link(&project.id, change, stamp)?;
+        self.changed(project);
+        Ok(())
     }
 
     pub fn retract(
@@ -174,11 +232,16 @@ impl ContextService {
         reason: &str,
         stamp: Stamp,
     ) -> Result<()> {
-        self.store.retract(&project.id, assertion_id, reason, stamp)
+        self.store
+            .retract(&project.id, assertion_id, reason, stamp)?;
+        self.changed(project);
+        Ok(())
     }
 
     pub fn archive_entity(&self, project: &Project, entity_id: &str, stamp: Stamp) -> Result<()> {
-        self.store.archive_entity(&project.id, entity_id, stamp)
+        self.store.archive_entity(&project.id, entity_id, stamp)?;
+        self.changed(project);
+        Ok(())
     }
 
     pub fn merge_entities(
@@ -189,7 +252,9 @@ impl ContextService {
         stamp: Stamp,
     ) -> Result<()> {
         self.store
-            .merge_entities(&project.id, entity_id, into, stamp)
+            .merge_entities(&project.id, entity_id, into, stamp)?;
+        self.changed(project);
+        Ok(())
     }
 
     pub fn resolve_contradiction(
@@ -201,7 +266,9 @@ impl ContextService {
         stamp: Stamp,
     ) -> Result<()> {
         self.store
-            .resolve_contradiction(&project.id, a, b, reasoning, stamp)
+            .resolve_contradiction(&project.id, a, b, reasoning, stamp)?;
+        self.changed(project);
+        Ok(())
     }
 
     /// One checkout's fate settles its provisional records: `repo` is the
@@ -221,19 +288,35 @@ impl ContextService {
         } else {
             AssertionStatus::Abandoned
         };
-        self.store
-            .settle(&project.id, workspace_id, repo, is_primary, outcome, stamp)
+        let settled =
+            self.store
+                .settle(&project.id, workspace_id, repo, is_primary, outcome, stamp)?;
+        if settled > 0 {
+            self.changed(project);
+        }
+        Ok(settled)
     }
 
     /// Proposals: add one (held by a writer or the extractor), rule on one.
-    pub fn add_proposal(&self, proposal: &Proposal) -> Result<()> {
-        self.store.add_proposal(proposal)
+    /// A ruling is scoped to the project the gate opened: a proposal id from
+    /// another project is unknown here (the store keeps that rule).
+    pub fn add_proposal(&self, project: &Project, proposal: &Proposal) -> Result<()> {
+        if proposal.project_id != project.id {
+            return Err(ContextError::Invalid(
+                "a proposal is added to the project it was made for".into(),
+            ));
+        }
+        self.store.add_proposal(proposal)?;
+        self.changed(project);
+        Ok(())
     }
 
     pub fn accept_proposal(&self, project: &Project, proposal_id: &str, by: Author) -> Result<Id> {
-        self.require_proposal(project, proposal_id)?;
-        self.store
-            .accept_proposal(proposal_id, ProposalStatus::Accepted, by)
+        let id =
+            self.store
+                .accept_proposal(&project.id, proposal_id, ProposalStatus::Accepted, by)?;
+        self.changed(project);
+        Ok(id)
     }
 
     pub fn dismiss_proposal(
@@ -243,19 +326,10 @@ impl ContextService {
         reason: DismissReason,
         by: Author,
     ) -> Result<()> {
-        self.require_proposal(project, proposal_id)?;
-        self.store.dismiss_proposal(proposal_id, reason, by)
-    }
-
-    /// A ruling is scoped to the project the gate opened: a proposal id from
-    /// another project is "no such proposal" here.
-    fn require_proposal(&self, project: &Project, proposal_id: &str) -> Result<()> {
-        match self.store.proposal(proposal_id)? {
-            Some(p) if p.project_id == project.id => Ok(()),
-            _ => Err(ContextError::Invalid(
-                "no such proposal in this project".into(),
-            )),
-        }
+        self.store
+            .dismiss_proposal(&project.id, proposal_id, reason, by)?;
+        self.changed(project);
+        Ok(())
     }
 
     /// For the pipeline modules that need the raw connection for their own
@@ -264,3 +338,7 @@ impl ContextService {
         f(&self.db.lock())
     }
 }
+
+#[cfg(test)]
+#[path = "tests/service.rs"]
+mod tests;

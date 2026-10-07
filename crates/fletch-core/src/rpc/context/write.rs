@@ -70,10 +70,7 @@ impl ContextDispatcher {
     }
 
     fn graph(&self) -> Result<Graph, String> {
-        self.service
-            .store()
-            .load(&self.project.id)
-            .map_err(|e| e.to_string())
+        self.service.graph(&self.project).map_err(|e| e.to_string())
     }
 
     /// The entity is recorded before its relations are resolved, so a bad

@@ -2,8 +2,8 @@
 //! Context tab reads and writes, reached the same way from a paired client
 //! (`remote::dispatch`). Every op takes the host-local `projects.id` and
 //! resolves the project's context id itself; every write is stamped as the
-//! user acting through the UI and ends in a `context:changed` pulse so any
-//! open tab reloads.
+//! user acting through the UI. The `context:changed` pulse any open tab
+//! reloads on is the service's, raised for every writer's writes alike.
 //!
 //! See docs/remote-protocol.md, "Project context".
 
@@ -17,9 +17,7 @@ use crate::context::{
 use crate::error::{Error, Result};
 use crate::host::EngineCtx;
 
-/// Fired with `{ project_id }` (the fletch project id) after every write below.
-/// Carries no row: the tab reloads the overview, which is small by design.
-pub const CONTEXT_CHANGED: &str = "context:changed";
+pub use crate::context::CHANGED_EVENT as CONTEXT_CHANGED;
 
 /// Everything the Context tab shows in one read.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -42,11 +40,6 @@ pub enum ProposalVerdict {
     Dismiss,
 }
 
-#[derive(Serialize)]
-struct Changed<'a> {
-    project_id: &'a str,
-}
-
 /// The stamp every UI write carries: the user, through the UI, from no
 /// particular workspace or turn.
 fn ui_stamp() -> Stamp {
@@ -65,10 +58,6 @@ fn ui_stamp() -> Stamp {
 /// connection lock so the store's own locking can follow.
 fn open(ctx: &EngineCtx, project_id: &str) -> Result<context::Project> {
     Ok(ctx.context()?.open(project_id)?)
-}
-
-fn emit_changed(ctx: &EngineCtx, project_id: &str) {
-    crate::host::emit(ctx.sink.as_ref(), CONTEXT_CHANGED, &Changed { project_id });
 }
 
 pub fn context_overview_impl(ctx: &EngineCtx, project_id: &str) -> Result<ContextOverview> {
@@ -114,7 +103,6 @@ pub fn context_record_entity_impl(
 ) -> Result<Id> {
     let project = open(ctx, project_id)?;
     let recorded = ctx.context()?.record_entity(&project, input, ui_stamp())?;
-    emit_changed(ctx, project_id);
     Ok(recorded)
 }
 
@@ -146,7 +134,6 @@ pub fn context_record_assertion_impl(
             return Err(Error::Other("a user write cannot be held".into()))
         }
     };
-    emit_changed(ctx, project_id);
     Ok(recorded)
 }
 
@@ -161,7 +148,6 @@ pub fn context_retract_impl(
     let project = open(ctx, project_id)?;
     ctx.context()?
         .retract(&project, assertion_id, reason, ui_stamp())?;
-    emit_changed(ctx, project_id);
     Ok(())
 }
 
@@ -173,7 +159,6 @@ pub fn context_archive_entity_impl(
     let project = open(ctx, project_id)?;
     ctx.context()?
         .archive_entity(&project, entity_id, ui_stamp())?;
-    emit_changed(ctx, project_id);
     Ok(())
 }
 
@@ -187,14 +172,12 @@ pub fn context_merge_entities_impl(
     let project = open(ctx, project_id)?;
     ctx.context()?
         .merge_entities(&project, from, into, ui_stamp())?;
-    emit_changed(ctx, project_id);
     Ok(())
 }
 
 pub fn context_link_impl(ctx: &EngineCtx, project_id: &str, change: LinkChange) -> Result<()> {
     let project = open(ctx, project_id)?;
     ctx.context()?.link(&project, change, ui_stamp())?;
-    emit_changed(ctx, project_id);
     Ok(())
 }
 
@@ -210,7 +193,6 @@ pub fn context_resolve_contradiction_impl(
     let project = open(ctx, project_id)?;
     ctx.context()?
         .resolve_contradiction(&project, a, b, reasoning, ui_stamp())?;
-    emit_changed(ctx, project_id);
     Ok(())
 }
 
@@ -236,7 +218,6 @@ pub fn context_rule_proposal_impl(
             None
         }
     };
-    emit_changed(ctx, project_id);
     Ok(recorded)
 }
 

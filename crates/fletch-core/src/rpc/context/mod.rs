@@ -50,7 +50,8 @@ fn is_context_op(op: &str) -> bool {
 pub struct ContextDispatcher {
     inner: Arc<dyn RpcDispatcher>,
     service: ContextService,
-    /// The project as the gate let it through at spawn.
+    /// The project as the gate let it through at spawn — a name, not a
+    /// permission: every op asks the service again.
     project: context::Project,
     agent_id: String,
     provider: String,
@@ -250,6 +251,12 @@ impl RpcDispatcher for ContextDispatcher {
         Box::pin(async move {
             if !is_context_op(op) {
                 return self.inner.dispatch(id, op, args).await;
+            }
+            // The gate, now: the project was let through at spawn, and the
+            // layer may have been turned off since. (A write reads it again
+            // inside its own transaction; this is what refuses a read.)
+            if let Err(e) = self.service.check(&self.project) {
+                return (Response::err(id, e.to_string()), Vec::new());
             }
             let resp = match op {
                 "context_get" => self.get(id, args),

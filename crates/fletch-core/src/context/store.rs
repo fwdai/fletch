@@ -91,10 +91,14 @@ impl ContextStore {
         &self.db
     }
 
-    /// Runs `f` inside one transaction on the locked connection.
-    fn write<T>(&self, f: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
+    /// Runs `f` inside one transaction on the locked connection, after
+    /// reading the gate for `project_id` in that same transaction
+    /// (`super::require_enabled_for`): no write lands on a project the layer
+    /// is off for, whoever is holding a `Project` from when it was on.
+    fn write<T>(&self, project_id: &str, f: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
         let conn = self.db.lock();
         let tx = conn.unchecked_transaction()?;
+        super::require_enabled_for(&tx, project_id)?;
         let out = f(&tx)?;
         tx.commit()?;
         Ok(out)
@@ -157,7 +161,9 @@ impl ContextStore {
         input: EntityInput,
         stamp: Stamp,
     ) -> Result<Id> {
-        self.write(|conn| self.record_entity_in(conn, project_id, input, stamp))
+        self.write(project_id, |conn| {
+            self.record_entity_in(conn, project_id, input, stamp)
+        })
     }
 
     fn record_entity_in(
@@ -168,8 +174,13 @@ impl ContextStore {
         stamp: Stamp,
     ) -> Result<Id> {
         let id = match &input.id {
+            // A revision is of the entity itself: an archived or merged one
+            // is history and is not revised back into play.
             Some(id) => {
-                require_entity(conn, project_id, id)?;
+                let (status, _) = entity_state(conn, project_id, id)?;
+                if status != EntityStatus::Active {
+                    return Err(not_active(id, &status));
+                }
                 id.clone()
             }
             None => new_id(),
@@ -220,7 +231,7 @@ impl ContextStore {
         input: AssertionInput,
         stamp: Stamp,
     ) -> Result<Id> {
-        self.write(|conn| {
+        self.write(project_id, |conn| {
             let graph = load_graph(conn, project_id)?;
             self.record_assertion_in(conn, project_id, &graph, input, stamp)
         })
@@ -249,9 +260,14 @@ impl ContextStore {
             ));
         }
         let rationale = capped("rationale", clean_line(&input.rationale), MAX_RATIONALE)?;
-        for entity_id in &input.about {
-            require_entity(conn, project_id, entity_id)?;
-        }
+        // Subjects are active entities: a merged one stands for the entity it
+        // was merged into (where its edges went), an archived one is refused
+        // — compile serves active entities only, so a record about anything
+        // else would be invisible.
+        let input = AssertionInput {
+            about: active_subjects(conn, project_id, &input.about)?,
+            ..input
+        };
         if let Some(sup) = &input.supersedes {
             if sup.reasoning.trim().is_empty() {
                 return Err(ContextError::MissingReasoning);
@@ -301,10 +317,17 @@ impl ContextStore {
                 "an entity cannot relate to itself".into(),
             ));
         }
-        self.write(|conn| {
-            require_entity(conn, project_id, &change.from)?;
-            require_entity(conn, project_id, &change.to)?;
-            let LinkChange { from, to, rel, add } = change;
+        self.write(project_id, |conn| {
+            // Both ends active, a merged end standing for its destination —
+            // the same rule as an assertion's subjects.
+            let from = active_entity(conn, project_id, &change.from)?;
+            let to = active_entity(conn, project_id, &change.to)?;
+            if from == to {
+                return Err(ContextError::Invalid(
+                    "an entity cannot relate to itself".into(),
+                ));
+            }
+            let LinkChange { rel, add, .. } = change;
             let payload = if add {
                 EventPayload::Linked { from, to, rel }
             } else {
@@ -349,7 +372,9 @@ impl ContextStore {
         stamp: Stamp,
     ) -> Result<Landing> {
         let policy_for = stamp.author.kind;
-        self.write(|conn| self.land_in(conn, project_id, candidate, stamp, policy_for))
+        self.write(project_id, |conn| {
+            self.land_in(conn, project_id, candidate, stamp, policy_for)
+        })
     }
 
     /// [`Self::land`] inside the caller's transaction. `policy_for` is the
@@ -373,6 +398,9 @@ impl ContextStore {
             user: _,
         } = candidate;
         let about_pending = resolve_pending(conn, project_id, &mut input, about_pending)?;
+        // Classify against the subjects as they stand now: a subject merged
+        // since the candidate was made is its destination's heads.
+        input.about = active_subjects(conn, project_id, &input.about)?;
         let graph = load_graph(conn, project_id)?;
         // A restatement is a duplicate — unless it is the very head the
         // candidate revises (same words, new rationale or stance).
@@ -477,7 +505,7 @@ impl ContextStore {
                 tag(&other)?
             ))),
         };
-        self.write(|conn| {
+        self.write(project_id, |conn| {
             let ids = provisional_in_checkout(conn, project_id, workspace_id, repo, is_primary)?;
             for id in &ids {
                 self.append(
@@ -509,7 +537,7 @@ impl ContextStore {
                 "resolving a contradiction needs reasoning".into(),
             ));
         }
-        self.write(|conn| {
+        self.write(project_id, |conn| {
             require_assertion(conn, project_id, a)?;
             require_assertion(conn, project_id, b)?;
             if !contradiction_exists(conn, a, b)? {
@@ -558,7 +586,7 @@ impl ContextStore {
         stamp: Stamp,
         payload: EventPayload,
     ) -> Result<()> {
-        self.write(|conn| {
+        self.write(project_id, |conn| {
             require_assertion(conn, project_id, assertion_id)?;
             self.append(conn, project_id, stamp, now_millis(), payload)?;
             Ok(())
@@ -571,7 +599,7 @@ impl ContextStore {
         entity_id: &str,
         stamp: Stamp,
     ) -> Result<()> {
-        self.write(|conn| {
+        self.write(project_id, |conn| {
             require_entity(conn, project_id, entity_id)?;
             let payload = EventPayload::EntityArchived {
                 id: entity_id.to_string(),
@@ -597,17 +625,14 @@ impl ContextStore {
                 "an entity cannot be merged into itself".into(),
             ));
         }
-        self.write(|conn| {
+        self.write(project_id, |conn| {
             // Both sides active: an archived or already-merged source has
             // nothing left to move, and an inactive target cannot be
             // reached — which is also what rules out a cycle.
-            for (which, id) in [("source", entity_id), ("target", into)] {
+            for id in [entity_id, into] {
                 let (status, _) = entity_state(conn, project_id, id)?;
                 if status != EntityStatus::Active {
-                    return Err(ContextError::Invalid(format!(
-                        "`{id}` is {}; the merge {which} must be an active entity",
-                        tag(&status)?
-                    )));
+                    return Err(not_active(id, &status));
                 }
             }
             let payload = EventPayload::EntityMerged {
@@ -626,8 +651,7 @@ impl ContextStore {
         load_graph(&self.db.lock(), project_id)
     }
 
-    /// Every event of one project in `(recorded_at, host_id, seq)` order —
-    /// the order a replay applies them in.
+    /// Every event of one project in replay order (see [`load_events`]).
     pub fn events(&self, project_id: &str) -> Result<Vec<Event>> {
         let conn = self.db.lock();
         load_events(&conn, project_id)
@@ -636,7 +660,7 @@ impl ContextStore {
     /// Drops the project's projection rows and replays its events. Recovery
     /// and the replay-equivalence test; never part of a normal write.
     pub fn rebuild_projection(&self, project_id: &str) -> Result<()> {
-        self.write(|conn| {
+        self.write(project_id, |conn| {
             clear_projection(conn, project_id)?;
             for event in load_events(conn, project_id)? {
                 apply(conn, &event)?;
@@ -700,7 +724,7 @@ impl ContextStore {
     }
 
     pub(super) fn add_proposal(&self, proposal: &Proposal) -> Result<()> {
-        insert_proposal(&self.db.lock(), proposal)
+        self.write(&proposal.project_id, |conn| insert_proposal(conn, proposal))
     }
 
     pub fn proposals(
@@ -734,16 +758,17 @@ impl ContextStore {
     /// pending. `Confirms` records nothing: against a still-current target,
     /// confirmation settles it. Subjects that were only proposed (`about_pending`) are
     /// resolved now; one still missing is `Invalid("accept the entity …
-    /// first")`. Returns the recorded (or duplicated) id.
+    /// first")`. Returns the recorded (or duplicated) id. The proposal must
+    /// belong to `project_id`: a ruling is scoped to one project.
     pub(super) fn accept_proposal(
         &self,
+        project_id: &str,
         proposal_id: &str,
         status: ProposalStatus,
         ruled_by: Author,
     ) -> Result<Id> {
-        self.write(|conn| {
-            let proposal = require_pending(conn, proposal_id)?;
-            let project_id = &proposal.project_id;
+        self.write(project_id, |conn| {
+            let proposal = require_pending(conn, project_id, proposal_id)?;
             let (input, stamp, relation, about_pending) = match proposal.payload {
                 ProposalPayload::Entity { input, stamp } => {
                     let id = self.record_entity_in(conn, project_id, input, stamp)?;
@@ -817,12 +842,13 @@ impl ContextStore {
 
     pub(super) fn dismiss_proposal(
         &self,
+        project_id: &str,
         proposal_id: &str,
         reason: DismissReason,
         ruled_by: Author,
     ) -> Result<()> {
-        self.write(|conn| {
-            require_pending(conn, proposal_id)?;
+        self.write(project_id, |conn| {
+            require_pending(conn, project_id, proposal_id)?;
             rule_proposal(
                 conn,
                 proposal_id,
@@ -1152,6 +1178,42 @@ fn require_entity(conn: &Connection, project_id: &str, id: &str) -> Result<()> {
         return Err(ContextError::UnknownEntity(id.to_string()));
     }
     Ok(())
+}
+
+/// The active entity `id` stands for: itself when active, the entity it was
+/// merged into when merged (one hop — the projector compresses paths), and
+/// an error when archived or when the merge destination is not active.
+/// Every edge a writer adds (an assertion's subjects, a relation's ends)
+/// goes through here, so nothing new attaches to history.
+fn active_entity(conn: &Connection, project_id: &str, id: &str) -> Result<Id> {
+    match entity_state(conn, project_id, id)? {
+        (EntityStatus::Active, _) => Ok(id.to_string()),
+        (EntityStatus::Merged, Some(into)) => match entity_state(conn, project_id, &into)? {
+            (EntityStatus::Active, _) => Ok(into),
+            (status, _) => Err(not_active(&into, &status)),
+        },
+        (status, _) => Err(not_active(id, &status)),
+    }
+}
+
+/// `about` as active entity ids, in order, without repeats.
+fn active_subjects(conn: &Connection, project_id: &str, about: &[Id]) -> Result<Vec<Id>> {
+    let mut out: Vec<Id> = Vec::with_capacity(about.len());
+    for id in about {
+        let active = active_entity(conn, project_id, id)?;
+        if !out.contains(&active) {
+            out.push(active);
+        }
+    }
+    Ok(out)
+}
+
+/// The refusal for an entity that is not active.
+fn not_active(id: &str, status: &EntityStatus) -> ContextError {
+    ContextError::Invalid(format!(
+        "entity `{id}` is {}; only an active entity can be the subject of a record",
+        tag(status).unwrap_or_default()
+    ))
 }
 
 fn require_assertion(conn: &Connection, project_id: &str, id: &str) -> Result<()> {
@@ -1583,12 +1645,17 @@ fn pairs(conn: &Connection, sql: &str, project_id: &str) -> Result<Vec<(Id, Id)>
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
-/// In replay order: wall clock first, so a host's event lands after the one
-/// from another host it builds on; `(host_id, seq)` breaks ties.
+/// In replay order. Within one host the order is `seq`, always: that is the
+/// order the events were written in, and what each builds on — a wall clock
+/// that moved backwards between two writes must not replay the second
+/// first. Across hosts the per-host streams are merged by `recorded_at`
+/// (host id breaking ties), so a host's event lands after the one from
+/// another host it builds on, as far as clocks can tell. A multi-host fold
+/// needs causal order proper (design doc, "Deferred").
 fn load_events(conn: &Connection, project_id: &str) -> Result<Vec<Event>> {
     let mut stmt = conn.prepare(
         "SELECT id, project_id, host_id, seq, recorded_at, author, source, provenance, payload
-         FROM context.events WHERE project_id = ?1 ORDER BY recorded_at, host_id, seq",
+         FROM context.events WHERE project_id = ?1 ORDER BY host_id, seq",
     )?;
     let rows = stmt.query_map([project_id], |r| {
         let (v, payload) = payload_from_json(&r.get::<_, String>(8)?)?;
@@ -1607,7 +1674,35 @@ fn load_events(conn: &Connection, project_id: &str) -> Result<Vec<Event>> {
             payload,
         })
     })?;
-    Ok(rows.collect::<rusqlite::Result<_>>()?)
+    Ok(merge_by_clock(rows.collect::<rusqlite::Result<_>>()?))
+}
+
+/// Merge per-host streams (each already in `seq` order, hosts contiguous)
+/// into one, taking at each step the stream whose next event has the
+/// earliest `recorded_at` — never reordering within a host.
+fn merge_by_clock(events: Vec<Event>) -> Vec<Event> {
+    let mut streams: Vec<std::collections::VecDeque<Event>> = Vec::new();
+    for event in events {
+        match streams.last_mut() {
+            Some(stream) if stream.back().is_some_and(|e| e.host_id == event.host_id) => {
+                stream.push_back(event)
+            }
+            _ => streams.push(std::collections::VecDeque::from([event])),
+        }
+    }
+    let mut out = Vec::new();
+    loop {
+        let next = streams
+            .iter()
+            .enumerate()
+            .filter_map(|(i, s)| s.front().map(|e| ((e.recorded_at, &e.host_id), i)))
+            .min()
+            .map(|(_, i)| i);
+        match next {
+            Some(i) => out.push(streams[i].pop_front().expect("non-empty")),
+            None => return out,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1669,8 +1764,11 @@ fn get_proposal(conn: &Connection, proposal_id: &str) -> Result<Option<Proposal>
         .optional()?)
 }
 
-fn require_pending(conn: &Connection, proposal_id: &str) -> Result<Proposal> {
+/// The pending proposal `proposal_id` of `project_id`; one of another project
+/// is "unknown" here.
+fn require_pending(conn: &Connection, project_id: &str, proposal_id: &str) -> Result<Proposal> {
     let proposal = get_proposal(conn, proposal_id)?
+        .filter(|p| p.project_id == project_id)
         .ok_or_else(|| ContextError::Invalid(format!("unknown proposal `{proposal_id}`")))?;
     if proposal.status != ProposalStatus::Pending {
         return Err(ContextError::Invalid(format!(

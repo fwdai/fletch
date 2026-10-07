@@ -13,7 +13,14 @@ const REPO_B: &str = "gateway";
 
 fn service() -> (ContextService, tempfile::TempDir) {
     let (store, dir) = ContextStore::temp().unwrap();
-    (ContextService::new(store.db().clone()).unwrap(), dir)
+    (
+        ContextService::new(
+            store.db().clone(),
+            std::sync::Arc::new(crate::host::sink::NullSink),
+        )
+        .unwrap(),
+        dir,
+    )
 }
 
 fn project() -> Project {

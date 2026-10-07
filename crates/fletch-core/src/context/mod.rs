@@ -64,6 +64,13 @@ pub const EXTRACT_KEY: &str = "context.extract";
 /// Default character budget for a rendered bundle.
 pub const DEFAULT_BUDGET_CHARS: usize = 12_000;
 
+/// Fired with `{ project_id }` (the Fletch project id) by the service after
+/// every write that changes what a project's context says — whichever
+/// writer made it: the UI, an agent op, the ingester or the extractor. It
+/// carries no row: a client re-reads `context_overview`, which is small by
+/// design. Forwarded to remote clients.
+pub const CHANGED_EVENT: &str = "context:changed";
+
 /// Both project toggles are opt-out: absent or anything but the literal
 /// `"false"` means on (the `code_indexing_enabled` convention).
 fn project_flag(conn: &rusqlite::Connection, fletch_project_id: &str, key: &str) -> bool {
@@ -98,6 +105,36 @@ pub fn enabled(conn: &rusqlite::Connection, fletch_project_id: &str) -> bool {
 /// Whether the background extractor runs for a project. Implies [`enabled`].
 pub fn extract_enabled(conn: &rusqlite::Connection, fletch_project_id: &str) -> bool {
     enabled(conn, fletch_project_id) && project_flag(conn, fletch_project_id, EXTRACT_KEY)
+}
+
+/// The Fletch project a *context* id was minted for, if any.
+fn fletch_project_of(conn: &rusqlite::Connection, context_project_id: &str) -> Option<String> {
+    conn.query_row(
+        "SELECT project_id FROM project_settings WHERE key = ?1 AND value = ?2",
+        [PROJECT_ID_KEY, context_project_id],
+        |r| r.get(0),
+    )
+    .ok()
+}
+
+/// The gate as the store reads it inside every write transaction, keyed by
+/// the context id the write names: the developer gate, then the flag of the
+/// Fletch project that owns the id. A `Project` resolved through the service
+/// is a name, not a lasting permission — an agent spawned while the layer
+/// was on, or a pipeline that opened the project before an `await`, is
+/// refused the moment either switch is off. An id no project owns (a test's)
+/// has no project flag, so only the developer gate applies.
+pub(crate) fn require_enabled_for(
+    conn: &rusqlite::Connection,
+    context_project_id: &str,
+) -> Result<()> {
+    if !dev_enabled(conn) {
+        return Err(ContextError::Disabled);
+    }
+    match fletch_project_of(conn, context_project_id) {
+        Some(fletch) if !project_flag(conn, &fletch, ENABLED_KEY) => Err(ContextError::Disabled),
+        _ => Ok(()),
+    }
 }
 
 /// Two rules a reading of the code cannot be trusted to keep: a `user_turn`

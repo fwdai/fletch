@@ -217,6 +217,7 @@ fn projection_survives_restart() {
     let dir = tempfile::tempdir().unwrap();
     let before = {
         let db = crate::database::init(dir.path()).unwrap();
+        crate::database::set_setting(&db.lock(), crate::context::DEV_SETTING, "true").unwrap();
         let store = ContextStore::new(db).unwrap();
         let e = store
             .record_entity(P, entity("core", EntityKind::Module), stamp())
@@ -913,7 +914,7 @@ fn pending_subjects_resolve_when_the_proposal_is_accepted() {
     });
     store.add_proposal(&p).unwrap();
     assert!(matches!(
-        store.accept_proposal(&p.id, ProposalStatus::Accepted, Author::user()),
+        store.accept_proposal(P, &p.id, ProposalStatus::Accepted, Author::user()),
         Err(ContextError::Invalid(msg)) if msg == "accept the entity `Feat` first"
     ));
     assert_eq!(
@@ -925,7 +926,7 @@ fn pending_subjects_resolve_when_the_proposal_is_accepted() {
         .record_entity(P, entity("feat", EntityKind::Feature), stamp())
         .unwrap();
     let id = store
-        .accept_proposal(&p.id, ProposalStatus::Accepted, Author::user())
+        .accept_proposal(P, &p.id, ProposalStatus::Accepted, Author::user())
         .unwrap();
     assert_eq!(
         store.load(P).unwrap().assertion(&id).unwrap().about,
@@ -1059,18 +1060,18 @@ fn proposals_land_by_relation_kind() {
     assert_eq!(store.stats(P).unwrap().pending_proposals, 7);
 
     let f = store
-        .accept_proposal(&p_entity.id, ProposalStatus::Accepted, Author::user())
+        .accept_proposal(P, &p_entity.id, ProposalStatus::Accepted, Author::user())
         .unwrap();
     let n = store
-        .accept_proposal(&p_new.id, ProposalStatus::Auto, Author::ingester())
+        .accept_proposal(P, &p_new.id, ProposalStatus::Auto, Author::ingester())
         .unwrap();
     let c = store
-        .accept_proposal(&p_contra.id, ProposalStatus::Accepted, Author::user())
+        .accept_proposal(P, &p_contra.id, ProposalStatus::Accepted, Author::user())
         .unwrap();
     // The head still stands: its restatement is dismissed as a duplicate.
     assert_eq!(
         store
-            .accept_proposal(&p_dup.id, ProposalStatus::Accepted, Author::user())
+            .accept_proposal(P, &p_dup.id, ProposalStatus::Accepted, Author::user())
             .unwrap(),
         head
     );
@@ -1078,15 +1079,15 @@ fn proposals_land_by_relation_kind() {
     // lands, accepting this same parked confirmation must be rejected as stale.
     assert_eq!(
         store
-            .accept_proposal(&p_conf.id, ProposalStatus::Accepted, Author::user())
+            .accept_proposal(P, &p_conf.id, ProposalStatus::Accepted, Author::user())
             .unwrap(),
         head
     );
     let s = store
-        .accept_proposal(&p_sup.id, ProposalStatus::Accepted, Author::user())
+        .accept_proposal(P, &p_sup.id, ProposalStatus::Accepted, Author::user())
         .unwrap();
     store
-        .dismiss_proposal(&p_dismiss.id, DismissReason::Trivial, Author::user())
+        .dismiss_proposal(P, &p_dismiss.id, DismissReason::Trivial, Author::user())
         .unwrap();
 
     let g = store.load(P).unwrap();
@@ -1127,7 +1128,7 @@ fn proposals_land_by_relation_kind() {
     assert_eq!(dismissed.dismiss_reason, Some(DismissReason::Trivial));
     assert_eq!(dismissed.evidence, p_dismiss.evidence);
     assert!(matches!(
-        store.accept_proposal(&p_dismiss.id, ProposalStatus::Accepted, Author::user()),
+        store.accept_proposal(P, &p_dismiss.id, ProposalStatus::Accepted, Author::user()),
         Err(ContextError::Invalid(_))
     ));
     assert!(store.proposal("ghost").unwrap().is_none());
@@ -1310,7 +1311,7 @@ fn a_user_ruling_confirms_and_fills_in_reasoning() {
     let p_sup = assertion_proposal(assertion(&[&e]), rel(RelationKind::Supersedes, None));
     store.add_proposal(&p_sup).unwrap();
     let s = store
-        .accept_proposal(&p_sup.id, ProposalStatus::Accepted, Author::user())
+        .accept_proposal(P, &p_sup.id, ProposalStatus::Accepted, Author::user())
         .unwrap();
     let g = store.load(P).unwrap();
     let landed = g.assertion(&s).unwrap();
@@ -1324,7 +1325,7 @@ fn a_user_ruling_confirms_and_fills_in_reasoning() {
     );
     store.add_proposal(&p_auto).unwrap();
     let n = store
-        .accept_proposal(&p_auto.id, ProposalStatus::Auto, Author::ingester())
+        .accept_proposal(P, &p_auto.id, ProposalStatus::Auto, Author::ingester())
         .unwrap();
     assert_eq!(
         store.load(P).unwrap().assertion(&n).unwrap().status,
@@ -1359,7 +1360,7 @@ fn a_confirmed_restatement_settles_its_target() {
     let p_prov = confirms(AssertionStatus::Provisional);
     store.add_proposal(&p_prov).unwrap();
     store
-        .accept_proposal(&p_prov.id, ProposalStatus::Auto, Author::ingester())
+        .accept_proposal(P, &p_prov.id, ProposalStatus::Auto, Author::ingester())
         .unwrap();
     assert_eq!(
         store.load(P).unwrap().assertion(&head).unwrap().status,
@@ -1370,7 +1371,7 @@ fn a_confirmed_restatement_settles_its_target() {
     let p_conf = confirms(AssertionStatus::Confirmed);
     store.add_proposal(&p_conf).unwrap();
     store
-        .accept_proposal(&p_conf.id, ProposalStatus::Auto, Author::ingester())
+        .accept_proposal(P, &p_conf.id, ProposalStatus::Auto, Author::ingester())
         .unwrap();
     let g = store.load(P).unwrap();
     assert_eq!(
@@ -1474,7 +1475,7 @@ fn accepting_identical_proposals_lands_one_and_dismisses_the_other() {
     store.add_proposal(&second).unwrap();
 
     let id = store
-        .accept_proposal(&first.id, ProposalStatus::Accepted, Author::user())
+        .accept_proposal(P, &first.id, ProposalStatus::Accepted, Author::user())
         .unwrap();
     let g = store.load(P).unwrap();
     let landed = g.assertion(&id).unwrap();
@@ -1496,7 +1497,7 @@ fn accepting_identical_proposals_lands_one_and_dismisses_the_other() {
 
     assert_eq!(
         store
-            .accept_proposal(&second.id, ProposalStatus::Accepted, Author::user())
+            .accept_proposal(P, &second.id, ProposalStatus::Accepted, Author::user())
             .unwrap(),
         id
     );
@@ -1539,7 +1540,7 @@ fn accepting_a_proposal_against_a_stale_target_fails_and_stays_pending() {
 
     for p in [&p_sup, &p_contra, &p_conf] {
         assert!(matches!(
-            store.accept_proposal(&p.id, ProposalStatus::Accepted, Author::user()),
+            store.accept_proposal(P, &p.id, ProposalStatus::Accepted, Author::user()),
             Err(ContextError::Invalid(msg)) if msg.contains("no longer current")
         ));
         assert_eq!(
@@ -1637,4 +1638,225 @@ fn entity_text_is_sanitised_and_slugs_are_validated_at_the_store() {
             .unwrap_err();
         assert!(matches!(err, ContextError::Invalid(_)), "{bad:?}: {err}");
     }
+}
+
+/// Compile serves active entities only, so a record about an archived or
+/// merged one would be invisible: the store refuses the archived subject
+/// and redirects the merged one to where its edges went — for a decision's
+/// subjects, a relation's ends and an entity revision alike.
+#[test]
+fn records_attach_only_to_active_entities() {
+    let (store, _dir) = ContextStore::temp().unwrap();
+    let ids: Vec<Id> = ["a", "b", "c", "d"]
+        .iter()
+        .map(|s| {
+            store
+                .record_entity(P, entity(s, EntityKind::Module), stamp())
+                .unwrap()
+        })
+        .collect();
+    let (a, b, c, d) = (&ids[0], &ids[1], &ids[2], &ids[3]);
+    store.archive_entity(P, a, stamp()).unwrap();
+    store.merge_entities(P, b, c, stamp()).unwrap();
+
+    let archived = |err: ContextError| {
+        assert!(
+            matches!(&err, ContextError::Invalid(m) if m.contains("archived")),
+            "{err}"
+        );
+    };
+    archived(
+        store
+            .record_assertion(P, assertion(&[a]), stamp())
+            .unwrap_err(),
+    );
+    archived(
+        store
+            .link(
+                P,
+                LinkChange {
+                    from: d.clone(),
+                    to: a.clone(),
+                    rel: Rel::DependsOn,
+                    add: true,
+                },
+                stamp(),
+            )
+            .unwrap_err(),
+    );
+    let mut revision = entity("a", EntityKind::Module);
+    revision.id = Some(a.clone());
+    archived(store.record_entity(P, revision, stamp()).unwrap_err());
+    // The merged subject stands for its destination, once.
+    let s = store
+        .record_assertion(P, assertion(&[b, c]), stamp())
+        .unwrap();
+    store
+        .link(
+            P,
+            LinkChange {
+                from: d.clone(),
+                to: b.clone(),
+                rel: Rel::DependsOn,
+                add: true,
+            },
+            stamp(),
+        )
+        .unwrap();
+    let g = store.load(P).unwrap();
+    assert_eq!(g.assertion(&s).unwrap().about, vec![c.clone()]);
+    assert!(g
+        .relations
+        .iter()
+        .any(|r| r.from == *d && r.to == *c && r.rel == Rel::DependsOn));
+    assert!(!g.relations.iter().any(|r| r.to == *b));
+    // Nothing about the archived one was written.
+    assert_eq!(g.assertions.len(), 1);
+}
+
+/// A proposal is accepted against the graph as it stands: a subject archived
+/// in the meantime refuses the ruling, so nothing lands out of sight.
+#[test]
+fn accepting_a_proposal_about_an_archived_subject_is_refused() {
+    let (store, _dir) = ContextStore::temp().unwrap();
+    let e = store
+        .record_entity(P, entity("e", EntityKind::Module), stamp())
+        .unwrap();
+    let p = assertion_proposal(assertion(&[&e]), related(RelationKind::New, None, None));
+    store.add_proposal(&p).unwrap();
+    store.archive_entity(P, &e, stamp()).unwrap();
+    let err = store
+        .accept_proposal(P, &p.id, ProposalStatus::Accepted, Author::user())
+        .unwrap_err();
+    assert!(
+        matches!(&err, ContextError::Invalid(m) if m.contains("archived")),
+        "{err}"
+    );
+    assert_eq!(
+        store.proposal(&p.id).unwrap().unwrap().status,
+        ProposalStatus::Pending
+    );
+}
+
+/// The gate is read inside every write transaction, keyed by the project the
+/// write names — so whoever holds a project from when the layer was on is
+/// refused the moment the developer gate or the project's own flag is off.
+#[test]
+fn every_write_reads_the_gate_in_its_own_transaction() {
+    let (store, _dir) = ContextStore::temp().unwrap();
+    let e = store
+        .record_entity(P, entity("e", EntityKind::Module), stamp())
+        .unwrap();
+    let set = |key: &str, value: &str| {
+        crate::database::set_setting(&store.db().lock(), key, value).unwrap();
+    };
+    set(crate::context::DEV_SETTING, "false");
+    let disabled = |r: Result<()>| assert!(matches!(r, Err(ContextError::Disabled)), "{r:?}");
+    disabled(
+        store
+            .record_entity(P, entity("f", EntityKind::Module), stamp())
+            .map(|_| ()),
+    );
+    disabled(
+        store
+            .land(P, candidate(assertion(&[&e])), stamp())
+            .map(|_| ()),
+    );
+    disabled(store.archive_entity(P, &e, stamp()));
+    disabled(store.add_proposal(&assertion_proposal(
+        assertion(&[&e]),
+        related(RelationKind::New, None, None),
+    )));
+    disabled(store.rebuild_projection(P));
+    assert_eq!(store.load(P).unwrap().entities.len(), 1, "nothing landed");
+
+    // The project's own flag closes it too, through the id's owner.
+    set(crate::context::DEV_SETTING, "true");
+    {
+        let conn = store.db().lock();
+        conn.execute(
+            "INSERT INTO projects (id, name, created_at) VALUES ('fp', 'x', 0)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO project_settings (project_id, key, value) VALUES ('fp', ?1, ?2)",
+            params![crate::context::PROJECT_ID_KEY, P],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO project_settings (project_id, key, value) VALUES ('fp', ?1, 'false')",
+            [crate::context::ENABLED_KEY],
+        )
+        .unwrap();
+    }
+    disabled(store.archive_entity(P, &e, stamp()));
+    store
+        .db()
+        .lock()
+        .execute(
+            "DELETE FROM project_settings WHERE project_id = 'fp' AND key = ?1",
+            [crate::context::ENABLED_KEY],
+        )
+        .unwrap();
+    store.archive_entity(P, &e, stamp()).unwrap();
+}
+
+/// A wall clock that moved backwards between two of a host's writes must
+/// not replay the second first: within a host the order is always `seq`.
+/// The events are the store's own, laid into a fresh log as one host's
+/// stream with the clock running backwards.
+#[test]
+fn replay_keeps_a_hosts_seq_order_when_the_clock_moves_back() {
+    // Written on one store, laid into another's log so no row collides.
+    let (origin, _origin_dir) = ContextStore::temp().unwrap();
+    let (store, _dir) = ContextStore::temp().unwrap();
+    let e = origin
+        .record_entity(P, entity("e", EntityKind::Module), stamp())
+        .unwrap();
+    let s = origin
+        .record_assertion(P, assertion(&[&e]), stamp())
+        .unwrap();
+    origin.confirm(P, &s, stamp()).unwrap();
+    let base = crate::database::now_millis();
+    {
+        let conn = store.db().lock();
+        for (i, event) in origin.events(P).unwrap().iter().enumerate() {
+            // The entity carries the latest clock; what depends on it, an
+            // earlier one.
+            let recorded_at = if i == 0 {
+                base
+            } else {
+                base - 60_000 - i as i64
+            };
+            conn.execute(
+                "INSERT INTO context.events
+                   (id, project_id, host_id, seq, recorded_at, author, source, provenance, type, payload)
+                 VALUES (?1, ?2, 'h-back', ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![
+                    new_id(),
+                    P,
+                    i as i64 + 1,
+                    recorded_at,
+                    json(&event.stamp.author).unwrap(),
+                    json(&event.stamp.source).unwrap(),
+                    json(&event.stamp.provenance).unwrap(),
+                    event.payload.type_name(),
+                    payload_json(event).unwrap(),
+                ],
+            )
+            .unwrap();
+        }
+    }
+
+    let events = store.events(P).unwrap();
+    assert_eq!(
+        events.iter().map(|e| e.seq).collect::<Vec<_>>(),
+        vec![1, 2, 3]
+    );
+    assert!(events[0].recorded_at > events[1].recorded_at);
+    store.rebuild_projection(P).unwrap();
+    let g = store.load(P).unwrap();
+    assert_eq!(g.entities.len(), 1);
+    assert_eq!(g.assertion(&s).unwrap().status, AssertionStatus::Confirmed);
 }

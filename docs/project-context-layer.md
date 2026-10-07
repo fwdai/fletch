@@ -26,8 +26,10 @@ sources ─► observation ─► extraction ─► proposal ─► confirmation
   that is not regenerable from anything else.
 - **`events`** is the source of truth and is insert-only. `entities`,
   `assertions` and the edge tables are projections; `ContextStore::rebuild_projection`
-  drops and replays them through the same `apply` every write uses, in
-  `(host_id, seq)` order. A test greps the module for any `UPDATE`/`DELETE`
+  drops and replays them through the same `apply` every write uses. Replay
+  order is each host's `seq` order — always, whatever the wall clock did
+  between two writes — with the per-host streams merged by `recorded_at`
+  (`load_events`). A test greps the module for any `UPDATE`/`DELETE`
   against `events`.
 - **Compile** (`compile.rs`) is a pure function from one project's `Graph` to
   the `Bundle` an agent or the UI reads. Actuality is decided there, not in
@@ -52,13 +54,22 @@ sources ─► observation ─► extraction ─► proposal ─► confirmation
   is there; an extractor write is always held. A restatement is a duplicate
   for everyone — except the very head a candidate explicitly revises. The
   store's write methods are visible only inside `context`, so nothing
-  outside the service can reach them: the compiler keeps the rule.
+  outside the service can reach them: the compiler keeps the rule. Every
+  write that changes what a project's context says ends in one
+  `context:changed` pulse from the service, whichever writer made it, and
+  the event is on the remote whitelist — so a Context tab, local or paired,
+  reloads on an agent's op, a merged PR or the extractor as it does on its
+  own write.
 
 The store enforces identity and graph shape whatever the caller: slugs are
-one case-insensitive identity (`COLLATE NOCASE`); a supersession must target
-an assertion of the same kind and domain about a shared entity; an entity
-cannot relate to itself; a merge needs an active target, refuses cycles and
-compresses paths so every old id points at the final one.
+one case-insensitive identity (`COLLATE NOCASE`); a record attaches to
+active entities only — a merged subject stands for the entity it was merged
+into, an archived one is refused, for an assertion's subjects, a relation's
+ends and an entity revision alike (compile serves active entities, so
+anything else would be invisible); a supersession must target an assertion
+of the same kind and domain about a shared entity; an entity cannot relate
+to itself; a merge needs an active target, refuses cycles and compresses
+paths so every old id points at the final one.
 
 ## Data model (`model.rs`)
 
@@ -177,7 +188,13 @@ The whole layer sits behind a developer gate while it is piloted: the
 host-owned `context_layer_enabled` setting (Settings › Developer › Project
 context layer, opt-in; `set_context_layer_enabled` over the wire). Off, every
 entry — ops, instruction block, ingesters, extractor — reads the setting and
-does nothing, and the project page shows no Context tab.
+does nothing, and the project page shows no Context tab. The gate is read
+per operation, not per session: a `Project` the service resolved is a name,
+and every agent op asks again (`ContextService::check`) while every write
+reads the gate inside its own transaction (`ContextStore::write`), so an
+agent spawned while the layer was on, or a PR ingestion that opened the
+project before fetching the body, is refused the moment either switch is
+turned off.
 
 Stored context is untrusted data wherever it is rendered, and the store is
 the one place that makes it safe: every entity and assertion write validates
@@ -242,7 +259,7 @@ correct it in the tab.
 | Roadmap rulings and `wf_report` as deterministic sources | `capture/ingest/`, same `MergedPr`-style entry |
 | Gap mining (what did the agent discover that it was not served) | A second question in the extractor prompt; same proposal pipeline |
 | Host-side injection at turn start | The index block is step one; no per-turn mechanism exists yet |
-| Multi-host | Not an extension of what is here. The log replays by `(recorded_at, host_id, seq)` and fails loudly on an out-of-order status event, which is honest, not sufficient: two hosts need causal ordering (vector clock or HLC on every event), a fold that tolerates a status event arriving before its assertion, and a rule for forked supersession chains. Writer-minted ids and the stamp keep the door open; the fold is a redesign. |
+| Multi-host | Not an extension of what is here. The log replays each host in `seq` order and merges hosts by `recorded_at`, failing loudly on an out-of-order status event — honest for one host, not sufficient for two: they need causal ordering (vector clock or HLC on every event), a fold that tolerates a status event arriving before its assertion, and a rule for forked supersession chains. Writer-minted ids and the stamp keep the door open; the fold is a redesign. |
 | Replacing the roadmap brief | A `vision` entity takes over the moment one exists |
 
 ## Decisions made while building
