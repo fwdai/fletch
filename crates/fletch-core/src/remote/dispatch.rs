@@ -1638,11 +1638,10 @@ impl Dispatch for SupervisorDispatch {
                 // a runtime thread — exactly as the desktop command does.
                 "scan_usage_transcripts" => {
                     let a: UsageScanArgs = parse(args)?;
-                    ok(tokio::task::spawn_blocking(move || {
-                        crate::usage_scan::scan_all(a.since_ms, a.until_ms)
-                    })
-                    .await
-                    .map_err(|e| format!("usage scan failed: {e}"))?)
+                    res(
+                        crate::commands::scan_usage_transcripts_impl(ctx, a.since_ms, a.until_ms)
+                            .await,
+                    )
                 }
 
                 "get_settings"

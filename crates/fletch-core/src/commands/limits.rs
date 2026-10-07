@@ -55,6 +55,27 @@ pub async fn refresh_provider_limits_impl(
     limits::record_refresh(ctx, provider, account, outcome, limits::now_secs())
 }
 
+/// The whole-disk usage scan ([`crate::usage_scan::scan_all`]) off the async
+/// workers, and the codex limits it found on the way: each account's newest
+/// rollout reading is stored when it is newer than the one on record. Shared
+/// by the desktop command and the remote dispatcher.
+pub async fn scan_usage_transcripts_impl(
+    ctx: &EngineCtx,
+    since_ms: i64,
+    until_ms: i64,
+) -> Result<crate::usage_scan::UsageScan> {
+    let scan = tokio::task::spawn_blocking(move || crate::usage_scan::scan_all(since_ms, until_ms))
+        .await
+        .map_err(|e| Error::Other(format!("usage scan failed: {e}")))?;
+    for (account, reading) in &scan.rollout_limits {
+        // A failed write costs a meter update, not the usage answer.
+        if let Err(e) = limits::record_limits(ctx, "codex", Some(account), reading.clone()) {
+            tracing::warn!(error = %e, "could not record codex rollout limits");
+        }
+    }
+    Ok(scan)
+}
+
 fn require_account_provider(provider: &str) -> Result<()> {
     if accounts::supports_accounts(provider) {
         Ok(())

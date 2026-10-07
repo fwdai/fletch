@@ -110,6 +110,24 @@ pub(super) fn codex_token_count(ts: &str, usage: Value) -> String {
     .to_string()
 }
 
+/// A `token_count` that adds no spend (`info` still null) but carries the
+/// plan limits, five-hour window at `percent`.
+pub(super) fn codex_limits_line(ts: &str, percent: f64) -> String {
+    serde_json::json!({
+        "timestamp": ts,
+        "type": "event_msg",
+        "payload": {
+            "type": "token_count",
+            "info": null,
+            "rate_limits": {
+                "primary": { "used_percent": percent, "window_minutes": 300, "resets_at": 1_788_265_323 },
+                "secondary": { "used_percent": 3.0, "window_minutes": 10080, "resets_at": 1_788_765_541 },
+            },
+        },
+    })
+    .to_string()
+}
+
 pub(super) fn codex_usage(input: u64, cached: u64, cache_write: u64, output: u64) -> Value {
     serde_json::json!({
         "input_tokens": input,

@@ -35,6 +35,8 @@ use std::time::Instant;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 
+use crate::agent::accounts;
+use crate::agent::limits::ProviderLimits;
 use cache::IoStats;
 pub use cache::ScanCache;
 use parse::{local_hour_start_ms, UsageRecord};
@@ -133,6 +135,43 @@ pub struct UsageScan {
     /// the range the caller wants to slice out of it.
     pub since_ms: i64,
     pub until_ms: i64,
+    /// The newest plan-limits reading any scanned codex rollout carried, per
+    /// account id. Not part of the answer a client gets: the engine stores it
+    /// as the account's `rollout` reading (`commands::limits`).
+    #[serde(skip)]
+    pub rollout_limits: BTreeMap<String, ProviderLimits>,
+}
+
+/// A managed account's directory and id. A transcript under the directory is
+/// the account's; any other belongs to the default account.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AccountRoot {
+    pub dir: PathBuf,
+    pub id: String,
+}
+
+/// Every managed account of every account provider on this host.
+fn account_roots() -> Vec<AccountRoot> {
+    accounts::ACCOUNT_PROVIDERS
+        .iter()
+        .flat_map(|provider| {
+            accounts::list_account_ids(provider)
+                .into_iter()
+                .filter_map(move |id| {
+                    let dir = accounts::account_dir(provider, &id).ok()?;
+                    Some(AccountRoot { dir, id })
+                })
+        })
+        .collect()
+}
+
+/// The account `path` was written under: the managed one whose directory
+/// holds it, else the default.
+fn account_of<'a>(path: &Path, roots: &'a [AccountRoot]) -> &'a str {
+    roots
+        .iter()
+        .find(|root| path.starts_with(&root.dir))
+        .map_or(accounts::DEFAULT_ACCOUNT, |root| root.id.as_str())
 }
 
 /// Scan the real on-disk transcript roots for `[since_ms, until_ms)`, reusing
@@ -142,6 +181,7 @@ pub struct UsageScan {
 pub fn scan_all(since_ms: i64, until_ms: i64) -> UsageScan {
     let claude = crate::transcripts::claude_projects_dirs();
     let codex: Vec<PathBuf> = crate::transcripts::codex_sessions_dirs();
+    let roots = account_roots();
     static CACHE: OnceLock<Mutex<ScanCache>> = OnceLock::new();
     let path = cache_path();
     // Reading the cache is the first scan's I/O budget well spent: it replaces
@@ -161,7 +201,7 @@ pub fn scan_all(since_ms: i64, until_ms: i64) -> UsageScan {
         .lock();
 
     let before = cache.files.len();
-    let out = scan_dirs_with(&mut cache, &claude, &codex, since_ms, until_ms);
+    let out = scan_accounts_with(&mut cache, &claude, &codex, &roots, since_ms, until_ms);
     // Nothing read and nothing pruned means the file on disk still describes
     // this cache exactly — rewriting it would be pure I/O for no new state.
     if out.files_read > 0 || cache.files.len() != before {
@@ -199,16 +239,37 @@ pub fn scan_dirs(
     )
 }
 
+/// [`scan_accounts_with`] with every transcript credited to the default
+/// account.
+pub fn scan_dirs_with(
+    cache: &mut ScanCache,
+    claude_projects_dirs: &[PathBuf],
+    codex_sessions_dirs: &[PathBuf],
+    since_ms: i64,
+    until_ms: i64,
+) -> UsageScan {
+    scan_accounts_with(
+        cache,
+        claude_projects_dirs,
+        codex_sessions_dirs,
+        &[],
+        since_ms,
+        until_ms,
+    )
+}
+
 /// Core scan against a caller-owned cache, with the roots injected so tests
 /// never touch the real home dir: files unchanged since the last scan through
 /// the same cache are not re-read, and grown files are read from where that
 /// scan stopped. `claude_projects_dirs` are `.../projects` dirs (children are
 /// per-project slugs holding `<session>.jsonl`); `codex_sessions_dirs` are
 /// `.../sessions` dirs holding a `YYYY/MM/DD` tree of `rollout-*.jsonl`.
-pub fn scan_dirs_with(
+/// `account_roots` attributes each file to the account it was written under.
+pub fn scan_accounts_with(
     cache: &mut ScanCache,
     claude_projects_dirs: &[PathBuf],
     codex_sessions_dirs: &[PathBuf],
+    account_roots: &[AccountRoot],
     since_ms: i64,
     until_ms: i64,
 ) -> UsageScan {
@@ -249,7 +310,37 @@ pub fn scan_dirs_with(
         cache.files.retain(|path, _| walked.contains(path));
     }
 
-    aggregate(cache, &files, &io, since_ms, until_ms)
+    let mut out = aggregate(cache, &files, &io, since_ms, until_ms);
+    out.rollout_limits = rollout_limits(cache, &files, account_roots);
+    out
+}
+
+/// The newest limits reading among `files`' rollouts, per account. Read off
+/// the parse state, so it costs no I/O beyond the scan's own.
+fn rollout_limits(
+    cache: &ScanCache,
+    files: &[PathBuf],
+    roots: &[AccountRoot],
+) -> BTreeMap<String, ProviderLimits> {
+    let mut newest: BTreeMap<String, ProviderLimits> = BTreeMap::new();
+    for path in files {
+        let Some(reading) = cache
+            .files
+            .get(path)
+            .and_then(|entry| entry.codex.as_ref())
+            .and_then(|state| state.rate_limits.as_ref())
+        else {
+            continue;
+        };
+        let account = account_of(path, roots);
+        if newest
+            .get(account)
+            .map_or(true, |known| known.as_of < reading.as_of)
+        {
+            newest.insert(account.to_string(), reading.clone());
+        }
+    }
+    newest
 }
 
 // ── filesystem walk ─────────────────────────────────────────────────────────
@@ -471,6 +562,7 @@ impl Accumulator {
             bytes_read: io.bytes_read,
             since_ms,
             until_ms,
+            rollout_limits: BTreeMap::new(),
         }
     }
 }
@@ -870,6 +962,48 @@ mod tests {
     }
 
     // ── codex ───────────────────────────────────────────────────────────────
+
+    #[test]
+    fn rollout_limits_are_the_newest_reading_per_account() {
+        let td = tempfile::tempdir().unwrap();
+        let default_sessions = codex_file(
+            &td.path().join("home"),
+            "a",
+            &[codex_limits_line("2026-01-02T10:00:00Z", 10.0)],
+        );
+        let work = td.path().join("accounts").join("codex").join("work");
+        let work_sessions = codex_file(
+            &work,
+            "b",
+            &[
+                codex_limits_line("2026-01-02T10:00:00Z", 20.0),
+                codex_limits_line("2026-01-02T10:30:00Z", 40.0),
+            ],
+        );
+        codex_file(
+            &work,
+            "c",
+            &[codex_limits_line("2026-01-02T10:10:00Z", 30.0)],
+        );
+        let roots = [AccountRoot {
+            dir: work,
+            id: "work".into(),
+        }];
+
+        let (since, until) = wide_window();
+        let out = scan_accounts_with(
+            &mut ScanCache::default(),
+            &[],
+            &[default_sessions, work_sessions],
+            &roots,
+            since,
+            until,
+        );
+        let percent = |account: &str| out.rollout_limits[account].five_hour.unwrap().percent;
+        assert_eq!(percent("default"), 10.0);
+        assert_eq!(percent("work"), 40.0);
+        assert_eq!(out.rollout_limits.len(), 2);
+    }
 
     #[test]
     fn codex_takes_model_from_turn_context_and_drops_repeated_usage() {

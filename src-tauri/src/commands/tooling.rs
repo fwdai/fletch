@@ -182,14 +182,17 @@ pub async fn discover_supported_models() -> Vec<crate::model_catalog::AgentModel
 /// only the bytes appended (`filesRead`/`bytesRead` report what it cost). The
 /// cache is keyed by path, not by window: any window is answered from the same
 /// records.
+///
+/// Codex rollouts carry the account's plan limits too; the scan stores the
+/// newest per account as its `rollout` reading on the way (see
+/// `commands::limits` in the engine).
 #[tauri::command]
 pub async fn scan_usage_transcripts(
+    ctx: tauri::State<'_, std::sync::Arc<crate::host::EngineCtx>>,
     since_ms: i64,
     until_ms: i64,
 ) -> Result<crate::usage_scan::UsageScan> {
-    tauri::async_runtime::spawn_blocking(move || crate::usage_scan::scan_all(since_ms, until_ms))
-        .await
-        .map_err(|e| Error::Other(format!("usage scan failed: {e}")))
+    fletch_core::commands::scan_usage_transcripts_impl(&ctx, since_ms, until_ms).await
 }
 
 /// Probe whether each provider's CLI is *signed in* — the question
