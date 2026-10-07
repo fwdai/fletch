@@ -31,6 +31,22 @@ pub async fn list_files(checkout: &Path) -> Result<Vec<String>> {
         .collect())
 }
 
+/// Every file in the tree of `rev` (a commit), repo-relative with forward
+/// slashes: the repository as committed, whatever the working tree holds.
+pub async fn list_files_at(repo: &Path, rev: &str) -> Result<Vec<String>> {
+    let out = run_git(
+        repo,
+        &["ls-tree", "-r", "-z", "--name-only", rev],
+        &format!("ls-tree {rev}"),
+    )
+    .await?;
+    Ok(String::from_utf8_lossy(&out.stdout)
+        .split('\0')
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .collect())
+}
+
 /// Read a single file's contents at a given ref (e.g. the parent branch),
 /// used to show the prior contents of a file the agent deleted.
 pub async fn show_file(checkout: &Path, base_ref: &str, path: &str) -> Result<String> {

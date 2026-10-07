@@ -154,12 +154,15 @@ pub enum SourceKind {
     Brief,
     Workflow,
     Ui,
+    /// The repository itself at a commit (the bootstrap's file tree).
+    Repo,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Source {
     pub kind: SourceKind,
-    /// Turn id, PR number, roadmap item code, … — whatever names the origin.
+    /// Turn id, PR number, roadmap item code, commit SHA, … — whatever names
+    /// the origin.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reference: Option<String>,
 }
