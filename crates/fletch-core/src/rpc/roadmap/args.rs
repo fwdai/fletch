@@ -81,20 +81,6 @@ pub(super) struct HoldArgs {
     pub(super) reason: String,
 }
 
-/// Explicit empty shape, so a guessed filter is refused instead of silently ignored.
-#[derive(Debug, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct BriefArgs {}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct ProposeBriefArgs {
-    #[serde(default)]
-    pub(super) content: String,
-    #[serde(default)]
-    pub(super) note: Option<String>,
-}
-
 pub(super) const PROJECT_SCOPE: &str = "project";
 
 /// A missing `args` arrives as JSON null, same as `{}`.

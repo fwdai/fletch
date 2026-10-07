@@ -4,7 +4,7 @@ use rusqlite::Connection;
 use serde_json::{json, Map, Value};
 
 use crate::roadmap::events::{self, ItemEvent};
-use crate::roadmap::memory;
+use crate::roadmap::not_doing;
 use crate::roadmap::proposals::{self, Proposal};
 use crate::roadmap::store;
 use crate::roadmap::types::{ItemStatus, RoadmapItem};
@@ -106,7 +106,7 @@ fn compact_rejected(item: &RoadmapItem) -> Value {
 }
 
 /// Rejected rows never ride `items`; they arrive under `not_doing` in
-/// [`memory::not_doing`]'s order and cap.
+/// [`not_doing::not_doing`]'s order and cap.
 pub(super) fn list_op(conn: &Connection, project_id: &str, id: &str, args: &Value) -> Response {
     read(id, "roadmap_list", board(conn, project_id, args))
 }
@@ -160,7 +160,7 @@ fn board(conn: &Connection, project_id: &str, args: &Value) -> Result<Value, Str
         .collect();
     let mut payload = Map::new();
     payload.insert("items".into(), json!(rows));
-    let (rejected, omitted) = memory::not_doing(&items);
+    let (rejected, omitted) = not_doing::not_doing(&items);
     if !rejected.is_empty() {
         payload.insert(
             "not_doing".into(),

@@ -16,9 +16,9 @@ pub mod commands;
 pub mod deps;
 pub mod drainer;
 pub mod events;
-pub mod memory;
 pub mod merge_sweep;
 mod mutations;
+pub mod not_doing;
 pub mod order_proposals;
 pub mod pr_review;
 pub mod proposals;
@@ -38,8 +38,7 @@ pub type Db = Arc<Mutex<Connection>>;
 pub use commands::*;
 
 pub(crate) use client_events::{
-    emit_brief_proposal, emit_item, emit_item_event, emit_order_proposal, emit_project_hold,
-    emit_proposal,
+    emit_item, emit_item_event, emit_order_proposal, emit_project_hold, emit_proposal,
 };
 
 pub(crate) use brakes::hold_with_event as hold_item;

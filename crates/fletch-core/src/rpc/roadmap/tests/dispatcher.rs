@@ -27,10 +27,10 @@ async fn unknown_roadmap_ops_are_named_and_everything_else_delegates() {
 
 #[test]
 fn the_instruction_block_documents_exactly_these_ops() {
-    assert_eq!(OPS.len(), 9);
+    assert_eq!(OPS.len(), 7);
     let block = crate::instructions::roadmap_block(None).expect("shipped default is non-empty");
     assert!(
-        block.contains("nine extra RPC ops"),
+        block.contains("seven extra RPC ops"),
         "the block's own count must match OPS"
     );
     for op in OPS {

@@ -657,10 +657,6 @@ fn allowlist_matches_the_protocol_table() {
         "roadmap_get_order_proposal",
         "roadmap_accept_order_proposal",
         "roadmap_reject_order_proposal",
-        "roadmap_get_brief",
-        "roadmap_get_brief_proposal",
-        "roadmap_accept_brief_proposal",
-        "roadmap_reject_brief_proposal",
         "host_providers",
         "scan_usage_transcripts",
         "get_settings",
@@ -925,9 +921,9 @@ fn the_whole_wf_and_roadmap_surface_is_exposed() {
         .iter()
         .filter(|op| op.starts_with("roadmap_"))
         .count();
-    // 18 `wf_*` commands + `wf_run_agents`; 30 `roadmap_*` commands +
+    // 18 `wf_*` commands + `wf_run_agents`; 26 `roadmap_*` commands +
     // `roadmap_discard_proposal`, which is remote-only.
-    assert_eq!((wf, roadmap), (19, 31));
+    assert_eq!((wf, roadmap), (19, 27));
     for op in dispatch::WITHHELD_WF_ROADMAP_OPS {
         assert!(
             !op.0.starts_with("wf_") && !op.0.starts_with("roadmap_"),
@@ -1005,9 +1001,6 @@ fn the_wf_and_roadmap_events_are_forwarded_and_advertised() {
         "roadmap:order-proposal-deleted",
         "roadmap:project-hold",
         "roadmap:project-hold-released",
-        "roadmap:brief",
-        "roadmap:brief-proposal",
-        "roadmap:brief-proposal-deleted",
         "roadmap:queue-note",
     ] {
         assert!(
@@ -1156,19 +1149,13 @@ async fn the_roadmap_board_is_drivable_through_the_dispatcher() {
             "{op} answers a list"
         );
     }
-    for op in [
-        "roadmap_get_order_proposal",
-        "roadmap_get_brief",
-        "roadmap_get_brief_proposal",
-    ] {
-        assert!(
-            d.dispatch(op, json!({ "projectId": "p1" }))
-                .await
-                .expect(op)
-                .is_null(),
-            "{op} answers null on an untouched project"
-        );
-    }
+    assert!(
+        d.dispatch("roadmap_get_order_proposal", json!({ "projectId": "p1" }))
+            .await
+            .expect("roadmap_get_order_proposal")
+            .is_null(),
+        "roadmap_get_order_proposal answers null on an untouched project"
+    );
 
     // Ruling an item off the board and putting it back, then the board's own
     // Remove — the unconditional delete that used to be off the wire.

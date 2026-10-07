@@ -776,10 +776,6 @@ allowlist; any op not listed returns `{ ok: false, error: "unknown op" }`.
 | `roadmap_get_order_proposal` | `{ projectId }` | `RoadmapOrderProposal \| null` |
 | `roadmap_accept_order_proposal` | `{ projectId }` — ranks the whole sequence in one transaction; rejects when the orderable set changed since the ask | `null` |
 | `roadmap_reject_order_proposal` | `{ projectId }` | `null` |
-| `roadmap_get_brief` | `{ projectId }` | `RoadmapBrief \| null` |
-| `roadmap_get_brief_proposal` | `{ projectId }` | `RoadmapBriefProposal \| null` |
-| `roadmap_accept_brief_proposal` | `{ projectId }` — the only thing that writes product memory | `RoadmapBrief` |
-| `roadmap_reject_brief_proposal` | `{ projectId }` | `null` |
 | `host_providers` | `{}` — which provider CLIs this host has and which of them are signed in, so a client never offers to spawn one the host cannot run (see "Which providers a host can run"). Read-only; no desktop command of this name | `{ id, label, installed, version: string \| null, auth: "signed_in" \| "signed_out" \| "unknown" \| null, loginCommand: string \| null }[]` |
 | `scan_usage_transcripts` | `{ sinceMs, untilMs }` — token counts read off *this host's* Claude Code and Codex transcripts over the half-open window, bucketed by local hour, provider and model, plus a span per contributing session. Uncached and slow (seconds over 90 days): ask for the widest window once and slice shorter ranges out of the answer. Read-only; the hours are the host's local hours and the ids are unique within the host only, so a client aggregating several hosts must tag each answer with the host it came from | `UsageScan` — `{ buckets: { hourStartMs, provider, model, tokens: { input, output, cacheRead, cacheWrite }, requests }[], sessions: { provider, id, firstMs, lastMs }[], scannedFiles, filesRead, bytesRead, sinceMs, untilMs }` |
 | `get_settings` | `{}` — the host-owned global settings, and only those (see "Settings"): absent keys are unset and read as their default. No secret is ever in the answer | `Record<key, string>` |
@@ -800,7 +796,7 @@ allowlist; any op not listed returns `{ ok: false, error: "unknown op" }`.
 | `get_project_settings` | `{ projectId }` — the project's client-writable settings, and only those (see "Settings"); absent keys read as their default | `Record<key, string>` |
 | `set_project_setting` | `{ projectId, key, value: string \| null }` — writes one key, `null` deletes the row (back to the default). A key outside the project allowlist is refused | `null` |
 | `context_overview` | `{ projectId }` — the project's whole context in one read: the two toggles as the host reads them, the graph (entities, assertions, relations), the *pending* proposals and the stats (see "Project context") | `ContextOverview` |
-| `context_preview` | `{ projectId, query: CompileQuery }` — what an agent would be served for `query`, rendered as markdown; the roadmap brief stands in for a vision nobody has recorded | `string` |
+| `context_preview` | `{ projectId, query: CompileQuery }` — what an agent would be served for `query`, rendered as markdown; with `query.overview: true`, exactly the overview every agent's instructions carry at spawn | `string` |
 | `context_record_entity` | `{ projectId, input: EntityInput }` — creates, or records a revision when `input.id` is set. Stamped user / UI | `string` (the entity id) |
 | `context_record_assertion` | `{ projectId, input: AssertionInput }` — always lands `confirmed` (the user saying it is the confirmation); `input.supersedes` with reasoning is how a decision is changed | `string` (the assertion id) |
 | `context_retract` | `{ projectId, assertionId, reason }` — hides an assertion that was never right; a blank reason is refused | `null` |
@@ -1189,7 +1185,6 @@ roadmap:item           roadmap:item-deleted   roadmap:item-event
 roadmap:proposal       roadmap:proposal-deleted
 roadmap:order-proposal roadmap:order-proposal-deleted
 roadmap:project-hold   roadmap:project-hold-released
-roadmap:brief          roadmap:brief-proposal roadmap:brief-proposal-deleted
 roadmap:queue-note
 settings:changed       project_settings:changed
 context:changed
@@ -1336,12 +1331,11 @@ them with `autopilot_state {}` and `autopilot_log {}` after every handshake and
 treats the events as the deltas.
 
 The whole `wf:*` and `roadmap:*` stream is forwarded, so a remote run monitor
-and a remote board stay live instead of rendering once and going stale. Three
+and a remote board stay live instead of rendering once and going stale. Four
 of them carry an id rather than a row and are named for what they address:
 `wf:run-deleted` and `roadmap:item-deleted` fire the deleted row's id, while
-`roadmap:order-proposal-deleted`, `roadmap:project-hold-released` and
-`roadmap:brief-proposal-deleted` fire the *project* id — those three are facts
-about a board, not about a row.
+`roadmap:order-proposal-deleted` and `roadmap:project-hold-released` fire the
+*project* id — those two are facts about a board, not about a row.
 
 `wf:event` is an addressing envelope only — `{ run_id, seq, type, ts,
 step_exec_id }` — so nothing transcript-derived is duplicated onto the stream;

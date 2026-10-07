@@ -242,10 +242,6 @@ pub const OPS: &[&str] = &[
     "roadmap_get_order_proposal",
     "roadmap_accept_order_proposal",
     "roadmap_reject_order_proposal",
-    "roadmap_get_brief",
-    "roadmap_get_brief_proposal",
-    "roadmap_accept_brief_proposal",
-    "roadmap_reject_brief_proposal",
     // Which provider CLIs this host has, and which of them are signed in.
     // Read-only and the only provider op on the wire: a client spawns a
     // provider *here*, so it needs to know before it offers one. Installing a
@@ -537,10 +533,6 @@ const OP_SCOPES: &[(&str, Scope)] = &[
     ("roadmap_get_order_proposal", Scope::Observe),
     ("roadmap_accept_order_proposal", Scope::Roadmap),
     ("roadmap_reject_order_proposal", Scope::Roadmap),
-    ("roadmap_get_brief", Scope::Observe),
-    ("roadmap_get_brief_proposal", Scope::Observe),
-    ("roadmap_accept_brief_proposal", Scope::Roadmap),
-    ("roadmap_reject_brief_proposal", Scope::Roadmap),
     // Read-only, and every device needs it before it offers to spawn anything.
     ("host_providers", Scope::Observe),
     // Counts off transcripts already on disk; writes nothing.
@@ -1626,47 +1618,6 @@ impl Dispatch for SupervisorDispatch {
                     let a: ProjectArgs = parse(args)?;
                     ok(
                         crate::roadmap::commands::roadmap_reject_order_proposal_impl(
-                            a.project_id,
-                            ctx,
-                            &ctx.db,
-                        )
-                        .await?,
-                    )
-                }
-
-                "roadmap_get_brief" => {
-                    let a: ProjectArgs = parse(args)?;
-                    ok(
-                        crate::roadmap::commands::roadmap_get_brief_impl(a.project_id, &ctx.db)
-                            .await?,
-                    )
-                }
-
-                "roadmap_get_brief_proposal" => {
-                    let a: ProjectArgs = parse(args)?;
-                    ok(crate::roadmap::commands::roadmap_get_brief_proposal_impl(
-                        a.project_id,
-                        &ctx.db,
-                    )
-                    .await?)
-                }
-
-                "roadmap_accept_brief_proposal" => {
-                    let a: ProjectArgs = parse(args)?;
-                    ok(
-                        crate::roadmap::commands::roadmap_accept_brief_proposal_impl(
-                            a.project_id,
-                            ctx,
-                            &ctx.db,
-                        )
-                        .await?,
-                    )
-                }
-
-                "roadmap_reject_brief_proposal" => {
-                    let a: ProjectArgs = parse(args)?;
-                    ok(
-                        crate::roadmap::commands::roadmap_reject_brief_proposal_impl(
                             a.project_id,
                             ctx,
                             &ctx.db,

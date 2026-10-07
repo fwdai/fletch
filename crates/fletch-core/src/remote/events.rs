@@ -73,9 +73,6 @@ pub const FORWARDED_EVENTS: &[&str] = &[
     "roadmap:order-proposal-deleted",
     "roadmap:project-hold",
     "roadmap:project-hold-released",
-    "roadmap:brief",
-    "roadmap:brief-proposal",
-    "roadmap:brief-proposal-deleted",
     "roadmap:queue-note",
     // A write to a host-owned setting (protocol doc, "Settings"), so a second
     // client's Settings pane and project page follow without a refetch. Only

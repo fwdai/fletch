@@ -1,4 +1,4 @@
-//! User rulings: reject/reopen items, and accept/reject PM asks (item, order, brief).
+//! User rulings: reject/reopen items, and accept/reject PM asks (item, order).
 
 use rusqlite::Connection;
 

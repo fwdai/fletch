@@ -1120,6 +1120,9 @@ fn schema_has_split_entities() {
         !names.contains("session_records"),
         "session_records belongs to transcripts.db, not the main database"
     );
+    for t in ["roadmap_briefs", "roadmap_brief_proposals"] {
+        assert!(!names.contains(t), "{t} was replaced by the context layer");
+    }
     assert!(
         !names.contains("agents"),
         "stale table agents still present"

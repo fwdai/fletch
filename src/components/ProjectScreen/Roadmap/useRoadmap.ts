@@ -8,8 +8,8 @@
 // shared: the workspace's issue inbox and a run's roadmap chip follow the same
 // stream through it, so "what is on this board" cannot mean two different things
 // on two screens. Everything else on this board — the PM's asks, the holds, the
-// brief, the history trails, the queue notes — is loaded by the effect below,
-// which applies the same discipline to six more streams.
+// history trails, the queue notes — is loaded by the effect below, which applies
+// the same discipline to four more streams.
 //
 // The PM conversation is NOT here: it is a real agent chat, owned by the Thread
 // column (see Thread/usePmChats.ts). What the two share is this contract — the
@@ -37,13 +37,6 @@
 // The reverse is impossible: releasing is a typed command with no RPC op behind
 // it, so every release on this board is a click someone made.
 //
-// The product brief (migration 0034) is the fourth shared thing, and the only one
-// that isn't about the board at all: it is what the product *is*, which the PM
-// carries between sessions (its instructions are spawned with it). Same contract
-// once more — the PM proposes a whole new document, the user rules, and only that
-// ruling writes it. Held here rather than in the tab so a proposal that arrives
-// while the user is on the roadmap tab is already on screen when they switch.
-//
 // Order is the third thing the two parties share. `rank` (migration 0032) is what
 // the board draws a group by *and* what the drainer dispatches by, so dragging a
 // card up the list moves it up the queue. The user writes it directly (a drag);
@@ -55,9 +48,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   api,
   type NewRoadmapItem,
-  onRoadmapBrief,
-  onRoadmapBriefProposal,
-  onRoadmapBriefProposalDeleted,
   onRoadmapItemEvent,
   onRoadmapOrderProposal,
   onRoadmapOrderProposalDeleted,
@@ -66,8 +56,6 @@ import {
   onRoadmapProposal,
   onRoadmapProposalDeleted,
   onRoadmapQueueNote,
-  type RoadmapBrief,
-  type RoadmapBriefProposal,
   type RoadmapItem,
   type RoadmapItemEvent,
   type RoadmapItemPatch,
@@ -95,8 +83,6 @@ import { useProjectWorkflows } from "./useProjectWorkflows";
 const LANDED_MS = 2200;
 /** How long a focused row keeps its ring after being jumped to. */
 const FOCUS_MS = 2200;
-
-export type BoardTab = "roadmap" | "brief";
 
 export function useRoadmap(repoPath: string) {
   // The board is per project, not per repo: a multi-repo project has one
@@ -135,22 +121,12 @@ export function useRoadmap(repoPath: string) {
    *  here rather than derived from the rows because it belongs to no row: nothing
    *  dispatches while it exists, and the banner above the board is what says so. */
   const [projectHold, setProjectHold] = useState<RoadmapProjectHold | null>(null);
-  /** The project's product brief, or null (`roadmap:brief` +
-   *  `roadmap_get_brief`) — what the product *is*, as opposed to what the board
-   *  says will be built. One per project like the two above, and the second tab's
-   *  whole content. Only the user's ruling on `briefProposal` ever changes it. */
-  const [brief, setBrief] = useState<RoadmapBrief | null>(null);
-  /** The PM's pending ask to replace that brief, or null
-   *  (`roadmap:brief-proposal`). Board scoped, replaced in place, ruled on from
-   *  the Product brief tab. */
-  const [briefProposal, setBriefProposal] = useState<RoadmapBriefProposal | null>(null);
-  /** Are the six streams the effect below owns still loading? The rows have their
+  /** Are the four streams the effect below owns still loading? The rows have their
    *  own answer (`rowsLoading`); the board is loading while either is. */
   const [sideLoading, setSideLoading] = useState(true);
   /** The last failure from a mutation with no form of its own to report into
    *  (a move, a delete, an accepted proposal). */
   const [error, setError] = useState<string | null>(null);
-  const [tab, setTab] = useState<BoardTab>("roadmap");
   const [openCodes, setOpenCodes] = useState<ReadonlySet<string>>(() => new Set());
   const [focusCode, setFocusCode] = useState<string | null>(null);
   /** Codes highlighted because they just landed or just moved. */
@@ -283,8 +259,6 @@ export function useRoadmap(repoPath: string) {
       setProposalRows([]);
       setOrderProposal(null);
       setProjectHold(null);
-      setBrief(null);
-      setBriefProposal(null);
       setLatestEvents([]);
       setSideLoading(!workspaceReady);
       return;
@@ -345,29 +319,6 @@ export function useRoadmap(repoPath: string) {
       if (id !== projectId) return;
       hsync.push(null);
     });
-    // The brief and its pending ask are one row per board too, so they ride the
-    // same single-row sequencer. Worth the discipline for the same reason the
-    // order ask is: the PM parks a brief update mid-conversation, and a tab that
-    // clobbered it with a snapshot read a moment earlier would show the user the
-    // document they already ruled on.
-    const bsync = createSingleSync<RoadmapBrief>((b) => {
-      if (alive) setBrief(b);
-    });
-    const offBrief = onRoadmapBrief((b) => {
-      if (b.project_id !== projectId) return;
-      bsync.push(b);
-    });
-    const bpsync = createSingleSync<RoadmapBriefProposal>((p) => {
-      if (alive) setBriefProposal(p);
-    });
-    const offBriefProposal = onRoadmapBriefProposal((p) => {
-      if (p.project_id !== projectId) return;
-      bpsync.push(p);
-    });
-    const offBriefProposalDeleted = onRoadmapBriefProposalDeleted((id) => {
-      if (id !== projectId) return;
-      bpsync.push(null);
-    });
     // History rows, appended only to trails some card already loaded — an
     // event for a never-expanded item is dropped here and refetched whole on
     // that item's first expand, which keeps the map leak-free.
@@ -402,9 +353,6 @@ export function useRoadmap(repoPath: string) {
         offOrderDeleted,
         offHold,
         offHoldReleased,
-        offBrief,
-        offBriefProposal,
-        offBriefProposalDeleted,
         // Awaited too, now that the strip decides from this stream: a `blocked`
         // emitted before registration resolves would otherwise be lost, and the
         // snapshot below can't backfill an event that fired after it was read.
@@ -415,13 +363,11 @@ export function useRoadmap(repoPath: string) {
       ]);
       if (!alive) return;
       try {
-        const [pending, order, latest, hold, theBrief, briefAsk] = await Promise.all([
+        const [pending, order, latest, hold] = await Promise.all([
           api.roadmapListProposals(projectId),
           api.roadmapGetOrderProposal(projectId),
           api.roadmapLatestEvents(projectId),
           api.roadmapGetProjectHold(projectId),
-          api.roadmapGetBrief(projectId),
-          api.roadmapGetBriefProposal(projectId),
         ]);
         if (!alive) return;
         psync.settle(pending);
@@ -429,8 +375,6 @@ export function useRoadmap(repoPath: string) {
         setLatestEvents((prev) => mergeLatest(prev, latest));
         osync.settle(order);
         hsync.settle(hold);
-        bsync.settle(theBrief);
-        bpsync.settle(briefAsk);
         setSideLoading(false);
       } catch (e) {
         if (!alive) return;
@@ -439,8 +383,6 @@ export function useRoadmap(repoPath: string) {
         psync.settle();
         osync.settle();
         hsync.settle();
-        bsync.settle();
-        bpsync.settle();
         setError(String(e));
         setSideLoading(false);
       }
@@ -454,9 +396,6 @@ export function useRoadmap(repoPath: string) {
       void offOrderDeleted.then((f) => f());
       void offHold.then((f) => f());
       void offHoldReleased.then((f) => f());
-      void offBrief.then((f) => f());
-      void offBriefProposal.then((f) => f());
-      void offBriefProposalDeleted.then((f) => f());
       void offEvent.then((f) => f());
       void offNote.then((f) => f());
     };
@@ -466,7 +405,7 @@ export function useRoadmap(repoPath: string) {
    *  have landed before `blank` may claim there is nothing here. */
   const loading = sideLoading || rowsLoading;
   /** Has *this* project's row snapshot settled, either way? Distinct from
-   *  `loading`, which the six side streams also gate: a cross-screen jump has to
+   *  `loading`, which the four side streams also gate: a cross-screen jump has to
    *  know whether the rows it is about to be judged against are this board's, and
    *  on the render right after a project switch the old board's rows are still in
    *  hand while this map already speaks about the new one. `failed` counts as
@@ -789,29 +728,6 @@ export function useRoadmap(repoPath: string) {
     [guarded, projectId],
   );
 
-  /** Accept the PM's proposed brief — the user's "yes" on the product's memory,
-   *  and the only thing that writes it. Optimistic on the state the tab reads:
-   *  the backend emits both the new brief and the ask's removal, and both say the
-   *  same thing. A ruling that raced another window refuses backend-side and
-   *  surfaces on the board's error bar. */
-  const acceptBrief = useCallback(
-    () =>
-      guarded(async () => {
-        if (projectId) setBrief(await api.roadmapAcceptBriefProposal(projectId));
-      }),
-    [guarded, projectId],
-  );
-
-  /** Decline the proposed brief. The standing one is untouched — and if there is
-   *  none, the tab goes back to its empty state. */
-  const rejectBrief = useCallback(
-    () =>
-      guarded(async () => {
-        if (projectId) await api.roadmapRejectBriefProposal(projectId);
-      }),
-    [guarded, projectId],
-  );
-
   /** Decline the proposed order. The board is untouched. */
   const rejectOrder = useCallback(
     () =>
@@ -1049,8 +965,8 @@ export function useRoadmap(repoPath: string) {
    *  handful.
    *
    *  Three destinations, decided in reveal.ts:
-   *  - a row the board draws — switch to the roadmap tab, expand it, scroll it in
-   *    (the Board's `focusCode` effect) and ring it for a moment;
+   *  - a row the board draws — expand it, scroll it in (the Board's `focusCode`
+   *    effect) and ring it for a moment;
    *  - a shipped row — the Activity tab, which is where what has been built lives.
    *    Deliberately a tab switch and nothing more: the item is a line in a record
    *    there, not a card with a focus ring;
@@ -1063,7 +979,6 @@ export function useRoadmap(repoPath: string) {
     (code: string) => {
       const target = revealTarget(code, rows);
       if (target.kind === "board") {
-        setTab("roadmap");
         setFocusCode(code);
         setOpenCodes((s) => new Set(s).add(code));
         // The card lands expanded, so its trail must load exactly as if the
@@ -1126,13 +1041,6 @@ export function useRoadmap(repoPath: string) {
     makeProject,
     error,
     clearError,
-    /** The project's product brief, or null when the PM hasn't written one — the
-     *  second tab's content. */
-    brief,
-    /** The PM's pending ask to replace it, or null. Ruled on from that tab. */
-    briefProposal,
-    tab,
-    setTab,
     openCodes,
     toggleItem,
     focusCode,
@@ -1186,8 +1094,6 @@ export function useRoadmap(repoPath: string) {
     rejectProposals,
     acceptOrder,
     rejectOrder,
-    acceptBrief,
-    rejectBrief,
     queueItems,
     unqueueItems,
     reclaimItem,

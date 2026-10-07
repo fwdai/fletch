@@ -4,8 +4,7 @@
 // `@/api` (src/api/types/roadmap.ts, mirroring src-tauri/src/roadmap/types.rs)
 // and is re-exported here so the folder keeps importing from one place. What is
 // defined here is what the *screen* adds on top: the display row the board draws,
-// and its groups. (The second tab's product brief needs nothing here — it renders
-// the persisted `RoadmapBrief` markdown straight from `@/api`.)
+// and its groups.
 //
 // A PM proposal is not a separate kind of row: `roadmap_propose` persists it
 // with `status: "proposed"`, so a ghost on the board is an ordinary item that
@@ -28,7 +27,7 @@ export interface BoardItem {
   status: ItemStatus;
   source: ItemSource;
   /** Free-text product area this belongs to — a label the PM may set, matched
-   *  against nothing (the brief's domains are prose, not an enum). */
+   *  against nothing (areas are prose, not an enum). */
   area?: string;
   /** Acceptance criteria, rendered as a checklist. */
   accept?: string[];

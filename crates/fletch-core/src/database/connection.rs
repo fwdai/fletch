@@ -112,6 +112,7 @@ pub(crate) const MIGRATIONS: &[&str] = &[
     include_str!("../../migrations/0046_autopilot_log.sql"),
     include_str!("../../migrations/0047_drop_session_records.sql"),
     include_str!("../../migrations/0048_worktree_prs_branch.sql"),
+    include_str!("../../migrations/0049_drop_roadmap_briefs.sql"),
 ];
 
 /// The transcript log's own migrations, tracked by `transcripts.db`'s
@@ -133,10 +134,9 @@ pub(crate) const CONTEXT_MIGRATIONS: &[&str] =
 /// Rule: bump to the new `MIGRATIONS.len()` whenever a migration drops,
 /// renames or rebuilds something older code reads (a column, a table, a
 /// constraint it relies on); leave it alone for additive migrations (new
-/// nullable columns, new tables, new indexes). 47: migration 0047 dropped
-/// `session_records` from this file (it lives in `transcripts.db` now), which
-/// no earlier build can read around.
-pub(crate) const MIN_READER_VERSION: usize = 47;
+/// nullable columns, new tables, new indexes). 49: migration 0049 dropped the
+/// roadmap brief tables, which earlier builds read at every PM spawn.
+pub(crate) const MIN_READER_VERSION: usize = 49;
 const _: () = assert!(MIN_READER_VERSION >= 1 && MIN_READER_VERSION <= MIGRATIONS.len());
 
 /// `settings` key holding `MIN_READER_VERSION` of the build that last

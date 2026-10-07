@@ -125,11 +125,10 @@ export function cardRuling(ghost: boolean, proposal: RoadmapProposal | null = nu
 
 /** Everything the user owes this board a ruling on, by kind.
  *
- *  Four kinds, not two. The batch bar counted ghosts and item asks and silently
- *  ignored the board-scoped pair — the PM's whole-board order ask and its brief
- *  update — both of which are pending deltas the user must rule, and both of which
- *  are rendered somewhere else on the same screen. Counting two of four made the
- *  board's one summary number wrong. */
+ *  Three kinds, not two. The batch bar counted ghosts and item asks and silently
+ *  ignored the board-scoped one — the PM's whole-board order ask — which is a
+ *  pending delta the user must rule, rendered somewhere else on the same screen.
+ *  Counting two of three made the board's one summary number wrong. */
 export interface PendingDeltas {
   /** Every pending delta, board-scoped ones included. */
   total: number;
@@ -140,11 +139,9 @@ export interface PendingDeltas {
   asks: number;
   /** The whole-board order ask: 0 or 1. */
   order: number;
-  /** The brief update: 0 or 1. */
-  brief: number;
   /** The subset the batch bar itself can rule in one click: the card-scoped
-   *  deltas. The other two have their own surfaces (the order bar below, the
-   *  Product brief tab), so its buttons must never claim them. */
+   *  deltas. The order ask has its own surface (the order bar below), so its
+   *  buttons must never claim it. */
   batch: number;
   /** Ask ids to accept, after the ghosts are admitted — order matters: a patch
    *  against a row nobody has accepted is refused by the same gate that lets one
@@ -163,31 +160,25 @@ export function pendingDeltas(input: {
   /** Every pending per-item ask on the board. */
   asks: readonly Pick<RoadmapProposal, "id" | "item_id">[];
   orderProposal: unknown | null;
-  briefProposal: unknown | null;
 }): PendingDeltas {
   const ghostIds = new Set(input.ghostIds);
   const ghosts = ghostIds.size;
   const asks = input.asks.length;
   const order = input.orderProposal ? 1 : 0;
-  const brief = input.briefProposal ? 1 : 0;
   return {
-    total: ghosts + asks + order + brief,
+    total: ghosts + asks + order,
     ghosts,
     asks,
     order,
-    brief,
     batch: ghosts + asks,
     askIds: input.asks.map((a) => a.id),
     declinableAskIds: input.asks.filter((a) => !ghostIds.has(a.item_id)).map((a) => a.id),
   };
 }
 
-/** The batch bar's one line, naming what is pending — including the two kinds its
- *  own buttons don't rule, so the number above it and the screen around it agree.
+/** The batch bar's one line, naming what is pending — including the kind its own
+ *  buttons don't rule, so the number above it and the screen around it agree.
  *  Empty when nothing is pending elsewhere. */
 export function pendingElsewhere(d: PendingDeltas): string {
-  const parts: string[] = [];
-  if (d.order) parts.push("a new order");
-  if (d.brief) parts.push("a brief update");
-  return parts.length ? `Also pending: ${parts.join(" and ")}.` : "";
+  return d.order ? "Also pending: a new order." : "";
 }
