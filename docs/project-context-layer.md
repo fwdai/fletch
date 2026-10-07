@@ -135,6 +135,25 @@ Three paths, one pipeline, rising cost:
    whatever is already said about those entities (a restatement is skipped
    as a duplicate). The merge also confirms the workspace's provisionals;
    archive-without-merge abandons them.
+
+   The same merge appends its **structural delta** (`capture/ingest/structure.rs`),
+   before the lines so one can name a module the PR added. The GitHub fetch
+   that reads the body also reads the merge commit; the project's primary
+   repo (the one the bootstrap mapped; fetched into it when not local) lists
+   the tree of that commit and of its first parent, and the bootstrap's
+   `rules::modules` over each gives the modules before and after. `delta`,
+   pure, matches them by slug: *added*, *removed*, and *moved* (same slug,
+   new directory). Landed as the ingester with source `pr` and the merge
+   SHA, against what the project has now: an added module is recorded like
+   the bootstrap records one (paths, `part_of` from nesting, empty summary;
+   a slug the project has ever had is skipped, so a directory that returns
+   after its module was archived leaves it archived); a removed module's
+   active `module` entity is archived; a moved one is revised with its path
+   anchors rebased onto the new directory, every curated field kept. A PR
+   that only touches files inside existing modules writes nothing, and the
+   per-reference check makes a second announcement a no-op. No model is
+   involved; a rebase merge shows only its last commit, and a repo other
+   than the primary is not read (its slugs would collide).
 2. **Background extraction** (`capture/extract/`). After a turn settles
    (`session_sync`) — debounced to one run per workspace per 10 minutes, with
    ≥1 new user turn and ≥200 chars of user text — and always at archive, a
@@ -280,8 +299,8 @@ Context tab's **Map project**:
    with the commit SHA — entities and `part_of` relations only, never an
    assertion. A slug the project has ever had (archived and merged ones
    included) is skipped, not revised, so a second run writes nothing and
-   never undoes a curation. The same rules are meant to compute the
-   structural delta of a merged PR from its file list.
+   never undoes a curation. After that, structure changes only through
+   merged PRs (see Capture).
 2. **Meaning, an ordinary agent session.** The op answers the canned task
    (`instructions/context_mapping.md`), which the tab opens as a new
    workspace draft: with codegraph and the record ops the agent writes the
@@ -300,7 +319,6 @@ Context tab's **Map project**:
 |---|---|
 | Text search beyond token match (FTS5, then embeddings) | `compile::by_text`; an embedding column is derived data, rebuilt on replay |
 | Symbol anchors | `paths[]` already; a resolver over the checkout's `.codegraph/codegraph.db` at retrieval time (the host never queries it today), next to the path check in `compile` |
-| Structural deltas from a merged PR (modules added, removed, moved) | `capture::bootstrap::rules` over the PR's file list, landed through the `MergedPr` entry |
 | Roadmap rulings and `wf_report` as deterministic sources | `capture/ingest/`, same `MergedPr`-style entry |
 | Gap mining (what did the agent discover that it was not served) | A second question in the extractor prompt; same proposal pipeline |
 | Host-side injection at turn start | The index block is step one; no per-turn mechanism exists yet |
