@@ -17,6 +17,8 @@
 //! Mirrored in `src/api/types/providers.ts` (`AccountLimits`); keep the two in
 //! step.
 
+pub mod app_server;
+
 use std::collections::BTreeMap;
 
 use rusqlite::Connection;
