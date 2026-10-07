@@ -251,6 +251,83 @@ describe("transcripts through the desktop adapters", () => {
   });
 });
 
+/** What lets the chat tell "still loading" and "failed" apart from a log it
+ *  has: a chat always has messages, so an empty screen is never the answer. */
+describe("history load state", () => {
+  it("is loading from the moment the read starts, and ready once it lands", async () => {
+    useStore.setState((s) => {
+      const logLoads = { ...s.logLoads };
+      delete logLoads.pamukkale;
+      return { logLoads };
+    });
+    const read = state().rebuildLog("pamukkale");
+    expect(state().logLoads.pamukkale).toEqual({ status: "loading" });
+    await read;
+    expect(state().logLoads.pamukkale).toEqual({ status: "ready" });
+  });
+
+  it("records a failed read on the chat, not in lastError, and rethrows", async () => {
+    const read = vi.spyOn(api, "readSessionPage").mockRejectedValue(new Error("timed out"));
+    useStore.setState({ lastError: null });
+    try {
+      await expect(state().rebuildLog("pamukkale")).rejects.toThrow("timed out");
+    } finally {
+      read.mockRestore();
+    }
+    expect(state().logLoads.pamukkale).toEqual({ status: "error", error: "timed out" });
+    expect(state().lastError).toBeNull();
+  });
+
+  it("lets only the newest read say how loading went", async () => {
+    let fail!: (e: Error) => void;
+    const real = api.readSessionPage;
+    const read = vi
+      .spyOn(api, "readSessionPage")
+      .mockImplementationOnce(() => new Promise((_, reject) => (fail = reject)))
+      .mockImplementation((...args) => real.apply(api, args));
+    try {
+      const older = state().rebuildLog("pamukkale");
+      await state().rebuildLog("pamukkale");
+      fail(new Error("socket closed"));
+      await expect(older).rejects.toThrow("socket closed");
+    } finally {
+      read.mockRestore();
+    }
+    expect(state().logLoads.pamukkale).toEqual({ status: "ready" });
+  });
+
+  it("drops an older read that succeeds last: log and cursor stay the newest read's", async () => {
+    const real = api.readSessionPage;
+    const fresh = await real.call(api, "pamukkale");
+    let resolve!: () => void;
+    const read = vi
+      .spyOn(api, "readSessionPage")
+      // The older read answers last, with a history that differs from the
+      // newer one's in both its records and its cursor.
+      .mockImplementationOnce(
+        () =>
+          new Promise((r) => {
+            resolve = () => r({ records: fresh.records.slice(0, 1), older: "stale-cursor" });
+          }),
+      )
+      .mockImplementation((...args) => real.apply(api, args));
+    try {
+      const older = state().rebuildLog("pamukkale");
+      await state().rebuildLog("pamukkale");
+      const log = state().logs.pamukkale;
+      const history = state().histories.pamukkale;
+      resolve();
+      await older;
+      expect(state().logs.pamukkale).toBe(log);
+      expect(state().histories.pamukkale).toBe(history);
+      expect(state().histories.pamukkale?.older).not.toBe("stale-cursor");
+    } finally {
+      read.mockRestore();
+    }
+    expect(state().logLoads.pamukkale).toEqual({ status: "ready" });
+  });
+});
+
 describe("paged transcripts", () => {
   // caspian's fixture is seven codex rollout lines, which no earlier test
   // sends to. Pages of three cut it mid-turn: the newest opens on the tool
@@ -355,6 +432,20 @@ describe("paged transcripts", () => {
       await state().loadOlderLog("caspian");
       expect(state().logs.caspian?.at(-1)).toEqual(live);
       expect(state().logs.caspian?.filter((i) => i.kind === "queued_message")).toHaveLength(1);
+    });
+  });
+
+  it("rejects a failed older page to its caller, leaving the log and lastError alone", async () => {
+    await withSmallPages(async (read) => {
+      await state().rebuildLog("caspian");
+      const before = state().histories.caspian;
+      const log = state().logs.caspian;
+      useStore.setState({ lastError: null });
+      read.mockRejectedValueOnce(new Error("socket closed"));
+      await expect(state().loadOlderLog("caspian")).rejects.toThrow("socket closed");
+      expect(state().histories.caspian).toBe(before);
+      expect(state().logs.caspian).toBe(log);
+      expect(state().lastError).toBeNull();
     });
   });
 

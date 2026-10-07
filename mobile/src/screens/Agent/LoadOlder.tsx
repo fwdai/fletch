@@ -1,5 +1,5 @@
 import { type RefObject, useState } from "react";
-import { ignore } from "../../lib/ignore";
+import { Notice } from "../../components/ui/Notice";
 import { useStore } from "../../store";
 
 /** The head of a paged transcript: offered while the host has older pages
@@ -16,6 +16,7 @@ export function LoadOlder({
   const older = useStore((s) => s.histories[agentId]?.older);
   const loadOlderLog = useStore((s) => s.loadOlderLog);
   const [loading, setLoading] = useState(false);
+  const [failed, setFailed] = useState(false);
   if (!older) return null;
 
   const load = async () => {
@@ -25,13 +26,27 @@ export function LoadOlder({
     // would jump by its height. WebKit has no scroll anchoring to do it.
     const fromBottom = el ? el.scrollHeight - el.scrollTop : 0;
     setLoading(true);
-    // A failure is already in `lastError`, where the error UI reads it.
-    await loadOlderLog(agentId).catch(ignore);
+    setFailed(false);
+    try {
+      await loadOlderLog(agentId);
+    } catch {
+      // Said here, at the top of the log where the page would have landed —
+      // the store leaves the reporting to whoever asked.
+      setFailed(true);
+    }
     setLoading(false);
     requestAnimationFrame(() => {
       if (el) el.scrollTop = el.scrollHeight - fromBottom;
     });
   };
+
+  if (failed) {
+    return (
+      <Notice tone="error" action={{ label: "Retry", onClick: load }}>
+        Couldn’t load older messages.
+      </Notice>
+    );
+  }
 
   return (
     <button type="button" className="btn ghost sm load-older" disabled={loading} onClick={load}>

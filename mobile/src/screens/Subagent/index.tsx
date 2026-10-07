@@ -23,6 +23,7 @@ import { fmtElapsed, useElapsed } from "../../lib/hooks";
 import { joinThreadPath, splitThreadPath, tasksByToolUse, threadStatus } from "../../lib/thread";
 import { useStickyScroll } from "../../lib/useStickyScroll";
 import { agentOf, useStore } from "../../store";
+import { LogPlaceholder } from "../Agent/LogState";
 import { Dots, Transcript } from "../Agent/Transcript";
 
 const EMPTY: ChatItem[] = [];
@@ -30,6 +31,7 @@ const EMPTY: ChatItem[] = [];
 export function SubagentScreen({ agentId, path: pathProp }: { agentId: string; path: string }) {
   const agent = useStore((s) => agentOf(s, agentId));
   const log = useStore((s) => s.logs[agentId]);
+  const load = useStore((s) => s.logLoads[agentId]);
   const tasks = useStore((s) => s.backgroundTasks[agentId]);
   const busy = useStore((s) => (agent ? isAgentBusy(s, agent) : false));
   const push = useStore((s) => s.push);
@@ -108,7 +110,7 @@ export function SubagentScreen({ agentId, path: pathProp }: { agentId: string; p
             )}
           </>
         ) : log === undefined ? (
-          <div className="empty">Loading the conversation…</div>
+          <LogPlaceholder agentId={agentId} load={load} busy={false} />
         ) : (
           <div className="empty">
             <b>Thread not found</b>
