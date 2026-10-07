@@ -404,6 +404,20 @@ describe("paged transcripts", () => {
     });
   });
 
+  it("rejects a failed older page to its caller, leaving the log and lastError alone", async () => {
+    await withSmallPages(async (read) => {
+      await state().rebuildLog("caspian");
+      const before = state().histories.caspian;
+      const log = state().logs.caspian;
+      useStore.setState({ lastError: null });
+      read.mockRejectedValueOnce(new Error("socket closed"));
+      await expect(state().loadOlderLog("caspian")).rejects.toThrow("socket closed");
+      expect(state().histories.caspian).toBe(before);
+      expect(state().logs.caspian).toBe(log);
+      expect(state().lastError).toBeNull();
+    });
+  });
+
   it("drops an older page a rebuild overtook", async () => {
     await withSmallPages(async (read) => {
       await state().rebuildLog("caspian");

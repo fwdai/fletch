@@ -251,7 +251,8 @@ export interface MobileState extends ChatsSlice, ProposalsSlice {
    *  needed it is where the failure is shown. */
   rebuildLog(agentId: string, opts?: { liveTurn?: boolean }): Promise<void>;
   /** Read the page before the oldest one loaded and put it at the head of the
-   *  log. A no-op when there is no older page to read. */
+   *  log. A no-op when there is no older page to read. A failure rejects and
+   *  is not put in `lastError`: the control that asked shows it. */
   loadOlderLog(agentId: string): Promise<void>;
   loadGit(agentId: string): Promise<void>;
   /** The Ship tab's one read when it opens with no checks cached: PR state and
@@ -1121,27 +1122,25 @@ export const useStore = create<MobileState>()((set, get) => ({
   async loadOlderLog(agentId) {
     const loaded = get().histories[agentId];
     if (!loaded?.older) return;
-    return guard(set, async () => {
-      const [page, turns] = await Promise.all([
-        api.readSessionPage(agentId, loaded.older),
-        api.readUserTurns(agentId),
-      ]);
-      // A rebuild that landed meanwhile replaced the pages this one extends;
-      // its log is the newer, and the cursor it holds is the one to follow.
-      if (get().histories[agentId] !== loaded) return;
-      const provider = agentOf(get(), agentId)?.provider;
-      const records = [...page.records, ...loaded.records];
-      // Re-reduced whole rather than prepended, so a call on this page pairs
-      // with its result on the next. The log opens with what the loaded records
-      // reduced to; everything after that (a replayed running turn, live
-      // frames, a queued send) is not in them and is carried over as it is.
-      const head = reduceRecords(provider, loaded.records).length;
-      const items = applyUserTurns(reduceRecords(provider, records), turns);
-      set((s) => ({
-        histories: { ...s.histories, [agentId]: { records, older: page.older } },
-        logs: { ...s.logs, [agentId]: [...items, ...(s.logs[agentId] ?? []).slice(head)] },
-      }));
-    });
+    const [page, turns] = await Promise.all([
+      api.readSessionPage(agentId, loaded.older),
+      api.readUserTurns(agentId),
+    ]);
+    // A rebuild that landed meanwhile replaced the pages this one extends;
+    // its log is the newer, and the cursor it holds is the one to follow.
+    if (get().histories[agentId] !== loaded) return;
+    const provider = agentOf(get(), agentId)?.provider;
+    const records = [...page.records, ...loaded.records];
+    // Re-reduced whole rather than prepended, so a call on this page pairs
+    // with its result on the next. The log opens with what the loaded records
+    // reduced to; everything after that (a replayed running turn, live
+    // frames, a queued send) is not in them and is carried over as it is.
+    const head = reduceRecords(provider, loaded.records).length;
+    const items = applyUserTurns(reduceRecords(provider, records), turns);
+    set((s) => ({
+      histories: { ...s.histories, [agentId]: { records, older: page.older } },
+      logs: { ...s.logs, [agentId]: [...items, ...(s.logs[agentId] ?? []).slice(head)] },
+    }));
   },
 
   async loadGit(agentId) {
