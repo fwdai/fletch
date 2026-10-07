@@ -288,7 +288,11 @@ Context tab's **Map project**:
    `vision` (≤ 600 chars), a one-line summary, a name and aliases for every
    module (a revision names the entity by its slug in `id`), and the missing
    `part_of` / `depends_on` relations. It records no decisions or facts —
-   those come from the people who made them.
+   those come from the people who made them — with one exception: a project
+   that still has a row in `roadmap_briefs` (the user-reviewed product brief,
+   read with plain SQL so a dropped table is simply none) gets it appended to
+   the task, fenced, and the session folds it into the vision and records the
+   constraints it states, quoting the brief so they land as the user's.
 
 ## Deferred, and where each attaches
 
