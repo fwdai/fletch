@@ -11,7 +11,7 @@ already made, and exactly what PR 3 has to deliver. Read it before touching code
 |----|--------|-------|-------|
 | #874 | `feat/provider-accounts` | accounts model, per-account login, probe, Settings list | CI green, awaiting merge |
 | #875 | `feat/provider-accounts-spawn` (stacked on #874) | active account honoured at spawn, both sandbox engines, transcripts | CI green, awaiting merge |
-| PR 3 | `feat/provider-accounts-usage` (create from #875's HEAD) | per-account spend + limit meters | **not started** |
+| PR 3 | `feat/provider-accounts-usage` (stacked on #875) | per-account spend + limit meters | implemented; status-line source deferred |
 
 Merge #874 first, then #875. Manual checks Alex still owes before merging #875:
 a fresh Claude account click-through (add → sign in → make active → new agent)
@@ -84,14 +84,23 @@ Engine (`crates/fletch-core/src/`):
 - `sandbox/container/{launch.rs, auth.rs, launch_auth.rs, config_dir.rs}` —
   account dir mounted and forwarded; `auth::resolve(account_dir)` reads the
   account's suffixed Keychain item / `.credentials.json` only;
-  `claude_keychain_service`, `keychain_token(service)` (launch path only).
+  `claude_keychain_service`, `keychain_token(service)` (a launch, or the
+  limits Refresh through `oauth_access_token`; never a polling path).
 - `keychain.rs` — `item_present`, `delete_item` (macOS; presence-only reads).
 - `transcripts.rs` — `claude_projects_dirs` and `codex_sessions_dirs` union the
   account dirs; `claude_projects_dir(cwd, container, account_dir)`.
 - `supervisor/materialize.rs` — fork/rewind writer targets the stamped dir via
   `existing_account_dir`.
-- `usage_scan/` — scans all roots (incl. account dirs) but has **no account
-  dimension yet** (PR 3).
+- `usage_scan/` — scans all roots (incl. account dirs); each bucket and
+  session carries the `account` whose dir holds the transcript (PR 3), and
+  codex rollouts' `rate_limits` surface as `UsageScan::rollout_limits`.
+- `agent/limits/` (PR 3) — `ProviderLimits`/`AccountLimits`, normalisers per
+  source, the `provider_limits_<provider>_<account>` row (`record_limits`,
+  `record_refresh`, refresh floor and 429 back-off), `app_server` (codex
+  on-demand read), `oauth_usage` (claude manual refresh).
+- `commands/limits.rs` (PR 3) — `get_provider_limits_impl`,
+  `refresh_provider_limits_impl`, `scan_usage_transcripts_impl` (the scan plus
+  storing rollout readings; desktop and remote both call it).
 - `commands/settings.rs` — `is_host_setting_key` admits the
   `provider_account_*` family.
 
