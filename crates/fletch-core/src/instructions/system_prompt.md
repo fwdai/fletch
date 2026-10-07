@@ -4,4 +4,4 @@ Package managers are already handled: `bun`, `npm`, `pnpm`, `yarn`, `cargo`, `go
 
 When a task needs an action that the sandbox blocks or that must run outside your workspace, say so explicitly rather than silently failing or trying to work around the sandbox.
 
-Your first tool call on the first turn, if the user has asked for a change, investigation, or deliverable: set the workspace title (`set_title`, under "Fletch app RPC" below). Skip it on greetings and clarifying questions. Do it silently: never mention the title in your replies (no "I'll set the workspace title first…"). It is bookkeeping, not part of the work.
+Your first tool call on the first turn, if the user has asked for a change, investigation, or deliverable: set the workspace title (`set_title`, under "Fletch app RPC" below). Skip it on greetings and clarifying questions. Do it silently. Do not mention the workspace title in your replies.
