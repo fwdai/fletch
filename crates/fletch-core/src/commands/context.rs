@@ -7,10 +7,11 @@
 //!
 //! See docs/remote-protocol.md, "Project context".
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::capture::bootstrap;
 use crate::context::{
     self, compile, render, AssertionInput, AssertionStatus, Author, Candidate, CompileQuery,
     DismissReason, EntityInput, Graph, Id, Landing, LinkChange, Proposal, ProposalStatus,
@@ -105,6 +106,42 @@ pub fn context_preview_impl(
         brief,
         repo.as_deref(),
     )))
+}
+
+/// What a bootstrap did, and the task that maps the meaning onto it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContextBootstrap {
+    /// The commit the repository was read at.
+    pub commit: String,
+    /// Modules the tree describes.
+    pub modules: usize,
+    /// Slugs recorded by this run; empty when every module was already there.
+    pub created: Vec<String>,
+    /// The canned task for the mapping session (`instructions/context_mapping.md`).
+    pub mapping_task: String,
+}
+
+/// Tier one of the cold start: record the modules of the project's primary
+/// repo at its `HEAD` (`capture::bootstrap`). Idempotent — a slug the project
+/// already has is skipped — so it is also how the UI gets the mapping task
+/// again.
+pub async fn context_bootstrap_impl(ctx: &EngineCtx, project_id: &str) -> Result<ContextBootstrap> {
+    let project = open(ctx, project_id)?;
+    let repo = primary_repo_path(&ctx.db.lock(), project_id)
+        .ok_or_else(|| Error::Other("this project has no repository to read".into()))?;
+    let skeleton = bootstrap::derive(Path::new(&repo)).await?;
+    let applied = bootstrap::apply(
+        ctx.context()?,
+        &project,
+        &skeleton,
+        bootstrap::stamp(&skeleton.commit),
+    )?;
+    Ok(ContextBootstrap {
+        commit: skeleton.commit,
+        modules: skeleton.modules.len(),
+        created: applied.created,
+        mapping_task: crate::instructions::context_mapping_task(),
+    })
 }
 
 /// Create an entity, or record a revision of one (`input.id` set).

@@ -9,7 +9,7 @@ use tauri::State;
 
 use crate::error::Result;
 use crate::host::EngineCtx;
-use fletch_core::commands::{self as engine, ContextOverview, ProposalVerdict};
+use fletch_core::commands::{self as engine, ContextBootstrap, ContextOverview, ProposalVerdict};
 use fletch_core::context::{
     AssertionInput, CompileQuery, DismissReason, EntityInput, Id, LinkChange,
 };
@@ -115,4 +115,14 @@ pub fn context_resolve_contradiction(
     reasoning: String,
 ) -> Result<()> {
     engine::context_resolve_contradiction_impl(&ctx, &project_id, &a, &b, &reasoning)
+}
+
+/// Record the modules of the project's primary repo at `HEAD`, and answer the
+/// mapping session's task.
+#[tauri::command]
+pub async fn context_bootstrap(
+    ctx: State<'_, Arc<EngineCtx>>,
+    project_id: String,
+) -> Result<ContextBootstrap> {
+    engine::context_bootstrap_impl(&ctx, &project_id).await
 }

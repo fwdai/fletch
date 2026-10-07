@@ -1356,6 +1356,7 @@ pub fn run() {
             commands::context_link,
             commands::context_rule_proposal,
             commands::context_resolve_contradiction,
+            commands::context_bootstrap,
             probe_docker_engine,
             probe_podman_engine,
             get_container_auth_status,

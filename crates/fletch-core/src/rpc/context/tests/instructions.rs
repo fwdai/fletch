@@ -38,3 +38,19 @@ fn the_index_rides_inside_a_fence_after_the_playbook() {
         "{block}"
     );
 }
+
+/// The mapping task writes entities and relations through ops this
+/// dispatcher has, and names the decision op only to rule it out.
+#[test]
+fn the_mapping_task_uses_the_entity_ops_and_records_no_decisions() {
+    let task = crate::instructions::context_mapping_task();
+    for op in ["context_get", "context_record_entity", "context_link"] {
+        assert!(super::OPS.contains(&op));
+        assert!(task.contains(&format!("`{op}`")), "{op} missing: {task}");
+    }
+    assert!(
+        task.contains("Do **not** call `context_record_decision`"),
+        "{task}"
+    );
+    assert!(!crate::instructions::text().contains("Map this project"));
+}

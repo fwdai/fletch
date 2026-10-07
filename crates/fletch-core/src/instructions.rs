@@ -78,6 +78,16 @@ const ROADMAP: &str = include_str!("instructions/roadmap.md");
 /// test there against the ops that dispatcher implements.
 const CONTEXT: &str = include_str!("instructions/context.md");
 
+/// The canned task of a project-mapping session: an ordinary workspace whose
+/// first message this is, writing meaning onto the modules the bootstrap
+/// recorded with the `context_*` ops. Not part of any instruction block.
+const CONTEXT_MAPPING: &str = include_str!("instructions/context_mapping.md");
+
+/// The mapping session's task text, trimmed.
+pub fn context_mapping_task() -> String {
+    CONTEXT_MAPPING.trim().to_string()
+}
+
 /// The combined instruction text, trimmed. Empty when every source is
 /// blank/whitespace, which makes every injection helper a no-op.
 pub fn text() -> String {
