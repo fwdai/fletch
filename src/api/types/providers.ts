@@ -88,6 +88,54 @@ export interface ProviderAccount {
   detail: string | null;
 }
 
+/** One plan window of an account: how much of it is used and when it starts
+ *  over. Every source is normalised by the engine to these units. */
+export interface LimitWindow {
+  /** 0–100. */
+  percent: number;
+  /** Epoch seconds; null when the source reported no reset (an untouched
+   *  window). */
+  resets_at: number | null;
+}
+
+/** Where a limits reading came from. Mirrors `LimitSource` in the engine's
+ *  `agent::limits`. */
+export type LimitSource = "stream" | "statusline" | "app_server" | "oauth_usage" | "rollout";
+
+/** A reading of both windows at one instant (`as_of`, epoch seconds). */
+export interface ProviderLimits {
+  five_hour: LimitWindow | null;
+  seven_day: LimitWindow | null;
+  as_of: number;
+  source: LimitSource;
+}
+
+/** How the last manual limits refresh ended. `stale`: claude's stored token
+ *  was refused (it refreshes only while an agent runs); `rate_limited`: wait
+ *  until `next_allowed_at`. */
+export type LimitsRefreshStatus = "ok" | "signed_out" | "stale" | "rate_limited";
+
+export interface LimitsRefreshState {
+  status: LimitsRefreshStatus;
+  /** Epoch seconds of the attempt. */
+  at: number;
+  /** Epoch seconds before which another refresh is refused (429 back-off). */
+  next_allowed_at: number | null;
+  failures: number;
+}
+
+/** One account's limits row (`provider_limits_<provider>_<account>` in the
+ *  host's settings): the last known reading and how the last manual refresh
+ *  went. Mirrors `AccountLimits` in the engine's `agent::limits`. */
+export interface AccountLimits {
+  limits: ProviderLimits | null;
+  refresh: LimitsRefreshState | null;
+}
+
+/** `settings` key prefix of the limits rows. Mirrors `LIMITS_SETTING_PREFIX`
+ *  in the engine's `agent::limits`. */
+export const LIMITS_SETTING_PREFIX = "provider_limits_";
+
 /** Payload of `provider-login:output`: raw PTY bytes from a provider's in-app
  *  sign-in, base64-encoded (decode with `decodeBase64`, as for every PTY
  *  stream — see src/pty/decode.ts). `id` is the sign-in's key: the provider

@@ -20,6 +20,7 @@ mod args;
 mod auth_probe;
 mod capabilities;
 mod host_state;
+pub mod limits;
 mod login;
 mod probe;
 mod providers;

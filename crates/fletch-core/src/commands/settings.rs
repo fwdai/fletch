@@ -47,7 +47,8 @@ const HOST_SETTING_KEYS: &[&str] = &[
 pub const SETTINGS_CHANGED: &str = "settings:changed";
 
 /// Whether `key` is a host-owned setting a client may read: the exact list
-/// plus the `agent_bin_path_<id>` and `provider_account_<id>` families.
+/// plus the `agent_bin_path_<id>`, `provider_account_<id>` and
+/// `provider_limits_<provider>_<account>` families.
 pub fn is_host_setting_key(key: &str) -> bool {
     HOST_SETTING_KEYS.contains(&key)
         || key
@@ -56,6 +57,9 @@ pub fn is_host_setting_key(key: &str) -> bool {
         || key
             .strip_prefix(crate::agent::accounts::ACTIVE_SETTING_PREFIX)
             .is_some_and(|id| !id.is_empty())
+        || key
+            .strip_prefix(crate::agent::limits::LIMITS_SETTING_PREFIX)
+            .is_some_and(|rest| !rest.is_empty())
 }
 
 #[derive(Serialize)]
@@ -64,7 +68,7 @@ struct Changed<'a> {
     value: Option<&'a str>,
 }
 
-pub(super) fn announce(ctx: &EngineCtx, key: &str, value: Option<&str>) {
+pub(crate) fn announce(ctx: &EngineCtx, key: &str, value: Option<&str>) {
     crate::host::emit(ctx.sink.as_ref(), SETTINGS_CHANGED, &Changed { key, value });
 }
 
