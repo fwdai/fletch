@@ -5,10 +5,11 @@ what has been decided about it, the rules it follows, how it actually works —
 captured from the work done through Fletch and served back to every agent so
 it does not re-explore the project to reconstruct it.
 
-This is the first, deliberately small version. It replaces nothing yet (the
-roadmap brief still stands and is shown as the vision until a `vision` entity
-exists) and is built so the later pieces — search, code anchors, multi-host —
-are extensions, not rewrites. The core lives in `crates/fletch-core/src/context/`
+This is the first, deliberately small version. It is the single source of
+truth for project knowledge — it replaced the roadmap's product brief, and
+every agent (coding agents, reviewers, the PM chat) is served the same
+overview from it at spawn — and is built so the later pieces — search, code
+anchors, multi-host — are extensions, not rewrites. The core lives in `crates/fletch-core/src/context/`
 (model, store, service, compile, render, resolve, trust), the capture paths —
 the bootstrap, the extractor and the PR ingester — in `src/capture/`, the `context_*` RPC ops
 in `src/rpc/context/`, the host commands in `src/commands/context.rs`, and the
@@ -93,8 +94,8 @@ required reasoning), `contradicts` (assertion ↔ assertion), `relates`
 `settings`), `seq` (per-host monotonic, computed in the write transaction),
 `recorded_at`, `author` (`user · agent · extractor · ingester` + agent id and
 provider), `source` (`user_turn · agent_turn · pr · review_thread · roadmap ·
-brief · workflow · ui · repo` + reference), `provenance` (workspace, branch,
-commit, session, turn).
+workflow · ui · repo` + reference), `provenance` (workspace, branch, commit,
+session, turn).
 
 **Project identity** — events are keyed by a *context* project id minted into
 `project_settings` (`context.id`), never the host-local `projects.id`, so a
@@ -183,8 +184,18 @@ opened.
   project's primary repo for the Preview tab) and warns once per served path
   anchor — of an entity or an assertion — that the checkout does not have.
   The log is not touched; whoever reads the warning fixes the record.
-- The spawn-time **index** (`render_index`, ≤1500 chars) — every entity by
-  kind — rides in the instruction block so an agent knows what to ask for.
+- The spawn-time **overview** (`compile::overview`, ≤3000 chars,
+  `rpc::context::spawn_overview`) rides in the instruction block of every
+  session on a project with the layer on, whatever its purpose — a coding
+  agent and the PM chat get the identical section. In order: the vision (or
+  nothing), the adopted current `constraint` assertions in the business and
+  architectural domains (statement only), a one-line legend per `module`
+  (slug, clipped summary, first path), then every other active entity by kind
+  as `slug ("name")`. It goes through `compile`'s ranking and budget loop and
+  `render_markdown`; the vision and the constraints are never dropped, and a
+  truncation warning tells the agent `context_get` has more. The Context
+  tab's preview shows it verbatim (`CompileQuery.overview`). The extractor
+  still reads the plain index (`render_index`).
 - Every read is logged (`reads`: query, what was served, what was asked for
   and not found). Misses are the coverage signal.
 
@@ -217,9 +228,9 @@ the one place that makes it safe: every entity and assertion write validates
 the slug (`[a-z0-9][a-z0-9._-]*`, ≤ 64), strips control characters and
 collapses whitespace in every text field, and caps lengths (name 120,
 summary 600, statement 300, rationale 1000) — whichever writer it came
-from. The spawn-time index quotes names and leaves out entities the
+from. The spawn-time overview quotes names and leaves out entities the
 extractor minted until something else revised them, and the instruction
-block says the index is data, not instructions.
+block fences it and says it is data, not instructions.
 
 Trust is decided in one place too: `context::trust` finds the quoted words
 verbatim in a user turn of that workspace (`find_user_quote`), and the
@@ -303,9 +314,8 @@ Context tab's **Map project**:
 | Structural deltas from a merged PR (modules added, removed, moved) | `capture::bootstrap::rules` over the PR's file list, landed through the `MergedPr` entry |
 | Roadmap rulings and `wf_report` as deterministic sources | `capture/ingest/`, same `MergedPr`-style entry |
 | Gap mining (what did the agent discover that it was not served) | A second question in the extractor prompt; same proposal pipeline |
-| Host-side injection at turn start | The index block is step one; no per-turn mechanism exists yet |
+| Host-side injection at turn start | The overview block is step one; no per-turn mechanism exists yet |
 | Multi-host | Not an extension of what is here. The log replays each host in `seq` order and merges hosts by `recorded_at`, failing loudly on an out-of-order status event — honest for one host, not sufficient for two: they need causal ordering (vector clock or HLC on every event), a fold that tolerates a status event arriving before its assertion, and a rule for forked supersession chains. Writer-minted ids and the stamp keep the door open; the fold is a redesign. |
-| Replacing the roadmap brief | A `vision` entity takes over the moment one exists |
 
 ## Decisions made while building
 
@@ -322,3 +332,8 @@ Context tab's **Map project**:
   workspace's provisionals before that run lands.
 - **The extractor reuses the handoff one-shot runner** (tool-less, empty
   cwd, timeout) rather than a sandboxed agent run.
+- **One overview for every agent, and no brief.** The roadmap's product brief
+  (a PM-maintained markdown page, `roadmap_briefs`) was a stand-in for this
+  layer; migration 0049 drops it with its RPC ops, commands and board tab.
+  The PM keeps only the board's "Not doing" digest in its roadmap block — the
+  board's decision log, not project knowledge.
