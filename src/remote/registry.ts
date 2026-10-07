@@ -63,6 +63,9 @@ export interface HostRegistryOptions {
   /** Builds the client for one host. Injected so the wiring owns the secure
    *  transport and a test can hand in a fake. */
   newClient: (device: DeviceInfo) => RemoteClient;
+  /** A handshake changed a host's relay URL (the host is where it is set), so
+   *  the saved record should follow. The registry itself keeps no record. */
+  onRelayChange?: (hostKey: string, relay: string | undefined) => void;
   /** How long to wait before the one retry of an advisory read. Defaults to
    *  [`RETRY_AFTER_MS`]; a test passes 0 so it does not have to wait out a
    *  delay whose length is not what it is checking. */
@@ -160,6 +163,7 @@ export function createHostRegistry(opts: HostRegistryOptions): HostRegistry {
     const client = opts.newClient(await opts.device());
     clients.set(record.hostKey, client);
     let name = record.name;
+    let relay = record.relay;
     // Published before the dial, in `connecting`: a host that is offline has to
     // show up in the pane as a host that is offline, not as nothing at all.
     writers.upsertEnvironment({
@@ -191,6 +195,11 @@ export function createHostRegistry(opts: HostRegistryOptions): HostRegistry {
       // descriptor is what gates a remote environment's UI. The version rides
       // along for the rows that name the host — it is reported, never gated on.
       name = snapshot.host.name || name;
+      // The client has already folded the host's answer into its target.
+      if (client.target && client.target.relay !== relay) {
+        relay = client.target.relay;
+        opts.onRelayChange?.(record.hostKey, relay);
+      }
       handshakes.set(record.hostKey, (handshakes.get(record.hostKey) ?? 0) + 1);
       writers.upsertEnvironment({
         id: record.hostKey,
@@ -270,10 +279,15 @@ export function createHostRegistry(opts: HostRegistryOptions): HostRegistry {
         addr: `${target.host}:${target.port}`,
         relay: target.relay,
       };
-      const { dial } = await start(record, target);
+      const { client, dial } = await start(record, target);
       try {
         const snapshot = await dial;
-        return { ...record, name: snapshot.host.name || record.name };
+        return {
+          ...record,
+          name: snapshot.host.name || record.name,
+          // The host's answer wins over whatever the link carried.
+          relay: client.target ? client.target.relay : record.relay,
+        };
       } catch (e) {
         forget(target.hostKey);
         throw e;

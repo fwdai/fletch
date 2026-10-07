@@ -120,7 +120,8 @@ function fakeClient() {
     hostKey: HOST_KEY,
     via: null,
     setRelay: () => {},
-    target: null,
+    /** Set by a test to what the real client holds after a handshake. */
+    target: null as HostTarget | null,
     pair: () => Promise.reject(new Error("unused")),
     hello: () => Promise.reject(new Error("unused")),
   };
@@ -146,6 +147,7 @@ function harness() {
   // slice: the registry's contract is that it fires once per handshake, and
   // what the store then does with it is `environmentSwitch`'s own test.
   const reconnected = vi.fn();
+  const relayChanged = vi.fn();
   const registry = createHostRegistry({
     writers: {
       upsertEnvironment: store.getState().upsertEnvironment,
@@ -156,11 +158,12 @@ function harness() {
     },
     device,
     newClient: () => client,
+    onRelayChange: relayChanged,
     // The retry exists; how long it waits is not what these tests check.
     retryDelayMs: 0,
   });
   const entry = (): EnvironmentEntry | undefined => store.getState().environments[HOST_KEY];
-  return { store, client, registry, entry, device, reconnected };
+  return { store, client, registry, entry, device, reconnected, relayChanged };
 }
 
 describe("the paired-host lifecycle", () => {
@@ -345,6 +348,42 @@ describe("the paired-host lifecycle", () => {
       addr: "10.0.0.4:47285",
       relay: undefined,
     });
+  });
+
+  it("saves the relay the host answers, and only when it changed", async () => {
+    const { registry, client, relayChanged } = harness();
+    await registry.adopt({ ...RECORD, relay: "wss://old.test" });
+    const target = client.targets[0];
+
+    // Same as saved: nothing to write.
+    client.target = target;
+    client.handshake({ host: HOST, workspace: null, protocol: PROTOCOL });
+    expect(relayChanged).not.toHaveBeenCalled();
+
+    // Moved on the host.
+    client.target = { ...target, relay: "wss://new.test" };
+    client.handshake({ host: HOST, workspace: null, protocol: PROTOCOL });
+    expect(relayChanged).toHaveBeenLastCalledWith(HOST_KEY, "wss://new.test");
+
+    // Switched off on the host.
+    client.target = { ...target, relay: undefined };
+    client.handshake({ host: HOST, workspace: null, protocol: PROTOCOL });
+    expect(relayChanged).toHaveBeenLastCalledWith(HOST_KEY, undefined);
+    expect(relayChanged).toHaveBeenCalledTimes(2);
+  });
+
+  it("pairs into a record carrying the host's relay, not the link's", async () => {
+    const { registry, client } = harness();
+    const paired = registry.pair({
+      host: "10.0.0.4",
+      port: 47285,
+      hostKey: HOST_KEY,
+      pairingToken: "K7PQ2M9X",
+    });
+    await settled();
+    client.target = { host: "10.0.0.4", port: 47285, hostKey: HOST_KEY, relay: "wss://relay.test" };
+    client.handshake({ host: HOST, workspace: null, protocol: PROTOCOL });
+    expect((await paired).relay).toBe("wss://relay.test");
   });
 
   it("leaves nothing behind when a pairing is refused", async () => {

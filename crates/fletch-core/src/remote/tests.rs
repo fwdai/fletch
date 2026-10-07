@@ -1902,6 +1902,42 @@ async fn pair_then_hello_then_op_then_event_fanout() {
     assert_eq!(denied["error"], UNKNOWN_OP);
 }
 
+/// The relay URL is set on the Mac and nowhere else: both results answer it,
+/// `null` when there is none, so a device paired by hand learns it and every
+/// device follows a change from its next handshake.
+#[tokio::test]
+async fn pair_and_hello_answer_the_relay_url() {
+    let host = boot();
+    let phone = device();
+    let minted = host.state.pairing().mint(&Scope::ALL);
+
+    let mut ws = secure_connect(host.port, &phone).await;
+    ws.request("1", "pair", json!({ "token": minted.token }))
+        .await;
+    let paired = ws.next_json().await;
+    assert_eq!(paired["ok"], true);
+    assert_eq!(paired["result"]["relay"], Value::Null);
+    drop(ws);
+
+    // Normalized as stored. Nothing listens there; the link retrying in the
+    // background is not what this checks.
+    host.state
+        .set_relay(Some("ws://127.0.0.1:1/".to_string()))
+        .unwrap();
+    let mut ws = secure_connect(host.port, &phone).await;
+    ws.request("2", "hello", json!({})).await;
+    let hello = ws.next_json().await;
+    assert_eq!(hello["ok"], true);
+    assert_eq!(hello["result"]["relay"], "ws://127.0.0.1:1");
+    drop(ws);
+
+    host.state.set_relay(None).unwrap();
+    let mut ws = secure_connect(host.port, &phone).await;
+    ws.request("3", "hello", json!({})).await;
+    let hello = ws.next_json().await;
+    assert_eq!(hello["result"]["relay"], Value::Null);
+}
+
 /// The tap *is* the whitelist: it subscribes to the engine's whole event stream
 /// and only the documented names reach a connection. `agent:output` — raw PTY
 /// bytes — is the one that must never.

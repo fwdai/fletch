@@ -111,6 +111,14 @@ function reportable(message: string): string {
   return `Couldn't connect: ${cause}`;
 }
 
+/** `target` with the relay a handshake answered. The host is where the relay is
+ *  set, so a string replaces the held one and `null` clears it; a host too old
+ *  to send the field (`undefined`) leaves it alone. */
+function withRelay(target: HostTarget, relay: string | null | undefined): HostTarget {
+  if (relay === undefined) return target;
+  return { ...target, relay: relay?.trim() || undefined };
+}
+
 const randomId = () =>
   globalThis.crypto?.randomUUID?.() ??
   `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
@@ -453,7 +461,7 @@ export class ProtocolClient implements RemoteClient {
       const paired = await this.pair(target.pairingToken, this.opts.device);
       // Pairing is single use: drop the code, so a reconnect greets the host
       // with `hello` on the device key it just registered.
-      this._target = { ...target, pairingToken: undefined };
+      this._target = withRelay({ ...target, pairingToken: undefined }, paired.relay);
       this.setState("connected");
       // `pair` answers with the host identity but no snapshot, so ask for it.
       // Still part of pairing as far as anyone watching is concerned: the
@@ -464,6 +472,7 @@ export class ProtocolClient implements RemoteClient {
       return this.publishSnapshot({
         host: paired.host,
         workspace,
+        relay: paired.relay,
         // `pair` carries the descriptor too, so a first pairing gates its UI
         // from the same frame a reconnect's `hello` would.
         protocol: paired.protocol,
@@ -471,6 +480,7 @@ export class ProtocolClient implements RemoteClient {
     }
     this.step("greeting");
     const result = await this.hello(this.opts.device);
+    this._target = withRelay(target, result.relay);
     this.setState("connected");
     return this.publishSnapshot(result);
   }
