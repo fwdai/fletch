@@ -23,8 +23,16 @@ use crate::error::{Error, Result};
 pub const TIMEOUT: Duration = Duration::from_secs(10);
 
 /// The app-server's untyped internal error, which is how a 401 from the
-/// backend surfaces: the account has no usable login.
-const UNAUTHENTICATED_CODE: i64 = -32603;
+/// backend surfaces — but also how any other backend failure does, so the
+/// message has to name the auth failure before it counts as signed out.
+const INTERNAL_ERROR_CODE: i64 = -32603;
+
+/// Whether an internal error's message is about the login rather than, say,
+/// the network: "failed to fetch codex rate limits: 401" is the known form.
+fn names_auth_failure(message: &str) -> bool {
+    let m = message.to_ascii_lowercase();
+    m.contains("401") || m.contains("unauthori") || m.contains("logged in") || m.contains("login")
+}
 
 const INITIALIZE_ID: i64 = 1;
 const READ_ID: i64 = 2;
@@ -179,16 +187,19 @@ fn error_message(err: &Value) -> &str {
         .unwrap_or("unknown error")
 }
 
-/// What the read's response means: a reading, signed out (`-32603`), or an
-/// error worth telling the user about.
+/// What the read's response means: a reading, signed out (`-32603` about a
+/// 401), or an error worth telling the user about — a network failure must
+/// not read as a lost login.
 pub fn outcome(response: &Value, now: i64) -> Result<RefreshOutcome> {
     if let Some(err) = response.get("error") {
-        if err.get("code").and_then(Value::as_i64) == Some(UNAUTHENTICATED_CODE) {
+        let message = error_message(err);
+        if err.get("code").and_then(Value::as_i64) == Some(INTERNAL_ERROR_CODE)
+            && names_auth_failure(message)
+        {
             return Ok(RefreshOutcome::SignedOut);
         }
         return Err(Error::Other(format!(
-            "codex could not read its limits: {}",
-            error_message(err)
+            "codex could not read its limits: {message}"
         )));
     }
     response
@@ -237,6 +248,16 @@ mod tests {
             "error": { "code": -32603, "message": "failed to fetch codex rate limits: 401" },
         });
         assert_eq!(outcome(&response, 0).unwrap(), RefreshOutcome::SignedOut);
+    }
+
+    #[test]
+    fn an_internal_error_about_something_else_is_not_signed_out() {
+        let response = json!({
+            "id": 2,
+            "error": { "code": -32603, "message": "failed to fetch codex rate limits: connection refused" },
+        });
+        let err = outcome(&response, 0).unwrap_err().to_string();
+        assert!(err.contains("connection refused"), "{err}");
     }
 
     #[test]
