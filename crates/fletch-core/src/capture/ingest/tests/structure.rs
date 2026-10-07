@@ -3,7 +3,7 @@
 //! bootstrap from the tree before the merge.
 
 use super::*;
-use crate::capture::ingest::{ingest_merged, MergedPr};
+use crate::capture::ingest::{ingest_merged, read_and_ingest, seen, MergedPr};
 use crate::context::{compile, ContextStore};
 
 const PROJECT: &str = "proj-ctx";
@@ -363,30 +363,188 @@ fn a_decision_line_can_name_a_module_the_same_pr_added() {
     assert!(g.assertions.iter().any(|a| a.about == [net.id.clone()]));
 }
 
-/// From a real repository: the merge commit against its first parent.
+fn strings(paths: &[&str]) -> Vec<String> {
+    paths.iter().map(|p| p.to_string()).collect()
+}
+
+fn added(path: &str) -> PrFileChange {
+    PrFileChange::Added(path.into())
+}
+
+fn removed(path: &str) -> PrFileChange {
+    PrFileChange::Removed(path.into())
+}
+
+fn renamed(from: &str, to: &str) -> PrFileChange {
+    PrFileChange::Renamed {
+        from: from.into(),
+        to: to.into(),
+    }
+}
+
+/// A PR of several commits, as GitHub lists its files: one change per file,
+/// however many commits touched it. The tree after the merge also holds a
+/// crate the base gained while the PR was open; it is not the PR's.
+#[test]
+fn reversing_a_multi_commit_prs_files_gives_its_delta_alone() {
+    let after_files = strings(&[
+        "package.json",
+        "src/main.tsx",
+        "src/components/App.tsx",
+        "crates/core/Cargo.toml",
+        "crates/core/src/lib.rs",
+        "crates/core/src/store/mod.rs",
+        "crates/core/src/rpc/mod.rs",
+        "crates/net/Cargo.toml",
+        "crates/net/src/lib.rs",
+        "crates/net/src/http/mod.rs",
+        "crates/base-only/Cargo.toml",
+        "crates/base-only/src/lib.rs",
+    ]);
+    let changes = [
+        added("crates/net/Cargo.toml"),
+        added("crates/net/src/lib.rs"),
+        added("crates/net/src/http/mod.rs"),
+        added("crates/core/src/rpc/mod.rs"),
+        removed("crates/old/Cargo.toml"),
+        removed("crates/old/src/lib.rs"),
+    ];
+
+    let before_files = unapply(&after_files, &changes);
+    let mut expected = strings(&BEFORE);
+    expected.extend(strings(&[
+        "crates/base-only/Cargo.toml",
+        "crates/base-only/src/lib.rs",
+    ]));
+    expected.sort();
+    assert_eq!(before_files, expected);
+
+    let d = delta(
+        &rules::modules(&before_files),
+        &rules::modules(&after_files),
+    );
+    assert_eq!(slugs(&d.added), ["net", "core-rpc", "net-http"]);
+    assert_eq!(slugs(&d.removed), ["old"]);
+    assert!(d.moved.is_empty());
+}
+
+#[test]
+fn a_renamed_directory_is_a_move() {
+    let after_files = strings(&[
+        "package.json",
+        "src/main.tsx",
+        "src/components/App.tsx",
+        "libs/core/Cargo.toml",
+        "libs/core/src/lib.rs",
+        "libs/core/src/store/mod.rs",
+        "crates/old/Cargo.toml",
+        "crates/old/src/lib.rs",
+    ]);
+    let changes = [
+        renamed("crates/core/Cargo.toml", "libs/core/Cargo.toml"),
+        renamed("crates/core/src/lib.rs", "libs/core/src/lib.rs"),
+        renamed("crates/core/src/store/mod.rs", "libs/core/src/store/mod.rs"),
+    ];
+
+    let before_files = unapply(&after_files, &changes);
+    let d = delta(
+        &rules::modules(&before_files),
+        &rules::modules(&after_files),
+    );
+
+    let moved: Vec<(&str, &str)> = d
+        .moved
+        .iter()
+        .map(|m| (m.from.as_str(), m.to.path.as_str()))
+        .collect();
+    assert_eq!(
+        moved,
+        [
+            ("crates/core", "libs/core"),
+            ("crates/core/src/store", "libs/core/src/store")
+        ]
+    );
+    assert!(d.added.is_empty() && d.removed.is_empty(), "{d:?}");
+}
+
+fn git(dir: &Path, args: &[&str]) {
+    let out = std::process::Command::new("git")
+        .current_dir(dir)
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// The merge is made on the remote, so the source repo has to fetch it. A
+/// fetch that fails fails the ingest before the PR is marked; the next
+/// announcement reads and lands the delta.
 #[tokio::test]
-async fn read_compares_a_merge_commit_with_its_first_parent() {
+async fn a_failing_read_leaves_the_pr_unseen_and_a_retry_lands_the_delta() {
     let dir = tempfile::tempdir().unwrap();
-    let root = dir.path().join("repo");
+    let upstream = dir.path().join("upstream");
     let write = |path: &str| {
-        let file = root.join(path);
+        let file = upstream.join(path);
         std::fs::create_dir_all(file.parent().unwrap()).unwrap();
         std::fs::write(file, "").unwrap();
     };
     for path in BEFORE {
         write(path);
     }
-    crate::git::init_repo(&root).await.unwrap();
-    crate::git::commit_all(&root, "base").await.unwrap();
-    std::fs::remove_dir_all(root.join("crates/old")).unwrap();
+    crate::git::init_repo(&upstream).await.unwrap();
+    crate::git::commit_all(&upstream, "base").await.unwrap();
+    git(
+        dir.path(),
+        &["clone", "-q", upstream.to_str().unwrap(), "source"],
+    );
+    let source = dir.path().join("source");
     write("crates/net/Cargo.toml");
+    crate::git::commit_all(&upstream, "net manifest")
+        .await
+        .unwrap();
     write("crates/net/src/lib.rs");
-    crate::git::commit_all(&root, "merge").await.unwrap();
-    let sha = crate::git::rev_parse(&root, "HEAD").await.unwrap();
+    crate::git::commit_all(&upstream, "net code").await.unwrap();
+    let sha = crate::git::rev_parse(&upstream, "HEAD").await.unwrap();
+    let changes = [
+        added("crates/net/Cargo.toml"),
+        added("crates/net/src/lib.rs"),
+    ];
+    let (service, _db) = bootstrapped();
+    let pr = MergedPr {
+        reference: PR.into(),
+        body: String::new(),
+        branch: None,
+        sha: Some(sha),
+        structure: StructureDelta::default(),
+    };
+    let project = project();
+    let ingest = |pr: MergedPr| {
+        read_and_ingest(
+            &service,
+            &project,
+            WORKSPACE,
+            REPO,
+            true,
+            pr,
+            Some((source.as_path(), &changes[..])),
+        )
+    };
 
-    let d = read(&root, &sha).await.unwrap();
+    git(&source, &["remote", "set-url", "origin", "/nowhere"]);
+    assert!(ingest(pr.clone()).await.is_err());
+    assert!(!seen(&service, PROJECT, PR).unwrap());
+    assert!(!graph(&service).entities.iter().any(|e| e.slug == "net"));
 
-    assert_eq!(slugs(&d.added), ["net"]);
-    assert_eq!(slugs(&d.removed), ["old"]);
-    assert!(d.moved.is_empty());
+    git(
+        &source,
+        &["remote", "set-url", "origin", upstream.to_str().unwrap()],
+    );
+    ingest(pr).await.unwrap();
+    assert!(seen(&service, PROJECT, PR).unwrap());
+    let g = graph(&service);
+    assert_eq!(entity(&g, "net").paths, ["crates/net"]);
 }

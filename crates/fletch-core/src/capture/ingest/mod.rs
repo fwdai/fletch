@@ -26,6 +26,7 @@ use sha2::{Digest, Sha256};
 use crate::context::model::*;
 use crate::context::service::{ContextService, Project};
 use crate::context::{resolve, ContextError, Result};
+use crate::github::PrFileChange;
 use crate::host::EngineCtx;
 use crate::roadmap::drainer::primary_repo_path;
 use crate::workspace::{AgentRecord, TrackedRepo, WorkspaceManager};
@@ -182,11 +183,11 @@ fn pr_reference(url: Option<&str>, subdir: &str, number: u32) -> String {
     }
 }
 
-/// Fetch the PR body and merge commit through the GitHub client, read the
-/// merge's structural delta from the source repo when it is the project's
-/// primary one, and ingest both. The source repo backs the slug lookup when
-/// the checkout is already gone. A delta that cannot be read is logged and
-/// left out; the decision lines still land.
+/// Fetch the PR body, merge commit and, when the source repo is the
+/// project's primary one, changed files through the GitHub client, then read
+/// the structural delta and ingest. The source repo backs the slug lookup
+/// when the checkout is already gone. Any failure is logged and leaves the
+/// PR unseen, for the next announcement to retry.
 #[allow(clippy::too_many_arguments)]
 async fn ingest_by_number(
     service: &ContextService,
@@ -226,33 +227,66 @@ async fn ingest_by_number(
     let mapped = service
         .with_conn(|conn| primary_repo_path(conn, &project.fletch_id))
         .is_some_and(|primary| Path::new(&primary) == repo.repo_path);
-    let structure = match merge.merge_sha.as_deref().filter(|_| mapped) {
-        Some(sha) => match structure::read(&repo.repo_path, sha).await {
-            Ok(delta) => delta,
-            Err(e) => {
-                tracing::warn!(workspace_id, pr = number, error = %e, "context ingest: merged PR's structure not read");
-                StructureDelta::default()
+    let changes = if mapped && merge.merge_sha.is_some() {
+        match crate::github::pr_files(&checkout, Some(&repo.repo_path), number).await {
+            Ok(Some(changes)) => Some(changes),
+            Ok(None) => {
+                tracing::info!(
+                    workspace_id,
+                    pr = number,
+                    "context ingest: merged PR files unavailable"
+                );
+                return;
             }
-        },
-        None => StructureDelta::default(),
+            Err(e) => {
+                tracing::warn!(workspace_id, pr = number, error = %e, "context ingest: merged PR files fetch failed");
+                return;
+            }
+        }
+    } else {
+        None
     };
     let pr = MergedPr {
         reference,
         body: merge.body,
         branch: branch.or_else(|| repo.branch.clone()),
         sha: merge.merge_sha,
-        structure,
+        structure: StructureDelta::default(),
     };
-    if let Err(e) = ingest_merged(
+    let source = changes.as_deref().map(|c| (repo.repo_path.as_path(), c));
+    if let Err(e) = read_and_ingest(
         service,
         project,
         workspace_id,
         &repo.subdir,
         is_primary,
-        &pr,
-    ) {
-        tracing::warn!(workspace_id, pr = %pr.reference, error = %e, "context ingest: merged PR not ingested");
+        pr,
+        source,
+    )
+    .await
+    {
+        tracing::warn!(workspace_id, pr = number, error = %e, "context ingest: merged PR not ingested");
     }
+}
+
+/// Read the merge's structural delta from `source` (the primary source repo
+/// and the files the PR changed), then [`ingest_merged`]. A read that fails
+/// fails the ingest before anything marks the PR as seen, so the next
+/// announcement of the merge (the watcher's tick, the archive) retries it.
+async fn read_and_ingest(
+    service: &ContextService,
+    project: &Project,
+    workspace_id: &str,
+    repo: &str,
+    is_primary: bool,
+    mut pr: MergedPr,
+    source: Option<(&Path, &[PrFileChange])>,
+) -> crate::error::Result<()> {
+    if let (Some((source_repo, changes)), Some(sha)) = (source, pr.sha.as_deref()) {
+        pr.structure = structure::read(source_repo, sha, changes).await?;
+    }
+    ingest_merged(service, project, workspace_id, repo, is_primary, &pr)?;
+    Ok(())
 }
 
 /// The store-level work of a merge, for tests and for any caller that

@@ -3,18 +3,20 @@
 //! merge and the tree after it. The log is never re-synced with the code, so
 //! a merged PR is where a change of structure enters the context.
 //!
-//! "Before" is the merge commit's first parent: the base branch as the merge
-//! found it, for a merge commit and a squash alike (a rebase merge shows only
-//! its last commit). A module is its slug; one whose slug stays but whose
-//! directory changes has moved. Only the project's primary repo is read, the
-//! one the bootstrap mapped.
+//! "After" is the merge commit's tree; "before" is that tree with the PR's
+//! own file changes reversed ([`unapply`]), so it is the PR alone whether it
+//! landed as a merge commit, a squash or a rebase of many commits. A module
+//! is its slug; one whose slug stays but whose directory changes has moved.
+//! Only the project's primary repo is read, the one the bootstrap mapped.
 
+use std::collections::BTreeSet;
 use std::path::Path;
 
 use crate::capture::bootstrap::{self, rules, Module};
 use crate::context::model::*;
 use crate::context::service::{ContextService, Project};
 use crate::context::Result;
+use crate::github::PrFileChange;
 
 /// What a merge did to the project's modules.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -61,12 +63,39 @@ pub fn delta(before: &[Module], after: &[Module]) -> StructureDelta {
     out
 }
 
-/// Read the delta a merge commit made, from `source_repo`'s object store,
-/// fetching the commit from `origin` first when it is not local.
-pub async fn read(source_repo: &Path, merge_sha: &str) -> crate::error::Result<StructureDelta> {
+/// The files of the tree before a PR, from the files after it and the
+/// PR's own changes: what it added is taken out, what it removed is put back,
+/// a rename goes back to its old path.
+pub fn unapply(after: &[String], changes: &[PrFileChange]) -> Vec<String> {
+    let mut files: BTreeSet<String> = after.iter().cloned().collect();
+    for change in changes {
+        match change {
+            PrFileChange::Added(path) => {
+                files.remove(path);
+            }
+            PrFileChange::Removed(path) => {
+                files.insert(path.clone());
+            }
+            PrFileChange::Renamed { from, to } => {
+                files.remove(to);
+                files.insert(from.clone());
+            }
+        }
+    }
+    files.into_iter().collect()
+}
+
+/// Read the delta a PR's merge commit made, from `source_repo`'s object store
+/// (fetching the commit from `origin` first when it is not local) and the
+/// files the PR changed.
+pub async fn read(
+    source_repo: &Path,
+    merge_sha: &str,
+    changes: &[PrFileChange],
+) -> crate::error::Result<StructureDelta> {
     crate::git::fetch_commit(source_repo, merge_sha).await?;
-    let before = crate::git::list_files_at(source_repo, &format!("{merge_sha}^1")).await?;
     let after = crate::git::list_files_at(source_repo, merge_sha).await?;
+    let before = unapply(&after, changes);
     Ok(delta(&rules::modules(&before), &rules::modules(&after)))
 }
 
