@@ -295,6 +295,37 @@ describe("history load state", () => {
     }
     expect(state().logLoads.pamukkale).toEqual({ status: "ready" });
   });
+
+  it("drops an older read that succeeds last: log and cursor stay the newest read's", async () => {
+    const real = api.readSessionPage;
+    const fresh = await real.call(api, "pamukkale");
+    let resolve!: () => void;
+    const read = vi
+      .spyOn(api, "readSessionPage")
+      // The older read answers last, with a history that differs from the
+      // newer one's in both its records and its cursor.
+      .mockImplementationOnce(
+        () =>
+          new Promise((r) => {
+            resolve = () => r({ records: fresh.records.slice(0, 1), older: "stale-cursor" });
+          }),
+      )
+      .mockImplementation((...args) => real.apply(api, args));
+    try {
+      const older = state().rebuildLog("pamukkale");
+      await state().rebuildLog("pamukkale");
+      const log = state().logs.pamukkale;
+      const history = state().histories.pamukkale;
+      resolve();
+      await older;
+      expect(state().logs.pamukkale).toBe(log);
+      expect(state().histories.pamukkale).toBe(history);
+      expect(state().histories.pamukkale?.older).not.toBe("stale-cursor");
+    } finally {
+      read.mockRestore();
+    }
+    expect(state().logLoads.pamukkale).toEqual({ status: "ready" });
+  });
 });
 
 describe("paged transcripts", () => {

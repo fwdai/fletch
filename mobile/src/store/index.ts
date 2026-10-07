@@ -1046,6 +1046,16 @@ export const useStore = create<MobileState>()((set, get) => ({
     const report = (load: LogLoad) => {
       if (read.current()) set((s) => ({ logLoads: { ...s.logLoads, [agentId]: load } }));
     };
+    // Everything a read writes lands in one update, and only while it is the
+    // newest: an older read resolving last would otherwise put its transcript
+    // and cursor over the newer one's, under the newer one's `ready`.
+    const commit = (patch: (s: MobileState) => Partial<MobileState>) => {
+      if (!read.current()) return;
+      set((s) => ({
+        ...patch(s),
+        logLoads: { ...s.logLoads, [agentId]: { status: "ready" } },
+      }));
+    };
     const rebuild = async () => {
       // Only the newest page, where the host has pages: a long session's
       // history runs to tens of MB of tool results, and the phone needs the
@@ -1071,17 +1081,20 @@ export const useStore = create<MobileState>()((set, get) => ({
         [history, turns] = await Promise.all([readNewest(), api.readUserTurns(agentId)]);
       }
       const { records } = history;
-      set((s) => ({ histories: { ...s.histories, [agentId]: history } }));
+      const histories = (s: MobileState) => ({ ...s.histories, [agentId]: history });
       // Still nothing stored and no running turn to replay: keep the log the
       // live events built rather than wiping the conversation the user was
       // just looking at (the desktop's records-appended handler makes the same
       // call). With no log either, the chat says the history is missing —
       // never that there is no conversation (see `LogLoad`).
-      if (records.length === 0 && !opts.liveTurn) return;
+      if (records.length === 0 && !opts.liveTurn) {
+        commit((s) => ({ histories: histories(s) }));
+        return;
+      }
       const provider = agentOf(get(), agentId)?.provider;
       const items = applyUserTurns(reduceRecords(provider, records), turns);
       if (!opts.liveTurn) {
-        set((s) => ({ logs: { ...s.logs, [agentId]: items } }));
+        commit((s) => ({ histories: histories(s), logs: { ...s.logs, [agentId]: items } }));
         return;
       }
       // The running turn is read last, once the records have settled, so the
@@ -1102,7 +1115,8 @@ export const useStore = create<MobileState>()((set, get) => ({
         off();
       }
       const startedAt = runningTurnStart(turns);
-      set((s) => ({
+      commit((s) => ({
+        histories: histories(s),
         ...replayLiveTurn(s, agentId, withPendingTurns(agentId, items, turns), live, late),
         ...(startedAt === undefined
           ? {}
@@ -1112,7 +1126,6 @@ export const useStore = create<MobileState>()((set, get) => ({
     report({ status: "loading" });
     try {
       await rebuild();
-      report({ status: "ready" });
     } catch (e) {
       report({ status: "error", error: message(e) });
       throw e;
