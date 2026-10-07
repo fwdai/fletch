@@ -1,5 +1,5 @@
 import { useCallback, useState } from "react";
-import type { ProviderAccount } from "@/api/types/providers";
+import type { AccountLimits, ProviderAccount } from "@/api/types/providers";
 import { ProviderAuthBadge } from "@/components/SettingsScreen/ProviderAuthBadge";
 import { ProviderLoginTerminal } from "@/components/SettingsScreen/ProviderLogin";
 import { Button } from "@/components/ui/Button";
@@ -7,13 +7,15 @@ import { accountLabel } from "@/data/providerAccounts";
 import { loginCommand } from "@/data/providerDetail";
 import type { ProviderId } from "@/data/providers";
 import { useAppStore } from "@/store";
+import { LimitsPanel } from "./LimitsPanel";
 
 /** One account: the radio that makes it the one new agents use, its name and
  *  sign-in state, and its actions. Sign in opens the same embedded terminal
  *  as a single-login provider, run against this account's directory. Remove
  *  asks once inline — it deletes the account's login and transcripts — and is
  *  never offered for the default (the CLI's own directory) or the active one
- *  (the backend refuses that too; pick another first). */
+ *  (the backend refuses that too; pick another first). Under it, the
+ *  account's plan limits. */
 export function AccountRow({
   account,
   providerId,
@@ -21,11 +23,15 @@ export function AccountRow({
   signingIn,
   onSignIn,
   onCloseSignIn,
+  limits,
+  nowMs,
 }: {
   account: ProviderAccount;
   providerId: ProviderId;
   providerLabel: string;
   signingIn: boolean;
+  limits: AccountLimits | undefined;
+  nowMs: number;
   onSignIn: () => void;
   onCloseSignIn: () => void;
 }) {
@@ -112,6 +118,8 @@ export function AccountRow({
           </>
         )}
       </div>
+
+      <LimitsPanel providerId={providerId} account={account} row={limits} nowMs={nowMs} />
 
       {error && <p className="set-prov-acct-error text-sm">{error}</p>}
 

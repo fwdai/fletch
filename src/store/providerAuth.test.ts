@@ -13,6 +13,8 @@ const {
   listProviderAccounts,
   addProviderAccount,
   setActiveProviderAccount,
+  getProviderLimits,
+  refreshProviderLimits,
 } = vi.hoisted(() => ({
   probeProviderAuth: vi.fn(),
   probeProviderVersions: vi.fn(),
@@ -20,6 +22,10 @@ const {
   listProviderAccounts: vi.fn<() => Promise<ProviderAccount[]>>(async () => []),
   addProviderAccount: vi.fn(async () => {}),
   setActiveProviderAccount: vi.fn(async () => {}),
+  getProviderLimits: vi.fn<(provider: string) => Promise<Record<string, AccountLimits>>>(
+    async () => ({}),
+  ),
+  refreshProviderLimits: vi.fn<(provider: string, account: string) => Promise<AccountLimits>>(),
 }));
 vi.mock("@/api", () => ({
   api: {
@@ -28,6 +34,8 @@ vi.mock("@/api", () => ({
     listProviderAccounts,
     addProviderAccount,
     setActiveProviderAccount,
+    getProviderLimits,
+    refreshProviderLimits,
   },
 }));
 // The slice seeds the model catalog from localStorage at module load; none of
@@ -38,7 +46,7 @@ vi.mock("@/data/modelCatalog", () => ({
 }));
 vi.mock("@/storage/settings", () => ({ setSetting: vi.fn() }));
 
-import type { ProviderAccount, ProviderAuthProbe } from "@/api/types/providers";
+import type { AccountLimits, ProviderAccount, ProviderAuthProbe } from "@/api/types/providers";
 import { createProvidersSlice } from "./providers";
 import type { AppState } from "./types";
 
@@ -169,6 +177,63 @@ describe("provider accounts in the store", () => {
     const store = makeStore();
     await expect(store.getState().addProviderAccount("claude", "work")).rejects.toThrow(
       "already exists",
+    );
+  });
+});
+
+const limitsRow = (percent: number): AccountLimits => ({
+  limits: {
+    five_hour: { percent, resets_at: 1_788_265_323 },
+    seven_day: null,
+    as_of: 1_788_000_000,
+    source: "stream",
+  },
+  refresh: null,
+});
+
+describe("provider limits in the store", () => {
+  it("loads each listed provider's limits after its accounts", async () => {
+    listProviderAccounts.mockResolvedValueOnce([account("codex", "default", { active: true })]);
+    getProviderLimits.mockResolvedValueOnce({ default: limitsRow(42) });
+    const store = makeStore();
+    await store.getState().refreshProviderAccounts();
+    expect(getProviderLimits).toHaveBeenLastCalledWith("codex");
+    expect(store.getState().providerLimits).toEqual({ codex: { default: limitsRow(42) } });
+  });
+
+  it("keeps the last limits when a load fails", async () => {
+    getProviderLimits.mockResolvedValueOnce({ default: limitsRow(1) });
+    const store = makeStore();
+    await store.getState().loadProviderLimits("claude");
+    getProviderLimits.mockRejectedValueOnce(new Error("ipc exploded"));
+    await expect(store.getState().loadProviderLimits("claude")).resolves.toBeUndefined();
+    expect(store.getState().providerLimits.claude).toEqual({ default: limitsRow(1) });
+  });
+
+  it("follows a limits row announced on settings:changed and ignores other keys", () => {
+    const store = makeStore();
+    store
+      .getState()
+      .applyProviderLimitsChange("provider_limits_claude_work", JSON.stringify(limitsRow(7)));
+    store.getState().applyProviderLimitsChange("notify_turn_complete", "true");
+    expect(store.getState().providerLimits).toEqual({ claude: { work: limitsRow(7) } });
+  });
+
+  it("stores the row a refresh answers with", async () => {
+    refreshProviderLimits.mockResolvedValueOnce(limitsRow(12));
+    const store = makeStore();
+    await store.getState().refreshProviderLimits("codex", "work");
+    expect(refreshProviderLimits).toHaveBeenCalledWith("codex", "work");
+    expect(store.getState().providerLimits.codex).toEqual({ work: limitsRow(12) });
+  });
+
+  it("surfaces a refresh that couldn't ask at all", async () => {
+    refreshProviderLimits.mockRejectedValueOnce(
+      new Error("Could not find the `codex` executable."),
+    );
+    const store = makeStore();
+    await expect(store.getState().refreshProviderLimits("codex", "default")).rejects.toThrow(
+      "codex",
     );
   });
 });

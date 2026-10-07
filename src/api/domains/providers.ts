@@ -4,6 +4,7 @@ import type { AgentModels } from "@/data/modelCatalog/types";
 // whatever environment is active.
 import { invokeLocal } from "../invoke";
 import type {
+  AccountLimits,
   BinValidation,
   ProviderAccount,
   ProviderAuthProbe,
@@ -52,6 +53,18 @@ export const providersApi = {
   /** Choose the account new agents of `provider` use; `null` is the CLI's own. */
   setActiveProviderAccount: (provider: string, id: string | null) =>
     invokeLocal<void>("set_active_provider_account", { provider, id }),
+  /** Every account of `provider` with its last known plan limits, keyed by
+   *  account id. A read of what the engine stored; nothing is asked of the
+   *  vendor. */
+  getProviderLimits: (provider: string) =>
+    invokeLocal<Record<string, AccountLimits>>("get_provider_limits", { provider }),
+  /** Ask the vendor for one account's limits now (`account` is a managed id or
+   *  `DEFAULT_ACCOUNT_ID`) and resolve to the row as stored. Inside the refresh
+   *  floor or a 429 back-off nothing is asked and the stored row comes back.
+   *  Signed out, stale and rate limited are states on the row, not rejections;
+   *  rejects only for what the row can't say (no CLI, no network). */
+  refreshProviderLimits: (provider: string, account: string) =>
+    invokeLocal<AccountLimits>("refresh_provider_limits", { provider, account }),
   /** Run an agent CLI's pinned sign-in command under a PTY so the user can
    *  complete it in an embedded terminal. Output arrives as
    *  `provider-login:output`, the end of the flow as `provider-login:exit`,

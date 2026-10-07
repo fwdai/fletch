@@ -33,7 +33,8 @@ use crate::host::EngineCtx;
 /// `settings` key prefix of the limits rows: `provider_limits_<provider>_<account>`,
 /// `account` being a managed id or [`accounts::DEFAULT_ACCOUNT`]. Neither part
 /// can hold an underscore (provider ids and account slugs don't), so the key
-/// splits unambiguously — `limitsKeyParts` in the store relies on that.
+/// splits unambiguously — `limitsKeyParts` in
+/// `src/data/providerLimits.ts` relies on that.
 pub const LIMITS_SETTING_PREFIX: &str = "provider_limits_";
 
 /// The least time between two successful manual refreshes of one account. A
