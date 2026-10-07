@@ -59,8 +59,9 @@ pub fn context_project_id(conn: &Connection, fletch_project_id: &str) -> Result<
 /// `projects` row goes (the `context.id` mapping cascades with it, and this
 /// is read first). The log is insert-only for a project that exists; a
 /// project that no longer does keeps nothing, so that no pipeline still
-/// holding it can read or write orphaned context. Edge tables and extractor
-/// runs carry no `project_id` and are found through what they hang off.
+/// holding it can read or write orphaned context. Edge tables carry no
+/// `project_id` and are found through what they hang off; extractor runs
+/// cascade from their observation (a foreign key, the one in `context.db`).
 /// Written as one loop over table names so the module's grep for row-level
 /// edits of the log stays a guard against exactly those.
 pub fn purge_project(conn: &Connection, fletch_project_id: &str) -> rusqlite::Result<()> {
@@ -69,16 +70,11 @@ pub fn purge_project(conn: &Connection, fletch_project_id: &str) -> rusqlite::Re
     };
     const ASSERTIONS: &str = "SELECT id FROM context.assertions WHERE project_id = ?1";
     const ENTITIES: &str = "SELECT id FROM context.entities WHERE project_id = ?1";
-    const OBSERVATIONS: &str = "SELECT id FROM context.observations WHERE project_id = ?1";
     let by_parent = [
         ("about", format!("assertion_id IN ({ASSERTIONS})")),
         ("supersedes", format!("new_id IN ({ASSERTIONS})")),
         ("contradicts", format!("a_id IN ({ASSERTIONS})")),
         ("relates", format!("from_id IN ({ENTITIES})")),
-        (
-            "extractor_runs",
-            format!("observation_id IN ({OBSERVATIONS})"),
-        ),
     ];
     for (table, condition) in by_parent {
         conn.execute(
@@ -166,12 +162,36 @@ impl ContextStore {
     /// (`super::require_enabled_for`): no write lands on a project the layer
     /// is off for, whoever is holding a `Project` from when it was on.
     fn write<T>(&self, project_id: &str, f: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
+        self.write_in(|_| Ok(project_id.to_string()), f)
+    }
+
+    /// [`Self::write`] for a mutation keyed by something other than the
+    /// project — an observation id — whose project `project` resolves in
+    /// the same transaction (`Err` when the row is gone: a purged project
+    /// leaves nothing to hang bookkeeping off).
+    fn write_in<T>(
+        &self,
+        project: impl FnOnce(&Connection) -> Result<String>,
+        f: impl FnOnce(&Connection) -> Result<T>,
+    ) -> Result<T> {
         let conn = self.db.lock();
         let tx = conn.unchecked_transaction()?;
-        super::require_enabled_for(&tx, project_id)?;
+        let project_id = project(&tx)?;
+        super::require_enabled_for(&tx, &project_id)?;
         let out = f(&tx)?;
         tx.commit()?;
         Ok(out)
+    }
+
+    /// The observation's project, for [`Self::write_in`].
+    fn observation_project(conn: &Connection, observation_id: &str) -> Result<String> {
+        conn.query_row(
+            "SELECT project_id FROM context.observations WHERE id = ?1",
+            [observation_id],
+            |r| r.get(0),
+        )
+        .optional()?
+        .ok_or_else(|| ContextError::Invalid(format!("unknown observation `{observation_id}`")))
     }
 
     /// Inserts the event row (next `seq` for this host, computed in the
@@ -740,57 +760,71 @@ impl ContextStore {
     }
 
     // -- pipeline ----------------------------------------------------------
+    //
+    // Bookkeeping is a project's as much as its log is: each of these reads
+    // the gate in its own transaction, the ones keyed by an observation
+    // through the observation's project — so a run that outlives its
+    // project's deletion (the model call takes minutes) writes nothing.
 
     pub fn add_observation(&self, observation: &Observation) -> Result<()> {
-        let conn = self.db.lock();
-        conn.execute(
-            "INSERT INTO context.observations
-               (id, project_id, source, provenance, input_hash, plan, created_at, extracted_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            params![
-                observation.id,
-                observation.project_id,
-                json(&observation.source)?,
-                json(&observation.provenance)?,
-                observation.input_hash,
-                observation.plan,
-                observation.created_at,
-                observation.extracted_at,
-            ],
-        )?;
-        Ok(())
+        self.write(&observation.project_id, |conn| {
+            conn.execute(
+                "INSERT INTO context.observations
+                   (id, project_id, source, provenance, input_hash, plan, created_at, extracted_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![
+                    observation.id,
+                    observation.project_id,
+                    json(&observation.source)?,
+                    json(&observation.provenance)?,
+                    observation.input_hash,
+                    observation.plan,
+                    observation.created_at,
+                    observation.extracted_at,
+                ],
+            )?;
+            Ok(())
+        })
     }
 
     pub fn mark_extracted(&self, observation_id: &str) -> Result<()> {
-        let conn = self.db.lock();
-        conn.execute(
-            "UPDATE context.observations SET extracted_at = ?2 WHERE id = ?1",
-            params![observation_id, now_millis()],
-        )?;
-        Ok(())
+        self.write_in(
+            |conn| Self::observation_project(conn, observation_id),
+            |conn| {
+                conn.execute(
+                    "UPDATE context.observations SET extracted_at = ?2 WHERE id = ?1",
+                    params![observation_id, now_millis()],
+                )?;
+                Ok(())
+            },
+        )
     }
 
     pub fn add_extractor_run(&self, run: &ExtractorRun) -> Result<()> {
-        let conn = self.db.lock();
-        conn.execute(
-            "INSERT INTO context.extractor_runs
-               (id, observation_id, model, prompt_version, output, tokens_in, tokens_out,
-                duration_ms, error, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-            params![
-                run.id,
-                run.observation_id,
-                run.model,
-                run.prompt_version,
-                run.output,
-                run.tokens_in,
-                run.tokens_out,
-                run.duration_ms,
-                run.error,
-                run.created_at,
-            ],
-        )?;
-        Ok(())
+        self.write_in(
+            |conn| Self::observation_project(conn, &run.observation_id),
+            |conn| {
+                conn.execute(
+                    "INSERT INTO context.extractor_runs
+                       (id, observation_id, model, prompt_version, output, tokens_in, tokens_out,
+                        duration_ms, error, created_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                    params![
+                        run.id,
+                        run.observation_id,
+                        run.model,
+                        run.prompt_version,
+                        run.output,
+                        run.tokens_in,
+                        run.tokens_out,
+                        run.duration_ms,
+                        run.error,
+                        run.created_at,
+                    ],
+                )?;
+                Ok(())
+            },
+        )
     }
 
     pub(super) fn add_proposal(&self, proposal: &Proposal) -> Result<()> {
@@ -932,30 +966,31 @@ impl ContextStore {
     // -- telemetry ---------------------------------------------------------
 
     pub fn log_read(&self, read: &ReadRecord) -> Result<()> {
-        let conn = self.db.lock();
         let served = serde_json::json!({
             "entities": read.served_entities,
             "assertions": read.served_assertions,
         });
-        conn.execute(
-            "INSERT INTO context.reads
-               (id, project_id, agent_id, workspace_id, session_id, query, served, misses,
-                chars, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-            params![
-                new_id(),
-                read.project_id,
-                read.agent_id,
-                read.workspace_id,
-                read.session_id,
-                json(&read.query)?,
-                served.to_string(),
-                json(&read.misses)?,
-                read.chars as i64,
-                now_millis(),
-            ],
-        )?;
-        Ok(())
+        self.write(&read.project_id, |conn| {
+            conn.execute(
+                "INSERT INTO context.reads
+                   (id, project_id, agent_id, workspace_id, session_id, query, served, misses,
+                    chars, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                params![
+                    new_id(),
+                    read.project_id,
+                    read.agent_id,
+                    read.workspace_id,
+                    read.session_id,
+                    json(&read.query)?,
+                    served.to_string(),
+                    json(&read.misses)?,
+                    read.chars as i64,
+                    now_millis(),
+                ],
+            )?;
+            Ok(())
+        })
     }
 
     pub fn stats(&self, project_id: &str) -> Result<Stats> {

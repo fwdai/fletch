@@ -199,7 +199,12 @@ id no project maps to is refused, never let through. Deleting a project
 purges its whole context — every table, the log included — inside the
 deletion's transaction (`context::purge_project`, from both deletion paths
 in `workspace::repos`), and the mapping cascades with the project row, so
-nothing still holding the project can read or write what was there.
+nothing still holding the project can read or write what was there. The
+pipeline's bookkeeping (observations, extractor runs, the reads log) is
+gated the same way, in its own transaction, the observation-keyed writes
+through the observation's project — an extraction whose model call outlives
+its project's deletion writes nothing — and an extractor run cascades from
+its observation by foreign key.
 
 Stored context is untrusted data wherever it is rendered, and the store is
 the one place that makes it safe: every entity and assertion write validates

@@ -125,7 +125,8 @@ CREATE INDEX idx_observations_project ON observations(project_id, created_at);
 
 CREATE TABLE extractor_runs (
     id             TEXT PRIMARY KEY,
-    observation_id TEXT NOT NULL,
+    -- A run is its observation's; a purge of the project takes it along.
+    observation_id TEXT NOT NULL REFERENCES observations(id) ON DELETE CASCADE,
     model          TEXT NOT NULL,
     prompt_version TEXT NOT NULL,
     output         TEXT,                 -- raw model output

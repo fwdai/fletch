@@ -1945,6 +1945,54 @@ fn deleting_a_project_purges_its_context_and_closes_its_id() {
         store.record_entity(P, entity("late", EntityKind::Module), stamp()),
         Err(ContextError::Disabled)
     ));
+    // Bookkeeping is gated the same way: an extraction that outlived the
+    // deletion (its observation is gone) writes no run and marks nothing,
+    // and a read of the deleted project logs nothing.
+    assert!(store
+        .add_extractor_run(&ExtractorRun {
+            id: new_id(),
+            observation_id: observation.id.clone(),
+            model: "m".into(),
+            prompt_version: "1".into(),
+            output: Some("late raw output".into()),
+            tokens_in: None,
+            tokens_out: None,
+            duration_ms: None,
+            error: None,
+            created_at: 0,
+        })
+        .is_err());
+    assert!(store.mark_extracted(&observation.id).is_err());
+    assert!(matches!(
+        store.add_observation(&Observation {
+            id: new_id(),
+            ..observation.clone()
+        }),
+        Err(ContextError::Disabled)
+    ));
+    assert!(matches!(
+        store.log_read(&ReadRecord {
+            project_id: P.into(),
+            agent_id: None,
+            workspace_id: None,
+            session_id: None,
+            query: CompileQuery::default(),
+            served_entities: vec![],
+            served_assertions: vec![],
+            misses: vec![],
+            chars: 0,
+        }),
+        Err(ContextError::Disabled)
+    ));
+    let conn = store.db().lock();
+    for table in ["extractor_runs", "reads"] {
+        let n: i64 = conn
+            .query_row(&format!("SELECT COUNT(*) FROM context.{table}"), [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(n, 0, "{table}");
+    }
 }
 
 /// A wall clock that moved backwards between two of a host's writes must
