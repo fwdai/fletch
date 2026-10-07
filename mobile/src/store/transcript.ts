@@ -20,6 +20,14 @@ export interface LoadedHistory {
   older: string | null;
 }
 
+/** How the last read of an agent's history went. `ready` with nothing to show
+ *  is not an empty chat — a chat is created by its first message — so the
+ *  screens treat it as a history the host could not produce. */
+export type LogLoad =
+  | { status: "loading" }
+  | { status: "ready" }
+  | { status: "error"; error: string };
+
 /** Render canonical session records exactly as on-disk replay does:
  *  `normalizeTranscript` → `reduce`. Adapter throws degrade to a partial log
  *  rather than an empty screen. */

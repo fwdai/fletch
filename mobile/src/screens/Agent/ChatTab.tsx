@@ -3,11 +3,13 @@ import { type MutableRefObject, useEffect, useMemo } from "react";
 import { applyPolicy, type ChatItem, getAdapter } from "../../adapters";
 import { isAgentBusy, providerLabel } from "../../lib/agents";
 import { fmtElapsed, useElapsed } from "../../lib/hooks";
+import { ignore } from "../../lib/ignore";
 import { tasksByToolUse } from "../../lib/thread";
 import { useStickyScroll } from "../../lib/useStickyScroll";
 import { useStore } from "../../store";
 import { ApprovalCard, ErrorCard, PublishApprovalCard } from "./ApprovalCard";
 import { LoadOlder } from "./LoadOlder";
+import { LogPlaceholder } from "./LogState";
 import { ProposalCard } from "./ProposalCard";
 import { SubagentStrip } from "./SubagentStrip";
 import { Transcript } from "./Transcript";
@@ -23,6 +25,8 @@ export function ChatTab({
   // No `?? []` inside a selector: a fresh empty value on every call is a new
   // reference and re-renders forever under zustand v5.
   const log = useStore((s) => s.logs[agent.id]);
+  const load = useStore((s) => s.logLoads[agent.id]);
+  const loadAgent = useStore((s) => s.loadAgent);
   const pending = useStore((s) => s.pendingToolUse[agent.id]);
   const startedAt = useStore((s) => s.turnStartedAt[agent.id]);
   const tasks = useStore((s) => s.backgroundTasks[agent.id]);
@@ -47,6 +51,14 @@ export function ChatTab({
     if (planning && connected) void loadProposals(agent.project_id);
   }, [planning, connected, agent.project_id, loadProposals]);
 
+  // `openAgent` reads the history as it pushes this screen. Any other way in
+  // (a spawn whose first send failed and dropped its optimistic turn, say)
+  // would otherwise sit on the skeleton with no read behind it.
+  const unread = log === undefined && load === undefined;
+  useEffect(() => {
+    if (unread && connected) void loadAgent(agent.id).catch(ignore);
+  }, [unread, connected, agent.id, loadAgent]);
+
   const policy = getAdapter(agent.provider).policy;
   const visible = useMemo(() => applyPolicy(log ?? [], policy), [log, policy]);
   const pendingIds = Object.keys(pending ?? {});
@@ -60,6 +72,11 @@ export function ChatTab({
     return map;
   }, [log]);
   const byToolUse = useMemo(() => tasksByToolUse(tasks), [tasks]);
+  // Nothing to draw yet. What is drawn instead depends on the read
+  // (LogPlaceholder); while it is still out, the skeleton stands in for the
+  // working line too.
+  const empty = visible.length === 0;
+  const loading = empty && (load === undefined || load.status === "loading");
 
   // `log` is the signal that matters: a streaming message is extended in
   // place, so the item count stays put while the rendered height grows. The
@@ -81,6 +98,7 @@ export function ChatTab({
       <div className="scroll chat" ref={scroller} onScroll={onScroll}>
         <LoadOlder agentId={agent.id} scroller={scroller} />
         <Transcript items={visible} tasks={byToolUse} busy={busy} openThread={openThread} />
+        {empty && <LogPlaceholder agentId={agent.id} load={load} busy={busy} />}
         {pendingIds.map((toolUseId) => (
           <ApprovalCard
             key={toolUseId}
@@ -97,7 +115,7 @@ export function ChatTab({
         {agent.status === "error" && (
           <ErrorCard agentId={agent.id} message={agent.last_error ?? null} />
         )}
-        {busy && pendingIds.length === 0 && (
+        {busy && pendingIds.length === 0 && !loading && (
           <div className="working rise">
             <span className="working-dots">
               <i />
@@ -106,12 +124,6 @@ export function ChatTab({
             </span>
             {providerLabel(agent.provider)} is working
             {startedAt && <span className="el">{fmtElapsed(elapsed)}</span>}
-          </div>
-        )}
-        {visible.length === 0 && !busy && (
-          <div className="empty">
-            <b>No conversation yet</b>
-            Send the first message below.
           </div>
         )}
       </div>

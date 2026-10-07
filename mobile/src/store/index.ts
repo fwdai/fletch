@@ -59,7 +59,7 @@ import {
   mergeActivity,
   type ShipActivityMap,
 } from "./shipActivity";
-import { applyUserTurns, type LoadedHistory, reduceRecords } from "./transcript";
+import { applyUserTurns, type LoadedHistory, type LogLoad, reduceRecords } from "./transcript";
 
 export const client = createClient();
 export const api = createApi(client);
@@ -131,6 +131,10 @@ export interface MobileState extends ChatsSlice, ProposalsSlice {
 
   workspace: Workspace | null;
   logs: Record<string, ChatItem[]>;
+  /** Per agent, how the last read of its history from the host went — what
+   *  tells a chat that is still loading (or failed to) apart from one that
+   *  loaded. Absent until a read has been asked for. */
+  logLoads: Record<string, LogLoad>;
   /** Per agent, the records its log was last reduced from and the cursor for
    *  older ones (store/transcript). What `loadOlderLog` extends; a set `older`
    *  is what offers the chat's "Load older messages". */
@@ -242,7 +246,9 @@ export interface MobileState extends ChatsSlice, ProposalsSlice {
   openAgent(agentId: string, tab?: AgentTab): void;
   loadAgent(agentId: string): Promise<void>;
   /** Rebuild the log from the host's records. With `liveTurn`, the running
-   *  turn is replayed on top from `read_live_turn` (see store/liveTurn). */
+   *  turn is replayed on top from `read_live_turn` (see store/liveTurn).
+   *  Reports how the read went in `logLoads`, not `lastError`: the chat that
+   *  needed it is where the failure is shown. */
   rebuildLog(agentId: string, opts?: { liveTurn?: boolean }): Promise<void>;
   /** Read the page before the oldest one loaded and put it at the head of the
    *  log. A no-op when there is no older page to read. */
@@ -387,6 +393,18 @@ let queuedLink: HostTarget | null = null;
  *  two can be out at once and answer out of order. One order for all of them,
  *  as everywhere else a whole list is replaced (util/newestWins). */
 const approvalLoads = newestWins();
+
+/** Per agent, the order of its history reads: opening a chat, a reconnect and
+ *  a turn end can each start one, and only the newest says how loading went. */
+const logReads = new Map<string, ReturnType<typeof newestWins>>();
+const claimLogRead = (agentId: string) => {
+  let order = logReads.get(agentId);
+  if (!order) {
+    order = newestWins();
+    logReads.set(agentId, order);
+  }
+  return order.claim();
+};
 
 /** Approval events seen while an `approvals_list` is in flight, replayed over
  *  its answer so the snapshot cannot undo them (see util/publishApprovals).
@@ -587,6 +605,7 @@ export const useStore = create<MobileState>()((set, get) => ({
 
   workspace: null,
   logs: {},
+  logLoads: {},
   histories: {},
   sending: {},
   pendingToolUse: {},
@@ -880,6 +899,7 @@ export const useStore = create<MobileState>()((set, get) => ({
       // on this device for an answer.
       pendingPublishApprovals: [],
       logs: {},
+      logLoads: {},
       histories: {},
       backgroundTasks: {},
       liveSeq: {},
@@ -1021,7 +1041,11 @@ export const useStore = create<MobileState>()((set, get) => ({
   },
 
   async rebuildLog(agentId, opts = {}) {
-    return guard(set, async () => {
+    const read = claimLogRead(agentId);
+    const report = (load: LogLoad) => {
+      if (read.current()) set((s) => ({ logLoads: { ...s.logLoads, [agentId]: load } }));
+    };
+    const rebuild = async () => {
       // Only the newest page, where the host has pages: a long session's
       // history runs to tens of MB of tool results, and the phone needs the
       // last turns to paint. Every rebuild starts over from it, the turn-end
@@ -1050,8 +1074,8 @@ export const useStore = create<MobileState>()((set, get) => ({
       // Still nothing stored and no running turn to replay: keep the log the
       // live events built rather than wiping the conversation the user was
       // just looking at (the desktop's records-appended handler makes the same
-      // call). A brand-new agent has no log either way, so the empty state
-      // still renders for it.
+      // call). With no log either, the chat says the history is missing —
+      // never that there is no conversation (see `LogLoad`).
       if (records.length === 0 && !opts.liveTurn) return;
       const provider = agentOf(get(), agentId)?.provider;
       const items = applyUserTurns(reduceRecords(provider, records), turns);
@@ -1083,7 +1107,15 @@ export const useStore = create<MobileState>()((set, get) => ({
           ? {}
           : { turnStartedAt: { ...s.turnStartedAt, [agentId]: startedAt } }),
       }));
-    });
+    };
+    report({ status: "loading" });
+    try {
+      await rebuild();
+      report({ status: "ready" });
+    } catch (e) {
+      report({ status: "error", error: message(e) });
+      throw e;
+    }
   },
 
   async loadOlderLog(agentId) {

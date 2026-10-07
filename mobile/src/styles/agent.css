@@ -468,6 +468,73 @@
 .load-older {
   align-self: center;
 }
+/* The chat while its history is on the way (LogState): the shape of a
+   conversation, shimmering. Held back a beat, so a read that answers at once
+   goes straight to the messages instead of flashing the skeleton first. */
+.log-skel {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding-top: 4px;
+  animation: fade 300ms var(--ease-out) 150ms both;
+}
+.log-skel .sk {
+  height: 11px;
+  border-radius: 7px;
+  background: linear-gradient(100deg, var(--bg-2) 30%, var(--bg-3) 50%, var(--bg-2) 70%);
+  background-size: 300% 100%;
+  animation: skShimmer 1.6s var(--ease) infinite;
+}
+.log-skel .sk-user {
+  align-self: flex-end;
+  height: 40px;
+  border-radius: 18px 18px 6px 18px;
+}
+.log-skel .sk-text {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 2px 2px 0;
+}
+.log-skel .sk-tool {
+  height: 40px;
+  border-radius: 13px;
+}
+.log-skel-cap {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 6px;
+  font-size: 12.5px;
+  color: var(--fg-3);
+}
+@keyframes skShimmer {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: 0 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  /* The global rule shortens animations rather than stopping them; an endless
+     sweep shortened to nothing would flicker. */
+  .log-skel .sk {
+    animation: none;
+  }
+}
+/* The read failed, or found nothing: the error itself, set apart and quiet. */
+.log-fail .why {
+  max-width: 100%;
+  padding: 7px 10px;
+  border-radius: 10px;
+  background: var(--bg-1);
+  border: 1px solid var(--bd-soft);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--fg-3);
+}
 .working {
   display: flex;
   align-items: center;

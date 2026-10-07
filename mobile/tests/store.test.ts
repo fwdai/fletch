@@ -251,6 +251,52 @@ describe("transcripts through the desktop adapters", () => {
   });
 });
 
+/** What lets the chat tell "still loading" and "failed" apart from a log it
+ *  has: a chat always has messages, so an empty screen is never the answer. */
+describe("history load state", () => {
+  it("is loading from the moment the read starts, and ready once it lands", async () => {
+    useStore.setState((s) => {
+      const logLoads = { ...s.logLoads };
+      delete logLoads.pamukkale;
+      return { logLoads };
+    });
+    const read = state().rebuildLog("pamukkale");
+    expect(state().logLoads.pamukkale).toEqual({ status: "loading" });
+    await read;
+    expect(state().logLoads.pamukkale).toEqual({ status: "ready" });
+  });
+
+  it("records a failed read on the chat, not in lastError, and rethrows", async () => {
+    const read = vi.spyOn(api, "readSessionPage").mockRejectedValue(new Error("timed out"));
+    useStore.setState({ lastError: null });
+    try {
+      await expect(state().rebuildLog("pamukkale")).rejects.toThrow("timed out");
+    } finally {
+      read.mockRestore();
+    }
+    expect(state().logLoads.pamukkale).toEqual({ status: "error", error: "timed out" });
+    expect(state().lastError).toBeNull();
+  });
+
+  it("lets only the newest read say how loading went", async () => {
+    let fail!: (e: Error) => void;
+    const real = api.readSessionPage;
+    const read = vi
+      .spyOn(api, "readSessionPage")
+      .mockImplementationOnce(() => new Promise((_, reject) => (fail = reject)))
+      .mockImplementation((...args) => real.apply(api, args));
+    try {
+      const older = state().rebuildLog("pamukkale");
+      await state().rebuildLog("pamukkale");
+      fail(new Error("socket closed"));
+      await expect(older).rejects.toThrow("socket closed");
+    } finally {
+      read.mockRestore();
+    }
+    expect(state().logLoads.pamukkale).toEqual({ status: "ready" });
+  });
+});
+
 describe("paged transcripts", () => {
   // caspian's fixture is seven codex rollout lines, which no earlier test
   // sends to. Pages of three cut it mid-turn: the newest opens on the tool

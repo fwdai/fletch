@@ -830,6 +830,11 @@
   background: var(--accent-soft);
   border-color: var(--accent-line);
 }
+.blank .glyph.danger {
+  color: var(--danger);
+  background: color-mix(in oklch, var(--danger) 12%, transparent);
+  border-color: color-mix(in oklch, var(--danger) 35%, transparent);
+}
 /* Connection state, worn on the glyph's shoulder in the same dot the host
    pill and the agent rows use. */
 .blank .glyph .badge {
