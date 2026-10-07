@@ -27,7 +27,8 @@ export type SourceKind =
   | "roadmap"
   | "brief"
   | "workflow"
-  | "ui";
+  | "ui"
+  | "repo";
 
 export interface Source {
   kind: SourceKind;
@@ -236,6 +237,18 @@ export interface ContextOverview {
   /** Pending only — the review queue. */
   proposals: ContextProposal[];
   stats: ContextStats;
+}
+
+/** What `context_bootstrap` recorded from the project's primary repo. */
+export interface ContextBootstrap {
+  /** The commit the repository was read at. */
+  commit: string;
+  /** Modules the tree describes. */
+  modules: number;
+  /** Slugs recorded by this run; empty when every module was already there. */
+  created: string[];
+  /** The canned first message of a mapping session. */
+  mapping_task: string;
 }
 
 export type ProposalVerdict = "accept" | "dismiss";

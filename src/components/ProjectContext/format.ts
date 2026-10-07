@@ -145,6 +145,7 @@ const SOURCE_LABEL: Record<Source["kind"], string> = {
   brief: "brief",
   workflow: "workflow",
   ui: "UI",
+  repo: "repo at",
 };
 
 /** "from user turn", "from PR #12" (the reference is stored as written), "from UI". */
