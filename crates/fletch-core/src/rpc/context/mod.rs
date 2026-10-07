@@ -25,9 +25,10 @@ use std::sync::Arc;
 
 use serde_json::Value;
 
-use crate::context::{self, render, Author, ContextService, Provenance, Source, SourceKind, Stamp};
+use crate::context::{
+    self, compile, render, Author, ContextService, Provenance, Source, SourceKind, Stamp,
+};
 use crate::host::EngineCtx;
-use crate::roadmap::Db;
 use crate::rpc::{Response, RpcDispatcher, RpcEvent, RpcFuture};
 use crate::workspace::WorkspaceManager;
 
@@ -38,9 +39,6 @@ pub const OPS: [&str; 4] = [
     "context_record_decision",
     "context_link",
 ];
-
-/// Characters the spawn-time index may take in the instruction block.
-const INDEX_CHARS: usize = 1500;
 
 /// The whole namespace, so a typo'd op gets an error naming the real ones.
 fn is_context_op(op: &str) -> bool {
@@ -59,7 +57,6 @@ pub struct ContextDispatcher {
     /// added to a live agent, so spawn-time state is not authoritative.
     checkouts: CheckoutResolver,
     session_id: Option<String>,
-    db: Db,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -74,7 +71,7 @@ type CheckoutResolver = Arc<dyn Fn() -> Result<Vec<Checkout>, String> + Send + S
 /// project. Off, or anything failing on the way to the service, leaves
 /// `inner` as it was: an agent without the ops is worth more than a spawn
 /// that fails, and the instruction block is gated on the same path (see
-/// [`spawn_index`]). Checkout identity and paths are deliberately resolved from
+/// [`spawn_overview`]). Checkout identity and paths are deliberately resolved from
 /// the workspace record on every write: `add_repo_to_agent` can extend a live
 /// agent without rebuilding its RPC dispatcher.
 pub fn wrap(
@@ -116,18 +113,19 @@ pub fn wrap(
         provider: provider.to_string(),
         checkouts,
         session_id: session_id.map(str::to_string),
-        db: ctx.db.clone(),
     })
 }
 
-/// The index the instruction block carries at spawn: `None` when the layer is
-/// off for the project (or unreachable), `Some` — possibly empty — when on.
-pub fn spawn_index(ctx: &EngineCtx, fletch_project_id: &str) -> Option<String> {
+/// The overview the instruction block carries at spawn
+/// ([`compile::overview`]), the same for every session on the project
+/// whatever its purpose: `None` when the layer is off for the project (or
+/// unreachable), `Some` — possibly empty — when on.
+pub fn spawn_overview(ctx: &EngineCtx, fletch_project_id: &str) -> Option<String> {
     let (service, project) = open(ctx, fletch_project_id)?;
     match service.store().load(&project.id) {
-        Ok(graph) => Some(render::render_index(&graph, INDEX_CHARS)),
+        Ok(graph) => Some(render::render_markdown(&compile::overview(&graph, 0))),
         Err(e) => {
-            tracing::warn!("context: index unavailable for project {fletch_project_id}: {e}");
+            tracing::warn!("context: overview unavailable for project {fletch_project_id}: {e}");
             None
         }
     }

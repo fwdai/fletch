@@ -19,7 +19,6 @@ import { ItemCard } from "./ItemCard";
 import { ItemDialog } from "./ItemDialog";
 import { NotDoing } from "./NotDoing";
 import { OrderProposalBar } from "./OrderProposalBar";
-import { ProductBrief } from "./ProductBrief";
 import { ProjectHoldBanner } from "./ProjectHoldBanner";
 import { useBoardDnd } from "./useBoardDnd";
 
@@ -29,8 +28,7 @@ type Editing = { item: RoadmapItem | null; horizon: Horizon };
 
 /** The board the PM agent maintains: horizon groups of expandable items, with
  *  the PM's outstanding proposals rendered inline as ghost rows in the horizon
- *  they'd land in. The sibling tab holds the product brief — the memory the agent
- *  reasons *from*, where the board is what it reasons *about*. */
+ *  they'd land in. */
 export function Board({
   roadmap,
   repoPath,
@@ -53,10 +51,6 @@ export function Board({
     proposals,
     orderProposal,
     orderable,
-    brief,
-    briefProposal,
-    tab,
-    setTab,
     openCodes,
     toggleItem,
     focusCode,
@@ -80,8 +74,6 @@ export function Board({
     rejectProposals,
     acceptOrder,
     rejectOrder,
-    acceptBrief,
-    rejectBrief,
     moveItem,
     setRanks,
     queueItems,
@@ -162,20 +154,17 @@ export function Board({
   const batchAccept = acceptActions(autoqueue, "Accept all");
 
   /** Everything this board owes the user a ruling on, by kind — the batch bar's
-   *  count and copy, and the Product-brief tab's dot. Pure, and tested, because
-   *  three surfaces read it and they used to each count a different subset: the
-   *  bar added up ghosts and asks-on-admitted-rows (two of the four pending kinds,
-   *  dropping an ask against a ghost entirely), while the tab dot answered its own
-   *  question separately. See ruling.ts. */
+   *  count and copy. Pure, and tested, because the bar used to add up ghosts and
+   *  asks-on-admitted-rows (two of the three pending kinds, dropping an ask
+   *  against a ghost entirely). See ruling.ts. */
   const deltas = useMemo(
     () =>
       pendingDeltas({
         ghostIds: ghosts.map((g) => g.item.id),
         asks: [...proposals.values()],
         orderProposal,
-        briefProposal,
       }),
-    [ghosts, proposals, orderProposal, briefProposal],
+    [ghosts, proposals, orderProposal],
   );
   const ghostIds = useMemo(() => ghosts.map((g) => g.item.id), [ghosts]);
   const openNew = (horizon: Horizon) => setEditing({ item: null, horizon });
@@ -186,32 +175,11 @@ export function Board({
   return (
     <aside className="rm-board" ref={asideRef} style={width == null ? undefined : { width }}>
       <div className="rm-board-h flex-center">
-        <div className="rm-tabs">
-          <button
-            type="button"
-            className={`rm-tab iflex-center text-sm ${tab === "roadmap" ? "active" : ""}`}
-            onClick={() => setTab("roadmap")}
-          >
-            <Icon name="map" size={13} /> Roadmap
-          </button>
-          {/* "Product brief", not "Product map": the tab now shows the document
-              the PM actually keeps, and naming it for what it is stops the
-              surface promising a derived map nothing produces. A pending change
-              is flagged here too — it is one click away and easy to miss. */}
-          <button
-            type="button"
-            className={`rm-tab iflex-center text-sm ${tab === "brief" ? "active" : ""}`}
-            onClick={() => setTab("brief")}
-          >
-            <Icon name="notebookPen" size={13} /> Product brief
-            {deltas.brief > 0 && <span className="rm-tab-dot" aria-label="1 pending change" />}
-          </button>
-        </div>
         <span className="grow" />
         {/* No shipped count here: the page header already carries it, and two
             copies of the same number a centimetre apart is clutter, not
             reinforcement. */}
-        {tab === "roadmap" && !readOnly && (
+        {!readOnly && (
           <IconButton
             aria-label="Add roadmap item"
             tip="Add an item"
@@ -252,15 +220,13 @@ export function Board({
           hasn't started, and above the scroller for the same reason both bars
           are: the items it names can be in three different horizons. Renders
           nothing when nothing is waiting. */}
-      {tab === "roadmap" && (
-        <NeedsYou
-          cards={needsYou}
-          onFocusItem={revealItem}
-          onOpenRun={openRun}
-          onReleaseItem={readOnly ? undefined : releaseItem}
-          onReleaseProject={readOnly ? undefined : releaseProject}
-        />
-      )}
+      <NeedsYou
+        cards={needsYou}
+        onFocusItem={revealItem}
+        onOpenRun={openRun}
+        onReleaseItem={readOnly ? undefined : releaseItem}
+        onReleaseProject={readOnly ? undefined : releaseProject}
+      />
 
       {/* The pipeline, right under the decisions. The pair is the board's status
           line: the strip above is every decision you owe it, this is the state of
@@ -269,13 +235,13 @@ export function Board({
           answer different questions: what you have to do about it, and where it
           sits. Decisions come first because an item that stopped moving outranks
           one that hasn't, and the rail renders nothing when the pipeline is idle. */}
-      {tab === "roadmap" && <InFlightRail entries={inFlight} onFocusItem={revealItem} />}
+      <InFlightRail entries={inFlight} onFocusItem={revealItem} />
 
       {/* The whole board is stopped. Below the strip (which already carries a
           card for it, with the same one-click release) because this band is the
           standing explanation for cards that look queued and aren't moving —
           the strip is the decision, this is the state. */}
-      {tab === "roadmap" && projectHold && (
+      {projectHold && (
         <ProjectHoldBanner
           hold={projectHold}
           onRelease={readOnly ? undefined : () => void releaseProject()}
@@ -292,7 +258,7 @@ export function Board({
           to pretend isn't there. Discard-all is not symmetrical, and can't be: a
           discarded ghost takes its ask with it (the row is deleted and the ask
           cascades), so only asks on rows that survive are declined by name. */}
-      {tab === "roadmap" && deltas.batch > 1 && (
+      {deltas.batch > 1 && (
         <div className="rm-props flex-center text-xs">
           <span className="rm-props-n iflex-center mono">
             <Icon name="sparkle" size={11} />
@@ -327,7 +293,7 @@ export function Board({
           single card can carry it. It goes below the batch bar because a
           reordering of items the user hasn't accepted yet is the less urgent of
           the two decisions. */}
-      {tab === "roadmap" && orderProposal && (
+      {orderProposal && (
         <OrderProposalBar
           proposal={orderProposal}
           orderable={orderable}
@@ -337,14 +303,7 @@ export function Board({
       )}
 
       <div className="rm-board-scroll" ref={scroll}>
-        {tab === "brief" ? (
-          <ProductBrief
-            brief={brief}
-            proposal={briefProposal}
-            onAccept={readOnly ? undefined : () => void acceptBrief()}
-            onDecline={readOnly ? undefined : () => void rejectBrief()}
-          />
-        ) : blank ? (
+        {blank ? (
           // Deliberately still shown over a non-empty decision log below: a
           // board whose every item was rejected has nothing to *work*, which is
           // what this state claims.
@@ -539,16 +498,14 @@ export function Board({
             `blank` ternary on purpose — a board whose only rows are rejected
             still owes the reader its record — and it renders nothing when the
             log is empty. */}
-        {tab === "roadmap" && (
-          <NotDoing
-            items={rejected}
-            focusCode={focusCode}
-            onReopen={readOnly ? undefined : (id) => void reopenItem(id)}
-            rowRef={(code, el) => {
-              rows.current[code] = el;
-            }}
-          />
-        )}
+        <NotDoing
+          items={rejected}
+          focusCode={focusCode}
+          onReopen={readOnly ? undefined : (id) => void reopenItem(id)}
+          rowRef={(code, el) => {
+            rows.current[code] = el;
+          }}
+        />
       </div>
 
       {editing && (

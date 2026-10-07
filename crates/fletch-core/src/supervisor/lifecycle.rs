@@ -1331,30 +1331,30 @@ impl Supervisor {
         // project-manager chat (the only purpose given the
         // `rpc::roadmap::RoadmapDispatcher` — see `launch_agent_process`).
         let roadmap_pm = record.purpose.as_deref() == Some(crate::workspace::PURPOSE_ROADMAP_PM);
-        // The PM's product context (`roadmap::memory::product_context` — the
-        // brief plus the board's not-doing digest), read here because this is
-        // the site that knows *which project* this chat belongs to — the same
-        // stamp `launch_agent_process` gives the RPC dispatcher. Read on every
-        // launch path, like every other instruction layer, so a resumed chat
-        // whose brief the user changed (or whose board rejected something)
-        // comes back with the current memory rather than the one it spawned
-        // with. A read failure degrades to no context: an agent with one section
-        // missing is worth more than a spawn that fails.
-        let product_context = roadmap_pm
+        // The PM's not-doing digest (`roadmap::not_doing::digest`), read here
+        // because this is the site that knows *which project* this chat
+        // belongs to — the same stamp `launch_agent_process` gives the RPC
+        // dispatcher. Read on every launch path, like every other instruction
+        // layer, so a resumed chat whose board rejected something comes back
+        // with the current log. A read failure degrades to no digest: an agent
+        // with one section missing is worth more than a spawn that fails.
+        let not_doing = roadmap_pm
             .then(|| {
                 let conn = ctx.db.lock();
-                crate::roadmap::memory::product_context(&conn, &record.project_id).ok()
+                crate::roadmap::not_doing::digest(&conn, &record.project_id).ok()
             })
             .flatten()
             .flatten();
-        // The context layer's entity index; `None` when the layer is off for
-        // this project, in which case the session has no `context_*` ops either.
-        let context_index = rpc::context::spawn_index(ctx, &record.project_id);
+        // The context layer's overview, the same for every session on the
+        // project, the PM's included; `None` when the layer is off for this
+        // project, in which case the session has no `context_*` ops either
+        // (`rpc::context::wrap` wraps every dispatcher, the roadmap one too).
+        let context_overview = rpc::context::spawn_overview(ctx, &record.project_id);
         let blocks = crate::agent_profile::Blocks {
             codegraph: codegraph_available,
             roadmap_pm,
-            product_context: product_context.as_deref(),
-            context: context_index.as_deref(),
+            not_doing: not_doing.as_deref(),
+            context: context_overview.as_deref(),
         };
         let instructions = crate::agent_profile::effective_instructions(
             brief.as_deref(),

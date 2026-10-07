@@ -172,7 +172,7 @@ async fn coexists_records_alongside_the_head() {
 /// A workspace with one live session, so the dispatcher can read the user's
 /// turns. The rows the lineage reader needs and nothing more.
 fn seed_session(d: &ContextDispatcher) {
-    let conn = d.db.lock();
+    let conn = db(d).lock();
     let now = crate::database::now_millis();
     // The fixture already owns the project (`ContextStore::own`).
     conn.execute(
@@ -193,7 +193,7 @@ fn seed_session(d: &ContextDispatcher) {
 }
 
 fn user_said(d: &ContextDispatcher, turn_id: &str, text: &str) {
-    assert!(crate::workspace::WorkspaceManager::new(d.db.clone())
+    assert!(crate::workspace::WorkspaceManager::new(db(d).clone())
         .insert_user_turn(AGENT, turn_id, text, &[])
         .unwrap());
 }

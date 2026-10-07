@@ -9,7 +9,6 @@ use super::brakes::{self, ProjectHold};
 use super::client_events::{self, emit_item, emit_item_event, emit_project_hold};
 use super::drainer;
 use super::events::{self, EventActor, EventKind, ItemEvent};
-use super::memory::{self, Brief, BriefProposal};
 use super::merge_sweep;
 use super::mutations::{create_checked, update_and_record};
 use super::order_proposals::{self, OrderProposal};
@@ -466,47 +465,5 @@ pub async fn roadmap_reject_order_proposal_impl(
         order_proposals::delete(&conn, &project_id).map_err(|e| e.to_string())?;
     }
     client_events::emit_order_proposal_deleted(ctx.sink.as_ref(), &project_id);
-    Ok(())
-}
-
-pub async fn roadmap_get_brief_impl(project_id: String, db: &Db) -> Result<Option<Brief>, String> {
-    let conn = db.lock();
-    memory::load(&conn, &project_id).map_err(|e| e.to_string())
-}
-
-pub async fn roadmap_get_brief_proposal_impl(
-    project_id: String,
-    db: &Db,
-) -> Result<Option<BriefProposal>, String> {
-    let conn = db.lock();
-    memory::get_proposal(&conn, &project_id).map_err(|e| e.to_string())
-}
-
-// Brief + proposal consume under one lock (invariant 3).
-pub async fn roadmap_accept_brief_proposal_impl(
-    project_id: String,
-    ctx: &Arc<EngineCtx>,
-    db: &Db,
-) -> Result<Brief, String> {
-    let applied = {
-        let conn = db.lock();
-        memory::accept(&conn, &project_id).map_err(|e| e.to_string())?
-    };
-    client_events::emit_brief_proposal_deleted(ctx.sink.as_ref(), &project_id);
-    let brief = applied.ok_or("this brief update has already been ruled on")?;
-    client_events::emit_brief(ctx.sink.as_ref(), &brief);
-    Ok(brief)
-}
-
-pub async fn roadmap_reject_brief_proposal_impl(
-    project_id: String,
-    ctx: &Arc<EngineCtx>,
-    db: &Db,
-) -> Result<(), String> {
-    {
-        let conn = db.lock();
-        memory::delete_proposal(&conn, &project_id).map_err(|e| e.to_string())?;
-    }
-    client_events::emit_brief_proposal_deleted(ctx.sink.as_ref(), &project_id);
     Ok(())
 }

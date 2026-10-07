@@ -1134,6 +1134,57 @@ fn schema_has_split_entities() {
     );
 }
 
+/// The roadmap brief tables (0034) are a read-only archive: the context layer
+/// replaced the brief, and the rows wait to be imported into it. Nothing in
+/// the crate outside tests may write them again.
+#[test]
+fn nothing_writes_the_legacy_brief_tables() {
+    fn collect_rs(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                if !path.ends_with("tests") {
+                    collect_rs(&path, out);
+                }
+            } else if path.extension().is_some_and(|e| e == "rs") && !path.ends_with("tests.rs") {
+                out.push(path);
+            }
+        }
+    }
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut sources = Vec::new();
+    collect_rs(&dir, &mut sources);
+    assert!(!sources.is_empty());
+    // Patterns are assembled at runtime so no source can match by quoting them.
+    let tables = ["briefs", "brief_proposals"].map(|t| format!("roadmap_{t}"));
+    let verbs = [
+        "insert into",
+        "insert or replace into",
+        "replace into",
+        "update",
+        "delete from",
+    ];
+    for path in sources {
+        let text = std::fs::read_to_string(&path).unwrap();
+        // An inline test module may seed the archive; only what precedes it
+        // ships.
+        let shipped = text.split("#[cfg(test)]").next().unwrap().to_lowercase();
+        let sql = shipped.split_whitespace().collect::<Vec<_>>().join(" ");
+        for table in &tables {
+            for verb in verbs {
+                for end in [" ", "("] {
+                    let forbidden = format!("{verb} {table}{end}");
+                    assert!(
+                        !sql.contains(&forbidden),
+                        "{}: `{forbidden}`",
+                        path.display()
+                    );
+                }
+            }
+        }
+    }
+}
+
 #[test]
 fn workspace_hierarchy_cascades() {
     let db = test_db();

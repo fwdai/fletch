@@ -525,48 +525,13 @@
   padding: 0 10px 0 var(--rm-gut);
   border-bottom: 1px solid var(--bd-soft);
 }
-/* Secondary nav: bare pills, not the page header's segmented control. Nesting
-   one control inside another would give two levels of tabs the same weight. */
-.rm-tabs {
-  display: flex;
-  gap: 2px;
-  margin-left: -8px;
-}
-.rm-tab {
-  gap: 6px;
-  height: 26px;
-  padding: 0 10px;
-  border-radius: var(--r-sm);
-  font-weight: 500;
-  color: var(--fg-2);
-  transition:
-    background 0.14s var(--ease),
-    color 0.14s var(--ease),
-    box-shadow 0.14s var(--ease);
-}
-.rm-tab svg {
-  color: var(--fg-3);
-  transition: color 0.14s var(--ease);
-}
-.rm-tab:hover {
-  background: var(--hover);
-  color: var(--fg-0);
-}
-.rm-tab.active {
-  background: var(--bg-2);
-  color: var(--fg-0);
-  box-shadow: inset 0 0 0 1px var(--bd-soft);
-}
-.rm-tab.active svg {
-  color: var(--accent);
-}
 .rm-board-scroll {
   flex: 1;
   overflow-y: auto;
   padding: 14px var(--rm-gut) 48px;
 }
 
-/* A write that failed. Sits between the tabs and the rows, because it is about
+/* A write that failed. Sits between the header and the rows, because it is about
    the board as a whole and there is no single row to hang it off. */
 .rm-board-err {
   flex-shrink: 0;
@@ -1840,87 +1805,6 @@ button.rm-handoff:hover {
 }
 .rm-deps-in:focus {
   outline: none;
-}
-
-/* ── product brief tab ──
-   The document the PM keeps, not a dashboard: one column, prose width, and the
-   pending-change decision above it. The markdown body borrows the chat's
-   `.m-agent` prose skin (Chat.css, imported ahead of this file) rather than
-   restating twenty type rules — it is the same kind of content, written by the
-   same author. */
-.rm-brief {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding-bottom: 8px;
-}
-.rm-brief-md {
-  max-width: 68ch;
-  margin: 0 2px;
-}
-/* `.m-agent` reserves the gap under a chat bubble; here the tab's own padding
-   does. */
-.rm-brief-md.m-agent {
-  margin-bottom: 0;
-}
-.rm-brief-ask {
-  display: flex;
-  flex-direction: column;
-  border: 1px solid var(--accent-line);
-  border-radius: var(--r-md);
-  overflow: hidden;
-  background: var(--bg-2);
-}
-/* The bar sits flush inside the ask box: it is the box's header, not a card of
-   its own, so it drops the standalone rounding. */
-.rm-brief-ask .rm-decbar {
-  border: 0;
-  border-radius: 0;
-}
-.rm-brief-t {
-  gap: 6px;
-  padding: 7px 10px;
-  border: 0;
-  border-top: 1px solid var(--bd-soft);
-  background: none;
-  color: var(--fg-2);
-  cursor: pointer;
-  text-align: left;
-}
-.rm-brief-t:hover {
-  color: var(--fg-1);
-  background: var(--hover);
-}
-.rm-brief-chev {
-  flex-shrink: 0;
-  transform: rotate(-90deg);
-  transition: transform 120ms ease;
-}
-.rm-brief-chev.open {
-  transform: none;
-}
-.rm-brief-ask .rm-brief-md {
-  padding: 4px 12px 2px;
-  border-top: 1px solid var(--bd-soft);
-}
-.rm-brief-h {
-  gap: 6px;
-  margin: 2px 2px 0;
-  color: var(--fg-3);
-}
-.rm-brief-l {
-  color: var(--fg-2);
-}
-.rm-brief-age {
-  color: var(--fg-3);
-}
-/* A pending brief change, flagged on the tab itself. */
-.rm-tab-dot {
-  width: 5px;
-  height: 5px;
-  margin-left: 1px;
-  border-radius: 50%;
-  background: var(--accent);
 }
 
 /* ── narrow windows ──

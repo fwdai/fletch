@@ -81,20 +81,18 @@ describe("cardRuling", () => {
 
 describe("pendingDeltas", () => {
   const order = { project_id: "p1", codes: ["FLT-100"], note: null, created_at: 0 };
-  const brief = { project_id: "p1", content: "# vision", note: null, created_at: 0 };
 
-  it("counts all four kinds, not two", () => {
+  it("counts all three kinds, not two", () => {
     const d = pendingDeltas({
       ghostIds: ["g1", "g2"],
       asks: [ask({ id: "a1", item_id: "i-1" })],
       orderProposal: order,
-      briefProposal: brief,
     });
-    expect(d).toMatchObject({ ghosts: 2, asks: 1, order: 1, brief: 1, total: 5, batch: 3 });
+    expect(d).toMatchObject({ ghosts: 2, asks: 1, order: 1, total: 4, batch: 3 });
   });
 
   it("is empty on a board with nothing pending", () => {
-    const d = pendingDeltas({ ghostIds: [], asks: [], orderProposal: null, briefProposal: null });
+    const d = pendingDeltas({ ghostIds: [], asks: [], orderProposal: null });
     expect(d.total).toBe(0);
     expect(d.batch).toBe(0);
     expect(d.askIds).toEqual([]);
@@ -109,7 +107,6 @@ describe("pendingDeltas", () => {
       ghostIds: ["g1"],
       asks: [ask({ id: "a1", item_id: "g1" })],
       orderProposal: null,
-      briefProposal: null,
     });
     expect(d.asks).toBe(1);
     expect(d.batch, "the ghost and its revision are both owed a ruling").toBe(2);
@@ -123,42 +120,29 @@ describe("pendingDeltas", () => {
       ghostIds: ["g1"],
       asks: [ask({ id: "a1", item_id: "g1" }), ask({ id: "a2", item_id: "i-9" })],
       orderProposal: null,
-      briefProposal: null,
     });
     expect(d.askIds).toEqual(["a1", "a2"]);
     expect(d.declinableAskIds).toEqual(["a2"]);
   });
 
-  it("does not let the batch bar claim the board-scoped pair", () => {
-    const d = pendingDeltas({
-      ghostIds: [],
-      asks: [],
-      orderProposal: order,
-      briefProposal: brief,
-    });
-    expect(d.total).toBe(2);
-    expect(d.batch, "neither is ruled from the batch bar").toBe(0);
+  it("does not let the batch bar claim the order ask", () => {
+    const d = pendingDeltas({ ghostIds: [], asks: [], orderProposal: order });
+    expect(d.total).toBe(1);
+    expect(d.batch, "it is not ruled from the batch bar").toBe(0);
   });
 });
 
 describe("pendingElsewhere", () => {
-  const base = { ghostIds: ["g1"], asks: [], orderProposal: null, briefProposal: null };
+  const base = { ghostIds: ["g1"], asks: [], orderProposal: null };
   const order = { project_id: "p1", codes: [], note: null, created_at: 0 };
-  const brief = { project_id: "p1", content: "", note: null, created_at: 0 };
 
   it("says nothing when the batch bar covers everything", () => {
     expect(pendingElsewhere(pendingDeltas(base))).toBe("");
   });
 
-  it("names the surfaces the batch buttons don't reach", () => {
+  it("names the surface the batch buttons don't reach", () => {
     expect(pendingElsewhere(pendingDeltas({ ...base, orderProposal: order }))).toBe(
       "Also pending: a new order.",
     );
-    expect(pendingElsewhere(pendingDeltas({ ...base, briefProposal: brief }))).toBe(
-      "Also pending: a brief update.",
-    );
-    expect(
-      pendingElsewhere(pendingDeltas({ ...base, orderProposal: order, briefProposal: brief })),
-    ).toBe("Also pending: a new order and a brief update.");
   });
 });

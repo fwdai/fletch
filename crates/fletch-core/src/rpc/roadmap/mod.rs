@@ -8,7 +8,6 @@
 
 mod args;
 mod brakes;
-mod brief;
 mod deltas;
 mod duplicates;
 mod intake;
@@ -28,14 +27,12 @@ use serde_json::Value;
 use crate::host::EngineCtx;
 use crate::roadmap::Db;
 use crate::roadmap::{
-    emit_brief_proposal, emit_item, emit_item_event, emit_order_proposal, emit_project_hold,
-    emit_proposal,
+    emit_item, emit_item_event, emit_order_proposal, emit_project_hold, emit_proposal,
 };
 use crate::rpc::git::GitDispatcher;
 use crate::rpc::{Response, RpcDispatcher, RpcEvent, RpcFuture};
 
 use brakes::{hold_op, Held};
-use brief::{brief_op, propose_brief_op};
 use deltas::{propose_discard_op, propose_update_op};
 use intake::propose_op;
 use listing::list_op;
@@ -43,7 +40,7 @@ use notes::note_op;
 use ordering::propose_order_op;
 
 /// Pinned by a test against the instruction block so the two can't drift.
-pub const OPS: [&str; 9] = [
+pub const OPS: [&str; 7] = [
     "roadmap_list",
     "roadmap_propose",
     "roadmap_propose_update",
@@ -51,8 +48,6 @@ pub const OPS: [&str; 9] = [
     "roadmap_propose_order",
     "roadmap_note",
     "roadmap_hold",
-    "roadmap_brief",
-    "roadmap_propose_brief_update",
 ];
 
 /// The whole namespace, so a typo'd op gets an error naming the real ones.
@@ -148,14 +143,6 @@ impl RpcDispatcher for RoadmapDispatcher {
                         }
                         Held::Project(hold) => emit_project_hold(sink, hold),
                     },
-                ),
-                "roadmap_brief" => {
-                    let conn = self.db.lock();
-                    (brief_op(&conn, &self.project_id, id, args), Vec::new())
-                }
-                "roadmap_propose_brief_update" => self.announce(
-                    |conn, project| propose_brief_op(conn, project, id, args),
-                    emit_brief_proposal,
                 ),
                 other => (
                     Response::err(

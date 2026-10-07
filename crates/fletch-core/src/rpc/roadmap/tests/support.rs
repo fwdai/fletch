@@ -1,5 +1,4 @@
 use super::brakes::{hold_op, Held};
-use super::brief::{brief_op, propose_brief_op};
 use super::deltas::{propose_discard_op, propose_update_op};
 use super::intake::propose_op;
 use super::listing::list_op;
@@ -15,7 +14,6 @@ use serde_json::{json, Value};
 
 use crate::database::get_migrations;
 use crate::roadmap::events::ItemEvent;
-use crate::roadmap::memory::BriefProposal;
 use crate::roadmap::order_proposals::OrderProposal;
 use crate::roadmap::proposals::Proposal;
 use crate::roadmap::Db;
@@ -76,16 +74,6 @@ pub(super) fn propose_discard(db: &Db, args: Value) -> (Response, Option<Proposa
 pub(super) fn propose_order(db: &Db, args: Value) -> (Response, Option<OrderProposal>) {
     let conn = db.lock();
     propose_order_op(&conn, "p1", "r1", &args)
-}
-
-pub(super) fn brief(db: &Db, args: Value) -> Response {
-    let conn = db.lock();
-    brief_op(&conn, "p1", "r1", &args)
-}
-
-pub(super) fn propose_brief(db: &Db, args: Value) -> (Response, Option<BriefProposal>) {
-    let conn = db.lock();
-    propose_brief_op(&conn, "p1", "r1", &args)
 }
 
 pub(super) fn note(db: &Db, args: Value) -> (Response, Option<ItemEvent>) {

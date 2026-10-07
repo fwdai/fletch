@@ -286,7 +286,7 @@ async fn a_removed_directory_is_a_missing_path_warning() {
         ..Default::default()
     };
 
-    let fresh = compile::compile(&graph(&service), &query, None, Some(&root));
+    let fresh = compile::compile(&graph(&service), &query, Some(&root));
     assert!(
         !fresh.warnings.iter().any(|w| w.contains("does not exist")),
         "{:?}",
@@ -294,7 +294,7 @@ async fn a_removed_directory_is_a_missing_path_warning() {
     );
 
     std::fs::remove_dir_all(root.join("crates/core/src/store")).unwrap();
-    let stale = compile::compile(&graph(&service), &query, None, Some(&root));
+    let stale = compile::compile(&graph(&service), &query, Some(&root));
     let missing: Vec<&String> = stale
         .warnings
         .iter()
@@ -307,7 +307,7 @@ async fn a_removed_directory_is_a_missing_path_warning() {
     assert!(markdown.contains("crates/core/src/store"), "{markdown}");
 
     // No checkout, no check.
-    let unchecked = compile::compile(&graph(&service), &query, None, None);
+    let unchecked = compile::compile(&graph(&service), &query, None);
     assert!(!unchecked
         .warnings
         .iter()

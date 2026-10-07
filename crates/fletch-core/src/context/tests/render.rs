@@ -35,7 +35,7 @@ fn sample() -> Bundle {
     Bundle {
         project_id: "p1".into(),
         vision: Some(vision("v")),
-        vision_fallback: None,
+        overview: false,
         entities: vec![
             bundle_entity(vision("v"), EntryReason::Vision, Vec::new()),
             bundle_entity(
@@ -122,17 +122,33 @@ fn history_lines_nest_under_the_head() {
 }
 
 #[test]
-fn empty_sections_are_omitted_and_vision_falls_back() {
+fn empty_sections_are_omitted() {
     let md = render_markdown(&Bundle::default());
     assert_eq!(
         md,
         "# Project context\n\n## Vision\nNo vision recorded yet.\n"
     );
+}
+
+#[test]
+fn an_overview_bundle_renders_as_the_overview() {
     let b = Bundle {
-        vision_fallback: Some("the brief".into()),
-        ..Default::default()
+        overview: true,
+        ..sample()
     };
-    assert!(render_markdown(&b).contains("## Vision\nthe brief\n"));
+    let md = render_markdown(&b);
+    assert!(md.starts_with("## Vision\nShip the thing\n"), "{md}");
+    assert!(!md.contains("# Project context"), "{md}");
+    assert!(md.contains("\n## Modules\n- `db` — db summary\n"), "{md}");
+    assert!(
+        md.contains("\n## Index\n**Features:** auth (\"auth\")\n"),
+        "{md}"
+    );
+    assert!(
+        md.contains("- [rejected] Use JWT (about: `auth`) (id: d2)\n"),
+        "no rationale in the overview: {md}"
+    );
+    assert!(md.ends_with("## Warnings\n- Something is off\n"), "{md}");
 }
 
 #[test]

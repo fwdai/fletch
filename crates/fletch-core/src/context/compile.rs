@@ -26,6 +26,9 @@
 //! The checkout is the one input that is not the graph: whether an anchor
 //! still exists is a fact about a working tree, read at retrieval and never
 //! stored.
+//!
+//! [`overview`] is the other mode (`query.overview`): the fixed picture every
+//! agent on the project gets at spawn, fitted by the same loop.
 
 use std::collections::HashSet;
 use std::path::Path;
@@ -33,20 +36,17 @@ use std::path::Path;
 use super::model::*;
 use super::render::render_markdown;
 use super::resolve::{self, is_live};
-use super::DEFAULT_BUDGET_CHARS;
+use super::{DEFAULT_BUDGET_CHARS, OVERVIEW_BUDGET_CHARS};
 
 /// How many text-query matches enter the bundle.
 const QUERY_HITS: usize = 10;
 
-/// Compile `query` against `graph`. `vision_fallback` is the roadmap brief,
-/// shown as the vision when no vision entity exists; `checkout`, the
-/// reader's working tree, that path anchors are checked against.
-pub fn compile(
-    graph: &Graph,
-    query: &CompileQuery,
-    vision_fallback: Option<String>,
-    checkout: Option<&Path>,
-) -> Bundle {
+/// Compile `query` against `graph`. `checkout` is the reader's working tree,
+/// that path anchors are checked against.
+pub fn compile(graph: &Graph, query: &CompileQuery, checkout: Option<&Path>) -> Bundle {
+    if query.overview {
+        return overview(graph, query.budget_chars);
+    }
     let mut entries = Entries::default();
     let vision = graph.vision();
     if let Some(v) = vision {
@@ -80,23 +80,77 @@ pub fn compile(
         }
     }
 
-    let mut ranked = entries.ranked(graph);
+    let ranked = entries.ranked(graph);
     let missing = checkout.map(|root| missing_anchors(graph, &ranked, root));
     let budget = match query.budget_chars {
         0 => DEFAULT_BUDGET_CHARS,
         n => n,
     };
+    fit(ranked, budget, |ranked, truncated| {
+        assemble(graph, query, ranked, &misses, truncated, missing.as_ref())
+    })
+}
+
+/// The spawn-time overview, the same for every agent on the project: the
+/// vision, the adopted current constraints in the business and architectural
+/// domains, and every other active entity (rendered as a module legend and a
+/// slug index). Entities the extractor minted are left out until something
+/// else revised them: model output never writes itself into the next model's
+/// instructions. Fitted to `budget_chars` (0 means [`OVERVIEW_BUDGET_CHARS`])
+/// by the loop [`compile`] uses; the vision and the constraints are never
+/// dropped.
+pub fn overview(graph: &Graph, budget_chars: usize) -> Bundle {
+    let mut entries = Entries::default();
+    for e in active(graph).filter(|e| e.author.kind != AuthorKind::Extractor) {
+        match e.kind {
+            EntityKind::Vision if graph.vision().is_some_and(|v| v.id == e.id) => {
+                entries.add(e, EntryReason::Vision)
+            }
+            EntityKind::Vision => {}
+            _ => entries.add(e, EntryReason::Named),
+        }
+    }
+    let constraints: Vec<&Assertion> = graph
+        .assertions
+        .iter()
+        .filter(|a| {
+            a.kind == AssertionKind::Constraint
+                && a.stance == Stance::Adopted
+                && a.domain != Domain::Implementation
+                && is_current(graph, a)
+        })
+        .collect();
+    let (assertions, contradictions) = bundle_assertions(graph, &constraints, false);
+    let budget = match budget_chars {
+        0 => OVERVIEW_BUDGET_CHARS,
+        n => n,
+    };
+    fit(entries.ranked(graph), budget, |ranked, truncated| Bundle {
+        project_id: graph.project_id.clone(),
+        vision: ranked
+            .iter()
+            .find(|(_, r)| *r == EntryReason::Vision)
+            .map(|(e, _)| (*e).clone()),
+        overview: true,
+        entities: bundle_entities(graph, ranked),
+        warnings: warnings(graph, &assertions, &contradictions, &[], truncated),
+        assertions: assertions.clone(),
+        contradictions: contradictions.clone(),
+        misses: Vec::new(),
+        truncated: truncated.to_vec(),
+    })
+}
+
+/// Drops the lowest-ranked entity until the rendered bundle fits `budget`;
+/// the vision is never dropped. Dropped ids go to `truncated`.
+fn fit<'a>(
+    mut ranked: Vec<(&'a Entity, EntryReason)>,
+    budget: usize,
+    build: impl Fn(&[(&'a Entity, EntryReason)], &[Id]) -> Bundle,
+) -> Bundle {
     let mut truncated = Vec::new();
     loop {
-        let bundle = assemble(
-            graph,
-            query,
-            &ranked,
-            vision_fallback.clone(),
-            &misses,
-            &truncated,
-            missing.as_ref(),
-        );
+        let bundle = build(&ranked, &truncated);
         if render_markdown(&bundle).len() <= budget {
             return bundle;
         }
@@ -381,13 +435,40 @@ fn assemble(
     graph: &Graph,
     query: &CompileQuery,
     ranked: &[(&Entity, EntryReason)],
-    vision_fallback: Option<String>,
     misses: &[String],
     truncated: &[Id],
     missing: Option<&HashSet<String>>,
 ) -> Bundle {
+    let mut heads: Vec<&Assertion> = Vec::new();
+    for (e, _) in ranked {
+        for a in heads_about(graph, &e.id) {
+            if !heads.iter().any(|h| h.id == a.id) {
+                heads.push(a);
+            }
+        }
+    }
+    let (assertions, contradictions) = bundle_assertions(graph, &heads, query.include_history);
+    let mut warnings = warnings(graph, &assertions, &contradictions, misses, truncated);
+    if let Some(missing) = missing {
+        warnings.extend(stale_anchors(ranked, &assertions, missing));
+    }
+    Bundle {
+        project_id: graph.project_id.clone(),
+        vision: graph.vision().cloned(),
+        overview: false,
+        entities: bundle_entities(graph, ranked),
+        assertions,
+        contradictions,
+        misses: misses.to_vec(),
+        warnings,
+        truncated: truncated.to_vec(),
+    }
+}
+
+/// The ranked entities, each with its relations to the others in the bundle.
+fn bundle_entities(graph: &Graph, ranked: &[(&Entity, EntryReason)]) -> Vec<BundleEntity> {
     let ids: HashSet<&str> = ranked.iter().map(|(e, _)| e.id.as_str()).collect();
-    let entities = ranked
+    ranked
         .iter()
         .map(|(e, reason)| BundleEntity {
             entity: (*e).clone(),
@@ -402,17 +483,16 @@ fn assemble(
                 .cloned()
                 .collect(),
         })
-        .collect();
+        .collect()
+}
 
-    let mut heads: Vec<&Assertion> = Vec::new();
-    for (e, _) in ranked {
-        for a in heads_about(graph, &e.id) {
-            if !heads.iter().any(|h| h.id == a.id) {
-                heads.push(a);
-            }
-        }
-    }
-
+/// `heads` flagged, with the contradictions among the current heads they
+/// touch, each pair once.
+fn bundle_assertions(
+    graph: &Graph,
+    heads: &[&Assertion],
+    include_history: bool,
+) -> (Vec<BundleAssertion>, Vec<Contradiction>) {
     let mut seen_pairs = HashSet::new();
     let mut contradictions = Vec::new();
     let assertions: Vec<BundleAssertion> = heads
@@ -440,7 +520,7 @@ fn assemble(
                     contradicted_by,
                     has_history: a.supersedes.is_some(),
                 },
-                history: if query.include_history {
+                history: if include_history {
                     history(graph, &a.id).into_iter().cloned().collect()
                 } else {
                     Vec::new()
@@ -448,24 +528,7 @@ fn assemble(
             }
         })
         .collect();
-
-    let vision = graph.vision().cloned();
-    let vision_fallback = vision.is_none().then_some(vision_fallback).flatten();
-    let mut warnings = warnings(graph, &assertions, &contradictions, misses, truncated);
-    if let Some(missing) = missing {
-        warnings.extend(stale_anchors(ranked, &assertions, missing));
-    }
-    Bundle {
-        project_id: graph.project_id.clone(),
-        vision,
-        vision_fallback,
-        entities,
-        assertions,
-        contradictions,
-        misses: misses.to_vec(),
-        warnings,
-        truncated: truncated.to_vec(),
-    }
+    (assertions, contradictions)
 }
 
 /// Current heads `a` is in tension with, whichever side recorded the link.

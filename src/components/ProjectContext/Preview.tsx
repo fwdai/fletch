@@ -5,7 +5,8 @@ import { TextInput } from "@/components/ui/TextInput";
 import { matchesSearch } from "./format";
 
 /** "What would an agent see?" — a free-text query plus optional entity
- *  picks, compiled and rendered host-side exactly as for an agent. */
+ *  picks, compiled and rendered host-side exactly as for an agent; or the
+ *  overview every agent on the project is spawned with. */
 export function Preview({ projectId, entities }: { projectId: string; entities: ContextEntity[] }) {
   const [query, setQuery] = useState("");
   const [picks, setPicks] = useState<string[]>([]);
@@ -18,7 +19,7 @@ export function Preview({ projectId, entities }: { projectId: string; entities: 
   const togglePick = (slug: string) =>
     setPicks((prev) => (prev.includes(slug) ? prev.filter((s) => s !== slug) : [...prev, slug]));
 
-  const run = () => {
+  const run = (overview: boolean) => {
     setBusy(true);
     setError(null);
     api
@@ -28,6 +29,7 @@ export function Preview({ projectId, entities }: { projectId: string; entities: 
         paths: [],
         include_history: history,
         budget_chars: 0,
+        overview,
       })
       .then(setOutput)
       .catch((e) => setError(String(e)))
@@ -77,8 +79,11 @@ export function Preview({ projectId, entities }: { projectId: string; entities: 
         Include history
       </label>
       <div className="pc-form-actions">
-        <Button variant="primary" disabled={busy} onClick={run}>
+        <Button variant="primary" disabled={busy} onClick={() => run(false)}>
           Preview
+        </Button>
+        <Button variant="outline" disabled={busy} onClick={() => run(true)}>
+          Spawn overview
         </Button>
       </div>
       {error && <div className="pc-error text-sm">{error}</div>}

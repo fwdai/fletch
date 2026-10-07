@@ -142,7 +142,6 @@ const SOURCE_LABEL: Record<Source["kind"], string> = {
   pr: "PR",
   review_thread: "review thread",
   roadmap: "roadmap",
-  brief: "brief",
   workflow: "workflow",
   ui: "UI",
   repo: "repo at",

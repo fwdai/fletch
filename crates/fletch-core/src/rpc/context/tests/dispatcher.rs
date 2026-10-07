@@ -54,7 +54,7 @@ async fn every_op_is_refused_once_the_layer_is_turned_off() {
     let e = entity(&d, "billing").await;
     assert!(call(&d, "context_get", json!({})).await.ok);
 
-    crate::database::set_setting(&d.db.lock(), context::DEV_SETTING, "false").unwrap();
+    crate::database::set_setting(&db(&d).lock(), context::DEV_SETTING, "false").unwrap();
     for (op, args) in [
         ("context_get", json!({})),
         (

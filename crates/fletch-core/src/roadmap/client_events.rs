@@ -6,7 +6,6 @@ use crate::host::{emit, EventSink};
 
 use super::brakes::ProjectHold;
 use super::events::ItemEvent;
-use super::memory::{Brief, BriefProposal};
 use super::order_proposals::OrderProposal;
 use super::proposals::Proposal;
 use super::types::RoadmapItem;
@@ -45,16 +44,4 @@ pub(crate) fn emit_project_hold(sink: &dyn EventSink, hold: &ProjectHold) {
 
 pub(super) fn emit_project_hold_released(sink: &dyn EventSink, project_id: &str) {
     emit(sink, "roadmap:project-hold-released", project_id);
-}
-
-pub(super) fn emit_brief(sink: &dyn EventSink, brief: &Brief) {
-    emit(sink, "roadmap:brief", brief);
-}
-
-pub(crate) fn emit_brief_proposal(sink: &dyn EventSink, proposal: &BriefProposal) {
-    emit(sink, "roadmap:brief-proposal", proposal);
-}
-
-pub(super) fn emit_brief_proposal_deleted(sink: &dyn EventSink, project_id: &str) {
-    emit(sink, "roadmap:brief-proposal-deleted", project_id);
 }

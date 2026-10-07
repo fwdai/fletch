@@ -13,7 +13,6 @@ use fletch_core::host::EngineCtx;
 use fletch_core::roadmap::brakes::ProjectHold;
 use fletch_core::roadmap::commands;
 use fletch_core::roadmap::events::ItemEvent;
-use fletch_core::roadmap::memory::{Brief, BriefProposal};
 use fletch_core::roadmap::order_proposals::OrderProposal;
 use fletch_core::roadmap::pr_review;
 use fletch_core::roadmap::proposals::Proposal;
@@ -251,38 +250,4 @@ pub async fn roadmap_reject_order_proposal(
     db: State<'_, Db>,
 ) -> Result<(), String> {
     commands::roadmap_reject_order_proposal_impl(project_id, ctx.inner(), db.inner()).await
-}
-
-#[tauri::command]
-pub async fn roadmap_get_brief(
-    project_id: String,
-    db: State<'_, Db>,
-) -> Result<Option<Brief>, String> {
-    commands::roadmap_get_brief_impl(project_id, db.inner()).await
-}
-
-#[tauri::command]
-pub async fn roadmap_get_brief_proposal(
-    project_id: String,
-    db: State<'_, Db>,
-) -> Result<Option<BriefProposal>, String> {
-    commands::roadmap_get_brief_proposal_impl(project_id, db.inner()).await
-}
-
-#[tauri::command]
-pub async fn roadmap_accept_brief_proposal(
-    project_id: String,
-    ctx: State<'_, Arc<EngineCtx>>,
-    db: State<'_, Db>,
-) -> Result<Brief, String> {
-    commands::roadmap_accept_brief_proposal_impl(project_id, ctx.inner(), db.inner()).await
-}
-
-#[tauri::command]
-pub async fn roadmap_reject_brief_proposal(
-    project_id: String,
-    ctx: State<'_, Arc<EngineCtx>>,
-    db: State<'_, Db>,
-) -> Result<(), String> {
-    commands::roadmap_reject_brief_proposal_impl(project_id, ctx.inner(), db.inner()).await
 }
