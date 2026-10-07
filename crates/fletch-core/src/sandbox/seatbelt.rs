@@ -337,7 +337,11 @@ fn deny_git_exec_config(root: &str) -> String {
 /// exactly as [`subpath_grants`] emits the grants these sit inside, so the deny
 /// lands on the same path the grant re-allowed even when a root is a symlink.
 /// MUST follow the `(allow file-write* …)` block — SBPL is last-match-wins.
-fn deny_provider_exec_config(home: &Path, codex_account_home: Option<&Path>) -> String {
+fn deny_provider_exec_config(
+    home: &Path,
+    codex_account_home: Option<&Path>,
+    relocated_claude_dir: Option<&Path>,
+) -> String {
     let policy::ProviderExecConfig { mut files, dirs } = policy::provider_exec_config_denials(home);
     // A managed codex account's home is granted whole for this launch, so its
     // `config.toml` needs the same carve-out as the default home's: the shared
@@ -350,6 +354,16 @@ fn deny_provider_exec_config(home: &Path, codex_account_home: Option<&Path>) -> 
     if let Some(dir) = codex_account_home {
         files.push(dir.join("config.toml"));
         files.push(policy::resolve_existing_prefix(dir).join("config.toml"));
+    }
+    // A relocated claude dir (a managed account's, or the app env's) is granted
+    // by islands, never whole, so its `settings.json` (hooks) is unwritable by
+    // omission — as long as no broader grant encloses the dir. Deny it outright
+    // too, like codex's `config.toml`: the posture then holds wherever the dir
+    // sits (the per-user temp tree is granted whole, which is where the kernel
+    // test puts it), and a shared-config link can't be swapped for a file.
+    if let Some(dir) = relocated_claude_dir {
+        files.push(dir.join("settings.json"));
+        files.push(policy::resolve_existing_prefix(dir).join("settings.json"));
     }
     let mut clauses: Vec<String> = Vec::new();
     for (kind, paths) in [("literal", &files), ("subpath", &dirs)] {
@@ -763,14 +777,19 @@ pub fn build_profile(
     // can't.) The `~/.claude.json` top-level state *file* stays a seatbelt-local
     // literal grant: it's a file, not a dir, so the dir-oriented policy API
     // doesn't model it (see the policy module doc).
-    let claude_config_extra = claude_config_dir
+    // The relocated claude dir this launch grants, resolved — `None` for the
+    // default `~/.claude`. Shared by its island grants below and its
+    // `settings.json` deny (`deny_provider_config`), so the two name one dir.
+    let relocated_claude_dir = claude_config_dir
         // A bin-resident relocation (`CLAUDE_CONFIG_DIR=$HOME/.local/bin/…`)
         // would put an agent-writable subtree on the user's PATH — the same
         // rejection every env-relocated policy dir gets (invariant 1;
         // fail-closed: claude's config writes are denied, never a hijack).
         .filter(|p| !policy::bin_resident(p))
         .map(policy::resolve_existing_prefix)
-        .filter(|resolved| resolved.to_string_lossy() != claude_default_dir.to_string_lossy())
+        .filter(|resolved| resolved.to_string_lossy() != claude_default_dir.to_string_lossy());
+    let claude_config_extra = relocated_claude_dir
+        .as_ref()
         .map(|resolved| {
             // Islands flow through `subpath_grants` (bin_resident filter +
             // resolved forms) like every other grant; the credential file gets
@@ -778,8 +797,8 @@ pub fn build_profile(
             // inside the dir (`<dir>/.claude.json`, the twin of the default's
             // `~/.claude.json` literal below), so that file is granted too —
             // without it a managed account can't record its onboarding/login.
-            let mut lines = subpath_grants(policy::claude_write_island_dirs(&resolved));
-            lines.extend(claude_credentials_rules(&resolved));
+            let mut lines = subpath_grants(policy::claude_write_island_dirs(resolved));
+            lines.extend(claude_credentials_rules(resolved));
             lines.extend(literal_grants(&resolved.join(".claude.json")));
             format!("\n{}", lines.join("\n"))
         })
@@ -845,7 +864,8 @@ pub fn build_profile(
     // like `deny_git_config`): deny their command-defining config back out of the
     // whole-root grants in `policy_dirs` above. Run deliberately doesn't carry it,
     // same reasoning as the git deny.
-    let deny_provider_config = deny_provider_exec_config(&home, codex_account_home);
+    let deny_provider_config =
+        deny_provider_exec_config(&home, codex_account_home, relocated_claude_dir.as_deref());
 
     // Invariant 4, agent profile only — same Run-vs-agent asymmetry as invariant
     // 3 above. Carves the known macOS launch-time auto-exec surfaces (iTerm2
@@ -1187,7 +1207,10 @@ mod tests {
     /// `seatbelt_denies_writing_git_config`): a codex account's home takes its
     /// session writes but not a `config.toml` — neither a fresh one nor one
     /// replacing the shared link — and a claude account's dir takes its islands
-    /// and `.claude.json` but not `settings.json`. Run with:
+    /// and `.claude.json` but not `settings.json`. The dirs live under the
+    /// per-user temp tree, which the profile grants whole, so every denial here
+    /// is proven by an explicit deny clause, not by the absence of a grant.
+    /// Run with:
     ///   cargo test --lib seatbelt_enforces_account_dir_grants -- --ignored --nocapture
     #[test]
     #[ignore]
@@ -1612,6 +1635,39 @@ mod tests {
             "{profile}"
         );
         assert!(!profile.contains(&format!("(subpath \"{}\")", canonical_cfg.display())));
+    }
+
+    /// A relocated claude dir's `settings.json` (hooks) is denied outright,
+    /// after the allow block, so the posture holds even when a broader grant
+    /// encloses the dir — the default dir, granted by omission, gets no deny.
+    #[test]
+    fn profile_denies_a_relocated_claude_dirs_settings_file() {
+        let (td, root, rpc, home) = sandbox_dirs();
+        let cfg = td.path().join("accounts/claude/work");
+        std::fs::create_dir_all(&cfg).unwrap();
+        let canonical_cfg = std::fs::canonicalize(&cfg).unwrap();
+        let deny = format!(
+            "(literal \"{}\")",
+            canonical_cfg.join("settings.json").display()
+        );
+
+        let plain = build_profile(&root, &rpc, &home, None, None, None, None).unwrap();
+        assert!(!plain.contains(&deny));
+
+        let profile =
+            build_profile(&root, &rpc, &home, Some(cfg.as_path()), None, None, None).unwrap();
+        let grant = format!(
+            "(literal \"{}\")",
+            canonical_cfg.join(".claude.json").display()
+        );
+        let grant_at = profile
+            .find(&grant)
+            .expect("the state file must be granted");
+        let deny_at = profile.find(&deny).expect("settings.json must be denied");
+        assert!(
+            deny_at > grant_at,
+            "the deny must follow the grant: {profile}"
+        );
     }
 
     /// A managed codex account's home is granted whole, like `~/.codex`, and
