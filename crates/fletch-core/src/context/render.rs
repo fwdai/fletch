@@ -62,6 +62,10 @@ pub fn render_markdown(bundle: &Bundle) -> String {
                     "- **{}** (`{}`) — {}\n",
                     e.name, e.slug, e.summary
                 ));
+                if !e.paths.is_empty() {
+                    let paths: Vec<String> = e.paths.iter().map(|p| format!("`{p}`")).collect();
+                    out.push_str(&format!("  - at {}\n", paths.join(", ")));
+                }
                 for r in b.relations.iter().filter(|r| r.from == e.id) {
                     if let Some(to) = slug_of(bundle, &r.to) {
                         out.push_str(&format!("  - {} `{}`\n", rel_name(r.rel), to));

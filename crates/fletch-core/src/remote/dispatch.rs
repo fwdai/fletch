@@ -292,6 +292,7 @@ pub const OPS: &[&str] = &[
     "context_link",
     "context_rule_proposal",
     "context_resolve_contradiction",
+    "context_bootstrap",
 ];
 
 pub const REGISTER_PUSH: &str = "register_push";
@@ -578,6 +579,7 @@ const OP_SCOPES: &[(&str, Scope)] = &[
     ("context_link", Scope::Projects),
     ("context_rule_proposal", Scope::Projects),
     ("context_resolve_contradiction", Scope::Projects),
+    ("context_bootstrap", Scope::Projects),
 ];
 
 /// The one scope that reaches `op`. `None` for a name outside [`OPS`] —
@@ -1720,6 +1722,13 @@ impl Dispatch for SupervisorDispatch {
                 | "context_link"
                 | "context_rule_proposal"
                 | "context_resolve_contradiction" => context_op(ctx, op, args),
+
+                // Reads the project's repo through git, so not one of the
+                // synchronous `context_op`s.
+                "context_bootstrap" => {
+                    let a: ProjectArgs = parse(args)?;
+                    res(crate::commands::context_bootstrap_impl(ctx, &a.project_id).await)
+                }
 
                 // Unreachable while `OPS` and the arms above agree; kept so a
                 // name added to one and not the other fails closed.

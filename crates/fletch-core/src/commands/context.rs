@@ -7,8 +7,11 @@
 //!
 //! See docs/remote-protocol.md, "Project context".
 
+use std::path::{Path, PathBuf};
+
 use serde::{Deserialize, Serialize};
 
+use crate::capture::bootstrap;
 use crate::context::{
     self, compile, render, AssertionInput, AssertionStatus, Author, Candidate, CompileQuery,
     DismissReason, EntityInput, Graph, Id, Landing, LinkChange, Proposal, ProposalStatus,
@@ -16,6 +19,7 @@ use crate::context::{
 };
 use crate::error::{Error, Result};
 use crate::host::EngineCtx;
+use crate::roadmap::drainer::primary_repo_path;
 
 pub use crate::context::CHANGED_EVENT as CONTEXT_CHANGED;
 
@@ -81,18 +85,82 @@ pub fn context_overview_impl(ctx: &EngineCtx, project_id: &str) -> Result<Contex
 
 /// What an agent would be served for `query`: the compiled bundle rendered as
 /// markdown, with the roadmap brief standing in for a vision nobody has
-/// recorded yet.
+/// recorded yet and path anchors checked against the project's primary repo.
 pub fn context_preview_impl(
     ctx: &EngineCtx,
     project_id: &str,
     query: CompileQuery,
 ) -> Result<String> {
     let project = open(ctx, project_id)?;
-    let brief = crate::roadmap::memory::load(&ctx.db.lock(), project_id)?.map(|b| b.content);
+    let (brief, repo) = {
+        let conn = ctx.db.lock();
+        (
+            crate::roadmap::memory::load(&conn, project_id)?.map(|b| b.content),
+            primary_repo_path(&conn, project_id).map(PathBuf::from),
+        )
+    };
     let graph = ctx.context()?.store().load(&project.id)?;
     Ok(render::render_markdown(&compile::compile(
-        &graph, &query, brief,
+        &graph,
+        &query,
+        brief,
+        repo.as_deref(),
     )))
+}
+
+/// What a bootstrap did, and the task that maps the meaning onto it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContextBootstrap {
+    /// The commit the repository was read at.
+    pub commit: String,
+    /// Modules the tree describes.
+    pub modules: usize,
+    /// Slugs recorded by this run; empty when every module was already there.
+    pub created: Vec<String>,
+    /// The canned task for the mapping session (`instructions/context_mapping.md`).
+    pub mapping_task: String,
+}
+
+/// Tier one of the cold start: record the modules of the project's primary
+/// repo at its `HEAD` (`capture::bootstrap`). Idempotent — a slug the project
+/// already has is skipped — so it is also how the UI gets the mapping task
+/// again.
+pub async fn context_bootstrap_impl(ctx: &EngineCtx, project_id: &str) -> Result<ContextBootstrap> {
+    let project = open(ctx, project_id)?;
+    let (repo, brief) = {
+        let conn = ctx.db.lock();
+        (
+            primary_repo_path(&conn, project_id),
+            legacy_brief(&conn, project_id),
+        )
+    };
+    let repo = repo.ok_or_else(|| Error::Other("this project has no repository to read".into()))?;
+    let skeleton = bootstrap::derive(Path::new(&repo)).await?;
+    let applied = bootstrap::apply(
+        ctx.context()?,
+        &project,
+        &skeleton,
+        bootstrap::stamp(&skeleton.commit),
+    )?;
+    Ok(ContextBootstrap {
+        commit: skeleton.commit,
+        modules: skeleton.modules.len(),
+        created: applied.created,
+        mapping_task: crate::instructions::context_mapping_task(brief.as_deref()),
+    })
+}
+
+/// The project's roadmap brief, read straight from its table: the UI and ops
+/// that wrote it are gone or going, the user-reviewed content is not, and
+/// the mapping session is where it lands. A missing table or row is `None`.
+fn legacy_brief(conn: &rusqlite::Connection, project_id: &str) -> Option<String> {
+    conn.query_row(
+        "SELECT content FROM roadmap_briefs WHERE project_id = ?1",
+        [project_id],
+        |r| r.get::<_, String>(0),
+    )
+    .ok()
+    .filter(|content| !content.trim().is_empty())
 }
 
 /// Create an entity, or record a revision of one (`input.id` set).
@@ -272,6 +340,60 @@ mod tests {
             .to_string();
         assert!(e.contains("context layer is off"), "{e}");
         assert!(sink.events().is_empty());
+    }
+
+    /// The bootstrap hands the mapping session a project's legacy brief, and
+    /// only when it has one.
+    #[tokio::test]
+    async fn the_mapping_task_carries_a_legacy_brief_only_when_there_is_one() {
+        let (ctx, _sink, dir) = crate::host::ctx::test_ctx();
+        crate::database::set_setting(&ctx.db.lock(), context::DEV_SETTING, "true").unwrap();
+        for project in ["p1", "p2"] {
+            let repo = dir.path().join(project);
+            std::fs::create_dir_all(repo.join("src/app")).unwrap();
+            std::fs::write(repo.join("package.json"), "{}").unwrap();
+            std::fs::write(repo.join("src/app/main.ts"), "").unwrap();
+            crate::git::init_repo(&repo).await.unwrap();
+            crate::git::commit_all(&repo, "init").await.unwrap();
+            let conn = ctx.db.lock();
+            conn.execute(
+                "INSERT INTO projects (id, name, created_at) VALUES (?1, ?1, 0)",
+                [project],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO repos (id, project_id, path, created_at) VALUES (?1, ?1, ?2, 0)",
+                [project, repo.to_str().unwrap()],
+            )
+            .unwrap();
+        }
+        ctx.db
+            .lock()
+            .execute(
+                "INSERT INTO roadmap_briefs (project_id, content, updated_at)
+                 VALUES ('p1', 'Fletch runs coding agents side by side.', 0)",
+                [],
+            )
+            .unwrap();
+
+        let with = context_bootstrap_impl(&ctx, "p1").await.unwrap();
+        assert!(
+            with.mapping_task.contains("## Legacy product brief"),
+            "{}",
+            with.mapping_task
+        );
+        assert!(with
+            .mapping_task
+            .contains("<legacy-product-brief>\nFletch runs coding agents side by side.\n"));
+        assert_eq!(with.created, vec!["src", "src-app"]);
+
+        let without = context_bootstrap_impl(&ctx, "p2").await.unwrap();
+        assert!(!without.mapping_task.contains("## Legacy product brief"));
+        assert!(!without.mapping_task.contains("<legacy-product-brief>"));
+        assert_eq!(
+            without.mapping_task,
+            crate::instructions::context_mapping_task(None)
+        );
     }
 
     /// A ruling on a tension between two recorded heads is one event and one

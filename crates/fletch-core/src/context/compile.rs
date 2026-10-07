@@ -20,9 +20,15 @@
 //!    `budget_chars`; the vision and the warnings are never dropped.
 //!    Dropped ids go to `truncated`.
 //! 5. `warnings`: human-readable lines for contradictions, provisional
-//!    decisions, and misses.
+//!    decisions, misses, and — given the reader's checkout — every path
+//!    anchor of what is served that the checkout does not have.
+//!
+//! The checkout is the one input that is not the graph: whether an anchor
+//! still exists is a fact about a working tree, read at retrieval and never
+//! stored.
 
 use std::collections::HashSet;
+use std::path::Path;
 
 use super::model::*;
 use super::render::render_markdown;
@@ -33,8 +39,14 @@ use super::DEFAULT_BUDGET_CHARS;
 const QUERY_HITS: usize = 10;
 
 /// Compile `query` against `graph`. `vision_fallback` is the roadmap brief,
-/// shown as the vision when no vision entity exists.
-pub fn compile(graph: &Graph, query: &CompileQuery, vision_fallback: Option<String>) -> Bundle {
+/// shown as the vision when no vision entity exists; `checkout`, the
+/// reader's working tree, that path anchors are checked against.
+pub fn compile(
+    graph: &Graph,
+    query: &CompileQuery,
+    vision_fallback: Option<String>,
+    checkout: Option<&Path>,
+) -> Bundle {
     let mut entries = Entries::default();
     let vision = graph.vision();
     if let Some(v) = vision {
@@ -69,6 +81,7 @@ pub fn compile(graph: &Graph, query: &CompileQuery, vision_fallback: Option<Stri
     }
 
     let mut ranked = entries.ranked(graph);
+    let missing = checkout.map(|root| missing_anchors(graph, &ranked, root));
     let budget = match query.budget_chars {
         0 => DEFAULT_BUDGET_CHARS,
         n => n,
@@ -82,6 +95,7 @@ pub fn compile(graph: &Graph, query: &CompileQuery, vision_fallback: Option<Stri
             vision_fallback.clone(),
             &misses,
             &truncated,
+            missing.as_ref(),
         );
         if render_markdown(&bundle).len() <= budget {
             return bundle;
@@ -323,6 +337,35 @@ fn trim_path(p: &str) -> String {
     p.trim_start_matches("./").trim_end_matches('/').to_string()
 }
 
+/// The anchors of the ranked entities and of the heads about them that
+/// `root` does not have. Read once per compile, before the budget loop. An
+/// anchor that is not a plain repo-relative path (absolute, climbing out with
+/// `..`, a glob) is not checked.
+fn missing_anchors(
+    graph: &Graph,
+    ranked: &[(&Entity, EntryReason)],
+    root: &Path,
+) -> HashSet<String> {
+    let checkable = |p: &str| {
+        !p.is_empty()
+            && !Path::new(p).is_absolute()
+            && !p.split('/').any(|s| s == "..")
+            && !p.contains(['*', '?', '['])
+    };
+    ranked
+        .iter()
+        .flat_map(|(e, _)| {
+            e.paths.iter().chain(
+                heads_about(graph, &e.id)
+                    .into_iter()
+                    .flat_map(|a| a.paths.iter()),
+            )
+        })
+        .map(|p| trim_path(p))
+        .filter(|p| checkable(p) && !root.join(p).exists())
+        .collect()
+}
+
 /// One is the other or a directory above it.
 fn path_overlaps(a: &str, b: &str) -> bool {
     let under = |short: &str, long: &str| {
@@ -341,6 +384,7 @@ fn assemble(
     vision_fallback: Option<String>,
     misses: &[String],
     truncated: &[Id],
+    missing: Option<&HashSet<String>>,
 ) -> Bundle {
     let ids: HashSet<&str> = ranked.iter().map(|(e, _)| e.id.as_str()).collect();
     let entities = ranked
@@ -407,7 +451,10 @@ fn assemble(
 
     let vision = graph.vision().cloned();
     let vision_fallback = vision.is_none().then_some(vision_fallback).flatten();
-    let warnings = warnings(graph, &assertions, &contradictions, misses, truncated);
+    let mut warnings = warnings(graph, &assertions, &contradictions, misses, truncated);
+    if let Some(missing) = missing {
+        warnings.extend(stale_anchors(ranked, &assertions, missing));
+    }
     Bundle {
         project_id: graph.project_id.clone(),
         vision,
@@ -472,6 +519,39 @@ fn warnings(
         ));
     }
     out
+}
+
+/// One line per served anchor in `missing`: the code it pointed at has moved
+/// or gone since it was recorded.
+fn stale_anchors(
+    ranked: &[(&Entity, EntryReason)],
+    assertions: &[BundleAssertion],
+    missing: &HashSet<String>,
+) -> Vec<String> {
+    let gone = |paths: &[String]| -> Vec<String> {
+        paths
+            .iter()
+            .map(|p| trim_path(p))
+            .filter(|p| missing.contains(p))
+            .collect()
+    };
+    let entities = ranked.iter().flat_map(|(e, _)| {
+        gone(&e.paths).into_iter().map(|p| {
+            format!(
+                "`{p}` (anchor of `{}`) does not exist in this checkout",
+                e.slug
+            )
+        })
+    });
+    let assertions = assertions.iter().flat_map(|a| {
+        gone(&a.assertion.paths).into_iter().map(|p| {
+            format!(
+                "`{p}` (anchor of \"{}\") does not exist in this checkout",
+                a.assertion.statement
+            )
+        })
+    });
+    entities.chain(assertions).collect()
 }
 
 #[cfg(test)]

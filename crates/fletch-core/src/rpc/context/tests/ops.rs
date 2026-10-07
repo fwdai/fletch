@@ -297,6 +297,58 @@ async fn context_get_serves_markdown_and_logs_the_misses() {
     assert!(call(&d, "context_get", serde_json::Value::Null).await.ok);
 }
 
+/// Anchors are checked against the workspace's primary checkout: a module
+/// whose directory is gone is served with a warning saying so.
+#[tokio::test]
+async fn context_get_warns_about_an_anchor_the_checkout_lost() {
+    let (d, dir) = dispatcher();
+    let billing = dir.path().join(REPO).join("src/billing");
+    std::fs::create_dir_all(&billing).unwrap();
+    payload(
+        &call(
+            &d,
+            "context_record_entity",
+            json!({ "slug": "billing", "kind": "module", "name": "Billing",
+                    "summary": "Invoices.", "paths": ["src/billing"] }),
+        )
+        .await,
+    );
+    let get = || call(&d, "context_get", json!({ "entities": ["billing"] }));
+
+    let served = get().await.stdout.unwrap();
+    assert!(served.contains("at `src/billing`"), "{served}");
+    assert!(!served.contains("does not exist"), "{served}");
+
+    std::fs::remove_dir_all(&billing).unwrap();
+    let served = get().await.stdout.unwrap();
+    assert!(
+        served.contains("`src/billing` (anchor of `billing`) does not exist in this checkout"),
+        "{served}"
+    );
+}
+
+/// What `context_get` shows is the slug, so that is what a revision may name.
+#[tokio::test]
+async fn an_entity_is_revised_by_its_slug() {
+    let (d, _dir) = dispatcher();
+    let id = entity(&d, "billing").await;
+
+    let resp = call(
+        &d,
+        "context_record_entity",
+        json!({ "id": "billing", "slug": "billing", "kind": "module", "name": "Billing",
+                "summary": "Invoices and payment runs.", "aliases": ["invoicing"] }),
+    )
+    .await;
+
+    assert_eq!(payload(&resp)["id"], id.as_str());
+    let graph = graph(&d);
+    assert_eq!(graph.entities.len(), 1);
+    let e = graph.entity(&id).unwrap();
+    assert_eq!(e.summary, "Invoices and payment runs.");
+    assert_eq!(e.aliases, vec!["invoicing"]);
+}
+
 #[tokio::test]
 async fn link_and_unlink_resolve_slugs() {
     let (d, _dir) = dispatcher();

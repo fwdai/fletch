@@ -74,13 +74,24 @@ impl ContextDispatcher {
     }
 
     /// The entity is recorded before its relations are resolved, so a bad
-    /// `relates.to` reports what did land rather than losing the entity.
+    /// `relates.to` reports what did land rather than losing the entity. The
+    /// `id` of a revision is resolved like any reference: what `context_get`
+    /// shows an agent is the slug, not the id.
     fn write_entity(
         &self,
-        input: EntityInput,
+        mut input: EntityInput,
         relates: Vec<RelatesArg>,
         stamp: Stamp,
     ) -> Result<Value, String> {
+        if let Some(reference) = input.id.take() {
+            let graph = self.graph()?;
+            input.id = Some(
+                resolve::entity(&graph, &reference)
+                    .map_err(explain)?
+                    .id
+                    .clone(),
+            );
+        }
         let slug = input.slug.clone();
         let id = self
             .service

@@ -10,6 +10,7 @@ import { AddEntityForm } from "./AddEntityForm";
 import { EntityDetail } from "./EntityDetail";
 import { EntityList } from "./EntityList";
 import { ENABLED_KEY, EXTRACT_KEY, flagOn } from "./format";
+import { MapProject } from "./MapProject";
 import { Preview } from "./Preview";
 import { ReviewQueue } from "./ReviewQueue";
 import { useContextOverview } from "./useContextOverview";
@@ -155,6 +156,7 @@ export function ContextTab({
             >
               Add decision
             </Button>
+            <MapProject projectId={projectId} disabled={locked || !enabled} />
           </div>
           <div className="pc-split">
             <EntityList entities={active} selectedId={selectedId} onSelect={select} />

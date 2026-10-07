@@ -2,6 +2,7 @@ import { invoke } from "../invoke";
 import type {
   AssertionInput,
   CompileQuery,
+  ContextBootstrap,
   ContextOverview,
   DismissReason,
   EntityInput,
@@ -41,6 +42,10 @@ export const contextApi = {
     invoke<void>("context_merge_entities", { projectId, from, into }),
   contextLink: (projectId: string, change: LinkChange) =>
     invoke<void>("context_link", { projectId, change }),
+  /** Record the modules of the project's primary repo at `HEAD` (only slugs
+   *  the project has never had), and get the mapping session's task. */
+  contextBootstrap: (projectId: string) =>
+    invoke<ContextBootstrap>("context_bootstrap", { projectId }),
   /** Accept (resolves to the recorded id) or dismiss (needs a reason) a
    *  pending proposal. */
   contextRuleProposal: (

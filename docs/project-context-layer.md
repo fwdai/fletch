@@ -10,7 +10,7 @@ roadmap brief still stands and is shown as the vision until a `vision` entity
 exists) and is built so the later pieces — search, code anchors, multi-host —
 are extensions, not rewrites. The core lives in `crates/fletch-core/src/context/`
 (model, store, service, compile, render, resolve, trust), the capture paths —
-the extractor and the PR ingester — in `src/capture/`, the `context_*` RPC ops
+the bootstrap, the extractor and the PR ingester — in `src/capture/`, the `context_*` RPC ops
 in `src/rpc/context/`, the host commands in `src/commands/context.rs`, and the
 UI in `src/components/ProjectContext/`.
 
@@ -93,8 +93,8 @@ required reasoning), `contradicts` (assertion ↔ assertion), `relates`
 `settings`), `seq` (per-host monotonic, computed in the write transaction),
 `recorded_at`, `author` (`user · agent · extractor · ingester` + agent id and
 provider), `source` (`user_turn · agent_turn · pr · review_thread · roadmap ·
-brief · workflow · ui` + reference), `provenance` (workspace, branch, commit,
-session, turn).
+brief · workflow · ui · repo` + reference), `provenance` (workspace, branch,
+commit, session, turn).
 
 **Project identity** — events are keyed by a *context* project id minted into
 `project_settings` (`context.id`), never the host-local `projects.id`, so a
@@ -173,10 +173,16 @@ opened.
 - `context_get` (any agent, any provider, any engine — it is a mailbox op):
   no args returns the map (vision, every active entity, their heads); with
   `entities` (slugs), `paths` and/or `query` it returns the named entities,
-  their one-hop neighbours, the current assertions grouped by kind and
-  domain (adopted before rejected), and warnings for anything provisional,
-  contradicted or missing. `include_history` adds the supersession chain.
-  Budgeted at 12k chars; the vision and warnings are never dropped.
+  their one-hop neighbours (each with its path anchors), the current
+  assertions grouped by kind and domain (adopted before rejected), and
+  warnings for anything provisional, contradicted or missing.
+  `include_history` adds the supersession chain. Budgeted at 12k chars; the
+  vision and warnings are never dropped.
+- **Staleness** is computed at read time, never stored: `compile` takes the
+  reader's checkout (the workspace's primary checkout for `context_get`, the
+  project's primary repo for the Preview tab) and warns once per served path
+  anchor — of an entity or an assertion — that the checkout does not have.
+  The log is not touched; whoever reads the warning fixes the record.
 - The spawn-time **index** (`render_index`, ≤1500 chars) — every entity by
   kind — rides in the instruction block so an agent knows what to ask for.
 - Every read is logged (`reads`: query, what was served, what was asked for
@@ -256,16 +262,45 @@ Dogfood on this repo with the layer on. What to look at, all from SQL over
 - **Usage**: share of sessions with ≥1 `context_get`; `Stats` from
   `context_overview`.
 
-Bootstrap: ask an agent to map the project (vision from the brief, modules
-from the code layout, features from the roadmap) with the record ops, then
-correct it in the tab.
+## Bootstrap
+
+The log is built once from the code at a commit and only appended to after
+that; nothing rebuilds or re-syncs the base. Two tiers, both from the
+Context tab's **Map project**:
+
+1. **Structure, no model** (`capture/bootstrap/`, host op
+   `context_bootstrap`). `derive` reads the tree of the project's primary
+   repo at `HEAD` (`git ls-tree`, so the committed code, not the working
+   tree); `rules::modules`, pure over a file list, turns it into module
+   candidates: every package (a directory with a `Cargo.toml`,
+   `package.json`, `pyproject.toml` or `go.mod`; the root one stands in as
+   its `src/`), and every code directory directly under a package's `src/`,
+   each anchored at its directory, nested ones `part_of` their parent.
+   `apply` lands them through the service as the ingester, source `repo`
+   with the commit SHA — entities and `part_of` relations only, never an
+   assertion. A slug the project has ever had (archived and merged ones
+   included) is skipped, not revised, so a second run writes nothing and
+   never undoes a curation. The same rules are meant to compute the
+   structural delta of a merged PR from its file list.
+2. **Meaning, an ordinary agent session.** The op answers the canned task
+   (`instructions/context_mapping.md`), which the tab opens as a new
+   workspace draft: with codegraph and the record ops the agent writes the
+   `vision` (≤ 600 chars), a one-line summary, a name and aliases for every
+   module (a revision names the entity by its slug in `id`), and the missing
+   `part_of` / `depends_on` relations. It records no decisions or facts —
+   those come from the people who made them — with one exception: a project
+   that still has a row in `roadmap_briefs` (the user-reviewed product brief,
+   read with plain SQL so a dropped table is simply none) gets it appended to
+   the task, fenced, and the session folds it into the vision and records the
+   constraints it states, quoting the brief so they land as the user's.
 
 ## Deferred, and where each attaches
 
 | Later | Attaches to |
 |---|---|
 | Text search beyond token match (FTS5, then embeddings) | `compile::by_text`; an embedding column is derived data, rebuilt on replay |
-| Symbol anchors and staleness against the code graph | `paths[]` already; a resolver over the checkout's `.codegraph/codegraph.db` at retrieval time (the host never queries it today) |
+| Symbol anchors | `paths[]` already; a resolver over the checkout's `.codegraph/codegraph.db` at retrieval time (the host never queries it today), next to the path check in `compile` |
+| Structural deltas from a merged PR (modules added, removed, moved) | `capture::bootstrap::rules` over the PR's file list, landed through the `MergedPr` entry |
 | Roadmap rulings and `wf_report` as deterministic sources | `capture/ingest/`, same `MergedPr`-style entry |
 | Gap mining (what did the agent discover that it was not served) | A second question in the extractor prompt; same proposal pipeline |
 | Host-side injection at turn start | The index block is step one; no per-turn mechanism exists yet |

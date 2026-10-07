@@ -53,8 +53,9 @@ the product is and why it is built this way.
 "relates":[{"rel":"part_of","to":"payments"}]}` — `kind` is
 `vision | goal | capability | feature | module | topic` (default `topic`);
 summary up to 600 characters; `aliases` lets `context_get` find it under other
-names. Pass `id` to revise an existing entity. Record the entity before you
-record a decision about it.
+names. Pass `id` (the entity's current slug will do) to revise an existing
+entity; a revision replaces every field, so send its `paths` and `aliases`
+again. Record the entity before you record a decision about it.
 
 ### `context_link` — relate two entities
 

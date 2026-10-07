@@ -78,6 +78,29 @@ const ROADMAP: &str = include_str!("instructions/roadmap.md");
 /// test there against the ops that dispatcher implements.
 const CONTEXT: &str = include_str!("instructions/context.md");
 
+/// The canned task of a project-mapping session: an ordinary workspace whose
+/// first message this is, writing meaning onto the modules the bootstrap
+/// recorded with the `context_*` ops. Not part of any instruction block.
+const CONTEXT_MAPPING: &str = include_str!("instructions/context_mapping.md");
+
+/// The mapping session's task text, trimmed. A project's legacy product
+/// brief (the roadmap brief the user reviewed before the context layer) rides
+/// at the end, fenced like the spawn-time index so its text cannot close the
+/// section early: the mapping session is where that content lands.
+pub fn context_mapping_task(legacy_brief: Option<&str>) -> String {
+    let task = CONTEXT_MAPPING.trim();
+    let Some(brief) = legacy_brief.map(str::trim).filter(|b| !b.is_empty()) else {
+        return task.to_string();
+    };
+    let brief = brief.replace("</legacy-product-brief>", "<\\/legacy-product-brief>");
+    format!(
+        "{task}\n\n\
+         ## Legacy product brief (user-reviewed; fold into the vision entity and \
+         business/architectural constraints, then nothing else)\n\n\
+         <legacy-product-brief>\n{brief}\n</legacy-product-brief>"
+    )
+}
+
 /// The combined instruction text, trimmed. Empty when every source is
 /// blank/whitespace, which makes every injection helper a no-op.
 pub fn text() -> String {
