@@ -334,6 +334,10 @@ Context tab's **Map project**:
   cwd, timeout) rather than a sandboxed agent run.
 - **One overview for every agent, and no brief.** The roadmap's product brief
   (a PM-maintained markdown page, `roadmap_briefs`) was a stand-in for this
-  layer; migration 0049 drops it with its RPC ops, commands and board tab.
-  The PM keeps only the board's "Not doing" digest in its roadmap block — the
-  board's decision log, not project knowledge.
+  layer; its RPC ops, commands, events and board tab are gone. The PM keeps
+  only the board's "Not doing" digest in its roadmap block — the board's
+  decision log, not project knowledge. The `roadmap_briefs` and
+  `roadmap_brief_proposals` tables are retained as a read-only archive
+  (nothing writes them; a test greps the crate) so an accepted brief can be
+  imported into the vision and constraints under the user's review; a later
+  release drops them after that import.
