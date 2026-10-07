@@ -81,7 +81,13 @@ async fn an_empty_store_gets_every_module_with_paths_and_part_of_edges() {
 
     let skeleton = derive(&root).await.unwrap();
     assert_eq!(skeleton.commit.len(), 40);
-    let applied = apply(&service, &project(), &skeleton, stamp(&skeleton.commit)).unwrap();
+    let applied = apply(
+        &service,
+        &project(),
+        &skeleton.modules,
+        stamp(&skeleton.commit),
+    )
+    .unwrap();
 
     let g = graph(&service);
     let mut slugs: Vec<&str> = g.entities.iter().map(|e| e.slug.as_str()).collect();
@@ -130,10 +136,22 @@ async fn a_second_run_writes_nothing() {
     let root = repo(dir.path()).await;
     let (service, _db) = service();
     let skeleton = derive(&root).await.unwrap();
-    apply(&service, &project(), &skeleton, stamp(&skeleton.commit)).unwrap();
+    apply(
+        &service,
+        &project(),
+        &skeleton.modules,
+        stamp(&skeleton.commit),
+    )
+    .unwrap();
     let before = service.store().events(PROJECT).unwrap().len();
 
-    let again = apply(&service, &project(), &skeleton, stamp(&skeleton.commit)).unwrap();
+    let again = apply(
+        &service,
+        &project(),
+        &skeleton.modules,
+        stamp(&skeleton.commit),
+    )
+    .unwrap();
 
     assert_eq!(again, Applied::default());
     assert_eq!(service.store().events(PROJECT).unwrap().len(), before);
@@ -178,7 +196,13 @@ async fn existing_slugs_are_skipped_not_revised() {
     service.archive_entity(&project(), &mobile, user).unwrap();
 
     let skeleton = derive(&root).await.unwrap();
-    let applied = apply(&service, &project(), &skeleton, stamp(&skeleton.commit)).unwrap();
+    let applied = apply(
+        &service,
+        &project(),
+        &skeleton.modules,
+        stamp(&skeleton.commit),
+    )
+    .unwrap();
 
     assert!(!applied.created.contains(&"core".to_string()));
     assert!(!applied.created.contains(&"mobile".to_string()));
@@ -218,7 +242,13 @@ async fn a_parent_slug_held_by_another_kind_gets_no_edge() {
         .unwrap();
 
     let skeleton = derive(&root).await.unwrap();
-    apply(&service, &project(), &skeleton, stamp(&skeleton.commit)).unwrap();
+    apply(
+        &service,
+        &project(),
+        &skeleton.modules,
+        stamp(&skeleton.commit),
+    )
+    .unwrap();
 
     let g = graph(&service);
     assert_eq!(g.entity(&feature).unwrap().kind, EntityKind::Feature);
@@ -280,7 +310,13 @@ async fn a_removed_directory_is_a_missing_path_warning() {
     let root = repo(dir.path()).await;
     let (service, _db) = service();
     let skeleton = derive(&root).await.unwrap();
-    apply(&service, &project(), &skeleton, stamp(&skeleton.commit)).unwrap();
+    apply(
+        &service,
+        &project(),
+        &skeleton.modules,
+        stamp(&skeleton.commit),
+    )
+    .unwrap();
     let query = CompileQuery {
         entities: vec!["core-store".into()],
         ..Default::default()

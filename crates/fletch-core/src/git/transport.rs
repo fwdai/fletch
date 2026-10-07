@@ -161,6 +161,21 @@ pub async fn fetch_base(source_repo: &Path, base: &str) -> Result<()> {
     Ok(())
 }
 
+/// Make commit `sha` readable in a project's SOURCE repo: nothing to do when
+/// its object store already has it, else one fetch of that commit from
+/// `origin` as [`fetch_base`] fetches a branch (a merge made on GitHub is not
+/// local until something fetches it).
+pub async fn fetch_commit(source_repo: &Path, sha: &str) -> Result<()> {
+    let object = format!("{sha}^{{commit}}");
+    let have = git_output(source_repo, &["cat-file", "-e", &object])
+        .await
+        .is_ok_and(|out| out.status.success());
+    if have {
+        return Ok(());
+    }
+    fetch_base(source_repo, sha).await
+}
+
 /// Whether a branch named exactly `branch` exists on `origin` *right now*, asked
 /// over the wire with the app's token. `Some(false)` when no such branch is
 /// there; `None` when the question couldn't be answered at all (no remote,

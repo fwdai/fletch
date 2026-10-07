@@ -14,15 +14,21 @@
 //! caller.
 
 pub mod pr;
+pub mod structure;
 
 pub use pr::{parse_decisions, ParsedDecision};
+pub use structure::StructureDelta;
+
+use std::path::Path;
 
 use sha2::{Digest, Sha256};
 
 use crate::context::model::*;
 use crate::context::service::{ContextService, Project};
 use crate::context::{resolve, ContextError, Result};
+use crate::github::PrFileChange;
 use crate::host::EngineCtx;
+use crate::roadmap::drainer::primary_repo_path;
 use crate::workspace::{AgentRecord, TrackedRepo, WorkspaceManager};
 
 /// What the host knows about a PR it just saw merge.
@@ -35,6 +41,8 @@ pub struct MergedPr {
     pub branch: Option<String>,
     /// Merge or head commit, when known.
     pub sha: Option<String>,
+    /// The modules the merge added, removed or moved.
+    pub structure: StructureDelta,
 }
 
 /// The PR watcher's entry: it has the PR's state and checkout, not its body.
@@ -78,8 +86,9 @@ pub async fn on_pr_merged_by_number(
 /// The archive entry: every checkout is settled by its own fate. A repo
 /// whose PR merged while the watcher was not looking (the host was down,
 /// say) is ingested first — idempotent through the per-reference check in
-/// [`ingest_merged`], so a PR the watcher already handled costs one read —
-/// and then settled; one without a merge has its provisionals abandoned.
+/// [`ingest_merged`], so a PR the watcher already handled costs one local
+/// query — and then settled; one without a merge has its provisionals
+/// abandoned.
 pub async fn on_workspace_archived(ctx: &EngineCtx, workspace_id: &str) {
     let Some((service, record, project)) = target(ctx, workspace_id) else {
         return;
@@ -174,8 +183,11 @@ fn pr_reference(url: Option<&str>, subdir: &str, number: u32) -> String {
     }
 }
 
-/// Fetch the PR body through the GitHub client and ingest it. The source repo
-/// backs the slug lookup when the checkout is already gone.
+/// Fetch the PR body, merge commit and, when the source repo is the
+/// project's primary one, changed files through the GitHub client, then read
+/// the structural delta and ingest. The source repo backs the slug lookup
+/// when the checkout is already gone. Any failure is logged and leaves the
+/// PR unseen, for the next announcement to retry.
 #[allow(clippy::too_many_arguments)]
 async fn ingest_by_number(
     service: &ContextService,
@@ -187,11 +199,16 @@ async fn ingest_by_number(
     reference: String,
     branch: Option<String>,
 ) {
+    if matches!(seen(service, &project.id, &reference), Ok(true)) {
+        return;
+    }
     let Ok(checkout) = repo.checkout_path(workspace_id) else {
         return;
     };
-    let body = match crate::github::pr_body(&checkout, Some(&repo.repo_path), number).await {
-        Ok(Some(body)) => body,
+    let merge = match crate::github::pr_body_and_merge(&checkout, Some(&repo.repo_path), number)
+        .await
+    {
+        Ok(Some(merge)) => merge,
         Ok(None) => {
             tracing::info!(
                 workspace_id,
@@ -205,35 +222,85 @@ async fn ingest_by_number(
             return;
         }
     };
+    // Modules are the project's primary repo's, the one the bootstrap maps:
+    // another repo's tree would collide with it on slugs such as `src`.
+    let mapped = service
+        .with_conn(|conn| primary_repo_path(conn, &project.fletch_id))
+        .is_some_and(|primary| Path::new(&primary) == repo.repo_path);
+    let changes = if mapped && merge.merge_sha.is_some() {
+        match crate::github::pr_files(&checkout, Some(&repo.repo_path), number).await {
+            Ok(Some(changes)) => Some(changes),
+            Ok(None) => {
+                tracing::info!(
+                    workspace_id,
+                    pr = number,
+                    "context ingest: merged PR files unavailable"
+                );
+                return;
+            }
+            Err(e) => {
+                tracing::warn!(workspace_id, pr = number, error = %e, "context ingest: merged PR files fetch failed");
+                return;
+            }
+        }
+    } else {
+        None
+    };
     let pr = MergedPr {
         reference,
-        body,
+        body: merge.body,
         branch: branch.or_else(|| repo.branch.clone()),
-        sha: None,
+        sha: merge.merge_sha,
+        structure: StructureDelta::default(),
     };
-    if let Err(e) = ingest_merged(
+    let source = changes.as_deref().map(|c| (repo.repo_path.as_path(), c));
+    if let Err(e) = read_and_ingest(
         service,
         project,
         workspace_id,
         &repo.subdir,
         is_primary,
-        &pr,
-    ) {
-        tracing::warn!(workspace_id, pr = %pr.reference, error = %e, "context ingest: merged PR not ingested");
+        pr,
+        source,
+    )
+    .await
+    {
+        tracing::warn!(workspace_id, pr = number, error = %e, "context ingest: merged PR not ingested");
     }
 }
 
+/// Read the merge's structural delta from `source` (the primary source repo
+/// and the files the PR changed), then [`ingest_merged`]. A read that fails
+/// fails the ingest before anything marks the PR as seen, so the next
+/// announcement of the merge (the watcher's tick, the archive) retries it.
+async fn read_and_ingest(
+    service: &ContextService,
+    project: &Project,
+    workspace_id: &str,
+    repo: &str,
+    is_primary: bool,
+    mut pr: MergedPr,
+    source: Option<(&Path, &[PrFileChange])>,
+) -> crate::error::Result<()> {
+    if let (Some((source_repo, changes)), Some(sha)) = (source, pr.sha.as_deref()) {
+        pr.structure = structure::read(source_repo, sha, changes).await?;
+    }
+    ingest_merged(service, project, workspace_id, repo, is_primary, &pr)?;
+    Ok(())
+}
+
 /// The store-level work of a merge, for tests and for any caller that
-/// already resolved the project: record the PR's `## Decisions` under the
-/// write policy, then settle the checkout (`repo`, the subdir; `is_primary`
-/// whether it is the workspace's first repo, whose fate also covers records
-/// stamped with no repo).
+/// already resolved the project: land the PR's structural delta, record its
+/// `## Decisions` under the write policy, then settle the checkout (`repo`,
+/// the subdir; `is_primary` whether it is the workspace's first repo, whose
+/// fate also covers records stamped with no repo). Structure goes first so a
+/// decision line can name a module the same PR added.
 ///
 /// The observation that marks the PR as ingested is recorded last, once every
 /// line has landed and the checkout is settled, so a failure part-way leaves
 /// the PR unseen and the next announcement of the same merge (the archive
-/// path, a restart) finishes the job: the lines that did land are duplicates
-/// and are skipped.
+/// path, a restart) finishes the job: the structure and the lines that did
+/// land are already there and are skipped.
 pub fn ingest_merged(
     service: &ContextService,
     project: &Project,
@@ -253,6 +320,7 @@ pub fn ingest_merged(
         pr.branch.clone(),
         pr.sha.clone(),
     );
+    structure::apply(service, project, &pr.structure, &stamp)?;
     let graph = service.store().load(&project.id)?;
     for decision in parse_decisions(&pr.body) {
         land(service, project, &graph, &stamp, decision)?;
