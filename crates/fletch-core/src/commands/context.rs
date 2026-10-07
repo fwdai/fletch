@@ -7,6 +7,8 @@
 //!
 //! See docs/remote-protocol.md, "Project context".
 
+use std::path::PathBuf;
+
 use serde::{Deserialize, Serialize};
 
 use crate::context::{
@@ -16,6 +18,7 @@ use crate::context::{
 };
 use crate::error::{Error, Result};
 use crate::host::EngineCtx;
+use crate::roadmap::drainer::primary_repo_path;
 
 pub use crate::context::CHANGED_EVENT as CONTEXT_CHANGED;
 
@@ -81,17 +84,26 @@ pub fn context_overview_impl(ctx: &EngineCtx, project_id: &str) -> Result<Contex
 
 /// What an agent would be served for `query`: the compiled bundle rendered as
 /// markdown, with the roadmap brief standing in for a vision nobody has
-/// recorded yet.
+/// recorded yet and path anchors checked against the project's primary repo.
 pub fn context_preview_impl(
     ctx: &EngineCtx,
     project_id: &str,
     query: CompileQuery,
 ) -> Result<String> {
     let project = open(ctx, project_id)?;
-    let brief = crate::roadmap::memory::load(&ctx.db.lock(), project_id)?.map(|b| b.content);
+    let (brief, repo) = {
+        let conn = ctx.db.lock();
+        (
+            crate::roadmap::memory::load(&conn, project_id)?.map(|b| b.content),
+            primary_repo_path(&conn, project_id).map(PathBuf::from),
+        )
+    };
     let graph = ctx.context()?.store().load(&project.id)?;
     Ok(render::render_markdown(&compile::compile(
-        &graph, &query, brief,
+        &graph,
+        &query,
+        brief,
+        repo.as_deref(),
     )))
 }
 

@@ -1,5 +1,7 @@
 //! `context_get`: compile the picture for what the agent named and log what
 //! was served — the misses in that log are the coverage signal the UI shows.
+//! Path anchors are checked against the workspace's primary checkout, so an
+//! agent is told when what it is served points at code that is gone.
 
 use serde_json::Value;
 
@@ -31,7 +33,8 @@ impl ContextDispatcher {
             .service
             .graph(&self.project)
             .map_err(|e| e.to_string())?;
-        let bundle = compile::compile(&graph, &query, self.vision_fallback());
+        let checkout = self.primary_checkout().map(|c| c.path);
+        let bundle = compile::compile(&graph, &query, self.vision_fallback(), checkout.as_deref());
         let markdown = render::render_markdown(&bundle);
 
         let read = ReadRecord {

@@ -88,7 +88,7 @@ fn town() -> Graph {
 
 #[test]
 fn empty_query_is_the_map() {
-    let b = compile(&town(), &CompileQuery::default(), None);
+    let b = compile(&town(), &CompileQuery::default(), None, None);
     assert_eq!(b.vision.as_ref().map(|v| v.id.as_str()), Some("v"));
     let mut got = reasons(&b);
     got.sort_by_key(|(id, _)| *id);
@@ -117,7 +117,7 @@ fn named_entry_pulls_one_hop_and_records_misses() {
         entities: vec!["auth".into(), "nothing".into()],
         ..Default::default()
     };
-    let b = compile(&town(), &q, None);
+    let b = compile(&town(), &q, None, None);
     assert_eq!(
         reasons(&b),
         [
@@ -136,10 +136,15 @@ fn named_entry_pulls_one_hop_and_records_misses() {
 fn vision_fallback_only_without_vision() {
     let mut g = town();
     g.entities.remove(0);
-    let b = compile(&g, &CompileQuery::default(), Some("brief".into()));
+    let b = compile(&g, &CompileQuery::default(), Some("brief".into()), None);
     assert!(b.vision.is_none());
     assert_eq!(b.vision_fallback.as_deref(), Some("brief"));
-    let b = compile(&town(), &CompileQuery::default(), Some("brief".into()));
+    let b = compile(
+        &town(),
+        &CompileQuery::default(),
+        Some("brief".into()),
+        None,
+    );
     assert!(b.vision_fallback.is_none());
 }
 
@@ -149,7 +154,7 @@ fn text_query_scores_entities_and_statements() {
         query: Some("postgres".into()),
         ..Default::default()
     };
-    let b = compile(&town(), &q, None);
+    let b = compile(&town(), &q, None, None);
     assert_eq!(
         reasons(&b),
         [
@@ -169,7 +174,7 @@ fn paths_anchor_entities_and_assertions() {
         paths: vec!["src/billing/stripe.rs".into(), "src/db".into()],
         ..Default::default()
     };
-    let b = compile(&g, &q, None);
+    let b = compile(&g, &q, None, None);
     let mut got = reasons(&b);
     got.sort_by_key(|(id, _)| *id);
     assert_eq!(
@@ -192,7 +197,7 @@ fn flags_and_warnings_for_provisional_and_contradicted() {
         entities: vec!["auth".into()],
         ..Default::default()
     };
-    let b = compile(&g, &q, None);
+    let b = compile(&g, &q, None, None);
     let d1 = &b.assertions[0];
     let d2 = &b.assertions[1];
     assert!(d1.flags.provisional && !d2.flags.provisional);
@@ -215,7 +220,7 @@ fn history_attached_only_on_request() {
         entities: vec!["auth".into()],
         ..Default::default()
     };
-    let b = compile(&g, &q, None);
+    let b = compile(&g, &q, None, None);
     assert!(b.assertions[0].flags.has_history && b.assertions[0].history.is_empty());
     let b = compile(
         &g,
@@ -223,6 +228,7 @@ fn history_attached_only_on_request() {
             include_history: true,
             ..q
         },
+        None,
         None,
     );
     assert_eq!(ids(&b.assertions[0].history), ["a2", "a1"]);
@@ -235,12 +241,12 @@ fn budget_drops_lowest_tier_first_and_never_the_vision() {
         entities: vec!["auth".into()],
         ..Default::default()
     };
-    let full = render_markdown(&compile(&g, &q, None)).len();
+    let full = render_markdown(&compile(&g, &q, None, None)).len();
     let q = CompileQuery {
         budget_chars: full - 1,
         ..q
     };
-    let b = compile(&g, &q, None);
+    let b = compile(&g, &q, None, None);
     assert_eq!(b.truncated, ["m1"]);
     assert_eq!(
         reasons(&b),
@@ -254,6 +260,7 @@ fn budget_drops_lowest_tier_first_and_never_the_vision() {
             budget_chars: 1,
             ..q
         },
+        None,
         None,
     );
     assert_eq!(b.truncated, ["m1", "f1"]);
