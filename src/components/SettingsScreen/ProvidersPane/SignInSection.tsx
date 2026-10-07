@@ -12,6 +12,7 @@ import { DocsLink } from "@/components/ui/DocsLink";
 import { loginCommand, PROVIDER_DETAIL } from "@/data/providerDetail";
 import type { ProviderId } from "@/data/providers";
 import { useAppStore } from "@/store";
+import { ReauthButton } from "../ProviderAuthBadge";
 import { ProviderLoginTerminal } from "../ProviderLogin";
 
 export function SignInSection({
@@ -65,10 +66,19 @@ export function SignInSection({
     );
   }
 
+  // Already signed in: the header's badge says so; offer only a quiet re-auth.
+  if (status === "signed_in") {
+    return (
+      <div className="set-prov-detail-actions flex-center">
+        <ReauthButton onClick={() => setOpen(true)} />
+      </div>
+    );
+  }
+
   return (
     <div className="set-prov-detail-actions flex-center">
       {/* A signed-out CLI is installed but unusable, so its sign-in is the
-          row's primary action; an already-signed-in one keeps it quiet. */}
+          row's primary action; an unknown status keeps it quiet. */}
       <Button
         variant={status === "signed_out" ? "primary" : "outline"}
         size="sm"

@@ -1,6 +1,6 @@
 import { useCallback, useState } from "react";
 import type { AccountLimits, ProviderAccount } from "@/api/types/providers";
-import { ProviderAuthBadge } from "@/components/SettingsScreen/ProviderAuthBadge";
+import { ProviderAuthBadge, ReauthButton } from "@/components/SettingsScreen/ProviderAuthBadge";
 import { ProviderLoginTerminal } from "@/components/SettingsScreen/ProviderLogin";
 import { Button } from "@/components/ui/Button";
 import { accountLabel } from "@/data/providerAccounts";
@@ -46,6 +46,9 @@ export function AccountRow({
   const command = loginCommand(providerId);
   const inputId = `account-${providerId}-${account.id}`;
   const accountId = account.managed ? account.id : undefined;
+  // Offered unless the account is known to be signed in — or a limits refresh
+  // just found it signed out, whose hint below points at this button.
+  const needsSignIn = account.status !== "signed_in" || limits?.refresh?.status === "signed_out";
 
   const choose = () => {
     setError(null);
@@ -81,6 +84,7 @@ export function AccountRow({
           {accountLabel(account)}
         </label>
         <ProviderAuthBadge status={account.status} detail={account.detail} />
+        {command && !signingIn && !needsSignIn && <ReauthButton onClick={onSignIn} />}
         <span className="set-prov-acct-sub mono text-xs truncate">
           {account.managed
             ? `~/.fletch/accounts/${providerId}/${account.id}`
@@ -101,7 +105,7 @@ export function AccountRow({
           </>
         ) : (
           <>
-            {command && !signingIn && (
+            {command && !signingIn && needsSignIn && (
               <Button
                 variant={account.status === "signed_out" ? "primary" : "outline"}
                 size="sm"
