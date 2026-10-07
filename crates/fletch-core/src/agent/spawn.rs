@@ -156,7 +156,11 @@ fn rpc_env(rpc_dir: &Path) -> Vec<(String, String)> {
 /// default account's credential vars to strip from the child so the CLI can
 /// only authenticate as that account (the container engines filter the same
 /// vars in their auth chain; host-side launches inherit the login shell, so
-/// they must drop them here). All empty for the default account.
+/// they must drop them here). The sessions apply `unset` to the inherited
+/// layers only, before the launch plan's own env: a token a container engine
+/// resolved for *this* account under one of those names is kept, since docker
+/// forwards it from the runtime CLI's process env. All empty for the default
+/// account.
 #[derive(Default)]
 struct AccountLaunch {
     dir: Option<PathBuf>,

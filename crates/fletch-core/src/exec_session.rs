@@ -185,11 +185,13 @@ impl ExecSession {
         for (k, v) in crate::git_dist::child_env() {
             cmd.env(k, v);
         }
-        for (k, v) in &self.env {
-            cmd.env(k, v);
-        }
+        // Removals before the session's own env, as in `PtySession::spawn`: a
+        // launch plan's resolved value survives a removal of the same name.
         for k in &self.env_remove {
             cmd.env_remove(k);
+        }
+        for (k, v) in &self.env {
+            cmd.env(k, v);
         }
         cmd.stdin(Stdio::null());
         cmd.stdout(Stdio::piped());
