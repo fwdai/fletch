@@ -27,7 +27,7 @@ struct LoginExitPayload {
 /// alone for its default account, `<provider>:<account>` for a Fletch-managed
 /// one. The frontend builds the same string (`loginKey` in
 /// SettingsScreen/ProviderLogin/loginSessions.ts).
-fn session_key(id: &str, account: Option<&str>) -> String {
+pub(crate) fn session_key(id: &str, account: Option<&str>) -> String {
     match account.filter(|a| !crate::agent::accounts::is_default(a)) {
         Some(account) => format!("{id}:{account}"),
         None => id.to_string(),
@@ -69,16 +69,25 @@ pub fn open_provider_login(
     let args: Vec<String> = args.iter().map(|a| (*a).to_string()).collect();
 
     // A managed account's directory is (re)made right before the CLI writes
-    // into it, so its shared config links are current for the login too.
-    let env: Vec<(String, String)> = match account
+    // into it, so its shared config links are current for the login too. The
+    // default account's ambient credentials are dropped for the same reason
+    // the spawn path drops them: an API key in the login shell would have the
+    // CLI skip (or short-circuit) the very login this flow is for.
+    let (env, env_remove): (Vec<(String, String)>, Vec<String>) = match account
         .as_deref()
         .filter(|a| !crate::agent::accounts::is_default(a))
     {
         Some(acct) => {
             crate::agent::accounts::ensure_account_dir(&id, acct)?;
-            crate::agent::accounts::account_env(&id, acct)?
+            (
+                crate::agent::accounts::account_env(&id, acct)?,
+                crate::agent::accounts::ambient_credential_vars(&id)
+                    .iter()
+                    .map(|v| v.to_string())
+                    .collect(),
+            )
         }
-        None => Vec::new(),
+        None => (Vec::new(), Vec::new()),
     };
 
     let key = session_key(&id, account.as_deref());
@@ -105,6 +114,7 @@ pub fn open_provider_login(
             env: &env,
             cols,
             rows,
+            env_remove: &env_remove,
             kill_plan: crate::sandbox::KillHandle::ProcessGroup,
         },
         move |bytes| {

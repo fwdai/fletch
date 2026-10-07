@@ -177,10 +177,47 @@ pub fn account_for_new_agent(provider: &str, setting: Option<&str>) -> Option<St
 
 /// The directory of the account an agent was stamped with, or `None` for the
 /// default (or a stamp that no longer names a valid account). Not necessarily
-/// present: the account may have been removed since.
+/// present: the account may have been removed since — callers about to write
+/// there use [`existing_account_dir`].
 pub fn stamped_account_dir(provider: &str, account: Option<&str>) -> Option<PathBuf> {
     let id = account.filter(|id| !is_default(id))?;
     account_dir(provider, id).ok()
+}
+
+/// [`stamped_account_dir`] for a caller that is about to launch into or write
+/// under the directory: a managed stamp whose directory was removed is an
+/// error, so nothing recreates the account behind the user's back (a launch
+/// would run it signed out; a transcript write would resurrect it with the
+/// Keychain login it may still hold).
+pub fn existing_account_dir(provider: &str, account: Option<&str>) -> Result<Option<PathBuf>> {
+    let Some(id) = account.filter(|id| !is_default(id)) else {
+        return Ok(None);
+    };
+    let dir = account_dir(provider, id)?;
+    if !dir.is_dir() {
+        return Err(Error::Other(format!(
+            "This agent runs under the `{id}` account, which has been removed."
+        )));
+    }
+    Ok(Some(dir))
+}
+
+/// The env vars that sign `provider`'s CLI in on their own, from the app's
+/// process or the user's login shell. They belong to the default account, so
+/// a launch under a managed account removes them from the child's env: the
+/// CLI must authenticate with that account's own login or not at all. Proxy
+/// endpoint vars (`ANTHROPIC_BASE_URL`, `OPENAI_BASE_URL`) are not here and
+/// still pass through. The container auth chain filters the same claude set.
+pub fn ambient_credential_vars(provider: &str) -> &'static [&'static str] {
+    match provider {
+        "claude" => &[
+            "ANTHROPIC_API_KEY",
+            "CLAUDE_CODE_OAUTH_TOKEN",
+            "ANTHROPIC_AUTH_TOKEN",
+        ],
+        "codex" => &["OPENAI_API_KEY"],
+        _ => &[],
+    }
 }
 
 /// The CLI's own config dir on this host — the default account, and the source
@@ -246,10 +283,23 @@ fn symlink(src: &Path, dst: &Path) -> std::io::Result<()> {
     }
 }
 
-/// Delete a managed account directory, links and all. The login it held in
-/// the macOS Keychain is the CLI's item, not ours, and is left in place.
+/// Delete a managed account — its directory, links and all, and the login it
+/// held. Codex's login lives in the directory; claude's lives in the macOS
+/// Keychain under the item named for this directory, which goes too, so
+/// re-adding an account of the same name starts signed out rather than
+/// inheriting the old credential. The Keychain delete is best-effort (a locked
+/// keychain refuses it): logged, and the directory is removed regardless.
 pub fn remove_account_dir(provider: &str, id: &str) -> Result<()> {
     let dir = account_dir(provider, id)?;
+    if provider == "claude" {
+        let service = crate::sandbox::container::auth::claude_keychain_service(Some(&dir));
+        if !crate::keychain::delete_item(&service) {
+            tracing::warn!(
+                account = id,
+                "could not delete the account's Keychain login; it may still exist"
+            );
+        }
+    }
     match std::fs::remove_dir_all(&dir) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -497,6 +547,43 @@ mod tests {
             .unwrap()
             .file_type()
             .is_symlink());
+    }
+
+    /// A launch or a transcript write under a stamp whose directory is gone
+    /// must fail, never recreate the account; the default never fails.
+    #[test]
+    fn existing_account_dir_refuses_a_removed_account() {
+        with_root(|root| {
+            assert_eq!(existing_account_dir("claude", None).unwrap(), None);
+            assert_eq!(
+                existing_account_dir("claude", Some(DEFAULT_ACCOUNT)).unwrap(),
+                None
+            );
+            let err = existing_account_dir("claude", Some("work")).unwrap_err();
+            assert!(err.to_string().contains("has been removed"), "{err}");
+            assert!(!root.join("claude").join("work").exists());
+
+            std::fs::create_dir_all(root.join("claude").join("work")).unwrap();
+            assert_eq!(
+                existing_account_dir("claude", Some("work")).unwrap(),
+                Some(root.join("claude").join("work"))
+            );
+        });
+    }
+
+    /// The vars a managed launch strips are the ones that would sign the CLI
+    /// in as the default account; endpoint vars are not among them.
+    #[test]
+    fn ambient_credential_vars_name_logins_not_endpoints() {
+        for provider in ACCOUNT_PROVIDERS {
+            let vars = ambient_credential_vars(provider);
+            assert!(!vars.is_empty(), "{provider}");
+            assert!(!vars.contains(&"ANTHROPIC_BASE_URL"));
+            assert!(!vars.contains(&"OPENAI_BASE_URL"));
+        }
+        assert!(ambient_credential_vars("claude").contains(&"ANTHROPIC_API_KEY"));
+        assert!(ambient_credential_vars("codex").contains(&"OPENAI_API_KEY"));
+        assert!(ambient_credential_vars("cursor").is_empty());
     }
 
     #[test]

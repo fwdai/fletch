@@ -210,6 +210,7 @@ where
             env,
             cols: 120,
             rows: 32,
+            env_remove: &[],
             kill_plan: crate::sandbox::KillHandle::ProcessGroup,
         },
         on_output,

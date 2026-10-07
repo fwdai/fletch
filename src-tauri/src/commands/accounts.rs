@@ -25,13 +25,20 @@ pub fn add_provider_account(provider: String, id: String) -> Result<()> {
     engine::add_provider_account_impl(&provider, &id)
 }
 
-/// Delete a managed account directory. Refused while it is the active one.
+/// Delete a managed account — its directory and its login. Refused while it is
+/// the active one. A sign-in still running for it is killed first, so nothing
+/// writes the account back after the directory is gone.
 #[tauri::command]
 pub fn remove_provider_account(
     ctx: State<'_, Arc<EngineCtx>>,
+    logins: State<'_, crate::provider_login::ProviderLoginSessions>,
     provider: String,
     id: String,
 ) -> Result<()> {
+    // Dropping the session kills its PTY (see `ProviderLoginSessions`).
+    logins
+        .lock()
+        .remove(&super::provider_login::session_key(&provider, Some(&id)));
     engine::remove_provider_account_impl(&ctx, &provider, &id)
 }
 

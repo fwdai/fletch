@@ -39,6 +39,30 @@ pub(crate) fn item_present(_service: &str, _account: Option<&str>) -> bool {
     false
 }
 
+/// Delete the generic-password item for `service`, when there is one. True
+/// when no item remains afterwards: deleted, or absent to begin with. Deleting
+/// reads no secret, so it raises no Keychain prompt; a locked keychain or an
+/// unavailable `security` reads as `false`. Only for logins Fletch owns — a
+/// managed provider account's — never the CLI's own default item.
+#[cfg(target_os = "macos")]
+pub(crate) fn delete_item(service: &str) -> bool {
+    if !item_present(service, None) {
+        return true;
+    }
+    std::process::Command::new("security")
+        .args(["delete-generic-password", "-s", service])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+/// Off macOS nothing is in a keychain to delete.
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn delete_item(_service: &str) -> bool {
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

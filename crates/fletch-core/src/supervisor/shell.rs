@@ -40,6 +40,7 @@ impl Supervisor {
                 env: &[],
                 cols: 120,
                 rows: 32,
+                env_remove: &[],
                 kill_plan: crate::sandbox::KillHandle::ProcessGroup,
             },
             move |bytes| {

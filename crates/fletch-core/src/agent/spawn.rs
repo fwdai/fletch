@@ -152,12 +152,16 @@ fn rpc_env(rpc_dir: &Path) -> Vec<(String, String)> {
 }
 
 /// What a launch needs from the managed account it runs under: the account's
-/// config dir for the sandbox engine, and the env pointing the CLI at it.
-/// Both empty for the default account.
+/// config dir for the sandbox engine, the env pointing the CLI at it, and the
+/// default account's credential vars to strip from the child so the CLI can
+/// only authenticate as that account (the container engines filter the same
+/// vars in their auth chain; host-side launches inherit the login shell, so
+/// they must drop them here). All empty for the default account.
 #[derive(Default)]
 struct AccountLaunch {
     dir: Option<PathBuf>,
     env: Vec<(String, String)>,
+    unset: Vec<String>,
 }
 
 /// The managed account a launch of `provider` runs under: its config dir,
@@ -169,14 +173,14 @@ fn account_launch(provider: &str, account: Option<&str>) -> Result<AccountLaunch
     let Some(id) = account.filter(|id| !accounts::is_default(id)) else {
         return Ok(AccountLaunch::default());
     };
-    if !accounts::account_dir(provider, id)?.is_dir() {
-        return Err(Error::Other(format!(
-            "This agent runs under the `{id}` account, which has been removed."
-        )));
-    }
+    accounts::existing_account_dir(provider, Some(id))?;
     Ok(AccountLaunch {
         dir: Some(accounts::ensure_account_dir(provider, id)?),
         env: accounts::account_env(provider, id)?,
+        unset: accounts::ambient_credential_vars(provider)
+            .iter()
+            .map(|v| v.to_string())
+            .collect(),
     })
 }
 
@@ -272,6 +276,7 @@ impl Agent {
                 env: &env,
                 cols: spec.cols,
                 rows: spec.rows,
+                env_remove: &account.unset,
                 kill_plan: kill,
             },
             on_output,
@@ -363,6 +368,7 @@ impl Agent {
                 env: &env,
                 cols: spec.cols,
                 rows: spec.rows,
+                env_remove: &account.unset,
                 kill_plan: kill,
             },
             on_output,
@@ -426,6 +432,7 @@ impl Agent {
                 args: &args,
                 cwd: &spec.cwd,
                 env: &env,
+                env_remove: &account.unset,
                 kill_plan: kill,
             },
             on_event,
@@ -577,6 +584,7 @@ impl Agent {
                 session_id: spec.session_id,
                 stdout_is_json,
                 env,
+                env_remove: account.unset,
                 kill_plan: kill,
             },
             build_args,

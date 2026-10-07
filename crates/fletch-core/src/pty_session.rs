@@ -39,6 +39,10 @@ pub struct PtySpawn<'a> {
     pub env: &'a [(String, String)],
     pub cols: u16,
     pub rows: u16,
+    /// Variables the child must *not* see, whatever the inherited or login-shell
+    /// environment holds — applied last, after `env`. A managed provider
+    /// account's launch lists the default account's credential vars here.
+    pub env_remove: &'a [String],
     /// How to terminate the child (chosen by the sandbox engine).
     pub kill_plan: KillHandle,
 }
@@ -108,6 +112,11 @@ impl PtySession {
         // Caller-supplied overrides (e.g. FLETCH_RPC_DIR) last, so they win.
         for (k, v) in spec.env {
             cmd.env(k, v);
+        }
+        // Removals after everything: the inherited and login-shell layers above
+        // are exactly where an ambient credential would come from.
+        for k in spec.env_remove {
+            cmd.env_remove(k);
         }
 
         let mut child = pair
@@ -428,6 +437,7 @@ mod tests {
                 env: &[],
                 cols: 80,
                 rows: 24,
+                env_remove: &[],
                 kill_plan: KillHandle::ProcessGroup,
             },
             move |bytes| {
@@ -442,6 +452,52 @@ mod tests {
         let first = out_rx.recv_timeout(Duration::from_secs(2)).unwrap();
         assert!(String::from_utf8_lossy(&first).contains("hello-from-pty"));
 
+        let exit = exit_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(exit.success, "unexpected PTY exit: {exit:?}");
+    }
+
+    /// A removed var is gone even though the inherited environment carries
+    /// it — the point of `env_remove` for a managed account's credentials.
+    #[test]
+    fn env_remove_strips_an_inherited_var() {
+        let td = tempfile::tempdir().unwrap();
+        let (out_tx, out_rx) = mpsc::channel();
+        let (exit_tx, exit_rx) = mpsc::channel();
+        // Set on this process, so the child would inherit it.
+        std::env::set_var("FLETCH_PTY_TEST_SECRET", "leaked");
+        let _pty = PtySession::spawn(
+            PtySpawn {
+                program: std::path::Path::new("/bin/sh"),
+                args: &[
+                    "-c".to_string(),
+                    "printf \"secret=${FLETCH_PTY_TEST_SECRET:-unset}\"".to_string(),
+                ],
+                cwd: td.path(),
+                env: &[],
+                cols: 80,
+                rows: 24,
+                env_remove: &["FLETCH_PTY_TEST_SECRET".to_string()],
+                kill_plan: KillHandle::ProcessGroup,
+            },
+            move |bytes| {
+                let _ = out_tx.send(bytes);
+            },
+            move |exit| {
+                let _ = exit_tx.send(exit);
+            },
+        )
+        .unwrap();
+        std::env::remove_var("FLETCH_PTY_TEST_SECRET");
+
+        let mut seen = Vec::new();
+        while let Ok(bytes) = out_rx.recv_timeout(Duration::from_secs(2)) {
+            seen.extend(bytes);
+            if String::from_utf8_lossy(&seen).contains("secret=") {
+                break;
+            }
+        }
+        let text = String::from_utf8_lossy(&seen);
+        assert!(text.contains("secret=unset"), "{text}");
         let exit = exit_rx.recv_timeout(Duration::from_secs(2)).unwrap();
         assert!(exit.success, "unexpected PTY exit: {exit:?}");
     }
@@ -470,6 +526,7 @@ mod tests {
                 env: &[],
                 cols: 80,
                 rows: 24,
+                env_remove: &[],
                 kill_plan: KillHandle::ProcessGroup,
             },
             |_| {},

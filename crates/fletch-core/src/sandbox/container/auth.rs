@@ -701,6 +701,18 @@ mod tests {
     /// The suffix is the first eight hex chars of SHA-256 over the directory
     /// path as the env var carries it — verified against a live Keychain
     /// item written by claude 2.1.x for a custom `CLAUDE_CONFIG_DIR`.
+    /// The host-side launch strips the same vars this chain treats as a
+    /// default-account login, so a managed account is isolated the same way
+    /// under every sandbox engine.
+    #[test]
+    fn host_launches_strip_the_vars_this_chain_counts_as_a_login() {
+        let mut chain = SHELL_KEY_VARS.to_vec();
+        chain.sort_unstable();
+        let mut host = crate::agent::accounts::ambient_credential_vars("claude").to_vec();
+        host.sort_unstable();
+        assert_eq!(chain, host);
+    }
+
     #[test]
     fn keychain_service_is_suffixed_per_config_dir() {
         assert_eq!(claude_keychain_service(None), "Claude Code-credentials");

@@ -172,6 +172,7 @@ impl ClaudeSetup {
                 env: &[],
                 cols: PTY_COLS,
                 rows: PTY_ROWS,
+                env_remove: &[],
                 kill_plan: KillHandle::ProcessGroup,
             },
             on_output,
