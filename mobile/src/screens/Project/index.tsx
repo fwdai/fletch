@@ -3,14 +3,13 @@ import { Icon } from "@desktop/components/Icon";
 import { useEffect, useState } from "react";
 import { AgentRow } from "../../components/AgentRow";
 import { Nav, Segmented, Swatch } from "../../components/ui";
-import { agentsOfProject, baseOf, isActive, isBusy } from "../../lib/agents";
+import { type AgentStage, agentsOfProject, baseOf, stageOf } from "../../lib/agents";
 import { projectById, repoLabel } from "../../lib/projects";
 import { useStore } from "../../store";
 
-/** The three stages of an agent's life, each row in exactly one: working now,
- *  finished with a PR waiting on review, or idle — no PR, or one already
- *  merged or closed. */
-type Filter = "active" | "prs" | "idle";
+/** Tab order, which is also the order the screen falls through when picking
+ *  the tab to open on. */
+const STAGES: AgentStage[] = ["running", "yours", "prs"];
 
 export function ProjectScreen({ projectId }: { projectId: string }) {
   // Derived outside the selector: a selector that builds a new array on every
@@ -28,7 +27,19 @@ export function ProjectScreen({ projectId }: { projectId: string }) {
   const loadChats = useStore((s) => s.loadChats);
   const connected = useStore((s) => s.connection === "connected");
   const canPlan = useStore((s) => s.hostSupports("list_project_chats"));
-  const [filter, setFilter] = useState<Filter>("active");
+
+  // The live PR state wins over the record's persisted snapshot when it is
+  // known; most rows only have the snapshot.
+  const prStateOf = (a: AgentRecord) => prStates[a.id]?.state ?? a.repos[0]?.pr_state ?? null;
+  const stage = (a: AgentRecord) => stageOf(a, prStateOf(a));
+  const count = (s: AgentStage) => agents.filter((a) => stage(a) === s).length;
+
+  // Opens on what is running; when nothing is, on the first tab with something
+  // to act on, rather than an empty list. Picked once, so a turn finishing
+  // never moves the user off the tab they are reading.
+  const [filter, setFilter] = useState<AgentStage>(
+    () => STAGES.find((s) => count(s) > 0) ?? "running",
+  );
 
   // Planning chats are absent from the workspace snapshot, so they are read on
   // their own — on arrival, and again on every reconnect, since nothing pushes
@@ -39,16 +50,12 @@ export function ProjectScreen({ projectId }: { projectId: string }) {
 
   if (!project) return null;
 
-  // The live PR state wins over the record's persisted snapshot when it is
-  // known; most rows only have the snapshot.
-  const prStateOf = (a: AgentRecord) => prStates[a.id]?.state ?? a.repos[0]?.pr_state ?? null;
-  const hasPr = (a: AgentRecord) => prStateOf(a) !== null;
-  const stageOf = (a: AgentRecord): Filter =>
-    isActive(a) ? "active" : prStateOf(a) === "open" ? "prs" : "idle";
-  const list = agents.filter((a) => stageOf(a) === filter);
-  const count = (stage: Filter) => agents.filter((a) => stageOf(a) === stage).length;
-  const running = agents.filter(isBusy).length;
-  const prs = agents.filter(hasPr).length;
+  // Open PRs, still to merge, above the merged and closed ones the host's
+  // auto-archive is about to clear. The sort is stable, so newest-first holds
+  // within each.
+  const list = agents
+    .filter((a) => stage(a) === filter)
+    .sort((a, b) => Number(prStateOf(a) !== "open") - Number(prStateOf(b) !== "open"));
 
   return (
     <>
@@ -81,28 +88,16 @@ export function ProjectScreen({ projectId }: { projectId: string }) {
         <span className="pill mono">
           {agents.length} agent{agents.length === 1 ? "" : "s"}
         </span>
-        {running > 0 && (
-          <span className="pill mono ok">
-            <span className="dot running" style={{ width: 6, height: 6 }} />
-            {running} running
-          </span>
-        )}
-        {prs > 0 && (
-          <span className="pill mono">
-            <Icon name="pr" size={11} />
-            {prs} PR{prs > 1 ? "s" : ""}
-          </span>
-        )}
       </div>
       <div className="proj-tabs">
         <Segmented
           items={[
-            { id: "active", label: "Active", count: count("active") },
-            { id: "prs", label: "With PR", count: count("prs") },
-            { id: "idle", label: "Idle" },
+            { id: "running", label: "Running", count: count("running") },
+            { id: "yours", label: "Your turn", count: count("yours") },
+            { id: "prs", label: "PRs", count: count("prs") },
           ]}
           value={filter}
-          onChange={(id) => setFilter(id as Filter)}
+          onChange={(id) => setFilter(id as AgentStage)}
         />
       </div>
       <div className="scroll proj-body">
@@ -113,11 +108,11 @@ export function ProjectScreen({ projectId }: { projectId: string }) {
           {list.length === 0 && (
             <div className="empty">
               <b>Nothing here</b>
-              {filter === "active"
+              {filter === "running"
                 ? "No agents are working right now."
-                : filter === "prs"
-                  ? "No PRs waiting on review."
-                  : "No idle agents."}
+                : filter === "yours"
+                  ? "No agent is waiting on you."
+                  : "No PRs to land."}
             </div>
           )}
         </div>

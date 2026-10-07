@@ -2,7 +2,7 @@
 
 import type { AgentRecord, Workspace } from "@desktop/api/types/agent";
 import { describe, expect, it } from "vitest";
-import { agentsOfProject } from "../src/lib/agents";
+import { agentsOfProject, stageOf } from "../src/lib/agents";
 
 const agent = (over: Partial<AgentRecord>) =>
   ({
@@ -59,5 +59,28 @@ describe("agentsOfProject", () => {
 
   it("is empty with no snapshot", () => {
     expect(agentsOfProject(null, "p1")).toEqual([]);
+  });
+});
+
+describe("stageOf", () => {
+  it("puts a turn in flight under running, whatever its PR", () => {
+    expect(stageOf(agent({ status: "running" }), "open")).toBe("running");
+    expect(stageOf(agent({ status: "spawning" }), null)).toBe("running");
+  });
+
+  it("hands a resting agent without a PR back to the user", () => {
+    expect(stageOf(agent({ status: "idle" }), null)).toBe("yours");
+    expect(stageOf(agent({ status: "error" }), null)).toBe("yours");
+    expect(stageOf(agent({ status: "stopped" }), null)).toBe("yours");
+  });
+
+  it("hands an errored agent back to the user even with a PR", () => {
+    expect(stageOf(agent({ status: "error" }), "open")).toBe("yours");
+  });
+
+  it("files a resting agent with a PR under PRs, whatever its state", () => {
+    expect(stageOf(agent({ status: "idle" }), "open")).toBe("prs");
+    expect(stageOf(agent({ status: "idle" }), "merged")).toBe("prs");
+    expect(stageOf(agent({ status: "idle" }), "closed")).toBe("prs");
   });
 });
