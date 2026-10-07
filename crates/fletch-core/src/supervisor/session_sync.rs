@@ -576,8 +576,8 @@ pub struct AgentPrStatus {
 ///   re-fetched).
 /// - **Closed** PRs are served from the snapshot too, *except* when the caller
 ///   asks for a live look (`reverify_closed` — a client's launch or
-///   environment-switch seed), so a reopen is still caught without paying for
-///   it on every read.
+///   environment-switch seed, and the host watcher's slow safety-net pass), so
+///   a reopen is still caught without paying for it on every read.
 /// - Everything else is fetched live by number and its snapshot refreshed.
 ///
 /// `with_threads` folds each checkout's *focused* open PR's review threads into

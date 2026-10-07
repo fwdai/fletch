@@ -844,8 +844,9 @@ impl Dispatch for SupervisorDispatch {
                 "get_all_git_meta" => res(crate::commands::get_all_git_meta_impl(sup).await),
 
                 // The sidebar's seed (the desktop's Tauri command of the same
-                // name): the caller decides when a closed PR is worth a live
-                // look. Between seeds the PR watcher's events keep it current.
+                // name): the caller decides when a closed PR deserves an
+                // immediate live look. Between seeds the PR watcher's events
+                // keep it current, including its slow closed-PR recheck.
                 "get_all_pr_status" => {
                     let a: AllPrStatusArgs = parse(args)?;
                     ok(crate::supervisor::resolve_all_pr_status(

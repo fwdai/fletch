@@ -621,9 +621,10 @@ pub fn boot(cfg: BootConfig) -> Result<Engine, BootError> {
     // until there is something to watch.
     crate::roadmap::merge_sweep::spawn(ctx.clone(), db.clone());
     // The ship loop's eyes while the window is shut: read every agent's bound
-    // open PR once a minute (state and CI, review threads every other tick)
-    // and emit a `pr:*` event per change, so a paired phone hears about failed
-    // checks, a reviewer's comment or a merge without the Git panel polling.
+    // open PR once a minute (state and CI, review threads every other tick),
+    // and closed PRs every five minutes so a reopen is discovered. Emit a
+    // `pr:*` event per change, so a paired phone hears about failed checks, a
+    // reviewer's comment, a merge or a reopen without the Git panel polling.
     // Reads once now to seed its memory — the seed announces each open PR's
     // state and nothing else, so a restart does not re-raise last week's
     // threads.
