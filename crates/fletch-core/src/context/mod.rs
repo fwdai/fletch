@@ -64,6 +64,10 @@ pub const EXTRACT_KEY: &str = "context.extract";
 /// Default character budget for a rendered bundle.
 pub const DEFAULT_BUDGET_CHARS: usize = 12_000;
 
+/// Default character budget for the spawn-time overview, which rides in every
+/// agent's instructions.
+pub const OVERVIEW_BUDGET_CHARS: usize = 3_000;
+
 /// Fired with `{ project_id }` (the Fletch project id) by the service after
 /// every write that changes what a project's context says — whichever
 /// writer made it: the UI, an agent op, the ingester or the extractor. It

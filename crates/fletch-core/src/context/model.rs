@@ -151,7 +151,6 @@ pub enum SourceKind {
     Pr,
     ReviewThread,
     Roadmap,
-    Brief,
     Workflow,
     Ui,
     /// The repository itself at a commit (the bootstrap's file tree).
@@ -516,6 +515,10 @@ pub struct CompileQuery {
     /// Character budget for the rendered bundle; 0 means the default.
     #[serde(default)]
     pub budget_chars: usize,
+    /// Compile the spawn-time overview instead (`compile::overview`); the
+    /// other fields except `budget_chars` are ignored.
+    #[serde(default)]
+    pub overview: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -569,12 +572,12 @@ pub struct Contradiction {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Bundle {
     pub project_id: String,
-    /// The vision entity, or the roadmap brief when no vision has been
-    /// recorded yet (`vision_fallback`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vision: Option<Entity>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub vision_fallback: Option<String>,
+    /// Compiled by [`crate::context::compile::overview`]: rendered as the
+    /// spawn-time overview rather than a `context_get` answer.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub overview: bool,
     pub entities: Vec<BundleEntity>,
     pub assertions: Vec<BundleAssertion>,
     pub contradictions: Vec<Contradiction>,

@@ -66,7 +66,7 @@ pub(super) fn dispatcher_with_checkout_state(
     let resolver: CheckoutResolver = Arc::new(move || Ok(checkouts.lock().unwrap().clone()));
     let d = ContextDispatcher {
         inner: Arc::new(Inner),
-        service: ContextService::new(db.clone(), Arc::new(crate::host::sink::NullSink)).unwrap(),
+        service: ContextService::new(db, Arc::new(crate::host::sink::NullSink)).unwrap(),
         project: context::Project {
             id: PROJECT.into(),
             fletch_id: FLETCH_PROJECT.into(),
@@ -75,9 +75,13 @@ pub(super) fn dispatcher_with_checkout_state(
         provider: "claude".into(),
         checkouts: resolver,
         session_id: Some("sess-1".into()),
-        db,
     };
     (d, dir, state)
+}
+
+/// The database under the dispatcher's store.
+pub(super) fn db(d: &ContextDispatcher) -> &crate::roadmap::Db {
+    d.service.store().db()
 }
 
 /// The project's graph as the store holds it.

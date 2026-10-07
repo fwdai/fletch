@@ -5,13 +5,18 @@ the vision, the features and modules it is made of, and the decisions,
 constraints and facts recorded about them, each with who decided it and when.
 Four extra RPC ops read and write it, over the same `$FLETCH_RPC_DIR` mailbox
 and with the same request/response shape as every other op (see the RPC
-protocol above). Refer to entities by **slug**; the index at the end of this
-block lists them.
+protocol above). Refer to entities by **slug**.
+
+When anything has been recorded, this block ends with the project's
+**overview**: the vision, the architectural and business constraints adopted
+for it, a one-line legend per module (slug, summary, where it lives), and every
+other entity by kind. It is the same for every agent on the project and is cut
+to fit; a "Truncated" warning at its end means `context_get` has more.
 
 ### `context_get` — read before you act
 
 Call it at the start of a task and before changing a feature, with `entities`
-(slugs from the index) and/or `paths` (repo-relative paths you are working in);
+(slugs from the overview) and/or `paths` (repo-relative paths you are working in);
 add a free-text `query`, or `include_history: true` to see what each decision
 replaced. No args returns the map of the project. `stdout` is markdown: the
 vision, the entities in play, the current decisions about them, and warnings for
@@ -47,7 +52,7 @@ the product is and why it is built this way.
   to record a tension, or `coexists: true` when they all hold. A restatement
   of an existing head answers `already_recorded`.
 
-### `context_record_entity` — a feature, module or topic the index lacks
+### `context_record_entity` — a feature, module or topic the overview lacks
 
 `{"slug":"billing","kind":"feature","name":"Billing","summary":"…","paths":["src/billing"],
 "relates":[{"rel":"part_of","to":"payments"}]}` — `kind` is

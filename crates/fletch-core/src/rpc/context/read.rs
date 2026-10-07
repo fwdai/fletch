@@ -27,6 +27,7 @@ impl ContextDispatcher {
             paths: clean_list(&a.paths),
             include_history: a.include_history,
             budget_chars: 0,
+            overview: false,
         };
         let store = self.service.store();
         let graph = self
@@ -34,7 +35,7 @@ impl ContextDispatcher {
             .graph(&self.project)
             .map_err(|e| e.to_string())?;
         let checkout = self.primary_checkout().map(|c| c.path);
-        let bundle = compile::compile(&graph, &query, self.vision_fallback(), checkout.as_deref());
+        let bundle = compile::compile(&graph, &query, checkout.as_deref());
         let markdown = render::render_markdown(&bundle);
 
         let read = ReadRecord {
@@ -60,18 +61,5 @@ impl ContextDispatcher {
             tracing::warn!("context: read not logged for agent {}: {e}", self.agent_id);
         }
         Ok(markdown)
-    }
-
-    /// The roadmap brief stands in for the vision until one is recorded. A
-    /// read failure is no fallback, not a failed `context_get`.
-    fn vision_fallback(&self) -> Option<String> {
-        let conn = self.db.lock();
-        match crate::roadmap::memory::load(&conn, &self.project.fletch_id) {
-            Ok(brief) => brief.map(|b| b.content),
-            Err(e) => {
-                tracing::warn!("context: roadmap brief unavailable as vision fallback: {e}");
-                None
-            }
-        }
     }
 }

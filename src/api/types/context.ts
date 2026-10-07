@@ -25,7 +25,6 @@ export type SourceKind =
   | "pr"
   | "review_thread"
   | "roadmap"
-  | "brief"
   | "workflow"
   | "ui"
   | "repo";
@@ -174,6 +173,9 @@ export interface CompileQuery {
   paths: string[];
   include_history: boolean;
   budget_chars: number;
+  /** Compile the spawn-time overview every agent's instructions carry
+   *  instead; the other fields except `budget_chars` are ignored. */
+  overview?: boolean;
 }
 
 export interface Evidence {

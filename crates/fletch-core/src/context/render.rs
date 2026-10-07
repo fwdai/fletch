@@ -3,14 +3,20 @@
 //! domain (adopted, then rejected) · History (if requested) · Warnings.
 //! Provisional and contradicted assertions are marked inline, never dropped.
 //!
-//! Also the compact *index* the instruction block carries at spawn: every
-//! active entity as `slug ("name")`, grouped by kind, capped. The index goes
-//! into every agent's instructions, so names travel as quoted data and an
-//! entity the extractor minted on its own is left out until a person, an
-//! agent or a merged PR has revised it: model output never writes itself
-//! into the next model's instructions.
+//! An overview bundle (`compile::overview`) renders as the section every
+//! agent's instructions carry at spawn: Vision · Constraints · Modules (one
+//! line each) · Index (every other entity as `slug ("name")`, by kind) ·
+//! Warnings. Names travel as quoted data.
+//!
+//! Also the compact *index* the extractor reads: every active entity as
+//! `slug ("name")`, grouped by kind, capped. An entity the extractor minted
+//! on its own is left out until a person, an agent or a merged PR has
+//! revised it: model output never feeds itself back.
 
 use super::model::*;
+
+/// Characters of a module's summary its legend line keeps.
+const LEGEND_SUMMARY_CHARS: usize = 140;
 
 const ENTITY_KINDS: [EntityKind; 6] = [
     EntityKind::Vision,
@@ -33,12 +39,14 @@ const DOMAINS: [Domain; 3] = [
 const STANCES: [Stance; 2] = [Stance::Adopted, Stance::Rejected];
 
 pub fn render_markdown(bundle: &Bundle) -> String {
+    if bundle.overview {
+        return render_overview(bundle);
+    }
     let mut out = String::from("# Project context\n");
     out.push_str("\n## Vision\n");
-    match (&bundle.vision, &bundle.vision_fallback) {
-        (Some(v), _) => out.push_str(&v.summary),
-        (None, Some(fallback)) => out.push_str(fallback),
-        (None, None) => out.push_str("No vision recorded yet."),
+    match &bundle.vision {
+        Some(v) => out.push_str(&v.summary),
+        None => out.push_str("No vision recorded yet."),
     }
     out.push('\n');
 
@@ -75,6 +83,75 @@ pub fn render_markdown(bundle: &Bundle) -> String {
         }
     }
 
+    push_assertions(&mut out, bundle);
+    push_warnings(&mut out, bundle);
+    out
+}
+
+/// The overview section; empty when the bundle has nothing in it.
+fn render_overview(bundle: &Bundle) -> String {
+    let mut out = String::new();
+    if let Some(v) = &bundle.vision {
+        out.push_str(&format!("## Vision\n{}\n", v.summary));
+    }
+    push_assertions(&mut out, bundle);
+
+    let listed: Vec<&Entity> = bundle
+        .entities
+        .iter()
+        .filter(|b| b.reason != EntryReason::Vision)
+        .map(|b| &b.entity)
+        .collect();
+    let modules: Vec<String> = listed
+        .iter()
+        .filter(|e| e.kind == EntityKind::Module)
+        .map(|e| legend_line(e))
+        .collect();
+    if !modules.is_empty() {
+        out.push_str(&format!("\n## Modules\n{}", modules.concat()));
+    }
+    let groups: Vec<String> = ENTITY_KINDS
+        .iter()
+        .filter(|kind| !matches!(kind, EntityKind::Vision | EntityKind::Module))
+        .filter_map(|kind| {
+            let items: Vec<String> = listed
+                .iter()
+                .filter(|e| e.kind == *kind)
+                .map(|e| index_item(e))
+                .collect();
+            (!items.is_empty())
+                .then(|| format!("**{}:** {}\n", entity_kind_label(*kind), items.join(", ")))
+        })
+        .collect();
+    if !groups.is_empty() {
+        out.push_str(&format!("\n## Index\n{}", groups.concat()));
+    }
+    push_warnings(&mut out, bundle);
+    out.trim_start().to_string()
+}
+
+/// `` - `slug` — summary (`first/path`) ``, the summary clipped.
+fn legend_line(e: &Entity) -> String {
+    let mut line = format!("- `{}`", e.slug);
+    let summary = e.summary.trim();
+    if !summary.is_empty() {
+        line.push_str(" — ");
+        match summary.char_indices().nth(LEGEND_SUMMARY_CHARS) {
+            Some((cut, _)) => {
+                line.push_str(&summary[..cut]);
+                line.push('…');
+            }
+            None => line.push_str(summary),
+        }
+    }
+    if let Some(path) = e.paths.first() {
+        line.push_str(&format!(" (`{path}`)"));
+    }
+    line.push('\n');
+    line
+}
+
+fn push_assertions(out: &mut String, bundle: &Bundle) {
     for kind in ASSERTION_KINDS {
         let of_kind: Vec<&BundleAssertion> = bundle
             .assertions
@@ -101,14 +178,15 @@ pub fn render_markdown(bundle: &Bundle) -> String {
             }
         }
     }
+}
 
+fn push_warnings(out: &mut String, bundle: &Bundle) {
     if !bundle.warnings.is_empty() {
         out.push_str("\n## Warnings\n");
         for w in &bundle.warnings {
             out.push_str(&format!("- {w}\n"));
         }
     }
-    out
 }
 
 fn slug_of<'a>(bundle: &'a Bundle, id: &str) -> Option<&'a str> {
@@ -133,7 +211,9 @@ fn assertion_line(bundle: &Bundle, b: &BundleAssertion) -> String {
     if !about.is_empty() {
         line.push_str(&format!(" (about: {})", about.join(", ")));
     }
-    if !a.rationale.is_empty() {
+    // The overview keeps constraints to their statement: they are never
+    // dropped, so they must stay thin; `context_get` carries the why.
+    if !bundle.overview && !a.rationale.is_empty() {
         line.push_str(&format!(" — {}", a.rationale));
     }
     if b.flags.provisional {
@@ -160,7 +240,7 @@ fn assertion_line(bundle: &Bundle, b: &BundleAssertion) -> String {
     line
 }
 
-/// The spawn-time index: slugs and names by kind, within `max_chars`. Empty
+/// The extractor's index: slugs and names by kind, within `max_chars`. Empty
 /// string when the graph has no active entities.
 pub fn render_index(graph: &Graph, max_chars: usize) -> String {
     let groups: Vec<(&str, Vec<String>)> = ENTITY_KINDS
@@ -174,7 +254,7 @@ pub fn render_index(graph: &Graph, max_chars: usize) -> String {
                         && e.kind == *kind
                         && e.author.kind != AuthorKind::Extractor
                 })
-                .map(|e| format!("{} ({})", e.slug, quoted(&e.name)))
+                .map(index_item)
                 .collect::<Vec<_>>();
             (entity_kind_label(*kind), items)
         })
@@ -229,6 +309,10 @@ fn index_text_counted(
         out.push('\n');
     }
     (out, emitted)
+}
+
+fn index_item(e: &Entity) -> String {
+    format!("{} ({})", e.slug, quoted(&e.name))
 }
 
 /// A name as a quoted string: whatever it contains reads as data.

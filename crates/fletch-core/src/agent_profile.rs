@@ -298,12 +298,12 @@ pub fn effective_instructions(
         .codegraph
         .then(crate::instructions::codegraph_block)
         .flatten();
-    // The product context rides *inside* the roadmap block rather than as a
-    // layer of its own: it is only meaningful to a session that has the ops,
-    // and the block is where the contract for changing it is stated.
+    // The not-doing digest rides *inside* the roadmap block rather than as a
+    // layer of its own: it is the board's decision log, only meaningful to a
+    // session that has the board.
     let roadmap = blocks
         .roadmap_pm
-        .then(|| crate::instructions::roadmap_block(blocks.product_context))
+        .then(|| crate::instructions::roadmap_block(blocks.not_doing))
         .flatten();
     let context = crate::instructions::context_block(blocks.context);
     let parts: Vec<String> = [codegraph, roadmap, context, clean(brief), handoff, index]
@@ -325,17 +325,17 @@ pub struct Blocks<'a> {
     /// This is a roadmap project-manager chat, so it has the `roadmap_*` RPC
     /// ops (`rpc::roadmap::RoadmapDispatcher`) and may be told about them.
     pub roadmap_pm: bool,
-    /// The project's product context (`roadmap::memory::product_context` — the
-    /// brief plus the board's not-doing digest), when it has any — the PM's
-    /// memory of the product across sessions, injected inside the roadmap
-    /// block. Carried here rather than fetched inside
-    /// [`effective_instructions`] because that keeps this module free of the
-    /// database, and it rides in `Blocks` rather than as a sixth parameter
-    /// because it is a *conditional* layer like the two flags above: ignored
-    /// unless `roadmap_pm`, since no other session has the ops that maintain it.
-    pub product_context: Option<&'a str>,
-    /// The project context layer's spawn-time entity index
-    /// (`rpc::context::spawn_index`): `None` when the layer is off for the
+    /// The board's not-doing digest (`roadmap::not_doing::digest`), when the
+    /// user has ruled anything off it — injected inside the roadmap block.
+    /// Carried here rather than fetched inside [`effective_instructions`]
+    /// because that keeps this module free of the database, and it rides in
+    /// `Blocks` rather than as a sixth parameter because it is a *conditional*
+    /// layer like the two flags above: ignored unless `roadmap_pm`, since no
+    /// other session has the board.
+    pub not_doing: Option<&'a str>,
+    /// The project context layer's spawn-time overview
+    /// (`rpc::context::spawn_overview`), the same for every session on the
+    /// project whatever its purpose: `None` when the layer is off for the
     /// project, so the session has no `context_*` ops and must not be told
     /// about them; `Some` — possibly empty — when it does.
     pub context: Option<&'a str>,
@@ -563,16 +563,16 @@ mod tests {
     const CG: Blocks<'static> = Blocks {
         codegraph: true,
         roadmap_pm: false,
-        product_context: None,
+        not_doing: None,
         context: None,
     };
 
-    /// A roadmap project-manager chat, without codegraph, whose project has no
-    /// product brief yet.
+    /// A roadmap project-manager chat, without codegraph, whose board has
+    /// nothing ruled off yet.
     const PM: Blocks<'static> = Blocks {
         codegraph: false,
         roadmap_pm: true,
-        product_context: None,
+        not_doing: None,
         context: None,
     };
 
@@ -705,7 +705,7 @@ mod tests {
             Blocks {
                 codegraph: true,
                 roadmap_pm: true,
-                product_context: None,
+                not_doing: None,
                 context: None,
             },
         )
@@ -717,18 +717,18 @@ mod tests {
     }
 
     #[test]
-    fn the_product_context_reaches_only_a_project_manager_chat() {
+    fn the_not_doing_digest_reaches_only_a_project_manager_chat() {
         let dir = tempfile::tempdir().unwrap();
-        let context = "## Product brief\n\n# Fletch\n\n## Not doing\n\n- FLT-9 — Sprints — no";
+        let digest = "- FLT-9 — Sprints — no";
 
-        // A PM chat whose project has context: it rides inside the roadmap block.
+        // A PM chat whose board has rulings: it rides inside the roadmap block.
         let pm = effective_instructions(
             None,
             None,
             &[],
             dir.path(),
             Blocks {
-                product_context: Some(context),
+                not_doing: Some(digest),
                 ..PM
             },
         )
@@ -736,20 +736,18 @@ mod tests {
         .unwrap();
         assert_eq!(
             Some(pm),
-            crate::instructions::roadmap_block(Some(context)),
-            "the context must not become a layer of its own"
+            crate::instructions::roadmap_block(Some(digest)),
+            "the digest must not become a layer of its own"
         );
 
-        // An ordinary session cannot be handed one: it has no op to maintain the
-        // brief and no board to read, so product memory there would be context
-        // nobody asked for and nobody could change.
+        // An ordinary session cannot be handed one: it has no board to read.
         let plain = effective_instructions(
             Some("Be terse."),
             None,
             &[],
             dir.path(),
             Blocks {
-                product_context: Some(context),
+                not_doing: Some(digest),
                 ..Blocks::default()
             },
         )
@@ -758,11 +756,51 @@ mod tests {
         assert_eq!(plain, "Be terse.");
     }
 
+    /// The overview is project knowledge, not a role's: a coding agent and the
+    /// PM chat on the same project carry the identical context block.
+    #[test]
+    fn a_coding_agent_and_the_pm_get_the_same_context_block() {
+        let dir = tempfile::tempdir().unwrap();
+        let overview =
+            "## Vision\nShip the thing\n\n## Index\n**Features:** billing (\"Billing\")\n";
+        let block = crate::instructions::context_block(Some(overview)).unwrap();
+
+        let coder = effective_instructions(
+            None,
+            None,
+            &[],
+            dir.path(),
+            Blocks {
+                context: Some(overview),
+                ..CG
+            },
+        )
+        .unwrap()
+        .unwrap();
+        let pm = effective_instructions(
+            None,
+            None,
+            &[],
+            dir.path(),
+            Blocks {
+                not_doing: Some("- FLT-9 — Sprints — no"),
+                context: Some(overview),
+                ..PM
+            },
+        )
+        .unwrap()
+        .unwrap();
+        assert!(coder.ends_with(&format!("\n\n{block}")), "{coder}");
+        assert!(pm.ends_with(&format!("\n\n{block}")), "{pm}");
+        assert_eq!(coder.matches("<project-context>").count(), 1);
+        assert_eq!(pm.matches("<project-context>").count(), 1);
+    }
+
     #[test]
     fn the_context_block_rides_only_when_the_layer_is_on() {
         let dir = tempfile::tempdir().unwrap();
 
-        // Off (`None`): never mentioned, even with an index-shaped brief around.
+        // Off (`None`): never mentioned.
         let off =
             effective_instructions(Some("Be terse."), None, &[], dir.path(), Blocks::default())
                 .unwrap()
