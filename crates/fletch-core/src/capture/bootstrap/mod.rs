@@ -75,10 +75,11 @@ pub fn stamp(commit: &str) -> Stamp {
 /// parent. A slug already there is skipped, not revised. A parent that was
 /// already there is linked to only when it is an active module: a feature
 /// or topic that happens to share the directory's slug is not that directory.
+/// `modules` lists parents before children, as [`rules::modules`] does.
 pub fn apply(
     service: &ContextService,
     project: &Project,
-    skeleton: &Skeleton,
+    modules: &[Module],
     stamp: Stamp,
 ) -> Result<Applied> {
     let graph = service.graph(project)?;
@@ -90,7 +91,7 @@ pub fn apply(
     };
     let mut ids: Vec<(String, Id)> = Vec::new();
     let mut applied = Applied::default();
-    for module in &skeleton.modules {
+    for module in modules {
         if known(&module.slug).is_some() {
             continue;
         }

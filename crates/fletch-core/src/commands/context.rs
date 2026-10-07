@@ -139,7 +139,7 @@ pub async fn context_bootstrap_impl(ctx: &EngineCtx, project_id: &str) -> Result
     let applied = bootstrap::apply(
         ctx.context()?,
         &project,
-        &skeleton,
+        &skeleton.modules,
         bootstrap::stamp(&skeleton.commit),
     )?;
     Ok(ContextBootstrap {
