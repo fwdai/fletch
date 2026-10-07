@@ -28,6 +28,9 @@ const PROJECT_SETTING_KEYS: &[&str] = &[
     "roadmap.declined_issues",
     "linear.team_id",
     "linear.team_name",
+    // Both opt-out: absent is on, `"false"` is off (`context::project_flag`).
+    crate::context::ENABLED_KEY,
+    crate::context::EXTRACT_KEY,
 ];
 
 /// The key family a client may write in full: `run.<row>` (the project's run
@@ -149,6 +152,8 @@ mod tests {
             "roadmap.declined_issues",
             "linear.team_id",
             "linear.team_name",
+            "context.enabled",
+            "context.extract",
         ] {
             assert!(is_client_project_key(key), "{key} must be client-writable");
         }

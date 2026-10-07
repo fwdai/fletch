@@ -140,7 +140,7 @@ describe("host-owned settings", () => {
     for (const key of ["autopilot.enabled", "roadmap.code_seq", "roadmap.code_prefix", "run."]) {
       expect(isHostProjectSettingKey(key)).toBe(false);
     }
-    expect(HOST_SETTING_KEYS).toHaveLength(16);
-    expect(HOST_PROJECT_SETTING_KEYS).toHaveLength(11);
+    expect(HOST_SETTING_KEYS).toHaveLength(17);
+    expect(HOST_PROJECT_SETTING_KEYS).toHaveLength(13);
   });
 });

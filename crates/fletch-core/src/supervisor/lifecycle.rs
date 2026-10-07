@@ -1110,6 +1110,16 @@ impl Supervisor {
             )),
             (None, false) => Arc::new(git_dispatcher),
         };
+        // Every agent of a project with the context layer on also gets the
+        // `context_*` ops, whichever dispatcher it was given above.
+        let rpc_dispatcher = rpc::context::wrap(
+            ctx,
+            rpc_dispatcher,
+            &record.project_id,
+            agent_id,
+            &record.provider,
+            session_id.as_deref(),
+        );
 
         let start = session_start(&record, &cwd);
 
@@ -1337,10 +1347,14 @@ impl Supervisor {
             })
             .flatten()
             .flatten();
+        // The context layer's entity index; `None` when the layer is off for
+        // this project, in which case the session has no `context_*` ops either.
+        let context_index = rpc::context::spawn_index(ctx, &record.project_id);
         let blocks = crate::agent_profile::Blocks {
             codegraph: codegraph_available,
             roadmap_pm,
             product_context: product_context.as_deref(),
+            context: context_index.as_deref(),
         };
         let instructions = crate::agent_profile::effective_instructions(
             brief.as_deref(),

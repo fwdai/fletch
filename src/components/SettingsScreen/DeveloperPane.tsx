@@ -13,6 +13,8 @@ export function DeveloperPane() {
   const setUpdateReady = useAppStore((s) => s.setUpdateReady);
   const features = useAppStore((s) => s.features);
   const setFeature = useAppStore((s) => s.setFeature);
+  const contextLayerEnabled = useAppStore((s) => s.contextLayerEnabled);
+  const setContextLayerEnabled = useAppStore((s) => s.setContextLayerEnabled);
   const [refreshingModels, setRefreshingModels] = useState(false);
 
   const handleRefreshModels = async () => {
@@ -41,6 +43,18 @@ export function DeveloperPane() {
           <SetToggle
             on={!!features.missionControl}
             onClick={() => setFeature("missionControl", !features.missionControl)}
+          />
+        </SetRow>
+      </SetGroup>
+
+      <SetGroup label="Pilots">
+        <SetRow
+          title="Project context layer"
+          sub="Agents read and record project knowledge (vision, features, decisions, constraints) through context_* ops; a background pass extracts it from sessions and merged PRs. Adds a Context tab to every project page."
+        >
+          <SetToggle
+            on={contextLayerEnabled}
+            onClick={() => setContextLayerEnabled(!contextLayerEnabled)}
           />
         </SetRow>
       </SetGroup>

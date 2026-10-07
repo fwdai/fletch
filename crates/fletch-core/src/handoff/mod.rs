@@ -9,7 +9,7 @@
 //! (`sessions.handoff_context`) and composed into its instructions by
 //! `agent_profile::effective_instructions`.
 
-mod run;
+pub(crate) mod run;
 mod tail;
 
 use std::path::PathBuf;

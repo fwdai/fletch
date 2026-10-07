@@ -266,6 +266,7 @@ pub const OPS: &[&str] = &[
     "set_notify_pr_activity",
     "set_auto_archive_idle_days",
     "set_code_indexing_enabled",
+    "set_context_layer_enabled",
     "set_sandbox_engine",
     "set_docker_launch_settings",
     "set_podman_launch_settings",
@@ -278,6 +279,19 @@ pub const OPS: &[&str] = &[
     // And a project's: one allowlisted pair over `project_settings`.
     "get_project_settings",
     "set_project_setting",
+    // The project context layer (protocol doc, "Project context"): the
+    // Context tab's reads and the user's own writes, so a paired client
+    // curates the same knowledge the host serves its agents.
+    "context_overview",
+    "context_preview",
+    "context_record_entity",
+    "context_record_assertion",
+    "context_retract",
+    "context_archive_entity",
+    "context_merge_entities",
+    "context_link",
+    "context_rule_proposal",
+    "context_resolve_contradiction",
 ];
 
 pub const REGISTER_PUSH: &str = "register_push";
@@ -539,6 +553,7 @@ const OP_SCOPES: &[(&str, Scope)] = &[
     ("set_notify_pr_activity", Scope::Projects),
     ("set_auto_archive_idle_days", Scope::Projects),
     ("set_code_indexing_enabled", Scope::Projects),
+    ("set_context_layer_enabled", Scope::Projects),
     ("set_sandbox_engine", Scope::Projects),
     ("set_docker_launch_settings", Scope::Projects),
     ("set_podman_launch_settings", Scope::Projects),
@@ -551,6 +566,18 @@ const OP_SCOPES: &[(&str, Scope)] = &[
     ("set_publish_confirmation", Scope::Publish),
     ("set_publish_approval_wait", Scope::Publish),
     ("set_agent_attribution_removed", Scope::Publish),
+    // The context layer: two reads, and writes that rewrite what the host
+    // knows about a project — `projects`, like its settings.
+    ("context_overview", Scope::Observe),
+    ("context_preview", Scope::Observe),
+    ("context_record_entity", Scope::Projects),
+    ("context_record_assertion", Scope::Projects),
+    ("context_retract", Scope::Projects),
+    ("context_archive_entity", Scope::Projects),
+    ("context_merge_entities", Scope::Projects),
+    ("context_link", Scope::Projects),
+    ("context_rule_proposal", Scope::Projects),
+    ("context_resolve_contradiction", Scope::Projects),
 ];
 
 /// The one scope that reaches `op`. `None` for a name outside [`OPS`] —
@@ -1670,6 +1697,7 @@ impl Dispatch for SupervisorDispatch {
                 | "set_notify_pr_activity"
                 | "set_auto_archive_idle_days"
                 | "set_code_indexing_enabled"
+                | "set_context_layer_enabled"
                 | "set_sandbox_engine"
                 | "set_docker_launch_settings"
                 | "set_podman_launch_settings"
@@ -1681,6 +1709,17 @@ impl Dispatch for SupervisorDispatch {
                 | "set_agent_attribution_removed"
                 | "get_project_settings"
                 | "set_project_setting" => settings_op(ctx, sup, op, args).await,
+
+                "context_overview"
+                | "context_preview"
+                | "context_record_entity"
+                | "context_record_assertion"
+                | "context_retract"
+                | "context_archive_entity"
+                | "context_merge_entities"
+                | "context_link"
+                | "context_rule_proposal"
+                | "context_resolve_contradiction" => context_op(ctx, op, args),
 
                 // Unreachable while `OPS` and the arms above agree; kept so a
                 // name added to one and not the other fails closed.
@@ -1825,6 +1864,10 @@ pub(super) async fn settings_op(
             let a: EnabledArgs = parse(args)?;
             res(c::set_code_indexing_enabled_impl(ctx, sup, a.enabled))
         }
+        "set_context_layer_enabled" => {
+            let a: EnabledArgs = parse(args)?;
+            res(c::set_context_layer_enabled_impl(ctx, a.enabled))
+        }
         "set_sandbox_engine" => {
             let a: EngineArgs = parse(args)?;
             res(c::set_sandbox_engine_impl(ctx, &a.engine).await)
@@ -1874,6 +1917,86 @@ pub(super) async fn settings_op(
                 &a.project_id,
                 &a.key,
                 a.value.as_deref(),
+            ))
+        }
+        _ => Err(UNKNOWN_OP.to_string()),
+    }
+}
+
+/// The project context ops (protocol doc, "Project context"): the same
+/// `commands::context_*_impl` bodies the Tauri commands call. All synchronous
+/// — each is one locked read or write on the host's database.
+fn context_op(ctx: &EngineCtx, op: &str, args: Value) -> DispatchResult {
+    use crate::commands as c;
+    match op {
+        "context_overview" => {
+            let a: ProjectArgs = parse(args)?;
+            res(c::context_overview_impl(ctx, &a.project_id))
+        }
+        "context_preview" => {
+            let a: ContextPreviewArgs = parse(args)?;
+            res(c::context_preview_impl(ctx, &a.project_id, a.query))
+        }
+        "context_record_entity" => {
+            let a: ContextEntityArgs = parse(args)?;
+            res(c::context_record_entity_impl(ctx, &a.project_id, a.input))
+        }
+        "context_record_assertion" => {
+            let a: ContextAssertionArgs = parse(args)?;
+            res(c::context_record_assertion_impl(
+                ctx,
+                &a.project_id,
+                a.input,
+            ))
+        }
+        "context_retract" => {
+            let a: ContextRetractArgs = parse(args)?;
+            res(c::context_retract_impl(
+                ctx,
+                &a.project_id,
+                &a.assertion_id,
+                &a.reason,
+            ))
+        }
+        "context_archive_entity" => {
+            let a: ContextEntityIdArgs = parse(args)?;
+            res(c::context_archive_entity_impl(
+                ctx,
+                &a.project_id,
+                &a.entity_id,
+            ))
+        }
+        "context_merge_entities" => {
+            let a: ContextMergeArgs = parse(args)?;
+            res(c::context_merge_entities_impl(
+                ctx,
+                &a.project_id,
+                &a.from,
+                &a.into,
+            ))
+        }
+        "context_link" => {
+            let a: ContextLinkArgs = parse(args)?;
+            res(c::context_link_impl(ctx, &a.project_id, a.change))
+        }
+        "context_rule_proposal" => {
+            let a: ContextRuleArgs = parse(args)?;
+            res(c::context_rule_proposal_impl(
+                ctx,
+                &a.project_id,
+                &a.proposal_id,
+                a.verdict,
+                a.dismiss_reason,
+            ))
+        }
+        "context_resolve_contradiction" => {
+            let a: ContextResolveArgs = parse(args)?;
+            res(c::context_resolve_contradiction_impl(
+                ctx,
+                &a.project_id,
+                &a.a,
+                &a.b,
+                &a.reasoning,
             ))
         }
         _ => Err(UNKNOWN_OP.to_string()),
@@ -2401,6 +2524,76 @@ struct ProjectChatsArgs {
 #[serde(rename_all = "camelCase")]
 struct ProjectArgs {
     project_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ContextPreviewArgs {
+    project_id: String,
+    query: crate::context::CompileQuery,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ContextEntityArgs {
+    project_id: String,
+    input: crate::context::EntityInput,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ContextAssertionArgs {
+    project_id: String,
+    input: crate::context::AssertionInput,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ContextRetractArgs {
+    project_id: String,
+    assertion_id: String,
+    reason: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ContextEntityIdArgs {
+    project_id: String,
+    entity_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ContextMergeArgs {
+    project_id: String,
+    from: String,
+    into: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ContextLinkArgs {
+    project_id: String,
+    change: crate::context::LinkChange,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ContextRuleArgs {
+    project_id: String,
+    proposal_id: String,
+    verdict: crate::commands::ProposalVerdict,
+    #[serde(default)]
+    dismiss_reason: Option<crate::context::DismissReason>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ContextResolveArgs {
+    project_id: String,
+    a: String,
+    b: String,
+    reasoning: String,
 }
 
 #[derive(Deserialize)]

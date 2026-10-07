@@ -24,7 +24,7 @@ const MAX_REPLY_BYTES: usize = 32 * 1024;
 /// The working directory is an empty scratch dir, so a CLI that looks around
 /// finds nothing to read or change, and nothing is left behind. On timeout the
 /// whole process group is killed: these CLIs are often wrapper scripts.
-pub(super) async fn once(
+pub(crate) async fn once(
     program: &str,
     shot: &OneShot,
     model: Option<&str>,

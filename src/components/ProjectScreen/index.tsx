@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "@/api";
+import { ProjectContext } from "@/components/ProjectContext";
 import { loadRunOverrides, type SetupRow, toSetupRows } from "@/components/RunConfig";
 import { Loader } from "@/components/ui/Loader";
 import { useAppStore } from "@/store";
@@ -39,6 +40,7 @@ export function ProjectScreen({ repoPath }: { repoPath: string }) {
   // sidebar's "Project settings" gear lands on Settings, the title-bar pill
   // on the roadmap.
   const tab = useAppStore((s) => s.projectScreenTab);
+  const contextLayerEnabled = useAppStore((s) => s.contextLayerEnabled);
   const setTab = useAppStore((s) => s.setProjectScreenTab);
   const [loaded, setLoaded] = useState<Loaded | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -112,6 +114,8 @@ export function ProjectScreen({ repoPath }: { repoPath: string }) {
               </div>
             ) : tab === "activity" ? (
               <Activity projectId={loaded.projectId} />
+            ) : tab === "context" && contextLayerEnabled ? (
+              <ProjectContext projectId={loaded.projectId} />
             ) : (
               <>
                 <GeneralSection projectId={loaded.projectId} currentName={name} />

@@ -6,6 +6,7 @@
 
 mod agent;
 mod app;
+mod context;
 mod feedback;
 mod files;
 mod git_ops;
@@ -28,6 +29,7 @@ mod workspace;
 
 pub use agent::*;
 pub use app::*;
+pub use context::*;
 pub use feedback::*;
 pub use files::*;
 pub use git_ops::*;

@@ -50,6 +50,12 @@ pub fn set_code_indexing_enabled(
     engine::set_code_indexing_enabled_impl(&ctx, &supervisor, enabled)
 }
 
+/// The project context layer's developer gate.
+#[tauri::command]
+pub fn set_context_layer_enabled(ctx: State<'_, Arc<EngineCtx>>, enabled: bool) -> Result<()> {
+    engine::set_context_layer_enabled_impl(&ctx, enabled)
+}
+
 /// Change the sandbox engine stamped onto new agents, after a live probe.
 #[tauri::command]
 pub async fn set_sandbox_engine(ctx: State<'_, Arc<EngineCtx>>, engine: String) -> Result<()> {

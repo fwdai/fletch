@@ -1,0 +1,235 @@
+/* The project page's Context tab. Composes on the page shell (.ps-section,
+   .ps-field, .ps-input) and the shared primitives; only the layout that is
+   its own lives here. */
+
+.pc-nav {
+  display: flex;
+  gap: 4px;
+  margin: 10px 0 14px;
+}
+
+.pc-nav .ps-tab {
+  gap: 6px;
+}
+
+.pc-split {
+  display: grid;
+  grid-template-columns: minmax(200px, 260px) 1fr;
+  gap: 18px;
+  align-items: start;
+}
+
+.pc-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.pc-group-t {
+  color: var(--fg-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin: 6px 0 2px;
+}
+
+.pc-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 5px 8px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  background: none;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.pc-row:hover {
+  background: var(--bg-hover, rgba(127, 127, 127, 0.08));
+}
+
+.pc-row.active {
+  border-color: var(--accent);
+}
+
+.pc-row-slug {
+  color: var(--fg-muted);
+  margin-left: auto;
+}
+
+.pc-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.pc-detail-h {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.pc-detail-h h3 {
+  margin: 0;
+}
+
+.pc-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-left: auto;
+}
+
+.pc-meta {
+  color: var(--fg-muted);
+}
+
+.pc-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.pc-chip {
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--bg-hover, rgba(127, 127, 127, 0.12));
+}
+
+.pc-rel-row,
+.pc-inline-form {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.pc-inline-form .ps-input {
+  width: auto;
+  min-width: 120px;
+}
+
+.pc-assertion {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  border: 1px solid var(--border, rgba(127, 127, 127, 0.25));
+  border-radius: 8px;
+}
+
+.pc-assertion.rejected .pc-statement {
+  text-decoration: line-through;
+  color: var(--fg-muted);
+}
+
+.pc-badges {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.pc-history {
+  margin: 4px 0 0 10px;
+  padding-left: 10px;
+  border-left: 2px solid var(--border, rgba(127, 127, 127, 0.25));
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.pc-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.pc-form .ps-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.pc-form .ps-input,
+.pc-form textarea.ui-input {
+  width: 100%;
+}
+
+.pc-form textarea.ui-input {
+  min-height: 64px;
+  resize: vertical;
+}
+
+.pc-form-row {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+
+.pc-picks {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 180px;
+  overflow: auto;
+  padding: 4px;
+  border: 1px solid var(--border, rgba(127, 127, 127, 0.25));
+  border-radius: 6px;
+}
+
+.pc-picks label {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.pc-form-actions {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+.pc-error {
+  color: var(--danger, #d33);
+}
+
+.pc-proposal {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--border, rgba(127, 127, 127, 0.25));
+  border-radius: 8px;
+}
+
+.pc-quote {
+  margin: 0;
+  padding-left: 10px;
+  border-left: 2px solid var(--accent);
+  color: var(--fg-muted);
+  white-space: pre-wrap;
+}
+
+.pc-preview {
+  margin: 0;
+  padding: 12px;
+  border: 1px solid var(--border, rgba(127, 127, 127, 0.25));
+  border-radius: 8px;
+  white-space: pre-wrap;
+  overflow: auto;
+  max-height: 60vh;
+}
+
+.pc-count {
+  min-width: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: var(--accent);
+  color: var(--accent-fg, #fff);
+  text-align: center;
+}

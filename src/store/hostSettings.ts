@@ -35,6 +35,8 @@ export function hostSettingsState(s: Record<string, string>): Partial<AppState> 
     agentAttributionRemoved: s.agent_attribution_removed === "true",
     // Opt-out: only an explicit "false" disables indexing.
     codeIndexingEnabled: s.code_indexing_enabled !== "false",
+    // Opt-in: the project context layer is piloted behind Settings › Developer.
+    contextLayerEnabled: s.context_layer_enabled === "true",
     sandboxEngine: parseSandboxEngine(s.sandbox_engine),
     // Opt-in, unlike the alerts: autopilot publishes unattended, so defaulting
     // it on would hang every unattended run until the decision timeout.

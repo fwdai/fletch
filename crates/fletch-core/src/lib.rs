@@ -18,6 +18,7 @@ pub mod attachments;
 pub mod attribution;
 pub mod autopilot;
 pub mod bin_resolve;
+pub mod capture;
 pub mod child_io;
 pub mod codegraph;
 /// The engine halves of the desktop's Tauri commands. Each `*_impl` is the
@@ -25,6 +26,7 @@ pub mod codegraph;
 /// the remote dispatcher (`remote::dispatch`) calls directly, so a phone and
 /// the desktop window take the same code path.
 pub mod commands;
+pub mod context;
 pub mod database;
 pub mod download;
 pub mod error;

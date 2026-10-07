@@ -60,6 +60,9 @@ impl Supervisor {
 
         self.workspace.begin_archive(agent_id)?;
         emit_workspace_changed(ctx.sink.as_ref());
+        // The context layer's last look at the transcript; each checkout's
+        // fate is applied below, once the record is final.
+        crate::capture::extract::on_archive(ctx.clone(), agent_id.to_string());
 
         self.detach_runtime(agent_id);
         reap_agent_containers(agent_id, Some(&record), "archive");
@@ -101,6 +104,7 @@ impl Supervisor {
             // restore rebuilds from and the timing trace. Loud, not fatal.
             tracing::error!(agent_id, error = %e, "recording archive completion failed");
         }
+        crate::capture::ingest::on_workspace_archived(&ctx, agent_id).await;
         // The snapshot (diff stats, branch tips) reshapes the record beyond
         // what `agent:status` carries, so ping the frontend to reload the
         // workspace now that History has something to show.

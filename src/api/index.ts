@@ -1,5 +1,6 @@
 import { agentsApi } from "./domains/agents";
 import { commandsApi } from "./domains/commands";
+import { contextApi } from "./domains/context";
 import { dictationApi } from "./domains/dictation";
 import { filesApi } from "./domains/files";
 import { gitApi } from "./domains/git";
@@ -24,6 +25,7 @@ export * from "./events";
 export * from "./types/agent";
 export * from "./types/checkout";
 export * from "./types/commands";
+export * from "./types/context";
 export * from "./types/dictation";
 export * from "./types/git";
 export * from "./types/issues";
@@ -62,4 +64,5 @@ export const api = {
   ...workflowsApi,
   ...roadmapApi,
   ...usageApi,
+  ...contextApi,
 };

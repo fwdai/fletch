@@ -27,6 +27,10 @@ pub struct EngineCtx {
     supervisor: OnceLock<Arc<Supervisor>>,
     /// Set once during boot, for the same reason.
     workflows: OnceLock<Arc<WorkflowService>>,
+    /// The project context layer's front door, built on first use over the
+    /// same `db` (`context.db` is attached to that connection by
+    /// `database::init`).
+    context: OnceLock<crate::context::ContextService>,
     /// Is the user looking at this host right now? Drives the push-alert
     /// suppression that used to ask the desktop window directly; a host with no
     /// window answers `false`.
@@ -40,8 +44,20 @@ impl EngineCtx {
             db,
             supervisor: OnceLock::new(),
             workflows: OnceLock::new(),
+            context: OnceLock::new(),
             focus,
         }
+    }
+
+    /// The project context store. Built lazily because it mints this host's
+    /// writer id into `settings` on first use, which needs the migrated
+    /// database rather than the bare handle `new` receives.
+    pub fn context(&self) -> crate::error::Result<&crate::context::ContextService> {
+        if let Some(service) = self.context.get() {
+            return Ok(service);
+        }
+        let service = crate::context::ContextService::new(self.db.clone(), self.sink.clone())?;
+        Ok(self.context.get_or_init(|| service))
     }
 
     /// Publish the supervisor. Boot calls this exactly once; a second call is a

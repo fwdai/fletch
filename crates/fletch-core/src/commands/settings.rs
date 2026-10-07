@@ -40,6 +40,7 @@ const HOST_SETTING_KEYS: &[&str] = &[
     rpc::approval::SETTING,
     rpc::approval::WAIT_SETTING,
     attribution::SETTING,
+    crate::context::DEV_SETTING,
 ];
 
 /// The event every setter emits, one per key it wrote.
@@ -194,6 +195,12 @@ pub fn set_code_indexing_enabled_impl(
         crate::host::spawn(warm_codegraph_index(repos));
     }
     Ok(())
+}
+
+/// The project context layer's developer gate (`context_layer_enabled`).
+/// Nothing else to do: every entry into the layer reads the setting.
+pub fn set_context_layer_enabled_impl(ctx: &EngineCtx, enabled: bool) -> Result<()> {
+    store(ctx, crate::context::DEV_SETTING, flag(enabled))
 }
 
 /// Best-effort: ensure codegraph is installed, then build/refresh the index

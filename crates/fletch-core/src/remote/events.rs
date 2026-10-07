@@ -82,6 +82,9 @@ pub const FORWARDED_EVENTS: &[&str] = &[
     // ever emitted for an allowlisted key, so no secret can ride one.
     crate::commands::SETTINGS_CHANGED,
     crate::commands::PROJECT_SETTINGS_CHANGED,
+    // A write to a project's context (protocol doc, "Project context"), from
+    // any writer, so a remote Context tab reloads like the local one.
+    crate::context::CHANGED_EVENT,
 ];
 
 /// Install the taps and hand back the push-alert one.

@@ -34,14 +34,26 @@ pub const TRANSCRIPTS_DB_FILENAME: &str = "transcripts.db";
 /// touching `session_records` qualifies it with this.
 pub const TRANSCRIPTS_SCHEMA: &str = "transcripts";
 
+/// The project context log (`src/context/`), next to `DB_FILENAME` and
+/// attached as schema `context::SCHEMA`. Its own file because it is the one
+/// store not regenerable from anything else and the unit a second host will
+/// sync; it moves aside with `data.db` because its project ids are minted
+/// into `project_settings` there.
+pub const CONTEXT_DB_FILENAME: &str = "context.db";
+
 /// Every on-disk database base name the app may have used, current and legacy.
 /// Fresh-start recovery moves all of these aside so a leftover legacy file can't
 /// be resurrected by `migrate_legacy_db_name` on the retried `init`, and so the
 /// transcript log never outlives the `sessions` rows that own it.
-pub const DB_BASENAMES: &[&str] = &[DB_FILENAME, TRANSCRIPTS_DB_FILENAME, LEGACY_DB_FILENAME];
+pub const DB_BASENAMES: &[&str] = &[
+    DB_FILENAME,
+    TRANSCRIPTS_DB_FILENAME,
+    CONTEXT_DB_FILENAME,
+    LEGACY_DB_FILENAME,
+];
 
 /// The database files `init` opens, each with its own schema and migrations.
-const LIVE_DB_BASENAMES: &[&str] = &[DB_FILENAME, TRANSCRIPTS_DB_FILENAME];
+const LIVE_DB_BASENAMES: &[&str] = &[DB_FILENAME, TRANSCRIPTS_DB_FILENAME, CONTEXT_DB_FILENAME];
 
 /// The SQLite database's WAL/SHM sidecar suffixes. The main file plus these
 /// three names are the complete on-disk footprint that must move together.
@@ -109,6 +121,10 @@ pub(crate) const TRANSCRIPT_MIGRATIONS: &[&str] = &[include_str!(
     "../../migrations_transcripts/0001_session_records.sql"
 )];
 
+/// `context.db`'s migrations, tracked by its own `user_version`.
+pub(crate) const CONTEXT_MIGRATIONS: &[&str] =
+    &[include_str!("../../migrations_context/0001_context.sql")];
+
 /// Smallest `MIGRATIONS.len()` a build needs to read the schema these
 /// migrations produce. Stored in `settings` under `MIN_READER_VERSION_KEY` by
 /// every build at or ahead of the database, so an older build opening a newer
@@ -170,10 +186,13 @@ pub fn init_with_progress(
     quarantine_orphaned_wal(data_dir)?;
     let db_path = data_dir.join(DB_FILENAME);
     let transcripts_path = data_dir.join(TRANSCRIPTS_DB_FILENAME);
+    let context_path = data_dir.join(CONTEXT_DB_FILENAME);
     let mut conn = open_db(&db_path)?;
     backup_before_upgrade(&conn, &db_path, MIGRATIONS.len(), on_phase)?;
     prepare_transcripts_db(&transcripts_path, on_phase)?;
     attach_transcripts(&conn, &transcripts_path)?;
+    prepare_context_db(&context_path, on_phase)?;
+    attach_context(&conn, &context_path)?;
     let relocated = relocate_session_records(&conn, on_phase)?;
     on_phase(DbPhase::Migrating);
     migrate_main(&mut conn)?;
@@ -197,16 +216,32 @@ fn prepare_transcripts_db(path: &Path, on_phase: &dyn Fn(DbPhase)) -> Result<()>
 }
 
 fn attach_transcripts(conn: &Connection, path: &Path) -> Result<()> {
+    attach_db(conn, path, TRANSCRIPTS_SCHEMA)
+}
+
+/// `context.db`, the same way as `transcripts.db`: migrated on its own
+/// connection, then attached under `context::SCHEMA`.
+fn prepare_context_db(path: &Path, on_phase: &dyn Fn(DbPhase)) -> Result<()> {
+    let mut conn = open_db(path)?;
+    backup_before_upgrade(&conn, path, CONTEXT_MIGRATIONS.len(), on_phase)?;
+    migrate(
+        &mut conn,
+        &Migrations::new(CONTEXT_MIGRATIONS.iter().map(|&sql| M::up(sql)).collect()),
+    )
+}
+
+fn attach_context(conn: &Connection, path: &Path) -> Result<()> {
+    attach_db(conn, path, crate::context::SCHEMA)
+}
+
+fn attach_db(conn: &Connection, path: &Path, schema: &str) -> Result<()> {
     let path = path
         .to_str()
         .ok_or_else(|| Error::Other(format!("non-UTF-8 database path: {}", path.display())))?;
-    conn.execute(
-        &format!("ATTACH DATABASE ?1 AS {TRANSCRIPTS_SCHEMA}"),
-        [path],
-    )?;
+    conn.execute(&format!("ATTACH DATABASE ?1 AS {schema}"), [path])?;
     // Per-database, unlike the connection-wide pragmas `open_db` sets; the
     // attached file would otherwise run at the WAL default of FULL.
-    conn.execute_batch(&format!("PRAGMA {TRANSCRIPTS_SCHEMA}.synchronous = NORMAL"))?;
+    conn.execute_batch(&format!("PRAGMA {schema}.synchronous = NORMAL"))?;
     Ok(())
 }
 
