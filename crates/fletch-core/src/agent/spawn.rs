@@ -151,25 +151,33 @@ fn rpc_env(rpc_dir: &Path) -> Vec<(String, String)> {
     env
 }
 
+/// What a launch needs from the managed account it runs under: the account's
+/// config dir for the sandbox engine, and the env pointing the CLI at it.
+/// Both empty for the default account.
+#[derive(Default)]
+struct AccountLaunch {
+    dir: Option<PathBuf>,
+    env: Vec<(String, String)>,
+}
+
 /// The managed account a launch of `provider` runs under: its config dir,
 /// repaired first so shared config linked since the last launch is there, and
 /// the env pointing the CLI at it. Nothing for the default account. A stamped
 /// account whose dir was removed fails the launch rather than recreating it
 /// signed out, or silently running the agent under another login.
-fn account_launch(
-    provider: &str,
-    account: Option<&str>,
-) -> Result<(Option<PathBuf>, Vec<(String, String)>)> {
+fn account_launch(provider: &str, account: Option<&str>) -> Result<AccountLaunch> {
     let Some(id) = account.filter(|id| !accounts::is_default(id)) else {
-        return Ok((None, Vec::new()));
+        return Ok(AccountLaunch::default());
     };
     if !accounts::account_dir(provider, id)?.is_dir() {
         return Err(Error::Other(format!(
             "This agent runs under the `{id}` account, which has been removed."
         )));
     }
-    let dir = accounts::ensure_account_dir(provider, id)?;
-    Ok((Some(dir), accounts::account_env(provider, id)?))
+    Ok(AccountLaunch {
+        dir: Some(accounts::ensure_account_dir(provider, id)?),
+        env: accounts::account_env(provider, id)?,
+    })
 }
 
 /// Run `provider`'s MCP-delivery builder over the session's snapshot, writing
@@ -219,7 +227,7 @@ impl Agent {
         let claude = agent_bin_for("claude", "claude", "Claude Code", engine.as_ref(), &home)?;
         let mcp = resolve_mcp("claude", spec.mcp_servers, &spec.sandbox_root)?;
         let agent_args = prepare_pty_args(&spec, &mcp.args);
-        let (account_dir, account_env) = account_launch("claude", spec.account)?;
+        let account = account_launch("claude", spec.account)?;
 
         let ctx = AgentLaunchCtx {
             agent_id: spec.agent_id,
@@ -231,7 +239,7 @@ impl Agent {
             home: &home,
             interactive: true,
             blackboard: spec.blackboard,
-            account_dir: account_dir.as_deref(),
+            account_dir: account.dir.as_deref(),
         };
         let LaunchPlan {
             program,
@@ -244,7 +252,7 @@ impl Agent {
         let mut env = launch_env;
         env.extend(rpc_env(&spec.rpc_dir));
         env.extend(mcp.env);
-        env.extend(account_env);
+        env.extend(account.env);
 
         tracing::info!(
             agent_id = %spec.agent_id,
@@ -306,7 +314,7 @@ impl Agent {
             spec.instructions,
             &mcp.args,
         );
-        let (account_dir, account_env) = account_launch(provider, spec.account)?;
+        let account = account_launch(provider, spec.account)?;
 
         // Unified sandbox: run the agent's TUI under the sandbox engine (the
         // agent's own sandbox is disabled in its arg builder), so per-turn
@@ -321,7 +329,7 @@ impl Agent {
             home: &home,
             interactive: true,
             blackboard: spec.blackboard,
-            account_dir: account_dir.as_deref(),
+            account_dir: account.dir.as_deref(),
         };
         let LaunchPlan {
             program,
@@ -334,7 +342,7 @@ impl Agent {
         let mut env = launch_env;
         env.extend(rpc_env(&spec.rpc_dir));
         env.extend(mcp.env);
-        env.extend(account_env);
+        env.extend(account.env);
 
         tracing::info!(
             agent_id = %spec.agent_id,
@@ -375,7 +383,7 @@ impl Agent {
         let claude = agent_bin_for("claude", "claude", "Claude Code", engine.as_ref(), &home)?;
         let mcp = resolve_mcp("claude", spec.mcp_servers, &spec.sandbox_root)?;
         let agent_args = prepare_managed_args(&spec, &mcp.args);
-        let (account_dir, account_env) = account_launch("claude", spec.account)?;
+        let account = account_launch("claude", spec.account)?;
 
         let ctx = AgentLaunchCtx {
             agent_id: spec.agent_id,
@@ -387,7 +395,7 @@ impl Agent {
             home: &home,
             interactive: false,
             blackboard: spec.blackboard,
-            account_dir: account_dir.as_deref(),
+            account_dir: account.dir.as_deref(),
         };
         let LaunchPlan {
             program,
@@ -400,7 +408,7 @@ impl Agent {
         let mut env = launch_env;
         env.extend(rpc_env(&spec.rpc_dir));
         env.extend(mcp.env);
-        env.extend(account_env);
+        env.extend(account.env);
 
         tracing::info!(
             agent_id = %spec.agent_id,
@@ -529,7 +537,7 @@ impl Agent {
             .ok_or_else(|| Error::Other("agent bin path not utf-8".into()))?;
         // Resolved once for the session: every turn's process runs under the
         // same account, from the env captured here.
-        let (account_dir, account_env) = account_launch(provider, spec.account.as_deref())?;
+        let account = account_launch(provider, spec.account.as_deref())?;
 
         let ctx = AgentLaunchCtx {
             agent_id: &spec.agent_id,
@@ -541,7 +549,7 @@ impl Agent {
             home: &home,
             interactive: false,
             blackboard: spec.blackboard.as_deref(),
-            account_dir: account_dir.as_deref(),
+            account_dir: account.dir.as_deref(),
         };
         let LaunchPlan {
             program: launch_program,
@@ -552,7 +560,7 @@ impl Agent {
         let mut env = launch_env;
         env.extend(rpc_env(&spec.rpc_dir));
         env.extend(mcp_env);
-        env.extend(account_env);
+        env.extend(account.env);
 
         tracing::info!(
             agent_bin = %program.display(),
