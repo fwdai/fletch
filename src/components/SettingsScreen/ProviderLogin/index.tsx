@@ -2,10 +2,15 @@ import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/Button";
 import { loginCommand, PROVIDER_DETAIL } from "@/data/providerDetail";
 import type { ProviderId } from "@/data/providers";
+import { loginKey } from "./loginSessions";
 import { useProviderLogin } from "./useProviderLogin";
 
 interface Props {
   providerId: ProviderId;
+  /** A Fletch-managed account to sign in (see `ProviderAccount`); the CLI
+   *  runs with its config dir pointed there. Absent, or the default id, signs
+   *  the CLI's own directory in. */
+  accountId?: string;
   /** Product name, for the terminal's label ("Signing in to Codex CLI"). */
   providerLabel: string;
   /** Dismiss the terminal. Called once the sign-in PTY has actually been
@@ -24,8 +29,14 @@ interface Props {
  *
  *  Only render this for a provider that has a `loginCommand`; antigravity and
  *  pi have none and show their `signIn` hint alone. */
-export function ProviderLoginTerminal({ providerId, providerLabel, onClose, onFinished }: Props) {
-  const { containerRef, exit, runAgain, close } = useProviderLogin(providerId);
+export function ProviderLoginTerminal({
+  providerId,
+  accountId,
+  providerLabel,
+  onClose,
+  onFinished,
+}: Props) {
+  const { containerRef, exit, runAgain, close } = useProviderLogin(loginKey(providerId, accountId));
   const command = loginCommand(providerId);
   const hint = PROVIDER_DETAIL[providerId].signIn;
   // Close is awaited before the row collapses: dismissing first would let a

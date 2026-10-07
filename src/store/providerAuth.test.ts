@@ -7,11 +7,29 @@
 import { describe, expect, it, vi } from "vitest";
 import { create } from "zustand";
 
-const { probeProviderAuth, probeProviderVersions } = vi.hoisted(() => ({
+const {
+  probeProviderAuth,
+  probeProviderVersions,
+  listProviderAccounts,
+  addProviderAccount,
+  setActiveProviderAccount,
+} = vi.hoisted(() => ({
   probeProviderAuth: vi.fn(),
   probeProviderVersions: vi.fn(),
+  // Every refresh re-lists accounts; an empty list is the quiet default.
+  listProviderAccounts: vi.fn<() => Promise<ProviderAccount[]>>(async () => []),
+  addProviderAccount: vi.fn(async () => {}),
+  setActiveProviderAccount: vi.fn(async () => {}),
 }));
-vi.mock("@/api", () => ({ api: { probeProviderAuth, probeProviderVersions } }));
+vi.mock("@/api", () => ({
+  api: {
+    probeProviderAuth,
+    probeProviderVersions,
+    listProviderAccounts,
+    addProviderAccount,
+    setActiveProviderAccount,
+  },
+}));
 // The slice seeds the model catalog from localStorage at module load; none of
 // that is under test here.
 vi.mock("@/data/modelCatalog", () => ({
@@ -20,7 +38,7 @@ vi.mock("@/data/modelCatalog", () => ({
 }));
 vi.mock("@/storage/settings", () => ({ setSetting: vi.fn() }));
 
-import type { ProviderAuthProbe } from "@/api/types/providers";
+import type { ProviderAccount, ProviderAuthProbe } from "@/api/types/providers";
 import { createProvidersSlice } from "./providers";
 import type { AppState } from "./types";
 
@@ -83,5 +101,74 @@ describe("provider sign-in status in the store", () => {
     await store.getState().refreshProviderVersions();
     expect(store.getState().providersProbed).toBe(false);
     expect(store.getState().providerAuth).toEqual({ claude: "signed_in" });
+  });
+});
+
+const account = (
+  provider: string,
+  id: string,
+  extra: Partial<ProviderAccount> = {},
+): ProviderAccount => ({
+  provider,
+  id,
+  managed: id !== "default",
+  active: false,
+  status: "signed_out",
+  detail: "synthetic reason",
+  ...extra,
+});
+
+describe("provider accounts in the store", () => {
+  it("groups the flat list by provider, keeping the backend's order", async () => {
+    probeProviderAuth.mockResolvedValueOnce([]);
+    listProviderAccounts.mockResolvedValueOnce([
+      account("claude", "default", { active: true, status: "signed_in", detail: null }),
+      account("claude", "work"),
+      account("codex", "default", { active: true }),
+    ]);
+    const store = makeStore();
+    await store.getState().refreshProviderAuth();
+    const accounts = store.getState().providerAccounts;
+    expect(accounts.claude?.map((a) => a.id)).toEqual(["default", "work"]);
+    expect(accounts.codex?.map((a) => a.id)).toEqual(["default"]);
+    // A provider the backend lists nothing for has no entry at all, which is
+    // what the row reads as "single sign-in, no accounts section".
+    expect(accounts.cursor).toBeUndefined();
+  });
+
+  it("keeps the last good list when the re-list fails", async () => {
+    listProviderAccounts.mockResolvedValueOnce([account("claude", "default", { active: true })]);
+    const store = makeStore();
+    await store.getState().refreshProviderAccounts();
+    listProviderAccounts.mockRejectedValueOnce(new Error("ipc exploded"));
+    await expect(store.getState().refreshProviderAccounts()).resolves.toBeUndefined();
+    expect(store.getState().providerAccounts.claude?.map((a) => a.id)).toEqual(["default"]);
+  });
+
+  it("re-lists after an account is added or made active", async () => {
+    const store = makeStore();
+    listProviderAccounts.mockResolvedValueOnce([
+      account("claude", "default", { active: true }),
+      account("claude", "work"),
+    ]);
+    await store.getState().addProviderAccount("claude", "work");
+    expect(addProviderAccount).toHaveBeenCalledWith("claude", "work");
+    expect(store.getState().providerAccounts.claude?.map((a) => a.id)).toEqual(["default", "work"]);
+
+    listProviderAccounts.mockResolvedValueOnce([
+      account("claude", "default"),
+      account("claude", "work", { active: true }),
+    ]);
+    await store.getState().setActiveProviderAccount("claude", "work");
+    expect(setActiveProviderAccount).toHaveBeenCalledWith("claude", "work");
+    expect(store.getState().providerAccounts.claude?.find((a) => a.active)?.id).toBe("work");
+  });
+
+  it("surfaces the backend's refusal so the form can show it", async () => {
+    addProviderAccount.mockRejectedValueOnce(new Error("An account named `work` already exists."));
+    const store = makeStore();
+    await expect(store.getState().addProviderAccount("claude", "work")).rejects.toThrow(
+      "already exists",
+    );
   });
 });

@@ -15,6 +15,7 @@
 //!   spawns a fresh `codex exec [resume <id>]` (see `codex_session`).
 //!   Codex sandboxes itself rather than running under sandbox-exec.
 
+pub mod accounts;
 mod args;
 mod auth_probe;
 mod capabilities;

@@ -21,6 +21,9 @@ import {
  *  forward keystrokes and resizes, and open any URL it prints in the browser
  *  (OAuth flows print one when they can't launch a browser themselves).
  *
+ *  `providerId` is the sign-in's key (`loginKey`): the provider id, or
+ *  `<provider>:<account>` for a managed account — one terminal per key.
+ *
  *  `exit` is the flow's outcome once it ends, `undefined` while it runs.
  *  `runAgain` restarts it on a cleared screen; `close` is the only path that
  *  kills the PTY — unmounting leaves it running so collapsing the row

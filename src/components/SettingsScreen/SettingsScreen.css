@@ -940,6 +940,75 @@
   flex: 1;
 }
 
+/* Accounts list for a provider that can hold several sign-ins
+   (ProvidersPane/AccountsSection). Each account is a framed line: the radio
+   that makes it the one new agents use, its name and badge, its directory,
+   then its actions; a sign-in terminal opens inside the frame. */
+.set-prov-accounts {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 12px;
+}
+.set-prov-acct-head {
+  display: grid;
+  grid-template-columns: 92px 1fr;
+  gap: 14px;
+  align-items: baseline;
+  padding: 5px 0;
+  color: var(--fg-2);
+  line-height: var(--lh-normal);
+}
+.set-prov-acct {
+  border: 0.5px solid var(--bd-soft);
+  border-radius: var(--r-sm);
+  background: var(--bg-1);
+  padding: 6px 10px;
+}
+.set-prov-acct.active {
+  border-color: var(--accent);
+}
+.set-prov-acct-main {
+  gap: 8px;
+  min-width: 0;
+}
+.set-prov-acct-main input[type="radio"] {
+  margin: 0;
+  accent-color: var(--accent);
+}
+.set-prov-acct-name {
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.set-prov-acct-sub {
+  flex: 1;
+  min-width: 0;
+  color: var(--fg-3);
+}
+.set-prov-acct-confirm {
+  color: var(--fg-2);
+  white-space: nowrap;
+}
+.set-prov-acct-error {
+  margin: 6px 0 0;
+  color: var(--danger);
+}
+.set-prov-acct-add {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 6px;
+}
+.set-prov-acct-add-row {
+  gap: 6px;
+  min-width: 0;
+}
+.set-prov-acct-add-row .set-prov-bin-input {
+  flex: 1;
+  min-width: 0;
+}
+
 /* One-line explanation above an install action (or a confirmation under one). */
 .set-prov-hint {
   margin: 0 0 10px;

@@ -258,8 +258,25 @@ fn merge_auth_env(
 
 /// Whether `.credentials.json` carries a credential the container can
 /// authenticate with — see [`usable_oauth_token`] for the usability bar.
-fn credentials_file_usable(contents: Option<&[u8]>) -> bool {
+pub(crate) fn credentials_file_usable(contents: Option<&[u8]>) -> bool {
     usable_oauth_token(contents).is_some()
+}
+
+/// The Keychain service claude keeps a login under for `config_dir`: the plain
+/// service for the default `~/.claude`, else the service plus the first eight
+/// hex chars of the SHA-256 of the directory path — how claude keeps one login
+/// per `CLAUDE_CONFIG_DIR`. The path is hashed exactly as the env var carries
+/// it, so callers pass the same string they set.
+pub(crate) fn claude_keychain_service(config_dir: Option<&Path>) -> String {
+    use sha2::{Digest, Sha256};
+    match config_dir {
+        None => KEYCHAIN_SERVICE.to_string(),
+        Some(dir) => {
+            let digest = Sha256::digest(dir.as_os_str().as_encoded_bytes());
+            let hex: String = digest.iter().take(4).map(|b| format!("{b:02x}")).collect();
+            format!("{KEYCHAIN_SERVICE}-{hex}")
+        }
+    }
 }
 
 /// Extract a container-usable OAuth access token from a credentials JSON blob —
@@ -604,6 +621,22 @@ mod tests {
             resolve_from(None, None, Some(&shell), false),
             ContainerAuth::Unavailable
         ));
+    }
+
+    /// The suffix is the first eight hex chars of SHA-256 over the directory
+    /// path as the env var carries it — verified against a live Keychain
+    /// item written by claude 2.1.x for a custom `CLAUDE_CONFIG_DIR`.
+    #[test]
+    fn keychain_service_is_suffixed_per_config_dir() {
+        assert_eq!(claude_keychain_service(None), "Claude Code-credentials");
+        assert_eq!(
+            claude_keychain_service(Some(Path::new("/cfg/eve"))),
+            "Claude Code-credentials-b634a9ea"
+        );
+        assert_eq!(
+            claude_keychain_service(Some(Path::new("/Users/u/.fletch/accounts/claude/work"))),
+            "Claude Code-credentials-98eed843"
+        );
     }
 
     #[test]

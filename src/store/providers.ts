@@ -1,5 +1,5 @@
 import { api } from "@/api";
-import type { ProviderAuthStatus } from "@/api/types/providers";
+import type { ProviderAccount, ProviderAuthStatus } from "@/api/types/providers";
 import {
   loadCachedCatalog,
   type ModelMeta,
@@ -37,6 +37,11 @@ export interface ProvidersSlice {
    *  resolves, and `"unknown"` when the backend has no cheap check for that
    *  CLI's credential store — both render as no claim either way. */
   providerAuth: Record<string, ProviderAuthStatus>;
+  /** Every sign-in Fletch knows per account-capable provider, the default
+   *  (the CLI's own login) first, each with its probe and whether it is the
+   *  one new agents use. Absent until the first list resolves. Refreshed with
+   *  `providerAuth`, so the accounts list and the row badge never disagree. */
+  providerAccounts: Record<string, ProviderAccount[]>;
   /** Strip agents' commit/PR attribution regardless of their own settings.
    *  Mirrors the backend-owned `agent_attribution_removed`; false (the default)
    *  leaves each agent's own settings in charge. */
@@ -52,6 +57,18 @@ export interface ProvidersSlice {
    *  `refreshProviderVersions`, so every existing rescan/poll refreshes both;
    *  exposed separately for a sign-in flow that wants to re-check on its own. */
   refreshProviderAuth: () => Promise<void>;
+  /** Re-list every provider's accounts with their sign-in state. Called at
+   *  the tail of `refreshProviderAuth`; exposed for the account actions below,
+   *  which re-list once their change has landed. */
+  refreshProviderAccounts: () => Promise<void>;
+  /** Create a managed account (a fresh config dir) and re-list. Signing it in
+   *  is the row's own Sign in. Rejects with the backend's reason on a bad or
+   *  taken name, so the form can show it. */
+  addProviderAccount: (provider: string, id: string) => Promise<void>;
+  /** Delete a managed account and re-list. The backend refuses the active one. */
+  removeProviderAccount: (provider: string, id: string) => Promise<void>;
+  /** Choose which account new agents of `provider` use and re-list. */
+  setActiveProviderAccount: (provider: string, id: string | null) => Promise<void>;
   /** Set (path) or clear (null) a provider's custom binary path. Persists the
    *  override, updates local state, and re-probes so the version/path refresh. */
   setProviderPathOverride: (id: string, path: string | null) => Promise<void>;
@@ -73,6 +90,7 @@ export const createProvidersSlice: SliceCreator<ProvidersSlice> = (set, get) => 
   modelCatalog: cachedCatalog.byId,
   modelsByAgent: cachedCatalog.byAgent,
   providerAuth: {},
+  providerAccounts: {},
   agentAttributionRemoved: false,
 
   setProviderEnabled: (id, enabled) =>
@@ -118,6 +136,35 @@ export const createProvidersSlice: SliceCreator<ProvidersSlice> = (set, get) => 
       // keeps the last-known-good map rather than claiming every provider is
       // signed out. Absent/`unknown` entries render as no claim either way.
     }
+    // Accounts ride along for the same reason the auth probe rides along with
+    // versions: one rescan, one consistent picture.
+    await get().refreshProviderAccounts();
+  },
+  refreshProviderAccounts: async () => {
+    try {
+      const accounts = await api.listProviderAccounts();
+      const byProvider: Record<string, ProviderAccount[]> = {};
+      for (const account of accounts) {
+        const list = byProvider[account.provider] ?? [];
+        list.push(account);
+        byProvider[account.provider] = list;
+      }
+      set({ providerAccounts: byProvider });
+    } catch {
+      // Non-fatal: keep the last good list rather than emptying the section.
+    }
+  },
+  addProviderAccount: async (provider, id) => {
+    await api.addProviderAccount(provider, id);
+    await get().refreshProviderAccounts();
+  },
+  removeProviderAccount: async (provider, id) => {
+    await api.removeProviderAccount(provider, id);
+    await get().refreshProviderAccounts();
+  },
+  setActiveProviderAccount: async (provider, id) => {
+    await api.setActiveProviderAccount(provider, id);
+    await get().refreshProviderAccounts();
   },
   setProviderPathOverride: async (id, path) => {
     const trimmed = path?.trim() || null;

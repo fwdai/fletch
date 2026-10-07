@@ -69,9 +69,29 @@ export interface ProviderAuthProbe {
   detail: string | null;
 }
 
+/** The id of the account that is the CLI's own config dir (`~/.claude`,
+ *  `~/.codex`): the one every user has, which Fletch neither created nor can
+ *  remove. Mirrors `DEFAULT_ACCOUNT` in the engine's `agent::accounts`. */
+export const DEFAULT_ACCOUNT_ID = "default";
+
+/** One sign-in of a provider (`api.listProviderAccounts`). A managed account
+ *  is a Fletch-owned config directory under `~/.fletch/accounts`, signed in
+ *  through the same in-app login run with that directory; `active` marks the
+ *  one new agents use. `status`/`detail` are the same probe as
+ *  `ProviderAuthProbe`, per directory. */
+export interface ProviderAccount {
+  provider: string;
+  id: string;
+  managed: boolean;
+  active: boolean;
+  status: ProviderAuthStatus;
+  detail: string | null;
+}
+
 /** Payload of `provider-login:output`: raw PTY bytes from a provider's in-app
  *  sign-in, base64-encoded (decode with `decodeBase64`, as for every PTY
- *  stream — see src/pty/decode.ts). */
+ *  stream — see src/pty/decode.ts). `id` is the sign-in's key: the provider
+ *  id, or `<provider>:<account>` for a managed account (see `loginKey`). */
 export interface ProviderLoginOutputEvent {
   id: string;
   bytes: string;

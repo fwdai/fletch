@@ -9,6 +9,7 @@
 //! Re-exported flat, like the shell's own `commands` module, so
 //! `commands::commit_agent_impl` resolves without naming the submodule.
 
+pub mod accounts;
 pub mod agent;
 pub mod context;
 pub mod files;
@@ -20,6 +21,7 @@ pub mod settings;
 pub mod verify;
 pub mod workspace;
 
+pub use accounts::*;
 pub use agent::*;
 pub use context::*;
 pub use files::*;

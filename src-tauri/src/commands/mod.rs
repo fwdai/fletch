@@ -4,6 +4,7 @@
 //! that call them. Every handler is re-exported here so `lib.rs`'s
 //! `generate_handler![commands::x, ...]` list keeps resolving unchanged.
 
+mod accounts;
 mod agent;
 mod app;
 mod context;
@@ -27,6 +28,7 @@ mod tooling;
 mod workflow;
 mod workspace;
 
+pub use accounts::*;
 pub use agent::*;
 pub use app::*;
 pub use context::*;
