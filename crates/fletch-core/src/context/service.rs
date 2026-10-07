@@ -93,11 +93,7 @@ impl ContextService {
     /// served context goes through (writes read it again in their own
     /// transaction).
     pub fn check(&self, project: &Project) -> Result<()> {
-        if self.is_enabled(&project.fletch_id) {
-            Ok(())
-        } else {
-            Err(ContextError::Disabled)
-        }
+        super::require_enabled_for(&self.db.lock(), &project.id)
     }
 
     /// The project's graph, for what is served to an agent: the gate first.

@@ -194,7 +194,12 @@ and every agent op asks again (`ContextService::check`) while every write
 reads the gate inside its own transaction (`ContextStore::write`), so an
 agent spawned while the layer was on, or a PR ingestion that opened the
 project before fetching the body, is refused the moment either switch is
-turned off.
+turned off. The gate is keyed by the context id and requires an owner: an
+id no project maps to is refused, never let through. Deleting a project
+purges its whole context — every table, the log included — inside the
+deletion's transaction (`context::purge_project`, from both deletion paths
+in `workspace::repos`), and the mapping cascades with the project row, so
+nothing still holding the project can read or write what was there.
 
 Stored context is untrusted data wherever it is rendered, and the store is
 the one place that makes it safe: every entity and assertion write validates

@@ -9,6 +9,8 @@ use crate::host::sink::RecordingSink;
 
 fn service() -> (ContextService, Arc<RecordingSink>, tempfile::TempDir) {
     let (store, dir) = ContextStore::temp().unwrap();
+    store.own("ctx-svc", "fp-svc");
+    store.own("ctx-other", "fp-other");
     let sink = Arc::new(RecordingSink::new());
     (
         ContextService::new(store.db().clone(), sink.clone()).unwrap(),

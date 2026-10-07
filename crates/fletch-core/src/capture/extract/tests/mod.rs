@@ -46,7 +46,9 @@ impl Extractor for Failing {
 }
 
 pub fn store() -> (ContextStore, tempfile::TempDir) {
-    ContextStore::temp().unwrap()
+    let (store, dir) = ContextStore::temp().unwrap();
+    store.own(PROJECT, "fp-test");
+    (store, dir)
 }
 
 /// The service the pipeline writes through, over a temp store.

@@ -174,8 +174,9 @@ async fn coexists_records_alongside_the_head() {
 fn seed_session(d: &ContextDispatcher) {
     let conn = d.db.lock();
     let now = crate::database::now_millis();
+    // The fixture already owns the project (`ContextStore::own`).
     conn.execute(
-        "INSERT INTO projects (id, name, created_at) VALUES (?1, 'p', ?2)",
+        "INSERT OR IGNORE INTO projects (id, name, created_at) VALUES (?1, 'p', ?2)",
         rusqlite::params![FLETCH_PROJECT, now],
     )
     .unwrap();

@@ -18,29 +18,31 @@ export function useContextOverview(projectId: string): {
   // Re-read (and re-subscribe) on a switch: both are bound to the transport
   // that was active when they were made.
   const environmentId = useAppStore((s) => s.activeEnvironmentId);
-  // Bumped on every (project, environment) switch and on unmount. A read
-  // answers only if it was asked under the current generation, so a slow
-  // answer for the previous project cannot land as this one's.
-  const generation = useRef(0);
+  // Every read takes the next number; only the newest one asked may answer.
+  // That covers a slow answer for the previous project landing as this
+  // one's, and two reads of the same project (the first load, then a
+  // `context:changed`) resolving out of order. Bumped on unmount too, so
+  // nothing in flight answers after the hook is gone.
+  const latest = useRef(0);
 
   const reload = useCallback(() => {
-    const asked = generation.current;
+    latest.current += 1;
+    const mine = latest.current;
     api
       .contextOverview(projectId)
       .then((o) => {
-        if (generation.current !== asked) return;
+        if (latest.current !== mine) return;
         setOverview(o);
         setError(null);
       })
       .catch((e) => {
-        if (generation.current !== asked) return;
+        if (latest.current !== mine) return;
         setError(String(e));
       });
   }, [projectId]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: environmentId is the intended re-run trigger, not an unused dep
   useEffect(() => {
-    generation.current += 1;
     setOverview(null);
     setError(null);
     reload();
@@ -54,7 +56,7 @@ export function useContextOverview(projectId: string): {
     });
     return () => {
       cancelled = true;
-      generation.current += 1;
+      latest.current += 1;
       unlisten?.();
     };
   }, [projectId, environmentId, reload]);

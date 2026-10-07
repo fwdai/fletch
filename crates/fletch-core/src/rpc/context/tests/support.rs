@@ -31,7 +31,7 @@ pub(super) const REPO: &str = "quorum";
 
 /// A dispatcher over a fresh store; the temp dir is the (non-git) checkout,
 /// so provenance comes back without a branch or commit. The gate is open in
-/// `ContextStore::temp`, so the project is built directly.
+/// `ContextStore::temp` and the project owned there, so it is built directly.
 pub(super) fn dispatcher() -> (ContextDispatcher, tempfile::TempDir) {
     dispatcher_with_repos(vec![REPO.into()])
 }
@@ -51,6 +51,7 @@ pub(super) fn dispatcher_with_checkout_state(
     Arc<Mutex<Vec<Checkout>>>,
 ) {
     let (store, dir) = crate::context::ContextStore::temp().unwrap();
+    store.own(PROJECT, FLETCH_PROJECT);
     let db = store.db().clone();
     let checkouts = Arc::new(Mutex::new(
         repos

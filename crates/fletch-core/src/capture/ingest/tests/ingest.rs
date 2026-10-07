@@ -13,6 +13,7 @@ const REPO_B: &str = "gateway";
 
 fn service() -> (ContextService, tempfile::TempDir) {
     let (store, dir) = ContextStore::temp().unwrap();
+    store.own(PROJECT, "fp-ctx");
     (
         ContextService::new(
             store.db().clone(),

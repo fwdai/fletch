@@ -149,6 +149,9 @@ impl WorkspaceManager {
                         [&source_pid],
                         |row| Ok((row.get(0)?, row.get(1)?)),
                     )?;
+                    // Its context goes with it, like every row that hangs off
+                    // the project (undo restores the project row alone).
+                    crate::context::purge_project(&tx, &source_pid)?;
                     tx.execute("DELETE FROM projects WHERE id = ?1", [&source_pid])?;
                     Some(DroppedProject { name, created_at })
                 } else {
@@ -299,7 +302,8 @@ impl WorkspaceManager {
 
     /// Atomically delete a project and its workflow runs after filesystem and
     /// runtime cleanup has been staged by the supervisor. Workflow runs do not
-    /// have a project FK, so they share this transaction explicitly; every
+    /// have a project FK, so they share this transaction explicitly, as does
+    /// the project's context (`context.db` has no FK to `projects`); every
     /// other project-owned row is removed by foreign-key cascade, once any
     /// session outside the project that inherits from one inside is detached.
     pub fn delete_project(&self, project_id: &str, expected_run_ids: &[String]) -> Result<()> {
@@ -332,6 +336,8 @@ impl WorkspaceManager {
             trims: lineage::detach_children(&tx, &doomed)?,
             sessions: sessions::session_ids_for_workspaces(&tx, &doomed)?,
         };
+        // Before the row goes: the context id's mapping cascades with it.
+        crate::context::purge_project(&tx, project_id)?;
         let changed = tx.execute("DELETE FROM projects WHERE id = ?1", [project_id])?;
         if changed == 0 {
             return Err(Error::Other(format!("project not found: {project_id}")));

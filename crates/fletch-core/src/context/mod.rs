@@ -35,7 +35,7 @@ pub(crate) mod fixtures;
 
 pub use model::*;
 pub use service::{ContextService, Project};
-pub use store::{context_project_id, ContextStore};
+pub use store::{context_project_id, purge_project, ContextStore};
 
 /// Schema name `context.db` is attached under on the main connection.
 pub const SCHEMA: &str = "context";
@@ -107,8 +107,25 @@ pub fn extract_enabled(conn: &rusqlite::Connection, fletch_project_id: &str) -> 
     enabled(conn, fletch_project_id) && project_flag(conn, fletch_project_id, EXTRACT_KEY)
 }
 
+/// The context id minted for a Fletch project, if one was (no minting, unlike
+/// [`context_project_id`]).
+pub(crate) fn context_id_of(
+    conn: &rusqlite::Connection,
+    fletch_project_id: &str,
+) -> Option<String> {
+    conn.query_row(
+        "SELECT value FROM project_settings WHERE project_id = ?1 AND key = ?2",
+        [fletch_project_id, PROJECT_ID_KEY],
+        |r| r.get(0),
+    )
+    .ok()
+}
+
 /// The Fletch project a *context* id was minted for, if any.
-fn fletch_project_of(conn: &rusqlite::Connection, context_project_id: &str) -> Option<String> {
+pub(crate) fn fletch_project_of(
+    conn: &rusqlite::Connection,
+    context_project_id: &str,
+) -> Option<String> {
     conn.query_row(
         "SELECT project_id FROM project_settings WHERE key = ?1 AND value = ?2",
         [PROJECT_ID_KEY, context_project_id],
@@ -117,13 +134,15 @@ fn fletch_project_of(conn: &rusqlite::Connection, context_project_id: &str) -> O
     .ok()
 }
 
-/// The gate as the store reads it inside every write transaction, keyed by
-/// the context id the write names: the developer gate, then the flag of the
-/// Fletch project that owns the id. A `Project` resolved through the service
-/// is a name, not a lasting permission — an agent spawned while the layer
-/// was on, or a pipeline that opened the project before an `await`, is
-/// refused the moment either switch is off. An id no project owns (a test's)
-/// has no project flag, so only the developer gate applies.
+/// The gate as every operation reads it, keyed by the context id it names:
+/// the developer gate, then the flag of the Fletch project that owns the id
+/// — and there must be one. A `Project` resolved through the service is a
+/// name, not a lasting permission: an agent spawned while the layer was on,
+/// a pipeline that opened the project before an `await`, or anything still
+/// holding a project that has since been deleted (its mapping goes with its
+/// row, its context with [`purge_project`]) is refused the moment the
+/// switch is off or the owner is gone. Tests own their ids explicitly
+/// (`ContextStore::own`).
 pub(crate) fn require_enabled_for(
     conn: &rusqlite::Connection,
     context_project_id: &str,
@@ -132,8 +151,8 @@ pub(crate) fn require_enabled_for(
         return Err(ContextError::Disabled);
     }
     match fletch_project_of(conn, context_project_id) {
-        Some(fletch) if !project_flag(conn, &fletch, ENABLED_KEY) => Err(ContextError::Disabled),
-        _ => Ok(()),
+        Some(fletch) if project_flag(conn, &fletch, ENABLED_KEY) => Ok(()),
+        _ => Err(ContextError::Disabled),
     }
 }
 

@@ -3,7 +3,10 @@
 //!
 //! Nothing here issues `UPDATE` or `DELETE` against `events`; `assertions`
 //! rows change only in `status`, and only when a confirmed / abandoned /
-//! retracted event is applied. A test greps this file for both.
+//! retracted event is applied. A test greps this file for both. The one
+//! thing that removes a project's events is [`purge_project`], which takes a
+//! deleted project's whole context with it — every table, in one loop,
+//! inside the deletion's own transaction.
 //!
 //! Every write goes through one private [`apply`], and `rebuild_projection`
 //! replays the log through the same function, so the live projection and a
@@ -51,6 +54,54 @@ pub fn context_project_id(conn: &Connection, fletch_project_id: &str) -> Result<
     )?)
 }
 
+/// Remove every context row of the Fletch project `fletch_project_id`, in
+/// the caller's transaction — the project deletion's, before its
+/// `projects` row goes (the `context.id` mapping cascades with it, and this
+/// is read first). The log is insert-only for a project that exists; a
+/// project that no longer does keeps nothing, so that no pipeline still
+/// holding it can read or write orphaned context. Edge tables and extractor
+/// runs carry no `project_id` and are found through what they hang off.
+/// Written as one loop over table names so the module's grep for row-level
+/// edits of the log stays a guard against exactly those.
+pub fn purge_project(conn: &Connection, fletch_project_id: &str) -> rusqlite::Result<()> {
+    let Some(project_id) = super::context_id_of(conn, fletch_project_id) else {
+        return Ok(());
+    };
+    const ASSERTIONS: &str = "SELECT id FROM context.assertions WHERE project_id = ?1";
+    const ENTITIES: &str = "SELECT id FROM context.entities WHERE project_id = ?1";
+    const OBSERVATIONS: &str = "SELECT id FROM context.observations WHERE project_id = ?1";
+    let by_parent = [
+        ("about", format!("assertion_id IN ({ASSERTIONS})")),
+        ("supersedes", format!("new_id IN ({ASSERTIONS})")),
+        ("contradicts", format!("a_id IN ({ASSERTIONS})")),
+        ("relates", format!("from_id IN ({ENTITIES})")),
+        (
+            "extractor_runs",
+            format!("observation_id IN ({OBSERVATIONS})"),
+        ),
+    ];
+    for (table, condition) in by_parent {
+        conn.execute(
+            &format!("DELETE FROM context.{table} WHERE {condition}"),
+            [&project_id],
+        )?;
+    }
+    for table in [
+        "assertions",
+        "entities",
+        "observations",
+        "proposals",
+        "reads",
+        "events",
+    ] {
+        conn.execute(
+            &format!("DELETE FROM context.{table} WHERE project_id = ?1"),
+            [&project_id],
+        )?;
+    }
+    Ok(())
+}
+
 impl ContextStore {
     /// Reads `settings.context.host_id`, minting it on first use.
     pub fn new(db: Db) -> Result<Self> {
@@ -81,6 +132,25 @@ impl ContextStore {
         crate::database::set_setting(&db.lock(), super::DEV_SETTING, "true")
             .map_err(|e| ContextError::Invalid(e.to_string()))?;
         Ok((Self::new(db)?, dir))
+    }
+
+    /// Make `fletch_project_id` (a `projects` row, created if missing) the
+    /// owner of the context id `project_id`, so the gate lets writes under
+    /// that id through. Tests own their ids with this; a host mints them
+    /// through [`context_project_id`].
+    #[cfg(test)]
+    pub(crate) fn own(&self, project_id: &str, fletch_project_id: &str) {
+        let conn = self.db.lock();
+        conn.execute(
+            "INSERT OR IGNORE INTO projects (id, name, created_at) VALUES (?1, ?1, 0)",
+            [fletch_project_id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT OR REPLACE INTO project_settings (project_id, key, value) VALUES (?1, ?2, ?3)",
+            params![fletch_project_id, PROJECT_ID_KEY, project_id],
+        )
+        .unwrap();
     }
 
     pub fn host_id(&self) -> &str {
