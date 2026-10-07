@@ -227,7 +227,7 @@ fn merging_a_deleted_directory_archives_its_module() {
         entities: vec!["old".into()],
         ..Default::default()
     };
-    let bundle = compile::compile(&g, &query, None, None);
+    let bundle = compile::compile(&g, &query, None);
     assert_eq!(bundle.misses, ["old"]);
     assert!(bundle.entities.is_empty());
 }

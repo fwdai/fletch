@@ -16,11 +16,24 @@ export const STATUS_LABEL: Record<AgentStatus, string> = {
 
 export const EFFORTS = ["low", "medium", "high", "max"];
 
-/** Statuses that put an agent in a project's "Active" filter. */
+/** Statuses that put an agent in the Home screen's active list. */
 export const isActive = (a: AgentRecord) =>
   a.status === "running" || a.status === "spawning" || a.status === "error";
 
 export const isBusy = (a: AgentRecord) => a.status === "running" || a.status === "spawning";
+
+/** Where an agent sits in a project's list, by what the developer does next,
+ *  each row in exactly one: watch it work; pick the conversation back up — a
+ *  finished turn, a stop, or an error, PR or not, since an error needs the user
+ *  whatever else is true; or land its PR. Abandoned workspaces need no stage of
+ *  their own: the host's auto-archive sweep clears them. */
+export type AgentStage = "running" | "yours" | "prs";
+
+export function stageOf(a: AgentRecord, prState: string | null): AgentStage {
+  if (isBusy(a)) return "running";
+  if (a.status === "error") return "yours";
+  return prState ? "prs" : "yours";
+}
 
 /** The one busy signal every surface renders from, as on the desktop: the
  *  host's status — `running` while a turn is in flight, whoever started it,
