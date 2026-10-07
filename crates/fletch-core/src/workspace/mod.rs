@@ -27,6 +27,7 @@ mod sessions;
 pub(crate) mod tests;
 mod turns;
 
+pub use agents::live_agents_on_account;
 pub use factory::{is_per_turn_provider, new_agent_record};
 pub use lineage::{Anchor, HistoryPage, SessionLineage, HISTORY_PAGE_DEFAULT, HISTORY_PAGE_MAX};
 pub use paths::{

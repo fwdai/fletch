@@ -698,9 +698,6 @@ mod tests {
         );
     }
 
-    /// The suffix is the first eight hex chars of SHA-256 over the directory
-    /// path as the env var carries it — verified against a live Keychain
-    /// item written by claude 2.1.x for a custom `CLAUDE_CONFIG_DIR`.
     /// The host-side launch strips the same vars this chain treats as a
     /// default-account login, so a managed account is isolated the same way
     /// under every sandbox engine.
@@ -713,6 +710,9 @@ mod tests {
         assert_eq!(chain, host);
     }
 
+    /// The suffix is the first eight hex chars of SHA-256 over the directory
+    /// path as the env var carries it — verified against a live Keychain
+    /// item written by claude 2.1.x for a custom `CLAUDE_CONFIG_DIR`.
     #[test]
     fn keychain_service_is_suffixed_per_config_dir() {
         assert_eq!(claude_keychain_service(None), "Claude Code-credentials");

@@ -249,7 +249,51 @@ pub fn ensure_account_dir(provider: &str, id: &str) -> Result<PathBuf> {
         &dir,
         shared_items(provider),
     );
+    if provider == "claude" {
+        seed_claude_state(&dir, &home);
+    }
     Ok(dir)
+}
+
+/// A fresh claude config dir has no `.claude.json`, so claude would open its
+/// first-run onboarding (the theme pick) in the agent's terminal — and in a
+/// container, where the account dir is mounted read-only, on every launch.
+/// Seed the one flag that skips it, plus the theme the user already chose,
+/// when the file is absent. Nothing else is copied: the identity and OAuth
+/// account live in that file too, and they are exactly what differs per
+/// account. Best-effort: a failure costs the onboarding screen, not the login.
+fn seed_claude_state(dir: &Path, home: &Path) {
+    let state = dir.join(".claude.json");
+    if state.exists() {
+        return;
+    }
+    // Claude keeps its state beside a relocated config dir, else at `~/.claude.json`.
+    let own = match std::env::var_os("CLAUDE_CONFIG_DIR").filter(|v| !v.is_empty()) {
+        Some(v) => PathBuf::from(v).join(".claude.json"),
+        None => home.join(".claude.json"),
+    };
+    let seed = claude_state_seed(std::fs::read(&own).ok().as_deref());
+    if let Err(e) = std::fs::write(&state, seed.to_string()) {
+        tracing::warn!(error = %e, "could not seed the account's claude state file");
+    }
+}
+
+/// Pure core of [`seed_claude_state`]: onboarding done, and the theme from the
+/// user's own state file when it has one.
+fn claude_state_seed(own: Option<&[u8]>) -> serde_json::Value {
+    let mut seed = serde_json::Map::new();
+    seed.insert(
+        "hasCompletedOnboarding".into(),
+        serde_json::Value::Bool(true),
+    );
+    let theme = own
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(bytes).ok())
+        .and_then(|v| v.get("theme").cloned())
+        .filter(|t| t.is_string());
+    if let Some(theme) = theme {
+        seed.insert("theme".into(), theme);
+    }
+    serde_json::Value::Object(seed)
 }
 
 /// Link each of `items` from `source` into `dir` where the source exists and
@@ -569,6 +613,25 @@ mod tests {
                 Some(root.join("claude").join("work"))
             );
         });
+    }
+
+    /// Only what skips first-run onboarding is seeded: the flag, and the
+    /// theme when the user's own state has one. Never the account identity.
+    #[test]
+    fn claude_state_seed_skips_onboarding_and_keeps_the_theme_only() {
+        let own = br#"{"theme":"dark","oauthAccount":{"emailAddress":"a@b"},"hasCompletedOnboarding":true}"#;
+        assert_eq!(
+            claude_state_seed(Some(own)),
+            serde_json::json!({ "hasCompletedOnboarding": true, "theme": "dark" })
+        );
+        assert_eq!(
+            claude_state_seed(None),
+            serde_json::json!({ "hasCompletedOnboarding": true })
+        );
+        assert_eq!(
+            claude_state_seed(Some(b"not json")),
+            serde_json::json!({ "hasCompletedOnboarding": true })
+        );
     }
 
     /// The vars a managed launch strips are the ones that would sign the CLI

@@ -5,6 +5,29 @@ use rusqlite::OptionalExtension;
 
 use super::*;
 
+/// How many live (non-archived) agents of `provider` are stamped with the
+/// managed account `account` (see `agent::accounts`). Gates removing the
+/// account: its directory holds those agents' login and transcripts, and a
+/// running one would write it straight back. A free function over the
+/// connection because the accounts commands hold one, not a manager; the
+/// provider is read off the workspace's sessions, where it lives.
+pub fn live_agents_on_account(
+    conn: &rusqlite::Connection,
+    provider: &str,
+    account: &str,
+) -> Result<i64> {
+    let count = conn.query_row(
+        "SELECT COUNT(*) FROM workspaces w
+          WHERE w.archived_at IS NULL
+            AND w.provider_account = ?2
+            AND EXISTS (SELECT 1 FROM sessions s
+                         WHERE s.workspace_id = w.id AND s.provider = ?1)",
+        rusqlite::params![provider, account],
+        |row| row.get(0),
+    )?;
+    Ok(count)
+}
+
 impl WorkspaceManager {
     /// Ids of every live (non-archived) agent in this build's DB — the set of
     /// names that are actually reserved. Archived agents have had their

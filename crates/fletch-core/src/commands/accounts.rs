@@ -55,15 +55,32 @@ pub fn add_provider_account_impl(provider: &str, id: &str) -> Result<()> {
     Ok(())
 }
 
-/// Delete a managed account directory — its login, its transcripts, its links.
-/// The active account can't be removed; pick another first.
-pub fn remove_provider_account_impl(ctx: &EngineCtx, provider: &str, id: &str) -> Result<()> {
-    let active = database::get_setting(&ctx.db.lock(), &accounts::active_setting_key(provider));
+/// Whether a managed account may be removed right now: not while it is the
+/// active one, and not while any live (non-archived) agent is stamped with it
+/// — that agent's login and transcripts live in the directory, and a running
+/// one would write it straight back. The error names the fix.
+pub fn ensure_account_removable(ctx: &EngineCtx, provider: &str, id: &str) -> Result<()> {
+    let conn = ctx.db.lock();
+    let active = database::get_setting(&conn, &accounts::active_setting_key(provider));
     if active.as_deref() == Some(id) {
         return Err(Error::Other(
             "This account is in use. Choose another account before removing it.".into(),
         ));
     }
+    let agents = crate::workspace::live_agents_on_account(&conn, provider, id)?;
+    if agents > 0 {
+        let noun = if agents == 1 { "agent" } else { "agents" };
+        return Err(Error::Other(format!(
+            "{agents} {noun} still run under this account. Archive them before removing it."
+        )));
+    }
+    Ok(())
+}
+
+/// Delete a managed account directory — its login, its transcripts, its links.
+/// Refused under the same conditions as [`ensure_account_removable`].
+pub fn remove_provider_account_impl(ctx: &EngineCtx, provider: &str, id: &str) -> Result<()> {
+    ensure_account_removable(ctx, provider, id)?;
     accounts::remove_account_dir(provider, id)
 }
 
