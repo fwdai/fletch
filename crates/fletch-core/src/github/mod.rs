@@ -37,5 +37,5 @@ pub use pr::*;
 pub use repo::*;
 pub use types::*;
 
-pub(crate) use pr::{pr_body, pr_update_body};
+pub(crate) use pr::{pr_body, pr_body_and_merge, pr_update_body};
 pub(crate) use query::{pr_status_batch, resolve_slug, PrBatchRow, PrRef};

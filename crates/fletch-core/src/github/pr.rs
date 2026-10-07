@@ -126,11 +126,30 @@ pub(crate) async fn pr_body(
     source_repo: Option<&Path>,
     number: u32,
 ) -> Result<Option<String>> {
+    Ok(pr_body_and_merge(checkout, source_repo, number)
+        .await?
+        .map(|pr| pr.body))
+}
+
+/// A PR's body, and the commit its merge put on the base branch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PrMerge {
+    pub body: String,
+    /// `None` until the PR merges.
+    pub merge_sha: Option<String>,
+}
+
+/// Fetch a PR's body and merge commit by number; `Ok(None)` as [`pr_body`].
+pub(crate) async fn pr_body_and_merge(
+    checkout: &Path,
+    source_repo: Option<&Path>,
+    number: u32,
+) -> Result<Option<PrMerge>> {
     let Some((owner, repo)) = resolve_slug(checkout, source_repo).await else {
         return Ok(None);
     };
     let query = r#"query($owner:String!,$repo:String!,$number:Int!){
-  repository(owner:$owner,name:$repo){ pullRequest(number:$number){ body } }
+  repository(owner:$owner,name:$repo){ pullRequest(number:$number){ body mergeCommit{ oid } } }
 }"#;
     let Some(data) = graphql_opt(
         query,
@@ -144,7 +163,10 @@ pub(crate) async fn pr_body(
     if node.is_null() {
         return Ok(None);
     }
-    Ok(Some(node["body"].as_str().unwrap_or_default().to_string()))
+    Ok(Some(PrMerge {
+        body: node["body"].as_str().unwrap_or_default().to_string(),
+        merge_sha: node["mergeCommit"]["oid"].as_str().map(str::to_string),
+    }))
 }
 
 /// Overwrite a PR's body by number (REST PATCH). Used by the multi-repo
