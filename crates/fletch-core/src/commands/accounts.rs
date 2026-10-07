@@ -43,8 +43,13 @@ pub async fn list_provider_accounts_impl(ctx: &Arc<EngineCtx>) -> Result<Vec<Pro
 /// login PTY, run with this account's env), so a fresh account lists as
 /// signed out until then.
 pub fn add_provider_account_impl(provider: &str, id: &str) -> Result<()> {
-    if accounts::list_account_ids(provider).iter().any(|known| known == id) {
-        return Err(Error::Other(format!("An account named `{id}` already exists.")));
+    if accounts::list_account_ids(provider)
+        .iter()
+        .any(|known| known == id)
+    {
+        return Err(Error::Other(format!(
+            "An account named `{id}` already exists."
+        )));
     }
     accounts::ensure_account_dir(provider, id)?;
     Ok(())
@@ -70,7 +75,9 @@ pub fn set_active_provider_account_impl(
     id: Option<&str>,
 ) -> Result<()> {
     if !accounts::supports_accounts(provider) {
-        return Err(Error::Other(format!("`{provider}` has no account directories.")));
+        return Err(Error::Other(format!(
+            "`{provider}` has no account directories."
+        )));
     }
     let id = id.filter(|id| !accounts::is_default(id));
     if let Some(id) = id {

@@ -98,7 +98,9 @@ pub fn accounts_root() -> Result<PathBuf> {
 pub fn validate_account_id(id: &str) -> Result<()> {
     let ok = !id.is_empty()
         && id.len() <= 32
-        && id.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        && id
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
         && id.chars().next().is_some_and(|c| c.is_ascii_alphanumeric());
     if !ok {
         return Err(Error::Other(
@@ -106,7 +108,9 @@ pub fn validate_account_id(id: &str) -> Result<()> {
         ));
     }
     if is_default(id) {
-        return Err(Error::Other(format!("`{DEFAULT_ACCOUNT}` is the CLI's own login.")));
+        return Err(Error::Other(format!(
+            "`{DEFAULT_ACCOUNT}` is the CLI's own login."
+        )));
     }
     Ok(())
 }
@@ -115,7 +119,9 @@ fn validate_provider(provider: &str) -> Result<()> {
     if supports_accounts(provider) {
         Ok(())
     } else {
-        Err(Error::Other(format!("`{provider}` has no account directories.")))
+        Err(Error::Other(format!(
+            "`{provider}` has no account directories."
+        )))
     }
 }
 
@@ -169,7 +175,11 @@ pub fn ensure_account_dir(provider: &str, id: &str) -> Result<PathBuf> {
     std::fs::create_dir_all(&dir)?;
     let home =
         dirs::home_dir().ok_or_else(|| Error::Other("HOME directory not available".into()))?;
-    link_shared(&shared_source_dir(provider, &home), &dir, shared_items(provider));
+    link_shared(
+        &shared_source_dir(provider, &home),
+        &dir,
+        shared_items(provider),
+    );
     Ok(dir)
 }
 
@@ -331,7 +341,10 @@ mod tests {
                 env,
                 vec![(
                     "CODEX_HOME".to_string(),
-                    root.join("codex").join("work").to_string_lossy().into_owned()
+                    root.join("codex")
+                        .join("work")
+                        .to_string_lossy()
+                        .into_owned()
                 )]
             );
         });
@@ -364,18 +377,41 @@ mod tests {
 
         link_shared(&source, &dir, shared_items("claude"));
 
-        assert!(dir.join("settings.json").symlink_metadata().unwrap().file_type().is_symlink());
-        assert!(dir.join("commands").symlink_metadata().unwrap().file_type().is_symlink());
+        assert!(dir
+            .join("settings.json")
+            .symlink_metadata()
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert!(dir
+            .join("commands")
+            .symlink_metadata()
+            .unwrap()
+            .file_type()
+            .is_symlink());
         // Absent in the source: nothing to link, and no dangling link either.
         assert!(dir.join("skills").symlink_metadata().is_err());
         // The fork survives untouched.
-        assert!(!dir.join("CLAUDE.md").symlink_metadata().unwrap().file_type().is_symlink());
-        assert_eq!(std::fs::read_to_string(dir.join("CLAUDE.md")).unwrap(), "mine");
+        assert!(!dir
+            .join("CLAUDE.md")
+            .symlink_metadata()
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(
+            std::fs::read_to_string(dir.join("CLAUDE.md")).unwrap(),
+            "mine"
+        );
 
         // A source item that appears later is picked up by the next repair.
         std::fs::create_dir_all(source.join("skills")).unwrap();
         link_shared(&source, &dir, shared_items("claude"));
-        assert!(dir.join("skills").symlink_metadata().unwrap().file_type().is_symlink());
+        assert!(dir
+            .join("skills")
+            .symlink_metadata()
+            .unwrap()
+            .file_type()
+            .is_symlink());
     }
 
     #[test]

@@ -114,7 +114,11 @@ pub(crate) fn probe_dir(id: &str, dir: &Path) -> ProviderAuthProbe {
             classify_codex_auth(read_file(&dir.join("auth.json")).as_deref(), false),
             "no credential in this account's auth.json",
         ),
-        _ => entry(id, AuthStatus::Unknown, "provider has no account directories"),
+        _ => entry(
+            id,
+            AuthStatus::Unknown,
+            "provider has no account directories",
+        ),
     }
 }
 
