@@ -319,6 +319,26 @@ export function Toggle({
   );
 }
 
+/** Detail most people never need, behind a quiet row that opens it in place.
+ *  Closed every time its sheet opens. */
+export function Disclosure({ label, children }: { label: string; children: ReactNode }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="disclosure">
+      <button
+        type="button"
+        className="disclosure-btn"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+      >
+        {label}
+        <Icon name="chevD" size={14} className={open ? "open" : undefined} />
+      </button>
+      {open && children}
+    </div>
+  );
+}
+
 export function StatusDot({ status }: { status: AgentStatus }) {
   return <span className={`dot ${status}`} />;
 }

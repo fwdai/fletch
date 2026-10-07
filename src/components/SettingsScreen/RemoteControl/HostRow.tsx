@@ -14,8 +14,8 @@ const STATE_LABELS: Record<ConnectionStatus, string> = {
   error: "not connected",
 };
 
-/** One paired host: where it is, whether this Mac is talking to it right now,
- *  and the last reason it isn't. "Forget" drops the connection and the record;
+/** One paired host: whether this Mac is talking to it right now, and the last
+ *  reason it isn't. "Forget" drops the connection and the record;
  *  the host keeps its own device entry until it is revoked there, so pairing
  *  again needs a fresh link either way. */
 export function HostRow({
@@ -45,8 +45,7 @@ export function HostRow({
           {entry?.name || host.name}
         </div>
         <div className="set-row-s text-sm">
-          {host.addr} · {STATE_LABELS[connection]}
-          {host.relay ? " · relay configured" : ""}
+          {STATE_LABELS[connection]}
           {version ? ` · ${version}` : ""}
         </div>
         {entry?.error && <div className="set-row-s text-sm">{entry.error}</div>}

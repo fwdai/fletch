@@ -3,10 +3,10 @@ import type { PairingPreset } from "@/api";
 import { Segmented } from "@/components/Settings/Segmented";
 import { Button } from "@/components/ui/Button";
 import { SetGroup, SetHead, SetRow, SetToggle } from "../primitives";
+import { ConnectionAdvanced } from "./ConnectionAdvanced";
 import { DeviceRow } from "./DeviceRow";
 import { PairedHosts } from "./PairedHosts";
 import { PairingCard } from "./PairingCard";
-import { PortRow } from "./PortRow";
 import { CONTROL_PRESET_HELP, PAIRING_PRESETS } from "./presets";
 import { RelayRow } from "./RelayRow";
 import { useRemote } from "./useRemote";
@@ -17,7 +17,8 @@ import { useRemote } from "./useRemote";
  *  Reachable on the LAN (or Tailscale) only, and every frame is end-to-end
  *  encrypted between the phone and this Mac — hence the plain statement of what
  *  the switch opens, and pairing that is an explicit, expiring, single-use act
- *  rather than a standing invitation. */
+ *  rather than a standing invitation. Ports, addresses and keys are under
+ *  Advanced: nobody needs them to pair a phone. */
 export function RemoteControlPane() {
   const {
     status,
@@ -40,15 +41,16 @@ export function RemoteControlPane() {
   const enabled = !!status?.enabled;
   const listening = !!status?.listening;
   const devices = status?.devices ?? [];
-  const addresses = status?.addresses ?? [];
 
-  const reach = listening
-    ? addresses.length > 0
-      ? addresses.map((a) => `${a}:${status?.port}`).join(" · ")
-      : "No network address found — connect this Mac to Wi-Fi or Ethernet."
+  // Only what stops a phone from reaching this Mac; a healthy connection says
+  // nothing beyond its switches.
+  const problem = listening
+    ? status?.addresses.length === 0
+      ? "No network address found — connect this Mac to Wi-Fi or Ethernet."
+      : null
     : enabled
       ? "On, but the port could not be opened."
-      : "Off. No port is open.";
+      : null;
 
   return (
     <div className="set-pane">
@@ -61,7 +63,7 @@ export function RemoteControlPane() {
       <SetGroup label="Connection">
         <SetRow
           title="Allow remote control"
-          sub="Opens a port on your network so a paired phone can watch and steer agents. End-to-end encrypted."
+          sub="Lets a paired phone watch and steer agents over your network. End-to-end encrypted."
         >
           <SetToggle
             on={enabled}
@@ -69,8 +71,6 @@ export function RemoteControlPane() {
             onClick={() => void setEnabled(!enabled)}
           />
         </SetRow>
-
-        {status && <PortRow port={status.port} disabled={busy} onSet={(p) => void setPort(p)} />}
 
         {status && (
           <RelayRow
@@ -80,15 +80,21 @@ export function RemoteControlPane() {
           />
         )}
 
-        <SetRow title="Reachable at" sub={reach} align="start">
-          {listening && <span className="set-remote-port mono text-sm">port {status?.port}</span>}
-        </SetRow>
-
         {/* The host's own standing problem (an unwritable device store, which
             also blocks pairing) first, then whatever the last command failed
-            with. */}
+            with, then what is wrong with the listener. */}
         {status?.error && <div className="set-inline-warn">{status.error}</div>}
         {error && <div className="set-inline-warn">{error}</div>}
+        {!status?.error && !error && problem && <div className="set-inline-warn">{problem}</div>}
+
+        {status && (
+          <ConnectionAdvanced
+            status={status}
+            disabled={busy}
+            onSetPort={(p) => void setPort(p)}
+            onSetRelay={(url) => void setRelay(url)}
+          />
+        )}
       </SetGroup>
 
       <SetGroup label="Devices">
@@ -122,7 +128,6 @@ export function RemoteControlPane() {
         {invite && (
           <PairingCard
             invite={invite}
-            hostId={status?.hostId}
             lanOnly={status?.relay.state !== "connected"}
             onRegenerate={() => void beginPairing(invite.preset)}
             onDismiss={clearInvite}

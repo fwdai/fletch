@@ -119,7 +119,6 @@ function fakeClient() {
     host: null,
     hostKey: HOST_KEY,
     via: null,
-    setRelay: () => {},
     /** Set by a test to what the real client holds after a handshake. */
     target: null as HostTarget | null,
     pair: () => Promise.reject(new Error("unused")),

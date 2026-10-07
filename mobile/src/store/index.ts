@@ -120,7 +120,8 @@ export interface MobileState extends ChatsSlice, ProposalsSlice {
   /** The paired host's public key — pinned on first contact, and what makes
    *  the app paired at all. */
   hostKey: string | null;
-  /** The host's relay base URL, when it has one; the fallback path. */
+  /** The host's relay base URL, when it has one; the fallback path. Set on
+   *  the Mac only — this mirrors what its last handshake answered. */
   relay: string | null;
   /** Which path the live connection took — mirrored from the client for the
    *  Host sheet, and null when there is no connection. */
@@ -215,8 +216,6 @@ export interface MobileState extends ChatsSlice, ProposalsSlice {
   pairFromLink(target: HostTarget): void;
   reconnect(): Promise<void>;
   unpair(): Promise<void>;
-  /** Add or change the relay for the paired host without re-pairing. */
-  setRelay(url: string | null): Promise<void>;
   setTheme(theme: ThemeMode): void;
   setSystemTheme(t: "light" | "dark"): void;
   setActiveFirst(on: boolean): void;
@@ -927,16 +926,6 @@ export const useStore = create<MobileState>()((set, get) => ({
       // leaving it on the Pair screen would offer the user a dead retry.
       pairTarget: null,
     });
-  },
-
-  /** The relay is a property of the paired host, not of a pairing: a link that
-   *  never carried one (or a hand-typed pairing) can be given one here, and it
-   *  applies from the next connection attempt on. */
-  async setRelay(url) {
-    const relay = url?.trim() || null;
-    client.setRelay(relay);
-    set({ relay });
-    if (!mockEnabled()) await saveSettings({ relay: relay ?? undefined });
   },
 
   setTheme(theme) {

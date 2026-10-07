@@ -266,9 +266,6 @@ export interface RemoteClient {
   readonly hostKey: string | null;
   /** Which candidate the live connection is on, or null when not connected. */
   readonly via: Via | null;
-  /** Point the held target at a relay (or none) without re-pairing. It takes
-   *  effect on the next connection attempt. */
-  setRelay(relay: string | null): void;
   /** Where the client is pointed, with any spent pairing token stripped and
    *  the host key it authenticated pinned in. */
   readonly target: Readonly<HostTarget> | null;

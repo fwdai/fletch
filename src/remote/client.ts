@@ -185,13 +185,6 @@ export class ProtocolClient implements RemoteClient {
     return this.socket ? this._via : null;
   }
 
-  /** Add or change the relay on the held target. Nothing reconnects: the next
-   *  attempt picks up the new dial list. */
-  setRelay(relay: string | null): void {
-    if (!this._target) return;
-    this._target = { ...this._target, relay: relay?.trim() || undefined };
-  }
-
   /** Where this client is (or was last) pointed. The client owns it: after a
    *  pairing handshake the spent `pairingToken` is gone and the host key the
    *  transport authenticated is pinned in, so this is always what a reconnect

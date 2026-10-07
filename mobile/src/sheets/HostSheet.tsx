@@ -1,6 +1,5 @@
 import { Icon } from "@desktop/components/Icon";
-import { useEffect, useState } from "react";
-import { Segmented, Sheet, Toggle } from "../components/ui";
+import { Disclosure, Segmented, Sheet, Toggle } from "../components/ui";
 import { ignore } from "../lib/ignore";
 import { projectsOf } from "../lib/projects";
 import { client, useStore } from "../store";
@@ -33,19 +32,11 @@ export function HostSheet({ open, onClose }: { open: boolean; onClose: () => voi
   const hostKey = useStore((s) => s.hostKey);
   const relay = useStore((s) => s.relay);
   const via = useStore((s) => s.via);
-  const setRelay = useStore((s) => s.setRelay);
   const projects = useStore((s) => projectsOf(s.workspace).length);
   const agents = useStore((s) => s.workspace?.agents.length ?? 0);
   // The client owns the target; this re-reads it on every render, which the
   // connection-state subscription above already drives.
   const address = client.target ? `${client.target.host}:${client.target.port}` : "";
-  const [draft, setDraft] = useState(relay ?? "");
-  // Follow the stored value when it changes elsewhere (a fresh pairing link
-  // brings one), but never fight the user's typing.
-  useEffect(() => setDraft(relay ?? ""), [relay]);
-  const commitRelay = () => {
-    if ((draft.trim() || null) !== relay) void setRelay(draft).catch(ignore);
-  };
 
   return (
     <Sheet
@@ -79,7 +70,6 @@ export function HostSheet({ open, onClose }: { open: boolean; onClose: () => voi
               style={{ width: 6, height: 6 }}
             />
             {CONNECTION_TEXT[connection]}
-            {address ? ` · ${address}` : ""}
           </div>
         </div>
       </div>
@@ -92,24 +82,6 @@ export function HostSheet({ open, onClose }: { open: boolean; onClose: () => voi
           <span>Platform</span>
           <span>{host?.os ?? "—"}</span>
         </div>
-        <div className="kv">
-          <span>Identity</span>
-          {/* The pinned host key, abbreviated: enough to compare against the
-              one Settings shows on the Mac. */}
-          <span>{hostKey ? `${hostKey.slice(0, 12)}…` : "—"}</span>
-        </div>
-        {relay && (
-          <div className="kv">
-            <span>Relay</span>
-            <span>{abbreviate(relay)}</span>
-          </div>
-        )}
-        {via && connection === "connected" && (
-          <div className="kv">
-            <span>Connected over</span>
-            <span>{VIA_TEXT[via]}</span>
-          </div>
-        )}
         <div className="kv">
           <span>Projects</span>
           <span>{projects}</span>
@@ -140,26 +112,30 @@ export function HostSheet({ open, onClose }: { open: boolean; onClose: () => voi
           </span>
         </div>
       </div>
-      <div className="relay-field">
-        <label htmlFor="host-relay">Relay URL</label>
-        <input
-          id="host-relay"
-          value={draft}
-          placeholder="wss://relay.fletch.sh"
-          autoCapitalize="off"
-          autoCorrect="off"
-          spellCheck={false}
-          onChange={(e) => setDraft(e.target.value)}
-          onBlur={commitRelay}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") e.currentTarget.blur();
-          }}
-        />
-        <div className="hint">
-          Used only when your Mac's local address does not answer. Leave empty for local network
-          only.
+      {/* How the link is plumbed: read-only, and set on the Mac, which every
+          handshake reports back. */}
+      <Disclosure label="Advanced">
+        <div className="kv">
+          <span>Address</span>
+          <span>{address || "—"}</span>
         </div>
-      </div>
+        <div className="kv">
+          <span>Identity</span>
+          {/* The pinned host key, abbreviated: enough to compare against the
+              one Settings shows on the Mac. */}
+          <span>{hostKey ? `${hostKey.slice(0, 12)}…` : "—"}</span>
+        </div>
+        <div className="kv">
+          <span>Relay</span>
+          <span>{relay ? abbreviate(relay) : "Off"}</span>
+        </div>
+        {via && connection === "connected" && (
+          <div className="kv">
+            <span>Connected over</span>
+            <span>{VIA_TEXT[via]}</span>
+          </div>
+        )}
+      </Disclosure>
       <div style={{ display: "flex", gap: 10, marginTop: 18 }}>
         <button
           type="button"
