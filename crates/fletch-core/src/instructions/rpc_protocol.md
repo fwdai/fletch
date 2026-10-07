@@ -79,6 +79,7 @@ ID=$(uuidgen); printf '{"id":"%s","op":"set_title","args":{"title":"Swap sidebar
 - Each later turn: if untitled and the purpose is now clear, call it first.
 - Untitled after the user's third message: call it with your best inference.
 - Repeat calls overwrite. Re-call only when the purpose changes materially.
+- Do it silently. Do not mention it in your replies.
 
 In a multi-repo workspace (sibling repository checkouts under the workspace
 root), every git op accepts an optional `args.repo` — the sibling checkout's
