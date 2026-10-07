@@ -169,6 +169,75 @@ pub(crate) async fn pr_body_and_merge(
     }))
 }
 
+/// One file a PR added, removed or renamed. Edits in place are left out:
+/// they change no file list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PrFileChange {
+    Added(String),
+    Removed(String),
+    Renamed { from: String, to: String },
+}
+
+/// Page size for [`pr_files`]: GitHub's maximum.
+const FILES_PAGE_SIZE: usize = 100;
+/// GitHub lists at most 3000 files of a PR.
+const FILES_MAX_PAGES: u32 = 30;
+
+/// The files a PR added, removed or renamed, by number; `Ok(None)` when its
+/// repository is not a GitHub one. A PR past GitHub's 3000-file listing
+/// limit comes back truncated (logged).
+pub(crate) async fn pr_files(
+    checkout: &Path,
+    source_repo: Option<&Path>,
+    number: u32,
+) -> Result<Option<Vec<PrFileChange>>> {
+    let Some((owner, repo)) = resolve_slug(checkout, source_repo).await else {
+        return Ok(None);
+    };
+    let client = client::Client::new()?;
+    let mut changes = Vec::new();
+    for page in 1..=FILES_MAX_PAGES {
+        let (status, body) = client
+            .rest(
+                reqwest::Method::GET,
+                &format!(
+                    "/repos/{owner}/{repo}/pulls/{number}/files?per_page={FILES_PAGE_SIZE}&page={page}"
+                ),
+                None,
+            )
+            .await?;
+        if !status.is_success() {
+            return Err(Error::Gh(format!(
+                "pr files failed: {}",
+                detailed_rest_error(&body)
+            )));
+        }
+        let batch = body.as_array().cloned().unwrap_or_default();
+        changes.extend(batch.iter().filter_map(parse_file_change));
+        if batch.len() < FILES_PAGE_SIZE {
+            return Ok(Some(changes));
+        }
+    }
+    tracing::warn!(
+        number,
+        "pr files: listing truncated at GitHub's 3000-file limit"
+    );
+    Ok(Some(changes))
+}
+
+fn parse_file_change(file: &Value) -> Option<PrFileChange> {
+    let path = file["filename"].as_str()?.to_string();
+    match file["status"].as_str()? {
+        "added" | "copied" => Some(PrFileChange::Added(path)),
+        "removed" => Some(PrFileChange::Removed(path)),
+        "renamed" => Some(PrFileChange::Renamed {
+            from: file["previous_filename"].as_str()?.to_string(),
+            to: path,
+        }),
+        _ => None,
+    }
+}
+
 /// Overwrite a PR's body by number (REST PATCH). Used by the multi-repo
 /// PR-set cross-linker; callers are expected to have fetched the current body
 /// via [`pr_body`] and edited it (sentinel replacement, never blind append).
@@ -461,6 +530,36 @@ mod tests {
             "title": format!("PR {number}"),
             "mergeable": mergeable,
         })
+    }
+
+    #[test]
+    fn pr_files_keep_what_changes_the_file_list() {
+        let parse = |file: Value| parse_file_change(&file);
+        assert_eq!(
+            parse(json!({ "filename": "a.rs", "status": "added" })),
+            Some(PrFileChange::Added("a.rs".into()))
+        );
+        assert_eq!(
+            parse(json!({ "filename": "b.rs", "status": "copied" })),
+            Some(PrFileChange::Added("b.rs".into()))
+        );
+        assert_eq!(
+            parse(json!({ "filename": "c.rs", "status": "removed" })),
+            Some(PrFileChange::Removed("c.rs".into()))
+        );
+        assert_eq!(
+            parse(
+                json!({ "filename": "new/d.rs", "status": "renamed", "previous_filename": "old/d.rs" })
+            ),
+            Some(PrFileChange::Renamed {
+                from: "old/d.rs".into(),
+                to: "new/d.rs".into()
+            })
+        );
+        assert_eq!(
+            parse(json!({ "filename": "e.rs", "status": "modified" })),
+            None
+        );
     }
 
     #[test]
