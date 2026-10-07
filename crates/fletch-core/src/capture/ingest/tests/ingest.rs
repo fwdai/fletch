@@ -137,6 +137,7 @@ fn merged(body: &str) -> MergedPr {
         body: body.to_string(),
         branch: Some("feat/sessions".to_string()),
         sha: Some("abc123".to_string()),
+        structure: StructureDelta::default(),
     }
 }
 
