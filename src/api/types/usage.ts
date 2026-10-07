@@ -16,12 +16,16 @@ export interface UsageScanTokens {
   cacheWrite: number;
 }
 
-/** One hour/provider/model cell of the usage table. */
+/** One hour/provider/model/account cell of the usage table. */
 export interface UsageBucket {
   /** Epoch ms of the *local* hour containing the records. */
   hourStartMs: number;
   provider: UsageProvider;
   model: string;
+  /** The provider account whose directory holds the transcript: a managed id
+   *  or `"default"`. Absent from a host older than per-account usage, which
+   *  reads as the default. */
+  account?: string;
   tokens: UsageScanTokens;
   /** Usage records folded into this bucket, after dedupe. */
   requests: number;
@@ -32,12 +36,14 @@ export interface UsageBucket {
 export interface UsageSessionSpan {
   provider: UsageProvider;
   id: string;
+  /** As `UsageBucket.account`. */
+  account?: string;
   firstMs: number;
   lastMs: number;
 }
 
 export interface UsageScan {
-  /** Sorted by hour, then provider, then model. */
+  /** Sorted by hour, then provider, then model, then account. */
   buckets: UsageBucket[];
   /** Sorted by provider, then start, then id. */
   sessions: UsageSessionSpan[];

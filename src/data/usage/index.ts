@@ -24,6 +24,7 @@ export {
 } from "./costLabel";
 export type {
   HostUsageScan,
+  UsageAccountRow,
   UsageCostCoverage,
   UsageDay,
   UsageDayRow,

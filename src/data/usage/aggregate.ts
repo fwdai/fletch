@@ -6,11 +6,13 @@ import type {
   UsageScanTokens,
   UsageSessionSpan,
 } from "@/api";
+import { DEFAULT_ACCOUNT_ID } from "@/api/types/providers";
 import type { SlimCatalog } from "@/data/modelCatalog";
 import { cacheSavingsUsd, priceTokens } from "@/data/modelCatalog";
 import { dayKeysBetween, localDay } from "@/util/format";
 import type {
   HostUsageScan,
+  UsageAccountRow,
   UsageDay,
   UsageDayRow,
   UsageDaySlice,
@@ -173,6 +175,16 @@ interface DayAcc {
 
 const byTokensDesc = (a: { tokens: number }, b: { tokens: number }) => b.tokens - a.tokens;
 
+/** The account a bucket or session ran under; a host from before per-account
+ *  usage names none, which is the default. */
+const accountOf = (row: { account?: string }) => row.account || DEFAULT_ACCOUNT_ID;
+
+interface SliceAcc {
+  tokens: number;
+  costUsd: number;
+  unpricedTokens: number;
+}
+
 /** Fold a scan into the numbers the usage pane renders: totals, per-provider
  *  rows, a zero-filled daily series, and the model / day breakdowns.
  *
@@ -199,10 +211,9 @@ export function aggregateUsage(
   // exact, however many tokens it otherwise processed.
   let unpricedCacheReadTokens = 0;
 
-  const providers = new Map<
-    UsageProvider,
-    { tokens: number; costUsd: number; unpricedTokens: number }
-  >();
+  const providers = new Map<UsageProvider, SliceAcc>();
+  // Provider → account → the same sums, for the per-account split.
+  const accounts = new Map<UsageProvider, Map<string, SliceAcc>>();
   const models = new Map<string, UsageModelRow>();
   const days = new Map<string, DayAcc>();
 
@@ -227,6 +238,14 @@ export function aggregateUsage(
     prov.costUsd += cost ?? 0;
     prov.unpricedTokens += unpriced;
     providers.set(b.provider, prov);
+
+    const byAccount = accounts.get(b.provider) ?? new Map<string, SliceAcc>();
+    const acct = byAccount.get(accountOf(b)) ?? { tokens: 0, costUsd: 0, unpricedTokens: 0 };
+    acct.tokens += tokens;
+    acct.costUsd += cost ?? 0;
+    acct.unpricedTokens += unpriced;
+    byAccount.set(accountOf(b), acct);
+    accounts.set(b.provider, byAccount);
 
     // Keyed by provider too: the same model id can be reached through more
     // than one CLI, and the row carries a provider icon.
@@ -269,7 +288,33 @@ export function aggregateUsage(
   const share = (tokens: number) => (totals.processed > 0 ? tokens / totals.processed : 0);
 
   const sessionsBy = new Map<UsageProvider, number>();
-  for (const s of sessions) sessionsBy.set(s.provider, (sessionsBy.get(s.provider) ?? 0) + 1);
+  const sessionsByAccount = new Map<string, number>();
+  const accountKey = (provider: UsageProvider, account: string) => `${provider}::${account}`;
+  for (const s of sessions) {
+    sessionsBy.set(s.provider, (sessionsBy.get(s.provider) ?? 0) + 1);
+    const key = accountKey(s.provider, accountOf(s));
+    sessionsByAccount.set(key, (sessionsByAccount.get(key) ?? 0) + 1);
+  }
+
+  const accountRows = (provider: UsageProvider): UsageAccountRow[] => {
+    const sums = accounts.get(provider) ?? new Map<string, SliceAcc>();
+    const ids = new Set(sums.keys());
+    for (const s of sessions) if (s.provider === provider) ids.add(accountOf(s));
+    return [...ids]
+      .map((account) => {
+        const sum = sums.get(account);
+        const tokens = sum?.tokens ?? 0;
+        return {
+          account,
+          sessions: sessionsByAccount.get(accountKey(provider, account)) ?? 0,
+          tokens,
+          costUsd: sum?.costUsd ?? 0,
+          unpricedTokens: sum?.unpricedTokens ?? 0,
+          share: share(tokens),
+        };
+      })
+      .sort((a, b) => b.tokens - a.tokens || b.sessions - a.sessions);
+  };
 
   const providerRows: UsageProviderRow[] = [...new Set([...providers.keys(), ...sessionsBy.keys()])]
     .map((provider) => {
@@ -282,6 +327,7 @@ export function aggregateUsage(
         costUsd: p?.costUsd ?? 0,
         unpricedTokens: p?.unpricedTokens ?? 0,
         share: share(tokens),
+        accounts: accountRows(provider),
       };
     })
     .sort((a, b) => b.tokens - a.tokens || b.sessions - a.sessions);

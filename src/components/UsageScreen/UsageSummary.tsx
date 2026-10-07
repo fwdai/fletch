@@ -1,10 +1,14 @@
+import { Fragment } from "react";
+import { DEFAULT_ACCOUNT_ID } from "@/api/types/providers";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { CountUp, Skeleton } from "@/components/Stats";
+import { accountLabel } from "@/data/providerAccounts";
 import { providerChip, providerLabel } from "@/data/providers";
 import {
   type CostLabel,
   costLabel,
   coverageLabel,
+  type UsageAccountRow,
   type UsageMetric,
   type UsageStats,
 } from "@/data/usage";
@@ -38,8 +42,33 @@ function Headline({ stats, metric }: { stats: UsageStats; metric: UsageMetric })
   );
 }
 
+/** One account's part of a provider row, indented under it. */
+function AccountSplit({ row }: { row: UsageAccountRow }) {
+  const cost = coverageLabel(row);
+  const label = accountLabel({ id: row.account, managed: row.account !== DEFAULT_ACCOUNT_ID });
+  return (
+    <div className="usg-prov usg-prov-acct flex-center">
+      <div className="usg-prov-id">
+        <div className="usg-prov-acct-name text-sm">{label}</div>
+        <div className="usg-prov-sub text-xs">{sessionsLabel(row.sessions)}</div>
+      </div>
+      <div className="usg-prov-nums">
+        <div className="usg-prov-tok mono text-sm">{formatTokens(row.tokens)}</div>
+        <div
+          className={`usg-prov-sub text-xs${cost.tip ? " tip" : ""}`}
+          data-tip={cost.tip ?? undefined}
+        >
+          {formatPercent(row.share)} of tokens ·{" "}
+          <span className={cost.kind === "unpriced" ? "usg-unpriced" : undefined}>{cost.text}</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /** The left column: one headline number for the whole window, then the same
- *  number split per provider. */
+ *  number split per provider — and per account under a provider that ran
+ *  under more than one. */
 export function UsageSummary({
   stats,
   metric,
@@ -72,26 +101,30 @@ export function UsageSummary({
           [0, 1].map((i) => <Skeleton key={i} height={46} className="usg-prov-skel" />)}
         {stats?.providers.map((p) => {
           const row = coverageLabel(p);
+          const split = p.accounts.length > 1;
           return (
-            <div key={p.provider} className="usg-prov flex-center">
-              <ProviderIcon slug={p.provider} {...providerChip(p.provider)} size={26} />
-              <div className="usg-prov-id">
-                <div className="usg-prov-name text-base">{providerLabel(p.provider)}</div>
-                <div className="usg-prov-sub text-xs">{sessionsLabel(p.sessions)}</div>
-              </div>
-              <div className="usg-prov-nums">
-                <div className="usg-prov-tok mono text-base">{formatTokens(p.tokens)}</div>
-                <div
-                  className={`usg-prov-sub text-xs${row.tip ? " tip" : ""}`}
-                  data-tip={row.tip ?? undefined}
-                >
-                  {formatPercent(p.share)} of tokens ·{" "}
-                  <span className={row.kind === "unpriced" ? "usg-unpriced" : undefined}>
-                    {row.text}
-                  </span>
+            <Fragment key={p.provider}>
+              <div className="usg-prov flex-center">
+                <ProviderIcon slug={p.provider} {...providerChip(p.provider)} size={26} />
+                <div className="usg-prov-id">
+                  <div className="usg-prov-name text-base">{providerLabel(p.provider)}</div>
+                  <div className="usg-prov-sub text-xs">{sessionsLabel(p.sessions)}</div>
+                </div>
+                <div className="usg-prov-nums">
+                  <div className="usg-prov-tok mono text-base">{formatTokens(p.tokens)}</div>
+                  <div
+                    className={`usg-prov-sub text-xs${row.tip ? " tip" : ""}`}
+                    data-tip={row.tip ?? undefined}
+                  >
+                    {formatPercent(p.share)} of tokens ·{" "}
+                    <span className={row.kind === "unpriced" ? "usg-unpriced" : undefined}>
+                      {row.text}
+                    </span>
+                  </div>
                 </div>
               </div>
-            </div>
+              {split && p.accounts.map((a) => <AccountSplit key={a.account} row={a} />)}
+            </Fragment>
           );
         })}
       </div>

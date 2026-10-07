@@ -312,8 +312,59 @@ describe("aggregateUsage", () => {
       range,
     );
     expect(only.providers).toEqual([
-      { provider: "codex", sessions: 1, tokens: 0, costUsd: 0, unpricedTokens: 0, share: 0 },
+      {
+        provider: "codex",
+        sessions: 1,
+        tokens: 0,
+        costUsd: 0,
+        unpricedTokens: 0,
+        share: 0,
+        accounts: [
+          { account: "default", sessions: 1, tokens: 0, costUsd: 0, unpricedTokens: 0, share: 0 },
+        ],
+      },
     ]);
+  });
+});
+
+// Spend per provider account: each provider row carries its own split, which
+// the usage pane shows only when there is more than one account to show.
+describe("aggregateUsage per account", () => {
+  const days = ["2026-09-14", "2026-09-15"];
+  const range = windowOf(days);
+
+  it("splits a provider's tokens, cost and sessions by account", () => {
+    const stats = aggregateUsage(
+      scan(
+        [
+          bucket({ hourStartMs: at(days[0], 9), model: "sonnet-5", account: "work" }),
+          bucket({ hourStartMs: at(days[0], 10), model: "sonnet-5", account: "work" }),
+          bucket({ hourStartMs: at(days[1], 9), model: "sonnet-5", account: "default" }),
+        ],
+        [
+          session({ id: "a", firstMs: at(days[0], 9), account: "work" }),
+          session({ id: "b", firstMs: at(days[1], 9), account: "default" }),
+        ],
+      ),
+      CATALOG,
+      range,
+    );
+    const [claude] = stats.providers;
+    expect(claude.accounts.map((a) => [a.account, a.tokens, a.sessions])).toEqual([
+      ["work", 220, 1],
+      ["default", 110, 1],
+    ]);
+    expect(claude.accounts.reduce((sum, a) => sum + a.costUsd, 0)).toBeCloseTo(claude.costUsd);
+    expect(claude.accounts.reduce((sum, a) => sum + a.share, 0)).toBeCloseTo(claude.share);
+  });
+
+  it("reads a bucket from a host without accounts as the default account's", () => {
+    const stats = aggregateUsage(
+      scan([bucket({ hourStartMs: at(days[0], 9), model: "sonnet-5" })]),
+      CATALOG,
+      range,
+    );
+    expect(stats.providers[0].accounts.map((a) => a.account)).toEqual(["default"]);
   });
 });
 
