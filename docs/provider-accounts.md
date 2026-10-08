@@ -426,8 +426,9 @@ What Fletch does:
 - Transcripts move with the agent, not the account: rollouts are found in the
   agent's overlay first. A thread an agent ran before this change is copied
   (with its sub-agent threads) into the overlay at its launches, each file
-  whole under its final name and every missing one retried, so resume keeps
-  working; the original stays put, and the usage scan counts a rollout name
+  whole under its final name and every missing one retried until the whole
+  thread is confirmed (a marker in the overlay's `.fletch-adopted/` then
+  skips the legacy walk), so resume keeps working; the original stays put, and the usage scan counts a rollout name
   once, so the copy isn't spend twice. The usage scan credits an overlay to
   the agent's stamp (`workspace::agent_accounts`). The fork/rewind writer
   writes into the target agent's overlay.

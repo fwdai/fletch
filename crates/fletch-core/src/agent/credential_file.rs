@@ -86,7 +86,7 @@ pub(crate) use imp::PrivateDir;
 
 #[cfg(unix)]
 mod imp {
-    use std::ffi::CString;
+    use std::ffi::{CStr, CString};
     use std::fs::File;
     use std::io::{Error, ErrorKind, Result, Write};
     use std::os::fd::{AsRawFd, FromRawFd};
@@ -151,7 +151,10 @@ mod imp {
         }
 
         fn openat_dir(&self, name: &str) -> Result<Self> {
-            let c = cname(name)?;
+            self.openat_dir_c(&cname(name)?)
+        }
+
+        fn openat_dir_c(&self, c: &CStr) -> Result<Self> {
             // SAFETY: a valid dir fd and a NUL-terminated name; the returned
             // fd is owned by the `File` built from it.
             let fd = check(unsafe {
@@ -163,7 +166,7 @@ mod imp {
             })?;
             Ok(Self {
                 dir: unsafe { File::from_raw_fd(fd) },
-                path: self.path.join(name),
+                path: self.path.join(std::ffi::OsStr::from_bytes(c.to_bytes())),
             })
         }
 
@@ -238,7 +241,12 @@ mod imp {
         /// Remove whatever is at `name`: a link itself (never its target), a
         /// file, or a directory with everything in it. Nothing there is fine.
         pub(crate) fn remove(&self, name: &str) -> Result<()> {
-            let c = cname(name)?;
+            self.remove_c(&cname(name)?)
+        }
+
+        /// [`remove`](Self::remove) by the raw name bytes, so an entry whose
+        /// name isn't UTF-8 (one the agent made) is removed like any other.
+        fn remove_c(&self, c: &CStr) -> Result<()> {
             // SAFETY: as in `openat_dir`.
             let ret = unsafe { libc::unlinkat(self.dir.as_raw_fd(), c.as_ptr(), 0) };
             if ret == 0 {
@@ -248,7 +256,7 @@ mod imp {
             match e.raw_os_error() {
                 Some(libc::ENOENT) => Ok(()),
                 Some(libc::EISDIR) | Some(libc::EPERM) => {
-                    let sub = self.openat_dir(name)?;
+                    let sub = self.openat_dir_c(c)?;
                     sub.clear()?;
                     // SAFETY: as in `openat_dir`.
                     check(unsafe {
@@ -262,13 +270,13 @@ mod imp {
 
         fn clear(&self) -> Result<()> {
             for name in self.names()? {
-                self.remove(&name)?;
+                self.remove_c(&name)?;
             }
             Ok(())
         }
 
-        /// The names in this directory, `.` and `..` aside.
-        fn names(&self) -> Result<Vec<String>> {
+        /// The names in this directory as raw bytes, `.` and `..` aside.
+        fn names(&self) -> Result<Vec<CString>> {
             // SAFETY: `dup` of a valid fd; `fdopendir` takes ownership of the
             // duplicate and `closedir` releases it; each `dirent` is read
             // before the next `readdir` call.
@@ -287,10 +295,9 @@ mod imp {
                     if entry.is_null() {
                         break;
                     }
-                    let name = std::ffi::CStr::from_ptr((*entry).d_name.as_ptr());
-                    let name = name.to_string_lossy().into_owned();
-                    if name != "." && name != ".." {
-                        out.push(name);
+                    let name = CStr::from_ptr((*entry).d_name.as_ptr());
+                    if name.to_bytes() != b"." && name.to_bytes() != b".." {
+                        out.push(name.to_owned());
                     }
                 }
                 libc::closedir(dir);
@@ -539,6 +546,28 @@ mod tests {
 
         assert_eq!(dir.entry("sessions").unwrap(), Entry::Dir);
         assert!(!elsewhere.join("x").exists());
+    }
+
+    /// An agent can name a file with bytes that aren't UTF-8; removing the
+    /// directory it sits in must still empty and remove it.
+    #[test]
+    fn removing_a_directory_takes_entries_whose_names_are_not_utf8() {
+        use std::os::unix::ffi::OsStrExt;
+        let td = tempfile::tempdir().unwrap();
+        let dir_path = td.path().join("dir");
+        std::fs::create_dir_all(dir_path.join("junk")).unwrap();
+        let odd = std::ffi::OsStr::from_bytes(b"bad-\xff-name");
+        // APFS refuses such a name outright, so on macOS there is nothing to
+        // remove; Linux filesystems (and a container's bind mounts) take it.
+        if let Err(e) = std::fs::write(dir_path.join("junk").join(odd), "x") {
+            assert_eq!(e.raw_os_error(), Some(nix::libc::EILSEQ), "{e}");
+            return;
+        }
+        let dir = PrivateDir::open(&dir_path).unwrap();
+
+        dir.remove("junk").unwrap();
+
+        assert_eq!(dir.entry("junk").unwrap(), Entry::Missing);
     }
 
     #[test]

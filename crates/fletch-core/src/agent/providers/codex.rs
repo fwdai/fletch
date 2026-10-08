@@ -96,7 +96,10 @@ pub(crate) fn codex_write(
 /// and one an earlier launch failed to copy is tried again. One that is
 /// there is never touched, since codex appends to it once it resumes.
 /// Written through a handle on the overlay (`codex_login::open_overlay`), so
-/// a link the agent planted in it is replaced, never followed.
+/// a link the agent planted in it is replaced, never followed. Once every
+/// file of the thread is confirmed there, a marker in the overlay
+/// ([`ADOPTED_DIRNAME`]) skips the walk of the legacy roots at later
+/// launches.
 pub(crate) fn adopt_legacy_rollouts(session_id: &str, overlay: &Path) -> Result<()> {
     adopt_rollouts_from(
         session_id,
@@ -105,30 +108,47 @@ pub(crate) fn adopt_legacy_rollouts(session_id: &str, overlay: &Path) -> Result<
     )
 }
 
+/// The overlay dir holding one empty file per thread whose adoption is
+/// complete, named for the thread id.
+const ADOPTED_DIRNAME: &str = ".fletch-adopted";
+
 /// [`adopt_legacy_rollouts`] from the `legacy` session roots given.
 fn adopt_rollouts_from(session_id: &str, overlay: &Path, legacy: &[PathBuf]) -> Result<()> {
+    let overlay = crate::agent::codex_login::open_overlay(overlay)?;
+    let adopted = overlay.subdir(ADOPTED_DIRNAME)?;
+    // A thread id that can't name a file is never marked, only walked.
+    let marked = adopted.entry(session_id).ok();
+    if marked.as_ref().is_some_and(|e| *e != Entry::Missing) {
+        return Ok(());
+    }
     let mut diag = ReadDiagnostics::default();
     let mains = legacy
         .iter()
         .flat_map(|root| crate::transcripts::find_codex_rollouts_in(root, session_id, &mut diag))
         .collect::<Vec<_>>();
-    if mains.is_empty() {
-        return Ok(());
-    }
-    let sessions = crate::agent::codex_login::open_overlay(overlay)?.subdir("sessions")?;
+    let sessions = overlay.subdir("sessions")?;
     // A thread the overlay already holds under any name is the copy codex
     // resumed and appends to; only its sub-agents' files are checked.
     let have_main =
         !crate::transcripts::find_codex_rollouts_in(sessions.path(), session_id, &mut diag)
             .is_empty();
+    if mains.is_empty() && !have_main {
+        // Not written yet, or gone: nothing to confirm.
+        return Ok(());
+    }
+    let mut complete = true;
     for main in mains {
         let children = codex_subagent_files(&main).into_iter().map(|(_, p)| p);
         let main = (!have_main).then(|| main.clone());
         for path in main.into_iter().chain(children) {
             if let Err(e) = copy_rollout(&path, &sessions) {
+                complete = false;
                 tracing::warn!(error = %e, "could not copy a codex thread into the agent's home");
             }
         }
+    }
+    if complete && marked.is_some() {
+        adopted.write_file(session_id, b"", 0o600)?;
     }
     Ok(())
 }
@@ -667,14 +687,51 @@ mod tests {
 
     /// A sub-agent's file that an earlier launch failed to copy is copied by
     /// the next, though the main thread is already there.
+    #[cfg(unix)]
     #[test]
     fn an_adoption_cut_short_is_finished_at_the_next_launch() {
+        use std::os::unix::fs::PermissionsExt;
+        let td = tempfile::tempdir().unwrap();
+        let legacy = td.path().join("legacy");
+        let overlay = td.path().join("agent").join(".fletch-codex-home");
+        legacy_rollout(&legacy, "09-00-00", "main-1", None);
+        // The sub-agent ran a day later, so its copy needs a dir of its own,
+        // which the first launch can't create.
+        let child_day = legacy.join("2026/10/02");
+        std::fs::create_dir_all(&child_day).unwrap();
+        std::fs::write(
+            child_day.join("rollout-2026-10-02T09-05-00-child-1.jsonl"),
+            format!("{}\n", meta_line("child-1", Some("main-1"))),
+        )
+        .unwrap();
+        let month = overlay.join("sessions/2026/10");
+        std::fs::create_dir_all(month.join("01")).unwrap();
+        std::fs::set_permissions(&month, std::fs::Permissions::from_mode(0o555)).unwrap();
+        adopt_rollouts_from("main-1", &overlay, std::slice::from_ref(&legacy)).unwrap();
+        std::fs::set_permissions(&month, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(!month.join("02").exists());
+        assert!(!overlay.join(ADOPTED_DIRNAME).join("main-1").exists());
+
+        adopt_rollouts_from("main-1", &overlay, &[legacy]).unwrap();
+
+        assert_eq!(
+            names_in(&month.join("02")),
+            vec!["rollout-2026-10-02T09-05-00-child-1.jsonl"]
+        );
+        assert!(overlay.join(ADOPTED_DIRNAME).join("main-1").is_file());
+    }
+
+    /// Once a thread is confirmed whole, later launches don't walk the legacy
+    /// roots for it: a file deleted from the overlay afterwards stays gone.
+    #[test]
+    fn a_confirmed_adoption_skips_the_legacy_walk() {
         let td = tempfile::tempdir().unwrap();
         let legacy = td.path().join("legacy");
         let overlay = td.path().join("agent").join(".fletch-codex-home");
         legacy_rollout(&legacy, "09-00-00", "main-1", None);
         legacy_rollout(&legacy, "09-05-00", "child-1", Some("main-1"));
         adopt_rollouts_from("main-1", &overlay, std::slice::from_ref(&legacy)).unwrap();
+        assert!(overlay.join(ADOPTED_DIRNAME).join("main-1").is_file());
         let day = overlay.join("sessions/2026/10/01");
         std::fs::remove_file(day.join("rollout-2026-10-01T09-05-00-child-1.jsonl")).unwrap();
 
@@ -682,10 +739,7 @@ mod tests {
 
         assert_eq!(
             names_in(&day),
-            vec![
-                "rollout-2026-10-01T09-00-00-main-1.jsonl",
-                "rollout-2026-10-01T09-05-00-child-1.jsonl"
-            ]
+            vec!["rollout-2026-10-01T09-00-00-main-1.jsonl"]
         );
     }
 
