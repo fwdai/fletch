@@ -40,6 +40,40 @@ pub const ACTIVE_SETTING_PREFIX: &str = "provider_account_";
 /// these have accounts; the rest keep their single sign-in.
 pub const ACCOUNT_PROVIDERS: [&str; 2] = ["claude", "codex"];
 
+/// One async lock per account provider, serializing what relies on an
+/// account staying as it was checked (an agent's switch onto or off it)
+/// against what ends it (removal, sign-out). Per provider rather than per
+/// account: the set stays fixed whatever ids a caller names, and these are
+/// rare, user-driven moves. Lock order: this first, then an agent's delivery
+/// lock, its input route, and the supervisor's lifecycle lock.
+pub struct AccountLocks {
+    locks: [(&'static str, tokio::sync::Mutex<()>); ACCOUNT_PROVIDERS.len()],
+}
+
+impl Default for AccountLocks {
+    fn default() -> Self {
+        Self {
+            locks: ACCOUNT_PROVIDERS.map(|p| (p, tokio::sync::Mutex::new(()))),
+        }
+    }
+}
+
+impl AccountLocks {
+    /// `provider`'s lock, or `None` for a provider without accounts, which has
+    /// nothing to serialize.
+    pub async fn lock(&self, provider: &str) -> Option<tokio::sync::MutexGuard<'_, ()>> {
+        let (_, lock) = self.locks.iter().find(|(p, _)| *p == provider)?;
+        Some(lock.lock().await)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_held(&self, provider: &str) -> bool {
+        self.locks
+            .iter()
+            .any(|(p, lock)| *p == provider && lock.try_lock().is_err())
+    }
+}
+
 pub fn active_setting_key(provider: &str) -> String {
     format!("{ACTIVE_SETTING_PREFIX}{provider}")
 }

@@ -82,8 +82,11 @@ pub fn ensure_account_removable(ctx: &EngineCtx, provider: &str, id: &str) -> Re
 }
 
 /// Delete a managed account directory — its login, its transcripts, its links.
-/// Refused under the same conditions as [`ensure_account_removable`].
-pub fn remove_provider_account_impl(ctx: &EngineCtx, provider: &str, id: &str) -> Result<()> {
+/// Refused under the same conditions as [`ensure_account_removable`]. The
+/// check and the delete hold the provider's account lock, so no agent is
+/// switched onto the account between them (`Supervisor::switch_account`).
+pub async fn remove_provider_account_impl(ctx: &EngineCtx, provider: &str, id: &str) -> Result<()> {
+    let _account = ctx.account_locks.lock(provider).await;
     ensure_account_removable(ctx, provider, id)?;
     accounts::remove_account_dir(provider, id)
 }
@@ -128,7 +131,15 @@ const LOGOUT_TIMEOUT: Duration = Duration::from_secs(30);
 /// still signed in is an error that says why. For the default that is usually
 /// a key in the user's shell, which the probe counts and no child process can
 /// unset — the error names the variable to remove.
-pub async fn sign_out_provider_account_impl(provider: &str, id: &str) -> Result<()> {
+///
+/// Holds the provider's account lock throughout, so no agent is switched onto
+/// the account on the strength of a login this is clearing.
+pub async fn sign_out_provider_account_impl(
+    ctx: &EngineCtx,
+    provider: &str,
+    id: &str,
+) -> Result<()> {
+    let _account = ctx.account_locks.lock(provider).await;
     let home =
         dirs::home_dir().ok_or_else(|| Error::Other("HOME directory not available".into()))?;
     let (bin, label) = crate::agent::provider_bin_label(provider)

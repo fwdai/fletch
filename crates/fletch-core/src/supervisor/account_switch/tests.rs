@@ -565,5 +565,129 @@ fn a_switch_moves_the_removal_gate_with_the_agent() {
     });
 }
 
+/// A supervisor over the ctx's own database, so the accounts commands see the
+/// agents the switch restamps; `AGENT` is stamped `work`.
+async fn shared_db_agent(dir: &Path) -> (Arc<Supervisor>, Arc<EngineCtx>, tempfile::TempDir) {
+    let (ctx, _sink, db_dir) = crate::host::ctx::test_ctx();
+    let sup = Arc::new(Supervisor::new(Arc::new(
+        crate::workspace::WorkspaceManager::new(ctx.db.clone()),
+    )));
+    let checkout = committed_repo(dir, "repo").await;
+    let mut record = record_in_checkouts(&sup, AGENT, std::slice::from_ref(&checkout));
+    record.account = Some("work".into());
+    sup.workspace.add_agent(&mut record).unwrap();
+    (sup, ctx, db_dir)
+}
+
+/// Start a switch to `to` and return once it holds the provider's account
+/// lock, parked on the lifecycle lock `held` keeps.
+async fn parked_switch(
+    sup: &Arc<Supervisor>,
+    ctx: &Arc<EngineCtx>,
+    to: &'static str,
+) -> tokio::task::JoinHandle<Result<AgentRecord>> {
+    let switching = {
+        let (sup, ctx) = (sup.clone(), ctx.clone());
+        tokio::spawn(async move { sup.switch_account(&ctx, AGENT, to).await })
+    };
+    while !sup
+        .delivery_locks
+        .lock()
+        .get(AGENT)
+        .is_some_and(|lock| lock.try_lock().is_err())
+    {
+        tokio::task::yield_now().await;
+    }
+    assert!(ctx.account_locks.is_held("claude"));
+    switching
+}
+
+/// The target is checked before it is stamped; a removal can't slip between
+/// the two. It waits for the switch, then sees the new stamp and refuses.
+#[test]
+fn a_removal_during_a_switch_waits_and_then_refuses_the_new_stamp() {
+    in_root(|root| async move {
+        let td = tempfile::tempdir().unwrap();
+        signed_in(&root, "home");
+        let (sup, ctx, _db) = shared_db_agent(td.path()).await;
+
+        let held = sup.agent_lifecycle.lock().await;
+        let switching = parked_switch(&sup, &ctx, "home").await;
+        let removing = {
+            let ctx = ctx.clone();
+            tokio::spawn(async move {
+                crate::commands::remove_provider_account_impl(&ctx, "claude", "home").await
+            })
+        };
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(!removing.is_finished(), "the removal ran inside the switch");
+        drop(held);
+
+        switching.await.unwrap().unwrap();
+        let why = removing.await.unwrap().unwrap_err().to_string();
+
+        assert!(why.contains("still run under this account"), "{why}");
+        assert!(root.join("claude").join("home").is_dir());
+        assert_eq!(stamp(&sup).as_deref(), Some("home"));
+    });
+}
+
+/// A sign-out of the target waits for a switch that already checked its
+/// login. Aborted before it runs, so no CLI logout is started here.
+#[test]
+fn a_sign_out_during_a_switch_waits_for_it() {
+    in_root(|root| async move {
+        let td = tempfile::tempdir().unwrap();
+        signed_in(&root, "home");
+        let (sup, ctx, _db) = shared_db_agent(td.path()).await;
+
+        let held = sup.agent_lifecycle.lock().await;
+        let switching = parked_switch(&sup, &ctx, "home").await;
+        let signing_out = {
+            let ctx = ctx.clone();
+            tokio::spawn(async move {
+                crate::commands::sign_out_provider_account_impl(&ctx, "claude", "home").await
+            })
+        };
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        assert!(
+            !signing_out.is_finished(),
+            "the sign-out ran inside the switch"
+        );
+        signing_out.abort();
+        drop(held);
+        switching.await.unwrap().unwrap();
+        assert_eq!(stamp(&sup).as_deref(), Some("home"));
+    });
+}
+
+/// Defence behind the lock: the re-check under the lifecycle lock still
+/// refuses a target whose directory is gone.
+#[test]
+fn a_target_removed_before_the_restamp_is_refused() {
+    in_root(|root| async move {
+        let td = tempfile::tempdir().unwrap();
+        signed_in(&root, "home");
+        let (sup, ctx, _db) = shared_db_agent(td.path()).await;
+        // Live, so the switch fetches the target's token after its probe:
+        // that token being kept is the sign the probe has passed.
+        live_process(&sup, td.path());
+
+        let held = sup.agent_lifecycle.lock().await;
+        let switching = parked_switch(&sup, &ctx, "home").await;
+        while !sup.logins.lock().prefetched.contains_key(AGENT) {
+            tokio::task::yield_now().await;
+        }
+        std::fs::remove_dir_all(root.join("claude").join("home")).unwrap();
+        drop(held);
+
+        let why = switching.await.unwrap().unwrap_err().to_string();
+
+        assert!(why.contains("No claude account named `home`"), "{why}");
+        assert_eq!(stamp(&sup).as_deref(), Some("work"));
+    });
+}
+
 #[cfg(target_os = "macos")]
 mod launched;

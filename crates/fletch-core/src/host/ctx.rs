@@ -35,6 +35,9 @@ pub struct EngineCtx {
     /// suppression that used to ask the desktop window directly; a host with no
     /// window answers `false`.
     pub focus: Box<dyn Fn() -> bool + Send + Sync>,
+    /// Serializes account switches against removal and sign-out
+    /// (`accounts::AccountLocks`).
+    pub account_locks: crate::agent::accounts::AccountLocks,
 }
 
 impl EngineCtx {
@@ -46,6 +49,7 @@ impl EngineCtx {
             workflows: OnceLock::new(),
             context: OnceLock::new(),
             focus,
+            account_locks: Default::default(),
         }
     }
 

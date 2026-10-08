@@ -91,12 +91,17 @@ impl Supervisor {
         agent_id: &str,
         account: &str,
     ) -> Result<AgentRecord> {
-        // Rewind's prologue. The existence check comes first, so an unknown id
-        // never creates a delivery lock. The delivery lock is a send's, so a
-        // send that arrives meanwhile waits and then routes to the process
-        // launched under the new stamp. The route keeps an archive from
-        // tearing the checkout down under the relaunch.
-        self.workspace.agent(agent_id)?;
+        // The existence check comes first, so an unknown id never creates a
+        // delivery lock. The provider's account lock is held from the first
+        // target check through the restamp and relaunch, so neither the old
+        // account nor the target can be removed or signed out in between;
+        // it comes before the delivery lock, so a removal waiting on it never
+        // holds anything a switch needs. Then rewind's prologue: the delivery
+        // lock is a send's, so a send that arrives meanwhile waits and then
+        // routes to the process launched under the new stamp, and the route
+        // keeps an archive from tearing the checkout down under the relaunch.
+        let provider = self.workspace.agent(agent_id)?.provider;
+        let _account = ctx.account_locks.lock(&provider).await;
         let _delivering = self.lock_delivery(agent_id).await;
         let _route = self.open_route(agent_id)?;
 

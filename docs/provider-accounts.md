@@ -124,7 +124,10 @@ build it in PR 3.
   launches inside its account dir (`launches_in_account_dir`), whose sessions
   wouldn't resume under another account: codex until its sessions leave the
   account's `CODEX_HOME` (#885).
-  Order: existence check, the agent's delivery lock (a send's, so a message
+  Order: existence check, the provider's account lock
+  (`accounts::AccountLocks` on `EngineCtx`, also held by removal across its
+  check and delete and by sign-out across the logout, so neither can end an
+  account between the switch's check and its restamp), the agent's delivery lock (a send's, so a message
   sent during the switch waits and runs under the new stamp), an input route
   (an archive can't tear the checkout down under the relaunch), then the
   checks, the probe and the target's token (`prefetch_login_as`) off the
