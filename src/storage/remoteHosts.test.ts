@@ -13,7 +13,9 @@ vi.mock("./settings", () => ({
   },
 }));
 
-const { forgetHost, loadHosts, REMOTE_HOSTS_KEY, saveHost } = await import("./remoteHosts");
+const { forgetHost, loadHosts, REMOTE_HOSTS_KEY, saveHost, updateHost } = await import(
+  "./remoteHosts"
+);
 
 const HOST = {
   hostKey: "aaaa-host-key",
@@ -61,6 +63,33 @@ describe("saved remote hosts", () => {
       expect.objectContaining({ hostKey: "bbbb", name: "Mini" }),
     ]);
     expect(await loadHosts()).toHaveLength(1);
+  });
+
+  it("keeps relay updates from concurrent host reconnects", async () => {
+    const mini = { ...HOST, hostKey: "bbbb", name: "Mini" };
+    await saveHost(HOST);
+    await saveHost(mini);
+
+    await Promise.all([
+      updateHost(HOST.hostKey, { relay: "wss://cloud-relay.test" }),
+      updateHost(mini.hostKey, { relay: "wss://mini-relay.test" }),
+    ]);
+
+    expect(await loadHosts()).toEqual([
+      { ...HOST, relay: "wss://cloud-relay.test" },
+      { ...mini, relay: "wss://mini-relay.test" },
+    ]);
+  });
+
+  it("does not let an in-flight relay update restore a forgotten host", async () => {
+    await saveHost(HOST);
+
+    await Promise.all([
+      forgetHost(HOST.hostKey),
+      updateHost(HOST.hostKey, { relay: "wss://new-relay.test" }),
+    ]);
+
+    expect(await loadHosts()).toEqual([]);
   });
 
   it("forgetting a host that was never saved is a no-op", async () => {

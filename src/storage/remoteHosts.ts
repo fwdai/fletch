@@ -38,6 +38,22 @@ const isHost = (v: unknown): v is SavedHost => {
   );
 };
 
+// All records share one settings row, so every mutation is a read-modify-write
+// of the same JSON array. Keep those operations in order: parallel reconnects
+// must not overwrite each other's relay changes, and a late relay write must
+// not restore a host that was forgotten while it was in flight. A rejected
+// operation is returned to its caller but does not poison the queue.
+let mutationTail: Promise<void> = Promise.resolve();
+
+function serializeMutation<T>(operation: () => Promise<T>): Promise<T> {
+  const result = mutationTail.then(operation);
+  mutationTail = result.then(
+    () => undefined,
+    () => undefined,
+  );
+  return result;
+}
+
 /** Every saved host. A missing, unparseable or non-array value reads as none,
  *  and a corrupt entry is skipped rather than losing its neighbours — the same
  *  rule the host's own device store follows. */
@@ -55,9 +71,11 @@ export async function loadHosts(): Promise<SavedHost[]> {
 /** Add `host`, or replace the record with the same key — re-pairing a host is
  *  an update, not a second entry. Returns the list as saved. */
 export async function saveHost(host: SavedHost): Promise<SavedHost[]> {
-  const next = [...(await loadHosts()).filter((h) => h.hostKey !== host.hostKey), host];
-  await setSetting(REMOTE_HOSTS_KEY, next);
-  return next;
+  return serializeMutation(async () => {
+    const next = [...(await loadHosts()).filter((h) => h.hostKey !== host.hostKey), host];
+    await setSetting(REMOTE_HOSTS_KEY, next);
+    return next;
+  });
 }
 
 /** Change fields on the record for `hostKey`. A host with no record (forgotten,
@@ -66,17 +84,21 @@ export async function updateHost(
   hostKey: string,
   patch: Partial<Omit<SavedHost, "hostKey">>,
 ): Promise<void> {
-  const hosts = await loadHosts();
-  if (!hosts.some((h) => h.hostKey === hostKey)) return;
-  await setSetting(
-    REMOTE_HOSTS_KEY,
-    hosts.map((h) => (h.hostKey === hostKey ? { ...h, ...patch } : h)),
-  );
+  return serializeMutation(async () => {
+    const hosts = await loadHosts();
+    if (!hosts.some((h) => h.hostKey === hostKey)) return;
+    await setSetting(
+      REMOTE_HOSTS_KEY,
+      hosts.map((h) => (h.hostKey === hostKey ? { ...h, ...patch } : h)),
+    );
+  });
 }
 
 /** Drop the record for `hostKey`. Returns the list as saved. */
 export async function forgetHost(hostKey: string): Promise<SavedHost[]> {
-  const next = (await loadHosts()).filter((h) => h.hostKey !== hostKey);
-  await setSetting(REMOTE_HOSTS_KEY, next);
-  return next;
+  return serializeMutation(async () => {
+    const next = (await loadHosts()).filter((h) => h.hostKey !== hostKey);
+    await setSetting(REMOTE_HOSTS_KEY, next);
+    return next;
+  });
 }
