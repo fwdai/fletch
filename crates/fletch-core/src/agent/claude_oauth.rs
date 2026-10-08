@@ -371,8 +371,17 @@ struct Registry {
     revoked: HashMap<String, String>,
     /// A rotated login the store refused to take: the old refresh token is
     /// already spent, so this is the account's only valid one until a save
-    /// succeeds.
-    unsaved: HashMap<String, Stored>,
+    /// succeeds — or until the store changes under it (a new sign-in).
+    unsaved: HashMap<String, Pending>,
+}
+
+#[derive(Clone)]
+struct Pending {
+    stored: Stored,
+    /// The store's stamp as the refused save left it. A retry writes only
+    /// while it still matches, so a sign-in made meanwhile is never
+    /// overwritten by the old login's successor.
+    stamp: Option<String>,
 }
 
 fn registry() -> parking_lot::MutexGuard<'static, Registry> {
@@ -419,15 +428,27 @@ async fn read_store(
 }
 
 /// The login to work from: a rotated pair still waiting to be stored, written
-/// now if the store takes it, else what the store holds.
+/// now if the store takes it, else what the store holds. A pending pair whose
+/// store has changed since (the user signed in again) is dropped: the store's
+/// login is the newer one.
 async fn current_login(
     key: &str,
     store: &Arc<dyn LoginStore>,
 ) -> Result<(Option<String>, Option<Stored>), LoginError> {
     let pending = registry().unsaved.get(key).cloned();
-    let Some(pending) = pending else {
+    let Some(Pending {
+        stored: pending,
+        stamp: pending_stamp,
+    }) = pending
+    else {
         return read_store(store).await;
     };
+    let stamper = store.clone();
+    if blocking(move || stamper.stamp()).await? != pending_stamp {
+        registry().unsaved.remove(key);
+        tracing::info!("claude login changed since a refused write; dropping the pending pair");
+        return read_store(store).await;
+    }
     let saver = store.clone();
     let retry = pending.clone();
     let saved = blocking(move || saver.save(&retry.place, &retry.json)).await?;
@@ -523,12 +544,22 @@ async fn token_with(
             };
             let saver = store.clone();
             let to_save = rotated.clone();
-            let saved = blocking(move || saver.save(&to_save.place, &to_save.json)).await?;
+            let (saved, left_at) = blocking(move || {
+                let saved = saver.save(&to_save.place, &to_save.json);
+                (saved, saver.stamp())
+            })
+            .await?;
             if let Err(e) = saved {
                 // The old refresh token is spent; keep the new pair and write
                 // it on the next call rather than lose the account's login.
                 tracing::error!(error = %e, "refreshed claude login could not be stored; keeping it to retry");
-                registry().unsaved.insert(key.to_string(), rotated);
+                registry().unsaved.insert(
+                    key.to_string(),
+                    Pending {
+                        stored: rotated,
+                        stamp: left_at,
+                    },
+                );
             }
             tracing::info!(
                 rotated = grant.refresh_token.is_some(),
@@ -1133,6 +1164,24 @@ mod tests {
             1,
             "r1 is never sent twice"
         );
+    }
+
+    /// A sign-in that lands between the refused write and its retry is the
+    /// newer login: the pending pair is dropped, never written over it.
+    #[tokio::test]
+    async fn a_sign_in_after_a_refused_write_wins_over_the_kept_login() {
+        let k = key("unsaved-signed-in");
+        let store = MemStore::holding(login("a1", "r1", now_ms() - HOUR_MS));
+        store.fail_saves(true);
+        let endpoint = MockEndpoint::new(Answer::Grant(grant("a2", Some("r2"))));
+        launch(&k, &store, &endpoint).await.unwrap();
+        store.fail_saves(false);
+        store.replace(login("a9", "r9", now_ms() + 5 * HOUR_MS));
+
+        assert_eq!(launch(&k, &store, &endpoint).await.unwrap().secret(), "a9");
+        assert_eq!(store.current()["claudeAiOauth"]["refreshToken"], "r9");
+        assert_eq!(store.saves.load(Ordering::SeqCst), 1, "no retry write");
+        assert!(!registry().unsaved.contains_key(&k));
     }
 
     #[tokio::test]

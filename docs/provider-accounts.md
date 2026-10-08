@@ -425,6 +425,12 @@ polling.
   `CLAUDE_CONFIG_DIR` today); onboarding is pre-seeded to compensate.
 - `ensure_account_dir` never overwrites a shared-config link the CLI replaced
   with a real file; Settings does not yet surface such a fork.
+- A Keychain claude login over about 2 KB (the `security -i` line limit,
+  hex-encoded) is never host-refreshed, so it needs a fresh sign-in each time
+  its access token expires.
+- A rotated pair the store refused (`claude_oauth`'s `unsaved`) lives only in
+  memory: if the app quits before a retry stores it, the login is lost and
+  needs a new sign-in. Follow-up: persist it through `crate::secrets`.
 
 ## Sources consulted
 
