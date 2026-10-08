@@ -85,6 +85,7 @@ pub(crate) fn antigravity_conv_id_from_map(json_text: &str, cwd: &str) -> Option
 
 pub(crate) fn antigravity_locate(
     session_id: &str,
+    _agent_id: &str,
     cwd: &Path,
     diag: &mut ReadDiagnostics,
 ) -> Vec<PathBuf> {

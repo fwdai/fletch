@@ -1,5 +1,6 @@
 //! Coordinator between Tauri IPC commands and the running agents.
 
+mod account_switch;
 pub mod auto_archive;
 pub mod base_freshness;
 mod checkpoints;

@@ -40,6 +40,40 @@ pub const ACTIVE_SETTING_PREFIX: &str = "provider_account_";
 /// these have accounts; the rest keep their single sign-in.
 pub const ACCOUNT_PROVIDERS: [&str; 2] = ["claude", "codex"];
 
+/// One async lock per account provider, serializing what relies on an
+/// account staying as it was checked (an agent's switch onto or off it)
+/// against what ends it (removal, sign-out). Per provider rather than per
+/// account: the set stays fixed whatever ids a caller names, and these are
+/// rare, user-driven moves. Lock order: this first, then an agent's delivery
+/// lock, its input route, and the supervisor's lifecycle lock.
+pub struct AccountLocks {
+    locks: [(&'static str, tokio::sync::Mutex<()>); ACCOUNT_PROVIDERS.len()],
+}
+
+impl Default for AccountLocks {
+    fn default() -> Self {
+        Self {
+            locks: ACCOUNT_PROVIDERS.map(|p| (p, tokio::sync::Mutex::new(()))),
+        }
+    }
+}
+
+impl AccountLocks {
+    /// `provider`'s lock, or `None` for a provider without accounts, which has
+    /// nothing to serialize.
+    pub async fn lock(&self, provider: &str) -> Option<tokio::sync::MutexGuard<'_, ()>> {
+        let (_, lock) = self.locks.iter().find(|(p, _)| *p == provider)?;
+        Some(lock.lock().await)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_held(&self, provider: &str) -> bool {
+        self.locks
+            .iter()
+            .any(|(p, lock)| *p == provider && lock.try_lock().is_err())
+    }
+}
+
 pub fn active_setting_key(provider: &str) -> String {
     format!("{ACTIVE_SETTING_PREFIX}{provider}")
 }
@@ -58,17 +92,6 @@ pub fn supports_accounts(provider: &str) -> bool {
     config_dir_env(provider).is_some()
 }
 
-/// Whether an agent under a managed account of `provider` runs its CLI in the
-/// account's dir. Claude's never does: a sandboxed claude can't refresh its own
-/// login, so the host does (`claude_oauth`) and hands the agent the access
-/// token, and every claude agent runs in the shared default config dir. The
-/// account dir stays the login's host-only storage and what Settings signs in
-/// with (`account_env`). Sharing the dir is also what keeps every account's
-/// transcripts in one place.
-pub fn launches_in_account_dir(provider: &str) -> bool {
-    supports_accounts(provider) && provider != "claude"
-}
-
 pub fn is_default(id: &str) -> bool {
     id.is_empty() || id == DEFAULT_ACCOUNT
 }
@@ -77,7 +100,7 @@ pub fn is_default(id: &str) -> bool {
 /// only — never the login, the identity file (`.claude.json`, which also holds
 /// onboarding state) or the session stores, which are exactly what differs per
 /// account.
-fn shared_items(provider: &str) -> &'static [&'static str] {
+pub(crate) fn shared_items(provider: &str) -> &'static [&'static str] {
     match provider {
         "claude" => &[
             "settings.json",
@@ -163,9 +186,9 @@ pub fn list_account_ids(provider: &str) -> Vec<String> {
 }
 
 /// Every managed account directory of `provider`, in id order — the roots a
-/// transcript scan unions with the CLI's default dir: a codex agent stamped
-/// with an account writes its sessions there, and claude agents did before
-/// their accounts became token sources (`launches_in_account_dir`).
+/// transcript scan unions with the CLI's default dir: agents stamped with an
+/// account wrote their sessions there before no CLI ran in an account dir
+/// (claude signs in by token, codex runs in its per-agent overlay).
 pub fn list_account_dirs(provider: &str) -> Vec<PathBuf> {
     let Ok(root) = accounts_root() else {
         return Vec::new();
@@ -406,38 +429,28 @@ pub fn list_accounts(active_id: impl Fn(&str) -> Option<String>) -> Vec<Provider
             .filter(|id| ids.iter().any(|known| known == id))
             .unwrap_or_else(|| DEFAULT_ACCOUNT.to_string());
 
-        let probe = auth_probe::probe_default(provider);
-        out.push(ProviderAccount {
-            provider: provider.to_string(),
-            id: DEFAULT_ACCOUNT.to_string(),
-            managed: false,
-            active: active == DEFAULT_ACCOUNT,
-            status: probe.status,
-            detail: probe.detail,
-        });
-
-        for id in ids {
-            let Ok(dir) = account_dir(provider, &id) else {
+        for id in std::iter::once(DEFAULT_ACCOUNT.to_string()).chain(ids) {
+            let Ok((status, detail)) = probe_account(provider, &id) else {
                 continue;
             };
-            let probe = auth_probe::probe_dir(provider, &dir);
             out.push(ProviderAccount {
                 provider: provider.to_string(),
                 active: active == id,
+                managed: !is_default(&id),
                 id,
-                managed: true,
-                status: probe.status,
-                detail: probe.detail,
+                status,
+                detail,
             });
         }
     }
     out
 }
 
-/// One account's login state, probed exactly as [`list_accounts`] probes it —
-/// so the default counts a credential in the user's shell, a managed one
-/// doesn't. Blocking: a Keychain check shells out.
-pub fn probe_account(provider: &str, id: &str) -> Result<AuthStatus> {
+/// One account's login state and the probe's fixed reason when it isn't
+/// signed in, probed as [`list_accounts`] lists it — so the default counts a
+/// credential in the user's shell, a managed one doesn't. Blocking: a Keychain
+/// check shells out.
+pub fn probe_account(provider: &str, id: &str) -> Result<(AuthStatus, Option<String>)> {
     let provider = ACCOUNT_PROVIDERS
         .iter()
         .copied()
@@ -448,7 +461,7 @@ pub fn probe_account(provider: &str, id: &str) -> Result<AuthStatus> {
     } else {
         auth_probe::probe_dir(provider, &account_dir(provider, id)?)
     };
-    Ok(probe.status)
+    Ok((probe.status, probe.detail))
 }
 
 /// `provider`'s credential variables set in the app's env or the user's login

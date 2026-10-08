@@ -70,8 +70,12 @@ pub async fn scan_usage_transcripts_impl(
         tracing::warn!(error = %e, "could not read session accounts for the usage scan");
         Default::default()
     });
+    let agents = crate::workspace::agent_accounts(&ctx.db.lock()).unwrap_or_else(|e| {
+        tracing::warn!(error = %e, "could not read agent accounts for the usage scan");
+        Default::default()
+    });
     let scan = tokio::task::spawn_blocking(move || {
-        crate::usage_scan::scan_all(since_ms, until_ms, sessions)
+        crate::usage_scan::scan_all(since_ms, until_ms, sessions, agents)
     })
     .await
     .map_err(|e| Error::Other(format!("usage scan failed: {e}")))?;

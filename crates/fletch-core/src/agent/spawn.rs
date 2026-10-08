@@ -16,6 +16,7 @@ use super::accounts;
 use super::args::{prepare_managed_args, prepare_pty_args};
 use super::capabilities::{mcp_delivery, per_turn_descriptor};
 use super::claude_oauth::AccessToken;
+use super::codex_login;
 use super::probe::resolve_agent_bin;
 use super::{Agent, ManagedAgent, PerTurnAgent, PerTurnDescriptor, PtyAgent, TurnArgs};
 
@@ -156,9 +157,9 @@ fn rpc_env(rpc_dir: &Path) -> Vec<(String, String)> {
     env
 }
 
-/// What a launch needs from the managed account it runs under: the account's
-/// config dir for the sandbox engine and the env pointing the CLI at it (a
-/// codex account; a claude one signs in by token instead), and the default
+/// What a launch needs from the managed account it runs under: a codex
+/// account's dir, naming the login the agent's [`CodexHome`] copies from (no
+/// CLI runs in it; a claude account signs in by token instead), and the default
 /// account's credential vars to strip from the child so the CLI can only
 /// authenticate as that account (the container engines filter the same vars
 /// in their auth chain; host-side launches inherit the login shell, so they
@@ -170,15 +171,17 @@ fn rpc_env(rpc_dir: &Path) -> Vec<(String, String)> {
 #[derive(Default)]
 struct AccountLaunch {
     dir: Option<PathBuf>,
-    env: Vec<(String, String)>,
     unset: Vec<String>,
 }
 
 /// The managed account a launch of `provider` runs under. A stamped account
 /// whose dir was removed fails the launch rather than recreating it signed
-/// out, or silently running the agent under another login. A codex account's
-/// dir is repaired first, so shared config linked since the last launch is
-/// there. Nothing for the default account.
+/// out, or silently running the agent under another login. Nothing for the
+/// default account. No CLI runs in an account dir: a codex account's dir is
+/// repaired,
+/// so shared config linked since the last launch is there for the host's own
+/// codex runs, and handed on as the login the agent's [`CodexHome`] copies
+/// from; a claude account signs in by token.
 fn account_launch(provider: &str, account: Option<&str>) -> Result<AccountLaunch> {
     let Some(id) = account.filter(|id| !accounts::is_default(id)) else {
         return Ok(AccountLaunch::default());
@@ -188,17 +191,83 @@ fn account_launch(provider: &str, account: Option<&str>) -> Result<AccountLaunch
         .iter()
         .map(|v| v.to_string())
         .collect();
-    if !accounts::launches_in_account_dir(provider) {
-        return Ok(AccountLaunch {
-            unset,
-            ..AccountLaunch::default()
-        });
+    let dir = if provider == "codex" {
+        Some(accounts::ensure_account_dir(provider, id)?)
+    } else {
+        None
+    };
+    Ok(AccountLaunch { dir, unset })
+}
+
+/// The `CODEX_HOME` a codex launch runs in: the per-agent overlay under its
+/// writable root, holding the agent's own sessions, the shared config linked
+/// in, and a launch credential with no refresh token, which the host writes
+/// fresh from the account's login (`source`) before the launch and before
+/// every turn (see `codex_login`). The sandbox sees neither the account's
+/// directory nor its refresh token.
+struct CodexHome {
+    overlay: PathBuf,
+    source: PathBuf,
+}
+
+impl CodexHome {
+    /// Assemble agent `agent_id`'s overlay for a codex launch (`None` for any
+    /// other provider) and write its first credential.
+    fn prepare(
+        provider: &str,
+        agent_id: &str,
+        account_dir: Option<&Path>,
+        home: &Path,
+        session_id: Option<&str>,
+    ) -> Result<Option<Self>> {
+        if provider != "codex" {
+            return Ok(None);
+        }
+        Self::prepare_at(
+            codex_login::overlay_for_agent(agent_id)?,
+            account_dir,
+            home,
+            session_id,
+        )
+        .map(Some)
     }
-    Ok(AccountLaunch {
-        dir: Some(accounts::ensure_account_dir(provider, id)?),
-        env: accounts::account_env(provider, id)?,
-        unset,
-    })
+
+    /// [`prepare`](Self::prepare) for the overlay at `overlay`. A thread the
+    /// agent ran before it had an overlay is copied in so `resume` still
+    /// finds it.
+    fn prepare_at(
+        overlay: PathBuf,
+        account_dir: Option<&Path>,
+        home: &Path,
+        session_id: Option<&str>,
+    ) -> Result<Self> {
+        codex_login::prepare_overlay(&overlay, home)?;
+        if let Some(id) = session_id {
+            super::providers::codex::adopt_legacy_rollouts(id, &overlay)?;
+        }
+        let this = Self {
+            overlay,
+            source: codex_login::source_home(account_dir, home),
+        };
+        this.write_credential()?;
+        Ok(this)
+    }
+
+    fn write_credential(&self) -> Result<()> {
+        codex_login::write_launch_credential(
+            &self.source,
+            &self.overlay,
+            &codex_login::http_refresh,
+            chrono::Utc::now().timestamp(),
+        )
+    }
+
+    fn env(&self) -> (String, String) {
+        (
+            "CODEX_HOME".to_string(),
+            self.overlay.to_string_lossy().into_owned(),
+        )
+    }
 }
 
 /// Run `provider`'s MCP-delivery builder over the session's snapshot, writing
@@ -262,6 +331,7 @@ impl Agent {
             blackboard: spec.blackboard,
             account_dir: account.dir.as_deref(),
             oauth_token: spec.oauth_token,
+            codex_home: None,
         };
         let LaunchPlan {
             program,
@@ -274,7 +344,6 @@ impl Agent {
         let mut env = launch_env;
         env.extend(rpc_env(&spec.rpc_dir));
         env.extend(mcp.env);
-        env.extend(account.env);
 
         tracing::info!(
             agent_id = %spec.agent_id,
@@ -341,6 +410,15 @@ impl Agent {
             &mcp.args,
         );
         let account = account_launch(provider, spec.account)?;
+        // The TUI is one long process and gets its credential once, here: a
+        // TUI left open past the access token's expiry has to be reopened.
+        let codex = CodexHome::prepare(
+            provider,
+            spec.agent_id,
+            account.dir.as_deref(),
+            &home,
+            Some(spec.session_id),
+        )?;
 
         // Unified sandbox: run the agent's TUI under the sandbox engine (the
         // agent's own sandbox is disabled in its arg builder), so per-turn
@@ -357,6 +435,7 @@ impl Agent {
             blackboard: spec.blackboard,
             account_dir: account.dir.as_deref(),
             oauth_token: None,
+            codex_home: codex.as_ref().map(|c| c.overlay.as_path()),
         };
         let LaunchPlan {
             program,
@@ -369,7 +448,7 @@ impl Agent {
         let mut env = launch_env;
         env.extend(rpc_env(&spec.rpc_dir));
         env.extend(mcp.env);
-        env.extend(account.env);
+        env.extend(codex.as_ref().map(CodexHome::env));
 
         tracing::info!(
             agent_id = %spec.agent_id,
@@ -428,6 +507,7 @@ impl Agent {
             blackboard: spec.blackboard,
             account_dir: account.dir.as_deref(),
             oauth_token: spec.oauth_token,
+            codex_home: None,
         };
         let LaunchPlan {
             program,
@@ -440,7 +520,6 @@ impl Agent {
         let mut env = launch_env;
         env.extend(rpc_env(&spec.rpc_dir));
         env.extend(mcp.env);
-        env.extend(account.env);
 
         tracing::info!(
             agent_id = %spec.agent_id,
@@ -574,6 +653,13 @@ impl Agent {
         // Resolved once for the session: every turn's process runs under the
         // same account, from the env captured here.
         let account = account_launch(provider, spec.account.as_deref())?;
+        let codex = CodexHome::prepare(
+            provider,
+            &spec.agent_id,
+            account.dir.as_deref(),
+            &home,
+            spec.session_id.as_deref(),
+        )?;
 
         let ctx = AgentLaunchCtx {
             agent_id: &spec.agent_id,
@@ -587,6 +673,7 @@ impl Agent {
             blackboard: spec.blackboard.as_deref(),
             account_dir: account.dir.as_deref(),
             oauth_token: None,
+            codex_home: codex.as_ref().map(|c| c.overlay.as_path()),
         };
         let LaunchPlan {
             program: launch_program,
@@ -597,7 +684,12 @@ impl Agent {
         let mut env = launch_env;
         env.extend(rpc_env(&spec.rpc_dir));
         env.extend(mcp_env);
-        env.extend(account.env);
+        env.extend(codex.as_ref().map(CodexHome::env));
+        // Every turn is a fresh process, so every turn gets a fresh credential.
+        let before_turn = codex.map(|codex| {
+            let codex = std::sync::Arc::new(codex);
+            std::sync::Arc::new(move || codex.write_credential()) as crate::exec_session::TurnPrep
+        });
 
         tracing::info!(
             agent_bin = %program.display(),
@@ -616,12 +708,15 @@ impl Agent {
                 env,
                 env_remove: account.unset,
                 kill_plan: kill,
+                before_turn,
             },
             build_args,
             extract_session_id,
             cb,
         );
-        Ok(Self::PerTurn(PerTurnAgent { session }))
+        Ok(Self::PerTurn(PerTurnAgent {
+            session: Box::new(session),
+        }))
     }
 
     pub fn write_pty(&self, bytes: &[u8]) -> Result<()> {
@@ -836,6 +931,7 @@ fn agent_bin_for(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::Engine as _;
 
     /// A claude account launches in the shared default config dir: nothing
     /// relocates the CLI or hands the engine the account dir, and the default
@@ -847,7 +943,6 @@ mod tests {
             std::fs::create_dir_all(root.join("claude").join("work")).unwrap();
             let launch = account_launch("claude", Some("work")).unwrap();
             assert!(launch.dir.is_none());
-            assert!(launch.env.is_empty());
             for var in [
                 "ANTHROPIC_API_KEY",
                 "CLAUDE_CODE_OAUTH_TOKEN",
@@ -855,21 +950,6 @@ mod tests {
             ] {
                 assert!(launch.unset.iter().any(|v| v == var), "{var}");
             }
-        });
-    }
-
-    #[test]
-    fn a_codex_account_launch_runs_in_the_account_home() {
-        accounts::with_test_root(|root| {
-            let dir = root.join("codex").join("work");
-            std::fs::create_dir_all(&dir).unwrap();
-            let launch = account_launch("codex", Some("work")).unwrap();
-            assert_eq!(launch.dir.as_deref(), Some(dir.as_path()));
-            assert_eq!(
-                launch.env,
-                vec![("CODEX_HOME".to_string(), dir.to_string_lossy().into_owned())]
-            );
-            assert_eq!(launch.unset, vec!["OPENAI_API_KEY".to_string()]);
         });
     }
 
@@ -884,6 +964,170 @@ mod tests {
     #[test]
     fn the_default_account_launch_changes_nothing() {
         let launch = account_launch("claude", None).unwrap();
-        assert!(launch.dir.is_none() && launch.env.is_empty() && launch.unset.is_empty());
+        assert!(launch.dir.is_none() && launch.unset.is_empty());
+    }
+
+    fn far_future_login() -> serde_json::Value {
+        let enc = |v: serde_json::Value| {
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(v.to_string().as_bytes())
+        };
+        let exp = chrono::Utc::now().timestamp() + 9 * 24 * 3600;
+        let access = format!(
+            "{}.{}.sig",
+            enc(serde_json::json!({"alg": "RS256"})),
+            enc(serde_json::json!({"iat": exp - 10 * 24 * 3600, "exp": exp}))
+        );
+        serde_json::json!({
+            "auth_mode": "chatgpt",
+            "tokens": {"access_token": access, "id_token": "id", "refresh_token": "rt.host", "account_id": "a"},
+            "last_refresh": "2026-10-01T00:00:00Z"
+        })
+    }
+
+    #[test]
+    fn a_codex_launch_runs_in_its_overlay_with_a_credential_and_no_refresh_token() {
+        let td = tempfile::tempdir().unwrap();
+        let (root, home, account) = (
+            td.path().join("w"),
+            td.path().join("home"),
+            td.path().join("acct"),
+        );
+        for dir in [&root, &home, &account] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        std::fs::write(account.join("auth.json"), far_future_login().to_string()).unwrap();
+
+        let overlay = codex_login::overlay_in(&root);
+        let codex = CodexHome::prepare_at(overlay.clone(), Some(&account), &home, None).unwrap();
+
+        assert_eq!(
+            codex.env(),
+            (
+                "CODEX_HOME".to_string(),
+                overlay.to_string_lossy().into_owned()
+            )
+        );
+        let written: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(overlay.join("auth.json")).unwrap()).unwrap();
+        assert_eq!(written["tokens"]["refresh_token"], "");
+        assert!(overlay.join("sessions").is_dir());
+    }
+
+    #[test]
+    fn only_codex_launches_get_an_overlay() {
+        assert!(
+            CodexHome::prepare("claude", "yosemite", None, Path::new("/"), None)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn a_managed_codex_account_launch_names_its_dir_and_sets_no_env() {
+        accounts::with_test_root(|root| {
+            std::fs::create_dir_all(root.join("codex").join("work")).unwrap();
+            let launch = account_launch("codex", Some("work")).unwrap();
+            assert_eq!(launch.dir, Some(root.join("codex").join("work")));
+            assert!(launch.unset.contains(&"OPENAI_API_KEY".to_string()));
+        });
+    }
+
+    /// Live, end to end on this Mac: a real `codex exec` turn under the
+    /// seatbelt profile, in an overlay assembled from the login in
+    /// `$FLETCH_LIVE_CODEX_SOURCE` (a directory holding a *copy* of an
+    /// `auth.json` with more than a day left on its access token, so nothing
+    /// refreshes). Spends one tiny turn of that account's quota;
+    /// `FLETCH_LIVE_CODEX_MODEL` overrides the model the shared config picks.
+    /// Run with:
+    ///   FLETCH_LIVE_CODEX_SOURCE=<dir> cargo test --lib live_codex_turn -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    #[cfg(target_os = "macos")]
+    fn live_codex_turn_runs_from_its_overlay_under_seatbelt() {
+        let Some(source) = std::env::var_os("FLETCH_LIVE_CODEX_SOURCE").map(PathBuf::from) else {
+            eprintln!("FLETCH_LIVE_CODEX_SOURCE unset; skipping");
+            return;
+        };
+        let home = dirs::home_dir().unwrap();
+        let before = std::fs::read(source.join("auth.json")).unwrap();
+        let td = tempfile::tempdir().unwrap();
+        let (root, rpc) = (td.path().join("agent"), td.path().join("rpc"));
+        let cwd = root.join("repo");
+        for dir in [&cwd, &rpc] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        let codex =
+            CodexHome::prepare_at(codex_login::overlay_in(&root), Some(&source), &home, None)
+                .unwrap();
+        let ctx = AgentLaunchCtx {
+            agent_id: "live",
+            provider: "codex",
+            writable_root: &root,
+            source_repos: &[],
+            rpc_dir: &rpc,
+            cwd: &cwd,
+            home: &home,
+            interactive: false,
+            blackboard: None,
+            account_dir: Some(&source),
+            oauth_token: None,
+            codex_home: Some(&codex.overlay),
+        };
+        let bin = resolve_agent_bin("codex", "codex", "Codex", &home).unwrap();
+        let plan = sandbox::engine_for(EngineKind::SandboxExec)
+            .unwrap()
+            .launch_agent(&ctx, &bin)
+            .unwrap();
+        println!(
+            "CA source: plan={:?} app env={:?}",
+            plan.env
+                .iter()
+                .find(|(k, _)| k == "CODEX_CA_CERTIFICATE")
+                .map(|(_, v)| v),
+            ["SSL_CERT_FILE", "CODEX_CA_CERTIFICATE"]
+                .into_iter()
+                .filter(|v| std::env::var_os(v).is_some())
+                .collect::<Vec<_>>()
+        );
+        let mut cmd = std::process::Command::new(&plan.program);
+        cmd.args(&plan.prefix_args)
+            .args(["exec", "--json", "--skip-git-repo-check"])
+            .args(
+                std::env::var("FLETCH_LIVE_CODEX_MODEL")
+                    .map(|m| vec!["-m".to_string(), m])
+                    .unwrap_or_default(),
+            )
+            .arg("Reply with exactly the word: pong")
+            .current_dir(&cwd)
+            .stdin(std::process::Stdio::null());
+        crate::bin_resolve::apply_login_shell_env(&mut cmd);
+        cmd.envs(plan.env.iter().map(|(k, v)| (k, v)))
+            .env(codex.env().0, codex.env().1)
+            .env_remove("OPENAI_API_KEY");
+        let out = cmd.output().unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        eprintln!("{stdout}");
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(stdout.contains("\"text\":\"pong\""), "{stdout}");
+        assert_eq!(std::fs::read(source.join("auth.json")).unwrap(), before);
+        let mut diag = crate::agent::ReadDiagnostics::default();
+        let thread = stdout
+            .lines()
+            .find_map(|l| {
+                let v: serde_json::Value = serde_json::from_str(l).ok()?;
+                v.get("thread_id")?.as_str().map(str::to_string)
+            })
+            .unwrap();
+        let rollouts = crate::transcripts::find_codex_rollouts_in(
+            &codex.overlay.join("sessions"),
+            &thread,
+            &mut diag,
+        );
+        assert_eq!(rollouts.len(), 1);
+        assert!(rollouts[0].starts_with(&codex.overlay), "{rollouts:?}");
     }
 }

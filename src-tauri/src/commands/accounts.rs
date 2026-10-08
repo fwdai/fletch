@@ -8,6 +8,8 @@ use tauri::State;
 use crate::agent::accounts::ProviderAccount;
 use crate::error::Result;
 use crate::host::EngineCtx;
+use crate::supervisor::Supervisor;
+use crate::workspace::AgentRecord;
 use fletch_core::commands as engine;
 
 /// Every account of every account-capable provider, each probed for its
@@ -31,7 +33,7 @@ pub fn add_provider_account(provider: String, id: String) -> Result<()> {
 /// leaves the sign-in alone — so nothing writes the account back after the
 /// directory is gone.
 #[tauri::command]
-pub fn remove_provider_account(
+pub async fn remove_provider_account(
     ctx: State<'_, Arc<EngineCtx>>,
     logins: State<'_, crate::provider_login::ProviderLoginSessions>,
     provider: String,
@@ -42,7 +44,7 @@ pub fn remove_provider_account(
     logins
         .lock()
         .remove(&super::provider_login::session_key(&provider, Some(&id)));
-    engine::remove_provider_account_impl(&ctx, &provider, &id)
+    engine::remove_provider_account_impl(&ctx, &provider, &id).await
 }
 
 /// Sign an account out with the CLI's own logout (`id` a managed id or
@@ -50,6 +52,7 @@ pub fn remove_provider_account(
 /// write the login straight back.
 #[tauri::command]
 pub async fn sign_out_provider_account(
+    ctx: State<'_, Arc<EngineCtx>>,
     logins: State<'_, crate::provider_login::ProviderLoginSessions>,
     provider: String,
     id: String,
@@ -58,7 +61,7 @@ pub async fn sign_out_provider_account(
     logins
         .lock()
         .remove(&super::provider_login::session_key(&provider, Some(&id)));
-    engine::sign_out_provider_account_impl(&provider, &id).await
+    engine::sign_out_provider_account_impl(&ctx, &provider, &id).await
 }
 
 /// Name the account new agents of `provider` use; `None` means the CLI's own.
@@ -69,4 +72,16 @@ pub fn set_active_provider_account(
     id: Option<String>,
 ) -> Result<()> {
     engine::set_active_provider_account_impl(&ctx, &provider, id.as_deref())
+}
+
+/// Move an agent onto another account of its provider (`account` is an id or
+/// `default`) from its next turn. Resolves to the restamped record.
+#[tauri::command]
+pub async fn switch_agent_account(
+    supervisor: State<'_, Arc<Supervisor>>,
+    ctx: State<'_, Arc<EngineCtx>>,
+    agent_id: String,
+    account: String,
+) -> Result<AgentRecord> {
+    engine::switch_agent_account_impl(supervisor.inner(), ctx.inner(), &agent_id, &account).await
 }

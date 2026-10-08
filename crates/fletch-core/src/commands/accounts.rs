@@ -11,6 +11,8 @@ use crate::agent::accounts::{self, ProviderAccount};
 use crate::database;
 use crate::error::{Error, Result};
 use crate::host::EngineCtx;
+use crate::supervisor::Supervisor;
+use crate::workspace::AgentRecord;
 
 /// Every account of every account-capable provider, probed. Runs the probes
 /// off the async runtime: each is a file read or a Keychain presence check.
@@ -80,8 +82,11 @@ pub fn ensure_account_removable(ctx: &EngineCtx, provider: &str, id: &str) -> Re
 }
 
 /// Delete a managed account directory — its login, its transcripts, its links.
-/// Refused under the same conditions as [`ensure_account_removable`].
-pub fn remove_provider_account_impl(ctx: &EngineCtx, provider: &str, id: &str) -> Result<()> {
+/// Refused under the same conditions as [`ensure_account_removable`]. The
+/// check and the delete hold the provider's account lock, so no agent is
+/// switched onto the account between them (`Supervisor::switch_account`).
+pub async fn remove_provider_account_impl(ctx: &EngineCtx, provider: &str, id: &str) -> Result<()> {
+    let _account = ctx.account_locks.lock(provider).await;
     ensure_account_removable(ctx, provider, id)?;
     accounts::remove_account_dir(provider, id)
 }
@@ -126,7 +131,15 @@ const LOGOUT_TIMEOUT: Duration = Duration::from_secs(30);
 /// still signed in is an error that says why. For the default that is usually
 /// a key in the user's shell, which the probe counts and no child process can
 /// unset — the error names the variable to remove.
-pub async fn sign_out_provider_account_impl(provider: &str, id: &str) -> Result<()> {
+///
+/// Holds the provider's account lock throughout, so no agent is switched onto
+/// the account on the strength of a login this is clearing.
+pub async fn sign_out_provider_account_impl(
+    ctx: &EngineCtx,
+    provider: &str,
+    id: &str,
+) -> Result<()> {
+    let _account = ctx.account_locks.lock(provider).await;
     let home =
         dirs::home_dir().ok_or_else(|| Error::Other("HOME directory not available".into()))?;
     let (bin, label) = crate::agent::provider_bin_label(provider)
@@ -156,7 +169,7 @@ pub async fn sign_out_provider_account_impl(provider: &str, id: &str) -> Result<
 
     let (p, i) = (provider.to_string(), id.to_string());
     let (status, shell_vars) = tokio::task::spawn_blocking(move || {
-        let status = accounts::probe_account(&p, &i)?;
+        let (status, _) = accounts::probe_account(&p, &i)?;
         let shell_vars = if accounts::is_default(&i) {
             accounts::shell_credential_vars(&p)
         } else {
@@ -228,6 +241,20 @@ fn logout_command(
         }
     }
     Ok(cmd)
+}
+
+/// Move an agent's workspace onto another account of its provider from its
+/// next turn: `account` is a managed id or `default`. Resolves to the
+/// restamped record; refused mid-turn and for a target that isn't a signed-in
+/// account of the agent's provider (see `Supervisor::switch_account`). The
+/// one entry point the desktop command and the remote op share.
+pub async fn switch_agent_account_impl(
+    sup: &Arc<Supervisor>,
+    ctx: &Arc<EngineCtx>,
+    agent_id: &str,
+    account: &str,
+) -> Result<AgentRecord> {
+    sup.switch_account(ctx, agent_id, account).await
 }
 
 #[cfg(test)]

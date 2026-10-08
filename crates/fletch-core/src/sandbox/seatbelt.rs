@@ -65,12 +65,9 @@ impl SandboxEngine for SandboxExecEngine {
     }
 
     fn launch_agent(&self, ctx: &AgentLaunchCtx, agent_bin: &str) -> Result<LaunchPlan> {
-        // A managed codex account's dir is where this launch's CLI keeps its
-        // state, so it is granted for this launch only. Claude accounts never
-        // relocate the CLI: every claude runs in the shared default config dir
-        // and signs in with the host-resolved token below, so its account dir
-        // (host-only login storage) gets nothing.
-        let codex_account = ctx.account_dir.filter(|_| ctx.provider == "codex");
+        // No account dir is granted: codex runs in its per-agent overlay
+        // (`ctx.codex_home`), claude in the shared default config dir with the
+        // host-resolved token below. Account dirs are host-only login storage.
         let claude_config_dir = std::env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from);
         let profile_text = build_profile(
             ctx.writable_root,
@@ -79,7 +76,7 @@ impl SandboxEngine for SandboxExecEngine {
             claude_config_dir.as_deref(),
             ctx.blackboard,
             ctx.adopted_workspace(),
-            codex_account,
+            ctx.codex_home.filter(|_| ctx.provider == "codex"),
         )?;
         // A workflow step agent's blackboard is granted writable in the profile
         // above; also point the agent at it via `WF_BLACKBOARD` (the same host
@@ -352,19 +349,18 @@ fn deny_git_exec_config(root: &str) -> String {
 /// MUST follow the `(allow file-write* …)` block — SBPL is last-match-wins.
 fn deny_provider_exec_config(
     home: &Path,
-    codex_account_home: Option<&Path>,
+    codex_home: Option<&Path>,
     relocated_claude_dir: Option<&Path>,
 ) -> String {
     let policy::ProviderExecConfig { mut files, dirs } = policy::provider_exec_config_denials(home);
-    // A managed codex account's home is granted whole for this launch, so its
-    // `config.toml` needs the same carve-out as the default home's: the shared
-    // file is only linked in, and an agent that replaces the link with a file
-    // of its own would hand that account's next host-side codex run its
-    // commands.
+    // The codex overlay is granted whole for this launch, so its `config.toml`
+    // is carved out: the shared file is only linked in, and an agent that
+    // replaced the link with a file of its own would choose the commands every
+    // later codex launch of this agent runs.
     // The link's own path is denied with its dir resolved too: resolving the
     // whole path follows the link to the shared file, and the sandbox checks
     // an unlink of the link at its resolved parent.
-    if let Some(dir) = codex_account_home {
+    if let Some(dir) = codex_home {
         files.push(dir.join("config.toml"));
         files.push(policy::resolve_existing_prefix(dir).join("config.toml"));
     }
@@ -717,8 +713,9 @@ pub(crate) fn pid_alive(_pid: i32) -> bool {
 /// `writable_root` (the workflow kernel's shared run workspace) — its own
 /// writable subpath, and its own invariant-3 deny, since the agent's checkout
 /// isn't under the root this profile is otherwise built around.
-/// `codex_account_home` is the managed codex account's dir the agent runs with
-/// as `CODEX_HOME`, granted like the default codex home (`None` = no account).
+/// `codex_home` is the per-agent `CODEX_HOME` overlay a codex launch runs in
+/// (`agent::codex_login`), granted whole bar its `config.toml` (`None` for
+/// every other provider).
 pub fn build_profile(
     writable_root: &Path,
     rpc_dir: &Path,
@@ -726,7 +723,7 @@ pub fn build_profile(
     claude_config_dir: Option<&Path>,
     blackboard: Option<&Path>,
     adopted_workspace: Option<&Path>,
-    codex_account_home: Option<&Path>,
+    codex_home: Option<&Path>,
 ) -> Result<String> {
     let writable_root = canonical(writable_root)?;
     let rpc_root = canonical(rpc_dir)?;
@@ -816,12 +813,12 @@ pub fn build_profile(
             format!("\n{}", lines.join("\n"))
         })
         .unwrap_or_default();
-    // A managed codex account's home (`CODEX_HOME` for this launch) is granted
-    // whole, exactly like the default `~/.codex` in the policy list below, and
-    // gets that root's invariant-2 deny over its `config.toml` too
-    // (`deny_provider_config`). Its shared items are links into the default
-    // home; a write through one resolves there and meets that home's own deny.
-    let codex_account_grant = codex_account_home
+    // The codex overlay (`CODEX_HOME` for this launch) is granted whole, with
+    // an invariant-2 deny over its `config.toml` (`deny_provider_config`). It
+    // usually sits under the writable root already; granting it by name keeps
+    // that true wherever it lives. Its shared items are links into the user's
+    // codex home, which is not granted, so a write through one is denied.
+    let codex_home_grant = codex_home
         .map(|dir| format!("\n{}", subpath_grants([dir.to_path_buf()]).join("\n")))
         .unwrap_or_default();
     // The write allow-list is the engine-independent policy, not a list local to
@@ -878,7 +875,9 @@ pub fn build_profile(
     // whole-root grants in `policy_dirs` above. Run deliberately doesn't carry it,
     // same reasoning as the git deny.
     let deny_provider_config =
-        deny_provider_exec_config(&home, codex_account_home, relocated_claude_dir.as_deref());
+        deny_provider_exec_config(&home, codex_home, relocated_claude_dir.as_deref());
+
+    let deny_codex_logins = deny_host_codex_logins(&home);
 
     let deny_claude_logins = deny_host_claude_logins(&home, relocated_claude_dir.as_deref());
 
@@ -903,7 +902,7 @@ pub fn build_profile(
   (subpath "/private/var/folders")
   (subpath "/private/var/tmp")
   (literal {claude_json})
-{claude_credentials}{claude_config_extra}{codex_account_grant}
+{claude_credentials}{claude_config_extra}{codex_home_grant}
 {policy_dirs})
 
 {deny_app_data}{deny_engine_data}
@@ -913,6 +912,8 @@ pub fn build_profile(
 {deny_provider_config}
 
 {deny_claude_logins}
+
+{deny_codex_logins}
 
 {KEYCHAIN_MACH_DENY}
 
@@ -968,7 +969,8 @@ fn user_sets_a_ca_bundle() -> bool {
 
 /// SBPL deny, reads and writes alike, of the host's claude logins on disk:
 /// the default config dir's `.credentials.json` (and a relocated dir's), and
-/// every managed claude account dir. Each can hold a refresh token, and a
+/// the temp files the host writes a refreshed login through, and every
+/// managed claude account dir. Each can hold a refresh token, and a
 /// sandboxed claude signs in with the host-resolved access token instead
 /// (`agent::claude_oauth`), so nothing in the sandbox has a use for them.
 /// Every agent's profile carries it, whatever its provider; the Keychain items
@@ -976,26 +978,87 @@ fn user_sets_a_ca_bundle() -> bool {
 /// resolved form, like the grants. MUST follow the `(allow file-write* …)`
 /// block.
 fn deny_host_claude_logins(home: &Path, relocated_claude_dir: Option<&Path>) -> String {
-    let mut clauses: Vec<String> = Vec::new();
-    let mut push = |kind: &str, p: &Path| {
-        for form in [p.to_path_buf(), policy::resolve_existing_prefix(p)] {
-            let line = format!("  ({kind} {})", sbpl_string(&form.to_string_lossy()));
-            if !clauses.contains(&line) {
-                clauses.push(line);
-            }
-        }
-    };
-    push(
-        "literal",
-        &home.join(".claude").join(policy::CLAUDE_CREDENTIALS_FILE),
-    );
+    let mut deny = LoginDeny::default();
+    let temp = crate::agent::credential_file::TEMP_PREFIX;
+    deny.literal(&home.join(".claude").join(policy::CLAUDE_CREDENTIALS_FILE));
+    deny.prefix(&home.join(".claude"), temp);
     if let Some(dir) = relocated_claude_dir {
-        push("literal", &dir.join(policy::CLAUDE_CREDENTIALS_FILE));
+        deny.literal(&dir.join(policy::CLAUDE_CREDENTIALS_FILE));
+        deny.prefix(dir, temp);
     }
     if let Ok(root) = crate::agent::accounts::accounts_root() {
-        push("subpath", &root.join("claude"));
+        deny.subpath(&root.join("claude"));
     }
-    format!("(deny file-read* file-write*\n{})", clauses.join("\n"))
+    deny.block()
+}
+
+/// The same deny for the host's codex logins: the default home's `auth.json`,
+/// the temp files the host writes a refreshed login through beside it (one
+/// a crash left behind included), and every managed codex account dir. A
+/// codex launch gets a credential without the refresh token in its overlay
+/// (`agent::codex_login`). MUST follow the `(allow file-write* …)` block.
+fn deny_host_codex_logins(home: &Path) -> String {
+    let codex_home = policy::codex_home_dir(home);
+    let mut deny = LoginDeny::default();
+    deny.literal(&codex_home.join("auth.json"));
+    deny.prefix(&codex_home, crate::agent::credential_file::TEMP_PREFIX);
+    if let Ok(root) = crate::agent::accounts::accounts_root() {
+        deny.subpath(&root.join("codex"));
+    }
+    deny.block()
+}
+
+/// The clauses of a login deny, each path in its literal and resolved form,
+/// like the grants (the sandbox checks resolved paths).
+#[derive(Default)]
+struct LoginDeny {
+    clauses: Vec<String>,
+}
+
+impl LoginDeny {
+    fn push(&mut self, line: String) {
+        if !self.clauses.contains(&line) {
+            self.clauses.push(line);
+        }
+    }
+
+    fn forms(p: &Path) -> [PathBuf; 2] {
+        [p.to_path_buf(), policy::resolve_existing_prefix(p)]
+    }
+
+    fn literal(&mut self, p: &Path) {
+        for form in Self::forms(p) {
+            self.push(format!(
+                "  (literal {})",
+                sbpl_string(&form.to_string_lossy())
+            ));
+        }
+    }
+
+    fn subpath(&mut self, p: &Path) {
+        for form in Self::forms(p) {
+            self.push(format!(
+                "  (subpath {})",
+                sbpl_string(&form.to_string_lossy())
+            ));
+        }
+    }
+
+    /// Every file directly in `dir` whose name starts with `prefix`.
+    fn prefix(&mut self, dir: &Path, prefix: &str) {
+        for form in Self::forms(dir) {
+            let re = format!(
+                "^{}/{}[^/]*$",
+                sbpl_regex_escape(&form.to_string_lossy()),
+                sbpl_regex_escape(prefix)
+            );
+            self.push(format!("  (regex {})", sbpl_string(&re)));
+        }
+    }
+
+    fn block(self) -> String {
+        format!("(deny file-read* file-write*\n{})", self.clauses.join("\n"))
+    }
 }
 
 /// SBPL `(subpath …)` grant lines for the policy dirs, each emitted in its
@@ -1355,6 +1418,59 @@ mod tests {
         ));
     }
 
+    /// The kernel half of `profile_denies_reading_the_hosts_codex_logins`:
+    /// under the profile a process can read the overlay's launch credential
+    /// but neither the default home's `auth.json` nor an account's. Run with:
+    ///   cargo test --lib seatbelt_hides_the_hosts_codex_logins -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    #[cfg(target_os = "macos")]
+    fn seatbelt_hides_the_hosts_codex_logins() {
+        crate::agent::accounts::with_test_root(|accounts| {
+            let (_td, root, rpc, home) = sandbox_dirs();
+            let default_auth = policy::codex_home_dir(&home).join("auth.json");
+            let account_auth = accounts.join("codex/work/auth.json");
+            let leftover = policy::codex_home_dir(&home).join(".fletch-auth-crashed");
+            let neighbour = policy::codex_home_dir(&home).join("history.jsonl");
+            let overlay = root.join(".fletch-codex-home");
+            for file in [
+                &default_auth,
+                &account_auth,
+                &leftover,
+                &neighbour,
+                &overlay.join("auth.json"),
+            ] {
+                std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+                std::fs::write(file, "{}").unwrap();
+            }
+            let profile = build_profile(
+                &root,
+                &rpc,
+                &home,
+                None,
+                None,
+                None,
+                Some(overlay.as_path()),
+            )
+            .unwrap();
+            let reads = |file: &Path| {
+                std::process::Command::new(SANDBOX_EXEC)
+                    .args(profile_args(&profile))
+                    .args(["/bin/cat", &file.to_string_lossy()])
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status()
+                    .expect("sandbox-exec")
+                    .success()
+            };
+            assert!(reads(&overlay.join("auth.json")));
+            assert!(!reads(&default_auth));
+            assert!(!reads(&account_auth));
+            assert!(!reads(&leftover));
+            assert!(reads(&neighbour));
+        });
+    }
+
     /// Invariant 2's deny-inside-grant, at the profile level: each non-claude
     /// provider's command-defining config is denied write while its root stays
     /// granted. Without it, an agent poisons e.g. `~/.gemini/settings.json`
@@ -1468,11 +1584,12 @@ mod tests {
             profile.contains(&format!("(subpath \"{}\")", opencode_config.display())),
             "agent profile should grant the narrow opencode config dir"
         );
-        // Codex's dir is env-relocatable too (`$CODEX_HOME`) — same treatment.
+        // The user's codex home is not granted: codex runs in a per-agent
+        // overlay, and its login lives here.
         let codex_home = policy::codex_home_dir(&canonical_home);
         assert!(
-            profile.contains(&format!("(subpath \"{}\")", codex_home.display())),
-            "agent profile should grant the codex home dir"
+            !profile.contains(&format!("(subpath \"{}\")", codex_home.display())),
+            "agent profile must not grant the codex home dir"
         );
         // Everything else unchanged: provider dot-dirs, caches, macOS-native.
         // (`.claude` is deliberately NOT here — its root is no longer granted;
@@ -1769,13 +1886,13 @@ mod tests {
         );
     }
 
-    /// A managed codex account's home is granted whole, like `~/.codex`, and
-    /// carries the same invariant-2 deny over its `config.toml` — after the
-    /// allow block, so last-match-wins makes the deny stick.
+    /// The codex overlay is granted whole and carries an invariant-2 deny
+    /// over its `config.toml`, after the allow block, so last-match-wins makes
+    /// the deny stick.
     #[test]
-    fn profile_grants_a_codex_account_home_and_denies_its_config() {
+    fn profile_grants_the_codex_overlay_and_denies_its_config() {
         let (td, root, rpc, home) = sandbox_dirs();
-        let account = td.path().join("accounts/codex/work");
+        let account = td.path().join("elsewhere/.fletch-codex-home");
         std::fs::create_dir_all(&account).unwrap();
         let canonical_account = std::fs::canonicalize(&account).unwrap();
 
@@ -1797,22 +1914,53 @@ mod tests {
             "(literal \"{}\")",
             canonical_account.join("config.toml").display()
         );
-        let grant_at = profile.find(&grant).expect("account home must be granted");
+        let grant_at = profile.find(&grant).expect("the overlay must be granted");
         let deny_at = profile.find(&deny).expect("its config.toml must be denied");
         assert!(
             deny_at > grant_at,
             "the deny must follow the grant: {profile}"
         );
-        // Its parent (every other account) is not swept in.
         let parent = canonical_account.parent().unwrap();
         assert!(!profile.contains(&format!("(subpath \"{}\")", parent.display())));
     }
 
-    /// Only a codex launch relocates into its account dir: claude accounts are
-    /// a token source, so a claude launch grants nothing under the dir, and
-    /// providers without accounts never do.
+    /// Every agent's profile hides the host's codex logins, reads included:
+    /// the default home's `auth.json` and every managed codex account dir.
     #[test]
-    fn launch_grants_the_account_dir_to_its_own_provider_only() {
+    fn profile_denies_reading_the_hosts_codex_logins() {
+        crate::agent::accounts::with_test_root(|accounts| {
+            let (_td, root, rpc, home) = sandbox_dirs();
+            let home = std::fs::canonicalize(&home).unwrap();
+            let profile = build_profile(&root, &rpc, &home, None, None, None, None).unwrap();
+            let deny_at = profile
+                .find("(deny file-read* file-write*\n")
+                .expect("a read deny block");
+            let denied = &profile[deny_at..];
+            let auth = policy::codex_home_dir(&home).join("auth.json");
+            assert!(
+                denied.contains(&format!("(literal \"{}\")", auth.display())),
+                "{denied}"
+            );
+            let account_root = accounts.join("codex");
+            assert!(
+                denied.contains(&format!("(subpath \"{}\")", account_root.display())),
+                "{denied}"
+            );
+            let temp = format!(
+                "(regex \"^{}/\\\\.fletch-auth-[^/]*$\")",
+                sbpl_regex_escape(&policy::codex_home_dir(&home).to_string_lossy())
+                    .replace('\\', "\\\\")
+            );
+            assert!(denied.contains(&temp), "{temp} not in {denied}");
+            assert!(deny_at > profile.find("(allow file-write*").unwrap());
+        });
+    }
+
+    /// No launch relocates into an account dir: codex runs in its overlay,
+    /// claude accounts are a token source, and providers without accounts
+    /// never do.
+    #[test]
+    fn no_launch_grants_an_account_dir_whatever_its_provider() {
         let (td, root, rpc, home) = sandbox_dirs();
         let account = td.path().join("accounts/x/work");
         std::fs::create_dir_all(&account).unwrap();
@@ -1830,6 +1978,7 @@ mod tests {
                 blackboard: None,
                 account_dir: Some(&account),
                 oauth_token: None,
+                codex_home: None,
             };
             SandboxExecEngine
                 .launch_agent(&ctx, "/usr/local/bin/agent")
@@ -1840,7 +1989,10 @@ mod tests {
         let whole = format!("(subpath \"{}\")", canonical_account.display());
 
         let codex = profile_for("codex");
-        assert!(codex.contains(&whole), "{codex}");
+        assert!(
+            !codex.contains(&whole),
+            "codex runs in its overlay, never the account dir: {codex}"
+        );
 
         for provider in ["claude", "cursor"] {
             let profile = profile_for(provider);
@@ -2021,6 +2173,7 @@ mod tests {
             blackboard: None,
             account_dir: Some(&codex_home),
             oauth_token: None,
+            codex_home: Some(&codex_home),
         };
         let mut plan = SandboxExecEngine.launch_agent(&ctx, &codex).unwrap();
         if std::env::var_os("FLETCH_LIVE_WITHOUT_KEYCHAIN_DENY").is_some() {
@@ -2144,6 +2297,7 @@ mod tests {
             blackboard: None,
             account_dir: None,
             oauth_token: Some(&token),
+            codex_home: None,
         };
         let plan = SandboxExecEngine
             .launch_agent(&ctx, "/usr/local/bin/claude")
@@ -3057,6 +3211,7 @@ mod tests {
             blackboard: None,
             account_dir: None,
             oauth_token: None,
+            codex_home: None,
         };
         let plan = SandboxExecEngine
             .launch_agent(&ctx, "/usr/local/bin/claude")

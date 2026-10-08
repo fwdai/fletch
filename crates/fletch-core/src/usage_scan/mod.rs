@@ -175,6 +175,27 @@ impl Attribution {
     }
 }
 
+/// Each codex agent's own session root (`transcripts::codex_overlay_sessions_dirs`)
+/// as a root, credited to the agent's stamp (`agents`, agent id → account):
+/// the overlay belongs to that one agent, so a thread in it that is no
+/// session of its own (a sub-agent's) is the agent's spend too. An agent no
+/// longer in the database is the default account's.
+pub fn overlay_roots(
+    overlays: &[(String, PathBuf)],
+    agents: &HashMap<String, String>,
+) -> Vec<AccountRoot> {
+    overlays
+        .iter()
+        .map(|(agent, dir)| AccountRoot {
+            dir: dir.clone(),
+            id: agents
+                .get(agent)
+                .cloned()
+                .unwrap_or_else(|| accounts::DEFAULT_ACCOUNT.to_string()),
+        })
+        .collect()
+}
+
 /// Every managed account of every account provider on this host.
 pub fn account_roots() -> Vec<AccountRoot> {
     accounts::ACCOUNT_PROVIDERS
@@ -203,14 +224,19 @@ fn account_of<'a>(path: &Path, roots: &'a [AccountRoot]) -> &'a str {
 /// the process-wide cache — restored from disk on first use, so even the first
 /// scan of a fresh process only reads what was appended since the last run.
 /// Blocking; call from `spawn_blocking`. `sessions` is
-/// [`Attribution::sessions`], read from the database by the caller.
-pub fn scan_all(since_ms: i64, until_ms: i64, sessions: HashMap<String, String>) -> UsageScan {
+/// [`Attribution::sessions`] and `agents` each agent's stamp
+/// ([`overlay_roots`]), both read from the database by the caller.
+pub fn scan_all(
+    since_ms: i64,
+    until_ms: i64,
+    sessions: HashMap<String, String>,
+    agents: HashMap<String, String>,
+) -> UsageScan {
     let claude = crate::transcripts::claude_projects_dirs();
     let codex: Vec<PathBuf> = crate::transcripts::codex_sessions_dirs();
-    let attribution = Attribution {
-        roots: account_roots(),
-        sessions,
-    };
+    let mut roots = overlay_roots(&crate::transcripts::codex_overlay_sessions_dirs(), &agents);
+    roots.extend(account_roots());
+    let attribution = Attribution { roots, sessions };
     static CACHE: OnceLock<Mutex<ScanCache>> = OnceLock::new();
     let path = cache_path();
     // Reading the cache is the first scan's I/O budget well spent: it replaces
@@ -323,11 +349,21 @@ pub fn scan_accounts_with(
         }
     }
 
+    // A rollout's name is unique (time and thread id), so one seen in an
+    // earlier root is a copy: an agent's overlay holds the legacy threads it
+    // adopted, and codex records carry no id to dedupe the spend by.
+    let mut codex_names: HashSet<std::ffi::OsString> = HashSet::new();
     for dir in codex_sessions_dirs {
         for year in read_subdirs(dir) {
             for month in read_subdirs(&year) {
                 for day in read_subdirs(&month) {
                     for file in read_jsonl_files(&day) {
+                        let Some(name) = file.file_name() else {
+                            continue;
+                        };
+                        if !codex_names.insert(name.to_os_string()) {
+                            continue;
+                        }
                         if cache.refresh(&file, Provider::Codex, since_ms, &mut io) {
                             files.push(file);
                         }
@@ -347,30 +383,33 @@ pub fn scan_accounts_with(
     }
 
     let mut out = aggregate(cache, &files, attribution, &io, since_ms, until_ms);
-    out.rollout_limits = rollout_limits(cache, &files, &attribution.roots);
+    out.rollout_limits = rollout_limits(cache, &files, attribution);
     out
 }
 
 /// The newest limits reading among `files`' rollouts, per account. Read off
-/// the parse state, so it costs no I/O beyond the scan's own. By directory:
-/// a codex agent runs in its account's home, so the rollout's directory is
-/// the login whose limits it reports.
+/// the parse state, so it costs no I/O beyond the scan's own. Credited like
+/// the spend: a rollout reports the limits of the login its session ran
+/// under, which is its workspace's stamp, else its directory's account.
 fn rollout_limits(
     cache: &ScanCache,
     files: &[PathBuf],
-    roots: &[AccountRoot],
+    attribution: &Attribution,
 ) -> BTreeMap<String, ProviderLimits> {
     let mut newest: BTreeMap<String, ProviderLimits> = BTreeMap::new();
     for path in files {
-        let Some(reading) = cache
-            .files
-            .get(path)
-            .and_then(|entry| entry.codex.as_ref())
+        let Some(entry) = cache.files.get(path) else {
+            continue;
+        };
+        let Some(reading) = entry
+            .codex
+            .as_ref()
             .and_then(|state| state.rate_limits.as_ref())
         else {
             continue;
         };
-        let account = account_of(path, roots);
+        let session = entry.codex_session_id(path);
+        let account = attribution.account_of(path, Some(&session));
         if newest
             .get(account)
             .map_or(true, |known| known.as_of < reading.as_of)
@@ -1194,6 +1233,97 @@ mod tests {
         assert_eq!(percent("default"), 10.0);
         assert_eq!(percent("work"), 40.0);
         assert_eq!(out.rollout_limits.len(), 2);
+    }
+
+    fn codex_meta(id: &str, parent: Option<&str>) -> String {
+        let source = match parent {
+            Some(p) => serde_json::json!({"subagent": {"thread_spawn": {"parent_thread_id": p}}}),
+            None => serde_json::json!("exec"),
+        };
+        serde_json::json!({"type": "session_meta", "timestamp": "2026-01-02T09:59:00Z",
+                           "payload": {"id": id, "source": source}})
+        .to_string()
+    }
+
+    /// An agent's overlay is credited to the agent's stamp, a sub-agent
+    /// thread in it (no session of its own) included; an overlay whose agent
+    /// is unknown is the default's.
+    #[test]
+    fn an_agents_own_codex_threads_are_credited_to_its_stamp() {
+        let td = tempfile::tempdir().unwrap();
+        let overlay = |agent: &str| td.path().join(agent).join(".fletch-codex-home");
+        let stamped = codex_file(
+            &overlay("etna"),
+            "a",
+            &[
+                codex_meta("thread-etna", None),
+                codex_limits_line("2026-01-02T10:00:00Z", 15.0),
+            ],
+        );
+        codex_file(
+            &overlay("etna"),
+            "b",
+            &[
+                codex_meta("thread-etna-child", Some("thread-etna")),
+                codex_limits_line("2026-01-02T10:30:00Z", 35.0),
+            ],
+        );
+        let unknown = codex_file(
+            &overlay("fuji"),
+            "c",
+            &[
+                codex_meta("thread-fuji", None),
+                codex_limits_line("2026-01-02T10:00:00Z", 25.0),
+            ],
+        );
+        let attribution = Attribution {
+            roots: overlay_roots(
+                &[
+                    ("etna".to_string(), stamped.clone()),
+                    ("fuji".to_string(), unknown.clone()),
+                ],
+                &HashMap::from([("etna".to_string(), "work".to_string())]),
+            ),
+            sessions: HashMap::new(),
+        };
+
+        let (since, until) = wide_window();
+        let out = scan_accounts_with(
+            &mut ScanCache::default(),
+            &[],
+            &[stamped, unknown],
+            &attribution,
+            since,
+            until,
+        );
+        let percent = |account: &str| out.rollout_limits[account].five_hour.unwrap().percent;
+        assert_eq!(percent("work"), 35.0);
+        assert_eq!(percent("default"), 25.0);
+    }
+
+    /// A legacy thread an agent adopted sits in its overlay and in the old
+    /// root under one name: its spend counts once, from the overlay.
+    #[test]
+    fn an_adopted_rollout_is_counted_once() {
+        let td = tempfile::tempdir().unwrap();
+        let lines = [
+            codex_meta("thread-1", None),
+            codex_turn_context("2026-01-02T10:00:00Z", "gpt-5"),
+            codex_token_count("2026-01-02T10:00:01Z", codex_usage(100, 0, 0, 10)),
+        ];
+        let overlay = codex_file(&td.path().join("agent/.fletch-codex-home"), "same", &lines);
+        let legacy = codex_file(&td.path().join("home/.codex"), "same", &lines);
+
+        let (since, until) = wide_window();
+        let out = scan_dirs(&[], &[overlay, legacy], since, until);
+
+        let total: u64 = out
+            .buckets
+            .iter()
+            .map(|b| b.tokens.input + b.tokens.output)
+            .sum();
+        assert_eq!(total, 110);
+        assert_eq!(out.sessions.len(), 1);
     }
 
     #[test]

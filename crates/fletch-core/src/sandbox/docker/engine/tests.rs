@@ -154,13 +154,22 @@ fn rw_config_spec<'a>(
     }
 }
 
-/// A codex `RunSpec`: a read-write `~/.codex` mount, `OPENAI_API_KEY` as the
-/// forwarded auth var, and the codex image.
+/// The shared codex config an overlay links to, bound read-only.
+static CODEX_SHARED: std::sync::LazyLock<Vec<PathBuf>> = std::sync::LazyLock::new(|| {
+    vec![
+        PathBuf::from("/Users/u/.codex/config.toml"),
+        PathBuf::from("/Users/u/.codex/skills"),
+    ]
+});
+
+/// A codex `RunSpec`: the agent's `CODEX_HOME` overlay read-write, the shared
+/// config read-only, `OPENAI_API_KEY` as the forwarded auth var, and the codex
+/// image.
 fn codex_spec<'a>() -> RunSpec<'a> {
     rw_config_spec(
         ProviderMounts::Codex {
-            config_dir: Path::new("/Users/u/.codex"),
-            forward_home: false,
+            home: Path::new("/Users/u/.fletch/worktrees/orkney/.fletch-codex-home"),
+            shared: &CODEX_SHARED,
         },
         "fletch-agent-codex:abc123def456",
         "codex",
@@ -465,22 +474,24 @@ fn argv_mounts_borrowed_object_store_read_only() {
     );
 }
 
-/// Codex mounts its config dir read-write (auth refresh + rollout writes
-/// must reach the host) and launches the codex image + `codex` bin. There's
-/// no `~/.claude` read-only mount, no tmpfs overlay, and no `projects/`
-/// transcript bind — codex persists transcripts through this same RW mount.
+/// Codex mounts the agent's own `CODEX_HOME` overlay read-write (its
+/// rollouts must reach the host) and only the shared config its links point
+/// at, read-only, never `~/.codex` itself, which holds the login's refresh
+/// token. No `~/.claude` mount, no tmpfs overlay, no `projects/` bind.
 #[test]
-fn argv_codex_mounts_config_dir_read_write() {
+fn argv_codex_mounts_its_overlay_and_never_the_codex_home() {
     let args = run_args(&codex_spec());
     assert_eq!(
         values_of(&args, "-v"),
         vec![
             "/Users/u/.fletch/worktrees/orkney:/Users/u/.fletch/worktrees/orkney",
             "/Users/u/.fletch/rpc/orkney:/Users/u/.fletch/rpc/orkney",
-            // ~/.codex read-write: no `:ro` suffix.
-            "/Users/u/.codex:/Users/u/.codex",
+            "/Users/u/.fletch/worktrees/orkney/.fletch-codex-home:/Users/u/.fletch/worktrees/orkney/.fletch-codex-home",
+            "/Users/u/.codex/config.toml:/Users/u/.codex/config.toml:ro",
+            "/Users/u/.codex/skills:/Users/u/.codex/skills:ro",
         ],
     );
+    assert!(!values_of(&args, "-v").contains(&"/Users/u/.codex:/Users/u/.codex"));
     // No claude-shaped surfaces leak into a codex launch.
     assert!(
         !args.iter().any(|a| a.contains("/.claude")),
@@ -500,10 +511,10 @@ fn argv_codex_mounts_config_dir_read_write() {
 }
 
 /// Codex forwards `OPENAI_API_KEY` by bare name (invariant 3) and, unlike
-/// claude, no `CLAUDE_CONFIG_DIR`/Anthropic vars. `CODEX_HOME` forwards only
-/// for a non-default `$CODEX_HOME`.
+/// claude, no `CLAUDE_CONFIG_DIR`/Anthropic vars. `CODEX_HOME` always
+/// forwards: it names the overlay.
 #[test]
-fn argv_codex_forwards_openai_key_and_optional_codex_home() {
+fn argv_codex_forwards_openai_key_and_codex_home() {
     let args = run_args(&codex_spec());
     let forwarded = values_of(&args, "-e");
     assert!(
@@ -513,19 +524,7 @@ fn argv_codex_forwards_openai_key_and_optional_codex_home() {
     assert!(forwarded.contains(&"HOME"));
     assert!(!forwarded.contains(&"CLAUDE_CONFIG_DIR"));
     assert!(!forwarded.contains(&"ANTHROPIC_API_KEY"));
-    // Default ~/.codex: CODEX_HOME is not forwarded (the mount + HOME cover it).
-    assert!(
-        !forwarded.contains(&"CODEX_HOME"),
-        "default CODEX_HOME must not forward"
-    );
-
-    // A non-default $CODEX_HOME is forwarded so in-container codex reads it.
-    let mut spec = codex_spec();
-    spec.mounts = ProviderMounts::Codex {
-        config_dir: Path::new("/Users/u/.codex"),
-        forward_home: true,
-    };
-    assert!(values_of(&run_args(&spec), "-e").contains(&"CODEX_HOME"));
+    assert!(forwarded.contains(&"CODEX_HOME"));
 
     // No token value anywhere in argv.
     for arg in &args {

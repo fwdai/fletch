@@ -33,12 +33,35 @@ pub fn session_accounts(
     Ok(out)
 }
 
+/// Every agent by id, with the account its workspace is stamped with
+/// (`default` for no stamp), archived ones included — what the usage scan
+/// credits an agent's own codex session dir to.
+pub fn agent_accounts(
+    conn: &rusqlite::Connection,
+) -> Result<std::collections::HashMap<String, String>> {
+    let mut stmt = conn.prepare("SELECT id, provider_account FROM workspaces")?;
+    let rows = stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+    })?;
+    let mut out = std::collections::HashMap::new();
+    for row in rows {
+        let (id, account) = row?;
+        let account = account
+            .filter(|a| !crate::agent::accounts::is_default(a))
+            .unwrap_or_else(|| crate::agent::accounts::DEFAULT_ACCOUNT.to_string());
+        out.insert(id, account);
+    }
+    Ok(out)
+}
+
 /// How many live (non-archived) agents of `provider` are stamped with the
 /// managed account `account` (see `agent::accounts`). Gates removing the
 /// account: its directory holds the login those agents launch on (and a codex
 /// account's transcripts), and a running codex agent would write it straight
-/// back. A free function over the connection because the accounts commands
-/// hold one, not a manager; the provider is read off the workspace's
+/// back. Reads the current stamp, so an agent switched off the account
+/// (`Supervisor::switch_account`) no longer holds it. A free function over the
+/// connection because the accounts commands hold one, not a manager; the
+/// provider is read off the workspace's
 /// sessions, where it lives.
 pub fn live_agents_on_account(
     conn: &rusqlite::Connection,
@@ -569,6 +592,31 @@ impl WorkspaceManager {
         conn.execute(
             "UPDATE sessions SET model = ?1 WHERE workspace_id = ?2 AND superseded_at IS NULL",
             rusqlite::params![model, id],
+        )?;
+        Ok(())
+    }
+
+    /// Drop the session's recorded failure, so the agent rests as idle again.
+    pub fn clear_agent_error(&self, id: &str) -> Result<()> {
+        let conn = self.db.lock();
+        Self::ensure_agent_exists(&conn, id)?;
+        conn.execute(
+            "UPDATE sessions SET last_error = NULL
+             WHERE workspace_id = ?1 AND superseded_at IS NULL",
+            [id],
+        )?;
+        Ok(())
+    }
+
+    /// Restamp the workspace's provider account (`None` for the default).
+    /// Every later launch reads it back, and so do usage attribution and the
+    /// account-removal gate (see `Supervisor::switch_account`).
+    pub fn update_agent_account(&self, id: &str, account: Option<&str>) -> Result<()> {
+        let conn = self.db.lock();
+        Self::ensure_agent_exists(&conn, id)?;
+        conn.execute(
+            "UPDATE workspaces SET provider_account = ?1 WHERE id = ?2",
+            rusqlite::params![account, id],
         )?;
         Ok(())
     }

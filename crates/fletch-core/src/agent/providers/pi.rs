@@ -30,7 +30,12 @@ fn pi_sessions_dir() -> Option<PathBuf> {
     dirs::home_dir().map(|home| home.join(".pi/agent/sessions"))
 }
 
-pub(crate) fn pi_locate(session_id: &str, cwd: &Path, diag: &mut ReadDiagnostics) -> Vec<PathBuf> {
+pub(crate) fn pi_locate(
+    session_id: &str,
+    _agent_id: &str,
+    cwd: &Path,
+    diag: &mut ReadDiagnostics,
+) -> Vec<PathBuf> {
     match pi_sessions_dir() {
         Some(sessions) => pi_locate_in(&sessions, session_id, cwd, diag),
         None => Vec::new(),
@@ -60,9 +65,9 @@ fn pi_locate_in(
 /// copied as is.
 pub(crate) fn pi_write(
     session_id: &str,
+    _agent_id: &str,
     cwd: &Path,
     _container: bool,
-    _account_dir: Option<&Path>,
     bodies: &[Value],
 ) -> Result<Option<PathBuf>> {
     let sessions = pi_sessions_dir()

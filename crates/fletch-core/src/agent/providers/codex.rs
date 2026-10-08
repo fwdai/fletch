@@ -36,8 +36,9 @@ use std::path::{Path, PathBuf};
 use serde_json::Value;
 
 use crate::agent::args::{model_args, push_opt};
+use crate::agent::credential_file::{Entry, PrivateDir};
 use crate::agent::transcript::{
-    records_with_id, replace_field, write_new_jsonl, RawRecord, ReadDiagnostics, SubagentLayout,
+    records_with_id, replace_field, RawRecord, ReadDiagnostics, SubagentLayout,
 };
 use crate::agent::TurnArgs;
 use crate::error::{Error, Result};
@@ -47,10 +48,11 @@ use super::gated_session_id;
 
 pub(crate) fn codex_locate(
     session_id: &str,
+    agent_id: &str,
     _cwd: &Path,
     diag: &mut ReadDiagnostics,
 ) -> Vec<PathBuf> {
-    crate::transcripts::find_codex_rollouts(session_id, diag)
+    crate::transcripts::find_codex_rollouts(session_id, agent_id, diag)
 }
 
 pub(crate) fn codex_read(paths: &[PathBuf], diag: &mut ReadDiagnostics) -> Vec<RawRecord> {
@@ -61,59 +63,165 @@ pub(crate) fn codex_read(paths: &[PathBuf], diag: &mut ReadDiagnostics) -> Vec<R
     records_with_id(values, None)
 }
 
-/// Write `bodies` as codex thread `session_id`, run in `cwd`: a rollout
-/// `<CODEX_HOME>/sessions/YYYY/MM/DD/rollout-<local time>-<id>.jsonl` (the
-/// managed account's home when the agent runs under one), named
+/// Write `bodies` as codex thread `session_id` of agent `agent_id`, run in
+/// `cwd`: a rollout `<CODEX_HOME>/sessions/YYYY/MM/DD/rollout-<local
+/// time>-<id>.jsonl` in the agent's own overlay
+/// (`codex_login::overlay_for_agent`), whichever account it runs under, named
 /// as codex names its own (0.153.4). `codex exec resume <id>` finds it by the
-/// id at the end of its name, as [`codex_locate`] does. Its `session_meta`
-/// names the new thread (`id`, and `session_id` and `cwd` where present);
+/// id at the end of its name without it being in codex's sqlite index
+/// (verified on 0.154.0), as [`codex_locate`] does. Its `session_meta` names
+/// the new thread (`id`, and `session_id` and `cwd` where present);
 /// everything else is copied as is.
 pub(crate) fn codex_write(
     session_id: &str,
+    agent_id: &str,
     cwd: &Path,
     _container: bool,
-    account_dir: Option<&Path>,
     bodies: &[Value],
 ) -> Result<Option<PathBuf>> {
-    let sessions = match account_dir {
-        Some(dir) => dir.join("sessions"),
-        None => crate::transcripts::codex_sessions_dir()
-            .ok_or_else(|| Error::Other("codex's sessions directory can't be resolved".into()))?,
-    };
+    let overlay = crate::agent::codex_login::overlay_for_agent(agent_id)?;
+    let sessions = crate::agent::codex_login::open_overlay(&overlay)?.subdir("sessions")?;
     codex_write_in(&sessions, session_id, cwd, bodies).map(Some)
 }
 
-/// [`codex_write`] under the `sessions` root given.
+/// Copy thread `session_id` from where codex kept it before agents had their
+/// own `CODEX_HOME` (the default or an account home) into the overlay's
+/// `sessions`, sub-agent threads included, at the same `YYYY/MM/DD` paths, so
+/// an agent created before overlays still resumes its conversation. Copied,
+/// not moved: the original stays where the user's own codex expects it (the
+/// usage scan counts a file name once, so the copy isn't spend twice).
+///
+/// Run at every launch and checked file by file: each copy lands whole under
+/// its final name (temp then rename), so a file that is there is complete,
+/// and one an earlier launch failed to copy is tried again. One that is
+/// there is never touched, since codex appends to it once it resumes.
+/// Written through a handle on the overlay (`codex_login::open_overlay`), so
+/// a link the agent planted in it is replaced, never followed. Once every
+/// file of the thread is confirmed there, a marker in the overlay
+/// ([`ADOPTED_DIRNAME`]) skips the walk of the legacy roots at later
+/// launches.
+pub(crate) fn adopt_legacy_rollouts(session_id: &str, overlay: &Path) -> Result<()> {
+    adopt_rollouts_from(
+        session_id,
+        overlay,
+        &crate::transcripts::legacy_codex_sessions_dirs(),
+    )
+}
+
+/// The overlay dir holding one empty file per thread whose adoption is
+/// complete, named for the thread id.
+const ADOPTED_DIRNAME: &str = ".fletch-adopted";
+
+/// [`adopt_legacy_rollouts`] from the `legacy` session roots given.
+fn adopt_rollouts_from(session_id: &str, overlay: &Path, legacy: &[PathBuf]) -> Result<()> {
+    let overlay = crate::agent::codex_login::open_overlay(overlay)?;
+    let adopted = overlay.subdir(ADOPTED_DIRNAME)?;
+    // A thread id that can't name a file is never marked, only walked.
+    let marked = adopted.entry(session_id).ok();
+    if marked.as_ref().is_some_and(|e| *e != Entry::Missing) {
+        return Ok(());
+    }
+    let mut diag = ReadDiagnostics::default();
+    let mains = legacy
+        .iter()
+        .flat_map(|root| crate::transcripts::find_codex_rollouts_in(root, session_id, &mut diag))
+        .collect::<Vec<_>>();
+    let sessions = overlay.subdir("sessions")?;
+    // A thread the overlay already holds under any name is the copy codex
+    // resumed and appends to; only its sub-agents' files are checked.
+    let have_main =
+        !crate::transcripts::find_codex_rollouts_in(sessions.path(), session_id, &mut diag)
+            .is_empty();
+    if mains.is_empty() && !have_main {
+        // Not written yet, or gone: nothing to confirm.
+        return Ok(());
+    }
+    let mut complete = true;
+    for main in mains {
+        let children = codex_subagent_files(&main).into_iter().map(|(_, p)| p);
+        let main = (!have_main).then(|| main.clone());
+        for path in main.into_iter().chain(children) {
+            if let Err(e) = copy_rollout(&path, &sessions) {
+                complete = false;
+                tracing::warn!(error = %e, "could not copy a codex thread into the agent's home");
+            }
+        }
+    }
+    if complete && marked.is_some() {
+        adopted.write_file(session_id, b"", 0o600)?;
+    }
+    Ok(())
+}
+
+/// The `YYYY/MM/DD` directory under `sessions`, created as needed.
+fn rollout_dir(
+    sessions: &PrivateDir,
+    year: &str,
+    month: &str,
+    day: &str,
+) -> std::io::Result<PrivateDir> {
+    sessions.subdir(year)?.subdir(month)?.subdir(day)
+}
+
+/// Copy one rollout to the same `YYYY/MM/DD/<file>` under `sessions`, unless
+/// a file of that name is already there.
+fn copy_rollout(path: &Path, sessions: &PrivateDir) -> std::io::Result<()> {
+    let names: Vec<&str> = path
+        .components()
+        .rev()
+        .take(4)
+        .filter_map(|c| c.as_os_str().to_str())
+        .collect();
+    let [file, day, month, year] = names[..] else {
+        return Err(std::io::Error::other("not a sessions/YYYY/MM/DD rollout"));
+    };
+    let dir = rollout_dir(sessions, year, month, day)?;
+    if dir.entry(file)? != Entry::Missing {
+        return Ok(());
+    }
+    let mut source = std::fs::File::open(path)?;
+    dir.write_stream(file, &mut source, 0o600)
+}
+
+/// [`codex_write`] under the `sessions` dir given.
 fn codex_write_in(
-    sessions: &Path,
+    sessions: &PrivateDir,
     session_id: &str,
     cwd: &Path,
     bodies: &[Value],
 ) -> Result<PathBuf> {
     let cwd = cwd.to_string_lossy();
-    let lines: Vec<Value> = bodies
-        .iter()
-        .map(|body| {
-            let mut line = body.clone();
-            if line.get("type").and_then(Value::as_str) == Some("session_meta") {
-                if let Some(meta) = line.get_mut("payload") {
-                    replace_field(meta, "id", session_id);
-                    replace_field(meta, "session_id", session_id);
-                    replace_field(meta, "cwd", &cwd);
-                }
+    let mut out: Vec<u8> = Vec::new();
+    for body in bodies {
+        let mut line = body.clone();
+        if line.get("type").and_then(Value::as_str) == Some("session_meta") {
+            if let Some(meta) = line.get_mut("payload") {
+                replace_field(meta, "id", session_id);
+                replace_field(meta, "session_id", session_id);
+                replace_field(meta, "cwd", &cwd);
             }
-            line
-        })
-        .collect();
+        }
+        serde_json::to_writer(&mut out, &line)?;
+        out.push(b'\n');
+    }
     let now = chrono::Local::now();
-    let path = sessions
-        .join(now.format("%Y/%m/%d").to_string())
-        .join(format!(
-            "rollout-{}-{session_id}.jsonl",
-            now.format("%Y-%m-%dT%H-%M-%S")
-        ));
-    write_new_jsonl(&path, &lines)?;
-    Ok(path)
+    let (year, month, day) = (
+        now.format("%Y").to_string(),
+        now.format("%m").to_string(),
+        now.format("%d").to_string(),
+    );
+    let file = format!(
+        "rollout-{}-{session_id}.jsonl",
+        now.format("%Y-%m-%dT%H-%M-%S")
+    );
+    let dir = rollout_dir(sessions, &year, &month, &day)?;
+    if dir.entry(&file)? != Entry::Missing {
+        return Err(Error::Other(format!(
+            "a codex thread named {file} already exists"
+        )));
+    }
+    dir.write_file(&file, &out, 0o600)?;
+    Ok(dir.path().join(file))
 }
 
 /// A rollout's first line, unparsed. Every rollout (parent or child, all 236
@@ -507,14 +615,143 @@ mod tests {
             .collect()
     }
 
+    fn meta_line(id: &str, parent: Option<&str>) -> String {
+        let source = match parent {
+            Some(p) => json!({"subagent": {"thread_spawn": {"parent_thread_id": p}}}),
+            None => json!("exec"),
+        };
+        json!({"type": "session_meta", "payload": {"id": id, "source": source}}).to_string()
+    }
+
+    fn legacy_rollout(root: &Path, ts: &str, id: &str, parent: Option<&str>) -> PathBuf {
+        let day = root.join("2026").join("10").join("01");
+        std::fs::create_dir_all(&day).unwrap();
+        let path = day.join(format!("rollout-2026-10-01T{ts}-{id}.jsonl"));
+        std::fs::write(&path, format!("{}\n", meta_line(id, parent))).unwrap();
+        path
+    }
+
+    fn names_in(day: &Path) -> Vec<String> {
+        let mut names: Vec<_> = std::fs::read_dir(day)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn a_legacy_thread_and_its_subagents_are_copied_into_the_agents_home() {
+        let td = tempfile::tempdir().unwrap();
+        let legacy = td.path().join("legacy");
+        let overlay = td.path().join("agent").join(".fletch-codex-home");
+        let main = legacy_rollout(&legacy, "09-00-00", "main-1", None);
+        legacy_rollout(&legacy, "09-05-00", "child-1", Some("main-1"));
+        legacy_rollout(&legacy, "09-06-00", "other-1", None);
+
+        adopt_rollouts_from("main-1", &overlay, std::slice::from_ref(&legacy)).unwrap();
+
+        let day = overlay.join("sessions/2026/10/01");
+        let mut copied: Vec<_> = std::fs::read_dir(&day)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        copied.sort();
+        assert_eq!(
+            copied,
+            vec![
+                "rollout-2026-10-01T09-00-00-main-1.jsonl",
+                "rollout-2026-10-01T09-05-00-child-1.jsonl"
+            ]
+        );
+        assert!(main.exists());
+    }
+
+    #[test]
+    fn a_thread_the_agents_home_already_holds_is_not_copied_again() {
+        let td = tempfile::tempdir().unwrap();
+        let legacy = td.path().join("legacy");
+        let overlay = td.path().join("agent").join(".fletch-codex-home");
+        let sessions = overlay.join("sessions");
+        legacy_rollout(&legacy, "09-00-00", "main-1", None);
+        let own = legacy_rollout(&sessions, "10-00-00", "main-1", None);
+        std::fs::write(&own, "appended by codex\n").unwrap();
+
+        adopt_rollouts_from("main-1", &overlay, &[legacy]).unwrap();
+
+        let mut diag = ReadDiagnostics::default();
+        let found = crate::transcripts::find_codex_rollouts_in(&sessions, "main-1", &mut diag);
+        assert_eq!(found, vec![own.clone()]);
+        assert_eq!(std::fs::read_to_string(own).unwrap(), "appended by codex\n");
+    }
+
+    /// A sub-agent's file that an earlier launch failed to copy is copied by
+    /// the next, though the main thread is already there.
+    #[cfg(unix)]
+    #[test]
+    fn an_adoption_cut_short_is_finished_at_the_next_launch() {
+        use std::os::unix::fs::PermissionsExt;
+        let td = tempfile::tempdir().unwrap();
+        let legacy = td.path().join("legacy");
+        let overlay = td.path().join("agent").join(".fletch-codex-home");
+        legacy_rollout(&legacy, "09-00-00", "main-1", None);
+        // The sub-agent ran a day later, so its copy needs a dir of its own,
+        // which the first launch can't create.
+        let child_day = legacy.join("2026/10/02");
+        std::fs::create_dir_all(&child_day).unwrap();
+        std::fs::write(
+            child_day.join("rollout-2026-10-02T09-05-00-child-1.jsonl"),
+            format!("{}\n", meta_line("child-1", Some("main-1"))),
+        )
+        .unwrap();
+        let month = overlay.join("sessions/2026/10");
+        std::fs::create_dir_all(month.join("01")).unwrap();
+        std::fs::set_permissions(&month, std::fs::Permissions::from_mode(0o555)).unwrap();
+        adopt_rollouts_from("main-1", &overlay, std::slice::from_ref(&legacy)).unwrap();
+        std::fs::set_permissions(&month, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(!month.join("02").exists());
+        assert!(!overlay.join(ADOPTED_DIRNAME).join("main-1").exists());
+
+        adopt_rollouts_from("main-1", &overlay, &[legacy]).unwrap();
+
+        assert_eq!(
+            names_in(&month.join("02")),
+            vec!["rollout-2026-10-02T09-05-00-child-1.jsonl"]
+        );
+        assert!(overlay.join(ADOPTED_DIRNAME).join("main-1").is_file());
+    }
+
+    /// Once a thread is confirmed whole, later launches don't walk the legacy
+    /// roots for it: a file deleted from the overlay afterwards stays gone.
+    #[test]
+    fn a_confirmed_adoption_skips_the_legacy_walk() {
+        let td = tempfile::tempdir().unwrap();
+        let legacy = td.path().join("legacy");
+        let overlay = td.path().join("agent").join(".fletch-codex-home");
+        legacy_rollout(&legacy, "09-00-00", "main-1", None);
+        legacy_rollout(&legacy, "09-05-00", "child-1", Some("main-1"));
+        adopt_rollouts_from("main-1", &overlay, std::slice::from_ref(&legacy)).unwrap();
+        assert!(overlay.join(ADOPTED_DIRNAME).join("main-1").is_file());
+        let day = overlay.join("sessions/2026/10/01");
+        std::fs::remove_file(day.join("rollout-2026-10-01T09-05-00-child-1.jsonl")).unwrap();
+
+        adopt_rollouts_from("main-1", &overlay, &[legacy]).unwrap();
+
+        assert_eq!(
+            names_in(&day),
+            vec!["rollout-2026-10-01T09-00-00-main-1.jsonl"]
+        );
+    }
+
     #[test]
     fn a_written_thread_is_where_codex_resumes_it_with_only_its_identity_changed() {
         let td = tempfile::tempdir().unwrap();
         let sessions = td.path().join("sessions");
+        std::fs::create_dir_all(&sessions).unwrap();
         let cwd = Path::new("/Users/u/.fletch/workspaces/new/repo");
         let lines = rollout_lines();
 
-        let path = codex_write_in(&sessions, NEW, cwd, &lines).unwrap();
+        let path = codex_write_in(&PrivateDir::open(&sessions).unwrap(), NEW, cwd, &lines).unwrap();
 
         // Found by the id ending its name, in the `YYYY/MM/DD` tree.
         let mut diag = ReadDiagnostics::default();
