@@ -46,10 +46,24 @@ export const SOURCE_LABEL: Record<LimitSource, string> = {
   rollout: "session log",
 };
 
+function agoLabel(asOf: number, nowMs: number): string {
+  const age = formatAge(asOf * 1000, nowMs);
+  return age === "now" ? "just now" : `${age} ago`;
+}
+
 /** "as of 5m ago · Codex app-server". */
 export function asOfLabel(limits: ProviderLimits, nowMs: number): string {
-  const age = formatAge(limits.as_of * 1000, nowMs);
-  return `as of ${age === "now" ? "just now" : `${age} ago`} · ${SOURCE_LABEL[limits.source]}`;
+  return `as of ${agoLabel(limits.as_of, nowMs)} · ${SOURCE_LABEL[limits.source]}`;
+}
+
+/** "Fable as of 2h ago" for model windows older than the reading they ride on
+ *  — kept from the last Refresh while agent sessions updated the rest. Null
+ *  when every model window is as fresh as the reading. */
+export function olderModelsLabel(limits: ProviderLimits, nowMs: number): string | null {
+  const older = (limits.models ?? []).filter((m) => m.as_of < limits.as_of);
+  if (older.length === 0) return null;
+  const asOf = Math.min(...older.map((m) => m.as_of));
+  return `${older.map((m) => m.model).join(", ")} as of ${agoLabel(asOf, nowMs)}`;
 }
 
 /** What the last Refresh ran into, when it didn't produce a reading worth

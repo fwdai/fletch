@@ -102,12 +102,24 @@ export interface LimitWindow {
  *  `agent::limits`. */
 export type LimitSource = "stream" | "statusline" | "app_server" | "oauth_usage" | "rollout";
 
-/** A reading of both windows at one instant (`as_of`, epoch seconds). */
+/** A weekly window the vendor scopes to one model, named by the server
+ *  ("Fable"). Its own `as_of`: it can outlive the reading that brought it
+ *  (a passive reading lists none, so the last refresh's carry over). Mirrors
+ *  `ModelWindow` in the engine's `agent::limits`. */
+export interface ModelWindow extends LimitWindow {
+  model: string;
+  as_of: number;
+}
+
+/** A reading of both windows at one instant (`as_of`, epoch seconds), and any
+ *  model-scoped windows the source listed. `models` is absent from a row
+ *  stored before it existed. */
 export interface ProviderLimits {
   five_hour: LimitWindow | null;
   seven_day: LimitWindow | null;
   as_of: number;
   source: LimitSource;
+  models?: ModelWindow[];
 }
 
 /** How the last manual limits refresh ended. `stale`: claude's stored token

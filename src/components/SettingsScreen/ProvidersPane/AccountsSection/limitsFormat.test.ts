@@ -1,7 +1,14 @@
 import { describe, expect, it } from "vitest";
 import type { LimitsRefreshState, ProviderLimits } from "@/api/types/providers";
 import { formatClockTime } from "@/util/format";
-import { asOfLabel, formatCountdown, inBackoff, refreshHint, resetLabel } from "./limitsFormat";
+import {
+  asOfLabel,
+  formatCountdown,
+  inBackoff,
+  olderModelsLabel,
+  refreshHint,
+  resetLabel,
+} from "./limitsFormat";
 
 const MIN = 60_000;
 const HOUR = 60 * MIN;
@@ -62,6 +69,33 @@ describe("asOfLabel", () => {
 
   it("calls a reading under a minute old just now", () => {
     expect(asOfLabel(reading(NOW - 10_000), NOW)).toBe("as of just now · Codex app-server");
+  });
+});
+
+describe("olderModelsLabel", () => {
+  const model = (name: string, asOfMs: number) => ({
+    model: name,
+    percent: 30,
+    resets_at: null,
+    as_of: secs(asOfMs),
+  });
+  const reading = (models: ProviderLimits["models"]): ProviderLimits => ({
+    five_hour: null,
+    seven_day: null,
+    as_of: secs(NOW - 5 * MIN),
+    source: "stream",
+    models,
+  });
+
+  it("names model windows older than the reading, with the oldest age", () => {
+    const limits = reading([model("Fable", NOW - 2 * HOUR), model("Opus", NOW - 3 * HOUR)]);
+    expect(olderModelsLabel(limits, NOW)).toBe("Fable, Opus as of 3h ago");
+  });
+
+  it("says nothing when they are as fresh as the reading, or there are none", () => {
+    expect(olderModelsLabel(reading([model("Fable", NOW - 5 * MIN)]), NOW)).toBeNull();
+    expect(olderModelsLabel(reading([]), NOW)).toBeNull();
+    expect(olderModelsLabel(reading(undefined), NOW)).toBeNull();
   });
 });
 
