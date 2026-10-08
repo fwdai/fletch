@@ -164,6 +164,9 @@ export interface HostTarget {
   /** Display name from the pairing URL, before `hello` reports the real one. */
   name?: string;
   pairingToken?: string;
+  /** Pair by asking and being accepted on the Mac, with no code: `pair_request`
+   *  then `pair_confirm` (docs/remote-protocol.md, "Confirmed pairing"). */
+  confirm?: boolean;
 }
 
 /** Which path a connection took. The protocol is identical on both, so nothing
@@ -224,7 +227,15 @@ export const MAX_FRAME_BYTES = 4 * 1024 * 1024;
  *  `LAN_OPEN_TIMEOUT_MS` before the relay is tried, and the workspace that
  *  follows a `pair` crosses the relay too. A screen with nothing but a state
  *  name cannot tell any of that apart from a hang. */
-export type PairStep = "connecting" | "lan" | "relay" | "registering" | "greeting" | "workspace";
+export type PairStep =
+  | "connecting"
+  | "lan"
+  | "relay"
+  | "registering"
+  | "requesting"
+  | "confirming"
+  | "greeting"
+  | "workspace";
 
 export interface CallOptions {
   /** How long to wait for the answer, in ms; absent or 0 waits for ever. For
@@ -237,6 +248,7 @@ export interface CallOptions {
 export type EventHandler = (payload: unknown) => void;
 export type StateHandler = (state: ConnectionState, error?: string) => void;
 export type StepHandler = (step: PairStep) => void;
+export type CodeHandler = (code: string) => void;
 
 export interface RemoteClient {
   /** Open a connection and complete `pair` or `hello`. Rejects if the
@@ -254,6 +266,9 @@ export interface RemoteClient {
   /** Subscribe to the progress of the attempt in flight. Unlike `onState` it
    *  does not fire on subscribe: there is no current step between attempts. */
   onStep(cb: StepHandler): () => void;
+  /** The six digits of a confirmed pairing, once both nonces are in: what to
+   *  show while the Mac decides. Fires once per such attempt. */
+  onConfirmCode(cb: CodeHandler): () => void;
   /** Fires with the workspace snapshot after every successful handshake,
    *  including reconnects. */
   onSnapshot(cb: (result: HelloResult) => void): () => void;

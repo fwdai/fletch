@@ -78,6 +78,19 @@ export interface RemoteStatus {
    *  pane. Currently only one: paired devices cannot be stored, which also
    *  makes `remoteBeginPairing` refuse. */
   error: string | null;
+  /** A device waiting for this Mac to accept it, if one is — the same prompt
+   *  `remote:pair-request` raised, for a window that missed it. */
+  pairRequest: PairRequest | null;
+}
+
+/** A device asking to pair, confirmed on this Mac (docs/remote-protocol.md,
+ *  "Confirmed pairing"). Only while "Pair a device" is open. */
+export interface PairRequest {
+  id: string;
+  deviceName: string;
+  platform: string;
+  /** Six digits the device is showing too. They must match. */
+  code: string;
 }
 
 /** A minted pairing code: 8 characters from `A-Z2-9`, single use, five minutes. */

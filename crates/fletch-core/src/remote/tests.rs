@@ -4131,3 +4131,183 @@ async fn read_session_page_pages_back_through_the_dispatcher() {
     assert_ne!(bad, dispatch::UNKNOWN_OP);
     assert!(bad.contains("cursor"), "{bad}");
 }
+
+// ---------------------------------------------------------------------------
+// Confirmed pairing (docs/remote-protocol.md, "Confirmed pairing")
+// ---------------------------------------------------------------------------
+
+/// A desktop host: one with a screen to confirm on, so it installs a confirmer.
+fn boot_confirming() -> (Host, Arc<crate::host::sink::RecordingSink>) {
+    let host = boot();
+    let sink = Arc::new(crate::host::sink::RecordingSink::new());
+    host.state.prompts().set_confirmer(sink.clone());
+    (host, sink)
+}
+
+/// The phone's half up to the prompt: commit, read the host's nonce, reveal.
+/// Returns the code the phone would show.
+async fn request_and_reveal(ws: &mut SecureWs) -> String {
+    let nonce = secure::pairing::nonce().unwrap();
+    let commit = secure::encode_key(&secure::pairing::commitment(&nonce));
+    ws.request(
+        "1",
+        "pair_request",
+        json!({ "device": { "name": "Alex's iPhone", "platform": "ios" }, "commit": commit }),
+    )
+    .await;
+    let answer = ws.next_json().await;
+    assert_eq!(answer["ok"], true, "{answer}");
+    let host_nonce =
+        secure::pairing::decode(answer["result"]["nonce"].as_str().unwrap(), "n").unwrap();
+    let code = secure::pairing::code(ws.channel.handshake_hash(), &nonce, &host_nonce);
+    ws.request(
+        "2",
+        "pair_confirm",
+        json!({ "nonce": secure::encode_key(&nonce) }),
+    )
+    .await;
+    code
+}
+
+async fn prompt_of(state: &RemoteState) -> super::confirm::PairPrompt {
+    for _ in 0..200 {
+        if let Some(prompt) = state.prompts().current() {
+            return prompt;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("no prompt opened");
+}
+
+#[tokio::test]
+async fn an_accepted_confirmation_pairs_the_device_with_the_windows_scopes() {
+    let (host, sink) = boot_confirming();
+    host.state.pairing().mint(&[Scope::Observe, Scope::Agents]);
+    let phone = device();
+    let mut ws = secure_connect(host.port, &phone).await;
+
+    let code = request_and_reveal(&mut ws).await;
+    let prompt = prompt_of(&host.state).await;
+    // The same six digits on both screens, and who is asking.
+    assert_eq!(prompt.code, code);
+    assert_eq!(prompt.device_name, "Alex's iPhone");
+    assert_eq!(host.state.status().pair_request, Some(prompt.clone()));
+
+    assert!(host.state.prompts().answer(&prompt.id, true));
+    let paired = ws.next_json().await;
+    assert_eq!(paired["id"], "2");
+    assert_eq!(paired["ok"], true, "{paired}");
+    assert!(paired["result"]["deviceId"].is_string());
+
+    let record = host.state.devices().find_by_key(&phone.public).unwrap();
+    assert_eq!(record.scope_set(), vec![Scope::Observe, Scope::Agents]);
+    // One "Pair a device", one device: the window is spent.
+    assert!(host.state.pairing().window().is_none());
+    // And the connection is authenticated.
+    ws.request("3", "get_workspace", json!({})).await;
+    assert_eq!(ws.next_json().await["ok"], true);
+
+    let names: Vec<String> = sink.events().into_iter().map(|(n, _)| n).collect();
+    assert_eq!(
+        names,
+        [
+            super::confirm::PAIR_REQUEST_EVENT,
+            super::confirm::PAIR_REQUEST_ENDED_EVENT
+        ]
+    );
+}
+
+#[tokio::test]
+async fn a_declined_confirmation_registers_nothing() {
+    let (host, _sink) = boot_confirming();
+    host.state.pairing().mint(&Scope::ALL);
+    let phone = device();
+    let mut ws = secure_connect(host.port, &phone).await;
+
+    request_and_reveal(&mut ws).await;
+    let prompt = prompt_of(&host.state).await;
+    host.state.prompts().answer(&prompt.id, false);
+
+    let answer = ws.next_json().await;
+    assert_eq!(answer["ok"], false);
+    assert_eq!(answer["error"], "Pairing was declined on your Mac.");
+    assert!(host.state.devices().find_by_key(&phone.public).is_none());
+    // The window stays open for another try.
+    assert!(host.state.pairing().window().is_some());
+}
+
+#[tokio::test]
+async fn a_request_needs_a_pairing_window() {
+    let (host, _sink) = boot_confirming();
+    let mut ws = secure_connect(host.port, &device()).await;
+    let commit = secure::encode_key(&[0u8; 32]);
+    ws.request("1", "pair_request", json!({ "commit": commit }))
+        .await;
+    let answer = ws.next_json().await;
+    assert_eq!(answer["ok"], false);
+    assert!(answer["error"].as_str().unwrap().contains("Pair a device"));
+}
+
+#[tokio::test]
+async fn a_host_without_a_screen_refuses_and_points_at_the_code() {
+    let host = boot();
+    host.state.pairing().mint(&Scope::ALL);
+    let mut ws = secure_connect(host.port, &device()).await;
+    let commit = secure::encode_key(&[0u8; 32]);
+    ws.request("1", "pair_request", json!({ "commit": commit }))
+        .await;
+    let answer = ws.next_json().await;
+    assert_eq!(answer["ok"], false);
+    assert_eq!(answer["error"], super::confirm::NO_CONFIRMER);
+}
+
+/// The commitment is the point: a nonce chosen after seeing the host's is not
+/// the one committed to, and the connection ends.
+#[tokio::test]
+async fn a_nonce_that_does_not_match_the_commitment_closes_4003() {
+    let (host, _sink) = boot_confirming();
+    host.state.pairing().mint(&Scope::ALL);
+    let mut ws = secure_connect(host.port, &device()).await;
+    let committed = secure::pairing::nonce().unwrap();
+    let commit = secure::encode_key(&secure::pairing::commitment(&committed));
+    ws.request("1", "pair_request", json!({ "commit": commit }))
+        .await;
+    assert_eq!(ws.next_json().await["ok"], true);
+    let other = secure::encode_key(&secure::pairing::nonce().unwrap());
+    ws.request("2", "pair_confirm", json!({ "nonce": other }))
+        .await;
+    assert_eq!(ws.close_code().await, 4003);
+    assert!(host.state.prompts().current().is_none());
+}
+
+#[tokio::test]
+async fn pair_confirm_cannot_open_a_connection() {
+    let (host, _sink) = boot_confirming();
+    let mut ws = secure_connect(host.port, &device()).await;
+    ws.request("1", "pair_confirm", json!({ "nonce": "x" }))
+        .await;
+    assert_eq!(ws.close_code().await, 4001);
+}
+
+/// A phone that gives up takes its prompt down with it: the Mac must not be
+/// left asking about a device that is gone.
+#[tokio::test]
+async fn a_phone_that_hangs_up_withdraws_its_prompt() {
+    let (host, sink) = boot_confirming();
+    host.state.pairing().mint(&Scope::ALL);
+    let mut ws = secure_connect(host.port, &device()).await;
+    request_and_reveal(&mut ws).await;
+    prompt_of(&host.state).await;
+    drop(ws);
+    for _ in 0..200 {
+        if host.state.prompts().current().is_none() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(host.state.prompts().current().is_none());
+    assert_eq!(
+        sink.events().last().map(|(n, _)| n.clone()).as_deref(),
+        Some(super::confirm::PAIR_REQUEST_ENDED_EVENT)
+    );
+}

@@ -104,6 +104,14 @@ const CLOSE_UNAUTHENTICATED: CloseCode = CloseCode::Library(4003);
 /// error without closing, so the host sends the RFC's 1009 itself — the phone
 /// has no client-side cap and relies on this code to know what happened.
 const CLOSE_TOO_LARGE: CloseCode = CloseCode::Size;
+/// The confirmed-pairing frames (docs/remote-protocol.md, "Confirmed
+/// pairing"). `pair_request` may open a connection, like `pair` and `hello`;
+/// `pair_confirm` may only follow it.
+const PAIR_REQUEST: &str = "pair_request";
+const PAIR_CONFIRM: &str = "pair_confirm";
+/// How long the Mac's prompt waits for someone to answer it.
+const CONFIRM_TIMEOUT: Duration = Duration::from_secs(60);
+
 /// How long a peer has to finish the three-message Noise handshake. The session
 /// is registered before it starts, but nothing reads the close channel until
 /// `read_loop` does, so this is what bounds a socket that opens and then says
@@ -423,6 +431,11 @@ async fn read_loop<S: WsTransport>(
     // of outliving the socket they were going to answer on.
     let mut in_flight: JoinSet<()> = JoinSet::new();
     let mut first_frame = true;
+    // A confirmed pairing in progress on this connection: what `pair_request`
+    // committed to, then the Mac's prompt waiting for an answer. One per
+    // connection — a phone that wants to try again opens a new one.
+    let mut confirm: Option<ConfirmAttempt> = None;
+    let mut decision: Option<PendingDecision> = None;
     let mut missed_pongs = 0u32;
     let mut ping = tokio::time::interval(PING_INTERVAL);
     // `interval` fires immediately; the first real ping belongs one period out.
@@ -444,6 +457,43 @@ async fn read_loop<S: WsTransport>(
                     out.send(close_frame(CloseCode::Library(reason.code), reason.reason));
                 }
                 break;
+            }
+            // The Mac's answer to a confirmed pairing. A select arm rather than
+            // an await in the frame handler: the wait can last a minute, and
+            // the pings below must keep going while it does.
+            outcome = async {
+                match decision.as_mut() {
+                    Some(pending) => (&mut pending.answer).await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                let Some(pending) = decision.take() else { continue };
+                let accepted = match outcome {
+                    Ok(Ok(accepted)) => accepted,
+                    // Withdrawn unanswered: remote access went off under it.
+                    Ok(Err(_)) => false,
+                    Err(_) => {
+                        state.prompts().withdraw(&pending.prompt_id);
+                        out.send(json_frame(err_frame(&pending.frame_id, NO_ANSWER)));
+                        continue;
+                    }
+                };
+                if !accepted {
+                    out.send(json_frame(err_frame(&pending.frame_id, DECLINED)));
+                    continue;
+                }
+                let device = confirm.as_ref().map(|c| &c.device);
+                let Some((record, result)) =
+                    accept_confirmed(state, device, &secured.remote_static)
+                else {
+                    out.send(json_frame(err_frame(&pending.frame_id, WINDOW_CLOSED)));
+                    continue;
+                };
+                if !admit(state, out, session, secured, &record, &pending.frame_id, result, &mut event_task) {
+                    out.send(close_frame(CLOSE_UNAUTHENTICATED, "bad credential"));
+                    break;
+                }
+                authenticated = Some(record.device_id);
             }
             _ = ping.tick() => {
                 if missed_pongs >= MAX_MISSED_PONGS {
@@ -506,7 +556,7 @@ async fn read_loop<S: WsTransport>(
                                 continue;
                             }
                         };
-                        let handshake = frame.op == "pair" || frame.op == "hello";
+                        let handshake = matches!(frame.op.as_str(), "pair" | "hello" | PAIR_REQUEST);
                         if first_frame && !handshake {
                             out.send(close_frame(CLOSE_BAD_FIRST_FRAME, "expected pair or hello"));
                             break;
@@ -514,42 +564,79 @@ async fn read_loop<S: WsTransport>(
                         first_frame = false;
 
                         if authenticated.is_none() {
-                            if !handshake {
-                                out.send(close_frame(CLOSE_UNAUTHENTICATED, "hello required"));
+                            // Nothing else may be said while the Mac is
+                            // deciding: the answer is the next thing this
+                            // connection hears.
+                            if decision.is_some() {
+                                out.send(close_frame(CLOSE_BAD_FIRST_FRAME, "waiting for the Mac"));
                                 break;
+                            }
+                            match frame.op.as_str() {
+                                PAIR_REQUEST => {
+                                    if confirm.is_some() {
+                                        out.send(close_frame(CLOSE_BAD_FIRST_FRAME, "one pairing request per connection"));
+                                        break;
+                                    }
+                                    match begin_confirm(state, frame.args) {
+                                        Ok((attempt, nonce)) => {
+                                            confirm = Some(attempt);
+                                            out.send(json_frame(ok_frame(&frame.id, json!({ "nonce": nonce }))));
+                                        }
+                                        Err(Refusal::Malformed) => {
+                                            out.send(close_frame(CLOSE_BAD_FIRST_FRAME, "malformed pairing request"));
+                                            break;
+                                        }
+                                        Err(Refusal::Answer(error)) => {
+                                            out.send(json_frame(err_frame(&frame.id, error)));
+                                        }
+                                    }
+                                    continue;
+                                }
+                                PAIR_CONFIRM => {
+                                    let Some(attempt) = confirm.as_mut().filter(|a| !a.revealed) else {
+                                        out.send(close_frame(CLOSE_BAD_FIRST_FRAME, "pair_confirm without pair_request"));
+                                        break;
+                                    };
+                                    attempt.revealed = true;
+                                    let hash = *secured.channel.lock().handshake_hash();
+                                    let Some(code) = attempt.code(&hash, &frame.args) else {
+                                        // The nonce does not match what was
+                                        // committed: whoever this is changed
+                                        // their mind after seeing the host's.
+                                        out.send(close_frame(CLOSE_UNAUTHENTICATED, "pairing check failed"));
+                                        break;
+                                    };
+                                    let opened = state.prompts().open(
+                                        &attempt.device.name(),
+                                        &attempt.device.platform(),
+                                        &code,
+                                    );
+                                    match opened {
+                                        Ok((prompt_id, answer)) => {
+                                            decision = Some(PendingDecision {
+                                                frame_id: frame.id,
+                                                prompt_id,
+                                                answer: Box::pin(tokio::time::timeout(CONFIRM_TIMEOUT, answer)),
+                                            });
+                                        }
+                                        Err(error) => {
+                                            out.send(json_frame(err_frame(&frame.id, error)));
+                                        }
+                                    }
+                                    continue;
+                                }
+                                _ if !handshake => {
+                                    out.send(close_frame(CLOSE_UNAUTHENTICATED, "hello required"));
+                                    break;
+                                }
+                                _ => {}
                             }
                             match authenticate(state, &frame, &secured.remote_static).await {
                                 Some((record, result)) => {
-                                    // Before the reply: the phone may send a
-                                    // fragmented frame the moment it reads it.
-                                    secured.channel.lock().set_frame_limit(secure::MAX_FRAME_PLAINTEXT);
-                                    // Subscribe before the reply goes out: an
-                                    // event emitted in the gap would otherwise
-                                    // be lost, and the phone would render a
-                                    // snapshot it can't see the next change to.
-                                    event_task = Some(spawn_event_forwarder(state, out.clone()));
-                                    // Makes this socket revocable and visible
-                                    // as `connected`.
-                                    session.bind_device(&record.device_id);
-                                    // The device could have been revoked
-                                    // between `authenticate` above and the line
-                                    // above, in which case `revoke_device`
-                                    // found no session to close and this is
-                                    // where that is caught.
-                                    if !state.devices().contains(&record.device_id) {
+                                    if !admit(state, out, session, secured, &record, &frame.id, result, &mut event_task) {
                                         out.send(close_frame(CLOSE_UNAUTHENTICATED, "bad credential"));
                                         break;
                                     }
-                                    state.devices().touch(&record.device_id);
-                                    // Reply last: the phone must not be able to
-                                    // observe itself as authenticated before it
-                                    // is on the fan-out and in the registry.
-                                    out.send(response_frame(&frame.id, Ok(result), out.frame_cap));
-                                    tracing::info!(
-                                        device = %record.name,
-                                        platform = %record.platform,
-                                        "remote: device authenticated"
-                                    );
                                     authenticated = Some(record.device_id);
                                 }
                                 None => {
@@ -644,6 +731,11 @@ async fn read_loop<S: WsTransport>(
         }
     }
 
+    // A prompt this connection opened is moot once the connection is gone.
+    if let Some(pending) = decision {
+        state.prompts().withdraw(&pending.prompt_id);
+    }
+
     // Nothing this connection started may outlive it. Git ops run inside
     // `spawn_blocking` and run to completion regardless; aborting only stops
     // the host from waiting for them and from answering into a dead socket.
@@ -655,6 +747,155 @@ async fn read_loop<S: WsTransport>(
         let _ = task.await;
     }
     stream
+}
+
+/// Bring an authenticated device onto this connection: frame limit raised,
+/// event forwarding on, the session bound to the device, and only then the
+/// reply. `false` when the device was revoked in the gap — the caller closes.
+#[allow(clippy::too_many_arguments)]
+fn admit(
+    state: &Arc<RemoteState>,
+    out: &Outbox,
+    session: &SessionGuard,
+    secured: &Secured,
+    record: &DeviceRecord,
+    frame_id: &str,
+    result: Value,
+    event_task: &mut Option<tokio::task::JoinHandle<()>>,
+) -> bool {
+    // Before the reply: the phone may send a fragmented frame the moment it
+    // reads it.
+    secured
+        .channel
+        .lock()
+        .set_frame_limit(secure::MAX_FRAME_PLAINTEXT);
+    // Subscribe before the reply goes out: an event emitted in the gap would
+    // otherwise be lost, and the phone would render a snapshot it can't see the
+    // next change to.
+    *event_task = Some(spawn_event_forwarder(state, out.clone()));
+    // Makes this socket revocable and visible as `connected`.
+    session.bind_device(&record.device_id);
+    // The device could have been revoked between authenticating and the line
+    // above, in which case `revoke_device` found no session to close and this
+    // is where that is caught.
+    if !state.devices().contains(&record.device_id) {
+        return false;
+    }
+    state.devices().touch(&record.device_id);
+    // Reply last: the phone must not be able to observe itself as
+    // authenticated before it is on the fan-out and in the registry.
+    out.send(response_frame(frame_id, Ok(result), out.frame_cap));
+    tracing::info!(
+        device = %record.name,
+        platform = %record.platform,
+        "remote: device authenticated"
+    );
+    true
+}
+
+/// What the phone is told when the Mac's prompt ends without a yes.
+const DECLINED: &str = "Pairing was declined on your Mac.";
+const NO_ANSWER: &str = "Nobody answered on your Mac. Try again.";
+const WINDOW_CLOSED: &str =
+    "The pairing window closed on your Mac. Open Pair a device again and retry.";
+const NO_WINDOW: &str =
+    "On your Mac, open Settings → Remote control → Pair a device, then try again.";
+
+/// A confirmed pairing on one connection, from `pair_request` on.
+struct ConfirmAttempt {
+    device: ClientInfo,
+    commitment: [u8; 32],
+    host_nonce: [u8; secure::pairing::NONCE_LEN],
+    /// `pair_confirm` has been heard. A nonce is revealed once.
+    revealed: bool,
+}
+
+impl ConfirmAttempt {
+    /// The code to show, from `pair_confirm`'s revealed nonce — or `None` when
+    /// that nonce is malformed or is not the one committed to.
+    fn code(&self, handshake_hash: &[u8; 32], args: &Value) -> Option<String> {
+        let nonce = args.get("nonce")?.as_str()?;
+        let device_nonce = secure::pairing::decode(nonce, "nonce").ok()?;
+        (secure::pairing::commitment(&device_nonce) == self.commitment)
+            .then(|| secure::pairing::code(handshake_hash, &device_nonce, &self.host_nonce))
+    }
+}
+
+/// The Mac's prompt, waiting.
+struct PendingDecision {
+    /// `pair_confirm`'s id, which the answer is the response to.
+    frame_id: String,
+    prompt_id: String,
+    answer: std::pin::Pin<Box<tokio::time::Timeout<tokio::sync::oneshot::Receiver<bool>>>>,
+}
+
+enum Refusal {
+    /// Not a pairing request at all: closed like any malformed first frame.
+    Malformed,
+    /// A real request this host cannot take now; the phone shows the words.
+    Answer(&'static str),
+}
+
+#[derive(Deserialize)]
+struct PairRequestArgs {
+    #[serde(default)]
+    device: Option<ClientInfo>,
+    commit: String,
+}
+
+/// `pair_request`: check there is someone to ask and a window to ask in, and
+/// answer with this host's nonce.
+fn begin_confirm(
+    state: &Arc<RemoteState>,
+    args: Value,
+) -> std::result::Result<(ConfirmAttempt, String), Refusal> {
+    let args: PairRequestArgs = serde_json::from_value(args).map_err(|_| Refusal::Malformed)?;
+    let commitment =
+        secure::pairing::decode(&args.commit, "commit").map_err(|_| Refusal::Malformed)?;
+    if !state.prompts().can_confirm() {
+        return Err(Refusal::Answer(super::confirm::NO_CONFIRMER));
+    }
+    if state.pairing().window().is_none() {
+        return Err(Refusal::Answer(NO_WINDOW));
+    }
+    let host_nonce = secure::pairing::nonce().map_err(|_| Refusal::Answer(NO_WINDOW))?;
+    Ok((
+        ConfirmAttempt {
+            device: args.device.unwrap_or_default(),
+            commitment,
+            host_nonce,
+            revealed: false,
+        },
+        secure::encode_key(&host_nonce),
+    ))
+}
+
+/// The person said yes: close the pairing window and register the device under
+/// its scopes, exactly as `pair` does with a code. `None` when the window
+/// lapsed while the prompt was up.
+fn accept_confirmed(
+    state: &Arc<RemoteState>,
+    device: Option<&ClientInfo>,
+    remote_static: &[u8; 32],
+) -> Option<(DeviceRecord, Value)> {
+    let device = device?;
+    let window = state.pairing().take_window()?;
+    let record = state
+        .pair_device(
+            &device.name(),
+            &device.platform(),
+            remote_static,
+            &window.scopes,
+        )
+        .map_err(|e| tracing::warn!(error = %e, "remote: pairing failed"))
+        .ok()?;
+    let result = json!({
+        "deviceId": record.device_id,
+        "host": super::host_info(),
+        "relay": state.relay_url(),
+        "protocol": super::protocol_descriptor_for(&record.scope_set()),
+    });
+    Some((record, result))
 }
 
 /// Forward the shared event stream to one connection. Owned by a task rather

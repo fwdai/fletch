@@ -66,6 +66,8 @@ pub fn run() {
             remote::remote_send,
             remote::remote_close,
             remote::remote_device_public_key,
+            remote::remote_pair_commit,
+            remote::remote_pair_code,
         ])
         .run(tauri::generate_context!())
         .expect("error while running fletch mobile");

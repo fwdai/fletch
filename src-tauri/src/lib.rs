@@ -1554,6 +1554,7 @@ pub fn run() {
             commands::remote_set_port,
             commands::remote_set_relay,
             commands::remote_begin_pairing,
+            commands::remote_answer_pair_request,
             commands::remote_revoke_device,
             // This Mac as a client of other hosts (`client/`), the same four
             // commands the phone registers over the same dialer.
@@ -1561,6 +1562,8 @@ pub fn run() {
             client::remote_send,
             client::remote_close,
             client::remote_device_public_key,
+            client::remote_pair_commit,
+            client::remote_pair_code,
             dictation::dictation_availability,
             dictation::dictation_start,
             dictation::dictation_stop,

@@ -14,6 +14,8 @@ export const STEP_LABELS: Record<PairStep, string> = {
   lan: "Looking for your Mac on this network…",
   relay: "Not on the same network — connecting over the internet…",
   registering: "Registering this device with your Mac…",
+  requesting: "Asking your Mac…",
+  confirming: "Accept on your Mac — check it shows the same code.",
   greeting: "Saying hello…",
   workspace: "Loading your workspace…",
 };

@@ -88,6 +88,23 @@ impl PairingTokens {
         }
     }
 
+    /// The pairing window: the newest token still redeemable, which is what
+    /// "Pair a device" on the Mac is showing. A confirmed pairing needs one
+    /// open, and is granted that token's scopes. `None` when no code is live.
+    pub fn window(&self) -> Option<Pending> {
+        let now = Instant::now();
+        let mut pending = self.pending.lock();
+        pending.retain(|p| p.expires_at > now);
+        pending.last().cloned()
+    }
+
+    /// Close the window by redeeming its token, as a typed code would: one
+    /// "Pair a device" admits one device, whichever way it pairs.
+    pub fn take_window(&self) -> Option<Pending> {
+        let token = self.window()?.token;
+        self.consume(&token)
+    }
+
     /// Redeem a token: `Some` at most once per mint, and never past the TTL.
     /// The entry carries the scopes the token was minted with.
     pub fn consume(&self, token: &str) -> Option<Pending> {

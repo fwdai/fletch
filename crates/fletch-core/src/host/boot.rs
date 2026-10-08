@@ -348,7 +348,7 @@ pub fn boot(cfg: BootConfig) -> Result<Engine, BootError> {
     // further down, once the remote state it needs exists.
     let (events, _) = broadcast::channel(EVENT_BUFFER);
     let sink = Arc::new(FanoutSink::new(vec![
-        host_sink,
+        host_sink.clone(),
         Arc::new(BroadcastSink(events.clone())),
     ]));
 
@@ -695,6 +695,12 @@ pub fn boot(cfg: BootConfig) -> Result<Engine, BootError> {
             match serving {
                 RemoteBoot::Off => unreachable!("handled above"),
                 RemoteBoot::Desktop => {
+                    // Someone is at this screen, so a phone may pair by asking
+                    // and being accepted here. The host's own sink, not the
+                    // fanout: the prompt is for this window, never for the
+                    // remote taps. A headless host installs none and refuses
+                    // such requests, which sends the phone to the code.
+                    state.prompts().set_confirmer(host_sink.clone());
                     // The URL is stored before the autostart, so `start` brings
                     // the host link up with the listener. Safe outside the async
                     // runtime: nothing is enabled yet, so this cannot spawn the

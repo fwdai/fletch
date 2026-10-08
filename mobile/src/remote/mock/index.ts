@@ -32,6 +32,13 @@ import { scriptFor } from "./script";
  *  identity: the client pins it exactly as it would a real one. */
 export const MOCK_HOST_KEY = "mock-host-key";
 const MOCK_PAIRING_TOKEN_LEN = 8;
+/** What both "screens" show in a mock confirmed pairing. There is no Noise
+ *  transcript under the mock, so nothing to derive it from. */
+export const MOCK_CONFIRM_CODE = "424242";
+/** How long the mock Mac takes to click Accept. */
+const MOCK_CONFIRM_DELAY_MS = 1200;
+/** Frames an unauthenticated connection may send. */
+const OPENING_OPS = ["pair", "hello", "pair_request"];
 
 export interface MockOptions {
   /** Wall-clock scale for the scripted stream; 0 emits everything at once
@@ -141,12 +148,30 @@ export class MockHost {
     }
     const first = this.firstFrame;
     this.firstFrame = false;
-    if (first && frame.op !== "pair" && frame.op !== "hello") {
+    if (first && !OPENING_OPS.includes(frame.op)) {
       this.emit({ id: frame.id, ok: false, error: "bad first frame" });
       this.onClose?.(CLOSE_BAD_FIRST_FRAME);
       return;
     }
-    if (!this.authed && frame.op !== "pair" && frame.op !== "hello") {
+    if (!this.authed && frame.op === "pair_confirm") {
+      // The mock Mac always accepts, after a moment to read the code.
+      this.later(() => {
+        this.authed = true;
+        this.later(() => this.bootstrap(), 400);
+        this.emit({
+          id: frame.id,
+          ok: true,
+          result: {
+            deviceId: "mock-device",
+            host: fx.hostInfo,
+            relay: fx.relay,
+            protocol: fx.protocol,
+          },
+        });
+      }, MOCK_CONFIRM_DELAY_MS);
+      return;
+    }
+    if (!this.authed && !OPENING_OPS.includes(frame.op)) {
       this.onClose?.(CLOSE_UNAUTHENTICATED);
       return;
     }
@@ -534,6 +559,8 @@ export class MockHost {
           protocol: fx.protocol,
         };
       }
+      case "pair_request":
+        return { nonce: "mock-host-nonce" };
       case "hello": {
         // Device authentication is the handshake, which the mock socket
         // stands in for: anything that gets this far is a known device.
@@ -988,6 +1015,8 @@ export function mockSocket(opts: MockOptions = {}): SocketFactory {
       via: "lan",
       send: (text) => host.receive(text),
       close: () => host.close(),
+      pairCommit: async () => "mock-commit",
+      pairCode: async () => ({ nonce: "mock-device-nonce", code: MOCK_CONFIRM_CODE }),
     };
     return socket;
   };

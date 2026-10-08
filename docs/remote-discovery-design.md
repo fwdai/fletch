@@ -1,7 +1,7 @@
 # Design: AirDrop-style pairing (discovery + confirm on the Mac)
 
-Status: approved. 4a (discovery) is built and specified in
-`docs/remote-protocol.md`, "Discovery"; 4b (confirm on the Mac) is next.
+Status: built. 4a (discovery) and 4b (confirm on the Mac) are specified in
+`docs/remote-protocol.md`, "Discovery" and "Confirmed pairing".
 
 ## Goal
 
@@ -33,7 +33,6 @@ port. The TXT record holds:
 - `name`: the machine name, as `host_info()` reports it.
 - `id`: the host ID (its public key, base64url). It is already public and is
   what the relay routes on.
-- `pair=1`: only while a pairing window is open (see 3).
 
 The record is a hint, not a credential. Anyone on the LAN can announce any
 name and id, so nothing trusts it. The handshake and the confirmation code are
@@ -52,15 +51,17 @@ what authenticate.
 ### 3. Pairing is confirmed on the Mac, with a code both screens show
 
 1. On the Mac: Settings › Remote control › **Pair a device** opens a pairing
-   window. This already exists as the 5-minute invite; it now also sets
-   `pair=1` and picks the access preset. Outside a window the host refuses pair
+   window. This already exists as the 5-minute invite, and it already picks
+   the access preset. Outside a window the host refuses pair
    requests outright, so nobody on the LAN can spam prompts. This matches
    AirDrop's "Everyone for 10 minutes".
 2. On the phone, the user taps the Mac. The phone runs the usual Noise XX
-   handshake and sends a new first frame, `pair_request { device }`.
-3. Both ends derive a **6-digit code from the Noise handshake hash**. snow
-   exposes it as `get_handshake_hash`, and it is identical on both ends only if
-   nobody sits in between. The phone shows "Confirm on your Mac: 482 913". The
+   handshake and sends a new first frame, `pair_request { device, commit }`.
+3. Both ends derive a **6-digit code from the Noise handshake hash** and two
+   nonces exchanged commit-then-reveal. The hash alone would not do: a party in
+   the middle chooses its own ephemeral keys and could grind a million of them
+   offline until both sides showed the same digits. The device commits to its
+   nonce before seeing the host's, so neither side can choose after the other. The phone shows "Confirm on your Mac: 482 913". The
    Mac shows "Alex's iPhone wants to connect · 482 913 · Accept / Decline".
 4. Accept registers the device key exactly as `pair` does today and answers
    with the same result: `deviceId`, `host`, `relay`, `protocol`. Decline, or
@@ -122,7 +123,10 @@ at the Mac, which today's code does too.
 1. Linux hosts announce too, from 4a on.
 2. The Mac's accept prompt is a floating sheet shown during the pairing
    window, not a system notification.
-3. (4a) The host's `.local` name is derived from its key, so a paired device
+3. (4b) No `pair=1` TXT flag: the host answers a request outside a pairing
+   window with an error the phone shows, which needs no re-announcing as
+   windows open and close.
+4. (4a) The host's `.local` name is derived from its key, so a paired device
    reconnects by name without browsing; the name races the saved address
    inside the existing LAN budget. Browsing is only for the Pair screen's
    list, and its TXT record carries the port so no SRV resolution is needed.

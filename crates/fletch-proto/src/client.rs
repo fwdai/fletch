@@ -10,10 +10,11 @@
 //! a new `connect` never disturbs an existing one, and a caller that holds a
 //! stale id cannot send on, close, or hear another caller's connection.
 //!
-//! There is no Tauri in here. Both apps wrap this in four thin commands
+//! There is no Tauri in here. Both apps wrap this in the same thin commands
 //! (`remote_connect`, `remote_send`, `remote_close`,
-//! `remote_device_public_key`) and hand [`ClientEvent`] to their event bus, so
-//! the phone and the desktop dial hosts through the same code.
+//! `remote_device_public_key`, `remote_pair_commit`, `remote_pair_code`) and
+//! hand [`ClientEvent`] to their event bus, so the phone and the desktop dial
+//! hosts through the same code.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -33,6 +34,7 @@ use tokio_tungstenite::tungstenite::{Bytes, Message};
 use crate::dial::{self, Ws};
 use crate::keys::{StaticKey, DEVICE_KEY_FILE};
 use crate::noise::{initiate, Channel, MAX_MESSAGE_PLAINTEXT};
+use crate::pairing;
 use crate::Result;
 
 type Writer = SplitSink<Ws, Message>;
@@ -156,6 +158,22 @@ struct Conn {
     /// Pings sent since the last pong. The keepalive task raises it, the read
     /// loop zeroes it (see [`Keepalive`]).
     missed_pongs: u32,
+    /// The nonce this end committed to for a confirmed pairing, held between
+    /// [`Dialer::pair_commit`] and [`Dialer::pair_code`]. Kept here rather
+    /// than handed to the webview, which only ever sees the commitment until
+    /// the host has answered with its own nonce.
+    pair_nonce: Option<[u8; pairing::NONCE_LEN]>,
+}
+
+/// The device's half of a confirmed pairing, once the host's nonce is in: the
+/// nonce to reveal and the code to show.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PairCode {
+    /// This end's nonce, base64url — `pair_confirm`'s argument.
+    pub nonce: String,
+    /// The six digits the Mac shows too.
+    pub code: String,
 }
 
 /// Every live connection this client holds, plus the device identity they all
@@ -257,6 +275,7 @@ impl Dialer {
             writer,
             channel,
             missed_pongs: 0,
+            pair_nonce: None,
         }));
         self.conns.lock().await.insert(id, conn);
         self.clone().spawn_reader(reader, id);
@@ -316,6 +335,40 @@ impl Dialer {
             let _ = conn.writer.close().await;
         }
         Ok(())
+    }
+
+    /// Start a confirmed pairing on `id`: draw this end's nonce, keep it, and
+    /// answer with the commitment to send in `pair_request` (docs/
+    /// remote-protocol.md, "Confirmed pairing"). A second call replaces the
+    /// nonce, so a retried request never reveals one it did not commit to.
+    pub async fn pair_commit(&self, id: ConnectionId) -> Result<String> {
+        let conn = self
+            .conn(id)
+            .await
+            .ok_or_else(|| "not connected".to_string())?;
+        let nonce = pairing::nonce()?;
+        conn.lock().await.pair_nonce = Some(nonce);
+        Ok(crate::encode_key(&pairing::commitment(&nonce)))
+    }
+
+    /// Finish this end's half once the host has sent `host_nonce`: the nonce to
+    /// reveal and the code to show. The committed nonce is used up, so it can
+    /// be revealed against one host nonce only.
+    pub async fn pair_code(&self, id: ConnectionId, host_nonce: &str) -> Result<PairCode> {
+        let host_nonce = pairing::decode(host_nonce, "the host's nonce")?;
+        let conn = self
+            .conn(id)
+            .await
+            .ok_or_else(|| "not connected".to_string())?;
+        let mut conn = conn.lock().await;
+        let nonce = conn
+            .pair_nonce
+            .take()
+            .ok_or_else(|| "no pairing was started on this connection".to_string())?;
+        Ok(PairCode {
+            nonce: crate::encode_key(&nonce),
+            code: pairing::code(conn.channel.handshake_hash(), &nonce, &host_nonce),
+        })
     }
 
     /// This device's public key, base64url — what a host records when pairing.

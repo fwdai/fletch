@@ -7,6 +7,7 @@ import { FolderPickerHost } from "./components/FolderPicker";
 import { GithubConnectModal } from "./components/GithubConnect";
 import { History } from "./components/History";
 import { Onboarding } from "./components/Onboarding";
+import { PairRequestPrompt } from "./components/PairRequest";
 import { ProjectScreen } from "./components/ProjectScreen";
 import { PublishApproval } from "./components/PublishApproval";
 import { RightPanel } from "./components/RightPanel";
@@ -189,6 +190,7 @@ function AppShell() {
       <UpdateToast />
       <DockerBuildToast />
       <PublishApproval />
+      <PairRequestPrompt />
       {/* One bubble for every `data-tip` trigger in the app. */}
       <TooltipLayer />
     </div>

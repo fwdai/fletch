@@ -8,6 +8,7 @@ import { type Candidate, candidatesFor } from "./candidates";
 import type { Socket, SocketFactory, SocketHandlers } from "./socket";
 import {
   type CallOptions,
+  type CodeHandler,
   CLOSE_REASONS,
   CLOSE_REMOTE_DISABLED,
   CLOSE_UNAUTHENTICATED,
@@ -43,6 +44,9 @@ const FATAL_CLOSE = new Set([CLOSE_UNAUTHENTICATED, CLOSE_REMOTE_DISABLED]);
  *  Mac that has gone quiet forwards the request into nothing — so without a
  *  bound of its own the attempt would sit in `pairing` for ever. */
 export const HANDSHAKE_TIMEOUT_MS = 15_000;
+/** The same bound for a confirmed pairing, which waits on a person: the host
+ *  gives its prompt 60 s, and this leaves room for its answer to arrive. */
+export const CONFIRM_TIMEOUT_MS = 75_000;
 const HANDSHAKE_TIMED_OUT = "The Mac did not answer. Check that it is awake and connected.";
 
 /** The host dispatches at most this many requests per connection and refuses
@@ -131,6 +135,7 @@ export class ProtocolClient implements RemoteClient {
   private listeners = new Map<string, Set<EventHandler>>();
   private stateListeners = new Set<StateHandler>();
   private stepListeners = new Set<StepHandler>();
+  private codeListeners = new Set<CodeHandler>();
   private snapshotListeners = new Set<(r: HelloResult) => void>();
   private _target: HostTarget | null = null;
   /** Bumped for every attempt and every teardown. A socket's callbacks carry
@@ -205,6 +210,11 @@ export class ProtocolClient implements RemoteClient {
     return () => this.stepListeners.delete(cb);
   }
 
+  onConfirmCode(cb: CodeHandler): () => void {
+    this.codeListeners.add(cb);
+    return () => this.codeListeners.delete(cb);
+  }
+
   onSnapshot(cb: (result: HelloResult) => void): () => void {
     this.snapshotListeners.add(cb);
     return () => this.snapshotListeners.delete(cb);
@@ -259,6 +269,29 @@ export class ProtocolClient implements RemoteClient {
 
   async pair(token: string, device: DeviceInfo): Promise<PairResult> {
     const result = await this.request<PairResult>("pair", { token, device });
+    this._host = result.host;
+    this._protocol = result.protocol ?? null;
+    return result;
+  }
+
+  /** Pair by asking (docs/remote-protocol.md, "Confirmed pairing"): commit to
+   *  a nonce, take the host's, reveal ours, and show the six digits while the
+   *  Mac decides. The transport holds the nonce; this side never sees it until
+   *  it is revealed. */
+  private async pairByConfirm(socket: Socket): Promise<PairResult> {
+    if (!socket.pairCommit || !socket.pairCode) {
+      throw new Error("This app can't pair by confirming on the Mac. Enter the code instead.");
+    }
+    this.step("requesting");
+    const commit = await socket.pairCommit();
+    const { nonce: hostNonce } = await this.request<{ nonce: string }>("pair_request", {
+      device: this.opts.device,
+      commit,
+    });
+    const { nonce, code } = await socket.pairCode(hostNonce);
+    for (const cb of this.codeListeners) cb(code);
+    this.step("confirming");
+    const result = await this.request<PairResult>("pair_confirm", { nonce });
     this._host = result.host;
     this._protocol = result.protocol ?? null;
     return result;
@@ -337,7 +370,8 @@ export class ProtocolClient implements RemoteClient {
     let target = this._target;
     if (!target) throw new Error("no host configured");
     const gen = ++this.gen;
-    this.setState(target.pairingToken ? "pairing" : "connecting");
+    const pairing = !!target.pairingToken || !!target.confirm;
+    this.setState(pairing ? "pairing" : "connecting");
     this.step("connecting");
     try {
       const socket = await this.openFirstReachable(target, gen);
@@ -357,8 +391,8 @@ export class ProtocolClient implements RemoteClient {
         this._target = target;
       }
       return await this.withTimeout(
-        this.handshake(target),
-        HANDSHAKE_TIMEOUT_MS,
+        this.handshake(target, socket),
+        target.confirm ? CONFIRM_TIMEOUT_MS : HANDSHAKE_TIMEOUT_MS,
         HANDSHAKE_TIMED_OUT,
       );
     } catch (e) {
@@ -366,7 +400,10 @@ export class ProtocolClient implements RemoteClient {
       // A pairing code is single use and short lived, so a refused pairing
       // attempt is the user's to retry. A host presenting the wrong identity
       // is never worth retrying either: only re-pairing can clear it.
-      const retryable = !this._target?.pairingToken && !message.includes(HOST_KEY_MISMATCH);
+      const retryable =
+        !this._target?.pairingToken &&
+        !this._target?.confirm &&
+        !message.includes(HOST_KEY_MISMATCH);
       const shown = reportable(message);
       if (this.current(gen)) {
         // A socket whose handshake did not complete is no use, and after a
@@ -449,14 +486,22 @@ export class ProtocolClient implements RemoteClient {
   }
 
   /** The first frame on a fresh socket: `pair` when a pairing code is held,
-   *  `hello` otherwise. */
-  private async handshake(target: HostTarget): Promise<HelloResult> {
-    if (target.pairingToken) {
-      this.step("registering");
-      const paired = await this.pair(target.pairingToken, this.opts.device);
-      // Pairing is single use: drop the code, so a reconnect greets the host
-      // with `hello` on the device key it just registered.
-      this._target = withRelay({ ...target, pairingToken: undefined }, paired.relay);
+   *  `pair_request` when pairing by confirmation, `hello` otherwise. */
+  private async handshake(target: HostTarget, socket: Socket): Promise<HelloResult> {
+    if (target.pairingToken || target.confirm) {
+      let paired: PairResult;
+      if (target.pairingToken) {
+        this.step("registering");
+        paired = await this.pair(target.pairingToken, this.opts.device);
+      } else {
+        paired = await this.pairByConfirm(socket);
+      }
+      // Pairing is single use: drop the code (or the request), so a reconnect
+      // greets the host with `hello` on the device key it just registered.
+      this._target = withRelay(
+        { ...target, pairingToken: undefined, confirm: undefined },
+        paired.relay,
+      );
       this.setState("connected");
       // `pair` answers with the host identity but no snapshot, so ask for it.
       // Still part of pairing as far as anyone watching is concerned: the

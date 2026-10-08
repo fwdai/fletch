@@ -12,10 +12,12 @@
 //! `relay` the outbound host link that carries off-LAN devices, `session` the
 //! live-connection registry, `dispatch` the op allowlist, `events` the taps on
 //! the engine's event stream, `push` the two alert triggers those taps raise,
-//! `discovery` the LAN announcement. This module owns the state those share
+//! `discovery` the LAN announcement, `confirm` the Mac's side of a confirmed
+//! pairing. This module owns the state those share
 //! and the lifecycle of the listener, its announcement and the relay link.
 
 mod auth;
+pub mod confirm;
 mod discovery;
 mod dispatch;
 mod events;
@@ -173,6 +175,9 @@ pub struct RemoteStatus {
     /// inline. Currently only one: `devices.json` is not writable, so pairing
     /// is refused because the credential would not survive a restart.
     pub error: Option<String>,
+    /// A device waiting for this Mac to accept it, if one is. The same prompt
+    /// `confirm::PAIR_REQUEST_EVENT` raised, for a window that missed it.
+    pub pair_request: Option<confirm::PairPrompt>,
 }
 
 /// `remote_begin_pairing`' reply: the code to read out and the deep link to
@@ -232,6 +237,7 @@ pub struct RemoteState {
     host: Option<HostKey>,
     host_error: Option<String>,
     pairing: PairingTokens,
+    prompts: confirm::PairPrompts,
     events: broadcast::Sender<Arc<str>>,
     /// Every live connection, so `RemoteDevice::connected` is a fact about
     /// sockets and a revoke can reach the socket it just de-authorized.
@@ -264,6 +270,7 @@ impl RemoteState {
             host,
             host_error,
             pairing: PairingTokens::new(),
+            prompts: confirm::PairPrompts::default(),
             events,
             sessions: Arc::new(Sessions::new()),
             inner: Mutex::new(Inner {
@@ -306,6 +313,12 @@ impl RemoteState {
 
     pub fn pairing(&self) -> &PairingTokens {
         &self.pairing
+    }
+
+    /// The confirmed-pairing prompts. Their `set_confirmer` is how a host with
+    /// a screen opts in; `answer` is the person's click.
+    pub fn prompts(&self) -> &confirm::PairPrompts {
+        &self.prompts
     }
 
     /// The configured relay base URL, as `set_relay` normalized it. The URL is
@@ -534,6 +547,7 @@ impl RemoteState {
                 .devices
                 .storage_error()
                 .or_else(|| self.host_error.clone()),
+            pair_request: self.prompts.current(),
         }
     }
 

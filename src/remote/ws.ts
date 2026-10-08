@@ -90,6 +90,12 @@ const secureSocket: SocketFactory = async (url, handlers, opts) => {
     hostKey: result.hostKey,
     via: opts?.via ?? "lan",
     send: (text) => localTransport.call<void>("remote_send", { connectionId: id, text }),
+    pairCommit: () => localTransport.call<string>("remote_pair_commit", { connectionId: id }),
+    pairCode: (hostNonce) =>
+      localTransport.call<{ nonce: string; code: string }>("remote_pair_code", {
+        connectionId: id,
+        hostNonce,
+      }),
     close: () => {
       done = true;
       stop();

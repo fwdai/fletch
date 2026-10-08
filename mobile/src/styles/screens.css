@@ -797,6 +797,29 @@
 .nearby-host[aria-pressed="true"] svg:last-child {
   color: var(--accent);
 }
+/* A confirmed pairing's six digits, while the Mac decides: the thing to
+   compare, so the largest thing on the screen. */
+.confirm-code {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 18px 14px;
+  border: 1px solid var(--bd-soft);
+  border-radius: 14px;
+  background: var(--bg-2);
+  text-align: center;
+}
+.confirm-code .digits {
+  font-family: var(--font-mono);
+  font-size: 34px;
+  font-weight: 500;
+  letter-spacing: 0.12em;
+  color: var(--fg-0);
+}
+.pair .confirm-code p {
+  font-size: 13px;
+}
 /* The typed-address fallback, kept out of the way of the list above it. */
 .pair-manual {
   align-self: flex-start;

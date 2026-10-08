@@ -6,15 +6,19 @@ import { parseAddress, parsePairUrl } from "../../remote";
 import type { NearbyHost } from "../../remote/nearby";
 import { useStore } from "../../store";
 import { Wordmark } from "../Home/Wordmark";
+import { ConfirmCode } from "./ConfirmCode";
 import { NearbyList } from "./NearbyList";
 import { Progress } from "./Progress";
 import { useNearby } from "./useNearby";
 
 /** Pairing by hand: pick the Mac from the ones announcing themselves on this
- *  network (docs/remote-protocol.md, "Discovery") and type the one-time code
- *  it shows. Picking one supplies its `.local` name, port and claimed key —
+ *  network (docs/remote-protocol.md, "Discovery") and accept on the Mac when it
+ *  asks, checking both screens show the same six digits ("Confirmed
+ *  pairing"). Picking one supplies its `.local` name, port and claimed key —
  *  the key is pinned and the handshake proves it — so no address is ever
- *  typed. The address field is the fallback for networks that block Bonjour.
+ *  typed. Two fallbacks, each a tap away: the one-time code, for a host with
+ *  nobody at its screen to accept; and the address, for networks that block
+ *  Bonjour.
  *
  *  A pasted `fletch://pair?…` link fills everything and brings the host's
  *  public key with it, which is what authenticates the Mac outright. A link
@@ -28,12 +32,15 @@ export function PairScreen() {
   const step = useStore((s) => s.pairStep);
   const linked = useStore((s) => s.pairTarget);
   const error = useStore((s) => s.connectionError);
+  const code = useStore((s) => s.pairCode);
   const [address, setAddress] = useState("");
   const [token, setToken] = useState("");
   const [hostKey, setHostKey] = useState<string | undefined>(undefined);
   const [relay, setRelay] = useState<string | undefined>(undefined);
   const [picked, setPicked] = useState<NearbyHost | null>(null);
   const [manual, setManual] = useState(false);
+  // Pair with the one-time code rather than by accepting on the Mac.
+  const [withCode, setWithCode] = useState(false);
   const busy = step !== null;
   const parsed = parseAddress(address);
   // A link already says which Mac; there is nothing to browse for.
@@ -47,8 +54,15 @@ export function PairScreen() {
     setRelay(linked.relay);
     setPicked(null);
     setManual(true);
+    setWithCode(true);
     if (linked.pairingToken) setToken(linked.pairingToken);
   }, [linked]);
+
+  // A host with nobody at its screen cannot accept; it says so, and the code
+  // is the way in. (The words are the host's: `confirm::NO_CONFIRMER`.)
+  useEffect(() => {
+    if (error && /enter the code/i.test(error)) setWithCode(true);
+  }, [error]);
 
   /** Anything pasted into a field may be the whole deep link. */
   const absorb = (value: string, fallback: (v: string) => void) => {
@@ -59,6 +73,7 @@ export function PairScreen() {
     setRelay(link.relay);
     setPicked(null);
     setManual(true);
+    setWithCode(true);
     if (link.pairingToken) setToken(link.pairingToken);
   };
 
@@ -81,14 +96,15 @@ export function PairScreen() {
     setAddress(value);
   };
 
+  const ready = !!parsed && (!withCode || !!token.trim());
   const submit = () => {
-    if (!parsed || !token.trim()) return;
+    if (!parsed || !ready) return;
     void connect({
       ...parsed,
       hostKey,
       relay,
       name: picked?.name,
-      pairingToken: token.trim().toUpperCase(),
+      ...(withCode ? { pairingToken: token.trim().toUpperCase() } : { confirm: true }),
     }).catch(() => {});
   };
 
@@ -111,7 +127,7 @@ export function PairScreen() {
         ) : (
           <p>
             On your Mac open <b>Settings → Remote control → Pair a device</b>. Scan its QR code with
-            your camera, or pick your Mac below and enter the code it shows.
+            your camera, or pick your Mac below and accept on the Mac when it asks.
           </p>
         )}
       </div>
@@ -142,32 +158,39 @@ export function PairScreen() {
           Can't find your Mac? Enter its address
         </button>
       )}
-      <div className="field">
-        <label htmlFor="pair-token">Pairing code</label>
-        <input
-          id="pair-token"
-          value={token}
-          placeholder="K7PQ2M9X"
-          autoCapitalize="characters"
-          autoCorrect="off"
-          spellCheck={false}
-          onChange={(e) => absorb(e.target.value, (v) => setToken(v.toUpperCase()))}
-        />
-      </div>
+      {withCode ? (
+        <div className="field">
+          <label htmlFor="pair-token">Pairing code</label>
+          <input
+            id="pair-token"
+            value={token}
+            placeholder="K7PQ2M9X"
+            autoCapitalize="characters"
+            autoCorrect="off"
+            spellCheck={false}
+            onChange={(e) => absorb(e.target.value, (v) => setToken(v.toUpperCase()))}
+          />
+        </div>
+      ) : (
+        <button type="button" className="pair-manual" onClick={() => setWithCode(true)}>
+          Have a pairing code instead?
+        </button>
+      )}
+      {code && step === "confirming" && <ConfirmCode code={code} />}
       {step ? <Progress step={step} /> : error && <Notice tone="error">{error}</Notice>}
       <button
         type="button"
         className="btn primary block"
-        disabled={busy || !parsed || !token.trim()}
+        disabled={busy || !ready}
         onClick={submit}
       >
         <Icon name="laptop" size={17} />
         {busy ? "Pairing…" : error ? "Try again" : "Pair"}
       </button>
       <div className="hint">
-        The code is valid for five minutes and can be used once. The link is end-to-end encrypted.
-        The app talks to your Mac directly on your network, and reaches it from anywhere else when
-        “Reach this Mac from anywhere” is on in its settings.
+        Pairing works for five minutes after you click Pair a device on your Mac. The link is
+        end-to-end encrypted. The app talks to your Mac directly on your network, and reaches it
+        from anywhere else when “Reach this Mac from anywhere” is on in its settings.
       </div>
     </div>
   );

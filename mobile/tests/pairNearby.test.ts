@@ -5,6 +5,7 @@
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, expect, test, vi } from "vitest";
+import type { HostTarget } from "../src/remote";
 
 // 32 bytes whose first eight are 01 23 45 67 89 ab cd ef: the vector the host's
 // `discovery::tests` labels, so this pins the same name from the client side.
@@ -33,7 +34,7 @@ let unmount: (() => void) | undefined;
 afterEach(() => unmount?.());
 
 async function mount() {
-  const connect = vi.fn(async () => {});
+  const connect = vi.fn(async (_target: HostTarget) => {});
   useStore.setState({ connect, pairStep: null, pairTarget: null, connectionError: null });
   const host = document.createElement("div");
   document.body.append(host);
@@ -44,14 +45,14 @@ async function mount() {
   return { host, connect };
 }
 
-test("pairs with a picked Mac by its .local name, pinning the key it announced", async () => {
+test("pairs with a picked Mac by asking it, at its .local name, pinning the key it announced", async () => {
   const { host, connect } = await mount();
-  // No address field until it is asked for.
+  // No address or code field until one is asked for.
   expect(host.querySelector("#pair-host")).toBeNull();
+  expect(host.querySelector("#pair-token")).toBeNull();
 
   await act(async () => button(host, "Studio Mac")?.click());
   expect(host.querySelector("h1")?.textContent).toBe("Pair with Studio Mac");
-  await act(async () => type(host.querySelector("#pair-token") as HTMLInputElement, "k7pq2m9x"));
   await act(async () => button(host, "Pair")?.click());
 
   expect(connect).toHaveBeenCalledWith({
@@ -60,8 +61,34 @@ test("pairs with a picked Mac by its .local name, pinning the key it announced",
     hostKey: KEY,
     relay: undefined,
     name: "Studio Mac",
-    pairingToken: "K7PQ2M9X",
+    confirm: true,
   });
+});
+
+test("the one-time code is a tap away, and pairs with the code instead", async () => {
+  const { host, connect } = await mount();
+  await act(async () => button(host, "Studio Mac")?.click());
+  await act(async () => button(host, "Have a pairing code")?.click());
+  // A code mode with no code typed has nothing to pair with.
+  expect(button(host, "Pair")?.disabled).toBe(true);
+  await act(async () => type(host.querySelector("#pair-token") as HTMLInputElement, "k7pq2m9x"));
+  await act(async () => button(host, "Pair")?.click());
+
+  expect(connect).toHaveBeenCalledWith(
+    expect.objectContaining({ host: "fletch-0123456789abcdef.local", pairingToken: "K7PQ2M9X" }),
+  );
+  expect(connect.mock.calls[0][0]).not.toHaveProperty("confirm");
+});
+
+test("a host that cannot confirm sends the phone to the code", async () => {
+  const { host } = await mount();
+  await act(async () =>
+    useStore.setState({
+      connectionError:
+        "This host can't confirm a pairing on its screen. Enter the code it shows instead.",
+    }),
+  );
+  expect(host.querySelector("#pair-token")).not.toBeNull();
 });
 
 test("a typed address drops the picked Mac and the key it claimed", async () => {
@@ -71,10 +98,9 @@ test("a typed address drops the picked Mac and the key it claimed", async () => 
   await act(async () =>
     type(host.querySelector("#pair-host") as HTMLInputElement, "10.0.0.9:47285"),
   );
-  await act(async () => type(host.querySelector("#pair-token") as HTMLInputElement, "K7PQ2M9X"));
   await act(async () => button(host, "Pair")?.click());
 
   expect(connect).toHaveBeenCalledWith(
-    expect.objectContaining({ host: "10.0.0.9", port: 47285, hostKey: undefined }),
+    expect.objectContaining({ host: "10.0.0.9", port: 47285, hostKey: undefined, confirm: true }),
   );
 });

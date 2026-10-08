@@ -14,6 +14,9 @@ pub use fletch_proto::keys::{encode_key, StaticKey as HostKey, HOST_KEY_FILE};
 pub use fletch_proto::noise::{
     respond, Channel as SecureChannel, MAX_FRAME_PLAINTEXT, MAX_MESSAGE_PLAINTEXT,
 };
+/// The confirmed-pairing primitives: the device's commitment, and the code
+/// both screens show.
+pub use fletch_proto::pairing;
 
 /// The initiator half. Production never runs it on this end — the phone does —
 /// so only the tests here reach for it.

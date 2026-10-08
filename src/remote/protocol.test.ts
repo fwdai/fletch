@@ -1,7 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
 import { backoffDelay } from "./backoff";
 import { candidatesFor, LAN_OPEN_TIMEOUT_MS, RELAY_OPEN_TIMEOUT_MS } from "./candidates";
-import { HANDSHAKE_TIMEOUT_MS, MAX_IN_FLIGHT, ProtocolClient, READ_TIMEOUT_MS } from "./client";
+import {
+  CONFIRM_TIMEOUT_MS,
+  HANDSHAKE_TIMEOUT_MS,
+  MAX_IN_FLIGHT,
+  ProtocolClient,
+  READ_TIMEOUT_MS,
+} from "./client";
 import { localHostname, parseAddress, parsePairUrl, relayDeviceUrl, wsUrl } from "./pairing";
 import type { Socket, SocketHandlers, SocketOptions } from "./socket";
 import {
@@ -79,6 +85,12 @@ function fakeSocket(hostKey = HOST_KEY, unreachable: Record<string, "reject" | "
           sent.push(JSON.parse(text));
         },
         close: () => {},
+        // The Rust transport draws and keeps the nonce; this stands in for it.
+        pairCommit: async () => "commit-1",
+        pairCode: async (hostNonce: string) => ({
+          nonce: `device-for-${hostNonce}`,
+          code: "482913",
+        }),
       };
     },
     reply: (frame: unknown) => handlers?.onMessage(JSON.stringify(frame)),
@@ -921,6 +933,74 @@ describe("relay from the host", () => {
       relay: "wss://relay.test",
     });
     expect(snapshots[0].relay).toBe("wss://relay.test");
+  });
+});
+
+/** docs/remote-protocol.md, "Confirmed pairing": no code, the Mac accepts. */
+describe("confirmed pairing", () => {
+  it("commits, reveals after the host's nonce, shows the code and pairs on the answer", async () => {
+    const fake = fakeSocket();
+    const { timers, setTimer, clearTimer } = captureTimers();
+    const client = new ProtocolClient({
+      openSocket: fake.factory,
+      device: DEVICE,
+      setTimer,
+      clearTimer,
+    });
+    const codes: string[] = [];
+    const steps: PairStep[] = [];
+    client.onConfirmCode((c) => codes.push(c));
+    client.onStep((s) => steps.push(s));
+
+    const pairing = client.connect({ host: "h", port: 1, hostKey: HOST_KEY, confirm: true });
+    await vi.waitFor(() => expect(fake.sent.length).toBe(1));
+    expect(client.state).toBe("pairing");
+    // A person is deciding, so the attempt waits longer than a handshake does.
+    expect(timers.map((t) => t.ms)).toEqual([CONFIRM_TIMEOUT_MS]);
+    expect(fake.sent[0]).toMatchObject({
+      op: "pair_request",
+      args: { device: DEVICE, commit: "commit-1" },
+    });
+    fake.reply({ id: fake.sent[0].id, ok: true, result: { nonce: "host-n" } });
+
+    await vi.waitFor(() => expect(fake.sent.length).toBe(2));
+    expect(fake.sent[1]).toMatchObject({
+      op: "pair_confirm",
+      args: { nonce: "device-for-host-n" },
+    });
+    expect(codes).toEqual(["482913"]);
+    expect(steps).toContain("confirming");
+
+    fake.reply({
+      id: fake.sent[1].id,
+      ok: true,
+      result: { deviceId: "d", host: { name: "Mac", appVersion: "1", os: "macos" }, relay: null },
+    });
+    await vi.waitFor(() => expect(fake.sent.length).toBe(3));
+    expect(fake.sent[2].op).toBe("get_workspace");
+    fake.reply({ id: fake.sent[2].id, ok: true, result: null });
+    await pairing;
+    // Spent: a reconnect says `hello`, not `pair_request`.
+    expect(client.target?.confirm).toBeUndefined();
+  });
+
+  it("is not retried when the Mac says no — asking again is the user's call", async () => {
+    const fake = fakeSocket();
+    const { timers, setTimer, clearTimer } = captureTimers();
+    const client = new ProtocolClient({
+      openSocket: fake.factory,
+      device: DEVICE,
+      setTimer,
+      clearTimer,
+    });
+    const pairing = client.connect({ host: "h", port: 1, hostKey: HOST_KEY, confirm: true });
+    await vi.waitFor(() => expect(fake.sent.length).toBe(1));
+    fake.reply({ id: fake.sent[0].id, ok: true, result: { nonce: "host-n" } });
+    await vi.waitFor(() => expect(fake.sent.length).toBe(2));
+    fake.reply({ id: fake.sent[1].id, ok: false, error: "Pairing was declined on your Mac." });
+    await expect(pairing).rejects.toThrow("declined");
+    expect(client.state).toBe("error");
+    expect(timers).toHaveLength(0);
   });
 });
 

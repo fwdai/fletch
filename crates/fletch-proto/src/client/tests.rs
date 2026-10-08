@@ -494,3 +494,39 @@ async fn a_peer_that_pongs_stays_connected() {
         .unwrap();
     assert!(pings >= 3, "the dialer pinged only {pings} times");
 }
+
+/// Both ends of a real handshake derive the same six digits: the device from
+/// its own nonce and the host's, the host from the revealed nonce, which has to
+/// match the commitment it was sent first.
+#[tokio::test]
+async fn both_ends_derive_the_same_pairing_code() {
+    let key = Arc::new(StaticKey::generate().unwrap());
+    let (url, mut accepted) = host(key.clone()).await;
+    let (dialer, _events, _dir) = dialer();
+    let id = dialer
+        .connect(target(&url, None))
+        .await
+        .unwrap()
+        .connection_id;
+    let host_end = accepted.recv().await.unwrap();
+
+    let commit = dialer.pair_commit(id).await.unwrap();
+    let host_nonce = pairing::nonce().unwrap();
+    let device = dialer
+        .pair_code(id, &crate::encode_key(&host_nonce))
+        .await
+        .unwrap();
+
+    let revealed = pairing::decode(&device.nonce, "nonce").unwrap();
+    assert_eq!(crate::encode_key(&pairing::commitment(&revealed)), commit);
+    assert_eq!(
+        pairing::code(host_end.channel.handshake_hash(), &revealed, &host_nonce),
+        device.code
+    );
+
+    // The committed nonce is spent: it cannot be revealed against another.
+    assert!(dialer
+        .pair_code(id, &crate::encode_key(&host_nonce))
+        .await
+        .is_err());
+}

@@ -103,7 +103,8 @@ export function RemoteControlPane() {
             title="Pair a device"
             sub={
               <>
-                Shows a one-time QR code to scan with your phone, good for five minutes.
+                Opens pairing for five minutes: scan the QR code with your phone, or pick this Mac
+                in Fletch on your phone and accept here.
                 <br />
                 {CONTROL_PRESET_HELP}
               </>

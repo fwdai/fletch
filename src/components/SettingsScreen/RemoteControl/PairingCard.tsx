@@ -25,12 +25,14 @@ function useCountdown(iso: string): number {
   return left;
 }
 
-/** A live pairing invitation, QR first: the iPhone's own camera opens the
- *  `fletch://pair` link it encodes, which brings everything the phone needs and
- *  authenticates this Mac outright. Picking this Mac from the phone's "Macs
- *  nearby" list and typing the code is the fallback, one click away rather
- *  than the headline; the address is shown only for networks where the phone
- *  cannot see the list. Single use and five
+/** A live pairing invitation — the window during which this Mac will pair a
+ *  device — QR first: the iPhone's own camera opens the `fletch://pair` link
+ *  it encodes, which brings everything the phone needs and authenticates this
+ *  Mac outright. Picking this Mac from the phone's "Macs nearby" list is the
+ *  fallback, one click away rather than the headline; the phone asks, and this
+ *  Mac's prompt (`PairRequestPrompt`) is where it is accepted. The code and
+ *  address are the last resort, for networks where the phone cannot see the
+ *  list. Single use and five
  *  minutes, so the countdown is part of the affordance rather than decoration.
  *  The copied link is how another Mac pairs (Paired hosts › Add a host). */
 export function PairingCard({
@@ -75,24 +77,30 @@ export function PairingCard({
           <div className="set-pair-manual text-sm">
             {manual ? (
               <>
-                <div className="set-pair-code mono">{invite.token}</div>
                 <div className="set-pair-copy">
                   {hostName
-                    ? `Pick “${hostName}” under Macs nearby in Fletch on your phone, then enter this code.`
-                    : "Pick this Mac under Macs nearby in Fletch on your phone, then enter this code."}
+                    ? `Pick “${hostName}” under Macs nearby in Fletch on your phone, then accept here when this Mac asks.`
+                    : "Pick this Mac under Macs nearby in Fletch on your phone, then accept here when this Mac asks."}
                 </div>
-                {link && (
-                  <div className="set-pair-copy">
-                    Not listed? Enter its address instead:{" "}
-                    <span className="set-pair-addr mono">
-                      {link.host}:{link.port}
-                    </span>
-                  </div>
-                )}
+                <div className="set-pair-copy">
+                  Not listed? Enter this code
+                  {link ? (
+                    <>
+                      {" "}
+                      and address:{" "}
+                      <span className="set-pair-addr mono">
+                        {link.host}:{link.port}
+                      </span>
+                    </>
+                  ) : (
+                    ":"
+                  )}
+                </div>
+                <div className="set-pair-code mono">{invite.token}</div>
               </>
             ) : (
               <button type="button" className="set-pair-manual-btn" onClick={() => setManual(true)}>
-                Can't scan? Enter a code instead
+                Can't scan?
               </button>
             )}
           </div>

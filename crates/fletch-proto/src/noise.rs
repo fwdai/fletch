@@ -176,6 +176,11 @@ impl Handshake {
     }
 
     pub fn finish(self) -> Result<Channel> {
+        let handshake_hash: [u8; 32] = self
+            .state
+            .get_handshake_hash()
+            .try_into()
+            .map_err(|_| "handshake failed: unexpected hash length".to_string())?;
         let state = self
             .state
             .into_transport_mode()
@@ -186,6 +191,7 @@ impl Handshake {
             fragments: self.capabilities & self.peer_capabilities & CAP_FRAGMENTS != 0,
             partial: None,
             frame_limit: MAX_FRAME_PLAINTEXT,
+            handshake_hash,
         })
     }
 }
@@ -212,6 +218,10 @@ pub struct Channel {
     /// messages are not held to it: the transport's 4 MiB message cap already
     /// bounds each one, and nothing accumulates across them.
     frame_limit: usize,
+    /// Noise's `h` at the end of the handshake: a digest of the whole
+    /// transcript, equal on both ends only if nobody sat between them. The
+    /// pairing confirmation code is derived from it (`pairing::code`).
+    handshake_hash: [u8; 32],
 }
 
 impl Channel {
@@ -219,6 +229,12 @@ impl Channel {
     /// a client.
     pub fn remote_static_base64(&self) -> Result<String> {
         remote_static_base64(self.state.get_remote_static())
+    }
+
+    /// The handshake transcript hash (see the field). Public: it binds the
+    /// session, it does not unlock it.
+    pub fn handshake_hash(&self) -> &[u8; 32] {
+        &self.handshake_hash
     }
 
     /// Whether large frames travel fragmented on this connection, in either

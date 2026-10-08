@@ -322,8 +322,9 @@ address.
 - **Pairing.** A phone lists the hosts it finds by `name`. Picking one gives it
   `fletch-<label>.local`, the TXT `port` and the TXT `id`, which it pins as the
   host key: an announcement of a real host's `id` from another machine fails
-  the handshake. It then pairs with the code as usual. A typed address is the
-  fallback for networks that block multicast.
+  the handshake. It then pairs by confirmation (see "Confirmed pairing"), or
+  with the code where the host cannot confirm. A typed address is the fallback
+  for networks that block multicast.
 - **Reconnecting.** See "Relay" → "Phone side": the host name is raced against
   the saved address within the LAN budget.
 
@@ -440,10 +441,12 @@ A passive observer of the network sees the WebSocket upgrade, ping/pong timing
 and ciphertext sizes. No credential crosses the wire, so a capture cannot be
 replayed and the device key is never exposed. An active attacker on the path
 during a QR pairing cannot impersonate the host, because the phone already
-holds the host's key. During a hand-typed pairing an active attacker on the
-same LAN could impersonate the host for that one pairing (trust on first use);
-that is the accepted residual risk of manual entry and the reason the QR is the
-default path. A stolen phone holds its device key, which the desktop revokes in
+holds the host's key. A confirmed pairing defeats one too: the six digits
+match only when both ends saw the same handshake, and the commit-then-reveal
+order gives an attacker one chance in a million rather than an offline search.
+During a hand-typed *code* pairing an active attacker on the same LAN could
+impersonate the host for that one pairing (trust on first use); that is the
+accepted residual risk of the code fallback. A stolen phone holds its device key, which the desktop revokes in
 Settings (revoke also closes the device's live connections with `4003`). A
 stolen `host_key` lets an attacker impersonate the host to paired phones;
 deleting the file regenerates the key on next launch, after which every phone
@@ -516,9 +519,10 @@ keys, `null` for `Option::None`, `null` result for `()`).
 
 ## Authentication and pairing
 
-The first frame after the handshake MUST be `pair` or `hello`. Any other first
-frame closes the connection with code `4001`. Any request before a successful
-`pair` or `hello` closes with `4003`. A `hello` from a device key the host does
+The first frame after the handshake MUST be `pair`, `hello` or `pair_request`
+(see "Confirmed pairing"). Any other first frame closes the connection with code
+`4001`. Any request before a successful `pair` or `hello` (or a confirmed
+pairing) closes with `4003`, except `pair_confirm` after `pair_request`. A `hello` from a device key the host does
 not have on record (never paired, or revoked) closes with `4003`.
 
 ### `pair`
@@ -574,6 +578,44 @@ is how a device's access is changed. After `pair` the
 connection is authenticated as if `hello` had succeeded and the host starts
 forwarding events. The host does NOT push a snapshot; the client issues
 `get_workspace` itself right after a successful `pair`.
+
+### Confirmed pairing
+
+A device that found the host by discovery (see "Discovery") pairs without a
+code: it asks, and someone at the host accepts, comparing a six-digit code both
+screens show. It needs the same *pairing window* as a code — a live invite
+from "Pair a device" — and is granted that invite's scopes; accepting redeems
+the invite, so one "Pair a device" admits one device whichever way it pairs.
+
+A code derived from the Noise transcript alone could be ground by a party in
+the middle, which picks its own ephemeral keys and could try a million offline
+until both transcripts gave the same six digits. So each side adds a 32-byte
+nonce in an order that leaves neither a choice after seeing the other's:
+
+1. Device → `{ "op": "pair_request", "args": { "device": { "name", "platform",
+   "appVersion" }, "commit": "<base64url SHA-256("fletch-pair-commit-v1" ||
+   deviceNonce)>" } }` as the first frame. The host answers
+   `{ "nonce": "<base64url hostNonce>" }`, or an error the device shows: no
+   window is open, the host has nobody at its screen to accept (a headless
+   host — enter the code instead), or another request is already waiting.
+   One `pair_request` per connection; a malformed one closes `4001`.
+2. Device → `{ "op": "pair_confirm", "args": { "nonce": "<base64url
+   deviceNonce>" } }`. A nonce that does not hash to the commitment closes
+   `4003`. Both ends now compute the code: the first four bytes of
+   SHA-256("fletch-pair-code-v1" || h || deviceNonce || hostNonce), big-endian,
+   modulo 1 000 000, zero-padded to six digits — where `h` is the Noise
+   handshake hash.
+3. The host shows "<device name> wants to connect · 482 913 · Accept /
+   Decline" and answers `pair_confirm` only when someone does, or after 60 s.
+   Accepted, the result is exactly `pair`'s and the connection is
+   authenticated. Declined, timed out or the window lapsed: an error, and the
+   device opens a new connection to try again. While it waits the connection
+   may send nothing else (`4001`); hanging up withdraws the prompt.
+
+The device's nonce stays in its Rust layer between the two frames
+(`remote_pair_commit` and `remote_pair_code`), so the webview never holds a
+nonce it has not yet revealed. Known-answer vectors are in
+`crates/fletch-proto/src/pairing.rs`.
 
 ### `hello`
 
