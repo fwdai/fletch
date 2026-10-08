@@ -32,9 +32,29 @@ pub fn login_command(id: &str) -> Option<&'static [&'static str]> {
     }
 }
 
+/// argv (after the binary itself) that signs a provider's CLI out of the
+/// config dir it runs against, or `None` where Fletch offers no sign-out. Only
+/// the account-capable CLIs, whose logout asks nothing — so it runs without a
+/// terminal. Verified against `claude auth --help` and `codex --help`.
+pub fn logout_command(id: &str) -> Option<&'static [&'static str]> {
+    match id {
+        "claude" => Some(&["auth", "logout"]),
+        "codex" => Some(&["logout"]),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pins_the_logout_command_for_the_account_providers_only() {
+        assert_eq!(logout_command("claude"), Some(&["auth", "logout"][..]));
+        assert_eq!(logout_command("codex"), Some(&["logout"][..]));
+        assert_eq!(logout_command("cursor"), None);
+        assert_eq!(logout_command("not-a-provider"), None);
+    }
 
     #[test]
     fn pins_the_login_command_for_every_signable_provider() {

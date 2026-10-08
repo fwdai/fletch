@@ -67,7 +67,10 @@ Engine (`crates/fletch-core/src/`):
 - `commands/accounts.rs` — `list_provider_accounts_impl`,
   `add_provider_account_impl`, `ensure_account_removable` (refuses the active
   account and any account a live agent is stamped with),
-  `remove_provider_account_impl`, `set_active_provider_account_impl`.
+  `remove_provider_account_impl`, `set_active_provider_account_impl`,
+  `sign_out_provider_account_impl` (runs the CLI's own logout — pinned in
+  `agent/login.rs` `logout_command` — with the account's config-dir env; the
+  account and its sessions stay).
 - `workspace/agents.rs` — `live_agents_on_account` (count query over
   `workspaces` + `sessions`, where the provider lives).
 - `supervisor/lifecycle.rs` — `active_account` stamping in `spawn_agent`;

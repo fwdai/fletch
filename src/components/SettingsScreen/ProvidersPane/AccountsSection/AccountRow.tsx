@@ -7,15 +7,15 @@ import { accountLabel } from "@/data/providerAccounts";
 import { loginCommand } from "@/data/providerDetail";
 import type { ProviderId } from "@/data/providers";
 import { useAppStore } from "@/store";
+import { AccountMenu } from "./AccountMenu";
+import { type AccountAction, accountActions } from "./accountActions";
 import { LimitsPanel } from "./LimitsPanel";
 
 /** One account: the radio that makes it the one new agents use, its name and
- *  sign-in state, and its actions. Sign in opens the same embedded terminal
- *  as a single-login provider, run against this account's directory. Remove
- *  asks once inline — it deletes the account's login and transcripts — and is
- *  never offered for the default (the CLI's own directory) or the active one
- *  (the backend refuses that too; pick another first). Under it, the
- *  account's plan limits. */
+ *  sign-in state, Sign in when it needs one, and a corner menu for the rest
+ *  (sign out, delete — see `accountActions`), each confirmed inline. Sign in
+ *  opens the same embedded terminal as a single-login provider, run against
+ *  this account's directory. Under it, the account's plan limits. */
 export function AccountRow({
   account,
   providerId,
@@ -37,10 +37,12 @@ export function AccountRow({
 }) {
   const setActive = useAppStore((s) => s.setActiveProviderAccount);
   const remove = useAppStore((s) => s.removeProviderAccount);
+  const signOut = useAppStore((s) => s.signOutProviderAccount);
   // Stable (a zustand action), so the terminal's one-shot outcome effect
   // isn't re-armed by a parent re-render — same contract as SignInSection.
   const refreshAccounts = useAppStore((s) => s.refreshProviderAccounts);
-  const [confirming, setConfirming] = useState(false);
+  const [confirming, setConfirming] = useState<AccountAction | null>(null);
+  const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const command = loginCommand(providerId);
@@ -54,12 +56,19 @@ export function AccountRow({
     setError(null);
     setActive(providerId, accountId ?? null).catch((err) => setError(String(err)));
   };
-  const removeNow = () => {
+  // On success the re-list replaces this card (delete) or its badge (sign
+  // out); either way the question is answered.
+  const run = async (action: AccountAction) => {
     setError(null);
-    remove(providerId, account.id).catch((err) => {
+    setBusy(true);
+    try {
+      await (action.id === "delete" ? remove : signOut)(providerId, account.id);
+    } catch (err) {
       setError(String(err));
-      setConfirming(false);
-    });
+    } finally {
+      setBusy(false);
+      setConfirming(null);
+    }
   };
 
   const refresh = useCallback(() => void refreshAccounts(), [refreshAccounts]);
@@ -93,13 +102,17 @@ export function AccountRow({
 
         {confirming ? (
           <>
-            <span className="set-prov-acct-confirm text-sm">
-              Delete this account's login and sessions?
-            </span>
-            <Button variant="outline" size="sm" danger onClick={removeNow}>
-              Delete
+            <span className="set-prov-acct-confirm text-sm">{confirming.confirm}</span>
+            <Button
+              variant="outline"
+              size="sm"
+              danger={confirming.danger}
+              disabled={busy}
+              onClick={() => void run(confirming)}
+            >
+              {confirming.confirmLabel}
             </Button>
-            <Button variant="ghost" size="sm" onClick={() => setConfirming(false)}>
+            <Button variant="ghost" size="sm" disabled={busy} onClick={() => setConfirming(null)}>
               Cancel
             </Button>
           </>
@@ -114,11 +127,11 @@ export function AccountRow({
                 Sign in
               </Button>
             )}
-            {account.managed && !account.active && (
-              <Button variant="ghost" size="sm" danger onClick={() => setConfirming(true)}>
-                Remove
-              </Button>
-            )}
+            <AccountMenu
+              actions={accountActions(account, providerLabel)}
+              disabled={signingIn}
+              onPick={setConfirming}
+            />
           </>
         )}
       </div>

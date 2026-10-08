@@ -1494,6 +1494,7 @@ pub fn run() {
             commands::list_provider_accounts,
             commands::add_provider_account,
             commands::remove_provider_account,
+            commands::sign_out_provider_account,
             commands::set_active_provider_account,
             commands::get_provider_limits,
             commands::refresh_provider_limits,
