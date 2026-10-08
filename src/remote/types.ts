@@ -203,6 +203,13 @@ export const CLOSE_REASONS: Record<number, string> = {
   [CLOSE_LISTENER_RESTARTING]: "Your Mac is restarting remote access",
 };
 
+/** What a host with nobody at its screen answers `pair_request` with
+ *  (docs/remote-protocol.md, "Confirmed pairing"). Matched exactly: it is the
+ *  signal to pair with the code instead. The host's copy is
+ *  `confirm::NO_CONFIRMER`, pinned by a test there. */
+export const NO_CONFIRMER_ERROR =
+  "This host can't confirm a pairing on its screen. Enter the code it shows instead.";
+
 /** A close no entry above explains: a dropped network, a missed ping. */
 export const CONNECTION_LOST = "Lost the connection to your Mac";
 

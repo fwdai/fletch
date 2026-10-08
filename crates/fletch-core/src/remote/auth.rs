@@ -28,6 +28,23 @@ const PAIRING_LEN: usize = 8;
 /// How long a minted pairing token stays redeemable.
 pub const PAIRING_TTL: Duration = Duration::from_secs(5 * 60);
 
+/// How many confirmed-pairing requests one pairing window answers. Each one
+/// that gets the host's nonce is a fresh six-digit roll for a party in the
+/// middle, who learns its digits before any prompt shows and can quietly hang
+/// up and try again; this caps those silent rolls per "Pair a device" click
+/// at five in a million. A phone's honest retries fit easily.
+pub const MAX_CONFIRM_REQUESTS: u32 = 5;
+
+/// Why a confirmed-pairing request found no window to be answered in.
+#[derive(Debug, PartialEq, Eq)]
+pub enum WindowRefusal {
+    /// No "Pair a device" code is live.
+    Closed,
+    /// The live window has answered its [`MAX_CONFIRM_REQUESTS`]; it is closed
+    /// now, every code with it.
+    Exhausted,
+}
+
 /// A freshly minted pairing token plus the wall-clock instant it lapses, which
 /// is what Settings counts down to. `scopes` is what redeeming it will grant —
 /// the code carries the access, so the desktop can say what it is handing out
@@ -55,6 +72,8 @@ pub struct Pending {
     /// void one early.
     expires_at: Instant,
     pub scopes: Vec<Scope>,
+    /// Confirmed-pairing requests this window has answered with a nonce.
+    confirm_requests: u32,
 }
 
 impl PairingTokens {
@@ -79,6 +98,7 @@ impl PairingTokens {
             token: token.clone(),
             expires_at: now + ttl,
             scopes: scopes.to_vec(),
+            confirm_requests: 0,
         });
         let expires_at = Utc::now() + chrono::Duration::from_std(ttl).unwrap_or_default();
         MintedToken {
@@ -96,6 +116,23 @@ impl PairingTokens {
         let mut pending = self.pending.lock();
         pending.retain(|p| p.expires_at > now);
         pending.last().cloned()
+    }
+
+    /// Count one confirmed-pairing request against the window, or refuse it.
+    /// The request past [`MAX_CONFIRM_REQUESTS`] closes the window and every
+    /// other live code too: whoever is rolling should find nothing left to
+    /// roll against until someone at the Mac opens a new one.
+    pub fn count_confirm_request(&self) -> std::result::Result<(), WindowRefusal> {
+        let now = Instant::now();
+        let mut pending = self.pending.lock();
+        pending.retain(|p| p.expires_at > now);
+        let window = pending.last_mut().ok_or(WindowRefusal::Closed)?;
+        window.confirm_requests += 1;
+        if window.confirm_requests > MAX_CONFIRM_REQUESTS {
+            pending.clear();
+            return Err(WindowRefusal::Exhausted);
+        }
+        Ok(())
     }
 
     /// Close the window by redeeming its token, as a typed code would: one

@@ -483,11 +483,12 @@ async fn read_loop<S: WsTransport>(
                     continue;
                 }
                 let device = confirm.as_ref().map(|c| &c.device);
-                let Some((record, result)) =
-                    accept_confirmed(state, device, &secured.remote_static)
-                else {
-                    out.send(json_frame(err_frame(&pending.frame_id, WINDOW_CLOSED)));
-                    continue;
+                let (record, result) = match accept_confirmed(state, device, &secured.remote_static) {
+                    Ok(accepted) => accepted,
+                    Err(error) => {
+                        out.send(json_frame(err_frame(&pending.frame_id, error)));
+                        continue;
+                    }
                 };
                 if !admit(state, out, session, secured, &record, &pending.frame_id, result, &mut event_task) {
                     out.send(close_frame(CLOSE_UNAUTHENTICATED, "bad credential"));
@@ -800,6 +801,9 @@ const WINDOW_CLOSED: &str =
     "The pairing window closed on your Mac. Open Pair a device again and retry.";
 const NO_WINDOW: &str =
     "On your Mac, open Settings → Remote control → Pair a device, then try again.";
+const TOO_MANY_REQUESTS: &str =
+    "Too many pairing attempts. On your Mac, open Pair a device again, then retry.";
+const NOT_SAVED: &str = "Your Mac accepted, but couldn't save this device. Try again.";
 
 /// A confirmed pairing on one connection, from `pair_request` on.
 struct ConfirmAttempt {
@@ -855,8 +859,17 @@ fn begin_confirm(
     if !state.prompts().can_confirm() {
         return Err(Refusal::Answer(super::confirm::NO_CONFIRMER));
     }
-    if state.pairing().window().is_none() {
-        return Err(Refusal::Answer(NO_WINDOW));
+    // Counted before the nonce goes out: the nonce is what gives a party in
+    // the middle its roll (see `auth::MAX_CONFIRM_REQUESTS`).
+    match state.pairing().count_confirm_request() {
+        Ok(()) => {}
+        Err(super::auth::WindowRefusal::Closed) => return Err(Refusal::Answer(NO_WINDOW)),
+        Err(super::auth::WindowRefusal::Exhausted) => {
+            tracing::warn!(
+                "remote: pairing window closed after too many confirmed-pairing requests"
+            );
+            return Err(Refusal::Answer(TOO_MANY_REQUESTS));
+        }
     }
     let host_nonce = secure::pairing::nonce().map_err(|_| Refusal::Answer(NO_WINDOW))?;
     Ok((
@@ -871,15 +884,16 @@ fn begin_confirm(
 }
 
 /// The person said yes: close the pairing window and register the device under
-/// its scopes, exactly as `pair` does with a code. `None` when the window
-/// lapsed while the prompt was up.
+/// its scopes, exactly as `pair` does with a code. The error is what the phone
+/// is told: the window lapsed while the prompt was up, or the device could not
+/// be stored.
 fn accept_confirmed(
     state: &Arc<RemoteState>,
     device: Option<&ClientInfo>,
     remote_static: &[u8; 32],
-) -> Option<(DeviceRecord, Value)> {
-    let device = device?;
-    let window = state.pairing().take_window()?;
+) -> std::result::Result<(DeviceRecord, Value), &'static str> {
+    let device = device.ok_or(WINDOW_CLOSED)?;
+    let window = state.pairing().take_window().ok_or(WINDOW_CLOSED)?;
     let record = state
         .pair_device(
             &device.name(),
@@ -887,15 +901,17 @@ fn accept_confirmed(
             remote_static,
             &window.scopes,
         )
-        .map_err(|e| tracing::warn!(error = %e, "remote: pairing failed"))
-        .ok()?;
+        .map_err(|e| {
+            tracing::warn!(error = %e, "remote: pairing failed");
+            NOT_SAVED
+        })?;
     let result = json!({
         "deviceId": record.device_id,
         "host": super::host_info(),
         "relay": state.relay_url(),
         "protocol": super::protocol_descriptor_for(&record.scope_set()),
     });
-    Some((record, result))
+    Ok((record, result))
 }
 
 /// Forward the shared event stream to one connection. Owned by a task rather

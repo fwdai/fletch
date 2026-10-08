@@ -5,7 +5,7 @@
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, expect, test, vi } from "vitest";
-import type { HostTarget } from "../src/remote";
+import { type HostTarget, NO_CONFIRMER_ERROR } from "../src/remote";
 
 // 32 bytes whose first eight are 01 23 45 67 89 ab cd ef: the vector the host's
 // `discovery::tests` labels, so this pins the same name from the client side.
@@ -82,12 +82,7 @@ test("the one-time code is a tap away, and pairs with the code instead", async (
 
 test("a host that cannot confirm sends the phone to the code", async () => {
   const { host } = await mount();
-  await act(async () =>
-    useStore.setState({
-      connectionError:
-        "This host can't confirm a pairing on its screen. Enter the code it shows instead.",
-    }),
-  );
+  await act(async () => useStore.setState({ connectionError: NO_CONFIRMER_ERROR }));
   expect(host.querySelector("#pair-token")).not.toBeNull();
 });
 

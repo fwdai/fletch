@@ -2,7 +2,7 @@ import { Icon } from "@desktop/components/Icon";
 import { localHostname } from "@desktop/remote/pairing";
 import { useEffect, useState } from "react";
 import { Notice } from "../../components/ui/Notice";
-import { parseAddress, parsePairUrl } from "../../remote";
+import { NO_CONFIRMER_ERROR, parseAddress, parsePairUrl } from "../../remote";
 import type { NearbyHost } from "../../remote/nearby";
 import { useStore } from "../../store";
 import { Wordmark } from "../Home/Wordmark";
@@ -58,10 +58,10 @@ export function PairScreen() {
     if (linked.pairingToken) setToken(linked.pairingToken);
   }, [linked]);
 
-  // A host with nobody at its screen cannot accept; it says so, and the code
-  // is the way in. (The words are the host's: `confirm::NO_CONFIRMER`.)
+  // A host with nobody at its screen cannot accept; it says so in documented
+  // words, and the code is the way in.
   useEffect(() => {
-    if (error && /enter the code/i.test(error)) setWithCode(true);
+    if (error === NO_CONFIRMER_ERROR) setWithCode(true);
   }, [error]);
 
   /** Anything pasted into a field may be the whole deep link. */

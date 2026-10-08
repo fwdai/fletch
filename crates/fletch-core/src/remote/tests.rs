@@ -4311,3 +4311,72 @@ async fn a_phone_that_hangs_up_withdraws_its_prompt() {
         Some(super::confirm::PAIR_REQUEST_ENDED_EVENT)
     );
 }
+
+/// The grinding bound: a party in the middle learns its digits from the host's
+/// nonce, before any prompt shows, and can hang up and roll again. Each window
+/// answers MAX_CONFIRM_REQUESTS requests; the next is refused and closes every
+/// code, so rolling on needs someone at the Mac to open a new one.
+#[tokio::test]
+async fn silent_rolls_are_capped_per_pairing_window() {
+    let (host, _sink) = boot_confirming();
+    let minted = host.state.pairing().mint(&Scope::ALL);
+    let commit = secure::encode_key(&secure::pairing::commitment(&[7u8; 32]));
+    let ask = |port| {
+        let commit = commit.clone();
+        async move {
+            let mut ws = secure_connect(port, &device()).await;
+            ws.request("1", "pair_request", json!({ "commit": commit }))
+                .await;
+            ws.next_json().await
+            // Hung up here, never revealing: nothing shows on the Mac.
+        }
+    };
+
+    for roll in 0..super::auth::MAX_CONFIRM_REQUESTS {
+        let answer = ask(host.port).await;
+        assert_eq!(answer["ok"], true, "roll {roll}: {answer}");
+        assert!(host.state.prompts().current().is_none());
+    }
+    let refused = ask(host.port).await;
+    assert_eq!(refused["ok"], false);
+    assert!(refused["error"]
+        .as_str()
+        .unwrap()
+        .contains("Too many pairing attempts"));
+
+    // Closed, every way in: no window for another request, and the typed code
+    // the card is showing is spent with it.
+    assert!(host.state.pairing().window().is_none());
+    assert!(host.state.pairing().consume(&minted.token).is_none());
+    // A fresh "Pair a device" starts a fresh count.
+    host.state.pairing().mint(&Scope::ALL);
+    assert_eq!(ask(host.port).await["ok"], true);
+}
+
+/// Accepted on the Mac but not stored: the phone is told that, not that the
+/// window closed.
+#[cfg(unix)]
+#[tokio::test]
+async fn an_acceptance_the_store_cannot_keep_says_so() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let (host, _sink) = boot_confirming();
+    host.state.pairing().mint(&Scope::ALL);
+    let phone = device();
+    let mut ws = secure_connect(host.port, &phone).await;
+    request_and_reveal(&mut ws).await;
+    let prompt = prompt_of(&host.state).await;
+
+    let dir = host.dir.path();
+    let writable = std::fs::metadata(dir).unwrap().permissions();
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o500)).unwrap();
+    host.state.prompts().answer(&prompt.id, true);
+    let answer = ws.next_json().await;
+    std::fs::set_permissions(dir, writable).unwrap();
+
+    assert_eq!(answer["ok"], false, "{answer}");
+    assert!(answer["error"]
+        .as_str()
+        .unwrap()
+        .contains("couldn't save this device"));
+}

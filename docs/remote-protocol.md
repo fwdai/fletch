@@ -445,8 +445,10 @@ and ciphertext sizes. No credential crosses the wire, so a capture cannot be
 replayed and the device key is never exposed. An active attacker on the path
 during a QR pairing cannot impersonate the host, because the phone already
 holds the host's key. A confirmed pairing defeats one too: the six digits
-match only when both ends saw the same handshake, and the commit-then-reveal
-order gives an attacker one chance in a million rather than an offline search.
+match only when both ends saw the same handshake, the commit-then-reveal order
+leaves no offline search, and the per-window cap on requests leaves an
+attacker at most five unseen tries — five in a million — per "Pair a device"
+(see "Confirmed pairing").
 During a hand-typed *code* pairing an active attacker on the same LAN could
 impersonate the host for that one pairing (trust on first use); that is the
 accepted residual risk of the code fallback. A stolen phone holds its device key, which the desktop revokes in
@@ -599,9 +601,12 @@ nonce in an order that leaves neither a choice after seeing the other's:
    "appVersion" }, "commit": "<base64url SHA-256("fletch-pair-commit-v1" ||
    deviceNonce)>" } }` as the first frame. The host answers
    `{ "nonce": "<base64url hostNonce>" }`, or an error the device shows: no
-   window is open, the host has nobody at its screen to accept (a headless
-   host — enter the code instead), or another request is already waiting.
-   One `pair_request` per connection; a malformed one closes `4001`.
+   window is open; the window has already answered five requests (it closes,
+   see below); another request is already waiting; or the host has nobody at
+   its screen to accept — a headless host — which answers exactly
+   `This host can't confirm a pairing on its screen. Enter the code it shows
+   instead.`, the device's signal to switch to the code. One `pair_request`
+   per connection; a malformed one closes `4001`.
 2. Device → `{ "op": "pair_confirm", "args": { "nonce": "<base64url
    deviceNonce>" } }`. A nonce that does not hash to the commitment closes
    `4003`. Both ends now compute the code: the first four bytes of
@@ -614,6 +619,15 @@ nonce in an order that leaves neither a choice after seeing the other's:
    authenticated. Declined, timed out or the window lapsed: an error, and the
    device opens a new connection to try again. While it waits the connection
    may send nothing else (`4001`); hanging up withdraws the prompt.
+
+**What it bounds.** The commitment stops the device side being steered, but
+the host's nonce goes out before any prompt shows, so a party in the middle
+learns the host-side digits on every `pair_request` and can hang up unseen
+when they do not match the phone's. Each such roll is a one-in-a-million
+chance, so the host caps them: a pairing window answers at most five
+`pair_request`s, and the sixth closes it along with every live pairing code.
+The bound is therefore five in a million (one in 200 000) per "Pair a device",
+and every further window takes someone at the Mac to open it.
 
 The device's nonce stays in its Rust layer between the two frames
 (`remote_pair_commit` and `remote_pair_code`), so the webview never holds a

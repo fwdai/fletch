@@ -30,7 +30,10 @@ pub struct PairPrompt {
     pub code: String,
 }
 
-/// Why a prompt could not be opened, in words the phone shows.
+/// Why a prompt could not be opened, in words the phone shows. `NO_CONFIRMER`
+/// is also a contract: the phone matches it exactly to switch to the code
+/// (`NO_CONFIRMER_ERROR` in src/remote/types.ts; docs/remote-protocol.md,
+/// "Confirmed pairing"), so it changes in all three places or none.
 pub const NO_CONFIRMER: &str =
     "This host can't confirm a pairing on its screen. Enter the code it shows instead.";
 pub const BUSY: &str = "Your Mac is answering another pairing request. Try again in a moment.";
@@ -133,6 +136,15 @@ mod tests {
         let prompts = PairPrompts::default();
         prompts.set_confirmer(sink.clone());
         (prompts, sink)
+    }
+
+    /// Pinned: the phone compares against this exact string.
+    #[test]
+    fn the_no_confirmer_refusal_is_the_documented_one() {
+        assert_eq!(
+            NO_CONFIRMER,
+            "This host can't confirm a pairing on its screen. Enter the code it shows instead."
+        );
     }
 
     #[test]

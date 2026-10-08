@@ -61,7 +61,9 @@ what authenticate.
    nonces exchanged commit-then-reveal. The hash alone would not do: a party in
    the middle chooses its own ephemeral keys and could grind a million of them
    offline until both sides showed the same digits. The device commits to its
-   nonce before seeing the host's, so neither side can choose after the other. The phone shows "Confirm on your Mac: 482 913". The
+   nonce before seeing the host's, so neither side can choose after the other. The host's nonce still reaches a party in the middle before
+   any prompt shows, letting it hang up unseen and roll again, so each pairing
+   window answers at most five requests: five in a million per window. The phone shows "Confirm on your Mac: 482 913". The
    Mac shows "Alex's iPhone wants to connect · 482 913 · Accept / Decline".
 4. Accept registers the device key exactly as `pair` does today and answers
    with the same result: `deviceId`, `host`, `relay`, `protocol`. Decline, or
