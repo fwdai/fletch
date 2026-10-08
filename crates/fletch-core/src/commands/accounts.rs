@@ -11,6 +11,8 @@ use crate::agent::accounts::{self, ProviderAccount};
 use crate::database;
 use crate::error::{Error, Result};
 use crate::host::EngineCtx;
+use crate::supervisor::Supervisor;
+use crate::workspace::AgentRecord;
 
 /// Every account of every account-capable provider, probed. Runs the probes
 /// off the async runtime: each is a file read or a Keychain presence check.
@@ -156,7 +158,7 @@ pub async fn sign_out_provider_account_impl(provider: &str, id: &str) -> Result<
 
     let (p, i) = (provider.to_string(), id.to_string());
     let (status, shell_vars) = tokio::task::spawn_blocking(move || {
-        let status = accounts::probe_account(&p, &i)?;
+        let (status, _) = accounts::probe_account(&p, &i)?;
         let shell_vars = if accounts::is_default(&i) {
             accounts::shell_credential_vars(&p)
         } else {
@@ -228,6 +230,20 @@ fn logout_command(
         }
     }
     Ok(cmd)
+}
+
+/// Move an agent's workspace onto another account of its provider from its
+/// next turn: `account` is a managed id or `default`. Resolves to the
+/// restamped record; refused mid-turn and for a target that isn't a signed-in
+/// account of the agent's provider (see `Supervisor::switch_account`). The
+/// one entry point the desktop command and the remote op share.
+pub async fn switch_agent_account_impl(
+    sup: &Arc<Supervisor>,
+    ctx: &Arc<EngineCtx>,
+    agent_id: &str,
+    account: &str,
+) -> Result<AgentRecord> {
+    sup.switch_account(ctx, agent_id, account).await
 }
 
 #[cfg(test)]

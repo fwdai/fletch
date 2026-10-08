@@ -599,6 +599,64 @@ fn session_accounts_maps_each_provider_session_to_its_stamp() {
     assert_eq!(map.get(&ids[1]).map(String::as_str), Some("default"));
 }
 
+/// A restamp moves the agent off the old account for every reader of the
+/// stamp: the record, the removal gate and usage attribution.
+#[test]
+fn restamping_an_agent_moves_it_off_the_old_account() {
+    let db = test_db();
+    seed_repo(&db, "/r");
+    let wm = WorkspaceManager::new(db.clone());
+    let mut rec = new_agent_record(
+        "yosemite".into(),
+        "a".into(),
+        "claude".into(),
+        mk_repo("/r"),
+        "t".into(),
+        AgentView::Custom,
+    );
+    rec.account = Some("work".into());
+    wm.add_agent(&mut rec).unwrap();
+    let session = wm.agent("yosemite").unwrap().session_id.unwrap();
+
+    wm.update_agent_account("yosemite", Some("home")).unwrap();
+
+    assert_eq!(
+        wm.agent("yosemite").unwrap().account.as_deref(),
+        Some("home")
+    );
+    let conn = db.lock();
+    assert_eq!(live_agents_on_account(&conn, "claude", "work").unwrap(), 0);
+    assert_eq!(live_agents_on_account(&conn, "claude", "home").unwrap(), 1);
+    assert_eq!(
+        session_accounts(&conn)
+            .unwrap()
+            .get(&session)
+            .map(String::as_str),
+        Some("home")
+    );
+}
+
+#[test]
+fn restamping_to_the_default_clears_the_stamp() {
+    let db = test_db();
+    seed_repo(&db, "/r");
+    let wm = WorkspaceManager::new(db);
+    let mut rec = new_agent_record(
+        "yosemite".into(),
+        "a".into(),
+        "claude".into(),
+        mk_repo("/r"),
+        "t".into(),
+        AgentView::Custom,
+    );
+    rec.account = Some("work".into());
+    wm.add_agent(&mut rec).unwrap();
+
+    wm.update_agent_account("yosemite", None).unwrap();
+
+    assert_eq!(wm.agent("yosemite").unwrap().account, None);
+}
+
 #[test]
 fn update_agent_effort_round_trips() {
     let db = test_db();

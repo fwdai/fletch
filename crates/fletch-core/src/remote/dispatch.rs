@@ -135,6 +135,7 @@ pub const OPS: &[&str] = &[
     "discard_agent",
     "set_agent_model",
     "set_agent_effort",
+    "switch_agent_account",
     "read_session_records",
     "read_session_page",
     "read_user_turns",
@@ -414,6 +415,7 @@ const OP_SCOPES: &[(&str, Scope)] = &[
     ("discard_agent", Scope::Agents),
     ("set_agent_model", Scope::Agents),
     ("set_agent_effort", Scope::Agents),
+    ("switch_agent_account", Scope::Agents),
     ("read_session_records", Scope::Observe),
     ("read_session_page", Scope::Observe),
     ("read_user_turns", Scope::Observe),
@@ -789,6 +791,19 @@ impl Dispatch for SupervisorDispatch {
                     res(sup
                         .set_agent_effort(ctx, &a.agent_id, a.effort.as_deref())
                         .await)
+                }
+
+                // The host's own accounts: the stamp, the probe and the login
+                // the relaunch signs in with are all this machine's.
+                "switch_agent_account" => {
+                    let a: AccountArgs = parse(args)?;
+                    res(crate::commands::switch_agent_account_impl(
+                        sup,
+                        ctx,
+                        &a.agent_id,
+                        &a.account,
+                    )
+                    .await)
                 }
 
                 // The stitched display history (lineage included), like the
@@ -2790,6 +2805,13 @@ struct EffortArgs {
     agent_id: String,
     #[serde(default)]
     effort: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AccountArgs {
+    agent_id: String,
+    account: String,
 }
 
 #[derive(Deserialize)]

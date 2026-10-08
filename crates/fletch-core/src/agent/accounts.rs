@@ -406,38 +406,28 @@ pub fn list_accounts(active_id: impl Fn(&str) -> Option<String>) -> Vec<Provider
             .filter(|id| ids.iter().any(|known| known == id))
             .unwrap_or_else(|| DEFAULT_ACCOUNT.to_string());
 
-        let probe = auth_probe::probe_default(provider);
-        out.push(ProviderAccount {
-            provider: provider.to_string(),
-            id: DEFAULT_ACCOUNT.to_string(),
-            managed: false,
-            active: active == DEFAULT_ACCOUNT,
-            status: probe.status,
-            detail: probe.detail,
-        });
-
-        for id in ids {
-            let Ok(dir) = account_dir(provider, &id) else {
+        for id in std::iter::once(DEFAULT_ACCOUNT.to_string()).chain(ids) {
+            let Ok((status, detail)) = probe_account(provider, &id) else {
                 continue;
             };
-            let probe = auth_probe::probe_dir(provider, &dir);
             out.push(ProviderAccount {
                 provider: provider.to_string(),
                 active: active == id,
+                managed: !is_default(&id),
                 id,
-                managed: true,
-                status: probe.status,
-                detail: probe.detail,
+                status,
+                detail,
             });
         }
     }
     out
 }
 
-/// One account's login state, probed exactly as [`list_accounts`] probes it —
-/// so the default counts a credential in the user's shell, a managed one
-/// doesn't. Blocking: a Keychain check shells out.
-pub fn probe_account(provider: &str, id: &str) -> Result<AuthStatus> {
+/// One account's login state and the probe's fixed reason when it isn't
+/// signed in, probed as [`list_accounts`] lists it — so the default counts a
+/// credential in the user's shell, a managed one doesn't. Blocking: a Keychain
+/// check shells out.
+pub fn probe_account(provider: &str, id: &str) -> Result<(AuthStatus, Option<String>)> {
     let provider = ACCOUNT_PROVIDERS
         .iter()
         .copied()
@@ -448,7 +438,7 @@ pub fn probe_account(provider: &str, id: &str) -> Result<AuthStatus> {
     } else {
         auth_probe::probe_dir(provider, &account_dir(provider, id)?)
     };
-    Ok(probe.status)
+    Ok((probe.status, probe.detail))
 }
 
 /// `provider`'s credential variables set in the app's env or the user's login

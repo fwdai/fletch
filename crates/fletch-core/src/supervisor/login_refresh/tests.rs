@@ -227,12 +227,37 @@ async fn a_launch_takes_the_token_resolved_ahead_of_it() {
         "a1".into(),
         Prefetched {
             at_ms: claude_oauth::now_ms(),
+            account: None,
             token: Ok(Some(AccessToken::for_test("kept", 7))),
         },
     );
     let token = sup.launch_login("a1", &record).await.unwrap().unwrap();
     assert_eq!(token.secret(), "kept");
     assert!(!sup.logins.lock().prefetched.contains_key("a1"));
+}
+
+/// A token kept for one account never signs in a launch stamped with
+/// another: the switch resolves its target's token before it restamps, and a
+/// revive racing it must resolve its own.
+#[test]
+fn a_launch_under_another_stamp_ignores_the_kept_token() {
+    crate::agent::accounts::with_test_root(|_| {
+        let sup = test_supervisor();
+        let mut record = crate::supervisor::tests::record_with_status("a1", AgentStatus::Idle);
+        record.account = Some("gone".into());
+        sup.logins.lock().prefetched.insert(
+            "a1".into(),
+            Prefetched {
+                at_ms: claude_oauth::now_ms(),
+                account: None,
+                token: Ok(Some(AccessToken::for_test("kept", 7))),
+            },
+        );
+        let launch = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(sup.launch_login("a1", &record));
+        assert!(launch.is_err(), "the `gone` stamp resolves its own login");
+    });
 }
 
 /// A launch that fails keeps the rejected-token mark, so the next launch
@@ -246,6 +271,7 @@ async fn a_failed_launch_keeps_the_rejected_mark() {
         "a1".into(),
         Prefetched {
             at_ms: claude_oauth::now_ms(),
+            account: None,
             token: Err("offline".into()),
         },
     );

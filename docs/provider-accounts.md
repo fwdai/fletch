@@ -13,7 +13,7 @@ already made, and exactly what PR 3 has to deliver. Read it before touching code
 | #875 | `feat/provider-accounts-spawn` (stacked on #874) | active account honoured at spawn, both sandbox engines, transcripts | CI green, awaiting merge |
 | PR 3 | `feat/provider-accounts-usage` (stacked on #875) | per-account spend + limit meters | implemented; status-line source deferred |
 | host login 1 | `feat/claude-host-login` | the host owns every claude login: refresh, token injection on every engine, relaunch-on-expiry, attribution by stamp | draft (2026-10-08) |
-| host login 2 | — | mid-session account switch (hand the agent another token via `relaunch_with_resume`) | not started |
+| host login 2 | `feat/account-switch` (stacked on host login 1) | mid-session account switch (`switch_agent_account`: restamp, relaunch on the other token via `relaunch_locked`); refused for any provider whose sessions still live in the account dir (codex until #885) | draft (2026-10-08) |
 
 Merge #874 first, then #875. Manual checks Alex still owes before merging #875:
 a fresh Claude account click-through (add → sign in → make active → new agent)
@@ -112,6 +112,35 @@ build it in PR 3.
   session Fletch ran belongs to its workspace's account
   (`workspace::session_accounts`), and only transcripts matching no known
   session fall back to "whose directory holds it".
+- **Switching a workspace's account** (`Supervisor::switch_account`, command
+  and remote op `switch_agent_account` with `{ agentId, account }`) restamps
+  `workspaces.provider_account` and, when the agent has a live handle,
+  relaunches it on its own session (`relaunch_locked`), so the next turn runs
+  on the new account's token in the same conversation. Refused mid-turn (the
+  composer's busy notion: spawning or running; resting and errored sessions
+  switch), for the current account (`None`, `""` and `default` are one), for
+  an id with no directory, for a target whose probe reads signed out
+  (`unknown` passes), for an archived agent, and for any provider that still
+  launches inside its account dir (`launches_in_account_dir`), whose sessions
+  wouldn't resume under another account: codex until its sessions leave the
+  account's `CODEX_HOME` (#885).
+  Order: existence check, the agent's delivery lock (a send's, so a message
+  sent during the switch waits and runs under the new stamp), an input route
+  (an archive can't tear the checkout down under the relaunch), then the
+  checks, the probe and the target's token (`prefetch_login_as`) off the
+  app-wide lifecycle lock; then, under it, the record is re-read and the
+  checks and the busy test run again before the restamp. The kept token
+  carries the stamp it was resolved for, so no launch under another stamp
+  uses it. A failed relaunch puts the old stamp and the old rejected-token
+  mark back, drops the target's token, and says why; a busy `take_idle`
+  reads as "wait for the turn to finish". A session with no process just
+  takes the stamp, and an `Error` left from the old account is cleared. A
+  per-turn agent's live handle freezes the account into its `PerTurnSpec`, so
+  it is rebuilt the same way (no process to stop between turns). Usage
+  follows the current stamp, so a switch moves the workspace's whole past
+  spend to the new account (accepted for v1). Emits `workspace:changed`. The
+  UI's `switchAccount` gate needs `list_provider_accounts` on the wire as
+  well, since the list it picks from is read with `invokeLocal` (this Mac's).
 - Claude's macOS Keychain item for a managed dir is
   `Claude Code-credentials-<first 8 hex of sha256(dir path string)>`, no trailing
   slash, hashed exactly as the env var carries it. Verified against a live item
@@ -150,21 +179,32 @@ Engine (`crates/fletch-core/src/`):
   revoked reads as signed out, "sign in again".
 - `commands/accounts.rs` — `list_provider_accounts_impl`,
   `add_provider_account_impl`, `ensure_account_removable` (refuses the active
-  account and any account a live agent is stamped with),
-  `remove_provider_account_impl`, `set_active_provider_account_impl`,
+  account and any account a live agent is stamped with; reads the current
+  stamp, so it follows a switch), `remove_provider_account_impl`,
+  `set_active_provider_account_impl`,
   `sign_out_provider_account_impl` (runs the CLI's own logout — pinned in
   `agent/login.rs` `logout_command` — with the account's config-dir env; the
-  account and its sessions stay).
+  account and its sessions stay), `switch_agent_account_impl` (desktop
+  command and remote op share it).
+- `supervisor/account_switch.rs` — `Supervisor::switch_account`: the
+  refusals (`target_stamp`, `ensure_signed_in` over
+  `accounts::probe_account`), restamp, relaunch, rollback. Ignored macOS tests
+  in `account_switch/tests/launched.rs` run a scripted `claude` under
+  sandbox-exec and compare token digests across the switch
+  (`FLETCH_LIVE_SWITCH=<from>:<to>` for real accounts).
+- `remote/dispatch.rs` — `switch_agent_account` op (`agents` scope).
 - `workspace/agents.rs` — `live_agents_on_account` (count query over
   `workspaces` + `sessions`, where the provider lives); `session_accounts`
-  (provider session id → stamped account, for the usage scan).
+  (provider session id → stamped account, for the usage scan);
+  `WorkspaceManager::update_agent_account` (the restamp).
 - `supervisor/lifecycle.rs` — `active_account` stamping in `spawn_agent`;
   `record.account` threaded into `SpawnSpec`/`PerTurnSpec`;
   `spawn_agent_process` signs every claude launch in through `launch_login`
   into `SpawnSpec.oauth_token`; `start_process` adopts a legacy account-dir
   session; the managed event handler feeds `observe_login`.
-- `supervisor/login_refresh.rs` — `prefetch_login` / `launch_login` (token
-  resolved before the lock and watchdog, consumed by the launch),
+- `supervisor/login_refresh.rs` — `prefetch_login` / `prefetch_login_as` /
+  `launch_login` (token resolved before the lock and watchdog, kept with the
+  stamp it is for, consumed by a launch under that stamp),
   `relaunch_with_resume` and `relaunch_locked` (for a caller already holding
   the lifecycle lock), `take_idle` + `restart_taken` (shared with
   `respawn_agent_preserving_session`: idle check and removal under one
@@ -232,7 +272,8 @@ Engine (`crates/fletch-core/src/`):
   `provider_account_*` family.
 
 Desktop (`src-tauri/src/commands/`): `accounts.rs` (thin wrappers; kills the
-account's login PTY before removal, after the removability check),
+account's login PTY before removal, after the removability check;
+`switch_agent_account`),
 `provider_login.rs` (`open_provider_login(id, account, cols, rows)`,
 `session_key(provider, account)` = `provider` or `provider:account`).
 

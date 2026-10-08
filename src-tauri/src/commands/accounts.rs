@@ -8,6 +8,8 @@ use tauri::State;
 use crate::agent::accounts::ProviderAccount;
 use crate::error::Result;
 use crate::host::EngineCtx;
+use crate::supervisor::Supervisor;
+use crate::workspace::AgentRecord;
 use fletch_core::commands as engine;
 
 /// Every account of every account-capable provider, each probed for its
@@ -69,4 +71,16 @@ pub fn set_active_provider_account(
     id: Option<String>,
 ) -> Result<()> {
     engine::set_active_provider_account_impl(&ctx, &provider, id.as_deref())
+}
+
+/// Move an agent onto another account of its provider (`account` is an id or
+/// `default`) from its next turn. Resolves to the restamped record.
+#[tauri::command]
+pub async fn switch_agent_account(
+    supervisor: State<'_, Arc<Supervisor>>,
+    ctx: State<'_, Arc<EngineCtx>>,
+    agent_id: String,
+    account: String,
+) -> Result<AgentRecord> {
+    engine::switch_agent_account_impl(supervisor.inner(), ctx.inner(), &agent_id, &account).await
 }

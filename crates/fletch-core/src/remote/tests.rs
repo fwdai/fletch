@@ -530,7 +530,7 @@ fn begin_pairing_names_the_preset_and_refuses_an_unknown_one() {
 
 #[test]
 fn allowlist_matches_the_protocol_table() {
-    // The 143 rows of docs/remote-protocol.md's op table, spelled out here so a
+    // The 144 rows of docs/remote-protocol.md's op table, spelled out here so a
     // silent widening of the wire surface fails this test. `register_push` is
     // the one the session layer answers itself (it needs the connection's
     // device identity), so it lives in `SESSION_OPS`; the two together are what
@@ -550,6 +550,7 @@ fn allowlist_matches_the_protocol_table() {
         "discard_agent",
         "set_agent_model",
         "set_agent_effort",
+        "switch_agent_account",
         "read_session_records",
         "read_session_page",
         "read_user_turns",
@@ -4428,4 +4429,71 @@ fn a_restored_token_keeps_its_place_and_an_expired_one_stays_gone() {
     std::thread::sleep(Duration::from_millis(5));
     tokens.restore(taken);
     assert!(tokens.consume(&lapsed.token).is_none());
+}
+
+// ---------------------------------------------------------------------------
+// Account switch
+// ---------------------------------------------------------------------------
+
+/// `switch_agent_account` takes the desktop command's `{ agentId, account }`
+/// and answers the restamped `AgentRecord`; a refusal is its message.
+#[test]
+fn switch_agent_account_takes_the_command_args_and_answers_the_record() {
+    crate::agent::accounts::with_test_root(|root| {
+        let login = json!({
+            "claudeAiOauth": {
+                "accessToken": "sk-ant-oat01-test-work",
+                "refreshToken": "sk-ant-ort01-test-work",
+                "expiresAt": crate::agent::claude_oauth::now_ms() + 86_400_000,
+            }
+        });
+        let account = root.join("claude").join("work");
+        std::fs::create_dir_all(&account).unwrap();
+        std::fs::write(account.join(".credentials.json"), login.to_string()).unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        let db = crate::database::init(dir.path()).unwrap();
+        let ctx = Arc::new(crate::host::EngineCtx::new(
+            Arc::new(crate::host::sink::NullSink),
+            db.clone(),
+            Box::new(|| false),
+        ));
+        let sup = Arc::new(crate::supervisor::Supervisor::new(Arc::new(
+            crate::workspace::WorkspaceManager::new(db),
+        )));
+        sup.add_workspace_repo(repo.clone()).unwrap();
+        let tracked =
+            serde_json::from_value(json!({ "repo_path": repo, "subdir": "repo" })).unwrap();
+        let mut record = crate::workspace::new_agent_record(
+            "yosemite".into(),
+            "yosemite".into(),
+            "claude".into(),
+            tracked,
+            String::new(),
+            crate::workspace::AgentView::Custom,
+        );
+        sup.workspace.add_agent(&mut record).unwrap();
+        let d = dispatch::SupervisorDispatch::new(ctx, sup);
+
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let args = json!({ "agentId": "yosemite", "account": "work" });
+            let record = d
+                .dispatch("switch_agent_account", args.clone())
+                .await
+                .expect("switched");
+            assert_eq!(record["id"], "yosemite");
+            assert_eq!(record["account"], "work");
+
+            let refused = d
+                .dispatch("switch_agent_account", args)
+                .await
+                .expect_err("already on it");
+            assert!(
+                refused.contains("already runs under the `work`"),
+                "{refused}"
+            );
+        });
+    });
 }

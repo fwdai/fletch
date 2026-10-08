@@ -29,7 +29,7 @@ use super::Supervisor;
 const GAVE_UP_MSG: &str = "Claude rejected this account's login again after a refresh. \
      Sign in again under Settings → Providers, then resend.";
 
-const BUSY_MSG: &str = "a turn is in progress";
+pub(super) const BUSY_MSG: &str = "a turn is in progress";
 
 /// How long a token resolved ahead of a launch stays good for that launch. A
 /// fresh spawn provisions its checkout in between, which takes a while; the
@@ -47,12 +47,25 @@ pub(super) struct Logins {
     /// The last turn Fletch delivered to each agent, for the retry to resend.
     last_turn: HashMap<String, PendingMsg>,
     /// Tokens resolved ahead of a launch (`prefetch_login`).
-    prefetched: HashMap<String, Prefetched>,
+    pub(super) prefetched: HashMap<String, Prefetched>,
 }
 
-struct Prefetched {
+pub(super) struct Prefetched {
     at_ms: i64,
+    /// The stamp it was resolved for: a launch under any other stamp (an
+    /// account switch, or a revive racing one) resolves its own.
+    account: Option<String>,
     token: std::result::Result<Option<AccessToken>, String>,
+}
+
+impl Prefetched {
+    fn fits(&self, record: &AgentRecord, now_ms: i64) -> bool {
+        fn managed(a: Option<&str>) -> Option<&str> {
+            a.filter(|id| !crate::agent::accounts::is_default(id))
+        }
+        now_ms - self.at_ms < PREFETCH_TTL_MS
+            && managed(self.account.as_deref()) == managed(record.account.as_deref())
+    }
 }
 
 /// What a turn's terminal event says about the agent's login.
@@ -110,11 +123,30 @@ impl Supervisor {
     /// take no host token.
     pub(super) async fn prefetch_login(&self, agent_id: &str) -> Result<Option<AccessToken>> {
         let record = self.workspace.agent(agent_id)?;
-        if record.provider != "claude" {
+        let rejected = self.logins.lock().rejected.get(agent_id).copied();
+        self.prefetch_login_as(
+            agent_id,
+            &record.provider,
+            record.account.as_deref(),
+            rejected,
+        )
+        .await
+    }
+
+    /// [`Self::prefetch_login`] for a launch under `account` rather than the
+    /// record's current stamp: the account switch resolves its target's token
+    /// before it restamps.
+    pub(super) async fn prefetch_login_as(
+        &self,
+        agent_id: &str,
+        provider: &str,
+        account: Option<&str>,
+        rejected: Option<i64>,
+    ) -> Result<Option<AccessToken>> {
+        if provider != "claude" {
             return Ok(None);
         }
-        let rejected = self.logins.lock().rejected.get(agent_id).copied();
-        let token = claude_oauth::launch_token(record.account.as_deref(), rejected).await;
+        let token = claude_oauth::launch_token(account, rejected).await;
         let kept = match &token {
             Ok(token) => Ok(token.clone()),
             Err(e) => Err(e.to_string()),
@@ -123,19 +155,25 @@ impl Supervisor {
             agent_id.to_string(),
             Prefetched {
                 at_ms: claude_oauth::now_ms(),
+                account: account.map(str::to_string),
                 token: kept,
             },
         );
         token
     }
 
-    fn has_prefetched(&self, agent_id: &str) -> bool {
+    /// Drop a token resolved for a launch that is no longer coming.
+    pub(super) fn discard_prefetch(&self, agent_id: &str) {
+        self.logins.lock().prefetched.remove(agent_id);
+    }
+
+    fn has_prefetched(&self, agent_id: &str, record: &AgentRecord) -> bool {
         let now = claude_oauth::now_ms();
         self.logins
             .lock()
             .prefetched
             .get(agent_id)
-            .is_some_and(|p| now - p.at_ms < PREFETCH_TTL_MS)
+            .is_some_and(|p| p.fits(record, now))
     }
 
     /// The token this launch of `record` signs in with: the one kept by
@@ -146,7 +184,7 @@ impl Supervisor {
         record: &AgentRecord,
     ) -> Result<Option<AccessToken>> {
         let kept = self.logins.lock().prefetched.remove(agent_id);
-        if let Some(kept) = kept.filter(|p| claude_oauth::now_ms() - p.at_ms < PREFETCH_TTL_MS) {
+        if let Some(kept) = kept.filter(|p| p.fits(record, claude_oauth::now_ms())) {
             return kept.token.map_err(Error::Other);
         }
         let rejected = self.logins.lock().rejected.get(agent_id).copied();
@@ -250,7 +288,7 @@ impl Supervisor {
         }
         // A launch that can't sign in fails before the running process is
         // stopped, so it keeps working on the token it has.
-        if !self.has_prefetched(agent_id) {
+        if !self.has_prefetched(agent_id, &record) {
             self.prefetch_login(agent_id).await?;
         } else if let Some(Prefetched { token: Err(e), .. }) =
             self.logins.lock().prefetched.get(agent_id)
