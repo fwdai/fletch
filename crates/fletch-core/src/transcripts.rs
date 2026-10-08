@@ -209,10 +209,7 @@ fn find_session_jsonl_in(
 /// `None` only when neither CODEX_HOME nor a home dir can be resolved. Where a
 /// default-account session is written; [`codex_sessions_dirs`] is every root.
 pub(crate) fn codex_sessions_dir() -> Option<PathBuf> {
-    std::env::var_os("CODEX_HOME")
-        .map(PathBuf::from)
-        .or_else(|| dirs::home_dir().map(|h| h.join(".codex")))
-        .map(|home| home.join("sessions"))
+    dirs::home_dir().map(|h| crate::sandbox::policy::codex_home_dir(&h).join("sessions"))
 }
 
 /// The session roots codex wrote to before each agent ran in its own
@@ -416,6 +413,18 @@ pub(crate) fn read_jsonl_values(path: &Path, diag: &mut ReadDiagnostics) -> Vec<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Legacy threads of the default account live under the `CODEX_HOME` the
+    /// user's shell exports.
+    #[test]
+    fn the_default_codex_sessions_dir_follows_the_login_shells_codex_home() {
+        let td = tempfile::tempdir().unwrap();
+        let dir = crate::bin_resolve::with_login_shell_env(
+            &[("CODEX_HOME", td.path().to_str().unwrap())],
+            codex_sessions_dir,
+        );
+        assert_eq!(dir, Some(td.path().join("sessions")));
+    }
 
     // ── claude transcript location (CLAUDE_CONFIG_DIR) ────────────────────────
 

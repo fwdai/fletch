@@ -8,7 +8,6 @@
 //! since [`ContainerAuth`]'s `Debug` prints var names only.
 
 use std::collections::HashMap;
-use std::ffi::OsStr;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
@@ -131,12 +130,17 @@ impl fmt::Debug for ContainerAuth {
     }
 }
 
-/// The config dir whose `.credentials.json` claude reads: `CLAUDE_CONFIG_DIR`
-/// if set, else `~/.claude`.
-fn credentials_config_dir(config_dir_env: Option<&OsStr>, home: Option<&Path>) -> Option<PathBuf> {
-    config_dir_env
-        .map(PathBuf::from)
-        .or_else(|| home.map(|h| h.join(".claude")))
+/// The config dir whose `.credentials.json` claude reads: the relocated
+/// `CLAUDE_CONFIG_DIR` if set, else `~/.claude`.
+fn credentials_config_dir(relocated: Option<PathBuf>, home: Option<&Path>) -> Option<PathBuf> {
+    relocated.or_else(|| home.map(|h| h.join(".claude")))
+}
+
+/// The Keychain item the default account's login lives under: the one claude
+/// names for the user's relocated config dir, the same dir a launch mounts
+/// and forwards.
+fn default_keychain_service() -> String {
+    claude_keychain_service(crate::agent::accounts::claude_config_override().as_deref())
 }
 
 /// Walk the auth chain (first hit wins). May block on the first call: loading
@@ -164,8 +168,8 @@ pub fn resolve(host_login: Option<&AccessToken>) -> ContainerAuth {
 ///
 /// - The Keychain step is **presence-only**: [`crate::keychain::item_present`]
 ///   runs `security find-generic-password` without `-w`, so the credential is
-///   never read and macOS never prompts. An item under [`KEYCHAIN_SERVICE`] is
-///   taken as a login; deciding otherwise would mean reading the payload, which
+///   never read and macOS never prompts. An item under the default config
+///   dir's service ([`default_keychain_service`]) is taken as a login; deciding otherwise would mean reading the payload, which
 ///   is exactly what this path must not do.
 /// - [`AuthSource::StoredToken`] is excluded: that token is pasted into Fletch's
 ///   settings for containers to use and says nothing about whether the `claude`
@@ -175,7 +179,7 @@ pub fn resolve(host_login: Option<&AccessToken>) -> ContainerAuth {
 /// evaluated by the same [`resolve_from`] chain [`resolve`] uses, so the two
 /// can't drift on what counts as a login.
 pub fn host_login_present() -> bool {
-    if crate::keychain::item_present(KEYCHAIN_SERVICE, None) {
+    if crate::keychain::item_present(&default_keychain_service(), None) {
         return true;
     }
     let (env, credentials_file) = chain_inputs();
@@ -195,7 +199,7 @@ fn chain_inputs() -> (Option<HashMap<String, String>>, bool) {
     // `nondefault_claude_config_dir`); hardcoding `~/.claude` would refuse a
     // container whose only credential lives in a custom config dir.
     let credentials_file = credentials_config_dir(
-        std::env::var_os("CLAUDE_CONFIG_DIR").as_deref(),
+        crate::agent::accounts::claude_config_override(),
         dirs::home_dir().as_deref(),
     )
     .is_some_and(|dir| {
@@ -331,7 +335,7 @@ pub enum ContainerAuthStatus {
 /// polls it, so the host login is checked by presence, never read: the
 /// Keychain item's existence, or a usable credentials file.
 pub fn status() -> ContainerAuthStatus {
-    if crate::keychain::item_present(KEYCHAIN_SERVICE, None) {
+    if crate::keychain::item_present(&default_keychain_service(), None) {
         return ContainerAuthStatus::Keychain;
     }
     let (env, credentials_file) = chain_inputs();
@@ -630,6 +634,34 @@ mod tests {
         );
     }
 
+    /// Settings' presence probe looks for the Keychain item claude names for a
+    /// config dir only the login shell exports, not the default dir's.
+    #[test]
+    fn the_status_probe_looks_at_the_login_shells_config_dir_keychain_item() {
+        let service = crate::bin_resolve::with_login_shell_env(
+            &[("CLAUDE_CONFIG_DIR", "/cfg/eve")],
+            default_keychain_service,
+        );
+        assert_eq!(service, "Claude Code-credentials-b634a9ea");
+    }
+
+    /// The chain's credentials-file step reads under a config dir only the
+    /// login shell exports.
+    #[test]
+    fn the_credentials_file_check_reads_under_the_login_shells_config_dir() {
+        let td = tempfile::tempdir().unwrap();
+        std::fs::write(
+            td.path().join(".credentials.json"),
+            br#"{"claudeAiOauth":{"accessToken":"sk-ant-oat-x","refreshToken":"r","expiresAt":1893456000000}}"#,
+        )
+        .unwrap();
+        let (_, credentials_file) = crate::bin_resolve::with_login_shell_env(
+            &[("CLAUDE_CONFIG_DIR", td.path().to_str().unwrap())],
+            chain_inputs,
+        );
+        assert!(credentials_file);
+    }
+
     #[test]
     fn credentials_config_dir_honors_claude_config_dir() {
         let home = Path::new("/Users/u");
@@ -640,7 +672,7 @@ mod tests {
         );
         // A custom `CLAUDE_CONFIG_DIR` is used verbatim.
         assert_eq!(
-            credentials_config_dir(Some(OsStr::new("/cfg/eve")), Some(home)),
+            credentials_config_dir(Some(PathBuf::from("/cfg/eve")), Some(home)),
             Some(PathBuf::from("/cfg/eve"))
         );
         // No env and no home → nothing to check.

@@ -27,7 +27,7 @@ pub(crate) fn xdg_base_is_nondefault(var: &str, home: &Path, default_rel: &str) 
 /// already-mounted `~/.claude`. Returns the *original* path, not the resolved
 /// one, so mount and forwarded value stay at the host path (invariant 1).
 pub(crate) fn nondefault_claude_config_dir(home: &Path) -> Option<PathBuf> {
-    let dir = std::env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from)?;
+    let dir = crate::agent::accounts::claude_config_override()?;
     (!config_dir_is_default(&dir, home)).then_some(dir)
 }
 

@@ -566,6 +566,53 @@ mod tests {
         }
     }
 
+    /// A `CLAUDE_CONFIG_DIR` only the login shell exports is the dir the host
+    /// login comes from, so the container mounts and forwards that dir.
+    #[test]
+    fn a_claude_launch_mounts_and_forwards_the_login_shells_config_dir() {
+        let td = tempfile::tempdir().unwrap();
+        let home = td.path().join("home");
+        let root = td.path().join("w");
+        let rpc = td.path().join("rpc");
+        let relocated = td.path().join("claude-eve");
+        for dir in [&home, &root, &rpc] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        let token = crate::agent::host_login::claude::AccessToken::for_test("sk-ant-oat-test", 1);
+        let ctx = AgentLaunchCtx {
+            agent_id: "a1",
+            provider: "claude",
+            writable_root: &root,
+            source_repos: &[],
+            rpc_dir: &rpc,
+            cwd: &root,
+            home: &home,
+            interactive: false,
+            blackboard: None,
+            account_dir: None,
+            oauth_token: Some(&token),
+            codex_home: None,
+        };
+
+        let launch = crate::bin_resolve::with_login_shell_env(
+            &[("CLAUDE_CONFIG_DIR", relocated.to_str().unwrap())],
+            || prepare(&ctx, ContainerProvider::Claude, None),
+        )
+        .unwrap();
+
+        let relocated_s = relocated.to_string_lossy().into_owned();
+        assert!(launch
+            .env
+            .iter()
+            .any(|(k, v)| k == "CLAUDE_CONFIG_DIR" && *v == relocated_s));
+        match launch.mounts() {
+            ProviderMounts::Claude { config_dir, .. } => {
+                assert_eq!(config_dir, Some(relocated.as_path()));
+            }
+            _ => panic!("expected claude mounts"),
+        }
+    }
+
     /// The file lands under the data dir handed in — never under a path an
     /// agent's container has read-write — and is rewritten in place each time.
     #[test]
