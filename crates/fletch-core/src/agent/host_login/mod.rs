@@ -12,11 +12,15 @@
 
 use std::any::Any;
 use std::collections::HashMap;
+use std::future::Future;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use parking_lot::Mutex;
 use serde_json::Value;
+
+pub mod claude;
+pub(crate) mod codex;
 
 /// Why a refresh produced no tokens. Neither variant carries a token or a
 /// response body.
@@ -28,21 +32,20 @@ pub(crate) enum RefreshFailure {
     Failed(String),
 }
 
-/// One lock per key, created on first use: what makes the refreshes of one
-/// login single-flight. `T` is the lock kind the caller holds across its work
-/// (an async mutex where the refresh awaits, a blocking one where it doesn't).
-pub(crate) struct Flights<T> {
-    locks: Mutex<Option<HashMap<String, Arc<T>>>>,
+/// One lock per login key, created on first use: what makes the refreshes
+/// of one login single-flight.
+struct Flights {
+    locks: Mutex<Option<HashMap<String, Arc<Mutex<()>>>>>,
 }
 
-impl<T: Default> Flights<T> {
-    pub(crate) const fn new() -> Self {
+impl Flights {
+    const fn new() -> Self {
         Self {
             locks: Mutex::new(None),
         }
     }
 
-    pub(crate) fn get(&self, key: &str) -> Arc<T> {
+    fn get(&self, key: &str) -> Arc<Mutex<()>> {
         self.locks
             .lock()
             .get_or_insert_with(HashMap::new)
@@ -52,19 +55,23 @@ impl<T: Default> Flights<T> {
     }
 }
 
+/// A rotated login a store refused to take, and its place, type-erased so
+/// one registry holds every provider's.
+type KeptLogin = (Value, Arc<dyn Any + Send + Sync>);
+
 /// Rotated logins a store refused to take, kept in memory by login key: the
 /// old refresh token is already spent, so a kept one is that login's only
 /// valid credential until a save succeeds, or until the store changes under
 /// it (a new sign-in), which drops it.
-pub(crate) struct Kept<T> {
-    pairs: Mutex<Option<KeptMap<T>>>,
+struct Kept {
+    pairs: Mutex<Option<KeptMap>>,
 }
 
-/// Login key → the kept value and the store's stamp when it was kept.
-type KeptMap<T> = HashMap<String, (T, Option<String>)>;
+/// Login key → the kept login and the store's stamp when it was kept.
+type KeptMap = HashMap<String, (KeptLogin, Option<String>)>;
 
-impl<T: Clone> Kept<T> {
-    pub(crate) const fn new() -> Self {
+impl Kept {
+    const fn new() -> Self {
         Self {
             pairs: Mutex::new(None),
         }
@@ -72,16 +79,16 @@ impl<T: Clone> Kept<T> {
 
     /// Keep `value` for `key`, with the store's stamp as the failed save
     /// left it.
-    pub(crate) fn keep(&self, key: &str, value: T, stamp: Option<String>) {
+    fn keep(&self, key: &str, value: KeptLogin, stamp: Option<String>) {
         self.pairs
             .lock()
             .get_or_insert_with(HashMap::new)
             .insert(key.to_string(), (value, stamp));
     }
 
-    /// The value kept for `key` while the store still has the stamp it had
+    /// The login kept for `key` while the store still has the stamp it had
     /// then; one kept under another stamp is dropped.
-    pub(crate) fn current(&self, key: &str, stamp: Option<&str>) -> Option<T> {
+    fn current(&self, key: &str, stamp: Option<&str>) -> Option<KeptLogin> {
         let mut pairs = self.pairs.lock();
         let map = pairs.get_or_insert_with(HashMap::new);
         match map.get(key) {
@@ -94,19 +101,32 @@ impl<T: Clone> Kept<T> {
         }
     }
 
-    #[cfg(test)]
-    fn has(&self, key: &str) -> bool {
-        self.pairs
-            .lock()
-            .as_ref()
-            .is_some_and(|m| m.contains_key(key))
-    }
-
-    pub(crate) fn forget(&self, key: &str) {
+    fn forget(&self, key: &str) {
         if let Some(map) = self.pairs.lock().as_mut() {
             map.remove(key);
         }
     }
+}
+
+/// Run one sign-in request to completion from blocking code: on its own
+/// thread with its own runtime, so a caller that is itself on an async
+/// worker never nests runtimes.
+pub(crate) fn run_request<T: Send + 'static>(
+    request: impl Future<Output = Result<T, RefreshFailure>> + Send + 'static,
+) -> Result<T, RefreshFailure> {
+    std::thread::spawn(move || {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| RefreshFailure::Failed(format!("no runtime: {e}")))?
+            .block_on(request)
+    })
+    .join()
+    .unwrap_or_else(|_| {
+        Err(RefreshFailure::Failed(
+            "the sign-in request panicked".into(),
+        ))
+    })
 }
 
 /// What the engine needs to know of a stored login.
@@ -187,33 +207,33 @@ pub(crate) enum Demand {
     Replace { rejected_expires_at_ms: i64 },
 }
 
-/// A kept login and its place, the place type-erased so one registry holds
-/// every provider's.
-type KeptLogin = (Value, Arc<dyn Any + Send + Sync>);
-
-static FLIGHTS: Flights<Mutex<()>> = Flights::new();
-static KEPT: Kept<KeptLogin> = Kept::new();
+static FLIGHTS: Flights = Flights::new();
+static KEPT: Kept = Kept::new();
 static REVOKED: Mutex<Option<HashMap<String, String>>> = Mutex::new(None);
 
-/// Where a provider keeps a refused login's mark across restarts:
-/// `<accounts root>/.state/<provider>-revoked/<hash of the login key>`.
-pub(crate) fn mark_file(provider: &str, key: &str) -> Option<PathBuf> {
+/// The hex SHA-256 of `bytes`: how a mark names a login key, or records a
+/// refused token, without holding either.
+pub(crate) fn digest(bytes: &[u8]) -> String {
     use sha2::{Digest, Sha256};
-    // Tests that don't point the accounts root at a tempdir must not write
-    // into the developer's real one.
+    Sha256::digest(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+/// Where a refused login's mark is kept across restarts:
+/// `<accounts root>/.state/<dirname>/<first 16 hex of the key's digest>`.
+pub(crate) fn mark_file(dirname: &str, key: &str) -> Option<PathBuf> {
+    // A test that doesn't point the accounts root at a tempdir must not write
+    // into the developer's real one; its marks stay in memory.
     if cfg!(test) && std::env::var_os(crate::agent::accounts::ACCOUNTS_ROOT_ENV).is_none() {
         return None;
     }
-    let digest: String = Sha256::digest(key.as_bytes())
-        .iter()
-        .take(8)
-        .map(|b| format!("{b:02x}"))
-        .collect();
     let root = crate::agent::accounts::accounts_root().ok()?;
     Some(
         root.join(".state")
-            .join(format!("{provider}-revoked"))
-            .join(digest),
+            .join(dirname)
+            .join(&digest(key.as_bytes())[..16]),
     )
 }
 
@@ -318,8 +338,10 @@ impl<P: LoginProvider> HostLogin<P> {
                     {
                         return Err(LoginError::SignedOut);
                     }
-                    let creds = self.provider.parse(&json).ok_or(LoginError::SignedOut)?;
+                    // Saved (or kept) before anything else can fail: the old
+                    // refresh token is already spent.
                     self.save_rotated(&key, &cur.place, &json);
+                    let creds = self.provider.parse(&json).ok_or(LoginError::SignedOut)?;
                     tracing::info!(provider = P::PROVIDER, "login refreshed");
                     return Ok(self.provider.launch(&json, &creds));
                 }
@@ -328,24 +350,29 @@ impl<P: LoginProvider> HostLogin<P> {
                     // login) may have rotated the login while this request
                     // was out; its new login is in the store and still good.
                     let fresh = self.read_store()?;
-                    let rotated = fresh.as_ref().and_then(|f| {
-                        let creds = self.provider.parse(&f.json)?;
-                        (creds.refresh.as_deref() != Some(refresh.as_str())).then_some(creds)
-                    });
-                    // The rotated login is taken as freshly read: launched on
-                    // unless it is due, else refreshed once more. A second
-                    // refusal is the login's.
-                    if let Some(rot) = rotated.filter(|_| !rechecked) {
+                    let fresh_creds = fresh.as_ref().and_then(|f| self.provider.parse(&f.json));
+                    let moved = fresh_creds
+                        .as_ref()
+                        .is_some_and(|c| c.refresh.as_deref() != Some(refresh.as_str()));
+                    // A login rotated meanwhile (a refresh token gone counts)
+                    // is taken as freshly read: launched on unless it is due,
+                    // else refreshed once more.
+                    if moved && !rechecked {
                         rechecked = true;
-                        cur = fresh.expect("rotated came from it");
-                        creds = rot;
+                        cur = fresh.expect("parsed from it");
+                        creds = fresh_creds.expect("checked above");
                         continue;
                     }
-                    let (stamp, json) = match &fresh {
-                        Some(f) => (f.stamp.clone().or(cur.stamp.clone()), &f.json),
-                        None => (cur.stamp.clone(), &cur.json),
-                    };
-                    self.record_revoked(&key, stamp.as_deref(), json);
+                    // Marked only when the store still holds the token that
+                    // was refused (or nothing): a login that moved on again
+                    // is someone else's newer one, and stays usable.
+                    if !moved {
+                        let (stamp, json) = match &fresh {
+                            Some(f) => (f.stamp.clone().or(cur.stamp.clone()), &f.json),
+                            None => (cur.stamp.clone(), &cur.json),
+                        };
+                        self.record_revoked(&key, stamp.as_deref(), json);
+                    }
                     tracing::warn!(
                         provider = P::PROVIDER,
                         "login refresh refused; the account must sign in again"
@@ -451,13 +478,19 @@ impl<P: LoginProvider> HostLogin<P> {
         }
     }
 
+    /// The mark on record: this process's first, else the one a past run
+    /// left in the provider's mark file. An empty file (one being written)
+    /// is no mark.
     fn recorded_mark(&self, key: &str) -> Option<String> {
-        if let Some(path) = self.provider.mark_path() {
-            return std::fs::read_to_string(path)
-                .ok()
-                .map(|m| m.trim().to_string());
+        let remembered = REVOKED.lock().as_ref().and_then(|m| m.get(key).cloned());
+        if remembered.is_some() {
+            return remembered;
         }
-        REVOKED.lock().as_ref()?.get(key).cloned()
+        let path = self.provider.mark_path()?;
+        std::fs::read_to_string(path)
+            .ok()
+            .map(|m| m.trim().to_string())
+            .filter(|m| !m.is_empty())
     }
 
     fn clear_mark(&self, key: &str) {
@@ -491,12 +524,11 @@ impl<P: LoginProvider> HostLogin<P> {
                 if let Some(dir) = path.parent() {
                     std::fs::create_dir_all(dir)?;
                 }
-                std::fs::write(&path, &mark)
+                crate::agent::credential_file::write_private_file(&path, mark.as_bytes())
             };
             if let Err(e) = write() {
-                tracing::warn!(provider = P::PROVIDER, error = %e, "could not record the login as revoked");
+                tracing::warn!(provider = P::PROVIDER, error = %e, "could not record the login as revoked past a restart");
             }
-            return;
         }
         REVOKED
             .lock()
@@ -508,15 +540,6 @@ impl<P: LoginProvider> HostLogin<P> {
 /// Still usable at `now_ms`: unexpired, or of unknown expiry.
 fn unexpired(creds: &Creds, now_ms: i64) -> bool {
     creds.expires_at_ms.map_or(true, |e| e > now_ms)
-}
-
-pub mod claude;
-pub(crate) mod codex;
-
-/// Whether a rotated login is kept for the engine key `key` (`provider:key`).
-#[cfg(test)]
-pub(crate) fn is_kept(key: &str) -> bool {
-    KEPT.has(key)
 }
 
 #[cfg(test)]

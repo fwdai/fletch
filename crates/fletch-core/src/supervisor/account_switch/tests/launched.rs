@@ -150,8 +150,8 @@ async fn switch_between(scratch: &Path, from: &str, to: &str) {
     let (to_digest, to_expiry) = token_of(to).await;
     println!(
         "{from}: token {from_digest} expires_in_min {}; {to}: token {to_digest} expires_in_min {}",
-        (from_expiry - claude_login::now_ms()) / 60_000,
-        (to_expiry - claude_login::now_ms()) / 60_000,
+        (from_expiry - crate::agent::host_login::now_ms()) / 60_000,
+        (to_expiry - crate::agent::host_login::now_ms()) / 60_000,
     );
     assert_ne!(from_digest, to_digest, "the two accounts share a token");
 

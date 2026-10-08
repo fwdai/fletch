@@ -159,7 +159,7 @@ async fn a_rejection_without_a_host_token_is_left_alone() {
 async fn an_idle_process_inside_the_margin_is_due() {
     let td = tempfile::tempdir().unwrap();
     let sup = test_supervisor();
-    let expiry = claude_login::now_ms() + 10 * 60 * 1000;
+    let expiry = crate::agent::host_login::now_ms() + 10 * 60 * 1000;
     live_with_login(&sup, td.path(), expiry);
     assert_eq!(sup.login_due("a1"), Some(expiry));
 }
@@ -168,7 +168,7 @@ async fn an_idle_process_inside_the_margin_is_due() {
 async fn a_busy_process_is_never_due() {
     let td = tempfile::tempdir().unwrap();
     let sup = test_supervisor();
-    live_with_login(&sup, td.path(), claude_login::now_ms() + 60_000);
+    live_with_login(&sup, td.path(), crate::agent::host_login::now_ms() + 60_000);
     sup.statuses
         .lock()
         .insert("a1".into(), AgentStatus::Running);
@@ -179,7 +179,11 @@ async fn a_busy_process_is_never_due() {
 async fn a_process_with_runway_left_is_not_due() {
     let td = tempfile::tempdir().unwrap();
     let sup = test_supervisor();
-    live_with_login(&sup, td.path(), claude_login::now_ms() + 5 * HOUR_MS);
+    live_with_login(
+        &sup,
+        td.path(),
+        crate::agent::host_login::now_ms() + 5 * HOUR_MS,
+    );
     assert_eq!(sup.login_due("a1"), None);
 }
 
@@ -226,7 +230,7 @@ async fn a_launch_takes_the_token_resolved_ahead_of_it() {
     sup.logins.lock().prefetched.insert(
         "a1".into(),
         Prefetched {
-            at_ms: claude_login::now_ms(),
+            at_ms: crate::agent::host_login::now_ms(),
             account: None,
             token: Ok(Some(AccessToken::for_test("kept", 7))),
         },
@@ -248,7 +252,7 @@ fn a_launch_under_another_stamp_ignores_the_kept_token() {
         sup.logins.lock().prefetched.insert(
             "a1".into(),
             Prefetched {
-                at_ms: claude_login::now_ms(),
+                at_ms: crate::agent::host_login::now_ms(),
                 account: None,
                 token: Ok(Some(AccessToken::for_test("kept", 7))),
             },
@@ -270,7 +274,7 @@ async fn a_failed_launch_keeps_the_rejected_mark() {
     sup.logins.lock().prefetched.insert(
         "a1".into(),
         Prefetched {
-            at_ms: claude_login::now_ms(),
+            at_ms: crate::agent::host_login::now_ms(),
             account: None,
             token: Err("offline".into()),
         },

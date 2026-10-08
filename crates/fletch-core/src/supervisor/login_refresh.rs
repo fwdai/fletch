@@ -169,7 +169,7 @@ impl Supervisor {
         self.logins.lock().prefetched.insert(
             agent_id.to_string(),
             Prefetched {
-                at_ms: claude_login::now_ms(),
+                at_ms: crate::agent::host_login::now_ms(),
                 account: account.map(str::to_string),
                 token: kept,
             },
@@ -183,7 +183,7 @@ impl Supervisor {
     }
 
     fn has_prefetched(&self, agent_id: &str, record: &AgentRecord) -> bool {
-        let now = claude_login::now_ms();
+        let now = crate::agent::host_login::now_ms();
         self.logins
             .lock()
             .prefetched
@@ -199,7 +199,7 @@ impl Supervisor {
         record: &AgentRecord,
     ) -> Result<Option<AccessToken>> {
         let kept = self.logins.lock().prefetched.remove(agent_id);
-        if let Some(kept) = kept.filter(|p| p.fits(record, claude_login::now_ms())) {
+        if let Some(kept) = kept.filter(|p| p.fits(record, crate::agent::host_login::now_ms())) {
             return kept.token.map_err(Error::Other);
         }
         let rejected = self.logins.lock().rejected.get(agent_id).copied();
@@ -396,8 +396,9 @@ impl Supervisor {
             .lock()
             .get(agent_id)
             .and_then(|agent| agent.login_expires_at_ms())?;
-        (claude_login::needs_refresh(expiry, claude_login::now_ms()) && !self.is_busy(agent_id))
-            .then_some(expiry)
+        (claude_login::needs_refresh(expiry, crate::agent::host_login::now_ms())
+            && !self.is_busy(agent_id))
+        .then_some(expiry)
     }
 
     /// Record the turn just delivered, for a login retry to resend.

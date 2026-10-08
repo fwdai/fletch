@@ -6,8 +6,7 @@
 use std::path::{Path, PathBuf};
 
 use super::credential_file::{Entry, PrivateDir};
-use super::host_login::codex::{self, Refresher};
-use super::host_login::LoginError;
+use super::host_login::codex::{self, CodexLoginError, Refresher};
 use crate::agent::accounts;
 use crate::error::{Error, Result};
 
@@ -82,14 +81,12 @@ pub(crate) fn write_launch_credential(
 ) -> Result<()> {
     match codex::launch_file(source_home, refresh, now) {
         Ok(launch) => write_launch(overlay, launch.as_ref()),
-        Err(LoginError::Revoked) => {
-            write_launch(overlay, None)?;
-            Err(Error::Other(codex::SIGNED_OUT_MSG.into()))
+        Err(e) => {
+            if e == CodexLoginError::Revoked {
+                write_launch(overlay, None)?;
+            }
+            Err(e.into())
         }
-        Err(LoginError::Unavailable(reason)) => Err(Error::Other(format!(
-            "Couldn't refresh the Codex login ({reason}); its access token has expired."
-        ))),
-        Err(LoginError::SignedOut) => unreachable!("launch_file maps it to None"),
     }
 }
 

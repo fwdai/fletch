@@ -1,3 +1,4 @@
+use std::any::Any;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
@@ -455,17 +456,101 @@ fn a_sign_in_after_a_refused_save_wins_over_the_kept_rotation() {
 }
 
 #[test]
-fn a_kept_value_lasts_while_the_stamp_holds_and_is_dropped_when_it_moves() {
-    let kept: Kept<u32> = Kept::new();
-    kept.keep("a", 7, Some("s1".into()));
-    assert_eq!(kept.current("a", Some("s1")), Some(7));
-    assert_eq!(kept.current("a", Some("s2")), None);
-    assert_eq!(kept.current("a", Some("s1")), None);
+fn a_kept_login_lasts_while_the_stamp_holds_and_is_dropped_when_it_moves() {
+    let kept = Kept::new();
+    let place: Arc<dyn Any + Send + Sync> = Arc::new(());
+    kept.keep("a", (json!(7), place), Some("s1".into()));
+    assert_eq!(
+        kept.current("a", Some("s1")).map(|(v, _)| v),
+        Some(json!(7))
+    );
+    assert!(kept.current("a", Some("s2")).is_none());
+    assert!(kept.current("a", Some("s1")).is_none());
 }
 
 #[test]
 fn one_key_gets_one_lock_and_another_key_another() {
-    static FLIGHTS: Flights<Mutex<()>> = Flights::new();
-    assert!(Arc::ptr_eq(&FLIGHTS.get("a"), &FLIGHTS.get("a")));
-    assert!(!Arc::ptr_eq(&FLIGHTS.get("a"), &FLIGHTS.get("b")));
+    let flights = Flights::new();
+    assert!(Arc::ptr_eq(&flights.get("a"), &flights.get("a")));
+    assert!(!Arc::ptr_eq(&flights.get("a"), &flights.get("b")));
+}
+
+/// Two other processes rotate the login while this one's requests are out:
+/// the first refusal rechecks the rotated login, the second finds the store
+/// moved on again. That newer login is someone else's and still valid, so
+/// nothing is marked and the next credential uses it.
+#[test]
+fn a_refusal_after_the_store_moved_on_twice_marks_nothing() {
+    let fake = Fake::holding(Some(login("at-1", Some("rt-1"), soon())));
+    *fake.during_refresh.lock() = Some(Box::new(|f| {
+        f.store(login("at-2", Some("rt-2"), soon()));
+        *f.during_refresh.lock() = Some(Box::new(|f| {
+            f.store(login("at-3", Some("rt-3"), later()));
+        }));
+    }));
+    fake.answer(Err(RefreshFailure::Rejected));
+    fake.answer(Err(RefreshFailure::Rejected));
+    let e = engine(fake);
+
+    assert_eq!(e.credential(Demand::Launch), Err(LoginError::Revoked));
+    assert!(!e.is_revoked());
+    assert_eq!(e.credential(Demand::Launch).unwrap(), "at-3");
+    assert_eq!(*e.provider().sent.lock(), vec!["rt-1", "rt-2"]);
+}
+
+/// A login another process left without a refresh token while the request
+/// was out counts as rotated: it is launched on while it lasts, not marked
+/// refused.
+#[test]
+fn a_refusal_after_the_refresh_token_was_removed_launches_on_what_is_stored() {
+    let fake = Fake::holding(Some(login("at-1", Some("rt-1"), soon())));
+    *fake.during_refresh.lock() = Some(Box::new(|f| f.store(login("at-bare", None, soon()))));
+    fake.answer(Err(RefreshFailure::Rejected));
+    let e = engine(fake);
+
+    assert_eq!(e.credential(Demand::Launch).unwrap(), "at-bare");
+    assert!(!e.is_revoked());
+}
+
+/// The mark file can't be written (its directory is a file): the refusal is
+/// still remembered in memory, so the refused token isn't sent again and
+/// the probe reads the login revoked.
+#[test]
+fn a_mark_that_cannot_be_written_is_still_remembered() {
+    let td = tempfile::tempdir().unwrap();
+    let blocker = td.path().join("not-a-dir");
+    std::fs::write(&blocker, "x").unwrap();
+    let mut fake = Fake::holding(Some(login("at-1", Some("rt-1"), soon())));
+    fake.mark_path = Some(blocker.join("mark"));
+    fake.answer(Err(RefreshFailure::Rejected));
+    let e = engine(fake);
+
+    assert_eq!(e.credential(Demand::Launch), Err(LoginError::Revoked));
+    assert!(e.is_revoked());
+    assert_eq!(e.credential(Demand::Launch), Err(LoginError::Revoked));
+    assert_eq!(e.provider().sent.lock().len(), 1);
+}
+
+#[test]
+fn an_empty_mark_file_is_no_mark() {
+    let td = tempfile::tempdir().unwrap();
+    let mut fake = Fake::holding(Some(login("at-1", Some("rt-1"), later())));
+    fake.mark_path = Some(td.path().join("mark"));
+    std::fs::write(td.path().join("mark"), "").unwrap();
+    let e = engine(fake);
+
+    assert!(!e.is_revoked());
+    assert_eq!(e.credential(Demand::Launch).unwrap(), "at-1");
+}
+
+/// A refresh answer that applies but leaves no usable login is still saved:
+/// the old refresh token was spent getting it.
+#[test]
+fn a_refreshed_login_is_saved_before_it_is_parsed() {
+    let e = engine(Fake::holding(Some(login("at-1", Some("rt-1"), soon()))));
+    e.provider().answer(Ok(grant("", Some("rt-2"))));
+
+    assert_eq!(e.credential(Demand::Launch), Err(LoginError::SignedOut));
+    assert_eq!(e.provider().saves.load(Ordering::SeqCst), 1);
+    assert_eq!(e.provider().stored_json()["refresh"], "rt-2");
 }

@@ -28,10 +28,8 @@ use std::time::Duration;
 
 use base64::Engine as _;
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 
 use super::{Creds, Demand, HostLogin, LoginError, LoginProvider, RefreshFailure};
-use crate::agent::accounts;
 
 pub const REFRESH_URL: &str = "https://auth.openai.com/oauth/token";
 
@@ -157,7 +155,7 @@ impl LoginProvider for CodexProvider<'_> {
     /// A refusal is recorded against the refused refresh token, by its hash
     /// only: a new sign-in writes a new one, and the mark lapses.
     fn mark_of(&self, _stamp: Option<&str>, json: &Value) -> Option<String> {
-        refresh_token(json).map(|t| hex_digest(t.as_bytes()))
+        refresh_token(json).map(|t| super::digest(t.as_bytes()))
     }
 
     fn current_mark(&self) -> Option<String> {
@@ -166,11 +164,41 @@ impl LoginProvider for CodexProvider<'_> {
     }
 
     fn mark_path(&self) -> Option<PathBuf> {
-        signed_out_marker(self.source_home)
+        super::mark_file("codex-signed-out", &self.key())
     }
 
     fn now_ms(&self) -> i64 {
         self.now * 1000
+    }
+}
+
+/// Why a codex launch got no credential, with the text the user sees. Never
+/// carries a credential.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum CodexLoginError {
+    /// The refresh token was refused; only a new sign-in helps.
+    Revoked,
+    /// The access token has expired and the refresh could not be completed.
+    Unavailable(String),
+}
+
+impl std::fmt::Display for CodexLoginError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Revoked => f.write_str(
+                "The Codex login has expired or was revoked. Sign in again in Settings › Providers.",
+            ),
+            Self::Unavailable(reason) => write!(
+                f,
+                "Couldn't refresh the Codex login ({reason}); its access token has expired."
+            ),
+        }
+    }
+}
+
+impl From<CodexLoginError> for crate::error::Error {
+    fn from(e: CodexLoginError) -> Self {
+        Self::Other(e.to_string())
     }
 }
 
@@ -184,7 +212,7 @@ pub(crate) fn launch_file(
     source_home: &Path,
     refresh: Refresher<'_>,
     now: i64,
-) -> Result<Option<Value>, LoginError> {
+) -> Result<Option<Value>, CodexLoginError> {
     let login = HostLogin::new(CodexProvider {
         source_home,
         refresh,
@@ -193,7 +221,8 @@ pub(crate) fn launch_file(
     match login.credential(Demand::Launch) {
         Ok(launch) => Ok(Some(launch)),
         Err(LoginError::SignedOut) => Ok(None),
-        Err(e) => Err(e),
+        Err(LoginError::Revoked) => Err(CodexLoginError::Revoked),
+        Err(LoginError::Unavailable(reason)) => Err(CodexLoginError::Unavailable(reason)),
     }
 }
 
@@ -207,9 +236,6 @@ pub(crate) fn is_revoked(source_home: &Path) -> bool {
     })
     .is_revoked()
 }
-
-pub(crate) const SIGNED_OUT_MSG: &str =
-    "The Codex login has expired or was revoked. Sign in again in Settings › Providers.";
 
 /// The production [`Refresher`]: the codex token endpoint over HTTPS. Blocking,
 /// because launches and turns are synchronous; the request runs on its own
@@ -231,15 +257,7 @@ pub(crate) fn refresh_at(
 ) -> std::result::Result<TokenResponse, RefreshFailure> {
     let url = url.to_string();
     let refresh_token = refresh_token.to_string();
-    std::thread::spawn(move || {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|e| RefreshFailure::Failed(format!("no runtime: {e}")))?;
-        runtime.block_on(post_refresh(&url, &refresh_token))
-    })
-    .join()
-    .unwrap_or_else(|_| Err(RefreshFailure::Failed("refresh thread panicked".into())))
+    super::run_request(async move { post_refresh(&url, &refresh_token).await })
 }
 
 async fn post_refresh(
@@ -404,25 +422,6 @@ pub(crate) fn read_auth(path: &Path) -> Option<Value> {
     serde_json::from_slice::<Value>(&bytes)
         .ok()
         .filter(Value::is_object)
-}
-
-/// Where the signed-out mark for the login in `source_home` lives: under the
-/// accounts root, never in the user's own codex home, named for the home's
-/// path.
-fn signed_out_marker(source_home: &Path) -> Option<PathBuf> {
-    let root = accounts::accounts_root().ok()?;
-    Some(
-        root.join(".state")
-            .join("codex-signed-out")
-            .join(&hex_digest(source_home.to_string_lossy().as_bytes())[..16]),
-    )
-}
-
-fn hex_digest(bytes: &[u8]) -> String {
-    Sha256::digest(bytes)
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect()
 }
 
 #[cfg(test)]

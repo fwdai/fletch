@@ -16,8 +16,8 @@ use super::accounts;
 use super::args::{prepare_managed_args, prepare_pty_args};
 use super::capabilities::{mcp_delivery, per_turn_descriptor};
 use super::codex_home;
+use super::host_login;
 use super::host_login::claude::AccessToken;
-use super::host_login::codex as codex_login;
 use super::probe::resolve_agent_bin;
 use super::{Agent, ManagedAgent, PerTurnAgent, PerTurnDescriptor, PtyAgent, TurnArgs};
 
@@ -248,7 +248,7 @@ impl CodexHome {
         }
         let this = Self {
             overlay,
-            source: codex_login::source_home(account_dir, home),
+            source: host_login::codex::source_home(account_dir, home),
         };
         this.write_credential()?;
         Ok(this)
@@ -258,7 +258,7 @@ impl CodexHome {
         codex_home::write_launch_credential(
             &self.source,
             &self.overlay,
-            &codex_login::http_refresh,
+            &host_login::codex::http_refresh,
             chrono::Utc::now().timestamp(),
         )
     }

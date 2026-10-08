@@ -1956,6 +1956,26 @@ mod tests {
         });
     }
 
+    /// A limits read's temporary codex home is made inside the codex accounts
+    /// dir, which every agent's profile denies whole, so no agent can read
+    /// the login in it or swap a link before the host's app-server starts.
+    #[test]
+    fn profile_denies_the_limits_reads_temporary_home() {
+        crate::agent::accounts::with_test_root(|_| {
+            let (_td, root, rpc, home) = sandbox_dirs();
+            let profile = build_profile(&root, &rpc, &home, None, None, None, None).unwrap();
+            let parent = crate::agent::limits::app_server::limits_parent().unwrap();
+            let deny_at = profile
+                .find("(deny file-read* file-write*\n")
+                .expect("a read deny block");
+            assert!(
+                profile[deny_at..].contains(&format!("(subpath \"{}\")", parent.display())),
+                "{profile}"
+            );
+            assert!(parent.join(".limits-x").starts_with(&parent));
+        });
+    }
+
     /// No launch relocates into an account dir: codex runs in its overlay,
     /// claude accounts are a token source, and providers without accounts
     /// never do.

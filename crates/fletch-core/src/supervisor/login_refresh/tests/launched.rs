@@ -96,7 +96,7 @@ async fn launched(root: &Path, expires_in_ms: i64) -> Launched {
     write_login(
         &account,
         "sk-ant-oat01-first",
-        claude_login::now_ms() + expires_in_ms,
+        crate::agent::host_login::now_ms() + expires_in_ms,
     );
 
     let parent = crate::workspace::agent_parent_dir(AGENT).unwrap();
@@ -159,7 +159,7 @@ fn scripted_relaunch_with_resume_resumes_on_the_current_login() {
         write_login(
             &run.account,
             "sk-ant-oat01-second",
-            claude_login::now_ms() + 6 * HOUR_MS,
+            crate::agent::host_login::now_ms() + 6 * HOUR_MS,
         );
         run.sup
             .relaunch_with_resume(&run.ctx, AGENT)
@@ -195,7 +195,7 @@ fn scripted_relaunch_if_login_due_moves_onto_a_fresher_token() {
         write_login(
             &run.account,
             "sk-ant-oat01-second",
-            claude_login::now_ms() + 6 * HOUR_MS,
+            crate::agent::host_login::now_ms() + 6 * HOUR_MS,
         );
         run.sup.relaunch_if_login_due(&run.ctx, AGENT).await;
         let lines = wait_for_launches(&run.log, 2).await;

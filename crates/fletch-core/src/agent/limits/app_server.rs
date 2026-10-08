@@ -43,9 +43,9 @@ const READ_ID: i64 = 2;
 /// The app-server is a real codex, so it never runs in the account's own
 /// home: it would refresh the login itself, outside the host's single-flight,
 /// and could spend a refresh token the host is about to use. It runs in a
-/// temporary `CODEX_HOME` holding the launch copy of the login (refresh token
-/// blanked, refreshed by the host first if due) and the shared config, removed
-/// after the read. A managed account also has the default account's
+/// temporary `CODEX_HOME` ([`LimitsHome`]) holding the launch copy of the
+/// login (refresh token blanked, refreshed by the host first if due) and the
+/// shared config, removed after the read. A managed account also has the default account's
 /// `OPENAI_API_KEY` removed, so it answers with its own login or none.
 pub async fn read_limits(account_dir: Option<&Path>) -> Result<RefreshOutcome> {
     let home =
@@ -70,7 +70,7 @@ pub async fn read_limits(account_dir: Option<&Path>) -> Result<RefreshOutcome> {
     let Some(limits_home) = prepared else {
         return Ok(RefreshOutcome::SignedOut);
     };
-    let codex_home = limits_home.path().join("codex-home");
+    let codex_home = limits_home.path.clone();
 
     let mut cmd = tokio::process::Command::new(program);
     cmd.arg("app-server")
@@ -124,34 +124,61 @@ pub async fn read_limits(account_dir: Option<&Path>) -> Result<RefreshOutcome> {
     answer
 }
 
-/// A temporary `CODEX_HOME` for one limits read of the login in
-/// `source_home`: the shared config linked in as an agent's overlay has it,
-/// and the launch copy of the login. `None` when the host found the login
-/// refused, which reads as signed out like the app-server's own 401.
+/// The dir every limits read's temporary home is made in: inside the codex
+/// accounts dir, which every agent's seatbelt profile denies reading and
+/// writing (`seatbelt::deny_host_codex_logins`). The host's temp dir would be
+/// granted to agents, which could read the login there or swap a config link
+/// before the unsandboxed app-server starts.
+pub(crate) fn limits_parent() -> Result<std::path::PathBuf> {
+    Ok(accounts::accounts_root()?.join("codex"))
+}
+
+/// A temporary `CODEX_HOME` for one limits read, made and removed through a
+/// handle on its parent so nothing planted redirects either.
+struct LimitsHome {
+    parent: crate::agent::credential_file::PrivateDir,
+    name: String,
+    path: std::path::PathBuf,
+}
+
+impl Drop for LimitsHome {
+    fn drop(&mut self) {
+        if let Err(e) = self.parent.remove(&self.name) {
+            tracing::warn!(error = %e, "could not remove a limits read's temporary codex home");
+        }
+    }
+}
+
+/// The temporary home for one limits read of the login in `source_home`: the
+/// shared config linked in as an agent's overlay has it, and the launch copy
+/// of the login. `None` when the host finds the login refused, which reads as
+/// signed out like the app-server's own 401, and makes nothing. Removed on
+/// every path once made, a failure to fill it included.
 fn limits_home(
     source_home: &Path,
     home: &Path,
     refresh: crate::agent::host_login::codex::Refresher<'_>,
     now: i64,
-) -> Result<Option<tempfile::TempDir>> {
-    let dir = tempfile::Builder::new()
-        .prefix("fletch-codex-limits-")
-        .tempdir()?;
-    let codex_home = dir.path().join("codex-home");
-    crate::agent::codex_home::prepare_overlay(&codex_home, home)?;
-    match crate::agent::host_login::codex::launch_file(source_home, refresh, now) {
-        Ok(launch) => {
-            crate::agent::codex_home::write_launch(&codex_home, launch.as_ref())?;
-            Ok(Some(dir))
-        }
-        Err(crate::agent::host_login::LoginError::Revoked) => Ok(None),
-        Err(crate::agent::host_login::LoginError::Unavailable(reason)) => Err(Error::Other(
-            format!("Couldn't refresh the Codex login ({reason}); its access token has expired."),
-        )),
-        Err(crate::agent::host_login::LoginError::SignedOut) => {
-            unreachable!("launch_file maps it to None")
-        }
-    }
+) -> Result<Option<LimitsHome>> {
+    use crate::agent::host_login::codex::{self, CodexLoginError};
+    let launch = match codex::launch_file(source_home, refresh, now) {
+        Ok(launch) => launch,
+        Err(CodexLoginError::Revoked) => return Ok(None),
+        Err(e) => return Err(e.into()),
+    };
+    let root = limits_parent()?;
+    std::fs::create_dir_all(&root)?;
+    let parent = crate::agent::credential_file::PrivateDir::open(&root)?;
+    let name = format!(".limits-{}", uuid::Uuid::new_v4().simple());
+    parent.subdir(&name)?;
+    let made = LimitsHome {
+        path: root.join(&name),
+        parent,
+        name,
+    };
+    crate::agent::codex_home::prepare_overlay(&made.path, home)?;
+    crate::agent::codex_home::write_launch(&made.path, launch.as_ref())?;
+    Ok(Some(made))
 }
 
 fn now() -> i64 {
@@ -289,38 +316,51 @@ mod tests {
         panic!("no refresh expected")
     }
 
-    /// The app-server reads limits from a home holding the launch copy of the
-    /// login and the shared config, never the account's own directory, and
-    /// the home is gone after the read.
+    /// The app-server reads limits from a home inside the agent-denied codex
+    /// accounts dir, holding the launch copy of the login and the shared
+    /// config, never the account's own directory; the home is gone after the
+    /// read.
     #[test]
-    fn the_limits_read_runs_in_a_home_with_no_refresh_token() {
-        let td = tempfile::tempdir().unwrap();
-        let home = td.path().join("home");
-        std::fs::create_dir_all(home.join(".codex")).unwrap();
-        std::fs::write(home.join(".codex/config.toml"), "").unwrap();
-        let source = td.path().join("account");
-        std::fs::create_dir_all(&source).unwrap();
-        let now = 1_791_448_171;
-        let login = json!({"auth_mode": "chatgpt", "tokens": {
-            "access_token": jwt_exp(now + 5 * 86_400), "id_token": "id",
-            "refresh_token": "rt.host", "account_id": "a"}});
-        std::fs::write(source.join("auth.json"), login.to_string()).unwrap();
+    fn the_limits_read_runs_in_a_hidden_home_with_no_refresh_token() {
+        accounts::with_test_root(|root| {
+            let home = root.join("home");
+            std::fs::create_dir_all(home.join(".codex")).unwrap();
+            std::fs::write(home.join(".codex/config.toml"), "").unwrap();
+            let source = root.join("codex/work");
+            std::fs::create_dir_all(&source).unwrap();
+            let now = 1_791_448_171;
+            let login = json!({"auth_mode": "chatgpt", "tokens": {
+                "access_token": jwt_exp(now + 5 * 86_400), "id_token": "id",
+                "refresh_token": "rt.host", "account_id": "a"}});
+            std::fs::write(source.join("auth.json"), login.to_string()).unwrap();
 
-        let dir = limits_home(&source, &home, &never, now).unwrap().unwrap();
+            let made = limits_home(&source, &home, &never, now).unwrap().unwrap();
 
-        let codex_home = dir.path().join("codex-home");
-        let written: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(codex_home.join("auth.json")).unwrap()).unwrap();
-        assert_eq!(written["tokens"]["refresh_token"], "");
-        assert!(codex_home
-            .join("config.toml")
-            .symlink_metadata()
-            .unwrap()
-            .file_type()
-            .is_symlink());
-        let path = dir.path().to_path_buf();
-        drop(dir);
-        assert!(!path.exists());
+            assert!(
+                made.path.starts_with(root.join("codex")),
+                "{}",
+                made.path.display()
+            );
+            assert!(made.name.starts_with(".limits-"));
+            let written: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(made.path.join("auth.json")).unwrap())
+                    .unwrap();
+            assert_eq!(written["tokens"]["refresh_token"], "");
+            assert!(made
+                .path
+                .join("config.toml")
+                .symlink_metadata()
+                .unwrap()
+                .file_type()
+                .is_symlink());
+            let path = made.path.clone();
+            drop(made);
+            assert!(!path.exists());
+            assert_eq!(
+                crate::agent::accounts::list_account_ids("codex"),
+                vec!["work"]
+            );
+        });
     }
 
     #[test]

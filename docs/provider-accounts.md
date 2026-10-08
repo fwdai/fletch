@@ -57,8 +57,9 @@ build it in PR 3.
   account. `security -i` takes one line of about 4 KB, so a Keychain login
   too large to write back whole is not refreshed at all (the launch runs on
   the stored token while it lasts); a rotated pair the store refuses anyway
-  is kept in memory and written on the next call. A refused refresh
-  (400/401) marks the login revoked until the store changes, and Settings
+  is kept in memory and written on the next call. A refused refresh (a 401,
+  or a 400 naming `invalid_grant`; any other 400 is a failure to retry)
+  marks the login revoked until the store changes, and Settings
   shows "sign in again"; the mark (the store's stamp, nothing secret) is
   kept under `<accounts root>/.state/claude-revoked/`, so it survives a
   restart. The token is resolved before the lifecycle lock
@@ -180,7 +181,12 @@ Engine (`crates/fletch-core/src/`):
   One rule after a refusal for every provider: if the stored refresh token
   changed while the request was out (another process rotated it), the
   rotated login is taken as freshly read, launched on unless it is due,
-  else refreshed once more; a second refusal is the login's. Providers
+  else refreshed once more (a login left without a refresh token counts as
+  rotated, and is launched on while it lasts). The mark is recorded only
+  when the store still holds the refused token, or nothing: a login that
+  moved on again is someone else's newer one. Marks are kept in memory and,
+  where the provider names a file, written there (0600, atomically) to
+  survive a restart; an unwritable file costs only the restart. Providers
   implement `LoginProvider` (store, parse, margin, refresh request,
   launch form, what a refusal is recorded against).
 - `agent/host_login/claude.rs` — the claude adapter. `launch_token(account,
@@ -450,9 +456,12 @@ What Fletch does:
   writes into the target agent's overlay.
 - The limits app-server is a real codex too, so it never runs in the
   account's own home either (it would refresh the login itself, outside the
-  host's single-flight): each read gets a temporary `CODEX_HOME` holding the
-  launch copy of the login (refreshed by the host first if due) and the
-  shared config, removed after the read. A login the host found refused
+  host's single-flight): each read gets a temporary `CODEX_HOME` at
+  `<accounts root>/codex/.limits-<random>` (inside the dir every agent
+  profile denies, unlike the host's temp dir, which agents may write)
+  holding the launch copy of the login (refreshed by the host first if due)
+  and the shared config, made and removed through a no-follow handle on
+  every path. A login the host found refused
   reads as signed out without starting it. Managed launches still strip
   `OPENAI_API_KEY`.
 
