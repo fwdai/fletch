@@ -14,18 +14,19 @@
 //! refused anyway is kept in memory and written on the next call: it is then
 //! the account's only valid refresh token.
 
-use std::collections::HashMap;
 use std::fmt;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 use std::time::Duration;
 
-use parking_lot::Mutex;
 use serde_json::Value;
 
-use super::accounts;
+use super::{AfterRotation, Creds, HostLogin, LoginProvider};
+use crate::agent::accounts;
+
+pub(crate) use super::Demand;
 
 pub const TOKEN_URL: &str = "https://platform.claude.com/v1/oauth/token";
 
@@ -97,7 +98,7 @@ pub fn needs_refresh(expires_at_ms: i64, now_ms: i64) -> bool {
 }
 
 pub(crate) fn now_ms() -> i64 {
-    chrono::Utc::now().timestamp_millis()
+    super::now_ms()
 }
 
 /// Why no token could be had. Every message is fixed text plus, for
@@ -129,6 +130,16 @@ impl fmt::Display for LoginError {
     }
 }
 
+impl From<super::LoginError> for LoginError {
+    fn from(e: super::LoginError) -> Self {
+        match e {
+            super::LoginError::SignedOut => Self::SignedOut,
+            super::LoginError::Revoked => Self::Revoked,
+            super::LoginError::Unavailable(reason) => Self::Unavailable(reason),
+        }
+    }
+}
+
 impl From<LoginError> for crate::error::Error {
     fn from(e: LoginError) -> Self {
         Self::Other(e.to_string())
@@ -147,7 +158,7 @@ pub async fn access_token_for_launch(
     token_with(
         &store.service.clone(),
         Arc::new(store),
-        &HttpEndpoint::default(),
+        Arc::new(HttpEndpoint::default()),
         Demand::Launch,
     )
     .await
@@ -164,7 +175,7 @@ pub async fn replace_rejected_token(
     token_with(
         &store.service.clone(),
         Arc::new(store),
-        &HttpEndpoint::default(),
+        Arc::new(HttpEndpoint::default()),
         Demand::Replace {
             rejected_expires_at_ms,
         },
@@ -203,14 +214,16 @@ pub async fn launch_token(
 /// unless a refusal is on record: only then is the store's stamp (the
 /// Keychain item's metadata, or the file's) read, and never the password.
 pub fn is_revoked(account_dir: Option<&Path>) -> bool {
-    let key = crate::sandbox::container::auth::claude_keychain_service(account_dir);
-    if !registry().revoked.contains_key(&key) {
-        return false;
-    }
     let Some(store) = HostStore::for_account(account_dir) else {
         return false;
     };
-    revoked_at(&key, store.stamp().as_deref())
+    let key = store.service.clone();
+    HostLogin::new(ClaudeProvider::new(
+        &key,
+        Arc::new(store),
+        Arc::new(HttpEndpoint::default()),
+    ))
+    .is_revoked()
 }
 
 /// The access token in a stored credential blob (`.credentials.json` or the
@@ -225,12 +238,6 @@ pub(crate) fn stored_access_token(contents: &[u8]) -> Option<String> {
 }
 
 // ── core ────────────────────────────────────────────────────────────────────
-
-#[derive(Debug, Clone, Copy)]
-enum Demand {
-    Launch,
-    Replace { rejected_expires_at_ms: i64 },
-}
 
 struct Pair {
     access: String,
@@ -349,242 +356,125 @@ fn parse_grant(body: &Value) -> Option<TokenGrant> {
     })
 }
 
-pub(crate) use super::credential_file::RefreshFailure;
+pub(crate) use super::RefreshFailure;
 
 pub(crate) type RefreshFuture<'a> =
     Pin<Box<dyn Future<Output = Result<TokenGrant, RefreshFailure>> + Send + 'a>>;
 
-pub(crate) trait TokenEndpoint: Send + Sync {
+pub(crate) trait TokenEndpoint: Send + Sync + 'static {
     fn refresh<'a>(&'a self, refresh_token: &'a str) -> RefreshFuture<'a>;
 }
 
-#[derive(Default)]
-struct Registry {
-    /// The store stamp each account was found revoked at.
-    revoked: HashMap<String, String>,
-    /// A rotated login the store refused to take: the old refresh token is
-    /// already spent, so this is the account's only valid one until a save
-    /// succeeds — or until the store changes under it (a new sign-in).
-    unsaved: HashMap<String, Pending>,
-}
-
-#[derive(Clone)]
-struct Pending {
-    stored: Stored,
-    /// The store's stamp as the refused save left it. A retry writes only
-    /// while it still matches, so a sign-in made meanwhile is never
-    /// overwritten by the old login's successor.
-    stamp: Option<String>,
-}
-
-fn registry() -> parking_lot::MutexGuard<'static, Registry> {
-    static REGISTRY: OnceLock<Mutex<Registry>> = OnceLock::new();
-    REGISTRY.get_or_init(Default::default).lock()
-}
-
-fn flight(key: &str) -> Arc<tokio::sync::Mutex<()>> {
-    static FLIGHTS: super::credential_file::Flights<tokio::sync::Mutex<()>> =
-        super::credential_file::Flights::new();
-    FLIGHTS.get(key)
-}
-
-/// Whether `key` was found revoked at `stamp`. A different stamp means the
-/// store changed (a new sign-in), which clears the mark.
-fn revoked_at(key: &str, stamp: Option<&str>) -> bool {
-    let mut reg = registry();
-    match (reg.revoked.get(key), stamp) {
-        (Some(at), Some(now)) if at == now => true,
-        _ => {
-            reg.revoked.remove(key);
-            false
-        }
-    }
-}
-
-async fn blocking<T: Send + 'static>(
-    f: impl FnOnce() -> T + Send + 'static,
-) -> Result<T, LoginError> {
-    tokio::task::spawn_blocking(f)
-        .await
-        .map_err(|e| LoginError::Unavailable(format!("credential store task failed: {e}")))
-}
-
-async fn read_store(
-    store: &Arc<dyn LoginStore>,
-) -> Result<(Option<String>, Option<Stored>), LoginError> {
-    let store = store.clone();
-    let (stamp, loaded) = blocking(move || (store.stamp(), store.load())).await?;
-    let stored = loaded.map_err(LoginError::Unavailable)?;
-    Ok((stamp, stored))
-}
-
-/// The login to work from: a rotated pair still waiting to be stored, written
-/// now if the store takes it, else what the store holds. A pending pair whose
-/// store has changed since (the user signed in again) is dropped: the store's
-/// login is the newer one.
-async fn current_login(
-    key: &str,
-    store: &Arc<dyn LoginStore>,
-) -> Result<(Option<String>, Option<Stored>), LoginError> {
-    let pending = registry().unsaved.get(key).cloned();
-    let Some(Pending {
-        stored: pending,
-        stamp: pending_stamp,
-    }) = pending
-    else {
-        return read_store(store).await;
-    };
-    let stamper = store.clone();
-    if blocking(move || stamper.stamp()).await? != pending_stamp {
-        registry().unsaved.remove(key);
-        tracing::info!("claude login changed since a refused write; dropping the pending pair");
-        return read_store(store).await;
-    }
-    let saver = store.clone();
-    let retry = pending.clone();
-    let saved = blocking(move || saver.save(&retry.place, &retry.json)).await?;
-    match saved {
-        Ok(()) => {
-            registry().unsaved.remove(key);
-            tracing::info!("stored a refreshed claude login that an earlier write refused");
-            read_store(store).await
-        }
-        Err(e) => {
-            tracing::error!(error = %e, "refreshed claude login still can't be stored");
-            Ok((None, Some(pending)))
-        }
-    }
-}
-
-fn token_of(pair: &Pair) -> AccessToken {
-    AccessToken {
-        secret: pair.access.clone(),
-        expires_at_ms: pair.expires_at_ms,
-    }
-}
-
-/// The stored token when a refresh can't be had, while it still works.
-fn fall_back(demand: Demand, pair: &Pair, reason: String) -> Result<AccessToken, LoginError> {
-    if matches!(demand, Demand::Launch) && pair.expires_at_ms > now_ms() {
-        Ok(token_of(pair))
-    } else {
-        Err(LoginError::Unavailable(reason))
-    }
-}
-
-async fn token_with(
-    key: &str,
+/// A claude login on the engine: its store and its sign-in server.
+struct ClaudeProvider {
+    key: String,
     store: Arc<dyn LoginStore>,
-    endpoint: &dyn TokenEndpoint,
-    demand: Demand,
-) -> Result<AccessToken, LoginError> {
-    let flight = flight(key);
-    // Held across the refresh and the write-back: whoever waits here reads
-    // the rotated pair, never the one this flight just spent.
-    let _flight = flight.lock().await;
+    endpoint: Arc<dyn TokenEndpoint>,
+    /// Drives the async endpoint from the engine's blocking thread.
+    runtime: Option<tokio::runtime::Handle>,
+}
 
-    let (stamp, stored) = current_login(key, &store).await?;
-    let Some(stored) = stored else {
-        return Err(LoginError::SignedOut);
-    };
-    // A pending pair has no stamp; it is newer than any refusal on record.
-    if stamp.is_some() && revoked_at(key, stamp.as_deref()) {
-        return Err(LoginError::Revoked);
+impl ClaudeProvider {
+    fn new(key: &str, store: Arc<dyn LoginStore>, endpoint: Arc<dyn TokenEndpoint>) -> Self {
+        Self {
+            key: key.to_string(),
+            store,
+            endpoint,
+            runtime: tokio::runtime::Handle::try_current().ok(),
+        }
     }
-    let mut creds: Value = serde_json::from_str(&stored.json).map_err(|_| LoginError::SignedOut)?;
-    let pair = parse_pair(&creds).ok_or(LoginError::SignedOut)?;
+}
 
-    let now = now_ms();
-    let due = match demand {
-        Demand::Launch => needs_refresh(pair.expires_at_ms, now),
-        Demand::Replace {
-            rejected_expires_at_ms,
-        } => pair.expires_at_ms <= rejected_expires_at_ms || needs_refresh(pair.expires_at_ms, now),
-    };
-    if !due {
-        return Ok(token_of(&pair));
-    }
-    let Some(refresh) = pair.refresh.clone() else {
-        return if matches!(demand, Demand::Launch) && pair.expires_at_ms > now {
-            Ok(token_of(&pair))
-        } else {
-            Err(LoginError::Revoked)
-        };
-    };
-    // Spending the refresh token is only safe when its successor can be
-    // stored: `security -i` takes one line of about 4 KB.
-    let fit_check = store.clone();
-    let place = stored.place.clone();
-    let len = stored.json.len() + GROWTH_SLACK;
-    if !blocking(move || fit_check.fits(&place, len)).await? {
-        tracing::warn!("claude login too large to store back after a refresh; not refreshing");
-        return fall_back(
-            demand,
-            &pair,
-            "the stored login is too large to write back after a refresh".into(),
-        );
+impl LoginProvider for ClaudeProvider {
+    type Place = Place;
+    type Grant = TokenGrant;
+    type Launch = AccessToken;
+    const PROVIDER: &'static str = "claude";
+    const AFTER_ROTATION: AfterRotation = AfterRotation::UseIfUnexpired;
+
+    fn key(&self) -> String {
+        self.key.clone()
     }
 
-    match endpoint.refresh(&refresh).await {
-        Ok(grant) => {
-            let expires_at_ms =
-                apply_grant(&mut creds, &grant, now_ms()).ok_or(LoginError::SignedOut)?;
-            let rotated = Stored {
-                json: creds.to_string(),
-                place: stored.place.clone(),
-            };
-            let saver = store.clone();
-            let to_save = rotated.clone();
-            let (saved, left_at) = blocking(move || {
-                let saved = saver.save(&to_save.place, &to_save.json);
-                (saved, saver.stamp())
-            })
-            .await?;
-            if let Err(e) = saved {
-                // The old refresh token is spent; keep the new pair and write
-                // it on the next call rather than lose the account's login.
-                tracing::error!(error = %e, "refreshed claude login could not be stored; keeping it to retry");
-                registry().unsaved.insert(
-                    key.to_string(),
-                    Pending {
-                        stored: rotated,
-                        stamp: left_at,
-                    },
-                );
-            }
+    fn stamp(&self) -> Option<String> {
+        self.store.stamp()
+    }
+
+    fn load(&self) -> Result<Option<(String, Place)>, String> {
+        Ok(self.store.load()?.map(|stored| (stored.json, stored.place)))
+    }
+
+    fn parse(&self, json: &Value) -> Option<Creds> {
+        let pair = parse_pair(json)?;
+        Some(Creds {
+            refresh: pair.refresh,
+            expires_at_ms: Some(pair.expires_at_ms),
+        })
+    }
+
+    fn due(&self, creds: &Creds, _json: &Value, now_ms: i64) -> bool {
+        creds
+            .expires_at_ms
+            .map_or(true, |expires| needs_refresh(expires, now_ms))
+    }
+
+    /// `security -i` takes one line of about 4 KB, and a refresh may grow
+    /// the login by up to [`GROWTH_SLACK`].
+    fn fits(&self, place: &Place, len: usize) -> bool {
+        self.store.fits(place, len + GROWTH_SLACK)
+    }
+
+    fn refresh(&self, refresh_token: &str) -> Result<TokenGrant, RefreshFailure> {
+        let runtime = self.runtime.as_ref().ok_or_else(|| {
+            RefreshFailure::Failed("no runtime to reach the sign-in server".into())
+        })?;
+        let grant = runtime.block_on(self.endpoint.refresh(refresh_token));
+        if let Ok(grant) = &grant {
             tracing::info!(
                 rotated = grant.refresh_token.is_some(),
                 scoped = grant.scoped,
                 "claude login refreshed"
             );
-            Ok(AccessToken {
-                secret: grant.access_token,
-                expires_at_ms,
-            })
         }
-        Err(RefreshFailure::Rejected) => {
-            // Another process (the user's own terminal claude, on the default
-            // login) may have rotated the pair while this request was out; its
-            // new pair is in the store and still good.
-            let (fresh_stamp, fresh) = read_store(&store).await?;
-            let rotated = fresh
-                .and_then(|s| serde_json::from_str::<Value>(&s.json).ok())
-                .and_then(|v| parse_pair(&v))
-                .filter(|p| p.refresh != pair.refresh && p.expires_at_ms > now_ms());
-            if let Some(rotated) = rotated {
-                return Ok(token_of(&rotated));
-            }
-            if let Some(stamp) = fresh_stamp.or(stamp) {
-                registry().revoked.insert(key.to_string(), stamp);
-            }
-            tracing::warn!("claude login refresh refused; the account must sign in again");
-            Err(LoginError::Revoked)
-        }
-        Err(RefreshFailure::Failed(reason)) => {
-            tracing::warn!(%reason, "claude login refresh failed");
-            fall_back(demand, &pair, reason)
+        grant
+    }
+
+    fn apply(&self, json: &mut Value, grant: &TokenGrant, now_ms: i64) -> bool {
+        apply_grant(json, grant, now_ms).is_some()
+    }
+
+    fn save(&self, place: &Place, json: &Value) -> Result<(), String> {
+        self.store.save(place, &json.to_string())
+    }
+
+    fn launch(&self, json: &Value, creds: &Creds) -> AccessToken {
+        AccessToken {
+            secret: parse_pair(json).map(|pair| pair.access).unwrap_or_default(),
+            expires_at_ms: creds.expires_at_ms.unwrap_or_default(),
         }
     }
+
+    fn mark_of(&self, stamp: Option<&str>, _json: &Value) -> Option<String> {
+        stamp.map(str::to_string)
+    }
+
+    fn current_mark(&self) -> Option<String> {
+        self.store.stamp()
+    }
+}
+
+/// The engine's flow for the login `store` holds, on a blocking task.
+async fn token_with(
+    key: &str,
+    store: Arc<dyn LoginStore>,
+    endpoint: Arc<dyn TokenEndpoint>,
+    demand: Demand,
+) -> Result<AccessToken, LoginError> {
+    let login = HostLogin::new(ClaudeProvider::new(key, store, endpoint));
+    tokio::task::spawn_blocking(move || login.credential(demand))
+        .await
+        .map_err(|e| LoginError::Unavailable(format!("credential store task failed: {e}")))?
+        .map_err(LoginError::from)
 }
 
 // ── the real store and endpoint ─────────────────────────────────────────────
@@ -676,8 +566,10 @@ impl LoginStore for HostStore {
             Place::Keychain { account } => {
                 crate::keychain::write_password(&self.service, account, json)
             }
-            Place::File => super::credential_file::write_private_file(&self.file, json.as_bytes())
-                .map_err(|e| e.to_string()),
+            Place::File => {
+                crate::agent::credential_file::write_private_file(&self.file, json.as_bytes())
+                    .map_err(|e| e.to_string())
+            }
         }
     }
 }
@@ -766,8 +658,24 @@ fn interpret_refresh(status: u16, body: Option<&Value>) -> Result<TokenGrant, Re
 #[cfg(test)]
 mod tests {
     use super::*;
+    use parking_lot::Mutex;
     use serde_json::json;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// Whether the engine has a refusal on record for `key` that `store`'s
+    /// login still matches.
+    fn revoked_at(key: &str, store: &Arc<MemStore>) -> bool {
+        HostLogin::new(ClaudeProvider::new(
+            key,
+            store.clone(),
+            Arc::new(MockEndpoint::new(Answer::Down)),
+        ))
+        .is_revoked()
+    }
+
+    fn is_kept(key: &str) -> bool {
+        super::super::is_kept(&format!("claude:{key}"))
+    }
 
     const HOUR_MS: i64 = 60 * 60 * 1000;
 
@@ -932,15 +840,15 @@ mod tests {
     async fn launch(
         key: &str,
         store: &Arc<MemStore>,
-        endpoint: &MockEndpoint,
+        endpoint: &Arc<MockEndpoint>,
     ) -> Result<AccessToken, LoginError> {
-        token_with(key, store.clone(), endpoint, Demand::Launch).await
+        token_with(key, store.clone(), endpoint.clone(), Demand::Launch).await
     }
 
     #[tokio::test]
     async fn a_fresh_token_is_used_without_a_refresh() {
         let store = MemStore::holding(login("a1", "r1", now_ms() + 4 * HOUR_MS));
-        let endpoint = MockEndpoint::new(Answer::Down);
+        let endpoint = Arc::new(MockEndpoint::new(Answer::Down));
         let token = launch(&key("fresh"), &store, &endpoint).await.unwrap();
         assert_eq!(token.secret(), "a1");
         assert_eq!(endpoint.calls.load(Ordering::SeqCst), 0);
@@ -949,7 +857,7 @@ mod tests {
     #[tokio::test]
     async fn a_token_inside_the_margin_is_refreshed_and_the_rotated_pair_stored() {
         let store = MemStore::holding(login("a1", "r1", now_ms() + 10 * 60 * 1000));
-        let endpoint = MockEndpoint::new(Answer::Grant(grant("a2", Some("r2"))));
+        let endpoint = Arc::new(MockEndpoint::new(Answer::Grant(grant("a2", Some("r2")))));
         let token = launch(&key("rotate"), &store, &endpoint).await.unwrap();
         assert_eq!(token.secret(), "a2");
         assert!(token.expires_at_ms() > now_ms() + 7 * HOUR_MS);
@@ -964,7 +872,7 @@ mod tests {
     async fn a_refresh_preserves_every_field_it_does_not_own() {
         let before = login("a1", "r1", now_ms() - HOUR_MS);
         let store = MemStore::holding(before.clone());
-        let endpoint = MockEndpoint::new(Answer::Grant(grant("a2", Some("r2"))));
+        let endpoint = Arc::new(MockEndpoint::new(Answer::Grant(grant("a2", Some("r2")))));
         launch(&key("preserve"), &store, &endpoint).await.unwrap();
         let after = store.current();
         assert_eq!(after["mcpOAuth"], before["mcpOAuth"]);
@@ -985,7 +893,7 @@ mod tests {
     #[tokio::test]
     async fn a_refresh_without_rotation_keeps_the_stored_refresh_token() {
         let store = MemStore::holding(login("a1", "r1", now_ms() - HOUR_MS));
-        let endpoint = MockEndpoint::new(Answer::Grant(grant("a2", None)));
+        let endpoint = Arc::new(MockEndpoint::new(Answer::Grant(grant("a2", None))));
         launch(&key("no-rotation"), &store, &endpoint)
             .await
             .unwrap();
@@ -996,12 +904,12 @@ mod tests {
     async fn a_refused_refresh_reads_as_revoked_and_sticks_until_the_login_changes() {
         let k = key("revoked");
         let store = MemStore::holding(login("a1", "r1", now_ms() - HOUR_MS));
-        let endpoint = MockEndpoint::new(Answer::Rejected);
+        let endpoint = Arc::new(MockEndpoint::new(Answer::Rejected));
         assert_eq!(
             launch(&k, &store, &endpoint).await.unwrap_err(),
             LoginError::Revoked
         );
-        assert!(revoked_at(&k, store.stamp().as_deref()));
+        assert!(revoked_at(&k, &store));
         // A second launch doesn't spend another request on a known-dead token.
         assert_eq!(
             launch(&k, &store, &endpoint).await.unwrap_err(),
@@ -1021,6 +929,7 @@ mod tests {
         endpoint.meanwhile = Some(Box::new(move || {
             other.replace(login("a5", "r5", now_ms() + 8 * HOUR_MS));
         }));
+        let endpoint = Arc::new(endpoint);
         let token = launch(&key("raced"), &store, &endpoint).await.unwrap();
         assert_eq!(token.secret(), "a5");
     }
@@ -1029,7 +938,7 @@ mod tests {
     async fn a_network_error_leaves_the_stored_pair_untouched() {
         let before = login("a1", "r1", now_ms() - HOUR_MS);
         let store = MemStore::holding(before.clone());
-        let endpoint = MockEndpoint::new(Answer::Down);
+        let endpoint = Arc::new(MockEndpoint::new(Answer::Down));
         let err = launch(&key("down"), &store, &endpoint).await.unwrap_err();
         assert!(matches!(err, LoginError::Unavailable(_)), "{err:?}");
         assert_eq!(store.current(), before);
@@ -1039,7 +948,7 @@ mod tests {
     #[tokio::test]
     async fn a_network_error_still_launches_on_an_unexpired_token() {
         let store = MemStore::holding(login("a1", "r1", now_ms() + 5 * 60 * 1000));
-        let endpoint = MockEndpoint::new(Answer::Down);
+        let endpoint = Arc::new(MockEndpoint::new(Answer::Down));
         let token = launch(&key("down-unexpired"), &store, &endpoint)
             .await
             .unwrap();
@@ -1057,7 +966,7 @@ mod tests {
             .map(|_| {
                 let (k, store, endpoint) = (k.clone(), store.clone(), endpoint.clone());
                 tokio::spawn(async move {
-                    token_with(&k, store, endpoint.as_ref(), Demand::Launch)
+                    token_with(&k, store, endpoint, Demand::Launch)
                         .await
                         .unwrap()
                         .secret()
@@ -1075,11 +984,11 @@ mod tests {
     async fn replacing_a_rejected_token_forces_a_refresh_of_a_fresh_looking_one() {
         let expires = now_ms() + 5 * HOUR_MS;
         let store = MemStore::holding(login("a1", "r1", expires));
-        let endpoint = MockEndpoint::new(Answer::Grant(grant("a2", Some("r2"))));
+        let endpoint = Arc::new(MockEndpoint::new(Answer::Grant(grant("a2", Some("r2")))));
         let demand = Demand::Replace {
             rejected_expires_at_ms: expires,
         };
-        let token = token_with(&key("replace"), store.clone(), &endpoint, demand)
+        let token = token_with(&key("replace"), store.clone(), endpoint.clone(), demand)
             .await
             .unwrap();
         assert_eq!(token.secret(), "a2");
@@ -1088,13 +997,18 @@ mod tests {
     #[tokio::test]
     async fn replacing_a_rejected_token_takes_a_newer_stored_one_without_a_refresh() {
         let store = MemStore::holding(login("a2", "r2", now_ms() + 8 * HOUR_MS));
-        let endpoint = MockEndpoint::new(Answer::Down);
+        let endpoint = Arc::new(MockEndpoint::new(Answer::Down));
         let demand = Demand::Replace {
             rejected_expires_at_ms: now_ms() + HOUR_MS,
         };
-        let token = token_with(&key("replace-newer"), store.clone(), &endpoint, demand)
-            .await
-            .unwrap();
+        let token = token_with(
+            &key("replace-newer"),
+            store.clone(),
+            endpoint.clone(),
+            demand,
+        )
+        .await
+        .unwrap();
         assert_eq!(token.secret(), "a2");
         assert_eq!(endpoint.calls.load(Ordering::SeqCst), 0);
     }
@@ -1102,22 +1016,13 @@ mod tests {
     #[tokio::test]
     async fn nothing_stored_is_signed_out() {
         let store = Arc::new(MemStore::default());
-        let endpoint = MockEndpoint::new(Answer::Down);
+        let endpoint = Arc::new(MockEndpoint::new(Answer::Down));
         let k = key("empty");
         assert_eq!(
             launch(&k, &store, &endpoint).await.unwrap_err(),
             LoginError::SignedOut
         );
-        assert!(!revoked_at(&k, store.stamp().as_deref()));
-    }
-
-    #[test]
-    fn a_new_sign_in_clears_a_revoked_mark() {
-        let k = key("cleared");
-        registry().revoked.insert(k.clone(), "1".into());
-        assert!(revoked_at(&k, Some("1")));
-        assert!(!revoked_at(&k, Some("2")));
-        assert!(!registry().revoked.contains_key(&k));
+        assert!(!revoked_at(&k, &store));
     }
 
     /// The old refresh token is spent once the server answers, so a rotated
@@ -1127,7 +1032,7 @@ mod tests {
         let k = key("unsaved");
         let store = MemStore::holding(login("a1", "r1", now_ms() - HOUR_MS));
         store.fail_saves(true);
-        let endpoint = MockEndpoint::new(Answer::Grant(grant("a2", Some("r2"))));
+        let endpoint = Arc::new(MockEndpoint::new(Answer::Grant(grant("a2", Some("r2")))));
         assert_eq!(launch(&k, &store, &endpoint).await.unwrap().secret(), "a2");
         assert_eq!(store.current()["claudeAiOauth"]["refreshToken"], "r1");
         assert_eq!(launch(&k, &store, &endpoint).await.unwrap().secret(), "a2");
@@ -1145,7 +1050,7 @@ mod tests {
         let k = key("unsaved-signed-in");
         let store = MemStore::holding(login("a1", "r1", now_ms() - HOUR_MS));
         store.fail_saves(true);
-        let endpoint = MockEndpoint::new(Answer::Grant(grant("a2", Some("r2"))));
+        let endpoint = Arc::new(MockEndpoint::new(Answer::Grant(grant("a2", Some("r2")))));
         launch(&k, &store, &endpoint).await.unwrap();
         store.fail_saves(false);
         store.replace(login("a9", "r9", now_ms() + 5 * HOUR_MS));
@@ -1153,7 +1058,7 @@ mod tests {
         assert_eq!(launch(&k, &store, &endpoint).await.unwrap().secret(), "a9");
         assert_eq!(store.current()["claudeAiOauth"]["refreshToken"], "r9");
         assert_eq!(store.saves.load(Ordering::SeqCst), 1, "no retry write");
-        assert!(!registry().unsaved.contains_key(&k));
+        assert!(!is_kept(&k));
     }
 
     #[tokio::test]
@@ -1161,12 +1066,12 @@ mod tests {
         let k = key("unsaved-retry");
         let store = MemStore::holding(login("a1", "r1", now_ms() - HOUR_MS));
         store.fail_saves(true);
-        let endpoint = MockEndpoint::new(Answer::Grant(grant("a2", Some("r2"))));
+        let endpoint = Arc::new(MockEndpoint::new(Answer::Grant(grant("a2", Some("r2")))));
         launch(&k, &store, &endpoint).await.unwrap();
         store.fail_saves(false);
         assert_eq!(launch(&k, &store, &endpoint).await.unwrap().secret(), "a2");
         assert_eq!(store.current()["claudeAiOauth"]["refreshToken"], "r2");
-        assert!(!registry().unsaved.contains_key(&k));
+        assert!(!is_kept(&k));
     }
 
     fn oversized(access: &str, expires_at_ms: i64) -> Value {
@@ -1181,7 +1086,7 @@ mod tests {
     #[tokio::test]
     async fn a_login_too_large_to_store_back_is_not_refreshed() {
         let store = MemStore::in_keychain(oversized("a1", now_ms() + 10 * 60 * 1000));
-        let endpoint = MockEndpoint::new(Answer::Grant(grant("a2", Some("r2"))));
+        let endpoint = Arc::new(MockEndpoint::new(Answer::Grant(grant("a2", Some("r2")))));
         let token = launch(&key("too-big"), &store, &endpoint).await.unwrap();
         assert_eq!(token.secret(), "a1");
         assert_eq!(endpoint.calls.load(Ordering::SeqCst), 0);
@@ -1191,7 +1096,7 @@ mod tests {
     #[tokio::test]
     async fn an_expired_login_too_large_to_store_back_says_why() {
         let store = MemStore::in_keychain(oversized("a1", now_ms() - HOUR_MS));
-        let endpoint = MockEndpoint::new(Answer::Grant(grant("a2", Some("r2"))));
+        let endpoint = Arc::new(MockEndpoint::new(Answer::Grant(grant("a2", Some("r2")))));
         let err = launch(&key("too-big-expired"), &store, &endpoint)
             .await
             .unwrap_err();
@@ -1202,7 +1107,7 @@ mod tests {
     #[tokio::test]
     async fn a_keychain_login_with_room_is_refreshed() {
         let store = MemStore::in_keychain(login("a1", "r1", now_ms() - HOUR_MS));
-        let endpoint = MockEndpoint::new(Answer::Grant(grant("a2", Some("r2"))));
+        let endpoint = Arc::new(MockEndpoint::new(Answer::Grant(grant("a2", Some("r2")))));
         let token = launch(&key("keychain-room"), &store, &endpoint)
             .await
             .unwrap();
@@ -1266,7 +1171,7 @@ mod tests {
         let td = tempfile::tempdir().unwrap();
         let path = td.path().join(".credentials.json");
         std::fs::write(&path, "old").unwrap();
-        super::super::credential_file::write_private_file(&path, b"{\"new\":true}").unwrap();
+        crate::agent::credential_file::write_private_file(&path, b"{\"new\":true}").unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "{\"new\":true}");
         #[cfg(unix)]
         {
@@ -1366,15 +1271,15 @@ mod tests {
             let before = stored_pair(&store);
             let before_blob: Value =
                 serde_json::from_str(&store.load().unwrap().unwrap().json).unwrap();
-            let endpoint = Watching {
+            let endpoint = Arc::new(Watching {
                 inner: HttpEndpoint::default(),
                 scoped: Mutex::new(None),
-            };
+            });
             std::thread::sleep(Duration::from_millis(1100));
             let token = token_with(
                 &service,
                 Arc::new(store),
-                &endpoint,
+                endpoint.clone(),
                 Demand::Replace {
                     rejected_expires_at_ms: before.expires_at_ms,
                 },

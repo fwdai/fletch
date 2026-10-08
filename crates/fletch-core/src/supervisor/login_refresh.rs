@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use serde_json::Value;
 
-use crate::agent::claude_oauth::{self, AccessToken};
+use crate::agent::host_login::claude::{self as claude_login, AccessToken};
 use crate::agent::Agent;
 use crate::error::{Error, Result};
 use crate::host::EngineCtx;
@@ -161,7 +161,7 @@ impl Supervisor {
         if provider != "claude" {
             return Ok(None);
         }
-        let token = claude_oauth::launch_token(account, rejected).await;
+        let token = claude_login::launch_token(account, rejected).await;
         let kept = match &token {
             Ok(token) => Ok(token.clone()),
             Err(e) => Err(e.to_string()),
@@ -169,7 +169,7 @@ impl Supervisor {
         self.logins.lock().prefetched.insert(
             agent_id.to_string(),
             Prefetched {
-                at_ms: claude_oauth::now_ms(),
+                at_ms: claude_login::now_ms(),
                 account: account.map(str::to_string),
                 token: kept,
             },
@@ -183,7 +183,7 @@ impl Supervisor {
     }
 
     fn has_prefetched(&self, agent_id: &str, record: &AgentRecord) -> bool {
-        let now = claude_oauth::now_ms();
+        let now = claude_login::now_ms();
         self.logins
             .lock()
             .prefetched
@@ -199,11 +199,11 @@ impl Supervisor {
         record: &AgentRecord,
     ) -> Result<Option<AccessToken>> {
         let kept = self.logins.lock().prefetched.remove(agent_id);
-        if let Some(kept) = kept.filter(|p| p.fits(record, claude_oauth::now_ms())) {
+        if let Some(kept) = kept.filter(|p| p.fits(record, claude_login::now_ms())) {
             return kept.token.map_err(Error::Other);
         }
         let rejected = self.logins.lock().rejected.get(agent_id).copied();
-        claude_oauth::launch_token(record.account.as_deref(), rejected).await
+        claude_login::launch_token(record.account.as_deref(), rejected).await
     }
 
     /// The launch replaced a rejected token, so the mark has done its job.
@@ -396,7 +396,7 @@ impl Supervisor {
             .lock()
             .get(agent_id)
             .and_then(|agent| agent.login_expires_at_ms())?;
-        (claude_oauth::needs_refresh(expiry, claude_oauth::now_ms()) && !self.is_busy(agent_id))
+        (claude_login::needs_refresh(expiry, claude_login::now_ms()) && !self.is_busy(agent_id))
             .then_some(expiry)
     }
 
@@ -414,7 +414,7 @@ impl Supervisor {
     /// instead of the ordinary queue drain (`drain_pending_respawn`), and the
     /// rejected turn is put back at the head of the queue for the respawn's
     /// flush to resend. The respawn's launch replaces the rejected token
-    /// (`claude_oauth::launch_token`). A rejection of the retry gives up.
+    /// (`host_login::claude::launch_token`). A rejection of the retry gives up.
     ///
     /// The budget is one retry per attempt, not per agent: giving up clears
     /// it, so the user's next send after signing in again gets its own

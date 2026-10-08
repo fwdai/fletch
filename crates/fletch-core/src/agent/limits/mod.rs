@@ -126,7 +126,7 @@ pub enum RefreshStatus {
     /// unauthenticated `-32603` (codex).
     SignedOut,
     /// Claude refused the account's access token even after the host
-    /// refreshed it (`claude_oauth`); only a new sign-in helps.
+    /// refreshed it (`host_login::claude`); only a new sign-in helps.
     Stale,
     /// The endpoint answered 429; see `next_allowed_at`.
     RateLimited,

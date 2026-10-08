@@ -534,7 +534,7 @@ mod tests {
         }
         std::fs::create_dir_all(home.join(".claude")).unwrap();
         std::fs::write(home.join(".claude").join(CREDENTIALS_FILE), "{}").unwrap();
-        let token = crate::agent::claude_oauth::AccessToken::for_test("sk-ant-oat-test", 1);
+        let token = crate::agent::host_login::claude::AccessToken::for_test("sk-ant-oat-test", 1);
         let ctx = AgentLaunchCtx {
             agent_id: "a1",
             provider: "claude",

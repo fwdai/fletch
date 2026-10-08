@@ -95,7 +95,7 @@ impl SandboxEngine for SandboxExecEngine {
         let mut env = policy::toolchain_cache_env(&cache_root);
         // Claude reads it once at start and ranks it above any `/login`
         // credential in the config dir, and it can't refresh it — which is the
-        // point: refreshing is the host's job (`agent::claude_oauth`).
+        // point: refreshing is the host's job (`agent::host_login::claude`).
         if let Some(token) = ctx.oauth_token.filter(|_| ctx.provider == "claude") {
             env.push((
                 "CLAUDE_CODE_OAUTH_TOKEN".to_string(),
@@ -972,7 +972,7 @@ fn user_sets_a_ca_bundle() -> bool {
 /// the temp files the host writes a refreshed login through, and every
 /// managed claude account dir. Each can hold a refresh token, and a
 /// sandboxed claude signs in with the host-resolved access token instead
-/// (`agent::claude_oauth`), so nothing in the sandbox has a use for them.
+/// (`agent::host_login::claude`), so nothing in the sandbox has a use for them.
 /// Every agent's profile carries it, whatever its provider; the Keychain items
 /// are closed off separately ([`KEYCHAIN_MACH_DENY`]). Paths in literal and
 /// resolved form, like the grants. MUST follow the `(allow file-write* …)`
@@ -2284,7 +2284,7 @@ mod tests {
     #[test]
     fn a_claude_launch_carries_the_host_token_and_no_config_dir() {
         let (_td, root, rpc, home) = sandbox_dirs();
-        let token = crate::agent::claude_oauth::AccessToken::for_test("sk-ant-oat-test", 1);
+        let token = crate::agent::host_login::claude::AccessToken::for_test("sk-ant-oat-test", 1);
         let ctx = AgentLaunchCtx {
             agent_id: "a1",
             provider: "claude",

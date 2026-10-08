@@ -43,7 +43,7 @@ build it in PR 3.
     runs in the shared default config dir with `CLAUDE_CODE_OAUTH_TOKEN` set
     to the account's access token, which claude ranks above any `/login` in
     that dir. So all accounts' transcripts land in the default places.
-- **The host owns every claude login** (`agent/claude_oauth.rs`). A sandboxed
+- **The host owns every claude login** (`agent/host_login/claude.rs` on the engine in `agent/host_login`). A sandboxed
   claude can't refresh its own token: the refresh needs `mkdir <dir>.lock`,
   `<dir>/.oauth_refresh.lock` and a Keychain write, all denied under seatbelt,
   and a container has no Keychain. It also must not hold the ~30-day refresh
@@ -172,7 +172,12 @@ Engine (`crates/fletch-core/src/`):
   `list_accounts` (probes every account), `ProviderAccount`,
   `ACTIVE_SETTING_PREFIX`,
   `with_test_root` (test helper, crate-wide env lock).
-- `agent/claude_oauth.rs` — the host-owned claude login. `launch_token(account,
+- `agent/host_login/mod.rs` — the engine every host-owned login runs on:
+  load, due check, single-flight refresh, write-back, a kept rotated login
+  when the write fails (`Kept`, by store stamp), the refused-refresh mark;
+  providers implement `LoginProvider` (store, parse, margin, refresh request,
+  launch form, what a refusal is recorded against).
+- `agent/host_login/claude.rs` — the claude adapter. `launch_token(account,
   rejected)` (what every claude launch signs in with; a managed account without
   a usable login fails the launch, the default degrades to no token),
   `access_token_for_launch`, `replace_rejected_token` (after a 401),
@@ -185,7 +190,7 @@ Engine (`crates/fletch-core/src/`):
   `live_legacy_account_session_*` (`FLETCH_LIVE_CLAUDE_ACCOUNT=<id>`).
 - `agent/auth_probe.rs` — `probe_default`, `probe_dir` (per-account sign-in
   probe; Keychain presence or `.credentials.json` for claude, `auth.json` for
-  codex; never consults shell keys). A claude login `claude_oauth` found
+  codex; never consults shell keys). A claude login the host (`host_login::claude`) found
   revoked reads as signed out, "sign in again".
 - `commands/accounts.rs` — `list_provider_accounts_impl`,
   `add_provider_account_impl`, `ensure_account_removable` (refuses the active
@@ -293,7 +298,7 @@ Engine (`crates/fletch-core/src/`):
   source, the `provider_limits_<provider>_<account>` row (`record_limits`,
   `record_refresh`, refresh floor and 429 back-off), `app_server` (codex
   on-demand read), `oauth_usage` (claude manual refresh, on
-  `claude_oauth`'s refreshed token; a 401 gets one forced refresh).
+  `host_login::claude`'s refreshed token; a 401 gets one forced refresh).
 - `commands/limits.rs` (PR 3) — `get_provider_limits_impl`,
   `refresh_provider_limits_impl`, `scan_usage_transcripts_impl` (the scan plus
   storing rollout readings; desktop and remote both call it).
@@ -528,7 +533,7 @@ update that doc. Access tokens expire in ~60 min and Claude refreshes them only
 when it runs: on 401 report "stale, run an agent under this account to
 refresh", do **not** implement the OAuth refresh flow. (Superseded by host
 login 1: the host now refreshes, tokens last ~8h, and `oauth_usage` reads
-through `claude_oauth`; see "The model".) On 429 back off
+through `host_login::claude`; see "The model".) On 429 back off
 (exponential, persisted) and show the last known value. Never poll.
 
 **Spend per account.** Add an `account` dimension to `usage_scan`: a record's
@@ -642,7 +647,7 @@ polling.
 - A Keychain claude login over about 2 KB (the `security -i` line limit,
   hex-encoded) is never host-refreshed, so it needs a fresh sign-in each time
   its access token expires.
-- A rotated pair the store refused (`claude_oauth`'s `unsaved`) lives only in
+- A rotated pair the store refused (the engine's `Kept`) lives only in
   memory: if the app quits before a retry stores it, the login is lost and
   needs a new sign-in. Follow-up: persist it through `crate::secrets`.
 

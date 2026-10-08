@@ -1,5 +1,5 @@
 //! Anthropic auth for containerized agents. [`resolve`] walks a first-hit-wins
-//! chain — the host's claude login (an access token `agent::claude_oauth`
+//! chain — the host's claude login (an access token `agent::host_login::claude`
 //! resolved, and refreshed, for this launch), stored setup-token, shell/process
 //! env, else [`ContainerAuth::Unavailable`] — and is re-evaluated on every
 //! spawn, so a `claude` re-login lands immediately. It
@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 
 use parking_lot::RwLock;
 
-use crate::agent::claude_oauth::{stored_access_token, AccessToken};
+use crate::agent::host_login::claude::{stored_access_token, AccessToken};
 use crate::bin_resolve;
 
 /// `crate::secrets` key holding the user-pasted `claude setup-token` value.
@@ -143,7 +143,7 @@ fn credentials_config_dir(config_dir_env: Option<&OsStr>, home: Option<&Path>) -
 /// the login-shell env runs a shell if nothing populated `bin_resolve`'s cache.
 ///
 /// `host_login` is the access token the spawn path resolved for the account
-/// the agent is stamped with (`agent::claude_oauth::launch_token`). The
+/// the agent is stamped with (`agent::host_login::claude::launch_token`). The
 /// container never sees the stored login itself, so nothing inside it can
 /// refresh (and rotate) the host's refresh token. A managed account always
 /// arrives with a token, since its launch fails without one, so the stored
@@ -189,7 +189,7 @@ pub fn host_login_present() -> bool {
 /// Read the chain's non-Keychain inputs. Shared by [`resolve`], [`status`] and
 /// [`host_login_present`] so they can't drift on *what* they look at. The
 /// Keychain is deliberately not one of them: only a launch may read its
-/// secret, and that read belongs to `agent::claude_oauth`.
+/// secret, and that read belongs to `agent::host_login::claude`.
 fn chain_inputs() -> (Option<HashMap<String, String>>, bool) {
     // The dir claude will actually read — and the one the engine mounts (see
     // `nondefault_claude_config_dir`); hardcoding `~/.claude` would refuse a
@@ -236,7 +236,7 @@ fn merge_auth_env(
 }
 
 /// Whether `.credentials.json` holds a claude login — see
-/// [`crate::agent::claude_oauth::stored_access_token`] for the bar.
+/// [`crate::agent::host_login::claude::stored_access_token`] for the bar.
 pub(crate) fn credentials_file_usable(contents: Option<&[u8]>) -> bool {
     contents.and_then(stored_access_token).is_some()
 }

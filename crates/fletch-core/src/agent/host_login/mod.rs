@@ -98,6 +98,14 @@ impl<T: Clone> Kept<T> {
         }
     }
 
+    #[cfg(test)]
+    fn has(&self, key: &str) -> bool {
+        self.pairs
+            .lock()
+            .as_ref()
+            .is_some_and(|m| m.contains_key(key))
+    }
+
     pub(crate) fn forget(&self, key: &str) {
         if let Some(map) = self.pairs.lock().as_mut() {
             map.remove(key);
@@ -499,6 +507,14 @@ fn unexpired(creds: &Creds, now_ms: i64) -> bool {
 /// Known to be unexpired now.
 fn unexpired_strict(creds: &Creds) -> bool {
     creds.expires_at_ms.is_some_and(|e| e > now_ms())
+}
+
+pub mod claude;
+
+/// Whether a rotated login is kept for the engine key `key` (`provider:key`).
+#[cfg(test)]
+pub(crate) fn is_kept(key: &str) -> bool {
+    KEPT.has(key)
 }
 
 #[cfg(test)]

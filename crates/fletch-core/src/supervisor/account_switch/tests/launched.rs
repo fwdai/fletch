@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use super::*;
-use crate::agent::claude_oauth;
+use crate::agent::host_login::claude as claude_login;
 
 fn digest(secret: &str) -> String {
     use sha2::{Digest, Sha256};
@@ -92,7 +92,7 @@ async fn wait_idle(sup: &Supervisor) {
 /// The token digest and expiry each account's launch resolves to.
 async fn token_of(id: &str) -> (String, i64) {
     let dir = accounts::account_dir("claude", id).unwrap();
-    let token = claude_oauth::access_token_for_launch(Some(&dir))
+    let token = claude_login::access_token_for_launch(Some(&dir))
         .await
         .expect("a usable login");
     (digest(token.secret()), token.expires_at_ms())
@@ -150,8 +150,8 @@ async fn switch_between(scratch: &Path, from: &str, to: &str) {
     let (to_digest, to_expiry) = token_of(to).await;
     println!(
         "{from}: token {from_digest} expires_in_min {}; {to}: token {to_digest} expires_in_min {}",
-        (from_expiry - claude_oauth::now_ms()) / 60_000,
-        (to_expiry - claude_oauth::now_ms()) / 60_000,
+        (from_expiry - claude_login::now_ms()) / 60_000,
+        (to_expiry - claude_login::now_ms()) / 60_000,
     );
     assert_ne!(from_digest, to_digest, "the two accounts share a token");
 

@@ -15,8 +15,8 @@ use crate::sandbox::{AgentLaunchCtx, EngineKind, LaunchPlan, SandboxEngine};
 use super::accounts;
 use super::args::{prepare_managed_args, prepare_pty_args};
 use super::capabilities::{mcp_delivery, per_turn_descriptor};
-use super::claude_oauth::AccessToken;
 use super::codex_login;
+use super::host_login::claude::AccessToken;
 use super::probe::resolve_agent_bin;
 use super::{Agent, ManagedAgent, PerTurnAgent, PerTurnDescriptor, PtyAgent, TurnArgs};
 
@@ -134,7 +134,7 @@ pub struct SpawnSpec<'a> {
     /// default account.
     pub account: Option<&'a str>,
     /// The access token a claude launch signs in with, resolved (and
-    /// refreshed) by the host for `account` — see `claude_oauth::launch_token`.
+    /// refreshed) by the host for `account` — see `host_login::claude::launch_token`.
     /// `None` for per-turn providers.
     pub oauth_token: Option<&'a AccessToken>,
     /// The run blackboard dir to grant this agent write access to, when it is a
