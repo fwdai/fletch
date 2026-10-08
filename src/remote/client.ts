@@ -93,6 +93,12 @@ export interface ClientOptions {
 
 /** The transport words a dial failure as `cannot reach {url}: {cause}`. */
 const DIAL_FAILED = /^cannot reach \S+: (.+)$/s;
+/** And a failed Noise handshake as `handshake failed: {cause}`. */
+const HANDSHAKE_FAILED = /^handshake failed/i;
+/** What a transport failure says when none of the usual causes fits. The raw
+ *  text names protocol internals (handshake, frames, sockets), which are for
+ *  a log and mean nothing on a phone screen. */
+const COULD_NOT_CONNECT = "Couldn't connect to your Mac.";
 
 /** What the transport says, reworded for a phone screen. Its mismatch marker
  *  carries the two keys and its dial failures name the URL they tried — a
@@ -101,6 +107,7 @@ const DIAL_FAILED = /^cannot reach \S+: (.+)$/s;
  *  where it is one of the usual three. */
 function reportable(message: string): string {
   if (message.includes(HOST_KEY_MISMATCH)) return HOST_KEY_MISMATCH_REASON;
+  if (HANDSHAKE_FAILED.test(message)) return COULD_NOT_CONNECT;
   const dial = DIAL_FAILED.exec(message);
   if (!dial) return message;
   const cause = dial[1];
@@ -113,7 +120,7 @@ function reportable(message: string): string {
   if (/refused/i.test(cause)) {
     return "Your Mac refused the connection. Check that remote access is switched on.";
   }
-  return `Couldn't connect: ${cause}`;
+  return COULD_NOT_CONNECT;
 }
 
 /** `target` with the relay a handshake answered. The host is where the relay is

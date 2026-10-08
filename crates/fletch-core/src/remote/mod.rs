@@ -430,11 +430,22 @@ impl RemoteState {
         }
         let link = inner.relay.take();
         // Withdrawn with the listener: a phone must not list a Mac that will
-        // refuse it.
-        inner.advertiser = None;
+        // refuse it. Dropped outside the lock, since the goodbye is waited for.
+        let advertiser = inner.advertiser.take();
         drop(inner);
+        drop(advertiser);
         self.sessions.close_all(CLOSE_DISABLED);
         drop(link);
+    }
+
+    /// Withdraw the LAN announcement and nothing else: the process is going
+    /// away, and a phone should drop this host from its nearby list now rather
+    /// than when the record's TTL lapses. Both hosts' exit paths call it — the
+    /// desktop's `ExitRequested`, and the termination-signal listener `boot`
+    /// installs. Idempotent.
+    pub fn withdraw_announcement(&self) {
+        let advertiser = self.inner.lock().advertiser.take();
+        drop(advertiser);
     }
 
     /// Set (or clear) the relay base URL and bring the link in line with it.

@@ -772,6 +772,7 @@ pub fn boot(cfg: BootConfig) -> Result<Engine, BootError> {
     #[cfg(unix)]
     if let Some(exit) = signals {
         let supervisor = supervisor.clone();
+        let remote = remote.clone();
         crate::host::spawn(async move {
             use tokio::signal::unix::{signal, SignalKind};
             let mut sigint = signal(SignalKind::interrupt()).expect("install SIGINT handler");
@@ -782,6 +783,10 @@ pub fn boot(cfg: BootConfig) -> Result<Engine, BootError> {
             }
             tracing::info!("termination signal received; killing child processes");
             supervisor.shutdown();
+            // Off the nearby list before the process goes.
+            if let Some(remote) = &remote {
+                remote.withdraw_announcement();
+            }
             exit();
         });
     }

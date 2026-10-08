@@ -22,7 +22,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use futures_util::stream::{SplitSink, SplitStream};
+use futures_util::stream::{FuturesUnordered, SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
 use serde::Serialize;
 use tokio::sync::Mutex;
@@ -33,7 +33,7 @@ use tokio_tungstenite::tungstenite::{Bytes, Message};
 
 use crate::dial::{self, Ws};
 use crate::keys::{StaticKey, DEVICE_KEY_FILE};
-use crate::noise::{initiate, Channel, MAX_MESSAGE_PLAINTEXT};
+use crate::noise::{initiate, Channel, HOST_KEY_MISMATCH, MAX_MESSAGE_PLAINTEXT};
 use crate::pairing;
 use crate::Result;
 
@@ -239,31 +239,41 @@ impl Dialer {
         let deadline = target
             .timeout_ms
             .map(|ms| Instant::now() + Duration::from_millis(ms));
-        // Both address families, and every alternate URL, race inside
-        // `dial::connect_any`, so one that blackholes cannot spend the budget on
-        // behalf of the others.
-        let dialled = within(deadline, dial::connect_any(&target.url, &target.alternates))
-            .await
-            .ok_or_else(|| timed_out(&target.url, target.timeout_ms))?;
-        let mut ws = dialled.map_err(|e| format!("cannot reach {}: {e}", target.url))?;
-        // The borrow of `ws` ends with the statement, so the socket is ours
-        // again whether the handshake finished, failed or ran out of time.
-        let handshaken = within(
-            deadline,
-            initiate(&mut ws, &key, target.host_key.as_deref()),
-        )
+        // Every URL for the host runs its own dial *and* handshake, and the
+        // first to finish one wins: the race is for the pinned host, not for
+        // whichever address opens a socket first. A saved IP that now belongs
+        // to another Fletch machine fails its handshake and loses to the
+        // `.local` name that reaches the right one. Address families race
+        // inside each dial (`dial::connect`), so nothing that blackholes can
+        // spend the budget on behalf of the rest. Losers still in flight are
+        // dropped with the race.
+        let expected = target.host_key.as_deref();
+        let urls: Vec<&str> = std::iter::once(target.url.as_str())
+            .chain(target.alternates.iter().map(String::as_str))
+            .collect();
+        let raced = within(deadline, async {
+            let mut attempts: FuturesUnordered<_> = urls
+                .iter()
+                .enumerate()
+                .map(|(i, url)| {
+                    let key = key.clone();
+                    async move { (i, open(url, &key, expected).await) }
+                })
+                .collect();
+            let mut failures = Vec::new();
+            while let Some((i, opened)) = attempts.next().await {
+                match opened {
+                    Ok(found) => return Ok(found),
+                    Err(e) => failures.push((i, e)),
+                }
+            }
+            Err(failures)
+        })
         .await;
-        let channel = match handshaken {
-            Some(Ok(channel)) => channel,
-            Some(Err(e)) => {
-                close_ws(&mut ws, CLOSE_BAD_FRAME, &e).await;
-                return Err(e);
-            }
-            None => {
-                let e = timed_out(&target.url, target.timeout_ms);
-                close_ws(&mut ws, u16::from(CloseCode::Normal), &e).await;
-                return Err(e);
-            }
+        let (ws, channel) = match raced {
+            Some(Ok(found)) => found,
+            Some(Err(failures)) => return Err(reported_failure(failures)),
+            None => return Err(timed_out(&target.url, target.timeout_ms)),
         };
         let host_key = channel.remote_static_base64()?;
 
@@ -525,6 +535,37 @@ async fn within<F: std::future::Future>(deadline: Option<Instant>, fut: F) -> Op
         Some(at) => tokio::time::timeout_at(at, fut).await.ok(),
         None => Some(fut.await),
     }
+}
+
+/// Dial `url` and run the handshake on it. A failed handshake closes the socket
+/// with 4001, as it always has.
+async fn open(url: &str, key: &StaticKey, expected: Option<&str>) -> Result<(Ws, Channel)> {
+    let mut ws = dial::connect(url)
+        .await
+        .map_err(|e| format!("cannot reach {url}: {e}"))?;
+    match initiate(&mut ws, key, expected).await {
+        Ok(channel) => Ok((ws, channel)),
+        Err(e) => {
+            close_ws(&mut ws, CLOSE_BAD_FRAME, &e).await;
+            Err(e)
+        }
+    }
+}
+
+/// When every URL failed, the one failure to report: the first, in the
+/// caller's order, that is not a host-key mismatch — or the mismatch, when
+/// every URL met the wrong host. A stranger answering at an address the host
+/// has left says nothing about the host's key; only a mismatch everywhere is
+/// worth the "pair again" that the caller attaches to one, since it is never
+/// retried.
+fn reported_failure(mut failures: Vec<(usize, String)>) -> String {
+    failures.sort_by_key(|(i, _)| *i);
+    failures
+        .iter()
+        .find(|(_, e)| !e.contains(HOST_KEY_MISMATCH))
+        .or(failures.first())
+        .map(|(_, e)| e.clone())
+        .unwrap_or_else(|| "no address to dial".to_string())
 }
 
 /// The error a caller sees when opening a connection overran its budget. The

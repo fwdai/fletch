@@ -193,7 +193,7 @@ export const CLOSE_LISTENER_RESTARTING = 1012;
 /** What a close means to the person holding the device. No protocol words:
  *  the code is the detail, and nothing the user can do depends on it. */
 export const CLOSE_REASONS: Record<number, string> = {
-  [CLOSE_BAD_FIRST_FRAME]: "Couldn't connect to your Mac. Try again.",
+  [CLOSE_BAD_FIRST_FRAME]: "Couldn't connect to your Mac.",
   [CLOSE_UNAUTHENTICATED]: "This device is not paired with the host any more",
   [CLOSE_REMOTE_DISABLED]: "Remote access is switched off on the host",
   [CLOSE_HOST_OFFLINE]: "Your Mac is offline",

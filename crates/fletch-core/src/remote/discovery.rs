@@ -70,9 +70,15 @@ fn properties(name: &str, host_id: &str, port: u16) -> HashMap<String, String> {
     ])
 }
 
+/// How long dropping an announcement waits for the goodbye to go out. Bounded:
+/// a network that has gone away must not hold up a quit.
+const GOODBYE_WAIT: std::time::Duration = std::time::Duration::from_millis(300);
+
 /// A live announcement. Dropping it withdraws the records (a goodbye packet,
 /// so browsers drop this host at once rather than when the TTL lapses) and
-/// stops the daemon.
+/// stops the daemon. The drop waits up to [`GOODBYE_WAIT`] for the goodbye to
+/// be sent, so a process about to exit does not take the daemon thread down
+/// first.
 pub struct Advertiser {
     daemon: ServiceDaemon,
     fullname: String,
@@ -110,9 +116,10 @@ impl Advertiser {
 
 impl Drop for Advertiser {
     fn drop(&mut self) {
-        // Both are fire-and-forget: each hands back a channel for the outcome,
-        // and there is nobody left to tell.
-        let _ = self.daemon.unregister(&self.fullname);
+        if let Ok(sent) = self.daemon.unregister(&self.fullname) {
+            let _ = sent.recv_timeout(GOODBYE_WAIT);
+        }
+        // Fire-and-forget: there is nobody left to tell how it went.
         let _ = self.daemon.shutdown();
     }
 }
@@ -201,5 +208,32 @@ mod tests {
             .unwrap_or_else(|e| panic!("{host} did not resolve: {e}"))
             .collect();
         assert!(!addrs.is_empty(), "{host} resolved to nothing");
+
+        // And the goodbye: dropping the announcement takes it out of a
+        // browser's list at once, not when the record's TTL lapses.
+        let browser = ServiceDaemon::new().unwrap();
+        let events = browser.browse(SERVICE_TYPE).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let fullname = loop {
+            match events.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+                Ok(mdns_sd::ServiceEvent::ServiceResolved(service))
+                    if service.get_property_val_str(TXT_ID) == Some("test-id") =>
+                {
+                    break service.get_fullname().to_string()
+                }
+                Ok(_) => continue,
+                Err(_) => panic!("the service was not seen again within 10 s"),
+            }
+        };
+        drop(_advertiser);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            match events.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+                Ok(mdns_sd::ServiceEvent::ServiceRemoved(_, name)) if name == fullname => break,
+                Ok(_) => continue,
+                Err(_) => panic!("no goodbye within 5 s"),
+            }
+        }
+        let _ = browser.shutdown();
     }
 }
