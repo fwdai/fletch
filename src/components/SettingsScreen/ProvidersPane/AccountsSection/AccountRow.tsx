@@ -93,7 +93,10 @@ export function AccountRow({
           {accountLabel(account)}
         </label>
         <ProviderAuthBadge status={account.status} detail={account.detail} />
-        {command && !signingIn && !needsSignIn && <ReauthButton onClick={onSignIn} />}
+        {/* Not while a confirm is up: one question on the card at a time. */}
+        {command && !signingIn && !needsSignIn && !confirming && (
+          <ReauthButton onClick={onSignIn} />
+        )}
         <span className="set-prov-acct-sub mono text-xs truncate">
           {account.managed
             ? `~/.fletch/accounts/${providerId}/${account.id}`
