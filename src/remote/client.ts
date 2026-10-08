@@ -8,11 +8,11 @@ import { type Candidate, candidatesFor } from "./candidates";
 import type { Socket, SocketFactory, SocketHandlers } from "./socket";
 import {
   type CallOptions,
-  type CodeHandler,
   CLOSE_REASONS,
   CLOSE_REMOTE_DISABLED,
   CLOSE_UNAUTHENTICATED,
   CONNECTION_LOST,
+  type CodeHandler,
   type ConnectionState,
   type DeviceInfo,
   type EventFrame,
