@@ -4444,7 +4444,7 @@ fn switch_agent_account_takes_the_command_args_and_answers_the_record() {
             "claudeAiOauth": {
                 "accessToken": "sk-ant-oat01-test-work",
                 "refreshToken": "sk-ant-ort01-test-work",
-                "expiresAt": crate::agent::claude_oauth::now_ms() + 86_400_000,
+                "expiresAt": crate::agent::host_login::now_ms() + 86_400_000,
             }
         });
         let account = root.join("claude").join("work");

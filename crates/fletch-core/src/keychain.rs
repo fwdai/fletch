@@ -9,7 +9,7 @@
 //! seconds while it is open.
 //!
 //! A caller that genuinely needs the secret asks for it with [`read_password`]:
-//! only `agent::claude_oauth`, once per agent launch or explicit user action
+//! only `agent::host_login::claude`, once per agent launch or explicit user action
 //! (an account's limits Refresh). Nothing on a polling path may do that;
 //! [`item_stamp`] is how a polling path notices that an item changed.
 //!

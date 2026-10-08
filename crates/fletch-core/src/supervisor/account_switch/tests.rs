@@ -32,7 +32,7 @@ where
 }
 
 fn far_future_ms() -> i64 {
-    crate::agent::claude_oauth::now_ms() + 7 * 24 * 3_600_000
+    crate::agent::host_login::now_ms() + 7 * 24 * 3_600_000
 }
 
 /// A managed claude account holding a file login that needs no refresh.

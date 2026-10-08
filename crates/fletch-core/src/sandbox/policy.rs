@@ -291,7 +291,7 @@ pub fn provider_state_dirs(provider: &str, home: &Path) -> Vec<PathBuf> {
         "claude" => claude_write_island_dirs(&home.join(".claude")),
         // None: a sandboxed codex never runs in the user's codex home. Its
         // `CODEX_HOME` is a per-agent overlay under the writable root
-        // (`agent::codex_login`), and `~/.codex` holds the login's refresh
+        // (`agent::codex_home`), and `~/.codex` holds the login's refresh
         // token, which the sandbox must not be able to rewrite.
         "codex" => Vec::new(),
         "cursor" => vec![home.join(".cursor")],
@@ -590,12 +590,14 @@ pub fn opencode_config_dir(home: &Path) -> PathBuf {
     xdg_base(home, "XDG_CONFIG_HOME", ".config").join("opencode")
 }
 
-/// Codex's config dir: `$CODEX_HOME` if set non-blank, else `~/.codex` — the
+/// Codex's config dir: `$CODEX_HOME` as a launched child sees it (the login
+/// shell's over the app's, see `bin_resolve::effective_env_var`) if set
+/// non-blank, else `~/.codex` — the
 /// default account's home, where the host reads its login and the legacy
 /// session root. No engine grants or mounts it: launches run in a per-agent
-/// overlay (`agent::codex_login`).
+/// overlay (`agent::codex_home`).
 pub fn codex_home_dir(home: &Path) -> PathBuf {
-    codex_home_from(std::env::var_os("CODEX_HOME"), home)
+    codex_home_from(crate::bin_resolve::effective_env_var("CODEX_HOME"), home)
 }
 
 /// Pure core of [`codex_home_dir`] — the same env-seam split as
@@ -605,6 +607,29 @@ pub fn codex_home_dir(home: &Path) -> PathBuf {
 /// the launch — falling back to the default is the strict improvement).
 fn codex_home_from(value: Option<std::ffi::OsString>, home: &Path) -> PathBuf {
     env_state_dir(value, home.join(".codex"))
+}
+
+/// [`codex_home_dir`] for callers that have no home dir in hand: an explicit
+/// `CODEX_HOME` stands on its own, and the OS home is consulted only for the
+/// `~/.codex` fallback. `None` when neither resolves.
+pub fn codex_home() -> Option<PathBuf> {
+    codex_home_or(
+        crate::bin_resolve::effective_env_var("CODEX_HOME"),
+        dirs::home_dir().as_deref(),
+    )
+}
+
+/// Pure core of [`codex_home`]. Without a home dir the bin-resident rejection
+/// has no default to fall back to, so it resolves to nothing — fail-closed,
+/// the same as [`env_state_dir`].
+fn codex_home_or(value: Option<std::ffi::OsString>, home: Option<&Path>) -> Option<PathBuf> {
+    match home {
+        Some(home) => Some(codex_home_from(value, home)),
+        None => value
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+            .filter(|dir| !bin_resident(dir)),
+    }
 }
 
 /// The XDG base dir named by `var` (`$var` if set non-blank, else
@@ -1138,6 +1163,29 @@ mod tests {
         // Blank counts as unset — the old docker-local resolution took it
         // verbatim and produced an empty, launch-failing mount source.
         assert_eq!(codex_home_from(Some("".into()), home), home.join(".codex"));
+    }
+
+    /// An explicit `CODEX_HOME` must not depend on the OS home being known;
+    /// the home is only the source of the `~/.codex` fallback.
+    #[test]
+    fn an_explicit_codex_home_needs_no_os_home() {
+        let home = Path::new("/Users/u");
+        assert_eq!(
+            codex_home_or(Some("/srv/codex".into()), None),
+            Some(PathBuf::from("/srv/codex"))
+        );
+        assert_eq!(codex_home_or(None, None), None);
+        assert_eq!(codex_home_or(Some("".into()), None), None);
+        assert_eq!(
+            codex_home_or(Some("/Users/u/.local/bin/codex".into()), None),
+            None,
+            "a bin-resident CODEX_HOME has no default to fall back to"
+        );
+        assert_eq!(
+            codex_home_or(Some("/srv/codex".into()), Some(home)),
+            Some(PathBuf::from("/srv/codex"))
+        );
+        assert_eq!(codex_home_or(None, Some(home)), Some(home.join(".codex")));
     }
 
     /// Invariant 1 enforced at resolution time, not just asserted over the

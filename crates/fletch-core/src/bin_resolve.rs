@@ -144,8 +144,52 @@ pub fn resolve_bin_candidates(name: &str, home: &Path) -> Vec<String> {
 /// agent CLIs usually expect the richer shell environment where version
 /// managers, API keys, and Homebrew paths are configured.
 pub fn login_shell_env() -> Option<&'static HashMap<String, String>> {
+    #[cfg(test)]
+    if let Some(env) = TEST_LOGIN_SHELL_ENV.with(std::cell::Cell::get) {
+        return Some(env);
+    }
     static ENV: OnceLock<Option<HashMap<String, String>>> = OnceLock::new();
     ENV.get_or_init(load_login_shell_env).as_ref()
+}
+
+#[cfg(test)]
+thread_local! {
+    static TEST_LOGIN_SHELL_ENV: std::cell::Cell<Option<&'static HashMap<String, String>>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// Run `f` with `env` standing in for the login shell's environment on this
+/// thread, so a test never runs the user's real shell or sees what it exports.
+#[cfg(test)]
+pub(crate) fn with_login_shell_env<T>(env: &[(&str, &str)], f: impl FnOnce() -> T) -> T {
+    let env: HashMap<String, String> = env
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+    let previous = TEST_LOGIN_SHELL_ENV.with(|cell| cell.replace(Some(Box::leak(Box::new(env)))));
+    let out = f();
+    TEST_LOGIN_SHELL_ENV.with(|cell| cell.set(previous));
+    out
+}
+
+/// `name` as a child launched with [`apply_login_shell_env`] sees it: the
+/// login shell's value wins over the app's own, since a GUI launch inherits
+/// launchd's environment and not the one the user configured. Blank counts
+/// as unset.
+pub fn effective_env_var(name: &str) -> Option<std::ffi::OsString> {
+    effective_env_var_from(name, std::env::var_os(name), login_shell_env())
+}
+
+fn effective_env_var_from(
+    name: &str,
+    process: Option<std::ffi::OsString>,
+    shell: Option<&HashMap<String, String>>,
+) -> Option<std::ffi::OsString> {
+    shell
+        .and_then(|env| env.get(name))
+        .map(std::ffi::OsString::from)
+        .or(process)
+        .filter(|value| !value.is_empty())
 }
 
 /// Apply the cached login-shell environment to a std process command. Caller
@@ -394,6 +438,36 @@ mod tests {
                 "{expected} is not searched: {paths:?}",
             );
         }
+    }
+
+    #[test]
+    fn the_login_shell_value_wins_over_the_app_env() {
+        let shell = HashMap::from([("CODEX_HOME".to_string(), "/shell".to_string())]);
+        assert_eq!(
+            effective_env_var_from("CODEX_HOME", Some("/app".into()), Some(&shell)),
+            Some("/shell".into())
+        );
+    }
+
+    #[test]
+    fn the_app_env_is_used_when_the_login_shell_does_not_set_the_var() {
+        assert_eq!(
+            effective_env_var_from("CODEX_HOME", Some("/app".into()), Some(&HashMap::new())),
+            Some("/app".into())
+        );
+        assert_eq!(
+            effective_env_var_from("CODEX_HOME", Some("/app".into()), None),
+            Some("/app".into())
+        );
+    }
+
+    #[test]
+    fn a_blank_login_shell_value_reads_as_unset() {
+        let shell = HashMap::from([("CODEX_HOME".to_string(), String::new())]);
+        assert_eq!(
+            effective_env_var_from("CODEX_HOME", Some("/app".into()), Some(&shell)),
+            None
+        );
     }
 
     #[test]

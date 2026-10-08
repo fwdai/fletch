@@ -15,8 +15,9 @@ use crate::sandbox::{AgentLaunchCtx, EngineKind, LaunchPlan, SandboxEngine};
 use super::accounts;
 use super::args::{prepare_managed_args, prepare_pty_args};
 use super::capabilities::{mcp_delivery, per_turn_descriptor};
-use super::claude_oauth::AccessToken;
-use super::codex_login;
+use super::codex_home;
+use super::host_login;
+use super::host_login::claude::AccessToken;
 use super::probe::resolve_agent_bin;
 use super::{Agent, ManagedAgent, PerTurnAgent, PerTurnDescriptor, PtyAgent, TurnArgs};
 
@@ -134,7 +135,7 @@ pub struct SpawnSpec<'a> {
     /// default account.
     pub account: Option<&'a str>,
     /// The access token a claude launch signs in with, resolved (and
-    /// refreshed) by the host for `account` — see `claude_oauth::launch_token`.
+    /// refreshed) by the host for `account` — see `host_login::claude::launch_token`.
     /// `None` for per-turn providers.
     pub oauth_token: Option<&'a AccessToken>,
     /// The run blackboard dir to grant this agent write access to, when it is a
@@ -203,7 +204,7 @@ fn account_launch(provider: &str, account: Option<&str>) -> Result<AccountLaunch
 /// writable root, holding the agent's own sessions, the shared config linked
 /// in, and a launch credential with no refresh token, which the host writes
 /// fresh from the account's login (`source`) before the launch and before
-/// every turn (see `codex_login`). The sandbox sees neither the account's
+/// every turn (see `codex_home` and `host_login::codex`). The sandbox sees neither the account's
 /// directory nor its refresh token.
 struct CodexHome {
     overlay: PathBuf,
@@ -224,7 +225,7 @@ impl CodexHome {
             return Ok(None);
         }
         Self::prepare_at(
-            codex_login::overlay_for_agent(agent_id)?,
+            codex_home::overlay_for_agent(agent_id)?,
             account_dir,
             home,
             session_id,
@@ -241,23 +242,23 @@ impl CodexHome {
         home: &Path,
         session_id: Option<&str>,
     ) -> Result<Self> {
-        codex_login::prepare_overlay(&overlay, home)?;
+        codex_home::prepare_overlay(&overlay, home)?;
         if let Some(id) = session_id {
             super::providers::codex::adopt_legacy_rollouts(id, &overlay)?;
         }
         let this = Self {
             overlay,
-            source: codex_login::source_home(account_dir, home),
+            source: host_login::codex::source_home(account_dir, home),
         };
         this.write_credential()?;
         Ok(this)
     }
 
     fn write_credential(&self) -> Result<()> {
-        codex_login::write_launch_credential(
+        codex_home::write_launch_credential(
             &self.source,
             &self.overlay,
-            &codex_login::http_refresh,
+            &host_login::codex::http_refresh,
             chrono::Utc::now().timestamp(),
         )
     }
@@ -997,7 +998,7 @@ mod tests {
         }
         std::fs::write(account.join("auth.json"), far_future_login().to_string()).unwrap();
 
-        let overlay = codex_login::overlay_in(&root);
+        let overlay = codex_home::overlay_in(&root);
         let codex = CodexHome::prepare_at(overlay.clone(), Some(&account), &home, None).unwrap();
 
         assert_eq!(
@@ -1011,6 +1012,41 @@ mod tests {
             serde_json::from_slice(&std::fs::read(overlay.join("auth.json")).unwrap()).unwrap();
         assert_eq!(written["tokens"]["refresh_token"], "");
         assert!(overlay.join("sessions").is_dir());
+    }
+
+    /// The default account's login is copied from a `CODEX_HOME` only the
+    /// login shell exports, the home the user's own codex runs from.
+    #[test]
+    fn a_default_codex_launch_copies_the_login_from_the_login_shells_codex_home() {
+        let td = tempfile::tempdir().unwrap();
+        let (root, home, shell_home) = (
+            td.path().join("w"),
+            td.path().join("home"),
+            td.path().join("shell-codex"),
+        );
+        for dir in [&root, &home.join(".codex"), &shell_home] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        let mut shell_login = far_future_login();
+        shell_login["tokens"]["account_id"] = "shell".into();
+        std::fs::write(shell_home.join("auth.json"), shell_login.to_string()).unwrap();
+        std::fs::write(
+            home.join(".codex/auth.json"),
+            far_future_login().to_string(),
+        )
+        .unwrap();
+
+        let overlay = codex_home::overlay_in(&root);
+        crate::bin_resolve::with_login_shell_env(
+            &[("CODEX_HOME", shell_home.to_str().unwrap())],
+            || CodexHome::prepare_at(overlay.clone(), None, &home, None),
+        )
+        .unwrap();
+
+        let written: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(overlay.join("auth.json")).unwrap()).unwrap();
+        assert_eq!(written["tokens"]["account_id"], "shell");
+        assert_eq!(written["tokens"]["refresh_token"], "");
     }
 
     #[test]
@@ -1057,7 +1093,7 @@ mod tests {
             std::fs::create_dir_all(dir).unwrap();
         }
         let codex =
-            CodexHome::prepare_at(codex_login::overlay_in(&root), Some(&source), &home, None)
+            CodexHome::prepare_at(codex_home::overlay_in(&root), Some(&source), &home, None)
                 .unwrap();
         let ctx = AgentLaunchCtx {
             agent_id: "live",

@@ -91,13 +91,13 @@ pub struct AgentLaunchCtx<'a> {
     /// `oauth_token` instead.
     pub account_dir: Option<&'a Path>,
     /// The claude access token the host resolved for this launch
-    /// (`agent::claude_oauth`), for the account the agent is stamped with.
+    /// (`agent::host_login::claude`), for the account the agent is stamped with.
     /// Both engines hand it to claude as `CLAUDE_CODE_OAUTH_TOKEN`; the
     /// stored login it came from never enters the sandbox. `None` for other
     /// providers, or a default account with no host login.
-    pub oauth_token: Option<&'a crate::agent::claude_oauth::AccessToken>,
+    pub oauth_token: Option<&'a crate::agent::host_login::claude::AccessToken>,
     /// The per-agent `CODEX_HOME` the host assembled for a codex launch
-    /// (`agent::codex_login`): shared config linked in, the agent's own
+    /// (`agent::codex_home`): shared config linked in, the agent's own
     /// sessions, and a launch credential with no refresh token. The one codex
     /// home a sandbox may write or mount. `None` for every other provider.
     pub codex_home: Option<&'a Path>,

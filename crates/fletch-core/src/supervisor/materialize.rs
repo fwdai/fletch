@@ -442,7 +442,7 @@ mod tests {
         let thread = sup.workspace.agent("shasta").unwrap().session_id.unwrap();
         let mut diag = ReadDiagnostics::default();
         let rollouts = crate::transcripts::find_codex_rollouts(&thread, "shasta", &mut diag);
-        let overlay = crate::agent::codex_login::overlay_for_agent("shasta").unwrap();
+        let overlay = crate::agent::codex_home::overlay_for_agent("shasta").unwrap();
         assert!(rollouts[0].starts_with(&overlay), "{rollouts:?}");
         resume_and_say(&rollouts[0], &[said("three")]);
         sup.sync_session("shasta");

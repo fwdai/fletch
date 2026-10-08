@@ -72,7 +72,7 @@ pub(crate) enum ProviderMounts<'a> {
         /// shared `~/.claude` stays read-only.
         projects_src: &'a Path,
     },
-    /// Codex: the per-agent `CODEX_HOME` overlay (`agent::codex_login`)
+    /// Codex: the per-agent `CODEX_HOME` overlay (`agent::codex_home`)
     /// bound **read-write** and forwarded, plus the shared config its links
     /// point at, each bound **read-only** at its host path so the links resolve
     /// in-container. The user's codex home and the account dirs are never

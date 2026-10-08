@@ -31,7 +31,7 @@ build it in PR 3.
 - A **managed account** is a config directory `~/.fletch/accounts/<provider>/<id>/`
   (`FLETCH_ACCOUNTS_ROOT` overrides the root in tests). No sandboxed CLI
   runs in it: it is the login's host-only storage, used by the host's own
-  runs (the login PTY, the limits app-server). The directory listing
+  run (the login PTY). The directory listing
   **is** the registry; there is no accounts table. `id` is a slug
   (`[a-z0-9-]`, ≤32, not `default`) and doubles as the label.
   - A **codex** agent runs in its own `CODEX_HOME` overlay, never the
@@ -43,7 +43,7 @@ build it in PR 3.
     runs in the shared default config dir with `CLAUDE_CODE_OAUTH_TOKEN` set
     to the account's access token, which claude ranks above any `/login` in
     that dir. So all accounts' transcripts land in the default places.
-- **The host owns every claude login** (`agent/claude_oauth.rs`). A sandboxed
+- **The host owns every claude login** (`agent/host_login/claude.rs` on the engine in `agent/host_login`). A sandboxed
   claude can't refresh its own token: the refresh needs `mkdir <dir>.lock`,
   `<dir>/.oauth_refresh.lock` and a Keychain write, all denied under seatbelt,
   and a container has no Keychain. It also must not hold the ~30-day refresh
@@ -57,9 +57,12 @@ build it in PR 3.
   account. `security -i` takes one line of about 4 KB, so a Keychain login
   too large to write back whole is not refreshed at all (the launch runs on
   the stored token while it lasts); a rotated pair the store refuses anyway
-  is kept in memory and written on the next call. A refused refresh
-  (400/401) marks the login revoked until the store changes, and Settings
-  shows "sign in again". The token is resolved before the lifecycle lock
+  is kept in memory and written on the next call. A refused refresh (a 401,
+  or a 400 naming `invalid_grant`; any other 400 is a failure to retry)
+  marks the login revoked until the store changes, and Settings
+  shows "sign in again"; the mark (the store's stamp, nothing secret) is
+  kept under `<accounts root>/.state/claude-revoked/`, so it survives a
+  restart. The token is resolved before the lifecycle lock
   and the spawn watchdog (`prefetch_login`), with a 5 s refresh timeout and
   a 20 s cap on a Keychain read that might prompt.
 - **The sandbox holds no login but the access token.** Every agent's seatbelt
@@ -172,7 +175,21 @@ Engine (`crates/fletch-core/src/`):
   `list_accounts` (probes every account), `ProviderAccount`,
   `ACTIVE_SETTING_PREFIX`,
   `with_test_root` (test helper, crate-wide env lock).
-- `agent/claude_oauth.rs` — the host-owned claude login. `launch_token(account,
+- `agent/host_login/mod.rs` — the engine every host-owned login runs on:
+  load, due check, single-flight refresh, write-back, a kept rotated login
+  when the write fails (`Kept`, by store stamp), the refused-refresh mark.
+  One rule after a refusal for every provider: if the stored refresh token
+  changed while the request was out (another process rotated it), the
+  rotated login is taken as freshly read, launched on unless it is due,
+  else refreshed once more (a login left without a refresh token counts as
+  rotated, and is launched on while it lasts). The mark is recorded only
+  when the store still holds the refused token, or nothing: a login that
+  moved on again is someone else's newer one. Marks are kept in memory and,
+  where the provider names a file, written there (0600, atomically) to
+  survive a restart; an unwritable file costs only the restart. Providers
+  implement `LoginProvider` (store, parse, margin, refresh request,
+  launch form, what a refusal is recorded against).
+- `agent/host_login/claude.rs` — the claude adapter. `launch_token(account,
   rejected)` (what every claude launch signs in with; a managed account without
   a usable login fails the launch, the default degrades to no token),
   `access_token_for_launch`, `replace_rejected_token` (after a 401),
@@ -185,7 +202,7 @@ Engine (`crates/fletch-core/src/`):
   `live_legacy_account_session_*` (`FLETCH_LIVE_CLAUDE_ACCOUNT=<id>`).
 - `agent/auth_probe.rs` — `probe_default`, `probe_dir` (per-account sign-in
   probe; Keychain presence or `.credentials.json` for claude, `auth.json` for
-  codex; never consults shell keys). A claude login `claude_oauth` found
+  codex; never consults shell keys). A claude login the host (`host_login::claude`) found
   revoked reads as signed out, "sign in again".
 - `commands/accounts.rs` — `list_provider_accounts_impl`,
   `add_provider_account_impl`, `ensure_account_removable` (refuses the active
@@ -275,12 +292,17 @@ Engine (`crates/fletch-core/src/`):
   agent id), `legacy_codex_sessions_dirs` (default + account homes, threads
   from before overlays), `find_codex_rollouts(id, agent_id)` (the agent's overlay,
   then legacy).
-- `agent/codex_login.rs` — the host side of a codex login: `overlay_for_agent`,
-  `prepare_overlay`, `write_launch_credential` (refresh single-flight per
-  login, launch copy with the refresh token blanked, written through a
-  no-follow handle on the overlay), `http_refresh`, the signed-out mark read
-  by `auth_probe`. `agent/credential_file.rs` — the 0600 fsynced atomic write
-  and the keyed single-flight map both host logins share.
+- `agent/host_login/codex.rs` — the codex adapter on the engine: the
+  `auth.json` store (stamped by mtime and size), JWT expiry and the
+  min(24h, half the lifetime) margin, the auth.openai.com refresh and its
+  error codes, the launch copy with the refresh token blanked
+  (`launch_file`), the refused-token mark (`is_revoked`, read by
+  `auth_probe`, kept in `.state/codex-signed-out` as before).
+- `agent/codex_home.rs` — the per-agent overlay: `overlay_for_agent`,
+  `open_overlay`, `prepare_overlay`, `write_launch_credential` (the
+  launch file written through a no-follow handle, removed when nothing is
+  stored or the login was refused). `agent/credential_file.rs` — the 0600
+  fsynced atomic write, the file stamp and `PrivateDir`.
 - `supervisor/materialize.rs` — fork/rewind writer: the default dir for
   claude, the agent's overlay for codex.
 - `usage_scan/` — scans all roots (incl. account dirs and agent overlays);
@@ -293,7 +315,7 @@ Engine (`crates/fletch-core/src/`):
   source, the `provider_limits_<provider>_<account>` row (`record_limits`,
   `record_refresh`, refresh floor and 429 back-off), `app_server` (codex
   on-demand read), `oauth_usage` (claude manual refresh, on
-  `claude_oauth`'s refreshed token; a 401 gets one forced refresh).
+  `host_login::claude`'s refreshed token; a 401 gets one forced refresh).
 - `commands/limits.rs` (PR 3) — `get_provider_limits_impl`,
   `refresh_provider_limits_impl`, `scan_usage_transcripts_impl` (the scan plus
   storing rollout readings; desktop and remote both call it).
@@ -432,8 +454,16 @@ What Fletch does:
   once, so the copy isn't spend twice. The usage scan credits an overlay to
   the agent's stamp (`workspace::agent_accounts`). The fork/rewind writer
   writes into the target agent's overlay.
-- Unchanged: the limits app-server still runs on the host with
-  `CODEX_HOME=<account dir>`; managed launches still strip `OPENAI_API_KEY`.
+- The limits app-server is a real codex too, so it never runs in the
+  account's own home either (it would refresh the login itself, outside the
+  host's single-flight): each read gets a temporary `CODEX_HOME` at
+  `<accounts root>/codex/.limits-<random>` (inside the dir every agent
+  profile denies, unlike the host's temp dir, which agents may write)
+  holding the launch copy of the login (refreshed by the host first if due)
+  and the shared config, made and removed through a no-follow handle on
+  every path. A login the host found refused
+  reads as signed out without starting it. Managed launches still strip
+  `OPENAI_API_KEY`.
 
 ## PR 3: per-account usage and limits
 
@@ -458,7 +488,8 @@ Accounts included: default and managed, for claude and codex.
 
 **Codex, on demand (primary).** Spawn `codex app-server` (binary via
 `agent::resolve_agent_bin("codex", …)`; honours bin overrides) with
-`CODEX_HOME=<account dir>` for a managed account (nothing for default) and the
+`CODEX_HOME` at a temporary home holding the account's launch copy (see
+"Codex: the host owns the login") and the
 default account's `OPENAI_API_KEY` **removed** for managed accounts
 (`accounts::ambient_credential_vars`). JSON-RPC 2.0 over stdio, newline
 delimited, no Content-Length framing:
@@ -528,7 +559,7 @@ update that doc. Access tokens expire in ~60 min and Claude refreshes them only
 when it runs: on 401 report "stale, run an agent under this account to
 refresh", do **not** implement the OAuth refresh flow. (Superseded by host
 login 1: the host now refreshes, tokens last ~8h, and `oauth_usage` reads
-through `claude_oauth`; see "The model".) On 429 back off
+through `host_login::claude`; see "The model".) On 429 back off
 (exponential, persisted) and show the last known value. Never poll.
 
 **Spend per account.** Add an `account` dimension to `usage_scan`: a record's
@@ -642,7 +673,7 @@ polling.
 - A Keychain claude login over about 2 KB (the `security -i` line limit,
   hex-encoded) is never host-refreshed, so it needs a fresh sign-in each time
   its access token expires.
-- A rotated pair the store refused (`claude_oauth`'s `unsaved`) lives only in
+- A rotated pair the store refused (the engine's `Kept`) lives only in
   memory: if the app quits before a retry stores it, the login is lost and
   needs a new sign-in. Follow-up: persist it through `crate::secrets`.
 

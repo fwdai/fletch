@@ -19,9 +19,9 @@ pub mod accounts;
 mod args;
 mod auth_probe;
 mod capabilities;
-pub mod claude_oauth;
-pub mod codex_login;
+pub(crate) mod codex_home;
 pub(crate) mod credential_file;
+pub(crate) mod host_login;
 mod host_state;
 pub mod limits;
 mod login;
@@ -66,7 +66,7 @@ pub enum Agent {
 pub struct PtyAgent {
     pty: PtySession,
     /// When the claude access token this process was launched with lapses
-    /// (`claude_oauth`). The process can't take a new one, so the supervisor
+    /// (`host_login::claude`). The process can't take a new one, so the supervisor
     /// relaunches it before a turn that would outrun it.
     login_expires_at_ms: Option<i64>,
 }

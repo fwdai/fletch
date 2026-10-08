@@ -538,11 +538,7 @@ static CODEX_COMMANDS: CommandDiscovery = CommandDiscovery {
 /// extra and still work, because invocation is expanded app-side rather than
 /// by the codex CLI.
 fn codex_command_roots(_project: Option<&Path>) -> Vec<CommandRoot> {
-    let home = std::env::var_os("CODEX_HOME")
-        .filter(|v| !v.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| dirs::home_dir().map(|h| h.join(".codex")));
-    let Some(home) = home else {
+    let Some(home) = crate::sandbox::policy::codex_home() else {
         return Vec::new();
     };
     vec![CommandRoot {
@@ -646,6 +642,19 @@ fn first_meaningful_line(body: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Codex reads its prompts from the `CODEX_HOME` the user's shell exports,
+    /// so the command list does too.
+    #[test]
+    fn codex_prompts_are_listed_from_the_login_shells_codex_home() {
+        let td = tempfile::tempdir().unwrap();
+        let roots = crate::bin_resolve::with_login_shell_env(
+            &[("CODEX_HOME", td.path().to_str().unwrap())],
+            || codex_command_roots(None),
+        );
+        let dirs: Vec<_> = roots.iter().map(|root| root.dir.clone()).collect();
+        assert_eq!(dirs, vec![td.path().join("prompts")]);
+    }
 
     #[test]
     fn splits_frontmatter_and_body() {

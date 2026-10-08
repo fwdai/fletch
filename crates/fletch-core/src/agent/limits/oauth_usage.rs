@@ -4,7 +4,7 @@
 //! The endpoint is undocumented and rate-limits eagerly, so this never polls:
 //! the command layer gates every call behind the refresh floor and a persisted
 //! 429 back-off (`super::refresh_allowed`). The token is the host's login
-//! (`agent::claude_oauth`), refreshed first when it is due, so a lapsed token
+//! (`agent::host_login::claude`), refreshed first when it is due, so a lapsed token
 //! no longer needs an agent run to come back.
 //!
 //! The token is sent in one header and dropped. It is never logged, never
@@ -16,7 +16,7 @@ use std::time::Duration;
 use serde_json::Value;
 
 use super::{from_oauth_usage, now_secs, RefreshOutcome};
-use crate::agent::claude_oauth::{self, AccessToken, LoginError};
+use crate::agent::host_login::claude::{self as claude_login, AccessToken, LoginError};
 use crate::error::{Error, Result};
 
 pub const USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
@@ -32,7 +32,7 @@ const TIMEOUT: Duration = Duration::from_secs(15);
 /// or a revoked one, reads as signed out.
 pub async fn read_limits(account_dir: Option<PathBuf>) -> Result<RefreshOutcome> {
     let dir = account_dir.as_deref();
-    let Some(token) = signed_in(claude_oauth::access_token_for_launch(dir).await)? else {
+    let Some(token) = signed_in(claude_login::access_token_for_launch(dir).await)? else {
         return Ok(RefreshOutcome::SignedOut);
     };
     let client = reqwest::Client::builder()
@@ -44,7 +44,7 @@ pub async fn read_limits(account_dir: Option<PathBuf>) -> Result<RefreshOutcome>
     if status != 401 {
         return interpret(status, body.as_ref(), now_secs());
     }
-    let replaced = claude_oauth::replace_rejected_token(dir, token.expires_at_ms()).await;
+    let replaced = claude_login::replace_rejected_token(dir, token.expires_at_ms()).await;
     let Some(token) = signed_in(replaced)? else {
         return Ok(RefreshOutcome::SignedOut);
     };

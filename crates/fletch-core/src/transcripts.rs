@@ -143,7 +143,7 @@ pub(crate) fn claude_project_dirname(cwd: &Path) -> Option<String> {
 /// account land in the default dir.
 pub(crate) fn claude_projects_dirs() -> Vec<PathBuf> {
     projects_dirs_from(
-        std::env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from),
+        crate::agent::accounts::claude_config_override(),
         dirs::home_dir(),
         crate::agent::accounts::list_account_dirs("claude"),
     )
@@ -209,10 +209,7 @@ fn find_session_jsonl_in(
 /// `None` only when neither CODEX_HOME nor a home dir can be resolved. Where a
 /// default-account session is written; [`codex_sessions_dirs`] is every root.
 pub(crate) fn codex_sessions_dir() -> Option<PathBuf> {
-    std::env::var_os("CODEX_HOME")
-        .map(PathBuf::from)
-        .or_else(|| dirs::home_dir().map(|h| h.join(".codex")))
-        .map(|home| home.join("sessions"))
+    crate::sandbox::policy::codex_home().map(|h| h.join("sessions"))
 }
 
 /// The session roots codex wrote to before each agent ran in its own
@@ -242,7 +239,7 @@ fn sessions_dirs_from(default: Option<PathBuf>, account_dirs: Vec<PathBuf>) -> V
 
 /// Every agent's own codex session root, as `(agent id, sessions dir)`: the
 /// `sessions` dir of each agent's `CODEX_HOME` overlay
-/// (`agent::codex_login::overlay_for_agent`). Only overlays that exist.
+/// (`agent::codex_home::overlay_for_agent`). Only overlays that exist.
 pub(crate) fn codex_overlay_sessions_dirs() -> Vec<(String, PathBuf)> {
     crate::workspace::checkouts_root()
         .map(|root| overlay_sessions_in(&root))
@@ -258,7 +255,7 @@ fn overlay_sessions_in(checkouts_root: &Path) -> Vec<(String, PathBuf)> {
         .flatten()
         .filter_map(|entry| {
             let id = entry.file_name().into_string().ok()?;
-            let sessions = crate::agent::codex_login::overlay_in(&entry.path()).join("sessions");
+            let sessions = crate::agent::codex_home::overlay_in(&entry.path()).join("sessions");
             sessions.is_dir().then_some((id, sessions))
         })
         .collect();
@@ -292,7 +289,7 @@ pub(crate) fn find_codex_rollouts(
     agent_id: &str,
     diag: &mut ReadDiagnostics,
 ) -> Vec<PathBuf> {
-    let own = crate::agent::codex_login::overlay_for_agent(agent_id)
+    let own = crate::agent::codex_home::overlay_for_agent(agent_id)
         .map(|o| o.join("sessions"))
         .ok();
     let tiers = [
@@ -416,6 +413,18 @@ pub(crate) fn read_jsonl_values(path: &Path, diag: &mut ReadDiagnostics) -> Vec<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Legacy threads of the default account live under the `CODEX_HOME` the
+    /// user's shell exports.
+    #[test]
+    fn the_default_codex_sessions_dir_follows_the_login_shells_codex_home() {
+        let td = tempfile::tempdir().unwrap();
+        let dir = crate::bin_resolve::with_login_shell_env(
+            &[("CODEX_HOME", td.path().to_str().unwrap())],
+            codex_sessions_dir,
+        );
+        assert_eq!(dir, Some(td.path().join("sessions")));
+    }
 
     // ── claude transcript location (CLAUDE_CONFIG_DIR) ────────────────────────
 
@@ -549,7 +558,7 @@ mod tests {
         let overlay = |id: &str| {
             td.path()
                 .join(id)
-                .join(crate::agent::codex_login::OVERLAY_DIRNAME)
+                .join(crate::agent::codex_home::OVERLAY_DIRNAME)
         };
         std::fs::create_dir_all(overlay("fuji").join("sessions")).unwrap();
         std::fs::create_dir_all(overlay("etna").join("sessions")).unwrap();

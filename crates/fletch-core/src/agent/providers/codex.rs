@@ -66,7 +66,7 @@ pub(crate) fn codex_read(paths: &[PathBuf], diag: &mut ReadDiagnostics) -> Vec<R
 /// Write `bodies` as codex thread `session_id` of agent `agent_id`, run in
 /// `cwd`: a rollout `<CODEX_HOME>/sessions/YYYY/MM/DD/rollout-<local
 /// time>-<id>.jsonl` in the agent's own overlay
-/// (`codex_login::overlay_for_agent`), whichever account it runs under, named
+/// (`codex_home::overlay_for_agent`), whichever account it runs under, named
 /// as codex names its own (0.153.4). `codex exec resume <id>` finds it by the
 /// id at the end of its name without it being in codex's sqlite index
 /// (verified on 0.154.0), as [`codex_locate`] does. Its `session_meta` names
@@ -79,8 +79,8 @@ pub(crate) fn codex_write(
     _container: bool,
     bodies: &[Value],
 ) -> Result<Option<PathBuf>> {
-    let overlay = crate::agent::codex_login::overlay_for_agent(agent_id)?;
-    let sessions = crate::agent::codex_login::open_overlay(&overlay)?.subdir("sessions")?;
+    let overlay = crate::agent::codex_home::overlay_for_agent(agent_id)?;
+    let sessions = crate::agent::codex_home::open_overlay(&overlay)?.subdir("sessions")?;
     codex_write_in(&sessions, session_id, cwd, bodies).map(Some)
 }
 
@@ -95,7 +95,7 @@ pub(crate) fn codex_write(
 /// its final name (temp then rename), so a file that is there is complete,
 /// and one an earlier launch failed to copy is tried again. One that is
 /// there is never touched, since codex appends to it once it resumes.
-/// Written through a handle on the overlay (`codex_login::open_overlay`), so
+/// Written through a handle on the overlay (`codex_home::open_overlay`), so
 /// a link the agent planted in it is replaced, never followed. Once every
 /// file of the thread is confirmed there, a marker in the overlay
 /// ([`ADOPTED_DIRNAME`]) skips the walk of the legacy roots at later
@@ -114,7 +114,7 @@ const ADOPTED_DIRNAME: &str = ".fletch-adopted";
 
 /// [`adopt_legacy_rollouts`] from the `legacy` session roots given.
 fn adopt_rollouts_from(session_id: &str, overlay: &Path, legacy: &[PathBuf]) -> Result<()> {
-    let overlay = crate::agent::codex_login::open_overlay(overlay)?;
+    let overlay = crate::agent::codex_home::open_overlay(overlay)?;
     let adopted = overlay.subdir(ADOPTED_DIRNAME)?;
     // A thread id that can't name a file is never marked, only walked.
     let marked = adopted.entry(session_id).ok();

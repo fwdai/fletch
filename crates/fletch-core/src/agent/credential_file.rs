@@ -1,30 +1,15 @@
-//! What the host's claude and codex logins share: how a credential file is
-//! written, how refreshes of one login are serialised, the shape of a refused
-//! refresh, and how the host writes into a directory a sandboxed agent can
+//! How the host's logins touch the disk: how a credential file is written and
+//! stamped, and how the host writes into a directory a sandboxed agent can
 //! also write (its codex overlay) without following anything the agent
 //! planted there.
 
-use std::collections::HashMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-
-use parking_lot::Mutex;
 
 /// Every temp file the host writes a credential through starts with this, so
 /// the seatbelt profile can deny reading one beside a login it hides,
 /// including one a crash left behind (`seatbelt::deny_host_codex_logins`).
 pub(crate) const TEMP_PREFIX: &str = ".fletch-auth-";
-
-/// Why a refresh produced no tokens. Neither variant carries a token or a
-/// response body.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum RefreshFailure {
-    /// The server refused the refresh token itself: only a new sign-in helps.
-    Rejected,
-    /// Anything else (transport, a 5xx, a 429, an answer without a token).
-    Failed(String),
-}
 
 /// Replace `path` with a 0600 file holding `contents` in one rename, synced
 /// first, so a reader never sees half a credential and a crash never leaves a
@@ -48,30 +33,6 @@ pub(crate) fn write_private_file(path: &Path, contents: &[u8]) -> std::io::Resul
     Ok(())
 }
 
-/// One lock per key, created on first use: what makes the refreshes of one
-/// login single-flight. `T` is the lock kind the caller holds across its work
-/// (an async mutex where the refresh awaits, a blocking one where it doesn't).
-pub(crate) struct Flights<T> {
-    locks: Mutex<Option<HashMap<String, Arc<T>>>>,
-}
-
-impl<T: Default> Flights<T> {
-    pub(crate) const fn new() -> Self {
-        Self {
-            locks: Mutex::new(None),
-        }
-    }
-
-    pub(crate) fn get(&self, key: &str) -> Arc<T> {
-        self.locks
-            .lock()
-            .get_or_insert_with(HashMap::new)
-            .entry(key.to_string())
-            .or_default()
-            .clone()
-    }
-}
-
 /// A file's identity for telling whether it changed since it was last seen:
 /// modification time and size. `None` when the file is absent.
 pub(crate) fn file_stamp(path: &Path) -> Option<String> {
@@ -82,55 +43,6 @@ pub(crate) fn file_stamp(path: &Path) -> Option<String> {
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .map_or(0, |d| d.as_nanos());
     Some(format!("{mtime}:{}", meta.len()))
-}
-
-/// Rotated logins a store refused to take, kept in memory by login key: the
-/// old refresh token is already spent, so a kept one is that login's only
-/// valid credential until a save succeeds, or until the store changes under
-/// it (a new sign-in), which drops it.
-pub(crate) struct Kept<T> {
-    pairs: Mutex<Option<KeptMap<T>>>,
-}
-
-/// Login key → the kept value and the store's stamp when it was kept.
-type KeptMap<T> = HashMap<String, (T, Option<String>)>;
-
-impl<T: Clone> Kept<T> {
-    pub(crate) const fn new() -> Self {
-        Self {
-            pairs: Mutex::new(None),
-        }
-    }
-
-    /// Keep `value` for `key`, with the store's stamp as the failed save
-    /// left it.
-    pub(crate) fn keep(&self, key: &str, value: T, stamp: Option<String>) {
-        self.pairs
-            .lock()
-            .get_or_insert_with(HashMap::new)
-            .insert(key.to_string(), (value, stamp));
-    }
-
-    /// The value kept for `key` while the store still has the stamp it had
-    /// then; one kept under another stamp is dropped.
-    pub(crate) fn current(&self, key: &str, stamp: Option<&str>) -> Option<T> {
-        let mut pairs = self.pairs.lock();
-        let map = pairs.get_or_insert_with(HashMap::new);
-        match map.get(key) {
-            Some((value, at)) if at.as_deref() == stamp => Some(value.clone()),
-            Some(_) => {
-                map.remove(key);
-                None
-            }
-            None => None,
-        }
-    }
-
-    pub(crate) fn forget(&self, key: &str) {
-        if let Some(map) = self.pairs.lock().as_mut() {
-            map.remove(key);
-        }
-    }
 }
 
 /// What sits at a name inside a [`PrivateDir`], looked at without following
@@ -329,6 +241,34 @@ mod imp {
             }
         }
 
+        /// Remove every entry whose name starts with `prefix` and that was
+        /// last modified more than `age` ago, without following any of them.
+        pub(crate) fn remove_stale(&self, prefix: &str, age: std::time::Duration) -> Result<()> {
+            let cutoff = std::time::SystemTime::now()
+                .checked_sub(age)
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map_or(0, |d| d.as_secs() as i64);
+            for name in self.names()? {
+                if !name.to_bytes().starts_with(prefix.as_bytes()) {
+                    continue;
+                }
+                let mut st: libc::stat = unsafe { std::mem::zeroed() };
+                // SAFETY: as in `openat_dir`; `st` is a valid out pointer.
+                let ret = unsafe {
+                    libc::fstatat(
+                        self.dir.as_raw_fd(),
+                        name.as_ptr(),
+                        &mut st,
+                        libc::AT_SYMLINK_NOFOLLOW,
+                    )
+                };
+                if ret == 0 && (st.st_mtime as i64) < cutoff {
+                    self.remove_c(&name)?;
+                }
+            }
+            Ok(())
+        }
+
         fn clear(&self) -> Result<()> {
             for name in self.names()? {
                 self.remove_c(&name)?;
@@ -505,6 +445,21 @@ mod imp {
                 Ok(_) => Entry::Other,
             })
         }
+        pub(crate) fn remove_stale(&self, prefix: &str, age: std::time::Duration) -> Result<()> {
+            for entry in std::fs::read_dir(&self.path)?.flatten() {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                let old = entry
+                    .metadata()
+                    .and_then(|m| m.modified())
+                    .ok()
+                    .and_then(|t| t.elapsed().ok())
+                    .is_some_and(|elapsed| elapsed > age);
+                if name.starts_with(prefix) && old {
+                    self.remove(&name)?;
+                }
+            }
+            Ok(())
+        }
         pub(crate) fn remove(&self, name: &str) -> Result<()> {
             let path = self.path.join(name);
             match self.entry(name)? {
@@ -558,15 +513,6 @@ mod tests {
     }
 
     #[test]
-    fn a_kept_value_lasts_while_the_stamp_holds_and_is_dropped_when_it_moves() {
-        let kept: Kept<u32> = Kept::new();
-        kept.keep("a", 7, Some("s1".into()));
-        assert_eq!(kept.current("a", Some("s1")), Some(7));
-        assert_eq!(kept.current("a", Some("s2")), None);
-        assert_eq!(kept.current("a", Some("s1")), None);
-    }
-
-    #[test]
     fn a_stamp_changes_when_the_file_is_rewritten() {
         let td = tempfile::tempdir().unwrap();
         let path = td.path().join("auth.json");
@@ -575,13 +521,6 @@ mod tests {
         let first = file_stamp(&path).unwrap();
         std::fs::write(&path, "longer").unwrap();
         assert_ne!(file_stamp(&path).unwrap(), first);
-    }
-
-    #[test]
-    fn one_key_gets_one_lock_and_another_key_another() {
-        static FLIGHTS: Flights<Mutex<()>> = Flights::new();
-        assert!(Arc::ptr_eq(&FLIGHTS.get("a"), &FLIGHTS.get("a")));
-        assert!(!Arc::ptr_eq(&FLIGHTS.get("a"), &FLIGHTS.get("b")));
     }
 
     #[test]

@@ -68,7 +68,7 @@ impl SandboxEngine for SandboxExecEngine {
         // No account dir is granted: codex runs in its per-agent overlay
         // (`ctx.codex_home`), claude in the shared default config dir with the
         // host-resolved token below. Account dirs are host-only login storage.
-        let claude_config_dir = std::env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from);
+        let claude_config_dir = crate::agent::accounts::claude_config_override();
         let profile_text = build_profile(
             ctx.writable_root,
             ctx.rpc_dir,
@@ -95,7 +95,7 @@ impl SandboxEngine for SandboxExecEngine {
         let mut env = policy::toolchain_cache_env(&cache_root);
         // Claude reads it once at start and ranks it above any `/login`
         // credential in the config dir, and it can't refresh it — which is the
-        // point: refreshing is the host's job (`agent::claude_oauth`).
+        // point: refreshing is the host's job (`agent::host_login::claude`).
         if let Some(token) = ctx.oauth_token.filter(|_| ctx.provider == "claude") {
             env.push((
                 "CLAUDE_CODE_OAUTH_TOKEN".to_string(),
@@ -714,7 +714,7 @@ pub(crate) fn pid_alive(_pid: i32) -> bool {
 /// writable subpath, and its own invariant-3 deny, since the agent's checkout
 /// isn't under the root this profile is otherwise built around.
 /// `codex_home` is the per-agent `CODEX_HOME` overlay a codex launch runs in
-/// (`agent::codex_login`), granted whole bar its `config.toml` (`None` for
+/// (`agent::codex_home`), granted whole bar its `config.toml` (`None` for
 /// every other provider).
 pub fn build_profile(
     writable_root: &Path,
@@ -972,7 +972,7 @@ fn user_sets_a_ca_bundle() -> bool {
 /// the temp files the host writes a refreshed login through, and every
 /// managed claude account dir. Each can hold a refresh token, and a
 /// sandboxed claude signs in with the host-resolved access token instead
-/// (`agent::claude_oauth`), so nothing in the sandbox has a use for them.
+/// (`agent::host_login::claude`), so nothing in the sandbox has a use for them.
 /// Every agent's profile carries it, whatever its provider; the Keychain items
 /// are closed off separately ([`KEYCHAIN_MACH_DENY`]). Paths in literal and
 /// resolved form, like the grants. MUST follow the `(allow file-write* …)`
@@ -996,7 +996,7 @@ fn deny_host_claude_logins(home: &Path, relocated_claude_dir: Option<&Path>) -> 
 /// the temp files the host writes a refreshed login through beside it (one
 /// a crash left behind included), and every managed codex account dir. A
 /// codex launch gets a credential without the refresh token in its overlay
-/// (`agent::codex_login`). MUST follow the `(allow file-write* …)` block.
+/// (`agent::codex_home`). MUST follow the `(allow file-write* …)` block.
 fn deny_host_codex_logins(home: &Path) -> String {
     let codex_home = policy::codex_home_dir(home);
     let mut deny = LoginDeny::default();
@@ -1956,6 +1956,26 @@ mod tests {
         });
     }
 
+    /// A limits read's temporary codex home is made inside the codex accounts
+    /// dir, which every agent's profile denies whole, so no agent can read
+    /// the login in it or swap a link before the host's app-server starts.
+    #[test]
+    fn profile_denies_the_limits_reads_temporary_home() {
+        crate::agent::accounts::with_test_root(|_| {
+            let (_td, root, rpc, home) = sandbox_dirs();
+            let profile = build_profile(&root, &rpc, &home, None, None, None, None).unwrap();
+            let parent = crate::agent::limits::app_server::limits_parent().unwrap();
+            let deny_at = profile
+                .find("(deny file-read* file-write*\n")
+                .expect("a read deny block");
+            assert!(
+                profile[deny_at..].contains(&format!("(subpath \"{}\")", parent.display())),
+                "{profile}"
+            );
+            assert!(parent.join(".limits-x").starts_with(&parent));
+        });
+    }
+
     /// No launch relocates into an account dir: codex runs in its overlay,
     /// claude accounts are a token source, and providers without accounts
     /// never do.
@@ -2284,7 +2304,7 @@ mod tests {
     #[test]
     fn a_claude_launch_carries_the_host_token_and_no_config_dir() {
         let (_td, root, rpc, home) = sandbox_dirs();
-        let token = crate::agent::claude_oauth::AccessToken::for_test("sk-ant-oat-test", 1);
+        let token = crate::agent::host_login::claude::AccessToken::for_test("sk-ant-oat-test", 1);
         let ctx = AgentLaunchCtx {
             agent_id: "a1",
             provider: "claude",
