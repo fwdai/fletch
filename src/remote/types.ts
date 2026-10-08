@@ -164,6 +164,9 @@ export interface HostTarget {
   /** Display name from the pairing URL, before `hello` reports the real one. */
   name?: string;
   pairingToken?: string;
+  /** Pair by asking and being accepted on the Mac, with no code: `pair_request`
+   *  then `pair_confirm` (docs/remote-protocol.md, "Confirmed pairing"). */
+  confirm?: boolean;
 }
 
 /** Which path a connection took. The protocol is identical on both, so nothing
@@ -187,16 +190,28 @@ export const CLOSE_FRAME_TOO_LARGE = 1009;
  *  next attempt simply succeeds; on the LAN it keeps dialling the old port. */
 export const CLOSE_LISTENER_RESTARTING = 1012;
 
+/** What a close means to the person holding the device. No protocol words:
+ *  the code is the detail, and nothing the user can do depends on it. */
 export const CLOSE_REASONS: Record<number, string> = {
-  [CLOSE_BAD_FIRST_FRAME]: "Host rejected the handshake",
+  [CLOSE_BAD_FIRST_FRAME]: "Couldn't connect to your Mac.",
   [CLOSE_UNAUTHENTICATED]: "This device is not paired with the host any more",
   [CLOSE_REMOTE_DISABLED]: "Remote access is switched off on the host",
   [CLOSE_HOST_OFFLINE]: "Your Mac is offline",
   [CLOSE_TOO_MANY_DEVICES]: "This Mac already has its 8 remote devices connected",
-  [CLOSE_RELAY_THROTTLED]: "The relay throttled this connection",
-  [CLOSE_FRAME_TOO_LARGE]: "Frame too large",
+  [CLOSE_RELAY_THROTTLED]: "Too many requests at once. Reconnecting…",
+  [CLOSE_FRAME_TOO_LARGE]: "That was too large to send.",
   [CLOSE_LISTENER_RESTARTING]: "Your Mac is restarting remote access",
 };
+
+/** What a host with nobody at its screen answers `pair_request` with
+ *  (docs/remote-protocol.md, "Confirmed pairing"). Matched exactly: it is the
+ *  signal to pair with the code instead. The host's copy is
+ *  `confirm::NO_CONFIRMER`, pinned by a test there. */
+export const NO_CONFIRMER_ERROR =
+  "This host can't confirm a pairing on its screen. Enter the code it shows instead.";
+
+/** A close no entry above explains: a dropped network, a missed ping. */
+export const CONNECTION_LOST = "Lost the connection to your Mac";
 
 /** The marker the Rust transport puts in front of a pinned-key mismatch. It
  *  is not retryable: the host's identity, not the network, is wrong. */
@@ -219,7 +234,15 @@ export const MAX_FRAME_BYTES = 4 * 1024 * 1024;
  *  `LAN_OPEN_TIMEOUT_MS` before the relay is tried, and the workspace that
  *  follows a `pair` crosses the relay too. A screen with nothing but a state
  *  name cannot tell any of that apart from a hang. */
-export type PairStep = "connecting" | "lan" | "relay" | "registering" | "greeting" | "workspace";
+export type PairStep =
+  | "connecting"
+  | "lan"
+  | "relay"
+  | "registering"
+  | "requesting"
+  | "confirming"
+  | "greeting"
+  | "workspace";
 
 export interface CallOptions {
   /** How long to wait for the answer, in ms; absent or 0 waits for ever. For
@@ -232,6 +255,7 @@ export interface CallOptions {
 export type EventHandler = (payload: unknown) => void;
 export type StateHandler = (state: ConnectionState, error?: string) => void;
 export type StepHandler = (step: PairStep) => void;
+export type CodeHandler = (code: string) => void;
 
 export interface RemoteClient {
   /** Open a connection and complete `pair` or `hello`. Rejects if the
@@ -249,6 +273,9 @@ export interface RemoteClient {
   /** Subscribe to the progress of the attempt in flight. Unlike `onState` it
    *  does not fire on subscribe: there is no current step between attempts. */
   onStep(cb: StepHandler): () => void;
+  /** The six digits of a confirmed pairing, once both nonces are in: what to
+   *  show while the Mac decides. Fires once per such attempt. */
+  onConfirmCode(cb: CodeHandler): () => void;
   /** Fires with the workspace snapshot after every successful handshake,
    *  including reconnects. */
   onSnapshot(cb: (result: HelloResult) => void): () => void;
@@ -266,9 +293,6 @@ export interface RemoteClient {
   readonly hostKey: string | null;
   /** Which candidate the live connection is on, or null when not connected. */
   readonly via: Via | null;
-  /** Point the held target at a relay (or none) without re-pairing. It takes
-   *  effect on the next connection attempt. */
-  setRelay(relay: string | null): void;
   /** Where the client is pointed, with any spent pairing token stripped and
    *  the host key it authenticated pinned in. */
   readonly target: Readonly<HostTarget> | null;

@@ -1,8 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
 import { backoffDelay } from "./backoff";
 import { candidatesFor, LAN_OPEN_TIMEOUT_MS, RELAY_OPEN_TIMEOUT_MS } from "./candidates";
-import { HANDSHAKE_TIMEOUT_MS, MAX_IN_FLIGHT, ProtocolClient, READ_TIMEOUT_MS } from "./client";
-import { parseAddress, parsePairUrl, relayDeviceUrl, wsUrl } from "./pairing";
+import {
+  CONFIRM_TIMEOUT_MS,
+  HANDSHAKE_TIMEOUT_MS,
+  MAX_IN_FLIGHT,
+  ProtocolClient,
+  READ_TIMEOUT_MS,
+} from "./client";
+import { localHostname, parseAddress, parsePairUrl, relayDeviceUrl, wsUrl } from "./pairing";
 import type { Socket, SocketHandlers, SocketOptions } from "./socket";
 import {
   CLOSE_HOST_OFFLINE,
@@ -10,6 +16,7 @@ import {
   CLOSE_RELAY_THROTTLED,
   CLOSE_TOO_MANY_DEVICES,
   CLOSE_UNAUTHENTICATED,
+  CONNECTION_LOST,
   type DeviceInfo,
   type HelloResult,
   HOST_KEY_MISMATCH,
@@ -78,6 +85,12 @@ function fakeSocket(hostKey = HOST_KEY, unreachable: Record<string, "reject" | "
           sent.push(JSON.parse(text));
         },
         close: () => {},
+        // The Rust transport draws and keeps the nonce; this stands in for it.
+        pairCommit: async () => "commit-1",
+        pairCode: async (hostNonce: string) => ({
+          nonce: `device-for-${hostNonce}`,
+          code: "482913",
+        }),
       };
     },
     reply: (frame: unknown) => handlers?.onMessage(JSON.stringify(frame)),
@@ -195,12 +208,30 @@ describe("pairing URL", () => {
   });
 });
 
+/** The same key `discovery::tests` labels in Rust: the two ends must agree on
+ *  the name, or a paired device dials one nobody answers to. */
+const VECTOR_KEY = "ASNFZ4mrze__AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+
+describe("local hostname", () => {
+  it("is the first eight key bytes in hex, as the host announces it", () => {
+    expect(localHostname(VECTOR_KEY)).toBe("fletch-0123456789abcdef.local");
+  });
+
+  it("is null for a key it cannot read", () => {
+    expect(localHostname("")).toBeNull();
+    expect(localHostname("AAAA")).toBeNull(); // three bytes
+    expect(localHostname("not base64!")).toBeNull();
+  });
+});
+
 describe("connection candidates", () => {
+  const LOCAL = `ws://${localHostname(HOST_KEY)}:1/ws`;
+
   it("dials the LAN address first, with a 3 s open budget, then the relay with a longer one", () => {
     expect(
       candidatesFor({ host: "h", port: 1, hostKey: HOST_KEY, relay: "wss://relay.test" }),
     ).toEqual([
-      { url: "ws://h:1/ws", via: "lan", timeoutMs: LAN_OPEN_TIMEOUT_MS },
+      { url: "ws://h:1/ws", alternates: [LOCAL], via: "lan", timeoutMs: LAN_OPEN_TIMEOUT_MS },
       {
         url: `wss://relay.test/v1/device/${HOST_KEY}`,
         via: "relay",
@@ -210,10 +241,20 @@ describe("connection candidates", () => {
   });
 
   it("is LAN-only without a relay, and without a host key to route on", () => {
-    const lanOnly = [{ url: "ws://h:1/ws", via: "lan", timeoutMs: LAN_OPEN_TIMEOUT_MS }];
-    expect(candidatesFor({ host: "h", port: 1, hostKey: HOST_KEY })).toEqual(lanOnly);
-    // Hand-typed entry has no key yet, and the key *is* the relay's route.
-    expect(candidatesFor({ host: "h", port: 1, relay: "wss://relay.test" })).toEqual(lanOnly);
+    expect(candidatesFor({ host: "h", port: 1, hostKey: HOST_KEY })).toEqual([
+      { url: "ws://h:1/ws", alternates: [LOCAL], via: "lan", timeoutMs: LAN_OPEN_TIMEOUT_MS },
+    ]);
+    // Hand-typed entry has no key yet: no relay route, and no name to race.
+    expect(candidatesFor({ host: "h", port: 1, relay: "wss://relay.test" })).toEqual([
+      { url: "ws://h:1/ws", via: "lan", timeoutMs: LAN_OPEN_TIMEOUT_MS },
+    ]);
+  });
+
+  it("does not race the saved address against itself", () => {
+    const local = localHostname(HOST_KEY) as string;
+    expect(
+      candidatesFor({ host: local, port: 1, hostKey: HOST_KEY })[0].alternates,
+    ).toBeUndefined();
   });
 });
 
@@ -413,6 +454,31 @@ describe("connection lifecycle", () => {
     expect(timers.map((t) => t.ms)).toEqual([1000]);
   });
 
+  /** The vocabulary guard for everything the transport can throw, not only the
+   *  close-reason table: protocol words and URLs stay in the log. */
+  it.each([
+    "handshake failed: Decrypt error",
+    "handshake failed: unexpected hash length",
+    "cannot reach ws://10.0.0.4:47285/ws: Connection reset by peer (os error 54)",
+    "cannot reach wss://relay.test/v1/device/abc: WebSocket protocol error: Handshake not finished",
+  ])("says %j in plain words", async (raw) => {
+    const seen: (string | undefined)[] = [];
+    const { setTimer, clearTimer } = captureTimers();
+    const client = new ProtocolClient({
+      openSocket: async () => {
+        throw new Error(raw);
+      },
+      device: DEVICE,
+      setTimer,
+      clearTimer,
+    });
+    client.onState((_, error) => seen.push(error));
+    await expect(client.connect({ host: "h", port: 1, hostKey: HOST_KEY })).rejects.toThrow();
+    const shown = seen.at(-1) ?? "";
+    expect(shown).not.toMatch(/relay|handshake|frame|socket|ws:\/\/|os error/i);
+    expect(shown).not.toBe("");
+  });
+
   it("gives up on a pairing the host never answers, instead of waiting for ever", async () => {
     // The relay accepts a device link whenever it believes a host link is up,
     // and a Mac that went to sleep leaves it believing that: the socket opens,
@@ -490,8 +556,12 @@ describe("reconnect", () => {
     fake.reply(helloOk(fake.sent[0].id as string));
     await connected;
 
+    const reported: (string | undefined)[] = [];
+    client.onState((_state, error) => reported.push(error));
     fake.hangup(1006);
     expect(client.state).toBe("error");
+    // A close nothing explains is said in plain words, never as its code.
+    expect(reported.at(-1)).toBe(CONNECTION_LOST);
     expect(timers.map((t) => t.ms)).toEqual([1000]);
 
     timers[0].fn();
@@ -535,9 +605,13 @@ describe("reconnect", () => {
     // mirroring `retrying` into UI state sees "reconnecting", not "stuck".
     expect(client.retrying).toBe(true);
     expect(retryingSeen.at(-1)).toBe(true);
-    // The relay's other device-link closes are readable too, not bare codes.
+    // The relay's other device-link closes are readable too: not bare codes,
+    // and not the relay's own vocabulary.
     expect(CLOSE_REASONS[CLOSE_TOO_MANY_DEVICES]).toContain("8 remote devices");
-    expect(CLOSE_REASONS[CLOSE_RELAY_THROTTLED]).toContain("throttled");
+    expect(CLOSE_REASONS[CLOSE_RELAY_THROTTLED]).toContain("Too many requests");
+    for (const reason of Object.values(CLOSE_REASONS)) {
+      expect(reason).not.toMatch(/relay|handshake|frame/i);
+    }
   });
 
   it("does not retry after a 4003 close — the device has to be paired again", async () => {
@@ -884,6 +958,74 @@ describe("relay from the host", () => {
       relay: "wss://relay.test",
     });
     expect(snapshots[0].relay).toBe("wss://relay.test");
+  });
+});
+
+/** docs/remote-protocol.md, "Confirmed pairing": no code, the Mac accepts. */
+describe("confirmed pairing", () => {
+  it("commits, reveals after the host's nonce, shows the code and pairs on the answer", async () => {
+    const fake = fakeSocket();
+    const { timers, setTimer, clearTimer } = captureTimers();
+    const client = new ProtocolClient({
+      openSocket: fake.factory,
+      device: DEVICE,
+      setTimer,
+      clearTimer,
+    });
+    const codes: string[] = [];
+    const steps: PairStep[] = [];
+    client.onConfirmCode((c) => codes.push(c));
+    client.onStep((s) => steps.push(s));
+
+    const pairing = client.connect({ host: "h", port: 1, hostKey: HOST_KEY, confirm: true });
+    await vi.waitFor(() => expect(fake.sent.length).toBe(1));
+    expect(client.state).toBe("pairing");
+    // A person is deciding, so the attempt waits longer than a handshake does.
+    expect(timers.map((t) => t.ms)).toEqual([CONFIRM_TIMEOUT_MS]);
+    expect(fake.sent[0]).toMatchObject({
+      op: "pair_request",
+      args: { device: DEVICE, commit: "commit-1" },
+    });
+    fake.reply({ id: fake.sent[0].id, ok: true, result: { nonce: "host-n" } });
+
+    await vi.waitFor(() => expect(fake.sent.length).toBe(2));
+    expect(fake.sent[1]).toMatchObject({
+      op: "pair_confirm",
+      args: { nonce: "device-for-host-n" },
+    });
+    expect(codes).toEqual(["482913"]);
+    expect(steps).toContain("confirming");
+
+    fake.reply({
+      id: fake.sent[1].id,
+      ok: true,
+      result: { deviceId: "d", host: { name: "Mac", appVersion: "1", os: "macos" }, relay: null },
+    });
+    await vi.waitFor(() => expect(fake.sent.length).toBe(3));
+    expect(fake.sent[2].op).toBe("get_workspace");
+    fake.reply({ id: fake.sent[2].id, ok: true, result: null });
+    await pairing;
+    // Spent: a reconnect says `hello`, not `pair_request`.
+    expect(client.target?.confirm).toBeUndefined();
+  });
+
+  it("is not retried when the Mac says no — asking again is the user's call", async () => {
+    const fake = fakeSocket();
+    const { timers, setTimer, clearTimer } = captureTimers();
+    const client = new ProtocolClient({
+      openSocket: fake.factory,
+      device: DEVICE,
+      setTimer,
+      clearTimer,
+    });
+    const pairing = client.connect({ host: "h", port: 1, hostKey: HOST_KEY, confirm: true });
+    await vi.waitFor(() => expect(fake.sent.length).toBe(1));
+    fake.reply({ id: fake.sent[0].id, ok: true, result: { nonce: "host-n" } });
+    await vi.waitFor(() => expect(fake.sent.length).toBe(2));
+    fake.reply({ id: fake.sent[1].id, ok: false, error: "Pairing was declined on your Mac." });
+    await expect(pairing).rejects.toThrow("declined");
+    expect(client.state).toBe("error");
+    expect(timers).toHaveLength(0);
   });
 });
 

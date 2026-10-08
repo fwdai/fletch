@@ -4,5 +4,11 @@
 <dict>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Fletch uses the microphone to dictate messages to your agents. Audio is sent to your paired Mac for transcription.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Fletch finds your Mac on this network and connects to it directly.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_fletch._tcp</string>
+	</array>
 </dict>
 </plist>

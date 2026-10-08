@@ -10,10 +10,11 @@
 //! a new `connect` never disturbs an existing one, and a caller that holds a
 //! stale id cannot send on, close, or hear another caller's connection.
 //!
-//! There is no Tauri in here. Both apps wrap this in four thin commands
+//! There is no Tauri in here. Both apps wrap this in the same thin commands
 //! (`remote_connect`, `remote_send`, `remote_close`,
-//! `remote_device_public_key`) and hand [`ClientEvent`] to their event bus, so
-//! the phone and the desktop dial hosts through the same code.
+//! `remote_device_public_key`, `remote_pair_commit`, `remote_pair_code`) and
+//! hand [`ClientEvent`] to their event bus, so the phone and the desktop dial
+//! hosts through the same code.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -21,7 +22,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use futures_util::stream::{SplitSink, SplitStream};
+use futures_util::stream::{FuturesUnordered, SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
 use serde::Serialize;
 use tokio::sync::Mutex;
@@ -32,7 +33,8 @@ use tokio_tungstenite::tungstenite::{Bytes, Message};
 
 use crate::dial::{self, Ws};
 use crate::keys::{StaticKey, DEVICE_KEY_FILE};
-use crate::noise::{initiate, Channel, MAX_MESSAGE_PLAINTEXT};
+use crate::noise::{initiate, Channel, HOST_KEY_MISMATCH, MAX_MESSAGE_PLAINTEXT};
+use crate::pairing;
 use crate::Result;
 
 type Writer = SplitSink<Ws, Message>;
@@ -83,6 +85,10 @@ impl Default for Keepalive {
 pub struct Target {
     /// A LAN `ws://` or a relay `wss://` — one candidate, already chosen.
     pub url: String,
+    /// Other URLs for the same host, raced against `url` within the same
+    /// budget: a LAN candidate's `.local` name beside its saved address. The
+    /// host key, not the URL, says who answered.
+    pub alternates: Vec<String>,
     /// The host key the caller pins, base64url. `None` is trust on first use:
     /// whatever the handshake authenticates comes back in [`ConnectResult`].
     pub host_key: Option<String>,
@@ -152,6 +158,22 @@ struct Conn {
     /// Pings sent since the last pong. The keepalive task raises it, the read
     /// loop zeroes it (see [`Keepalive`]).
     missed_pongs: u32,
+    /// The nonce this end committed to for a confirmed pairing, held between
+    /// [`Dialer::pair_commit`] and [`Dialer::pair_code`]. Kept here rather
+    /// than handed to the webview, which only ever sees the commitment until
+    /// the host has answered with its own nonce.
+    pair_nonce: Option<[u8; pairing::NONCE_LEN]>,
+}
+
+/// The device's half of a confirmed pairing, once the host's nonce is in: the
+/// nonce to reveal and the code to show.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PairCode {
+    /// This end's nonce, base64url — `pair_confirm`'s argument.
+    pub nonce: String,
+    /// The six digits the Mac shows too.
+    pub code: String,
 }
 
 /// Every live connection this client holds, plus the device identity they all
@@ -217,30 +239,41 @@ impl Dialer {
         let deadline = target
             .timeout_ms
             .map(|ms| Instant::now() + Duration::from_millis(ms));
-        // Both address families race inside `dial::connect`, so one that
-        // blackholes cannot spend the budget on behalf of the other.
-        let dialled = within(deadline, dial::connect(&target.url))
-            .await
-            .ok_or_else(|| timed_out(&target.url, target.timeout_ms))?;
-        let mut ws = dialled.map_err(|e| format!("cannot reach {}: {e}", target.url))?;
-        // The borrow of `ws` ends with the statement, so the socket is ours
-        // again whether the handshake finished, failed or ran out of time.
-        let handshaken = within(
-            deadline,
-            initiate(&mut ws, &key, target.host_key.as_deref()),
-        )
+        // Every URL for the host runs its own dial *and* handshake, and the
+        // first to finish one wins: the race is for the pinned host, not for
+        // whichever address opens a socket first. A saved IP that now belongs
+        // to another Fletch machine fails its handshake and loses to the
+        // `.local` name that reaches the right one. Address families race
+        // inside each dial (`dial::connect`), so nothing that blackholes can
+        // spend the budget on behalf of the rest. Losers still in flight are
+        // dropped with the race.
+        let expected = target.host_key.as_deref();
+        let urls: Vec<&str> = std::iter::once(target.url.as_str())
+            .chain(target.alternates.iter().map(String::as_str))
+            .collect();
+        let raced = within(deadline, async {
+            let mut attempts: FuturesUnordered<_> = urls
+                .iter()
+                .enumerate()
+                .map(|(i, url)| {
+                    let key = key.clone();
+                    async move { (i, open(url, &key, expected).await) }
+                })
+                .collect();
+            let mut failures = Vec::new();
+            while let Some((i, opened)) = attempts.next().await {
+                match opened {
+                    Ok(found) => return Ok(found),
+                    Err(e) => failures.push((i, e)),
+                }
+            }
+            Err(failures)
+        })
         .await;
-        let channel = match handshaken {
-            Some(Ok(channel)) => channel,
-            Some(Err(e)) => {
-                close_ws(&mut ws, CLOSE_BAD_FRAME, &e).await;
-                return Err(e);
-            }
-            None => {
-                let e = timed_out(&target.url, target.timeout_ms);
-                close_ws(&mut ws, u16::from(CloseCode::Normal), &e).await;
-                return Err(e);
-            }
+        let (ws, channel) = match raced {
+            Some(Ok(found)) => found,
+            Some(Err(failures)) => return Err(reported_failure(failures)),
+            None => return Err(timed_out(&target.url, target.timeout_ms)),
         };
         let host_key = channel.remote_static_base64()?;
 
@@ -252,6 +285,7 @@ impl Dialer {
             writer,
             channel,
             missed_pongs: 0,
+            pair_nonce: None,
         }));
         self.conns.lock().await.insert(id, conn);
         self.clone().spawn_reader(reader, id);
@@ -311,6 +345,40 @@ impl Dialer {
             let _ = conn.writer.close().await;
         }
         Ok(())
+    }
+
+    /// Start a confirmed pairing on `id`: draw this end's nonce, keep it, and
+    /// answer with the commitment to send in `pair_request` (docs/
+    /// remote-protocol.md, "Confirmed pairing"). A second call replaces the
+    /// nonce, so a retried request never reveals one it did not commit to.
+    pub async fn pair_commit(&self, id: ConnectionId) -> Result<String> {
+        let conn = self
+            .conn(id)
+            .await
+            .ok_or_else(|| "not connected".to_string())?;
+        let nonce = pairing::nonce()?;
+        conn.lock().await.pair_nonce = Some(nonce);
+        Ok(crate::encode_key(&pairing::commitment(&nonce)))
+    }
+
+    /// Finish this end's half once the host has sent `host_nonce`: the nonce to
+    /// reveal and the code to show. The committed nonce is used up, so it can
+    /// be revealed against one host nonce only.
+    pub async fn pair_code(&self, id: ConnectionId, host_nonce: &str) -> Result<PairCode> {
+        let host_nonce = pairing::decode(host_nonce, "the host's nonce")?;
+        let conn = self
+            .conn(id)
+            .await
+            .ok_or_else(|| "not connected".to_string())?;
+        let mut conn = conn.lock().await;
+        let nonce = conn
+            .pair_nonce
+            .take()
+            .ok_or_else(|| "no pairing was started on this connection".to_string())?;
+        Ok(PairCode {
+            nonce: crate::encode_key(&nonce),
+            code: pairing::code(conn.channel.handshake_hash(), &nonce, &host_nonce),
+        })
     }
 
     /// This device's public key, base64url — what a host records when pairing.
@@ -467,6 +535,37 @@ async fn within<F: std::future::Future>(deadline: Option<Instant>, fut: F) -> Op
         Some(at) => tokio::time::timeout_at(at, fut).await.ok(),
         None => Some(fut.await),
     }
+}
+
+/// Dial `url` and run the handshake on it. A failed handshake closes the socket
+/// with 4001, as it always has.
+async fn open(url: &str, key: &StaticKey, expected: Option<&str>) -> Result<(Ws, Channel)> {
+    let mut ws = dial::connect(url)
+        .await
+        .map_err(|e| format!("cannot reach {url}: {e}"))?;
+    match initiate(&mut ws, key, expected).await {
+        Ok(channel) => Ok((ws, channel)),
+        Err(e) => {
+            close_ws(&mut ws, CLOSE_BAD_FRAME, &e).await;
+            Err(e)
+        }
+    }
+}
+
+/// When every URL failed, the one failure to report: the first, in the
+/// caller's order, that is not a host-key mismatch — or the mismatch, when
+/// every URL met the wrong host. A stranger answering at an address the host
+/// has left says nothing about the host's key; only a mismatch everywhere is
+/// worth the "pair again" that the caller attaches to one, since it is never
+/// retried.
+fn reported_failure(mut failures: Vec<(usize, String)>) -> String {
+    failures.sort_by_key(|(i, _)| *i);
+    failures
+        .iter()
+        .find(|(_, e)| !e.contains(HOST_KEY_MISMATCH))
+        .or(failures.first())
+        .map(|(_, e)| e.clone())
+        .unwrap_or_else(|| "no address to dial".to_string())
 }
 
 /// The error a caller sees when opening a connection overran its budget. The

@@ -25,6 +25,9 @@ tauri-plugin-fs = "2"
 tauri-plugin-notification = "2"
 tauri-plugin-deep-link = "2"
 tauri-plugin-push = { path = "plugins/push" }
+# The "Macs nearby" list: Bonjour browsing through NWBrowser, in repo for the
+# same reason push is.
+tauri-plugin-nearby = { path = "plugins/nearby" }
 
 # The wire protocol and the client end of it, shared with the desktop
 # (`src-tauri/`): the Noise channel, the device key file, the chunked frame

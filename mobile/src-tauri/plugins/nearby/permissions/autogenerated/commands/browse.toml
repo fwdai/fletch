@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-browse"
+description = "Enables the browse command without any pre-configured scope."
+commands.allow = ["browse"]
+
+[[permission]]
+identifier = "deny-browse"
+description = "Denies the browse command without any pre-configured scope."
+commands.deny = ["browse"]

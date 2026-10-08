@@ -108,6 +108,9 @@ export interface MobileState extends ChatsSlice, ProposalsSlice {
    *  waits are long enough (a LAN dial timing out, then a relay) that a
    *  screen showing nothing reads as a hung app. */
   pairStep: PairStep | null;
+  /** The six digits of a confirmed pairing in progress — what the Pair screen
+   *  shows while the Mac decides. Null outside one. */
+  pairCode: string | null;
   /** The `fletch://pair` link the app was opened with, so the Pair screen can
    *  show which Mac it is pairing with rather than an empty form — and keep
    *  the details for a one-tap retry if it fails. */
@@ -120,7 +123,8 @@ export interface MobileState extends ChatsSlice, ProposalsSlice {
   /** The paired host's public key — pinned on first contact, and what makes
    *  the app paired at all. */
   hostKey: string | null;
-  /** The host's relay base URL, when it has one; the fallback path. */
+  /** The host's relay base URL, when it has one; the fallback path. Set on
+   *  the Mac only — this mirrors what its last handshake answered. */
   relay: string | null;
   /** Which path the live connection took — mirrored from the client for the
    *  Host sheet, and null when there is no connection. */
@@ -215,8 +219,6 @@ export interface MobileState extends ChatsSlice, ProposalsSlice {
   pairFromLink(target: HostTarget): void;
   reconnect(): Promise<void>;
   unpair(): Promise<void>;
-  /** Add or change the relay for the paired host without re-pairing. */
-  setRelay(url: string | null): Promise<void>;
   setTheme(theme: ThemeMode): void;
   setSystemTheme(t: "light" | "dark"): void;
   setActiveFirst(on: boolean): void;
@@ -596,6 +598,7 @@ export const useStore = create<MobileState>()((set, get) => ({
   connectionError: null,
   retrying: false,
   pairStep: null,
+  pairCode: null,
   pairTarget: null,
   hostInfo: null,
   protocol: null,
@@ -659,6 +662,9 @@ export const useStore = create<MobileState>()((set, get) => ({
     // behalf of one would be describing a connection the user did not ask for.
     client.onStep((step) => {
       if (get().pairStep) set({ pairStep: step });
+    });
+    client.onConfirmCode((code) => {
+      if (get().pairStep) set({ pairCode: code });
     });
     // The log of an open thread is kept current by live events, which a
     // dropped socket or a backgrounded webview silently misses — so every
@@ -835,7 +841,7 @@ export const useStore = create<MobileState>()((set, get) => ({
   async connect(target) {
     // The client owns the target from here: it strips the spent pairing token
     // and pins the host key the handshake authenticated.
-    set({ connectionError: null, pairStep: "connecting" });
+    set({ connectionError: null, pairStep: "connecting", pairCode: null });
     try {
       const snapshot = await client.connect(target);
       await adopt(set, get, snapshot.host);
@@ -848,7 +854,7 @@ export const useStore = create<MobileState>()((set, get) => ({
       // Cleared here and nowhere else: everything the user is waiting for has
       // either happened or failed, which is not true at any earlier point the
       // client reports.
-      set({ pairStep: null });
+      set({ pairStep: null, pairCode: null });
     }
   },
 
@@ -927,16 +933,6 @@ export const useStore = create<MobileState>()((set, get) => ({
       // leaving it on the Pair screen would offer the user a dead retry.
       pairTarget: null,
     });
-  },
-
-  /** The relay is a property of the paired host, not of a pairing: a link that
-   *  never carried one (or a hand-typed pairing) can be given one here, and it
-   *  applies from the next connection attempt on. */
-  async setRelay(url) {
-    const relay = url?.trim() || null;
-    client.setRelay(relay);
-    set({ relay });
-    if (!mockEnabled()) await saveSettings({ relay: relay ?? undefined });
   },
 
   setTheme(theme) {

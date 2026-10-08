@@ -259,6 +259,27 @@
   flex-shrink: 0;
   gap: 8px;
 }
+
+/* `SetDisclosure`: a link, not a row — it should not compete with the
+   settings above it. */
+.set-disclosure {
+  padding-top: 12px;
+}
+.set-disclosure-btn {
+  gap: 4px;
+  color: var(--fg-3);
+  cursor: pointer;
+  transition: color 0.12s;
+}
+.set-disclosure-btn:hover {
+  color: var(--fg-1);
+}
+.set-disclosure-btn svg {
+  transition: transform 0.18s var(--ease);
+}
+.set-disclosure-btn svg.open {
+  transform: rotate(180deg);
+}
 /* Dropdowns used as row controls (e.g. the sandbox engine select) need an
    explicit width — as a flex item the select would shrink-wrap its label. */
 .set-row-c .ui-select {
@@ -1197,12 +1218,6 @@
 }
 
 /* ── MOBILE DEVICES ──────────────────────────────────────────────────── */
-/* The listen port sits beside a wrapping address list, so it reads as a label
-   rather than a control. */
-.set-remote-port {
-  color: var(--fg-3);
-  white-space: nowrap;
-}
 /* Relay URL, edited in place beside the link's state. */
 .set-relay-url {
   width: 230px;
@@ -1259,10 +1274,6 @@
   color: var(--fg-0);
   line-height: 1.1;
 }
-.set-pair[data-expired="1"] .set-pair-code {
-  color: var(--fg-3);
-  text-decoration: line-through;
-}
 .set-pair-copy {
   color: var(--fg-2);
   margin-top: 6px;
@@ -1283,11 +1294,23 @@
   gap: 8px;
   margin-top: 12px;
 }
-/* This Mac's public key: reference material, not something to read out. */
-.set-pair-host {
+/* The address a phone types, beside the code it types with it. */
+.set-pair-addr {
+  color: var(--fg-0);
+  margin-top: 8px;
+}
+/* "Can't scan?": the typed-entry fallback, out of the way of the QR. */
+.set-pair-manual {
+  margin-top: 10px;
+}
+.set-pair-manual-btn {
   color: var(--fg-3);
-  margin-top: 12px;
-  overflow-wrap: anywhere;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.set-pair-manual-btn:hover {
+  color: var(--fg-1);
 }
 /* White quiet zone regardless of theme — a dark-on-dark QR does not scan. */
 .set-pair-qr {

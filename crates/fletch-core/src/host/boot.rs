@@ -348,7 +348,7 @@ pub fn boot(cfg: BootConfig) -> Result<Engine, BootError> {
     // further down, once the remote state it needs exists.
     let (events, _) = broadcast::channel(EVENT_BUFFER);
     let sink = Arc::new(FanoutSink::new(vec![
-        host_sink,
+        host_sink.clone(),
         Arc::new(BroadcastSink(events.clone())),
     ]));
 
@@ -695,6 +695,12 @@ pub fn boot(cfg: BootConfig) -> Result<Engine, BootError> {
             match serving {
                 RemoteBoot::Off => unreachable!("handled above"),
                 RemoteBoot::Desktop => {
+                    // Someone is at this screen, so a phone may pair by asking
+                    // and being accepted here. The host's own sink, not the
+                    // fanout: the prompt is for this window, never for the
+                    // remote taps. A headless host installs none and refuses
+                    // such requests, which sends the phone to the code.
+                    state.prompts().set_confirmer(host_sink.clone());
                     // The URL is stored before the autostart, so `start` brings
                     // the host link up with the listener. Safe outside the async
                     // runtime: nothing is enabled yet, so this cannot spawn the
@@ -766,6 +772,7 @@ pub fn boot(cfg: BootConfig) -> Result<Engine, BootError> {
     #[cfg(unix)]
     if let Some(exit) = signals {
         let supervisor = supervisor.clone();
+        let remote = remote.clone();
         crate::host::spawn(async move {
             use tokio::signal::unix::{signal, SignalKind};
             let mut sigint = signal(SignalKind::interrupt()).expect("install SIGINT handler");
@@ -776,6 +783,10 @@ pub fn boot(cfg: BootConfig) -> Result<Engine, BootError> {
             }
             tracing::info!("termination signal received; killing child processes");
             supervisor.shutdown();
+            // Off the nearby list before the process goes.
+            if let Some(remote) = &remote {
+                remote.withdraw_announcement();
+            }
             exit();
         });
     }

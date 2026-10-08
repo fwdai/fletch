@@ -11,11 +11,14 @@
 //! pairing codes and the device registry, `server` the WebSocket listener,
 //! `relay` the outbound host link that carries off-LAN devices, `session` the
 //! live-connection registry, `dispatch` the op allowlist, `events` the taps on
-//! the engine's event stream, `push` the two alert triggers those taps raise.
-//! This module owns the state those eight share and the lifecycle of the
-//! listener and the relay link.
+//! the engine's event stream, `push` the two alert triggers those taps raise,
+//! `discovery` the LAN announcement, `confirm` the Mac's side of a confirmed
+//! pairing. This module owns the state those share
+//! and the lifecycle of the listener, its announcement and the relay link.
 
 mod auth;
+pub mod confirm;
+mod discovery;
 mod dispatch;
 mod events;
 pub mod push;
@@ -172,6 +175,9 @@ pub struct RemoteStatus {
     /// inline. Currently only one: `devices.json` is not writable, so pairing
     /// is refused because the credential would not survive a restart.
     pub error: Option<String>,
+    /// A device waiting for this Mac to accept it, if one is. The same prompt
+    /// `confirm::PAIR_REQUEST_EVENT` raised, for a window that missed it.
+    pub pair_request: Option<confirm::PairPrompt>,
 }
 
 /// `remote_begin_pairing`' reply: the code to read out and the deep link to
@@ -204,6 +210,12 @@ struct Inner {
     relay: Option<RelayLink>,
     /// Injectable so the relay tests do not sleep.
     relay_timing: RelayTiming,
+    /// The LAN announcement, `Some` exactly while the listener runs (and the
+    /// daemon could start). Replaced when the port moves.
+    advertiser: Option<discovery::Advertiser>,
+    /// Whether to announce at all. Off under test: the socket tests boot a
+    /// host per test, and none of them should appear on the real network.
+    discovery: bool,
 }
 
 struct ServerHandle {
@@ -225,6 +237,7 @@ pub struct RemoteState {
     host: Option<HostKey>,
     host_error: Option<String>,
     pairing: PairingTokens,
+    prompts: confirm::PairPrompts,
     events: broadcast::Sender<Arc<str>>,
     /// Every live connection, so `RemoteDevice::connected` is a fact about
     /// sockets and a revoke can reach the socket it just de-authorized.
@@ -257,6 +270,7 @@ impl RemoteState {
             host,
             host_error,
             pairing: PairingTokens::new(),
+            prompts: confirm::PairPrompts::default(),
             events,
             sessions: Arc::new(Sessions::new()),
             inner: Mutex::new(Inner {
@@ -266,6 +280,8 @@ impl RemoteState {
                 relay_url: None,
                 relay: None,
                 relay_timing: RelayTiming::default(),
+                advertiser: None,
+                discovery: !cfg!(test),
             }),
         })
     }
@@ -297,6 +313,12 @@ impl RemoteState {
 
     pub fn pairing(&self) -> &PairingTokens {
         &self.pairing
+    }
+
+    /// The confirmed-pairing prompts. Their `set_confirmer` is how a host with
+    /// a screen opts in; `answer` is the person's click.
+    pub fn prompts(&self) -> &confirm::PairPrompts {
+        &self.prompts
     }
 
     /// The configured relay base URL, as `set_relay` normalized it. The URL is
@@ -337,6 +359,7 @@ impl RemoteState {
             port: bound,
             shutdown,
         });
+        self.advertise(&mut inner, bound);
         self.spawn_relay(&mut inner);
         tracing::info!(port = bound, "remote: listening");
         Ok(bound)
@@ -377,6 +400,7 @@ impl RemoteState {
             shutdown,
         });
         inner.port = port;
+        self.advertise(&mut inner, bound);
         drop(inner);
         if let Some(old) = old {
             let _ = old.shutdown.send(());
@@ -405,9 +429,23 @@ impl RemoteState {
             tracing::info!(port = handle.port, "remote: stopped");
         }
         let link = inner.relay.take();
+        // Withdrawn with the listener: a phone must not list a Mac that will
+        // refuse it. Dropped outside the lock, since the goodbye is waited for.
+        let advertiser = inner.advertiser.take();
         drop(inner);
+        drop(advertiser);
         self.sessions.close_all(CLOSE_DISABLED);
         drop(link);
+    }
+
+    /// Withdraw the LAN announcement and nothing else: the process is going
+    /// away, and a phone should drop this host from its nearby list now rather
+    /// than when the record's TTL lapses. Both hosts' exit paths call it — the
+    /// desktop's `ExitRequested`, and the termination-signal listener `boot`
+    /// installs. Idempotent.
+    pub fn withdraw_announcement(&self) {
+        let advertiser = self.inner.lock().advertiser.take();
+        drop(advertiser);
     }
 
     /// Set (or clear) the relay base URL and bring the link in line with it.
@@ -436,6 +474,26 @@ impl RemoteState {
             self.spawn_relay(&mut inner);
         }
         Ok(())
+    }
+
+    /// Announce this host on the LAN at `port`, replacing any earlier
+    /// announcement. A failure is logged and nothing else: discovery only saves
+    /// a phone from typing an address, and the listener works without it.
+    fn advertise(&self, inner: &mut Inner, port: u16) {
+        // The old records go first, so a browser never sees two ports at once.
+        inner.advertiser = None;
+        let Some(host) = self.host.as_ref().filter(|_| inner.discovery) else {
+            return;
+        };
+        match discovery::Advertiser::start(
+            host.public_bytes(),
+            &host.public_base64(),
+            &machine_name(),
+            port,
+        ) {
+            Ok(advertiser) => inner.advertiser = Some(advertiser),
+            Err(e) => tracing::warn!(error = %e, "remote: not announced on the local network"),
+        }
     }
 
     /// Start the host link if remote access is on, a URL is set and no link is
@@ -500,6 +558,7 @@ impl RemoteState {
                 .devices
                 .storage_error()
                 .or_else(|| self.host_error.clone()),
+            pair_request: self.prompts.current(),
         }
     }
 

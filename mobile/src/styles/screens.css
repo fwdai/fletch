@@ -722,8 +722,8 @@
   line-height: 1.5;
 }
 .pair label,
-.ap-field label,
-.relay-field label {
+.pair .label,
+.ap-field label {
   display: block;
   font-size: 11px;
   font-weight: 600;
@@ -736,8 +736,7 @@
   margin-top: 2px;
 }
 .pair input,
-.ap-field input,
-.relay-field input {
+.ap-field input {
   width: 100%;
   background: var(--bg-2);
   border: 1px solid var(--bd-soft);
@@ -749,20 +748,8 @@
   transition: border-color 0.2s;
 }
 .pair input:focus,
-.ap-field input:focus,
-.relay-field input:focus {
+.ap-field input:focus {
   border-color: var(--accent-line);
-}
-/* Relay URL in the host sheet: the same field as pairing, one row down from
-   the values above it. */
-.relay-field {
-  margin-top: 16px;
-}
-.relay-field .hint {
-  font-size: 12px;
-  color: var(--fg-3);
-  line-height: 1.45;
-  margin-top: 6px;
 }
 .pair .grid {
   display: grid;
@@ -778,6 +765,68 @@
   font-size: 12.5px;
   color: var(--fg-3);
   line-height: 1.5;
+}
+/* "Macs nearby": one row per announcing host, by name — the AirDrop list. */
+.nearby {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--bd-soft);
+  border-radius: 12px;
+  overflow: hidden;
+}
+.nearby-host {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 13px;
+  font-size: 15px;
+  color: var(--fg-0);
+  background: var(--bg-2);
+  text-align: left;
+}
+.nearby-host + .nearby-host {
+  border-top: 1px solid var(--bd-soft);
+}
+.nearby-host span {
+  flex: 1;
+  min-width: 0;
+}
+.nearby-host[aria-pressed="true"] {
+  background: var(--bg-3);
+}
+.nearby-host[aria-pressed="true"] svg:last-child {
+  color: var(--accent);
+}
+/* A confirmed pairing's six digits, while the Mac decides: the thing to
+   compare, so the largest thing on the screen. */
+.confirm-code {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 18px 14px;
+  border: 1px solid var(--bd-soft);
+  border-radius: 14px;
+  background: var(--bg-2);
+  text-align: center;
+}
+.confirm-code .digits {
+  font-family: var(--font-mono);
+  font-size: 34px;
+  font-weight: 500;
+  letter-spacing: 0.12em;
+  color: var(--fg-0);
+}
+.pair .confirm-code p {
+  font-size: 13px;
+}
+/* The typed-address fallback, kept out of the way of the list above it. */
+.pair-manual {
+  align-self: flex-start;
+  font-size: 13px;
+  color: var(--fg-3);
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
 /* Sits where the error line does, and for the same reason: whatever the last
    thing to happen was, it is readable next to the button that started it. */

@@ -133,6 +133,7 @@ const FAST: Keepalive = Keepalive {
 fn target(url: &str, host_key: Option<String>) -> Target {
     Target {
         url: url.to_string(),
+        alternates: Vec::new(),
         host_key,
         timeout_ms: Some(10_000),
     }
@@ -492,4 +493,148 @@ async fn a_peer_that_pongs_stays_connected() {
         .unwrap()
         .unwrap();
     assert!(pings >= 3, "the dialer pinged only {pings} times");
+}
+
+/// Both ends of a real handshake derive the same six digits: the device from
+/// its own nonce and the host's, the host from the revealed nonce, which has to
+/// match the commitment it was sent first.
+#[tokio::test]
+async fn both_ends_derive_the_same_pairing_code() {
+    let key = Arc::new(StaticKey::generate().unwrap());
+    let (url, mut accepted) = host(key.clone()).await;
+    let (dialer, _events, _dir) = dialer();
+    let id = dialer
+        .connect(target(&url, None))
+        .await
+        .unwrap()
+        .connection_id;
+    let host_end = accepted.recv().await.unwrap();
+
+    let commit = dialer.pair_commit(id).await.unwrap();
+    let host_nonce = pairing::nonce().unwrap();
+    let device = dialer
+        .pair_code(id, &crate::encode_key(&host_nonce))
+        .await
+        .unwrap();
+
+    let revealed = pairing::decode(&device.nonce, "nonce").unwrap();
+    assert_eq!(crate::encode_key(&pairing::commitment(&revealed)), commit);
+    assert_eq!(
+        pairing::code(host_end.channel.handshake_hash(), &revealed, &host_nonce),
+        device.code
+    );
+
+    // The committed nonce is spent: it cannot be revealed against another.
+    assert!(dialer
+        .pair_code(id, &crate::encode_key(&host_nonce))
+        .await
+        .is_err());
+}
+
+/// A URL nothing listens on: bound a moment ago, closed now, so it refuses.
+fn dead_url() -> String {
+    let l = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+    format!("ws://{}/ws", l.local_addr().unwrap())
+}
+
+fn racing(url: &str, alternate: &str, host_key: Option<String>) -> Target {
+    Target {
+        alternates: vec![alternate.to_string()],
+        ..target(url, host_key)
+    }
+}
+
+/// The IP-change case discovery exists for: the saved address now belongs to
+/// another Fletch machine, and the host's `.local` name reaches the real one.
+/// The race is won by the pinned host, not by the first socket to open.
+#[tokio::test]
+async fn a_stranger_at_the_saved_address_loses_to_the_pinned_host() {
+    let ours = Arc::new(StaticKey::generate().unwrap());
+    let theirs = Arc::new(StaticKey::generate().unwrap());
+    let (stranger, _s) = host(theirs).await;
+    let (pinned, mut accepted) = host(ours.clone()).await;
+    let (dialer, _events, _dir) = dialer();
+
+    let result = dialer
+        .connect(racing(&stranger, &pinned, Some(ours.public_base64())))
+        .await
+        .unwrap();
+    assert_eq!(result.host_key, ours.public_base64());
+    accepted.recv().await.unwrap();
+}
+
+/// Both URLs reach the host: one connection comes of it, and it works.
+#[tokio::test]
+async fn when_both_urls_answer_one_connection_wins() {
+    let key = Arc::new(StaticKey::generate().unwrap());
+    let (url, mut accepted) = host(key.clone()).await;
+    let (dialer, mut events, _dir) = dialer();
+
+    let result = dialer
+        .connect(racing(&url, &url, Some(key.public_base64())))
+        .await
+        .unwrap();
+    let mut first = accepted.recv().await.unwrap();
+    first.send("{\"hello\":1}").await;
+    // Whichever handshake finished first is the one the dialer kept; the other,
+    // if it finished at all, was dropped and hears nothing.
+    let frame = tokio::time::timeout(Duration::from_secs(2), next_message(&mut events)).await;
+    if let Ok(frame) = frame {
+        assert_eq!(frame.connection_id, result.connection_id);
+    }
+    assert_eq!(dialer.conns.lock().await.len(), 1);
+}
+
+/// Winning the race to a socket is not winning the race: an alternate that
+/// answers with the wrong key is refused as surely as the primary would be.
+/// (Reported as the primary's refusal, by the rule below: not every URL met
+/// the wrong host.)
+#[tokio::test]
+async fn the_pin_holds_when_only_the_alternate_answers() {
+    let ours = StaticKey::generate().unwrap();
+    let theirs = Arc::new(StaticKey::generate().unwrap());
+    let (stranger, _s) = host(theirs).await;
+    let (dialer, _events, _dir) = dialer();
+
+    let err = dialer
+        .connect(racing(&dead_url(), &stranger, Some(ours.public_base64())))
+        .await
+        .unwrap_err();
+    assert!(err.starts_with("cannot reach"), "{err}");
+    assert!(dialer.conns.lock().await.is_empty());
+}
+
+/// Every URL met a host with the wrong key: that is the mismatch, reported as
+/// such so the caller stops and asks the user to pair again.
+#[tokio::test]
+async fn a_mismatch_everywhere_is_reported_as_one() {
+    let ours = StaticKey::generate().unwrap();
+    let theirs = Arc::new(StaticKey::generate().unwrap());
+    let (stranger, _s) = host(theirs).await;
+    let (dialer, _events, _dir) = dialer();
+
+    let err = dialer
+        .connect(racing(&stranger, &stranger, Some(ours.public_base64())))
+        .await
+        .unwrap_err();
+    assert!(err.contains(HOST_KEY_MISMATCH), "{err}");
+    assert!(dialer.conns.lock().await.is_empty());
+}
+
+/// A mismatch is reported (and so never retried) only when every URL met the
+/// wrong host. A stranger at the saved address while the host's own name does
+/// not answer is a host that is away, not one that changed its key.
+#[tokio::test]
+async fn a_mismatch_on_one_url_is_not_final_while_another_failed_otherwise() {
+    let ours = StaticKey::generate().unwrap();
+    let theirs = Arc::new(StaticKey::generate().unwrap());
+    let (stranger, _s) = host(theirs).await;
+    let (dialer, _events, _dir) = dialer();
+
+    let err = dialer
+        .connect(racing(&stranger, &dead_url(), Some(ours.public_base64())))
+        .await
+        .unwrap_err();
+    assert!(!err.contains(HOST_KEY_MISMATCH), "{err}");
+    assert!(err.starts_with("cannot reach"), "{err}");
 }

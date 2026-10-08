@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import type { PairingInvite } from "@/api";
 import { Button } from "@/components/ui/Button";
 import { CopyButton } from "@/components/ui/CopyButton";
+import { parsePairUrl } from "@/remote/pairing";
 import { presetLabel } from "./presets";
 
 const QR_SIZE = 148;
@@ -24,23 +25,30 @@ function useCountdown(iso: string): number {
   return left;
 }
 
-/** The live pairing code: readable text for manual entry (v2 phones have no
- *  scanner) plus the same `fletch://pair` deep link as a QR for the ones that
- *  do. Single use and five minutes, so the countdown is part of the affordance
- *  rather than decoration.
- *
- *  The host ID under it is this Mac's public key. The QR carries it, so a
- *  scanned pairing authenticates the host outright; a hand-typed one pins
- *  whatever key it meets, and this is the string to check it against. */
+/** A live pairing invitation — the window during which this Mac will pair a
+ *  device — QR first: the iPhone's own camera opens the `fletch://pair` link
+ *  it encodes, which brings everything the phone needs and authenticates this
+ *  Mac outright. Picking this Mac from the phone's "Macs nearby" list is the
+ *  fallback, one click away rather than the headline; the phone asks, and this
+ *  Mac's prompt (`PairRequestPrompt`) is where it is accepted. The code and
+ *  address are the last resort, for networks where the phone cannot see the
+ *  list. Single use and five
+ *  minutes, so the countdown is part of the affordance rather than decoration.
+ *  The copied link is how another Mac pairs (Paired hosts › Add a host). */
 export function PairingCard({
   invite,
-  hostId,
+  hostName,
+  closed,
   lanOnly,
   onRegenerate,
   onDismiss,
 }: {
   invite: PairingInvite;
-  hostId?: string;
+  /** What this Mac is called in the phone's nearby list. */
+  hostName?: string;
+  /** The host closed this window early (too many pairing requests from the
+   *  network): the code is spent, whatever the countdown says. */
+  closed?: boolean;
   /** No relay link is up, so the link carries no relay and the phone can
    *  only reach this Mac from the same network. */
   lanOnly?: boolean;
@@ -48,32 +56,67 @@ export function PairingCard({
   onDismiss: () => void;
 }) {
   const left = useCountdown(invite.expiresAt);
-  const expired = left === 0;
+  // Over either way: lapsed, or closed by the host. Same card, different words.
+  const expired = left === 0 || !!closed;
   const mmss = `${Math.floor(left / 60)}:${String(left % 60).padStart(2, "0")}`;
+  const [manual, setManual] = useState(false);
+  const link = parsePairUrl(invite.url);
 
   return (
     <div className="set-pair" data-expired={expired ? "1" : "0"}>
       <div className="set-pair-main">
-        <div className="set-pair-code mono">{invite.token}</div>
         <div className="set-pair-copy text-sm">
-          {expired
-            ? "This code has expired. Generate a new one."
-            : `Enter this code in Fletch on your phone, or scan the code. It grants ${presetLabel(
-                invite.preset,
-              )} access.`}
+          {closed
+            ? "Pairing closed after too many attempts from this network. Generate a new code."
+            : expired
+              ? "This code has expired. Generate a new one."
+              : `Scan this with your iPhone's camera to pair it. It grants ${presetLabel(
+                  invite.preset,
+                )} access.`}
         </div>
         {!expired && lanOnly && (
           <div className="set-inline-warn text-sm">
-            The relay is not connected, so this pairing only works while the phone is on the same
-            network as this Mac. Turn on “Reach this Mac from anywhere” and generate a new code to
-            pair from anywhere.
+            This Mac can't be reached from other networks right now, so keep your phone on the same
+            network while it pairs. Turn on “Reach this Mac from anywhere” to pair from anywhere.
+          </div>
+        )}
+        {!expired && (
+          <div className="set-pair-manual text-sm">
+            {manual ? (
+              <>
+                <div className="set-pair-copy">
+                  {hostName
+                    ? `Pick “${hostName}” under Macs nearby in Fletch on your phone, then accept here when this Mac asks.`
+                    : "Pick this Mac under Macs nearby in Fletch on your phone, then accept here when this Mac asks."}
+                </div>
+                <div className="set-pair-copy">
+                  Not listed? Enter this code
+                  {link ? (
+                    <>
+                      {" "}
+                      and address:{" "}
+                      <span className="set-pair-addr mono">
+                        {link.host}:{link.port}
+                      </span>
+                    </>
+                  ) : (
+                    ":"
+                  )}
+                </div>
+                <div className="set-pair-code mono">{invite.token}</div>
+              </>
+            ) : (
+              <button type="button" className="set-pair-manual-btn" onClick={() => setManual(true)}>
+                Can't scan?
+              </button>
+            )}
           </div>
         )}
         <div className="set-pair-meta text-xs flex-center">
           <span className={`set-pair-clock mono ${left <= 30 ? "urgent" : ""}`}>
-            {expired ? "expired" : `expires in ${mmss}`}
+            {closed ? "closed" : expired ? "expired" : `expires in ${mmss}`}
           </span>
-          <CopyButton text={invite.url} tip="Copy pairing link" />
+          <CopyButton text={invite.url} tip="Copy pairing link, to pair another Mac" />
         </div>
         <div className="set-pair-actions flex-center">
           <Button variant="outline" size="sm" onClick={onRegenerate}>
@@ -83,7 +126,6 @@ export function PairingCard({
             Done
           </Button>
         </div>
-        {hostId && <div className="set-pair-host mono text-xs">host {hostId}</div>}
       </div>
       {!expired && (
         <div className="set-pair-qr">

@@ -21,6 +21,10 @@ export const remoteApi = {
    *  refuses a name it does not define. */
   remoteBeginPairing: (preset: PairingPreset) =>
     invokeLocal<PairingInvite>("remote_begin_pairing", { preset }),
+  /** Accept or decline a device asking to pair. `false` when the request is
+   *  already over (answered elsewhere, withdrawn, timed out). */
+  remoteAnswerPairRequest: (id: string, accept: boolean) =>
+    invokeLocal<boolean>("remote_answer_pair_request", { id, accept }),
   remoteRevokeDevice: (deviceId: string) =>
     invokeLocal<RemoteStatus>("remote_revoke_device", { deviceId }),
 };

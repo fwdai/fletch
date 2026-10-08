@@ -38,6 +38,7 @@ import type {
   ProviderLoginExitEvent,
   ProviderLoginOutputEvent,
 } from "./types/providers";
+import type { PairRequest } from "./types/remote";
 import type {
   RoadmapItem,
   RoadmapItemEvent,
@@ -380,6 +381,26 @@ export function onPublishApprovalResolved(
   cb: (e: PublishApprovalResolved) => void,
 ): Promise<UnlistenFn> {
   return on<PublishApprovalResolved>("publish:approval-resolved", cb);
+}
+
+/** A device on the network asks this Mac to pair, and is showing `code`.
+ *  Local: it is this machine's listener being asked, whatever environment the
+ *  window is driving. */
+export function onPairRequest(cb: (e: PairRequest) => void): Promise<UnlistenFn> {
+  return onLocal<PairRequest>("remote:pair-request", cb);
+}
+
+/** That request is over — answered (here or in another window), withdrawn by
+ *  the device, or timed out. */
+export function onPairRequestEnded(cb: (e: { id: string }) => void): Promise<UnlistenFn> {
+  return onLocal<{ id: string }>("remote:pair-request-ended", cb);
+}
+
+/** The host closed the pairing window itself — after too many pairing
+ *  requests, which anyone on the network can send — so the code on screen no
+ *  longer works. */
+export function onPairingClosed(cb: (e: { reason: string }) => void): Promise<UnlistenFn> {
+  return onLocal<{ reason: string }>("remote:pairing-closed", cb);
 }
 
 /** Fires per line (and at start/finish/failure) while the embedded docker agent

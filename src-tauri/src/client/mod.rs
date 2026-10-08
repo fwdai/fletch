@@ -1,4 +1,4 @@
-// The desktop's four secure-channel commands: this Mac as a *client* of other
+// The desktop's secure-channel commands: this Mac as a *client* of other
 // Fletch hosts, alongside `remote/`, which is this Mac as a host. The two share
 // nothing but the protocol crate — separate keys, separate state — so one
 // machine can be both at once.
@@ -16,7 +16,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use fletch_proto::client::{ClientEvent, ConnectResult, ConnectionId, Dialer, Target};
+use fletch_proto::client::{ClientEvent, ConnectResult, ConnectionId, Dialer, PairCode, Target};
 use tauri::{AppHandle, Emitter, State};
 
 /// The dialer this app's commands work on.
@@ -41,19 +41,22 @@ fn emit(app: &AppHandle, event: ClientEvent) {
     };
 }
 
-/// Open a socket to `url`, run the Noise handshake, and report the host's
+/// Open a socket to `url` (or whichever of `alternates`, the same host's other
+/// URLs, answers first), run the Noise handshake, and report the host's
 /// identity and the new connection's id. `timeout_ms` bounds the dial and the
 /// handshake together.
 #[tauri::command]
 pub async fn remote_connect(
     state: State<'_, Arc<Dialer>>,
     url: String,
+    alternates: Option<Vec<String>>,
     host_key: Option<String>,
     timeout_ms: Option<u64>,
 ) -> Result<ConnectResult, String> {
     state
         .connect(Target {
             url,
+            alternates: alternates.unwrap_or_default(),
             host_key,
             timeout_ms,
         })
@@ -77,6 +80,27 @@ pub async fn remote_close(
     connection_id: ConnectionId,
 ) -> Result<(), String> {
     state.close(connection_id).await
+}
+
+/// Start a confirmed pairing on `connection_id`: this end's nonce stays here,
+/// and the commitment to send in `pair_request` comes back.
+#[tauri::command]
+pub async fn remote_pair_commit(
+    state: State<'_, Arc<Dialer>>,
+    connection_id: ConnectionId,
+) -> Result<String, String> {
+    state.pair_commit(connection_id).await
+}
+
+/// Finish this end's half once the host's nonce is in: the nonce to reveal in
+/// `pair_confirm`, and the six digits to show.
+#[tauri::command]
+pub async fn remote_pair_code(
+    state: State<'_, Arc<Dialer>>,
+    connection_id: ConnectionId,
+    host_nonce: String,
+) -> Result<PairCode, String> {
+    state.pair_code(connection_id, &host_nonce).await
 }
 
 /// This device's public key, base64url — what the host records when pairing.

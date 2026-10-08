@@ -55,6 +55,24 @@ export function wsUrl(target: Pick<HostTarget, "host" | "port">): string {
   return `ws://${host}:${target.port}/ws`;
 }
 
+/** The name a host announces itself under on the LAN, derived from its key:
+ *  `fletch-<first 8 key bytes, hex>.local` (docs/remote-protocol.md,
+ *  "Discovery"). A paired device already holds the key, so it can dial this
+ *  without browsing. Null for a key that is not base64url of at least 8 bytes. */
+export function localHostname(hostKey: string): string | null {
+  const b64 = hostKey.replace(/-/g, "+").replace(/_/g, "/");
+  let bytes: string;
+  try {
+    bytes = atob(b64 + "=".repeat((4 - (b64.length % 4)) % 4));
+  } catch {
+    return null;
+  }
+  if (bytes.length < 8) return null;
+  let hex = "";
+  for (let i = 0; i < 8; i += 1) hex += bytes.charCodeAt(i).toString(16).padStart(2, "0");
+  return `fletch-${hex}.local`;
+}
+
 /** `<relay>/v1/device/<hostKey>` — the phone's endpoint on the relay
  *  (docs/remote-protocol.md, "Relay"). The host key is the route, and it is
  *  already base64url, so nothing needs encoding. */

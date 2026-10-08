@@ -1,4 +1,5 @@
-import type { ReactNode } from "react";
+import { type ReactNode, useState } from "react";
+import { Icon } from "@/components/Icon";
 import type { FeatureFlags } from "@/storage/preferences";
 
 /** Shared building blocks for the full-screen settings panes. These use the
@@ -80,6 +81,27 @@ export function SetRow({
         {sub && <div className="set-row-s text-sm">{sub}</div>}
       </div>
       {children && <div className="set-row-c flex-center">{children}</div>}
+    </div>
+  );
+}
+
+/** Rows most people never need, behind a quiet link at the end of a group:
+ *  the escape hatches for someone who knows what they are changing. Closed on
+ *  every visit. */
+export function SetDisclosure({ label, children }: { label: string; children: ReactNode }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="set-disclosure">
+      <button
+        type="button"
+        className="set-disclosure-btn iflex-center text-sm"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+      >
+        {label}
+        <Icon name="chevD" size={12} className={open ? "open" : undefined} />
+      </button>
+      {open && <div className="set-rows">{children}</div>}
     </div>
   );
 }

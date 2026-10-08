@@ -3,7 +3,7 @@
 // The Noise handshake and every frame after it are identical on both paths, so
 // this is the only place that knows there is more than one.
 
-import { relayDeviceUrl, wsUrl } from "./pairing";
+import { localHostname, relayDeviceUrl, wsUrl } from "./pairing";
 import type { HostTarget, Via } from "./types";
 
 /** How long to wait for the LAN socket to open before moving on. The timeout
@@ -19,6 +19,8 @@ export const RELAY_OPEN_TIMEOUT_MS = 15_000;
 
 export interface Candidate {
   url: string;
+  /** The same host's other URLs, raced against `url` inside one dial. */
+  alternates?: string[];
   via: Via;
   /** Bound on the dial plus handshake, enforced by the transport. */
   timeoutMs?: number;
@@ -26,9 +28,19 @@ export interface Candidate {
 
 /** The dial list for `target`. The relay is only reachable with the host key,
  *  which is also its route on the relay, so a hand-typed target (no key yet)
- *  is LAN-only until a pairing link supplies both. */
+ *  is LAN-only until a pairing link supplies both.
+ *
+ *  The key also names the host on the LAN: its announced `.local` name rides
+ *  along with the saved address and the two race in one dial, so a Mac whose
+ *  IP has changed is still found, within the same budget. A host too old to
+ *  announce simply never answers to the name. */
 export function candidatesFor(target: HostTarget, lanTimeoutMs = LAN_OPEN_TIMEOUT_MS): Candidate[] {
-  const list: Candidate[] = [{ url: wsUrl(target), via: "lan", timeoutMs: lanTimeoutMs }];
+  const lan: Candidate = { url: wsUrl(target), via: "lan", timeoutMs: lanTimeoutMs };
+  const local = target.hostKey ? localHostname(target.hostKey) : null;
+  if (local && local !== target.host) {
+    lan.alternates = [wsUrl({ host: local, port: target.port })];
+  }
+  const list: Candidate[] = [lan];
   if (target.relay && target.hostKey) {
     list.push({
       url: relayDeviceUrl(target.relay, target.hostKey),

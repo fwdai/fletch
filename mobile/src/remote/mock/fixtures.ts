@@ -600,6 +600,10 @@ export const supportedModels: AgentModels[] = [
 
 export const hostInfo = { name: "Alex's MacBook Pro", appVersion: "0.7.23", os: "macos" };
 
+/** The relay the mock host answers in `pair` and `hello`, as a Mac with "Reach
+ *  this Mac from anywhere" on does. */
+export const relay = "wss://relay.fletch.sh";
+
 /** What the mock host reports in `pair` and `hello` (docs/remote-protocol.md,
  *  "Compatibility"): a current host, so the mock exercises the capability gating
  *  rather than the older-host fallback. Spelled out rather than derived, like

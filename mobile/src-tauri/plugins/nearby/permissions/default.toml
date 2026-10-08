@@ -1,0 +1,7 @@
+"$schema" = "schemas/schema.json"
+
+[default]
+description = """
+Lets the app list the Fletch hosts announcing themselves on the local network.
+"""
+permissions = ["allow-browse"]

@@ -119,6 +119,18 @@ pub fn remote_begin_pairing(
     remote.begin_pairing(preset.as_deref())
 }
 
+/// The answer to a device asking to pair (the `remote:pair-request` prompt).
+/// `false` when that prompt is already over — answered in another window,
+/// withdrawn by the phone, or timed out — which the sheet treats as done.
+#[tauri::command]
+pub fn remote_answer_pair_request(
+    remote: State<'_, Arc<RemoteState>>,
+    id: String,
+    accept: bool,
+) -> bool {
+    remote.prompts().answer(&id, accept)
+}
+
 #[tauri::command]
 pub fn remote_revoke_device(
     remote: State<'_, Arc<RemoteState>>,

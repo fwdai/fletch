@@ -13,6 +13,12 @@ export interface Socket {
   readonly hostKey: string;
   /** Which path this socket took — reported for the UI only. */
   readonly via: Via;
+  /** Start a confirmed pairing: the transport draws and keeps this end's
+   *  nonce and answers with the commitment (docs/remote-protocol.md,
+   *  "Confirmed pairing"). Absent on a transport that cannot. */
+  pairCommit?(): Promise<string>;
+  /** With the host's nonce in: the nonce to reveal and the six digits to show. */
+  pairCode?(hostNonce: string): Promise<{ nonce: string; code: string }>;
 }
 
 export interface SocketHandlers {
@@ -34,6 +40,8 @@ export interface SocketOptions {
   timeoutMs?: number;
   /** Which candidate this URL came from; echoed back as `Socket.via`. */
   via?: Via;
+  /** Other URLs for the same host, raced against `url` by the transport. */
+  alternates?: string[];
 }
 
 /** Opens a socket to `url`. Rejecting is equivalent to `onError` + `onClose`;

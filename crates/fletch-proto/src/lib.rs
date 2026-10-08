@@ -23,6 +23,7 @@ pub mod client;
 pub mod dial;
 pub mod keys;
 pub mod noise;
+pub mod pairing;
 pub mod relay;
 
 /// Every fallible call in this crate reports a message meant to be shown to a
@@ -35,7 +36,7 @@ pub mod relay;
 /// carries its own marker string ([`noise::HOST_KEY_MISMATCH`]).
 pub type Result<T> = std::result::Result<T, String>;
 
-pub use client::{ClientEvent, ConnectResult, ConnectionId, Dialer, Target};
+pub use client::{ClientEvent, ConnectResult, ConnectionId, Dialer, PairCode, Target};
 pub use keys::{encode_key, StaticKey, DEVICE_KEY_FILE, HOST_KEY_FILE, KEY_LEN};
 pub use noise::{
     Channel, Handshake, FRAGMENT_PLAINTEXT, HOST_KEY_MISMATCH, MAX_CHUNK_PLAINTEXT,

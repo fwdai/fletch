@@ -1,0 +1,10 @@
+/* The six digits the device is showing too: the thing to compare, so it is
+   the largest thing in the card. */
+.pair-request-code {
+  margin-top: 14px;
+  text-align: center;
+  font-size: 30px;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  color: var(--fg-0);
+}

@@ -1554,6 +1554,7 @@ pub fn run() {
             commands::remote_set_port,
             commands::remote_set_relay,
             commands::remote_begin_pairing,
+            commands::remote_answer_pair_request,
             commands::remote_revoke_device,
             // This Mac as a client of other hosts (`client/`), the same four
             // commands the phone registers over the same dialer.
@@ -1561,6 +1562,8 @@ pub fn run() {
             client::remote_send,
             client::remote_close,
             client::remote_device_public_key,
+            client::remote_pair_commit,
+            client::remote_pair_code,
             dictation::dictation_availability,
             dictation::dictation_start,
             dictation::dictation_stop,
@@ -1622,6 +1625,11 @@ pub fn run() {
                 // quitting mid-run orphans the processes.
                 if let Some(supervisor) = app.try_state::<Arc<Supervisor>>() {
                     supervisor.shutdown();
+                }
+                // Off phones' nearby lists now, not when the mDNS record's TTL
+                // lapses. Waits a bounded moment for the goodbye to go out.
+                if let Some(remote) = app.try_state::<Arc<crate::remote::RemoteState>>() {
+                    remote.withdraw_announcement();
                 }
                 // Same reasoning for a sign-in left open in Settings: clearing
                 // the map drops each session, which kills its PTY.

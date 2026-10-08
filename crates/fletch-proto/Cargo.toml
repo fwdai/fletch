@@ -13,8 +13,11 @@ rust-version = "1.77"
 snow = "0.10"
 # base64url without padding: how every key travels in this protocol.
 base64 = "0.22"
-# The relay's host-link proof is a SHA-256 over the DH secret.
+# The relay's host-link proof is a SHA-256 over the DH secret, and so are the
+# pairing commitment and confirmation code (`pairing.rs`).
 sha2 = "0.10"
+# The pairing nonces. 0.3 is the copy both apps already link.
+getrandom = "0.3"
 # `sink` for `SinkExt` on the WebSocket the handshake is driven over, and the
 # stream split the client's read loop needs; nothing here needs the rest of the
 # combinator zoo.

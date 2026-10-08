@@ -47,6 +47,7 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_push::init())
+        .plugin(tauri_plugin_nearby::init())
         .setup(|app| {
             use tauri::Manager;
             #[cfg(target_os = "ios")]
@@ -65,6 +66,8 @@ pub fn run() {
             remote::remote_send,
             remote::remote_close,
             remote::remote_device_public_key,
+            remote::remote_pair_commit,
+            remote::remote_pair_code,
         ])
         .run(tauri::generate_context!())
         .expect("error while running fletch mobile");
