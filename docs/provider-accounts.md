@@ -611,6 +611,11 @@ polling.
   Per-turn agents get a fresh file every turn.
 - A refresh can block a turn's start for up to 20 s (it runs on its own
   thread, about once every nine days per login).
+- A rotated codex login whose save to `auth.json` failed lives only in the
+  app's memory (`credential_file::Kept`), used by launches and saved by the
+  next one that can. If the app quits before that retry, the kept login is
+  lost, and the refresh token on disk is already spent: the account needs a
+  new sign-in. A new sign-in made meanwhile wins over the kept login.
 - If the user's own codex and Fletch refresh one login at the same instant,
   one of them spends a refresh token the other already rotated and codex's
   reuse detection may sign the login out. Both sides re-read the file before

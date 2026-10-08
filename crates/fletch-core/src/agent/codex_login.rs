@@ -156,6 +156,12 @@ pub(crate) type Refresher<'a> =
 /// refresh token that has since rotated. A refusal is checked the same way:
 /// a refresh token that changed on disk since it was read is tried once
 /// before the login counts as dead.
+///
+/// A rotated login whose save failed is kept in memory ([`KEPT`]): the
+/// refresh token on disk is already spent, so dropping it would sign the
+/// account out. Launches use the kept login, and each retries the save while
+/// the file is as the failed save left it; a file that changed meanwhile (a
+/// new sign-in) wins and the kept login is dropped.
 pub(crate) fn write_launch_credential(
     source_home: &Path,
     overlay: &Path,
@@ -167,7 +173,16 @@ pub(crate) fn write_launch_credential(
     let _flight = lock.lock();
     let dir = open_overlay(overlay)?;
     let stored = source_home.join(AUTH_FILE);
-    let Some(mut auth) = read_auth(&stored) else {
+    let key = source_home.to_string_lossy();
+    let kept = KEPT.current(&key, credential_file::file_stamp(&stored).as_deref());
+    let found = match kept {
+        Some(kept) => {
+            save_rotated(&key, &stored, &kept);
+            Some(kept)
+        }
+        None => read_auth(&stored),
+    };
+    let Some(mut auth) = found else {
         dir.remove(AUTH_FILE)?;
         return Ok(());
     };
@@ -177,10 +192,7 @@ pub(crate) fn write_launch_credential(
         match refresh(&sent) {
             Ok(tokens) => {
                 apply_refresh(&mut auth, tokens, now);
-                credential_file::write_private_file(
-                    &stored,
-                    serde_json::to_string_pretty(&auth)?.as_bytes(),
-                )?;
+                save_rotated(&key, &stored, &auth);
                 break;
             }
             Err(RefreshFailure::Rejected) => {
@@ -212,6 +224,25 @@ pub(crate) fn write_launch_credential(
     let launch = serde_json::to_string_pretty(&launch_credential(&auth))?;
     dir.write_file(AUTH_FILE, launch.as_bytes(), 0o600)?;
     Ok(())
+}
+
+/// Rotated logins whose save failed, by source home (see
+/// [`write_launch_credential`]).
+static KEPT: credential_file::Kept<Value> = credential_file::Kept::new();
+
+/// Save a rotated login to `stored`, or keep it in memory with the file's
+/// stamp when the save fails, so the next launch can use it and retry.
+fn save_rotated(key: &str, stored: &Path, auth: &Value) {
+    let saved = serde_json::to_string_pretty(auth)
+        .map_err(std::io::Error::other)
+        .and_then(|json| credential_file::write_private_file(stored, json.as_bytes()));
+    match saved {
+        Ok(()) => KEPT.forget(key),
+        Err(e) => {
+            tracing::warn!(error = %e, "could not save the refreshed codex login; keeping it in memory");
+            KEPT.keep(key, auth.clone(), credential_file::file_stamp(stored));
+        }
+    }
 }
 
 pub(crate) const SIGNED_OUT_MSG: &str =
@@ -743,6 +774,93 @@ mod tests {
             let stored = std::fs::read(source.join(AUTH_FILE)).unwrap();
             assert!(!marked_signed_out(&source, Some(&stored)));
         });
+    }
+
+    /// Makes the source home unwritable (so a save fails) until dropped.
+    #[cfg(unix)]
+    struct ReadOnly<'a>(&'a Path);
+
+    #[cfg(unix)]
+    impl<'a> ReadOnly<'a> {
+        fn set(dir: &'a Path) -> Self {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+            Self(dir)
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for ReadOnly<'_> {
+        fn drop(&mut self) {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(self.0, std::fs::Permissions::from_mode(0o755));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_rotation_that_cannot_be_saved_is_kept_and_used_by_the_next_launch() {
+        let (_td, source, overlay) = dirs();
+        write_login(&source, &login(NOW + 3600));
+        {
+            let _ro = ReadOnly::set(&source);
+            write_launch_credential(&source, &overlay, &|_| Ok(rotated()), NOW).unwrap();
+            assert_eq!(
+                read(&source.join(AUTH_FILE))["tokens"]["refresh_token"],
+                "rt.original"
+            );
+
+            write_launch_credential(&source, &overlay, &never, NOW).unwrap();
+        }
+
+        let launch = read(&overlay.join(AUTH_FILE));
+        assert_eq!(
+            launch["tokens"]["access_token"],
+            json!(jwt(NOW, NOW + 10 * DAY))
+        );
+        assert_eq!(launch["tokens"]["refresh_token"], "");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_kept_rotation_is_saved_once_the_store_takes_it() {
+        let (_td, source, overlay) = dirs();
+        write_login(&source, &login(NOW + 3600));
+        {
+            let _ro = ReadOnly::set(&source);
+            write_launch_credential(&source, &overlay, &|_| Ok(rotated()), NOW).unwrap();
+        }
+
+        write_launch_credential(&source, &overlay, &never, NOW).unwrap();
+
+        assert_eq!(
+            read(&source.join(AUTH_FILE))["tokens"]["refresh_token"],
+            "rt.rotated"
+        );
+        write_launch_credential(&source, &overlay, &never, NOW).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_sign_in_after_a_failed_save_wins_over_the_kept_rotation() {
+        let (_td, source, overlay) = dirs();
+        write_login(&source, &login(NOW + 3600));
+        {
+            let _ro = ReadOnly::set(&source);
+            write_launch_credential(&source, &overlay, &|_| Ok(rotated()), NOW).unwrap();
+        }
+        let mut signed_in = login(NOW + 9 * DAY);
+        signed_in["tokens"]["refresh_token"] = Value::String("rt.new-sign-in".into());
+        signed_in["tokens"]["account_id"] = Value::String("acct-after-sign-in".into());
+        write_login(&source, &signed_in);
+
+        write_launch_credential(&source, &overlay, &never, NOW).unwrap();
+
+        assert_eq!(read(&source.join(AUTH_FILE)), signed_in);
+        assert_eq!(
+            read(&overlay.join(AUTH_FILE))["tokens"]["account_id"],
+            "acct-after-sign-in"
+        );
     }
 
     #[test]

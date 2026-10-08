@@ -72,6 +72,67 @@ impl<T: Default> Flights<T> {
     }
 }
 
+/// A file's identity for telling whether it changed since it was last seen:
+/// modification time and size. `None` when the file is absent.
+pub(crate) fn file_stamp(path: &Path) -> Option<String> {
+    let meta = std::fs::metadata(path).ok()?;
+    let mtime = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map_or(0, |d| d.as_nanos());
+    Some(format!("{mtime}:{}", meta.len()))
+}
+
+/// Rotated logins a store refused to take, kept in memory by login key: the
+/// old refresh token is already spent, so a kept one is that login's only
+/// valid credential until a save succeeds, or until the store changes under
+/// it (a new sign-in), which drops it.
+pub(crate) struct Kept<T> {
+    pairs: Mutex<Option<KeptMap<T>>>,
+}
+
+/// Login key → the kept value and the store's stamp when it was kept.
+type KeptMap<T> = HashMap<String, (T, Option<String>)>;
+
+impl<T: Clone> Kept<T> {
+    pub(crate) const fn new() -> Self {
+        Self {
+            pairs: Mutex::new(None),
+        }
+    }
+
+    /// Keep `value` for `key`, with the store's stamp as the failed save
+    /// left it.
+    pub(crate) fn keep(&self, key: &str, value: T, stamp: Option<String>) {
+        self.pairs
+            .lock()
+            .get_or_insert_with(HashMap::new)
+            .insert(key.to_string(), (value, stamp));
+    }
+
+    /// The value kept for `key` while the store still has the stamp it had
+    /// then; one kept under another stamp is dropped.
+    pub(crate) fn current(&self, key: &str, stamp: Option<&str>) -> Option<T> {
+        let mut pairs = self.pairs.lock();
+        let map = pairs.get_or_insert_with(HashMap::new);
+        match map.get(key) {
+            Some((value, at)) if at.as_deref() == stamp => Some(value.clone()),
+            Some(_) => {
+                map.remove(key);
+                None
+            }
+            None => None,
+        }
+    }
+
+    pub(crate) fn forget(&self, key: &str) {
+        if let Some(map) = self.pairs.lock().as_mut() {
+            map.remove(key);
+        }
+    }
+}
+
 /// What sits at a name inside a [`PrivateDir`], looked at without following
 /// a link.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -494,6 +555,26 @@ mod tests {
         assert_eq!(mode & 0o777, 0o600);
         let names: Vec<_> = std::fs::read_dir(td.path()).unwrap().collect();
         assert_eq!(names.len(), 1);
+    }
+
+    #[test]
+    fn a_kept_value_lasts_while_the_stamp_holds_and_is_dropped_when_it_moves() {
+        let kept: Kept<u32> = Kept::new();
+        kept.keep("a", 7, Some("s1".into()));
+        assert_eq!(kept.current("a", Some("s1")), Some(7));
+        assert_eq!(kept.current("a", Some("s2")), None);
+        assert_eq!(kept.current("a", Some("s1")), None);
+    }
+
+    #[test]
+    fn a_stamp_changes_when_the_file_is_rewritten() {
+        let td = tempfile::tempdir().unwrap();
+        let path = td.path().join("auth.json");
+        assert_eq!(file_stamp(&path), None);
+        std::fs::write(&path, "one").unwrap();
+        let first = file_stamp(&path).unwrap();
+        std::fs::write(&path, "longer").unwrap();
+        assert_ne!(file_stamp(&path).unwrap(), first);
     }
 
     #[test]

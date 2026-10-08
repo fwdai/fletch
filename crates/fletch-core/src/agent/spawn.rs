@@ -1078,6 +1078,17 @@ mod tests {
             .unwrap()
             .launch_agent(&ctx, &bin)
             .unwrap();
+        println!(
+            "CA source: plan={:?} app env={:?}",
+            plan.env
+                .iter()
+                .find(|(k, _)| k == "CODEX_CA_CERTIFICATE")
+                .map(|(_, v)| v),
+            ["SSL_CERT_FILE", "CODEX_CA_CERTIFICATE"]
+                .into_iter()
+                .filter(|v| std::env::var_os(v).is_some())
+                .collect::<Vec<_>>()
+        );
         let mut cmd = std::process::Command::new(&plan.program);
         cmd.args(&plan.prefix_args)
             .args(["exec", "--json", "--skip-git-repo-check"])
