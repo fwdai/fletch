@@ -12,10 +12,10 @@ import { ViewToggle } from "./ViewToggle";
 
 /** Header strip above the workspace body. Houses the left-sidebar toggle, the
  *  agent's title over its codename + branch + diff + age, the account picker
- *  (account providers only), the Custom/Native view switcher, and the right-panel toggle. A sub-agent thread's header
- *  (SubagentThread/ThreadHeader) keeps this exact skeleton — dot, title line,
- *  meta line — so stepping into and out of a thread moves nothing but the
- *  words. */
+ *  (account providers only), the Custom/Native view switcher, and the
+ *  right-panel toggle. A sub-agent thread's header (SubagentThread/ThreadHeader)
+ *  keeps this exact skeleton — dot, title line, meta line — so stepping into
+ *  and out of a thread moves nothing but the words. */
 interface Props {
   agent: AgentRecord;
 }

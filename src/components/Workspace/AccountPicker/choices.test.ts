@@ -12,20 +12,24 @@ const account = (id: string, status: ProviderAccount["status"] = "signed_in"): P
 });
 
 describe("pickerState", () => {
-  it("hides the picker for a provider without accounts", () => {
-    expect(pickerState(false, false, false)).toBe("hidden");
+  it("hides the picker where accounts can't be switched", () => {
+    expect(pickerState(false, 3, false)).toBe("hidden");
   });
 
-  it("hides the picker on a host that cannot switch", () => {
-    expect(pickerState(true, true, false)).toBe("hidden");
+  it("reports a single account as nothing to switch to", () => {
+    expect(pickerState(true, 1, false)).toBe("single");
+  });
+
+  it("reports an unloaded list as nothing to switch to", () => {
+    expect(pickerState(true, 0, false)).toBe("single");
   });
 
   it("disables the picker while the agent is running", () => {
-    expect(pickerState(true, false, true)).toBe("disabled");
+    expect(pickerState(true, 2, true)).toBe("disabled");
   });
 
-  it("offers the picker to an idle agent of an account provider", () => {
-    expect(pickerState(true, false, false)).toBe("ready");
+  it("offers the picker to an idle agent with another account", () => {
+    expect(pickerState(true, 2, false)).toBe("ready");
   });
 });
 

@@ -44,11 +44,14 @@ export function accountChoices(accounts: ProviderAccount[], current: string): Ac
   });
 }
 
-/** `hidden`: the provider has no accounts, or the host can't switch.
- *  `disabled`: a turn is running; the host refuses a switch until it ends. */
-export type PickerState = "hidden" | "disabled" | "ready";
+/** `hidden`: no switching here (see `useCanSwitchAccount`).
+ *  `single`: the loaded list has nothing to switch to; the header hides and
+ *  the hint points at Settings instead.
+ *  `disabled`: a turn or a switch is running; the host refuses until it ends. */
+export type PickerState = "hidden" | "single" | "disabled" | "ready";
 
-export function pickerState(hasAccounts: boolean, gated: boolean, busy: boolean): PickerState {
-  if (!hasAccounts || gated) return "hidden";
+export function pickerState(canSwitch: boolean, accountCount: number, busy: boolean): PickerState {
+  if (!canSwitch) return "hidden";
+  if (accountCount <= 1) return "single";
   return busy ? "disabled" : "ready";
 }

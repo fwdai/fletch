@@ -37,6 +37,78 @@ describe("endedOnAccountError", () => {
     expect(endedOnAccountError(items)).toBe(true);
   });
 
+  it("flags claude's expired OAuth token reported in the reply", () => {
+    const items = [
+      user("go"),
+      reply(
+        'API Error: 401 {"type":"error","error":{"type":"authentication_error","message":"OAuth access token has expired."}} · Please run /login',
+      ),
+      error("Turn failed"),
+      turnEnd("error"),
+    ];
+    expect(endedOnAccountError(items)).toBe(true);
+  });
+
+  it("flags claude's five-hour limit reported in the reply", () => {
+    const items = [
+      user("go"),
+      reply("5-hour limit reached ∙ resets 3pm"),
+      error("Turn failed"),
+      turnEnd("error"),
+    ];
+    expect(endedOnAccountError(items)).toBe(true);
+  });
+
+  it("flags codex's relayed 401 in the error notice", () => {
+    const items = [
+      user("go"),
+      error("unexpected status 401 Unauthorized: token could not be refreshed"),
+      turnEnd("error"),
+    ];
+    expect(endedOnAccountError(items)).toBe(true);
+  });
+
+  it("ignores a reply about authentication code before a bare turn failure", () => {
+    const items = [
+      user("go"),
+      reply("I updated the authentication middleware to validate the API key."),
+      error("Turn failed"),
+      turnEnd("error"),
+    ];
+    expect(endedOnAccountError(items)).toBe(false);
+  });
+
+  it("ignores a reply that mentions line 401 before a bare turn failure", () => {
+    const items = [
+      user("go"),
+      reply("The bug is on line 401"),
+      error("Turn failed"),
+      turnEnd("error"),
+    ];
+    expect(endedOnAccountError(items)).toBe(false);
+  });
+
+  it("ignores a reply about a rate limiter before an unrelated error", () => {
+    const items = [
+      user("go"),
+      reply("Added a rate limiter"),
+      error("Prompt is too long"),
+      turnEnd("error"),
+    ];
+    expect(endedOnAccountError(items)).toBe(false);
+  });
+
+  it("reads only the reply directly before the error notice", () => {
+    const items = [
+      user("go"),
+      reply("Please run /login if this happens to you."),
+      reply("Done refactoring."),
+      error("Turn failed"),
+      turnEnd("error"),
+    ];
+    expect(endedOnAccountError(items)).toBe(false);
+  });
+
   it("ignores a failed turn with an unrelated error", () => {
     const items = [user("go"), error("Process exited with code 1"), turnEnd("error")];
     expect(endedOnAccountError(items)).toBe(false);

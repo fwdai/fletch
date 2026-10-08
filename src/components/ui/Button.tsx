@@ -19,6 +19,9 @@ interface Props {
   className?: string;
   style?: CSSProperties;
   type?: "button" | "submit";
+  /** Set by `MenuButton` on a labelled trigger of the menu it opens. */
+  "aria-haspopup"?: "menu";
+  "aria-expanded"?: boolean;
 }
 
 /** Text-label button — CTAs and dialog actions (Cancel / Save / Restart …).
@@ -34,6 +37,7 @@ export function Button({
   className,
   style,
   type = "button",
+  ...aria
 }: Props) {
   const cls = [
     "btn-t",
@@ -54,6 +58,8 @@ export function Button({
       disabled={disabled}
       style={style}
       data-tip={tip}
+      aria-haspopup={aria["aria-haspopup"]}
+      aria-expanded={aria["aria-expanded"]}
     >
       {children}
     </button>

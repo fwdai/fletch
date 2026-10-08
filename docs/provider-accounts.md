@@ -133,10 +133,15 @@ Frontend (`src/`):
 - `api/domains/agents.ts` — `switchAgentAccount(agentId, account)` (host
   `invoke`); store action `switchAgentAccount` in `store/workspace.ts`, queued
   on `configOps` with effort/model so a send right after runs under the new
-  account. Gate `switchAccount` closes it on remote hosts.
-- `components/Workspace/AccountPicker/` — header picker (`index.tsx`,
-  `AccountMenu.tsx`, `choices.ts`) and `SwitchAccountHint` above the composer
-  when the last turn failed on a limit or sign-in (`accountError.ts`). CSS
+  account. It writes only `account` back (status stays with `agent:*`
+  events) and holds `switchingAccount[id]` while in flight. Gate
+  `switchAccount` needs both `list_provider_accounts` and
+  `switch_agent_account` on a remote host.
+- `components/Workspace/AccountPicker/` — header picker (`index.tsx` on
+  `ui/MenuButton`'s `trigger`, `AccountMenu.tsx`, `choices.ts`,
+  `useCanSwitchAccount.ts`) and `SwitchAccountHint` above the composer when
+  the last turn failed on a limit or sign-in (`accountError.ts`). The header
+  trigger hides with one account or fewer; the hint then links to Settings. CSS
   `.acct-pick*` / `.acct-hint*` in `Workspace.css`.
 
 ## PR 3: per-account usage and limits

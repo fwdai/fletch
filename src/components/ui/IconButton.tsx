@@ -20,6 +20,9 @@ interface Props {
   /** On/off state for a button that toggles in place (the composer's mic), so
    *  it is announced as pressed rather than as a plain action. */
   "aria-pressed"?: boolean;
+  /** Set by `MenuButton` on the trigger of the menu it opens. */
+  "aria-haspopup"?: "menu";
+  "aria-expanded"?: boolean;
   className?: string;
   style?: CSSProperties;
   type?: "button" | "submit";
@@ -63,6 +66,8 @@ export function IconButton({
       data-tip={tip}
       aria-label={rest["aria-label"] ?? tip}
       aria-pressed={rest["aria-pressed"]}
+      aria-haspopup={rest["aria-haspopup"]}
+      aria-expanded={rest["aria-expanded"]}
     >
       {children}
     </button>

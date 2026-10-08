@@ -151,6 +151,9 @@ export interface WorkspaceSlice {
   spawnStage: Record<string, { stage: SpawnStage; detail: string | null }>;
   /** True while a view switch is in flight — disable toggle UI. */
   switchInFlight: Record<string, boolean>;
+  /** True while an account switch is in flight, so the header picker and the
+   *  composer hint cannot both start one. */
+  switchingAccount: Record<string, boolean>;
   /** True for agents that completed a turn while not focused — drives the
    *  "new results to review" dot in the sidebar. Set on turn-end for any
    *  non-selected agent (covers research-only turns with no diff), cleared
@@ -211,7 +214,8 @@ export interface WorkspaceSlice {
   /** Move the agent onto another account of its provider (an id, or
    *  `DEFAULT_ACCOUNT_ID`) from its next turn. Queued with the config changes
    *  so a send right after it runs under the new account. Applies the returned
-   *  record; on refusal sets `lastError` and resolves to null. */
+   *  stamp; on refusal sets `lastError` and resolves to null, as it does when
+   *  a switch for the agent is already in flight. */
   switchAgentAccount: (id: string, account: string) => Promise<AgentRecord | null>;
   /** Answer a paused user-input tool (Claude's AskUserQuestion/ExitPlanMode).
    *  Looks up the held control-protocol request for `toolUseId` and delivers
@@ -302,6 +306,7 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
   busyLabel: {},
   spawnStage: {},
   switchInFlight: {},
+  switchingAccount: {},
   unseenResults: {},
   syncHealth: {},
   usage: {},
@@ -498,13 +503,19 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
   setAgentEffort: (id, effort) => configOps.run(id, () => api.setAgentEffort(id, effort)),
   setAgentModel: (id, model) => configOps.run(id, () => api.setAgentModel(id, model)),
   switchAgentAccount: async (id, account) => {
+    if (get().switchingAccount[id]) return null;
+    set((state) => ({ switchingAccount: { ...state.switchingAccount, [id]: true } }));
     try {
       const record = await configOps.run(id, () => api.switchAgentAccount(id, account));
-      set((state) => patchAgentRecord(state, id, record));
+      // Only the stamp: the host relaunches the agent, and an `agent:status`
+      // event that landed before this response is newer than the record's.
+      set((state) => patchAgentRecord(state, id, { account: record.account }));
       return record;
     } catch (e) {
       set({ lastError: String(e) });
       return null;
+    } finally {
+      set((state) => ({ switchingAccount: { ...state.switchingAccount, [id]: false } }));
     }
   },
 
