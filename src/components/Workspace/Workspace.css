@@ -52,6 +52,43 @@
   color: var(--danger);
 }
 
+/* Account picker: a long account id is cut rather than pushing the header's
+   toggles off the strip. */
+.acct-pick {
+  flex-shrink: 1;
+  min-width: 0;
+}
+.acct-pick-trigger {
+  gap: 5px;
+  max-width: 180px;
+  color: var(--fg-2);
+}
+.acct-pick-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.acct-hint {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 0 20px 8px;
+  color: var(--fg-2);
+}
+.acct-hint-icon {
+  flex-shrink: 0;
+  color: var(--warn);
+}
+.acct-hint > span {
+  flex: 1;
+  min-width: 0;
+}
+
 .view-toggle {
   display: flex;
   background: transparent;

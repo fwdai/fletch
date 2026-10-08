@@ -135,6 +135,13 @@ export const agentsApi = {
     invoke<void>("set_agent_effort", { agentId, effort }),
   setAgentModel: (agentId: string, model: string | null) =>
     invoke<void>("set_agent_model", { agentId, model }),
+  /** Move the agent onto another signed-in account of its provider (an id, or
+   *  `DEFAULT_ACCOUNT_ID`) from its next turn, keeping workspace and
+   *  conversation. Resolves to the restamped record; rejects with the host's
+   *  reason while a turn runs, for a signed-out or current target, or for a
+   *  provider without accounts. */
+  switchAgentAccount: (agentId: string, account: string) =>
+    invoke<AgentRecord>("switch_agent_account", { agentId, account }),
   resumeAgent: (agentId: string) => invoke<void>("resume_agent", { agentId }),
   stopAgent: (agentId: string) => invoke<void>("stop_agent", { agentId }),
   discardAgent: (agentId: string) => invoke<void>("discard_agent", { agentId }),

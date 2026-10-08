@@ -21,6 +21,7 @@ import {
   expandSlashCommand,
   isAgentBusy,
   passthroughSlashName,
+  patchAgentRecord,
   providerFor,
   reconcileSending,
   recordWorkspaceUsage,
@@ -207,6 +208,11 @@ export interface WorkspaceSlice {
   setAgentEffort: (id: string, effort: string | null) => Promise<void>;
   /** Persist a mid-session model change (see `setAgentEffort`). */
   setAgentModel: (id: string, model: string | null) => Promise<void>;
+  /** Move the agent onto another account of its provider (an id, or
+   *  `DEFAULT_ACCOUNT_ID`) from its next turn. Queued with the config changes
+   *  so a send right after it runs under the new account. Applies the returned
+   *  record; on refusal sets `lastError` and resolves to null. */
+  switchAgentAccount: (id: string, account: string) => Promise<AgentRecord | null>;
   /** Answer a paused user-input tool (Claude's AskUserQuestion/ExitPlanMode).
    *  Looks up the held control-protocol request for `toolUseId` and delivers
    *  `updatedInput` (the tool's input with the user's `answers` merged in) as
@@ -491,6 +497,16 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
 
   setAgentEffort: (id, effort) => configOps.run(id, () => api.setAgentEffort(id, effort)),
   setAgentModel: (id, model) => configOps.run(id, () => api.setAgentModel(id, model)),
+  switchAgentAccount: async (id, account) => {
+    try {
+      const record = await configOps.run(id, () => api.switchAgentAccount(id, account));
+      set((state) => patchAgentRecord(state, id, record));
+      return record;
+    } catch (e) {
+      set({ lastError: String(e) });
+      return null;
+    }
+  },
 
   sendUserMessage: async (id, text, attachments = []) => {
     // Wait for any in-flight effort/model change for this agent to land before

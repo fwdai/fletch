@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { AgentRecord } from "@/api";
 import { useAppStore } from "@/store";
+import { endedOnAccountError } from "./AccountPicker/accountError";
+import { SwitchAccountHint } from "./AccountPicker/SwitchAccountHint";
 import { ChatComposer } from "./ChatComposer";
 import { ChatSearch } from "./ChatSearch";
 import { CodeUndoBar } from "./CodeUndoBar";
@@ -98,6 +100,7 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
         hideNav={searchOpen}
       />
       <CodeUndoBar agentId={agent.id} />
+      {!liveBusy && endedOnAccountError(items) && <SwitchAccountHint agent={agent} />}
       <ChatComposer
         agent={agent}
         activeModel={activeModel}
