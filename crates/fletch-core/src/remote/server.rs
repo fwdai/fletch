@@ -868,6 +868,7 @@ fn begin_confirm(
             tracing::warn!(
                 "remote: pairing window closed after too many confirmed-pairing requests"
             );
+            state.prompts().window_closed("too_many_requests");
             return Err(Refusal::Answer(TOO_MANY_REQUESTS));
         }
     }
@@ -894,17 +895,21 @@ fn accept_confirmed(
 ) -> std::result::Result<(DeviceRecord, Value), &'static str> {
     let device = device.ok_or(WINDOW_CLOSED)?;
     let window = state.pairing().take_window().ok_or(WINDOW_CLOSED)?;
-    let record = state
-        .pair_device(
-            &device.name(),
-            &device.platform(),
-            remote_static,
-            &window.scopes,
-        )
-        .map_err(|e| {
+    let record = match state.pair_device(
+        &device.name(),
+        &device.platform(),
+        remote_static,
+        &window.scopes,
+    ) {
+        Ok(record) => record,
+        Err(e) => {
             tracing::warn!(error = %e, "remote: pairing failed");
-            NOT_SAVED
-        })?;
+            // Not stored, so not redeemed: the "try again" NOT_SAVED asks for
+            // lands in the same window.
+            state.pairing().restore(window);
+            return Err(NOT_SAVED);
+        }
+    };
     let result = json!({
         "deviceId": record.device_id,
         "host": super::host_info(),
@@ -978,15 +983,20 @@ async fn authenticate(
             // Through `pair_device`, not the store directly: a re-pair that
             // *changes* what this device may do also has to hang up on the
             // connections still holding the old descriptor.
-            let record = state
-                .pair_device(
-                    &info.name(),
-                    &info.platform(),
-                    remote_static,
-                    &pending.scopes,
-                )
-                .map_err(|e| tracing::warn!(error = %e, "remote: pairing failed"))
-                .ok()?;
+            let record = match state.pair_device(
+                &info.name(),
+                &info.platform(),
+                remote_static,
+                &pending.scopes,
+            ) {
+                Ok(record) => record,
+                Err(e) => {
+                    tracing::warn!(error = %e, "remote: pairing failed");
+                    // Not stored, so not redeemed: the code works again.
+                    state.pairing().restore(pending);
+                    return None;
+                }
+            };
             // No snapshot here, by contract: `pair` only authenticates and
             // starts the event stream, and the client issues its own
             // `get_workspace` next. Only `hello` carries a snapshot.

@@ -23,6 +23,7 @@ export function RemoteControlPane() {
   const {
     status,
     invite,
+    inviteClosed,
     error,
     busy,
     setEnabled,
@@ -130,6 +131,7 @@ export function RemoteControlPane() {
           <PairingCard
             invite={invite}
             hostName={status?.name}
+            closed={inviteClosed}
             lanOnly={status?.relay.state !== "connected"}
             onRegenerate={() => void beginPairing(invite.preset)}
             onDismiss={clearInvite}

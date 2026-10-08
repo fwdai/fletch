@@ -151,6 +151,24 @@ impl PairingTokens {
         let i = pending.iter().position(|p| p.token == token)?;
         Some(pending.remove(i))
     }
+
+    /// Put back a token that was redeemed for a pairing that then failed to
+    /// be stored, so the "try again" the device is told to do has a window to
+    /// land in. Taken first and restored on failure, rather than checked and
+    /// taken after: two pairings racing on one code must not both get it.
+    /// A token past its deadline in the meantime stays gone. Restored in mint
+    /// order, so the newest code is still the window.
+    pub fn restore(&self, token: Pending) {
+        if token.expires_at <= Instant::now() {
+            return;
+        }
+        let mut pending = self.pending.lock();
+        let at = pending
+            .iter()
+            .position(|p| p.expires_at > token.expires_at)
+            .unwrap_or(pending.len());
+        pending.insert(at, token);
+    }
 }
 
 impl Default for PairingTokens {

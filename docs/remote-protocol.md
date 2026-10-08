@@ -627,7 +627,13 @@ when they do not match the phone's. Each such roll is a one-in-a-million
 chance, so the host caps them: a pairing window answers at most five
 `pair_request`s, and the sixth closes it along with every live pairing code.
 The bound is therefore five in a million (one in 200 000) per "Pair a device",
-and every further window takes someone at the Mac to open it.
+and every further window takes someone at the Mac to open it. Since anyone on
+the network can close a window this way, the host tells its own screen
+(`remote:pairing-closed`), and the pairing card stops showing the spent code.
+
+A pairing the host accepts but cannot store — `pair` or confirmed — does not
+use the code up: the token goes back, so the retry the device is told to make
+lands in the same window.
 
 The device's nonce stays in its Rust layer between the two frames
 (`remote_pair_commit` and `remote_pair_code`), so the webview never holds a

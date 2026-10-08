@@ -1,5 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
-import { api, type PairingInvite, type PairingPreset, type RemoteStatus } from "@/api";
+import {
+  api,
+  onPairingClosed,
+  type PairingInvite,
+  type PairingPreset,
+  type RemoteStatus,
+} from "@/api";
 
 /** How often the pane re-reads status. A phone connecting or dropping produces
  *  no Tauri event (the remote server is the thing being observed, not an agent),
@@ -9,6 +15,9 @@ const POLL_MS = 4_000;
 export interface Remote {
   status: RemoteStatus | null;
   invite: PairingInvite | null;
+  /** The host closed the invite's window before it expired (too many pairing
+   *  requests from the network): its code no longer works. */
+  inviteClosed: boolean;
   error: string | null;
   busy: boolean;
   setEnabled: (enabled: boolean) => Promise<void>;
@@ -27,6 +36,7 @@ export interface Remote {
 export function useRemote(): Remote {
   const [status, setStatus] = useState<RemoteStatus | null>(null);
   const [invite, setInvite] = useState<PairingInvite | null>(null);
+  const [inviteClosed, setInviteClosed] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -43,6 +53,13 @@ export function useRemote(): Remote {
     const timer = setInterval(() => void refresh(), POLL_MS);
     return () => clearInterval(timer);
   }, [refresh]);
+
+  // The host closes the window itself, and anyone on the network can make it:
+  // the card must stop offering a code that no longer works.
+  useEffect(() => {
+    const off = onPairingClosed(() => setInviteClosed(true));
+    return () => void off.then((f) => f());
+  }, []);
 
   /** Run a mutating command; they all answer with the fresh status. */
   const mutate = useCallback(async (call: () => Promise<RemoteStatus>) => {
@@ -84,6 +101,7 @@ export function useRemote(): Remote {
     setError(null);
     try {
       setInvite(await api.remoteBeginPairing(preset));
+      setInviteClosed(false);
     } catch (e) {
       setError(String(e));
     }
@@ -94,11 +112,15 @@ export function useRemote(): Remote {
     [mutate],
   );
 
-  const clearInvite = useCallback(() => setInvite(null), []);
+  const clearInvite = useCallback(() => {
+    setInvite(null);
+    setInviteClosed(false);
+  }, []);
 
   return {
     status,
     invite,
+    inviteClosed,
     error,
     busy,
     setEnabled,

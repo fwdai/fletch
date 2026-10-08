@@ -38,6 +38,7 @@ function useCountdown(iso: string): number {
 export function PairingCard({
   invite,
   hostName,
+  closed,
   lanOnly,
   onRegenerate,
   onDismiss,
@@ -45,6 +46,9 @@ export function PairingCard({
   invite: PairingInvite;
   /** What this Mac is called in the phone's nearby list. */
   hostName?: string;
+  /** The host closed this window early (too many pairing requests from the
+   *  network): the code is spent, whatever the countdown says. */
+  closed?: boolean;
   /** No relay link is up, so the link carries no relay and the phone can
    *  only reach this Mac from the same network. */
   lanOnly?: boolean;
@@ -52,7 +56,8 @@ export function PairingCard({
   onDismiss: () => void;
 }) {
   const left = useCountdown(invite.expiresAt);
-  const expired = left === 0;
+  // Over either way: lapsed, or closed by the host. Same card, different words.
+  const expired = left === 0 || !!closed;
   const mmss = `${Math.floor(left / 60)}:${String(left % 60).padStart(2, "0")}`;
   const [manual, setManual] = useState(false);
   const link = parsePairUrl(invite.url);
@@ -61,11 +66,13 @@ export function PairingCard({
     <div className="set-pair" data-expired={expired ? "1" : "0"}>
       <div className="set-pair-main">
         <div className="set-pair-copy text-sm">
-          {expired
-            ? "This code has expired. Generate a new one."
-            : `Scan this with your iPhone's camera to pair it. It grants ${presetLabel(
-                invite.preset,
-              )} access.`}
+          {closed
+            ? "Pairing closed after too many attempts from this network. Generate a new code."
+            : expired
+              ? "This code has expired. Generate a new one."
+              : `Scan this with your iPhone's camera to pair it. It grants ${presetLabel(
+                  invite.preset,
+                )} access.`}
         </div>
         {!expired && lanOnly && (
           <div className="set-inline-warn text-sm">
@@ -107,7 +114,7 @@ export function PairingCard({
         )}
         <div className="set-pair-meta text-xs flex-center">
           <span className={`set-pair-clock mono ${left <= 30 ? "urgent" : ""}`}>
-            {expired ? "expired" : `expires in ${mmss}`}
+            {closed ? "closed" : expired ? "expired" : `expires in ${mmss}`}
           </span>
           <CopyButton text={invite.url} tip="Copy pairing link, to pair another Mac" />
         </div>

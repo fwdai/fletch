@@ -18,6 +18,11 @@ pub const PAIR_REQUEST_EVENT: &str = "remote:pair-request";
 /// Raised with `{ id }` when that prompt is over — answered, withdrawn, timed
 /// out — so every window showing it takes it down.
 pub const PAIR_REQUEST_ENDED_EVENT: &str = "remote:pair-request-ended";
+/// Raised with `{ reason }` when the host closes the pairing window itself —
+/// today only `"too_many_requests"` — so the pairing card stops showing a code
+/// that no longer works. Anyone on the LAN can cause it, which is why the card
+/// has to be told rather than left counting down.
+pub const PAIRING_CLOSED_EVENT: &str = "remote:pairing-closed";
 
 /// One pending question, as the desktop shows it.
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -83,6 +88,18 @@ impl PairPrompts {
         emit(sink.as_ref(), PAIR_REQUEST_EVENT, &prompt);
         *open = Some(Open { prompt, answer });
         Ok((id, rx))
+    }
+
+    /// Tell the screen the pairing window was closed by the host, not by the
+    /// person at it.
+    pub fn window_closed(&self, reason: &str) {
+        if let Some(sink) = self.confirmer.lock().clone() {
+            emit(
+                sink.as_ref(),
+                PAIRING_CLOSED_EVENT,
+                &serde_json::json!({ "reason": reason }),
+            );
+        }
     }
 
     /// The question still waiting, for a window that missed the event.

@@ -4318,7 +4318,7 @@ async fn a_phone_that_hangs_up_withdraws_its_prompt() {
 /// code, so rolling on needs someone at the Mac to open a new one.
 #[tokio::test]
 async fn silent_rolls_are_capped_per_pairing_window() {
-    let (host, _sink) = boot_confirming();
+    let (host, sink) = boot_confirming();
     let minted = host.state.pairing().mint(&Scope::ALL);
     let commit = secure::encode_key(&secure::pairing::commitment(&[7u8; 32]));
     let ask = |port| {
@@ -4345,9 +4345,15 @@ async fn silent_rolls_are_capped_per_pairing_window() {
         .contains("Too many pairing attempts"));
 
     // Closed, every way in: no window for another request, and the typed code
-    // the card is showing is spent with it.
+    // the card is showing is spent with it — so the card is told.
     assert!(host.state.pairing().window().is_none());
     assert!(host.state.pairing().consume(&minted.token).is_none());
+    let closed = sink
+        .events()
+        .into_iter()
+        .find(|(name, _)| name == super::confirm::PAIRING_CLOSED_EVENT)
+        .expect("the desktop is told the window closed");
+    assert_eq!(closed.1["reason"], "too_many_requests");
     // A fresh "Pair a device" starts a fresh count.
     host.state.pairing().mint(&Scope::ALL);
     assert_eq!(ask(host.port).await["ok"], true);
@@ -4379,4 +4385,47 @@ async fn an_acceptance_the_store_cannot_keep_says_so() {
         .as_str()
         .unwrap()
         .contains("couldn't save this device"));
+    // The "try again" it asks for has somewhere to land.
+    assert!(host.state.pairing().window().is_some());
+}
+
+/// The typed code too: a pairing the store could not keep did not use the
+/// code up.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_code_pairing_the_store_cannot_keep_leaves_the_code_live() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let host = boot();
+    let minted = host.state.pairing().mint(&Scope::ALL);
+    let mut ws = secure_connect(host.port, &device()).await;
+
+    let dir = host.dir.path();
+    let writable = std::fs::metadata(dir).unwrap().permissions();
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o500)).unwrap();
+    ws.request("1", "pair", json!({ "token": minted.token }))
+        .await;
+    let code = ws.close_code().await;
+    std::fs::set_permissions(dir, writable).unwrap();
+
+    assert_eq!(code, 4003);
+    assert!(host.state.pairing().consume(&minted.token).is_some());
+}
+
+#[test]
+fn a_restored_token_keeps_its_place_and_an_expired_one_stays_gone() {
+    let tokens = PairingTokens::new();
+    let older = tokens.mint(&Scope::ALL);
+    let newer = tokens.mint(&Scope::ALL);
+    let taken = tokens.consume(&older.token).unwrap();
+    tokens.restore(taken);
+    // Still the newer code that counts as the window.
+    assert_eq!(tokens.window().unwrap().token, newer.token);
+    assert!(tokens.consume(&older.token).is_some());
+
+    let lapsed = tokens.mint_with_ttl(&Scope::ALL, Duration::from_millis(1));
+    let taken = tokens.consume(&lapsed.token).unwrap();
+    std::thread::sleep(Duration::from_millis(5));
+    tokens.restore(taken);
+    assert!(tokens.consume(&lapsed.token).is_none());
 }
