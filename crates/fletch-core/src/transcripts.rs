@@ -43,9 +43,10 @@ pub(crate) fn find_session_jsonl(
 
 /// The `projects` directory claude keeps its sessions in when it runs in
 /// `cwd`: the per-agent dir a container sandbox mounts over it (`container`),
-/// else the config dir it runs with — the agent's managed account dir
-/// (`account_dir`) or the active default. The first place
-/// [`find_session_jsonl`] looks for each kind of agent.
+/// else the config dir it runs with — `account_dir` when one is given, or the
+/// active default, which is where every agent runs now that a claude account
+/// is a token source only (`accounts::launches_in_account_dir`). The first
+/// place [`find_session_jsonl`] looks for each kind of agent.
 pub(crate) fn claude_projects_dir(
     cwd: &Path,
     container: bool,
@@ -86,9 +87,10 @@ pub(crate) fn claude_project_dirname(cwd: &Path) -> Option<String> {
 /// Also the root list for the whole-disk usage scan (`usage_scan`), which walks
 /// every `<projects dir>/*/*.jsonl` rather than one known session id.
 ///
-/// Every managed account dir (`agent::accounts`) is a root too: an agent
-/// stamped with an account runs claude with that dir as `CLAUDE_CONFIG_DIR`,
-/// so its transcripts live there and nowhere else.
+/// Every managed account dir (`agent::accounts`) is a root too: agents
+/// stamped with an account used to run claude with that dir as
+/// `CLAUDE_CONFIG_DIR`, so their history lives there. New sessions of every
+/// account land in the default dir.
 pub(crate) fn claude_projects_dirs() -> Vec<PathBuf> {
     projects_dirs_from(
         std::env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from),

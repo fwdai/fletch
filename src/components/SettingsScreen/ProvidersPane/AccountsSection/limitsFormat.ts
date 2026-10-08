@@ -77,7 +77,7 @@ export function refreshHint(refresh: LimitsRefreshState | null, nowMs: number): 
       return `Rate limited; try again at ${formatClockTime(until * 1000)}.`;
     }
     case "stale":
-      return "The saved login is stale. Run an agent under this account to refresh it.";
+      return "Claude refused this login even after refreshing it. Sign in again to see limits.";
     case "signed_out":
       return "Signed out. Sign in to see limits.";
     default:

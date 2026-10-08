@@ -15,6 +15,7 @@ use crate::sandbox::{AgentLaunchCtx, EngineKind, LaunchPlan, SandboxEngine};
 use super::accounts;
 use super::args::{prepare_managed_args, prepare_pty_args};
 use super::capabilities::{mcp_delivery, per_turn_descriptor};
+use super::claude_oauth::AccessToken;
 use super::probe::resolve_agent_bin;
 use super::{Agent, ManagedAgent, PerTurnAgent, PerTurnDescriptor, PtyAgent, TurnArgs};
 
@@ -128,9 +129,13 @@ pub struct SpawnSpec<'a> {
     /// change never re-engines an existing agent (see `supervisor::lifecycle`).
     pub engine: EngineKind,
     /// Provider account stamped on the agent's record at creation and reused on
-    /// every spawn, like `engine`: the CLI runs pointed at that account's config
-    /// dir (`agent::accounts`). `None` = the CLI's own default account.
+    /// every spawn, like `engine` (`agent::accounts`). `None` = the CLI's own
+    /// default account.
     pub account: Option<&'a str>,
+    /// The access token a claude launch signs in with, resolved (and
+    /// refreshed) by the host for `account` — see `claude_oauth::launch_token`.
+    /// `None` for per-turn providers.
+    pub oauth_token: Option<&'a AccessToken>,
     /// The run blackboard dir to grant this agent write access to, when it is a
     /// workflow step agent (§8). `None` for a normal spawn. The sandbox engine
     /// turns it into the seatbelt subpath / Docker mount + `WF_BLACKBOARD`.
@@ -152,14 +157,15 @@ fn rpc_env(rpc_dir: &Path) -> Vec<(String, String)> {
 }
 
 /// What a launch needs from the managed account it runs under: the account's
-/// config dir for the sandbox engine, the env pointing the CLI at it, and the
-/// default account's credential vars to strip from the child so the CLI can
-/// only authenticate as that account (the container engines filter the same
-/// vars in their auth chain; host-side launches inherit the login shell, so
-/// they must drop them here). The sessions apply `unset` to the inherited
-/// layers only, before the launch plan's own env: a token a container engine
-/// resolved for *this* account under one of those names is kept, since docker
-/// forwards it from the runtime CLI's process env. All empty for the default
+/// config dir for the sandbox engine and the env pointing the CLI at it (a
+/// codex account; a claude one signs in by token instead), and the default
+/// account's credential vars to strip from the child so the CLI can only
+/// authenticate as that account (the container engines filter the same vars
+/// in their auth chain; host-side launches inherit the login shell, so they
+/// must drop them here — an ambient `ANTHROPIC_API_KEY` would outrank the
+/// account's token). The sessions apply `unset` to the inherited layers only,
+/// before the launch plan's own env: the account's token, which the plan
+/// carries under one of those names, is kept. All empty for the default
 /// account.
 #[derive(Default)]
 struct AccountLaunch {
@@ -168,23 +174,30 @@ struct AccountLaunch {
     unset: Vec<String>,
 }
 
-/// The managed account a launch of `provider` runs under: its config dir,
-/// repaired first so shared config linked since the last launch is there, and
-/// the env pointing the CLI at it. Nothing for the default account. A stamped
-/// account whose dir was removed fails the launch rather than recreating it
-/// signed out, or silently running the agent under another login.
+/// The managed account a launch of `provider` runs under. A stamped account
+/// whose dir was removed fails the launch rather than recreating it signed
+/// out, or silently running the agent under another login. A codex account's
+/// dir is repaired first, so shared config linked since the last launch is
+/// there. Nothing for the default account.
 fn account_launch(provider: &str, account: Option<&str>) -> Result<AccountLaunch> {
     let Some(id) = account.filter(|id| !accounts::is_default(id)) else {
         return Ok(AccountLaunch::default());
     };
     accounts::existing_account_dir(provider, Some(id))?;
+    let unset = accounts::ambient_credential_vars(provider)
+        .iter()
+        .map(|v| v.to_string())
+        .collect();
+    if !accounts::launches_in_account_dir(provider) {
+        return Ok(AccountLaunch {
+            unset,
+            ..AccountLaunch::default()
+        });
+    }
     Ok(AccountLaunch {
         dir: Some(accounts::ensure_account_dir(provider, id)?),
         env: accounts::account_env(provider, id)?,
-        unset: accounts::ambient_credential_vars(provider)
-            .iter()
-            .map(|v| v.to_string())
-            .collect(),
+        unset,
     })
 }
 
@@ -248,6 +261,7 @@ impl Agent {
             interactive: true,
             blackboard: spec.blackboard,
             account_dir: account.dir.as_deref(),
+            oauth_token: spec.oauth_token,
         };
         let LaunchPlan {
             program,
@@ -287,7 +301,10 @@ impl Agent {
             on_exit,
         )?;
 
-        Ok(Self::Pty(PtyAgent { pty }))
+        Ok(Self::Pty(PtyAgent {
+            pty,
+            login_expires_at_ms: spec.oauth_token.map(AccessToken::expires_at_ms),
+        }))
     }
 
     /// Launch a per-turn agent's interactive TUI in a PTY — the native view
@@ -339,6 +356,7 @@ impl Agent {
             interactive: true,
             blackboard: spec.blackboard,
             account_dir: account.dir.as_deref(),
+            oauth_token: None,
         };
         let LaunchPlan {
             program,
@@ -379,7 +397,10 @@ impl Agent {
             on_exit,
         )?;
 
-        Ok(Self::Pty(PtyAgent { pty }))
+        Ok(Self::Pty(PtyAgent {
+            pty,
+            login_expires_at_ms: None,
+        }))
     }
 
     pub fn spawn_managed<F, G>(spec: SpawnSpec<'_>, on_event: F, on_exit: G) -> Result<Self>
@@ -406,6 +427,7 @@ impl Agent {
             interactive: false,
             blackboard: spec.blackboard,
             account_dir: account.dir.as_deref(),
+            oauth_token: spec.oauth_token,
         };
         let LaunchPlan {
             program,
@@ -443,7 +465,10 @@ impl Agent {
             on_exit,
         )?;
 
-        Ok(Self::Managed(ManagedAgent { session }))
+        Ok(Self::Managed(ManagedAgent {
+            session,
+            login_expires_at_ms: spec.oauth_token.map(AccessToken::expires_at_ms),
+        }))
     }
 
     /// Build a per-turn runner (codex, cursor, opencode, pi) from its
@@ -561,6 +586,7 @@ impl Agent {
             interactive: false,
             blackboard: spec.blackboard.as_deref(),
             account_dir: account.dir.as_deref(),
+            oauth_token: None,
         };
         let LaunchPlan {
             program: launch_program,
@@ -629,6 +655,17 @@ impl Agent {
                 .session
                 .send_user_message(text, attachments, model, effort),
             Self::Pty(a) => a.pty.write(&pty_input_keystrokes(text, attachments)),
+        }
+    }
+
+    /// When the claude access token this process runs on lapses; `None` for a
+    /// process launched without a host token (per-turn providers, or a default
+    /// account with no host login).
+    pub fn login_expires_at_ms(&self) -> Option<i64> {
+        match self {
+            Self::Pty(a) => a.login_expires_at_ms,
+            Self::Managed(a) => a.login_expires_at_ms,
+            Self::PerTurn(_) => None,
         }
     }
 
@@ -793,5 +830,60 @@ fn agent_bin_for(
             })
     } else {
         resolve_agent_bin(provider, bin, label, home)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A claude account launches in the shared default config dir: nothing
+    /// relocates the CLI or hands the engine the account dir, and the default
+    /// account's ambient credentials are stripped so they can't outrank the
+    /// account's token.
+    #[test]
+    fn a_claude_account_launch_relocates_nothing_and_strips_ambient_credentials() {
+        accounts::with_test_root(|root| {
+            std::fs::create_dir_all(root.join("claude").join("work")).unwrap();
+            let launch = account_launch("claude", Some("work")).unwrap();
+            assert!(launch.dir.is_none());
+            assert!(launch.env.is_empty());
+            for var in [
+                "ANTHROPIC_API_KEY",
+                "CLAUDE_CODE_OAUTH_TOKEN",
+                "ANTHROPIC_AUTH_TOKEN",
+            ] {
+                assert!(launch.unset.iter().any(|v| v == var), "{var}");
+            }
+        });
+    }
+
+    #[test]
+    fn a_codex_account_launch_runs_in_the_account_home() {
+        accounts::with_test_root(|root| {
+            let dir = root.join("codex").join("work");
+            std::fs::create_dir_all(&dir).unwrap();
+            let launch = account_launch("codex", Some("work")).unwrap();
+            assert_eq!(launch.dir.as_deref(), Some(dir.as_path()));
+            assert_eq!(
+                launch.env,
+                vec![("CODEX_HOME".to_string(), dir.to_string_lossy().into_owned())]
+            );
+            assert_eq!(launch.unset, vec!["OPENAI_API_KEY".to_string()]);
+        });
+    }
+
+    #[test]
+    fn a_removed_claude_account_still_fails_the_launch() {
+        accounts::with_test_root(|_| {
+            let err = account_launch("claude", Some("gone")).err().unwrap();
+            assert!(err.to_string().contains("has been removed"), "{err}");
+        });
+    }
+
+    #[test]
+    fn the_default_account_launch_changes_nothing() {
+        let launch = account_launch("claude", None).unwrap();
+        assert!(launch.dir.is_none() && launch.env.is_empty() && launch.unset.is_empty());
     }
 }

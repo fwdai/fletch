@@ -212,13 +212,10 @@ pub(crate) fn prepare(
     let auth_start;
     match provider {
         ContainerProvider::Claude => {
-            // A managed account's dir takes the place of the app env's
-            // relocation: mounted and forwarded exactly like it, and the one
-            // whose login the auth chain below reads.
-            let cfg = match ctx.account_dir {
-                Some(dir) => Some(dir.to_path_buf()),
-                None => nondefault_claude_config_dir(ctx.home),
-            };
+            // Every account runs in the same config dir; a managed one differs
+            // only by the token the auth chain below forwards, so its account
+            // dir (host-only login storage) is never mounted.
+            let cfg = nondefault_claude_config_dir(ctx.home);
 
             // Fail the launch with the path rather than hand `-v` a source we
             // couldn't create: the bind would either be recreated root-owned or
@@ -244,11 +241,16 @@ pub(crate) fn prepare(
 
             // Overlay `.credentials.json` only when the file already exists: on
             // a missing source the runtime creates a root-owned *directory*
-            // there, breaking claude's later write of the real file.
-            claude_credentials_rw = claude_dir.join(CREDENTIALS_FILE).is_file();
-            config_dir_credentials_rw = cfg
-                .as_deref()
-                .is_some_and(|dir| dir.join(CREDENTIALS_FILE).is_file());
+            // there, breaking claude's later write of the real file. Never
+            // under a host-resolved token: the host is the login's only
+            // writer, and a refresh from in here would rotate its refresh
+            // token out from under it.
+            let host_owned = ctx.oauth_token.is_some();
+            claude_credentials_rw = !host_owned && claude_dir.join(CREDENTIALS_FILE).is_file();
+            config_dir_credentials_rw = !host_owned
+                && cfg
+                    .as_deref()
+                    .is_some_and(|dir| dir.join(CREDENTIALS_FILE).is_file());
             if let Some(dir) = &cfg {
                 env.push((
                     "CLAUDE_CONFIG_DIR".into(),
@@ -259,12 +261,7 @@ pub(crate) fn prepare(
             projects_src = Some(ps);
 
             auth_start = env.len();
-            let auth = super::auth::resolve(ctx.account_dir);
-            if ctx.account_dir.is_some() && matches!(auth, super::auth::ContainerAuth::Unavailable)
-            {
-                return Err(Error::Other(NO_ACCOUNT_AUTH_MSG.to_string()));
-            }
-            apply_container_auth(&mut env, auth)?;
+            apply_container_auth(&mut env, super::auth::resolve(ctx.oauth_token))?;
         }
         ContainerProvider::Codex => {
             // A managed account's home is always forwarded; otherwise only a
@@ -444,6 +441,7 @@ mod tests {
             interactive: false,
             blackboard: None,
             account_dir: Some(&account),
+            oauth_token: None,
         };
 
         let err = prepare(&ctx, ContainerProvider::Codex, None)
@@ -468,6 +466,51 @@ mod tests {
                 assert!(forward_home);
             }
             _ => panic!("expected codex mounts"),
+        }
+    }
+
+    /// A claude launch forwards the host-resolved token as the one auth var,
+    /// never points claude at another config dir, and leaves the host's
+    /// credentials file read-only (the host is its only writer).
+    #[test]
+    fn a_claude_launch_forwards_the_host_token_and_no_account_dir() {
+        let td = tempfile::tempdir().unwrap();
+        let home = td.path().join("home");
+        let root = td.path().join("w");
+        let rpc = td.path().join("rpc");
+        for dir in [&home, &root, &rpc] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        std::fs::create_dir_all(home.join(".claude")).unwrap();
+        std::fs::write(home.join(".claude").join(CREDENTIALS_FILE), "{}").unwrap();
+        let token = crate::agent::claude_oauth::AccessToken::for_test("sk-ant-oat-test", 1);
+        let ctx = AgentLaunchCtx {
+            agent_id: "a1",
+            provider: "claude",
+            writable_root: &root,
+            source_repos: &[],
+            rpc_dir: &rpc,
+            cwd: &root,
+            home: &home,
+            interactive: false,
+            blackboard: None,
+            account_dir: None,
+            oauth_token: Some(&token),
+        };
+
+        let launch = prepare(&ctx, ContainerProvider::Claude, None).unwrap();
+        assert_eq!(launch.auth_vars()[0], "CLAUDE_CODE_OAUTH_TOKEN");
+        assert!(!launch
+            .auth_vars()
+            .iter()
+            .any(|v| *v == "ANTHROPIC_API_KEY" || *v == "ANTHROPIC_AUTH_TOKEN"));
+        assert!(launch
+            .env
+            .iter()
+            .any(|(k, v)| k == "CLAUDE_CODE_OAUTH_TOKEN" && v == "sk-ant-oat-test"));
+        match launch.mounts() {
+            ProviderMounts::Claude { credentials_rw, .. } => assert!(!credentials_rw),
+            _ => panic!("expected claude mounts"),
         }
     }
 

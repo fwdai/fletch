@@ -3,13 +3,12 @@
 //!
 //! The endpoint is undocumented and rate-limits eagerly, so this never polls:
 //! the command layer gates every call behind the refresh floor and a persisted
-//! 429 back-off (`super::refresh_allowed`). Access tokens live about an hour and
-//! claude refreshes them only while it runs; a refused token is reported as
-//! stale ("run an agent under this account") rather than refreshed here.
+//! 429 back-off (`super::refresh_allowed`). The token is the host's login
+//! (`agent::claude_oauth`), refreshed first when it is due, so a lapsed token
+//! no longer needs an agent run to come back.
 //!
-//! The token is read from the Keychain or the account's credentials file,
-//! sent in one header, and dropped. It is never logged, never part of an error
-//! and never returned.
+//! The token is sent in one header and dropped. It is never logged, never
+//! part of an error and never returned.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -17,6 +16,7 @@ use std::time::Duration;
 use serde_json::Value;
 
 use super::{from_oauth_usage, now_secs, RefreshOutcome};
+use crate::agent::claude_oauth::{self, AccessToken, LoginError};
 use crate::error::{Error, Result};
 
 pub const USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
@@ -27,46 +27,61 @@ const OAUTH_BETA: &str = "oauth-2025-04-20";
 const TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Read the limits of the claude account whose config dir is `account_dir`
-/// (`None` = the default account). No usable login reads as signed out.
+/// (`None` = the default account). A 401 on a token that looked unexpired
+/// (revoked server-side) gets one forced refresh and a second ask. No login,
+/// or a revoked one, reads as signed out.
 pub async fn read_limits(account_dir: Option<PathBuf>) -> Result<RefreshOutcome> {
-    // A Keychain read shells out to `security`, so off the async workers.
-    let token = tokio::task::spawn_blocking(move || {
-        crate::sandbox::container::auth::oauth_access_token(account_dir.as_deref())
-    })
-    .await
-    .map_err(|e| Error::Other(format!("credential read failed: {e}")))?;
-    let Some(token) = token else {
+    let dir = account_dir.as_deref();
+    let Some(token) = signed_in(claude_oauth::access_token_for_launch(dir).await)? else {
         return Ok(RefreshOutcome::SignedOut);
     };
-
     let client = reqwest::Client::builder()
         .user_agent("Fletch")
         .timeout(TIMEOUT)
         .build()
         .map_err(|e| Error::Other(format!("http client: {e}")))?;
+    let (status, body) = get_usage(&client, &token).await?;
+    if status != 401 {
+        return interpret(status, body.as_ref(), now_secs());
+    }
+    let replaced = claude_oauth::replace_rejected_token(dir, token.expires_at_ms()).await;
+    let Some(token) = signed_in(replaced)? else {
+        return Ok(RefreshOutcome::SignedOut);
+    };
+    let (status, body) = get_usage(&client, &token).await?;
+    interpret(status, body.as_ref(), now_secs())
+}
+
+fn signed_in(token: std::result::Result<AccessToken, LoginError>) -> Result<Option<AccessToken>> {
+    match token {
+        Ok(token) => Ok(Some(token)),
+        Err(LoginError::SignedOut | LoginError::Revoked) => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
+async fn get_usage(client: &reqwest::Client, token: &AccessToken) -> Result<(u16, Option<Value>)> {
     // A transport error's text names the URL, never the request's headers.
     let response = client
         .get(USAGE_URL)
-        .bearer_auth(&token)
+        .bearer_auth(token.secret())
         .header("anthropic-beta", OAUTH_BETA)
         .send()
         .await
         .map_err(|e| Error::Other(format!("Claude's usage endpoint is unreachable: {e}")))?;
-    drop(token);
-
     let status = response.status().as_u16();
     let body = if response.status().is_success() {
         response.json::<Value>().await.ok()
     } else {
         None
     };
-    interpret(status, body.as_ref(), now_secs())
+    Ok((status, body))
 }
 
-/// What an answer means. 401: the stored token expired or was revoked —
-/// stale, not signed out, since the login itself is still there. 429: back
-/// off. Any other failure is an error the user sees; it carries the status
-/// only, never the body.
+/// What an answer means. 401 even after a forced refresh: stale, not signed
+/// out, since the login itself is still there. 429: back off. Any other
+/// failure is an error the user sees; it carries the status only, never the
+/// body.
 pub fn interpret(status: u16, body: Option<&Value>, now: i64) -> Result<RefreshOutcome> {
     match status {
         200..=299 => body

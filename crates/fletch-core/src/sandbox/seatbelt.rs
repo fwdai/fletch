@@ -65,15 +65,13 @@ impl SandboxEngine for SandboxExecEngine {
     }
 
     fn launch_agent(&self, ctx: &AgentLaunchCtx, agent_bin: &str) -> Result<LaunchPlan> {
-        // A managed account's dir is where this launch's CLI keeps its state, so
-        // it takes the place of the app env's own relocation for its provider.
-        // Per launch, not per profile: only the agent running under the account
-        // gets its dir.
-        let account_dir = |provider: &str| ctx.account_dir.filter(|_| ctx.provider == provider);
-        let claude_config_dir = match account_dir("claude") {
-            Some(dir) => Some(dir.to_path_buf()),
-            None => std::env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from),
-        };
+        // A managed codex account's dir is where this launch's CLI keeps its
+        // state, so it is granted for this launch only. Claude accounts never
+        // relocate the CLI: every claude runs in the shared default config dir
+        // and signs in with the host-resolved token below, so its account dir
+        // (host-only login storage) gets nothing.
+        let codex_account = ctx.account_dir.filter(|_| ctx.provider == "codex");
+        let claude_config_dir = std::env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from);
         let profile_text = build_profile(
             ctx.writable_root,
             ctx.rpc_dir,
@@ -81,7 +79,7 @@ impl SandboxEngine for SandboxExecEngine {
             claude_config_dir.as_deref(),
             ctx.blackboard,
             ctx.adopted_workspace(),
-            account_dir("codex"),
+            codex_account,
         )?;
         // A workflow step agent's blackboard is granted writable in the profile
         // above; also point the agent at it via `WF_BLACKBOARD` (the same host
@@ -98,6 +96,15 @@ impl SandboxEngine for SandboxExecEngine {
         // they do today, never that the sandbox is looser.
         let _ = std::fs::create_dir_all(&cache_root);
         let mut env = policy::toolchain_cache_env(&cache_root);
+        // Claude reads it once at start and ranks it above any `/login`
+        // credential in the config dir, and it can't refresh it — which is the
+        // point: refreshing is the host's job (`agent::claude_oauth`).
+        if let Some(token) = ctx.oauth_token.filter(|_| ctx.provider == "claude") {
+            env.push((
+                "CLAUDE_CODE_OAUTH_TOKEN".to_string(),
+                token.secret().to_string(),
+            ));
+        }
         if let Some(board) = ctx.blackboard {
             env.push((
                 crate::workflow::blackboard::WF_BLACKBOARD_ENV.to_string(),
@@ -1709,9 +1716,9 @@ mod tests {
         assert!(!profile.contains(&format!("(subpath \"{}\")", parent.display())));
     }
 
-    /// The account dir rides the launch, and only the launching provider's
-    /// relocation uses it: a claude account dir handed to a codex launch (or
-    /// the reverse) grants nothing.
+    /// Only a codex launch relocates into its account dir: claude accounts are
+    /// a token source, so a claude launch grants nothing under the dir, and
+    /// providers without accounts never do.
     #[test]
     fn launch_grants_the_account_dir_to_its_own_provider_only() {
         let (td, root, rpc, home) = sandbox_dirs();
@@ -1730,6 +1737,7 @@ mod tests {
                 interactive: false,
                 blackboard: None,
                 account_dir: Some(&account),
+                oauth_token: None,
             };
             SandboxExecEngine
                 .launch_agent(&ctx, "/usr/local/bin/agent")
@@ -1742,17 +1750,56 @@ mod tests {
         let codex = profile_for("codex");
         assert!(codex.contains(&whole), "{codex}");
 
-        let claude = profile_for("claude");
-        assert!(
-            !claude.contains(&whole),
-            "claude gets islands, not the root"
-        );
-        for island in policy::claude_write_island_dirs(&canonical_account) {
-            assert!(claude.contains(&format!("(subpath \"{}\")", island.display())));
+        for provider in ["claude", "cursor"] {
+            let profile = profile_for(provider);
+            assert!(
+                !profile.contains(&canonical_account.to_string_lossy().to_string()),
+                "{provider}: {profile}"
+            );
         }
+    }
 
-        let cursor = profile_for("cursor");
-        assert!(!cursor.contains(&canonical_account.to_string_lossy().to_string()));
+    /// A claude launch carries the host-resolved token as
+    /// `CLAUDE_CODE_OAUTH_TOKEN` in the plan's env (never argv), and nothing
+    /// pointing claude at another config dir.
+    #[test]
+    fn a_claude_launch_carries_the_host_token_and_no_config_dir() {
+        let (_td, root, rpc, home) = sandbox_dirs();
+        let token = crate::agent::claude_oauth::AccessToken::for_test("sk-ant-oat-test", 1);
+        let ctx = AgentLaunchCtx {
+            agent_id: "a1",
+            provider: "claude",
+            writable_root: &root,
+            source_repos: &[],
+            rpc_dir: &rpc,
+            cwd: &root,
+            home: &home,
+            interactive: false,
+            blackboard: None,
+            account_dir: None,
+            oauth_token: Some(&token),
+        };
+        let plan = SandboxExecEngine
+            .launch_agent(&ctx, "/usr/local/bin/claude")
+            .unwrap();
+        assert!(plan
+            .env
+            .iter()
+            .any(|(k, v)| k == "CLAUDE_CODE_OAUTH_TOKEN" && v == "sk-ant-oat-test"));
+        assert!(!plan.env.iter().any(|(k, _)| k == "CLAUDE_CONFIG_DIR"));
+        assert!(!plan
+            .prefix_args
+            .iter()
+            .any(|a| a.contains("sk-ant-oat-test")));
+
+        let codex = AgentLaunchCtx {
+            provider: "codex",
+            ..ctx
+        };
+        let plan = SandboxExecEngine
+            .launch_agent(&codex, "/usr/local/bin/codex")
+            .unwrap();
+        assert!(!plan.env.iter().any(|(k, _)| k == "CLAUDE_CODE_OAUTH_TOKEN"));
     }
 
     #[test]
@@ -2643,6 +2690,7 @@ mod tests {
             interactive: true,
             blackboard: None,
             account_dir: None,
+            oauth_token: None,
         };
         let plan = SandboxExecEngine
             .launch_agent(&ctx, "/usr/local/bin/claude")

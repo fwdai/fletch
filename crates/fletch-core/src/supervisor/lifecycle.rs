@@ -1422,6 +1422,7 @@ impl Supervisor {
                         rows: 32,
                         engine,
                         account: record.account.as_deref(),
+                        oauth_token: None,
                         blackboard: blackboard.as_deref(),
                     };
                     spawn_pty_per_turn_agent(
@@ -1464,6 +1465,14 @@ impl Supervisor {
             let session_id = session_id
                 .as_deref()
                 .expect("non-codex agents always have a session id");
+            // Resolved here, on every launch path, so a resume always starts on
+            // a token with the full refresh margin ahead of it. A token the
+            // API rejected (see `observe_login`) is replaced even if
+            // it looks unexpired.
+            let rejected = self.logins.lock().rejected.remove(agent_id);
+            let oauth_token =
+                crate::agent::claude_oauth::launch_token(record.account.as_deref(), rejected)
+                    .await?;
             let spec = SpawnSpec {
                 agent_id: &agent_id_str,
                 cwd,
@@ -1484,6 +1493,7 @@ impl Supervisor {
                 engine,
                 // The account stamped at creation, never the live setting.
                 account: record.account.as_deref(),
+                oauth_token: oauth_token.as_ref(),
                 blackboard: blackboard.as_deref(),
             };
             match record.view {
@@ -2006,9 +2016,17 @@ fn spawn_managed_agent(
     // runs under. The event still flows on to the transcript unchanged.
     let limits_ctx = ctx.clone();
     let account = spec.account.map(str::to_string);
+    let login_sup = sup.clone();
+    let login_agent = agent_id.clone();
     let on_event = move |event: Value| {
         crate::agent::limits::observe_stream_event(&limits_ctx, account.as_deref(), &event);
+        // Read before the event closes the turn: a rejection must flag its
+        // respawn ahead of the turn-end drain (`observe_login`).
+        let login = login_sup.observe_login(&login_agent, &event);
         on_event(event);
+        if login == super::login_refresh::LoginVerdict::GaveUp {
+            login_sup.report_login_failure(&limits_ctx, &login_agent);
+        }
     };
     Agent::spawn_managed(spec, on_event, make_exit_handler(sup, ctx, agent_id, gen))
 }

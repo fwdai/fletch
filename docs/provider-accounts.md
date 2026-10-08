@@ -12,6 +12,8 @@ already made, and exactly what PR 3 has to deliver. Read it before touching code
 | #874 | `feat/provider-accounts` | accounts model, per-account login, probe, Settings list | CI green, awaiting merge |
 | #875 | `feat/provider-accounts-spawn` (stacked on #874) | active account honoured at spawn, both sandbox engines, transcripts | CI green, awaiting merge |
 | PR 3 | `feat/provider-accounts-usage` (stacked on #875) | per-account spend + limit meters | implemented; status-line source deferred |
+| host login 1 | `feat/claude-host-login` | the host owns every claude login: refresh, token injection on every engine, relaunch-on-expiry, attribution by stamp | draft (2026-10-08) |
+| host login 2 | — | mid-session account switch (hand the agent another token via `relaunch_with_resume`) | not started |
 
 Merge #874 first, then #875. Manual checks Alex still owes before merging #875:
 a fresh Claude account click-through (add → sign in → make active → new agent)
@@ -26,16 +28,45 @@ build it in PR 3.
 ## The model
 
 - A **managed account** is a config directory `~/.fletch/accounts/<provider>/<id>/`
-  (`FLETCH_ACCOUNTS_ROOT` overrides the root in tests). The CLI is pointed at it
-  with `CLAUDE_CONFIG_DIR` (claude) or `CODEX_HOME` (codex). The directory
-  listing **is** the registry; there is no accounts table. `id` is a slug
+  (`FLETCH_ACCOUNTS_ROOT` overrides the root in tests). The directory listing
+  **is** the registry; there is no accounts table. `id` is a slug
   (`[a-z0-9-]`, ≤32, not `default`) and doubles as the label.
+  - A **codex** agent runs pointed at its account dir with `CODEX_HOME`.
+  - A **claude** account is a **token source only**
+    (`accounts::launches_in_account_dir`). Its dir is host-only storage for
+    the login (Settings signs in there with `CLAUDE_CONFIG_DIR`, and the
+    Keychain item is named for it). Every claude agent, whatever its account,
+    runs in the shared default config dir with `CLAUDE_CODE_OAUTH_TOKEN` set
+    to the account's access token, which claude ranks above any `/login` in
+    that dir. So all accounts' transcripts land in the default places.
+- **The host owns every claude login** (`agent/claude_oauth.rs`). A sandboxed
+  claude can't refresh its own token: the refresh needs `mkdir <dir>.lock`,
+  `<dir>/.oauth_refresh.lock` and a Keychain write, all denied under seatbelt,
+  and a container has no Keychain. It also must not hold the ~30-day refresh
+  token. So before every claude launch, on every engine, the app reads the
+  account's login (Keychain item, else `.credentials.json`), refreshes it at
+  `https://platform.claude.com/v1/oauth/token` when it expires within 30 min
+  (`REFRESH_MARGIN_MS`), writes the rotated pair back where it came from
+  (Keychain `-U` through `security -i`, or the file atomically at 0600,
+  keeping every field it doesn't own), and hands the agent only the ~8h
+  access token. Refresh tokens rotate, so refreshes run single-flight per
+  account. A refused refresh (400/401) marks the login revoked until the
+  store changes, and Settings shows "sign in again". A sandboxed agent never
+  touches the Keychain, read or write.
+- **A live claude can't take a new token** (it reads the env var once). Before
+  a turn is delivered to an idle claude process whose token is inside the
+  margin, the supervisor stops it and resumes the session on a fresh token
+  (`Supervisor::relaunch_with_resume`). A turn that still ends on a 401 gets
+  one refresh, relaunch and resend (`supervisor/login_refresh.rs`). A second
+  401 leaves the agent in `Error` with "sign in again". Per-turn providers
+  start a process every turn and need none of this.
 - The **default account** is the user's own CLI dir (`~/.claude`, `~/.codex`, or
   wherever their shell's env points). It has no directory under the root and no
   env override. It is also the **shared source**: `settings.json`, `CLAUDE.md`,
   `commands/`, `skills/`, `agents/`, `plugins/` (claude) and `config.toml`,
   `AGENTS.md`, `prompts/`, `skills/` (codex) are **symlinked** into each managed
-  dir, never copied. Login, `.claude.json`, sessions stay per dir.
+  dir, never copied. Login, `.claude.json`, sessions stay per dir. (The claude
+  links only matter to the Settings sign-in now, since agents don't run there.)
 - The **active account** per provider is the settings key
   `provider_account_<provider>` (absent/blank/`default` = default). It is read
   **only at agent creation** and stamped on the record
@@ -43,7 +74,10 @@ build it in PR 3.
   stamp. Switching the radio moves new agents only. The stamp itself moves only
   through `switch_agent_account` (the agent header's account picker), which
   the host refuses mid-turn; the next turn runs under the new account in the
-  same workspace and conversation.
+  same workspace and conversation. Usage is credited by this stamp too: a
+  session Fletch ran belongs to its workspace's account
+  (`workspace::session_accounts`), and only transcripts matching no known
+  session fall back to "whose directory holds it".
 - Claude's macOS Keychain item for a managed dir is
   `Claude Code-credentials-<first 8 hex of sha256(dir path string)>`, no trailing
   slash, hashed exactly as the env var carries it. Verified against a live item
@@ -63,10 +97,21 @@ Engine (`crates/fletch-core/src/`):
   `account_env`, `ambient_credential_vars`, `account_for_new_agent`,
   `stamped_account_dir`, `existing_account_dir` (errors on a removed stamp),
   `list_accounts` (probes every account), `ProviderAccount`,
-  `ACTIVE_SETTING_PREFIX`, `with_test_root` (test helper, crate-wide env lock).
+  `ACTIVE_SETTING_PREFIX`, `launches_in_account_dir` (false for claude),
+  `with_test_root` (test helper, crate-wide env lock).
+- `agent/claude_oauth.rs` — the host-owned claude login. `launch_token(account,
+  rejected)` (what every claude launch signs in with; a managed account without
+  a usable login fails the launch, the default degrades to no token),
+  `access_token_for_launch`, `replace_rejected_token` (after a 401),
+  `login_state` / `invalidate` (no secret read), `stored_access_token` (the
+  "is this a login" bar, `expiresAt > 0`), `REFRESH_MARGIN_MS`, `AccessToken`
+  (`Debug` prints the expiry only). `LoginStore` and `TokenEndpoint` are the
+  seams the tests mock. Ignored live tests: `live_forced_refresh_*`,
+  `live_seatbelt_turn_*` (`FLETCH_LIVE_CLAUDE_ACCOUNT=<id>`).
 - `agent/auth_probe.rs` — `probe_default`, `probe_dir` (per-account sign-in
   probe; Keychain presence or `.credentials.json` for claude, `auth.json` for
-  codex; never consults shell keys).
+  codex; never consults shell keys). A claude login `claude_oauth` found
+  revoked reads as signed out, "sign in again".
 - `commands/accounts.rs` — `list_provider_accounts_impl`,
   `add_provider_account_impl`, `ensure_account_removable` (refuses the active
   account and any account a live agent is stamped with),
@@ -75,35 +120,58 @@ Engine (`crates/fletch-core/src/`):
   `agent/login.rs` `logout_command` — with the account's config-dir env; the
   account and its sessions stay).
 - `workspace/agents.rs` — `live_agents_on_account` (count query over
-  `workspaces` + `sessions`, where the provider lives).
+  `workspaces` + `sessions`, where the provider lives); `session_accounts`
+  (provider session id → stamped account, for the usage scan).
 - `supervisor/lifecycle.rs` — `active_account` stamping in `spawn_agent`;
-  `record.account` threaded into `SpawnSpec`/`PerTurnSpec`.
+  `record.account` threaded into `SpawnSpec`/`PerTurnSpec`;
+  `spawn_agent_process` resolves `claude_oauth::launch_token` on every claude
+  launch path into `SpawnSpec.oauth_token`; the managed event handler feeds
+  `observe_login`.
+- `supervisor/login_refresh.rs` — `relaunch_with_resume` (switch_view's
+  teardown + resume without the view change; PR 2's account switch calls
+  it), `relaunch_if_login_due` (before a turn, from `send_user_message`),
+  `observe_login` (401 → flag a session-preserving respawn on a replaced
+  token and requeue the turn, once), `report_login_failure`.
 - `agent/spawn.rs` — `account_launch` → `AccountLaunch { dir, env, unset }`
   used by all four launch paths (claude PTY, claude managed, per-turn PTY,
-  per-turn exec). `unset` strips the default account's credential vars.
+  per-turn exec). `unset` strips the default account's credential vars; a
+  claude account gets no `dir` and no env (it signs in by token).
+  `Agent::login_expires_at_ms` is the launched token's expiry.
 - `pty_session.rs`, `managed_session.rs`, `exec_session.rs` — `env_remove`
   field applied after every env layer.
-- `sandbox/engine.rs` — `AgentLaunchCtx.account_dir`.
-- `sandbox/seatbelt.rs` — relocated claude dir: island grants + `.claude.json`
-  literal + explicit deny on `settings.json`; codex account home granted whole
-  with `config.toml` deny. Ignored kernel test documents the temp-tree grant.
+- `sandbox/engine.rs` — `AgentLaunchCtx.account_dir` (codex only) and
+  `AgentLaunchCtx.oauth_token` (claude, every engine).
+- `sandbox/seatbelt.rs` — puts `oauth_token` in the plan's env as
+  `CLAUDE_CODE_OAUTH_TOKEN`; grants nothing for a claude account dir. The
+  relocated-claude-dir grants (islands + `.claude.json` literal +
+  `settings.json` deny) stay: they still serve an app env that sets
+  `CLAUDE_CONFIG_DIR`. Codex account home granted whole with `config.toml`
+  deny. Ignored kernel test documents the temp-tree grant.
 - `sandbox/container/{launch.rs, auth.rs, launch_auth.rs, config_dir.rs}` —
-  account dir mounted and forwarded; `auth::resolve(account_dir)` reads the
-  account's suffixed Keychain item / `.credentials.json` only;
-  `claude_keychain_service`, `keychain_token(service)` (a launch, or the
-  limits Refresh through `oauth_access_token`; never a polling path).
-- `keychain.rs` — `item_present`, `delete_item` (macOS; presence-only reads).
+  `auth::resolve(oauth_token)`: the host token, then (default account only,
+  since a managed launch always has a token) the stored setup-token and the
+  shell's auth vars. A claude account dir is never mounted; the per-agent
+  `.fletch-claude-projects` mount stays; the `.credentials.json` rw overlay
+  is dropped whenever a host token is injected. `status()` is presence-only.
+  `claude_keychain_service`.
+- `keychain.rs` — `item_present`, `item_stamp` (`acct` + `mdat`, no secret),
+  `read_password` (launch or explicit action only), `write_password`
+  (`security -i`, hex `-X`, so the secret never hits argv), `delete_item`.
 - `transcripts.rs` — `claude_projects_dirs` and `codex_sessions_dirs` union the
-  account dirs; `claude_projects_dir(cwd, container, account_dir)`.
+  account dirs (old claude history still lives there);
+  `claude_projects_dir(cwd, container, account_dir)` resolves to the default
+  for every claude agent now.
 - `supervisor/materialize.rs` — fork/rewind writer targets the stamped dir via
-  `existing_account_dir`.
+  `existing_account_dir` for codex, the default dir for claude.
 - `usage_scan/` — scans all roots (incl. account dirs); each bucket and
-  session carries the `account` whose dir holds the transcript (PR 3), and
-  codex rollouts' `rate_limits` surface as `UsageScan::rollout_limits`.
+  session carries an `account`: the workspace stamp for a session Fletch ran
+  (`Attribution::sessions`), else whose dir holds the transcript. Codex
+  rollouts' `rate_limits` surface as `UsageScan::rollout_limits` (by dir).
 - `agent/limits/` (PR 3) — `ProviderLimits`/`AccountLimits`, normalisers per
   source, the `provider_limits_<provider>_<account>` row (`record_limits`,
   `record_refresh`, refresh floor and 429 back-off), `app_server` (codex
-  on-demand read), `oauth_usage` (claude manual refresh).
+  on-demand read), `oauth_usage` (claude manual refresh, on
+  `claude_oauth`'s refreshed token; a 401 gets one forced refresh).
 - `commands/limits.rs` (PR 3) — `get_provider_limits_impl`,
   `refresh_provider_limits_impl`, `scan_usage_transcripts_impl` (the scan plus
   storing rollout readings; desktop and remote both call it).
@@ -238,7 +306,9 @@ Keychain item named by `container::auth::claude_keychain_service(Some(dir))`
 documented as such — PR 3 adds a second, explicitly user-initiated caller;
 update that doc. Access tokens expire in ~60 min and Claude refreshes them only
 when it runs: on 401 report "stale, run an agent under this account to
-refresh", do **not** implement the OAuth refresh flow. On 429 back off
+refresh", do **not** implement the OAuth refresh flow. (Superseded by host
+login 1: the host now refreshes, tokens last ~8h, and `oauth_usage` reads
+through `claude_oauth`; see "The model".) On 429 back off
 (exponential, persisted) and show the last known value. Never poll.
 
 **Spend per account.** Add an `account` dimension to `usage_scan`: a record's

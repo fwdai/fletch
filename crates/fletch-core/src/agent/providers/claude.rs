@@ -124,7 +124,7 @@ pub(crate) static CLAUDE_TRANSCRIPT: TranscriptReader = TranscriptReader {
 /// Write `bodies` as claude session `session_id`, run in `cwd`: the file
 /// `--resume <session_id>` opens, `<projects>/<cwd as a dirname>/<id>.jsonl`
 /// in the projects dir claude uses there (the per-agent one in a container,
-/// else the account's config dir — [`crate::transcripts::claude_projects_dir`]). Each line's `sessionId` and
+/// else the config dir claude runs with — [`crate::transcripts::claude_projects_dir`]). Each line's `sessionId` and
 /// `cwd`, where it has them, name the new session; the rest, `uuid` and
 /// `parentUuid` chain included, is copied as is, so claude resumes the same
 /// conversation, compactions and all.

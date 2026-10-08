@@ -117,8 +117,8 @@ describe("refreshHint and inBackoff", () => {
     expect(inBackoff(limited, until + MIN)).toBe(false);
   });
 
-  it("tells a stale login how to refresh it", () => {
-    expect(refreshHint(state({ status: "stale" }), NOW)).toMatch(/Run an agent/);
+  it("tells a login refused after a refresh to sign in again", () => {
+    expect(refreshHint(state({ status: "stale" }), NOW)).toMatch(/Sign in again/);
   });
 
   it("asks a signed-out account to sign in", () => {
