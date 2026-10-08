@@ -50,6 +50,11 @@ export const providersApi = {
    *  Rejected while the account is the active one. */
   removeProviderAccount: (provider: string, id: string) =>
     invokeLocal<void>("remove_provider_account", { provider, id }),
+  /** Sign an account out with the CLI's own logout (`id` a managed id or
+   *  `DEFAULT_ACCOUNT_ID`, which also signs the terminal's CLI out). The
+   *  account and its sessions stay. Rejects with the CLI's reason. */
+  signOutProviderAccount: (provider: string, id: string) =>
+    invokeLocal<void>("sign_out_provider_account", { provider, id }),
   /** Choose the account new agents of `provider` use; `null` is the CLI's own. */
   setActiveProviderAccount: (provider: string, id: string | null) =>
     invokeLocal<void>("set_active_provider_account", { provider, id }),

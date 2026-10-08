@@ -73,6 +73,10 @@ export interface ProvidersSlice {
   addProviderAccount: (provider: string, id: string) => Promise<void>;
   /** Delete a managed account and re-list. The backend refuses the active one. */
   removeProviderAccount: (provider: string, id: string) => Promise<void>;
+  /** Sign an account out with its CLI's logout and re-list, so its badge
+   *  follows. Rejects with the CLI's reason, or with why the account still
+   *  reads as signed in (a key in the shell, for the default). */
+  signOutProviderAccount: (provider: string, id: string) => Promise<void>;
   /** Choose which account new agents of `provider` use and re-list. */
   setActiveProviderAccount: (provider: string, id: string | null) => Promise<void>;
   /** Re-read `provider`'s stored limits rows. Called after every accounts
@@ -199,6 +203,15 @@ export const createProvidersSlice: SliceCreator<ProvidersSlice> = (set, get) => 
   removeProviderAccount: async (provider, id) => {
     await api.removeProviderAccount(provider, id);
     await get().refreshProviderAccounts();
+  },
+  signOutProviderAccount: async (provider, id) => {
+    // Re-listed either way: a logout that left the account signed in (a key
+    // in the shell) still cleared its saved login.
+    try {
+      await api.signOutProviderAccount(provider, id);
+    } finally {
+      await get().refreshProviderAccounts();
+    }
   },
   setActiveProviderAccount: async (provider, id) => {
     await api.setActiveProviderAccount(provider, id);

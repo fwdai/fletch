@@ -309,7 +309,7 @@ fn non_empty_file(path: &Path) -> bool {
 /// shell — the same two sources the container auth chain consults, so a key that
 /// only exists in `~/.zshrc` still counts. The value is tested for emptiness and
 /// dropped; it is never returned or logged.
-fn env_key_present(var: &str) -> bool {
+pub(crate) fn env_key_present(var: &str) -> bool {
     let non_blank = |v: &String| !v.trim().is_empty();
     std::env::var(var).ok().is_some_and(|v| non_blank(&v))
         || crate::bin_resolve::login_shell_env()

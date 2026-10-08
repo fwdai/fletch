@@ -422,6 +422,35 @@ pub fn list_accounts(active_id: impl Fn(&str) -> Option<String>) -> Vec<Provider
     out
 }
 
+/// One account's login state, probed exactly as [`list_accounts`] probes it —
+/// so the default counts a credential in the user's shell, a managed one
+/// doesn't. Blocking: a Keychain check shells out.
+pub fn probe_account(provider: &str, id: &str) -> Result<AuthStatus> {
+    let provider = ACCOUNT_PROVIDERS
+        .iter()
+        .copied()
+        .find(|p| *p == provider)
+        .ok_or_else(|| Error::Other(format!("`{provider}` has no account directories.")))?;
+    let probe = if is_default(id) {
+        auth_probe::probe_default(provider)
+    } else {
+        auth_probe::probe_dir(provider, &account_dir(provider, id)?)
+    };
+    Ok(probe.status)
+}
+
+/// `provider`'s credential variables set in the app's env or the user's login
+/// shell: what signs the default account in with no stored login, and what no
+/// logout can clear. Names only; the values are tested for emptiness, never
+/// read out.
+pub fn shell_credential_vars(provider: &str) -> Vec<&'static str> {
+    ambient_credential_vars(provider)
+        .iter()
+        .copied()
+        .filter(|var| auth_probe::env_key_present(var))
+        .collect()
+}
+
 /// Run `f` with [`ACCOUNTS_ROOT_ENV`] pointed at a fresh tempdir. Serialized
 /// crate-wide: tests in one binary run in parallel, and every module whose
 /// tests touch the accounts root (this one, `transcripts`) must share one lock.

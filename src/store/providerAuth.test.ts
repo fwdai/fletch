@@ -13,6 +13,7 @@ const {
   listProviderAccounts,
   addProviderAccount,
   setActiveProviderAccount,
+  signOutProviderAccount,
   getProviderLimits,
   refreshProviderLimits,
 } = vi.hoisted(() => ({
@@ -22,6 +23,7 @@ const {
   listProviderAccounts: vi.fn<() => Promise<ProviderAccount[]>>(async () => []),
   addProviderAccount: vi.fn(async () => {}),
   setActiveProviderAccount: vi.fn(async () => {}),
+  signOutProviderAccount: vi.fn(async () => {}),
   getProviderLimits: vi.fn<(provider: string) => Promise<Record<string, AccountLimits>>>(
     async () => ({}),
   ),
@@ -34,6 +36,7 @@ vi.mock("@/api", () => ({
     listProviderAccounts,
     addProviderAccount,
     setActiveProviderAccount,
+    signOutProviderAccount,
     getProviderLimits,
     refreshProviderLimits,
   },
@@ -178,6 +181,19 @@ describe("provider accounts in the store", () => {
     await expect(store.getState().addProviderAccount("claude", "work")).rejects.toThrow(
       "already exists",
     );
+  });
+
+  it("re-lists after a sign-out even when it reports the account still signed in", async () => {
+    signOutProviderAccount.mockRejectedValueOnce(
+      new Error("`OPENAI_API_KEY` in your shell still signs it in."),
+    );
+    listProviderAccounts.mockResolvedValueOnce([account("codex", "default")]);
+    const store = makeStore();
+    await expect(store.getState().signOutProviderAccount("codex", "default")).rejects.toThrow(
+      "OPENAI_API_KEY",
+    );
+    expect(signOutProviderAccount).toHaveBeenCalledWith("codex", "default");
+    expect(store.getState().providerAccounts.codex?.map((a) => a.id)).toEqual(["default"]);
   });
 });
 

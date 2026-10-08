@@ -45,6 +45,22 @@ pub fn remove_provider_account(
     engine::remove_provider_account_impl(&ctx, &provider, &id)
 }
 
+/// Sign an account out with the CLI's own logout (`id` a managed id or
+/// `default`). A sign-in still running for it is killed first, so it can't
+/// write the login straight back.
+#[tauri::command]
+pub async fn sign_out_provider_account(
+    logins: State<'_, crate::provider_login::ProviderLoginSessions>,
+    provider: String,
+    id: String,
+) -> Result<()> {
+    // Dropping the session kills its PTY (see `ProviderLoginSessions`).
+    logins
+        .lock()
+        .remove(&super::provider_login::session_key(&provider, Some(&id)));
+    engine::sign_out_provider_account_impl(&provider, &id).await
+}
+
 /// Name the account new agents of `provider` use; `None` means the CLI's own.
 #[tauri::command]
 pub fn set_active_provider_account(

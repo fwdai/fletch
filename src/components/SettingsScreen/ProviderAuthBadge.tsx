@@ -1,5 +1,7 @@
 import type { ProviderAuthStatus } from "@/api/types/providers";
+import { Icon } from "@/components/Icon";
 import { Badge, type BadgeVariant } from "@/components/ui";
+import { IconButton } from "@/components/ui/IconButton";
 
 /** Tone and label per sign-in state. `signed_out` is a warning, not an error:
  *  the CLI is installed and one `Sign in` away from working, so it shouldn't
@@ -31,5 +33,16 @@ export function ProviderAuthBadge({
     <Badge variant={label.variant} hint={detail ?? undefined}>
       {label.text}
     </Badge>
+  );
+}
+
+/** The quiet way back into a login that already reads as signed in — to
+ *  switch identity, or replace a token the presence probe can't tell is dead.
+ *  Signed-out logins get a full `Sign in` button instead. */
+export function ReauthButton({ onClick }: { onClick: () => void }) {
+  return (
+    <IconButton size="xs" tip="Re-authenticate" onClick={onClick}>
+      <Icon name="refresh" size={12} />
+    </IconButton>
   );
 }
