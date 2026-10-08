@@ -58,14 +58,27 @@ build it in PR 3.
   shows "sign in again". The token is resolved before the lifecycle lock
   and the spawn watchdog (`prefetch_login`), with a 5 s refresh timeout and
   a 20 s cap on a Keychain read that might prompt.
-- **What the sandbox can still reach.** The seatbelt profile denies reads of
-  the host's claude logins on disk (`~/.claude/.credentials.json`, a
-  relocated dir's, and every `~/.fletch/accounts/claude/` dir). It does not
-  deny the Keychain: items live behind securityd, and
-  `security find-generic-password -s "Claude Code-credentials"` still
-  succeeds under the profile. Denying the securityd mach services is a
-  known follow-up; it needs a test that claude's MCP OAuth (also
-  Keychain-backed) still works first.
+- **The sandbox holds no login but the access token.** Every agent's seatbelt
+  profile denies reads of the host's claude logins on disk
+  (`~/.claude/.credentials.json`, a relocated dir's, and every
+  `~/.fletch/accounts/claude/` dir) and the Keychain's mach services
+  (`KEYCHAIN_MACH_DENY`: `com.apple.SecurityServer`, which every login-keychain
+  lookup goes through, plus `securityd`, `securityd.xpc`, `security.agent`).
+  Measured on macOS 27: `security find-generic-password -s
+  "Claude Code-credentials" -w` fails at once (exit 44, no prompt) under the
+  profile. `com.apple.trustd` stays allowed, so TLS works for curl, node,
+  python, git and Go (`gh`). codex is the exception: it reads its trusted
+  roots from the Keychain and fails every request with `UnknownIssuer`, so a
+  codex launch gets `CODEX_CA_CERTIFICATE=/etc/ssl/cert.pem` unless the user
+  already sets `CODEX_CA_CERTIFICATE` or `SSL_CERT_FILE`. The trade-off is
+  that a root a user added only to the Keychain (a corporate proxy's) is
+  invisible to Keychain-verifying tools in the sandbox, and anything an agent
+  kept in the Keychain (`gh auth`, git's `osxkeychain` helper) is unreachable
+  there. A stdio MCP server still works under the profile (live test
+  `live_seatbelt_turn_uses_a_stdio_mcp_server`). A remote MCP server that
+  signs in with OAuth keeps its tokens in claude's Keychain item
+  (`mcpOAuth`), which the sandboxed claude can no longer read: known limit,
+  untested here (no such server is configured on this Mac).
 - **A live claude can't take a new token** (it reads the env var once). Before
   a turn is delivered to an idle claude process whose token is inside the
   margin, the supervisor resolves a token first and, only when it lapses
@@ -171,8 +184,12 @@ Engine (`crates/fletch-core/src/`):
   `AgentLaunchCtx.oauth_token` (claude, every engine).
 - `sandbox/seatbelt.rs` — puts `oauth_token` in the plan's env as
   `CLAUDE_CODE_OAUTH_TOKEN`; grants nothing for a claude account dir;
-  `deny_host_claude_logins` hides the on-disk logins from every agent
-  (kernel test `seatbelt_hides_the_hosts_claude_logins`). The
+  `deny_host_claude_logins` hides the on-disk logins and `KEYCHAIN_MACH_DENY`
+  the Keychain from every agent (kernel test
+  `seatbelt_hides_the_hosts_claude_logins`; HTTPS in
+  `seatbelt_keeps_https_working_under_the_keychain_deny`); `codex_ca_env`
+  gives codex a CA bundle (live test
+  `live_codex_turn_runs_under_the_keychain_deny`). The
   relocated-claude-dir grants (islands + `.claude.json` literal +
   `settings.json` deny) stay: they still serve an app env that sets
   `CLAUDE_CONFIG_DIR`. Codex account home granted whole with `config.toml`

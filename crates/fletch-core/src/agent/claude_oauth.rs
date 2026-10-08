@@ -1545,6 +1545,76 @@ mod tests {
             assert_eq!(result["api_error_status"], 401, "{result}");
         }
 
+        const MCP_PROBE: &str = r#"import json, sys
+for line in sys.stdin:
+    msg = json.loads(line)
+    mid = msg.get("id")
+    method = msg.get("method")
+    if mid is None:
+        continue
+    if method == "initialize":
+        result = {"protocolVersion": msg["params"]["protocolVersion"],
+                  "capabilities": {"tools": {}},
+                  "serverInfo": {"name": "probe", "version": "1"}}
+    elif method == "tools/list":
+        result = {"tools": [{"name": "marker", "description": "Returns the marker word.",
+                             "inputSchema": {"type": "object", "properties": {}}}]}
+    elif method == "tools/call":
+        result = {"content": [{"type": "text", "text": "zebra-quartz-41"}]}
+    else:
+        result = {}
+    sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": mid, "result": result}) + "\n")
+    sys.stdout.flush()
+"#;
+
+        /// The Keychain deny doesn't cost claude its MCP servers: a stdio
+        /// server's tool is called and answers under the same profile, on the
+        /// env token alone.
+        #[tokio::test]
+        #[ignore]
+        async fn live_seatbelt_turn_uses_a_stdio_mcp_server() {
+            let token = access_token_for_launch(Some(&account_dir()))
+                .await
+                .expect("token");
+            let td = tempfile::tempdir().unwrap();
+            let root = td.path().join("agent");
+            let cwd = root.join("repo");
+            std::fs::create_dir_all(&cwd).unwrap();
+            let server = root.join("probe_mcp.py");
+            std::fs::write(&server, MCP_PROBE).unwrap();
+            let config = root.join("mcp.json");
+            let servers = serde_json::json!({"mcpServers": {"probe": {
+                "type": "stdio", "command": "/usr/bin/python3", "args": [server],
+            }}});
+            std::fs::write(&config, servers.to_string()).unwrap();
+            let config_arg = config.to_string_lossy().into_owned();
+            let (init, result, _) = seatbelt_run(
+                &token,
+                &root,
+                &cwd,
+                &[
+                    "--mcp-config",
+                    &config_arg,
+                    "--strict-mcp-config",
+                    "--allowedTools",
+                    "mcp__probe__marker",
+                    "-p",
+                    "Call the marker tool, then reply with exactly the text it returned.",
+                ],
+            );
+            println!(
+                "mcp_servers={} | is_error={} text={}",
+                init["mcp_servers"], result["is_error"], result["result"]
+            );
+            assert_eq!(result["is_error"], false, "{result}");
+            assert!(
+                result["result"]
+                    .as_str()
+                    .is_some_and(|t| t.contains("zebra-quartz-41")),
+                "{result}"
+            );
+        }
+
         /// A session written under the account dir before accounts became
         /// token sources resumes once moved into the default dir. Works on a
         /// copy, under a new id, of the session `FLETCH_LIVE_LEGACY_SESSION`
