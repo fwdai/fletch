@@ -12,24 +12,36 @@ const account = (id: string, status: ProviderAccount["status"] = "signed_in"): P
 });
 
 describe("pickerState", () => {
+  const two = [account("default"), account("work")];
+
   it("hides the picker where accounts can't be switched", () => {
-    expect(pickerState(false, 3, false)).toBe("hidden");
+    expect(pickerState(false, two, false)).toBe("hidden");
   });
 
   it("reports a single account as nothing to switch to", () => {
-    expect(pickerState(true, 1, false)).toBe("single");
+    expect(pickerState(true, [account("default")], false)).toBe("single");
   });
 
   it("reports an unloaded list as nothing to switch to", () => {
-    expect(pickerState(true, 0, false)).toBe("single");
+    expect(pickerState(true, [], false)).toBe("single");
+  });
+
+  it("reports the default plus a signed-out account as nothing to switch to", () => {
+    const accounts = [account("default"), account("spare", "signed_out")];
+    expect(pickerState(true, accounts, false)).toBe("single");
+  });
+
+  it("counts an account with an unknown probe as one to switch to", () => {
+    const accounts = [account("default"), account("other", "unknown")];
+    expect(pickerState(true, accounts, false)).toBe("ready");
   });
 
   it("disables the picker while the agent is running", () => {
-    expect(pickerState(true, 2, true)).toBe("disabled");
+    expect(pickerState(true, two, true)).toBe("disabled");
   });
 
   it("offers the picker to an idle agent with another account", () => {
-    expect(pickerState(true, 2, false)).toBe("ready");
+    expect(pickerState(true, two, false)).toBe("ready");
   });
 });
 

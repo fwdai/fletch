@@ -9,11 +9,11 @@ import type { ViewItem } from "../messages/pair";
 // to phrases an agent's own prose about auth code or rate limiters won't hit;
 // a miss only costs the hint, the header picker is always there.
 const REPLY_ERROR =
-  /API Error: 4(01|29)\b|\/login\b|limit reached|hit your (usage )?limit|token has expired|401 Unauthorized|429 Too Many Requests|could not be refreshed|please sign in again|not signed in|not logged in|invalid api key|credit balance is too low/i;
+  /API Error: 4(01|29)\b|run \/login\b|limit reached|hit your (usage )?limit|token has expired|401 Unauthorized|429 Too Many Requests|could not be refreshed|please sign in again|not signed in|not logged in|invalid api key|credit balance is too low/i;
 
 // An error notice is the vendor speaking, never the agent, so codex's bare
-// "usage limit" is safe to read there.
-const NOTICE_ERROR = new RegExp(`${REPLY_ERROR.source}|usage limit`, "i");
+// "usage limit" and a bare "/login" are safe to read there.
+const NOTICE_ERROR = new RegExp(`${REPLY_ERROR.source}|usage limit|/login\\b`, "i");
 
 /** Whether the latest turn (everything after the last user message) failed on
  *  something another account could fix: a limit or a sign-in problem. Reads

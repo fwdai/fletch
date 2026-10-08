@@ -141,8 +141,8 @@ Frontend (`src/`):
   `ui/MenuButton`'s `trigger`, `AccountMenu.tsx`, `choices.ts`,
   `useCanSwitchAccount.ts`) and `SwitchAccountHint` above the composer when
   the last turn failed on a limit or sign-in (`accountError.ts`). The header
-  trigger hides with one account or fewer; the hint then links to Settings. CSS
-  `.acct-pick*` / `.acct-hint*` in `Workspace.css`.
+  trigger hides while at most one account is not signed out; the hint then
+  links to Settings. CSS `.acct-pick*` / `.acct-hint*` in `Workspace.css`.
 
 ## PR 3: per-account usage and limits
 

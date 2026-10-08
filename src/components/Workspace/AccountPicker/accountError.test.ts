@@ -98,6 +98,25 @@ describe("endedOnAccountError", () => {
     expect(endedOnAccountError(items)).toBe(false);
   });
 
+  it("ignores a reply about a /login route before a bare turn failure", () => {
+    const items = [
+      user("go"),
+      reply("Added the /login route."),
+      error("Turn failed"),
+      turnEnd("error"),
+    ];
+    expect(endedOnAccountError(items)).toBe(false);
+  });
+
+  it("flags an error notice that points at /login", () => {
+    const items = [
+      user("go"),
+      error("Not authenticated. Use /login to sign in."),
+      turnEnd("error"),
+    ];
+    expect(endedOnAccountError(items)).toBe(true);
+  });
+
   it("reads only the reply directly before the error notice", () => {
     const items = [
       user("go"),

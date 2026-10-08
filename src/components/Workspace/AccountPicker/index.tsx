@@ -39,7 +39,7 @@ export function AccountPicker({
     if (trigger === "header" && canSwitch) void refreshAccounts();
   }, [trigger, canSwitch, refreshAccounts]);
 
-  const state = pickerState(canSwitch, accounts.length, busy || switching);
+  const state = pickerState(canSwitch, accounts, busy || switching);
   const manage = () => openSettingsScreen("providers");
 
   if (state === "hidden") return null;
