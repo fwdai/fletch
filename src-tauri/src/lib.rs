@@ -1623,6 +1623,11 @@ pub fn run() {
                 if let Some(supervisor) = app.try_state::<Arc<Supervisor>>() {
                     supervisor.shutdown();
                 }
+                // Off phones' nearby lists now, not when the mDNS record's TTL
+                // lapses. Waits a bounded moment for the goodbye to go out.
+                if let Some(remote) = app.try_state::<Arc<crate::remote::RemoteState>>() {
+                    remote.withdraw_announcement();
+                }
                 // Same reasoning for a sign-in left open in Settings: clearing
                 // the map drops each session, which kills its PTY.
                 if let Some(logins) = app.try_state::<provider_login::ProviderLoginSessions>() {

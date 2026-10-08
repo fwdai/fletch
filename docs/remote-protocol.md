@@ -277,10 +277,12 @@ repo); anyone can run their own and point both apps at it.
 - **Phone side.** Connection candidates in order: `addr` over `ws://` with a
   3 s open timeout, then `wss://<relay>/v1/device/<hostId>` with a 15 s one.
   When the phone holds the host key, the LAN candidate also dials
-  `fletch-<label>.local` on the same port (see "Discovery"); the two race
-  inside the one 3 s budget and the first to open wins, so a Mac whose address
-  changed is still reached on the LAN, and a host too old to announce costs
-  nothing.
+  `fletch-<label>.local` on the same port (see "Discovery"). The two race
+  inside the one 3 s budget, each through its own dial *and* handshake, and the
+  first to authenticate the pinned host key wins — so a Mac whose address
+  changed is still reached on the LAN even when another Fletch machine now
+  answers at the old one, and a host too old to announce costs nothing. A key
+  mismatch is final (not retried) only when every URL met the wrong host.
   A dial races the host's IPv6 and IPv4 addresses, interleaved by family and
   started 300 ms apart (RFC 8305), so a cellular network whose IPv6 path to
   the relay blackholes cannot spend the whole budget before IPv4 is tried.
@@ -316,7 +318,8 @@ address.
   `host.name`), `id` (the host ID, base64url) and `port` (the listen port, so a
   browser need not resolve the SRV record).
 - **Lifecycle.** Announced when the listener starts, re-announced on a port
-  change, withdrawn (goodbye packets) when remote access is turned off. A host
+  change, withdrawn (goodbye packets) when remote access is turned off and when
+  the host quits or is signalled to stop. A host
   that cannot announce — no multicast, port 5353 unavailable — logs it and
   serves as before.
 - **Pairing.** A phone lists the hosts it finds by `name`. Picking one gives it

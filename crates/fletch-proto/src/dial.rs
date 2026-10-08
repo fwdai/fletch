@@ -13,12 +13,6 @@
 //! the first socket to connect wins and the rest are dropped. TLS and the
 //! WebSocket upgrade then run on the winner exactly as `connect_async` would
 //! have done.
-//!
-//! [`connect_any`] runs the same race one level up, across several URLs for
-//! the same host: a paired host's saved address beside the `.local` name it
-//! announces (docs/remote-protocol.md, "Discovery"). Each URL resolves on its
-//! own, so a name that takes the whole budget to fail to resolve cannot hold
-//! up an address that answers at once.
 
 use std::io;
 use std::net::SocketAddr;
@@ -43,51 +37,17 @@ pub const STAGGER: Duration = Duration::from_millis(300);
 /// The caller bounds the whole thing; nothing here waits on its own account
 /// beyond the stagger between attempts.
 pub async fn connect(url: &str) -> Result<Ws> {
-    connect_any(url, &[]).await
-}
-
-/// [`connect`] to whichever of `url` and `alternates` opens a TCP socket
-/// first. They must all reach the same host: the winner is handed to the
-/// WebSocket upgrade, and the peer's identity is checked by the Noise
-/// handshake after this, whichever URL it was. When every one fails, the
-/// error is `url`'s, since that is the address the caller knows about.
-pub async fn connect_any(url: &str, alternates: &[String]) -> Result<Ws> {
-    let mut requests = Vec::with_capacity(1 + alternates.len());
-    for candidate in std::iter::once(url).chain(alternates.iter().map(String::as_str)) {
-        requests.push(candidate.into_client_request().map_err(|e| e.to_string())?);
-    }
-    let mut attempts: FuturesUnordered<_> = requests
-        .iter()
-        .enumerate()
-        .map(|(i, request)| async move { (i, open(request).await) })
-        .collect();
-    let mut primary_error = None;
-    while let Some((i, opened)) = attempts.next().await {
-        match opened {
-            Ok(stream) => {
-                // The losers are dropped with `attempts`, abandoning them.
-                drop(attempts);
-                let request = requests.swap_remove(i);
-                let (ws, _) = client_async_tls(request, stream)
-                    .await
-                    .map_err(|e| e.to_string())?;
-                return Ok(ws);
-            }
-            Err(e) if i == 0 => primary_error = Some(e),
-            Err(_) => {}
-        }
-    }
-    Err(primary_error.unwrap_or_else(|| "no address answered".to_string()))
-}
-
-/// Resolve one URL's host and race its addresses.
-async fn open(request: &Request) -> Result<TcpStream> {
-    let (host, port) = host_port(request)?;
+    let request = url.into_client_request().map_err(|e| e.to_string())?;
+    let (host, port) = host_port(&request)?;
     let addrs: Vec<SocketAddr> = tokio::net::lookup_host((host.as_str(), port))
         .await
         .map_err(|e| format!("cannot resolve {host}: {e}"))?
         .collect();
-    race(interleave(addrs)).await.map_err(|e| e.to_string())
+    let stream = race(interleave(addrs)).await.map_err(|e| e.to_string())?;
+    let (ws, _) = client_async_tls(request, stream)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(ws)
 }
 
 /// The host to resolve and the port to dial, with the scheme's default port
@@ -223,56 +183,6 @@ mod tests {
             let (_, peer) = live.accept().await.unwrap();
             assert_eq!(peer, stream.local_addr().unwrap());
         });
-    }
-
-    /// A dead saved address must not cost the host's other name its turn, and
-    /// the socket that opens is the one upgraded.
-    #[test]
-    fn connect_any_takes_whichever_url_answers() {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        rt.block_on(async {
-            let live = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
-                .await
-                .unwrap();
-            let live_port = live.local_addr().unwrap().port();
-            let dead_port = {
-                let l = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
-                l.local_addr().unwrap().port()
-            };
-            let server = tokio::spawn(async move {
-                let (tcp, _) = live.accept().await.unwrap();
-                tokio_tungstenite::accept_async(tcp).await.map(|_| ())
-            });
-            let ws = connect_any(
-                &format!("ws://127.0.0.1:{dead_port}/ws"),
-                &[format!("ws://127.0.0.1:{live_port}/ws")],
-            )
-            .await;
-            assert!(ws.is_ok(), "{:?}", ws.err());
-            server.await.unwrap().unwrap();
-        });
-    }
-
-    #[test]
-    fn connect_any_reports_the_primary_urls_failure() {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        let dead_port = {
-            let l = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
-            l.local_addr().unwrap().port()
-        };
-        let err = rt
-            .block_on(connect_any(
-                &format!("ws://127.0.0.1:{dead_port}/ws"),
-                &["ws://fletch-0000000000000000.invalid:1/ws".to_string()],
-            ))
-            .unwrap_err();
-        assert!(!err.contains("invalid"), "{err}");
     }
 
     #[test]
