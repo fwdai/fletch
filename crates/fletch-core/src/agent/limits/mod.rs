@@ -96,6 +96,24 @@ pub struct ProviderLimits {
     /// rollout, the time of the query otherwise.
     pub as_of: i64,
     pub source: LimitSource,
+    /// Windows scoped to one model, as many as the source lists. Only Claude's
+    /// OAuth endpoint lists any. Absent from rows stored before they existed.
+    #[serde(default)]
+    pub models: Vec<ModelWindow>,
+}
+
+/// A weekly window the vendor scopes to one model, named by the server
+/// ("Fable"). It keeps its own `as_of`: a passive reading lists no model
+/// windows, so the last refresh's outlive it ([`record_limits`]) and must not
+/// look as fresh as the reading they now ride on.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ModelWindow {
+    pub model: String,
+    /// 0–100.
+    pub percent: f64,
+    /// Epoch seconds; `None` when the source reported no reset.
+    pub resets_at: Option<i64>,
+    pub as_of: i64,
 }
 
 /// How the last manual refresh of an account ended, when it didn't produce a
@@ -215,6 +233,7 @@ impl Windows {
             seven_day: self.seven_day,
             as_of,
             source,
+            models: Vec::new(),
         })
     }
 }
@@ -243,7 +262,8 @@ pub fn from_stream_event(event: &Value, now: i64) -> Option<ProviderLimits> {
 
 /// Claude's OAuth usage endpoint: `five_hour` / `seven_day`, each
 /// `{utilization, resets_at}` with utilization a 0–100 percent and the reset
-/// ISO 8601 (null for an untouched window).
+/// ISO 8601 (null for an untouched window), plus the per-model windows of
+/// `limits[]` ([`oauth_model_windows`]).
 pub fn from_oauth_usage(body: &Value, now: i64) -> Option<ProviderLimits> {
     let window = |key: &str| {
         let w = body.get(key).filter(|w| w.is_object())?;
@@ -252,11 +272,41 @@ pub fn from_oauth_usage(body: &Value, now: i64) -> Option<ProviderLimits> {
             resets_at: w.get("resets_at").and_then(iso_secs),
         })
     };
-    Windows {
+    let mut reading = Windows {
         five_hour: window("five_hour"),
         seven_day: window("seven_day"),
     }
-    .reading(now, LimitSource::OauthUsage)
+    .reading(now, LimitSource::OauthUsage)?;
+    reading.models = oauth_model_windows(body, now);
+    Some(reading)
+}
+
+/// The model-scoped entries of the OAuth endpoint's `limits[]`, each
+/// `{scope: {model: {display_name}}, percent, resets_at}` — percent 0–100, the
+/// reset epoch seconds or ISO 8601. Every model the server lists is kept, in
+/// its order. The endpoint is undocumented, so an entry scoped to no model or
+/// missing its percent is skipped rather than failing the reading.
+fn oauth_model_windows(body: &Value, as_of: i64) -> Vec<ModelWindow> {
+    let Some(entries) = body.get("limits").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    entries
+        .iter()
+        .filter_map(|e| {
+            let model = e.pointer("/scope/model/display_name")?.as_str()?.trim();
+            if model.is_empty() {
+                return None;
+            }
+            Some(ModelWindow {
+                model: model.to_string(),
+                percent: clamp_percent(e.get("percent")?.as_f64()?),
+                resets_at: e
+                    .get("resets_at")
+                    .and_then(|v| epoch_secs(v).or_else(|| iso_secs(v))),
+                as_of,
+            })
+        })
+        .collect()
 }
 
 /// Codex's app-server `rateLimits`: `primary` / `secondary`, each
@@ -414,16 +464,21 @@ fn update(
 
 /// Store a passive reading (stream, rollout) for `account` (`None` = default)
 /// when it is newer than the one stored. Returns whether it was written.
-/// Leaves the manual refresh's state alone.
+/// Leaves the manual refresh's state alone. A passive source lists no model
+/// windows, so the stored ones carry over rather than vanish until the next
+/// refresh; a refresh ([`record_refresh`]) replaces them outright.
 pub fn record_limits(
     ctx: &EngineCtx,
     provider: &str,
     account: Option<&str>,
-    limits: ProviderLimits,
+    mut limits: ProviderLimits,
 ) -> Result<bool> {
     let written = update(ctx, provider, account, |row| {
         if row.limits.as_ref().is_some_and(|l| l.as_of >= limits.as_of) {
             return false;
+        }
+        if limits.models.is_empty() {
+            limits.models = row.limits.take().map(|l| l.models).unwrap_or_default();
         }
         row.limits = Some(limits);
         true
@@ -557,6 +612,38 @@ mod tests {
         assert_eq!(limits.source, LimitSource::OauthUsage);
         assert_eq!(limits.five_hour, window(42.0, 1_791_383_400));
         assert_eq!(limits.seven_day, window(61.0, 1_791_619_200));
+        assert_eq!(limits.models, Vec::new());
+    }
+
+    #[test]
+    fn the_oauth_endpoint_lists_every_model_scoped_window_it_sends() {
+        let body = json!({
+            "seven_day": { "utilization": 26.0, "resets_at": "2026-10-10T08:00:00Z" },
+            "limits": [
+                { "scope": { "model": { "display_name": "Fable" } }, "percent": 48.5, "resets_at": 1_791_619_200 },
+                { "scope": { "model": { "display_name": "Opus" } }, "percent": 120, "resets_at": "2026-10-10T08:00:00Z" },
+                { "scope": { "model": { "display_name": "Haiku" } }, "percent": 0, "resets_at": null },
+                // Not scoped to a model, nameless, or without a percent: skipped.
+                { "scope": {}, "percent": 10, "resets_at": 1 },
+                { "scope": { "model": { "display_name": " " } }, "percent": 10 },
+                { "scope": { "model": { "display_name": "Sonnet" } }, "resets_at": 1 },
+                "junk",
+            ],
+        });
+        let limits = from_oauth_usage(&body, 7).unwrap();
+        let windows: Vec<_> = limits
+            .models
+            .iter()
+            .map(|m| (m.model.as_str(), m.percent, m.resets_at, m.as_of))
+            .collect();
+        assert_eq!(
+            windows,
+            vec![
+                ("Fable", 48.5, Some(1_791_619_200), 7),
+                ("Opus", 100.0, Some(1_791_619_200), 7),
+                ("Haiku", 0.0, None, 7),
+            ]
+        );
     }
 
     #[test]
@@ -692,6 +779,7 @@ mod tests {
                 seven_day: None,
                 as_of: 5,
                 source: LimitSource::AppServer,
+                models: vec![model_window("Fable", 30.0, 4)],
             }),
             refresh: Some(state(RefreshStatus::Ok, 5)),
         };
@@ -706,7 +794,51 @@ mod tests {
             seven_day: None,
             as_of,
             source: LimitSource::Rollout,
+            models: Vec::new(),
         }
+    }
+
+    fn model_window(model: &str, percent: f64, as_of: i64) -> ModelWindow {
+        ModelWindow {
+            model: model.to_string(),
+            percent,
+            resets_at: Some(1_791_619_200),
+            as_of,
+        }
+    }
+
+    #[test]
+    fn a_row_stored_before_model_windows_reads_with_none() {
+        let raw = r#"{"limits":{"five_hour":null,"seven_day":{"percent":5,"resets_at":null},"as_of":1,"source":"stream"},"refresh":null}"#;
+        let row: AccountLimits = serde_json::from_str(raw).unwrap();
+        assert_eq!(row.limits.unwrap().models, Vec::new());
+    }
+
+    #[test]
+    fn a_passive_reading_keeps_the_last_refreshs_model_windows() {
+        let (ctx, _sink, _dir) = crate::host::ctx::test_ctx();
+        let refreshed = ProviderLimits {
+            models: vec![model_window("Fable", 30.0, 10)],
+            ..reading(10, 1.0)
+        };
+        record_refresh(&ctx, "claude", None, RefreshOutcome::Limits(refreshed), 10).unwrap();
+
+        record_limits(&ctx, "claude", None, reading(20, 2.0)).unwrap();
+        let stored = load(&ctx.db.lock(), "claude", None).limits.unwrap();
+        assert_eq!(stored.as_of, 20);
+        assert_eq!(stored.models, vec![model_window("Fable", 30.0, 10)]);
+
+        // A refresh is the authority: one that lists no model windows clears them.
+        record_refresh(
+            &ctx,
+            "claude",
+            None,
+            RefreshOutcome::Limits(reading(30, 3.0)),
+            30,
+        )
+        .unwrap();
+        let stored = load(&ctx.db.lock(), "claude", None).limits.unwrap();
+        assert_eq!(stored.models, Vec::new());
     }
 
     #[test]
