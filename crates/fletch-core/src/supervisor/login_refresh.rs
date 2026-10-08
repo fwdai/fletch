@@ -29,7 +29,7 @@ use super::Supervisor;
 const GAVE_UP_MSG: &str = "Claude rejected this account's login again after a refresh. \
      Sign in again under Settings → Providers, then resend.";
 
-pub(super) const BUSY_MSG: &str = "a turn is in progress";
+const BUSY_MSG: &str = "a turn is in progress";
 
 /// How long a token resolved ahead of a launch stays good for that launch. A
 /// fresh spawn provisions its checkout in between, which takes a while; the
@@ -66,6 +66,21 @@ impl Prefetched {
         now_ms - self.at_ms < PREFETCH_TTL_MS
             && managed(self.account.as_deref()) == managed(record.account.as_deref())
     }
+}
+
+/// How a relaunch under the caller's lifecycle lock went, short of an error.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Relaunch {
+    Restarted,
+    /// Mid-turn; nothing was stopped.
+    Busy,
+}
+
+/// What an account switch takes of the old account's rejected login, to put
+/// back if the switch fails.
+pub(super) struct Rejection {
+    expiry: Option<i64>,
+    retrying: bool,
 }
 
 /// What a turn's terminal event says about the agent's login.
@@ -196,6 +211,28 @@ impl Supervisor {
         self.logins.lock().rejected.remove(agent_id);
     }
 
+    /// Take the old account's rejected-token mark and spent retry out, on an
+    /// account switch: the new account's token was never rejected, and its
+    /// first 401 deserves its own retry.
+    pub(super) fn take_rejection(&self, agent_id: &str) -> Rejection {
+        let mut logins = self.logins.lock();
+        Rejection {
+            expiry: logins.rejected.remove(agent_id),
+            retrying: logins.retrying.remove(agent_id),
+        }
+    }
+
+    /// Put back what [`Self::take_rejection`] took, for a switch that failed.
+    pub(super) fn restore_rejection(&self, agent_id: &str, taken: Rejection) {
+        let mut logins = self.logins.lock();
+        if let Some(expiry) = taken.expiry {
+            logins.rejected.insert(agent_id.to_string(), expiry);
+        }
+        if taken.retrying {
+            logins.retrying.insert(agent_id.to_string());
+        }
+    }
+
     /// Drop everything kept about `agent_id`'s login, on teardown.
     pub(super) fn forget_logins(&self, agent_id: &str) {
         let mut logins = self.logins.lock();
@@ -282,6 +319,19 @@ impl Supervisor {
         ctx: &Arc<EngineCtx>,
         agent_id: &str,
     ) -> Result<()> {
+        match self.try_relaunch_locked(ctx, agent_id).await? {
+            Relaunch::Restarted => Ok(()),
+            Relaunch::Busy => Err(Error::Other(BUSY_MSG.into())),
+        }
+    }
+
+    /// [`Self::relaunch_locked`] with a busy agent reported as such, for a
+    /// caller with its own words for it.
+    pub(super) async fn try_relaunch_locked(
+        self: &Arc<Self>,
+        ctx: &Arc<EngineCtx>,
+        agent_id: &str,
+    ) -> Result<Relaunch> {
         let record = self.workspace.agent(agent_id)?;
         if self.deleting_projects.lock().contains(&record.project_id) {
             return Err(Error::Other("project deletion is in progress".into()));
@@ -297,10 +347,11 @@ impl Supervisor {
         }
         let agent = match self.take_idle(agent_id, &record) {
             Taken::Agent(agent) => Some(agent),
-            Taken::Busy => return Err(Error::Other(BUSY_MSG.into())),
+            Taken::Busy => return Ok(Relaunch::Busy),
             Taken::Gone => None,
         };
-        self.restart_taken(ctx, agent_id, agent).await
+        self.restart_taken(ctx, agent_id, agent).await?;
+        Ok(Relaunch::Restarted)
     }
 
     /// Before a turn is handed to an idle claude process, relaunch it if the

@@ -7,6 +7,7 @@ use crate::agent::Agent;
 use crate::host::sink::RecordingSink;
 use crate::pty_session::{PtySession, PtySpawn};
 use crate::sandbox::KillHandle;
+use crate::supervisor::login_refresh::LoginVerdict;
 use crate::supervisor::tests::{
     committed_repo, record_in_checkouts, record_with_status, test_supervisor,
 };
@@ -67,7 +68,33 @@ async fn agent_on(dir: &Path, account: Option<&str>) -> Arc<Supervisor> {
 }
 
 fn live_process(sup: &Supervisor, dir: &Path) {
-    let pty = PtySession::spawn(
+    let pty = cat_pty(dir);
+    sup.agents
+        .lock()
+        .insert(AGENT.to_string(), Arc::new(Agent::over_pty(pty)));
+}
+
+/// A live process launched on a host token, so a 401 result reaches the
+/// login retry (`observe_login`).
+fn live_process_with_login(sup: &Supervisor, dir: &Path) {
+    let pty = cat_pty(dir);
+    sup.agents.lock().insert(
+        AGENT.to_string(),
+        Arc::new(Agent::over_pty_with_login(pty, far_future_ms())),
+    );
+}
+
+fn rejected_result() -> serde_json::Value {
+    serde_json::json!({
+        "type": "result",
+        "is_error": true,
+        "api_error_status": 401,
+        "result": "Failed to authenticate. API Error: 401",
+    })
+}
+
+fn cat_pty(dir: &Path) -> PtySession {
+    PtySession::spawn(
         PtySpawn {
             program: Path::new("/bin/cat"),
             args: &[],
@@ -81,10 +108,7 @@ fn live_process(sup: &Supervisor, dir: &Path) {
         |_| {},
         |_| {},
     )
-    .unwrap();
-    sup.agents
-        .lock()
-        .insert(AGENT.to_string(), Arc::new(Agent::over_pty(pty)));
+    .unwrap()
 }
 
 fn stamp(sup: &Supervisor) -> Option<String> {
@@ -269,6 +293,10 @@ fn an_errored_session_switched_at_rest_drops_the_old_error() {
         let record = sup.switch_account(&ctx, AGENT, "home").await.unwrap();
 
         assert_eq!(record.status, AgentStatus::Idle);
+        assert!(
+            !sup.statuses.lock().contains_key(AGENT),
+            "no live status for a resting agent"
+        );
         assert_ne!(
             sup.workspace.agent(AGENT).unwrap().status,
             AgentStatus::Error
@@ -358,6 +386,58 @@ fn a_failed_relaunch_restores_the_old_accounts_rejected_token() {
         assert!(sup.switch_account(&ctx, AGENT, "home").await.is_err());
 
         assert_eq!(sup.logins.lock().rejected.get(AGENT), Some(&42));
+    });
+}
+
+/// The old account had spent its one retry; the agent stays on it after a
+/// failed switch, so the next 401 still gives up.
+#[test]
+fn a_failed_relaunch_keeps_the_old_accounts_spent_retry() {
+    in_root(|root| async move {
+        let td = tempfile::tempdir().unwrap();
+        signed_in(&root, "home");
+        let sup = agent_on(td.path(), Some("work")).await;
+        live_process_with_login(&sup, td.path());
+        assert_eq!(
+            sup.observe_login(AGENT, &rejected_result()),
+            LoginVerdict::Retrying
+        );
+        let (ctx, _sink, _dir) = crate::host::ctx::test_ctx();
+
+        assert!(sup.switch_account(&ctx, AGENT, "home").await.is_err());
+
+        live_process_with_login(&sup, td.path());
+        assert_eq!(
+            sup.observe_login(AGENT, &rejected_result()),
+            LoginVerdict::GaveUp
+        );
+    });
+}
+
+/// A 401 spent the old account's one retry; the new account's first 401
+/// gets a retry of its own.
+#[test]
+fn a_switch_gives_the_new_account_its_own_login_retry() {
+    in_root(|root| async move {
+        let td = tempfile::tempdir().unwrap();
+        signed_in(&root, "home");
+        let sup = agent_on(td.path(), Some("work")).await;
+        live_process_with_login(&sup, td.path());
+        assert_eq!(
+            sup.observe_login(AGENT, &rejected_result()),
+            LoginVerdict::Retrying
+        );
+        // The process went away after the turn, so the switch is at rest.
+        sup.agents.lock().remove(AGENT);
+        let (ctx, _sink, _dir) = crate::host::ctx::test_ctx();
+
+        sup.switch_account(&ctx, AGENT, "home").await.unwrap();
+
+        live_process_with_login(&sup, td.path());
+        assert_eq!(
+            sup.observe_login(AGENT, &rejected_result()),
+            LoginVerdict::Retrying
+        );
     });
 }
 

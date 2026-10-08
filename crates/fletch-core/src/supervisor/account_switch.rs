@@ -6,7 +6,8 @@ use crate::error::{Error, Result};
 use crate::host::EngineCtx;
 use crate::workspace::{AgentRecord, AgentStatus};
 
-use super::events::emit_workspace_changed;
+use super::events::{emit_status, emit_workspace_changed};
+use super::login_refresh::Relaunch;
 use super::Supervisor;
 
 const BUSY_MSG: &str = "Wait for the turn to finish before switching accounts.";
@@ -121,76 +122,79 @@ impl Supervisor {
             }
         }
 
-        let lifecycle_guard = self.agent_lifecycle.lock().await;
-        let record = self.workspace.agent(agent_id)?;
-        let checked = target_stamp(&record, account).and_then(|target| {
-            if self.is_busy(agent_id) {
-                Err(Error::Other(BUSY_MSG.into()))
-            } else {
-                Ok(target)
-            }
-        });
-        let target = match checked {
-            Ok(target) => target,
-            Err(e) => {
-                self.discard_prefetch(agent_id);
-                return Err(e);
-            }
-        };
-
-        self.workspace
-            .update_agent_account(agent_id, target.as_deref())?;
-        // A token the API rejected belonged to the old account; replacing it
-        // would force a refresh of the new one for nothing.
-        let rejected = self.logins.lock().rejected.remove(agent_id);
-        let live = self.agents.lock().contains_key(agent_id);
-        if live {
-            if let Err(e) = self.relaunch_locked(ctx, agent_id).await {
-                self.discard_prefetch(agent_id);
-                if let Err(undo) = self
-                    .workspace
-                    .update_agent_account(agent_id, record.account.as_deref())
-                {
-                    tracing::warn!(agent_id, error = %undo, "restoring the account stamp failed");
-                }
-                if let Some(expiry) = rejected {
-                    self.logins
-                        .lock()
-                        .rejected
-                        .insert(agent_id.to_string(), expiry);
-                }
-                emit_workspace_changed(ctx.sink.as_ref());
-                if e.to_string() == super::login_refresh::BUSY_MSG {
-                    return Err(Error::Other(BUSY_MSG.into()));
-                }
-                return Err(Error::Other(format!(
-                    "Couldn't start the agent under the `{}` account, so it stays on `{}`: {e}",
-                    label(target.as_deref()),
-                    label(record.account.as_deref()),
-                )));
-            }
-        } else {
-            self.discard_prefetch(agent_id);
-            // The failure was the old account's; the next launch is the new
-            // one's to judge.
-            if self.effective_status(agent_id, &record) == AgentStatus::Error {
-                if let Err(e) = self.workspace.clear_agent_error(agent_id) {
-                    tracing::warn!(agent_id, error = %e, "clearing the old account's error failed");
-                }
-                self.set_status(ctx, agent_id, AgentStatus::Idle, None);
-            }
-        }
-        drop(lifecycle_guard);
+        // A relaunch consumed the token; on any other way out it must not be
+        // left for a launch under the old stamp.
+        let switched = self.switch_locked(ctx, agent_id, account).await;
+        self.discard_prefetch(agent_id);
+        let (from, to, relaunched) = switched?;
         tracing::info!(
             agent_id,
-            from = label(record.account.as_deref()),
-            to = label(target.as_deref()),
-            relaunched = live,
+            from = label(from.as_deref()),
+            to = label(to.as_deref()),
+            relaunched,
             "switched the agent's provider account"
         );
         emit_workspace_changed(ctx.sink.as_ref());
         self.agent_record(agent_id)
             .ok_or_else(|| Error::AgentNotFound(agent_id.to_string()))
+    }
+
+    /// The switch under the lifecycle lock: the record re-read and checked
+    /// again, the restamp, and the relaunch or its rollback. Returns the old
+    /// stamp, the new one, and whether a process was relaunched.
+    async fn switch_locked(
+        self: &Arc<Self>,
+        ctx: &Arc<EngineCtx>,
+        agent_id: &str,
+        account: &str,
+    ) -> Result<(Option<String>, Option<String>, bool)> {
+        let _lifecycle_guard = self.agent_lifecycle.lock().await;
+        let record = self.workspace.agent(agent_id)?;
+        let target = target_stamp(&record, account)?;
+        if self.is_busy(agent_id) {
+            return Err(Error::Other(BUSY_MSG.into()));
+        }
+
+        self.workspace
+            .update_agent_account(agent_id, target.as_deref())?;
+        let rejection = self.take_rejection(agent_id);
+        let live = self.agents.lock().contains_key(agent_id);
+        if !live {
+            // The failure was the old account's; the next launch is the new
+            // one's to judge. No process, so no transition: the agent just
+            // rests as its record says.
+            if self.effective_status(agent_id, &record) == AgentStatus::Error {
+                if let Err(e) = self.workspace.clear_agent_error(agent_id) {
+                    tracing::warn!(agent_id, error = %e, "clearing the old account's error failed");
+                }
+                self.statuses.lock().remove(agent_id);
+                let rested = self
+                    .workspace
+                    .agent(agent_id)
+                    .map_or(AgentStatus::Idle, |r| r.status);
+                emit_status(ctx.sink.as_ref(), agent_id, rested, None);
+            }
+            return Ok((record.account, target, false));
+        }
+
+        let refusal = match self.try_relaunch_locked(ctx, agent_id).await {
+            Ok(Relaunch::Restarted) => return Ok((record.account, target, true)),
+            Ok(Relaunch::Busy) => Error::Other(BUSY_MSG.into()),
+            Err(e) => Error::Other(format!(
+                "Couldn't start the agent under the `{}` account, so it stays on `{}`: {e}",
+                label(target.as_deref()),
+                label(record.account.as_deref()),
+            )),
+        };
+        if let Err(undo) = self
+            .workspace
+            .update_agent_account(agent_id, record.account.as_deref())
+        {
+            tracing::warn!(agent_id, error = %undo, "restoring the account stamp failed");
+        }
+        self.restore_rejection(agent_id, rejection);
+        emit_workspace_changed(ctx.sink.as_ref());
+        Err(refusal)
     }
 }
 
