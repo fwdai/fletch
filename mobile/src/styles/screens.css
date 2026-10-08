@@ -20,6 +20,16 @@
   color: var(--fg-0);
   flex: 1;
 }
+.wordmark-mark {
+  /* same lockup proportions as the desktop title bar (.tb-mark): the tall
+   * ~2:3 bolt sits just above the wordmark's ascender height, nudged down
+   * because its visual weight is in the upper blade */
+  width: 0.57em;
+  height: 0.85em;
+  flex-shrink: 0;
+  position: relative;
+  top: 0.5px;
+}
 .wordmark .beta {
   font-family: var(--font-mono);
   font-size: 9px;
