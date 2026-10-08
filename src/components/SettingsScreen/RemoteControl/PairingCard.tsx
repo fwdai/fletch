@@ -25,13 +25,12 @@ function useCountdown(iso: string): number {
   return left;
 }
 
-/** The live pairing code: readable text for manual entry (v2 phones have no
- *  scanner) plus the same `fletch://pair` deep link as a QR for the ones that
- *  do. Single use and five minutes, so the countdown is part of the affordance
- *  rather than decoration.
- *
- *  Manual entry takes the address as well as the code, so the address is shown
- *  here — the one moment anyone needs it — exactly as the link carries it. */
+/** A live pairing invitation, QR first: the iPhone's own camera opens the
+ *  `fletch://pair` link it encodes, which brings everything the phone needs and
+ *  authenticates this Mac outright. Typing the address and code by hand is the
+ *  fallback, one click away rather than the headline. Single use and five
+ *  minutes, so the countdown is part of the affordance rather than decoration.
+ *  The copied link is how another Mac pairs (Paired hosts › Add a host). */
 export function PairingCard({
   invite,
   lanOnly,
@@ -48,36 +47,51 @@ export function PairingCard({
   const left = useCountdown(invite.expiresAt);
   const expired = left === 0;
   const mmss = `${Math.floor(left / 60)}:${String(left % 60).padStart(2, "0")}`;
+  const [manual, setManual] = useState(false);
   const link = parsePairUrl(invite.url);
 
   return (
     <div className="set-pair" data-expired={expired ? "1" : "0"}>
       <div className="set-pair-main">
-        <div className="set-pair-code mono">{invite.token}</div>
-        {!expired && link && (
-          <div className="set-pair-addr mono text-sm">
-            {link.host}:{link.port}
-          </div>
-        )}
         <div className="set-pair-copy text-sm">
           {expired
             ? "This code has expired. Generate a new one."
-            : `Enter this address and code in Fletch on your phone, or scan the QR code. It grants ${presetLabel(
+            : `Scan this with your iPhone's camera to pair it. It grants ${presetLabel(
                 invite.preset,
               )} access.`}
         </div>
         {!expired && lanOnly && (
           <div className="set-inline-warn text-sm">
-            The relay is not connected, so this pairing only works while the phone is on the same
-            network as this Mac. Turn on “Reach this Mac from anywhere” and generate a new code to
-            pair from anywhere.
+            This Mac can't be reached from other networks right now, so keep your phone on the same
+            network while it pairs. Turn on “Reach this Mac from anywhere” to pair from anywhere.
+          </div>
+        )}
+        {!expired && (
+          <div className="set-pair-manual text-sm">
+            {manual ? (
+              <>
+                <div className="set-pair-code mono">{invite.token}</div>
+                {link && (
+                  <div className="set-pair-addr mono">
+                    {link.host}:{link.port}
+                  </div>
+                )}
+                <div className="set-pair-copy">
+                  Enter this code and address in Fletch on your phone.
+                </div>
+              </>
+            ) : (
+              <button type="button" className="set-pair-manual-btn" onClick={() => setManual(true)}>
+                Can't scan? Enter a code instead
+              </button>
+            )}
           </div>
         )}
         <div className="set-pair-meta text-xs flex-center">
           <span className={`set-pair-clock mono ${left <= 30 ? "urgent" : ""}`}>
             {expired ? "expired" : `expires in ${mmss}`}
           </span>
-          <CopyButton text={invite.url} tip="Copy pairing link" />
+          <CopyButton text={invite.url} tip="Copy pairing link, to pair another Mac" />
         </div>
         <div className="set-pair-actions flex-center">
           <Button variant="outline" size="sm" onClick={onRegenerate}>

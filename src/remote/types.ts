@@ -187,16 +187,21 @@ export const CLOSE_FRAME_TOO_LARGE = 1009;
  *  next attempt simply succeeds; on the LAN it keeps dialling the old port. */
 export const CLOSE_LISTENER_RESTARTING = 1012;
 
+/** What a close means to the person holding the device. No protocol words:
+ *  the code is the detail, and nothing the user can do depends on it. */
 export const CLOSE_REASONS: Record<number, string> = {
-  [CLOSE_BAD_FIRST_FRAME]: "Host rejected the handshake",
+  [CLOSE_BAD_FIRST_FRAME]: "Couldn't connect to your Mac. Try again.",
   [CLOSE_UNAUTHENTICATED]: "This device is not paired with the host any more",
   [CLOSE_REMOTE_DISABLED]: "Remote access is switched off on the host",
   [CLOSE_HOST_OFFLINE]: "Your Mac is offline",
   [CLOSE_TOO_MANY_DEVICES]: "This Mac already has its 8 remote devices connected",
-  [CLOSE_RELAY_THROTTLED]: "The relay throttled this connection",
-  [CLOSE_FRAME_TOO_LARGE]: "Frame too large",
+  [CLOSE_RELAY_THROTTLED]: "Too many requests at once. Reconnecting…",
+  [CLOSE_FRAME_TOO_LARGE]: "That was too large to send.",
   [CLOSE_LISTENER_RESTARTING]: "Your Mac is restarting remote access",
 };
+
+/** A close no entry above explains: a dropped network, a missed ping. */
+export const CONNECTION_LOST = "Lost the connection to your Mac";
 
 /** The marker the Rust transport puts in front of a pinned-key mismatch. It
  *  is not retryable: the host's identity, not the network, is wrong. */

@@ -3,15 +3,16 @@ import type { PairStep } from "../../remote";
 
 /** What each step of a connection attempt means to someone holding the phone.
  *
- *  The relay line names the thing that actually takes the time: the LAN
+ *  The second line names the thing that actually takes the time: the LAN
  *  address is always dialled first and has to time out before the relay is
  *  tried, so a phone away from its Mac spends its first seconds on an address
- *  that cannot answer. Saying so is the difference between a wait and a hang.
+ *  that cannot answer. Saying so is the difference between a wait and a hang —
+ *  in the user's terms (a network, the internet), not the relay's.
  */
 export const STEP_LABELS: Record<PairStep, string> = {
   connecting: "Starting…",
   lan: "Looking for your Mac on this network…",
-  relay: "Not on this network — reaching your Mac through the relay…",
+  relay: "Not on the same network — connecting over the internet…",
   registering: "Registering this device with your Mac…",
   greeting: "Saying hello…",
   workspace: "Loading your workspace…",

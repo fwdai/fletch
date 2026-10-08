@@ -31,7 +31,7 @@ export function RelayRow({
   return (
     <SetRow
       title="Reach this Mac from anywhere"
-      sub="Lets your phone reach this Mac off your network via a relay. The relay only sees encrypted bytes."
+      sub="Lets your phone reach this Mac when it isn't on the same network, through Fletch's servers. Everything stays end-to-end encrypted."
     >
       {on && (
         <span className="set-relay-pill text-sm" data-state={relay.state}>

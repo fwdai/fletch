@@ -10,6 +10,7 @@ import {
   CLOSE_RELAY_THROTTLED,
   CLOSE_TOO_MANY_DEVICES,
   CLOSE_UNAUTHENTICATED,
+  CONNECTION_LOST,
   type DeviceInfo,
   type HelloResult,
   HOST_KEY_MISMATCH,
@@ -490,8 +491,12 @@ describe("reconnect", () => {
     fake.reply(helloOk(fake.sent[0].id as string));
     await connected;
 
+    const reported: (string | undefined)[] = [];
+    client.onState((_state, error) => reported.push(error));
     fake.hangup(1006);
     expect(client.state).toBe("error");
+    // A close nothing explains is said in plain words, never as its code.
+    expect(reported.at(-1)).toBe(CONNECTION_LOST);
     expect(timers.map((t) => t.ms)).toEqual([1000]);
 
     timers[0].fn();
@@ -535,9 +540,13 @@ describe("reconnect", () => {
     // mirroring `retrying` into UI state sees "reconnecting", not "stuck".
     expect(client.retrying).toBe(true);
     expect(retryingSeen.at(-1)).toBe(true);
-    // The relay's other device-link closes are readable too, not bare codes.
+    // The relay's other device-link closes are readable too: not bare codes,
+    // and not the relay's own vocabulary.
     expect(CLOSE_REASONS[CLOSE_TOO_MANY_DEVICES]).toContain("8 remote devices");
-    expect(CLOSE_REASONS[CLOSE_RELAY_THROTTLED]).toContain("throttled");
+    expect(CLOSE_REASONS[CLOSE_RELAY_THROTTLED]).toContain("Too many requests");
+    for (const reason of Object.values(CLOSE_REASONS)) {
+      expect(reason).not.toMatch(/relay|handshake|frame/i);
+    }
   });
 
   it("does not retry after a 4003 close — the device has to be paired again", async () => {

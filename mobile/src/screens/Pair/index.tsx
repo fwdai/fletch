@@ -72,8 +72,8 @@ export function PairScreen() {
           </p>
         ) : (
           <p>
-            On the desktop app open <b>Settings → Remote control → Pair a device</b>, then enter its
-            address and the one-time code here.
+            On your Mac open <b>Settings → Remote control → Pair a device</b> and scan the code with
+            your camera. Can't scan? Enter the code and address it shows here.
           </p>
         )}
       </div>
