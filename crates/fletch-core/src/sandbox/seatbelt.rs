@@ -874,6 +874,8 @@ pub fn build_profile(
     let deny_provider_config =
         deny_provider_exec_config(&home, codex_account_home, relocated_claude_dir.as_deref());
 
+    let deny_claude_logins = deny_host_claude_logins(&home, relocated_claude_dir.as_deref());
+
     // Invariant 4, agent profile only — same Run-vs-agent asymmetry as invariant
     // 3 above. Carves the known macOS launch-time auto-exec surfaces (iTerm2
     // AutoLaunch, VS Code / Cursor per-user config) back out of the broad
@@ -904,11 +906,45 @@ pub fn build_profile(
 
 {deny_provider_config}
 
+{deny_claude_logins}
+
 {deny_appsupport}
 
 {DEVICE_WRITE_RULES}
 "#
     ))
+}
+
+/// SBPL deny, reads and writes alike, of the host's claude logins on disk:
+/// the default config dir's `.credentials.json` (and a relocated dir's), and
+/// every managed claude account dir. Each can hold a refresh token, and a
+/// sandboxed claude signs in with the host-resolved access token instead
+/// (`agent::claude_oauth`), so nothing in the sandbox has a use for them.
+/// Every agent's profile carries it, whatever its provider. The Keychain items
+/// are another matter: they sit behind securityd, not the filesystem, and stay
+/// reachable from the sandbox. Paths in literal and resolved form, like the
+/// grants. MUST follow the `(allow file-write* …)` block.
+fn deny_host_claude_logins(home: &Path, relocated_claude_dir: Option<&Path>) -> String {
+    let mut clauses: Vec<String> = Vec::new();
+    let mut push = |kind: &str, p: &Path| {
+        for form in [p.to_path_buf(), policy::resolve_existing_prefix(p)] {
+            let line = format!("  ({kind} {})", sbpl_string(&form.to_string_lossy()));
+            if !clauses.contains(&line) {
+                clauses.push(line);
+            }
+        }
+    };
+    push(
+        "literal",
+        &home.join(".claude").join(policy::CLAUDE_CREDENTIALS_FILE),
+    );
+    if let Some(dir) = relocated_claude_dir {
+        push("literal", &dir.join(policy::CLAUDE_CREDENTIALS_FILE));
+    }
+    if let Ok(root) = crate::agent::accounts::accounts_root() {
+        push("subpath", &root.join("claude"));
+    }
+    format!("(deny file-read* file-write*\n{})", clauses.join("\n"))
 }
 
 /// SBPL `(subpath …)` grant lines for the policy dirs, each emitted in its
@@ -1470,8 +1506,13 @@ mod tests {
 
         let profile = build_profile(&root, &rpc, &home, None, None, None, None).unwrap();
         let canonical_home = std::fs::canonicalize(&home).unwrap();
+        // The login read-deny names the credentials file through the link
+        // too (the sandbox checks resolved paths); only the grants matter.
+        let grants = &profile[..profile
+            .find("(deny file-read* file-write*")
+            .unwrap_or(profile.len())];
         assert!(
-            !profile.contains(".local/bin"),
+            !grants.contains(".local/bin"),
             "a symlinked ~/.claude must not smuggle a bin subtree onto the allow-list"
         );
         assert!(
@@ -1757,6 +1798,78 @@ mod tests {
                 "{provider}: {profile}"
             );
         }
+    }
+
+    /// Every agent's profile hides the host's claude logins on disk, reads
+    /// included: the default dir's `.credentials.json`, a relocated dir's, and
+    /// every managed claude account dir — after the allow block.
+    #[test]
+    fn profile_denies_reading_the_hosts_claude_logins() {
+        crate::agent::accounts::with_test_root(|accounts| {
+            let (td, root, rpc, home) = sandbox_dirs();
+            let home = std::fs::canonicalize(&home).unwrap();
+            let relocated = std::fs::canonicalize(td.path()).unwrap().join("cfg");
+            let profile =
+                build_profile(&root, &rpc, &home, Some(&relocated), None, None, None).unwrap();
+            let deny_at = profile
+                .find("(deny file-read* file-write*\n")
+                .expect("a read deny block");
+            let denied = &profile[deny_at..];
+            for literal in [
+                home.join(".claude/.credentials.json"),
+                relocated.join(".credentials.json"),
+            ] {
+                assert!(
+                    denied.contains(&format!("(literal \"{}\")", literal.display())),
+                    "{denied}"
+                );
+            }
+            assert!(
+                denied.contains(&format!(
+                    "(subpath \"{}\")",
+                    accounts.join("claude").display()
+                )),
+                "{denied}"
+            );
+            assert!(deny_at > profile.find("(allow file-write*").unwrap());
+        });
+    }
+
+    /// The kernel half of `profile_denies_reading_the_hosts_claude_logins`:
+    /// under the profile a process can read an ordinary file but neither the
+    /// default dir's credentials file nor anything in a claude account dir.
+    /// Run with:
+    ///   cargo test --lib seatbelt_hides_the_hosts_claude_logins -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    #[cfg(target_os = "macos")]
+    fn seatbelt_hides_the_hosts_claude_logins() {
+        crate::agent::accounts::with_test_root(|accounts| {
+            let (_td, root, rpc, home) = sandbox_dirs();
+            let default_creds = home.join(".claude/.credentials.json");
+            let account_creds = accounts.join("claude/work/.credentials.json");
+            let account_state = accounts.join("claude/work/.claude.json");
+            let ordinary = root.join("notes.txt");
+            for file in [&default_creds, &account_creds, &account_state, &ordinary] {
+                std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+                std::fs::write(file, "{}").unwrap();
+            }
+            let profile = build_profile(&root, &rpc, &home, None, None, None, None).unwrap();
+            let reads = |file: &Path| {
+                std::process::Command::new(SANDBOX_EXEC)
+                    .args(profile_args(&profile))
+                    .args(["/bin/cat", &file.to_string_lossy()])
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status()
+                    .expect("sandbox-exec")
+                    .success()
+            };
+            assert!(reads(&ordinary));
+            assert!(!reads(&default_creds));
+            assert!(!reads(&account_creds));
+            assert!(!reads(&account_state));
+        });
     }
 
     /// A claude launch carries the host-resolved token as

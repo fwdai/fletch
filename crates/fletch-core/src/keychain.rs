@@ -86,16 +86,72 @@ fn parse_item_stamp(attributes: &str) -> Option<ItemStamp> {
     })
 }
 
+/// How long a `security` call that may raise a Keychain prompt gets before it
+/// is abandoned: long enough for a person to answer an unlock or access
+/// prompt, short enough that a dialog nobody sees can't hold a launch forever.
+#[cfg(target_os = "macos")]
+const PROMPTABLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// Run `command` (stdout piped, stderr discarded), feeding `input` to its
+/// stdin, and give up — killing it — after `timeout`.
+#[cfg(target_os = "macos")]
+fn run_bounded(
+    mut command: std::process::Command,
+    input: Option<&[u8]>,
+    timeout: std::time::Duration,
+) -> std::result::Result<std::process::Output, String> {
+    use std::io::{Read, Write};
+    use std::process::Stdio;
+    let mut child = command
+        .stdin(if input.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| format!("could not run `security`: {e}"))?;
+    if let Some(input) = input {
+        // Dropping stdin after the input ends `security -i`'s session.
+        let mut stdin = child.stdin.take().ok_or("`security` has no stdin")?;
+        stdin
+            .write_all(input)
+            .map_err(|e| format!("could not talk to `security`: {e}"))?;
+    }
+    let started = std::time::Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if started.elapsed() >= timeout => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("the Keychain didn't answer in time (an unanswered prompt?)".into());
+            }
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(25)),
+            Err(e) => return Err(format!("`security` failed: {e}")),
+        }
+    };
+    let mut stdout = Vec::new();
+    if let Some(mut out) = child.stdout.take() {
+        let _ = out.read_to_end(&mut stdout);
+    }
+    Ok(std::process::Output {
+        status,
+        stdout,
+        stderr: Vec::new(),
+    })
+}
+
 /// The password of the item for `service`. Reading it can raise the macOS
 /// "wants to use your confidential information" prompt, so only a launch or
-/// an explicit user action may call this, never a polling path.
+/// an explicit user action may call this, never a polling path; and it gives
+/// up after [`PROMPTABLE_TIMEOUT`].
 #[cfg(target_os = "macos")]
 pub(crate) fn read_password(service: &str) -> Option<String> {
-    let out = std::process::Command::new("security")
-        .args(["find-generic-password", "-s", service, "-w"])
-        .stderr(std::process::Stdio::null())
-        .output()
-        .ok()?;
+    let mut command = std::process::Command::new("security");
+    command.args(["find-generic-password", "-s", service, "-w"]);
+    let out = run_bounded(command, None, PROMPTABLE_TIMEOUT).ok()?;
     if !out.status.success() {
         return None;
     }
@@ -109,54 +165,59 @@ pub(crate) fn read_password(_service: &str) -> Option<String> {
     None
 }
 
+/// The longest command line `security -i` takes whole, newline included.
+/// Measured on macOS 27: a longer line is cut at this length and the
+/// truncated password stored anyway, so a write that doesn't fit must not be
+/// attempted at all.
+const SECURITY_LINE_MAX: usize = 4096;
+
+fn write_command(service: &str, account: &str, password: &str) -> String {
+    let hex: String = password.bytes().map(|b| format!("{b:02x}")).collect();
+    format!("add-generic-password -U -a \"{account}\" -s \"{service}\" -X {hex}\n")
+}
+
+/// Whether [`write_password`] can store a password of `len` bytes for
+/// `service` under `account`.
+pub(crate) fn password_fits(service: &str, account: &str, len: usize) -> bool {
+    write_command(service, account, "").len() + 2 * len <= SECURITY_LINE_MAX
+}
+
 /// Create or update (`-U`) the item for `service` under `account`. Written
 /// through `security`, like claude's own writes, so the item keeps the access
-/// list claude gave it and later reads by either side stay prompt-free. The
+/// list claude gave it and later reads by either side stay prompt-free (the
+/// in-process Keychain API is a different client and gets prompted). The
 /// command goes over `security -i`'s stdin with the password hex-encoded
 /// (`-X`): a `-w` argument would put the secret in argv, where any local
-/// process can read it.
+/// process can read it. A password too long for one `security -i` line is
+/// refused rather than stored truncated, and failures carry fixed text only:
+/// `security` echoes the command, secret included, in its own errors.
 #[cfg(target_os = "macos")]
 pub(crate) fn write_password(
     service: &str,
     account: &str,
     password: &str,
 ) -> std::result::Result<(), String> {
-    use std::io::Write;
     if [service, account]
         .iter()
         .any(|v| v.contains(['"', '\\', '\n']))
     {
         return Err("the Keychain item's name can't be passed to `security`".into());
     }
-    let hex: String = password.bytes().map(|b| format!("{b:02x}")).collect();
-    let mut child = std::process::Command::new("security")
-        .arg("-i")
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("could not run `security`: {e}"))?;
-    let command = format!("add-generic-password -U -a \"{account}\" -s \"{service}\" -X {hex}\n");
-    // Dropping stdin after the one line ends `security -i`'s session.
-    let wrote = match child.stdin.take() {
-        Some(mut stdin) => stdin
-            .write_all(command.as_bytes())
-            .map_err(|e| format!("could not talk to `security`: {e}")),
-        None => Err("`security` has no stdin".to_string()),
-    };
-    let output = child
-        .wait_with_output()
-        .map_err(|e| format!("`security` failed: {e}"))?;
-    wrote?;
-    if output.status.success() {
-        return Ok(());
+    if !password_fits(service, account, password.len()) {
+        return Err("the login is too large for `security` to store whole".into());
     }
-    let reason = String::from_utf8_lossy(&output.stderr).trim().to_string();
-    Err(if reason.is_empty() {
-        format!("`security` exited with {}", output.status)
+    let mut command = std::process::Command::new("security");
+    command.arg("-i");
+    let input = write_command(service, account, password);
+    let out = run_bounded(command, Some(input.as_bytes()), PROMPTABLE_TIMEOUT)?;
+    if out.status.success() {
+        Ok(())
     } else {
-        reason
-    })
+        Err(format!(
+            "`security` couldn't write the Keychain item (exit {})",
+            out.status.code().unwrap_or(-1)
+        ))
+    }
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -249,6 +310,37 @@ attributes:
         let stamp = parse_item_stamp(attributes).unwrap();
         assert_eq!(stamp.account.as_deref(), Some("alex"));
         assert!(stamp.modified.contains("20261008061332Z"), "{stamp:?}");
+    }
+
+    #[test]
+    fn a_password_fits_only_while_its_whole_line_does() {
+        let (svc, acct) = ("Claude Code-credentials-e6d7ed77", "alex");
+        let fixed = write_command(svc, acct, "").len();
+        let largest = (SECURITY_LINE_MAX - fixed) / 2;
+        assert!(password_fits(svc, acct, largest));
+        assert!(!password_fits(svc, acct, largest + 1));
+        assert!(!password_fits(svc, acct, 4500));
+        assert_eq!(
+            write_command(svc, acct, &"x".repeat(largest)).len(),
+            fixed + 2 * largest
+        );
+    }
+
+    /// A login over 4 KB is refused outright, with fixed text, and the item
+    /// already stored is left exactly as it was — never replaced by a cut-off
+    /// copy. Ignored like the round trip below.
+    #[test]
+    #[ignore]
+    #[cfg(target_os = "macos")]
+    fn an_oversized_password_is_refused_and_the_item_kept() {
+        let service = format!("fletch-keychain-big-{}", std::process::id());
+        let user = std::env::var("USER").unwrap();
+        write_password(&service, &user, "{\"small\":true}").unwrap();
+        let big = format!("{{\"blob\":\"{}\"}}", "s".repeat(4500));
+        let err = write_password(&service, &user, &big).unwrap_err();
+        assert!(!err.contains("sss"), "{err}");
+        assert_eq!(read_password(&service).as_deref(), Some("{\"small\":true}"));
+        delete_item(&service).unwrap();
     }
 
     #[test]

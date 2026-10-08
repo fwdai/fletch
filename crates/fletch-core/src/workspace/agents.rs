@@ -5,12 +5,6 @@ use rusqlite::OptionalExtension;
 
 use super::*;
 
-/// How many live (non-archived) agents of `provider` are stamped with the
-/// managed account `account` (see `agent::accounts`). Gates removing the
-/// account: its directory holds those agents' login and transcripts, and a
-/// running one would write it straight back. A free function over the
-/// connection because the accounts commands hold one, not a manager; the
-/// provider is read off the workspace's sessions, where it lives.
 /// Every provider session Fletch has run, by its provider session id, with
 /// the account its workspace is stamped with (`default` for no stamp) — what
 /// the usage scan credits that session's spend to. Archived workspaces
@@ -39,6 +33,13 @@ pub fn session_accounts(
     Ok(out)
 }
 
+/// How many live (non-archived) agents of `provider` are stamped with the
+/// managed account `account` (see `agent::accounts`). Gates removing the
+/// account: its directory holds the login those agents launch on (and a codex
+/// account's transcripts), and a running codex agent would write it straight
+/// back. A free function over the connection because the accounts commands
+/// hold one, not a manager; the provider is read off the workspace's
+/// sessions, where it lives.
 pub fn live_agents_on_account(
     conn: &rusqlite::Connection,
     provider: &str,

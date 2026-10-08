@@ -9,7 +9,10 @@
 //! Refresh tokens rotate: the one used is revoked by the answer. Two refreshes
 //! of one account racing would leave one of them holding a dead token, so
 //! every refresh of an account runs single-flight, and the new pair is written
-//! back before anyone else may read the store.
+//! back before anyone else may read the store. A refresh is only started when
+//! the answer is sure to fit back into the store, and a rotated pair the store
+//! refused anyway is kept in memory and written on the next call: it is then
+//! the account's only valid refresh token.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -33,7 +36,15 @@ const CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 const SCOPES: &str =
     "user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload";
 
-const TIMEOUT: Duration = Duration::from_secs(15);
+/// A refresh runs ahead of a launch, so a slow sign-in server must cost the
+/// launch seconds, not its whole spawn budget.
+const TIMEOUT: Duration = Duration::from_secs(5);
+
+/// How much a refresh may grow the stored blob: new tokens of a different
+/// length, a `refreshTokenExpiresAt` that wasn't there. The fit check before a
+/// refresh adds it, since the exact answer is only known once the old refresh
+/// token is already spent.
+const GROWTH_SLACK: usize = 256;
 
 /// How close to expiry a stored access token is refreshed before a launch, and
 /// how close a live agent's token may get before its next turn relaunches it.
@@ -98,8 +109,9 @@ pub enum LoginError {
     /// lifetime ran out. Only a new sign-in helps.
     Revoked,
     /// The token is past its expiry and the refresh could not be completed
-    /// (network, a server error, an unreadable store). The stored login is
-    /// untouched, so a later attempt may still succeed.
+    /// (network, a server error, an unreadable store, a login too large to
+    /// store back). The stored login is untouched, so a later attempt may
+    /// still succeed.
     Unavailable(String),
 }
 
@@ -123,26 +135,11 @@ impl From<LoginError> for crate::error::Error {
     }
 }
 
-/// An account's login as Settings may show it, decided without reading the
-/// secret (so it is safe on a polling path).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LoginState {
-    SignedOut,
-    /// `expires_at_ms` is known once this run has read the login.
-    SignedIn {
-        expires_at_ms: Option<i64>,
-    },
-    /// Inside the refresh margin; the next launch refreshes it.
-    Expiring {
-        expires_at_ms: i64,
-    },
-    Revoked,
-}
-
 /// The token a launch of claude under the account in `account_dir` (`None` =
 /// the default account) runs with, refreshed first when it is inside
-/// [`REFRESH_MARGIN_MS`]. A refresh that fails for a reason other than a
-/// revoked login still yields the stored token while it is unexpired.
+/// [`REFRESH_MARGIN_MS`]. A refresh that can't be made or fails for a reason
+/// other than a revoked login still yields the stored token while it is
+/// unexpired.
 pub async fn access_token_for_launch(
     account_dir: Option<&Path>,
 ) -> Result<AccessToken, LoginError> {
@@ -201,24 +198,19 @@ pub async fn launch_token(
     }
 }
 
-/// [`LoginState`] of the account in `account_dir`. Reads only the store's
-/// stamp (the Keychain item's metadata, or the file's), never the password.
-pub fn login_state(account_dir: Option<&Path>) -> LoginState {
-    let Some(store) = HostStore::for_account(account_dir) else {
-        return LoginState::SignedOut;
-    };
-    state_from(&store.service, store.stamp(), now_ms())
-}
-
-/// Mark the account's current login revoked, for a caller that learned so
-/// outside a refresh. Cleared by itself once the stored login changes (a new
-/// sign-in).
-pub fn invalidate(account_dir: Option<&Path>) {
-    if let Some(store) = HostStore::for_account(account_dir) {
-        if let Some(stamp) = store.stamp() {
-            registry().revoked.insert(store.service.clone(), stamp);
-        }
+/// Whether a refresh of the account in `account_dir` was refused and nothing
+/// has changed in its store since — Settings' "sign in again". Costs nothing
+/// unless a refusal is on record: only then is the store's stamp (the
+/// Keychain item's metadata, or the file's) read, and never the password.
+pub fn is_revoked(account_dir: Option<&Path>) -> bool {
+    let key = crate::sandbox::container::auth::claude_keychain_service(account_dir);
+    if !registry().revoked.contains_key(&key) {
+        return false;
     }
+    let Some(store) = HostStore::for_account(account_dir) else {
+        return false;
+    };
+    revoked_at(&key, store.stamp().as_deref())
 }
 
 /// The access token in a stored credential blob (`.credentials.json` or the
@@ -288,14 +280,32 @@ fn apply_grant(json: &mut Value, grant: &TokenGrant, now_ms: i64) -> Option<i64>
     Some(expires_at_ms)
 }
 
+/// Where a login was read from, and so where it is written back.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Place {
+    /// The Keychain item, owned by `account`.
+    Keychain {
+        account: String,
+    },
+    File,
+}
+
+#[derive(Clone)]
+pub(crate) struct Stored {
+    json: String,
+    place: Place,
+}
+
 /// One account's credential store. Blocking; the core calls it off the async
 /// workers.
 pub(crate) trait LoginStore: Send + Sync + 'static {
     /// A value that changes whenever the stored login does, without reading
     /// the secret. `None` = nothing stored.
     fn stamp(&self) -> Option<String>;
-    fn load(&self) -> Result<Option<String>, String>;
-    fn save(&self, json: &str) -> Result<(), String>;
+    fn load(&self) -> Result<Option<Stored>, String>;
+    /// Whether a blob of `len` bytes can be written back to `place` whole.
+    fn fits(&self, place: &Place, len: usize) -> bool;
+    fn save(&self, place: &Place, json: &str) -> Result<(), String>;
 }
 
 pub(crate) struct TokenGrant {
@@ -354,17 +364,15 @@ pub(crate) trait TokenEndpoint: Send + Sync {
     fn refresh<'a>(&'a self, refresh_token: &'a str) -> RefreshFuture<'a>;
 }
 
-struct Known {
-    stamp: String,
-    expires_at_ms: i64,
-}
-
 #[derive(Default)]
 struct Registry {
     flights: HashMap<String, Arc<tokio::sync::Mutex<()>>>,
     /// The store stamp each account was found revoked at.
     revoked: HashMap<String, String>,
-    known: HashMap<String, Known>,
+    /// A rotated login the store refused to take: the old refresh token is
+    /// already spent, so this is the account's only valid one until a save
+    /// succeeds.
+    unsaved: HashMap<String, Stored>,
 }
 
 fn registry() -> parking_lot::MutexGuard<'static, Registry> {
@@ -380,42 +388,16 @@ fn flight(key: &str) -> Arc<tokio::sync::Mutex<()>> {
         .clone()
 }
 
-fn remember(key: &str, stamp: Option<String>, expires_at_ms: i64) {
+/// Whether `key` was found revoked at `stamp`. A different stamp means the
+/// store changed (a new sign-in), which clears the mark.
+fn revoked_at(key: &str, stamp: Option<&str>) -> bool {
     let mut reg = registry();
-    match stamp {
-        Some(stamp) => {
-            reg.known.insert(
-                key.to_string(),
-                Known {
-                    stamp,
-                    expires_at_ms,
-                },
-            );
+    match (reg.revoked.get(key), stamp) {
+        (Some(at), Some(now)) if at == now => true,
+        _ => {
+            reg.revoked.remove(key);
+            false
         }
-        None => {
-            reg.known.remove(key);
-        }
-    }
-}
-
-fn state_from(key: &str, stamp: Option<String>, now_ms: i64) -> LoginState {
-    let Some(stamp) = stamp else {
-        return LoginState::SignedOut;
-    };
-    let reg = registry();
-    if reg.revoked.get(key) == Some(&stamp) {
-        return LoginState::Revoked;
-    }
-    match reg.known.get(key).filter(|k| k.stamp == stamp) {
-        Some(k) if needs_refresh(k.expires_at_ms, now_ms) => LoginState::Expiring {
-            expires_at_ms: k.expires_at_ms,
-        },
-        Some(k) => LoginState::SignedIn {
-            expires_at_ms: Some(k.expires_at_ms),
-        },
-        None => LoginState::SignedIn {
-            expires_at_ms: None,
-        },
     }
 }
 
@@ -429,17 +411,52 @@ async fn blocking<T: Send + 'static>(
 
 async fn read_store(
     store: &Arc<dyn LoginStore>,
-) -> Result<(Option<String>, Option<String>), LoginError> {
+) -> Result<(Option<String>, Option<Stored>), LoginError> {
     let store = store.clone();
     let (stamp, loaded) = blocking(move || (store.stamp(), store.load())).await?;
-    let json = loaded.map_err(LoginError::Unavailable)?;
-    Ok((stamp, json))
+    let stored = loaded.map_err(LoginError::Unavailable)?;
+    Ok((stamp, stored))
+}
+
+/// The login to work from: a rotated pair still waiting to be stored, written
+/// now if the store takes it, else what the store holds.
+async fn current_login(
+    key: &str,
+    store: &Arc<dyn LoginStore>,
+) -> Result<(Option<String>, Option<Stored>), LoginError> {
+    let pending = registry().unsaved.get(key).cloned();
+    let Some(pending) = pending else {
+        return read_store(store).await;
+    };
+    let saver = store.clone();
+    let retry = pending.clone();
+    let saved = blocking(move || saver.save(&retry.place, &retry.json)).await?;
+    match saved {
+        Ok(()) => {
+            registry().unsaved.remove(key);
+            tracing::info!("stored a refreshed claude login that an earlier write refused");
+            read_store(store).await
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "refreshed claude login still can't be stored");
+            Ok((None, Some(pending)))
+        }
+    }
 }
 
 fn token_of(pair: &Pair) -> AccessToken {
     AccessToken {
         secret: pair.access.clone(),
         expires_at_ms: pair.expires_at_ms,
+    }
+}
+
+/// The stored token when a refresh can't be had, while it still works.
+fn fall_back(demand: Demand, pair: &Pair, reason: String) -> Result<AccessToken, LoginError> {
+    if matches!(demand, Demand::Launch) && pair.expires_at_ms > now_ms() {
+        Ok(token_of(pair))
+    } else {
+        Err(LoginError::Unavailable(reason))
     }
 }
 
@@ -454,23 +471,16 @@ async fn token_with(
     // the rotated pair, never the one this flight just spent.
     let _flight = flight.lock().await;
 
-    let (stamp, json) = read_store(&store).await?;
-    let Some(text) = json else {
-        remember(key, None, 0);
+    let (stamp, stored) = current_login(key, &store).await?;
+    let Some(stored) = stored else {
         return Err(LoginError::SignedOut);
     };
-    {
-        let mut reg = registry();
-        match (reg.revoked.get(key), &stamp) {
-            (Some(at), Some(now)) if at == now => return Err(LoginError::Revoked),
-            _ => {
-                reg.revoked.remove(key);
-            }
-        }
+    // A pending pair has no stamp; it is newer than any refusal on record.
+    if stamp.is_some() && revoked_at(key, stamp.as_deref()) {
+        return Err(LoginError::Revoked);
     }
-    let mut creds: Value = serde_json::from_str(&text).map_err(|_| LoginError::SignedOut)?;
+    let mut creds: Value = serde_json::from_str(&stored.json).map_err(|_| LoginError::SignedOut)?;
     let pair = parse_pair(&creds).ok_or(LoginError::SignedOut)?;
-    remember(key, stamp.clone(), pair.expires_at_ms);
 
     let now = now_ms();
     let due = match demand {
@@ -489,25 +499,36 @@ async fn token_with(
             Err(LoginError::Revoked)
         };
     };
+    // Spending the refresh token is only safe when its successor can be
+    // stored: `security -i` takes one line of about 4 KB.
+    let fit_check = store.clone();
+    let place = stored.place.clone();
+    let len = stored.json.len() + GROWTH_SLACK;
+    if !blocking(move || fit_check.fits(&place, len)).await? {
+        tracing::warn!("claude login too large to store back after a refresh; not refreshing");
+        return fall_back(
+            demand,
+            &pair,
+            "the stored login is too large to write back after a refresh".into(),
+        );
+    }
 
     match endpoint.refresh(&refresh).await {
         Ok(grant) => {
             let expires_at_ms =
                 apply_grant(&mut creds, &grant, now_ms()).ok_or(LoginError::SignedOut)?;
-            let text = creds.to_string();
+            let rotated = Stored {
+                json: creds.to_string(),
+                place: stored.place.clone(),
+            };
             let saver = store.clone();
-            let saved = blocking(move || {
-                let saved = saver.save(&text);
-                (saved, saver.stamp())
-            })
-            .await?;
-            match saved {
-                (Ok(()), stamp) => remember(key, stamp, expires_at_ms),
-                // The old refresh token is spent, so the account now needs a
-                // new sign-in once this access token lapses; say so loudly.
-                (Err(e), _) => {
-                    tracing::error!(error = %e, "refreshed claude login could not be stored")
-                }
+            let to_save = rotated.clone();
+            let saved = blocking(move || saver.save(&to_save.place, &to_save.json)).await?;
+            if let Err(e) = saved {
+                // The old refresh token is spent; keep the new pair and write
+                // it on the next call rather than lose the account's login.
+                tracing::error!(error = %e, "refreshed claude login could not be stored; keeping it to retry");
+                registry().unsaved.insert(key.to_string(), rotated);
             }
             tracing::info!(
                 rotated = grant.refresh_token.is_some(),
@@ -525,12 +546,10 @@ async fn token_with(
             // new pair is in the store and still good.
             let (fresh_stamp, fresh) = read_store(&store).await?;
             let rotated = fresh
-                .as_deref()
-                .and_then(|t| serde_json::from_str::<Value>(t).ok())
+                .and_then(|s| serde_json::from_str::<Value>(&s.json).ok())
                 .and_then(|v| parse_pair(&v))
                 .filter(|p| p.refresh != pair.refresh && p.expires_at_ms > now_ms());
             if let Some(rotated) = rotated {
-                remember(key, fresh_stamp, rotated.expires_at_ms);
                 return Ok(token_of(&rotated));
             }
             if let Some(stamp) = fresh_stamp.or(stamp) {
@@ -541,11 +560,7 @@ async fn token_with(
         }
         Err(RefreshFailure::Failed(reason)) => {
             tracing::warn!(%reason, "claude login refresh failed");
-            if matches!(demand, Demand::Launch) && pair.expires_at_ms > now_ms() {
-                Ok(token_of(&pair))
-            } else {
-                Err(LoginError::Unavailable(reason))
-            }
+            fall_back(demand, &pair, reason)
         }
     }
 }
@@ -558,7 +573,6 @@ async fn token_with(
 struct HostStore {
     service: String,
     file: PathBuf,
-    from_keychain: Mutex<bool>,
 }
 
 impl HostStore {
@@ -570,7 +584,6 @@ impl HostStore {
         Some(Self {
             service: crate::sandbox::container::auth::claude_keychain_service(account_dir),
             file: dir.join(".credentials.json"),
-            from_keychain: Mutex::new(false),
         })
     }
 
@@ -598,12 +611,18 @@ impl LoginStore for HostStore {
         }
     }
 
-    fn load(&self) -> Result<Option<String>, String> {
-        if crate::keychain::item_stamp(&self.service).is_some() {
+    fn load(&self) -> Result<Option<Stored>, String> {
+        if let Some(item) = crate::keychain::item_stamp(&self.service) {
             match crate::keychain::read_password(&self.service) {
                 Some(json) if stored_access_token(json.as_bytes()).is_some() => {
-                    *self.from_keychain.lock() = true;
-                    return Ok(Some(json));
+                    let account = item
+                        .account
+                        .or_else(|| std::env::var("USER").ok())
+                        .ok_or_else(|| "no Keychain account name for the login".to_string())?;
+                    return Ok(Some(Stored {
+                        json,
+                        place: Place::Keychain { account },
+                    }));
                 }
                 // An item without a claude login (MCP logins only) defers to
                 // the file, as claude itself does.
@@ -615,19 +634,28 @@ impl LoginStore for HostStore {
                 }
             }
         }
-        *self.from_keychain.lock() = false;
-        Ok(self.file_login())
+        Ok(self.file_login().map(|json| Stored {
+            json,
+            place: Place::File,
+        }))
     }
 
-    fn save(&self, json: &str) -> Result<(), String> {
-        if *self.from_keychain.lock() {
-            let account = crate::keychain::item_stamp(&self.service)
-                .and_then(|item| item.account)
-                .or_else(|| std::env::var("USER").ok())
-                .ok_or_else(|| "no Keychain account name for the login".to_string())?;
-            return crate::keychain::write_password(&self.service, &account, json);
+    fn fits(&self, place: &Place, len: usize) -> bool {
+        match place {
+            Place::Keychain { account } => {
+                crate::keychain::password_fits(&self.service, account, len)
+            }
+            Place::File => true,
         }
-        write_private_file(&self.file, json).map_err(|e| e.to_string())
+    }
+
+    fn save(&self, place: &Place, json: &str) -> Result<(), String> {
+        match place {
+            Place::Keychain { account } => {
+                crate::keychain::write_password(&self.service, account, json)
+            }
+            Place::File => write_private_file(&self.file, json).map_err(|e| e.to_string()),
+        }
     }
 }
 
@@ -745,6 +773,10 @@ mod tests {
         json: Mutex<Option<String>>,
         version: AtomicUsize,
         saves: AtomicUsize,
+        /// Stands in for a Keychain item owned by this account; `None` = a
+        /// credentials file.
+        keychain_account: Option<String>,
+        fail_saves: std::sync::atomic::AtomicBool,
     }
 
     impl MemStore {
@@ -753,6 +785,18 @@ mod tests {
                 json: Mutex::new(Some(json.to_string())),
                 ..Default::default()
             })
+        }
+
+        fn in_keychain(json: Value) -> Arc<Self> {
+            Arc::new(Self {
+                json: Mutex::new(Some(json.to_string())),
+                keychain_account: Some("alex".into()),
+                ..Default::default()
+            })
+        }
+
+        fn fail_saves(&self, fail: bool) {
+            self.fail_saves.store(fail, Ordering::SeqCst);
         }
 
         fn current(&self) -> Value {
@@ -773,12 +817,30 @@ mod tests {
                 .map(|_| self.version.load(Ordering::SeqCst).to_string())
         }
 
-        fn load(&self) -> Result<Option<String>, String> {
-            Ok(self.json.lock().clone())
+        fn load(&self) -> Result<Option<Stored>, String> {
+            let place = match &self.keychain_account {
+                Some(account) => Place::Keychain {
+                    account: account.clone(),
+                },
+                None => Place::File,
+            };
+            Ok(self.json.lock().clone().map(|json| Stored { json, place }))
         }
 
-        fn save(&self, json: &str) -> Result<(), String> {
+        fn fits(&self, place: &Place, len: usize) -> bool {
+            match place {
+                Place::Keychain { account } => {
+                    crate::keychain::password_fits("Claude Code-credentials-e6d7ed77", account, len)
+                }
+                Place::File => true,
+            }
+        }
+
+        fn save(&self, _place: &Place, json: &str) -> Result<(), String> {
             self.saves.fetch_add(1, Ordering::SeqCst);
+            if self.fail_saves.load(Ordering::SeqCst) {
+                return Err("the store refused the write".into());
+            }
             self.replace(serde_json::from_str(json).unwrap());
             Ok(())
         }
@@ -936,7 +998,7 @@ mod tests {
             launch(&k, &store, &endpoint).await.unwrap_err(),
             LoginError::Revoked
         );
-        assert_eq!(state_from(&k, store.stamp(), now_ms()), LoginState::Revoked);
+        assert!(revoked_at(&k, store.stamp().as_deref()));
         // A second launch doesn't spend another request on a known-dead token.
         assert_eq!(
             launch(&k, &store, &endpoint).await.unwrap_err(),
@@ -1043,38 +1105,87 @@ mod tests {
             launch(&k, &store, &endpoint).await.unwrap_err(),
             LoginError::SignedOut
         );
+        assert!(!revoked_at(&k, store.stamp().as_deref()));
+    }
+
+    #[test]
+    fn a_new_sign_in_clears_a_revoked_mark() {
+        let k = key("cleared");
+        registry().revoked.insert(k.clone(), "1".into());
+        assert!(revoked_at(&k, Some("1")));
+        assert!(!revoked_at(&k, Some("2")));
+        assert!(!registry().revoked.contains_key(&k));
+    }
+
+    /// The old refresh token is spent once the server answers, so a rotated
+    /// pair the store won't take is kept and handed out, not dropped.
+    #[tokio::test]
+    async fn a_refreshed_login_the_store_refuses_is_kept_and_reused() {
+        let k = key("unsaved");
+        let store = MemStore::holding(login("a1", "r1", now_ms() - HOUR_MS));
+        store.fail_saves(true);
+        let endpoint = MockEndpoint::new(Answer::Grant(grant("a2", Some("r2"))));
+        assert_eq!(launch(&k, &store, &endpoint).await.unwrap().secret(), "a2");
+        assert_eq!(store.current()["claudeAiOauth"]["refreshToken"], "r1");
+        assert_eq!(launch(&k, &store, &endpoint).await.unwrap().secret(), "a2");
         assert_eq!(
-            state_from(&k, store.stamp(), now_ms()),
-            LoginState::SignedOut
+            endpoint.calls.load(Ordering::SeqCst),
+            1,
+            "r1 is never sent twice"
         );
     }
 
     #[tokio::test]
-    async fn login_state_reports_expiry_once_the_login_was_read() {
-        let k = key("state");
-        let expires = now_ms() + 3 * HOUR_MS;
-        let store = MemStore::holding(login("a1", "r1", expires));
-        assert_eq!(
-            state_from(&k, store.stamp(), now_ms()),
-            LoginState::SignedIn {
-                expires_at_ms: None
-            }
-        );
-        launch(&k, &store, &MockEndpoint::new(Answer::Down))
+    async fn a_kept_login_is_written_once_the_store_takes_it() {
+        let k = key("unsaved-retry");
+        let store = MemStore::holding(login("a1", "r1", now_ms() - HOUR_MS));
+        store.fail_saves(true);
+        let endpoint = MockEndpoint::new(Answer::Grant(grant("a2", Some("r2"))));
+        launch(&k, &store, &endpoint).await.unwrap();
+        store.fail_saves(false);
+        assert_eq!(launch(&k, &store, &endpoint).await.unwrap().secret(), "a2");
+        assert_eq!(store.current()["claudeAiOauth"]["refreshToken"], "r2");
+        assert!(!registry().unsaved.contains_key(&k));
+    }
+
+    fn oversized(access: &str, expires_at_ms: i64) -> Value {
+        let mut blob = login(access, "r1", expires_at_ms);
+        blob["mcpOAuth"]["big"] = json!({"accessToken": "m".repeat(4500)});
+        blob
+    }
+
+    /// A Keychain login over 4 KB can't be written back through `security
+    /// -i`, so its refresh token is never spent: the launch runs on the
+    /// stored token while it lasts.
+    #[tokio::test]
+    async fn a_login_too_large_to_store_back_is_not_refreshed() {
+        let store = MemStore::in_keychain(oversized("a1", now_ms() + 10 * 60 * 1000));
+        let endpoint = MockEndpoint::new(Answer::Grant(grant("a2", Some("r2"))));
+        let token = launch(&key("too-big"), &store, &endpoint).await.unwrap();
+        assert_eq!(token.secret(), "a1");
+        assert_eq!(endpoint.calls.load(Ordering::SeqCst), 0);
+        assert_eq!(store.saves.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn an_expired_login_too_large_to_store_back_says_why() {
+        let store = MemStore::in_keychain(oversized("a1", now_ms() - HOUR_MS));
+        let endpoint = MockEndpoint::new(Answer::Grant(grant("a2", Some("r2"))));
+        let err = launch(&key("too-big-expired"), &store, &endpoint)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("too large"), "{err}");
+        assert_eq!(endpoint.calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn a_keychain_login_with_room_is_refreshed() {
+        let store = MemStore::in_keychain(login("a1", "r1", now_ms() - HOUR_MS));
+        let endpoint = MockEndpoint::new(Answer::Grant(grant("a2", Some("r2"))));
+        let token = launch(&key("keychain-room"), &store, &endpoint)
             .await
             .unwrap();
-        assert_eq!(
-            state_from(&k, store.stamp(), now_ms()),
-            LoginState::SignedIn {
-                expires_at_ms: Some(expires)
-            }
-        );
-        assert_eq!(
-            state_from(&k, store.stamp(), expires - 60_000),
-            LoginState::Expiring {
-                expires_at_ms: expires
-            }
-        );
+        assert_eq!(token.secret(), "a2");
     }
 
     #[test]
@@ -1151,15 +1262,18 @@ mod tests {
         let store = HostStore {
             service: format!("fletch-test-absent-{}", uuid::Uuid::new_v4()),
             file: td.path().join(".credentials.json"),
-            from_keychain: Mutex::new(false),
         };
         assert_eq!(store.stamp(), None);
         let blob = login("a1", "r1", 5).to_string();
         std::fs::write(&store.file, &blob).unwrap();
         let before = store.stamp().expect("a file login has a stamp");
-        assert_eq!(store.load().unwrap().as_deref(), Some(blob.as_str()));
+        let loaded = store.load().unwrap().unwrap();
+        assert_eq!(
+            (loaded.json.as_str(), &loaded.place),
+            (blob.as_str(), &Place::File)
+        );
         store
-            .save(&login("a2-longer", "r2", 6).to_string())
+            .save(&Place::File, &login("a2-longer", "r2", 6).to_string())
             .unwrap();
         assert_ne!(store.stamp().unwrap(), before);
         let saved: Value =
@@ -1194,7 +1308,11 @@ mod tests {
         }
 
         fn stored_pair(store: &HostStore) -> Pair {
-            let text = store.load().unwrap().expect("the account is signed in");
+            let text = store
+                .load()
+                .unwrap()
+                .expect("the account is signed in")
+                .json;
             parse_pair(&serde_json::from_str(&text).unwrap()).unwrap()
         }
 
@@ -1225,7 +1343,8 @@ mod tests {
             let service = store.service.clone();
             let before_stamp = store.stamp();
             let before = stored_pair(&store);
-            let before_blob: Value = serde_json::from_str(&store.load().unwrap().unwrap()).unwrap();
+            let before_blob: Value =
+                serde_json::from_str(&store.load().unwrap().unwrap().json).unwrap();
             let endpoint = Watching {
                 inner: HttpEndpoint::default(),
                 scoped: Mutex::new(None),
@@ -1244,7 +1363,8 @@ mod tests {
 
             let store = HostStore::for_account(Some(&dir)).unwrap();
             let after = stored_pair(&store);
-            let after_blob: Value = serde_json::from_str(&store.load().unwrap().unwrap()).unwrap();
+            let after_blob: Value =
+                serde_json::from_str(&store.load().unwrap().unwrap().json).unwrap();
             println!(
                 "service={service} scoped={:?} access {}->{} refresh {}->{} \
                  expires_in_min {}->{} stamp {:?}->{:?}",
@@ -1274,24 +1394,40 @@ mod tests {
         /// the shared default config dir, with an env holding nothing but the
         /// plan's own (the token included) and the bare essentials.
         fn seatbelt_turn(token: &AccessToken) -> (Value, Value, bool) {
-            use crate::sandbox::AgentLaunchCtx;
-            let home = dirs::home_dir().unwrap();
             let td = tempfile::tempdir().unwrap();
             let root = td.path().join("agent");
             let cwd = root.join("repo");
+            std::fs::create_dir_all(&cwd).unwrap();
+            seatbelt_run(
+                token,
+                &root,
+                &cwd,
+                &["-p", "Reply with exactly the word: pong"],
+            )
+        }
+
+        /// `claude <args> --output-format stream-json --verbose --model haiku`
+        /// in `cwd` under the profile, with `root` as the writable root.
+        fn seatbelt_run(
+            token: &AccessToken,
+            root: &Path,
+            cwd: &Path,
+            args: &[&str],
+        ) -> (Value, Value, bool) {
+            use crate::sandbox::AgentLaunchCtx;
+            let home = dirs::home_dir().unwrap();
+            let td = tempfile::tempdir().unwrap();
             let rpc = td.path().join("rpc");
-            for d in [&cwd, &rpc] {
-                std::fs::create_dir_all(d).unwrap();
-            }
+            std::fs::create_dir_all(&rpc).unwrap();
             let claude =
                 crate::agent::resolve_agent_bin("claude", "claude", "Claude Code", &home).unwrap();
             let ctx = AgentLaunchCtx {
                 agent_id: "live",
                 provider: "claude",
-                writable_root: &root,
+                writable_root: root,
                 source_repos: &[],
                 rpc_dir: &rpc,
-                cwd: &cwd,
+                cwd,
                 home: &home,
                 interactive: false,
                 blackboard: None,
@@ -1304,16 +1440,15 @@ mod tests {
                 .unwrap();
             let out = std::process::Command::new(&plan.program)
                 .args(&plan.prefix_args)
+                .args(args)
                 .args([
-                    "-p",
-                    "Reply with exactly the word: pong",
                     "--output-format",
                     "stream-json",
                     "--verbose",
                     "--model",
                     "haiku",
                 ])
-                .current_dir(&cwd)
+                .current_dir(cwd)
                 .env_clear()
                 .env("HOME", &home)
                 .env("PATH", std::env::var("PATH").unwrap())
@@ -1359,6 +1494,52 @@ mod tests {
                 result["is_error"], result["api_error_status"], result["result"],
             );
             assert_eq!(result["api_error_status"], 401, "{result}");
+        }
+
+        /// A session written under the account dir before accounts became
+        /// token sources resumes once moved into the default dir. Works on a
+        /// copy, under a new id, of the session `FLETCH_LIVE_LEGACY_SESSION`
+        /// names (a `.jsonl` under a claude account's `projects`), run in
+        /// `FLETCH_LIVE_LEGACY_CWD`; the copy is removed afterwards.
+        #[tokio::test]
+        #[ignore]
+        async fn live_legacy_account_session_resumes_from_the_default_dir() {
+            let source = PathBuf::from(std::env::var("FLETCH_LIVE_LEGACY_SESSION").unwrap());
+            let cwd = PathBuf::from(std::env::var("FLETCH_LIVE_LEGACY_CWD").unwrap());
+            let old_id = source.file_stem().unwrap().to_string_lossy().into_owned();
+            let new_id = uuid::Uuid::new_v4().to_string();
+            let copy = source.with_file_name(format!("{new_id}.jsonl"));
+            let text = std::fs::read_to_string(&source)
+                .unwrap()
+                .replace(&old_id, &new_id);
+            std::fs::write(&copy, text).unwrap();
+
+            let moved = crate::transcripts::adopt_account_session(&new_id, &cwd)
+                .unwrap()
+                .expect("the copy moves into the default dir");
+            println!("moved to {}", moved.display());
+            assert!(!copy.exists());
+
+            let token = access_token_for_launch(Some(&account_dir()))
+                .await
+                .expect("token");
+            let (_, result, _) = seatbelt_run(
+                &token,
+                &cwd,
+                &cwd,
+                &[
+                    "--resume",
+                    &new_id,
+                    "-p",
+                    "Reply with exactly the word: resumed",
+                ],
+            );
+            let _ = std::fs::remove_file(&moved);
+            println!(
+                "resume: is_error={} num_turns={} text={}",
+                result["is_error"], result["num_turns"], result["result"]
+            );
+            assert_eq!(result["is_error"], false, "{result}");
         }
     }
 }

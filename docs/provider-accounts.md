@@ -50,16 +50,37 @@ build it in PR 3.
   (Keychain `-U` through `security -i`, or the file atomically at 0600,
   keeping every field it doesn't own), and hands the agent only the ~8h
   access token. Refresh tokens rotate, so refreshes run single-flight per
-  account. A refused refresh (400/401) marks the login revoked until the
-  store changes, and Settings shows "sign in again". A sandboxed agent never
-  touches the Keychain, read or write.
+  account. `security -i` takes one line of about 4 KB, so a Keychain login
+  too large to write back whole is not refreshed at all (the launch runs on
+  the stored token while it lasts); a rotated pair the store refuses anyway
+  is kept in memory and written on the next call. A refused refresh
+  (400/401) marks the login revoked until the store changes, and Settings
+  shows "sign in again". The token is resolved before the lifecycle lock
+  and the spawn watchdog (`prefetch_login`), with a 5 s refresh timeout and
+  a 20 s cap on a Keychain read that might prompt.
+- **What the sandbox can still reach.** The seatbelt profile denies reads of
+  the host's claude logins on disk (`~/.claude/.credentials.json`, a
+  relocated dir's, and every `~/.fletch/accounts/claude/` dir). It does not
+  deny the Keychain: items live behind securityd, and
+  `security find-generic-password -s "Claude Code-credentials"` still
+  succeeds under the profile. Denying the securityd mach services is a
+  known follow-up; it needs a test that claude's MCP OAuth (also
+  Keychain-backed) still works first.
 - **A live claude can't take a new token** (it reads the env var once). Before
   a turn is delivered to an idle claude process whose token is inside the
-  margin, the supervisor stops it and resumes the session on a fresh token
-  (`Supervisor::relaunch_with_resume`). A turn that still ends on a 401 gets
-  one refresh, relaunch and resend (`supervisor/login_refresh.rs`). A second
-  401 leaves the agent in `Error` with "sign in again". Per-turn providers
-  start a process every turn and need none of this.
+  margin, the supervisor resolves a token first and, only when it lapses
+  later than the live one, stops the process and resumes the session on it
+  (`Supervisor::relaunch_with_resume` / `relaunch_locked`). Offline, the turn
+  goes to the current process. A turn whose error result is a 401 gets one
+  refresh, relaunch and resend (`supervisor/login_refresh.rs`). A second 401
+  leaves the agent in `Error` with "sign in again"; the user's next send gets
+  its own retry, which is how a new sign-in reaches the process. Per-turn
+  providers start a process every turn and need none of this.
+- **Sessions from before this change** live under the account's
+  `projects/`. A seatbelt launch moves such a session (transcript and
+  subagent dir) into the default projects dir before resuming it
+  (`transcripts::adopt_account_session`), never overwriting one already
+  there.
 - The **default account** is the user's own CLI dir (`~/.claude`, `~/.codex`, or
   wherever their shell's env points). It has no directory under the root and no
   env override. It is also the **shared source**: `settings.json`, `CLAUDE.md`,
@@ -103,11 +124,13 @@ Engine (`crates/fletch-core/src/`):
   rejected)` (what every claude launch signs in with; a managed account without
   a usable login fails the launch, the default degrades to no token),
   `access_token_for_launch`, `replace_rejected_token` (after a 401),
-  `login_state` / `invalidate` (no secret read), `stored_access_token` (the
-  "is this a login" bar, `expiresAt > 0`), `REFRESH_MARGIN_MS`, `AccessToken`
-  (`Debug` prints the expiry only). `LoginStore` and `TokenEndpoint` are the
-  seams the tests mock. Ignored live tests: `live_forced_refresh_*`,
-  `live_seatbelt_turn_*` (`FLETCH_LIVE_CLAUDE_ACCOUNT=<id>`).
+  `is_revoked` (free unless a refusal is on record; then the store's stamp
+  only), `stored_access_token` (the "is this a login" bar, `expiresAt > 0`),
+  `REFRESH_MARGIN_MS`, `AccessToken` (`Debug` prints the expiry only).
+  `LoginStore` (`load` returns where it read from, `save` writes there,
+  `fits` gates a refresh) and `TokenEndpoint` are the seams the tests mock.
+  Ignored live tests: `live_forced_refresh_*`, `live_seatbelt_turn_*`,
+  `live_legacy_account_session_*` (`FLETCH_LIVE_CLAUDE_ACCOUNT=<id>`).
 - `agent/auth_probe.rs` — `probe_default`, `probe_dir` (per-account sign-in
   probe; Keychain presence or `.credentials.json` for claude, `auth.json` for
   codex; never consults shell keys). A claude login `claude_oauth` found
@@ -124,14 +147,19 @@ Engine (`crates/fletch-core/src/`):
   (provider session id → stamped account, for the usage scan).
 - `supervisor/lifecycle.rs` — `active_account` stamping in `spawn_agent`;
   `record.account` threaded into `SpawnSpec`/`PerTurnSpec`;
-  `spawn_agent_process` resolves `claude_oauth::launch_token` on every claude
-  launch path into `SpawnSpec.oauth_token`; the managed event handler feeds
-  `observe_login`.
-- `supervisor/login_refresh.rs` — `relaunch_with_resume` (switch_view's
-  teardown + resume without the view change; PR 2's account switch calls
-  it), `relaunch_if_login_due` (before a turn, from `send_user_message`),
-  `observe_login` (401 → flag a session-preserving respawn on a replaced
-  token and requeue the turn, once), `report_login_failure`.
+  `spawn_agent_process` signs every claude launch in through `launch_login`
+  into `SpawnSpec.oauth_token`; `start_process` adopts a legacy account-dir
+  session; the managed event handler feeds `observe_login`.
+- `supervisor/login_refresh.rs` — `prefetch_login` / `launch_login` (token
+  resolved before the lock and watchdog, consumed by the launch),
+  `relaunch_with_resume` and `relaunch_locked` (for a caller already holding
+  the lifecycle lock), `take_idle` + `restart_taken` (shared with
+  `respawn_agent_preserving_session`: idle check and removal under one
+  `agents` lock), `relaunch_if_login_due` (before a turn, from
+  `send_user_message`), `observe_login` (401 → flag a session-preserving
+  respawn on a replaced token and requeue the turn, once),
+  `report_login_failure`, `forget_logins` (teardown). Scripted ignored tests
+  in `login_refresh/tests/launched.rs`.
 - `agent/spawn.rs` — `account_launch` → `AccountLaunch { dir, env, unset }`
   used by all four launch paths (claude PTY, claude managed, per-turn PTY,
   per-turn exec). `unset` strips the default account's credential vars; a
@@ -142,25 +170,33 @@ Engine (`crates/fletch-core/src/`):
 - `sandbox/engine.rs` — `AgentLaunchCtx.account_dir` (codex only) and
   `AgentLaunchCtx.oauth_token` (claude, every engine).
 - `sandbox/seatbelt.rs` — puts `oauth_token` in the plan's env as
-  `CLAUDE_CODE_OAUTH_TOKEN`; grants nothing for a claude account dir. The
+  `CLAUDE_CODE_OAUTH_TOKEN`; grants nothing for a claude account dir;
+  `deny_host_claude_logins` hides the on-disk logins from every agent
+  (kernel test `seatbelt_hides_the_hosts_claude_logins`). The
   relocated-claude-dir grants (islands + `.claude.json` literal +
   `settings.json` deny) stay: they still serve an app env that sets
   `CLAUDE_CONFIG_DIR`. Codex account home granted whole with `config.toml`
   deny. Ignored kernel test documents the temp-tree grant.
 - `sandbox/container/{launch.rs, auth.rs, launch_auth.rs, config_dir.rs}` —
-  `auth::resolve(oauth_token)`: the host token, then (default account only,
+  `auth::resolve(oauth_token)`: the host token (`AuthSource::HostLogin`), then (default account only,
   since a managed launch always has a token) the stored setup-token and the
   shell's auth vars. A claude account dir is never mounted; the per-agent
   `.fletch-claude-projects` mount stays; the `.credentials.json` rw overlay
   is dropped whenever a host token is injected. `status()` is presence-only.
   `claude_keychain_service`.
 - `keychain.rs` — `item_present`, `item_stamp` (`acct` + `mdat`, no secret),
-  `read_password` (launch or explicit action only), `write_password`
-  (`security -i`, hex `-X`, so the secret never hits argv), `delete_item`.
+  `read_password` (launch or explicit action only, 20 s cap),
+  `write_password` (`security -i`, hex `-X`, so the secret never hits argv;
+  refuses a password over the ~4 KB line `password_fits` allows; fixed
+  error text, never `security`'s stderr), `delete_item`. The in-process
+  Keychain API was tried and rejected: a read of a `security`-created item
+  from the test binary took ~13 s on first access, the signature of an
+  access prompt.
 - `transcripts.rs` — `claude_projects_dirs` and `codex_sessions_dirs` union the
   account dirs (old claude history still lives there);
-  `claude_projects_dir(cwd, container, account_dir)` resolves to the default
-  for every claude agent now.
+  `claude_projects_dir(cwd, container)` resolves to the default for every
+  claude agent; `adopt_account_session` moves a legacy session out of an
+  account dir.
 - `supervisor/materialize.rs` — fork/rewind writer targets the stamped dir via
   `existing_account_dir` for codex, the default dir for claude.
 - `usage_scan/` — scans all roots (incl. account dirs); each bucket and

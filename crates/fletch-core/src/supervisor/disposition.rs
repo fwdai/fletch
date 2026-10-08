@@ -174,6 +174,9 @@ impl Supervisor {
     /// metadata, transition to Spawning so the supervisor's start path
     /// attaches to the existing claude session.
     pub async fn restore_agent(self: Arc<Self>, ctx: Arc<EngineCtx>, agent_id: &str) -> Result<()> {
+        // Resolved outside the lock and ahead of the spawn watchdog; kept for
+        // the launch, where a failure surfaces (`prefetch_login`).
+        let _ = self.prefetch_login(agent_id).await;
         let _lifecycle_guard = self.agent_lifecycle.lock().await;
         let record = self.workspace.agent(agent_id)?;
         let archive = record
@@ -377,6 +380,7 @@ impl Supervisor {
         self.rpc_dispatchers.lock().remove(agent_id);
         self.live_turns.lock().remove(agent_id);
         self.delivery_locks.lock().remove(agent_id);
+        self.forget_logins(agent_id);
         // Clear the in-memory queue and its durable mirror under one hold of
         // the queue lock. Dropping the mirror stops an archived agent's queue
         // from rehydrating on the next launch (discard also cascades via the FK

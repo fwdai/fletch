@@ -294,10 +294,11 @@ fn parse_json(bytes: Option<&[u8]>) -> Option<Value> {
 }
 
 /// Whether the host found this claude login's refresh token refused
-/// (`claude_oauth`). Decided from the store's metadata, so no secret is read
-/// on this polling path; a new sign-in changes the store and clears it.
+/// (`claude_oauth`). Free on this polling path unless a refusal is on record,
+/// and even then only the store's metadata is read, never a secret; a new
+/// sign-in changes the store and clears it.
 fn login_revoked(dir: Option<&Path>) -> bool {
-    super::claude_oauth::login_state(dir) == super::claude_oauth::LoginState::Revoked
+    super::claude_oauth::is_revoked(dir)
 }
 
 fn revoked_entry() -> ProviderAuthProbe {

@@ -137,13 +137,15 @@ fn claude_write(
     session_id: &str,
     cwd: &Path,
     container: bool,
-    account_dir: Option<&Path>,
+    // Part of the shared writer signature; codex uses it. Every claude agent
+    // runs in the default config dir, whatever its account.
+    _account_dir: Option<&Path>,
     bodies: &[Value],
 ) -> Result<Option<PathBuf>> {
     if !bodies.iter().any(|b| b.get("uuid").is_some()) {
         return Ok(None);
     }
-    let projects = crate::transcripts::claude_projects_dir(cwd, container, account_dir)
+    let projects = crate::transcripts::claude_projects_dir(cwd, container)
         .ok_or_else(|| Error::Other("claude's projects directory can't be resolved".into()))?;
     // Claude goes by its working directory as the OS reports it, symlinks
     // resolved; in a container, that is the path the checkout is mounted at.
