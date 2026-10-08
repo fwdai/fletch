@@ -241,6 +241,34 @@ mod imp {
             }
         }
 
+        /// Remove every entry whose name starts with `prefix` and that was
+        /// last modified more than `age` ago, without following any of them.
+        pub(crate) fn remove_stale(&self, prefix: &str, age: std::time::Duration) -> Result<()> {
+            let cutoff = std::time::SystemTime::now()
+                .checked_sub(age)
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map_or(0, |d| d.as_secs() as i64);
+            for name in self.names()? {
+                if !name.to_bytes().starts_with(prefix.as_bytes()) {
+                    continue;
+                }
+                let mut st: libc::stat = unsafe { std::mem::zeroed() };
+                // SAFETY: as in `openat_dir`; `st` is a valid out pointer.
+                let ret = unsafe {
+                    libc::fstatat(
+                        self.dir.as_raw_fd(),
+                        name.as_ptr(),
+                        &mut st,
+                        libc::AT_SYMLINK_NOFOLLOW,
+                    )
+                };
+                if ret == 0 && (st.st_mtime as i64) < cutoff {
+                    self.remove_c(&name)?;
+                }
+            }
+            Ok(())
+        }
+
         fn clear(&self) -> Result<()> {
             for name in self.names()? {
                 self.remove_c(&name)?;
@@ -416,6 +444,21 @@ mod imp {
                 Ok(m) if m.is_dir() => Entry::Dir,
                 Ok(_) => Entry::Other,
             })
+        }
+        pub(crate) fn remove_stale(&self, prefix: &str, age: std::time::Duration) -> Result<()> {
+            for entry in std::fs::read_dir(&self.path)?.flatten() {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                let old = entry
+                    .metadata()
+                    .and_then(|m| m.modified())
+                    .ok()
+                    .and_then(|t| t.elapsed().ok())
+                    .is_some_and(|elapsed| elapsed > age);
+                if name.starts_with(prefix) && old {
+                    self.remove(&name)?;
+                }
+            }
+            Ok(())
         }
         pub(crate) fn remove(&self, name: &str) -> Result<()> {
             let path = self.path.join(name);

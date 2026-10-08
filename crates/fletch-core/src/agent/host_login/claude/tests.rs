@@ -140,6 +140,20 @@ fn any_other_400_is_a_failure_not_a_refusal() {
     }
 }
 
+/// Only a standard OAuth error code reaches the message; anything else the
+/// server put in `error` is rendered as an unexpected 400.
+#[test]
+fn a_400_message_names_only_a_known_error_code() {
+    let message = |body: Value| match interpret_refresh(400, Some(&body)) {
+        Err(RefreshFailure::Failed(m)) => m,
+        other => panic!("{other:?}"),
+    };
+    assert!(message(json!({"error": "invalid_client"})).contains("(invalid_client)"));
+    let odd = message(json!({"error": "sk-ant-ort01-echoed-back"}));
+    assert!(!odd.contains("sk-ant"), "{odd}");
+    assert!(odd.contains("unexpected 400"), "{odd}");
+}
+
 #[test]
 fn other_answers_map_to_failed_or_a_grant() {
     assert!(matches!(

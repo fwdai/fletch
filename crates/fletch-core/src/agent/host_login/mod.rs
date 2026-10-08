@@ -364,9 +364,13 @@ impl<P: LoginProvider> HostLogin<P> {
                         continue;
                     }
                     // Marked only when the store still holds the token that
-                    // was refused (or nothing): a login that moved on again
-                    // is someone else's newer one, and stays usable.
-                    if !moved {
+                    // was refused, or nothing at all: a login that moved on
+                    // again is someone else's newer one, and anything else
+                    // there is not for this refusal to judge.
+                    let still_refused = fresh_creds
+                        .as_ref()
+                        .is_some_and(|c| c.refresh.as_deref() == Some(refresh.as_str()));
+                    if still_refused || fresh.is_none() {
                         let (stamp, json) = match &fresh {
                             Some(f) => (f.stamp.clone().or(cur.stamp.clone()), &f.json),
                             None => (cur.stamp.clone(), &cur.json),

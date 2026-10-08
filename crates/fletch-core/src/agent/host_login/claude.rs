@@ -555,7 +555,9 @@ fn oauth_error(body: Option<&Value>) -> Option<&str> {
 /// by a rotation, per RFC 6749 §5.2), refuses the refresh token itself; any
 /// other 400 is a malformed or unsupported request that a new sign-in would
 /// not fix, so it, like anything else, leaves the stored pair valid for a
-/// later try. Never carries the body, which may echo credentials.
+/// later try. The message names the status, and for a 400 only one of the
+/// standard OAuth error codes; nothing else from the body, which may echo
+/// credentials.
 fn interpret_refresh(status: u16, body: Option<&Value>) -> Result<TokenGrant, RefreshFailure> {
     match status {
         200..=299 => body.and_then(parse_grant).ok_or_else(|| {
@@ -563,10 +565,15 @@ fn interpret_refresh(status: u16, body: Option<&Value>) -> Result<TokenGrant, Re
         }),
         401 => Err(RefreshFailure::Rejected),
         400 if oauth_error(body) == Some("invalid_grant") => Err(RefreshFailure::Rejected),
-        400 => Err(RefreshFailure::Failed(format!(
-            "the sign-in server answered 400 ({})",
-            oauth_error(body).unwrap_or("no error code")
-        ))),
+        400 => Err(RefreshFailure::Failed(match oauth_error(body) {
+            Some(
+                code @ ("invalid_request"
+                | "unsupported_grant_type"
+                | "invalid_client"
+                | "invalid_scope"),
+            ) => format!("the sign-in server answered 400 ({code})"),
+            _ => "the sign-in server answered an unexpected 400".into(),
+        })),
         other => Err(RefreshFailure::Failed(format!(
             "the sign-in server answered {other}"
         ))),

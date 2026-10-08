@@ -498,6 +498,36 @@ fn a_refusal_after_the_store_moved_on_twice_marks_nothing() {
     assert_eq!(*e.provider().sent.lock(), vec!["rt-1", "rt-2"]);
 }
 
+/// What the store holds after a refusal is not a login at all (another
+/// process mid-write, a foreign file): the refusal is reported, but nothing
+/// is marked against a login it never saw.
+#[test]
+fn a_refusal_with_something_unreadable_in_the_store_marks_nothing() {
+    let fake = Fake::holding(Some(login("at-1", Some("rt-1"), soon())));
+    *fake.during_refresh.lock() = Some(Box::new(|f| f.store(json!({"not": "a login"}))));
+    fake.answer(Err(RefreshFailure::Rejected));
+    let e = engine(fake);
+
+    assert_eq!(e.credential(Demand::Launch), Err(LoginError::Revoked));
+    assert!(!e.is_revoked());
+}
+
+/// The store emptied while the request was out: the refusal is the login's.
+#[test]
+fn a_refusal_with_the_store_emptied_is_marked() {
+    let fake = Fake::holding(Some(login("at-1", Some("rt-1"), soon())));
+    *fake.during_refresh.lock() = Some(Box::new(|f| {
+        *f.stored.lock() = None;
+    }));
+    fake.answer(Err(RefreshFailure::Rejected));
+    let e = engine(fake);
+
+    assert_eq!(e.credential(Demand::Launch), Err(LoginError::Revoked));
+    e.provider().store(login("at-1", Some("rt-1"), soon()));
+    e.provider().version.store(1, Ordering::SeqCst);
+    assert!(e.is_revoked());
+}
+
 /// A login another process left without a refresh token while the request
 /// was out counts as rotated: it is launched on while it lasts, not marked
 /// refused.

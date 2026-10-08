@@ -133,6 +133,11 @@ pub(crate) fn limits_parent() -> Result<std::path::PathBuf> {
     Ok(accounts::accounts_root()?.join("codex"))
 }
 
+const LIMITS_PREFIX: &str = ".limits-";
+
+/// Far longer than a read ([`TIMEOUT`] plus a refresh) can take.
+const STALE_LIMITS_HOME: Duration = Duration::from_secs(10 * 60);
+
 /// A temporary `CODEX_HOME` for one limits read, made and removed through a
 /// handle on its parent so nothing planted redirects either.
 struct LimitsHome {
@@ -169,7 +174,13 @@ fn limits_home(
     let root = limits_parent()?;
     std::fs::create_dir_all(&root)?;
     let parent = crate::agent::credential_file::PrivateDir::open(&root)?;
-    let name = format!(".limits-{}", uuid::Uuid::new_v4().simple());
+    // A crash mid-read leaves a home behind, a launch copy of a login in it.
+    // One older than any read could last is gone by now; a younger one may
+    // be another account's read in progress.
+    if let Err(e) = parent.remove_stale(LIMITS_PREFIX, STALE_LIMITS_HOME) {
+        tracing::warn!(error = %e, "could not sweep stale limits homes");
+    }
+    let name = format!("{LIMITS_PREFIX}{}", uuid::Uuid::new_v4().simple());
     parent.subdir(&name)?;
     let made = LimitsHome {
         path: root.join(&name),
@@ -314,6 +325,36 @@ mod tests {
         crate::agent::host_login::RefreshFailure,
     > {
         panic!("no refresh expected")
+    }
+
+    /// A home a crashed read left behind is swept by the next read; one young
+    /// enough to be another read in progress is left alone.
+    #[test]
+    fn a_read_sweeps_the_homes_crashed_reads_left_behind() {
+        accounts::with_test_root(|root| {
+            let home = root.join("home");
+            std::fs::create_dir_all(&home).unwrap();
+            let codex = root.join("codex");
+            let stale = codex.join(".limits-crashed");
+            let fresh = codex.join(".limits-in-progress");
+            for dir in [&stale, &fresh] {
+                std::fs::create_dir_all(dir).unwrap();
+                std::fs::write(dir.join("auth.json"), "{}").unwrap();
+            }
+            let old = std::time::SystemTime::now() - Duration::from_secs(3600);
+            std::fs::File::open(&stale)
+                .unwrap()
+                .set_times(std::fs::FileTimes::new().set_modified(old))
+                .unwrap();
+            let source = codex.join("work");
+            std::fs::create_dir_all(&source).unwrap();
+
+            let made = limits_home(&source, &home, &never, 1_791_448_171).unwrap();
+
+            assert!(!stale.exists());
+            assert!(fresh.exists());
+            assert!(made.is_some());
+        });
     }
 
     /// The app-server reads limits from a home inside the agent-denied codex
