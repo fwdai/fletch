@@ -11,6 +11,7 @@ import {
   CLOSE_REASONS,
   CLOSE_REMOTE_DISABLED,
   CLOSE_UNAUTHENTICATED,
+  CONNECTION_LOST,
   type ConnectionState,
   type DeviceInfo,
   type EventFrame,
@@ -419,8 +420,8 @@ export class ProtocolClient implements RemoteClient {
       onMessage: (text) => {
         if (this.current(gen)) this.onMessage(text);
       },
-      onClose: (code, reason) => {
-        if (this.current(gen)) this.onClose(code, reason);
+      onClose: (code) => {
+        if (this.current(gen)) this.onClose(code);
       },
       onError: (message) => {
         if (this.current(gen)) this.onSocketError(message);
@@ -524,8 +525,10 @@ export class ProtocolClient implements RemoteClient {
     if (this._state === "connected") this.setState("error", message);
   }
 
-  private onClose(code: number, reason?: string) {
-    const message = CLOSE_REASONS[code] ?? reason ?? `Connection closed (${code})`;
+  private onClose(code: number) {
+    // The code and the transport's reason (`pong timeout`, …) are for a log,
+    // not a screen.
+    const message = CLOSE_REASONS[code] ?? CONNECTION_LOST;
     this.teardown(message);
     if (this.closedByUs) return;
     this.fail(message, !FATAL_CLOSE.has(code));

@@ -326,25 +326,6 @@
 .kv .seg {
   min-width: 200px;
 }
-/* `Disclosure`: a quiet row under a list of values, opening more of the same
-   in place. */
-.disclosure {
-  margin-top: 4px;
-}
-.disclosure-btn {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 11px 0;
-  font-size: 13px;
-  color: var(--fg-3);
-}
-.disclosure-btn svg {
-  transition: transform 0.18s;
-}
-.disclosure-btn svg.open {
-  transform: rotate(180deg);
-}
 
 /* progress steps (spawn + PR) */
 .progress {

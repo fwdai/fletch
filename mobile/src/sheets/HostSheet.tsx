@@ -1,8 +1,8 @@
 import { Icon } from "@desktop/components/Icon";
-import { Disclosure, Segmented, Sheet, Toggle } from "../components/ui";
+import { Segmented, Sheet, Toggle } from "../components/ui";
 import { ignore } from "../lib/ignore";
 import { projectsOf } from "../lib/projects";
-import { client, useStore } from "../store";
+import { useStore } from "../store";
 
 const CONNECTION_TEXT: Record<string, string> = {
   connected: "Connected",
@@ -12,14 +12,9 @@ const CONNECTION_TEXT: Record<string, string> = {
   error: "Disconnected",
 };
 
-/** Which candidate the live link is on. Both paths carry the same protocol, so
- *  this is information, not a setting. */
-const VIA_TEXT: Record<string, string> = { lan: "Local network", relay: "Relay" };
-
-/** Long enough to recognise the host, short enough for the value column. */
-const abbreviate = (url: string, max = 30) =>
-  url.length <= max ? url : `${url.slice(0, max - 1)}…`;
-
+/** The paired Mac as the user knows it: its name, whether it is reachable, and
+ *  what is on it. How the link is made — address, keys, relay, which path —
+ *  is never shown: it connects on its own, and nothing here could change it. */
 export function HostSheet({ open, onClose }: { open: boolean; onClose: () => void }) {
   const host = useStore((s) => s.hostInfo);
   const connection = useStore((s) => s.connection);
@@ -29,14 +24,8 @@ export function HostSheet({ open, onClose }: { open: boolean; onClose: () => voi
   const setActiveFirst = useStore((s) => s.setActiveFirst);
   const reconnect = useStore((s) => s.reconnect);
   const unpair = useStore((s) => s.unpair);
-  const hostKey = useStore((s) => s.hostKey);
-  const relay = useStore((s) => s.relay);
-  const via = useStore((s) => s.via);
   const projects = useStore((s) => projectsOf(s.workspace).length);
   const agents = useStore((s) => s.workspace?.agents.length ?? 0);
-  // The client owns the target; this re-reads it on every render, which the
-  // connection-state subscription above already drives.
-  const address = client.target ? `${client.target.host}:${client.target.port}` : "";
 
   return (
     <Sheet
@@ -75,14 +64,6 @@ export function HostSheet({ open, onClose }: { open: boolean; onClose: () => voi
       </div>
       <div style={{ marginTop: 12 }}>
         <div className="kv">
-          <span>Fletch desktop</span>
-          <span>{host?.appVersion ?? "—"}</span>
-        </div>
-        <div className="kv">
-          <span>Platform</span>
-          <span>{host?.os ?? "—"}</span>
-        </div>
-        <div className="kv">
           <span>Projects</span>
           <span>{projects}</span>
         </div>
@@ -112,30 +93,6 @@ export function HostSheet({ open, onClose }: { open: boolean; onClose: () => voi
           </span>
         </div>
       </div>
-      {/* How the link is plumbed: read-only, and set on the Mac, which every
-          handshake reports back. */}
-      <Disclosure label="Advanced">
-        <div className="kv">
-          <span>Address</span>
-          <span>{address || "—"}</span>
-        </div>
-        <div className="kv">
-          <span>Identity</span>
-          {/* The pinned host key, abbreviated: enough to compare against the
-              one Settings shows on the Mac. */}
-          <span>{hostKey ? `${hostKey.slice(0, 12)}…` : "—"}</span>
-        </div>
-        <div className="kv">
-          <span>Relay</span>
-          <span>{relay ? abbreviate(relay) : "Off"}</span>
-        </div>
-        {via && connection === "connected" && (
-          <div className="kv">
-            <span>Connected over</span>
-            <span>{VIA_TEXT[via]}</span>
-          </div>
-        )}
-      </Disclosure>
       <div style={{ display: "flex", gap: 10, marginTop: 18 }}>
         <button
           type="button"

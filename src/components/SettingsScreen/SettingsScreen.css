@@ -1273,10 +1273,6 @@
   color: var(--fg-0);
   line-height: 1.1;
 }
-.set-pair[data-expired="1"] .set-pair-code {
-  color: var(--fg-3);
-  text-decoration: line-through;
-}
 .set-pair-copy {
   color: var(--fg-2);
   margin-top: 6px;
@@ -1302,12 +1298,17 @@
   color: var(--fg-0);
   margin-top: 8px;
 }
-/* This Mac's public key: reference material, not something to read out. */
-.set-host-id {
-  display: block;
+/* "Can't scan?": the typed-entry fallback, out of the way of the QR. */
+.set-pair-manual {
+  margin-top: 10px;
+}
+.set-pair-manual-btn {
   color: var(--fg-3);
-  margin-top: 6px;
-  overflow-wrap: anywhere;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.set-pair-manual-btn:hover {
+  color: var(--fg-1);
 }
 /* White quiet zone regardless of theme — a dark-on-dark QR does not scan. */
 .set-pair-qr {
