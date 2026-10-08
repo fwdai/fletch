@@ -665,6 +665,14 @@ impl Supervisor {
         let mcp_servers_for_task = record.mcp_servers.clone();
         let adopted_for_task = adopted.is_some();
         let pin = code_from.clone();
+        // The login resolves alongside provisioning rather than after it, so a
+        // refresh doesn't add to the spawn's wait (`prefetch_login`).
+        {
+            let (sup, id) = (self.clone(), agent_id.clone());
+            crate::host::spawn(async move {
+                let _ = sup.prefetch_login(&id).await;
+            });
+        }
         let provisioning = async move {
             // Stage markers for the clients, emitted ahead of each step so the
             // spinner behind `spawning` can say what it is waiting on. Progress
@@ -1136,6 +1144,25 @@ impl Supervisor {
             session_id.as_deref(),
         );
 
+        // A session from before claude accounts became token sources lives in
+        // the account's dir; this launch resumes in the default one.
+        if record.provider == "claude" && !stamped_engine(&record).is_container() {
+            if let Some(session) = record.session_id.as_deref() {
+                match crate::transcripts::adopt_account_session(session, &cwd) {
+                    Ok(Some(path)) => tracing::info!(
+                        agent_id,
+                        path = %path.display(),
+                        "moved a claude session out of its account dir to resume it"
+                    ),
+                    Ok(None) => {}
+                    Err(e) => tracing::warn!(
+                        agent_id,
+                        error = %e,
+                        "could not move a claude session out of its account dir"
+                    ),
+                }
+            }
+        }
         let start = session_start(&record, &cwd);
 
         let agent_id_str = agent_id.to_string();
@@ -1422,6 +1449,7 @@ impl Supervisor {
                         rows: 32,
                         engine,
                         account: record.account.as_deref(),
+                        oauth_token: None,
                         blackboard: blackboard.as_deref(),
                     };
                     spawn_pty_per_turn_agent(
@@ -1464,6 +1492,12 @@ impl Supervisor {
             let session_id = session_id
                 .as_deref()
                 .expect("non-codex agents always have a session id");
+            // Every launch path signs in here, so a resume always starts on a
+            // token with the full refresh margin ahead of it — usually the one
+            // its caller resolved before taking the lifecycle lock
+            // (`prefetch_login`). A token the API rejected (`observe_login`)
+            // is replaced even if it looks unexpired.
+            let oauth_token = self.launch_login(agent_id, record).await?;
             let spec = SpawnSpec {
                 agent_id: &agent_id_str,
                 cwd,
@@ -1484,9 +1518,10 @@ impl Supervisor {
                 engine,
                 // The account stamped at creation, never the live setting.
                 account: record.account.as_deref(),
+                oauth_token: oauth_token.as_ref(),
                 blackboard: blackboard.as_deref(),
             };
-            match record.view {
+            let spawned = match record.view {
                 AgentView::Native => spawn_pty_agent(
                     spec,
                     ctx.clone(),
@@ -1501,11 +1536,19 @@ impl Supervisor {
                     self.clone(),
                     my_gen,
                 ),
+            };
+            if spawned.is_ok() {
+                self.launch_succeeded(agent_id);
             }
+            spawned
         }
     }
 
     pub async fn resume_agent(self: Arc<Self>, ctx: Arc<EngineCtx>, agent_id: &str) -> Result<()> {
+        if !self.agents.lock().contains_key(agent_id) {
+            // Kept for the launch below; a failure surfaces there.
+            let _ = self.prefetch_login(agent_id).await;
+        }
         let _lifecycle_guard = self.agent_lifecycle.lock().await;
         let record = self.workspace.agent(agent_id)?;
         if self.agents.lock().contains_key(agent_id) {
@@ -1565,6 +1608,8 @@ impl Supervisor {
         agent_id: &str,
         new_view: AgentView,
     ) -> Result<()> {
+        // Kept for the launch below; a failure surfaces there.
+        let _ = self.prefetch_login(agent_id).await;
         let _lifecycle_guard = self.agent_lifecycle.lock().await;
         let record = self.workspace.agent(agent_id)?;
         if record.view == new_view {
@@ -1723,6 +1768,9 @@ impl Supervisor {
         // transition mutually exclusive with project deletion. The deletion
         // marker is installed before that path waits for this lifecycle lock,
         // so a respawn that won the lock but lost the marker race also stops.
+        // The login is resolved first, outside the lock (`prefetch_login`); a
+        // failure is kept and surfaces from the launch.
+        let _ = self.prefetch_login(agent_id).await;
         let lifecycle_guard = self.agent_lifecycle.lock().await;
         let record = match self.workspace.agent(agent_id) {
             Ok(r) => r,
@@ -1735,51 +1783,22 @@ impl Supervisor {
             self.respawn_pending.lock().remove(agent_id);
             return Ok(());
         }
-        // Atomic idle-check + remove. `busy` distinguishes "left running" from
-        // "already gone" when no agent is taken.
-        let mut busy = false;
-        let taken = {
-            let mut agents = self.agents.lock();
-            if !agents.contains_key(agent_id) {
-                None // gone — next spawn resolves the new binary anyway
-            } else if matches!(
-                self.effective_status(agent_id, &record),
-                AgentStatus::Spawning | AgentStatus::Running
-            ) {
-                busy = true;
-                None
-            } else {
-                agents.remove(agent_id)
-            }
-        };
-        let agent = match taken {
-            Some(agent) => agent,
-            None if busy => {
+        let agent = match self.take_idle(agent_id, &record) {
+            super::login_refresh::Taken::Agent(agent) => agent,
+            super::login_refresh::Taken::Busy => {
                 self.respawn_pending.lock().insert(agent_id.to_string());
                 tracing::info!(agent_id, "session-preserving respawn deferred: agent busy");
                 return Ok(());
             }
-            None => {
+            // Gone: the next spawn re-reads the record anyway.
+            super::login_refresh::Taken::Gone => {
                 self.respawn_pending.lock().remove(agent_id);
                 return Ok(());
             }
         };
         self.respawn_pending.lock().remove(agent_id);
-        let _ = agent.shutdown();
-        self.activities.lock().remove(agent_id);
-        self.native_inputs.lock().remove(agent_id);
-
-        self.set_status(ctx, agent_id, AgentStatus::Spawning, None);
-        arm_spawn_timeout(self.clone(), ctx.clone(), agent_id.to_string());
-
-        // Let the old process fully release its session before resuming it
-        // (mirrors `switch_view`).
-        tokio::time::sleep(Duration::from_millis(150)).await;
-
-        if let Err(e) = self.start_process(ctx, agent_id).await {
-            let err = e.to_string();
-            tracing::warn!(agent_id, error = %err, "session-preserving respawn failed");
-            self.set_status(ctx, agent_id, AgentStatus::Error, Some(err));
+        if let Err(e) = self.restart_taken(ctx, agent_id, Some(agent)).await {
+            tracing::warn!(agent_id, error = %e, "session-preserving respawn failed");
             return Err(e);
         }
 
@@ -2006,9 +2025,17 @@ fn spawn_managed_agent(
     // runs under. The event still flows on to the transcript unchanged.
     let limits_ctx = ctx.clone();
     let account = spec.account.map(str::to_string);
+    let login_sup = sup.clone();
+    let login_agent = agent_id.clone();
     let on_event = move |event: Value| {
         crate::agent::limits::observe_stream_event(&limits_ctx, account.as_deref(), &event);
+        // Read before the event closes the turn: a rejection must flag its
+        // respawn ahead of the turn-end drain (`observe_login`).
+        let login = login_sup.observe_login(&login_agent, &event);
         on_event(event);
+        if login == super::login_refresh::LoginVerdict::GaveUp {
+            login_sup.report_login_failure(&limits_ctx, &login_agent);
+        }
     };
     Agent::spawn_managed(spec, on_event, make_exit_handler(sup, ctx, agent_id, gen))
 }

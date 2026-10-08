@@ -19,6 +19,7 @@ pub mod accounts;
 mod args;
 mod auth_probe;
 mod capabilities;
+pub mod claude_oauth;
 mod host_state;
 pub mod limits;
 mod login;
@@ -62,6 +63,10 @@ pub enum Agent {
 
 pub struct PtyAgent {
     pty: PtySession,
+    /// When the claude access token this process was launched with lapses
+    /// (`claude_oauth`). The process can't take a new one, so the supervisor
+    /// relaunches it before a turn that would outrun it.
+    login_expires_at_ms: Option<i64>,
 }
 
 #[cfg(test)]
@@ -69,12 +74,24 @@ impl Agent {
     /// An agent over a bare PTY process, for a test that needs a live process
     /// to hand messages to.
     pub(crate) fn over_pty(pty: PtySession) -> Self {
-        Self::Pty(PtyAgent { pty })
+        Self::Pty(PtyAgent {
+            pty,
+            login_expires_at_ms: None,
+        })
+    }
+
+    pub(crate) fn over_pty_with_login(pty: PtySession, login_expires_at_ms: i64) -> Self {
+        Self::Pty(PtyAgent {
+            pty,
+            login_expires_at_ms: Some(login_expires_at_ms),
+        })
     }
 }
 
 pub struct ManagedAgent {
     session: ManagedSession,
+    /// As [`PtyAgent::login_expires_at_ms`].
+    login_expires_at_ms: Option<i64>,
 }
 
 pub struct PerTurnAgent {

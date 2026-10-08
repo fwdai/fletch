@@ -15,9 +15,9 @@ use crate::sandbox::policy::{
 
 use super::labels;
 
-/// The one file under a claude config dir that stays writable when the dir is
-/// bind-mounted read-only: claude's OAuth refresh must land on the host for the
-/// `CredentialsFile` chain (see [`super::auth`]) to see the rotated token.
+/// The one file under a claude config dir that may stay writable when the dir
+/// is bind-mounted read-only, for a launch that runs on claude's own login
+/// rather than a host-resolved token (see `launch::prepare`).
 /// Shared with seatbelt via [`CLAUDE_CREDENTIALS_FILE`] so the two can't drift.
 pub(crate) const CREDENTIALS_FILE: &str = CLAUDE_CREDENTIALS_FILE;
 

@@ -64,9 +64,17 @@ pub async fn scan_usage_transcripts_impl(
     since_ms: i64,
     until_ms: i64,
 ) -> Result<crate::usage_scan::UsageScan> {
-    let scan = tokio::task::spawn_blocking(move || crate::usage_scan::scan_all(since_ms, until_ms))
-        .await
-        .map_err(|e| Error::Other(format!("usage scan failed: {e}")))?;
+    // A failed read degrades to crediting by directory alone, the rule for
+    // sessions Fletch never ran.
+    let sessions = crate::workspace::session_accounts(&ctx.db.lock()).unwrap_or_else(|e| {
+        tracing::warn!(error = %e, "could not read session accounts for the usage scan");
+        Default::default()
+    });
+    let scan = tokio::task::spawn_blocking(move || {
+        crate::usage_scan::scan_all(since_ms, until_ms, sessions)
+    })
+    .await
+    .map_err(|e| Error::Other(format!("usage scan failed: {e}")))?;
     for (account, reading) in &scan.rollout_limits {
         // A failed write costs a meter update, not the usage answer.
         if let Err(e) = limits::record_limits(ctx, "codex", Some(account), reading.clone()) {

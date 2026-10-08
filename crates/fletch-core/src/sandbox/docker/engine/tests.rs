@@ -1063,24 +1063,6 @@ fn resolved_auth_forwards_values_in_env_never_argv() {
     }
 }
 
-/// D1 swap, empty resolution (`CredentialsFile`): no env additions, no
-/// error — the `~/.claude` mount carries the credential.
-#[test]
-fn resolved_auth_with_empty_env_is_a_noop() {
-    use super::super::auth::AuthSource;
-
-    let mut env: Vec<(String, String)> = Vec::new();
-    apply_container_auth(
-        &mut env,
-        ContainerAuth::Resolved {
-            env: Vec::new(),
-            source: AuthSource::CredentialsFile,
-        },
-    )
-    .expect("credentials-file resolves");
-    assert!(env.is_empty());
-}
-
 /// D1 swap, `Unavailable`: the launch fails fast with the settings pointer
 /// C2 keys its call-to-action on. Asserts the stable substrings so the
 /// wording can evolve without silently breaking the UI match.

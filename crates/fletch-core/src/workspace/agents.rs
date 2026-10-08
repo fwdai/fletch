@@ -5,12 +5,41 @@ use rusqlite::OptionalExtension;
 
 use super::*;
 
+/// Every provider session Fletch has run, by its provider session id, with
+/// the account its workspace is stamped with (`default` for no stamp) — what
+/// the usage scan credits that session's spend to. Archived workspaces
+/// included: their spend still happened under the stamp.
+pub fn session_accounts(
+    conn: &rusqlite::Connection,
+) -> Result<std::collections::HashMap<String, String>> {
+    let mut stmt = conn.prepare(
+        "SELECT s.provider_session_id, w.provider_account FROM sessions s
+           JOIN workspaces w ON w.id = s.workspace_id
+          WHERE s.provider_session_id IS NOT NULL AND s.provider_session_id != ''",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        let session: String = row.get(0)?;
+        let account: Option<String> = row.get(1)?;
+        Ok((session, account))
+    })?;
+    let mut out = std::collections::HashMap::new();
+    for row in rows {
+        let (session, account) = row?;
+        let account = account
+            .filter(|a| !crate::agent::accounts::is_default(a))
+            .unwrap_or_else(|| crate::agent::accounts::DEFAULT_ACCOUNT.to_string());
+        out.insert(session, account);
+    }
+    Ok(out)
+}
+
 /// How many live (non-archived) agents of `provider` are stamped with the
 /// managed account `account` (see `agent::accounts`). Gates removing the
-/// account: its directory holds those agents' login and transcripts, and a
-/// running one would write it straight back. A free function over the
-/// connection because the accounts commands hold one, not a manager; the
-/// provider is read off the workspace's sessions, where it lives.
+/// account: its directory holds the login those agents launch on (and a codex
+/// account's transcripts), and a running codex agent would write it straight
+/// back. A free function over the connection because the accounts commands
+/// hold one, not a manager; the provider is read off the workspace's
+/// sessions, where it lives.
 pub fn live_agents_on_account(
     conn: &rusqlite::Connection,
     provider: &str,

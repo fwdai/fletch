@@ -273,6 +273,8 @@ impl Supervisor {
             self.workspace.set_handoff_context(&record.id, &context)?;
         }
         emit_spawn_progress(ctx.sink.as_ref(), &record.id, SpawnStage::Starting, None);
+        // Ahead of the spawn watchdog; kept for the launch (`prefetch_login`).
+        let _ = self.prefetch_login(&record.id).await;
         arm_spawn_timeout(self.clone(), ctx.clone(), record.id.clone());
         self.start_process(ctx, &record.id).await
     }

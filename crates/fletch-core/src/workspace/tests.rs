@@ -566,6 +566,39 @@ fn live_agents_on_account_counts_unarchived_stamps_of_that_provider() {
     assert_eq!(live_agents_on_account(&conn, "claude", "work").unwrap(), 1);
 }
 
+/// The usage scan credits a session to its workspace's stamp, so every session
+/// with a provider id maps to its account, unstamped ones to `default`.
+#[test]
+fn session_accounts_maps_each_provider_session_to_its_stamp() {
+    let db = test_db();
+    seed_repo(&db, "/r");
+    seed_repo(&db, "/r2");
+    let wm = WorkspaceManager::new(db.clone());
+    let mut ids = Vec::new();
+    for (id, repo, account) in [("yosemite", "/r", Some("work")), ("etna", "/r2", None)] {
+        let mut rec = new_agent_record(
+            id.into(),
+            id.into(),
+            "claude".into(),
+            mk_repo(repo),
+            "t".into(),
+            AgentView::Custom,
+        );
+        rec.account = account.map(str::to_string);
+        wm.add_agent(&mut rec).unwrap();
+        ids.push(
+            wm.agent(id)
+                .unwrap()
+                .session_id
+                .expect("claude has a session id"),
+        );
+    }
+
+    let map = session_accounts(&db.lock()).unwrap();
+    assert_eq!(map.get(&ids[0]).map(String::as_str), Some("work"));
+    assert_eq!(map.get(&ids[1]).map(String::as_str), Some("default"));
+}
+
 #[test]
 fn update_agent_effort_round_trips() {
     let db = test_db();

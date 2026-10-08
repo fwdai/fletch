@@ -58,6 +58,17 @@ pub fn supports_accounts(provider: &str) -> bool {
     config_dir_env(provider).is_some()
 }
 
+/// Whether an agent under a managed account of `provider` runs its CLI in the
+/// account's dir. Claude's never does: a sandboxed claude can't refresh its own
+/// login, so the host does (`claude_oauth`) and hands the agent the access
+/// token, and every claude agent runs in the shared default config dir. The
+/// account dir stays the login's host-only storage and what Settings signs in
+/// with (`account_env`). Sharing the dir is also what keeps every account's
+/// transcripts in one place.
+pub fn launches_in_account_dir(provider: &str) -> bool {
+    supports_accounts(provider) && provider != "claude"
+}
+
 pub fn is_default(id: &str) -> bool {
     id.is_empty() || id == DEFAULT_ACCOUNT
 }
@@ -152,8 +163,9 @@ pub fn list_account_ids(provider: &str) -> Vec<String> {
 }
 
 /// Every managed account directory of `provider`, in id order — the roots a
-/// transcript scan unions with the CLI's default dir, since an agent stamped
-/// with an account writes its sessions there.
+/// transcript scan unions with the CLI's default dir: a codex agent stamped
+/// with an account writes its sessions there, and claude agents did before
+/// their accounts became token sources (`launches_in_account_dir`).
 pub fn list_account_dirs(provider: &str) -> Vec<PathBuf> {
     let Ok(root) = accounts_root() else {
         return Vec::new();

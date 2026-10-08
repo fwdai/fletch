@@ -9,6 +9,7 @@ mod events;
 mod fork;
 mod lifecycle;
 mod live_turn;
+mod login_refresh;
 mod materialize;
 mod messaging;
 mod pr_set;
@@ -166,6 +167,9 @@ pub struct Supervisor {
     /// missed it (see `live_turn`). Cleared at the next turn start; removed on
     /// teardown. In-memory only.
     pub live_turns: Mutex<HashMap<String, live_turn::LiveTurn>>,
+    /// Claude logins that drew a 401, and the one retry each gets (see
+    /// `login_refresh`). In-memory only.
+    logins: Mutex<login_refresh::Logins>,
     /// Fan-out of every runtime status transition (see [`StatusEvent`]). Held
     /// as the sender; subscribers call [`Supervisor::subscribe_status`]. The
     /// supervisor never reads it, so a dropped-receiver `send` error is ignored.
@@ -196,6 +200,7 @@ impl Supervisor {
             verify_inflight: Arc::new(Mutex::new(HashSet::new())),
             rpc_dispatchers: Mutex::new(HashMap::new()),
             live_turns: Mutex::new(HashMap::new()),
+            logins: Mutex::new(login_refresh::Logins::default()),
             // Capacity is generous: a lagging subscriber gets `Lagged` and
             // re-reads `status_of`, so overflow degrades to a resync, never a
             // lost terminal state. 1024 covers bursts across many live agents.

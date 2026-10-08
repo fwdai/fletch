@@ -97,11 +97,13 @@ impl Supervisor {
             .checkout_path(&record.id)?;
         let container = stamped_engine(record).is_container();
         // Where the agent's CLI will look: under the account it was stamped
-        // with, which is where its launch points `CLAUDE_CONFIG_DIR`/`CODEX_HOME`.
-        // A removed account is an error here too: the writer would otherwise
-        // recreate its directory, and the launch that follows would run it.
+        // with when its launch runs the CLI there (`CODEX_HOME`), else the
+        // default dir every claude account shares. A removed account is an
+        // error here too: the launch that follows would fail on it anyway, and
+        // a codex writer would otherwise recreate its directory.
         let account_dir =
-            crate::agent::accounts::existing_account_dir(provider, record.account.as_deref())?;
+            crate::agent::accounts::existing_account_dir(provider, record.account.as_deref())?
+                .filter(|_| crate::agent::accounts::launches_in_account_dir(provider));
         let Some(path) = write(session_id, &cwd, container, account_dir.as_deref(), bodies)? else {
             return Ok(None);
         };

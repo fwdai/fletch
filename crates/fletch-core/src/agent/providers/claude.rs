@@ -124,7 +124,7 @@ pub(crate) static CLAUDE_TRANSCRIPT: TranscriptReader = TranscriptReader {
 /// Write `bodies` as claude session `session_id`, run in `cwd`: the file
 /// `--resume <session_id>` opens, `<projects>/<cwd as a dirname>/<id>.jsonl`
 /// in the projects dir claude uses there (the per-agent one in a container,
-/// else the account's config dir — [`crate::transcripts::claude_projects_dir`]). Each line's `sessionId` and
+/// else the config dir claude runs with — [`crate::transcripts::claude_projects_dir`]). Each line's `sessionId` and
 /// `cwd`, where it has them, name the new session; the rest, `uuid` and
 /// `parentUuid` chain included, is copied as is, so claude resumes the same
 /// conversation, compactions and all.
@@ -137,13 +137,15 @@ fn claude_write(
     session_id: &str,
     cwd: &Path,
     container: bool,
-    account_dir: Option<&Path>,
+    // Part of the shared writer signature; codex uses it. Every claude agent
+    // runs in the default config dir, whatever its account.
+    _account_dir: Option<&Path>,
     bodies: &[Value],
 ) -> Result<Option<PathBuf>> {
     if !bodies.iter().any(|b| b.get("uuid").is_some()) {
         return Ok(None);
     }
-    let projects = crate::transcripts::claude_projects_dir(cwd, container, account_dir)
+    let projects = crate::transcripts::claude_projects_dir(cwd, container)
         .ok_or_else(|| Error::Other("claude's projects directory can't be resolved".into()))?;
     // Claude goes by its working directory as the OS reports it, symlinks
     // resolved; in a container, that is the path the checkout is mounted at.

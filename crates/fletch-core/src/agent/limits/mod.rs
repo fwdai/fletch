@@ -125,8 +125,8 @@ pub enum RefreshStatus {
     /// No login to ask with: no credential (claude) or the app-server's
     /// unauthenticated `-32603` (codex).
     SignedOut,
-    /// Claude's stored access token was refused. Claude refreshes it only when
-    /// it runs, so the fix is to run an agent under the account.
+    /// Claude refused the account's access token even after the host
+    /// refreshed it (`claude_oauth`); only a new sign-in helps.
     Stale,
     /// The endpoint answered 429; see `next_allowed_at`.
     RateLimited,

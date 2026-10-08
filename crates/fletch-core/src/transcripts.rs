@@ -43,21 +43,73 @@ pub(crate) fn find_session_jsonl(
 
 /// The `projects` directory claude keeps its sessions in when it runs in
 /// `cwd`: the per-agent dir a container sandbox mounts over it (`container`),
-/// else the config dir it runs with — the agent's managed account dir
-/// (`account_dir`) or the active default. The first place
+/// else the active default config dir, where every agent runs whatever its
+/// account (a claude account is a token source only,
+/// `accounts::launches_in_account_dir`). The first place
 /// [`find_session_jsonl`] looks for each kind of agent.
-pub(crate) fn claude_projects_dir(
-    cwd: &Path,
-    container: bool,
-    account_dir: Option<&Path>,
-) -> Option<PathBuf> {
+pub(crate) fn claude_projects_dir(cwd: &Path, container: bool) -> Option<PathBuf> {
     if container {
         return Some(cwd.parent()?.join(DOCKER_CLAUDE_PROJECTS_DIRNAME));
     }
-    if let Some(dir) = account_dir {
-        return Some(dir.join("projects"));
-    }
     claude_projects_dirs().into_iter().next()
+}
+
+/// Move a session that only exists under a managed claude account's dir —
+/// written before accounts became token sources, when claude ran with
+/// `CLAUDE_CONFIG_DIR` there — into the default projects dir, transcript and
+/// subagent dir both, so `--resume` (which now runs in the default dir) finds
+/// it. `Ok(Some(new path))` when something moved. A session already in the
+/// default dir (or a container's per-agent dir) is left alone, and nothing at
+/// the destination is overwritten.
+pub(crate) fn adopt_account_session(
+    session_id: &str,
+    cwd: &Path,
+) -> std::io::Result<Option<PathBuf>> {
+    let Some(default) = claude_projects_dir(cwd, false) else {
+        return Ok(None);
+    };
+    let Some(found) = find_session_jsonl(session_id, cwd, &mut ReadDiagnostics::default()) else {
+        return Ok(None);
+    };
+    let account_projects: Vec<PathBuf> = crate::agent::accounts::list_account_dirs("claude")
+        .into_iter()
+        .map(|dir| dir.join("projects"))
+        .collect();
+    adopt_session_from(&found, &account_projects, &default)
+}
+
+/// Pure-path core of [`adopt_account_session`]: `found` is where the locator
+/// found the transcript, which lies under an account dir only when no copy
+/// exists in the default or container dirs it searches first.
+fn adopt_session_from(
+    found: &Path,
+    account_projects: &[PathBuf],
+    default_projects: &Path,
+) -> std::io::Result<Option<PathBuf>> {
+    if !account_projects.iter().any(|p| found.starts_with(p)) {
+        return Ok(None);
+    }
+    let (Some(slug_dir), Some(slug), Some(file), Some(stem)) = (
+        found.parent(),
+        found.parent().and_then(Path::file_name),
+        found.file_name(),
+        found.file_stem(),
+    ) else {
+        return Ok(None);
+    };
+    let target_dir = default_projects.join(slug);
+    let target = target_dir.join(file);
+    if target.exists() {
+        return Ok(None);
+    }
+    std::fs::create_dir_all(&target_dir)?;
+    std::fs::rename(found, &target)?;
+    let subagents = slug_dir.join(stem);
+    let subagents_target = target_dir.join(stem);
+    if subagents.is_dir() && !subagents_target.exists() {
+        std::fs::rename(&subagents, &subagents_target)?;
+    }
+    Ok(Some(target))
 }
 
 /// The directory under `projects` claude files the sessions of `cwd` in, as
@@ -86,9 +138,10 @@ pub(crate) fn claude_project_dirname(cwd: &Path) -> Option<String> {
 /// Also the root list for the whole-disk usage scan (`usage_scan`), which walks
 /// every `<projects dir>/*/*.jsonl` rather than one known session id.
 ///
-/// Every managed account dir (`agent::accounts`) is a root too: an agent
-/// stamped with an account runs claude with that dir as `CLAUDE_CONFIG_DIR`,
-/// so its transcripts live there and nowhere else.
+/// Every managed account dir (`agent::accounts`) is a root too: agents
+/// stamped with an account used to run claude with that dir as
+/// `CLAUDE_CONFIG_DIR`, so their history lives there. New sessions of every
+/// account land in the default dir.
 pub(crate) fn claude_projects_dirs() -> Vec<PathBuf> {
     projects_dirs_from(
         std::env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from),
@@ -376,6 +429,53 @@ mod tests {
         );
     }
 
+    fn legacy_session(td: &Path) -> (PathBuf, PathBuf, PathBuf) {
+        let account = td.join("accounts/claude/work/projects");
+        let default = td.join("home/.claude/projects");
+        let slug = account.join("-repo");
+        std::fs::create_dir_all(slug.join("sid/subagents")).unwrap();
+        std::fs::write(slug.join("sid.jsonl"), "{}\n").unwrap();
+        std::fs::write(slug.join("sid/subagents/agent-1.jsonl"), "{}\n").unwrap();
+        (account, default, slug.join("sid.jsonl"))
+    }
+
+    #[test]
+    fn a_session_left_in_an_account_dir_moves_to_the_default_with_its_subagents() {
+        let td = tempfile::tempdir().unwrap();
+        let (account, default, found) = legacy_session(td.path());
+        let moved = adopt_session_from(&found, &[account], &default).unwrap();
+        assert_eq!(moved, Some(default.join("-repo/sid.jsonl")));
+        assert!(default.join("-repo/sid/subagents/agent-1.jsonl").is_file());
+        assert!(!found.exists());
+    }
+
+    #[test]
+    fn a_session_outside_the_account_dirs_stays_put() {
+        let td = tempfile::tempdir().unwrap();
+        let (_account, default, found) = legacy_session(td.path());
+        let elsewhere = td.path().join("other/projects");
+        assert_eq!(
+            adopt_session_from(&found, &[elsewhere], &default).unwrap(),
+            None
+        );
+        assert!(found.exists());
+    }
+
+    #[test]
+    fn adopting_never_overwrites_a_session_already_in_the_default_dir() {
+        let td = tempfile::tempdir().unwrap();
+        let (account, default, found) = legacy_session(td.path());
+        std::fs::create_dir_all(default.join("-repo")).unwrap();
+        std::fs::write(default.join("-repo/sid.jsonl"), "kept\n").unwrap();
+        assert_eq!(
+            adopt_session_from(&found, &[account], &default).unwrap(),
+            None
+        );
+        let kept = std::fs::read_to_string(default.join("-repo/sid.jsonl")).unwrap();
+        assert_eq!(kept, "kept\n");
+        assert!(found.exists());
+    }
+
     /// End to end over a real accounts root: a transcript written under a
     /// managed account is found by the same lookups History and the reader
     /// use, and the account roots join the usage scan's lists.
@@ -395,9 +495,10 @@ mod tests {
                 &mut ReadDiagnostics::default(),
             );
             assert_eq!(found.as_deref(), Some(jsonl.as_path()));
-            assert_eq!(
-                claude_projects_dir(Path::new("/w/a/repo"), false, Some(&claude)),
-                Some(claude.join("projects"))
+            assert_ne!(
+                claude_projects_dir(Path::new("/w/a/repo"), false),
+                Some(claude.join("projects")),
+                "new sessions land in the default dir, not the account's"
             );
 
             let codex = root.join("codex").join("work");

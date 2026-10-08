@@ -95,6 +95,7 @@ pub(crate) fn probe_default(id: &'static str) -> ProviderAuthProbe {
 pub(crate) fn probe_dir(id: &str, dir: &Path) -> ProviderAuthProbe {
     use crate::sandbox::container::auth as container_auth;
     match id {
+        "claude" if login_revoked(Some(dir)) => revoked_entry(),
         "claude" => {
             let keychain = crate::keychain::item_present(
                 &container_auth::claude_keychain_service(Some(dir)),
@@ -145,6 +146,9 @@ fn probe_one(id: &'static str) -> ProviderAuthProbe {
 /// a presence check that never reads the credential — see
 /// [`crate::sandbox::container::auth::host_login_present`].
 fn claude_probe() -> ProviderAuthProbe {
+    if login_revoked(None) {
+        return revoked_entry();
+    }
     if crate::sandbox::container::auth::host_login_present() {
         entry_ok("claude")
     } else {
@@ -287,6 +291,22 @@ fn classify_provider_map_auth(json: Option<&[u8]>) -> AuthStatus {
 
 fn parse_json(bytes: Option<&[u8]>) -> Option<Value> {
     serde_json::from_slice(bytes?).ok()
+}
+
+/// Whether the host found this claude login's refresh token refused
+/// (`claude_oauth`). Free on this polling path unless a refusal is on record,
+/// and even then only the store's metadata is read, never a secret; a new
+/// sign-in changes the store and clears it.
+fn login_revoked(dir: Option<&Path>) -> bool {
+    super::claude_oauth::is_revoked(dir)
+}
+
+fn revoked_entry() -> ProviderAuthProbe {
+    entry(
+        "claude",
+        AuthStatus::SignedOut,
+        "this login expired or was revoked; sign in again",
+    )
 }
 
 fn signed_in_if(yes: bool) -> AuthStatus {

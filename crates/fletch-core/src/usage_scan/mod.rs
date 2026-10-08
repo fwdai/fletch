@@ -155,8 +155,28 @@ pub struct AccountRoot {
     pub id: String,
 }
 
+/// How spend is credited to accounts. A session Fletch ran is the account its
+/// workspace is stamped with (`sessions`), wherever the transcript sits: every
+/// claude account now writes into the one default dir. Anything else — a
+/// session from before the stamp existed, or one Fletch never ran — goes by
+/// the directory that holds it (`roots`).
+#[derive(Debug, Clone, Default)]
+pub struct Attribution {
+    pub roots: Vec<AccountRoot>,
+    /// Provider session id → account id (`"default"` included).
+    pub sessions: HashMap<String, String>,
+}
+
+impl Attribution {
+    fn account_of<'a>(&'a self, path: &Path, session: Option<&str>) -> &'a str {
+        session
+            .and_then(|id| self.sessions.get(id))
+            .map_or_else(|| account_of(path, &self.roots), String::as_str)
+    }
+}
+
 /// Every managed account of every account provider on this host.
-fn account_roots() -> Vec<AccountRoot> {
+pub fn account_roots() -> Vec<AccountRoot> {
     accounts::ACCOUNT_PROVIDERS
         .iter()
         .flat_map(|provider| {
@@ -182,11 +202,15 @@ fn account_of<'a>(path: &Path, roots: &'a [AccountRoot]) -> &'a str {
 /// Scan the real on-disk transcript roots for `[since_ms, until_ms)`, reusing
 /// the process-wide cache — restored from disk on first use, so even the first
 /// scan of a fresh process only reads what was appended since the last run.
-/// Blocking; call from `spawn_blocking`.
-pub fn scan_all(since_ms: i64, until_ms: i64) -> UsageScan {
+/// Blocking; call from `spawn_blocking`. `sessions` is
+/// [`Attribution::sessions`], read from the database by the caller.
+pub fn scan_all(since_ms: i64, until_ms: i64, sessions: HashMap<String, String>) -> UsageScan {
     let claude = crate::transcripts::claude_projects_dirs();
     let codex: Vec<PathBuf> = crate::transcripts::codex_sessions_dirs();
-    let roots = account_roots();
+    let attribution = Attribution {
+        roots: account_roots(),
+        sessions,
+    };
     static CACHE: OnceLock<Mutex<ScanCache>> = OnceLock::new();
     let path = cache_path();
     // Reading the cache is the first scan's I/O budget well spent: it replaces
@@ -206,7 +230,14 @@ pub fn scan_all(since_ms: i64, until_ms: i64) -> UsageScan {
         .lock();
 
     let before = cache.files.len();
-    let out = scan_accounts_with(&mut cache, &claude, &codex, &roots, since_ms, until_ms);
+    let out = scan_accounts_with(
+        &mut cache,
+        &claude,
+        &codex,
+        &attribution,
+        since_ms,
+        until_ms,
+    );
     // Nothing read and nothing pruned means the file on disk still describes
     // this cache exactly — rewriting it would be pure I/O for no new state.
     if out.files_read > 0 || cache.files.len() != before {
@@ -257,7 +288,7 @@ pub fn scan_dirs_with(
         cache,
         claude_projects_dirs,
         codex_sessions_dirs,
-        &[],
+        &Attribution::default(),
         since_ms,
         until_ms,
     )
@@ -269,12 +300,12 @@ pub fn scan_dirs_with(
 /// scan stopped. `claude_projects_dirs` are `.../projects` dirs (children are
 /// per-project slugs holding `<session>.jsonl`); `codex_sessions_dirs` are
 /// `.../sessions` dirs holding a `YYYY/MM/DD` tree of `rollout-*.jsonl`.
-/// `account_roots` attributes each file to the account it was written under.
+/// `attribution` credits each record to an account.
 pub fn scan_accounts_with(
     cache: &mut ScanCache,
     claude_projects_dirs: &[PathBuf],
     codex_sessions_dirs: &[PathBuf],
-    account_roots: &[AccountRoot],
+    attribution: &Attribution,
     since_ms: i64,
     until_ms: i64,
 ) -> UsageScan {
@@ -315,13 +346,15 @@ pub fn scan_accounts_with(
         cache.files.retain(|path, _| walked.contains(path));
     }
 
-    let mut out = aggregate(cache, &files, account_roots, &io, since_ms, until_ms);
-    out.rollout_limits = rollout_limits(cache, &files, account_roots);
+    let mut out = aggregate(cache, &files, attribution, &io, since_ms, until_ms);
+    out.rollout_limits = rollout_limits(cache, &files, &attribution.roots);
     out
 }
 
 /// The newest limits reading among `files`' rollouts, per account. Read off
-/// the parse state, so it costs no I/O beyond the scan's own.
+/// the parse state, so it costs no I/O beyond the scan's own. By directory:
+/// a codex agent runs in its account's home, so the rollout's directory is
+/// the login whose limits it reports.
 fn rollout_limits(
     cache: &ScanCache,
     files: &[PathBuf],
@@ -421,7 +454,7 @@ fn read_jsonl_files(dir: &Path) -> Vec<PathBuf> {
 fn aggregate(
     cache: &ScanCache,
     files: &[PathBuf],
-    account_roots: &[AccountRoot],
+    attribution: &Attribution,
     io: &IoStats,
     since_ms: i64,
     until_ms: i64,
@@ -434,7 +467,7 @@ fn aggregate(
     for_each_in_window(
         cache,
         files,
-        &[],
+        &Attribution::default(),
         since_ms,
         until_ms,
         |index, _, _, record| {
@@ -452,7 +485,7 @@ fn aggregate(
     for_each_in_window(
         cache,
         files,
-        account_roots,
+        attribution,
         since_ms,
         until_ms,
         |index, session, account, record| {
@@ -478,12 +511,12 @@ fn aggregate(
 
 /// Visit every in-window record of `files`, in the fixed file order, with the
 /// session and account to credit it to and a running index that identifies it
-/// across both aggregation passes. With no `account_roots` every record is the
-/// default account's.
+/// across both aggregation passes. With an empty `attribution` every record is
+/// the default account's.
 fn for_each_in_window<'a>(
     cache: &'a ScanCache,
     files: &[PathBuf],
-    account_roots: &[AccountRoot],
+    attribution: &Attribution,
     since_ms: i64,
     until_ms: i64,
     // The record outlives the walk (it is cached), so the first pass can key a
@@ -496,7 +529,6 @@ fn for_each_in_window<'a>(
         let Some(entry) = cache.files.get(path) else {
             continue;
         };
-        let account = account_of(path, account_roots);
         // Codex records get their session id from the file, Claude records
         // carry their own (subagent transcripts report the parent's).
         let codex_session_id = entry.codex.as_ref().map(|_| entry.codex_session_id(path));
@@ -508,7 +540,12 @@ fn for_each_in_window<'a>(
                 Provider::Codex => codex_session_id.as_deref(),
                 Provider::Claude => record.session_id.as_deref(),
             };
-            visit(index, session, account, record);
+            visit(
+                index,
+                session,
+                attribution.account_of(path, session),
+                record,
+            );
             index += 1;
         }
     }
@@ -1017,17 +1054,20 @@ mod tests {
         let home = claude_file(&td.path().join("home"), "slug", "s1", &[line("s1", "m1")]);
         let work_dir = td.path().join("accounts").join("claude").join("work");
         let work = claude_file(&work_dir, "slug", "s2", &[line("s2", "m2")]);
-        let roots = [AccountRoot {
-            dir: work_dir,
-            id: "work".into(),
-        }];
+        let attribution = Attribution {
+            roots: vec![AccountRoot {
+                dir: work_dir,
+                id: "work".into(),
+            }],
+            sessions: HashMap::new(),
+        };
 
         let (since, until) = wide_window();
         let out = scan_accounts_with(
             &mut ScanCache::default(),
             &[home, work],
             &[],
-            &roots,
+            &attribution,
             since,
             until,
         );
@@ -1039,6 +1079,58 @@ mod tests {
             .map(|s| (s.id.as_str(), s.account.as_str()))
             .collect();
         assert_eq!(sessions, [("s1", "default"), ("s2", "work")]);
+    }
+
+    /// Every claude account now writes into the default dir, so a session
+    /// Fletch ran is credited to its workspace's stamp, and only sessions it
+    /// doesn't know fall back to the directory rule.
+    #[test]
+    fn a_known_session_is_credited_to_its_stamp_wherever_its_transcript_sits() {
+        let td = tempfile::tempdir().unwrap();
+        let line = |session: &str, msg: &str| {
+            claude_line(
+                session,
+                msg,
+                "req",
+                "2026-01-02T10:00:00Z",
+                "claude-opus-4",
+                claude_usage(10, 5, 0, 0),
+            )
+        };
+        let home = td.path().join("home");
+        let shared = claude_file(&home, "slug", "s1", &[line("s1", "m1"), line("s3", "m3")]);
+        let work_dir = td.path().join("accounts").join("claude").join("work");
+        let old = claude_file(&work_dir, "slug", "s2", &[line("s2", "m2")]);
+        let attribution = Attribution {
+            roots: vec![AccountRoot {
+                dir: work_dir,
+                id: "work".into(),
+            }],
+            sessions: HashMap::from([
+                ("s1".to_string(), "work".to_string()),
+                ("s2".to_string(), "default".to_string()),
+            ]),
+        };
+
+        let (since, until) = wide_window();
+        let out = scan_accounts_with(
+            &mut ScanCache::default(),
+            &[shared, old],
+            &[],
+            &attribution,
+            since,
+            until,
+        );
+        let mut sessions: Vec<(&str, &str)> = out
+            .sessions
+            .iter()
+            .map(|s| (s.id.as_str(), s.account.as_str()))
+            .collect();
+        sessions.sort_unstable();
+        assert_eq!(
+            sessions,
+            [("s1", "work"), ("s2", "default"), ("s3", "default")]
+        );
     }
 
     #[test]
@@ -1081,17 +1173,20 @@ mod tests {
             "c",
             &[codex_limits_line("2026-01-02T10:10:00Z", 30.0)],
         );
-        let roots = [AccountRoot {
-            dir: work,
-            id: "work".into(),
-        }];
+        let attribution = Attribution {
+            roots: vec![AccountRoot {
+                dir: work,
+                id: "work".into(),
+            }],
+            sessions: HashMap::new(),
+        };
 
         let (since, until) = wide_window();
         let out = scan_accounts_with(
             &mut ScanCache::default(),
             &[],
             &[default_sessions, work_sessions],
-            &roots,
+            &attribution,
             since,
             until,
         );

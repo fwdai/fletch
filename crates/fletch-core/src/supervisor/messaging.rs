@@ -61,6 +61,9 @@ impl Supervisor {
         // leaves the message queued, and an archive must see neither half-done
         // (`Supervisor::open_route`).
         let _route = self.open_route(agent_id)?;
+        // Ahead of the routing, so it sees the relaunched process: idle, on a
+        // token with the whole margin ahead of the turn.
+        self.relaunch_if_login_due(ctx, agent_id).await;
         let mode = injection_mode(&record.provider);
 
         // Move any pasted attachments out of the app-data staging area into
@@ -563,6 +566,7 @@ async fn deliver_as_turn(
         sup.revert_turn_start(ctx, agent_id, &msg.turn_id, resting);
         return Err(e);
     }
+    sup.remember_turn(agent_id, msg);
     on_first_user_message(
         sup.clone(),
         ctx.clone(),

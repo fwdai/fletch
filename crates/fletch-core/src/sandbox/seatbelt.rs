@@ -65,15 +65,13 @@ impl SandboxEngine for SandboxExecEngine {
     }
 
     fn launch_agent(&self, ctx: &AgentLaunchCtx, agent_bin: &str) -> Result<LaunchPlan> {
-        // A managed account's dir is where this launch's CLI keeps its state, so
-        // it takes the place of the app env's own relocation for its provider.
-        // Per launch, not per profile: only the agent running under the account
-        // gets its dir.
-        let account_dir = |provider: &str| ctx.account_dir.filter(|_| ctx.provider == provider);
-        let claude_config_dir = match account_dir("claude") {
-            Some(dir) => Some(dir.to_path_buf()),
-            None => std::env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from),
-        };
+        // A managed codex account's dir is where this launch's CLI keeps its
+        // state, so it is granted for this launch only. Claude accounts never
+        // relocate the CLI: every claude runs in the shared default config dir
+        // and signs in with the host-resolved token below, so its account dir
+        // (host-only login storage) gets nothing.
+        let codex_account = ctx.account_dir.filter(|_| ctx.provider == "codex");
+        let claude_config_dir = std::env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from);
         let profile_text = build_profile(
             ctx.writable_root,
             ctx.rpc_dir,
@@ -81,7 +79,7 @@ impl SandboxEngine for SandboxExecEngine {
             claude_config_dir.as_deref(),
             ctx.blackboard,
             ctx.adopted_workspace(),
-            account_dir("codex"),
+            codex_account,
         )?;
         // A workflow step agent's blackboard is granted writable in the profile
         // above; also point the agent at it via `WF_BLACKBOARD` (the same host
@@ -98,6 +96,21 @@ impl SandboxEngine for SandboxExecEngine {
         // they do today, never that the sandbox is looser.
         let _ = std::fs::create_dir_all(&cache_root);
         let mut env = policy::toolchain_cache_env(&cache_root);
+        // Claude reads it once at start and ranks it above any `/login`
+        // credential in the config dir, and it can't refresh it — which is the
+        // point: refreshing is the host's job (`agent::claude_oauth`).
+        if let Some(token) = ctx.oauth_token.filter(|_| ctx.provider == "claude") {
+            env.push((
+                "CLAUDE_CODE_OAUTH_TOKEN".to_string(),
+                token.secret().to_string(),
+            ));
+        }
+        if ctx.provider == "codex" {
+            env.extend(codex_ca_env(
+                user_sets_a_ca_bundle(),
+                Path::new(SYSTEM_CA_BUNDLE),
+            ));
+        }
         if let Some(board) = ctx.blackboard {
             env.push((
                 crate::workflow::blackboard::WF_BLACKBOARD_ENV.to_string(),
@@ -867,6 +880,8 @@ pub fn build_profile(
     let deny_provider_config =
         deny_provider_exec_config(&home, codex_account_home, relocated_claude_dir.as_deref());
 
+    let deny_claude_logins = deny_host_claude_logins(&home, relocated_claude_dir.as_deref());
+
     // Invariant 4, agent profile only — same Run-vs-agent asymmetry as invariant
     // 3 above. Carves the known macOS launch-time auto-exec surfaces (iTerm2
     // AutoLaunch, VS Code / Cursor per-user config) back out of the broad
@@ -897,11 +912,90 @@ pub fn build_profile(
 
 {deny_provider_config}
 
+{deny_claude_logins}
+
+{KEYCHAIN_MACH_DENY}
+
 {deny_appsupport}
 
 {DEVICE_WRITE_RULES}
 "#
     ))
+}
+
+/// The Keychain's mach services, denied to every agent. Claude's logins sit in
+/// the login keychain under predictable names (`Claude Code-credentials[-…]`),
+/// and the file denies below can't reach them: the keychain is served by
+/// securityd. `com.apple.SecurityServer` is the one a lookup goes through
+/// (measured: denying it alone makes `security find-generic-password` fail at
+/// once, with no prompt); the others are its siblings. Trust evaluation runs
+/// through `com.apple.trustd`, which stays allowed, so TLS keeps working.
+const KEYCHAIN_MACH_DENY: &str = r#";; No Keychain access: logins reach an agent only as the host-resolved token.
+(deny mach-lookup
+  (global-name "com.apple.SecurityServer")
+  (global-name "com.apple.securityd")
+  (global-name "com.apple.securityd.xpc")
+  (global-name "com.apple.security.agent"))"#;
+
+/// The system's PEM bundle of trusted roots.
+const SYSTEM_CA_BUNDLE: &str = "/etc/ssl/cert.pem";
+
+/// codex verifies TLS against the roots the Keychain serves, which
+/// [`KEYCHAIN_MACH_DENY`] takes away (measured: every request fails with
+/// "invalid peer certificate: UnknownIssuer"). Point it at the system bundle
+/// instead (`CODEX_CA_CERTIFICATE`, which codex reads ahead of the Keychain),
+/// unless the user already chose a bundle of their own. Roots a user added
+/// only to the Keychain (a corporate proxy's) are not in the bundle.
+fn codex_ca_env(user_set: bool, bundle: &Path) -> Option<(String, String)> {
+    (!user_set && bundle.is_file()).then(|| {
+        (
+            "CODEX_CA_CERTIFICATE".to_string(),
+            bundle.to_string_lossy().into_owned(),
+        )
+    })
+}
+
+/// Whether the app's env or the login shell already names a CA bundle codex
+/// would use.
+fn user_sets_a_ca_bundle() -> bool {
+    const VARS: [&str; 2] = ["CODEX_CA_CERTIFICATE", "SSL_CERT_FILE"];
+    let shell = crate::bin_resolve::login_shell_env();
+    VARS.iter().any(|var| {
+        std::env::var_os(var).is_some_and(|v| !v.is_empty())
+            || shell.is_some_and(|env| env.get(*var).is_some_and(|v| !v.is_empty()))
+    })
+}
+
+/// SBPL deny, reads and writes alike, of the host's claude logins on disk:
+/// the default config dir's `.credentials.json` (and a relocated dir's), and
+/// every managed claude account dir. Each can hold a refresh token, and a
+/// sandboxed claude signs in with the host-resolved access token instead
+/// (`agent::claude_oauth`), so nothing in the sandbox has a use for them.
+/// Every agent's profile carries it, whatever its provider; the Keychain items
+/// are closed off separately ([`KEYCHAIN_MACH_DENY`]). Paths in literal and
+/// resolved form, like the grants. MUST follow the `(allow file-write* …)`
+/// block.
+fn deny_host_claude_logins(home: &Path, relocated_claude_dir: Option<&Path>) -> String {
+    let mut clauses: Vec<String> = Vec::new();
+    let mut push = |kind: &str, p: &Path| {
+        for form in [p.to_path_buf(), policy::resolve_existing_prefix(p)] {
+            let line = format!("  ({kind} {})", sbpl_string(&form.to_string_lossy()));
+            if !clauses.contains(&line) {
+                clauses.push(line);
+            }
+        }
+    };
+    push(
+        "literal",
+        &home.join(".claude").join(policy::CLAUDE_CREDENTIALS_FILE),
+    );
+    if let Some(dir) = relocated_claude_dir {
+        push("literal", &dir.join(policy::CLAUDE_CREDENTIALS_FILE));
+    }
+    if let Ok(root) = crate::agent::accounts::accounts_root() {
+        push("subpath", &root.join("claude"));
+    }
+    format!("(deny file-read* file-write*\n{})", clauses.join("\n"))
 }
 
 /// SBPL `(subpath …)` grant lines for the policy dirs, each emitted in its
@@ -1463,8 +1557,13 @@ mod tests {
 
         let profile = build_profile(&root, &rpc, &home, None, None, None, None).unwrap();
         let canonical_home = std::fs::canonicalize(&home).unwrap();
+        // The login read-deny names the credentials file through the link
+        // too (the sandbox checks resolved paths); only the grants matter.
+        let grants = &profile[..profile
+            .find("(deny file-read* file-write*")
+            .unwrap_or(profile.len())];
         assert!(
-            !profile.contains(".local/bin"),
+            !grants.contains(".local/bin"),
             "a symlinked ~/.claude must not smuggle a bin subtree onto the allow-list"
         );
         assert!(
@@ -1709,9 +1808,9 @@ mod tests {
         assert!(!profile.contains(&format!("(subpath \"{}\")", parent.display())));
     }
 
-    /// The account dir rides the launch, and only the launching provider's
-    /// relocation uses it: a claude account dir handed to a codex launch (or
-    /// the reverse) grants nothing.
+    /// Only a codex launch relocates into its account dir: claude accounts are
+    /// a token source, so a claude launch grants nothing under the dir, and
+    /// providers without accounts never do.
     #[test]
     fn launch_grants_the_account_dir_to_its_own_provider_only() {
         let (td, root, rpc, home) = sandbox_dirs();
@@ -1730,6 +1829,7 @@ mod tests {
                 interactive: false,
                 blackboard: None,
                 account_dir: Some(&account),
+                oauth_token: None,
             };
             SandboxExecEngine
                 .launch_agent(&ctx, "/usr/local/bin/agent")
@@ -1742,17 +1842,330 @@ mod tests {
         let codex = profile_for("codex");
         assert!(codex.contains(&whole), "{codex}");
 
-        let claude = profile_for("claude");
-        assert!(
-            !claude.contains(&whole),
-            "claude gets islands, not the root"
-        );
-        for island in policy::claude_write_island_dirs(&canonical_account) {
-            assert!(claude.contains(&format!("(subpath \"{}\")", island.display())));
+        for provider in ["claude", "cursor"] {
+            let profile = profile_for(provider);
+            assert!(
+                !profile.contains(&canonical_account.to_string_lossy().to_string()),
+                "{provider}: {profile}"
+            );
         }
+    }
 
-        let cursor = profile_for("cursor");
-        assert!(!cursor.contains(&canonical_account.to_string_lossy().to_string()));
+    /// Every agent's profile hides the host's claude logins on disk, reads
+    /// included: the default dir's `.credentials.json`, a relocated dir's, and
+    /// every managed claude account dir — after the allow block.
+    #[test]
+    fn profile_denies_reading_the_hosts_claude_logins() {
+        crate::agent::accounts::with_test_root(|accounts| {
+            let (td, root, rpc, home) = sandbox_dirs();
+            let home = std::fs::canonicalize(&home).unwrap();
+            let relocated = std::fs::canonicalize(td.path()).unwrap().join("cfg");
+            let profile =
+                build_profile(&root, &rpc, &home, Some(&relocated), None, None, None).unwrap();
+            let deny_at = profile
+                .find("(deny file-read* file-write*\n")
+                .expect("a read deny block");
+            let denied = &profile[deny_at..];
+            for literal in [
+                home.join(".claude/.credentials.json"),
+                relocated.join(".credentials.json"),
+            ] {
+                assert!(
+                    denied.contains(&format!("(literal \"{}\")", literal.display())),
+                    "{denied}"
+                );
+            }
+            assert!(
+                denied.contains(&format!(
+                    "(subpath \"{}\")",
+                    accounts.join("claude").display()
+                )),
+                "{denied}"
+            );
+            assert!(deny_at > profile.find("(allow file-write*").unwrap());
+        });
+    }
+
+    /// The kernel half of `profile_denies_reading_the_hosts_claude_logins`:
+    /// under the profile a process can read an ordinary file but neither the
+    /// default dir's credentials file nor anything in a claude account dir.
+    /// Run with:
+    ///   cargo test --lib seatbelt_hides_the_hosts_claude_logins -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    #[cfg(target_os = "macos")]
+    fn seatbelt_hides_the_hosts_claude_logins() {
+        crate::agent::accounts::with_test_root(|accounts| {
+            let (_td, root, rpc, home) = sandbox_dirs();
+            let default_creds = home.join(".claude/.credentials.json");
+            let account_creds = accounts.join("claude/work/.credentials.json");
+            let account_state = accounts.join("claude/work/.claude.json");
+            let ordinary = root.join("notes.txt");
+            for file in [&default_creds, &account_creds, &account_state, &ordinary] {
+                std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+                std::fs::write(file, "{}").unwrap();
+            }
+            let profile = build_profile(&root, &rpc, &home, None, None, None, None).unwrap();
+            let reads = |file: &Path| {
+                std::process::Command::new(SANDBOX_EXEC)
+                    .args(profile_args(&profile))
+                    .args(["/bin/cat", &file.to_string_lossy()])
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status()
+                    .expect("sandbox-exec")
+                    .success()
+            };
+            assert!(reads(&ordinary));
+            assert!(!reads(&default_creds));
+            assert!(!reads(&account_creds));
+            assert!(!reads(&account_state));
+
+            // The Keychain too: a throwaway item named like claude's, readable
+            // outside the profile, can't be found inside it, and the refusal
+            // is immediate (no prompt waiting for an answer).
+            let service = format!("Claude Code-credentials-fletchtest{}", std::process::id());
+            let user = std::env::var("USER").unwrap();
+            crate::keychain::write_password(&service, &user, "{\"probe\":true}").unwrap();
+            let finds = |sandboxed: bool| {
+                let mut command = if sandboxed {
+                    let mut c = std::process::Command::new(SANDBOX_EXEC);
+                    c.args(profile_args(&profile)).arg("/usr/bin/security");
+                    c
+                } else {
+                    std::process::Command::new("/usr/bin/security")
+                };
+                let started = std::time::Instant::now();
+                let found = command
+                    .args(["find-generic-password", "-s", &service, "-w"])
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status()
+                    .expect("security")
+                    .success();
+                (found, started.elapsed())
+            };
+            let outside = finds(false);
+            let inside = finds(true);
+            crate::keychain::delete_item(&service).unwrap();
+            assert!(outside.0, "the probe item must be readable outside");
+            assert!(!inside.0, "the Keychain must be closed to the sandbox");
+            assert!(
+                inside.1 < std::time::Duration::from_secs(5),
+                "{:?}",
+                inside.1
+            );
+        });
+    }
+
+    /// HTTPS still works under the Keychain deny (trust evaluation goes
+    /// through trustd): the API answers 401 JSON, not a TLS failure. Needs the
+    /// network; run with
+    ///   cargo test --lib seatbelt_keeps_https_working -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    #[cfg(target_os = "macos")]
+    fn seatbelt_keeps_https_working_under_the_keychain_deny() {
+        let (_td, root, rpc, home) = sandbox_dirs();
+        let profile = build_profile(&root, &rpc, &home, None, None, None, None).unwrap();
+        let out = std::process::Command::new(SANDBOX_EXEC)
+            .args(profile_args(&profile))
+            .args([
+                "/usr/bin/curl",
+                "-sS",
+                "-w",
+                "\nHTTP %{http_code}",
+                "https://api.anthropic.com/v1/models",
+            ])
+            .output()
+            .expect("sandbox-exec");
+        let text = String::from_utf8_lossy(&out.stdout);
+        println!("{text}");
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(text.ends_with("HTTP 401"), "{text}");
+        assert!(text.contains("authentication_error"), "{text}");
+    }
+
+    /// codex, signed in by a file login, still runs a turn under the launch
+    /// plan a codex agent gets: the Keychain deny, plus the CA bundle that
+    /// stands in for the Keychain's roots. Works on a temporary copy of
+    /// `~/.codex/auth.json` as the account home; spends one real codex turn.
+    /// `FLETCH_LIVE_WITHOUT_KEYCHAIN_DENY=1` runs the control without the
+    /// deny, `FLETCH_LIVE_WITHOUT_CA_BUNDLE=1` without the bundle. Run with
+    ///   cargo test --lib live_codex_turn_runs_under_the_keychain_deny -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    #[cfg(target_os = "macos")]
+    fn live_codex_turn_runs_under_the_keychain_deny() {
+        let (td, root, rpc, _home) = sandbox_dirs();
+        let home = dirs::home_dir().unwrap();
+        let codex_home = td.path().join("codex-home");
+        std::fs::create_dir_all(&codex_home).unwrap();
+        std::fs::copy(home.join(".codex/auth.json"), codex_home.join("auth.json")).unwrap();
+        let cwd = root.join("repo");
+        std::fs::create_dir_all(&cwd).unwrap();
+        let codex = crate::agent::resolve_agent_bin("codex", "codex", "Codex", &home).unwrap();
+        let ctx = AgentLaunchCtx {
+            agent_id: "live",
+            provider: "codex",
+            writable_root: &root,
+            source_repos: &[],
+            rpc_dir: &rpc,
+            cwd: &cwd,
+            home: &home,
+            interactive: false,
+            blackboard: None,
+            account_dir: Some(&codex_home),
+            oauth_token: None,
+        };
+        let mut plan = SandboxExecEngine.launch_agent(&ctx, &codex).unwrap();
+        if std::env::var_os("FLETCH_LIVE_WITHOUT_KEYCHAIN_DENY").is_some() {
+            plan.prefix_args[1] = plan.prefix_args[1].replace(KEYCHAIN_MACH_DENY, "");
+        }
+        if std::env::var_os("FLETCH_LIVE_WITHOUT_CA_BUNDLE").is_some() {
+            plan.env.retain(|(k, _)| k != "CODEX_CA_CERTIFICATE");
+        }
+        // What a real session layers in from the user's env: a bundle they
+        // chose themselves, which the plan then leaves alone.
+        let user_ca: Vec<(&str, String)> = ["SSL_CERT_FILE", "CODEX_CA_CERTIFICATE"]
+            .into_iter()
+            .filter_map(|var| std::env::var(var).ok().map(|v| (var, v)))
+            .collect();
+        println!(
+            "CA source: plan={:?} user={:?}",
+            plan.env
+                .iter()
+                .find(|(k, _)| k == "CODEX_CA_CERTIFICATE")
+                .map(|(_, v)| v),
+            user_ca.iter().map(|(k, _)| *k).collect::<Vec<_>>()
+        );
+        let log = td.path().join("codex.stderr");
+        let stdout = td.path().join("codex.stdout");
+        let mut child = std::process::Command::new(&plan.program)
+            .args(&plan.prefix_args)
+            .args([
+                "exec",
+                "--skip-git-repo-check",
+                "Reply with exactly the word: pong",
+            ])
+            .current_dir(&cwd)
+            .env_clear()
+            .env("HOME", &home)
+            .env("PATH", std::env::var("PATH").unwrap())
+            .env("USER", std::env::var("USER").unwrap())
+            .env("CODEX_HOME", &codex_home)
+            .envs(user_ca)
+            .envs(plan.env.iter().map(|(k, v)| (k, v)))
+            .stdin(std::process::Stdio::null())
+            .stdout(std::fs::File::create(&stdout).unwrap())
+            .stderr(std::fs::File::create(&log).unwrap())
+            .spawn()
+            .expect("sandbox-exec");
+        let started = std::time::Instant::now();
+        while child.try_wait().unwrap().is_none() {
+            if started.elapsed() > std::time::Duration::from_secs(120) {
+                let _ = std::process::Command::new("/usr/bin/pkill")
+                    .args(["-f", &codex_home.to_string_lossy()])
+                    .status();
+                let _ = child.kill();
+                let tail: String = std::fs::read_to_string(&log)
+                    .unwrap_or_default()
+                    .lines()
+                    .rev()
+                    .take(6)
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                panic!("codex hung for 120 s; last stderr lines (newest first):\n{tail}");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+        let status = child.wait().unwrap();
+        let text = std::fs::read_to_string(&stdout).unwrap_or_default();
+        println!(
+            "exit={:?} stdout={:?}",
+            status.code(),
+            text.trim().lines().last()
+        );
+        assert!(
+            status.success(),
+            "{}",
+            std::fs::read_to_string(&log).unwrap_or_default()
+        );
+        assert!(text.to_lowercase().contains("pong"), "{text}");
+    }
+
+    #[test]
+    fn codex_gets_the_system_bundle_unless_the_user_chose_one() {
+        let td = tempfile::tempdir().unwrap();
+        let bundle = td.path().join("cert.pem");
+        assert_eq!(codex_ca_env(false, &bundle), None, "no bundle on disk");
+        std::fs::write(&bundle, "pem").unwrap();
+        assert_eq!(
+            codex_ca_env(false, &bundle),
+            Some((
+                "CODEX_CA_CERTIFICATE".to_string(),
+                bundle.to_string_lossy().into_owned()
+            ))
+        );
+        assert_eq!(codex_ca_env(true, &bundle), None);
+    }
+
+    #[test]
+    fn agent_profile_denies_the_keychain_services() {
+        let (_td, root, rpc, home) = sandbox_dirs();
+        let profile = build_profile(&root, &rpc, &home, None, None, None, None).unwrap();
+        assert!(profile.contains(KEYCHAIN_MACH_DENY));
+        assert!(
+            !profile.contains("com.apple.trustd"),
+            "TLS trust stays reachable"
+        );
+    }
+
+    /// A claude launch carries the host-resolved token as
+    /// `CLAUDE_CODE_OAUTH_TOKEN` in the plan's env (never argv), and nothing
+    /// pointing claude at another config dir.
+    #[test]
+    fn a_claude_launch_carries_the_host_token_and_no_config_dir() {
+        let (_td, root, rpc, home) = sandbox_dirs();
+        let token = crate::agent::claude_oauth::AccessToken::for_test("sk-ant-oat-test", 1);
+        let ctx = AgentLaunchCtx {
+            agent_id: "a1",
+            provider: "claude",
+            writable_root: &root,
+            source_repos: &[],
+            rpc_dir: &rpc,
+            cwd: &root,
+            home: &home,
+            interactive: false,
+            blackboard: None,
+            account_dir: None,
+            oauth_token: Some(&token),
+        };
+        let plan = SandboxExecEngine
+            .launch_agent(&ctx, "/usr/local/bin/claude")
+            .unwrap();
+        assert!(plan
+            .env
+            .iter()
+            .any(|(k, v)| k == "CLAUDE_CODE_OAUTH_TOKEN" && v == "sk-ant-oat-test"));
+        assert!(!plan.env.iter().any(|(k, _)| k == "CLAUDE_CONFIG_DIR"));
+        assert!(!plan
+            .prefix_args
+            .iter()
+            .any(|a| a.contains("sk-ant-oat-test")));
+
+        let codex = AgentLaunchCtx {
+            provider: "codex",
+            ..ctx
+        };
+        let plan = SandboxExecEngine
+            .launch_agent(&codex, "/usr/local/bin/codex")
+            .unwrap();
+        assert!(!plan.env.iter().any(|(k, _)| k == "CLAUDE_CODE_OAUTH_TOKEN"));
     }
 
     #[test]
@@ -2643,6 +3056,7 @@ mod tests {
             interactive: true,
             blackboard: None,
             account_dir: None,
+            oauth_token: None,
         };
         let plan = SandboxExecEngine
             .launch_agent(&ctx, "/usr/local/bin/claude")

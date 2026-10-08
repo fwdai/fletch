@@ -12,6 +12,8 @@ already made, and exactly what PR 3 has to deliver. Read it before touching code
 | #874 | `feat/provider-accounts` | accounts model, per-account login, probe, Settings list | CI green, awaiting merge |
 | #875 | `feat/provider-accounts-spawn` (stacked on #874) | active account honoured at spawn, both sandbox engines, transcripts | CI green, awaiting merge |
 | PR 3 | `feat/provider-accounts-usage` (stacked on #875) | per-account spend + limit meters | implemented; status-line source deferred |
+| host login 1 | `feat/claude-host-login` | the host owns every claude login: refresh, token injection on every engine, relaunch-on-expiry, attribution by stamp | draft (2026-10-08) |
+| host login 2 | — | mid-session account switch (hand the agent another token via `relaunch_with_resume`) | not started |
 
 Merge #874 first, then #875. Manual checks Alex still owes before merging #875:
 a fresh Claude account click-through (add → sign in → make active → new agent)
@@ -26,16 +28,79 @@ build it in PR 3.
 ## The model
 
 - A **managed account** is a config directory `~/.fletch/accounts/<provider>/<id>/`
-  (`FLETCH_ACCOUNTS_ROOT` overrides the root in tests). The CLI is pointed at it
-  with `CLAUDE_CONFIG_DIR` (claude) or `CODEX_HOME` (codex). The directory
-  listing **is** the registry; there is no accounts table. `id` is a slug
+  (`FLETCH_ACCOUNTS_ROOT` overrides the root in tests). The directory listing
+  **is** the registry; there is no accounts table. `id` is a slug
   (`[a-z0-9-]`, ≤32, not `default`) and doubles as the label.
+  - A **codex** agent runs pointed at its account dir with `CODEX_HOME`.
+  - A **claude** account is a **token source only**
+    (`accounts::launches_in_account_dir`). Its dir is host-only storage for
+    the login (Settings signs in there with `CLAUDE_CONFIG_DIR`, and the
+    Keychain item is named for it). Every claude agent, whatever its account,
+    runs in the shared default config dir with `CLAUDE_CODE_OAUTH_TOKEN` set
+    to the account's access token, which claude ranks above any `/login` in
+    that dir. So all accounts' transcripts land in the default places.
+- **The host owns every claude login** (`agent/claude_oauth.rs`). A sandboxed
+  claude can't refresh its own token: the refresh needs `mkdir <dir>.lock`,
+  `<dir>/.oauth_refresh.lock` and a Keychain write, all denied under seatbelt,
+  and a container has no Keychain. It also must not hold the ~30-day refresh
+  token. So before every claude launch, on every engine, the app reads the
+  account's login (Keychain item, else `.credentials.json`), refreshes it at
+  `https://platform.claude.com/v1/oauth/token` when it expires within 30 min
+  (`REFRESH_MARGIN_MS`), writes the rotated pair back where it came from
+  (Keychain `-U` through `security -i`, or the file atomically at 0600,
+  keeping every field it doesn't own), and hands the agent only the ~8h
+  access token. Refresh tokens rotate, so refreshes run single-flight per
+  account. `security -i` takes one line of about 4 KB, so a Keychain login
+  too large to write back whole is not refreshed at all (the launch runs on
+  the stored token while it lasts); a rotated pair the store refuses anyway
+  is kept in memory and written on the next call. A refused refresh
+  (400/401) marks the login revoked until the store changes, and Settings
+  shows "sign in again". The token is resolved before the lifecycle lock
+  and the spawn watchdog (`prefetch_login`), with a 5 s refresh timeout and
+  a 20 s cap on a Keychain read that might prompt.
+- **The sandbox holds no login but the access token.** Every agent's seatbelt
+  profile denies reads of the host's claude logins on disk
+  (`~/.claude/.credentials.json`, a relocated dir's, and every
+  `~/.fletch/accounts/claude/` dir) and the Keychain's mach services
+  (`KEYCHAIN_MACH_DENY`: `com.apple.SecurityServer`, which every login-keychain
+  lookup goes through, plus `securityd`, `securityd.xpc`, `security.agent`).
+  Measured on macOS 27: `security find-generic-password -s
+  "Claude Code-credentials" -w` fails at once (exit 44, no prompt) under the
+  profile. `com.apple.trustd` stays allowed, so TLS works for curl, node,
+  python, git and Go (`gh`). codex is the exception: it reads its trusted
+  roots from the Keychain and fails every request with `UnknownIssuer`, so a
+  codex launch gets `CODEX_CA_CERTIFICATE=/etc/ssl/cert.pem` unless the user
+  already sets `CODEX_CA_CERTIFICATE` or `SSL_CERT_FILE`. The trade-off is
+  that a root a user added only to the Keychain (a corporate proxy's) is
+  invisible to Keychain-verifying tools in the sandbox, and anything an agent
+  kept in the Keychain (`gh auth`, git's `osxkeychain` helper) is unreachable
+  there. A stdio MCP server still works under the profile (live test
+  `live_seatbelt_turn_uses_a_stdio_mcp_server`). A remote MCP server that
+  signs in with OAuth keeps its tokens in claude's Keychain item
+  (`mcpOAuth`), which the sandboxed claude can no longer read: known limit,
+  untested here (no such server is configured on this Mac).
+- **A live claude can't take a new token** (it reads the env var once). Before
+  a turn is delivered to an idle claude process whose token is inside the
+  margin, the supervisor resolves a token first and, only when it lapses
+  later than the live one, stops the process and resumes the session on it
+  (`Supervisor::relaunch_with_resume` / `relaunch_locked`). Offline, the turn
+  goes to the current process. A turn whose error result is a 401 gets one
+  refresh, relaunch and resend (`supervisor/login_refresh.rs`). A second 401
+  leaves the agent in `Error` with "sign in again"; the user's next send gets
+  its own retry, which is how a new sign-in reaches the process. Per-turn
+  providers start a process every turn and need none of this.
+- **Sessions from before this change** live under the account's
+  `projects/`. A seatbelt launch moves such a session (transcript and
+  subagent dir) into the default projects dir before resuming it
+  (`transcripts::adopt_account_session`), never overwriting one already
+  there.
 - The **default account** is the user's own CLI dir (`~/.claude`, `~/.codex`, or
   wherever their shell's env points). It has no directory under the root and no
   env override. It is also the **shared source**: `settings.json`, `CLAUDE.md`,
   `commands/`, `skills/`, `agents/`, `plugins/` (claude) and `config.toml`,
   `AGENTS.md`, `prompts/`, `skills/` (codex) are **symlinked** into each managed
-  dir, never copied. Login, `.claude.json`, sessions stay per dir.
+  dir, never copied. Login, `.claude.json`, sessions stay per dir. (The claude
+  links only matter to the Settings sign-in now, since agents don't run there.)
 - The **active account** per provider is the settings key
   `provider_account_<provider>` (absent/blank/`default` = default). It is read
   **only at agent creation** and stamped on the record
@@ -43,7 +108,10 @@ build it in PR 3.
   stamp. Switching the radio moves new agents only. The stamp itself moves only
   through `switch_agent_account` (the agent header's account picker), which
   the host refuses mid-turn; the next turn runs under the new account in the
-  same workspace and conversation.
+  same workspace and conversation. Usage is credited by this stamp too: a
+  session Fletch ran belongs to its workspace's account
+  (`workspace::session_accounts`), and only transcripts matching no known
+  session fall back to "whose directory holds it".
 - Claude's macOS Keychain item for a managed dir is
   `Claude Code-credentials-<first 8 hex of sha256(dir path string)>`, no trailing
   slash, hashed exactly as the env var carries it. Verified against a live item
@@ -63,10 +131,23 @@ Engine (`crates/fletch-core/src/`):
   `account_env`, `ambient_credential_vars`, `account_for_new_agent`,
   `stamped_account_dir`, `existing_account_dir` (errors on a removed stamp),
   `list_accounts` (probes every account), `ProviderAccount`,
-  `ACTIVE_SETTING_PREFIX`, `with_test_root` (test helper, crate-wide env lock).
+  `ACTIVE_SETTING_PREFIX`, `launches_in_account_dir` (false for claude),
+  `with_test_root` (test helper, crate-wide env lock).
+- `agent/claude_oauth.rs` — the host-owned claude login. `launch_token(account,
+  rejected)` (what every claude launch signs in with; a managed account without
+  a usable login fails the launch, the default degrades to no token),
+  `access_token_for_launch`, `replace_rejected_token` (after a 401),
+  `is_revoked` (free unless a refusal is on record; then the store's stamp
+  only), `stored_access_token` (the "is this a login" bar, `expiresAt > 0`),
+  `REFRESH_MARGIN_MS`, `AccessToken` (`Debug` prints the expiry only).
+  `LoginStore` (`load` returns where it read from, `save` writes there,
+  `fits` gates a refresh) and `TokenEndpoint` are the seams the tests mock.
+  Ignored live tests: `live_forced_refresh_*`, `live_seatbelt_turn_*`,
+  `live_legacy_account_session_*` (`FLETCH_LIVE_CLAUDE_ACCOUNT=<id>`).
 - `agent/auth_probe.rs` — `probe_default`, `probe_dir` (per-account sign-in
   probe; Keychain presence or `.credentials.json` for claude, `auth.json` for
-  codex; never consults shell keys).
+  codex; never consults shell keys). A claude login `claude_oauth` found
+  revoked reads as signed out, "sign in again".
 - `commands/accounts.rs` — `list_provider_accounts_impl`,
   `add_provider_account_impl`, `ensure_account_removable` (refuses the active
   account and any account a live agent is stamped with),
@@ -75,35 +156,75 @@ Engine (`crates/fletch-core/src/`):
   `agent/login.rs` `logout_command` — with the account's config-dir env; the
   account and its sessions stay).
 - `workspace/agents.rs` — `live_agents_on_account` (count query over
-  `workspaces` + `sessions`, where the provider lives).
+  `workspaces` + `sessions`, where the provider lives); `session_accounts`
+  (provider session id → stamped account, for the usage scan).
 - `supervisor/lifecycle.rs` — `active_account` stamping in `spawn_agent`;
-  `record.account` threaded into `SpawnSpec`/`PerTurnSpec`.
+  `record.account` threaded into `SpawnSpec`/`PerTurnSpec`;
+  `spawn_agent_process` signs every claude launch in through `launch_login`
+  into `SpawnSpec.oauth_token`; `start_process` adopts a legacy account-dir
+  session; the managed event handler feeds `observe_login`.
+- `supervisor/login_refresh.rs` — `prefetch_login` / `launch_login` (token
+  resolved before the lock and watchdog, consumed by the launch),
+  `relaunch_with_resume` and `relaunch_locked` (for a caller already holding
+  the lifecycle lock), `take_idle` + `restart_taken` (shared with
+  `respawn_agent_preserving_session`: idle check and removal under one
+  `agents` lock), `relaunch_if_login_due` (before a turn, from
+  `send_user_message`), `observe_login` (401 → flag a session-preserving
+  respawn on a replaced token and requeue the turn, once),
+  `report_login_failure`, `forget_logins` (teardown). Scripted ignored tests
+  in `login_refresh/tests/launched.rs`.
 - `agent/spawn.rs` — `account_launch` → `AccountLaunch { dir, env, unset }`
   used by all four launch paths (claude PTY, claude managed, per-turn PTY,
-  per-turn exec). `unset` strips the default account's credential vars.
+  per-turn exec). `unset` strips the default account's credential vars; a
+  claude account gets no `dir` and no env (it signs in by token).
+  `Agent::login_expires_at_ms` is the launched token's expiry.
 - `pty_session.rs`, `managed_session.rs`, `exec_session.rs` — `env_remove`
   field applied after every env layer.
-- `sandbox/engine.rs` — `AgentLaunchCtx.account_dir`.
-- `sandbox/seatbelt.rs` — relocated claude dir: island grants + `.claude.json`
-  literal + explicit deny on `settings.json`; codex account home granted whole
-  with `config.toml` deny. Ignored kernel test documents the temp-tree grant.
+- `sandbox/engine.rs` — `AgentLaunchCtx.account_dir` (codex only) and
+  `AgentLaunchCtx.oauth_token` (claude, every engine).
+- `sandbox/seatbelt.rs` — puts `oauth_token` in the plan's env as
+  `CLAUDE_CODE_OAUTH_TOKEN`; grants nothing for a claude account dir;
+  `deny_host_claude_logins` hides the on-disk logins and `KEYCHAIN_MACH_DENY`
+  the Keychain from every agent (kernel test
+  `seatbelt_hides_the_hosts_claude_logins`; HTTPS in
+  `seatbelt_keeps_https_working_under_the_keychain_deny`); `codex_ca_env`
+  gives codex a CA bundle (live test
+  `live_codex_turn_runs_under_the_keychain_deny`). The
+  relocated-claude-dir grants (islands + `.claude.json` literal +
+  `settings.json` deny) stay: they still serve an app env that sets
+  `CLAUDE_CONFIG_DIR`. Codex account home granted whole with `config.toml`
+  deny. Ignored kernel test documents the temp-tree grant.
 - `sandbox/container/{launch.rs, auth.rs, launch_auth.rs, config_dir.rs}` —
-  account dir mounted and forwarded; `auth::resolve(account_dir)` reads the
-  account's suffixed Keychain item / `.credentials.json` only;
-  `claude_keychain_service`, `keychain_token(service)` (a launch, or the
-  limits Refresh through `oauth_access_token`; never a polling path).
-- `keychain.rs` — `item_present`, `delete_item` (macOS; presence-only reads).
+  `auth::resolve(oauth_token)`: the host token (`AuthSource::HostLogin`), then (default account only,
+  since a managed launch always has a token) the stored setup-token and the
+  shell's auth vars. A claude account dir is never mounted; the per-agent
+  `.fletch-claude-projects` mount stays; the `.credentials.json` rw overlay
+  is dropped whenever a host token is injected. `status()` is presence-only.
+  `claude_keychain_service`.
+- `keychain.rs` — `item_present`, `item_stamp` (`acct` + `mdat`, no secret),
+  `read_password` (launch or explicit action only, 20 s cap),
+  `write_password` (`security -i`, hex `-X`, so the secret never hits argv;
+  refuses a password over the ~4 KB line `password_fits` allows; fixed
+  error text, never `security`'s stderr), `delete_item`. The in-process
+  Keychain API was tried and rejected: a read of a `security`-created item
+  from the test binary took ~13 s on first access, the signature of an
+  access prompt.
 - `transcripts.rs` — `claude_projects_dirs` and `codex_sessions_dirs` union the
-  account dirs; `claude_projects_dir(cwd, container, account_dir)`.
+  account dirs (old claude history still lives there);
+  `claude_projects_dir(cwd, container)` resolves to the default for every
+  claude agent; `adopt_account_session` moves a legacy session out of an
+  account dir.
 - `supervisor/materialize.rs` — fork/rewind writer targets the stamped dir via
-  `existing_account_dir`.
+  `existing_account_dir` for codex, the default dir for claude.
 - `usage_scan/` — scans all roots (incl. account dirs); each bucket and
-  session carries the `account` whose dir holds the transcript (PR 3), and
-  codex rollouts' `rate_limits` surface as `UsageScan::rollout_limits`.
+  session carries an `account`: the workspace stamp for a session Fletch ran
+  (`Attribution::sessions`), else whose dir holds the transcript. Codex
+  rollouts' `rate_limits` surface as `UsageScan::rollout_limits` (by dir).
 - `agent/limits/` (PR 3) — `ProviderLimits`/`AccountLimits`, normalisers per
   source, the `provider_limits_<provider>_<account>` row (`record_limits`,
   `record_refresh`, refresh floor and 429 back-off), `app_server` (codex
-  on-demand read), `oauth_usage` (claude manual refresh).
+  on-demand read), `oauth_usage` (claude manual refresh, on
+  `claude_oauth`'s refreshed token; a 401 gets one forced refresh).
 - `commands/limits.rs` (PR 3) — `get_provider_limits_impl`,
   `refresh_provider_limits_impl`, `scan_usage_transcripts_impl` (the scan plus
   storing rollout readings; desktop and remote both call it).
@@ -238,7 +359,9 @@ Keychain item named by `container::auth::claude_keychain_service(Some(dir))`
 documented as such — PR 3 adds a second, explicitly user-initiated caller;
 update that doc. Access tokens expire in ~60 min and Claude refreshes them only
 when it runs: on 401 report "stale, run an agent under this account to
-refresh", do **not** implement the OAuth refresh flow. On 429 back off
+refresh", do **not** implement the OAuth refresh flow. (Superseded by host
+login 1: the host now refreshes, tokens last ~8h, and `oauth_usage` reads
+through `claude_oauth`; see "The model".) On 429 back off
 (exponential, persisted) and show the last known value. Never poll.
 
 **Spend per account.** Add an `account` dimension to `usage_scan`: a record's
@@ -319,6 +442,12 @@ polling.
   `CLAUDE_CONFIG_DIR` today); onboarding is pre-seeded to compensate.
 - `ensure_account_dir` never overwrites a shared-config link the CLI replaced
   with a real file; Settings does not yet surface such a fork.
+- A Keychain claude login over about 2 KB (the `security -i` line limit,
+  hex-encoded) is never host-refreshed, so it needs a fresh sign-in each time
+  its access token expires.
+- A rotated pair the store refused (`claude_oauth`'s `unsaved`) lives only in
+  memory: if the app quits before a retry stores it, the login is lost and
+  needs a new sign-in. Follow-up: persist it through `crate::secrets`.
 
 ## Sources consulted
 
