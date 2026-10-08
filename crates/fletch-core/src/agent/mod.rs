@@ -22,6 +22,7 @@ mod capabilities;
 pub mod claude_oauth;
 pub mod codex_login;
 pub(crate) mod credential_file;
+pub(crate) mod host_login;
 mod host_state;
 pub mod limits;
 mod login;
