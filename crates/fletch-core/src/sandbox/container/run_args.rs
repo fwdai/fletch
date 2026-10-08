@@ -72,12 +72,14 @@ pub(crate) enum ProviderMounts<'a> {
         /// shared `~/.claude` stays read-only.
         projects_src: &'a Path,
     },
-    /// Codex: `$CODEX_HOME`/`~/.codex` bind-mounted **read-write** at its host
-    /// path (auth.json refresh + session rollouts must persist).
+    /// Codex: the per-agent `CODEX_HOME` overlay (`agent::codex_login`)
+    /// bound **read-write** and forwarded, plus the shared config its links
+    /// point at, each bound **read-only** at its host path so the links resolve
+    /// in-container. The user's codex home and the account dirs are never
+    /// mounted: they hold the login's refresh token.
     Codex {
-        config_dir: &'a Path,
-        /// Forward `CODEX_HOME` (a non-default `$CODEX_HOME` only).
-        forward_home: bool,
+        home: &'a Path,
+        shared: &'a [PathBuf],
     },
     /// OpenCode: its data dir (accounts DB / `auth.json` / session storage the
     /// host transcript reader tails) plus its config dir when it exists, both
@@ -255,7 +257,14 @@ pub(crate) fn run_args(spec: &RunSpec<'_>) -> Vec<String> {
                 );
             }
         }
-        ProviderMounts::Codex { config_dir, .. } => push_rw_bind(&mut args, config_dir),
+        ProviderMounts::Codex { home, shared } => {
+            push_rw_bind(&mut args, home);
+            for item in *shared {
+                let path = item.to_string_lossy();
+                args.push("-v".into());
+                args.push(format!("{path}:{path}:ro"));
+            }
+        }
         ProviderMounts::Opencode {
             data_dir,
             config_dir,
@@ -286,11 +295,7 @@ pub(crate) fn run_args(spec: &RunSpec<'_>) -> Vec<String> {
                 forwarded.push("CLAUDE_CONFIG_DIR");
             }
         }
-        ProviderMounts::Codex { forward_home, .. } => {
-            if *forward_home {
-                forwarded.push("CODEX_HOME");
-            }
-        }
+        ProviderMounts::Codex { .. } => forwarded.push("CODEX_HOME"),
         ProviderMounts::Opencode {
             forward_xdg_data_home,
             forward_xdg_config_home,
@@ -352,7 +357,10 @@ pub(crate) fn mount_sources(spec: &RunSpec<'_>) -> Vec<PathBuf> {
             }
             out.push((*projects_src).into());
         }
-        ProviderMounts::Codex { config_dir, .. } => out.push((*config_dir).into()),
+        ProviderMounts::Codex { home, shared } => {
+            out.push((*home).into());
+            out.extend(shared.iter().cloned());
+        }
         ProviderMounts::Opencode {
             data_dir,
             config_dir,
@@ -476,8 +484,8 @@ mod tests {
                 projects_src: &projects,
             },
             ProviderMounts::Codex {
-                config_dir: alt,
-                forward_home: true,
+                home: alt,
+                shared: &stores,
             },
             ProviderMounts::Opencode {
                 data_dir: alt,

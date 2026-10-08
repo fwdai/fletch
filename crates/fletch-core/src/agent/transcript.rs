@@ -111,9 +111,9 @@ pub struct SubagentLayout {
 /// `Ok(None)` when they hold nothing the CLI can resume, so nothing is written.
 pub type TranscriptWrite = fn(
     session_id: &str,
+    agent_id: &str,
     cwd: &Path,
     container: bool,
-    account_dir: Option<&Path>,
     bodies: &[Value],
 ) -> Result<Option<PathBuf>>;
 
@@ -122,7 +122,14 @@ pub struct TranscriptReader {
     /// Ordered transcript artifact paths for a session (empty if none / not
     /// yet flushed). Multiple paths concatenate in order (resume can split).
     /// Records `root_exists` / `files_matched` into `diag` as it scans.
-    pub locate: fn(session_id: &str, cwd: &Path, diag: &mut ReadDiagnostics) -> Vec<PathBuf>,
+    /// `agent_id` names the agent whose session it is (a codex thread lives in
+    /// that agent's own `CODEX_HOME`).
+    pub locate: fn(
+        session_id: &str,
+        agent_id: &str,
+        cwd: &Path,
+        diag: &mut ReadDiagnostics,
+    ) -> Vec<PathBuf>,
     /// Parse located artifacts into ordered verbatim records, recording
     /// `lines_seen` / `records_parsed` / `io_errors` into `diag`.
     pub read: fn(paths: &[PathBuf], diag: &mut ReadDiagnostics) -> Vec<RawRecord>,

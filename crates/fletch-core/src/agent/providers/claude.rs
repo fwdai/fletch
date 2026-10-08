@@ -28,7 +28,12 @@ use crate::agent::transcript::{
 };
 use crate::error::{Error, Result};
 
-fn claude_locate(session_id: &str, cwd: &Path, diag: &mut ReadDiagnostics) -> Vec<PathBuf> {
+fn claude_locate(
+    session_id: &str,
+    _agent_id: &str,
+    cwd: &Path,
+    diag: &mut ReadDiagnostics,
+) -> Vec<PathBuf> {
     crate::transcripts::find_session_jsonl(session_id, cwd, diag)
         .into_iter()
         .collect()
@@ -135,11 +140,9 @@ pub(crate) static CLAUDE_TRANSCRIPT: TranscriptReader = TranscriptReader {
 /// starting the session fresh ("already in use").
 fn claude_write(
     session_id: &str,
+    _agent_id: &str,
     cwd: &Path,
     container: bool,
-    // Part of the shared writer signature; codex uses it. Every claude agent
-    // runs in the default config dir, whatever its account.
-    _account_dir: Option<&Path>,
     bodies: &[Value],
 ) -> Result<Option<PathBuf>> {
     if !bodies.iter().any(|b| b.get("uuid").is_some()) {
@@ -341,9 +344,7 @@ mod tests {
         let cwd = container_cwd(td.path());
         let lines = session_lines();
 
-        let path = claude_write(NEW, &cwd, true, None, &lines)
-            .unwrap()
-            .unwrap();
+        let path = claude_write(NEW, "a", &cwd, true, &lines).unwrap().unwrap();
 
         // Claude's own dir for the new checkout, under the container's mount.
         assert_eq!(
@@ -355,7 +356,7 @@ mod tests {
                 .join(format!("{NEW}.jsonl"))
         );
         let mut diag = ReadDiagnostics::default();
-        let located = (CLAUDE_TRANSCRIPT.locate)(NEW, &cwd, &mut diag);
+        let located = (CLAUDE_TRANSCRIPT.locate)(NEW, "a", &cwd, &mut diag);
         assert_eq!(located, [path]);
         let read = (CLAUDE_TRANSCRIPT.read)(&located, &mut diag);
         assert_eq!(read.len(), lines.len());
@@ -383,11 +384,8 @@ mod tests {
         let cwd = container_cwd(td.path());
         let metadata = [json!({ "type": "mode", "mode": "normal", "sessionId": "old" })];
 
-        assert_eq!(
-            claude_write(NEW, &cwd, true, None, &metadata).unwrap(),
-            None
-        );
-        assert_eq!(claude_write(NEW, &cwd, true, None, &[]).unwrap(), None);
+        assert_eq!(claude_write(NEW, "a", &cwd, true, &metadata).unwrap(), None);
+        assert_eq!(claude_write(NEW, "a", &cwd, true, &[]).unwrap(), None);
         assert!(!claude_session_has_messages(NEW, &cwd));
     }
 
@@ -396,12 +394,10 @@ mod tests {
         let td = tempfile::tempdir().unwrap();
         let cwd = container_cwd(td.path());
         let lines = session_lines();
-        let path = claude_write(NEW, &cwd, true, None, &lines)
-            .unwrap()
-            .unwrap();
+        let path = claude_write(NEW, "a", &cwd, true, &lines).unwrap().unwrap();
         let before = std::fs::read(&path).unwrap();
 
-        assert!(claude_write(NEW, &cwd, true, None, &lines[..2]).is_err());
+        assert!(claude_write(NEW, "a", &cwd, true, &lines[..2]).is_err());
         assert_eq!(std::fs::read(&path).unwrap(), before);
     }
 

@@ -34,6 +34,9 @@ type ExitCb = Arc<dyn Fn(ExecExit) + Send + Sync>;
 type ArgsBuilder =
     Arc<dyn Fn(&str, Option<&str>, Option<&str>, Option<&str>) -> Vec<String> + Send + Sync>;
 type IdExtractor = Arc<dyn Fn(&Value) -> Option<String> + Send + Sync>;
+/// Runs on the host before each turn's process is spawned; an error fails the
+/// turn before anything launches.
+pub type TurnPrep = Arc<dyn Fn() -> Result<()> + Send + Sync>;
 
 pub struct ExecSpawn {
     /// Program to launch each turn. Normally `sandbox-exec`, with the real
@@ -61,6 +64,8 @@ pub struct ExecSpawn {
     pub env_remove: Vec<String>,
     /// How to terminate a turn's child (chosen by the sandbox engine).
     pub kill_plan: KillHandle,
+    /// Host work each turn needs fresh — codex's per-turn launch credential.
+    pub before_turn: Option<TurnPrep>,
 }
 
 pub struct ExecSession {
@@ -71,6 +76,7 @@ pub struct ExecSession {
     env: Vec<(String, String)>,
     env_remove: Vec<String>,
     kill_plan: KillHandle,
+    before_turn: Option<TurnPrep>,
     session_id: Arc<Mutex<Option<String>>>,
     child: Arc<Mutex<Option<Child>>>,
     interrupted: Arc<AtomicBool>,
@@ -125,6 +131,7 @@ impl ExecSession {
             env: spec.env,
             env_remove: spec.env_remove,
             kill_plan: spec.kill_plan,
+            before_turn: spec.before_turn,
             session_id: Arc::new(Mutex::new(spec.session_id)),
             child: Arc::new(Mutex::new(None)),
             interrupted: Arc::new(AtomicBool::new(false)),
@@ -169,6 +176,10 @@ impl ExecSession {
                 prompt.push_str("\n\n");
             }
             prompt.push_str(&format!("Attached file: {path}"));
+        }
+
+        if let Some(prep) = &self.before_turn {
+            prep()?;
         }
 
         let args = {
@@ -444,6 +455,7 @@ mod tests {
                 env: vec![],
                 env_remove: Vec::new(),
                 kill_plan: KillHandle::ProcessGroup,
+                before_turn: None,
             },
             codex_args,
             codex_id,
@@ -502,6 +514,7 @@ mod tests {
                 env: vec![],
                 env_remove: Vec::new(),
                 kill_plan: KillHandle::ProcessGroup,
+                before_turn: None,
             },
             codex_args,
             codex_id,
@@ -542,6 +555,7 @@ mod tests {
                 env: vec![],
                 env_remove: Vec::new(),
                 kill_plan: KillHandle::ProcessGroup,
+                before_turn: None,
             },
             codex_args,
             codex_id,
@@ -615,6 +629,7 @@ mod tests {
                 env: vec![],
                 env_remove: Vec::new(),
                 kill_plan: KillHandle::ProcessGroup,
+                before_turn: None,
             },
             codex_args,
             codex_id,
@@ -647,5 +662,50 @@ mod tests {
             !exit.success,
             "interrupted turn should not report success: {exit:?}"
         );
+    }
+
+    #[test]
+    fn a_failing_turn_prep_fails_the_turn_before_any_process_spawns() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("ran");
+        let script = dir.path().join("agent.sh");
+        std::fs::write(&script, format!("#!/bin/sh\ntouch {}\n", marker.display())).unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let preps = Arc::new(AtomicU64::new(0));
+        let counted = preps.clone();
+        let session = ExecSession::new(
+            ExecSpawn {
+                program: script,
+                prefix_args: vec![],
+                cwd: dir.path().to_path_buf(),
+                session_id: None,
+                stdout_is_json: true,
+                env: vec![],
+                env_remove: Vec::new(),
+                kill_plan: KillHandle::ProcessGroup,
+                before_turn: Some(Arc::new(move || {
+                    counted.fetch_add(1, Ordering::SeqCst);
+                    Err(Error::Other("login expired".into()))
+                })),
+            },
+            codex_args,
+            codex_id,
+            ExecCallbacks {
+                on_event: |_ev| {},
+                on_session_id: |_sid| {},
+                on_exit: |_exit| {},
+            },
+        );
+
+        let err = session
+            .send_user_message("hello", &[], None, None)
+            .unwrap_err();
+        assert!(err.to_string().contains("login expired"), "{err}");
+        session
+            .send_user_message("again", &[], None, None)
+            .unwrap_err();
+        assert_eq!(preps.load(Ordering::SeqCst), 2);
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(!marker.exists());
     }
 }

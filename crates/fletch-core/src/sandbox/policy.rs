@@ -43,12 +43,12 @@
 //!    `~/.config/gh` (aliases carry shell commands), etc.
 //!
 //!    A provider's *own* config root is the subtler case invariant 2 also has to
-//!    answer. `~/.codex`, `~/.cursor`, `~/.gemini`, `~/.pi` and opencode's config
+//!    answer. `~/.cursor`, `~/.gemini`, `~/.pi` and opencode's config
 //!    dir are each granted **whole** by [`provider_state_dirs`] — the root holds
 //!    the session store / auth the CLI rewrites every turn, with no clean island
 //!    split that keeps those writable while excising config — yet each also holds
-//!    a file that names programs the CLI runs on the *host*: codex `config.toml`
-//!    (`[mcp_servers.*] command`, `notify`), gemini `settings.json` (`mcpServers`)
+//!    a file that names programs the CLI runs on the *host*: gemini
+//!    `settings.json` (`mcpServers`)
 //!    and, co-located under `~/.gemini`, antigravity's `config/mcp_config.json` /
 //!    `plugins/`, cursor `mcp.json` (`mcpServers`), opencode's config `mcp` +
 //!    auto-loaded `plugin/`, pi `agent/settings.json`. Writing one is host code
@@ -289,11 +289,11 @@ pub fn provider_state_dirs(provider: &str, home: &Path) -> Vec<PathBuf> {
         // narrowing, module doc). The credential *file* is added separately by
         // the seatbelt caller (it needs a regex rule, not a `(subpath …)`).
         "claude" => claude_write_island_dirs(&home.join(".claude")),
-        // Codex's state dir moves with `$CODEX_HOME`. The old blanket
-        // `~/.config` agent grant incidentally covered e.g.
-        // `CODEX_HOME=$HOME/.config/codex`; with the narrowing, this
-        // env-resolved grant is what keeps that supported relocation writable.
-        "codex" => vec![codex_home_dir(home)],
+        // None: a sandboxed codex never runs in the user's codex home. Its
+        // `CODEX_HOME` is a per-agent overlay under the writable root
+        // (`agent::codex_login`), and `~/.codex` holds the login's refresh
+        // token, which the sandbox must not be able to rewrite.
+        "codex" => Vec::new(),
         "cursor" => vec![home.join(".cursor")],
         "gemini" => vec![home.join(".gemini")],
         "pi" => vec![home.join(".pi")],
@@ -351,8 +351,6 @@ pub struct ProviderExecConfig {
 ///
 /// The surfaces, each grounded in the CLI's documented config layout and in how
 /// Fletch already drives that CLI's MCP delivery (`crate::agent_profile`):
-///   - **codex** (`$CODEX_HOME`/`~/.codex`) — `config.toml` (`[mcp_servers.*]
-///     command`, the `notify` program, custom model-provider commands).
 ///   - **gemini** (`~/.gemini`) — `settings.json` (`mcpServers`) and the
 ///     auto-loaded `extensions/` (each extension carries its own `mcpServers`).
 ///     `~/.gemini` also backs **antigravity** (it co-locates here, covered by the
@@ -386,10 +384,6 @@ pub struct ProviderExecConfig {
 pub fn provider_exec_config_denials(home: &Path) -> ProviderExecConfig {
     let mut files: Vec<PathBuf> = Vec::new();
     let mut dirs: Vec<PathBuf> = Vec::new();
-
-    // codex — only `config.toml` names executables; auth.json, sessions/,
-    // history.jsonl are pure state and stay writable.
-    files.push(codex_home_dir(home).join("config.toml"));
 
     // gemini (and antigravity, which shares `~/.gemini`) — settings.json carries
     // `mcpServers`, extensions/ is auto-loaded; antigravity adds
@@ -596,11 +590,10 @@ pub fn opencode_config_dir(home: &Path) -> PathBuf {
     xdg_base(home, "XDG_CONFIG_HOME", ".config").join("opencode")
 }
 
-/// Codex's config dir: `$CODEX_HOME` if set non-blank, else `~/.codex`. This
-/// is both the dir Docker bind-mounts read-write and where
-/// `transcripts::find_codex_rollouts` reads transcripts on the host, so the
-/// two must agree — this is the shared resolution (it used to live in the
-/// docker engine, leaving seatbelt blind to the relocation).
+/// Codex's config dir: `$CODEX_HOME` if set non-blank, else `~/.codex` — the
+/// default account's home, where the host reads its login and the legacy
+/// session root. No engine grants or mounts it: launches run in a per-agent
+/// overlay (`agent::codex_login`).
 pub fn codex_home_dir(home: &Path) -> PathBuf {
     codex_home_from(std::env::var_os("CODEX_HOME"), home)
 }
@@ -790,7 +783,6 @@ mod tests {
         // via the same resolvers the fn uses, so a CI runner's own env can't
         // perturb them (mirrors `provider_state_dirs_cover_each_provider`).
         for expected in [
-            codex_home_dir(home).join("config.toml"),
             home.join(".gemini/settings.json"),
             home.join(".gemini/config/mcp_config.json"),
             home.join(".cursor/mcp.json"),
@@ -1013,13 +1005,8 @@ mod tests {
             !provider_state_dirs("claude", home).contains(&home.join(".claude")),
             "claude must not grant its config-dir root"
         );
-        // Codex: env-dependent (`$CODEX_HOME`), so assert identity with the
-        // canonical resolver — same treatment as opencode below; the
-        // resolution itself is covered by the `codex_home_from` test.
-        assert_eq!(
-            provider_state_dirs("codex", home),
-            vec![codex_home_dir(home)]
-        );
+        // Codex: nothing — it runs in a per-agent overlay, never its home.
+        assert!(provider_state_dirs("codex", home).is_empty());
         assert_eq!(
             provider_state_dirs("cursor", home),
             vec![home.join(".cursor")]
@@ -1055,8 +1042,8 @@ mod tests {
                 island.display()
             );
         }
+        assert!(!all.contains(&codex_home_dir(home)));
         for expected in [
-            codex_home_dir(home),
             home.join(".cursor"),
             home.join(".gemini"),
             home.join(".pi"),

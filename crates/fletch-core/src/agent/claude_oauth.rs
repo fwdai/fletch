@@ -349,13 +349,7 @@ fn parse_grant(body: &Value) -> Option<TokenGrant> {
     })
 }
 
-#[derive(Debug)]
-pub(crate) enum RefreshFailure {
-    /// The server refused the refresh token itself.
-    Rejected,
-    /// Anything else: transport, a 5xx, a 429, an answer without a token.
-    Failed(String),
-}
+pub(crate) use super::credential_file::RefreshFailure;
 
 pub(crate) type RefreshFuture<'a> =
     Pin<Box<dyn Future<Output = Result<TokenGrant, RefreshFailure>> + Send + 'a>>;
@@ -366,7 +360,6 @@ pub(crate) trait TokenEndpoint: Send + Sync {
 
 #[derive(Default)]
 struct Registry {
-    flights: HashMap<String, Arc<tokio::sync::Mutex<()>>>,
     /// The store stamp each account was found revoked at.
     revoked: HashMap<String, String>,
     /// A rotated login the store refused to take: the old refresh token is
@@ -390,11 +383,9 @@ fn registry() -> parking_lot::MutexGuard<'static, Registry> {
 }
 
 fn flight(key: &str) -> Arc<tokio::sync::Mutex<()>> {
-    registry()
-        .flights
-        .entry(key.to_string())
-        .or_default()
-        .clone()
+    static FLIGHTS: super::credential_file::Flights<tokio::sync::Mutex<()>> =
+        super::credential_file::Flights::new();
+    FLIGHTS.get(key)
 }
 
 /// Whether `key` was found revoked at `stamp`. A different stamp means the
@@ -685,29 +676,10 @@ impl LoginStore for HostStore {
             Place::Keychain { account } => {
                 crate::keychain::write_password(&self.service, account, json)
             }
-            Place::File => write_private_file(&self.file, json).map_err(|e| e.to_string()),
+            Place::File => super::credential_file::write_private_file(&self.file, json.as_bytes())
+                .map_err(|e| e.to_string()),
         }
     }
-}
-
-/// Replace `path` atomically with a 0600 file holding `contents`, so a reader
-/// (claude, or the next refresh) never sees half a credential.
-fn write_private_file(path: &Path, contents: &str) -> std::io::Result<()> {
-    use std::io::Write;
-    let dir = path
-        .parent()
-        .ok_or_else(|| std::io::Error::other("credentials file has no directory"))?;
-    let mut tmp = tempfile::NamedTempFile::new_in(dir)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        tmp.as_file()
-            .set_permissions(std::fs::Permissions::from_mode(0o600))?;
-    }
-    tmp.write_all(contents.as_bytes())?;
-    tmp.as_file().sync_all()?;
-    tmp.persist(path).map_err(|e| e.error)?;
-    Ok(())
 }
 
 struct HttpEndpoint {
@@ -1294,7 +1266,7 @@ mod tests {
         let td = tempfile::tempdir().unwrap();
         let path = td.path().join(".credentials.json");
         std::fs::write(&path, "old").unwrap();
-        write_private_file(&path, "{\"new\":true}").unwrap();
+        super::super::credential_file::write_private_file(&path, b"{\"new\":true}").unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "{\"new\":true}");
         #[cfg(unix)]
         {
@@ -1482,6 +1454,7 @@ mod tests {
                 blackboard: None,
                 account_dir: None,
                 oauth_token: Some(token),
+                codex_home: None,
             };
             let plan = crate::sandbox::engine_for(crate::sandbox::EngineKind::SandboxExec)
                 .unwrap()

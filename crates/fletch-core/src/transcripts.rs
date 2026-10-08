@@ -44,8 +44,7 @@ pub(crate) fn find_session_jsonl(
 /// The `projects` directory claude keeps its sessions in when it runs in
 /// `cwd`: the per-agent dir a container sandbox mounts over it (`container`),
 /// else the active default config dir, where every agent runs whatever its
-/// account (a claude account is a token source only,
-/// `accounts::launches_in_account_dir`). The first place
+/// account (a claude account is a token source only). The first place
 /// [`find_session_jsonl`] looks for each kind of agent.
 pub(crate) fn claude_projects_dir(cwd: &Path, container: bool) -> Option<PathBuf> {
     if container {
@@ -216,17 +215,18 @@ pub(crate) fn codex_sessions_dir() -> Option<PathBuf> {
         .map(|home| home.join("sessions"))
 }
 
-/// Every codex session root: the default one, then each managed account's
-/// (`agent::accounts`), whose agents run codex with that dir as `CODEX_HOME`.
-/// Shared by the per-session locator below and the whole-disk usage scan.
-pub(crate) fn codex_sessions_dirs() -> Vec<PathBuf> {
+/// The session roots codex wrote to before each agent ran in its own
+/// `CODEX_HOME`: the default one, then each managed account's
+/// (`agent::accounts`). Agents created since write only to their overlay
+/// ([`codex_overlay_sessions_dirs`]); these still hold older threads.
+pub(crate) fn legacy_codex_sessions_dirs() -> Vec<PathBuf> {
     sessions_dirs_from(
         codex_sessions_dir(),
         crate::agent::accounts::list_account_dirs("codex"),
     )
 }
 
-/// Pure core of [`codex_sessions_dirs`], deduped in first-seen order.
+/// Pure core of [`legacy_codex_sessions_dirs`], deduped in first-seen order.
 fn sessions_dirs_from(default: Option<PathBuf>, account_dirs: Vec<PathBuf>) -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = Vec::new();
     for dir in default
@@ -240,18 +240,85 @@ fn sessions_dirs_from(default: Option<PathBuf>, account_dirs: Vec<PathBuf>) -> V
     out
 }
 
+/// Every agent's own codex session root, as `(agent id, sessions dir)`: the
+/// `sessions` dir of each agent's `CODEX_HOME` overlay
+/// (`agent::codex_login::overlay_for_agent`). Only overlays that exist.
+pub(crate) fn codex_overlay_sessions_dirs() -> Vec<(String, PathBuf)> {
+    crate::workspace::checkouts_root()
+        .map(|root| overlay_sessions_in(&root))
+        .unwrap_or_default()
+}
+
+/// Pure core of [`codex_overlay_sessions_dirs`] over a checkouts root, sorted
+/// by agent id.
+fn overlay_sessions_in(checkouts_root: &Path) -> Vec<(String, PathBuf)> {
+    let mut out: Vec<(String, PathBuf)> = std::fs::read_dir(checkouts_root)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| {
+            let id = entry.file_name().into_string().ok()?;
+            let sessions = crate::agent::codex_login::overlay_in(&entry.path()).join("sessions");
+            sessions.is_dir().then_some((id, sessions))
+        })
+        .collect();
+    out.sort();
+    out
+}
+
+/// Every codex session root on this host: each agent's own, then the legacy
+/// ones. The whole-disk usage scan's list.
+pub(crate) fn codex_sessions_dirs() -> Vec<PathBuf> {
+    codex_overlay_sessions_dirs()
+        .into_iter()
+        .map(|(_, dir)| dir)
+        .chain(legacy_codex_sessions_dirs())
+        .collect()
+}
+
 /// All of codex's rollout files for a thread id, ordered (filenames are
 /// timestamp-prefixed, so lexical sort == chronological). Codex stores sessions
-/// at `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-<ts>-<id>.jsonl` (CODEX_HOME
-/// defaults to `~/.codex`); the id suffix is the thread id we captured. Resume
-/// normally keeps one file per session, but returning all is correct if it
-/// splits. Every root is searched: a thread lives under the account its agent
-/// ran under.
-pub(crate) fn find_codex_rollouts(session_id: &str, diag: &mut ReadDiagnostics) -> Vec<PathBuf> {
-    codex_sessions_dirs()
-        .iter()
-        .flat_map(|sessions| find_codex_rollouts_in(sessions, session_id, diag))
-        .collect()
+/// at `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-<ts>-<id>.jsonl`; the id suffix
+/// is the thread id we captured. Resume normally keeps one file per session,
+/// but returning all is correct if it splits.
+///
+/// A thread lives in agent `agent_id`'s overlay or, for a thread from before
+/// overlays, in a legacy root. The first with a match wins: a legacy thread
+/// copied into an overlay at its next launch
+/// (`providers::codex::adopt_legacy_rollouts`) is read from the copy codex
+/// appends to, never from both.
+pub(crate) fn find_codex_rollouts(
+    session_id: &str,
+    agent_id: &str,
+    diag: &mut ReadDiagnostics,
+) -> Vec<PathBuf> {
+    let own = crate::agent::codex_login::overlay_for_agent(agent_id)
+        .map(|o| o.join("sessions"))
+        .ok();
+    let tiers = [
+        own.into_iter().collect::<Vec<_>>(),
+        legacy_codex_sessions_dirs(),
+    ];
+    find_codex_rollouts_tiered(session_id, &tiers, diag)
+}
+
+/// Pure core of [`find_codex_rollouts`]: the matches of the first tier of
+/// roots that has any.
+fn find_codex_rollouts_tiered(
+    session_id: &str,
+    tiers: &[Vec<PathBuf>],
+    diag: &mut ReadDiagnostics,
+) -> Vec<PathBuf> {
+    for roots in tiers {
+        let found: Vec<PathBuf> = roots
+            .iter()
+            .flat_map(|sessions| find_codex_rollouts_in(sessions, session_id, diag))
+            .collect();
+        if !found.is_empty() {
+            return found;
+        }
+    }
+    Vec::new()
 }
 
 /// [`find_codex_rollouts`] under the `sessions` root given.
@@ -476,6 +543,64 @@ mod tests {
         assert!(found.exists());
     }
 
+    #[test]
+    fn overlay_session_dirs_are_listed_per_agent_and_only_when_present() {
+        let td = tempfile::tempdir().unwrap();
+        let overlay = |id: &str| {
+            td.path()
+                .join(id)
+                .join(crate::agent::codex_login::OVERLAY_DIRNAME)
+        };
+        std::fs::create_dir_all(overlay("fuji").join("sessions")).unwrap();
+        std::fs::create_dir_all(overlay("etna").join("sessions")).unwrap();
+        std::fs::create_dir_all(td.path().join("rainier").join("repo")).unwrap();
+
+        assert_eq!(
+            overlay_sessions_in(td.path()),
+            vec![
+                ("etna".to_string(), overlay("etna").join("sessions")),
+                ("fuji".to_string(), overlay("fuji").join("sessions")),
+            ]
+        );
+    }
+
+    fn rollout_in(sessions: &Path, thread: &str) -> PathBuf {
+        let day = sessions.join("2026").join("10").join("08");
+        std::fs::create_dir_all(&day).unwrap();
+        let path = day.join(format!("rollout-2026-10-08T09-00-00-{thread}.jsonl"));
+        std::fs::write(&path, b"{}\n").unwrap();
+        path
+    }
+
+    #[test]
+    fn an_agents_own_overlay_wins_over_a_legacy_copy_of_the_thread() {
+        let td = tempfile::tempdir().unwrap();
+        let (own, legacy) = (td.path().join("own"), td.path().join("legacy"));
+        let thread = "019a-thread";
+        let copy = rollout_in(&own, thread);
+        rollout_in(&legacy, thread);
+        let mut diag = ReadDiagnostics::default();
+
+        let found = find_codex_rollouts_tiered(thread, &[vec![own], vec![legacy]], &mut diag);
+
+        assert_eq!(found, vec![copy]);
+    }
+
+    #[test]
+    fn a_thread_only_in_a_legacy_root_is_still_found() {
+        let td = tempfile::tempdir().unwrap();
+        let (own, legacy) = (td.path().join("own"), td.path().join("legacy"));
+        std::fs::create_dir_all(&own).unwrap();
+        let thread = "019a-old-thread";
+        let old = rollout_in(&legacy, thread);
+        let mut diag = ReadDiagnostics::default();
+
+        let found = find_codex_rollouts_tiered(thread, &[vec![own], vec![legacy]], &mut diag);
+
+        assert_eq!(found, vec![old]);
+        assert!(diag.root_exists);
+    }
+
     /// End to end over a real accounts root: a transcript written under a
     /// managed account is found by the same lookups History and the reader
     /// use, and the account roots join the usage scan's lists.
@@ -509,7 +634,10 @@ mod tests {
             std::fs::write(&rollout, b"{}\n").unwrap();
             assert!(codex_sessions_dirs().contains(&codex.join("sessions")));
             let mut diag = ReadDiagnostics::default();
-            assert_eq!(find_codex_rollouts(thread, &mut diag), vec![rollout]);
+            assert_eq!(
+                find_codex_rollouts(thread, "no-such-agent", &mut diag),
+                vec![rollout]
+            );
             assert!(diag.root_exists);
         });
     }

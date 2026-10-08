@@ -1247,7 +1247,7 @@ fn ingest_session_records(workspace: &WorkspaceManager, agent_id: &str) -> Optio
     };
 
     let mut diagnostics = crate::agent::ReadDiagnostics::default();
-    let paths = (reader.locate)(&session_id, &cwd, &mut diagnostics);
+    let paths = (reader.locate)(&session_id, agent_id, &cwd, &mut diagnostics);
 
     // Version-frozen snapshot tag (memoized probe — at most one --version per
     // provider per process).
@@ -1764,7 +1764,7 @@ pub(super) mod tests {
     ) -> (SyncHealth, ReadDiagnostics) {
         let reader = crate::agent::transcript_reader(provider).expect("reader");
         let mut diag = ReadDiagnostics::default();
-        let paths = (reader.locate)(session_id, cwd, &mut diag);
+        let paths = (reader.locate)(session_id, "sync-test", cwd, &mut diag);
         let _ = (reader.read)(&paths, &mut diag);
         (classify(&diag), diag)
     }
@@ -1802,7 +1802,7 @@ pub(super) mod tests {
         std::fs::write(&mixed, b"{\"a\":1}\ngarbage\n{\"b\":2}\n").unwrap();
         let reader = crate::agent::transcript_reader("codex").unwrap();
         let mut diag = ReadDiagnostics::default();
-        let paths = (reader.locate)("sid-d", cwd, &mut diag);
+        let paths = (reader.locate)("sid-d", "sync-test", cwd, &mut diag);
         let recs = (reader.read)(&paths, &mut diag);
         assert_eq!(recs.len(), 2, "the two valid lines are still returned");
         assert_eq!(diag.records_parsed, 2);
@@ -1853,7 +1853,7 @@ pub(super) mod tests {
         .unwrap();
         let reader = crate::agent::transcript_reader("claude").unwrap();
         let mut diag = ReadDiagnostics::default();
-        let paths = (reader.locate)(sid_d, cwd.path(), &mut diag);
+        let paths = (reader.locate)(sid_d, "sync-test", cwd.path(), &mut diag);
         let recs = (reader.read)(&paths, &mut diag);
         assert_eq!(recs.len(), 2);
         assert_eq!(diag.records_parsed, 2);

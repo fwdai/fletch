@@ -27,6 +27,7 @@ fn opencode_storage_root() -> Option<PathBuf> {
 
 pub(crate) fn opencode_locate(
     session_id: &str,
+    _agent_id: &str,
     _cwd: &Path,
     diag: &mut ReadDiagnostics,
 ) -> Vec<PathBuf> {

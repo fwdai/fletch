@@ -29,15 +29,6 @@ fn target_stamp(record: &AgentRecord, requested: &str) -> Result<Option<String>>
             "`{provider}` has no accounts to switch between."
         )));
     }
-    // Such a provider keeps its sessions in the account's own directory, so
-    // the other account's launch would find nothing to resume.
-    if accounts::launches_in_account_dir(provider) {
-        return Err(Error::Other(format!(
-            "Switching accounts mid-conversation isn't available for {provider} yet: \
-             its sessions live in each account's own directory, so the other account \
-             can't resume this one."
-        )));
-    }
     let requested = requested.trim();
     let target = (!accounts::is_default(requested)).then(|| requested.to_string());
     let current = record

@@ -96,19 +96,14 @@ impl Supervisor {
             .ok_or_else(|| Error::Other("agent has no tracked repos".into()))?
             .checkout_path(&record.id)?;
         let container = stamped_engine(record).is_container();
-        // Where the agent's CLI will look: under the account it was stamped
-        // with when its launch runs the CLI there (`CODEX_HOME`), else the
-        // default dir every claude account shares. A removed account is an
-        // error here too: the launch that follows would fail on it anyway, and
-        // a codex writer would otherwise recreate its directory.
-        let account_dir =
-            crate::agent::accounts::existing_account_dir(provider, record.account.as_deref())?
-                .filter(|_| crate::agent::accounts::launches_in_account_dir(provider));
-        let Some(path) = write(session_id, &cwd, container, account_dir.as_deref(), bodies)? else {
+        // A launch under a removed account would fail, so the conversation it
+        // would resume isn't written either.
+        crate::agent::accounts::existing_account_dir(provider, record.account.as_deref())?;
+        let Some(path) = write(session_id, &record.id, &cwd, container, bodies)? else {
             return Ok(None);
         };
         let mut diag = ReadDiagnostics::default();
-        let located = (reader.locate)(session_id, &cwd, &mut diag);
+        let located = (reader.locate)(session_id, &record.id, &cwd, &mut diag);
         if !located.contains(&path) {
             return Err(Error::Other(format!(
                 "the conversation was written to {}, where {} won't find it",
@@ -409,11 +404,15 @@ mod tests {
 
     /// A per-turn provider (codex) is read in full every pass, and gets the
     /// thread id the transcript was written as, which every turn resumes.
+    /// The agents here run in adopted checkouts outside their agent dirs, so
+    /// this also pins that the writer and the locator agree on the overlay.
     #[test]
     fn a_full_reader_drops_the_copy_on_every_pass() {
         let _env = super::super::session_sync::tests::ENV_LOCK.lock().unwrap();
         let home = tempfile::tempdir().unwrap();
+        let workspaces = tempfile::tempdir().unwrap();
         std::env::set_var("CODEX_HOME", home.path());
+        std::env::set_var(crate::workspace::WORKSPACES_ROOT_ENV, workspaces.path());
         let td = tempfile::tempdir().unwrap();
         let sup = test_supervisor();
         agent(&sup, td.path(), "rainier", "codex", None);
@@ -442,12 +441,15 @@ mod tests {
         sup.materialize("shasta").unwrap();
         let thread = sup.workspace.agent("shasta").unwrap().session_id.unwrap();
         let mut diag = ReadDiagnostics::default();
-        let rollouts = crate::transcripts::find_codex_rollouts(&thread, &mut diag);
+        let rollouts = crate::transcripts::find_codex_rollouts(&thread, "shasta", &mut diag);
+        let overlay = crate::agent::codex_login::overlay_for_agent("shasta").unwrap();
+        assert!(rollouts[0].starts_with(&overlay), "{rollouts:?}");
         resume_and_say(&rollouts[0], &[said("three")]);
         sup.sync_session("shasta");
         sup.sync_session("shasta");
         let written = lines_of(&rollouts[0]);
         std::env::remove_var("CODEX_HOME");
+        std::env::remove_var(crate::workspace::WORKSPACES_ROOT_ENV);
 
         assert_eq!(rollouts.len(), 1);
         assert_eq!(written[0]["payload"]["id"], thread.as_str());

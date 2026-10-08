@@ -110,11 +110,17 @@ pub(crate) fn probe_dir(id: &str, dir: &Path) -> ProviderAuthProbe {
                 "no login in this account's Keychain item or credentials file",
             )
         }
-        "codex" => detailed(
-            "codex",
-            classify_codex_auth(read_file(&dir.join("auth.json")).as_deref(), false),
-            "no credential in this account's auth.json",
-        ),
+        "codex" => {
+            let auth = read_file(&dir.join("auth.json"));
+            if super::codex_login::marked_signed_out(dir, auth.as_deref()) {
+                return entry("codex", AuthStatus::SignedOut, CODEX_REVOKED_DETAIL);
+            }
+            detailed(
+                "codex",
+                classify_codex_auth(auth.as_deref(), false),
+                "no credential in this account's auth.json",
+            )
+        }
         _ => entry(
             id,
             AuthStatus::Unknown,
@@ -160,10 +166,18 @@ fn claude_probe() -> ProviderAuthProbe {
     }
 }
 
+/// A codex login whose tokens are still on disk but whose refresh the
+/// sign-in service refused when the host last tried (`codex_login`).
+const CODEX_REVOKED_DETAIL: &str = "the login expired or was revoked; sign in again";
+
 /// codex writes `$CODEX_HOME/auth.json` (default `~/.codex/auth.json`) on login;
 /// an `OPENAI_API_KEY` in the login shell authenticates it just as well.
 fn codex_probe(home: &Path) -> ProviderAuthProbe {
-    let auth = read_file(&crate::sandbox::policy::codex_home_dir(home).join("auth.json"));
+    let codex_home = crate::sandbox::policy::codex_home_dir(home);
+    let auth = read_file(&codex_home.join("auth.json"));
+    if super::codex_login::marked_signed_out(&codex_home, auth.as_deref()) {
+        return entry("codex", AuthStatus::SignedOut, CODEX_REVOKED_DETAIL);
+    }
     let status = classify_codex_auth(auth.as_deref(), env_key_present("OPENAI_API_KEY"));
     detailed(
         "codex",

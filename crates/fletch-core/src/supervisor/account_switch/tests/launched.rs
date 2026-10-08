@@ -5,6 +5,7 @@
 //! one alone:
 //!
 //!   cargo test --lib scripted_switch -- --ignored --nocapture
+//!   cargo test --lib scripted_codex_switch -- --ignored --nocapture
 //!   FLETCH_LIVE_SWITCH=ai-eve:tttr-1 cargo test --lib live_switch -- --ignored --nocapture
 
 use std::collections::HashMap;
@@ -249,4 +250,129 @@ fn live_switch_moves_a_resumed_session_onto_the_other_accounts_token() {
         .build()
         .unwrap()
         .block_on(switch_between(scratch.path(), from, to));
+}
+
+/// A per-turn `codex`: every turn is one process, which logs the digest of the
+/// access token in its `CODEX_HOME`'s `auth.json`, whether that file still
+/// carries a refresh token, and the thread it resumed, then answers.
+fn fake_codex(dir: &Path, log: &Path) -> PathBuf {
+    let script = dir.join("fake-codex");
+    let body = format!(
+        r#"#!/bin/sh
+LOG='{log}'
+if [ "$1" = "--version" ]; then echo "codex-cli 0.154.0"; exit 0; fi
+auth="$CODEX_HOME/auth.json"
+tok=$(/usr/bin/grep -o '"access_token": *"[^"]*"' "$auth" | /usr/bin/shasum -a 256 | /usr/bin/cut -c1-12)
+if /usr/bin/grep -q '"refresh_token": *""' "$auth"; then rt=blank; else rt=present; fi
+mode=fresh
+prev=
+for a in "$@"; do
+  [ "$prev" = "resume" ] && mode="resume:$a"
+  prev="$a"
+done
+echo "turn $tok $rt $mode" >> "$LOG"
+echo '{{"type":"thread.started","thread_id":"thread-1"}}'
+echo '{{"type":"turn.started"}}'
+echo '{{"type":"item.completed","item":{{"id":"item_0","type":"agent_message","text":"ok"}}}}'
+echo '{{"type":"turn.completed","usage":{{}}}}'
+"#,
+        log = log.display()
+    );
+    std::fs::write(&script, body).unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    script
+}
+
+/// The digest `fake_codex` logs for an account's login.
+fn codex_token_digest(root: &Path, id: &str) -> String {
+    let login: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(root.join("codex").join(id).join("auth.json")).unwrap(),
+    )
+    .unwrap();
+    let pretty = serde_json::to_string_pretty(&login).unwrap();
+    let line = pretty
+        .lines()
+        .find(|l| l.contains("\"access_token\""))
+        .unwrap()
+        .trim()
+        .trim_end_matches(',')
+        .to_string();
+    use sha2::{Digest, Sha256};
+    Sha256::digest(format!("{line}\n").as_bytes())
+        .iter()
+        .take(6)
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+/// A per-turn codex workspace: a turn on `work`, a switch to `home` between
+/// turns, and the turn after. Each turn's process reads the overlay
+/// credential the host wrote for the stamp it runs under, never sees a
+/// refresh token, and the second turn resumes the first turn's thread.
+#[test]
+#[ignore]
+fn scripted_codex_switch_moves_the_next_turn_onto_the_other_login() {
+    in_root(|root| async move {
+        codex_signed_in(&root, "work");
+        codex_signed_in(&root, "home");
+        let scratch = tempfile::tempdir().unwrap();
+        crate::host::runtime::init(tokio::runtime::Handle::current());
+        std::env::set_var(
+            crate::workspace::WORKSPACES_ROOT_ENV,
+            scratch.path().join("ws"),
+        );
+        std::env::set_var(crate::rpc::RPC_ROOT_ENV, scratch.path().join("rpc"));
+        let parent = crate::workspace::agent_parent_dir(AGENT).unwrap();
+        std::fs::create_dir_all(&parent).unwrap();
+        let log = parent.join("turns.log");
+        let script = fake_codex(&parent, &log);
+        crate::bin_resolve::set_agent_overrides(HashMap::from([(
+            "codex".to_string(),
+            script.display().to_string(),
+        )]));
+
+        let checkout = committed_repo(&parent, "repo").await;
+        let sup = Arc::new(test_supervisor());
+        let mut record = record_in_checkouts(&sup, AGENT, std::slice::from_ref(&checkout));
+        record.provider = "codex".into();
+        record.account = Some("work".into());
+        record.session_id = None;
+        sup.workspace.add_agent(&mut record).unwrap();
+        let (ctx, _sink, _dir) = crate::host::ctx::test_ctx();
+        ctx.set_supervisor(sup.clone());
+
+        sup.start_process(&ctx, AGENT).await.expect("first launch");
+        sup.clone()
+            .send_user_message(&ctx, AGENT, "t-1", "first", &[])
+            .await
+            .unwrap();
+        wait_for(&log, 1, "turn").await;
+        wait_idle(&sup).await;
+
+        let switched = sup
+            .switch_account(&ctx, AGENT, "home")
+            .await
+            .expect("switch");
+        assert_eq!(switched.account.as_deref(), Some("home"));
+        sup.clone()
+            .send_user_message(&ctx, AGENT, "t-2", "second", &[])
+            .await
+            .unwrap();
+        let turns = wait_for(&log, 2, "turn").await;
+        for line in log_lines(&log) {
+            println!("{line}");
+        }
+
+        let work = codex_token_digest(&root, "work");
+        let home = codex_token_digest(&root, "home");
+        assert_ne!(work, home);
+        assert_eq!(turns[0], format!("turn {work} blank fresh"));
+        assert_eq!(turns[1], format!("turn {home} blank resume:thread-1"));
+        let overlay = parent.join(crate::agent::codex_login::OVERLAY_DIRNAME);
+        assert!(overlay.join("sessions").is_dir());
+
+        sup.shutdown();
+        crate::bin_resolve::set_agent_overrides(HashMap::new());
+    });
 }

@@ -132,14 +132,66 @@ fn a_provider_without_accounts_is_refused() {
     });
 }
 
+/// A codex login that needs no refresh: an access token whose `exp` is a week
+/// out, distinct per account.
+fn codex_signed_in(root: &Path, id: &str) -> PathBuf {
+    use base64::Engine as _;
+    let dir = root.join("codex").join(id);
+    std::fs::create_dir_all(&dir).unwrap();
+    let enc = |v: serde_json::Value| {
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(v.to_string().as_bytes())
+    };
+    let exp = chrono::Utc::now().timestamp() + 7 * 24 * 3600;
+    let access = format!(
+        "{}.{}.sig-{id}",
+        enc(serde_json::json!({"alg": "RS256"})),
+        enc(serde_json::json!({"iat": exp - 10 * 24 * 3600, "exp": exp, "acct": id}))
+    );
+    let login = serde_json::json!({
+        "auth_mode": "chatgpt",
+        "OPENAI_API_KEY": null,
+        "tokens": {"id_token": "id", "access_token": access,
+                   "refresh_token": format!("rt.{id}"), "account_id": id},
+        "last_refresh": "2026-10-01T00:00:00Z"
+    });
+    std::fs::write(dir.join("auth.json"), login.to_string()).unwrap();
+    dir
+}
+
+/// Codex no longer runs in its account's directory (its sessions live in the
+/// agent's own overlay), so the switch takes it like claude.
 #[test]
-fn a_provider_whose_sessions_live_in_the_account_dir_is_refused_by_name() {
+fn a_codex_workspace_is_no_longer_refused() {
     in_root(|root| async move {
-        std::fs::create_dir_all(root.join("codex").join("work")).unwrap();
+        codex_signed_in(&root, "work");
         let mut record = record_with_status(AGENT, AgentStatus::Idle);
         record.provider = "codex".into();
-        let why = refusal(&record, "work");
-        assert!(why.contains("isn't available for codex"), "{why}");
+        assert_eq!(
+            target_stamp(&record, "work").unwrap().as_deref(),
+            Some("work")
+        );
+    });
+}
+
+#[test]
+fn a_resting_codex_session_is_restamped_onto_the_signed_in_account() {
+    in_root(|root| async move {
+        let td = tempfile::tempdir().unwrap();
+        codex_signed_in(&root, "work");
+        codex_signed_in(&root, "home");
+        let checkout = committed_repo(td.path(), "repo").await;
+        let sup = Arc::new(test_supervisor());
+        let mut record = record_in_checkouts(&sup, AGENT, std::slice::from_ref(&checkout));
+        record.provider = "codex".into();
+        record.account = Some("work".into());
+        record.session_id = None;
+        sup.workspace.add_agent(&mut record).unwrap();
+        let (ctx, _sink, _dir) = crate::host::ctx::test_ctx();
+
+        let record = sup.switch_account(&ctx, AGENT, "home").await.unwrap();
+
+        assert_eq!(record.account.as_deref(), Some("home"));
+        assert!(sup.agents.lock().is_empty());
     });
 }
 

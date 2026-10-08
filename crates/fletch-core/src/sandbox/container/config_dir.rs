@@ -1,24 +1,11 @@
 //! Non-default config-dir detection (does the container need a `-e CLAUDE_CONFIG_DIR`
-//! / `-e CODEX_HOME` / `-e XDG_*`?) and the borrowed git object stores a
+//! / `-e XDG_*`?) and the borrowed git object stores a
 //! `--shared` clone reaches through alternates. Runtime-neutral: every answer
 //! here is a question about the *host* env and filesystem.
 
 use std::path::{Path, PathBuf};
 
 use crate::sandbox::policy::resolve_existing_prefix;
-
-/// Whether `$CODEX_HOME` names a dir other than the default `~/.codex`. Both
-/// sides resolve through [`resolve_existing_prefix`] so a symlink can't read as
-/// non-default; blank counts as unset.
-pub(crate) fn codex_home_is_nondefault(home: &Path) -> bool {
-    match std::env::var_os("CODEX_HOME") {
-        Some(v) if !v.is_empty() => {
-            resolve_existing_prefix(&PathBuf::from(v))
-                != resolve_existing_prefix(&home.join(".codex"))
-        }
-        _ => false,
-    }
-}
 
 // The dirs themselves (`codex_home_dir`, `opencode_*_dir`, `xdg_base`) live in
 // `crate::sandbox::policy` — every engine shares them.

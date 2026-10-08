@@ -13,7 +13,8 @@ already made, and exactly what PR 3 has to deliver. Read it before touching code
 | #875 | `feat/provider-accounts-spawn` (stacked on #874) | active account honoured at spawn, both sandbox engines, transcripts | CI green, awaiting merge |
 | PR 3 | `feat/provider-accounts-usage` (stacked on #875) | per-account spend + limit meters | implemented; status-line source deferred |
 | host login 1 | `feat/claude-host-login` | the host owns every claude login: refresh, token injection on every engine, relaunch-on-expiry, attribution by stamp | draft (2026-10-08) |
-| host login 2 | `feat/account-switch` (stacked on host login 1) | mid-session account switch (`switch_agent_account`: restamp, relaunch on the other token via `relaunch_locked`); refused for any provider whose sessions still live in the account dir (codex until #885) | draft (2026-10-08) |
+| host login 2 | `feat/account-switch` (stacked on host login 1) | mid-session account switch (`switch_agent_account`: restamp, relaunch on the other token via `relaunch_locked`) | draft (2026-10-08) |
+| host login 3 | `feat/codex-host-login` (stacked on host login 2) | the host owns every codex login: per-agent `CODEX_HOME` overlay, launch credential without a refresh token, host refresh; codex switching unlocked | draft (2026-10-08) |
 
 Merge #874 first, then #875. Manual checks Alex still owes before merging #875:
 a fresh Claude account click-through (add → sign in → make active → new agent)
@@ -28,12 +29,15 @@ build it in PR 3.
 ## The model
 
 - A **managed account** is a config directory `~/.fletch/accounts/<provider>/<id>/`
-  (`FLETCH_ACCOUNTS_ROOT` overrides the root in tests). The directory listing
+  (`FLETCH_ACCOUNTS_ROOT` overrides the root in tests). No sandboxed CLI
+  runs in it: it is the login's host-only storage, used by the host's own
+  runs (the login PTY, the limits app-server). The directory listing
   **is** the registry; there is no accounts table. `id` is a slug
   (`[a-z0-9-]`, ≤32, not `default`) and doubles as the label.
-  - A **codex** agent runs pointed at its account dir with `CODEX_HOME`.
-  - A **claude** account is a **token source only**
-    (`accounts::launches_in_account_dir`). Its dir is host-only storage for
+  - A **codex** agent runs in its own `CODEX_HOME` overlay, never the
+    account dir; the host copies the account's login into it without the
+    refresh token (see "Codex: the host owns the login" below).
+  - A **claude** account is a **token source only**. Its dir is host-only storage for
     the login (Settings signs in there with `CLAUDE_CONFIG_DIR`, and the
     Keychain item is named for it). Every claude agent, whatever its account,
     runs in the shared default config dir with `CLAUDE_CODE_OAUTH_TOKEN` set
@@ -120,10 +124,13 @@ build it in PR 3.
   composer's busy notion: spawning or running; resting and errored sessions
   switch), for the current account (`None`, `""` and `default` are one), for
   an id with no directory, for a target whose probe reads signed out
-  (`unknown` passes), for an archived agent, and for any provider that still
-  launches inside its account dir (`launches_in_account_dir`), whose sessions
-  wouldn't resume under another account: codex until its sessions leave the
-  account's `CODEX_HOME` (#885).
+  (`unknown` passes), and for an archived agent. Both providers switch: no
+  CLI runs in an account dir (claude signs in by token, codex runs in its
+  per-agent overlay), so a session resumes under any account. A codex switch
+  takes effect at the next turn, whose launch credential is copied from the
+  new stamp's login. Attribution follows the current stamp, so after a
+  switch the session's whole history and its last limits reading count for
+  the new account (for codex, until the next turn records a reading under it).
   Order: existence check, the provider's account lock
   (`accounts::AccountLocks` on `EngineCtx`, also held by removal across its
   check and delete and by sign-out across the logout, so neither can end an
@@ -163,7 +170,7 @@ Engine (`crates/fletch-core/src/`):
   `account_env`, `ambient_credential_vars`, `account_for_new_agent`,
   `stamped_account_dir`, `existing_account_dir` (errors on a removed stamp),
   `list_accounts` (probes every account), `ProviderAccount`,
-  `ACTIVE_SETTING_PREFIX`, `launches_in_account_dir` (false for claude),
+  `ACTIVE_SETTING_PREFIX`,
   `with_test_root` (test helper, crate-wide env lock).
 - `agent/claude_oauth.rs` — the host-owned claude login. `launch_token(account,
   rejected)` (what every claude launch signs in with; a managed account without
@@ -223,27 +230,35 @@ Engine (`crates/fletch-core/src/`):
   `Agent::login_expires_at_ms` is the launched token's expiry.
 - `pty_session.rs`, `managed_session.rs`, `exec_session.rs` — `env_remove`
   field applied after every env layer.
-- `sandbox/engine.rs` — `AgentLaunchCtx.account_dir` (codex only) and
-  `AgentLaunchCtx.oauth_token` (claude, every engine).
+- `sandbox/engine.rs` — `AgentLaunchCtx.account_dir` (codex only, naming the
+  login; no engine grants or mounts it), `AgentLaunchCtx.codex_home` (codex's
+  per-agent overlay) and `AgentLaunchCtx.oauth_token` (claude, every engine).
 - `sandbox/seatbelt.rs` — puts `oauth_token` in the plan's env as
-  `CLAUDE_CODE_OAUTH_TOKEN`; grants nothing for a claude account dir;
-  `deny_host_claude_logins` hides the on-disk logins and `KEYCHAIN_MACH_DENY`
-  the Keychain from every agent (kernel test
-  `seatbelt_hides_the_hosts_claude_logins`; HTTPS in
+  `CLAUDE_CODE_OAUTH_TOKEN`; grants nothing for any account dir;
+  `deny_host_claude_logins` hides the on-disk claude logins,
+  `deny_host_codex_logins` the codex ones (the host's refresh temp files
+  included), and `KEYCHAIN_MACH_DENY` the Keychain, from every agent (kernel
+  tests `seatbelt_hides_the_hosts_claude_logins`,
+  `seatbelt_hides_the_hosts_codex_logins`; HTTPS in
   `seatbelt_keeps_https_working_under_the_keychain_deny`); `codex_ca_env`
   gives codex a CA bundle (live test
-  `live_codex_turn_runs_under_the_keychain_deny`). The
+  `live_codex_turn_runs_under_the_keychain_deny`). The codex overlay
+  (`AgentLaunchCtx.codex_home`) is granted whole bar its `config.toml`. The
   relocated-claude-dir grants (islands + `.claude.json` literal +
   `settings.json` deny) stay: they still serve an app env that sets
-  `CLAUDE_CONFIG_DIR`. Codex account home granted whole with `config.toml`
-  deny. Ignored kernel test documents the temp-tree grant.
+  `CLAUDE_CONFIG_DIR`. The codex overlay is granted whole with `config.toml`
+  denied; every profile denies reading `~/.codex/auth.json` and
+  `<accounts root>/codex` (`deny_host_codex_logins`). Ignored kernel tests
+  `seatbelt_enforces_account_dir_grants`, `seatbelt_hides_the_hosts_codex_logins`.
 - `sandbox/container/{launch.rs, auth.rs, launch_auth.rs, config_dir.rs}` —
   `auth::resolve(oauth_token)`: the host token (`AuthSource::HostLogin`), then (default account only,
   since a managed launch always has a token) the stored setup-token and the
   shell's auth vars. A claude account dir is never mounted; the per-agent
   `.fletch-claude-projects` mount stays; the `.credentials.json` rw overlay
   is dropped whenever a host token is injected. `status()` is presence-only.
-  `claude_keychain_service`.
+  `claude_keychain_service`. Codex: the overlay mounted read-write and
+  forwarded, the shared config it links to mounted read-only, never
+  `~/.codex` or the account dir.
 - `keychain.rs` — `item_present`, `item_stamp` (`acct` + `mdat`, no secret),
   `read_password` (launch or explicit action only, 20 s cap),
   `write_password` (`security -i`, hex `-X`, so the secret never hits argv;
@@ -252,17 +267,28 @@ Engine (`crates/fletch-core/src/`):
   Keychain API was tried and rejected: a read of a `security`-created item
   from the test binary took ~13 s on first access, the signature of an
   access prompt.
-- `transcripts.rs` — `claude_projects_dirs` and `codex_sessions_dirs` union the
-  account dirs (old claude history still lives there);
+- `transcripts.rs` — `claude_projects_dirs` unions the claude account dirs
+  (old claude history still lives there);
   `claude_projects_dir(cwd, container)` resolves to the default for every
   claude agent; `adopt_account_session` moves a legacy session out of an
-  account dir.
-- `supervisor/materialize.rs` — fork/rewind writer targets the stamped dir via
-  `existing_account_dir` for codex, the default dir for claude.
-- `usage_scan/` — scans all roots (incl. account dirs); each bucket and
-  session carries an `account`: the workspace stamp for a session Fletch ran
-  (`Attribution::sessions`), else whose dir holds the transcript. Codex
-  rollouts' `rate_limits` surface as `UsageScan::rollout_limits` (by dir).
+  account dir. Codex: `codex_overlay_sessions_dirs` (every agent's own, by
+  agent id), `legacy_codex_sessions_dirs` (default + account homes, threads
+  from before overlays), `find_codex_rollouts(id, agent_id)` (the agent's overlay,
+  then legacy).
+- `agent/codex_login.rs` — the host side of a codex login: `overlay_for_agent`,
+  `prepare_overlay`, `write_launch_credential` (refresh single-flight per
+  login, launch copy with the refresh token blanked, written through a
+  no-follow handle on the overlay), `http_refresh`, the signed-out mark read
+  by `auth_probe`. `agent/credential_file.rs` — the 0600 fsynced atomic write
+  and the keyed single-flight map both host logins share.
+- `supervisor/materialize.rs` — fork/rewind writer: the default dir for
+  claude, the agent's overlay for codex.
+- `usage_scan/` — scans all roots (incl. account dirs and agent overlays);
+  each bucket and session carries an `account`: the workspace stamp for a
+  session Fletch ran (`Attribution::sessions`); a codex agent's overlay by
+  the agent's own stamp (`Attribution::roots`), so its sub-agent threads go
+  with it; anything else by the dir that holds it. Codex rollouts'
+  `rate_limits` surface as `UsageScan::rollout_limits`, credited the same way.
 - `agent/limits/` (PR 3) — `ProviderLimits`/`AccountLimits`, normalisers per
   source, the `provider_limits_<provider>_<account>` row (`record_limits`,
   `record_refresh`, refresh floor and 429 back-off), `app_server` (codex
@@ -311,6 +337,102 @@ Frontend (`src/`):
   the last turn failed on a limit or sign-in (`accountError.ts`). The header
   trigger hides while at most one account is not signed out; the hint then
   links to Settings. CSS `.acct-pick*` / `.acct-hint*` in `Workspace.css`.
+
+## Codex: the host owns the login (`feat/codex-host-login`)
+
+Principle (owner's, not to reopen): a sandboxed agent never holds a long-lived
+credential and never manages its own login. The host signs in, stores and
+refreshes; a launch gets the shortest-lived credential that works. Claude's
+half is `feat/claude-host-login`.
+
+What codex's login is (codex-cli 0.154.0, `codex-rs/login/src/auth/manager.rs`):
+
+- `auth.json`: `auth_mode` (`"chatgpt"`), `OPENAI_API_KEY` (null for a
+  subscription login), `tokens.{id_token, access_token, refresh_token,
+  account_id}`, `last_refresh` (RFC 3339, stamped on every refresh).
+- `access_token` is the bearer sent to the API: a JWT with a **ten-day**
+  lifetime (`exp - iat = 864000`). `id_token` lives one hour and is only read
+  for its claims (an expired one is fine). The refresh token is opaque
+  (`rt.…`), no readable expiry, and **rotates**: a refresh may return a new one,
+  and reusing a spent one is refused (`refresh_token_reused`).
+- codex refreshes on its own only when the access token is within five minutes
+  of `exp` (or, with no readable `exp`, when `last_refresh` is over eight days
+  old): `POST https://auth.openai.com/oauth/token`, JSON body
+  `{grant_type: "refresh_token", client_id: "app_EMoamEEZ73f0CkXaXp7hrann",
+  refresh_token}`; the answer is `{id_token?, access_token?, refresh_token?}`.
+  A bad refresh token gets `401 {"error": {"code": "invalid_refresh_token"}}`.
+- `codex exec` and `codex exec resume <id>` run normally from an `auth.json`
+  whose `refresh_token` is `""`. With the field **absent** the whole file is
+  rejected ("Missing bearer or basic authentication"). With an expired access
+  token and an empty refresh token the turn fails:
+  `Failed to refresh token: 400 Bad Request: Invalid 'refresh_token': empty string`.
+- No other hook takes a ChatGPT access token for `codex exec`.
+  `CODEX_ACCESS_TOKEN` is for personal access tokens (`at-…`) and Agent
+  Identity JWTs, not the ChatGPT OAuth token; `OPENAI_API_KEY`/`CODEX_API_KEY`
+  are API billing. The app-server has an externally-managed mode
+  (`account/login/start` with `chatgptAuthTokens`, refreshed through the
+  `account/chatgptAuthTokens/refresh` server request), which would let the
+  host hand over a token per request; it needs Fletch to drive turns through
+  the app-server instead of `exec`, so it is a later option, not this PR.
+- Sessions: `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-<ts>-<id>.jsonl`, with
+  `state_5.sqlite`, `thread_history_1.sqlite`, `logs_2.sqlite` and friends
+  beside them. `codex exec resume <id>` finds a rollout that is in no sqlite
+  index (a fresh `CODEX_HOME` holding only the copied rollout resumed it).
+
+What Fletch does:
+
+- Every codex launch (per-turn exec, native TUI; seatbelt and containers) runs
+  with `CODEX_HOME=<agent dir>/.fletch-codex-home` (`overlay_for_agent`, the
+  one path the launch, the fork/rewind writer and the locator share), an
+  overlay the host assembles before each launch: `sessions/` (the agent's own), the shared
+  `config.toml`/`AGENTS.md`/`prompts`/`skills` linked in from the user's codex
+  home (`accounts::shared_items`; anything the agent put in
+  their place is replaced), and `auth.json`.
+- `auth.json` in the overlay is the account's login with `refresh_token: ""`,
+  every other field kept. It is rewritten before the launch **and before every
+  turn**. When the access token has less than a day left (or half its
+  lifetime, if shorter), the host refreshes first and writes the result back
+  to the account's own `auth.json` atomically (0600, fsynced, through a
+  `.fletch-auth-*` temp file the sandbox can't read either, unknown fields
+  kept). One refresh per login at a time; the file is re-read under the lock
+  so a refresh the user's own codex just made is used, not repeated, and a
+  refusal of a refresh token that another process rotated meanwhile is
+  retried once with the rotated one.
+- Every host write into the overlay (the credential, the shared links,
+  adopted and forked threads) goes through a handle opened without following
+  links (`credential_file::PrivateDir`): an agent that swaps the overlay, or
+  anything in it, for a symlink between turns gets a real directory back,
+  and the host never writes through the link.
+- **Fletch rotates the user's personal codex login.** For the default
+  account the login is `~/.codex/auth.json`, and Fletch refreshes it up to a
+  day before expiry. A codex the user is already running keeps working:
+  before any refresh, proactive or after a 401, codex re-reads `auth.json`
+  and adopts a token another process wrote there instead of spending its
+  own (`AuthManager::refresh_token`'s guarded reload in
+  `codex-rs/login/src/auth/manager.rs`; the 0.154.0 binary carries its
+  "Skipping token refresh because auth changed after guarded reload" log).
+- A refused refresh (401, or `refresh_token_expired`/`_reused`/`_invalidated`,
+  `invalid_grant`, `invalid_refresh_token`) fails the turn with "sign in again"
+  and records a signed-out mark (`<accounts root>/.state/codex-signed-out/`,
+  holding only a hash of the refused refresh token); Settings then shows the
+  account signed out until a new sign-in replaces the token. A transient
+  failure launches with the current token while it is valid and fails the
+  turn once it has expired.
+- The account's directory (or `~/.codex`) is host-only storage. Seatbelt no
+  longer grants `~/.codex`; it grants the overlay (with its `config.toml`
+  denied) and denies **reading** `~/.codex/auth.json` and `<accounts
+  root>/codex/` in every agent's profile. Containers mount the overlay and the
+  shared config read-only; never the home or the account dir.
+- Transcripts move with the agent, not the account: rollouts are found in the
+  agent's overlay first. A thread an agent ran before this change is copied
+  (with its sub-agent threads) into the overlay at its launches, each file
+  whole under its final name and every missing one retried, so resume keeps
+  working; the original stays put, and the usage scan counts a rollout name
+  once, so the copy isn't spend twice. The usage scan credits an overlay to
+  the agent's stamp (`workspace::agent_accounts`). The fork/rewind writer
+  writes into the target agent's overlay.
+- Unchanged: the limits app-server still runs on the host with
+  `CODEX_HOME=<account dir>`; managed launches still strip `OPENAI_API_KEY`.
 
 ## PR 3: per-account usage and limits
 
@@ -479,8 +601,33 @@ polling.
 
 ### Known limits carried forward (mention in the PR, don't fix in PR 3)
 
-- In containers a codex account's links to shared config point at `~/.codex`,
-  which isn't mounted, so in-container codex runs without that shared config.
+- The launch credential is the ten-day access token, not something shorter:
+  codex offers nothing shorter for a ChatGPT login under `codex exec`. The
+  sandbox holds that token for as long as it lives; it never holds the
+  refresh token.
+- A native codex TUI gets its credential once, at launch; one left open past
+  the access token's expiry fails its next request and has to be reopened.
+  Per-turn agents get a fresh file every turn.
+- A refresh can block a turn's start for up to 20 s (it runs on its own
+  thread, about once every nine days per login).
+- If the user's own codex and Fletch refresh one login at the same instant,
+  one of them spends a refresh token the other already rotated and codex's
+  reuse detection may sign the login out. Both sides re-read the file before
+  refreshing, and Fletch retries a refusal once with a token rotated
+  meanwhile, which narrows this to truly simultaneous refreshes; it cannot
+  close it across processes.
+- Codex usage follows the current stamp: after a switch, the session's
+  whole history and its last limits reading count for the new account until
+  the next turn records a reading under it.
+- `cli_auth_credentials_store = "keyring"` logins (no `auth.json`) are not
+  read: such an agent runs signed out.
+- Each agent's overlay grows its own codex state (`logs_2.sqlite` etc.). In
+  containers the shared `skills` is read-only, so codex logs that it could
+  not install its bundled system skills; the ones already installed on the
+  host are read through the link. Seatbelt denies the same write, since
+  `~/.codex` is no longer writable.
+- Codex's `hooks.json` is not among the shared items, so user hooks don't run
+  in Fletch codex sessions.
 - One-shot CLI runs (handoff summariser) use the default account.
 - Claude's `.claude.json` is read-only in containers (same as a non-default
   `CLAUDE_CONFIG_DIR` today); onboarding is pre-seeded to compensate.

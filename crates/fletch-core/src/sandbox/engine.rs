@@ -84,10 +84,9 @@ pub struct AgentLaunchCtx<'a> {
     /// which is every agent until the scheduler (S4) populates it at spawn.
     pub blackboard: Option<&'a Path>,
     /// The config dir of the managed provider account this launch runs under
-    /// (`agent::accounts`) — what the spawn path points `CODEX_HOME` at. Takes
-    /// the place of any relocation in the app's own env for this launch:
-    /// seatbelt grants it like the CLI's own dir, a container engine mounts it
-    /// and forwards the env var. `None` = the CLI's own default account, and
+    /// (`agent::accounts`). For codex it only says *which* login the launch
+    /// runs under: codex itself runs in [`codex_home`](Self::codex_home) and
+    /// never sees this directory. `None` = the CLI's own default account, and
     /// always `None` for claude, whose accounts reach the agent as
     /// `oauth_token` instead.
     pub account_dir: Option<&'a Path>,
@@ -97,6 +96,11 @@ pub struct AgentLaunchCtx<'a> {
     /// stored login it came from never enters the sandbox. `None` for other
     /// providers, or a default account with no host login.
     pub oauth_token: Option<&'a crate::agent::claude_oauth::AccessToken>,
+    /// The per-agent `CODEX_HOME` the host assembled for a codex launch
+    /// (`agent::codex_login`): shared config linked in, the agent's own
+    /// sessions, and a launch credential with no refresh token. The one codex
+    /// home a sandbox may write or mount. `None` for every other provider.
+    pub codex_home: Option<&'a Path>,
 }
 
 impl<'a> AgentLaunchCtx<'a> {
@@ -227,6 +231,7 @@ mod tests {
             blackboard: None,
             account_dir: None,
             oauth_token: None,
+            codex_home: None,
         }
     }
 

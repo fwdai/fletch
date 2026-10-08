@@ -8,11 +8,10 @@ use std::path::{Path, PathBuf};
 
 use crate::error::{Error, Result};
 use crate::sandbox::engine::AgentLaunchCtx;
-use crate::sandbox::policy::{codex_home_dir, opencode_config_dir, opencode_data_dir};
+use crate::sandbox::policy::{opencode_config_dir, opencode_data_dir};
 
 use super::config_dir::{
-    borrowed_object_stores, codex_home_is_nondefault, nondefault_claude_config_dir,
-    xdg_base_is_nondefault,
+    borrowed_object_stores, nondefault_claude_config_dir, xdg_base_is_nondefault,
 };
 use super::launch_auth::{
     apply_container_auth, prepare_codex_launch, prepare_cursor_launch, prepare_opencode_launch,
@@ -44,8 +43,8 @@ pub(crate) struct ContainerLaunch {
     claude_credentials_rw: bool,
     config_dir_credentials_rw: bool,
     projects_src: Option<PathBuf>,
-    codex_config_dir: Option<PathBuf>,
-    forward_codex_home: bool,
+    codex_home: Option<PathBuf>,
+    codex_shared: Vec<PathBuf>,
     oc_data: Option<PathBuf>,
     oc_config: Option<PathBuf>,
     forward_xdg_data_home: bool,
@@ -87,11 +86,11 @@ impl ContainerLaunch {
                     .expect("claude launch must supply a projects_src"),
             },
             ContainerProvider::Codex => ProviderMounts::Codex {
-                config_dir: self
-                    .codex_config_dir
+                home: self
+                    .codex_home
                     .as_deref()
-                    .expect("codex launch must supply a config_dir"),
-                forward_home: self.forward_codex_home,
+                    .expect("codex launch must supply its CODEX_HOME"),
+                shared: &self.codex_shared,
             },
             ContainerProvider::Opencode => ProviderMounts::Opencode {
                 data_dir: self
@@ -198,8 +197,8 @@ pub(crate) fn prepare(
     let mut claude_credentials_rw = false;
     let mut config_dir_credentials_rw = false;
     let mut projects_src: Option<PathBuf> = None;
-    let mut codex_config_dir: Option<PathBuf> = None;
-    let mut forward_codex_home = false;
+    let mut codex_home: Option<PathBuf> = None;
+    let mut codex_shared: Vec<PathBuf> = Vec::new();
     let mut oc_data: Option<PathBuf> = None;
     let mut oc_config: Option<PathBuf> = None;
     let mut forward_xdg_data_home = false;
@@ -264,22 +263,19 @@ pub(crate) fn prepare(
             apply_container_auth(&mut env, super::auth::resolve(ctx.oauth_token))?;
         }
         ContainerProvider::Codex => {
-            // A managed account's home is always forwarded; otherwise only a
-            // non-default `$CODEX_HOME` is, since the container already
-            // resolves `~/.codex` via HOME.
-            let (dir, forward) = match ctx.account_dir {
-                Some(dir) => (dir.to_path_buf(), true),
-                None => (codex_home_dir(ctx.home), codex_home_is_nondefault(ctx.home)),
-            };
-            forward_codex_home = forward;
-            if forward_codex_home {
-                env.push(("CODEX_HOME".into(), dir.to_string_lossy().into_owned()));
-            }
+            // The host assembled the overlay and wrote its launch credential
+            // before this launch (`agent::spawn`); the account's own directory
+            // stays on the host.
+            let dir = ctx
+                .codex_home
+                .ok_or_else(|| Error::Other("codex launch without its CODEX_HOME overlay".into()))?
+                .to_path_buf();
+            env.push(("CODEX_HOME".into(), dir.to_string_lossy().into_owned()));
 
             auth_start = env.len();
             // An ambient `OPENAI_API_KEY` signs in the default account only:
             // under a managed one it would silently replace that account's
-            // login, so only the account's own `auth.json` counts.
+            // login, so only the account's own credential counts.
             let api_key = match ctx.account_dir {
                 Some(_) => None,
                 None => std::env::var("OPENAI_API_KEY").ok(),
@@ -288,7 +284,15 @@ pub(crate) fn prepare(
                 return Err(Error::Other(NO_ACCOUNT_AUTH_MSG.to_string()));
             }
             prepare_codex_launch(&mut env, &dir, api_key.as_deref())?;
-            codex_config_dir = Some(dir);
+            // From the host's own resolution of the shared source, never from
+            // the overlay's links, which the agent can rewrite.
+            let source = crate::agent::accounts::shared_source_dir("codex", ctx.home);
+            codex_shared = crate::agent::accounts::shared_items("codex")
+                .iter()
+                .map(|item| source.join(item))
+                .filter(|path| path.exists())
+                .collect();
+            codex_home = Some(dir);
         }
         ContainerProvider::Opencode => {
             let data = opencode_data_dir(ctx.home);
@@ -350,8 +354,8 @@ pub(crate) fn prepare(
         claude_credentials_rw,
         config_dir_credentials_rw,
         projects_src,
-        codex_config_dir,
-        forward_codex_home,
+        codex_home,
+        codex_shared,
         oc_data,
         oc_config,
         forward_xdg_data_home,
@@ -418,18 +422,21 @@ mod tests {
     }
 
     /// A codex launch under a managed account mounts and forwards the
-    /// account's home, gates on that home's own `auth.json`, and never lets an
-    /// ambient `OPENAI_API_KEY` (the default account's) stand in for it.
+    /// agent's overlay, gates on the overlay's launch credential, mounts
+    /// nothing of the account's own directory, and never lets an ambient
+    /// `OPENAI_API_KEY` (the default account's) stand in for the login.
     #[test]
-    fn a_codex_account_launch_uses_the_accounts_home_and_login() {
+    fn a_codex_account_launch_mounts_the_overlay_not_the_account_home() {
         let td = tempfile::tempdir().unwrap();
         let home = td.path().join("home");
         let root = td.path().join("w");
         let rpc = td.path().join("rpc");
         let account = td.path().join("accounts/codex/work");
-        for dir in [&home, &root, &rpc, &account] {
+        let overlay = root.join(".fletch-codex-home");
+        for dir in [&home, &root, &rpc, &account, &overlay] {
             std::fs::create_dir_all(dir).unwrap();
         }
+        std::fs::write(account.join("auth.json"), "{}").unwrap();
         let ctx = AgentLaunchCtx {
             agent_id: "a1",
             provider: "codex",
@@ -442,28 +449,72 @@ mod tests {
             blackboard: None,
             account_dir: Some(&account),
             oauth_token: None,
+            codex_home: Some(&overlay),
         };
 
         let err = prepare(&ctx, ContainerProvider::Codex, None)
             .err()
-            .expect("an account with no auth.json must not launch");
+            .expect("an overlay with no launch credential must not launch");
         assert!(err.to_string().contains("account isn't signed in"), "{err}");
 
-        std::fs::write(account.join("auth.json"), "{}").unwrap();
+        std::fs::write(overlay.join("auth.json"), "{}").unwrap();
         let launch = prepare(&ctx, ContainerProvider::Codex, None).unwrap();
-        let account_s = account.to_string_lossy().into_owned();
+        let overlay_s = overlay.to_string_lossy().into_owned();
         assert!(launch
             .env
             .iter()
-            .any(|(k, v)| k == "CODEX_HOME" && *v == account_s));
+            .any(|(k, v)| k == "CODEX_HOME" && *v == overlay_s));
         assert!(launch.auth_vars().is_empty(), "{:?}", launch.auth_vars());
         match launch.mounts() {
-            ProviderMounts::Codex {
-                config_dir,
-                forward_home,
-            } => {
-                assert_eq!(config_dir, account.as_path());
-                assert!(forward_home);
+            ProviderMounts::Codex { home: mounted, .. } => {
+                assert_eq!(mounted, overlay.as_path());
+            }
+            _ => panic!("expected codex mounts"),
+        }
+        let account_s = account.to_string_lossy().into_owned();
+        assert!(!launch.env.iter().any(|(_, v)| v.contains(&account_s)));
+    }
+
+    /// The shared config is mounted from the host's own codex home, read-only,
+    /// whatever links the agent left in its overlay.
+    #[cfg(unix)]
+    #[test]
+    fn a_codex_launch_mounts_the_shared_config_the_host_resolves() {
+        let td = tempfile::tempdir().unwrap();
+        let home = td.path().join("home");
+        let root = td.path().join("w");
+        let rpc = td.path().join("rpc");
+        let overlay = root.join(".fletch-codex-home");
+        for dir in [&home.join(".codex/skills"), &root, &rpc, &overlay] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        std::fs::write(home.join(".codex/config.toml"), "").unwrap();
+        std::fs::write(overlay.join("auth.json"), "{}").unwrap();
+        std::os::unix::fs::symlink("/etc", overlay.join("prompts")).unwrap();
+        let ctx = AgentLaunchCtx {
+            agent_id: "a1",
+            provider: "codex",
+            writable_root: &root,
+            source_repos: &[],
+            rpc_dir: &rpc,
+            cwd: &root,
+            home: &home,
+            interactive: false,
+            blackboard: None,
+            account_dir: None,
+            codex_home: Some(&overlay),
+            oauth_token: None,
+        };
+
+        let launch = prepare(&ctx, ContainerProvider::Codex, None).unwrap();
+
+        match launch.mounts() {
+            ProviderMounts::Codex { shared, .. } => {
+                let source = crate::sandbox::policy::codex_home_dir(&home);
+                assert_eq!(
+                    shared,
+                    &[source.join("config.toml"), source.join("skills")][..]
+                );
             }
             _ => panic!("expected codex mounts"),
         }
@@ -496,6 +547,7 @@ mod tests {
             blackboard: None,
             account_dir: None,
             oauth_token: Some(&token),
+            codex_home: None,
         };
 
         let launch = prepare(&ctx, ContainerProvider::Claude, None).unwrap();

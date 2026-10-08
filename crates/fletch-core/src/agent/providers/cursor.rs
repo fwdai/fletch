@@ -39,6 +39,7 @@ use super::gated_session_id;
 
 pub(crate) fn cursor_locate(
     session_id: &str,
+    _agent_id: &str,
     _cwd: &Path,
     diag: &mut ReadDiagnostics,
 ) -> Vec<PathBuf> {

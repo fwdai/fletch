@@ -33,6 +33,27 @@ pub fn session_accounts(
     Ok(out)
 }
 
+/// Every agent by id, with the account its workspace is stamped with
+/// (`default` for no stamp), archived ones included — what the usage scan
+/// credits an agent's own codex session dir to.
+pub fn agent_accounts(
+    conn: &rusqlite::Connection,
+) -> Result<std::collections::HashMap<String, String>> {
+    let mut stmt = conn.prepare("SELECT id, provider_account FROM workspaces")?;
+    let rows = stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+    })?;
+    let mut out = std::collections::HashMap::new();
+    for row in rows {
+        let (id, account) = row?;
+        let account = account
+            .filter(|a| !crate::agent::accounts::is_default(a))
+            .unwrap_or_else(|| crate::agent::accounts::DEFAULT_ACCOUNT.to_string());
+        out.insert(id, account);
+    }
+    Ok(out)
+}
+
 /// How many live (non-archived) agents of `provider` are stamped with the
 /// managed account `account` (see `agent::accounts`). Gates removing the
 /// account: its directory holds the login those agents launch on (and a codex

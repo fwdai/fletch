@@ -20,6 +20,8 @@ mod args;
 mod auth_probe;
 mod capabilities;
 pub mod claude_oauth;
+pub mod codex_login;
+pub(crate) mod credential_file;
 mod host_state;
 pub mod limits;
 mod login;
@@ -95,7 +97,8 @@ pub struct ManagedAgent {
 }
 
 pub struct PerTurnAgent {
-    session: ExecSession,
+    // Boxed so `Agent` stays the size of its other variants.
+    session: Box<ExecSession>,
 }
 
 /// The per-turn inputs a `*_build_args` builder turns into CLI argv. Bundled
