@@ -436,6 +436,7 @@ export class ProtocolClient implements RemoteClient {
           hostKey: target.hostKey,
           timeoutMs: candidate.timeoutMs,
           via: candidate.via,
+          alternates: candidate.alternates,
         });
       } catch (e) {
         last = e instanceof Error ? e : new Error(String(e));

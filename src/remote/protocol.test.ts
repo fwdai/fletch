@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { backoffDelay } from "./backoff";
 import { candidatesFor, LAN_OPEN_TIMEOUT_MS, RELAY_OPEN_TIMEOUT_MS } from "./candidates";
 import { HANDSHAKE_TIMEOUT_MS, MAX_IN_FLIGHT, ProtocolClient, READ_TIMEOUT_MS } from "./client";
-import { parseAddress, parsePairUrl, relayDeviceUrl, wsUrl } from "./pairing";
+import { localHostname, parseAddress, parsePairUrl, relayDeviceUrl, wsUrl } from "./pairing";
 import type { Socket, SocketHandlers, SocketOptions } from "./socket";
 import {
   CLOSE_HOST_OFFLINE,
@@ -196,12 +196,30 @@ describe("pairing URL", () => {
   });
 });
 
+/** The same key `discovery::tests` labels in Rust: the two ends must agree on
+ *  the name, or a paired device dials one nobody answers to. */
+const VECTOR_KEY = "ASNFZ4mrze__AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+
+describe("local hostname", () => {
+  it("is the first eight key bytes in hex, as the host announces it", () => {
+    expect(localHostname(VECTOR_KEY)).toBe("fletch-0123456789abcdef.local");
+  });
+
+  it("is null for a key it cannot read", () => {
+    expect(localHostname("")).toBeNull();
+    expect(localHostname("AAAA")).toBeNull(); // three bytes
+    expect(localHostname("not base64!")).toBeNull();
+  });
+});
+
 describe("connection candidates", () => {
+  const LOCAL = `ws://${localHostname(HOST_KEY)}:1/ws`;
+
   it("dials the LAN address first, with a 3 s open budget, then the relay with a longer one", () => {
     expect(
       candidatesFor({ host: "h", port: 1, hostKey: HOST_KEY, relay: "wss://relay.test" }),
     ).toEqual([
-      { url: "ws://h:1/ws", via: "lan", timeoutMs: LAN_OPEN_TIMEOUT_MS },
+      { url: "ws://h:1/ws", alternates: [LOCAL], via: "lan", timeoutMs: LAN_OPEN_TIMEOUT_MS },
       {
         url: `wss://relay.test/v1/device/${HOST_KEY}`,
         via: "relay",
@@ -211,10 +229,20 @@ describe("connection candidates", () => {
   });
 
   it("is LAN-only without a relay, and without a host key to route on", () => {
-    const lanOnly = [{ url: "ws://h:1/ws", via: "lan", timeoutMs: LAN_OPEN_TIMEOUT_MS }];
-    expect(candidatesFor({ host: "h", port: 1, hostKey: HOST_KEY })).toEqual(lanOnly);
-    // Hand-typed entry has no key yet, and the key *is* the relay's route.
-    expect(candidatesFor({ host: "h", port: 1, relay: "wss://relay.test" })).toEqual(lanOnly);
+    expect(candidatesFor({ host: "h", port: 1, hostKey: HOST_KEY })).toEqual([
+      { url: "ws://h:1/ws", alternates: [LOCAL], via: "lan", timeoutMs: LAN_OPEN_TIMEOUT_MS },
+    ]);
+    // Hand-typed entry has no key yet: no relay route, and no name to race.
+    expect(candidatesFor({ host: "h", port: 1, relay: "wss://relay.test" })).toEqual([
+      { url: "ws://h:1/ws", via: "lan", timeoutMs: LAN_OPEN_TIMEOUT_MS },
+    ]);
+  });
+
+  it("does not race the saved address against itself", () => {
+    const local = localHostname(HOST_KEY) as string;
+    expect(
+      candidatesFor({ host: local, port: 1, hostKey: HOST_KEY })[0].alternates,
+    ).toBeUndefined();
   });
 });
 

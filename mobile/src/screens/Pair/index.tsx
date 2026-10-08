@@ -1,24 +1,28 @@
 import { Icon } from "@desktop/components/Icon";
+import { localHostname } from "@desktop/remote/pairing";
 import { useEffect, useState } from "react";
 import { Notice } from "../../components/ui/Notice";
 import { parseAddress, parsePairUrl } from "../../remote";
+import type { NearbyHost } from "../../remote/nearby";
 import { useStore } from "../../store";
 import { Wordmark } from "../Home/Wordmark";
+import { NearbyList } from "./NearbyList";
 import { Progress } from "./Progress";
+import { useNearby } from "./useNearby";
 
-/** Manual pairing: the host's address and the one-time code from the desktop's
- *  Settings → Remote control. A pasted `fletch://pair?…` link fills both and
- *  brings the host's public key with it, which is what authenticates the Mac,
- *  plus the relay URL when the host has one; hand-typed entry has no key and
- *  pins the one it meets on first contact, and learns the relay from the
- *  `pair` result (docs/remote-protocol.md, "Secure channel" and
- *  "Authentication and pairing").
+/** Pairing by hand: pick the Mac from the ones announcing themselves on this
+ *  network (docs/remote-protocol.md, "Discovery") and type the one-time code
+ *  it shows. Picking one supplies its `.local` name, port and claimed key —
+ *  the key is pinned and the handshake proves it — so no address is ever
+ *  typed. The address field is the fallback for networks that block Bonjour.
  *
- *  A link the app was *opened* with pairs on its own, and fills the same
- *  fields as it goes: the connection can take the best part of half a minute
- *  from a phone off the Mac's network, so what is being paired and how far it
- *  has got are on screen throughout, and the details stay put for a one-tap
- *  retry if it fails. */
+ *  A pasted `fletch://pair?…` link fills everything and brings the host's
+ *  public key with it, which is what authenticates the Mac outright. A link
+ *  the app was *opened* with pairs on its own, and fills the same fields as it
+ *  goes: the connection can take the best part of half a minute from a phone
+ *  off the Mac's network, so what is being paired and how far it has got are
+ *  on screen throughout, and the details stay put for a one-tap retry if it
+ *  fails. */
 export function PairScreen() {
   const connect = useStore((s) => s.connect);
   const step = useStore((s) => s.pairStep);
@@ -28,8 +32,12 @@ export function PairScreen() {
   const [token, setToken] = useState("");
   const [hostKey, setHostKey] = useState<string | undefined>(undefined);
   const [relay, setRelay] = useState<string | undefined>(undefined);
+  const [picked, setPicked] = useState<NearbyHost | null>(null);
+  const [manual, setManual] = useState(false);
   const busy = step !== null;
   const parsed = parseAddress(address);
+  // A link already says which Mac; there is nothing to browse for.
+  const { hosts, searching } = useNearby(!linked);
 
   // A link the app was opened with lands in the store, not in these fields.
   useEffect(() => {
@@ -37,6 +45,8 @@ export function PairScreen() {
     setAddress(`${linked.host}:${linked.port}`);
     setHostKey(linked.hostKey);
     setRelay(linked.relay);
+    setPicked(null);
+    setManual(true);
     if (linked.pairingToken) setToken(linked.pairingToken);
   }, [linked]);
 
@@ -47,7 +57,28 @@ export function PairScreen() {
     setAddress(`${link.host}:${link.port}`);
     setHostKey(link.hostKey);
     setRelay(link.relay);
+    setPicked(null);
+    setManual(true);
     if (link.pairingToken) setToken(link.pairingToken);
+  };
+
+  const pick = (host: NearbyHost) => {
+    const name = localHostname(host.hostKey);
+    if (!name) return;
+    setPicked(host);
+    setAddress(`${name}:${host.port}`);
+    setHostKey(host.hostKey);
+    setRelay(undefined);
+  };
+
+  const typeAddress = (value: string) => {
+    // Typing an address is a different Mac from the one picked, as far as
+    // anyone knows: its claimed key no longer applies.
+    if (picked) {
+      setPicked(null);
+      setHostKey(undefined);
+    }
+    setAddress(value);
   };
 
   const submit = () => {
@@ -56,6 +87,7 @@ export function PairScreen() {
       ...parsed,
       hostKey,
       relay,
+      name: picked?.name,
       pairingToken: token.trim().toUpperCase(),
     }).catch(() => {});
   };
@@ -64,7 +96,13 @@ export function PairScreen() {
     <div className="pair">
       <Wordmark />
       <div className="hero">
-        <h1>{linked?.name ? `Pair with ${linked.name}` : "Pair with your Mac"}</h1>
+        <h1>
+          {linked?.name
+            ? `Pair with ${linked.name}`
+            : picked
+              ? `Pair with ${picked.name}`
+              : "Pair with your Mac"}
+        </h1>
         {linked ? (
           <p>
             Your Mac sent these details. Pairing starts on its own — from another network it can
@@ -72,23 +110,38 @@ export function PairScreen() {
           </p>
         ) : (
           <p>
-            On your Mac open <b>Settings → Remote control → Pair a device</b> and scan the code with
-            your camera. Can't scan? Enter the code and address it shows here.
+            On your Mac open <b>Settings → Remote control → Pair a device</b>. Scan its QR code with
+            your camera, or pick your Mac below and enter the code it shows.
           </p>
         )}
       </div>
-      <div className="field">
-        <label htmlFor="pair-host">Address</label>
-        <input
-          id="pair-host"
-          value={address}
-          placeholder="192.168.1.24:47285"
-          autoCapitalize="off"
-          autoCorrect="off"
-          spellCheck={false}
-          onChange={(e) => absorb(e.target.value, setAddress)}
+      {!linked && (
+        <NearbyList
+          hosts={hosts}
+          searching={searching}
+          selected={picked?.hostKey}
+          disabled={busy}
+          onSelect={pick}
         />
-      </div>
+      )}
+      {manual ? (
+        <div className="field">
+          <label htmlFor="pair-host">Address</label>
+          <input
+            id="pair-host"
+            value={picked ? "" : address}
+            placeholder="192.168.1.24:47285"
+            autoCapitalize="off"
+            autoCorrect="off"
+            spellCheck={false}
+            onChange={(e) => absorb(e.target.value, typeAddress)}
+          />
+        </div>
+      ) : (
+        <button type="button" className="pair-manual" onClick={() => setManual(true)}>
+          Can't find your Mac? Enter its address
+        </button>
+      )}
       <div className="field">
         <label htmlFor="pair-token">Pairing code</label>
         <input

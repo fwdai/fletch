@@ -722,6 +722,7 @@
   line-height: 1.5;
 }
 .pair label,
+.pair .label,
 .ap-field label {
   display: block;
   font-size: 11px;
@@ -764,6 +765,45 @@
   font-size: 12.5px;
   color: var(--fg-3);
   line-height: 1.5;
+}
+/* "Macs nearby": one row per announcing host, by name — the AirDrop list. */
+.nearby {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--bd-soft);
+  border-radius: 12px;
+  overflow: hidden;
+}
+.nearby-host {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 13px;
+  font-size: 15px;
+  color: var(--fg-0);
+  background: var(--bg-2);
+  text-align: left;
+}
+.nearby-host + .nearby-host {
+  border-top: 1px solid var(--bd-soft);
+}
+.nearby-host span {
+  flex: 1;
+  min-width: 0;
+}
+.nearby-host[aria-pressed="true"] {
+  background: var(--bg-3);
+}
+.nearby-host[aria-pressed="true"] svg:last-child {
+  color: var(--accent);
+}
+/* The typed-address fallback, kept out of the way of the list above it. */
+.pair-manual {
+  align-self: flex-start;
+  font-size: 13px;
+  color: var(--fg-3);
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
 /* Sits where the error line does, and for the same reason: whatever the last
    thing to happen was, it is readable next to the button that started it. */

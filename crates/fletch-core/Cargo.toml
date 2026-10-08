@@ -69,10 +69,15 @@ fletch-proto = { path = "../fletch-proto" }
 futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }
 # Pairing codes and device tokens (`remote/auth.rs`).
 rand = "0.9"
-# The host's LAN addresses, for the pairing URL and the settings pane's
-# "reachable at" line. Smallest interface-enumeration crate: libc on unix,
-# windows-sys elsewhere, both already present.
-if-addrs = "0.13"
+# The host's LAN addresses, for the pairing URL. Smallest interface-enumeration
+# crate: libc on unix, windows-sys elsewhere, both already present. Kept on the
+# version mdns-sd uses, so the tree holds one copy.
+if-addrs = "0.15"
+# Announcing the host on the LAN (`remote/discovery.rs`): `_fletch._tcp` plus
+# the host's own `fletch-<id>.local` name. Pure Rust, so the Mac app and the
+# headless Linux host advertise through the same code, sharing port 5353 with
+# mDNSResponder or Avahi rather than talking to either.
+mdns-sd = "0.21"
 
 # App-held secrets (secrets.rs) and the agent-credential probe (run_env.rs):
 # release builds keep the GitHub / container tokens in the login Keychain via

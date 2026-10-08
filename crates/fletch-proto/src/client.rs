@@ -83,6 +83,10 @@ impl Default for Keepalive {
 pub struct Target {
     /// A LAN `ws://` or a relay `wss://` — one candidate, already chosen.
     pub url: String,
+    /// Other URLs for the same host, raced against `url` within the same
+    /// budget: a LAN candidate's `.local` name beside its saved address. The
+    /// host key, not the URL, says who answered.
+    pub alternates: Vec<String>,
     /// The host key the caller pins, base64url. `None` is trust on first use:
     /// whatever the handshake authenticates comes back in [`ConnectResult`].
     pub host_key: Option<String>,
@@ -217,9 +221,10 @@ impl Dialer {
         let deadline = target
             .timeout_ms
             .map(|ms| Instant::now() + Duration::from_millis(ms));
-        // Both address families race inside `dial::connect`, so one that
-        // blackholes cannot spend the budget on behalf of the other.
-        let dialled = within(deadline, dial::connect(&target.url))
+        // Both address families, and every alternate URL, race inside
+        // `dial::connect_any`, so one that blackholes cannot spend the budget on
+        // behalf of the others.
+        let dialled = within(deadline, dial::connect_any(&target.url, &target.alternates))
             .await
             .ok_or_else(|| timed_out(&target.url, target.timeout_ms))?;
         let mut ws = dialled.map_err(|e| format!("cannot reach {}: {e}", target.url))?;

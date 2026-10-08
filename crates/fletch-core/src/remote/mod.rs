@@ -11,11 +11,12 @@
 //! pairing codes and the device registry, `server` the WebSocket listener,
 //! `relay` the outbound host link that carries off-LAN devices, `session` the
 //! live-connection registry, `dispatch` the op allowlist, `events` the taps on
-//! the engine's event stream, `push` the two alert triggers those taps raise.
-//! This module owns the state those eight share and the lifecycle of the
-//! listener and the relay link.
+//! the engine's event stream, `push` the two alert triggers those taps raise,
+//! `discovery` the LAN announcement. This module owns the state those share
+//! and the lifecycle of the listener, its announcement and the relay link.
 
 mod auth;
+mod discovery;
 mod dispatch;
 mod events;
 pub mod push;
@@ -204,6 +205,12 @@ struct Inner {
     relay: Option<RelayLink>,
     /// Injectable so the relay tests do not sleep.
     relay_timing: RelayTiming,
+    /// The LAN announcement, `Some` exactly while the listener runs (and the
+    /// daemon could start). Replaced when the port moves.
+    advertiser: Option<discovery::Advertiser>,
+    /// Whether to announce at all. Off under test: the socket tests boot a
+    /// host per test, and none of them should appear on the real network.
+    discovery: bool,
 }
 
 struct ServerHandle {
@@ -266,6 +273,8 @@ impl RemoteState {
                 relay_url: None,
                 relay: None,
                 relay_timing: RelayTiming::default(),
+                advertiser: None,
+                discovery: !cfg!(test),
             }),
         })
     }
@@ -337,6 +346,7 @@ impl RemoteState {
             port: bound,
             shutdown,
         });
+        self.advertise(&mut inner, bound);
         self.spawn_relay(&mut inner);
         tracing::info!(port = bound, "remote: listening");
         Ok(bound)
@@ -377,6 +387,7 @@ impl RemoteState {
             shutdown,
         });
         inner.port = port;
+        self.advertise(&mut inner, bound);
         drop(inner);
         if let Some(old) = old {
             let _ = old.shutdown.send(());
@@ -405,6 +416,9 @@ impl RemoteState {
             tracing::info!(port = handle.port, "remote: stopped");
         }
         let link = inner.relay.take();
+        // Withdrawn with the listener: a phone must not list a Mac that will
+        // refuse it.
+        inner.advertiser = None;
         drop(inner);
         self.sessions.close_all(CLOSE_DISABLED);
         drop(link);
@@ -436,6 +450,26 @@ impl RemoteState {
             self.spawn_relay(&mut inner);
         }
         Ok(())
+    }
+
+    /// Announce this host on the LAN at `port`, replacing any earlier
+    /// announcement. A failure is logged and nothing else: discovery only saves
+    /// a phone from typing an address, and the listener works without it.
+    fn advertise(&self, inner: &mut Inner, port: u16) {
+        // The old records go first, so a browser never sees two ports at once.
+        inner.advertiser = None;
+        let Some(host) = self.host.as_ref().filter(|_| inner.discovery) else {
+            return;
+        };
+        match discovery::Advertiser::start(
+            host.public_bytes(),
+            &host.public_base64(),
+            &machine_name(),
+            port,
+        ) {
+            Ok(advertiser) => inner.advertiser = Some(advertiser),
+            Err(e) => tracing::warn!(error = %e, "remote: not announced on the local network"),
+        }
     }
 
     /// Start the host link if remote access is on, a URL is set and no link is

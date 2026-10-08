@@ -133,6 +133,7 @@ const FAST: Keepalive = Keepalive {
 fn target(url: &str, host_key: Option<String>) -> Target {
     Target {
         url: url.to_string(),
+        alternates: Vec::new(),
         host_key,
         timeout_ms: Some(10_000),
     }

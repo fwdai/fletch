@@ -71,6 +71,7 @@ const secureSocket: SocketFactory = async (url, handlers, opts) => {
   try {
     result = await localTransport.call<ConnectResult>("remote_connect", {
       url,
+      alternates: opts?.alternates ?? null,
       hostKey: opts?.hostKey ?? null,
       // One timeout, and it lives in Rust: it bounds the dial and the
       // handshake together and closes the socket when it expires, so a

@@ -34,6 +34,8 @@ export interface SocketOptions {
   timeoutMs?: number;
   /** Which candidate this URL came from; echoed back as `Socket.via`. */
   via?: Via;
+  /** Other URLs for the same host, raced against `url` by the transport. */
+  alternates?: string[];
 }
 
 /** Opens a socket to `url`. Rejecting is equivalent to `onError` + `onClose`;

@@ -276,6 +276,11 @@ repo); anyone can run their own and point both apps at it.
   connections, as on the LAN.
 - **Phone side.** Connection candidates in order: `addr` over `ws://` with a
   3 s open timeout, then `wss://<relay>/v1/device/<hostId>` with a 15 s one.
+  When the phone holds the host key, the LAN candidate also dials
+  `fletch-<label>.local` on the same port (see "Discovery"); the two race
+  inside the one 3 s budget and the first to open wins, so a Mac whose address
+  changed is still reached on the LAN, and a host too old to announce costs
+  nothing.
   A dial races the host's IPv6 and IPv4 addresses, interleaved by family and
   started 300 ms apart (RFC 8305), so a cellular network whose IPv6 path to
   the relay blackholes cannot spend the whole budget before IPv4 is tried.
@@ -293,6 +298,34 @@ repo); anyone can run their own and point both apps at it.
   it next connects over the LAN. The Noise handshake and everything after it are identical on
   both paths, so the app above the transport cannot tell which one it is on
   and does not need to.
+
+## Discovery
+
+While remote access is on, the host announces itself on the LAN over mDNS, so
+a phone can list it by name and find it after its IP address changes. Nothing
+in an announcement is trusted: anyone on the network can announce any name and
+any key, and the Noise handshake is what authenticates, as it is on a typed
+address.
+
+- **Host name.** `fletch-<label>.local`, where `<label>` is the first 8 bytes
+  of the host's public key in lowercase hex (16 digits). It answers with every
+  interface address and follows them as they change. A device that holds the
+  host key derives the name itself, without browsing.
+- **Service.** `_fletch._tcp`, instance `fletch-<label>`, on the listen port.
+  Its TXT record carries `name` (the host name a device shows, as in
+  `host.name`), `id` (the host ID, base64url) and `port` (the listen port, so a
+  browser need not resolve the SRV record).
+- **Lifecycle.** Announced when the listener starts, re-announced on a port
+  change, withdrawn (goodbye packets) when remote access is turned off. A host
+  that cannot announce — no multicast, port 5353 unavailable — logs it and
+  serves as before.
+- **Pairing.** A phone lists the hosts it finds by `name`. Picking one gives it
+  `fletch-<label>.local`, the TXT `port` and the TXT `id`, which it pins as the
+  host key: an announcement of a real host's `id` from another machine fails
+  the handshake. It then pairs with the code as usual. A typed address is the
+  fallback for networks that block multicast.
+- **Reconnecting.** See "Relay" → "Phone side": the host name is raced against
+  the saved address within the LAN budget.
 
 ## Push notifications
 

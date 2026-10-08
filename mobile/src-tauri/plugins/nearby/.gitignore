@@ -1,0 +1,3 @@
+# The build script copies tauri's Swift API in here when targeting iOS, so that
+# ios/Package.swift can depend on it. Regenerated on every build.
+/.tauri/

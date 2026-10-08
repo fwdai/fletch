@@ -1,0 +1,22 @@
+[package]
+name = "tauri-plugin-nearby"
+version = "0.1.0"
+description = "Lists the Fletch hosts announcing themselves on the local network (Bonjour)"
+authors = ["Alex Chaplinsky", "fwdai.org"]
+license = "AGPL-3.0-only"
+edition = "2021"
+rust-version = "1.77"
+# Required by `tauri_plugin::Builder`: the ACL and the Swift library are keyed
+# off it, and the capability identifier becomes `nearby:*`.
+links = "tauri-plugin-nearby"
+
+[build-dependencies]
+tauri-plugin = { version = "2", features = ["build"] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+
+# The mobile bridge lives behind tauri's `wry` feature (see plugins/push).
+[target.'cfg(target_os = "ios")'.dependencies]
+tauri = { version = "2", features = ["wry"] }

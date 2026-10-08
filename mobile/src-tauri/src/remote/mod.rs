@@ -32,19 +32,22 @@ fn emit(app: &AppHandle, event: ClientEvent) {
     };
 }
 
-/// Open a socket to `url`, run the Noise handshake, and report the host's
+/// Open a socket to `url` (or whichever of `alternates`, the same host's other
+/// URLs, answers first), run the Noise handshake, and report the host's
 /// identity and the new connection's id. `timeout_ms` bounds the dial and the
 /// handshake together.
 #[tauri::command]
 pub async fn remote_connect(
     state: State<'_, Arc<Dialer>>,
     url: String,
+    alternates: Option<Vec<String>>,
     host_key: Option<String>,
     timeout_ms: Option<u64>,
 ) -> Result<ConnectResult, String> {
     state
         .connect(Target {
             url,
+            alternates: alternates.unwrap_or_default(),
             host_key,
             timeout_ms,
         })

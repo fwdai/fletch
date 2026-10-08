@@ -27,17 +27,22 @@ function useCountdown(iso: string): number {
 
 /** A live pairing invitation, QR first: the iPhone's own camera opens the
  *  `fletch://pair` link it encodes, which brings everything the phone needs and
- *  authenticates this Mac outright. Typing the address and code by hand is the
- *  fallback, one click away rather than the headline. Single use and five
+ *  authenticates this Mac outright. Picking this Mac from the phone's "Macs
+ *  nearby" list and typing the code is the fallback, one click away rather
+ *  than the headline; the address is shown only for networks where the phone
+ *  cannot see the list. Single use and five
  *  minutes, so the countdown is part of the affordance rather than decoration.
  *  The copied link is how another Mac pairs (Paired hosts › Add a host). */
 export function PairingCard({
   invite,
+  hostName,
   lanOnly,
   onRegenerate,
   onDismiss,
 }: {
   invite: PairingInvite;
+  /** What this Mac is called in the phone's nearby list. */
+  hostName?: string;
   /** No relay link is up, so the link carries no relay and the phone can
    *  only reach this Mac from the same network. */
   lanOnly?: boolean;
@@ -71,14 +76,19 @@ export function PairingCard({
             {manual ? (
               <>
                 <div className="set-pair-code mono">{invite.token}</div>
+                <div className="set-pair-copy">
+                  {hostName
+                    ? `Pick “${hostName}” under Macs nearby in Fletch on your phone, then enter this code.`
+                    : "Pick this Mac under Macs nearby in Fletch on your phone, then enter this code."}
+                </div>
                 {link && (
-                  <div className="set-pair-addr mono">
-                    {link.host}:{link.port}
+                  <div className="set-pair-copy">
+                    Not listed? Enter its address instead:{" "}
+                    <span className="set-pair-addr mono">
+                      {link.host}:{link.port}
+                    </span>
                   </div>
                 )}
-                <div className="set-pair-copy">
-                  Enter this code and address in Fletch on your phone.
-                </div>
               </>
             ) : (
               <button type="button" className="set-pair-manual-btn" onClick={() => setManual(true)}>
