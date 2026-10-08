@@ -175,6 +175,14 @@ export const GATES = {
     label: "Rewinding",
     reason: "Rewinding isn't available on a remote host yet.",
   },
+  /** Moving an agent onto another provider account. The picker lists the
+   *  host's accounts, so the gate stays closed until the list is on the wire
+   *  too; otherwise a remote agent would be offered this Mac's accounts. */
+  switchAccount: {
+    op: ["list_provider_accounts", "switch_agent_account"],
+    label: "Switching accounts",
+    reason: "Switching accounts isn't available on a remote host yet.",
+  },
   /** Merging a PR is on the wire, so this closes only against a host from
    *  before the op existed — the same shape as any other added op. */
   mergePr: {

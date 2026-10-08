@@ -6,15 +6,16 @@ import { useAppStore } from "@/store";
 import { useGate } from "@/store/capabilities";
 import { firstLine, formatAge } from "@/util/format";
 import { useMinuteClock } from "@/util/hooks";
+import { AccountPicker } from "./AccountPicker";
 import { ForkMenu } from "./ForkMenu";
 import { ViewToggle } from "./ViewToggle";
 
 /** Header strip above the workspace body. Houses the left-sidebar toggle, the
- *  agent's title over its codename + branch + diff + age, the Custom/Native
- *  view switcher, and the right-panel toggle. A sub-agent thread's header
- *  (SubagentThread/ThreadHeader) keeps this exact skeleton — dot, title line,
- *  meta line — so stepping into and out of a thread moves nothing but the
- *  words. */
+ *  agent's title over its codename + branch + diff + age, the account picker
+ *  (account providers only), the Custom/Native view switcher, and the
+ *  right-panel toggle. A sub-agent thread's header (SubagentThread/ThreadHeader)
+ *  keeps this exact skeleton — dot, title line, meta line — so stepping into
+ *  and out of a thread moves nothing but the words. */
 interface Props {
   agent: AgentRecord;
 }
@@ -62,6 +63,8 @@ export function WorkspaceHeader({ agent }: Props) {
           {age && <> · {age}</>}
         </div>
       </div>
+
+      <AccountPicker agent={agent} trigger="header" />
 
       {nativeView && (
         <ViewToggle

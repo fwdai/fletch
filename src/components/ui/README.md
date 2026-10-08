@@ -16,7 +16,7 @@ and is the path of least resistance for new UI.
 | `Chip` | Composer footer chip with a text label (model picker, base branch, attach). | `.c-chip` |
 | `Select` | Custom `<select>` replacement (keyboard-operable dropdown of string options). | `.ui-select-*` |
 | `DropdownMenu` / `DropdownItem` / `DropdownSection` / `DropdownSeparator` | Presentational menu shell + rows. Owns structure + state classes (`active`/`disabled`/`danger`); **caller owns behavior** (open/close, positioning via `style`, dismissal, keyboard). | `.dd` / `.dd-item` |
-| `MenuButton` | Icon button that opens a `DropdownMenu` anchored to it, flipping up near the bottom of its scroller (`usePlacement`); outside click dismisses. The rows get a `close` to dismiss it with. | `.dd-anchor` |
+| `MenuButton` | Icon button (or a labelled `trigger` render prop) that opens a `DropdownMenu` anchored to it, flipping up near the bottom of its scroller (`usePlacement`); outside click or Escape dismisses (`Scrim`). The rows get a `close` to dismiss it with. | `.dd-anchor` |
 | `CopyButton` | Copy-to-clipboard affordance with copied-state feedback. | — |
 | `Modal` / `ModalBody` / `ModalFooter` | Centered modal dialog — dimmed scrim + card + the standard icon/title/close header. Sizes `sm` / `md` / `lg`; `layer` picks the stacking level. The backdrop always dims; if it shouldn't, you want a popover (bare `Scrim`), not a modal. | `.modal` / `.modal-body` |
 | `ModalSheet` | The wide overlay sheet (History, Project Settings) — dimmed backdrop + large card, no built-in header. `fill` pins it to full viewport height. | `.modal-sheet` |

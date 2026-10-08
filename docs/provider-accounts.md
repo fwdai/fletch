@@ -40,7 +40,10 @@ build it in PR 3.
   `provider_account_<provider>` (absent/blank/`default` = default). It is read
   **only at agent creation** and stamped on the record
   (`workspaces.provider_account`, migration 0049). Every later spawn uses the
-  stamp. Switching the radio moves new agents only.
+  stamp. Switching the radio moves new agents only. The stamp itself moves only
+  through `switch_agent_account` (the agent header's account picker), which
+  the host refuses mid-turn; the next turn runs under the new account in the
+  same workspace and conversation.
 - Claude's macOS Keychain item for a managed dir is
   `Claude Code-credentials-<first 8 hex of sha256(dir path string)>`, no trailing
   slash, hashed exactly as the env var carries it. Verified against a live item
@@ -130,6 +133,19 @@ Frontend (`src/`):
 - `components/SettingsScreen/ProviderLogin/loginSessions.ts` — `loginKey()`;
   `ProviderLoginTerminal` takes `accountId`.
 - `api/types/agent.ts` — `AgentRecord.account`.
+- `api/domains/agents.ts` — `switchAgentAccount(agentId, account)` (host
+  `invoke`); store action `switchAgentAccount` in `store/workspace.ts`, queued
+  on `configOps` with effort/model so a send right after runs under the new
+  account. It writes only `account` back (status stays with `agent:*`
+  events) and holds `switchingAccount[id]` while in flight. Gate
+  `switchAccount` needs both `list_provider_accounts` and
+  `switch_agent_account` on a remote host.
+- `components/Workspace/AccountPicker/` — header picker (`index.tsx` on
+  `ui/MenuButton`'s `trigger`, `AccountMenu.tsx`, `choices.ts`,
+  `useCanSwitchAccount.ts`) and `SwitchAccountHint` above the composer when
+  the last turn failed on a limit or sign-in (`accountError.ts`). The header
+  trigger hides while at most one account is not signed out; the hint then
+  links to Settings. CSS `.acct-pick*` / `.acct-hint*` in `Workspace.css`.
 
 ## PR 3: per-account usage and limits
 

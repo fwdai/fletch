@@ -84,9 +84,11 @@ export function loginCommand(id: ProviderId): string | undefined {
 }
 
 /** Whether Fletch can hold several sign-ins for a provider — the gate for the
- *  accounts list in Settings. Mirrors the engine's `ACCOUNT_PROVIDERS`. */
-export function supportsAccounts(id: ProviderId): boolean {
-  return !!PROVIDER_DETAIL[id].accounts;
+ *  accounts list in Settings and the agent header's account picker. Mirrors
+ *  the engine's `ACCOUNT_PROVIDERS`. Takes any string because an agent record's
+ *  provider is untyped; an id this build doesn't know has no accounts. */
+export function supportsAccounts(id: string): boolean {
+  return !!PROVIDER_DETAIL[id as ProviderId]?.accounts;
 }
 
 export const PROVIDER_DETAIL: Record<ProviderId, ProviderDetail> = {
