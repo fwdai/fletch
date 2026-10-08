@@ -23,7 +23,7 @@ use std::time::Duration;
 
 use serde_json::Value;
 
-use super::{AfterRotation, Creds, HostLogin, LoginProvider};
+use super::{Creds, HostLogin, LoginProvider};
 use crate::agent::accounts;
 
 pub(crate) use super::Demand;
@@ -390,7 +390,6 @@ impl LoginProvider for ClaudeProvider {
     type Grant = TokenGrant;
     type Launch = AccessToken;
     const PROVIDER: &'static str = "claude";
-    const AFTER_ROTATION: AfterRotation = AfterRotation::UseIfUnexpired;
 
     fn key(&self) -> String {
         self.key.clone()
@@ -460,6 +459,12 @@ impl LoginProvider for ClaudeProvider {
 
     fn current_mark(&self) -> Option<String> {
         self.store.stamp()
+    }
+
+    /// Recorded so Settings still reads "sign in again" after a restart:
+    /// the store's stamp only, never anything secret.
+    fn mark_path(&self) -> Option<PathBuf> {
+        super::mark_file("claude", &self.key)
     }
 }
 
@@ -900,25 +905,60 @@ mod tests {
         assert_eq!(store.current()["claudeAiOauth"]["refreshToken"], "r1");
     }
 
-    #[tokio::test]
-    async fn a_refused_refresh_reads_as_revoked_and_sticks_until_the_login_changes() {
-        let k = key("revoked");
-        let store = MemStore::holding(login("a1", "r1", now_ms() - HOUR_MS));
-        let endpoint = Arc::new(MockEndpoint::new(Answer::Rejected));
-        assert_eq!(
-            launch(&k, &store, &endpoint).await.unwrap_err(),
-            LoginError::Revoked
-        );
-        assert!(revoked_at(&k, &store));
-        // A second launch doesn't spend another request on a known-dead token.
-        assert_eq!(
-            launch(&k, &store, &endpoint).await.unwrap_err(),
-            LoginError::Revoked
-        );
-        assert_eq!(endpoint.calls.load(Ordering::SeqCst), 1);
-        // A new sign-in clears it.
-        store.replace(login("a9", "r9", now_ms() + 5 * HOUR_MS));
-        assert_eq!(launch(&k, &store, &endpoint).await.unwrap().secret(), "a9");
+    /// Run `test` with the accounts root at a tempdir: a refusal is recorded
+    /// there, so the root must not move while the test reads it back.
+    fn with_marks<F: std::future::Future<Output = ()>>(test: impl FnOnce() -> F) {
+        accounts::with_test_root(|_| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(test());
+        });
+    }
+
+    #[test]
+    fn a_refused_refresh_reads_as_revoked_and_sticks_until_the_login_changes() {
+        with_marks(|| async {
+            let k = key("revoked");
+            let store = MemStore::holding(login("a1", "r1", now_ms() - HOUR_MS));
+            let endpoint = Arc::new(MockEndpoint::new(Answer::Rejected));
+            assert_eq!(
+                launch(&k, &store, &endpoint).await.unwrap_err(),
+                LoginError::Revoked
+            );
+            assert!(revoked_at(&k, &store));
+            // A second launch doesn't spend another request on a known-dead token.
+            assert_eq!(
+                launch(&k, &store, &endpoint).await.unwrap_err(),
+                LoginError::Revoked
+            );
+            assert_eq!(endpoint.calls.load(Ordering::SeqCst), 1);
+            // A new sign-in clears it.
+            store.replace(login("a9", "r9", now_ms() + 5 * HOUR_MS));
+            assert_eq!(launch(&k, &store, &endpoint).await.unwrap().secret(), "a9");
+        });
+    }
+
+    /// The mark is written under the accounts root, so a restart (a fresh
+    /// engine with nothing in memory) still reads the login as revoked
+    /// until the store changes.
+    #[test]
+    fn a_refused_login_is_still_revoked_after_a_restart() {
+        with_marks(|| async {
+            let k = key("restart");
+            let store = MemStore::holding(login("a1", "r1", now_ms() - HOUR_MS));
+            let endpoint = Arc::new(MockEndpoint::new(Answer::Rejected));
+            assert_eq!(
+                launch(&k, &store, &endpoint).await.unwrap_err(),
+                LoginError::Revoked
+            );
+            assert!(super::super::mark_file("claude", &k).unwrap().is_file());
+            assert!(revoked_at(&k, &store));
+            store.replace(login("a9", "r9", now_ms() + 5 * HOUR_MS));
+            assert!(!revoked_at(&k, &store));
+            assert!(!super::super::mark_file("claude", &k).unwrap().exists());
+        });
     }
 
     #[tokio::test]

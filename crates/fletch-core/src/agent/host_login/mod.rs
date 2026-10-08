@@ -118,19 +118,6 @@ pub(crate) struct Creds {
     pub expires_at_ms: Option<i64>,
 }
 
-/// What a refused refresh does when the stored refresh token turned out to
-/// have changed while the request was out (another process rotated it).
-/// Two rules until the providers converge on one.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum AfterRotation {
-    /// Launch on the rotated login while its access token is unexpired;
-    /// never refresh again.
-    UseIfUnexpired,
-    /// Treat the rotated login as freshly read: launch on it unless it is
-    /// due, else refresh it once more.
-    Recheck,
-}
-
 /// One provider's logins. Every method that touches a store is blocking.
 pub(crate) trait LoginProvider: Send + Sync {
     /// Where a login was read from, and so where it is written back.
@@ -141,7 +128,6 @@ pub(crate) trait LoginProvider: Send + Sync {
     type Launch;
     /// Names the provider in the registry keys and the logs.
     const PROVIDER: &'static str;
-    const AFTER_ROTATION: AfterRotation;
 
     /// One key per login: its single-flight lock and registry entries.
     fn key(&self) -> String;
@@ -208,6 +194,28 @@ type KeptLogin = (Value, Arc<dyn Any + Send + Sync>);
 static FLIGHTS: Flights<Mutex<()>> = Flights::new();
 static KEPT: Kept<KeptLogin> = Kept::new();
 static REVOKED: Mutex<Option<HashMap<String, String>>> = Mutex::new(None);
+
+/// Where a provider keeps a refused login's mark across restarts:
+/// `<accounts root>/.state/<provider>-revoked/<hash of the login key>`.
+pub(crate) fn mark_file(provider: &str, key: &str) -> Option<PathBuf> {
+    use sha2::{Digest, Sha256};
+    // Tests that don't point the accounts root at a tempdir must not write
+    // into the developer's real one.
+    if cfg!(test) && std::env::var_os(crate::agent::accounts::ACCOUNTS_ROOT_ENV).is_none() {
+        return None;
+    }
+    let digest: String = Sha256::digest(key.as_bytes())
+        .iter()
+        .take(8)
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    let root = crate::agent::accounts::accounts_root().ok()?;
+    Some(
+        root.join(".state")
+            .join(format!("{provider}-revoked"))
+            .join(digest),
+    )
+}
 
 pub(crate) fn now_ms() -> i64 {
     chrono::Utc::now().timestamp_millis()
@@ -324,22 +332,14 @@ impl<P: LoginProvider> HostLogin<P> {
                         let creds = self.provider.parse(&f.json)?;
                         (creds.refresh.as_deref() != Some(refresh.as_str())).then_some(creds)
                     });
-                    match (rotated, P::AFTER_ROTATION) {
-                        (Some(rot), AfterRotation::UseIfUnexpired)
-                            if unexpired_strict(&rot, self.provider.now_ms()) =>
-                        {
-                            let fresh = fresh.expect("rotated came from it");
-                            return Ok(self.provider.launch(&fresh.json, &rot));
-                        }
-                        (Some(rot), AfterRotation::Recheck)
-                            if !rechecked && rot.refresh.is_some() =>
-                        {
-                            rechecked = true;
-                            cur = fresh.expect("rotated came from it");
-                            creds = rot;
-                            continue;
-                        }
-                        _ => {}
+                    // The rotated login is taken as freshly read: launched on
+                    // unless it is due, else refreshed once more. A second
+                    // refusal is the login's.
+                    if let Some(rot) = rotated.filter(|_| !rechecked) {
+                        rechecked = true;
+                        cur = fresh.expect("rotated came from it");
+                        creds = rot;
+                        continue;
                     }
                     let (stamp, json) = match &fresh {
                         Some(f) => (f.stamp.clone().or(cur.stamp.clone()), &f.json),
@@ -508,11 +508,6 @@ impl<P: LoginProvider> HostLogin<P> {
 /// Still usable at `now_ms`: unexpired, or of unknown expiry.
 fn unexpired(creds: &Creds, now_ms: i64) -> bool {
     creds.expires_at_ms.map_or(true, |e| e > now_ms)
-}
-
-/// Known to be unexpired at `now_ms`.
-fn unexpired_strict(creds: &Creds, now_ms: i64) -> bool {
-    creds.expires_at_ms.is_some_and(|e| e > now_ms)
 }
 
 pub mod claude;

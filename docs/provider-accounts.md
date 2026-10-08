@@ -59,7 +59,9 @@ build it in PR 3.
   the stored token while it lasts); a rotated pair the store refuses anyway
   is kept in memory and written on the next call. A refused refresh
   (400/401) marks the login revoked until the store changes, and Settings
-  shows "sign in again". The token is resolved before the lifecycle lock
+  shows "sign in again"; the mark (the store's stamp, nothing secret) is
+  kept under `<accounts root>/.state/claude-revoked/`, so it survives a
+  restart. The token is resolved before the lifecycle lock
   and the spawn watchdog (`prefetch_login`), with a 5 s refresh timeout and
   a 20 s cap on a Keychain read that might prompt.
 - **The sandbox holds no login but the access token.** Every agent's seatbelt
@@ -174,8 +176,12 @@ Engine (`crates/fletch-core/src/`):
   `with_test_root` (test helper, crate-wide env lock).
 - `agent/host_login/mod.rs` — the engine every host-owned login runs on:
   load, due check, single-flight refresh, write-back, a kept rotated login
-  when the write fails (`Kept`, by store stamp), the refused-refresh mark;
-  providers implement `LoginProvider` (store, parse, margin, refresh request,
+  when the write fails (`Kept`, by store stamp), the refused-refresh mark.
+  One rule after a refusal for every provider: if the stored refresh token
+  changed while the request was out (another process rotated it), the
+  rotated login is taken as freshly read, launched on unless it is due,
+  else refreshed once more; a second refusal is the login's. Providers
+  implement `LoginProvider` (store, parse, margin, refresh request,
   launch form, what a refusal is recorded against).
 - `agent/host_login/claude.rs` — the claude adapter. `launch_token(account,
   rejected)` (what every claude launch signs in with; a managed account without

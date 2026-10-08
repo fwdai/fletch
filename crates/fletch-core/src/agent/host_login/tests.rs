@@ -25,11 +25,10 @@ fn grant(access: &str, refresh: Option<&str>) -> Grant {
     }
 }
 
-type Hook<const RECHECK: bool> = Box<dyn Fn(&Fake<RECHECK>) + Send + Sync>;
+type Hook = Box<dyn Fn(&Fake) + Send + Sync>;
 
-/// An in-memory store and a scripted sign-in server. `RECHECK` picks the
-/// rule after a refusal of a token another process rotated.
-struct Fake<const RECHECK: bool> {
+/// An in-memory store and a scripted sign-in server.
+struct Fake {
     key: String,
     stored: Mutex<Option<String>>,
     version: AtomicU64,
@@ -39,7 +38,7 @@ struct Fake<const RECHECK: bool> {
     answers: Mutex<VecDeque<Result<Grant, RefreshFailure>>>,
     sent: Mutex<Vec<String>>,
     /// Runs while a refresh request is out, before its answer.
-    during_refresh: Mutex<Option<Hook<RECHECK>>>,
+    during_refresh: Mutex<Option<Hook>>,
     mark_path: Option<PathBuf>,
 }
 
@@ -52,7 +51,7 @@ fn login(access: &str, refresh: Option<&str>, expires_ms: i64) -> Value {
     json!({ "access": access, "refresh": refresh, "expires": expires_ms, "kept": "as is" })
 }
 
-impl<const RECHECK: bool> Fake<RECHECK> {
+impl Fake {
     fn holding(json: Option<Value>) -> Self {
         Self {
             key: unique_key(),
@@ -83,16 +82,11 @@ impl<const RECHECK: bool> Fake<RECHECK> {
     }
 }
 
-impl<const RECHECK: bool> LoginProvider for Fake<RECHECK> {
+impl LoginProvider for Fake {
     type Place = String;
     type Grant = Grant;
     type Launch = String;
     const PROVIDER: &'static str = "fake";
-    const AFTER_ROTATION: AfterRotation = if RECHECK {
-        AfterRotation::Recheck
-    } else {
-        AfterRotation::UseIfUnexpired
-    };
 
     fn key(&self) -> String {
         self.key.clone()
@@ -180,7 +174,7 @@ impl<const RECHECK: bool> LoginProvider for Fake<RECHECK> {
     }
 }
 
-fn engine(fake: Fake<false>) -> HostLogin<Fake<false>> {
+fn engine(fake: Fake) -> HostLogin<Fake> {
     HostLogin::new(fake)
 }
 
@@ -273,9 +267,12 @@ fn a_refusal_after_another_process_rotated_the_login_uses_its_login() {
     assert_eq!(e.provider().sent.lock().len(), 1);
 }
 
+/// A rotated login another process left inside the margin is refreshed
+/// once more rather than launched on as it is. (Claude's adapter used to
+/// launch on any unexpired rotated pair.)
 #[test]
 fn a_refusal_after_a_rotation_rechecks_and_refreshes_the_rotated_login_once() {
-    let fake: Fake<true> = Fake::holding(Some(login("at-1", Some("rt-1"), soon())));
+    let fake = Fake::holding(Some(login("at-1", Some("rt-1"), soon())));
     *fake.during_refresh.lock() = Some(Box::new(|f| {
         f.store(login("at-other", Some("rt-other"), soon()))
     }));
@@ -291,7 +288,7 @@ fn a_refusal_after_a_rotation_rechecks_and_refreshes_the_rotated_login_once() {
 
 #[test]
 fn a_rotation_that_is_not_due_is_launched_on_after_a_recheck() {
-    let fake: Fake<true> = Fake::holding(Some(login("at-1", Some("rt-1"), soon())));
+    let fake = Fake::holding(Some(login("at-1", Some("rt-1"), soon())));
     *fake.during_refresh.lock() = Some(Box::new(|f| {
         f.store(login("at-other", Some("rt-other"), later()))
     }));
@@ -304,7 +301,7 @@ fn a_rotation_that_is_not_due_is_launched_on_after_a_recheck() {
 
 #[test]
 fn a_second_refusal_after_a_recheck_is_a_revocation() {
-    let fake: Fake<true> = Fake::holding(Some(login("at-1", Some("rt-1"), soon())));
+    let fake = Fake::holding(Some(login("at-1", Some("rt-1"), soon())));
     *fake.during_refresh.lock() = Some(Box::new(|f| {
         f.store(login("at-other", Some("rt-other"), soon()))
     }));

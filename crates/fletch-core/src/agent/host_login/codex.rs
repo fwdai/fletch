@@ -30,7 +30,7 @@ use base64::Engine as _;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use super::{AfterRotation, Creds, Demand, HostLogin, LoginError, LoginProvider, RefreshFailure};
+use super::{Creds, Demand, HostLogin, LoginError, LoginProvider, RefreshFailure};
 use crate::agent::accounts;
 
 pub const REFRESH_URL: &str = "https://auth.openai.com/oauth/token";
@@ -106,7 +106,6 @@ impl LoginProvider for CodexProvider<'_> {
     type Grant = TokenResponse;
     type Launch = Value;
     const PROVIDER: &'static str = "codex";
-    const AFTER_ROTATION: AfterRotation = AfterRotation::Recheck;
 
     fn key(&self) -> String {
         self.source_home.to_string_lossy().into_owned()
