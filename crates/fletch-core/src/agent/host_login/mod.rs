@@ -10,10 +10,6 @@
 //! callers run [`HostLogin::credential`] on a blocking task, so the
 //! single-flight lock is never held across an await.
 
-// No provider runs on the engine until the claude and codex adapters move
-// onto it; the lint comes back with them.
-#![cfg_attr(not(test), allow(dead_code))]
-
 use std::any::Any;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -178,6 +174,10 @@ pub(crate) trait LoginProvider: Send + Sync {
     fn mark_path(&self) -> Option<PathBuf> {
         None
     }
+    /// The clock the margin and expiry are judged by.
+    fn now_ms(&self) -> i64 {
+        now_ms()
+    }
 }
 
 /// Why no credential could be had. Never carries a credential.
@@ -233,6 +233,7 @@ impl<P: LoginProvider> HostLogin<P> {
         Self { provider }
     }
 
+    #[cfg(test)]
     pub(crate) fn provider(&self) -> &P {
         &self.provider
     }
@@ -264,7 +265,7 @@ impl<P: LoginProvider> HostLogin<P> {
             .ok_or(LoginError::SignedOut)?;
         let mut rechecked = false;
         loop {
-            let now = now_ms();
+            let now = self.provider.now_ms();
             let due = match demand {
                 Demand::Launch => self.provider.due(&creds, &cur.json, now),
                 Demand::Replace {
@@ -303,7 +304,10 @@ impl<P: LoginProvider> HostLogin<P> {
             match self.provider.refresh(&refresh) {
                 Ok(grant) => {
                     let mut json = cur.json.clone();
-                    if !self.provider.apply(&mut json, &grant, now_ms()) {
+                    if !self
+                        .provider
+                        .apply(&mut json, &grant, self.provider.now_ms())
+                    {
                         return Err(LoginError::SignedOut);
                     }
                     let creds = self.provider.parse(&json).ok_or(LoginError::SignedOut)?;
@@ -321,7 +325,9 @@ impl<P: LoginProvider> HostLogin<P> {
                         (creds.refresh.as_deref() != Some(refresh.as_str())).then_some(creds)
                     });
                     match (rotated, P::AFTER_ROTATION) {
-                        (Some(rot), AfterRotation::UseIfUnexpired) if unexpired_strict(&rot) => {
+                        (Some(rot), AfterRotation::UseIfUnexpired)
+                            if unexpired_strict(&rot, self.provider.now_ms()) =>
+                        {
                             let fresh = fresh.expect("rotated came from it");
                             return Ok(self.provider.launch(&fresh.json, &rot));
                         }
@@ -375,7 +381,7 @@ impl<P: LoginProvider> HostLogin<P> {
         creds: &Creds,
         reason: String,
     ) -> Result<P::Launch, LoginError> {
-        if matches!(demand, Demand::Launch) && unexpired(creds, now_ms()) {
+        if matches!(demand, Demand::Launch) && unexpired(creds, self.provider.now_ms()) {
             Ok(self.provider.launch(json, creds))
         } else {
             Err(LoginError::Unavailable(reason))
@@ -504,12 +510,13 @@ fn unexpired(creds: &Creds, now_ms: i64) -> bool {
     creds.expires_at_ms.map_or(true, |e| e > now_ms)
 }
 
-/// Known to be unexpired now.
-fn unexpired_strict(creds: &Creds) -> bool {
-    creds.expires_at_ms.is_some_and(|e| e > now_ms())
+/// Known to be unexpired at `now_ms`.
+fn unexpired_strict(creds: &Creds, now_ms: i64) -> bool {
+    creds.expires_at_ms.is_some_and(|e| e > now_ms)
 }
 
 pub mod claude;
+pub(crate) mod codex;
 
 /// Whether a rotated login is kept for the engine key `key` (`provider:key`).
 #[cfg(test)]

@@ -242,7 +242,7 @@ fn sessions_dirs_from(default: Option<PathBuf>, account_dirs: Vec<PathBuf>) -> V
 
 /// Every agent's own codex session root, as `(agent id, sessions dir)`: the
 /// `sessions` dir of each agent's `CODEX_HOME` overlay
-/// (`agent::codex_login::overlay_for_agent`). Only overlays that exist.
+/// (`agent::codex_home::overlay_for_agent`). Only overlays that exist.
 pub(crate) fn codex_overlay_sessions_dirs() -> Vec<(String, PathBuf)> {
     crate::workspace::checkouts_root()
         .map(|root| overlay_sessions_in(&root))
@@ -258,7 +258,7 @@ fn overlay_sessions_in(checkouts_root: &Path) -> Vec<(String, PathBuf)> {
         .flatten()
         .filter_map(|entry| {
             let id = entry.file_name().into_string().ok()?;
-            let sessions = crate::agent::codex_login::overlay_in(&entry.path()).join("sessions");
+            let sessions = crate::agent::codex_home::overlay_in(&entry.path()).join("sessions");
             sessions.is_dir().then_some((id, sessions))
         })
         .collect();
@@ -292,7 +292,7 @@ pub(crate) fn find_codex_rollouts(
     agent_id: &str,
     diag: &mut ReadDiagnostics,
 ) -> Vec<PathBuf> {
-    let own = crate::agent::codex_login::overlay_for_agent(agent_id)
+    let own = crate::agent::codex_home::overlay_for_agent(agent_id)
         .map(|o| o.join("sessions"))
         .ok();
     let tiers = [
@@ -549,7 +549,7 @@ mod tests {
         let overlay = |id: &str| {
             td.path()
                 .join(id)
-                .join(crate::agent::codex_login::OVERLAY_DIRNAME)
+                .join(crate::agent::codex_home::OVERLAY_DIRNAME)
         };
         std::fs::create_dir_all(overlay("fuji").join("sessions")).unwrap();
         std::fs::create_dir_all(overlay("etna").join("sessions")).unwrap();

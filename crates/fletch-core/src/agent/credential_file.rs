@@ -6,8 +6,6 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-pub(crate) use super::host_login::{Flights, Kept, RefreshFailure};
-
 /// Every temp file the host writes a credential through starts with this, so
 /// the seatbelt profile can deny reading one beside a login it hides,
 /// including one a crash left behind (`seatbelt::deny_host_codex_logins`).

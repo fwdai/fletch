@@ -291,7 +291,7 @@ pub fn provider_state_dirs(provider: &str, home: &Path) -> Vec<PathBuf> {
         "claude" => claude_write_island_dirs(&home.join(".claude")),
         // None: a sandboxed codex never runs in the user's codex home. Its
         // `CODEX_HOME` is a per-agent overlay under the writable root
-        // (`agent::codex_login`), and `~/.codex` holds the login's refresh
+        // (`agent::codex_home`), and `~/.codex` holds the login's refresh
         // token, which the sandbox must not be able to rewrite.
         "codex" => Vec::new(),
         "cursor" => vec![home.join(".cursor")],
@@ -593,7 +593,7 @@ pub fn opencode_config_dir(home: &Path) -> PathBuf {
 /// Codex's config dir: `$CODEX_HOME` if set non-blank, else `~/.codex` — the
 /// default account's home, where the host reads its login and the legacy
 /// session root. No engine grants or mounts it: launches run in a per-agent
-/// overlay (`agent::codex_login`).
+/// overlay (`agent::codex_home`).
 pub fn codex_home_dir(home: &Path) -> PathBuf {
     codex_home_from(std::env::var_os("CODEX_HOME"), home)
 }

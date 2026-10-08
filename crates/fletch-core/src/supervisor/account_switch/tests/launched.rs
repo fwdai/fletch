@@ -369,7 +369,7 @@ fn scripted_codex_switch_moves_the_next_turn_onto_the_other_login() {
         assert_ne!(work, home);
         assert_eq!(turns[0], format!("turn {work} blank fresh"));
         assert_eq!(turns[1], format!("turn {home} blank resume:thread-1"));
-        let overlay = parent.join(crate::agent::codex_login::OVERLAY_DIRNAME);
+        let overlay = parent.join(crate::agent::codex_home::OVERLAY_DIRNAME);
         assert!(overlay.join("sessions").is_dir());
 
         sup.shutdown();

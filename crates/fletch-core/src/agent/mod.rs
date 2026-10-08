@@ -19,7 +19,7 @@ pub mod accounts;
 mod args;
 mod auth_probe;
 mod capabilities;
-pub mod codex_login;
+pub(crate) mod codex_home;
 pub(crate) mod credential_file;
 pub(crate) mod host_login;
 mod host_state;

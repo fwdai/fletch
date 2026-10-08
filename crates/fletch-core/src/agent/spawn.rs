@@ -15,8 +15,9 @@ use crate::sandbox::{AgentLaunchCtx, EngineKind, LaunchPlan, SandboxEngine};
 use super::accounts;
 use super::args::{prepare_managed_args, prepare_pty_args};
 use super::capabilities::{mcp_delivery, per_turn_descriptor};
-use super::codex_login;
+use super::codex_home;
 use super::host_login::claude::AccessToken;
+use super::host_login::codex as codex_login;
 use super::probe::resolve_agent_bin;
 use super::{Agent, ManagedAgent, PerTurnAgent, PerTurnDescriptor, PtyAgent, TurnArgs};
 
@@ -203,7 +204,7 @@ fn account_launch(provider: &str, account: Option<&str>) -> Result<AccountLaunch
 /// writable root, holding the agent's own sessions, the shared config linked
 /// in, and a launch credential with no refresh token, which the host writes
 /// fresh from the account's login (`source`) before the launch and before
-/// every turn (see `codex_login`). The sandbox sees neither the account's
+/// every turn (see `codex_home` and `host_login::codex`). The sandbox sees neither the account's
 /// directory nor its refresh token.
 struct CodexHome {
     overlay: PathBuf,
@@ -224,7 +225,7 @@ impl CodexHome {
             return Ok(None);
         }
         Self::prepare_at(
-            codex_login::overlay_for_agent(agent_id)?,
+            codex_home::overlay_for_agent(agent_id)?,
             account_dir,
             home,
             session_id,
@@ -241,7 +242,7 @@ impl CodexHome {
         home: &Path,
         session_id: Option<&str>,
     ) -> Result<Self> {
-        codex_login::prepare_overlay(&overlay, home)?;
+        codex_home::prepare_overlay(&overlay, home)?;
         if let Some(id) = session_id {
             super::providers::codex::adopt_legacy_rollouts(id, &overlay)?;
         }
@@ -254,7 +255,7 @@ impl CodexHome {
     }
 
     fn write_credential(&self) -> Result<()> {
-        codex_login::write_launch_credential(
+        codex_home::write_launch_credential(
             &self.source,
             &self.overlay,
             &codex_login::http_refresh,
@@ -997,7 +998,7 @@ mod tests {
         }
         std::fs::write(account.join("auth.json"), far_future_login().to_string()).unwrap();
 
-        let overlay = codex_login::overlay_in(&root);
+        let overlay = codex_home::overlay_in(&root);
         let codex = CodexHome::prepare_at(overlay.clone(), Some(&account), &home, None).unwrap();
 
         assert_eq!(
@@ -1057,7 +1058,7 @@ mod tests {
             std::fs::create_dir_all(dir).unwrap();
         }
         let codex =
-            CodexHome::prepare_at(codex_login::overlay_in(&root), Some(&source), &home, None)
+            CodexHome::prepare_at(codex_home::overlay_in(&root), Some(&source), &home, None)
                 .unwrap();
         let ctx = AgentLaunchCtx {
             agent_id: "live",

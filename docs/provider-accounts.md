@@ -280,12 +280,17 @@ Engine (`crates/fletch-core/src/`):
   agent id), `legacy_codex_sessions_dirs` (default + account homes, threads
   from before overlays), `find_codex_rollouts(id, agent_id)` (the agent's overlay,
   then legacy).
-- `agent/codex_login.rs` — the host side of a codex login: `overlay_for_agent`,
-  `prepare_overlay`, `write_launch_credential` (refresh single-flight per
-  login, launch copy with the refresh token blanked, written through a
-  no-follow handle on the overlay), `http_refresh`, the signed-out mark read
-  by `auth_probe`. `agent/credential_file.rs` — the 0600 fsynced atomic write
-  and the keyed single-flight map both host logins share.
+- `agent/host_login/codex.rs` — the codex adapter on the engine: the
+  `auth.json` store (stamped by mtime and size), JWT expiry and the
+  min(24h, half the lifetime) margin, the auth.openai.com refresh and its
+  error codes, the launch copy with the refresh token blanked
+  (`launch_file`), the refused-token mark (`is_revoked`, read by
+  `auth_probe`, kept in `.state/codex-signed-out` as before).
+- `agent/codex_home.rs` — the per-agent overlay: `overlay_for_agent`,
+  `open_overlay`, `prepare_overlay`, `write_launch_credential` (the
+  launch file written through a no-follow handle, removed when nothing is
+  stored or the login was refused). `agent/credential_file.rs` — the 0600
+  fsynced atomic write, the file stamp and `PrivateDir`.
 - `supervisor/materialize.rs` — fork/rewind writer: the default dir for
   claude, the agent's overlay for codex.
 - `usage_scan/` — scans all roots (incl. account dirs and agent overlays);

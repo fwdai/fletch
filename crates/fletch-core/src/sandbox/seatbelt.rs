@@ -714,7 +714,7 @@ pub(crate) fn pid_alive(_pid: i32) -> bool {
 /// writable subpath, and its own invariant-3 deny, since the agent's checkout
 /// isn't under the root this profile is otherwise built around.
 /// `codex_home` is the per-agent `CODEX_HOME` overlay a codex launch runs in
-/// (`agent::codex_login`), granted whole bar its `config.toml` (`None` for
+/// (`agent::codex_home`), granted whole bar its `config.toml` (`None` for
 /// every other provider).
 pub fn build_profile(
     writable_root: &Path,
@@ -996,7 +996,7 @@ fn deny_host_claude_logins(home: &Path, relocated_claude_dir: Option<&Path>) -> 
 /// the temp files the host writes a refreshed login through beside it (one
 /// a crash left behind included), and every managed codex account dir. A
 /// codex launch gets a credential without the refresh token in its overlay
-/// (`agent::codex_login`). MUST follow the `(allow file-write* …)` block.
+/// (`agent::codex_home`). MUST follow the `(allow file-write* …)` block.
 fn deny_host_codex_logins(home: &Path) -> String {
     let codex_home = policy::codex_home_dir(home);
     let mut deny = LoginDeny::default();
