@@ -40,15 +40,37 @@ const READ_ID: i64 = 2;
 /// Read the limits of the codex account whose home is `account_dir` (`None` =
 /// the default account, the CLI's own home).
 ///
-/// A managed account runs with `CODEX_HOME` pointed at its directory and the
-/// default account's `OPENAI_API_KEY` removed, so it answers with its own
-/// login or none — never the default's.
+/// The app-server is a real codex, so it never runs in the account's own
+/// home: it would refresh the login itself, outside the host's single-flight,
+/// and could spend a refresh token the host is about to use. It runs in a
+/// temporary `CODEX_HOME` holding the launch copy of the login (refresh token
+/// blanked, refreshed by the host first if due) and the shared config, removed
+/// after the read. A managed account also has the default account's
+/// `OPENAI_API_KEY` removed, so it answers with its own login or none.
 pub async fn read_limits(account_dir: Option<&Path>) -> Result<RefreshOutcome> {
     let home =
         dirs::home_dir().ok_or_else(|| Error::Other("HOME directory not available".into()))?;
     let (bin, label) = crate::agent::provider_bin_label("codex")
         .ok_or_else(|| Error::Other("codex has no binary name".into()))?;
     let program = crate::agent::resolve_agent_bin("codex", bin, label, &home)?;
+    let source = crate::agent::host_login::codex::source_home(account_dir, &home);
+    let prepared = {
+        let home = home.clone();
+        tokio::task::spawn_blocking(move || {
+            limits_home(
+                &source,
+                &home,
+                &crate::agent::host_login::codex::http_refresh,
+                now(),
+            )
+        })
+        .await
+        .map_err(|e| Error::Other(format!("preparing the limits read failed: {e}")))??
+    };
+    let Some(limits_home) = prepared else {
+        return Ok(RefreshOutcome::SignedOut);
+    };
+    let codex_home = limits_home.path().join("codex-home");
 
     let mut cmd = tokio::process::Command::new(program);
     cmd.arg("app-server")
@@ -60,8 +82,8 @@ pub async fn read_limits(account_dir: Option<&Path>) -> Result<RefreshOutcome> {
     crate::bin_resolve::apply_login_shell_env(cmd.as_std_mut());
     // After the login-shell layer, so neither its `CODEX_HOME` nor its key
     // can stand in for the account's own.
-    if let Some(dir) = account_dir {
-        cmd.env("CODEX_HOME", dir);
+    cmd.env("CODEX_HOME", &codex_home);
+    if account_dir.is_some() {
         for var in accounts::ambient_credential_vars("codex") {
             cmd.env_remove(var);
         }
@@ -98,7 +120,38 @@ pub async fn read_limits(account_dir: Option<&Path>) -> Result<RefreshOutcome> {
             tokio::task::spawn_blocking(move || crate::pty_session::kill_process_group(pgid)).await;
     }
     let _ = child.kill().await;
+    drop(limits_home);
     answer
+}
+
+/// A temporary `CODEX_HOME` for one limits read of the login in
+/// `source_home`: the shared config linked in as an agent's overlay has it,
+/// and the launch copy of the login. `None` when the host found the login
+/// refused, which reads as signed out like the app-server's own 401.
+fn limits_home(
+    source_home: &Path,
+    home: &Path,
+    refresh: crate::agent::host_login::codex::Refresher<'_>,
+    now: i64,
+) -> Result<Option<tempfile::TempDir>> {
+    let dir = tempfile::Builder::new()
+        .prefix("fletch-codex-limits-")
+        .tempdir()?;
+    let codex_home = dir.path().join("codex-home");
+    crate::agent::codex_home::prepare_overlay(&codex_home, home)?;
+    match crate::agent::host_login::codex::launch_file(source_home, refresh, now) {
+        Ok(launch) => {
+            crate::agent::codex_home::write_launch(&codex_home, launch.as_ref())?;
+            Ok(Some(dir))
+        }
+        Err(crate::agent::host_login::LoginError::Revoked) => Ok(None),
+        Err(crate::agent::host_login::LoginError::Unavailable(reason)) => Err(Error::Other(
+            format!("Couldn't refresh the Codex login ({reason}); its access token has expired."),
+        )),
+        Err(crate::agent::host_login::LoginError::SignedOut) => {
+            unreachable!("launch_file maps it to None")
+        }
+    }
 }
 
 fn now() -> i64 {
@@ -213,6 +266,108 @@ pub fn outcome(response: &Value, now: i64) -> Result<RefreshOutcome> {
 mod tests {
     use super::super::{LimitSource, LimitWindow};
     use super::*;
+    use serde_json::json;
+
+    fn jwt_exp(exp: i64) -> String {
+        use base64::Engine as _;
+        let enc = |v: serde_json::Value| {
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(v.to_string().as_bytes())
+        };
+        format!(
+            "{}.{}.sig",
+            enc(json!({"alg": "RS256"})),
+            enc(json!({"iat": exp - 10 * 86_400, "exp": exp}))
+        )
+    }
+
+    fn never(
+        _: &str,
+    ) -> std::result::Result<
+        crate::agent::host_login::codex::TokenResponse,
+        crate::agent::host_login::RefreshFailure,
+    > {
+        panic!("no refresh expected")
+    }
+
+    /// The app-server reads limits from a home holding the launch copy of the
+    /// login and the shared config, never the account's own directory, and
+    /// the home is gone after the read.
+    #[test]
+    fn the_limits_read_runs_in_a_home_with_no_refresh_token() {
+        let td = tempfile::tempdir().unwrap();
+        let home = td.path().join("home");
+        std::fs::create_dir_all(home.join(".codex")).unwrap();
+        std::fs::write(home.join(".codex/config.toml"), "").unwrap();
+        let source = td.path().join("account");
+        std::fs::create_dir_all(&source).unwrap();
+        let now = 1_791_448_171;
+        let login = json!({"auth_mode": "chatgpt", "tokens": {
+            "access_token": jwt_exp(now + 5 * 86_400), "id_token": "id",
+            "refresh_token": "rt.host", "account_id": "a"}});
+        std::fs::write(source.join("auth.json"), login.to_string()).unwrap();
+
+        let dir = limits_home(&source, &home, &never, now).unwrap().unwrap();
+
+        let codex_home = dir.path().join("codex-home");
+        let written: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(codex_home.join("auth.json")).unwrap()).unwrap();
+        assert_eq!(written["tokens"]["refresh_token"], "");
+        assert!(codex_home
+            .join("config.toml")
+            .symlink_metadata()
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        let path = dir.path().to_path_buf();
+        drop(dir);
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn a_refused_login_reads_as_signed_out_without_starting_the_app_server() {
+        accounts::with_test_root(|root| {
+            let home = root.join("home");
+            std::fs::create_dir_all(&home).unwrap();
+            let source = root.join("codex/work");
+            std::fs::create_dir_all(&source).unwrap();
+            let now = 1_791_448_171;
+            let login = json!({"auth_mode": "chatgpt", "tokens": {
+                "access_token": jwt_exp(now - 1), "id_token": "id",
+                "refresh_token": "rt.dead", "account_id": "a"}});
+            std::fs::write(source.join("auth.json"), login.to_string()).unwrap();
+            let refused = |_: &str| Err(crate::agent::host_login::RefreshFailure::Rejected);
+
+            assert!(limits_home(&source, &home, &refused, now)
+                .unwrap()
+                .is_none());
+        });
+    }
+
+    /// Live: one limits read through the real app-server, from a temporary
+    /// home built from the login in `$FLETCH_LIVE_CODEX_SOURCE` (a directory
+    /// holding a copy of an `auth.json` with more than a day left). Spends no
+    /// model quota; the copy is left as it was. Run with:
+    ///   FLETCH_LIVE_CODEX_SOURCE=<dir> cargo test --lib live_limits_read -- --ignored --nocapture
+    #[tokio::test]
+    #[ignore]
+    async fn live_limits_read_runs_from_a_temporary_home() {
+        let Some(source) =
+            std::env::var_os("FLETCH_LIVE_CODEX_SOURCE").map(std::path::PathBuf::from)
+        else {
+            eprintln!("FLETCH_LIVE_CODEX_SOURCE unset; skipping");
+            return;
+        };
+        let before = std::fs::read(source.join("auth.json")).unwrap();
+        let RefreshOutcome::Limits(limits) = read_limits(Some(&source)).await.unwrap() else {
+            panic!("expected limits");
+        };
+        println!(
+            "five_hour={:?} seven_day={:?}",
+            limits.five_hour.map(|w| w.percent),
+            limits.seven_day.map(|w| w.percent)
+        );
+        assert_eq!(std::fs::read(source.join("auth.json")).unwrap(), before);
+    }
 
     const READ_FIXTURE: &str = r#"{"jsonrpc":"2.0","id":2,"result":{"rateLimits":{"primary":{"usedPercent":42,"windowDurationMins":300,"resetsAt":1788265323},"secondary":{"usedPercent":61,"windowDurationMins":10080,"resetsAt":1788765541},"planType":"plus"}}}"#;
 

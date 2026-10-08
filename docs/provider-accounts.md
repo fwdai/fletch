@@ -31,7 +31,7 @@ build it in PR 3.
 - A **managed account** is a config directory `~/.fletch/accounts/<provider>/<id>/`
   (`FLETCH_ACCOUNTS_ROOT` overrides the root in tests). No sandboxed CLI
   runs in it: it is the login's host-only storage, used by the host's own
-  runs (the login PTY, the limits app-server). The directory listing
+  run (the login PTY). The directory listing
   **is** the registry; there is no accounts table. `id` is a slug
   (`[a-z0-9-]`, ≤32, not `default`) and doubles as the label.
   - A **codex** agent runs in its own `CODEX_HOME` overlay, never the
@@ -448,8 +448,13 @@ What Fletch does:
   once, so the copy isn't spend twice. The usage scan credits an overlay to
   the agent's stamp (`workspace::agent_accounts`). The fork/rewind writer
   writes into the target agent's overlay.
-- Unchanged: the limits app-server still runs on the host with
-  `CODEX_HOME=<account dir>`; managed launches still strip `OPENAI_API_KEY`.
+- The limits app-server is a real codex too, so it never runs in the
+  account's own home either (it would refresh the login itself, outside the
+  host's single-flight): each read gets a temporary `CODEX_HOME` holding the
+  launch copy of the login (refreshed by the host first if due) and the
+  shared config, removed after the read. A login the host found refused
+  reads as signed out without starting it. Managed launches still strip
+  `OPENAI_API_KEY`.
 
 ## PR 3: per-account usage and limits
 
@@ -474,7 +479,8 @@ Accounts included: default and managed, for claude and codex.
 
 **Codex, on demand (primary).** Spawn `codex app-server` (binary via
 `agent::resolve_agent_bin("codex", …)`; honours bin overrides) with
-`CODEX_HOME=<account dir>` for a managed account (nothing for default) and the
+`CODEX_HOME` at a temporary home holding the account's launch copy (see
+"Codex: the host owns the login") and the
 default account's `OPENAI_API_KEY` **removed** for managed accounts
 (`accounts::ambient_credential_vars`). JSON-RPC 2.0 over stdio, newline
 delimited, no Content-Length framing:

@@ -80,17 +80,10 @@ pub(crate) fn write_launch_credential(
     refresh: Refresher<'_>,
     now: i64,
 ) -> Result<()> {
-    let launch = codex::launch_file(source_home, refresh, now);
-    let dir = open_overlay(overlay)?;
-    match launch {
-        Ok(Some(launch)) => {
-            let text = serde_json::to_string_pretty(&launch)?;
-            dir.write_file(AUTH_FILE, text.as_bytes(), 0o600)?;
-            Ok(())
-        }
-        Ok(None) => Ok(dir.remove(AUTH_FILE)?),
+    match codex::launch_file(source_home, refresh, now) {
+        Ok(launch) => write_launch(overlay, launch.as_ref()),
         Err(LoginError::Revoked) => {
-            dir.remove(AUTH_FILE)?;
+            write_launch(overlay, None)?;
             Err(Error::Other(codex::SIGNED_OUT_MSG.into()))
         }
         Err(LoginError::Unavailable(reason)) => Err(Error::Other(format!(
@@ -98,6 +91,20 @@ pub(crate) fn write_launch_credential(
         ))),
         Err(LoginError::SignedOut) => unreachable!("launch_file maps it to None"),
     }
+}
+
+/// Write `launch` as the overlay's `auth.json` through a no-follow handle, or
+/// remove the file when there is nothing to launch with.
+pub(crate) fn write_launch(overlay: &Path, launch: Option<&serde_json::Value>) -> Result<()> {
+    let dir = open_overlay(overlay)?;
+    match launch {
+        Some(launch) => {
+            let text = serde_json::to_string_pretty(launch)?;
+            dir.write_file(AUTH_FILE, text.as_bytes(), 0o600)?;
+        }
+        None => dir.remove(AUTH_FILE)?,
+    }
+    Ok(())
 }
 
 #[cfg(test)]
