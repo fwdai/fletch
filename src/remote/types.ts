@@ -55,6 +55,10 @@ export interface HostProtocol {
 export interface PairResult {
   deviceId: string;
   host: HostInfo;
+  /** The host's relay base URL, `null` when it has none. Absent from a host
+   *  older than the field, which leaves the held relay alone — absent and
+   *  `null` are different answers (docs/remote-protocol.md, `pair`). */
+  relay?: string | null;
   /** Absent from a host older than the field; see `hostSupports`. */
   protocol?: HostProtocol;
 }
@@ -62,6 +66,8 @@ export interface PairResult {
 export interface HelloResult {
   host: HostInfo;
   workspace: Workspace | null;
+  /** As on `PairResult`. */
+  relay?: string | null;
   protocol?: HostProtocol;
 }
 
@@ -152,8 +158,8 @@ export interface HostTarget {
    *  pins the key it meets. */
   hostKey?: string;
   /** Relay base URL, e.g. `wss://relay.fletch.sh` — the fallback path when the
-   *  LAN address cannot be reached. Comes from `relay=` in the pairing link, or
-   *  is entered later in the Host sheet; absent means LAN only. */
+   *  LAN address cannot be reached. Comes from `relay=` in the pairing link,
+   *  then from every handshake's `relay`; absent means LAN only. */
   relay?: string;
   /** Display name from the pairing URL, before `hello` reports the real one. */
   name?: string;

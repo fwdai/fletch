@@ -5,7 +5,7 @@
 // settings row together; `./registry` is the lifecycle on its own and knows
 // about none of them.
 
-import { forgetHost as forgetRecord, loadHosts, saveHost } from "@/storage/remoteHosts";
+import { forgetHost as forgetRecord, loadHosts, saveHost, updateHost } from "@/storage/remoteHosts";
 import { useAppStore } from "@/store";
 import { LOCAL_ENVIRONMENT_ID } from "@/store/environments";
 import { ProtocolClient } from "./client";
@@ -28,6 +28,7 @@ export const hosts = createHostRegistry({
   },
   device: thisDevice,
   newClient: (device) => new ProtocolClient({ openSocket: openWebSocket, device }),
+  onRelayChange: (hostKey, relay) => void updateHost(hostKey, { relay }).catch(() => {}),
 });
 
 /** Dial every saved host, once, after the app has rendered.

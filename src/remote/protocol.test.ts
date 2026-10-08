@@ -11,9 +11,11 @@ import {
   CLOSE_TOO_MANY_DEVICES,
   CLOSE_UNAUTHENTICATED,
   type DeviceInfo,
+  type HelloResult,
   HOST_KEY_MISMATCH,
   HOST_KEY_MISMATCH_REASON,
   type HostProtocol,
+  type HostTarget,
   hostSupports,
   type PairStep,
   V2_DEFAULT_OPS,
@@ -808,6 +810,80 @@ describe("relay fallback", () => {
     expect(client.state).toBe("error");
     expect(timers).toHaveLength(0);
     expect(client.hostKey).toBe(HOST_KEY);
+  });
+});
+
+/** docs/remote-protocol.md, `pair`: the host answers its relay URL on every
+ *  handshake, and the client keeps it on the target the next attempt dials. */
+describe("relay from the host", () => {
+  const hello = (id: string, relay?: string | null) => {
+    const frame = helloOk(id);
+    return relay === undefined ? frame : { ...frame, result: { ...frame.result, relay } };
+  };
+
+  async function greet(target: HostTarget, relay?: string | null) {
+    const fake = fakeSocket();
+    const client = new ProtocolClient({ openSocket: fake.factory, device: DEVICE });
+    const connected = client.connect(target);
+    await vi.waitFor(() => expect(fake.sent.length).toBe(1));
+    fake.reply(hello(fake.sent[0].id as string, relay));
+    await connected;
+    return { client };
+  }
+
+  it("takes the host's relay over the one it held", async () => {
+    const { client } = await greet(
+      { host: "h", port: 1, hostKey: HOST_KEY, relay: "wss://old.test" },
+      "wss://new.test",
+    );
+    expect(client.target?.relay).toBe("wss://new.test");
+  });
+
+  it("clears the relay when the host has none", async () => {
+    const { client } = await greet(
+      { host: "h", port: 1, hostKey: HOST_KEY, relay: "wss://old.test" },
+      null,
+    );
+    expect(client.target?.relay).toBeUndefined();
+  });
+
+  it("keeps the held relay when an older host does not say", async () => {
+    const { client } = await greet({
+      host: "h",
+      port: 1,
+      hostKey: HOST_KEY,
+      relay: "wss://old.test",
+    });
+    expect(client.target?.relay).toBe("wss://old.test");
+  });
+
+  it("gives a hand-typed pairing the relay its link never carried", async () => {
+    const fake = fakeSocket();
+    const client = new ProtocolClient({ openSocket: fake.factory, device: DEVICE });
+    const snapshots: HelloResult[] = [];
+    client.onSnapshot((s) => snapshots.push(s));
+    const pairing = client.connect({ host: "h", port: 1, pairingToken: "K7PQ2M9X" });
+    await vi.waitFor(() => expect(fake.sent.length).toBe(1));
+    fake.reply({
+      id: fake.sent[0].id,
+      ok: true,
+      result: {
+        deviceId: "d1",
+        host: { name: "Mac", appVersion: "0.7.23", os: "macos" },
+        relay: "wss://relay.test",
+      },
+    });
+    await vi.waitFor(() => expect(fake.sent.length).toBe(2));
+    fake.reply({ id: fake.sent[1].id, ok: true, result: null });
+    await pairing;
+    // The spent code is gone and the key pinned, as before — and now the relay
+    // is there too, so the next attempt has a second path to try.
+    expect(client.target).toMatchObject({
+      hostKey: HOST_KEY,
+      pairingToken: undefined,
+      relay: "wss://relay.test",
+    });
+    expect(snapshots[0].relay).toBe("wss://relay.test");
   });
 });
 

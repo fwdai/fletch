@@ -10,10 +10,9 @@ import { Progress } from "./Progress";
  *  Settings → Remote control. A pasted `fletch://pair?…` link fills both and
  *  brings the host's public key with it, which is what authenticates the Mac,
  *  plus the relay URL when the host has one; hand-typed entry has no key and
- *  pins the one it meets on first contact, and has no relay until a link
- *  supplies one or it is entered in the Host sheet later
- *  (docs/remote-protocol.md, "Secure channel" and "Authentication and
- *  pairing").
+ *  pins the one it meets on first contact, and learns the relay from the
+ *  `pair` result (docs/remote-protocol.md, "Secure channel" and
+ *  "Authentication and pairing").
  *
  *  A link the app was *opened* with pairs on its own, and fills the same
  *  fields as it goes: the connection can take the best part of half a minute

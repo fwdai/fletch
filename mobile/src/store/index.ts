@@ -676,6 +676,13 @@ export const useStore = create<MobileState>()((set, get) => ({
     };
     client.onSnapshot((snapshot) => {
       set({ hostInfo: snapshot.host, protocol: snapshot.protocol ?? null });
+      // The client has folded the host's relay into its target; a reconnect
+      // that never passes through `adopt` still has to keep it.
+      const relay = client.target?.relay ?? null;
+      if (relay !== get().relay) {
+        set({ relay });
+        if (!mockEnabled()) void saveSettings({ relay: relay ?? undefined });
+      }
       const ws = snapshot.workspace;
       // The handshake's snapshot is as authoritative as `refreshWorkspace`'s
       // read, so it settles the `sending` bridge the same way (helpers/sending)

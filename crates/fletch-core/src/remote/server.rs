@@ -704,6 +704,9 @@ async fn authenticate(
     remote_static: &[u8; 32],
 ) -> Option<(DeviceRecord, Value)> {
     let host = super::host_info();
+    // Answered on both, `null` included: the host is where the relay is set,
+    // and a device keeps whatever the last handshake said.
+    let relay = state.relay_url();
     // The descriptor is per *device*, not per host: `ops` is narrowed to what
     // this device's pairing scopes reach, so a client's existing "the host does
     // not have that op" gate also hides what this device may not do. Both
@@ -733,6 +736,7 @@ async fn authenticate(
             let result = json!({
                 "deviceId": record.device_id,
                 "host": host,
+                "relay": relay,
                 "protocol": super::protocol_descriptor_for(&record.scope_set()),
             });
             Some((record, result))
@@ -747,7 +751,12 @@ async fn authenticate(
                 .dispatch("get_workspace", json!({}))
                 .await
                 .unwrap_or(Value::Null);
-            let result = json!({ "host": host, "workspace": workspace, "protocol": protocol });
+            let result = json!({
+                "host": host,
+                "workspace": workspace,
+                "relay": relay,
+                "protocol": protocol,
+            });
             Some((record, result))
         }
         _ => None,
