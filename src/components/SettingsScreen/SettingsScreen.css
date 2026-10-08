@@ -1305,6 +1305,7 @@
 }
 .set-pair-manual-btn {
   color: var(--fg-3);
+  cursor: pointer;
   text-decoration: underline;
   text-underline-offset: 2px;
 }

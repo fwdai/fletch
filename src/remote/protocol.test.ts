@@ -414,6 +414,31 @@ describe("connection lifecycle", () => {
     expect(timers.map((t) => t.ms)).toEqual([1000]);
   });
 
+  /** The vocabulary guard for everything the transport can throw, not only the
+   *  close-reason table: protocol words and URLs stay in the log. */
+  it.each([
+    "handshake failed: Decrypt error",
+    "handshake failed: unexpected hash length",
+    "cannot reach ws://10.0.0.4:47285/ws: Connection reset by peer (os error 54)",
+    "cannot reach wss://relay.test/v1/device/abc: WebSocket protocol error: Handshake not finished",
+  ])("says %j in plain words", async (raw) => {
+    const seen: (string | undefined)[] = [];
+    const { setTimer, clearTimer } = captureTimers();
+    const client = new ProtocolClient({
+      openSocket: async () => {
+        throw new Error(raw);
+      },
+      device: DEVICE,
+      setTimer,
+      clearTimer,
+    });
+    client.onState((_, error) => seen.push(error));
+    await expect(client.connect({ host: "h", port: 1, hostKey: HOST_KEY })).rejects.toThrow();
+    const shown = seen.at(-1) ?? "";
+    expect(shown).not.toMatch(/relay|handshake|frame|socket|ws:\/\/|os error/i);
+    expect(shown).not.toBe("");
+  });
+
   it("gives up on a pairing the host never answers, instead of waiting for ever", async () => {
     // The relay accepts a device link whenever it believes a host link is up,
     // and a Mac that went to sleep leaves it believing that: the socket opens,
