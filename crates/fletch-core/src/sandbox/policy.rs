@@ -590,12 +590,14 @@ pub fn opencode_config_dir(home: &Path) -> PathBuf {
     xdg_base(home, "XDG_CONFIG_HOME", ".config").join("opencode")
 }
 
-/// Codex's config dir: `$CODEX_HOME` if set non-blank, else `~/.codex` — the
+/// Codex's config dir: `$CODEX_HOME` as a launched child sees it (the login
+/// shell's over the app's, see `bin_resolve::effective_env_var`) if set
+/// non-blank, else `~/.codex` — the
 /// default account's home, where the host reads its login and the legacy
 /// session root. No engine grants or mounts it: launches run in a per-agent
 /// overlay (`agent::codex_home`).
 pub fn codex_home_dir(home: &Path) -> PathBuf {
-    codex_home_from(std::env::var_os("CODEX_HOME"), home)
+    codex_home_from(crate::bin_resolve::effective_env_var("CODEX_HOME"), home)
 }
 
 /// Pure core of [`codex_home_dir`] — the same env-seam split as

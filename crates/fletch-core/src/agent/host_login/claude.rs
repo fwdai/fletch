@@ -421,12 +421,18 @@ struct HostStore {
 
 impl HostStore {
     fn for_account(account_dir: Option<&Path>) -> Option<Self> {
-        let dir = match account_dir {
-            Some(dir) => dir.to_path_buf(),
-            None => accounts::shared_source_dir("claude", &dirs::home_dir()?),
+        // The default account is wherever the user's own `CLAUDE_CONFIG_DIR`
+        // relocates it, and claude names that dir's Keychain item for it.
+        let relocated = match account_dir {
+            Some(dir) => Some(dir.to_path_buf()),
+            None => accounts::claude_config_override(),
+        };
+        let dir = match &relocated {
+            Some(dir) => dir.clone(),
+            None => dirs::home_dir()?.join(".claude"),
         };
         Some(Self {
-            service: crate::sandbox::container::auth::claude_keychain_service(account_dir),
+            service: crate::sandbox::container::auth::claude_keychain_service(relocated.as_deref()),
             file: dir.join(".credentials.json"),
         })
     }

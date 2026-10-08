@@ -1014,6 +1014,41 @@ mod tests {
         assert!(overlay.join("sessions").is_dir());
     }
 
+    /// The default account's login is copied from a `CODEX_HOME` only the
+    /// login shell exports, the home the user's own codex runs from.
+    #[test]
+    fn a_default_codex_launch_copies_the_login_from_the_login_shells_codex_home() {
+        let td = tempfile::tempdir().unwrap();
+        let (root, home, shell_home) = (
+            td.path().join("w"),
+            td.path().join("home"),
+            td.path().join("shell-codex"),
+        );
+        for dir in [&root, &home.join(".codex"), &shell_home] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        let mut shell_login = far_future_login();
+        shell_login["tokens"]["account_id"] = "shell".into();
+        std::fs::write(shell_home.join("auth.json"), shell_login.to_string()).unwrap();
+        std::fs::write(
+            home.join(".codex/auth.json"),
+            far_future_login().to_string(),
+        )
+        .unwrap();
+
+        let overlay = codex_home::overlay_in(&root);
+        crate::bin_resolve::with_login_shell_env(
+            &[("CODEX_HOME", shell_home.to_str().unwrap())],
+            || CodexHome::prepare_at(overlay.clone(), None, &home, None),
+        )
+        .unwrap();
+
+        let written: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(overlay.join("auth.json")).unwrap()).unwrap();
+        assert_eq!(written["tokens"]["account_id"], "shell");
+        assert_eq!(written["tokens"]["refresh_token"], "");
+    }
+
     #[test]
     fn only_codex_launches_get_an_overlay() {
         assert!(

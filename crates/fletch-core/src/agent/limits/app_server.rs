@@ -404,6 +404,42 @@ mod tests {
         });
     }
 
+    /// A `CODEX_HOME` only the login shell exports is the default account's
+    /// home: the limits read takes its login from there, not from `~/.codex`.
+    #[test]
+    fn the_default_limits_read_uses_a_codex_home_the_login_shell_exports() {
+        accounts::with_test_root(|root| {
+            let home = root.join("home");
+            std::fs::create_dir_all(home.join(".codex")).unwrap();
+            let shell_home = root.join("shell-codex");
+            std::fs::create_dir_all(&shell_home).unwrap();
+            let now = 1_791_448_171;
+            let login = |account: &str| {
+                json!({"auth_mode": "chatgpt", "tokens": {
+                    "access_token": jwt_exp(now + 5 * 86_400), "id_token": "id",
+                    "refresh_token": "rt.host", "account_id": account}})
+                .to_string()
+            };
+            std::fs::write(home.join(".codex/auth.json"), login("tilde")).unwrap();
+            std::fs::write(shell_home.join("auth.json"), login("shell")).unwrap();
+
+            let made = crate::bin_resolve::with_login_shell_env(
+                &[("CODEX_HOME", shell_home.to_str().unwrap())],
+                || {
+                    let source = crate::agent::host_login::codex::source_home(None, &home);
+                    limits_home(&source, &home, &never, now)
+                },
+            )
+            .unwrap()
+            .unwrap();
+
+            let written: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(made.path.join("auth.json")).unwrap())
+                    .unwrap();
+            assert_eq!(written["tokens"]["account_id"], "shell");
+        });
+    }
+
     #[test]
     fn a_refused_login_reads_as_signed_out_without_starting_the_app_server() {
         accounts::with_test_root(|root| {

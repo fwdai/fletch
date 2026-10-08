@@ -143,7 +143,7 @@ pub(crate) fn claude_project_dirname(cwd: &Path) -> Option<String> {
 /// account land in the default dir.
 pub(crate) fn claude_projects_dirs() -> Vec<PathBuf> {
     projects_dirs_from(
-        std::env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from),
+        crate::agent::accounts::claude_config_override(),
         dirs::home_dir(),
         crate::agent::accounts::list_account_dirs("claude"),
     )

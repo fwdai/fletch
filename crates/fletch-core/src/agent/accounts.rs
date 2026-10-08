@@ -260,10 +260,7 @@ pub fn ambient_credential_vars(provider: &str) -> &'static [&'static str] {
 /// own env override so a terminal that already relocates the dir is followed.
 pub fn shared_source_dir(provider: &str, home: &Path) -> PathBuf {
     match provider {
-        "claude" => std::env::var_os("CLAUDE_CONFIG_DIR")
-            .filter(|v| !v.is_empty())
-            .map(PathBuf::from)
-            .unwrap_or_else(|| home.join(".claude")),
+        "claude" => claude_config_override().unwrap_or_else(|| home.join(".claude")),
         "codex" => crate::sandbox::policy::codex_home_dir(home),
         _ => home.to_path_buf(),
     }
@@ -297,14 +294,21 @@ pub fn ensure_account_dir(provider: &str, id: &str) -> Result<PathBuf> {
 /// when the file is absent. Nothing else is copied: the identity and OAuth
 /// account live in that file too, and they are exactly what differs per
 /// account. Best-effort: a failure costs the onboarding screen, not the login.
+/// The user's relocated claude config dir, as a launched child sees
+/// `CLAUDE_CONFIG_DIR` (see `bin_resolve::effective_env_var`); `None` when
+/// claude uses `~/.claude`.
+pub fn claude_config_override() -> Option<PathBuf> {
+    crate::bin_resolve::effective_env_var("CLAUDE_CONFIG_DIR").map(PathBuf::from)
+}
+
 fn seed_claude_state(dir: &Path, home: &Path) {
     let state = dir.join(".claude.json");
     if state.exists() {
         return;
     }
     // Claude keeps its state beside a relocated config dir, else at `~/.claude.json`.
-    let own = match std::env::var_os("CLAUDE_CONFIG_DIR").filter(|v| !v.is_empty()) {
-        Some(v) => PathBuf::from(v).join(".claude.json"),
+    let own = match claude_config_override() {
+        Some(dir) => dir.join(".claude.json"),
         None => home.join(".claude.json"),
     };
     let seed = claude_state_seed(std::fs::read(&own).ok().as_deref());

@@ -68,7 +68,7 @@ impl SandboxEngine for SandboxExecEngine {
         // No account dir is granted: codex runs in its per-agent overlay
         // (`ctx.codex_home`), claude in the shared default config dir with the
         // host-resolved token below. Account dirs are host-only login storage.
-        let claude_config_dir = std::env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from);
+        let claude_config_dir = crate::agent::accounts::claude_config_override();
         let profile_text = build_profile(
             ctx.writable_root,
             ctx.rpc_dir,

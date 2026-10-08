@@ -219,5 +219,28 @@ fn a_refusal_is_recorded_under_the_accounts_root() {
     });
 }
 
+/// A GUI launch doesn't inherit the shell's env, but the claude it starts
+/// does: a `CLAUDE_CONFIG_DIR` only the login shell exports still names the
+/// default account's Keychain item and credentials file.
+#[test]
+fn the_default_login_is_read_from_a_config_dir_the_login_shell_exports() {
+    let td = tempfile::tempdir().unwrap();
+    let dir = td.path().join("relocated");
+    let store = crate::bin_resolve::with_login_shell_env(
+        &[("CLAUDE_CONFIG_DIR", dir.to_str().unwrap())],
+        || HostStore::for_account(None),
+    )
+    .unwrap();
+    assert_eq!(
+        store.service,
+        crate::sandbox::container::auth::claude_keychain_service(Some(&dir))
+    );
+    assert_ne!(
+        store.service,
+        crate::sandbox::container::auth::claude_keychain_service(None)
+    );
+    assert_eq!(store.file, dir.join(".credentials.json"));
+}
+
 #[cfg(target_os = "macos")]
 mod live;
