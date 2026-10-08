@@ -59,6 +59,14 @@ describe("gateReason", () => {
     expect(gateReason(host([...V2_DEFAULT_OPS, "autopilot_set"]), "autopilot")).toBeNull();
   });
 
+  it("keeps account switching closed on a host that switches but cannot list its accounts", () => {
+    // The picker would otherwise offer this Mac's accounts for the host's agent.
+    const switchOnly = host([...V2_DEFAULT_OPS, "switch_agent_account"]);
+    expect(gateReason(switchOnly, "switchAccount")).toBe(GATES.switchAccount.reason);
+    const both = host([...V2_DEFAULT_OPS, "switch_agent_account", "list_provider_accounts"]);
+    expect(gateReason(both, "switchAccount")).toBeNull();
+  });
+
   it("opens the add-project flows a host can see through to the end", () => {
     // Browsing the disk (`list_dir`), pinning the folder and cloning have all
     // been on the wire since v2, so even a host that reported no descriptor

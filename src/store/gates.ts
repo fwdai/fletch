@@ -175,10 +175,11 @@ export const GATES = {
     label: "Rewinding",
     reason: "Rewinding isn't available on a remote host yet.",
   },
-  /** Moving an agent onto another provider account. Not on the wire yet, and
-   *  the account list it picks from is this Mac's, not the host's. */
+  /** Moving an agent onto another provider account. The picker lists the
+   *  host's accounts, so the gate stays closed until the list is on the wire
+   *  too; otherwise a remote agent would be offered this Mac's accounts. */
   switchAccount: {
-    op: "switch_agent_account",
+    op: ["list_provider_accounts", "switch_agent_account"],
     label: "Switching accounts",
     reason: "Switching accounts isn't available on a remote host yet.",
   },
