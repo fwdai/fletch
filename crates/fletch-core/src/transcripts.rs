@@ -209,7 +209,7 @@ fn find_session_jsonl_in(
 /// `None` only when neither CODEX_HOME nor a home dir can be resolved. Where a
 /// default-account session is written; [`codex_sessions_dirs`] is every root.
 pub(crate) fn codex_sessions_dir() -> Option<PathBuf> {
-    dirs::home_dir().map(|h| crate::sandbox::policy::codex_home_dir(&h).join("sessions"))
+    crate::sandbox::policy::codex_home().map(|h| h.join("sessions"))
 }
 
 /// The session roots codex wrote to before each agent ran in its own

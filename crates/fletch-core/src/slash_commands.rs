@@ -538,7 +538,7 @@ static CODEX_COMMANDS: CommandDiscovery = CommandDiscovery {
 /// extra and still work, because invocation is expanded app-side rather than
 /// by the codex CLI.
 fn codex_command_roots(_project: Option<&Path>) -> Vec<CommandRoot> {
-    let Some(home) = dirs::home_dir().map(|h| crate::sandbox::policy::codex_home_dir(&h)) else {
+    let Some(home) = crate::sandbox::policy::codex_home() else {
         return Vec::new();
     };
     vec![CommandRoot {
