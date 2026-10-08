@@ -121,6 +121,11 @@ const LOGOUT_TIMEOUT: Duration = Duration::from_secs(30);
 /// terminal shares. The CLI clears its credential the way it stored it
 /// (Keychain item or credentials file), so nothing here touches either. The
 /// account itself stays, its sessions with it, and lists as signed out.
+///
+/// A clean exit isn't taken on trust: the account is probed again, and one
+/// still signed in is an error that says why. For the default that is usually
+/// a key in the user's shell, which the probe counts and no child process can
+/// unset — the error names the variable to remove.
 pub async fn sign_out_provider_account_impl(provider: &str, id: &str) -> Result<()> {
     let home =
         dirs::home_dir().ok_or_else(|| Error::Other("HOME directory not available".into()))?;
@@ -137,18 +142,57 @@ pub async fn sign_out_provider_account_impl(provider: &str, id: &str) -> Result<
                 LOGOUT_TIMEOUT.as_secs()
             ))
         })??;
-    if output.status.success() {
-        return Ok(());
+    if !output.status.success() {
+        // The CLI's own last word on why, if it gave one; logout prints no secret.
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let reason: String = stderr
+            .lines()
+            .rev()
+            .find(|l| !l.trim().is_empty())
+            .map(|l| l.trim().chars().take(200).collect())
+            .unwrap_or_else(|| output.status.to_string());
+        return Err(Error::Other(format!("{label} logout failed: {reason}")));
     }
-    // The CLI's own last word on why, if it gave one; logout prints no secret.
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let reason: String = stderr
-        .lines()
-        .rev()
-        .find(|l| !l.trim().is_empty())
-        .map(|l| l.trim().chars().take(200).collect())
-        .unwrap_or_else(|| output.status.to_string());
-    Err(Error::Other(format!("{label} logout failed: {reason}")))
+
+    let (p, i) = (provider.to_string(), id.to_string());
+    let (status, shell_vars) = tokio::task::spawn_blocking(move || {
+        let status = accounts::probe_account(&p, &i)?;
+        let shell_vars = if accounts::is_default(&i) {
+            accounts::shell_credential_vars(&p)
+        } else {
+            Vec::new()
+        };
+        Ok::<_, Error>((status, shell_vars))
+    })
+    .await
+    .map_err(|e| Error::Other(format!("sign-in probe failed: {e}")))??;
+    if status == crate::agent::AuthStatus::SignedIn {
+        return Err(Error::Other(still_signed_in(label, &shell_vars)));
+    }
+    Ok(())
+}
+
+/// Why an account still reads as signed in after a clean logout. `shell_vars`
+/// are the credential variables set in the user's shell — only ever non-empty
+/// for the default account, the one the probe lets them sign in.
+fn still_signed_in(label: &str, shell_vars: &[&str]) -> String {
+    if shell_vars.is_empty() {
+        return format!("{label} logged out, but this account still reads as signed in.");
+    }
+    let names = shell_vars
+        .iter()
+        .map(|v| format!("`{v}`"))
+        .collect::<Vec<_>>()
+        .join(" and ");
+    let (verb, pronoun) = if shell_vars.len() == 1 {
+        ("signs", "it")
+    } else {
+        ("sign", "them")
+    };
+    format!(
+        "{label}'s saved login is cleared, but {names} in your shell still {verb} it in. \
+         Remove {pronoun} from your shell profile (such as ~/.zshrc) to sign out fully."
+    )
 }
 
 /// The logout run for one account: the pinned argv, the user's login-shell
@@ -227,6 +271,27 @@ mod tests {
                 .map(OsStr::new);
             assert_eq!(env_of(&cmd, "CODEX_HOME").flatten(), shell);
         });
+    }
+
+    #[test]
+    fn a_login_left_by_a_shell_key_names_the_key_to_remove() {
+        assert_eq!(
+            still_signed_in("Codex", &["OPENAI_API_KEY"]),
+            "Codex's saved login is cleared, but `OPENAI_API_KEY` in your shell still signs it \
+             in. Remove it from your shell profile (such as ~/.zshrc) to sign out fully."
+        );
+        assert!(still_signed_in(
+            "Claude Code",
+            &["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"]
+        )
+        .contains(
+            "`ANTHROPIC_API_KEY` and `CLAUDE_CODE_OAUTH_TOKEN` in your shell still sign \
+                     it in. Remove them"
+        ));
+        assert_eq!(
+            still_signed_in("Claude Code", &[]),
+            "Claude Code logged out, but this account still reads as signed in."
+        );
     }
 
     #[test]
