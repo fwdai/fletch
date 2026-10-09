@@ -8,6 +8,7 @@ import { reduceRecords } from "@/helpers";
 // normalizeTranscript → reduce.
 function rec(body: Record<string, unknown>, provider = "pi", seq = 0): SessionRecord {
   return {
+    session_id: "s1",
     seq,
     provider,
     source: "transcript",
@@ -36,8 +37,8 @@ describe("reduceRecords", () => {
       ),
     ];
     expect(reduceRecords("pi", records)).toEqual([
-      { kind: "user_message", text: "hi", recordSeq: 2 },
-      { kind: "agent_message", text: "yo", recordSeq: 3 },
+      { kind: "user_message", text: "hi", recordSeq: 2, recordSession: "s1" },
+      { kind: "agent_message", text: "yo", recordSeq: 3, recordSession: "s1" },
     ]);
   });
 
@@ -210,9 +211,16 @@ describe("reduceRecords", () => {
         name: "Task",
         input: { description: "Look", subagent_type: "explore", model: "inherit", prompt },
         recordSeq: 10,
+        recordSession: "s1",
         children: [
-          { kind: "user_message", text: prompt, recordSeq: 11 },
-          { kind: "agent_message", text: "a.rs is fine", streaming: false, recordSeq: 12 },
+          { kind: "user_message", text: prompt, recordSeq: 11, recordSession: "s1" },
+          {
+            kind: "agent_message",
+            text: "a.rs is fine",
+            streaming: false,
+            recordSeq: 12,
+            recordSession: "s1",
+          },
         ],
       },
     ]);
@@ -248,8 +256,15 @@ describe("reduceRecords", () => {
         name: "Task",
         input: { prompt },
         recordSeq: 10,
+        recordSession: "s1",
         children: [
-          { kind: "agent_message", text: "first says fine", streaming: false, recordSeq: 12 },
+          {
+            kind: "agent_message",
+            text: "first says fine",
+            streaming: false,
+            recordSeq: 12,
+            recordSession: "s1",
+          },
         ],
       },
       {
@@ -258,8 +273,15 @@ describe("reduceRecords", () => {
         name: "Task",
         input: { prompt },
         recordSeq: 11,
+        recordSession: "s1",
         children: [
-          { kind: "agent_message", text: "second says fine", streaming: false, recordSeq: 13 },
+          {
+            kind: "agent_message",
+            text: "second says fine",
+            streaming: false,
+            recordSeq: 13,
+            recordSession: "s1",
+          },
         ],
       },
     ]);

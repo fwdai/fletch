@@ -15,14 +15,18 @@ import { asRecord } from "@/adapters/shared/json";
 import { fromRecord } from "@/adapters/shared/record-seq";
 import type { RawEvent } from "@/adapters/types";
 
-export function normalizeTranscript(lines: unknown[], seqs?: readonly number[]): RawEvent[] {
+export function normalizeTranscript(
+  lines: unknown[],
+  seqs?: readonly number[],
+  sessions?: readonly string[],
+): RawEvent[] {
   const out: RawEvent[] = [];
   for (const [i, line] of lines.entries()) {
     const rec = asRecord(line);
     if (rec.type !== "message") continue; // drop session/model_change/thinking_level_change/unknown
     const msg = asRecord(rec.message);
 
-    const emit = (ev: RawEvent) => out.push(fromRecord(ev, seqs?.[i]));
+    const emit = (ev: RawEvent) => out.push(fromRecord(ev, seqs?.[i], sessions?.[i]));
 
     if (msg.role === "toolResult") {
       // reduce renders results off tool_execution_end, not toolResult messages.

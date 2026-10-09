@@ -103,6 +103,37 @@ describe("claudeAdapter — transcript replay", () => {
     ]);
     expect(events).toEqual([]);
   });
+
+  // A prompt sent while claude works is logged only as a `queued_command`
+  // attachment — the record the backend pairs its turn row with
+  // (`claude_prompt` in providers/claude.rs) — so it must draw a bubble.
+  it("draws a prompt sent mid-turn from its queued_command attachment", () => {
+    const queued = (prompt: unknown, commandMode?: string) => ({
+      type: "attachment",
+      uuid: "q",
+      attachment: { type: "queued_command", prompt, ...(commandMode ? { commandMode } : {}) },
+    });
+    const lines = [
+      { type: "user", message: { role: "user", content: "original" } },
+      {
+        type: "assistant",
+        message: { role: "assistant", content: [{ type: "text", text: "on it" }] },
+      },
+      queued([{ type: "text", text: "also do X" }], "prompt"),
+      queued("and Y"),
+      queued("ls", "bash"),
+      queued("<task-notification><summary>done</summary></task-notification>", "prompt"),
+      { type: "attachment", attachment: { type: "hook_success" } },
+    ];
+    const items = reduceAll(claudeAdapter.normalizeTranscript(lines, [1, 2, 3, 4, 5, 6, 7]));
+    expect(items.map((i) => [i.kind, "text" in i ? i.text : "", i.recordSeq])).toEqual([
+      ["user_message", "original", 1],
+      ["agent_message", "on it", 2],
+      ["user_message", "also do X", 3],
+      ["user_message", "and Y", 4],
+      ["notice", "done", 6],
+    ]);
+  });
 });
 
 describe("claudeAdapter.reduce — injected meta user events", () => {

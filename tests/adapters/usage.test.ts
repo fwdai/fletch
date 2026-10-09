@@ -23,7 +23,15 @@ import { indexModelsDev } from "@/data/modelCatalog/modelsDev";
 // translators read — distinct from the live event stream the reducers consume.
 
 function record(provider: string, body: RawEvent, seq = 0): SessionRecord {
-  return { seq, provider, source: "transcript", native_id: `n${seq}`, agent_version: null, body };
+  return {
+    session_id: "s1",
+    seq,
+    provider,
+    source: "transcript",
+    native_id: `n${seq}`,
+    agent_version: null,
+    body,
+  };
 }
 
 function records(provider: string, bodies: RawEvent[]): SessionRecord[] {

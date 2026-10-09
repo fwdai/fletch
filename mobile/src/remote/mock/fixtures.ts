@@ -214,10 +214,15 @@ export const roadmapItems: RoadmapItem[] = [
 
 // --- session records ------------------------------------------------------
 
+/** Every mock agent's one session. Seqs are numbered across all of them, so
+ *  they never collide even under the one id. */
+export const MOCK_SESSION = "mock-session";
+
 let seq = 0;
 const rec = (provider: string, body: Record<string, unknown>): SessionRecord => {
   seq += 1;
   return {
+    session_id: MOCK_SESSION,
     seq,
     provider,
     source: "transcript",
@@ -366,6 +371,7 @@ export const userTurns: Record<string, UserTurn[]> = {
   arabia: [
     {
       turn_id: "t-arabia-1",
+      session_id: MOCK_SESSION,
       seq: 1,
       text: "Put dictation model choice in general settings.",
       attachments: [],
@@ -373,6 +379,7 @@ export const userTurns: Record<string, UserTurn[]> = {
       started_at: Date.now() - 187_000,
       ended_at: null,
       outcome: null,
+      position: 1,
     },
   ],
   pamukkale: [],

@@ -128,7 +128,11 @@ function reasoningSummary(v: unknown): string {
     .join("\n");
 }
 
-export function normalizeTranscript(lines: unknown[], seqs?: readonly number[]): RawEvent[] {
+export function normalizeTranscript(
+  lines: unknown[],
+  seqs?: readonly number[],
+  sessions?: readonly string[],
+): RawEvent[] {
   // Pre-pass: a tool call's output lands on a later function/custom-tool
   // output line, so index outputs by call_id first.
   const outputs = new Map<string, string>();
@@ -174,7 +178,9 @@ export function normalizeTranscript(lines: unknown[], seqs?: readonly number[]):
     // (and so the call and result items) belongs to the call's record.
     const parent = typeof env.parent_tool_use_id === "string" ? env.parent_tool_use_id : "";
     const emit = (ev: RawEvent) =>
-      out.push(fromRecord(parent ? { ...ev, parent_tool_use_id: parent } : ev, seqs?.[i]));
+      out.push(
+        fromRecord(parent ? { ...ev, parent_tool_use_id: parent } : ev, seqs?.[i], sessions?.[i]),
+      );
 
     if (env.type === "turn_context") {
       const m = p.model;

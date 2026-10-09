@@ -16,6 +16,11 @@ interface ChatItemBase {
    *  store-only. An item a later record extends (a streaming message, an
    *  upserted tool call) keeps the seq of the record that created it. */
   recordSeq?: number;
+  /** The session that produced the `recordSeq` record. A forked history
+   *  stitches several sessions whose seqs overlap, so the pair is what names
+   *  the record. Absent wherever `recordSeq` is, and from hosts that predate
+   *  it. */
+  recordSession?: string;
 }
 
 type ChatItemBody =
@@ -34,6 +39,11 @@ type ChatItemBody =
        *  Lets the `turn:sent` mirror skip a send already in the log, and names
        *  the turn a fork anchors on. Never set by an adapter's reduce(). */
       turnId?: string;
+      /** The agent never read this message: its turn was stopped before the
+       *  provider logged the prompt (`interrupted`) or it was never delivered
+       *  (`failed`). Set from the turn row's outcome (see `mergeUserTurns`);
+       *  the bubble says so and offers to send it again. */
+      undelivered?: "interrupted" | "failed";
     }
   // A follow-up the user sent mid-turn that hasn't landed in the transcript
   // yet: delivered live into the running turn (claude) or queued for the next
@@ -126,6 +136,8 @@ export type RawEvent = Record<string, unknown> & {
    *  `shared/record-seq`). Set only by `normalizeTranscript` when given seqs;
    *  no provider payload uses this key, so stamping it can't shadow a field. */
   recordSeq?: number;
+  /** The session of that record, when `normalizeTranscript` was given them. */
+  recordSession?: string;
 };
 
 export type DisplayMode = "show" | "hide";
@@ -140,8 +152,14 @@ export interface ChatAdapter {
   /** Translate transcript lines into the events `reduce` consumes. `seqs`, when
    *  given, is parallel to `transcriptLines` (each line's session-record seq):
    *  every event is stamped with the seq of the line it was emitted for, and
-   *  `reduce` carries it onto the items it creates. Omitted for bare bodies. */
-  normalizeTranscript(transcriptLines: unknown[], seqs?: readonly number[]): RawEvent[];
+   *  `reduce` carries it onto the items it creates. Omitted for bare bodies.
+   *  `sessions`, parallel the same way, names each line's session and rides
+   *  along with its seq. */
+  normalizeTranscript(
+    transcriptLines: unknown[],
+    seqs?: readonly number[],
+    sessions?: readonly string[],
+  ): RawEvent[];
   /** Claude-shaped `system` task events (`task_started` / `task_notification`,
    *  see shared/backgroundTasks) derived from ONE live event of a provider that
    *  has no such events of its own — Cursor's Task `tool_call`. The store folds

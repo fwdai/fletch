@@ -39,7 +39,11 @@ export { applyPolicy };
 export interface MobileAdapter {
   readonly id: string;
   reduce(prev: ChatItem[], rawEvent: RawEvent): ChatItem[];
-  normalizeTranscript(lines: unknown[], seqs?: readonly number[]): RawEvent[];
+  normalizeTranscript(
+    lines: unknown[],
+    seqs?: readonly number[],
+    sessions?: readonly string[],
+  ): RawEvent[];
   readonly policy: DisplayPolicy;
   /** Claude-shaped `system` task events derived from one live event, for a
    *  provider with no such events of its own (cursor's Task tool_call) — the

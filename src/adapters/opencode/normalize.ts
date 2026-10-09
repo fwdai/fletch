@@ -25,7 +25,11 @@ const PART_TO_LIVE: Record<string, string> = {
   "step-finish": "step_finish",
 };
 
-export function normalizeTranscript(lines: unknown[], seqs?: readonly number[]): RawEvent[] {
+export function normalizeTranscript(
+  lines: unknown[],
+  seqs?: readonly number[],
+  sessions?: readonly string[],
+): RawEvent[] {
   // First pass: messageID → role (message blobs have role + id, no `type`).
   // Assistant message blobs also carry `modelID` (the model that produced the
   // turn); index it so the emitted text event can carry the model to the UI.
@@ -43,7 +47,7 @@ export function normalizeTranscript(lines: unknown[], seqs?: readonly number[]):
   for (const [i, line] of lines.entries()) {
     const rec = asRecord(line);
     if (typeof rec.type !== "string") continue; // message blob — role captured above
-    const emit = (ev: RawEvent) => out.push(fromRecord(ev, seqs?.[i]));
+    const emit = (ev: RawEvent) => out.push(fromRecord(ev, seqs?.[i], sessions?.[i]));
 
     const msgRole = typeof rec.messageID === "string" ? roleOf.get(rec.messageID) : undefined;
 

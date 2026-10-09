@@ -47,7 +47,7 @@ import type { PushFletch } from "../remote/push";
 import { type AutopilotMap, autopilotFromSnapshot, checkoutKey, switchesOf } from "./autopilot";
 import { type ChatsSlice, createChatsSlice } from "./chats";
 import { registerRemoteEvents } from "./events";
-import { replayLiveTurn, runningTurnStart, withPendingTurns } from "./liveTurn";
+import { replayLiveTurn, runningTurnStart } from "./liveTurn";
 import { clearHost, loadDestParent, loadSettings, saveDestParent, saveSettings } from "./persist";
 import { createProposalsSlice, type ProposalsSlice } from "./proposals";
 import { forgetPush, pushTab, startPush, syncPush } from "./push";
@@ -59,7 +59,7 @@ import {
   mergeActivity,
   type ShipActivityMap,
 } from "./shipActivity";
-import { applyUserTurns, type LoadedHistory, type LogLoad, reduceRecords } from "./transcript";
+import { type LoadedHistory, type LogLoad, pastHistory, renderHistory } from "./transcript";
 
 export const client = createClient();
 export const api = createApi(client);
@@ -1095,7 +1095,7 @@ export const useStore = create<MobileState>()((set, get) => ({
         return;
       }
       const provider = agentOf(get(), agentId)?.provider;
-      const items = applyUserTurns(reduceRecords(provider, records), turns);
+      const items = renderHistory(provider, records, turns);
       if (!opts.liveTurn) {
         commit((s) => ({ histories: histories(s), logs: { ...s.logs, [agentId]: items } }));
         return;
@@ -1120,7 +1120,7 @@ export const useStore = create<MobileState>()((set, get) => ({
       const startedAt = runningTurnStart(turns);
       commit((s) => ({
         histories: histories(s),
-        ...replayLiveTurn(s, agentId, withPendingTurns(agentId, items, turns), live, late),
+        ...replayLiveTurn(s, agentId, items, live, late),
         ...(startedAt === undefined
           ? {}
           : { turnStartedAt: { ...s.turnStartedAt, [agentId]: startedAt } }),
@@ -1148,14 +1148,13 @@ export const useStore = create<MobileState>()((set, get) => ({
     const provider = agentOf(get(), agentId)?.provider;
     const records = [...page.records, ...loaded.records];
     // Re-reduced whole rather than prepended, so a call on this page pairs
-    // with its result on the next. The log opens with what the loaded records
-    // reduced to; everything after that (a replayed running turn, live
-    // frames, a queued send) is not in them and is carried over as it is.
-    const head = reduceRecords(provider, loaded.records).length;
-    const items = applyUserTurns(reduceRecords(provider, records), turns);
+    // with its result on the next. Everything the log holds past the loaded
+    // records (a replayed running turn, live frames, a queued send) is not in
+    // them and is carried over as it is.
+    const items = renderHistory(provider, records, turns);
     set((s) => ({
       histories: { ...s.histories, [agentId]: { records, older: page.older } },
-      logs: { ...s.logs, [agentId]: [...items, ...(s.logs[agentId] ?? []).slice(head)] },
+      logs: { ...s.logs, [agentId]: [...items, ...pastHistory(s.logs[agentId] ?? [], items)] },
     }));
   },
 

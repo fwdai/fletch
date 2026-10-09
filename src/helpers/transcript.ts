@@ -1,17 +1,18 @@
 // Transcript / log reduction: rendering canonical session_records into chat
-// items, overlaying outgoing user-turn metadata, carrying forward store-only
-// items across a rebuild, and applying a single live event.
+// items, carrying forward store-only items across a rebuild, and applying a
+// single live event. User turns merge in through `mergeTurns`.
 
 import { type ChatItem, getAdapter, type RawEvent } from "../adapters";
-import type { SessionRecord, UserTurn } from "../api";
+import type { SessionRecord } from "../api";
 import type { AppState } from "../store";
 import { providerFor } from "./agentLookups";
+import { hasSentTurn } from "./mirrorTurn";
 
 /** Render canonical `session_records` (verbatim per-provider transcript
  *  bodies) into chat items via the same pipeline as on-disk replay:
- *  `normalizeTranscript` → `reduce`. Every item carries the `recordSeq` of the
- *  record it came from. Defensive: a malformed body or an adapter throw
- *  degrades gracefully instead of failing the whole restore. */
+ *  `normalizeTranscript` → `reduce`. Every item carries the `recordSeq` and
+ *  `recordSession` of the record it came from. Defensive: a malformed body or
+ *  an adapter throw degrades gracefully instead of failing the whole restore. */
 export function reduceRecords(provider: string | undefined, records: SessionRecord[]): ChatItem[] {
   const adapter = getAdapter(provider);
   let rawEvents: RawEvent[];
@@ -19,6 +20,7 @@ export function reduceRecords(provider: string | undefined, records: SessionReco
     rawEvents = adapter.normalizeTranscript(
       records.map((r) => r.body),
       records.map((r) => r.seq),
+      records.map((r) => r.session_id),
     );
   } catch (err) {
     console.error("[adapters] normalizeTranscript threw during restore", {
@@ -40,101 +42,6 @@ export function reduceRecords(provider: string | undefined, records: SessionReco
     }
   }
   return items;
-}
-
-/** Overlay one turn's Fletch-origin metadata (id, run timing, attachments) onto
- *  the rendered user message it belongs to. */
-function overlayTurn(item: Extract<ChatItem, { kind: "user_message" }>, t: UserTurn): void {
-  item.turnId = t.turn_id;
-  if (t.started_at != null) item.startedAt = t.started_at;
-  if (t.ended_at != null) item.endedAt = t.ended_at;
-  if (t.attachments.length > 0) {
-    item.attachments = t.attachments;
-    // Render the clean text the user actually typed (what the live render
-    // showed) rather than the transcript's copy, which the runner padded
-    // with `Attached file: <path>` reference lines. The stored turn text is
-    // verbatim what was sent, so it matches the optimistic render exactly.
-    // Prefix-guard so a mis-aligned match can't rewrite an unrelated message.
-    if (item.text.startsWith(t.text)) {
-      item.text = t.text;
-    }
-  }
-}
-
-/** The turn's distinctive marker, mirroring the backend matcher: an attachment
- *  path beats the prompt text (paths are unique; text can be empty). */
-function turnNeedle(t: UserTurn): string | undefined {
-  return t.text || t.attachments[0];
-}
-
-/** Overlay Fletch-origin outgoing-turn metadata (turn id, attachments, run
- *  timing) onto the transcript-rendered conversation. Additive only — never replaces
- *  transcript content (which stays the canonical, re-ingestable history):
- *  - Matched turns (`native_id` set) hang their attachments on the rendered
- *    user message. Aligned from the end, so older turns that predate this
- *    feature (no row) simply keep no attachments instead of mis-grabbing them.
- *  - Pending turns (`native_id` null) overlay the rendered message that
- *    accounts for them when there is one — the matcher failing to stamp a turn
- *    does not mean the transcript lacks it — and render standalone otherwise,
- *    so a genuinely failed send survives reload + retry. */
-export function applyUserTurns(items: ChatItem[], turns: UserTurn[]): ChatItem[] {
-  if (turns.length === 0) return items;
-
-  const matched = turns.filter((t) => t.native_id);
-  const pending = turns.filter((t) => !t.native_id);
-  const result = items.map((it) => ({ ...it }));
-
-  const userIdxs: number[] = [];
-  result.forEach((it, i) => {
-    if (it.kind === "user_message") userIdxs.push(i);
-  });
-
-  // End-align matched turns to the trailing rendered user messages.
-  const n = Math.min(matched.length, userIdxs.length);
-  for (let k = 1; k <= n; k++) {
-    const t = matched[matched.length - k];
-    const item = result[userIdxs[userIdxs.length - k]];
-    if (item.kind === "user_message") overlayTurn(item, t);
-  }
-
-  // A pending turn is one the backend matcher couldn't associate with a record
-  // (`native_id IS NULL`) — which does NOT mean the transcript lacks it: the
-  // matcher only stamps a turn whose needle appears verbatim in a record body,
-  // and it never succeeds for providers whose records don't quote the prompt
-  // that way. Pushing every pending turn therefore renders the same message
-  // twice, permanently (unlike the store-only optimistic bubble, this survives
-  // every reload). So claim each one against a rendered user message the
-  // end-alignment above left unclaimed, oldest first, by the same substring
-  // association the matcher uses — and push only the turns the transcript
-  // genuinely doesn't carry (a failed send), which is what standalone
-  // rendering is for.
-  const unclaimed = userIdxs.slice(0, userIdxs.length - n);
-  for (const t of pending) {
-    const needle = turnNeedle(t);
-    const hit = needle
-      ? unclaimed.findIndex((idx) => {
-          const item = result[idx];
-          return (
-            item.kind === "user_message" &&
-            (item.text.includes(needle) || (item.attachments?.includes(needle) ?? false))
-          );
-        })
-      : -1;
-    if (hit !== -1) {
-      const item = result[unclaimed[hit]];
-      unclaimed.splice(hit, 1);
-      if (item.kind === "user_message") overlayTurn(item, t);
-      continue;
-    }
-    const item: Extract<ChatItem, { kind: "user_message" }> = {
-      kind: "user_message",
-      text: t.text,
-    };
-    overlayTurn(item, t);
-    result.push(item);
-  }
-
-  return result;
 }
 
 /** Locate a `prev` item within the freshly-rebuilt transcript so a carried-over
@@ -179,30 +86,20 @@ function locateAnchor(rebuilt: ChatItem[], item: ChatItem, from: number): number
  *  just rebuilt from canonical records. Neither ever lands in the transcript,
  *  so a plain rebuild would drop them; re-inserting keeps them visible for the
  *  session (until a full transcript reload). Command output always carries;
- *  queued follow-ups drop once a real turn accounts for them.
+ *  queued follow-ups drop once the rebuilt log draws their turn.
  *
- *  Drops any follow-up the rebuilt conversation already accounts
- *  for — its text (or first attachment path) now appears in a user message,
- *  whether the follow-up was delivered live (claude) or coalesced (per-turn) —
- *  mirroring the backend matcher's substring association.
+ *  Drops any follow-up the rebuilt conversation already draws: an item there
+ *  carries its `turnId`, because its turn row was merged in (`mergeUserTurns`)
+ *  — onto its echo, or standalone while it awaits one.
  *
- *  A follow-up that isn't in the transcript is re-inserted at its injection
+ *  A follow-up the rebuilt log doesn't draw is re-inserted at its injection
  *  point: right after the nearest preceding item we can still locate in the
- *  rebuilt log. This keeps a live-injected message (which claude does not
- *  persist as its own mid-turn record) in its place within the turn instead of
- *  jumping to the bottom below the answer it prompted. Follow-ups with no
- *  locatable anchor (e.g. an attachment-only one with no needle) fall to the
- *  end, held there until they can be matched. */
+ *  rebuilt log, so it keeps its place within the turn instead of jumping to the
+ *  bottom below the answer it prompted. Follow-ups with no locatable anchor
+ *  fall to the end. */
 export function carryForwardStoreOnly(rebuilt: ChatItem[], prev: ChatItem[]): ChatItem[] {
-  const matched = (q: Extract<ChatItem, { kind: "queued_message" }>): boolean => {
-    const needle = q.text || q.attachments?.[0];
-    if (!needle) return false;
-    return rebuilt.some(
-      (r) =>
-        r.kind === "user_message" &&
-        (r.text.includes(needle) || (r.attachments?.includes(needle) ?? false)),
-    );
-  };
+  const matched = (q: Extract<ChatItem, { kind: "queued_message" }>): boolean =>
+    q.turnId !== undefined && hasSentTurn(rebuilt, q.turnId);
 
   // Walk prev, tracking the rebuilt-index of the most recent locatable item.
   // Each store-only item is bucketed to insert after that anchor; -1 means no

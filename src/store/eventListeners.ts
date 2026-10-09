@@ -50,10 +50,10 @@ import {
   type AgentPatch,
   agentRecord,
   applyEvent,
-  applyUserTurns,
   carryForwardStoreOnly,
   dischargeSending,
   isAgentBusy,
+  mergeUserTurns,
   mirrorSentTurn,
   needsSessionIdRefresh,
   patchAgentRecord,
@@ -355,7 +355,7 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
           ]);
           if (records.length === 0) return;
           const provider = providerFor(get(), id);
-          const rebuilt = applyUserTurns(reduceRecords(provider, records), turns);
+          const rebuilt = mergeUserTurns(reduceRecords(provider, records), turns);
           // Re-attach store-only items the rebuild would drop: optimistic
           // follow-ups (until the transcript catches up) and command output
           // (/doctor, /cost, blocked-command notices — which persist). See

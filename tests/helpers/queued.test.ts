@@ -8,6 +8,11 @@ const agentMsg = (text: string): ChatItem => ({ kind: "agent_message", text });
 const toolCall = (id: string): ChatItem => ({ kind: "tool_call", id, name: "Bash", input: "" });
 const queued = (text: string, attachments?: string[]): ChatItem =>
   attachments ? { kind: "queued_message", text, attachments } : { kind: "queued_message", text };
+const sent = (text: string, turnId: string): ChatItem => ({
+  kind: "queued_message",
+  text,
+  turnId,
+});
 const cmdOut = (label: string, text: string): ChatItem => ({
   kind: "notice",
   subtype: "command_output",
@@ -24,28 +29,36 @@ describe("carryForwardStoreOnly", () => {
     expect(out).toEqual([...rebuilt, queued("a follow-up")]);
   });
 
-  it("drops a follow-up once its text lands in a user message (no duplicate bubble)", () => {
-    // Per-turn coalescing: queued "a" and "b" arrive as one "a\n\nb" user turn.
-    const rebuilt = [userMsg("first"), agentMsg("done"), userMsg("a\n\nb")];
-    const prev = [userMsg("first"), agentMsg("done"), queued("a"), queued("b")];
-    const out = carryForwardStoreOnly(rebuilt, prev);
-    expect(out).toEqual(rebuilt); // both reconciled away
-  });
-
-  it("drops a live-delivered follow-up matched as its own transcript message", () => {
-    // Claude live: the injected message becomes its own user record.
-    const rebuilt = [userMsg("first"), agentMsg("..."), userMsg("inject me")];
-    const prev = [userMsg("first"), agentMsg("..."), queued("inject me")];
+  it("drops a follow-up once the rebuilt log draws its turn (no duplicate bubble)", () => {
+    // Its turn row was merged onto its echo, which now carries the turn id.
+    const rebuilt: ChatItem[] = [
+      userMsg("first"),
+      agentMsg("..."),
+      { kind: "user_message", text: "inject me", turnId: "q1" },
+    ];
+    const prev = [userMsg("first"), agentMsg("..."), sent("inject me", "q1")];
     expect(carryForwardStoreOnly(rebuilt, prev)).toEqual(rebuilt);
   });
 
-  it("matches an attachment-only follow-up by its attachment path", () => {
-    const rebuilt = [userMsg("look", ["/tmp/a.png"])];
-    const prev = [queued("", ["/tmp/a.png"])];
+  it("drops a follow-up the rebuilt log draws from its row while it awaits an echo", () => {
+    const rebuilt: ChatItem[] = [userMsg("first"), sent("a", "q1")];
+    const prev = [userMsg("first"), { ...sent("a", "q1"), queued: true }];
     expect(carryForwardStoreOnly(rebuilt, prev)).toEqual(rebuilt);
   });
 
-  it("keeps an attachment-only follow-up with no needle until it can match", () => {
+  it("does not match a follow-up by its text", () => {
+    // A user message reading the same is someone else's turn (a native
+    // prompt, an earlier send) until it carries this turn's id.
+    const rebuilt = [userMsg("first"), userMsg("a")];
+    const prev = [userMsg("first"), sent("a", "q1")];
+    expect(carryForwardStoreOnly(rebuilt, prev)).toEqual([
+      userMsg("first"),
+      sent("a", "q1"),
+      userMsg("a"),
+    ]);
+  });
+
+  it("keeps a follow-up with no turn id", () => {
     const rebuilt = [userMsg("first")];
     const prev = [queued("")];
     const out = carryForwardStoreOnly(rebuilt, prev);

@@ -11,6 +11,7 @@ import {
   threadType,
 } from "@desktop/adapters/shared/subagents";
 import { Icon } from "@desktop/components/Icon";
+import { UNDELIVERED_LABEL } from "@desktop/helpers/mergeTurns";
 import { useMemo, useState } from "react";
 import type { ChatItem, DisplayPolicy } from "../../adapters";
 import { SentChips } from "../../attachments";
@@ -49,13 +50,26 @@ function toBlocks(items: ChatItem[]): Block[] {
   return blocks;
 }
 
-function Item({ item }: { item: ChatItem }) {
+/** Send a message again, as a new turn. */
+export type Resend = (text: string, attachments?: string[]) => void;
+
+function Item({ item, resend }: { item: ChatItem; resend?: Resend }) {
   switch (item.kind) {
     case "user_message":
       return (
         <div className="msg-user rise">
           {item.text}
           <SentChips paths={item.attachments} />
+          {item.undelivered && (
+            <div className="undelivered">
+              {UNDELIVERED_LABEL[item.undelivered]}
+              {resend && (
+                <button type="button" onClick={() => resend(item.text, item.attachments)}>
+                  Resend
+                </button>
+              )}
+            </div>
+          )}
         </div>
       );
     case "queued_message":
@@ -205,18 +219,21 @@ function ToolRow({
 /** `items` are expected to have been through `policy` already. `busy` is the
  *  owning agent's (or thread's) liveness, which a sub-agent card without a
  *  background task reads its running state from. `openThread` opens a
- *  sub-agent's thread; without it the cards are inert. */
+ *  sub-agent's thread; without it the cards are inert. `resend` backs the
+ *  Resend on a message the agent never read; without it there is none. */
 export function Transcript({
   items,
   tasks,
   busy = false,
   openThread,
+  resend,
 }: {
   items: ChatItem[];
   tasks?: TasksByToolUse;
   policy?: DisplayPolicy;
   busy?: boolean;
   openThread?: (toolUseId: string) => void;
+  resend?: Resend;
 }) {
   const blocks = useMemo(() => toBlocks(items), [items]);
   return (
@@ -236,7 +253,7 @@ export function Transcript({
             ))}
           </div>
         ) : (
-          <Item key={b.key} item={b.item} />
+          <Item key={b.key} item={b.item} resend={resend} />
         ),
       )}
     </>

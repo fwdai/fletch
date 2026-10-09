@@ -199,6 +199,26 @@ describe("cursorAdapter.normalizeTranscript", () => {
     expect(cursorTaskIdNth("cursor-task-811c9dc5", 2)).toBe("cursor-task-811c9dc5-2");
   });
 
+  // What `cursor_prompt` in providers/cursor.rs counts as a prompt — and so
+  // what turn rows pair with — is the `<user_query>` body; the context cursor
+  // injects as user records of its own is no prompt and draws no bubble.
+  it("draws a prompt's user_query and drops the context cursor injects", () => {
+    const said = (text: string) => ({
+      role: "user",
+      message: { content: [{ type: "text", text }] },
+    });
+    const lines = [
+      said("<available_subagent_types>\nexplore\n</available_subagent_types>"),
+      said("<dynamic_tools>[]</dynamic_tools>"),
+      said("<timestamp>Fri</timestamp>\n<user_query>\nfix the build\n</user_query>"),
+      { role: "assistant", message: { content: [{ type: "text", text: "done" }] } },
+    ];
+    expect(render(lines, seqsFor(lines))).toEqual([
+      { kind: "user_message", text: "fix the build", recordSeq: 102 },
+      { kind: "agent_message", text: "done", streaming: false, recordSeq: 103 },
+    ]);
+  });
+
   it("is defensive against malformed lines", () => {
     expect(() =>
       cursorAdapter.normalizeTranscript([null, 1, {}, { role: "system" }]),

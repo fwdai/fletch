@@ -25,12 +25,16 @@ function userText(content: string): string {
   return (m ? m[1] : content).trim();
 }
 
-export function normalizeTranscript(lines: unknown[], seqs?: readonly number[]): RawEvent[] {
+export function normalizeTranscript(
+  lines: unknown[],
+  seqs?: readonly number[],
+  sessions?: readonly string[],
+): RawEvent[] {
   const out: RawEvent[] = [];
   const pendingCallIds: string[] = []; // FIFO of unmatched tool-call ids
 
   for (const [i, line] of lines.entries()) {
-    const emit = (ev: RawEvent) => out.push(fromRecord(ev, seqs?.[i]));
+    const emit = (ev: RawEvent) => out.push(fromRecord(ev, seqs?.[i], sessions?.[i]));
     const step = asRecord(line);
     const type = typeof step.type === "string" ? step.type : "";
     const stepIndex = typeof step.step_index === "number" ? step.step_index : out.length;

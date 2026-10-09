@@ -5,12 +5,14 @@
 //   - agentLookups: derivations over the workspace + per-agent state pruning
 //   - commands:     slash-command / skill-invocation resolution
 //   - transcript:   session-record → chat-item reduction and log rebuild
+//   - mergeTurns:   placing user-turn rows in that log by position
 //   - usage:        live-usage persistence into session_records
 //   - reasoning:    readable Codex reasoning persistence for transcript replay
 //   - spawn:        spawn-payload snapshots + the send-when-ready retry util
 
 export * from "./agentLookups";
 export * from "./commands";
+export * from "./mergeTurns";
 export * from "./mirrorTurn";
 export * from "./reasoning";
 export * from "./sending";

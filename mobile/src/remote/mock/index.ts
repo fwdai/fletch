@@ -285,6 +285,7 @@ export class MockHost {
     this.state.records[id] = [
       ...list,
       {
+        session_id: fx.MOCK_SESSION,
         seq: this.seq,
         provider,
         source: "transcript",
@@ -529,6 +530,7 @@ export class MockHost {
       ...(this.state.turns[id] ?? []),
       {
         turn_id: turnId,
+        session_id: fx.MOCK_SESSION,
         seq: this.seq,
         text,
         attachments,
@@ -536,6 +538,7 @@ export class MockHost {
         started_at: Date.now(),
         ended_at: null,
         outcome: null,
+        position: this.seq,
       },
     ];
     this.patchAgent(id, { task: this.agent(id).task || text });

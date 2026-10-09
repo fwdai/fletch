@@ -1,38 +1,16 @@
 // Rebuilding a busy agent's log. The host's records stop at the last finished
 // turn — the running one is ingested only when it ends — so the log is the
-// records plus the running turn, replayed from the host's own copy of its
-// event stream (`read_live_turn`). That copy exists for every provider, and it
-// is what a phone that missed the stream in the background renders from.
+// records (with the running turn's prompt, and any queued behind it, drawn from
+// their rows by `mergeUserTurns`) plus the running turn, replayed from the
+// host's own copy of its event stream (`read_live_turn`). That copy exists for
+// every provider, and it is what a phone that missed the stream in the
+// background renders from.
 
 import type { AgentManagedEvent } from "@desktop/api/types/agent";
 import type { LiveTurn, UserTurn } from "@desktop/api/types/session";
-import { mirrorSentTurn } from "@desktop/helpers/mirrorTurn";
 import type { ChatItem, RawEvent } from "../adapters";
 import { foldAgentEvent } from "./events";
 import type { MobileState } from "./index";
-
-/** The turns the records do not carry yet: the one running (`started_at` set)
- *  and the follow-ups queued behind it, neither ended. Drawn as the bubbles
- *  their `turn:sent` would have drawn, so a replayed turn opens with its
- *  prompt. A turn the host has matched to a record is in `items` already. */
-export function withPendingTurns(
-  agentId: string,
-  items: ChatItem[],
-  turns: UserTurn[],
-): ChatItem[] {
-  let next = items;
-  for (const t of turns) {
-    if (t.native_id || t.ended_at != null) continue;
-    next = mirrorSentTurn(next, {
-      agent_id: agentId,
-      turn_id: t.turn_id,
-      text: t.text,
-      attachments: t.attachments,
-      follow_up: t.started_at == null,
-    });
-  }
-  return next;
-}
 
 /** When the running turn began, for the live timer a missed `turn:started`
  *  would have anchored. */

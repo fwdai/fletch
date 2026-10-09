@@ -1,3 +1,4 @@
+import type { SessionRecord, UserTurn } from "@desktop/api/types/session";
 import { describe, expect, it, vi } from "vitest";
 import {
   fitWithin,
@@ -12,7 +13,7 @@ import {
   UploadAborted,
   uploadAttachment,
 } from "../src/attachments/upload";
-import { applyUserTurns } from "../src/store/transcript";
+import { renderHistory } from "../src/store/transcript";
 
 /** A host that records every op and reassembles what it was sent. */
 function harness(opts: { failChunkAt?: number } = {}) {
@@ -160,60 +161,56 @@ describe("prepareFile decisions", () => {
   });
 });
 
-describe("applyUserTurns with attachments", () => {
-  it("hangs the turn's attachments on the bubble and restores the typed text", () => {
-    const items = applyUserTurns(
-      [
-        { kind: "user_message", text: "older, no row" },
-        {
-          kind: "user_message",
-          text: "what is wrong here?\nAttached file: /ws/.fletch-attachments/u/shot.png",
-        },
-        { kind: "agent_message", text: "Looking." },
-      ],
-      [
-        {
-          turn_id: "t1",
-          seq: 1,
-          text: "what is wrong here?",
-          attachments: ["/ws/.fletch-attachments/u/shot.png"],
-          native_id: "n1",
-          started_at: 10,
-          ended_at: 20,
-          outcome: "completed",
-        },
-      ],
-    );
-    expect(items[0]).toEqual({ kind: "user_message", text: "older, no row" });
-    expect(items[1]).toEqual({
+describe("renderHistory with attachments", () => {
+  const record = (seq: number, body: Record<string, unknown>): SessionRecord => ({
+    session_id: "s",
+    seq,
+    provider: "claude",
+    source: "transcript",
+    native_id: `n${seq}`,
+    agent_version: null,
+    body,
+  });
+  const said = (text: string) =>
+    record(0, { type: "user", message: { role: "user", content: text } });
+  const turn = (over: Partial<UserTurn>): UserTurn => ({
+    turn_id: "t1",
+    session_id: "s",
+    seq: 1,
+    text: "what is wrong here?",
+    attachments: ["/ws/.fletch-attachments/u/shot.png"],
+    native_id: "n2",
+    started_at: 10,
+    ended_at: 20,
+    outcome: "completed",
+    position: 2,
+    ...over,
+  });
+
+  it("hangs the turn's attachments on its own bubble and restores the typed text", () => {
+    const records = [
+      { ...said("older, no row"), seq: 1 },
+      { ...said("what is wrong here?\nAttached file: /ws/.fletch-attachments/u/shot.png"), seq: 2 },
+    ];
+    const items = renderHistory("claude", records, [turn({})]);
+    expect(items[0]).toMatchObject({ kind: "user_message", text: "older, no row" });
+    expect(items[0]).not.toHaveProperty("turnId");
+    expect(items[1]).toMatchObject({
       kind: "user_message",
       text: "what is wrong here?",
       attachments: ["/ws/.fletch-attachments/u/shot.png"],
+      turnId: "t1",
       startedAt: 10,
       endedAt: 20,
     });
   });
 
   it("leaves the text alone when the row does not prefix it", () => {
-    const [item] = applyUserTurns(
-      [{ kind: "user_message", text: "something else entirely" }],
-      [
-        {
-          turn_id: "t1",
-          seq: 1,
-          text: "typed",
-          attachments: ["/a.png"],
-          native_id: "n1",
-          started_at: null,
-          ended_at: null,
-          outcome: null,
-        },
-      ],
-    );
-    expect(item).toEqual({
-      kind: "user_message",
+    const records = [{ ...said("something else entirely"), seq: 2 }];
+    const [item] = renderHistory("claude", records, [turn({ text: "typed" })]);
+    expect(item).toMatchObject({
       text: "something else entirely",
-      attachments: ["/a.png"],
+      attachments: ["/ws/.fletch-attachments/u/shot.png"],
     });
   });
 });

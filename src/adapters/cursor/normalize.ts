@@ -47,7 +47,32 @@ export function cursorTaskIdNth(base: string, n: number): string {
   return n > 1 ? `${base}-${n}` : base;
 }
 
-export function normalizeTranscript(lines: unknown[], seqs?: readonly number[]): RawEvent[] {
+const USER_QUERY_RE = /<user_query>([\s\S]*?)<\/user_query>/;
+/** Text that opens with a tag: context cursor wrote itself. */
+const INJECTED_RE = /^\s*<[A-Za-z_][\w-]*>/;
+
+/** A top-level user record's blocks as its bubble should show them. Cursor
+ *  wraps every prompt in a `<timestamp>` + `<user_query>` envelope and logs
+ *  context it injects (`<available_subagent_types>`, `<dynamic_tools>`) as
+ *  user records of their own, without one. So an envelope's text becomes its
+ *  query, and other tag-led text is dropped — what `cursor_prompt` in
+ *  crates/fletch-core/src/agent/providers/cursor.rs counts as the prompt,
+ *  which turn rows are paired with. Plain text without an envelope (older
+ *  transcripts) is kept as it is. */
+function promptBlocks(blocks: Record<string, unknown>[]): Record<string, unknown>[] {
+  return blocks.flatMap((b) => {
+    if (b.type !== "text" || typeof b.text !== "string") return [b];
+    const query = b.text.match(USER_QUERY_RE);
+    if (query) return [{ ...b, text: query[1].trim() }];
+    return INJECTED_RE.test(b.text) ? [] : [b];
+  });
+}
+
+export function normalizeTranscript(
+  lines: unknown[],
+  seqs?: readonly number[],
+  sessions?: readonly string[],
+): RawEvent[] {
   const out: RawEvent[] = [];
   let toolSeq = 0;
   // Task calls seen so far in the main transcript, by base id. Without this,
@@ -62,7 +87,12 @@ export function normalizeTranscript(lines: unknown[], seqs?: readonly number[]):
     // part of the main transcript's numbering and must not bump the count.
     const parent = typeof rec.parent_tool_use_id === "string" ? rec.parent_tool_use_id : undefined;
     const msg = asRecord(rec.message);
-    const content = asBlockList(msg.content).map((b) => {
+    const blocks =
+      role === "user" && parent === undefined
+        ? promptBlocks(asBlockList(msg.content))
+        : asBlockList(msg.content);
+    if (blocks.length === 0) continue;
+    const content = blocks.map((b) => {
       if (b.type !== "tool_use" || b.id != null) return b;
       const prompt = b.name === "Task" ? asRecord(b.input).prompt : undefined;
       if (typeof prompt !== "string") return { ...b, id: `cursor-tool-${toolSeq++}` };
@@ -76,7 +106,7 @@ export function normalizeTranscript(lines: unknown[], seqs?: readonly number[]):
     });
     const ev: RawEvent = { type: role, message: { ...msg, content } };
     if (parent !== undefined) ev.parent_tool_use_id = parent;
-    out.push(fromRecord(ev, seqs?.[i]));
+    out.push(fromRecord(ev, seqs?.[i], sessions?.[i]));
   }
   return out;
 }

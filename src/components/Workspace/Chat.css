@@ -511,6 +511,17 @@
   color: var(--fg-2);
 }
 
+/* A message the agent never read (stopped first, or never delivered): its
+   bubble stays where it was sent, footed with why and a Resend. */
+.m-user__undelivered {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+  color: var(--fg-2);
+  white-space: normal;
+}
+
 .m-agent {
   line-height: var(--lh-relaxed);
   color: var(--fg-0);

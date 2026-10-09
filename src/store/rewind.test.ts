@@ -25,8 +25,14 @@ import { createRewindSlice } from "./rewind";
 import type { AppState } from "./types";
 import { createWorkspaceSlice } from "./workspace";
 
-const record = (uuid: string, role: "user" | "assistant", text: string): SessionRecord => ({
-  seq: 0,
+const record = (
+  uuid: string,
+  role: "user" | "assistant",
+  text: string,
+  seq: number,
+): SessionRecord => ({
+  session_id: "s1",
+  seq,
   provider: "claude",
   source: "transcript",
   native_id: uuid,
@@ -37,8 +43,9 @@ const record = (uuid: string, role: "user" | "assistant", text: string): Session
       : { type: "assistant", uuid, message: { role, content: [{ type: "text", text }] } },
 });
 
-const turn = (turnId: string, nativeId: string, text: string): UserTurn => ({
+const turn = (turnId: string, nativeId: string, text: string, position: number): UserTurn => ({
   turn_id: turnId,
+  session_id: "s1",
   seq: 0,
   text,
   attachments: [],
@@ -46,10 +53,11 @@ const turn = (turnId: string, nativeId: string, text: string): UserTurn => ({
   started_at: 1,
   ended_at: 2,
   outcome: "completed",
+  position,
 });
 
 /** `denali` said q0 and q1; the chat shows both. */
-const HISTORY = [record("u0", "user", "q0"), record("a0", "assistant", "a0")];
+const HISTORY = [record("u0", "user", "q0", 1), record("a0", "assistant", "a0", 2)];
 const SHOWN: ChatItem[] = [
   { kind: "user_message", text: "q0", turnId: "t0" },
   { kind: "agent_message", text: "a0" },
@@ -86,11 +94,11 @@ describe("rewindAgent", () => {
     api.syncSession.mockResolvedValue(undefined);
     // Before the rewind, the history through q1; after it, up to q1.
     api.readSessionRecords
-      .mockResolvedValueOnce([...HISTORY, record("u1", "user", "q1")])
+      .mockResolvedValueOnce([...HISTORY, record("u1", "user", "q1", 3)])
       .mockResolvedValue(HISTORY);
     api.readUserTurns
-      .mockResolvedValueOnce([turn("t0", "u0", "q0"), turn("t1", "u1", "q1")])
-      .mockResolvedValue([turn("t0", "u0", "q0")]);
+      .mockResolvedValueOnce([turn("t0", "u0", "q0", 1), turn("t1", "u1", "q1", 3)])
+      .mockResolvedValue([turn("t0", "u0", "q0", 1)]);
   });
 
   it("rewinds the conversation, then reloads the chat and puts the message back", async () => {

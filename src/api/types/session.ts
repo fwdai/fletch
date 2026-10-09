@@ -3,6 +3,10 @@
  *  returns an agent's display history, which starts with whatever its session
  *  inherits through lineage (a fork's parent conversation). */
 export interface SessionRecord {
+  /** The session that produced the record. Seqs overlap across the sessions
+   *  a history stitches, so `(session_id, seq)` is what names a record there
+   *  (and what `UserTurn.position` pairs with). */
+  session_id: string;
   /** Order within the record's own session; a history that spans sessions is
    *  ordered by its position in the list, not by this. */
   seq: number;
@@ -35,10 +39,12 @@ export interface SupersededSession {
 /** One Fletch-origin outgoing user message (session_user_turns). Carries the
  *  attachment metadata the transcript lacks; `native_id` links it to the
  *  canonical session_records user-message once matched at turn-end (null =
- *  pending or failed — rendered standalone for retry). */
+ *  pending, or a turn the provider never logged). */
 export interface UserTurn {
   /** Stable id, and what a fork anchors on. */
   turn_id: string;
+  /** The session the turn was sent in, whose seq space `position` is in. */
+  session_id: string;
   seq: number;
   text: string;
   attachments: string[];
@@ -52,6 +58,12 @@ export interface UserTurn {
    *  provider never logged the prompt. null while in flight or awaiting
    *  delivery, and for turns from before outcomes were recorded. */
   outcome: "completed" | "interrupted" | "failed" | null;
+  /** Where the turn sits among its session's records: its prompt record's seq
+   *  once paired (`native_id`), or, for a turn that ended without the provider
+   *  logging its prompt, the seq of the record that came next. null while in
+   *  flight, and for rows from before positions existed. What the transcript
+   *  places the turn by (`helpers/mergeTurns`). */
+  position: number | null;
   /** From an ancestor session (see `SessionRecord.inherited`). */
   inherited?: boolean;
 }
