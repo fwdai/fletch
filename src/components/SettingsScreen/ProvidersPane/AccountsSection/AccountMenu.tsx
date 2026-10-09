@@ -3,9 +3,9 @@ import { MenuButton } from "@/components/ui/MenuButton";
 import type { AccountAction } from "./accountActions";
 
 /** The three-dot menu in an account card's corner: its less frequent actions
- *  (sign out, delete), kept off the card itself. Picking one only closes the
- *  menu and hands it back — the card asks to confirm. Renders nothing for an
- *  account with no action to offer. */
+ *  (re-authenticate, sign out, delete), kept off the card itself. Picking one
+ *  only closes the menu and hands it back — the card asks to confirm, or runs
+ *  it. Renders nothing for an account with no action to offer. */
 export function AccountMenu({
   actions,
   disabled,
