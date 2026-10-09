@@ -25,3 +25,12 @@ export function accountSlug(name: string): string {
 export function accountLabel(account: Pick<ProviderAccount, "id" | "managed">): string {
   return account.managed || account.id !== DEFAULT_ACCOUNT_ID ? account.id : "Terminal login";
 }
+
+/** A stable hue (oklch, 0–359) for an account id, so its avatar keeps one
+ *  colour everywhere it appears and two accounts rarely share one. */
+export function accountHue(id: string): number {
+  let hash = 0;
+  for (const ch of id) hash = (hash * 31 + ch.charCodeAt(0)) >>> 0;
+  // Golden-angle steps spread neighbouring hashes around the wheel.
+  return Math.round((hash * 137.508) % 360);
+}

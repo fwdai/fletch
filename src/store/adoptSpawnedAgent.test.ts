@@ -114,7 +114,9 @@ describe("spawning a draft under a recycled landmark name", () => {
     // The prompt rides the spawn as the record's task, so the returned record
     // and every later snapshot carry it — no client-side seed to be clobbered
     // by a refresh while the process starts.
-    expect(spawnAgent.mock.calls[0]?.at(-1)).toBe("ship it");
+    expect(spawnAgent.mock.calls[0]?.at(-2)).toBe("ship it");
+    // No account picked: the spawn follows the active one in Settings.
+    expect(spawnAgent.mock.calls[0]?.at(-1)).toBeUndefined();
     // The archived predecessor is gone entirely — one record per id.
     expect(workspace?.agents.filter((a) => a.id === NAME)).toHaveLength(1);
     expect(workspace?.agents).toContainEqual(unrelated);

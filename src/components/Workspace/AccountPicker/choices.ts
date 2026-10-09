@@ -45,18 +45,23 @@ export function accountChoices(accounts: ProviderAccount[], current: string): Ac
 }
 
 /** `hidden`: no switching here (see `useCanSwitchAccount`).
- *  `single`: at most one account in the loaded list is not signed out, so
- *  there is nothing to switch to; the header hides and the hint points at
- *  Settings instead.
+ *  `single`: at most one account in the loaded list is not signed out, and
+ *  it is `current` (when given), so there is nothing to switch to; the
+ *  composer's picker hides its account and the hint points at Settings
+ *  instead. A `current` removed or signed out since is not that: moving onto
+ *  the one usable account is then the only way to start.
  *  `disabled`: a turn or a switch is running; the host refuses until it ends. */
 export type PickerState = "hidden" | "single" | "disabled" | "ready";
 
 export function pickerState(
   canSwitch: boolean,
-  accounts: Pick<ProviderAccount, "status">[],
+  accounts: Pick<ProviderAccount, "id" | "status">[],
   busy: boolean,
+  current?: string,
 ): PickerState {
   if (!canSwitch) return "hidden";
-  if (accounts.filter((a) => a.status !== "signed_out").length <= 1) return "single";
+  const usable = accounts.filter((a) => a.status !== "signed_out");
+  const stale = current !== undefined && usable.length === 1 && usable[0].id !== current;
+  if (usable.length <= 1 && !stale) return "single";
   return busy ? "disabled" : "ready";
 }

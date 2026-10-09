@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { AccountLimits } from "@/api/types/providers";
-import { limitsKeyParts, parseAccountLimits, withLimitsChange } from "./providerLimits";
+import {
+  limitsKeyParts,
+  parseAccountLimits,
+  spentWindow,
+  withLimitsChange,
+} from "./providerLimits";
 
 const row = (percent: number): AccountLimits => ({
   limits: {
@@ -65,5 +70,33 @@ describe("withLimitsChange", () => {
 
   it("has nothing to do for any other setting", () => {
     expect(withLimitsChange({}, "notify_turn_complete", "true")).toBeNull();
+  });
+});
+
+describe("spentWindow", () => {
+  const at = (s: number) => s * 1000;
+  const both = (fiveHour: number, sevenDay: number): AccountLimits => ({
+    limits: {
+      five_hour: { percent: fiveHour, resets_at: 1_000 },
+      seven_day: { percent: sevenDay, resets_at: 5_000 },
+      as_of: 0,
+      source: "stream",
+    },
+    refresh: null,
+  });
+
+  it("is null while every window has room, or nothing is known", () => {
+    expect(spentWindow(both(99, 40), at(0))).toBeNull();
+    expect(spentWindow(undefined, at(0))).toBeNull();
+    expect(spentWindow({ limits: null, refresh: null }, at(0))).toBeNull();
+  });
+
+  it("names the spent window until it resets", () => {
+    expect(spentWindow(both(100, 40), at(500))?.resets_at).toBe(1_000);
+    expect(spentWindow(both(100, 40), at(1_000))).toBeNull();
+  });
+
+  it("prefers the window that frees the account last", () => {
+    expect(spentWindow(both(100, 100), at(500))?.resets_at).toBe(5_000);
   });
 });

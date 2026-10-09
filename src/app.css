@@ -26,7 +26,8 @@
 @import "./components/Composer/Composer.css";
 @import "./components/Composer/PrimaryControl/PrimaryControl.css";
 @import "./styles/shared/dropdown.css";
-@import "./components/Composer/ModelPicker.css";
+@import "./components/AccountAvatar.css";
+@import "./components/Composer/ModelPicker/ModelPicker.css";
 @import "./components/RightPanel/RightPanel.css";
 @import "./components/RightPanel/Code/Code.css";
 @import "./components/RightPanel/GitPanel/GitPanel.css";

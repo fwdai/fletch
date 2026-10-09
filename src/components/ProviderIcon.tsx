@@ -8,6 +8,9 @@ interface ProviderIconProps {
   /** Hue (oklch) tinting the chip border, background, and fallback text. */
   hue: number;
   size?: number;
+  /** Frameless and square, to sit as one half of a split token (the composer
+   *  chip's agent + account). */
+  flush?: boolean;
 }
 
 /**
@@ -20,10 +23,15 @@ interface ProviderIconProps {
  * abbreviation monogram. Because the URL is fixed, swapping the SVG on the CDN
  * updates the icon for everyone without an app release.
  */
-export function ProviderIcon({ slug, short, hue, size = 30 }: ProviderIconProps) {
+export function ProviderIcon({ slug, short, hue, size = 30, flush = false }: ProviderIconProps) {
   const { svg, failed } = useProviderIcon(slug);
 
-  const cls = ["chip-mono", "iflex-center", svg && !failed ? "has-brand-icon" : ""]
+  const cls = [
+    "chip-mono",
+    "iflex-center",
+    svg && !failed ? "has-brand-icon" : "",
+    flush ? "is-flush" : "",
+  ]
     .filter(Boolean)
     .join(" ");
 
@@ -36,7 +44,7 @@ export function ProviderIcon({ slug, short, hue, size = 30 }: ProviderIconProps)
         // Scale the corner radius and monogram with `size` so the chip stays
         // proportionate at any scale. The ratios reproduce the CSS defaults
         // (7px radius, 10.5px text) exactly at the 30px settings size.
-        borderRadius: Math.max(3, Math.round(size * 0.233)),
+        borderRadius: flush ? 0 : Math.max(3, Math.round(size * 0.233)),
         fontSize: Math.round(size * 0.35 * 10) / 10,
         ["--ph-h" as string]: hue,
         ["--ph" as string]: "oklch(.65 .13 var(--ph-h))",

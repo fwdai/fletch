@@ -12,7 +12,7 @@ export function SwitchAccountHint({ agent }: { agent: AgentRecord }) {
     <div className="acct-hint text-sm" role="status">
       <Icon name="alert" size={12} className="acct-hint-icon" />
       <span>That turn hit an account limit or sign-in problem.</span>
-      <AccountPicker agent={agent} trigger="hint" />
+      <AccountPicker agent={agent} />
     </div>
   );
 }

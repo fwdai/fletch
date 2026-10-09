@@ -173,6 +173,8 @@ impl AgentDriver for SupervisorDriver {
                         // The step prompt is delivered as a message; the task is
                         // captured from it then.
                         task: None,
+                        // Steps run under the account active in Settings.
+                        account: None,
                     },
                 )
                 .await?;

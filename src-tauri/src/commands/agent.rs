@@ -38,6 +38,9 @@ pub async fn spawn_agent(
     // never shows an empty task while the process starts. Absent when the
     // caller has no prompt yet.
     task: Option<String>,
+    // The provider account picked in the composer (an id, or `default`);
+    // absent follows the active account in Settings.
+    account: Option<String>,
 ) -> Result<AgentRecord> {
     fletch_core::commands::spawn_agent_impl(
         supervisor.inner().clone(),
@@ -56,6 +59,7 @@ pub async fn spawn_agent(
         issue_ref,
         purpose,
         task,
+        account,
     )
     .await
 }

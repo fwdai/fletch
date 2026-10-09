@@ -115,7 +115,10 @@ own; the selection is the user's.
 - The **active account** per provider is the settings key
   `provider_account_<provider>` (absent/blank/`default` = default). It is read
   at agent creation and stamped on the record
-  (`workspaces.provider_account`, migration 0049). Every later spawn uses the
+  (`workspaces.provider_account`, migration 0049), unless the spawn names an
+  account itself (`SpawnRequest::account`, the composer's account strip on a
+  new session; `chosen_account` refuses a missing or signed-out one, and the
+  pick is never remembered past that draft). Every later spawn uses the
   stamp. **Switching the radio moves every agent of the provider**
   (`set_active_provider_account_impl` → `Supervisor::follow_active_account`,
   since 2026-10-09): the setter refuses a signed-out target (the fleet is
@@ -127,8 +130,9 @@ own; the selection is the user's.
   has; a limit it hits is the old account's and is resent once from that
   relaunch — `Logins::moved`). Rested sessions take the stamp and drop an `Error` the old account
   left. An agent already on the target (switched there by hand) is left
-  alone. The stamp also moves through `switch_agent_account` (the agent
-  header's account picker, refused mid-turn), which is a per-agent override
+  alone. The stamp also moves through `switch_agent_account` (the account
+  strip in the composer's model picker, or "Switch account" under a turn
+  that failed on a limit; refused mid-turn), which is a per-agent override
   until the next global change, and through `observe_limit` (below). Usage
   is credited by this stamp too: a session Fletch ran belongs to its
   workspace's account (`workspace::session_accounts`), and only transcripts

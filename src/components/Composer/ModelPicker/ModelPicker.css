@@ -70,7 +70,7 @@
   background: var(--selected);
 }
 /* .is-disabled, not :disabled — the row uses aria-disabled so it stays
- * hover-capable and can surface its tooltip (see ModelPicker.tsx). */
+ * hover-capable and can surface its tooltip (see AgentList.tsx). */
 .model-agent-row.is-disabled {
   opacity: 0.42;
   cursor: default;
@@ -246,6 +246,50 @@
   .model-chip-agent {
     display: none;
   }
+}
+
+/* Account row and flyout. The row is a model row led by the account's avatar,
+   with a chevron bright enough to say a list opens beside it. */
+.model-acct-row.hot {
+  background: var(--hover);
+}
+.model-option.model-acct-row > .model-acct-chev {
+  color: var(--fg-1);
+  transition:
+    transform 0.16s var(--ease),
+    color 0.16s;
+}
+.model-option.model-acct-row:hover > .model-acct-chev,
+.model-option.model-acct-row.hot > .model-acct-chev {
+  color: var(--accent);
+  transform: translateX(2px);
+}
+.model-acct-spent,
+.model-option-desc.is-spent {
+  color: var(--warn);
+}
+.model-acct-note {
+  padding: 4px 9px 6px;
+  color: var(--fg-3);
+}
+.model-option.is-disabled {
+  opacity: 0.42;
+  cursor: default;
+}
+.model-option.is-disabled:hover {
+  background: none;
+}
+.model-acct-manage {
+  margin-top: 4px;
+  border-top: 1px solid var(--bd-soft);
+  border-radius: 0 0 8px 8px;
+}
+.model-acct-manage .model-option-name {
+  font-weight: 400;
+  color: var(--fg-2);
+}
+.model-option.model-acct-manage > svg {
+  color: var(--fg-3);
 }
 
 /* branch picker scroll buttons */

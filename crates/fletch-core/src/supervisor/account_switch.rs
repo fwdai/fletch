@@ -72,6 +72,30 @@ pub(super) fn ensure_signed_in(provider: &str, target: Option<&str>) -> Result<(
     )))
 }
 
+/// The stamp for a new agent whose spawn names `requested` (an id, or
+/// `default`) rather than following Settings, or why it is refused: a
+/// provider without accounts, an id with no directory, a login the probe reads
+/// as signed out. Takes no account lock: the stamp is read at launch, which
+/// refuses an account removed since (`accounts::existing_account_dir`).
+pub(super) async fn chosen_account(provider: &str, requested: &str) -> Result<Option<String>> {
+    if !accounts::supports_accounts(provider) {
+        return Err(Error::Other(format!(
+            "`{provider}` has no accounts to pick from."
+        )));
+    }
+    let target = managed(Some(requested.trim())).map(str::to_string);
+    if let Some(id) = target.as_deref() {
+        if !accounts::account_dir(provider, id)?.is_dir() {
+            return Err(Error::Other(format!("No {provider} account named `{id}`.")));
+        }
+    }
+    let (p, probed) = (provider.to_string(), target.clone());
+    tokio::task::spawn_blocking(move || ensure_signed_in(&p, probed.as_deref()))
+        .await
+        .map_err(|e| Error::Other(format!("account probe failed: {e}")))??;
+    Ok(target)
+}
+
 impl Supervisor {
     /// Move `agent_id`'s workspace onto another account of its provider (an
     /// id, or `default`), keeping the workspace and the conversation. Refused

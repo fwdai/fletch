@@ -35,6 +35,9 @@ export interface DraftAgent {
    *  provider/model are mirrored into `provider`/`model`; this id additionally
    *  carries its instructions (resolved at spawn) and sidebar identity. */
   customAgentId?: string;
+  /** The provider account picked for this draft's agent. Never remembered
+   *  past the draft: undefined follows the active account in Settings. */
+  account?: string;
   /** Base branch to fork from. */
   base: string;
   /** Canonical issue ref this draft was started from ("123" for GitHub,
@@ -363,6 +366,7 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get) => ({
         // task at spawn means the returned record and every refresh snapshot
         // already carry it, so the sidebar row never reads empty in between.
         prompt,
+        draft.account,
       );
       // A draft started from a board card links its item to the agent the
       // moment there is an agent to link to — this is the only point where the

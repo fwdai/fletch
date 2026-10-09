@@ -431,6 +431,10 @@ pub struct SpawnRequest {
     /// be delivered once the process is up. `None` leaves the task to
     /// `on_first_user_message`, which captures it at send time.
     pub task: Option<String>,
+    /// The provider account this agent runs under, when the spawn picked one
+    /// (an id, or `default`) instead of the active account in Settings — the
+    /// composer's per-chat override. `None` follows Settings.
+    pub account: Option<String>,
 }
 
 impl Supervisor {
@@ -439,6 +443,14 @@ impl Supervisor {
         ctx: Arc<EngineCtx>,
         req: SpawnRequest,
     ) -> Result<AgentRecord> {
+        // The probe can read the Keychain, so it runs before the lifecycle
+        // lock every agent shares.
+        let chosen_account = match req.account.as_deref() {
+            Some(requested) => {
+                Some(super::account_switch::chosen_account(&req.provider, requested).await?)
+            }
+            None => None,
+        };
         let _lifecycle_guard = self.agent_lifecycle.lock().await;
         let SpawnRequest {
             view,
@@ -461,6 +473,7 @@ impl Supervisor {
             issue_ref,
             purpose,
             task,
+            account: _,
         } = req;
         if !repo_path.join(".git").exists() {
             return Err(Error::InvalidPath(format!(
@@ -600,9 +613,10 @@ impl Supervisor {
         // never re-engines it — see `spawn_agent_process`, which reuses the
         // stored value instead of the live setting.
         record.sandbox_engine = Some(engine_kind.as_setting().to_string());
-        // Stamp the provider account the same way: read from the live setting
-        // only here, so switching the active account moves new agents only.
-        record.account = active_account(&ctx, &record.provider);
+        // Stamp the provider account: the one the spawn picked, else the
+        // active one in Settings. Later moves go through the switch, a
+        // Settings change (`follow_active_account`) or a limit retry.
+        record.account = chosen_account.unwrap_or_else(|| active_account(&ctx, &record.provider));
         // Tag the agent with its owning run (workflow step spawn) so it's
         // hidden from the normal sidebar and cascaded on run delete.
         record.owner_run_id = owner_run_id;

@@ -230,8 +230,16 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
                 defaultModel={draft.model}
                 defaultCustomAgentId={draft.customAgentId}
                 onChangeSelection={(provider, model, customAgentId) => {
-                  updateDraft(draft.id, { provider, model, customAgentId });
+                  // An account belongs to its provider: another provider
+                  // starts over from its own active account in Settings.
+                  const account = provider === draft.provider ? draft.account : undefined;
+                  updateDraft(draft.id, { provider, model, customAgentId, account });
                   setNewDraftSelection(provider, model, customAgentId);
+                }}
+                // A per-draft pick, never remembered for the next draft.
+                account={{
+                  current: draft.account,
+                  onPick: (account) => updateDraft(draft.id, { account }),
                 }}
                 placeholder="Describe the task for the agent. ↵ to spawn."
                 onSend={({ text, provider, model, attachments, thinking, customAgentId }) =>

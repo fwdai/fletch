@@ -158,6 +158,8 @@ impl Supervisor {
             purpose: None,
             // A fork has no first prompt yet; its task is captured on first send.
             task: None,
+            // A fresh agent follows the account active in Settings.
+            account: None,
         };
         let spawned = self.spawn_agent(ctx, req).await;
         // Once spawned, its provisioning releases the code's pin; a spawn

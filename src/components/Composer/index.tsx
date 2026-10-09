@@ -20,7 +20,7 @@ import { blockedSentence, useAgentAvailability } from "./availability";
 import { ComposerFrame } from "./ComposerFrame";
 import { isDictationHotkey, useDictation, useDictationHotkey } from "./dictation";
 import { IssuePicker } from "./IssuePicker";
-import { ModelPicker } from "./ModelPicker";
+import { type AccountControl, ModelPicker } from "./ModelPicker";
 import { PrimaryControl, primaryState } from "./PrimaryControl";
 import { UsageMeter } from "./UsageMeter";
 import { useComposerInput } from "./useComposerInput";
@@ -81,6 +81,9 @@ interface Props {
   /** Fired when a new-agent draft changes its provider/model/custom-agent
    *  selection. `customAgentId` is set when a custom agent is picked. */
   onChangeSelection?: (provider: string, model?: string, customAgentId?: string) => void;
+  /** The provider account the agent runs (or will run) under, and how to move
+   *  it. The picker offers it only when the provider has several accounts. */
+  account?: AccountControl;
   /** Supplies candidate checkout-relative file paths for the "@" mention
    *  autocomplete. Called each time a mention opens, so the list stays fresh
    *  as the agent edits files. Omit it (e.g. new sessions with no checkout
@@ -184,6 +187,7 @@ export function Composer({
   onLocalCommand,
   projectDir,
   onChangeSelection,
+  account,
   mentionSource,
   listDir,
   listPrs,
@@ -436,6 +440,7 @@ export function Composer({
             model={model}
             customAgentId={customAgentId}
             modelOnly={existingSession}
+            account={account}
             onChange={(nextProvider, nextModel, nextCustomAgentId) => {
               // Effort follows from the selection via the effect above (a custom
               // agent's reasoning budget, else the per-provider default).
