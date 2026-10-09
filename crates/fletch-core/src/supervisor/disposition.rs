@@ -172,7 +172,8 @@ impl Supervisor {
     /// Pull an archived agent back into the live sidebar: recreate
     /// branches and checkouts from snapshot SHAs, clear archive
     /// metadata, transition to Spawning so the supervisor's start path
-    /// attaches to the existing claude session.
+    /// resumes the provider session — or, for a per-turn agent archived
+    /// before its first turn gave it one, starts fresh on its next turn.
     pub async fn restore_agent(self: Arc<Self>, ctx: Arc<EngineCtx>, agent_id: &str) -> Result<()> {
         // Resolved outside the lock and ahead of the spawn watchdog; kept for
         // the launch, where a failure surfaces (`prefetch_login`).
@@ -183,11 +184,9 @@ impl Supervisor {
             .archive
             .clone()
             .ok_or_else(|| Error::Other("agent is not archived".into()))?;
-        if record.session_id.is_none() {
-            return Err(Error::Other(
-                "archived agent has no session id; cannot restore".into(),
-            ));
-        }
+        // The same rule resume applies: refused before any mutation, so a
+        // record that cannot launch is left archived rather than half-restored.
+        record.launch_session()?;
 
         // Pre-flight: every snapshot must have a tip SHA, and that SHA must
         // be recoverable. We do this before any mutation so we don't leave a
@@ -740,6 +739,69 @@ mod tests {
     use crate::message_queue::PendingMsg;
     use crate::supervisor::tests::{record_with_status, test_supervisor};
     use std::path::Path;
+
+    /// An archived `provider` agent with no provider session, whose one
+    /// snapshot has no tip SHA: restore's first check after the session rule
+    /// refuses it, so the error names which of the two stopped it.
+    fn archived_without_session(sup: &Supervisor, id: &str, provider: &str) {
+        let mut record = record_with_status(id, AgentStatus::Idle);
+        record.provider = provider.to_string();
+        record.session_id = None;
+        sup.workspace.add_agent(&mut record).unwrap();
+        sup.workspace.begin_archive(id).unwrap();
+        let snapshot = ArchivedRepoSnapshot {
+            repo_path: record.repos[0].repo_path.clone(),
+            subdir: record.repos[0].subdir.clone(),
+            branch_name: None,
+            branch_tip_sha: None,
+            parent_branch: None,
+            parent_branch_sha: None,
+            diff_stats: DiffStats::default(),
+        };
+        sup.workspace
+            .finish_archive(id, std::slice::from_ref(&snapshot), None)
+            .unwrap();
+    }
+
+    /// A per-turn agent is handed its session id by its first turn, so one
+    /// archived before that has none to resume — and nothing to lose. Restore
+    /// lets it through to the snapshot checks, the same as resume lets it
+    /// launch (`AgentRecord::launch_session`).
+    #[tokio::test]
+    async fn a_per_turn_agent_archived_before_its_first_turn_restores() {
+        let (ctx, _sink, _dir) = crate::host::ctx::test_ctx();
+        let sup = Arc::new(test_supervisor());
+        archived_without_session(&sup, "dolomites", "codex");
+
+        let err = sup
+            .clone()
+            .restore_agent(ctx, "dolomites")
+            .await
+            .unwrap_err()
+            .to_string();
+
+        assert!(err.contains("branch tip SHA"), "got {err}");
+    }
+
+    /// Claude's id is minted with the record, so a claude record without one
+    /// names a conversation nothing can reach: refused before any mutation,
+    /// so the agent stays archived rather than half-restored.
+    #[tokio::test]
+    async fn a_claude_agent_without_a_session_stays_archived() {
+        let (ctx, _sink, _dir) = crate::host::ctx::test_ctx();
+        let sup = Arc::new(test_supervisor());
+        archived_without_session(&sup, "denali", "claude");
+
+        let err = sup
+            .clone()
+            .restore_agent(ctx, "denali")
+            .await
+            .unwrap_err()
+            .to_string();
+
+        assert!(err.contains("no session id"), "got {err}");
+        assert!(sup.workspace.agent("denali").unwrap().archive.is_some());
+    }
 
     #[test]
     fn a_disposal_reservation_is_exclusive_and_released_on_drop() {

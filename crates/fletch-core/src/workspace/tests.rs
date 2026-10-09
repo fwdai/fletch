@@ -3279,3 +3279,34 @@ fn delete_project_deletes_its_agents_transcript_rows() {
 
     assert_eq!(transcript_rows(&db), 0);
 }
+
+/// The one rule every relaunch (spawn, resume, restore) applies: a provider
+/// that mints its id up front must have it; a per-turn provider gets its id
+/// from its first turn and launches fresh without one.
+#[test]
+fn launch_session_requires_an_id_only_from_providers_that_mint_one() {
+    let record = |provider: &str, session_id: Option<&str>| {
+        let mut record = new_agent_record(
+            "denali".into(),
+            "denali".into(),
+            provider.into(),
+            mk_repo("/r"),
+            String::new(),
+            AgentView::Custom,
+        );
+        record.session_id = session_id.map(str::to_string);
+        record
+    };
+
+    assert_eq!(
+        record("claude", Some("sess-1")).launch_session().unwrap(),
+        Some("sess-1")
+    );
+    assert_eq!(
+        record("codex", Some("thread-1")).launch_session().unwrap(),
+        Some("thread-1")
+    );
+    assert_eq!(record("codex", None).launch_session().unwrap(), None);
+    let err = record("claude", None).launch_session().unwrap_err();
+    assert!(err.to_string().contains("no session id"), "got {err}");
+}

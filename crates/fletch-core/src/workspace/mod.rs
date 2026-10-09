@@ -343,6 +343,29 @@ pub struct AgentRecord {
     pub archive: Option<ArchiveMetadata>,
 }
 
+impl AgentRecord {
+    /// The provider session a launch of this record attaches to, or an error
+    /// when the record lacks one its provider needs up front.
+    ///
+    /// Claude's id is minted with the record (`new_agent_record`,
+    /// `start_session`), so a claude record without one can never be launched
+    /// again: the conversation it names is unreachable. A per-turn provider
+    /// (codex, cursor) is handed its id by the CLI on its first turn, so
+    /// `None` there only means the agent has not had one yet and launches
+    /// fresh. Every path that brings a record back to life — spawn, resume,
+    /// restore — asks this one question, so a record that one of them
+    /// accepts is a record the others accept too.
+    pub fn launch_session(&self) -> Result<Option<&str>> {
+        match self.session_id.as_deref() {
+            Some(id) => Ok(Some(id)),
+            None if is_per_turn_provider(&self.provider) => Ok(None),
+            None => Err(Error::Other(
+                "Agent has no session id; remove and respawn.".into(),
+            )),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Workspace {
     /// Repos pinned in the sidebar. Empty on first launch — the user
