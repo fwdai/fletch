@@ -143,15 +143,22 @@ own; the selection is the user's.
   `rejected`, or claude's own `<synthetic>` assistant message naming one
   (the "You've hit your session limit · resets 1pm" line; the result after
   it may carry no error flag and no text); for codex, a `turn.failed` whose
-  message names one. When the Settings-active account
-  differs from the agent's stamp, exists and probes as signed in, the agent
-  is restamped onto it, the turn goes back to the head of the queue, and a
-  session-preserving respawn is flagged for the turn end (its launch signs
-  in as the new account, or copies its login into the codex overlay; its
-  flush resends the turn). One retry per attempt; a limit under the active
-  account itself, including on that retry, leaves the vendor's error in the
-  chat, which is how the user learns every account they chose is spent.
-  Fletch never picks another account on its own.
+  message names one. The read of the selection, the probe and the restamp
+  run under the provider's account lock (`AccountLocks::blocking_lock`: the
+  stream is read on the agent's own thread, which has no runtime), so a
+  Settings change lands before or after the retry, never between, and the
+  account it names can't be removed or signed out before the agent is on
+  it. When the Settings-active account differs from the agent's stamp,
+  exists and probes as signed in, the agent is restamped onto it, the turn
+  goes back to the head of the queue, and a session-preserving respawn is
+  flagged for the turn end (its launch signs in as the new account, or
+  copies its login into the codex overlay; its flush resends the turn). One
+  retry per attempt, reset by a turn that ends on anything but a limit or a
+  login rejection (claude's clean `result`, codex's `turn.completed`); a
+  limit under the active account itself, including on that retry, leaves
+  the vendor's error in the chat, which is how the user learns every
+  account they chose is spent. Fletch never picks another account on its
+  own.
 - **Switching a workspace's account** (`Supervisor::switch_account`, command
   and remote op `switch_agent_account` with `{ agentId, account }`) restamps
   `workspaces.provider_account` and, when the agent has a live handle,

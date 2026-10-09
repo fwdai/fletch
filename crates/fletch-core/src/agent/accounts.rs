@@ -41,7 +41,8 @@ pub const ACTIVE_SETTING_PREFIX: &str = "provider_account_";
 pub const ACCOUNT_PROVIDERS: [&str; 2] = ["claude", "codex"];
 
 /// One async lock per account provider, serializing what relies on an
-/// account staying as it was checked (an agent's switch onto or off it)
+/// account staying as it was checked (an agent's switch onto or off it, the
+/// Settings selection's fan-out, a limit's retry under the selection)
 /// against what ends it (removal, sign-out). Per provider rather than per
 /// account: the set stays fixed whatever ids a caller names, and these are
 /// rare, user-driven moves. Lock order: this first, then an agent's delivery
@@ -64,6 +65,15 @@ impl AccountLocks {
     pub async fn lock(&self, provider: &str) -> Option<tokio::sync::MutexGuard<'_, ()>> {
         let (_, lock) = self.locks.iter().find(|(p, _)| *p == provider)?;
         Some(lock.lock().await)
+    }
+
+    /// [`Self::lock`] for a thread with no runtime: the agent stream readers
+    /// (`child_io::spawn_json_reader`), where a turn's limit is read. Panics
+    /// on a runtime worker, as tokio's `blocking_lock` does; a test on a
+    /// multi-thread runtime reaches it through `tokio::task::block_in_place`.
+    pub fn blocking_lock(&self, provider: &str) -> Option<tokio::sync::MutexGuard<'_, ()>> {
+        let (_, lock) = self.locks.iter().find(|(p, _)| *p == provider)?;
+        Some(lock.blocking_lock())
     }
 
     #[cfg(test)]

@@ -175,15 +175,17 @@ fn is_limit_rejection(event: &Value, limited: bool) -> bool {
 /// The vendors' words for a spent quota: claude's "You've hit your session
 /// limit · resets 1pm" and "usage limit reached", codex's "You've hit your
 /// usage limit", a plain rate limit. A device or budget limit is not the
-/// account's quota, and another account would not lift it.
+/// account's quota, and another account would not lift it, however the
+/// sentence is built around it.
 fn names_a_limit(text: &str) -> bool {
     let text = text.to_ascii_lowercase();
+    if text.contains("device limit") || text.contains("budget limit") {
+        return false;
+    }
     (text.contains("hit your") && text.contains("limit"))
         || text.contains("usage limit")
         || text.contains("rate limit")
-        || (text.contains("limit reached")
-            && !text.contains("device limit")
-            && !text.contains("budget limit"))
+        || text.contains("limit reached")
 }
 
 /// Whether a stream event, ahead of the result, already says the turn hit a
@@ -579,11 +581,17 @@ impl Supervisor {
     /// a session-preserving respawn is flagged for the turn end: its launch
     /// signs in as the new account (claude) or copies its login into the
     /// overlay (codex), and its flush resends the turn. One retry per
-    /// attempt; a limit under the active account itself — including on that
-    /// retry — leaves the vendor's error standing in the chat, which is the
-    /// user's cue that every account they chose from is spent. The active
-    /// account must exist and probe as signed in, else nothing moves. No other
-    /// account is ever picked: the selection is the user's.
+    /// attempt, reset by a turn that ends on anything but a limit or a login
+    /// rejection (claude's clean `result`, codex's `turn.completed`); a limit
+    /// under the active account itself — including on that retry — leaves
+    /// the vendor's error standing in the chat, which is the user's cue that
+    /// every account they chose from is spent. The active account must exist
+    /// and probe as signed in, else nothing moves. No other account is ever
+    /// picked: the selection is the user's.
+    ///
+    /// Blocking: the stream is read on the agent's own thread
+    /// (`child_io::spawn_json_reader`), and the retry takes the provider's
+    /// account lock there, so it never runs on a runtime worker.
     pub(super) fn observe_limit(
         &self,
         ctx: &Arc<EngineCtx>,
@@ -596,26 +604,43 @@ impl Supervisor {
         }
         let terminal = matches!(
             event.get("type").and_then(Value::as_str),
-            Some("result") | Some("turn.failed")
+            Some("result") | Some("turn.failed") | Some("turn.completed")
         );
         if !terminal {
             return LoginVerdict::Fine;
         }
         let limited = self.logins.lock().limited.remove(agent_id);
         if !is_limit_rejection(event, limited) {
+            // A turn that ended on anything else is a fresh start: the next
+            // limit gets its own retry. A login rejection is left to the
+            // login reader, whose budget it is (claude only; codex reports
+            // every end here, as `turn.completed` or `turn.failed`).
+            if !is_auth_rejection(event) {
+                self.logins.lock().retrying.remove(agent_id);
+            }
             return LoginVerdict::Fine;
         }
         self.retry_on_active_account(ctx, agent_id)
     }
 
     fn retry_on_active_account(&self, ctx: &Arc<EngineCtx>, agent_id: &str) -> LoginVerdict {
-        let Ok(record) = self.workspace.agent(agent_id) else {
+        let Ok(provider) = self.workspace.agent(agent_id).map(|r| r.provider) else {
             return LoginVerdict::Fine;
         };
-        let provider = record.provider.as_str();
+        let provider = provider.as_str();
         if !accounts::supports_accounts(provider) {
             return LoginVerdict::Fine;
         }
+        // Under the provider's account lock, like the Settings fan-out, the
+        // per-agent switch, removal and sign-out: the selection read here is
+        // the one that holds through the restamp (a Settings change lands
+        // before or after, never between), and the account it names can't be
+        // removed or signed out before the agent is on it. The record is read
+        // under it too: the fan-out may have just restamped this agent.
+        let _account = ctx.account_locks.blocking_lock(provider);
+        let Ok(record) = self.workspace.agent(agent_id) else {
+            return LoginVerdict::Fine;
+        };
         let active = database::get_setting(&ctx.db.lock(), &accounts::active_setting_key(provider));
         let active = managed(active.as_deref()).map(str::to_string);
         let current = managed(record.account.as_deref());
