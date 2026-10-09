@@ -45,7 +45,7 @@ export function AccountOptions({
               if (!blocked && !o.current) onPick(o.id);
             }}
           >
-            <AccountAvatar id={o.id} label={o.label} size={18} spent={o.spent !== null} />
+            <AccountAvatar id={o.id} label={o.label} spent={o.spent !== null} />
             <span className="model-option-main">
               <span className="model-option-name truncate text-base">{o.label}</span>
               {note && (

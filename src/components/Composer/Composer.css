@@ -330,13 +330,18 @@
   max-width: 170px;
   color: var(--fg-2);
 }
-/* The agent's icon, and the account's avatar overlapping it when the
-   provider has several accounts. */
-.model-chip-ident {
+/* With several accounts: the agent's icon and the account's badge as one
+   split token, a single frame with the halves divided by a hairline. */
+.model-chip-split {
   flex-shrink: 0;
+  height: 18px;
+  border: 1px solid var(--bd);
+  border-radius: 5px;
+  overflow: hidden;
 }
-.model-chip-ident > .acct-avatar {
-  margin-left: -4px;
+/* The icons' own frames give way to the token's (they render `flush`). */
+.model-chip-split > .is-flush {
+  border: 0;
 }
 
 /* composer · token usage meter */

@@ -32,7 +32,7 @@ export function AccountRow({
         onMouseEnter={onOpen}
         onClick={onOpen}
       >
-        <AccountAvatar id={view.id} label={view.label} size={16} spent={view.spent} />
+        <AccountAvatar id={view.id} label={view.label} spent={view.spent} />
         <span className="model-option-main">
           <span className="model-option-name truncate text-base">{view.label}</span>
         </span>

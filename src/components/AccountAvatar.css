@@ -1,28 +1,26 @@
-/* A provider account's round avatar (AccountAvatar.tsx). */
+/* A provider account's badge (AccountAvatar.tsx). */
 .acct-avatar {
   justify-content: center;
   flex-shrink: 0;
-  border-radius: 50%;
+  border-radius: 5px;
   font-weight: 650;
   line-height: 1;
-  color: oklch(0.86 0.1 var(--h));
-  background: oklch(0.52 0.13 var(--h) / 0.55);
-  border: 1px solid oklch(0.72 0.12 var(--h) / 0.5);
+  color: oklch(0.9 0.08 var(--h));
+  background: oklch(0.55 0.14 var(--h) / 0.45);
+  border: 1px solid oklch(0.7 0.12 var(--h) / 0.45);
 }
 .theme-light .acct-avatar {
   color: oklch(0.38 0.14 var(--h));
   background: oklch(0.86 0.08 var(--h));
 }
-/* Sitting over another icon: a cut-out ring in the surface colour. */
-.acct-avatar.has-ring {
-  box-shadow: 0 0 0 1.5px var(--bg-2);
-}
 .acct-avatar.is-spent {
+  color: oklch(0.2 0.02 92);
+  background: var(--warn);
   border-color: var(--warn);
-  box-shadow:
-    0 0 0 1.5px var(--bg-2),
-    0 0 0 2.5px var(--warn);
 }
-.acct-avatar:not(.has-ring).is-spent {
-  box-shadow: 0 0 0 1px var(--warn);
+/* The right half of a split token: the token draws the frame. */
+.acct-avatar.is-segment {
+  border: 0;
+  border-left: 1px solid var(--bd);
+  border-radius: 0;
 }

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { AccountAvatar } from "@/components/AccountAvatar";
 import { Icon } from "@/components/Icon";
 import { ProviderIcon } from "@/components/ProviderIcon";
@@ -43,9 +43,10 @@ interface Props {
  *  agents and custom agents; hovering a coding agent opens a flyout on the
  *  right for model selection. Clicking an agent row commits its default model;
  *  leaving model unset preserves the provider CLI's default. Selections stay
- *  sticky via `onChange`. When the provider has several accounts, the chip
- *  pairs the agent's icon with the account's avatar and the menu opens on an
- *  account row, whose flyout lists them the way an agent row lists models.
+ *  sticky via `onChange`. When the provider has several accounts, the chip's
+ *  icon becomes a split token (the agent's icon, then the account's badge) and
+ *  the menu opens on an account row, whose flyout lists them the way an agent
+ *  row lists models.
  *
  *  The menu always opens upward — the composer sits on the bottom edge of the
  *  window. A surface near the top of a panel wants a screen, not a menu that has
@@ -114,7 +115,7 @@ export function ModelPicker({
         ? "Model — changing restarts the agent (rebuilds cache)"
         : "Model"
       : "Agent and model";
-  // The chip shows the account as an avatar only; its name is here.
+  // The chip shows the account as a badge only; its name is here.
   const chipTip = accountView
     ? `${baseTip} · ${accountView.spent ? "limit reached on " : ""}${accountView.label}`
     : baseTip;
@@ -180,16 +181,23 @@ export function ModelPicker({
     </SideFlyout>
   );
 
-  // Overlaps the agent's icon: one identity, "this agent, as this account".
-  const chipAvatar = accountView && (
-    <AccountAvatar
-      id={accountView.id}
-      label={accountView.label}
-      size={14}
-      ring
-      spent={accountView.spent}
-    />
-  );
+  // With several accounts the agent's icon and the account's badge form one
+  // split token: "this agent, as this account".
+  const iconSize = accountView ? 18 : 15;
+  const chipIdent = (icon: ReactNode) =>
+    accountView ? (
+      <span className="model-chip-split iflex-center">
+        {icon}
+        <AccountAvatar
+          id={accountView.id}
+          label={accountView.label}
+          segment
+          spent={accountView.spent}
+        />
+      </span>
+    ) : (
+      icon
+    );
 
   return (
     <div className="model-picker">
@@ -204,24 +212,28 @@ export function ModelPicker({
       >
         {activeCustom ? (
           <>
-            <span className="model-chip-ident iflex-center">
-              <Mono name={activeCustom.name} hue={activeCustom.color} size={15} />
-              {chipAvatar}
-            </span>
+            {chipIdent(
+              <Mono
+                name={activeCustom.name}
+                hue={activeCustom.color}
+                size={iconSize}
+                flush={!!accountView}
+              />,
+            )}
             <span className="model-chip-agent">{activeCustom.name}</span>
             <span className="model-chip-model truncate">{providerLabel(activeCustom.base)}</span>
           </>
         ) : (
           <>
-            <span className="model-chip-ident iflex-center">
+            {chipIdent(
               <ProviderIcon
                 slug={selected.id}
                 short={selected.short}
                 hue={selected.hue}
-                size={15}
-              />
-              {chipAvatar}
-            </span>
+                size={iconSize}
+                flush={!!accountView}
+              />,
+            )}
             <span className="model-chip-agent">{selected.label}</span>
             <span className="model-chip-model truncate">
               {currentModel?.name ?? "Default model"}
