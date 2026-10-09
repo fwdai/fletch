@@ -48,6 +48,12 @@ pub const TIMEOUT: Duration = Duration::from_secs(180);
 /// for more to accumulate.
 pub const MIN_USER_CHARS: usize = 200;
 
+/// The source kind of a run's observation: the conversation as a whole, the
+/// agent's replies included (`user_turn` is reserved for what the user
+/// said). The pipeline writes it and the watermark reads it back; one
+/// constant, so the two cannot drift apart again.
+pub const OBSERVATION_SOURCE: SourceKind = SourceKind::AgentTurn;
+
 /// What the model answered: its raw text and, when the CLI reports it, usage.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ExtractOutput {
