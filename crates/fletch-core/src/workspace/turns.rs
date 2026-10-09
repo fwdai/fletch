@@ -112,15 +112,21 @@ impl WorkspaceManager {
         Ok(n > 0)
     }
 
-    /// Withdraw a turn that never reached the agent: the row
-    /// [`Self::insert_user_turn`] just created for a send that then failed,
-    /// before anything could match it. A matched turn is never removed.
-    pub fn delete_pending_user_turn(&self, turn_id: &str) -> Result<()> {
+    /// Withdraw turns that never reached the agent as themselves: the row
+    /// [`Self::insert_user_turn`] just created for a send that then failed, or
+    /// the rows of queued follow-ups that went out folded into another turn's
+    /// coalesced prompt. Only a row that never ran, never matched and has no
+    /// outcome is removed; any of those makes it a turn of its own.
+    pub fn delete_pending_user_turns(&self, turn_ids: &[String]) -> Result<()> {
         let conn = self.db.lock();
-        conn.execute(
-            "DELETE FROM session_user_turns WHERE turn_id = ?1 AND native_id IS NULL",
-            [turn_id],
+        let mut stmt = conn.prepare(
+            "DELETE FROM session_user_turns
+             WHERE turn_id = ?1 AND native_id IS NULL AND started_at IS NULL
+               AND outcome IS NULL",
         )?;
+        for turn_id in turn_ids {
+            stmt.execute([turn_id])?;
+        }
         Ok(())
     }
 
