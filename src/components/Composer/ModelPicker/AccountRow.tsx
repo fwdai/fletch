@@ -1,8 +1,9 @@
 import { Icon } from "@/components/Icon";
 import type { AccountView } from "./useAccountView";
 
-/** The menu's first section: the account the agent runs under, as a row whose
- *  hover (or click) opens the account flyout beside the card. */
+/** The menu's first section: the account the agent runs under, as a row the
+ *  height of a model row whose hover (or click) opens the account flyout
+ *  beside the card. */
 export function AccountRow({
   view,
   title,
@@ -23,19 +24,23 @@ export function AccountRow({
       </div>
       <button
         type="button"
-        className={`model-agent-row flex-center ${open ? "hot" : ""}`}
+        className={`model-option model-acct-row flex-center ${open ? "hot" : ""}`}
         aria-haspopup="menu"
         aria-expanded={open}
         title={view.label}
         onMouseEnter={onOpen}
         onClick={onOpen}
       >
-        <span className={`model-acct-icon flex-center ${view.spent ? "is-spent" : ""}`}>
-          <Icon name="user" size={14} />
+        <Icon
+          name="user"
+          size={13}
+          className={`model-acct-glyph ${view.spent ? "is-spent" : ""}`}
+        />
+        <span className="model-option-main">
+          <span className="model-option-name truncate text-base">{view.label}</span>
         </span>
-        <span className="model-agent-name truncate text-base">{view.label}</span>
-        {view.spent && <span className="model-agent-ver model-acct-spent text-xs">limit</span>}
-        <Icon name="chevR" size={12} />
+        {view.spent && <span className="model-acct-spent text-xs">limit</span>}
+        <Icon name="chevR" size={13} className="model-acct-chev" />
       </button>
     </>
   );
