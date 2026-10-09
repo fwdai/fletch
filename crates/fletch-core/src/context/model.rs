@@ -702,7 +702,9 @@ pub struct Candidate {
 ///   (the two-step: nothing written);
 /// - `Ingester` writes (a merged PR's lines) land next to what is there;
 /// - `Extractor` writes are always held (the pilot gives model output no
-///   durable authority), duplicates aside.
+///   durable authority), duplicates aside; a repeat of a waiting proposal
+///   is held as that proposal, and a repeat of one a person dismissed as
+///   wrong, trivial or already known is `Dismissed` (nothing written).
 ///
 /// A restatement of a current head is `Duplicate` for everyone.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -712,6 +714,7 @@ pub enum Landing {
     Duplicate { id: Id },
     Related { heads: Vec<Assertion> },
     Held { proposal_id: Id },
+    Dismissed { proposal_id: Id },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]

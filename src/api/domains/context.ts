@@ -60,6 +60,8 @@ export const contextApi = {
       verdict,
       dismissReason: dismissReason ?? null,
     }),
-  /** Dismiss every pending proposal as trivial; resolves to how many. */
-  contextDismissAll: (projectId: string) => invoke<number>("context_dismiss_all", { projectId }),
+  /** Dismiss every pending proposal made by `before` (epoch ms; all when
+   *  absent) as trivial; resolves to how many. */
+  contextDismissAll: (projectId: string, before?: number) =>
+    invoke<number>("context_dismiss_all", { projectId, before: before ?? null }),
 };

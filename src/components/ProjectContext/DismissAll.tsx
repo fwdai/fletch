@@ -1,10 +1,19 @@
 import { useState } from "react";
-import { api } from "@/api";
+import { api, type ContextProposal } from "@/api";
 import { Button } from "@/components/ui/Button";
 
 /** Clears the review queue in one ruling (each dismissed as trivial). Two
- *  clicks, since nothing brings a dismissed proposal back. */
-export function DismissAll({ projectId, count }: { projectId: string; count: number }) {
+ *  clicks, since nothing brings a dismissed proposal back; only the
+ *  proposals on screen, not any that arrive while the person confirms. */
+export function DismissAll({
+  projectId,
+  proposals,
+}: {
+  projectId: string;
+  proposals: ContextProposal[];
+}) {
+  const count = proposals.length;
+  const newest = proposals.reduce((max, p) => Math.max(max, p.created_at), 0);
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -13,7 +22,7 @@ export function DismissAll({ projectId, count }: { projectId: string; count: num
     setBusy(true);
     setError(null);
     api
-      .contextDismissAll(projectId)
+      .contextDismissAll(projectId, newest)
       .catch((e) => setError(String(e)))
       .finally(() => {
         setBusy(false);

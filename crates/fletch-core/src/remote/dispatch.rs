@@ -1969,8 +1969,8 @@ fn context_op(ctx: &EngineCtx, op: &str, args: Value) -> DispatchResult {
             ))
         }
         "context_dismiss_all" => {
-            let a: ProjectArgs = parse(args)?;
-            res(c::context_dismiss_all_impl(ctx, &a.project_id))
+            let a: ContextDismissAllArgs = parse(args)?;
+            res(c::context_dismiss_all_impl(ctx, &a.project_id, a.before))
         }
         "context_resolve_contradiction" => {
             let a: ContextResolveArgs = parse(args)?;
@@ -2568,6 +2568,14 @@ struct ContextRuleArgs {
     verdict: crate::commands::ProposalVerdict,
     #[serde(default)]
     dismiss_reason: Option<crate::context::DismissReason>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ContextDismissAllArgs {
+    project_id: String,
+    #[serde(default)]
+    before: Option<i64>,
 }
 
 #[derive(Deserialize)]

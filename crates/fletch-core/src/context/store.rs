@@ -16,7 +16,7 @@ use parking_lot::Mutex;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
 use super::model::*;
@@ -538,10 +538,25 @@ impl ContextStore {
             AuthorKind::Extractor => true,
         };
         if held {
+            let relation = relation.unwrap_or(ProposedRelation {
+                kind: RelationKind::New,
+                target: None,
+                reasoning: None,
+            });
+            let like = |status| {
+                assertion_proposal_like(conn, project_id, &input, &about_pending, &relation, status)
+            };
+            // A person has already ruled this claim out; asking again is noise.
+            if let Some(ruled) = like(ProposalStatus::Dismissed)? {
+                return Ok(Landing::Dismissed {
+                    proposal_id: ruled.id,
+                });
+            }
             // A repeat of a card already waiting (another run, another
             // workspace) is more evidence for it, not a card of its own.
-            if let Some(existing) = pending_assertion_like(conn, project_id, &input)? {
+            if let Some(existing) = like(ProposalStatus::Pending)? {
                 append_evidence(conn, &existing, evidence)?;
+                adopt_user_statement(conn, &existing, &input, &stamp)?;
                 return Ok(Landing::Held {
                     proposal_id: existing.id,
                 });
@@ -553,11 +568,7 @@ impl ContextStore {
                 payload: ProposalPayload::Assertion {
                     input,
                     stamp,
-                    relation: relation.unwrap_or(ProposedRelation {
-                        kind: RelationKind::New,
-                        target: None,
-                        reasoning: None,
-                    }),
+                    relation,
                     about_pending,
                 },
                 evidence,
@@ -860,22 +871,22 @@ impl ContextStore {
         get_proposal(&conn, proposal_id)
     }
 
-    /// The pending entity proposal for `slug` (any case), if one is waiting:
-    /// the extractor proposes a slug once, not once per run.
-    pub fn pending_entity_proposal(
-        &self,
-        project_id: &str,
-        slug: &str,
-    ) -> Result<Option<Proposal>> {
+    /// The entity proposal for `slug` (any case) that is waiting, or that a
+    /// person dismissed as wrong, trivial or already known; a waiting one
+    /// first. The extractor proposes a slug once, not once per run, and not
+    /// again once ruled out.
+    pub fn entity_proposal(&self, project_id: &str, slug: &str) -> Result<Option<Proposal>> {
         let conn = self.db.lock();
         Ok(conn
             .query_row(
                 &format!(
                     "SELECT {PROPOSAL_COLUMNS} FROM context.proposals
-                     WHERE project_id = ?1 AND status = 'pending'
+                     WHERE project_id = ?1
+                       AND (status = 'pending'
+                            OR (status = 'dismissed' AND dismiss_reason IN {SETTLED_DISMISSALS}))
                        AND json_extract(payload, '$.type') = 'entity'
                        AND lower(json_extract(payload, '$.input.slug')) = lower(?2)
-                     ORDER BY created_at, id LIMIT 1"
+                     ORDER BY status = 'pending' DESC, created_at, id LIMIT 1"
                 ),
                 params![project_id, slug],
                 proposal_from_row,
@@ -995,20 +1006,24 @@ impl ContextStore {
     }
 
     /// [`Self::dismiss_proposal`] for every pending proposal of the project,
-    /// in one transaction; the same ruling on each. Returns how many.
+    /// in one transaction; the same ruling on each. With `before` (epoch ms),
+    /// only those made by then: the ones the person was shown, not any that
+    /// arrived while they confirmed. Returns how many.
     pub(super) fn dismiss_all_pending(
         &self,
         project_id: &str,
         reason: DismissReason,
         ruled_by: Author,
+        before: Option<i64>,
     ) -> Result<usize> {
         self.write(project_id, |conn| {
             let ids: Vec<Id> = conn
                 .prepare(
                     "SELECT id FROM context.proposals
-                     WHERE project_id = ?1 AND status = 'pending'",
+                     WHERE project_id = ?1 AND status = 'pending'
+                       AND (?2 IS NULL OR created_at <= ?2)",
                 )?
-                .query_map([project_id], |r| r.get(0))?
+                .query_map(params![project_id, before], |r| r.get(0))?
                 .collect::<rusqlite::Result<_>>()?;
             for id in &ids {
                 rule_proposal(conn, id, ProposalStatus::Dismissed, Some(reason), &ruled_by)?;
@@ -1913,27 +1928,42 @@ fn insert_proposal(conn: &Connection, proposal: &Proposal) -> Result<()> {
     Ok(())
 }
 
-/// The pending assertion proposal that says what `input` says: same kind,
-/// domain and stance, and the same statement as [`resolve::classify`]
-/// compares them. The oldest, should there be several.
-fn pending_assertion_like(
+/// Dismissal reasons that rule on the claim itself, so a repeat of it is not
+/// asked again. `duplicate` is about the graph, which `classify` checks.
+const SETTLED_DISMISSALS: &str = "('wrong', 'trivial', 'already_known')";
+
+/// The `status` proposal that makes the claim `input` makes: same kind,
+/// domain and stance, the same statement as [`resolve::classify`] compares
+/// them, the same subjects (proposed ones too) and the same relation. A
+/// dismissed one counts only when the ruling was on the claim. The oldest,
+/// should there be several.
+fn assertion_proposal_like(
     conn: &Connection,
     project_id: &str,
     input: &AssertionInput,
+    about_pending: &[String],
+    relation: &ProposedRelation,
+    status: ProposalStatus,
 ) -> Result<Option<Proposal>> {
+    let ruled = match status {
+        ProposalStatus::Dismissed => format!("AND dismiss_reason IN {SETTLED_DISMISSALS}"),
+        _ => String::new(),
+    };
     let mut stmt = conn.prepare(&format!(
         "SELECT {PROPOSAL_COLUMNS} FROM context.proposals
-         WHERE project_id = ?1 AND status = 'pending'
+         WHERE project_id = ?1 AND status = ?2 {ruled}
            AND json_extract(payload, '$.type') = 'assertion'
-           AND json_extract(payload, '$.input.kind') = ?2
-           AND json_extract(payload, '$.input.domain') = ?3
-           AND json_extract(payload, '$.input.stance') = ?4
+           AND json_extract(payload, '$.input.kind') = ?3
+           AND json_extract(payload, '$.input.domain') = ?4
+           AND json_extract(payload, '$.input.stance') = ?5
          ORDER BY created_at, id"
     ))?;
     let statement = resolve::normalise(&input.statement);
+    let subjects = subjects_now(conn, project_id, &input.about, about_pending)?;
     let rows = stmt.query_map(
         params![
             project_id,
+            tag(&status)?,
             tag(&input.kind)?,
             tag(&input.domain)?,
             tag(&input.stance)?,
@@ -1942,13 +1972,78 @@ fn pending_assertion_like(
     )?;
     for row in rows {
         let proposal = row?;
-        if let ProposalPayload::Assertion { input, .. } = &proposal.payload {
-            if resolve::normalise(&input.statement) == statement {
-                return Ok(Some(proposal));
-            }
+        let ProposalPayload::Assertion {
+            input: theirs,
+            relation: their_relation,
+            about_pending: their_pending,
+            ..
+        } = &proposal.payload
+        else {
+            continue;
+        };
+        if resolve::normalise(&theirs.statement) == statement
+            && their_relation.kind == relation.kind
+            && their_relation.target == relation.target
+            && subjects_now(conn, project_id, &theirs.about, their_pending)? == subjects
+        {
+            return Ok(Some(proposal));
         }
     }
     Ok(None)
+}
+
+/// A claim's subjects as they stand now, for comparing two claims: active
+/// entity ids (merges followed; an inactive one as it was), and the slugs,
+/// lower-cased, that are still only proposed.
+fn subjects_now(
+    conn: &Connection,
+    project_id: &str,
+    about: &[Id],
+    about_pending: &[String],
+) -> Result<(BTreeSet<Id>, BTreeSet<String>)> {
+    let mut ids: BTreeSet<Id> = about
+        .iter()
+        .map(|id| active_entity(conn, project_id, id).unwrap_or_else(|_| id.clone()))
+        .collect();
+    let mut pending = BTreeSet::new();
+    for slug in about_pending {
+        match active_entity_by_slug(conn, project_id, slug)? {
+            Some(id) => ids.insert(id),
+            None => pending.insert(slug.to_lowercase()),
+        };
+    }
+    Ok((ids, pending))
+}
+
+/// A user-stated repeat of an agent-stated card makes the card the user's:
+/// their words and source, so accepting it confirms.
+fn adopt_user_statement(
+    conn: &Connection,
+    proposal: &Proposal,
+    input: &AssertionInput,
+    stamp: &Stamp,
+) -> Result<()> {
+    let mut payload = proposal.payload.clone();
+    let ProposalPayload::Assertion {
+        input: theirs,
+        stamp: their_stamp,
+        ..
+    } = &mut payload
+    else {
+        return Ok(());
+    };
+    if stamp.source.kind != SourceKind::UserTurn || their_stamp.source.kind == SourceKind::UserTurn
+    {
+        return Ok(());
+    }
+    theirs.statement = input.statement.clone();
+    theirs.status = input.status;
+    their_stamp.source = stamp.source.clone();
+    conn.execute(
+        "UPDATE context.proposals SET payload = ?2 WHERE id = ?1",
+        params![proposal.id, json(&payload)?],
+    )?;
+    Ok(())
 }
 
 /// Adds `evidence` to `proposal`, skipping quotes it already carries.

@@ -250,11 +250,34 @@ export function entityName(graph: ContextGraph, id: string): string {
   return graph.entities.find((e) => e.id === id)?.name ?? id;
 }
 
-/** The review queue's order: most-repeated first (a repeat of a pending
- *  proposal lands as another quote on it), then oldest first. */
+/** The distinct turns a proposal's quotes came from. A repeat of a pending
+ *  proposal lands as more quotes on it, but quotes from one turn are one
+ *  sighting, not several. */
+function turnCount(proposal: ContextProposal): number {
+  return new Set(proposal.evidence.flatMap((ev) => (ev.turn_id ? [ev.turn_id] : []))).size;
+}
+
+/** How well a proposal is corroborated: its distinct turns, or its quotes
+ *  when none carries a turn. */
+export function corroboration(proposal: ContextProposal): number {
+  return turnCount(proposal) || proposal.evidence.length;
+}
+
+/** The corroboration badge ("3 turns", "2 quotes"), or null for one quote
+ *  or none. */
+export function corroborationLabel(proposal: ContextProposal): string | null {
+  const turns = turnCount(proposal);
+  if (turns > 1) return `${turns} turns`;
+  return proposal.evidence.length > 1 ? `${proposal.evidence.length} quotes` : null;
+}
+
+/** The review queue's order: entities first (assertions about them wait on
+ *  their acceptance), then the best corroborated, then the oldest. */
 export function sortForReview(proposals: ContextProposal[]): ContextProposal[] {
+  const rank = (p: ContextProposal) => (p.payload.type === "entity" ? 0 : 1);
   return [...proposals].sort(
-    (a, b) => b.evidence.length - a.evidence.length || a.created_at - b.created_at,
+    (a, b) =>
+      rank(a) - rank(b) || corroboration(b) - corroboration(a) || a.created_at - b.created_at,
   );
 }
 

@@ -7,8 +7,8 @@ use crate::context::model::*;
 use crate::context::ContextService;
 
 use super::{
-    agent_stamp, extracted_at, run, run_row, seed_decision, seed_decision_as, seed_entity, service,
-    user_stamp, Canned, Failing, AGENT_QUOTE, PROJECT, REPO, USER_QUOTE,
+    agent_stamp, extracted_at, project, run, run_row, seed_decision, seed_decision_as, seed_entity,
+    service, user_stamp, Canned, Failing, AGENT_QUOTE, PROJECT, REPO, USER_QUOTE,
 };
 
 fn entity_json(slug: &str) -> String {
@@ -277,6 +277,60 @@ fn a_pending_entity_is_not_proposed_again() {
     assert_eq!(slugs, ["billing"]);
     let (_, _, _, about_pending, _) = &held(&service)[0];
     assert_eq!(about_pending, &["billing"]);
+}
+
+/// The model is never shown pending entities, so a later run names one
+/// without listing it; the assertion still carries it as `about_pending`.
+#[test]
+fn an_assertion_naming_an_entity_pending_from_an_earlier_run_keeps_it() {
+    let (service, _dir) = service();
+    run(&service, &Canned(answer(&[entity_json("billing")], &[])));
+
+    let about_billing = assertion_json(
+        "billing",
+        "fact",
+        "Tokens expire hourly",
+        AGENT_QUOTE,
+        r#"{"kind": "new"}"#,
+    );
+    let summary = run(&service, &Canned(answer(&[], &[about_billing])));
+    assert_eq!(summary.held, 1);
+    assert_eq!(summary.assertions_skipped, 0);
+    let (input, _, _, about_pending, _) = &held(&service)[0];
+    assert!(input.about.is_empty());
+    assert_eq!(about_pending, &["billing"]);
+}
+
+/// What a person dismissed stays dismissed: the next run's proposal of the
+/// same entity is skipped, and its repeat of the same assertion is not held.
+#[test]
+fn a_dismissed_proposal_is_not_proposed_again() {
+    let (service, _dir) = service();
+    seed_entity(&service, "auth");
+    let about_auth = assertion_json(
+        "auth",
+        "fact",
+        "Tokens expire hourly",
+        AGENT_QUOTE,
+        r#"{"kind": "new"}"#,
+    );
+    let both = || {
+        Canned(answer(
+            &[entity_json("billing")],
+            std::slice::from_ref(&about_auth),
+        ))
+    };
+    run(&service, &both());
+    service
+        .dismiss_all_pending(&project(), DismissReason::Wrong, Author::user(), None)
+        .unwrap();
+
+    let again = run(&service, &both());
+    assert_eq!(again.entities_proposed, 0);
+    assert_eq!(again.entities_skipped, 1);
+    assert_eq!(again.held, 0);
+    assert_eq!(again.redismissed, 1);
+    assert!(pending(&service).is_empty());
 }
 
 /// The same assertion from two runs is one card with both runs' quotes.

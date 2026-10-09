@@ -2142,7 +2142,7 @@ fn dismiss_all_rules_every_pending_proposal_and_nothing_else() {
         .unwrap();
 
     let n = store
-        .dismiss_all_pending(P, DismissReason::Trivial, Author::user())
+        .dismiss_all_pending(P, DismissReason::Trivial, Author::user(), None)
         .unwrap();
     assert_eq!(n, pending.len());
     assert!(store
@@ -2163,8 +2163,156 @@ fn dismiss_all_rules_every_pending_proposal_and_nothing_else() {
 
     assert_eq!(
         store
-            .dismiss_all_pending(P, DismissReason::Trivial, Author::user())
+            .dismiss_all_pending(P, DismissReason::Trivial, Author::user(), None)
             .unwrap(),
         0
     );
+}
+
+/// A repeat merges only when it makes the same claim: the same subjects
+/// (proposed ones too) and the same relation. The same words about another
+/// module, or as a supersession of a head, are cards of their own. A
+/// user-stated repeat makes an agent-stated card the user's.
+#[test]
+fn a_merge_needs_the_same_subjects_and_relation() {
+    let (store, _dir) = temp();
+    let a = store
+        .record_entity(P, entity("a", EntityKind::Module), stamp())
+        .unwrap();
+    let b = store
+        .record_entity(P, entity("b", EntityKind::Module), stamp())
+        .unwrap();
+    let held = |candidate: Candidate, stamp: Stamp| match store.land(P, candidate, stamp).unwrap() {
+        Landing::Held { proposal_id } => proposal_id,
+        other => panic!("extractor writes are held, got {other:?}"),
+    };
+    let first = held(candidate(saying(&[&a], "Use SQLite")), extractor());
+
+    assert_ne!(
+        held(candidate(saying(&[&b], "Use SQLite")), extractor()),
+        first
+    );
+    assert_ne!(
+        held(candidate(saying(&[&a, &b], "Use SQLite")), extractor()),
+        first
+    );
+    let about_pending = Candidate {
+        about_pending: vec!["c".into()],
+        ..candidate(saying(&[&a], "Use SQLite"))
+    };
+    assert_ne!(held(about_pending, extractor()), first);
+
+    let Landing::Recorded { id: head, .. } = store
+        .land(P, candidate(saying(&[&a], "Use Postgres")), stamp())
+        .unwrap()
+    else {
+        panic!("a user write lands");
+    };
+    let superseding = Candidate {
+        relation: Some(related(
+            RelationKind::Supersedes,
+            Some(&head),
+            Some("faster"),
+        )),
+        ..candidate(saying(&[&a], "Use SQLite"))
+    };
+    let replacement = held(superseding, extractor());
+    assert_ne!(replacement, first);
+    let ProposalPayload::Assertion { relation, .. } =
+        store.proposal(&replacement).unwrap().unwrap().payload
+    else {
+        panic!("an assertion proposal");
+    };
+    assert_eq!(relation.kind, RelationKind::Supersedes);
+
+    let user_stated = Candidate {
+        evidence: vec![quoted("use sqlite")],
+        ..candidate(AssertionInput {
+            status: AssertionStatus::Confirmed,
+            ..saying(&[&a], "use SQLite.")
+        })
+    };
+    let user_turn = Stamp {
+        source: Source::new(SourceKind::UserTurn, Some("t1".into())),
+        ..extractor()
+    };
+    assert_eq!(held(user_stated, user_turn), first);
+    let ProposalPayload::Assertion { input, stamp, .. } =
+        store.proposal(&first).unwrap().unwrap().payload
+    else {
+        panic!("an assertion proposal");
+    };
+    assert_eq!(input.statement, "use SQLite.");
+    assert_eq!(input.status, AssertionStatus::Confirmed);
+    assert_eq!(stamp.source.kind, SourceKind::UserTurn);
+}
+
+/// A repeat of a proposal a person dismissed as wrong, trivial or already
+/// known is not held again. One dismissed as a duplicate (of a head since
+/// gone, say) does not stand in the way.
+#[test]
+fn a_dismissed_claim_is_not_proposed_again_unless_it_was_a_duplicate() {
+    let (store, _dir) = temp();
+    let e = store
+        .record_entity(P, entity("e", EntityKind::Module), stamp())
+        .unwrap();
+    let land = |statement: &str| {
+        store
+            .land(P, candidate(saying(&[&e], statement)), extractor())
+            .unwrap()
+    };
+    let Landing::Held { proposal_id: wrong } = land("Tokens expire hourly") else {
+        panic!("extractor writes are held");
+    };
+    store
+        .dismiss_proposal(P, &wrong, DismissReason::Wrong, Author::user())
+        .unwrap();
+    assert_eq!(
+        land("tokens expire hourly."),
+        Landing::Dismissed { proposal_id: wrong }
+    );
+
+    let Landing::Held { proposal_id: dup } = land("Tokens expire daily") else {
+        panic!("extractor writes are held");
+    };
+    store
+        .dismiss_proposal(P, &dup, DismissReason::Duplicate, Author::user())
+        .unwrap();
+    let Landing::Held { proposal_id: again } = land("Tokens expire daily") else {
+        panic!("a duplicate dismissal does not suppress");
+    };
+    assert_ne!(again, dup);
+}
+
+/// Dismiss-all with `before` leaves a proposal made after it waiting: it
+/// arrived after the person was asked to confirm.
+#[test]
+fn dismiss_all_before_leaves_newer_proposals_pending() {
+    let (store, _dir) = temp();
+    let e = store
+        .record_entity(P, entity("e", EntityKind::Module), stamp())
+        .unwrap();
+    let new = || related(RelationKind::New, None, None);
+    let shown = Proposal {
+        created_at: 1_000,
+        ..assertion_proposal(saying(&[&e], "shown"), new())
+    };
+    let later = Proposal {
+        created_at: 2_000,
+        ..assertion_proposal(saying(&[&e], "arrived later"), new())
+    };
+    store.add_proposal(&shown).unwrap();
+    store.add_proposal(&later).unwrap();
+
+    let n = store
+        .dismiss_all_pending(P, DismissReason::Trivial, Author::user(), Some(1_000))
+        .unwrap();
+    assert_eq!(n, 1);
+    let pending: Vec<Id> = store
+        .proposals(P, Some(ProposalStatus::Pending))
+        .unwrap()
+        .into_iter()
+        .map(|p| p.id)
+        .collect();
+    assert_eq!(pending, [later.id]);
 }

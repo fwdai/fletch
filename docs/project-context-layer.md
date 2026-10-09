@@ -175,7 +175,10 @@ Three paths, one pipeline, rising cost:
    entities become pending entity proposals, assertions are held by
    `land` (a restatement is dropped as a duplicate), and an assertion about
    a proposed entity carries its slug as `about_pending` until that entity
-   is accepted. The pilot gives model output no durable authority before its
+   is accepted. A repeat of a waiting proposal (same statement, subjects
+   and relation) adds its quotes to that card instead of making another; a
+   repeat of one a person dismissed as wrong, trivial or already known is
+   not proposed again. The pilot gives model output no durable authority before its
    precision is known; the user's acceptance is what lands it, confirmed. The
    observation, the run (model, prompt version, raw output, timing, error)
    and every proposal are kept, so a run can be audited and re-extracted later.

@@ -38,11 +38,13 @@ pub struct Summary {
     pub observation_id: Id,
     /// Entities proposed for review.
     pub entities_proposed: usize,
-    /// Entities already in the graph or pending review, or with no usable
-    /// slug.
+    /// Entities already in the graph, pending review or dismissed by a
+    /// person, or with no usable slug.
     pub entities_skipped: usize,
     /// Assertions held for review.
     pub held: usize,
+    /// Assertions repeating a proposal a person dismissed; not held again.
+    pub redismissed: usize,
     /// Assertions that restate a current head; nothing kept.
     pub duplicates: usize,
     /// Assertions about nothing the graph or this run knows.
@@ -175,14 +177,13 @@ pub fn process(
             summary.entities_skipped += 1;
             continue;
         }
-        // Already waiting from an earlier run: not proposed again, but this
-        // run's assertions may still name it.
-        if store
-            .pending_entity_proposal(project_id, &input.slug)?
-            .is_some()
-        {
+        // Waiting from an earlier run, or ruled out by a person: not
+        // proposed again. This run's assertions may still name a waiting one.
+        if let Some(earlier) = store.entity_proposal(project_id, &input.slug)? {
             summary.entities_skipped += 1;
-            pending_slugs.push(input.slug);
+            if earlier.status == ProposalStatus::Pending {
+                pending_slugs.push(input.slug);
+            }
             continue;
         }
         pending_slugs.push(input.slug.clone());
@@ -235,12 +236,22 @@ pub fn process(
         let (found, unknown) = resolve::entities(&graph, &assertion.about);
         let mut about: Vec<Id> = found.iter().map(|e| e.id.clone()).collect();
         about.dedup();
-        let (about_pending, unknown): (Vec<String>, Vec<String>) = unknown
-            .into_iter()
-            .map(|reference| slug(&reference).unwrap_or(reference))
-            .partition(|s| pending_slugs.contains(s));
-        if !unknown.is_empty() {
-            tracing::warn!(?unknown, statement = %assertion.statement, "context extract: unknown entity slugs dropped");
+        let (mut about_pending, mut still_unknown) = (Vec::new(), Vec::new());
+        for s in unknown.into_iter().map(|r| slug(&r).unwrap_or(r)) {
+            // The model is never shown pending entities, so it names one
+            // from an earlier run without listing it again.
+            let pending = pending_slugs.contains(&s)
+                || store
+                    .entity_proposal(project_id, &s)?
+                    .is_some_and(|p| p.status == ProposalStatus::Pending);
+            if pending {
+                about_pending.push(s);
+            } else {
+                still_unknown.push(s);
+            }
+        }
+        if !still_unknown.is_empty() {
+            tracing::warn!(unknown = ?still_unknown, statement = %assertion.statement, "context extract: unknown entity slugs dropped");
         }
         if about.is_empty() && about_pending.is_empty() {
             summary.assertions_skipped += 1;
@@ -327,6 +338,10 @@ pub fn process(
         };
         match service.record_decision(project, candidate, stamp)? {
             Landing::Held { .. } => summary.held += 1,
+            Landing::Dismissed { proposal_id } => {
+                tracing::debug!(observation = %observation.id, %proposal_id, "context extract: repeats a dismissed proposal");
+                summary.redismissed += 1;
+            }
             Landing::Duplicate { id } => {
                 tracing::debug!(observation = %observation.id, head = %id, "context extract: duplicate of a head");
                 summary.duplicates += 1;

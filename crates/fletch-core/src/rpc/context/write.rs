@@ -203,7 +203,7 @@ impl ContextDispatcher {
             Landing::Recorded { id, status } => Ok(json!({ "id": id, "status": status })),
             Landing::Duplicate { id } => Ok(json!({ "already_recorded": id })),
             Landing::Related { heads } => Ok(conflict(&heads)),
-            Landing::Held { proposal_id } => Err(format!(
+            Landing::Held { proposal_id } | Landing::Dismissed { proposal_id } => Err(format!(
                 "the store held an agent write as proposal {proposal_id}; this is a bug in the \
                  write policy"
             )),

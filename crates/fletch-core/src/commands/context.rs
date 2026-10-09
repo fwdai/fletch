@@ -192,7 +192,7 @@ pub fn context_record_assertion_impl(
         .record_decision(&project, candidate, ui_stamp())?
     {
         Landing::Recorded { id, .. } | Landing::Duplicate { id } => id,
-        Landing::Related { .. } | Landing::Held { .. } => {
+        Landing::Related { .. } | Landing::Held { .. } | Landing::Dismissed { .. } => {
             return Err(Error::Other("a user write cannot be held".into()))
         }
     };
@@ -284,11 +284,16 @@ pub fn context_rule_proposal_impl(
 }
 
 /// Dismiss every pending proposal as trivial: the way out of a backlog that
-/// is too long to rule on card by card. Answers how many were dismissed.
-pub fn context_dismiss_all_impl(ctx: &EngineCtx, project_id: &str) -> Result<usize> {
+/// is too long to rule on card by card. `before` (epoch ms) limits it to the
+/// proposals the person was shown. Answers how many were dismissed.
+pub fn context_dismiss_all_impl(
+    ctx: &EngineCtx,
+    project_id: &str,
+    before: Option<i64>,
+) -> Result<usize> {
     let service = ctx.context()?;
     let project = open(ctx, project_id)?;
-    Ok(service.dismiss_all_pending(&project, DismissReason::Trivial, Author::user())?)
+    Ok(service.dismiss_all_pending(&project, DismissReason::Trivial, Author::user(), before)?)
 }
 
 #[cfg(test)]

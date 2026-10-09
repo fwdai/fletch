@@ -328,14 +328,18 @@ impl ContextService {
         Ok(())
     }
 
-    /// Clears the review queue in one ruling; returns how many were dismissed.
+    /// Clears the review queue in one ruling (only proposals made by `before`,
+    /// epoch ms, when given); returns how many were dismissed.
     pub fn dismiss_all_pending(
         &self,
         project: &Project,
         reason: DismissReason,
         by: Author,
+        before: Option<i64>,
     ) -> Result<usize> {
-        let dismissed = self.store.dismiss_all_pending(&project.id, reason, by)?;
+        let dismissed = self
+            .store
+            .dismiss_all_pending(&project.id, reason, by, before)?;
         if dismissed > 0 {
             self.changed(project);
         }
