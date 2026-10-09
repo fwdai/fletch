@@ -29,13 +29,17 @@ export type LogLoad =
   | { status: "error"; error: string };
 
 /** Render canonical session records exactly as on-disk replay does:
- *  `normalizeTranscript` → `reduce`. Adapter throws degrade to a partial log
- *  rather than an empty screen. */
+ *  `normalizeTranscript` → `reduce`, each item carrying the `recordSeq` of the
+ *  record it came from. Adapter throws degrade to a partial log rather than an
+ *  empty screen. */
 export function reduceRecords(provider: string | undefined, records: SessionRecord[]): ChatItem[] {
   const adapter = getAdapter(provider);
   let raw: RawEvent[];
   try {
-    raw = adapter.normalizeTranscript(records.map((r) => r.body));
+    raw = adapter.normalizeTranscript(
+      records.map((r) => r.body),
+      records.map((r) => r.seq),
+    );
   } catch {
     return [];
   }

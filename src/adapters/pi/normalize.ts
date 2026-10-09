@@ -12,18 +12,21 @@
 // events and drop everything else.
 
 import { asRecord } from "@/adapters/shared/json";
+import { fromRecord } from "@/adapters/shared/record-seq";
 import type { RawEvent } from "@/adapters/types";
 
-export function normalizeTranscript(lines: unknown[]): RawEvent[] {
+export function normalizeTranscript(lines: unknown[], seqs?: readonly number[]): RawEvent[] {
   const out: RawEvent[] = [];
-  for (const line of lines) {
+  for (const [i, line] of lines.entries()) {
     const rec = asRecord(line);
     if (rec.type !== "message") continue; // drop session/model_change/thinking_level_change/unknown
     const msg = asRecord(rec.message);
 
+    const emit = (ev: RawEvent) => out.push(fromRecord(ev, seqs?.[i]));
+
     if (msg.role === "toolResult") {
       // reduce renders results off tool_execution_end, not toolResult messages.
-      out.push({
+      emit({
         type: "tool_execution_end",
         toolCallId: msg.toolCallId,
         result: { content: msg.content },
@@ -32,7 +35,7 @@ export function normalizeTranscript(lines: unknown[]): RawEvent[] {
     } else {
       // user / assistant: reduce's message_end arm parses the content blocks
       // (text / thinking / toolCall).
-      out.push({ type: "message_end", message: msg });
+      emit({ type: "message_end", message: msg });
     }
   }
   return out;

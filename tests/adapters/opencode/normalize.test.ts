@@ -2,9 +2,9 @@ import { describe, expect, it } from "vitest";
 import { opencodeAdapter } from "@/adapters/opencode/index";
 import type { ChatItem, RawEvent } from "@/adapters/types";
 
-function render(lines: unknown[]): ChatItem[] {
+function render(lines: unknown[], seqs?: number[]): ChatItem[] {
   return opencodeAdapter
-    .normalizeTranscript(lines)
+    .normalizeTranscript(lines, seqs)
     .reduce<ChatItem[]>((acc, ev) => opencodeAdapter.reduce(acc, ev as RawEvent), []);
 }
 
@@ -31,7 +31,21 @@ const records: unknown[] = [
   { id: "p4", type: "step-finish", messageID: "m2", reason: "stop" },
 ];
 
+/** Session-record seqs for `lines`, offset so they can't pass for indices. */
+const seqsFor = (lines: unknown[]) => lines.map((_, i) => 100 + i);
+
 describe("opencodeAdapter.normalizeTranscript", () => {
+  it("stamps every item with the seq of the record it came from", () => {
+    // Message blobs emit nothing; the completed tool part fans out into call + result.
+    expect(render(records, seqsFor(records)).map((i) => [i.kind, i.recordSeq])).toEqual([
+      ["user_message", 101],
+      ["agent_message", 103],
+      ["tool_call", 104],
+      ["tool_result", 104],
+      ["notice", 105],
+    ]);
+  });
+
   it("reassembles message+part blobs into a rendered conversation", () => {
     const items = render(records);
     expect(items).toEqual([

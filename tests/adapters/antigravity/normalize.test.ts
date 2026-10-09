@@ -2,9 +2,9 @@ import { describe, expect, it } from "vitest";
 import { antigravityAdapter } from "@/adapters/antigravity/index";
 import type { ChatItem, RawEvent } from "@/adapters/types";
 
-function render(lines: unknown[]): ChatItem[] {
+function render(lines: unknown[], seqs?: number[]): ChatItem[] {
   return antigravityAdapter
-    .normalizeTranscript(lines)
+    .normalizeTranscript(lines, seqs)
     .reduce<ChatItem[]>((acc, ev) => antigravityAdapter.reduce(acc, ev as RawEvent), []);
 }
 
@@ -29,7 +29,19 @@ const transcript: unknown[] = [
   { step_index: 4, type: "PLANNER_RESPONSE", content: "Here are the files." },
 ];
 
+/** Session-record seqs for `lines`, offset so they can't pass for indices. */
+const seqsFor = (lines: unknown[]) => lines.map((_, i) => 100 + i);
+
 describe("antigravityAdapter.normalizeTranscript", () => {
+  it("stamps every item with the seq of the record it came from", () => {
+    expect(render(transcript, seqsFor(transcript)).map((i) => [i.kind, i.recordSeq])).toEqual([
+      ["user_message", 100],
+      ["tool_call", 102],
+      ["tool_result", 103],
+      ["agent_message", 104],
+    ]);
+  });
+
   it("renders user input, an order-paired tool call+result, and assistant text", () => {
     const items = render(transcript);
     expect(items[0]).toEqual({ kind: "user_message", text: "list the files" });

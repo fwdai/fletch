@@ -9,13 +9,17 @@ import { providerFor } from "./agentLookups";
 
 /** Render canonical `session_records` (verbatim per-provider transcript
  *  bodies) into chat items via the same pipeline as on-disk replay:
- *  `normalizeTranscript` → `reduce`. Defensive: a malformed body or an adapter
- *  throw degrades gracefully instead of failing the whole restore. */
+ *  `normalizeTranscript` → `reduce`. Every item carries the `recordSeq` of the
+ *  record it came from. Defensive: a malformed body or an adapter throw
+ *  degrades gracefully instead of failing the whole restore. */
 export function reduceRecords(provider: string | undefined, records: SessionRecord[]): ChatItem[] {
   const adapter = getAdapter(provider);
   let rawEvents: RawEvent[];
   try {
-    rawEvents = adapter.normalizeTranscript(records.map((r) => r.body));
+    rawEvents = adapter.normalizeTranscript(
+      records.map((r) => r.body),
+      records.map((r) => r.seq),
+    );
   } catch (err) {
     console.error("[adapters] normalizeTranscript threw during restore", {
       provider,

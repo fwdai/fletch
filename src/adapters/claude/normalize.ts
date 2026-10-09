@@ -5,14 +5,15 @@
 // normalizer is essentially a filter that drops unrelated record kinds.
 
 import { asRecord } from "@/adapters/shared/json";
+import { fromRecord } from "@/adapters/shared/record-seq";
 import type { RawEvent } from "@/adapters/types";
 import { transcriptTextContent } from "./content";
 
 const PASS_THROUGH = new Set(["user", "assistant", "result"]);
 
-export function normalizeTranscript(lines: unknown[]): RawEvent[] {
+export function normalizeTranscript(lines: unknown[], seqs?: readonly number[]): RawEvent[] {
   const out: RawEvent[] = [];
-  for (const raw of lines) {
+  for (const [i, raw] of lines.entries()) {
     const rec = asRecord(raw);
     const type = typeof rec.type === "string" ? rec.type : undefined;
     if (!type || !PASS_THROUGH.has(type)) continue;
@@ -34,7 +35,7 @@ export function normalizeTranscript(lines: unknown[]): RawEvent[] {
       if (!hasText && !hasBlocks) continue;
     }
 
-    out.push(rec as RawEvent);
+    out.push(fromRecord(rec as RawEvent, seqs?.[i]));
   }
   return out;
 }

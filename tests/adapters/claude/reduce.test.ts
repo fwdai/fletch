@@ -74,6 +74,28 @@ describe("claudeAdapter — transcript replay", () => {
     ]);
   });
 
+  it("stamps every item with the seq of the record it came from", () => {
+    const seqs = lines.map((_, i) => 100 + i);
+    const items = reduceAll(claudeAdapter.normalizeTranscript(lines, seqs));
+    // The /login record renders only as a notice; the reminder-wrapped prompt
+    // fans out into the message and its hook notice.
+    expect(items.map((i) => [i.kind, i.recordSeq])).toEqual([
+      ["user_message", 100],
+      ["agent_message", 101],
+      ["notice", 102],
+      ["user_message", 103],
+      ["notice", 103],
+      ["agent_message", 104],
+    ]);
+  });
+
+  it("leaves the record body it passes through as the event unstamped", () => {
+    const body = { type: "user", message: { role: "user", content: "hi" } };
+    const [ev] = claudeAdapter.normalizeTranscript([body], [7]);
+    expect(ev.recordSeq).toBe(7);
+    expect(body).not.toHaveProperty("recordSeq");
+  });
+
   it("drops unrelated transcript record kinds", () => {
     const events = claudeAdapter.normalizeTranscript([
       { type: "summary", summary: "ignored" },

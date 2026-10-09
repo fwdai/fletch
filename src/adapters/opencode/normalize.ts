@@ -13,6 +13,7 @@
 // (the part blob IS the live event's inner `part`).
 
 import { asRecord } from "@/adapters/shared/json";
+import { fromRecord } from "@/adapters/shared/record-seq";
 import type { RawEvent } from "@/adapters/types";
 
 // On-disk part type → live event type the reducer switches on.
@@ -24,7 +25,7 @@ const PART_TO_LIVE: Record<string, string> = {
   "step-finish": "step_finish",
 };
 
-export function normalizeTranscript(lines: unknown[]): RawEvent[] {
+export function normalizeTranscript(lines: unknown[], seqs?: readonly number[]): RawEvent[] {
   // First pass: messageID → role (message blobs have role + id, no `type`).
   // Assistant message blobs also carry `modelID` (the model that produced the
   // turn); index it so the emitted text event can carry the model to the UI.
@@ -39,22 +40,23 @@ export function normalizeTranscript(lines: unknown[]): RawEvent[] {
   }
 
   const out: RawEvent[] = [];
-  for (const line of lines) {
+  for (const [i, line] of lines.entries()) {
     const rec = asRecord(line);
     if (typeof rec.type !== "string") continue; // message blob — role captured above
+    const emit = (ev: RawEvent) => out.push(fromRecord(ev, seqs?.[i]));
 
     const msgRole = typeof rec.messageID === "string" ? roleOf.get(rec.messageID) : undefined;
 
     // A user message's text is the prompt.
     if (rec.type === "text" && msgRole === "user") {
-      out.push({ type: "user_message", text: typeof rec.text === "string" ? rec.text : "" });
+      emit({ type: "user_message", text: typeof rec.text === "string" ? rec.text : "" });
       continue;
     }
 
     const liveType = PART_TO_LIVE[rec.type];
     if (!liveType) continue; // subtask / unknown — nothing renderable
     const model = typeof rec.messageID === "string" ? modelOf.get(rec.messageID) : undefined;
-    out.push({ type: liveType, part: rec, model });
+    emit({ type: liveType, part: rec, model });
   }
   return out;
 }

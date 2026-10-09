@@ -33,6 +33,7 @@
 // from a tagged line inherits the tag so the reducer nests it underneath.
 
 import { asRecord } from "@/adapters/shared/json";
+import { fromRecord } from "@/adapters/shared/record-seq";
 import type { RawEvent } from "@/adapters/types";
 
 /** Fernet token (what codex stores for `spawn_agent.message` and reasoning):
@@ -127,7 +128,7 @@ function reasoningSummary(v: unknown): string {
     .join("\n");
 }
 
-export function normalizeTranscript(lines: unknown[]): RawEvent[] {
+export function normalizeTranscript(lines: unknown[], seqs?: readonly number[]): RawEvent[] {
   // Pre-pass: a tool call's output lands on a later function/custom-tool
   // output line, so index outputs by call_id first.
   const outputs = new Map<string, string>();
@@ -163,14 +164,17 @@ export function normalizeTranscript(lines: unknown[]): RawEvent[] {
   // precede the turn's events. Track the latest and stamp it onto the agent
   // messages that follow so the UI can show the model in use on replay.
   let currentModel: string | undefined;
-  for (const raw of lines) {
+  for (const [i, raw] of lines.entries()) {
     const env = asRecord(raw);
     const p = asRecord(env.payload);
     const ptype = typeof p.type === "string" ? p.type : "";
     // A sub-agent's record is tagged with its spawn call id by the sync;
-    // every event made from it carries the tag so the reducer nests it.
+    // every event made from it carries the tag so the reducer nests it. A tool
+    // call's result is folded in from its later output record, but the event
+    // (and so the call and result items) belongs to the call's record.
     const parent = typeof env.parent_tool_use_id === "string" ? env.parent_tool_use_id : "";
-    const emit = (ev: RawEvent) => out.push(parent ? { ...ev, parent_tool_use_id: parent } : ev);
+    const emit = (ev: RawEvent) =>
+      out.push(fromRecord(parent ? { ...ev, parent_tool_use_id: parent } : ev, seqs?.[i]));
 
     if (env.type === "turn_context") {
       const m = p.model;

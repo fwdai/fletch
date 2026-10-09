@@ -20,6 +20,7 @@
 // `turn_end`, which fires once per assistant step).
 
 import { asBlockList, asRecord } from "@/adapters/shared/json";
+import { withRecordSeq } from "@/adapters/shared/record-seq";
 import {
   aliasToolInput,
   dedupAgainstLast,
@@ -43,7 +44,9 @@ function textOfBlocks(content: unknown): string {
     .join("");
 }
 
-export function reduce(prev: ChatItem[], ev: RawEvent): ChatItem[] {
+export const reduce = withRecordSeq(reduceEvent);
+
+function reduceEvent(prev: ChatItem[], ev: RawEvent): ChatItem[] {
   const type = typeof ev.type === "string" ? ev.type : undefined;
 
   switch (type) {

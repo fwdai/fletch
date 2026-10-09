@@ -20,6 +20,7 @@
 // occurrence number (see `cursorTaskIdNth`).
 
 import { asBlockList, asRecord } from "@/adapters/shared/json";
+import { fromRecord } from "@/adapters/shared/record-seq";
 import type { RawEvent } from "@/adapters/types";
 
 /** The base replay id of a Cursor Task call, from its prompt. FNV-1a (32-bit)
@@ -46,14 +47,14 @@ export function cursorTaskIdNth(base: string, n: number): string {
   return n > 1 ? `${base}-${n}` : base;
 }
 
-export function normalizeTranscript(lines: unknown[]): RawEvent[] {
+export function normalizeTranscript(lines: unknown[], seqs?: readonly number[]): RawEvent[] {
   const out: RawEvent[] = [];
   let toolSeq = 0;
   // Task calls seen so far in the main transcript, by base id. Without this,
   // two Tasks with identical prompts share an id and `upsertToolCall` merges
   // them into a single row carrying both sub-agents' turns.
   const taskSeq = new Map<string, number>();
-  for (const line of lines) {
+  for (const [i, line] of lines.entries()) {
     const rec = asRecord(line);
     const role = rec.role;
     if (role !== "user" && role !== "assistant") continue; // drop unknown roles
@@ -75,7 +76,7 @@ export function normalizeTranscript(lines: unknown[]): RawEvent[] {
     });
     const ev: RawEvent = { type: role, message: { ...msg, content } };
     if (parent !== undefined) ev.parent_tool_use_id = parent;
-    out.push(ev);
+    out.push(fromRecord(ev, seqs?.[i]));
   }
   return out;
 }

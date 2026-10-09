@@ -7,7 +7,18 @@
 
 import type { Coverage, UsageEvent } from "./usage/events";
 
-export type ChatItem =
+export type ChatItem = ChatItemBase & ChatItemBody;
+
+interface ChatItemBase {
+  /** The `seq` of the `session_records` row this item was reduced from, so an
+   *  item can be placed by its position in the record stream rather than by
+   *  matching its text. Absent for items folded from the live stream or created
+   *  store-only. An item a later record extends (a streaming message, an
+   *  upserted tool call) keeps the seq of the record that created it. */
+  recordSeq?: number;
+}
+
+type ChatItemBody =
   | {
       kind: "user_message";
       text: string;
@@ -109,7 +120,13 @@ export type NoticeSubtype =
    *  the user asked for it and expects to read it. */
   | "command_output";
 
-export type RawEvent = Record<string, unknown> & { type?: string };
+export type RawEvent = Record<string, unknown> & {
+  type?: string;
+  /** The `seq` of the session record this event was normalized from (see
+   *  `shared/record-seq`). Set only by `normalizeTranscript` when given seqs;
+   *  no provider payload uses this key, so stamping it can't shadow a field. */
+  recordSeq?: number;
+};
 
 export type DisplayMode = "show" | "hide";
 
@@ -120,7 +137,11 @@ export type DisplayPolicy = Record<string, DisplayMode>;
 export interface ChatAdapter {
   readonly id: string;
   reduce(prevItems: ChatItem[], rawEvent: RawEvent): ChatItem[];
-  normalizeTranscript(transcriptLines: unknown[]): RawEvent[];
+  /** Translate transcript lines into the events `reduce` consumes. `seqs`, when
+   *  given, is parallel to `transcriptLines` (each line's session-record seq):
+   *  every event is stamped with the seq of the line it was emitted for, and
+   *  `reduce` carries it onto the items it creates. Omitted for bare bodies. */
+  normalizeTranscript(transcriptLines: unknown[], seqs?: readonly number[]): RawEvent[];
   /** Claude-shaped `system` task events (`task_started` / `task_notification`,
    *  see shared/backgroundTasks) derived from ONE live event of a provider that
    *  has no such events of its own — Cursor's Task `tool_call`. The store folds
