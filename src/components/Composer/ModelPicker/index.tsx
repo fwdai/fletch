@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { AccountAvatar } from "@/components/AccountAvatar";
 import { Icon } from "@/components/Icon";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { Mono } from "@/components/SettingsScreen/CustomAgents/Mono";
@@ -43,8 +44,8 @@ interface Props {
  *  right for model selection. Clicking an agent row commits its default model;
  *  leaving model unset preserves the provider CLI's default. Selections stay
  *  sticky via `onChange`. When the provider has several accounts, the chip
- *  leads with an account icon and the menu opens on an account row, whose
- *  flyout lists them the way an agent row's lists its models.
+ *  pairs the agent's icon with the account's avatar and the menu opens on an
+ *  account row, whose flyout lists them the way an agent row lists models.
  *
  *  The menu always opens upward — the composer sits on the bottom edge of the
  *  window. A surface near the top of a panel wants a screen, not a menu that has
@@ -113,7 +114,7 @@ export function ModelPicker({
         ? "Model — changing restarts the agent (rebuilds cache)"
         : "Model"
       : "Agent and model";
-  // The chip shows the account as an icon only; its name is here.
+  // The chip shows the account as an avatar only; its name is here.
   const chipTip = accountView
     ? `${baseTip} · ${accountView.spent ? "limit reached on " : ""}${accountView.label}`
     : baseTip;
@@ -167,11 +168,7 @@ export function ModelPicker({
   const accountFlyout = accountView && hovered === ACCOUNT_FLY && (
     <SideFlyout
       flyKey={ACCOUNT_FLY}
-      icon={
-        <span className="model-acct-icon flex-center">
-          <Icon name="user" size={13} />
-        </span>
-      }
+      icon={<ProviderIcon slug={selected.id} short={selected.short} hue={selected.hue} size={20} />}
       title={providerLabel(provider)}
       tag="account"
     >
@@ -181,6 +178,17 @@ export function ModelPicker({
         onManage={() => openSettings("providers")}
       />
     </SideFlyout>
+  );
+
+  // Overlaps the agent's icon: one identity, "this agent, as this account".
+  const chipAvatar = accountView && (
+    <AccountAvatar
+      id={accountView.id}
+      label={accountView.label}
+      size={14}
+      ring
+      spent={accountView.spent}
+    />
   );
 
   return (
@@ -194,22 +202,26 @@ export function ModelPicker({
         tip={chipTip}
         className="model-chip"
       >
-        {accountView && (
-          <Icon
-            name="user"
-            size={12}
-            className={`model-chip-acct ${accountView.spent ? "is-spent" : ""}`}
-          />
-        )}
         {activeCustom ? (
           <>
-            <Mono name={activeCustom.name} hue={activeCustom.color} size={15} />
+            <span className="model-chip-ident iflex-center">
+              <Mono name={activeCustom.name} hue={activeCustom.color} size={15} />
+              {chipAvatar}
+            </span>
             <span className="model-chip-agent">{activeCustom.name}</span>
             <span className="model-chip-model truncate">{providerLabel(activeCustom.base)}</span>
           </>
         ) : (
           <>
-            <ProviderIcon slug={selected.id} short={selected.short} hue={selected.hue} size={15} />
+            <span className="model-chip-ident iflex-center">
+              <ProviderIcon
+                slug={selected.id}
+                short={selected.short}
+                hue={selected.hue}
+                size={15}
+              />
+              {chipAvatar}
+            </span>
             <span className="model-chip-agent">{selected.label}</span>
             <span className="model-chip-model truncate">
               {currentModel?.name ?? "Default model"}

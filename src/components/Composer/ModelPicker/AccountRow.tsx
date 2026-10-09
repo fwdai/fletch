@@ -1,3 +1,4 @@
+import { AccountAvatar } from "@/components/AccountAvatar";
 import { Icon } from "@/components/Icon";
 import type { AccountView } from "./useAccountView";
 
@@ -31,11 +32,7 @@ export function AccountRow({
         onMouseEnter={onOpen}
         onClick={onOpen}
       >
-        <Icon
-          name="user"
-          size={13}
-          className={`model-acct-glyph ${view.spent ? "is-spent" : ""}`}
-        />
+        <AccountAvatar id={view.id} label={view.label} size={16} spent={view.spent} />
         <span className="model-option-main">
           <span className="model-option-name truncate text-base">{view.label}</span>
         </span>

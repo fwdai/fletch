@@ -32,6 +32,8 @@ export interface AccountOption extends AccountChoice {
  *  switch, or at most one account that isn't signed out. */
 export interface AccountView {
   options: AccountOption[];
+  /** The current account's id and its name. */
+  id: string;
   label: string;
   /** The current account's limit is spent. */
   spent: boolean;
@@ -71,6 +73,7 @@ export function useAccountView(
   });
   return {
     options,
+    id: current,
     label: currentAccountLabel(accounts, current),
     spent: options.some((o) => o.current && o.spent),
     locked,

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { accountLabel, accountSlug } from "./providerAccounts";
+import { accountHue, accountLabel, accountSlug } from "./providerAccounts";
 
 describe("accountSlug", () => {
   it("lowercases and collapses separators to single hyphens", () => {
@@ -24,5 +24,19 @@ describe("accountLabel", () => {
   it("names the default by what it is and a managed account by its id", () => {
     expect(accountLabel({ id: "default", managed: false })).toBe("Terminal login");
     expect(accountLabel({ id: "work", managed: true })).toBe("work");
+  });
+});
+
+describe("accountHue", () => {
+  it("is stable per id and on the wheel", () => {
+    expect(accountHue("work")).toBe(accountHue("work"));
+    for (const id of ["default", "work", "personal", "a"]) {
+      expect(accountHue(id)).toBeGreaterThanOrEqual(0);
+      expect(accountHue(id)).toBeLessThan(360);
+    }
+  });
+
+  it("tells apart ids that differ by a letter", () => {
+    expect(accountHue("work")).not.toBe(accountHue("works"));
   });
 });

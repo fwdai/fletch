@@ -248,16 +248,10 @@
   }
 }
 
-/* Account row and flyout. The row is a model row with a leading glyph and a
-   chevron bright enough to say a list opens beside it. */
+/* Account row and flyout. The row is a model row led by the account's avatar,
+   with a chevron bright enough to say a list opens beside it. */
 .model-acct-row.hot {
   background: var(--hover);
-}
-.model-option.model-acct-row > .model-acct-glyph {
-  color: var(--fg-2);
-}
-.model-option.model-acct-row > .model-acct-glyph.is-spent {
-  color: var(--warn);
 }
 .model-option.model-acct-row > .model-acct-chev {
   color: var(--fg-1);
@@ -269,18 +263,6 @@
 .model-option.model-acct-row.hot > .model-acct-chev {
   color: var(--accent);
   transform: translateX(2px);
-}
-/* The flyout head's icon, in place of a provider logo. */
-.model-acct-icon {
-  flex-shrink: 0;
-  justify-content: center;
-  border: 1px solid var(--bd-soft);
-  color: var(--fg-2);
-}
-.model-side-fly-head .model-acct-icon {
-  width: 20px;
-  height: 20px;
-  border-radius: 6px;
 }
 .model-acct-spent,
 .model-option-desc.is-spent {

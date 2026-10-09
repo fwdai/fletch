@@ -1,0 +1,28 @@
+/* A provider account's round avatar (AccountAvatar.tsx). */
+.acct-avatar {
+  justify-content: center;
+  flex-shrink: 0;
+  border-radius: 50%;
+  font-weight: 650;
+  line-height: 1;
+  color: oklch(0.86 0.1 var(--h));
+  background: oklch(0.52 0.13 var(--h) / 0.55);
+  border: 1px solid oklch(0.72 0.12 var(--h) / 0.5);
+}
+.theme-light .acct-avatar {
+  color: oklch(0.38 0.14 var(--h));
+  background: oklch(0.86 0.08 var(--h));
+}
+/* Sitting over another icon: a cut-out ring in the surface colour. */
+.acct-avatar.has-ring {
+  box-shadow: 0 0 0 1.5px var(--bg-2);
+}
+.acct-avatar.is-spent {
+  border-color: var(--warn);
+  box-shadow:
+    0 0 0 1.5px var(--bg-2),
+    0 0 0 2.5px var(--warn);
+}
+.acct-avatar:not(.has-ring).is-spent {
+  box-shadow: 0 0 0 1px var(--warn);
+}

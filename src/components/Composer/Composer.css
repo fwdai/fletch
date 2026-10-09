@@ -330,14 +330,13 @@
   max-width: 170px;
   color: var(--fg-2);
 }
-/* The account, only when the provider has several: an icon ahead of the
-   agent, named in the chip's tooltip, amber when its limit is spent. */
-.model-chip-acct {
+/* The agent's icon, and the account's avatar overlapping it when the
+   provider has several accounts. */
+.model-chip-ident {
   flex-shrink: 0;
-  color: var(--fg-3);
 }
-.model-chip-acct.is-spent {
-  color: var(--warn);
+.model-chip-ident > .acct-avatar {
+  margin-left: -4px;
 }
 
 /* composer · token usage meter */
