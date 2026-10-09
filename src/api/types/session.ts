@@ -47,6 +47,11 @@ export interface UserTurn {
   started_at: number | null;
   /** Epoch millis when the turn finished; null while in flight. */
   ended_at: number | null;
+  /** How the turn ended, as the backend recorded it: run to its end, stopped
+   *  by the user, or errored / dropped before it ever ran. Known even when the
+   *  provider never logged the prompt. null while in flight or awaiting
+   *  delivery, and for turns from before outcomes were recorded. */
+  outcome: "completed" | "interrupted" | "failed" | null;
   /** From an ancestor session (see `SessionRecord.inherited`). */
   inherited?: boolean;
 }

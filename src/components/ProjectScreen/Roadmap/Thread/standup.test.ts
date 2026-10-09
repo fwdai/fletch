@@ -23,6 +23,7 @@ function turn(over: Partial<UserTurn> = {}): UserTurn {
     native_id: null,
     started_at: null,
     ended_at: null,
+    outcome: null,
     ...over,
   };
 }

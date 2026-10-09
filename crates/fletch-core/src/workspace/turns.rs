@@ -15,13 +15,14 @@ pub(super) fn query_turns(
     inherited: bool,
 ) -> Result<Vec<UserTurn>> {
     let mut stmt = conn.prepare(
-        "SELECT t.turn_id, t.seq, t.text, t.attachments, t.native_id, t.started_at, t.ended_at
+        "SELECT t.turn_id, t.seq, t.text, t.attachments, t.native_id, t.started_at, t.ended_at,
+                t.outcome
          FROM session_user_turns t
          LEFT JOIN transcripts.session_records r ON r.session_id = t.session_id AND r.native_id = t.native_id
          WHERE t.session_id = ?1 AND (?2 IS NULL OR r.seq < ?2)
          ORDER BY t.seq ASC",
     )?;
-    // (turn_id, seq, text, attachments, native_id, started_at, ended_at)
+    // (turn_id, seq, text, attachments, native_id, started_at, ended_at, outcome)
     type UserTurnRow = (
         String,
         i64,
@@ -30,6 +31,7 @@ pub(super) fn query_turns(
         Option<String>,
         Option<i64>,
         Option<i64>,
+        Option<String>,
     );
     let rows: Vec<UserTurnRow> = stmt
         .query_map(rusqlite::params![session_id, below], |r| {
@@ -41,12 +43,13 @@ pub(super) fn query_turns(
                 r.get(4)?,
                 r.get(5)?,
                 r.get(6)?,
+                r.get(7)?,
             ))
         })?
         .collect::<std::result::Result<_, rusqlite::Error>>()?;
     rows.into_iter()
         .map(
-            |(turn_id, seq, text, attachments_text, native_id, started_at, ended_at)| {
+            |(turn_id, seq, text, attachments_text, native_id, started_at, ended_at, outcome)| {
                 let attachments = serde_json::from_str(&attachments_text)
                     .map_err(|e| Error::Other(format!("deserialize attachments: {e}")))?;
                 Ok(UserTurn {
@@ -57,6 +60,7 @@ pub(super) fn query_turns(
                     native_id,
                     started_at,
                     ended_at,
+                    outcome,
                     inherited,
                 })
             },
@@ -150,14 +154,18 @@ impl WorkspaceManager {
         Ok(())
     }
 
-    /// Close the in-flight turn at turn end by stamping `ended_at` on the open
-    /// turn (started, not yet ended) of the workspace's current session, and
-    /// return its stats for telemetry. `None` when none is open — e.g. the
+    /// Close the in-flight turn at turn end by stamping `ended_at` and
+    /// `outcome` on the open turn (started, not yet ended) of the workspace's
+    /// current session, and return its stats for telemetry. `None` when none is open — e.g. the
     /// resting Idle emitted at spawn, or a native turn with no timing row. At
     /// most one turn is ever open per session (each end closes the open turn
     /// before the next one starts), but the `WHERE` would safely close all open
     /// turns if one were ever stranded; duration then anchors on the earliest.
-    pub fn mark_user_turn_ended(&self, workspace_id: &str) -> Result<Option<ClosedTurn>> {
+    pub fn mark_user_turn_ended(
+        &self,
+        workspace_id: &str,
+        outcome: TurnOutcome,
+    ) -> Result<Option<ClosedTurn>> {
         let conn = self.db.lock();
         let Some(sid) = current_session_id(&conn, workspace_id) else {
             return Ok(None);
@@ -173,9 +181,9 @@ impl WorkspaceManager {
         };
         let now = now_millis();
         conn.execute(
-            "UPDATE session_user_turns SET ended_at = ?1
+            "UPDATE session_user_turns SET ended_at = ?1, outcome = ?3
              WHERE session_id = ?2 AND started_at IS NOT NULL AND ended_at IS NULL",
-            rusqlite::params![now, sid],
+            rusqlite::params![now, sid, outcome.as_str()],
         )?;
         // Records land before the terminal event that trips turn-end detection,
         // so the window is complete by the time we get here.
@@ -189,6 +197,23 @@ impl WorkspaceManager {
             duration_ms: now - started_at,
             record_count,
         }))
+    }
+
+    /// Mark turns whose messages were dropped before they ever ran — queued
+    /// follow-ups an archive or discard throws away — as `failed`, so their
+    /// rows read as given up on rather than waiting forever. Only a row that
+    /// never started and has no outcome yet is touched; a message that was
+    /// queued without a row (the busy path writes none) has nothing to mark.
+    pub fn mark_user_turns_abandoned(&self, turn_ids: &[String]) -> Result<()> {
+        let conn = self.db.lock();
+        let mut stmt = conn.prepare(
+            "UPDATE session_user_turns SET outcome = ?2
+             WHERE turn_id = ?1 AND started_at IS NULL AND outcome IS NULL",
+        )?;
+        for turn_id in turn_ids {
+            stmt.execute(rusqlite::params![turn_id, TurnOutcome::Failed.as_str()])?;
+        }
+        Ok(())
     }
 
     /// Match pending (`native_id IS NULL`) user turns to their canonical

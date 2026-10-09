@@ -45,6 +45,7 @@ const turn = (turnId: string, nativeId: string, text: string): UserTurn => ({
   native_id: nativeId,
   started_at: 1,
   ended_at: 2,
+  outcome: "completed",
 });
 
 /** `denali` said q0 and q1; the chat shows both. */

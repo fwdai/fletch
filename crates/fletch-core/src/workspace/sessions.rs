@@ -687,7 +687,10 @@ mod tests {
         let pending = wm.read_all_pending_messages().unwrap();
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].1.turn_id, "q2");
-        assert!(wm.mark_user_turn_ended("a").unwrap().is_none());
+        assert!(wm
+            .mark_user_turn_ended("a", TurnOutcome::Completed)
+            .unwrap()
+            .is_none());
     }
 
     #[test]

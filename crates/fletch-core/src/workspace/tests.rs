@@ -2610,7 +2610,7 @@ fn user_turn_timing_start_then_end() {
     assert_eq!(wm.read_history_turns(&ws_id).unwrap()[0].ended_at, None);
 
     let closed = wm
-        .mark_user_turn_ended(&ws_id)
+        .mark_user_turn_ended(&ws_id, TurnOutcome::Completed)
         .unwrap()
         .expect("open turn closed");
     let turn = wm.read_history_turns(&ws_id).unwrap().remove(0);
@@ -2625,6 +2625,106 @@ fn user_turn_timing_start_then_end() {
         "duration_ms matches stored ended_at − started_at"
     );
     assert_eq!(closed.record_count, 0, "no records ingested in this test");
+    assert_eq!(turn.outcome.as_deref(), Some("completed"));
+}
+
+#[test]
+fn a_turn_outcome_is_unset_until_the_turn_ends() {
+    let db = test_db();
+    let (ws_id, wm) = make_workspace_with_session(&db);
+    wm.insert_user_turn(&ws_id, "turn-1", "hello", &[]).unwrap();
+    assert_eq!(wm.read_history_turns(&ws_id).unwrap()[0].outcome, None);
+    wm.mark_user_turn_started("turn-1", 1000).unwrap();
+    assert_eq!(wm.read_history_turns(&ws_id).unwrap()[0].outcome, None);
+}
+
+/// A row from before outcomes were recorded has a NULL column, the same as
+/// one still in flight, and reads back as no outcome.
+#[test]
+fn a_legacy_turn_reads_with_no_outcome() {
+    let db = test_db();
+    let (ws_id, wm) = make_workspace_with_session(&db);
+    wm.insert_user_turn(&ws_id, "turn-1", "hello", &[]).unwrap();
+    db.lock()
+        .execute(
+            "UPDATE session_user_turns SET started_at = 1, ended_at = 2, outcome = NULL",
+            [],
+        )
+        .unwrap();
+    let turn = wm.read_history_turns(&ws_id).unwrap().remove(0);
+    assert_eq!(turn.ended_at, Some(2));
+    assert_eq!(turn.outcome, None);
+}
+
+#[test]
+fn each_way_a_turn_ends_is_recorded_on_its_row() {
+    let db = test_db();
+    let (ws_id, wm) = make_workspace_with_session(&db);
+    for (turn_id, outcome) in [
+        ("t1", TurnOutcome::Completed),
+        ("t2", TurnOutcome::Interrupted),
+        ("t3", TurnOutcome::Failed),
+    ] {
+        wm.insert_user_turn(&ws_id, turn_id, turn_id, &[]).unwrap();
+        wm.mark_user_turn_started(turn_id, 1000).unwrap();
+        wm.mark_user_turn_ended(&ws_id, outcome).unwrap().unwrap();
+    }
+    // The next turn's start and end leave the earlier outcomes alone.
+    wm.insert_user_turn(&ws_id, "t4", "t4", &[]).unwrap();
+    wm.mark_user_turn_started("t4", 2000).unwrap();
+    wm.mark_user_turn_ended(&ws_id, TurnOutcome::Completed)
+        .unwrap();
+    let outcomes: Vec<_> = wm
+        .read_history_turns(&ws_id)
+        .unwrap()
+        .into_iter()
+        .map(|t| t.outcome)
+        .collect();
+    assert_eq!(
+        outcomes,
+        ["completed", "interrupted", "failed", "completed"].map(|o| Some(o.to_string()))
+    );
+}
+
+#[test]
+fn the_closing_status_decides_the_outcome_unless_the_user_stopped() {
+    use TurnOutcome::*;
+    assert_eq!(TurnOutcome::closing(&AgentStatus::Idle, false), Completed);
+    assert_eq!(TurnOutcome::closing(&AgentStatus::Error, false), Failed);
+    assert_eq!(
+        TurnOutcome::closing(&AgentStatus::Stopped, false),
+        Interrupted
+    );
+    assert_eq!(TurnOutcome::closing(&AgentStatus::Idle, true), Interrupted);
+    assert_eq!(TurnOutcome::closing(&AgentStatus::Error, true), Interrupted);
+}
+
+/// Only a message that never ran is marked abandoned: a turn that started
+/// gets its outcome when it ends, and an outcome once written stays.
+#[test]
+fn abandoning_turns_marks_only_those_that_never_ran() {
+    let db = test_db();
+    let (ws_id, wm) = make_workspace_with_session(&db);
+    wm.insert_user_turn(&ws_id, "ran", "ran", &[]).unwrap();
+    wm.mark_user_turn_started("ran", 1000).unwrap();
+    wm.insert_user_turn(&ws_id, "held", "held", &[]).unwrap();
+
+    wm.mark_user_turns_abandoned(&["ran".into(), "held".into(), "no-row".into()])
+        .unwrap();
+
+    let outcomes: Vec<_> = wm
+        .read_history_turns(&ws_id)
+        .unwrap()
+        .into_iter()
+        .map(|t| (t.turn_id, t.outcome))
+        .collect();
+    assert_eq!(
+        outcomes,
+        [
+            ("ran".to_string(), None),
+            ("held".to_string(), Some("failed".to_string())),
+        ]
+    );
 }
 
 #[test]
@@ -2648,7 +2748,9 @@ fn mark_user_turn_ended_skips_turns_that_never_started() {
     // Idle emitted at spawn) must not get an ended_at.
     wm.insert_user_turn(&ws_id, "turn-1", "hello", &[]).unwrap();
     assert!(
-        wm.mark_user_turn_ended(&ws_id).unwrap().is_none(),
+        wm.mark_user_turn_ended(&ws_id, TurnOutcome::Completed)
+            .unwrap()
+            .is_none(),
         "no open turn to close"
     );
     assert_eq!(wm.read_history_turns(&ws_id).unwrap()[0].ended_at, None);

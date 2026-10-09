@@ -180,6 +180,7 @@ describe("applyUserTurns with attachments", () => {
           native_id: "n1",
           started_at: 10,
           ended_at: 20,
+          outcome: "completed",
         },
       ],
     );
@@ -205,6 +206,7 @@ describe("applyUserTurns with attachments", () => {
           native_id: "n1",
           started_at: null,
           ended_at: null,
+          outcome: null,
         },
       ],
     );

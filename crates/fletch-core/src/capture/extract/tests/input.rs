@@ -16,6 +16,7 @@ fn turn(id: &str, text: &str, native_id: Option<&str>, inherited: bool) -> UserT
         native_id: native_id.map(str::to_string),
         started_at: None,
         ended_at: None,
+        outcome: None,
         inherited,
     }
 }

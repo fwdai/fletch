@@ -372,6 +372,7 @@ export const userTurns: Record<string, UserTurn[]> = {
       native_id: "n1",
       started_at: Date.now() - 187_000,
       ended_at: null,
+      outcome: null,
     },
   ],
   pamukkale: [],

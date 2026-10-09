@@ -52,7 +52,8 @@ use crate::native_input::NativeInputTracker;
 use crate::pty_session::PtySession;
 use crate::run_session::RunSession;
 use crate::workspace::{
-    AgentRecord, AgentStatus, ClosedTurn, ProjectDeleteResult, Workspace, WorkspaceManager,
+    AgentRecord, AgentStatus, ClosedTurn, ProjectDeleteResult, TurnOutcome, Workspace,
+    WorkspaceManager,
 };
 
 use events::emit_status;
@@ -480,8 +481,15 @@ impl Supervisor {
         // the in-band turn-end and clean process exit; Error covers a crash.
         // A closed turn (started, not native, not the resting Idle at spawn)
         // yields stats we report as `turn_completed`.
+        //
+        // The stop flag is read here, ahead of the turn-end drain that
+        // consumes it (`transition_active` → `drain_message_queue`): every way
+        // a turn ends — the in-band terminal event, a per-turn process exit,
+        // a managed process exit — reaches this point first.
         if matches!(status, AgentStatus::Idle | AgentStatus::Error) {
-            match self.workspace.mark_user_turn_ended(agent_id) {
+            let stop_pending = self.interrupted.lock().contains(agent_id);
+            let outcome = TurnOutcome::closing(&status, stop_pending);
+            match self.workspace.mark_user_turn_ended(agent_id, outcome) {
                 Ok(Some(turn)) => self.track_turn_completed(agent_id, &status, turn),
                 Ok(None) => {}
                 Err(e) => tracing::warn!(error = %e, agent_id, "stamp user turn end failed"),

@@ -502,9 +502,47 @@ pub struct UserTurn {
     /// Wall-clock millis when the turn reached a terminal state. `None` while
     /// in flight — the live-timer signal.
     pub ended_at: Option<i64>,
+    /// How the turn ended ([`TurnOutcome::as_str`]), recorded by the backend
+    /// rather than inferred from the transcript, so a turn the provider never
+    /// logged (stopped before it wrote the prompt) still has a known fate.
+    /// `None` while in flight or awaiting delivery, and for rows written
+    /// before outcomes were recorded.
+    pub outcome: Option<String>,
     /// Shown through lineage from an ancestor session (see
     /// [`SessionRecord::inherited`]).
     pub inherited: bool,
+}
+
+/// How a user turn ended, as persisted in `session_user_turns.outcome`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TurnOutcome {
+    Completed,
+    /// The user stopped it.
+    Interrupted,
+    /// It errored, or its message was dropped before it ever ran.
+    Failed,
+}
+
+impl TurnOutcome {
+    /// The outcome of the turn a status transition closes. A pending user stop
+    /// wins over the status it lands on: the stop is why the turn ended, even
+    /// when the process it killed went down with an error.
+    pub fn closing(status: &AgentStatus, stop_pending: bool) -> Self {
+        match status {
+            _ if stop_pending => Self::Interrupted,
+            AgentStatus::Stopped => Self::Interrupted,
+            AgentStatus::Error => Self::Failed,
+            _ => Self::Completed,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Completed => "completed",
+            Self::Interrupted => "interrupted",
+            Self::Failed => "failed",
+        }
+    }
 }
 
 /// Stats for a turn that `mark_user_turn_ended` just closed, returned so the

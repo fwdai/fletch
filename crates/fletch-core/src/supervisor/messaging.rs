@@ -909,6 +909,116 @@ mod tests {
         assert_eq!(turns[0].started_at, Some(4242));
     }
 
+    // ── turn outcomes ─────────────────────────────────────────────────────
+
+    /// `yosemite`'s first turn, persisted and running, as a delivery leaves it.
+    fn running_turn(ctx: &Arc<EngineCtx>) -> Arc<Supervisor> {
+        let sup = Arc::new(test_supervisor());
+        let mut record = record_with_status("yosemite", AgentStatus::Idle);
+        sup.workspace.add_agent(&mut record).unwrap();
+        sup.statuses
+            .lock()
+            .insert("yosemite".to_string(), AgentStatus::Idle);
+        sup.workspace
+            .insert_user_turn("yosemite", TURN, "fix the build", &[])
+            .unwrap();
+        mark_user_turn_started(&sup, ctx, "yosemite", Some(TURN));
+        sup
+    }
+
+    fn outcomes(sup: &Supervisor) -> Vec<Option<String>> {
+        sup.workspace
+            .read_history_turns("yosemite")
+            .unwrap()
+            .into_iter()
+            .map(|t| t.outcome)
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_turn_that_runs_to_its_end_is_completed() {
+        let (ctx, _sink, _dir) = crate::host::ctx::test_ctx();
+        let sup = running_turn(&ctx);
+
+        transition_active(&sup, &ctx, "yosemite", AgentStatus::Idle);
+
+        assert_eq!(outcomes(&sup), [Some("completed".to_string())]);
+    }
+
+    /// The stop flag is consumed by the turn-end drain, which runs after the
+    /// turn is closed — so the close still sees it.
+    #[tokio::test]
+    async fn a_turn_the_user_stops_is_interrupted() {
+        let (ctx, _sink, _dir) = crate::host::ctx::test_ctx();
+        let sup = running_turn(&ctx);
+
+        sup.clone()
+            .stop_agent(ctx.clone(), "yosemite")
+            .await
+            .unwrap();
+        transition_active(&sup, &ctx, "yosemite", AgentStatus::Idle);
+
+        assert_eq!(outcomes(&sup), [Some("interrupted".to_string())]);
+        assert!(!sup.interrupted.lock().contains("yosemite"), "drained");
+    }
+
+    /// A stop that lands between turns is moot once the next turn starts.
+    #[tokio::test]
+    async fn a_stop_before_a_turn_starts_does_not_mark_it() {
+        let (ctx, _sink, _dir) = crate::host::ctx::test_ctx();
+        let sup = Arc::new(test_supervisor());
+        let mut record = record_with_status("yosemite", AgentStatus::Idle);
+        sup.workspace.add_agent(&mut record).unwrap();
+        sup.clone()
+            .stop_agent(ctx.clone(), "yosemite")
+            .await
+            .unwrap();
+        sup.workspace
+            .insert_user_turn("yosemite", TURN, "fix the build", &[])
+            .unwrap();
+        mark_user_turn_started(&sup, &ctx, "yosemite", Some(TURN));
+
+        transition_active(&sup, &ctx, "yosemite", AgentStatus::Idle);
+
+        assert_eq!(outcomes(&sup), [Some("completed".to_string())]);
+    }
+
+    #[tokio::test]
+    async fn a_turn_that_ends_in_error_is_failed() {
+        let (ctx, _sink, _dir) = crate::host::ctx::test_ctx();
+        let sup = running_turn(&ctx);
+
+        sup.set_status(
+            &ctx,
+            "yosemite",
+            AgentStatus::Error,
+            Some("Agent process exited: boom".into()),
+        );
+
+        assert_eq!(outcomes(&sup), [Some("failed".to_string())]);
+    }
+
+    /// A send whose hand-off fails is held for a retry, not given up on: its
+    /// row stays without an outcome, and a later turn end doesn't close it.
+    #[tokio::test]
+    async fn a_requeued_delivery_has_no_outcome() {
+        let td = tempfile::tempdir().unwrap();
+        let (sup, _checkout) = idle_agent_in(td.path()).await;
+        let (ctx, _sink, _dir) = crate::host::ctx::test_ctx();
+
+        let held = sup
+            .clone()
+            .send_user_message(&ctx, "yosemite", TURN, "hello", &[])
+            .await
+            .unwrap();
+        assert!(held);
+        assert_eq!(sup.message_queue.lock().turn_ids("yosemite"), [TURN]);
+
+        mark_user_turn_started(&sup, &ctx, "yosemite", None);
+        transition_active(&sup, &ctx, "yosemite", AgentStatus::Idle);
+        assert_eq!(outcomes(&sup), [None]);
+    }
+
     /// Capture is best-effort: a checkout that can't be snapshotted is skipped
     /// and the turn still goes out (here, as far as the missing process).
     #[tokio::test]

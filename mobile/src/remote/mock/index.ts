@@ -535,6 +535,7 @@ export class MockHost {
         native_id: `n${this.seq}`,
         started_at: Date.now(),
         ended_at: null,
+        outcome: null,
       },
     ];
     this.patchAgent(id, { task: this.agent(id).task || text });
