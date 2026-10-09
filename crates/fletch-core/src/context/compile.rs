@@ -172,10 +172,13 @@ pub fn overview(graph: &Graph, budget_chars: usize) -> Bundle {
 }
 
 /// Overview order: what the user stated before what anyone else did, merged
-/// before provisional, then newest first.
+/// before provisional, then newest first. "The user stated" is the user
+/// writing it or a verified quote of theirs (`user_turn` source), whoever
+/// recorded it.
 fn constraint_rank(a: &Assertion) -> (bool, bool, std::cmp::Reverse<i64>) {
+    let user_stated = a.author.kind == AuthorKind::User || a.source.kind == SourceKind::UserTurn;
     (
-        a.author.kind != AuthorKind::User,
+        !user_stated,
         a.status == AssertionStatus::Provisional,
         std::cmp::Reverse(a.recorded_at),
     )

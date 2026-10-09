@@ -414,8 +414,11 @@ fn the_overview_sheds_low_ranked_constraints_to_meet_its_budget() {
 
 #[test]
 fn overview_constraints_rank_user_then_confirmed_then_newest() {
+    // The fixture's default source is a user quote; the extractor's own
+    // reading of the conversation is not.
     let mut extracted = constraint("ext", &["f1"], "Extracted", Domain::Business);
     extracted.author = Author::extractor("ws", "claude");
+    extracted.source = Source::new(SourceKind::AgentTurn, None);
     extracted.recorded_at = 50;
     let mut user_provisional = constraint("user-prov", &["f1"], "Stated", Domain::Business);
     user_provisional.status = AssertionStatus::Provisional;
@@ -423,15 +426,21 @@ fn overview_constraints_rank_user_then_confirmed_then_newest() {
     old.recorded_at = 1;
     let mut new = constraint("new", &["f1"], "New", Domain::Business);
     new.recorded_at = 2;
+    // An agent recorded it, but from the user's own words: ranks as the
+    // user's, and older than `old`.
+    let mut quoted = constraint("quoted", &["f1"], "Quoted", Domain::Business);
+    quoted.author = Author::agent("ws", "claude");
+    quoted.source = Source::new(SourceKind::UserTurn, Some("t1".into()));
+    quoted.recorded_at = 0;
     let g = graph(
         vec![vision("v"), feature("f1", "billing")],
-        vec![extracted, user_provisional, old, new],
+        vec![extracted, user_provisional, old, new, quoted],
         Vec::new(),
     );
     let b = overview(&g, 0);
     assert_eq!(
         ids(b.assertions.iter().map(|a| &a.assertion)),
-        ["new", "old", "user-prov", "ext"]
+        ["new", "old", "quoted", "user-prov", "ext"]
     );
 }
 
