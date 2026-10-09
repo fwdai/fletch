@@ -463,6 +463,10 @@ fn now_millis() -> i64 {
 /// verbatim shape. Normalized into ChatItems on read by the per-provider adapter.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct SessionRecord {
+    /// The session that produced the record. A stitched history read spans
+    /// several sessions whose seqs overlap, so `(session_id, seq)` is what
+    /// names a record there (and what a [`UserTurn::position`] is paired by).
+    pub session_id: String,
     /// Position in the owning session's own seq space. A stitched history read
     /// spans several sessions, so seqs there are only ordered per session.
     pub seq: i64,
@@ -490,6 +494,9 @@ pub struct SupersededSession {
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct UserTurn {
     pub turn_id: String,
+    /// The session the turn was sent in; its [`Self::position`] is in that
+    /// session's record seq space.
+    pub session_id: String,
     pub seq: i64,
     pub text: String,
     pub attachments: Vec<String>,
@@ -508,6 +515,11 @@ pub struct UserTurn {
     /// `None` while in flight or awaiting delivery, and for rows written
     /// before outcomes were recorded.
     pub outcome: Option<String>,
+    /// Where the turn sits among its session's records (`TURN_POSITION`):
+    /// its prompt record's seq once paired, one past the records that existed
+    /// when it was sent for a turn that ended without the provider logging
+    /// it, `None` while in flight. What a renderer places the turn by.
+    pub position: Option<i64>,
     /// Shown through lineage from an ancestor session (see
     /// [`SessionRecord::inherited`]).
     pub inherited: bool,

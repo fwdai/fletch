@@ -33,55 +33,41 @@ pub(super) fn query_turns(
 ) -> Result<Vec<UserTurn>> {
     let mut stmt = conn.prepare(&format!(
         "SELECT t.turn_id, t.seq, t.text, t.attachments, t.native_id, t.started_at, t.ended_at,
-                t.outcome
+                t.outcome, {TURN_POSITION}
          FROM session_user_turns t
          LEFT JOIN transcripts.session_records r ON r.session_id = t.session_id AND r.native_id = t.native_id
          WHERE t.session_id = ?1 AND (?2 IS NULL OR {TURN_POSITION} < ?2)
          ORDER BY t.seq ASC",
     ))?;
-    // (turn_id, seq, text, attachments, native_id, started_at, ended_at, outcome)
-    type UserTurnRow = (
-        String,
-        i64,
-        String,
-        String,
-        Option<String>,
-        Option<i64>,
-        Option<i64>,
-        Option<String>,
-    );
-    let rows: Vec<UserTurnRow> = stmt
+    let rows: Vec<(UserTurn, String)> = stmt
         .query_map(rusqlite::params![session_id, below], |r| {
             Ok((
-                r.get(0)?,
-                r.get(1)?,
-                r.get(2)?,
+                UserTurn {
+                    turn_id: r.get(0)?,
+                    session_id: session_id.to_string(),
+                    seq: r.get(1)?,
+                    text: r.get(2)?,
+                    attachments: Vec::new(),
+                    native_id: r.get(4)?,
+                    started_at: r.get(5)?,
+                    ended_at: r.get(6)?,
+                    outcome: r.get(7)?,
+                    position: r.get(8)?,
+                    inherited,
+                },
                 r.get(3)?,
-                r.get(4)?,
-                r.get(5)?,
-                r.get(6)?,
-                r.get(7)?,
             ))
         })?
         .collect::<std::result::Result<_, rusqlite::Error>>()?;
     rows.into_iter()
-        .map(
-            |(turn_id, seq, text, attachments_text, native_id, started_at, ended_at, outcome)| {
-                let attachments = serde_json::from_str(&attachments_text)
-                    .map_err(|e| Error::Other(format!("deserialize attachments: {e}")))?;
-                Ok(UserTurn {
-                    turn_id,
-                    seq,
-                    text,
-                    attachments,
-                    native_id,
-                    started_at,
-                    ended_at,
-                    outcome,
-                    inherited,
-                })
-            },
-        )
+        .map(|(turn, attachments_text)| {
+            let attachments = serde_json::from_str(&attachments_text)
+                .map_err(|e| Error::Other(format!("deserialize attachments: {e}")))?;
+            Ok(UserTurn {
+                attachments,
+                ..turn
+            })
+        })
         .collect()
 }
 

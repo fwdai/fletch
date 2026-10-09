@@ -3178,6 +3178,49 @@ fn an_echo_less_turn_does_not_shift_the_turns_after_it() {
 }
 
 #[test]
+fn a_turn_reads_with_the_position_a_renderer_places_it_by() {
+    let db = test_db();
+    let (ws, wm) = make_workspace_with_session(&db);
+    session_with_an_echo_less_turn(&wm, &ws);
+    wm.insert_user_turn(&ws, "t4", "in flight", &[]).unwrap();
+    wm.mark_user_turn_started("t4", 1).unwrap();
+    let turns = wm.read_history_turns(&ws).unwrap();
+    // Records: u1 = 1, a1 = 2, u3 = 3. t2 went out with watermark 2.
+    let positions: Vec<_> = turns.iter().map(|t| t.position).collect();
+    assert_eq!(positions, [Some(1), Some(3), Some(3), None]);
+    let records = wm.read_history_records(&ws).unwrap();
+    for turn in &turns {
+        assert_eq!(turn.session_id, records[0].session_id);
+    }
+}
+
+#[test]
+fn a_stitched_history_names_each_record_and_turn_by_its_own_session() {
+    let db = test_db();
+    seed_repo(&db, "/r");
+    let wm = WorkspaceManager::new(db);
+    agent(&wm, "a", "/r", None);
+    exchange(&wm, "a", "a1", "alpha");
+    let end = wm.resolve_anchor("a", Anchor::End).unwrap();
+    agent(&wm, "b", "/r", Some(end));
+    exchange(&wm, "b", "b1", "beta");
+    let (theirs, ours) = (session_of(&wm, "a"), session_of(&wm, "b"));
+    let records = wm.read_history_records("b").unwrap();
+    let turns = wm.read_history_turns("b").unwrap();
+    // Both sessions number their records from 1: only the session tells
+    // a1's prompt from b1's.
+    assert_eq!((records[0].seq, records[2].seq), (1, 1));
+    for r in &records {
+        assert_eq!(&r.session_id, if r.inherited { &theirs } else { &ours });
+    }
+    assert_eq!(turns.len(), 2);
+    for t in &turns {
+        assert_eq!(&t.session_id, if t.inherited { &theirs } else { &ours });
+        assert_eq!(t.position, Some(1));
+    }
+}
+
+#[test]
 fn identical_prompts_sent_together_pair_in_send_order() {
     let db = test_db();
     let (ws, wm) = make_workspace_with_session(&db);

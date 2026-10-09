@@ -159,6 +159,7 @@ pub(super) fn query_newest_records(
                 let body = serde_json::from_str(&body_text)
                     .map_err(|e| Error::Other(format!("deserialize record body: {e}")))?;
                 Ok(SessionRecord {
+                    session_id: session_id.to_string(),
                     seq,
                     provider,
                     source,

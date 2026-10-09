@@ -10,6 +10,7 @@ use crate::workspace::{SessionRecord, UserTurn};
 fn turn(id: &str, text: &str, native_id: Option<&str>, inherited: bool) -> UserTurn {
     UserTurn {
         turn_id: id.into(),
+        session_id: "s".into(),
         seq: 0,
         text: text.into(),
         attachments: Vec::new(),
@@ -17,12 +18,14 @@ fn turn(id: &str, text: &str, native_id: Option<&str>, inherited: bool) -> UserT
         started_at: None,
         ended_at: None,
         outcome: None,
+        position: None,
         inherited,
     }
 }
 
 fn record(seq: i64, native_id: &str, body: Value) -> SessionRecord {
     SessionRecord {
+        session_id: "s".into(),
         seq,
         provider: "claude".into(),
         source: "transcript".into(),
