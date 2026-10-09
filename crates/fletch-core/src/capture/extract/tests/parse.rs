@@ -1,4 +1,4 @@
-use crate::capture::extract::prompt::parse;
+use crate::capture::extract::prompt::{parse, render, MAX_ASSERTIONS, MAX_ENTITIES};
 use crate::context::model::*;
 
 const GOOD: &str = r#"{
@@ -56,4 +56,25 @@ fn a_bad_item_is_skipped_and_counted_not_fatal() {
 #[test]
 fn missing_arrays_mean_nothing_proposed() {
     assert_eq!(parse("{}").unwrap(), Default::default());
+}
+
+/// The prompt no longer offers `implementation`, but an answer that uses it
+/// still parses: the pipeline counts and drops it rather than the run
+/// losing it as malformed.
+#[test]
+fn an_implementation_domain_still_parses() {
+    let text = GOOD.replace(r#""architectural""#, r#""implementation""#);
+    let parsed = parse(&text).unwrap();
+    assert_eq!(parsed.assertions[0].domain, Domain::Implementation);
+    assert_eq!(parsed.malformed, 0);
+}
+
+#[test]
+fn the_prompt_offers_two_domains_and_states_the_caps() {
+    let (service, _dir) = super::service();
+    let text = render(&super::input(&service, super::USER_TEXT));
+    assert!(text.contains(r#""domain": "business|architectural","#));
+    assert!(text.contains(&format!(
+        "At most {MAX_ASSERTIONS} assertions and at most {MAX_ENTITIES} new entity."
+    )));
 }

@@ -11,8 +11,10 @@ use rusqlite::OptionalExtension;
 use crate::context::{ContextStore, Result};
 
 /// The least time between two runs for one workspace. A turn-end that comes
-/// sooner waits for a later one (or the archive) to carry its turns.
-pub const DEBOUNCE_MS: i64 = 10 * 60 * 1000;
+/// sooner waits for a later one (or the archive) to carry its turns. Long, on
+/// purpose: the archive run, which sees the completed conversation, is the
+/// primary one; turn-ends only keep a long-lived workspace covered.
+pub const DEBOUNCE_MS: i64 = 4 * 60 * 60 * 1000;
 
 /// What the runs so far for a workspace covered, and when the last one was.
 #[derive(Debug, Clone, PartialEq, Eq)]

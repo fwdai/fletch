@@ -12,33 +12,47 @@ use crate::context::model::*;
 
 /// Bump when the instructions change in a way that alters what gets
 /// proposed; recorded on every run so outputs can be compared across versions.
-pub const PROMPT_VERSION: &str = "2";
+pub const PROMPT_VERSION: &str = "3";
+
+/// The most a run may propose, as the instructions state; the pipeline
+/// drops the rest, so a model that ignores them cannot flood the review.
+pub const MAX_ENTITIES: usize = 1;
+pub const MAX_ASSERTIONS: usize = 3;
 
 const INSTRUCTIONS: &str = "\
 You maintain a project's context graph: the entities a product is made of (vision, goals, \
 capabilities, features, modules, topics) and the assertions about them (decisions, constraints, \
-facts), each with a domain (business, architectural, implementation) and a stance (adopted, \
-rejected). Below are the workspace's plan, the entities already known, the current head \
-assertions, and the latest turns of a conversation between the user and a coding agent. Read \
-the turns and propose what the graph should learn from them.
+facts), each with a domain (business, architectural) and a stance (adopted, rejected). Below \
+are the workspace's plan, the entities already known, the current head assertions, and the \
+latest turns of a conversation between the user and a coding agent. Read the turns and propose \
+what the graph should learn from them.
+
+The bar: propose a statement only if an agent working later, on a different branch, would act \
+differently for knowing it.
 
 What counts:
-- decisions taken (adopted or rejected), with the reasoning given;
-- constraints the user stated — rules the work must follow;
-- facts about how the product or the business works;
-- deviations from the plan: compare what was done or decided against <plan>.
+- constraints — rules the work must follow;
+- rejected alternatives, with the reason they were rejected;
+- architectural decisions that reach beyond the change at hand;
+- facts about how the product or the business works.
 
 What does not count:
-- implementation trivia: file edits, commands run, test output, progress narration;
+- decisions local to one change: how a function was written, which file was edited — the \
+merged pull request's Decisions section already carries those;
+- commands run, test output, progress narration;
 - anything already in <heads> unless it changed — then relate the new assertion to it.
 
 Rules:
+- Domain is `business` or `architectural`, nothing else; anything that would be \
+implementation detail does not count.
+- At most 3 assertions and at most 1 new entity. Prefer proposing nothing over proposing \
+something marginal.
 - Reuse existing slugs from <entities> for `about`. Propose a new entity only when no \
 existing one fits; give it a short kebab-case slug.
 - Give every assertion at least one `evidence` quote copied verbatim from the turns — the \
 user's own words or the agent's; never paraphrase a quote. Quotes are checked against the \
-turns: an assertion whose quotes are not found there is held for review instead of being \
-recorded, and only a quote from the user's own message marks a statement as the user's.
+turns: an assertion whose quotes are not found there is dropped, and only a quote from the \
+user's own message marks a statement as the user's.
 - When a head changed, use relation `supersedes` with the head's `target` id and say why in \
 `reasoning`. When a fact disagrees with a recorded decision, use `contradicts` with the id. \
 Use `duplicate` when the head already says the same thing; `new` otherwise.
@@ -49,7 +63,7 @@ Reply with strict JSON only, no prose and no code fence, in exactly this shape:
 {\"entities\": [{\"slug\": \"\", \"kind\": \"vision|goal|capability|feature|module|topic\", \
 \"name\": \"\", \"summary\": \"\", \"aliases\": [], \"paths\": []}], \
 \"assertions\": [{\"about\": [\"slug\"], \"kind\": \"decision|constraint|fact\", \
-\"domain\": \"business|architectural|implementation\", \"stance\": \"adopted|rejected\", \
+\"domain\": \"business|architectural\", \"stance\": \"adopted|rejected\", \
 \"statement\": \"\", \"rationale\": \"\", \
 \"relation\": {\"kind\": \"new|confirms|supersedes|contradicts|duplicate\", \"target\": \"id\", \
 \"reasoning\": \"\"}, \"evidence\": [{\"quote\": \"\"}]}]}";
