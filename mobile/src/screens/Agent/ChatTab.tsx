@@ -39,6 +39,7 @@ export function ChatTab({
   const proposals = useStore((s) => s.proposals[agent.project_id]);
   const loadProposals = useStore((s) => s.loadProposals);
   const push = useStore((s) => s.push);
+  const send = useStore((s) => s.send);
   const connected = useStore((s) => s.connection === "connected");
   const planning = !!agent.purpose;
   const busy = useStore((s) => isAgentBusy(s, agent));
@@ -91,13 +92,21 @@ export function ChatTab({
   // strip and from its card in the log alike.
   const openThread = (toolUseId: string) =>
     push("subagent", { agentId: agent.id, path: toolUseId });
+  const resend = (text: string, attachments?: string[]) =>
+    void send(agent.id, text, attachments).catch(ignore);
 
   return (
     <>
       <SubagentStrip tasks={tasks} onOpen={openThread} />
       <div className="scroll chat" ref={scroller} onScroll={onScroll}>
         <LoadOlder agentId={agent.id} scroller={scroller} />
-        <Transcript items={visible} tasks={byToolUse} busy={busy} openThread={openThread} />
+        <Transcript
+          items={visible}
+          tasks={byToolUse}
+          busy={busy}
+          openThread={openThread}
+          resend={resend}
+        />
         {empty && <LogPlaceholder agentId={agent.id} load={load} busy={busy} />}
         {pendingIds.map((toolUseId) => (
           <ApprovalCard

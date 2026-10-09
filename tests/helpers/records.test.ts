@@ -6,9 +6,10 @@ import { reduceRecords } from "@/helpers";
 // Canonical session_records hold verbatim per-provider transcript bodies.
 // reduceRecords renders them the same way on-disk replay does:
 // normalizeTranscript → reduce.
-function rec(body: Record<string, unknown>, provider = "pi"): SessionRecord {
+function rec(body: Record<string, unknown>, provider = "pi", seq = 0): SessionRecord {
   return {
-    seq: 0,
+    session_id: "s1",
+    seq,
     provider,
     source: "transcript",
     native_id: "x",
@@ -20,16 +21,24 @@ function rec(body: Record<string, unknown>, provider = "pi"): SessionRecord {
 describe("reduceRecords", () => {
   it("renders Pi on-disk records via normalizeTranscript + reduce", () => {
     const records = [
-      rec({ type: "session", id: "s" }),
-      rec({ type: "message", message: { role: "user", content: [{ type: "text", text: "hi" }] } }),
-      rec({
-        type: "message",
-        message: { role: "assistant", content: [{ type: "text", text: "yo" }] },
-      }),
+      rec({ type: "session", id: "s" }, "pi", 1),
+      rec(
+        { type: "message", message: { role: "user", content: [{ type: "text", text: "hi" }] } },
+        "pi",
+        2,
+      ),
+      rec(
+        {
+          type: "message",
+          message: { role: "assistant", content: [{ type: "text", text: "yo" }] },
+        },
+        "pi",
+        3,
+      ),
     ];
     expect(reduceRecords("pi", records)).toEqual([
-      { kind: "user_message", text: "hi" },
-      { kind: "agent_message", text: "yo" },
+      { kind: "user_message", text: "hi", recordSeq: 2, recordSession: "s1" },
+      { kind: "agent_message", text: "yo", recordSeq: 3, recordSession: "s1" },
     ]);
   });
 
@@ -165,6 +174,7 @@ describe("reduceRecords", () => {
           },
         },
         "cursor",
+        10,
       ),
       rec(
         {
@@ -180,6 +190,7 @@ describe("reduceRecords", () => {
           },
         },
         "cursor",
+        11,
       ),
       rec(
         {
@@ -188,8 +199,9 @@ describe("reduceRecords", () => {
           message: { content: [{ type: "text", text: "a.rs is fine" }] },
         },
         "cursor",
+        12,
       ),
-      rec({ type: "turn_ended", status: "success", parent_tool_use_id: parent }, "cursor"),
+      rec({ type: "turn_ended", status: "success", parent_tool_use_id: parent }, "cursor", 13),
     ];
     const items = reduceRecords("cursor", records);
     expect(items).toEqual([
@@ -198,9 +210,17 @@ describe("reduceRecords", () => {
         id: parent,
         name: "Task",
         input: { description: "Look", subagent_type: "explore", model: "inherit", prompt },
+        recordSeq: 10,
+        recordSession: "s1",
         children: [
-          { kind: "user_message", text: prompt },
-          { kind: "agent_message", text: "a.rs is fine", streaming: false },
+          { kind: "user_message", text: prompt, recordSeq: 11, recordSession: "s1" },
+          {
+            kind: "agent_message",
+            text: "a.rs is fine",
+            streaming: false,
+            recordSeq: 12,
+            recordSession: "s1",
+          },
         ],
       },
     ]);
@@ -224,10 +244,10 @@ describe("reduceRecords", () => {
       message: { content: [{ type: "text", text }] },
     });
     const records = [
-      rec(task, "cursor"),
-      rec(task, "cursor"),
-      rec(reply(base, "first says fine"), "cursor"),
-      rec(reply(`${base}-2`, "second says fine"), "cursor"),
+      rec(task, "cursor", 10),
+      rec(task, "cursor", 11),
+      rec(reply(base, "first says fine"), "cursor", 12),
+      rec(reply(`${base}-2`, "second says fine"), "cursor", 13),
     ];
     expect(reduceRecords("cursor", records)).toEqual([
       {
@@ -235,14 +255,34 @@ describe("reduceRecords", () => {
         id: base,
         name: "Task",
         input: { prompt },
-        children: [{ kind: "agent_message", text: "first says fine", streaming: false }],
+        recordSeq: 10,
+        recordSession: "s1",
+        children: [
+          {
+            kind: "agent_message",
+            text: "first says fine",
+            streaming: false,
+            recordSeq: 12,
+            recordSession: "s1",
+          },
+        ],
       },
       {
         kind: "tool_call",
         id: `${base}-2`,
         name: "Task",
         input: { prompt },
-        children: [{ kind: "agent_message", text: "second says fine", streaming: false }],
+        recordSeq: 11,
+        recordSession: "s1",
+        children: [
+          {
+            kind: "agent_message",
+            text: "second says fine",
+            streaming: false,
+            recordSeq: 13,
+            recordSession: "s1",
+          },
+        ],
       },
     ]);
   });

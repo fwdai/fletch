@@ -102,6 +102,67 @@ pub struct SubagentLayout {
     pub id_field: Option<&'static str>,
 }
 
+/// The top-level field every ingested sub-agent record is tagged with: the
+/// tool_use id that spawned it, as the live stream carries it. No main
+/// transcript line has it, so it is also what tells a stored sub-agent record
+/// from the session's own conversation.
+pub(crate) const SUBAGENT_TAG: &str = "parent_tool_use_id";
+
+/// Given a session's stored transcript records in seq order, the prompt each
+/// one is the session's own top-level echo of: the text as the user typed it,
+/// or `None` for everything else (tool results, assistant and system records,
+/// provider injections, sub-agent records). What lets a sent turn be paired
+/// with the record its prompt produced by position rather than by searching
+/// record bodies for its text. Takes the whole sequence because a provider
+/// may log one prompt across several records (OpenCode: a message blob, then
+/// its text parts).
+pub type PromptTexts = fn(records: &[Value]) -> Vec<Option<String>>;
+
+/// Whether `record` belongs to a sub-agent rather than the session itself.
+pub(crate) fn is_subagent(record: &Value) -> bool {
+    record.get(SUBAGENT_TAG).is_some()
+}
+
+/// Fletch's instruction block, which the prepend-style agents (cursor,
+/// opencode, antigravity) get folded into their first prompt and echo back
+/// (`instructions::prepend_to_prompt`). `quorum-system` is the pre-rebrand tag.
+const INSTRUCTION_TAGS: [(&str, &str); 2] = [
+    ("<fletch-system>", "</fletch-system>"),
+    ("<quorum-system>", "</quorum-system>"),
+];
+
+/// The prompt as typed out of the text a provider logged for it: Fletch's
+/// instruction block removed and the edges trimmed. `None` when nothing is
+/// left, since an empty echo can't be told apart from any other.
+pub(crate) fn typed_prompt(logged: &str) -> Option<String> {
+    let mut text = logged.to_string();
+    for (open, close) in INSTRUCTION_TAGS {
+        while let Some(start) = text.find(open) {
+            let Some(len) = text[start..].find(close) else {
+                break;
+            };
+            text.replace_range(start..start + len + close.len(), "");
+        }
+    }
+    let text = text.trim();
+    (!text.is_empty()).then(|| text.to_string())
+}
+
+/// The text of a content-block array (`[{type: "text", text}]`), the blocks
+/// joined by `sep`, or the string itself when the content is one.
+pub(crate) fn content_text(content: &Value, sep: &str) -> Option<String> {
+    if let Some(text) = content.as_str() {
+        return Some(text.to_string());
+    }
+    let texts: Vec<&str> = content
+        .as_array()?
+        .iter()
+        .filter(|block| block.get("type").and_then(Value::as_str) == Some("text"))
+        .filter_map(|block| block.get("text").and_then(Value::as_str))
+        .collect();
+    (!texts.is_empty()).then(|| texts.join(sep))
+}
+
 /// Writes `bodies` as session `session_id`'s own transcript, where the
 /// provider's CLI looks for it when it runs in `cwd` (`container`: in a
 /// container sandbox; `account_dir`: under that managed account's config dir,
@@ -147,6 +208,10 @@ pub struct TranscriptReader {
     /// (`Supervisor::materialize`). `None` where the CLI keeps private storage
     /// (cursor, antigravity) or a copy would re-key every record (opencode).
     pub write: Option<TranscriptWrite>,
+    /// Which stored records echo the session's own prompts, so a sent turn
+    /// can be paired with the record it produced (`WorkspaceManager::
+    /// associate_pending_user_turns`).
+    pub prompt_texts: PromptTexts,
 }
 
 // ── Transcript readers ──────────────────────────────────────────────────────
@@ -343,5 +408,46 @@ pub(crate) fn write_new_jsonl(path: &Path, lines: &[Value]) -> Result<()> {
 pub(crate) fn replace_field(body: &mut Value, key: &str, value: &str) {
     if let Some(field) = body.get_mut(key) {
         *field = Value::String(value.to_string());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn a_typed_prompt_drops_the_instruction_block_and_the_edges() {
+        let first = crate::instructions::prepend_to_prompt("fix it", None, Some("be brief"));
+        assert!(first.contains("<fletch-system>"), "{first}");
+        assert_eq!(typed_prompt(&first).as_deref(), Some("fix it"));
+        assert_eq!(
+            typed_prompt("<quorum-system>old</quorum-system>\n\nhi\n").as_deref(),
+            Some("hi")
+        );
+        assert_eq!(
+            typed_prompt("  line one\nline two  ").as_deref(),
+            Some("line one\nline two")
+        );
+        assert_eq!(typed_prompt("<fletch-system>only</fletch-system>"), None);
+        assert_eq!(typed_prompt(" \n "), None);
+        // An unterminated block is the user's text, not ours.
+        assert_eq!(
+            typed_prompt("<fletch-system> typed").as_deref(),
+            Some("<fletch-system> typed")
+        );
+    }
+
+    #[test]
+    fn content_text_reads_a_string_or_the_text_blocks() {
+        assert_eq!(content_text(&json!("hi"), "\n").as_deref(), Some("hi"));
+        let blocks = json!([
+            {"type": "text", "text": "a"},
+            {"type": "image", "source": {}},
+            {"type": "text", "text": "b"}
+        ]);
+        assert_eq!(content_text(&blocks, "\n").as_deref(), Some("a\nb"));
+        assert_eq!(content_text(&json!([{"type": "tool_result"}]), "\n"), None);
+        assert_eq!(content_text(&json!(7), "\n"), None);
     }
 }

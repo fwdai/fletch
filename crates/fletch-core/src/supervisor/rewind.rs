@@ -314,6 +314,7 @@ mod tests {
     use crate::host::sink::RecordingSink;
     use crate::supervisor::tests::{committed_repo, record_in_checkouts, test_supervisor};
     use crate::supervisor::ArchiveTrigger;
+    use crate::workspace::tests::test_prompts;
 
     const AGENT: &str = "denali";
 
@@ -356,7 +357,9 @@ mod tests {
                 (&reply_id, &reply(turn)),
             ],
         );
-        sup.workspace.associate_pending_user_turns(ws).unwrap();
+        sup.workspace
+            .associate_pending_user_turns(ws, test_prompts)
+            .unwrap();
     }
 
     fn prompt(turn: &str, parent: Option<&str>) -> Value {

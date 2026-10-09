@@ -17,12 +17,15 @@ function signals(over: Partial<StandupSignals> = {}): StandupSignals {
 function turn(over: Partial<UserTurn> = {}): UserTurn {
   return {
     turn_id: "t1",
+    session_id: "s1",
     seq: 1,
     text: "hi",
     attachments: [],
     native_id: null,
     started_at: null,
     ended_at: null,
+    outcome: null,
+    position: null,
     ...over,
   };
 }

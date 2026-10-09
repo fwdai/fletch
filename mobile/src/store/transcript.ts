@@ -7,6 +7,8 @@
 // verbatim.
 
 import type { SessionRecord, UserTurn } from "@desktop/api/types/session";
+import { mergeUserTurns, turnsOnPage } from "@desktop/helpers/mergeTurns";
+import { hasSentTurn } from "@desktop/helpers/mirrorTurn";
 import { type ChatItem, getAdapter, type RawEvent } from "../adapters";
 
 /** The part of an agent's history the phone holds: every page loaded so far,
@@ -29,13 +31,18 @@ export type LogLoad =
   | { status: "error"; error: string };
 
 /** Render canonical session records exactly as on-disk replay does:
- *  `normalizeTranscript` → `reduce`. Adapter throws degrade to a partial log
- *  rather than an empty screen. */
+ *  `normalizeTranscript` → `reduce`, each item carrying the `recordSeq` and
+ *  `recordSession` of the record it came from. Adapter throws degrade to a
+ *  partial log rather than an empty screen. */
 export function reduceRecords(provider: string | undefined, records: SessionRecord[]): ChatItem[] {
   const adapter = getAdapter(provider);
   let raw: RawEvent[];
   try {
-    raw = adapter.normalizeTranscript(records.map((r) => r.body));
+    raw = adapter.normalizeTranscript(
+      records.map((r) => r.body),
+      records.map((r) => r.seq),
+      records.map((r) => r.session_id),
+    );
   } catch {
     return [];
   }
@@ -50,31 +57,30 @@ export function reduceRecords(provider: string | undefined, records: SessionReco
   return items;
 }
 
-/** Overlay a turn's Fletch-origin metadata — run timing and attachments — from
- *  `session_user_turns` onto the rendered user messages, end-aligned so turns
- *  predating the rows keep none. A turn with attachments also restores the text
- *  the user actually typed: the transcript's copy is what the runner sent,
- *  padded with `Attached file: <path>` lines, so the rebuilt bubble would
- *  otherwise differ from the one the send drew. Prefix-guarded, as on the
- *  desktop, so a mis-aligned row cannot rewrite an unrelated message. */
-export function applyUserTurns(items: ChatItem[], turns: UserTurn[]): ChatItem[] {
-  if (turns.length === 0) return items;
-  const matched = turns.filter((t) => t.native_id);
-  const result = items.map((it) => ({ ...it }));
-  const userIdxs = result.flatMap((it, i) => (it.kind === "user_message" ? [i] : []));
-  const n = Math.min(matched.length, userIdxs.length);
-  for (let k = 1; k <= n; k += 1) {
-    const turn = matched[matched.length - k];
-    const item = result[userIdxs[userIdxs.length - k]];
-    if (item.kind !== "user_message") continue;
-    if (turn.started_at != null) item.startedAt = turn.started_at;
-    if (turn.ended_at != null) item.endedAt = turn.ended_at;
-    if (turn.attachments.length > 0) {
-      item.attachments = turn.attachments;
-      if (item.text.startsWith(turn.text)) item.text = turn.text;
-    }
-  }
-  return result;
+/** The log a page of history draws: its records, with the agent's turns merged
+ *  in by position (`mergeUserTurns`) — those the page can place, so a turn on
+ *  an older page doesn't land at the top of this one. */
+export function renderHistory(
+  provider: string | undefined,
+  records: SessionRecord[],
+  turns: UserTurn[],
+): ChatItem[] {
+  return mergeUserTurns(reduceRecords(provider, records), turnsOnPage(turns, records));
+}
+
+/** What a log holds past the history it was rendered from: the replayed
+ *  running turn, live frames, a send not yet in the records. Every item
+ *  rendered from a record carries its seq and nothing after the history does,
+ *  so it is whatever follows the last stamped item — less the turn bubbles a
+ *  re-render of the history (`fresh`) draws itself. */
+export function pastHistory(log: ChatItem[], fresh: ChatItem[]): ChatItem[] {
+  let end = log.length;
+  while (end > 0 && log[end - 1].recordSeq === undefined) end -= 1;
+  return log.slice(end).filter((it) => {
+    const turnId =
+      it.kind === "user_message" || it.kind === "queued_message" ? it.turnId : undefined;
+    return turnId === undefined || !hasSentTurn(fresh, turnId);
+  });
 }
 
 /** Apply one live event to an agent's log. Returns the next log plus whether

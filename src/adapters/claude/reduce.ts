@@ -6,6 +6,7 @@
 // slash_command / hook_output notices.
 
 import { asBlockList, asRecord, isRecord } from "@/adapters/shared/json";
+import { withRecordSeq } from "@/adapters/shared/record-seq";
 import {
   appendToolInputDelta,
   dedupAgainstLast,
@@ -22,7 +23,7 @@ import { sanitizeUserText } from "./sanitize";
 // id (top-level `parent_tool_use_id`, set on user/assistant/result/stream_event
 // envelopes alike); they route under that tool_call's nested log instead of
 // the main timeline. Main-agent events have no parent and reduce normally.
-export const reduce = withSubagentRouting(reduceTop);
+export const reduce = withRecordSeq(withSubagentRouting(reduceTop));
 
 function reduceTop(prev: ChatItem[], ev: RawEvent): ChatItem[] {
   const type = typeof ev.type === "string" ? ev.type : undefined;

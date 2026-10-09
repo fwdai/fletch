@@ -16,10 +16,10 @@ import {
 import { discoverCommands } from "@/data/slashCommands";
 import {
   agentRecord,
-  applyUserTurns,
   dropAgentEntries,
   expandSlashCommand,
   isAgentBusy,
+  mergeUserTurns,
   passthroughSlashName,
   patchAgentRecord,
   providerFor,
@@ -265,14 +265,14 @@ async function readHistory(id: string): Promise<{ records: SessionRecord[]; turn
 
 /** The log a handoff transcript (adapters/handoff) is cut from: agent `id`'s
  *  history, reduced with `provider`'s adapter and passed through its display
- *  policy, with only its *matched* turns overlaid. Those carry the turn ids a
- *  transcript is cut at, while pending turns — which have no place in the
- *  history, so a new session never shows them — stay out of it. Read from the
- *  records rather than managedLogs, so it is right even when the chat has not
- *  been loaded into the UI yet. */
+ *  policy, with only its *matched* turns merged in. Those carry the turn ids a
+ *  transcript is cut at, while unmatched turns — pending, or never read by the
+ *  agent, so nothing the new session should be told it said — stay out of
+ *  it. Read from the records rather than managedLogs, so it is right even when
+ *  the chat has not been loaded into the UI yet. */
 export async function handoffLog(provider: string | undefined, id: string): Promise<ChatItem[]> {
   const { records, turns } = await readHistory(id);
-  const log = applyUserTurns(
+  const log = mergeUserTurns(
     reduceRecords(provider, records),
     turns.filter((t) => t.native_id),
   );
@@ -871,7 +871,7 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
       // lazily ingests on-disk history when the DB is empty; overlaying
       // outgoing/pending user turns keeps a failed send visible on reload.
       const { records, turns } = await readHistory(id);
-      const items = applyUserTurns(reduceRecords(provider, records), turns);
+      const items = mergeUserTurns(reduceRecords(provider, records), turns);
       const usage = usageFromRecords(provider, records);
       if (hasUsage(usage)) {
         // Via agentRecord, not the workspace snapshot: an off-sidebar chat's

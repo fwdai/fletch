@@ -20,6 +20,7 @@
 
 import { reduce as claudeReduce } from "@/adapters/claude/reduce";
 import { asRecord } from "@/adapters/shared/json";
+import { withRecordSeq } from "@/adapters/shared/record-seq";
 import { aliasToolInput, upsertToolCall } from "@/adapters/shared/reducer-helpers";
 import type { ChatItem, RawEvent } from "@/adapters/types";
 import { type CursorTaskCall, cursorTaskCall, cursorTaskOutcome } from "./task";
@@ -134,7 +135,9 @@ function handleThinking(prev: ChatItem[], ev: RawEvent): ChatItem[] {
   return [...prev, { kind: "notice", subtype: "reasoning", text }];
 }
 
-export function reduce(prev: ChatItem[], ev: RawEvent): ChatItem[] {
+export const reduce = withRecordSeq(reduceEvent);
+
+function reduceEvent(prev: ChatItem[], ev: RawEvent): ChatItem[] {
   // Cursor-specific events; everything else is Claude-shaped.
   if (ev.type === "tool_call") return handleToolCall(prev, ev);
   if (ev.type === "thinking") return handleThinking(prev, ev);

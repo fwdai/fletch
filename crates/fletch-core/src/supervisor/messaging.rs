@@ -315,7 +315,10 @@ impl Supervisor {
             });
         let sent = send();
         if sent.is_err() && inserted {
-            if let Err(e) = self.workspace.delete_pending_user_turn(&msg.turn_id) {
+            if let Err(e) = self
+                .workspace
+                .delete_pending_user_turns(std::slice::from_ref(&msg.turn_id))
+            {
                 tracing::warn!(error = %e, agent_id, "withdraw undelivered user turn failed");
             }
         }
@@ -598,9 +601,16 @@ pub(super) async fn flush_queued(
     // (`Supervisor::open_route`). Refused when one already holds the agent; the
     // follow-ups stay queued for the archive to dispose of as its trigger allows.
     let _route = sup.open_route(agent_id)?;
-    let count = sup.message_queue.lock().len(agent_id);
-    let Some(coalesced) = sup.message_queue.lock().drain_coalesced(agent_id) else {
-        return Ok(false);
+    let (coalesced, count) = {
+        let mut queue = sup.message_queue.lock();
+        let members = queue.turn_ids(agent_id);
+        let Some(coalesced) = queue.drain_coalesced(agent_id) else {
+            return Ok(false);
+        };
+        if members.len() > 1 {
+            supersede_member_turns(sup, agent_id, &coalesced, &members);
+        }
+        (coalesced, members.len())
     };
     if count > 1 {
         tracing::debug!(
@@ -642,6 +652,36 @@ pub(super) async fn flush_queued(
         }
     }
     Ok(false)
+}
+
+/// Make the coalesced message the one turn its members became. Each member
+/// whose earlier delivery failed left a row of its own, but its text now goes
+/// out inside the coalesced prompt; left in place, that row would read as an
+/// earlier turn and claim the coalesced record its text prefixes. The last
+/// member's own row, whose id the coalesced message takes, holds only its own
+/// text. So every member's pending row goes and the coalesced row is written
+/// fresh, at the drain rather than after delivery: a delivery that then fails
+/// re-queues the coalesced message under its own id, and the next flush no
+/// longer knows the members to clean up.
+///
+/// Called under the queue lock (queue → db, see `persist_and_enqueue`).
+fn supersede_member_turns(
+    sup: &Supervisor,
+    agent_id: &str,
+    coalesced: &PendingMsg,
+    members: &[String],
+) {
+    if let Err(e) = sup.workspace.delete_pending_user_turns(members) {
+        tracing::warn!(error = %e, agent_id, "withdraw coalesced follow-up turns failed");
+    }
+    if let Err(e) = sup.workspace.insert_user_turn(
+        agent_id,
+        &coalesced.turn_id,
+        &coalesced.text,
+        &coalesced.attachments,
+    ) {
+        tracing::warn!(error = %e, agent_id, "persist coalesced user turn failed");
+    }
 }
 
 /// At a turn-end Idle transition, flush any queued follow-up messages as the
@@ -909,6 +949,116 @@ mod tests {
         assert_eq!(turns[0].started_at, Some(4242));
     }
 
+    // ── turn outcomes ─────────────────────────────────────────────────────
+
+    /// `yosemite`'s first turn, persisted and running, as a delivery leaves it.
+    fn running_turn(ctx: &Arc<EngineCtx>) -> Arc<Supervisor> {
+        let sup = Arc::new(test_supervisor());
+        let mut record = record_with_status("yosemite", AgentStatus::Idle);
+        sup.workspace.add_agent(&mut record).unwrap();
+        sup.statuses
+            .lock()
+            .insert("yosemite".to_string(), AgentStatus::Idle);
+        sup.workspace
+            .insert_user_turn("yosemite", TURN, "fix the build", &[])
+            .unwrap();
+        mark_user_turn_started(&sup, ctx, "yosemite", Some(TURN));
+        sup
+    }
+
+    fn outcomes(sup: &Supervisor) -> Vec<Option<String>> {
+        sup.workspace
+            .read_history_turns("yosemite")
+            .unwrap()
+            .into_iter()
+            .map(|t| t.outcome)
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_turn_that_runs_to_its_end_is_completed() {
+        let (ctx, _sink, _dir) = crate::host::ctx::test_ctx();
+        let sup = running_turn(&ctx);
+
+        transition_active(&sup, &ctx, "yosemite", AgentStatus::Idle);
+
+        assert_eq!(outcomes(&sup), [Some("completed".to_string())]);
+    }
+
+    /// The stop flag is consumed by the turn-end drain, which runs after the
+    /// turn is closed — so the close still sees it.
+    #[tokio::test]
+    async fn a_turn_the_user_stops_is_interrupted() {
+        let (ctx, _sink, _dir) = crate::host::ctx::test_ctx();
+        let sup = running_turn(&ctx);
+
+        sup.clone()
+            .stop_agent(ctx.clone(), "yosemite")
+            .await
+            .unwrap();
+        transition_active(&sup, &ctx, "yosemite", AgentStatus::Idle);
+
+        assert_eq!(outcomes(&sup), [Some("interrupted".to_string())]);
+        assert!(!sup.interrupted.lock().contains("yosemite"), "drained");
+    }
+
+    /// A stop that lands between turns is moot once the next turn starts.
+    #[tokio::test]
+    async fn a_stop_before_a_turn_starts_does_not_mark_it() {
+        let (ctx, _sink, _dir) = crate::host::ctx::test_ctx();
+        let sup = Arc::new(test_supervisor());
+        let mut record = record_with_status("yosemite", AgentStatus::Idle);
+        sup.workspace.add_agent(&mut record).unwrap();
+        sup.clone()
+            .stop_agent(ctx.clone(), "yosemite")
+            .await
+            .unwrap();
+        sup.workspace
+            .insert_user_turn("yosemite", TURN, "fix the build", &[])
+            .unwrap();
+        mark_user_turn_started(&sup, &ctx, "yosemite", Some(TURN));
+
+        transition_active(&sup, &ctx, "yosemite", AgentStatus::Idle);
+
+        assert_eq!(outcomes(&sup), [Some("completed".to_string())]);
+    }
+
+    #[tokio::test]
+    async fn a_turn_that_ends_in_error_is_failed() {
+        let (ctx, _sink, _dir) = crate::host::ctx::test_ctx();
+        let sup = running_turn(&ctx);
+
+        sup.set_status(
+            &ctx,
+            "yosemite",
+            AgentStatus::Error,
+            Some("Agent process exited: boom".into()),
+        );
+
+        assert_eq!(outcomes(&sup), [Some("failed".to_string())]);
+    }
+
+    /// A send whose hand-off fails is held for a retry, not given up on: its
+    /// row stays without an outcome, and a later turn end doesn't close it.
+    #[tokio::test]
+    async fn a_requeued_delivery_has_no_outcome() {
+        let td = tempfile::tempdir().unwrap();
+        let (sup, _checkout) = idle_agent_in(td.path()).await;
+        let (ctx, _sink, _dir) = crate::host::ctx::test_ctx();
+
+        let held = sup
+            .clone()
+            .send_user_message(&ctx, "yosemite", TURN, "hello", &[])
+            .await
+            .unwrap();
+        assert!(held);
+        assert_eq!(sup.message_queue.lock().turn_ids("yosemite"), [TURN]);
+
+        mark_user_turn_started(&sup, &ctx, "yosemite", None);
+        transition_active(&sup, &ctx, "yosemite", AgentStatus::Idle);
+        assert_eq!(outcomes(&sup), [None]);
+    }
+
     /// Capture is best-effort: a checkout that can't be snapshotted is skipped
     /// and the turn still goes out (here, as far as the missing process).
     #[tokio::test]
@@ -1092,7 +1242,7 @@ mod tests {
             .append_session_records("yosemite", "claude", "transcript", None, &records)
             .unwrap();
         sup.workspace
-            .associate_pending_user_turns("yosemite")
+            .associate_pending_user_turns("yosemite", crate::workspace::tests::test_prompts)
             .unwrap();
     }
 
@@ -1199,5 +1349,77 @@ mod tests {
             matched(&sup),
             [(SECOND.to_string(), Some("u1".to_string()))]
         );
+    }
+
+    /// `(turn_id, text)` of `yosemite`'s turn rows, in send order.
+    fn rows(sup: &Supervisor) -> Vec<(String, String)> {
+        sup.workspace
+            .read_history_turns("yosemite")
+            .unwrap()
+            .into_iter()
+            .map(|t| (t.turn_id, t.text))
+            .collect()
+    }
+
+    /// Hand `msg` to an agent with no process, as a send does: the delivery
+    /// fails after writing the row, and the message is re-queued.
+    async fn fail_and_requeue(sup: &Arc<Supervisor>, ctx: &Arc<EngineCtx>, msg: PendingMsg) {
+        assert!(deliver_as_turn(sup, ctx, "yosemite", &msg).await.is_err());
+        sup.persist_and_enqueue("yosemite", msg);
+    }
+
+    /// Follow-ups folded into one prompt are one turn: the rows their failed
+    /// deliveries left behind don't outlive the coalesced delivery.
+    #[tokio::test]
+    async fn a_coalesced_flush_leaves_only_the_coalesced_turn() {
+        let td = tempfile::tempdir().unwrap();
+        let (sup, _) = idle_agent_in(td.path()).await;
+        let (ctx, _sink, _dir) = crate::host::ctx::test_ctx();
+        fail_and_requeue(&sup, &ctx, msg(FIRST, "first")).await;
+        fail_and_requeue(&sup, &ctx, msg(SECOND, "second")).await;
+        assert_eq!(rows(&sup).len(), 2);
+
+        live_process(&sup, td.path());
+        assert!(!flush_queued(&sup, &ctx, "yosemite").await.unwrap(), "sent");
+
+        assert_eq!(
+            rows(&sup),
+            [(SECOND.to_string(), "first\n\nsecond".to_string())]
+        );
+    }
+
+    /// A coalesced flush that fails re-queues the merged message under its own
+    /// id, so the next flush can't see the members — their rows are gone
+    /// already, and the coalesced row carries their text.
+    #[tokio::test]
+    async fn a_failed_coalesced_flush_leaves_no_member_rows_behind() {
+        let td = tempfile::tempdir().unwrap();
+        let (sup, _) = idle_agent_in(td.path()).await;
+        let (ctx, _sink, _dir) = crate::host::ctx::test_ctx();
+        fail_and_requeue(&sup, &ctx, msg(FIRST, "first")).await;
+        sup.persist_and_enqueue("yosemite", msg(SECOND, "second"));
+
+        assert!(flush_queued(&sup, &ctx, "yosemite").await.unwrap(), "held");
+        assert_eq!(sup.message_queue.lock().turn_ids("yosemite"), [SECOND]);
+        live_process(&sup, td.path());
+        assert!(!flush_queued(&sup, &ctx, "yosemite").await.unwrap(), "sent");
+
+        assert_eq!(
+            rows(&sup),
+            [(SECOND.to_string(), "first\n\nsecond".to_string())]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_single_requeued_follow_up_keeps_its_turn() {
+        let td = tempfile::tempdir().unwrap();
+        let (sup, _) = idle_agent_in(td.path()).await;
+        let (ctx, _sink, _dir) = crate::host::ctx::test_ctx();
+        fail_and_requeue(&sup, &ctx, msg(FIRST, "first")).await;
+
+        live_process(&sup, td.path());
+        assert!(!flush_queued(&sup, &ctx, "yosemite").await.unwrap(), "sent");
+
+        assert_eq!(rows(&sup), [(FIRST.to_string(), "first".to_string())]);
     }
 }

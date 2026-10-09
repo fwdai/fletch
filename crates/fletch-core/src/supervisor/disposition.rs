@@ -390,8 +390,18 @@ impl Supervisor {
         // can't slip a new row in between the two clears only to have it deleted
         // with no in-memory entry left to deliver it. Lock order stays queue →
         // db (see `messaging::Supervisor::persist_and_enqueue`).
+        //
+        // A dropped follow-up is given up on for good, so a turn row its
+        // earlier failed delivery left behind is marked failed rather than
+        // left waiting with no outcome.
         {
             let mut queue = self.message_queue.lock();
+            if let Err(e) = self
+                .workspace
+                .mark_user_turns_abandoned(&queue.turn_ids(agent_id))
+            {
+                tracing::warn!(error = %e, agent_id, "mark dropped follow-ups failed");
+            }
             queue.clear(agent_id);
             if let Err(e) = self.workspace.clear_pending_messages(agent_id) {
                 tracing::warn!(error = %e, agent_id, "clear persisted pending follow-ups failed");
@@ -871,6 +881,32 @@ mod tests {
         assert!(sup
             .reserve_disposal("denali", &record, ArchiveTrigger::User)
             .is_ok());
+    }
+
+    /// Follow-ups dropped with the runtime are never retried, so the turn row a
+    /// failed delivery left for one is marked failed.
+    #[test]
+    fn dropped_follow_ups_are_marked_failed() {
+        let sup = test_supervisor();
+        let mut record = record_with_status("denali", AgentStatus::Idle);
+        sup.workspace.add_agent(&mut record).unwrap();
+        sup.workspace
+            .insert_user_turn("denali", "t1", "and then this", &[])
+            .unwrap();
+        sup.message_queue.lock().enqueue(
+            "denali",
+            PendingMsg {
+                turn_id: "t1".into(),
+                text: "and then this".into(),
+                attachments: vec![],
+            },
+        );
+
+        sup.detach_runtime("denali");
+
+        let turns = sup.workspace.read_history_turns("denali").unwrap();
+        assert_eq!(turns[0].outcome.as_deref(), Some("failed"));
+        assert!(sup.message_queue.lock().is_empty("denali"));
     }
 
     fn git(repo: &Path, args: &[&str]) {

@@ -42,6 +42,7 @@ function recordsOf(provider: "claude" | "codex"): SessionRecord[] {
     .split("\n")
     .filter((line) => line.trim().length > 0)
     .map((line, seq) => ({
+      session_id: "corpus",
       seq,
       provider,
       source: "corpus",

@@ -63,6 +63,19 @@
 .msg-user.queued {
   opacity: 0.68;
 }
+/* A message the agent never read: footed with why, and a Resend. */
+.msg-user .undelivered {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--fg-2);
+}
+.msg-user .undelivered button {
+  color: var(--accent);
+  font-weight: 600;
+}
 .msg-user .tm {
   font-size: 10.5px;
   color: var(--fg-3);

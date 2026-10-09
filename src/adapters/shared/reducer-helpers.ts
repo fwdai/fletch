@@ -1,6 +1,7 @@
 import type { ChatItem } from "@/adapters/types";
 import { asRecord } from "./json";
 import { parsePartialJson } from "./partial-json";
+import { recordRefOf } from "./record-seq";
 
 // Walk from the end since the items we care about (latest streaming
 // agent_message, latest tool_call) are always near the tail.
@@ -60,7 +61,9 @@ export function finalizeStreamingItems(items: ChatItem[]): ChatItem[] {
   return mutated ? next : items;
 }
 
-/** Upsert a tool_call by id. Streaming flag is preserved from the caller. */
+/** Upsert a tool_call by id. Takes the streaming flag from the caller but keeps
+ *  the existing call's record stamp: a call belongs to the record that opened
+ *  it (see `ChatItem.recordSeq`). */
 export function upsertToolCall(
   items: ChatItem[],
   tool: Extract<ChatItem, { kind: "tool_call" }>,
@@ -68,7 +71,7 @@ export function upsertToolCall(
   const idx = items.findIndex((item) => item.kind === "tool_call" && item.id === tool.id);
   if (idx === -1) return [...items, tool];
   const next = items.slice();
-  next[idx] = { ...tool };
+  next[idx] = { ...tool, ...recordRefOf(items[idx]) };
   return next;
 }
 

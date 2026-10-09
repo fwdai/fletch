@@ -3,9 +3,9 @@ import { cursorAdapter } from "@/adapters/cursor/index";
 import { cursorTaskId, cursorTaskIdNth } from "@/adapters/cursor/normalize";
 import type { ChatItem, RawEvent } from "@/adapters/types";
 
-function render(lines: unknown[]): ChatItem[] {
+function render(lines: unknown[], seqs?: number[]): ChatItem[] {
   return cursorAdapter
-    .normalizeTranscript(lines)
+    .normalizeTranscript(lines, seqs)
     .reduce<ChatItem[]>((acc, ev) => cursorAdapter.reduce(acc, ev as RawEvent), []);
 }
 
@@ -28,7 +28,55 @@ const onDisk: unknown[] = [
   },
 ];
 
+/** Session-record seqs for `lines`, offset so they can't pass for indices. */
+const seqsFor = (lines: unknown[]) => lines.map((_, i) => 100 + i);
+
 describe("cursorAdapter.normalizeTranscript", () => {
+  it("stamps every item with the seq of the record it came from", () => {
+    // The assistant record fans out into text + two tool calls, all via the
+    // Claude reducer cursor delegates to.
+    expect(render(onDisk, seqsFor(onDisk)).map((i) => [i.kind, i.recordSeq])).toEqual([
+      ["user_message", 100],
+      ["agent_message", 101],
+      ["tool_call", 101],
+      ["tool_call", 101],
+    ]);
+  });
+
+  it("stamps a sub-agent's nested items with their own records' seqs", () => {
+    const prompt = "Look around.";
+    const taskId = cursorTaskId(prompt);
+    const lines = [
+      {
+        role: "assistant",
+        message: { content: [{ type: "tool_use", name: "Task", input: { prompt } }] },
+      },
+      {
+        role: "assistant",
+        parent_tool_use_id: taskId,
+        message: {
+          content: [
+            { type: "text", text: "Looking." },
+            { type: "tool_use", name: "Grep", input: { pattern: "x" } },
+          ],
+        },
+      },
+      {
+        role: "assistant",
+        parent_tool_use_id: taskId,
+        message: { content: [{ type: "text", text: "Nothing there." }] },
+      },
+    ];
+    const [task] = render(lines, seqsFor(lines));
+    expect(task).toMatchObject({ kind: "tool_call", id: taskId, recordSeq: 100 });
+    const children = task.kind === "tool_call" ? (task.children ?? []) : [];
+    expect(children.map((i) => [i.kind, i.recordSeq])).toEqual([
+      ["agent_message", 101],
+      ["tool_call", 101],
+      ["agent_message", 102],
+    ]);
+  });
+
   it("maps role→type and renders text + tool calls", () => {
     const items = render(onDisk);
     expect(items[0]).toEqual({ kind: "user_message", text: "do it" });
@@ -149,6 +197,26 @@ describe("cursorAdapter.normalizeTranscript", () => {
     // …and the occurrence suffix, pinned against `suffixed` in providers/cursor.rs.
     expect(cursorTaskIdNth("cursor-task-811c9dc5", 1)).toBe("cursor-task-811c9dc5");
     expect(cursorTaskIdNth("cursor-task-811c9dc5", 2)).toBe("cursor-task-811c9dc5-2");
+  });
+
+  // What `cursor_prompt` in providers/cursor.rs counts as a prompt — and so
+  // what turn rows pair with — is the `<user_query>` body; the context cursor
+  // injects as user records of its own is no prompt and draws no bubble.
+  it("draws a prompt's user_query and drops the context cursor injects", () => {
+    const said = (text: string) => ({
+      role: "user",
+      message: { content: [{ type: "text", text }] },
+    });
+    const lines = [
+      said("<available_subagent_types>\nexplore\n</available_subagent_types>"),
+      said("<dynamic_tools>[]</dynamic_tools>"),
+      said("<timestamp>Fri</timestamp>\n<user_query>\nfix the build\n</user_query>"),
+      { role: "assistant", message: { content: [{ type: "text", text: "done" }] } },
+    ];
+    expect(render(lines, seqsFor(lines))).toEqual([
+      { kind: "user_message", text: "fix the build", recordSeq: 102 },
+      { kind: "agent_message", text: "done", streaming: false, recordSeq: 103 },
+    ]);
   });
 
   it("is defensive against malformed lines", () => {

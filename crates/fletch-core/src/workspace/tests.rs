@@ -143,7 +143,31 @@ pub(crate) fn exchange(wm: &WorkspaceManager, ws: &str, turn: &str, text: &str) 
         ],
     )
     .unwrap();
-    wm.associate_pending_user_turns(ws).unwrap();
+    wm.associate_pending_user_turns(ws, test_prompts).unwrap();
+}
+
+/// The prompt echoes among the record shapes tests store: a claude record, as
+/// claude's reader tells them, or the `{"type" | "role": "user", "text"}`
+/// stand-in most tests use.
+pub(crate) fn test_prompts(records: &[serde_json::Value]) -> Vec<Option<String>> {
+    let claude = (crate::agent::transcript_reader("claude")
+        .unwrap()
+        .prompt_texts)(records);
+    let stand_in = |record: &serde_json::Value| {
+        let user = ["type", "role"]
+            .iter()
+            .any(|key| record.get(*key).and_then(|v| v.as_str()) == Some("user"));
+        if !user || record.get("parent_tool_use_id").is_some() {
+            return None;
+        }
+        let text = record.get("text")?.as_str()?.trim();
+        (!text.is_empty()).then(|| text.to_string())
+    };
+    records
+        .iter()
+        .zip(claude)
+        .map(|(record, claude)| claude.or_else(|| stand_in(record)))
+        .collect()
 }
 
 pub(crate) fn session_of(wm: &WorkspaceManager, ws: &str) -> String {
@@ -2610,7 +2634,7 @@ fn user_turn_timing_start_then_end() {
     assert_eq!(wm.read_history_turns(&ws_id).unwrap()[0].ended_at, None);
 
     let closed = wm
-        .mark_user_turn_ended(&ws_id)
+        .mark_user_turn_ended(&ws_id, TurnOutcome::Completed)
         .unwrap()
         .expect("open turn closed");
     let turn = wm.read_history_turns(&ws_id).unwrap().remove(0);
@@ -2625,6 +2649,106 @@ fn user_turn_timing_start_then_end() {
         "duration_ms matches stored ended_at − started_at"
     );
     assert_eq!(closed.record_count, 0, "no records ingested in this test");
+    assert_eq!(turn.outcome.as_deref(), Some("completed"));
+}
+
+#[test]
+fn a_turn_outcome_is_unset_until_the_turn_ends() {
+    let db = test_db();
+    let (ws_id, wm) = make_workspace_with_session(&db);
+    wm.insert_user_turn(&ws_id, "turn-1", "hello", &[]).unwrap();
+    assert_eq!(wm.read_history_turns(&ws_id).unwrap()[0].outcome, None);
+    wm.mark_user_turn_started("turn-1", 1000).unwrap();
+    assert_eq!(wm.read_history_turns(&ws_id).unwrap()[0].outcome, None);
+}
+
+/// A row from before outcomes were recorded has a NULL column, the same as
+/// one still in flight, and reads back as no outcome.
+#[test]
+fn a_legacy_turn_reads_with_no_outcome() {
+    let db = test_db();
+    let (ws_id, wm) = make_workspace_with_session(&db);
+    wm.insert_user_turn(&ws_id, "turn-1", "hello", &[]).unwrap();
+    db.lock()
+        .execute(
+            "UPDATE session_user_turns SET started_at = 1, ended_at = 2, outcome = NULL",
+            [],
+        )
+        .unwrap();
+    let turn = wm.read_history_turns(&ws_id).unwrap().remove(0);
+    assert_eq!(turn.ended_at, Some(2));
+    assert_eq!(turn.outcome, None);
+}
+
+#[test]
+fn each_way_a_turn_ends_is_recorded_on_its_row() {
+    let db = test_db();
+    let (ws_id, wm) = make_workspace_with_session(&db);
+    for (turn_id, outcome) in [
+        ("t1", TurnOutcome::Completed),
+        ("t2", TurnOutcome::Interrupted),
+        ("t3", TurnOutcome::Failed),
+    ] {
+        wm.insert_user_turn(&ws_id, turn_id, turn_id, &[]).unwrap();
+        wm.mark_user_turn_started(turn_id, 1000).unwrap();
+        wm.mark_user_turn_ended(&ws_id, outcome).unwrap().unwrap();
+    }
+    // The next turn's start and end leave the earlier outcomes alone.
+    wm.insert_user_turn(&ws_id, "t4", "t4", &[]).unwrap();
+    wm.mark_user_turn_started("t4", 2000).unwrap();
+    wm.mark_user_turn_ended(&ws_id, TurnOutcome::Completed)
+        .unwrap();
+    let outcomes: Vec<_> = wm
+        .read_history_turns(&ws_id)
+        .unwrap()
+        .into_iter()
+        .map(|t| t.outcome)
+        .collect();
+    assert_eq!(
+        outcomes,
+        ["completed", "interrupted", "failed", "completed"].map(|o| Some(o.to_string()))
+    );
+}
+
+#[test]
+fn the_closing_status_decides_the_outcome_unless_the_user_stopped() {
+    use TurnOutcome::*;
+    assert_eq!(TurnOutcome::closing(&AgentStatus::Idle, false), Completed);
+    assert_eq!(TurnOutcome::closing(&AgentStatus::Error, false), Failed);
+    assert_eq!(
+        TurnOutcome::closing(&AgentStatus::Stopped, false),
+        Interrupted
+    );
+    assert_eq!(TurnOutcome::closing(&AgentStatus::Idle, true), Interrupted);
+    assert_eq!(TurnOutcome::closing(&AgentStatus::Error, true), Interrupted);
+}
+
+/// Only a message that never ran is marked abandoned: a turn that started
+/// gets its outcome when it ends, and an outcome once written stays.
+#[test]
+fn abandoning_turns_marks_only_those_that_never_ran() {
+    let db = test_db();
+    let (ws_id, wm) = make_workspace_with_session(&db);
+    wm.insert_user_turn(&ws_id, "ran", "ran", &[]).unwrap();
+    wm.mark_user_turn_started("ran", 1000).unwrap();
+    wm.insert_user_turn(&ws_id, "held", "held", &[]).unwrap();
+
+    wm.mark_user_turns_abandoned(&["ran".into(), "held".into(), "no-row".into()])
+        .unwrap();
+
+    let outcomes: Vec<_> = wm
+        .read_history_turns(&ws_id)
+        .unwrap()
+        .into_iter()
+        .map(|t| (t.turn_id, t.outcome))
+        .collect();
+    assert_eq!(
+        outcomes,
+        [
+            ("ran".to_string(), None),
+            ("held".to_string(), Some("failed".to_string())),
+        ]
+    );
 }
 
 #[test]
@@ -2648,7 +2772,9 @@ fn mark_user_turn_ended_skips_turns_that_never_started() {
     // Idle emitted at spawn) must not get an ended_at.
     wm.insert_user_turn(&ws_id, "turn-1", "hello", &[]).unwrap();
     assert!(
-        wm.mark_user_turn_ended(&ws_id).unwrap().is_none(),
+        wm.mark_user_turn_ended(&ws_id, TurnOutcome::Completed)
+            .unwrap()
+            .is_none(),
         "no open turn to close"
     );
     assert_eq!(wm.read_history_turns(&ws_id).unwrap()[0].ended_at, None);
@@ -2694,7 +2820,9 @@ fn associate_pending_user_turns_matches_attachment_path_then_text() {
     )
     .unwrap();
 
-    let n = wm.associate_pending_user_turns(&ws_id).unwrap();
+    let n = wm
+        .associate_pending_user_turns(&ws_id, test_prompts)
+        .unwrap();
     assert_eq!(n, 2);
 
     let turns = wm.read_history_turns(&ws_id).unwrap();
@@ -2702,7 +2830,11 @@ fn associate_pending_user_turns_matches_attachment_path_then_text() {
     assert_eq!(turns[1].native_id.as_deref(), Some("rec-B"));
 
     // Idempotent: re-running associates nothing new.
-    assert_eq!(wm.associate_pending_user_turns(&ws_id).unwrap(), 0);
+    assert_eq!(
+        wm.associate_pending_user_turns(&ws_id, test_prompts)
+            .unwrap(),
+        0
+    );
 }
 
 #[test]
@@ -2724,7 +2856,9 @@ fn associate_matches_multiline_text() {
     )
     .unwrap();
 
-    let n = wm.associate_pending_user_turns(&ws_id).unwrap();
+    let n = wm
+        .associate_pending_user_turns(&ws_id, test_prompts)
+        .unwrap();
     assert_eq!(n, 1);
     let turns = wm.read_history_turns(&ws_id).unwrap();
     assert_eq!(turns[0].native_id.as_deref(), Some("rec-1"));
@@ -2738,7 +2872,11 @@ fn associate_leaves_unmatched_turn_pending() {
     // Sent, but the agent never logged it (call failed) — no transcript row.
     wm.insert_user_turn(&ws_id, "t1", "never delivered", &[])
         .unwrap();
-    assert_eq!(wm.associate_pending_user_turns(&ws_id).unwrap(), 0);
+    assert_eq!(
+        wm.associate_pending_user_turns(&ws_id, test_prompts)
+            .unwrap(),
+        0
+    );
 
     let turns = wm.read_history_turns(&ws_id).unwrap();
     assert_eq!(turns.len(), 1);
@@ -2777,7 +2915,8 @@ fn associate_never_matches_a_record_stored_before_the_turn() {
             ("a1", said("assistant", "Shall I? Reply yes to go on.")),
         ],
     );
-    wm.associate_pending_user_turns(&ws_id).unwrap();
+    wm.associate_pending_user_turns(&ws_id, test_prompts)
+        .unwrap();
     wm.insert_user_turn(&ws_id, "t2", "yes", &[]).unwrap();
     append_records(
         &wm,
@@ -2796,7 +2935,11 @@ fn associate_never_matches_a_record_stored_before_the_turn() {
             .unwrap();
     }
 
-    assert_eq!(wm.associate_pending_user_turns(&ws_id).unwrap(), 1);
+    assert_eq!(
+        wm.associate_pending_user_turns(&ws_id, test_prompts)
+            .unwrap(),
+        1
+    );
 
     assert_eq!(
         native_ids_of_turns(&wm, &ws_id),
@@ -2816,7 +2959,11 @@ fn a_record_stored_before_its_turns_row_is_never_matched() {
     append_records(&wm, &ws_id, &[("u1", said("user", "yes"))]);
     wm.insert_user_turn(&ws_id, "t1", "yes", &[]).unwrap();
 
-    assert_eq!(wm.associate_pending_user_turns(&ws_id).unwrap(), 0);
+    assert_eq!(
+        wm.associate_pending_user_turns(&ws_id, test_prompts)
+            .unwrap(),
+        0
+    );
     assert_eq!(native_ids_of_turns(&wm, &ws_id), [None]);
 }
 
@@ -2831,7 +2978,8 @@ fn a_re_ingested_record_keeps_its_first_seq() {
     // re-read from the top), still as the row it first landed in.
     wm.insert_user_turn(&ws_id, "t1", "yes", &[]).unwrap();
     append_records(&wm, &ws_id, &[("a0", quote), ("u1", said("user", "yes"))]);
-    wm.associate_pending_user_turns(&ws_id).unwrap();
+    wm.associate_pending_user_turns(&ws_id, test_prompts)
+        .unwrap();
 
     assert_eq!(native_ids_of_turns(&wm, &ws_id), [Some("u1".into())]);
 }
@@ -2848,7 +2996,8 @@ fn a_turn_without_a_watermark_matches_any_record() {
         .execute("UPDATE session_user_turns SET record_watermark = NULL", [])
         .unwrap();
 
-    wm.associate_pending_user_turns(&ws_id).unwrap();
+    wm.associate_pending_user_turns(&ws_id, test_prompts)
+        .unwrap();
 
     assert_eq!(native_ids_of_turns(&wm, &ws_id), [Some("u1".into())]);
 }
@@ -2862,7 +3011,8 @@ fn a_repeated_prompt_matches_each_send_to_its_own_record() {
         let body = serde_json::json!({"type": "user", "text": "yes"});
         wm.append_session_records(&ws_id, "claude", "transcript", None, &[(prompt, &body)])
             .unwrap();
-        wm.associate_pending_user_turns(&ws_id).unwrap();
+        wm.associate_pending_user_turns(&ws_id, test_prompts)
+            .unwrap();
     }
     assert_eq!(
         native_ids_of_turns(&wm, &ws_id),
@@ -2887,7 +3037,11 @@ fn coalesced_follow_ups_persist_one_row_that_matches_one_record() {
     wm.append_session_records(&ws_id, "codex", "transcript", None, &[("rec-1", &rec)])
         .unwrap();
 
-    assert_eq!(wm.associate_pending_user_turns(&ws_id).unwrap(), 1);
+    assert_eq!(
+        wm.associate_pending_user_turns(&ws_id, test_prompts)
+            .unwrap(),
+        1
+    );
     let turns = wm.read_history_turns(&ws_id).unwrap();
     assert_eq!(turns.len(), 1);
     assert_eq!(turns[0].native_id.as_deref(), Some("rec-1"));
@@ -2915,7 +3069,11 @@ fn live_injected_follow_ups_each_match_their_own_record() {
     )
     .unwrap();
 
-    assert_eq!(wm.associate_pending_user_turns(&ws_id).unwrap(), 2);
+    assert_eq!(
+        wm.associate_pending_user_turns(&ws_id, test_prompts)
+            .unwrap(),
+        2
+    );
     let turns = wm.read_history_turns(&ws_id).unwrap();
     assert_eq!(turns[0].native_id.as_deref(), Some("rec-A"));
     assert_eq!(turns[1].native_id.as_deref(), Some("rec-B"));
@@ -2939,7 +3097,11 @@ fn per_message_rows_orphan_against_a_coalesced_record() {
         .unwrap();
 
     // Only one row can claim the single record; the other stays pending.
-    assert_eq!(wm.associate_pending_user_turns(&ws_id).unwrap(), 1);
+    assert_eq!(
+        wm.associate_pending_user_turns(&ws_id, test_prompts)
+            .unwrap(),
+        1
+    );
     let pending = wm
         .read_history_turns(&ws_id)
         .unwrap()
@@ -2950,6 +3112,295 @@ fn per_message_rows_orphan_against_a_coalesced_record() {
         pending, 1,
         "the unclaimed row orphans — hence we coalesce to one row"
     );
+}
+
+// ── positional pairing (real claude records, claude's own reader) ──
+
+fn claude_said(text: &str) -> serde_json::Value {
+    serde_json::json!({"type": "user", "message": {"role": "user",
+        "content": [{"type": "text", "text": text}]}})
+}
+
+fn claude_queued(text: &str) -> serde_json::Value {
+    serde_json::json!({"type": "attachment", "attachment": {"type": "queued_command",
+        "prompt": [{"type": "text", "text": text}], "commandMode": "prompt"}})
+}
+
+fn claude_reply(text: &str) -> serde_json::Value {
+    serde_json::json!({"type": "assistant", "message": {"role": "assistant",
+        "content": [{"type": "text", "text": text}]}})
+}
+
+/// One pairing pass with claude's reader, as the turn-end sync runs it.
+fn pair_claude(wm: &WorkspaceManager, ws: &str) -> usize {
+    let reader = crate::agent::transcript_reader("claude").unwrap();
+    wm.associate_pending_user_turns(ws, reader.prompt_texts)
+        .unwrap()
+}
+
+/// Run `turn` and end it, as a turn the user stopped does.
+fn run_and_end(wm: &WorkspaceManager, ws: &str, turn: &str) {
+    wm.mark_user_turn_started(turn, 1).unwrap();
+    wm.mark_user_turn_ended(ws, TurnOutcome::Interrupted)
+        .unwrap();
+}
+
+/// `"t2"` was stopped before claude logged it: it has no echo, and the turns
+/// around it pair exactly as if it had never been sent.
+fn session_with_an_echo_less_turn(wm: &WorkspaceManager, ws: &str) {
+    wm.insert_user_turn(ws, "t1", "alpha", &[]).unwrap();
+    append_records(
+        wm,
+        ws,
+        &[("u1", claude_said("alpha")), ("a1", claude_reply("one"))],
+    );
+    pair_claude(wm, ws);
+    wm.insert_user_turn(ws, "t2", "stop me", &[]).unwrap();
+    run_and_end(wm, ws, "t2");
+    wm.insert_user_turn(ws, "t3", "gamma", &[]).unwrap();
+    append_records(
+        wm,
+        ws,
+        &[("u3", claude_said("gamma")), ("a3", claude_reply("three"))],
+    );
+    pair_claude(wm, ws);
+}
+
+#[test]
+fn an_echo_less_turn_does_not_shift_the_turns_after_it() {
+    let db = test_db();
+    let (ws, wm) = make_workspace_with_session(&db);
+    session_with_an_echo_less_turn(&wm, &ws);
+    assert_eq!(
+        native_ids_of_turns(&wm, &ws),
+        [Some("u1".into()), None, Some("u3".into())]
+    );
+}
+
+#[test]
+fn a_turn_reads_with_the_position_a_renderer_places_it_by() {
+    let db = test_db();
+    let (ws, wm) = make_workspace_with_session(&db);
+    session_with_an_echo_less_turn(&wm, &ws);
+    wm.insert_user_turn(&ws, "t4", "in flight", &[]).unwrap();
+    wm.mark_user_turn_started("t4", 1).unwrap();
+    let turns = wm.read_history_turns(&ws).unwrap();
+    // Records: u1 = 1, a1 = 2, u3 = 3. t2 went out with watermark 2.
+    let positions: Vec<_> = turns.iter().map(|t| t.position).collect();
+    assert_eq!(positions, [Some(1), Some(3), Some(3), None]);
+    let records = wm.read_history_records(&ws).unwrap();
+    for turn in &turns {
+        assert_eq!(turn.session_id, records[0].session_id);
+    }
+}
+
+#[test]
+fn a_stitched_history_names_each_record_and_turn_by_its_own_session() {
+    let db = test_db();
+    seed_repo(&db, "/r");
+    let wm = WorkspaceManager::new(db);
+    agent(&wm, "a", "/r", None);
+    exchange(&wm, "a", "a1", "alpha");
+    let end = wm.resolve_anchor("a", Anchor::End).unwrap();
+    agent(&wm, "b", "/r", Some(end));
+    exchange(&wm, "b", "b1", "beta");
+    let (theirs, ours) = (session_of(&wm, "a"), session_of(&wm, "b"));
+    let records = wm.read_history_records("b").unwrap();
+    let turns = wm.read_history_turns("b").unwrap();
+    // Both sessions number their records from 1: only the session tells
+    // a1's prompt from b1's.
+    assert_eq!((records[0].seq, records[2].seq), (1, 1));
+    for r in &records {
+        assert_eq!(&r.session_id, if r.inherited { &theirs } else { &ours });
+    }
+    assert_eq!(turns.len(), 2);
+    for t in &turns {
+        assert_eq!(&t.session_id, if t.inherited { &theirs } else { &ours });
+        assert_eq!(t.position, Some(1));
+    }
+}
+
+#[test]
+fn identical_prompts_sent_together_pair_in_send_order() {
+    let db = test_db();
+    let (ws, wm) = make_workspace_with_session(&db);
+    // The second went out before the first one's ingest: same watermark.
+    wm.insert_user_turn(&ws, "t1", "yes", &[]).unwrap();
+    wm.insert_user_turn(&ws, "t2", "yes", &[]).unwrap();
+    append_records(
+        &wm,
+        &ws,
+        &[
+            ("u1", claude_said("yes")),
+            ("a1", claude_reply("ok")),
+            ("u2", claude_said("yes")),
+        ],
+    );
+    assert_eq!(pair_claude(&wm, &ws), 2);
+    assert_eq!(
+        native_ids_of_turns(&wm, &ws),
+        [Some("u1".into()), Some("u2".into())]
+    );
+}
+
+#[test]
+fn a_provider_without_echoes_claims_nothing_and_loses_nothing() {
+    fn no_echoes(records: &[serde_json::Value]) -> Vec<Option<String>> {
+        vec![None; records.len()]
+    }
+    let db = test_db();
+    let (ws, wm) = make_workspace_with_session(&db);
+    wm.insert_user_turn(&ws, "t1", "alpha", &[]).unwrap();
+    append_records(&wm, &ws, &[("r1", said("user", "alpha"))]);
+    assert_eq!(wm.associate_pending_user_turns(&ws, no_echoes).unwrap(), 0);
+    let turns = wm.read_history_turns(&ws).unwrap();
+    assert_eq!(turns.len(), 1);
+    assert_eq!(
+        (turns[0].turn_id.as_str(), turns[0].native_id.as_deref()),
+        ("t1", None)
+    );
+}
+
+#[test]
+fn a_sub_agents_prompt_is_never_claimed() {
+    let db = test_db();
+    let (ws, wm) = make_workspace_with_session(&db);
+    wm.insert_user_turn(&ws, "t1", "look at a.rs", &[]).unwrap();
+    // The delegated prompt reads the same, but it is the sub-agent's.
+    let mut delegated = claude_said("look at a.rs");
+    delegated[crate::agent::SUBAGENT_TAG] = serde_json::json!("toolu_1");
+    append_records(&wm, &ws, &[("s1", delegated)]);
+    assert_eq!(pair_claude(&wm, &ws), 0);
+    append_records(&wm, &ws, &[("u1", claude_said("look at a.rs"))]);
+    assert_eq!(pair_claude(&wm, &ws), 1);
+    assert_eq!(native_ids_of_turns(&wm, &ws), [Some("u1".into())]);
+}
+
+#[test]
+fn a_prompt_typed_in_the_terminal_is_left_alone() {
+    let db = test_db();
+    let (ws, wm) = make_workspace_with_session(&db);
+    wm.insert_user_turn(&ws, "t1", "fix", &[]).unwrap();
+    wm.insert_user_turn(&ws, "t2", "ship it", &[]).unwrap();
+    // A native prompt (no row) lands first; it opens with t1's text, but not
+    // as a whole line, and claude's own interruption marker is no one's.
+    append_records(
+        &wm,
+        &ws,
+        &[
+            ("n1", claude_said("fix the build")),
+            ("x1", claude_said("[Request interrupted by user]")),
+            ("u1", claude_said("fix")),
+            ("n2", claude_said("ship it later?")),
+            ("u2", claude_said("ship it")),
+        ],
+    );
+    assert_eq!(pair_claude(&wm, &ws), 2);
+    assert_eq!(
+        native_ids_of_turns(&wm, &ws),
+        [Some("u1".into()), Some("u2".into())]
+    );
+}
+
+#[test]
+fn live_injected_turns_sharing_a_watermark_pair_in_order() {
+    let db = test_db();
+    let (ws, wm) = make_workspace_with_session(&db);
+    wm.insert_user_turn(&ws, "t1", "original", &[]).unwrap();
+    wm.insert_user_turn(&ws, "t2", "also do X", &[]).unwrap();
+    wm.insert_user_turn(&ws, "t3", "and Y", &[]).unwrap();
+    // A message sent while claude works is logged as a queued command, and
+    // a background task's notification arrives the same way.
+    append_records(
+        &wm,
+        &ws,
+        &[
+            ("u1", claude_said("original")),
+            ("a1", claude_reply("working")),
+            ("q2", claude_queued("also do X")),
+            (
+                "n1",
+                claude_queued("<task-notification><status>completed</status></task-notification>"),
+            ),
+            ("q3", claude_queued("and Y")),
+        ],
+    );
+    assert_eq!(pair_claude(&wm, &ws), 3);
+    assert_eq!(
+        native_ids_of_turns(&wm, &ws),
+        [Some("u1".into()), Some("q2".into()), Some("q3".into())]
+    );
+}
+
+#[test]
+fn an_ended_echo_less_turn_is_cut_at_just_past_its_watermark() {
+    let db = test_db();
+    let (ws, wm) = make_workspace_with_session(&db);
+    session_with_an_echo_less_turn(&wm, &ws);
+    let cut = |anchor| wm.resolve_anchor(&ws, anchor).unwrap().cut_seq;
+    // Records: u1 = 1, a1 = 2, u3 = 3. t2 went out with watermark 2.
+    assert_eq!(cut(Anchor::Before("t2")), 3);
+    // Nothing of t2's was logged, so through it is where gamma begins, and
+    // so is the end of t1's turn and the start of t3's.
+    assert_eq!(cut(Anchor::Through("t2")), 3);
+    assert_eq!(cut(Anchor::Through("t1")), 3);
+    assert_eq!(cut(Anchor::Before("t3")), 3);
+}
+
+#[test]
+fn an_echo_less_turn_with_records_of_its_own_runs_through_them() {
+    let db = test_db();
+    let (ws, wm) = make_workspace_with_session(&db);
+    wm.insert_user_turn(&ws, "t1", "alpha", &[]).unwrap();
+    append_records(&wm, &ws, &[("u1", claude_said("alpha"))]);
+    pair_claude(&wm, &ws);
+    // Stopped mid-reply: claude logged the reply but not the prompt.
+    wm.insert_user_turn(&ws, "t2", "beta", &[]).unwrap();
+    run_and_end(&wm, &ws, "t2");
+    append_records(&wm, &ws, &[("a2", claude_reply("partial"))]);
+    wm.insert_user_turn(&ws, "t3", "gamma", &[]).unwrap();
+    append_records(&wm, &ws, &[("u3", claude_said("gamma"))]);
+    pair_claude(&wm, &ws);
+    let cut = |anchor| wm.resolve_anchor(&ws, anchor).unwrap().cut_seq;
+    // Records: u1 = 1, a2 = 2, u3 = 3. t2 went out with watermark 1.
+    assert_eq!(cut(Anchor::Before("t2")), 2);
+    assert_eq!(cut(Anchor::Through("t2")), 3);
+    // t1's turn ends where t2 was sent, not at gamma's prompt.
+    assert_eq!(cut(Anchor::Through("t1")), 2);
+}
+
+#[test]
+fn an_echo_less_turn_still_in_flight_has_no_cut() {
+    let db = test_db();
+    let (ws, wm) = make_workspace_with_session(&db);
+    wm.insert_user_turn(&ws, "t1", "alpha", &[]).unwrap();
+    wm.mark_user_turn_started("t1", 1).unwrap();
+    for anchor in [Anchor::Before("t1"), Anchor::Through("t1")] {
+        let err = wm.resolve_anchor(&ws, anchor).unwrap_err().to_string();
+        assert!(err.contains("still syncing"), "{err}");
+    }
+}
+
+#[test]
+fn an_ancestors_ended_echo_less_turn_is_part_of_the_history_below_the_cut() {
+    let db = test_db();
+    seed_repo(&db, "/r");
+    let wm = WorkspaceManager::new(db);
+    agent(&wm, "a", "/r", None);
+    exchange(&wm, "a", "a1", "alpha");
+    wm.insert_user_turn("a", "a2", "stop me", &[]).unwrap();
+    run_and_end(&wm, "a", "a2");
+    exchange(&wm, "a", "a3", "gamma");
+    // Still running when `b` branches off: no position, so not inherited.
+    wm.insert_user_turn("a", "a4", "in flight", &[]).unwrap();
+    wm.mark_user_turn_started("a4", 2).unwrap();
+    let end = wm.resolve_anchor("a", Anchor::End).unwrap();
+    agent(&wm, "b", "/r", Some(end));
+    assert_eq!(history_turns(&wm, "b"), inherited(&["a1", "a2", "a3"]));
+    // A branch cut before a2 leaves it out.
+    let before = wm.resolve_anchor("a", Anchor::Before("a2")).unwrap();
+    agent(&wm, "c", "/r", Some(before));
+    assert_eq!(history_turns(&wm, "c"), inherited(&["a1"]));
 }
 
 #[test]

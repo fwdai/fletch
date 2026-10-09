@@ -4,10 +4,13 @@
 // (its turn runner is plaintext); the structured render comes entirely from the
 // transcript replayed through here.
 
+import { withRecordSeq } from "@/adapters/shared/record-seq";
 import { upsertToolCall } from "@/adapters/shared/reducer-helpers";
 import type { ChatItem, RawEvent } from "@/adapters/types";
 
-export function reduce(prev: ChatItem[], ev: RawEvent): ChatItem[] {
+export const reduce = withRecordSeq(reduceEvent);
+
+function reduceEvent(prev: ChatItem[], ev: RawEvent): ChatItem[] {
   switch (ev.type) {
     case "user": {
       const text = typeof ev.text === "string" ? ev.text : "";

@@ -7,12 +7,15 @@
 //! parts, in id order (ids are time-sortable); the frontend reassembles. ids are
 //! globally unique, so they're the native dedup key.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
 use crate::agent::args::{model_args, push_opt};
-use crate::agent::transcript::{json_files_in, read_json_value, RawRecord, ReadDiagnostics};
+use crate::agent::transcript::{
+    json_files_in, read_json_value, typed_prompt, RawRecord, ReadDiagnostics,
+};
 use crate::agent::TurnArgs;
 use crate::instructions;
 
@@ -93,6 +96,36 @@ pub(crate) fn opencode_read(
     out
 }
 
+/// The prompts of an opencode session. A prompt is a user message blob
+/// followed by its parts, and only a part holds the text, so the prompt sits
+/// on the message — where its turn begins — with the text of its `text` parts.
+/// A part opencode marks `synthetic` is one it added itself (a mentioned
+/// file's contents), not typed.
+pub(crate) fn opencode_prompt_texts(records: &[Value]) -> Vec<Option<String>> {
+    fn str_of<'a>(record: &'a Value, key: &str) -> Option<&'a str> {
+        record.get(key).and_then(Value::as_str)
+    }
+    let mut texts: HashMap<&str, Vec<&str>> = HashMap::new();
+    for part in records {
+        if str_of(part, "type") == Some("text")
+            && part.get("synthetic").and_then(Value::as_bool) != Some(true)
+        {
+            if let (Some(message), Some(text)) = (str_of(part, "messageID"), str_of(part, "text")) {
+                texts.entry(message).or_default().push(text);
+            }
+        }
+    }
+    records
+        .iter()
+        .map(|record| {
+            if record.get("type").is_some() || str_of(record, "role") != Some("user") {
+                return None;
+            }
+            typed_prompt(&texts.get(str_of(record, "id")?)?.join("\n"))
+        })
+        .collect()
+}
+
 /// OpenCode: `opencode run --format json --dangerously-skip-permissions [--session <id>] <prompt>`.
 /// `--dangerously-skip-permissions` auto-approves tools (incl. shell + file
 /// writes) so turns run unattended; verified end-to-end against opencode
@@ -150,4 +183,33 @@ pub(crate) fn opencode_pty_args(
     args.extend(model_args(model));
     push_opt(&mut args, "--session", session_id);
     args
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn a_prompt_sits_on_its_user_message_with_its_typed_parts() {
+        // As `opencode_read` orders them: each message blob, then its parts.
+        let records = [
+            json!({ "id": "msg_1", "sessionID": "ses_1", "role": "user",
+                    "time": { "created": 1 }, "agent": "build" }),
+            json!({ "id": "prt_1", "sessionID": "ses_1", "messageID": "msg_1", "type": "text",
+                    "text": "<fletch-system>\nbe brief\n</fletch-system>\n\nfix it" }),
+            json!({ "id": "prt_2", "sessionID": "ses_1", "messageID": "msg_1", "type": "text",
+                    "synthetic": true, "text": "Called the Read tool with {\"filePath\":\"a.rs\"}" }),
+            json!({ "id": "msg_2", "sessionID": "ses_1", "role": "assistant", "modelID": "m" }),
+            json!({ "id": "prt_3", "sessionID": "ses_1", "messageID": "msg_2", "type": "text",
+                    "text": "fix it" }),
+            json!({ "id": "prt_4", "sessionID": "ses_1", "messageID": "msg_2", "type": "tool",
+                    "tool": "bash" }),
+            // A prompt whose parts aren't written yet has nothing to compare.
+            json!({ "id": "msg_3", "sessionID": "ses_1", "role": "user" }),
+        ];
+        let mut expected = vec![None; records.len()];
+        expected[0] = Some("fix it".to_string());
+        assert_eq!(opencode_prompt_texts(&records), expected);
+    }
 }

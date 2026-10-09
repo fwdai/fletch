@@ -31,7 +31,9 @@ use std::path::{Path, PathBuf};
 use serde_json::Value;
 
 use crate::agent::args::{model_args, push_opt};
-use crate::agent::transcript::{records_with_id, RawRecord, ReadDiagnostics, SubagentLayout};
+use crate::agent::transcript::{
+    is_subagent, records_with_id, typed_prompt, RawRecord, ReadDiagnostics, SubagentLayout,
+};
 use crate::agent::TurnArgs;
 use crate::instructions;
 
@@ -122,6 +124,28 @@ fn cursor_user_query(text: &str) -> Option<&str> {
     let start = text.find("<user_query>")? + "<user_query>".len();
     let end = start + text[start..].find("</user_query>")?;
     Some(text[start..end].trim())
+}
+
+pub(crate) fn cursor_prompt_texts(records: &[Value]) -> Vec<Option<String>> {
+    records.iter().map(cursor_prompt).collect()
+}
+
+/// The prompt a cursor record echoes: a top-level `user` record's
+/// `<user_query>`. Cursor wraps every prompt in that envelope, and logs
+/// context it injects itself (`<available_subagent_types>`, `<dynamic_tools>`)
+/// as `user` records without one, so the envelope is what tells the two apart
+/// (verified on real transcripts, cursor-agent 2026.09).
+fn cursor_prompt(record: &Value) -> Option<String> {
+    if is_subagent(record) || record.get("role").and_then(Value::as_str) != Some("user") {
+        return None;
+    }
+    record
+        .pointer("/message/content")?
+        .as_array()?
+        .iter()
+        .filter_map(|block| block.get("text").and_then(Value::as_str))
+        .find_map(cursor_user_query)
+        .and_then(typed_prompt)
 }
 
 /// The query of a sub-agent file's first record, which is the prompt the
@@ -484,6 +508,36 @@ mod tests {
         assert_eq!(
             cursor_subagent_parent(&[task_record("look\n")], &cursor_task_id("look")),
             Some(cursor_task_id("look"))
+        );
+    }
+
+    #[test]
+    fn a_prompt_is_the_user_query_of_a_top_level_user_record() {
+        let line = |query: &str| serde_json::from_str::<Value>(&first_line(query)).unwrap();
+        let sent =
+            line("<fletch-system>\nbe brief\n</fletch-system>\n\nfix it\n\nAttached file: /a.png");
+        let injected = json!({ "role": "user", "message": { "content": [{ "type": "text",
+            "text": "<available_subagent_types>\n- explore\n</available_subagent_types>" }] } });
+        let mut nested = line("look at a.rs");
+        nested["parent_tool_use_id"] = json!("cursor-task-deadbeef");
+        let records = [
+            sent,
+            task_record("look at a.rs"),
+            injected,
+            nested,
+            json!({ "type": "turn_ended" }),
+            line("yes"),
+        ];
+        assert_eq!(
+            cursor_prompt_texts(&records),
+            [
+                Some("fix it\n\nAttached file: /a.png".to_string()),
+                None,
+                None,
+                None,
+                None,
+                Some("yes".to_string()),
+            ]
         );
     }
 

@@ -9,23 +9,25 @@ use crate::activity::{Activity, ManagedActivity};
 use crate::message_queue::InjectionMode;
 
 use super::providers::antigravity::{
-    antigravity_build_args, antigravity_locate, antigravity_pty_args, antigravity_read,
-    antigravity_session_id_from_cwd,
+    antigravity_build_args, antigravity_locate, antigravity_prompt_texts, antigravity_pty_args,
+    antigravity_read, antigravity_session_id_from_cwd,
 };
 use super::providers::claude::{claude_one_shot_args, CLAUDE_TRANSCRIPT};
 use super::providers::codex::{
-    codex_build_args, codex_locate, codex_one_shot_args, codex_pty_args, codex_read,
-    codex_session_id, codex_write, CODEX_SUBAGENTS,
+    codex_build_args, codex_locate, codex_one_shot_args, codex_prompt_texts, codex_pty_args,
+    codex_read, codex_session_id, codex_write, CODEX_SUBAGENTS,
 };
 use super::providers::cursor::{
-    cursor_build_args, cursor_locate, cursor_one_shot_args, cursor_pty_args, cursor_read,
-    cursor_session_id, CURSOR_SUBAGENTS,
+    cursor_build_args, cursor_locate, cursor_one_shot_args, cursor_prompt_texts, cursor_pty_args,
+    cursor_read, cursor_session_id, CURSOR_SUBAGENTS,
 };
 use super::providers::opencode::{
-    opencode_build_args, opencode_locate, opencode_pty_args, opencode_read, opencode_session_id,
+    opencode_build_args, opencode_locate, opencode_prompt_texts, opencode_pty_args, opencode_read,
+    opencode_session_id,
 };
 use super::providers::pi::{
-    pi_build_args, pi_locate, pi_one_shot_args, pi_pty_args, pi_read, pi_session_id, pi_write,
+    pi_build_args, pi_locate, pi_one_shot_args, pi_prompt_texts, pi_pty_args, pi_read,
+    pi_session_id, pi_write,
 };
 use super::transcript::{JsonlTail, TranscriptReader};
 use super::{McpDeliveryBuilder, OneShot, PtyArgsBuilder, TurnArgs};
@@ -155,6 +157,7 @@ pub(crate) const PER_TURN_AGENTS: &[PerTurnDescriptor] = &[
             tail: None, // multiple rollout files
             subagents: Some(CODEX_SUBAGENTS),
             write: Some(codex_write),
+            prompt_texts: codex_prompt_texts,
         }),
         one_shot: Some(OneShot {
             args: codex_one_shot_args,
@@ -183,6 +186,7 @@ pub(crate) const PER_TURN_AGENTS: &[PerTurnDescriptor] = &[
             // cursor-agent keeps its conversations in private storage; the
             // transcript Fletch reads is a projection of it.
             write: None,
+            prompt_texts: cursor_prompt_texts,
         }),
         one_shot: Some(OneShot {
             args: cursor_one_shot_args,
@@ -210,6 +214,7 @@ pub(crate) const PER_TURN_AGENTS: &[PerTurnDescriptor] = &[
             // message's id), and a session needs a project-scoped info blob:
             // a copy would re-key every record, not just name a new session.
             write: None,
+            prompt_texts: opencode_prompt_texts,
         }),
         // `opencode run` reads piped stdin, but has no flag to turn tools off
         // or make them read-only (per `opencode run --help`, 1.18).
@@ -236,6 +241,7 @@ pub(crate) const PER_TURN_AGENTS: &[PerTurnDescriptor] = &[
             }), // single jsonl when one file
             subagents: None,
             write: Some(pi_write),
+            prompt_texts: pi_prompt_texts,
         }),
         one_shot: Some(OneShot {
             args: pi_one_shot_args,
@@ -266,6 +272,7 @@ pub(crate) const PER_TURN_AGENTS: &[PerTurnDescriptor] = &[
             subagents: None,
             // agy's conversations live in its own private storage.
             write: None,
+            prompt_texts: antigravity_prompt_texts,
         }),
         // agy takes the prompt only as `--print <prompt>` (argv) and has no
         // tool-less mode (per `agy --help`).

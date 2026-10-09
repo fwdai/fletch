@@ -37,6 +37,7 @@ import { sessionSpend, usageFromRecords } from "@/adapters/usage";
 import { recordWorkspaceUsage } from "@/helpers/usage";
 
 const call = (id: string, input: number, output: number, inherited = false): SessionRecord => ({
+  session_id: inherited ? "parent" : "own",
   seq: 0,
   provider: "claude",
   source: "transcript",

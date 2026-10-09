@@ -4,9 +4,9 @@ import type { ChatItem, RawEvent } from "@/adapters/types";
 
 // Renders the on-disk transcript the way re-attach will: normalizeTranscript
 // (raw lines → RawEvent[]) then reduce (→ ChatItem[]).
-function render(lines: unknown[]): ChatItem[] {
+function render(lines: unknown[], seqs?: number[]): ChatItem[] {
   return piAdapter
-    .normalizeTranscript(lines)
+    .normalizeTranscript(lines, seqs)
     .reduce<ChatItem[]>((acc, ev) => piAdapter.reduce(acc, ev as RawEvent), []);
 }
 
@@ -54,7 +54,21 @@ const onDisk: unknown[] = [
   },
 ];
 
+/** Session-record seqs for `lines`, offset so they can't pass for indices. */
+const seqsFor = (lines: unknown[]) => lines.map((_, i) => 100 + i);
+
 describe("piAdapter.normalizeTranscript", () => {
+  it("stamps every item with the seq of the record it came from", () => {
+    // a1 fans out into a reasoning notice and a tool call; the preamble emits nothing.
+    expect(render(onDisk, seqsFor(onDisk)).map((i) => [i.kind, i.recordSeq])).toEqual([
+      ["user_message", 103],
+      ["notice", 104],
+      ["tool_call", 104],
+      ["tool_result", 105],
+      ["agent_message", 106],
+    ]);
+  });
+
   it("renders on-disk transcript: drops preamble, maps messages + tool results", () => {
     const items = render(onDisk);
     expect(items).toEqual([

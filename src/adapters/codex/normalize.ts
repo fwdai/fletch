@@ -11,7 +11,9 @@
 // clean `event_msg` channel, and tool activity from `response_item`
 // function/custom-tool calls (which cover shell, MCP, and app tools).
 // `response_item` user/assistant messages are skipped — they duplicate the
-// event_msg ones and carry injected noise (AGENTS.md, permissions blurb).
+// event_msg ones and carry injected noise (AGENTS.md, permissions blurb) —
+// though a prompt is stamped with its response_item twin's record, where the
+// backend positions its turn (see `promptRecord`).
 //
 // The event_msg backbone comes in two generations, both handled here:
 //   ≤ 0.144: { "type":"user_message", "message":"…" } / { "type":"agent_message", "message":"…" }
@@ -33,6 +35,7 @@
 // from a tagged line inherits the tag so the reducer nests it underneath.
 
 import { asRecord } from "@/adapters/shared/json";
+import { fromRecord } from "@/adapters/shared/record-seq";
 import type { RawEvent } from "@/adapters/types";
 
 /** Fernet token (what codex stores for `spawn_agent.message` and reasoning):
@@ -116,6 +119,34 @@ function outputText(v: unknown): string {
   return v == null ? "" : JSON.stringify(v);
 }
 
+/** The text of a top-level user-role `response_item` message — what the model
+ *  is sent for a prompt — or undefined for any other record. */
+function modelInput(env: Record<string, unknown>): string | undefined {
+  if (env.type !== "response_item" || typeof env.parent_tool_use_id === "string") return undefined;
+  const p = asRecord(env.payload);
+  if (p.type !== "message" || p.role !== "user" || !Array.isArray(p.content)) return undefined;
+  return outputText(p.content);
+}
+
+/** The index of the record the prompt event at `i` (with `text`) is
+ *  positioned on. Codex logs a prompt twice, back to back: the `response_item`
+ *  the model is sent, then the `event_msg` replayed here. The backend
+ *  (`codex_prompt_texts` in crates/fletch-core/src/agent/providers/codex.rs)
+ *  pairs the turn row with the response item when it immediately precedes the
+ *  event, in the same session, with the same text, and with the event
+ *  otherwise; the bubble must carry that same record for the row to land on it
+ *  rather than beside it. Sub-agent prompts are never paired. */
+function promptRecord(
+  lines: unknown[],
+  sessions: readonly string[] | undefined,
+  i: number,
+  text: string,
+): number {
+  if (i === 0 || typeof asRecord(lines[i]).parent_tool_use_id === "string") return i;
+  if (sessions?.[i - 1] !== sessions?.[i]) return i;
+  return modelInput(asRecord(lines[i - 1])) === text ? i - 1 : i;
+}
+
 function reasoningSummary(v: unknown): string {
   if (!Array.isArray(v)) return "";
   return v
@@ -127,7 +158,11 @@ function reasoningSummary(v: unknown): string {
     .join("\n");
 }
 
-export function normalizeTranscript(lines: unknown[]): RawEvent[] {
+export function normalizeTranscript(
+  lines: unknown[],
+  seqs?: readonly number[],
+  sessions?: readonly string[],
+): RawEvent[] {
   // Pre-pass: a tool call's output lands on a later function/custom-tool
   // output line, so index outputs by call_id first.
   const outputs = new Map<string, string>();
@@ -163,14 +198,21 @@ export function normalizeTranscript(lines: unknown[]): RawEvent[] {
   // precede the turn's events. Track the latest and stamp it onto the agent
   // messages that follow so the UI can show the model in use on replay.
   let currentModel: string | undefined;
-  for (const raw of lines) {
+  for (const [i, raw] of lines.entries()) {
     const env = asRecord(raw);
     const p = asRecord(env.payload);
     const ptype = typeof p.type === "string" ? p.type : "";
     // A sub-agent's record is tagged with its spawn call id by the sync;
-    // every event made from it carries the tag so the reducer nests it.
+    // every event made from it carries the tag so the reducer nests it. A tool
+    // call's result is folded in from its later output record, but the event
+    // (and so the call and result items) belongs to the call's record.
     const parent = typeof env.parent_tool_use_id === "string" ? env.parent_tool_use_id : "";
-    const emit = (ev: RawEvent) => out.push(parent ? { ...ev, parent_tool_use_id: parent } : ev);
+    const emit = (ev: RawEvent, at = i) =>
+      out.push(
+        fromRecord(parent ? { ...ev, parent_tool_use_id: parent } : ev, seqs?.[at], sessions?.[at]),
+      );
+    const emitPrompt = (text: string) =>
+      emit({ type: "user", text }, promptRecord(lines, sessions, i, text));
 
     if (env.type === "turn_context") {
       const m = p.model;
@@ -181,7 +223,7 @@ export function normalizeTranscript(lines: unknown[]): RawEvent[] {
     if (env.type === "event_msg") {
       if (ptype === "user_message") {
         const text = typeof p.message === "string" ? p.message : "";
-        if (text) emit({ type: "user", text });
+        if (text) emitPrompt(text);
       } else if (ptype === "agent_message") {
         const text = typeof p.message === "string" ? p.message : "";
         if (text) {
@@ -209,7 +251,7 @@ export function normalizeTranscript(lines: unknown[]): RawEvent[] {
         const item = asRecord(p.item);
         if (item.type === "UserMessage") {
           const text = outputText(item.content);
-          if (text) emit({ type: "user", text });
+          if (text) emitPrompt(text);
         } else if (item.type === "AgentMessage") {
           // Both phases (commentary preamble and final_answer) are prose the
           // user saw live, so both replay as agent messages.

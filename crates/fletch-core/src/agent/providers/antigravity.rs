@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use serde_json::Value;
 
 use crate::agent::args::push_opt;
-use crate::agent::transcript::{RawRecord, ReadDiagnostics};
+use crate::agent::transcript::{typed_prompt, RawRecord, ReadDiagnostics};
 use crate::agent::TurnArgs;
 use crate::instructions;
 
@@ -121,6 +121,28 @@ pub(crate) fn antigravity_locate(
     }
 }
 
+pub(crate) fn antigravity_prompt_texts(records: &[Value]) -> Vec<Option<String>> {
+    records.iter().map(antigravity_prompt).collect()
+}
+
+/// The prompt an agy step echoes: a `USER_INPUT` step's `<USER_REQUEST>`.
+/// agy wraps the prompt in it and appends notes of its own to the same step
+/// (`<USER_SETTINGS_CHANGE>`, verified on real transcripts), so the wrapper is
+/// read when present; the whole content otherwise, as the frontend does.
+fn antigravity_prompt(record: &Value) -> Option<String> {
+    if record.get("type").and_then(Value::as_str) != Some("USER_INPUT") {
+        return None;
+    }
+    let content = record.get("content")?.as_str()?;
+    const OPEN: &str = "<USER_REQUEST>";
+    let request = content
+        .find(OPEN)
+        .map(|start| &content[start + OPEN.len()..])
+        .and_then(|rest| Some(&rest[..rest.find("</USER_REQUEST>")?]))
+        .unwrap_or(content);
+    typed_prompt(request)
+}
+
 pub(crate) fn antigravity_read(paths: &[PathBuf], diag: &mut ReadDiagnostics) -> Vec<RawRecord> {
     paths
         .iter()
@@ -136,4 +158,36 @@ pub(crate) fn antigravity_read(paths: &[PathBuf], diag: &mut ReadDiagnostics) ->
             RawRecord { native_id, body }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn a_prompt_is_the_user_request_of_a_user_input_step() {
+        // The first turn's step as agy logs it: the instruction block Fletch
+        // folded in, the prompt, then agy's own note.
+        let first = json!({ "step_index": 0, "source": "USER_EXPLICIT", "type": "USER_INPUT",
+            "status": "DONE", "content": "<USER_REQUEST>\n<fletch-system>\nYou are running inside Fletch.\n</fletch-system>\n\nfix it\n</USER_REQUEST>\n<USER_SETTINGS_CHANGE>\nModel: Flash (High).\n</USER_SETTINGS_CHANGE>" });
+        let unwrapped = json!({ "type": "USER_INPUT", "content": "  yes " });
+        let records = [
+            first,
+            json!({ "type": "CONVERSATION_HISTORY" }),
+            json!({ "type": "PLANNER_RESPONSE", "content": "fix it" }),
+            json!({ "type": "RUN_COMMAND", "content": "fix it" }),
+            unwrapped,
+        ];
+        assert_eq!(
+            antigravity_prompt_texts(&records),
+            [
+                Some("fix it".to_string()),
+                None,
+                None,
+                None,
+                Some("yes".to_string())
+            ]
+        );
+    }
 }

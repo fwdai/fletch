@@ -124,6 +124,45 @@ describe("codexAdapter", () => {
     ]);
   });
 
+  it("stamps every replayed item with the seq of the record it came from", () => {
+    const lines = readJsonl("rollout.jsonl");
+    const items = run(
+      codexAdapter.normalizeTranscript(
+        lines,
+        lines.map((_, i) => 100 + i),
+      ),
+    );
+    // The call's result is folded in from its output record (108), but both
+    // rows belong to the call's own record.
+    expect(items.map((i) => [i.kind, i.recordSeq])).toEqual([
+      ["user_message", 105],
+      ["tool_call", 107],
+      ["tool_result", 107],
+      ["agent_message", 110],
+      ["notice", 111],
+    ]);
+  });
+
+  it("stamps a 0.153 rollout's items with their records' seqs", () => {
+    const lines = readJsonl("rollout-0153.jsonl");
+    const items = run(
+      codexAdapter.normalizeTranscript(
+        lines,
+        lines.map((_, i) => 100 + i),
+      ),
+    );
+    // The prompt carries its response_item twin's record (105), not the
+    // event's (106): the backend positions the turn there.
+    expect(items.map((i) => [i.kind, i.recordSeq])).toEqual([
+      ["user_message", 105],
+      ["agent_message", 109],
+      ["tool_call", 111],
+      ["tool_result", 111],
+      ["agent_message", 116],
+      ["notice", 118],
+    ]);
+  });
+
   // codex-cli ≥ 0.153 moved the rollout's conversational backbone from flat
   // `user_message` / `agent_message` events to `item_completed` TurnItem
   // envelopes (fixture mirrors a real 0.153.4 rollout). Before this was

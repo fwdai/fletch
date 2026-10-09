@@ -74,12 +74,65 @@ describe("claudeAdapter — transcript replay", () => {
     ]);
   });
 
+  it("stamps every item with the seq of the record it came from", () => {
+    const seqs = lines.map((_, i) => 100 + i);
+    const items = reduceAll(claudeAdapter.normalizeTranscript(lines, seqs));
+    // The /login record renders only as a notice; the reminder-wrapped prompt
+    // fans out into the message and its hook notice.
+    expect(items.map((i) => [i.kind, i.recordSeq])).toEqual([
+      ["user_message", 100],
+      ["agent_message", 101],
+      ["notice", 102],
+      ["user_message", 103],
+      ["notice", 103],
+      ["agent_message", 104],
+    ]);
+  });
+
+  it("leaves the record body it passes through as the event unstamped", () => {
+    const body = { type: "user", message: { role: "user", content: "hi" } };
+    const [ev] = claudeAdapter.normalizeTranscript([body], [7]);
+    expect(ev.recordSeq).toBe(7);
+    expect(body).not.toHaveProperty("recordSeq");
+  });
+
   it("drops unrelated transcript record kinds", () => {
     const events = claudeAdapter.normalizeTranscript([
       { type: "summary", summary: "ignored" },
       { type: "system", text: "ignored" },
     ]);
     expect(events).toEqual([]);
+  });
+
+  // A prompt sent while claude works is logged only as a `queued_command`
+  // attachment — the record the backend pairs its turn row with
+  // (`claude_prompt` in providers/claude.rs) — so it must draw a bubble.
+  it("draws a prompt sent mid-turn from its queued_command attachment", () => {
+    const queued = (prompt: unknown, commandMode?: string) => ({
+      type: "attachment",
+      uuid: "q",
+      attachment: { type: "queued_command", prompt, ...(commandMode ? { commandMode } : {}) },
+    });
+    const lines = [
+      { type: "user", message: { role: "user", content: "original" } },
+      {
+        type: "assistant",
+        message: { role: "assistant", content: [{ type: "text", text: "on it" }] },
+      },
+      queued([{ type: "text", text: "also do X" }], "prompt"),
+      queued("and Y"),
+      queued("ls", "bash"),
+      queued("<task-notification><summary>done</summary></task-notification>", "prompt"),
+      { type: "attachment", attachment: { type: "hook_success" } },
+    ];
+    const items = reduceAll(claudeAdapter.normalizeTranscript(lines, [1, 2, 3, 4, 5, 6, 7]));
+    expect(items.map((i) => [i.kind, "text" in i ? i.text : "", i.recordSeq])).toEqual([
+      ["user_message", "original", 1],
+      ["agent_message", "on it", 2],
+      ["user_message", "also do X", 3],
+      ["user_message", "and Y", 4],
+      ["notice", "done", 6],
+    ]);
   });
 });
 

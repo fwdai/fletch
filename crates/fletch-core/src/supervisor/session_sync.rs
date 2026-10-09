@@ -1344,9 +1344,9 @@ fn ingest_session_records(workspace: &WorkspaceManager, agent_id: &str) -> Optio
         None => inserted,
     };
 
-    // Link any pending outgoing user turns to the canonical transcript
-    // user-message rows just ingested (fills in their `native_id`).
-    if let Err(e) = workspace.associate_pending_user_turns(agent_id) {
+    // Pair any pending outgoing user turns with the prompt echoes just
+    // ingested (fills in their `native_id`).
+    if let Err(e) = workspace.associate_pending_user_turns(agent_id, reader.prompt_texts) {
         tracing::warn!(error = %e, agent_id, "associate user turns failed");
     }
 
@@ -1382,11 +1382,7 @@ struct SubagentCursor {
     records: usize,
 }
 
-/// The top-level field every ingested sub-agent record is tagged with: the
-/// tool_use id that spawned it, as the live stream carries it. No main
-/// transcript line has it, so it is also what tells a stored sub-agent record
-/// from the session's own conversation.
-pub(super) const SUBAGENT_TAG: &str = "parent_tool_use_id";
+pub(super) use crate::agent::SUBAGENT_TAG;
 
 fn subagent_cursors() -> &'static Mutex<HashMap<PathBuf, SubagentCursor>> {
     static CURSORS: OnceLock<Mutex<HashMap<PathBuf, SubagentCursor>>> = OnceLock::new();

@@ -20,6 +20,7 @@ import {
 import { agentOf, api, client, projectOf, useStore } from "../src/store";
 import { isReplayed, replayLiveTurn } from "../src/store/liveTurn";
 import { clearHost, loadSettings, saveSettings } from "../src/store/persist";
+import { pastHistory } from "../src/store/transcript";
 
 const state = () => useStore.getState();
 
@@ -205,6 +206,29 @@ describe("replaying the running turn", () => {
     const log = patch.logs?.zanskar ?? [];
     expect(log[0]).toMatchObject({ kind: "notice", text: expect.stringContaining("8 earlier") });
     expect(texts(log)).toEqual(["message 9"]);
+  });
+});
+
+/** Loading an older page re-renders the history whole and keeps what the log
+ *  held past it, without drawing a turn's bubble twice. */
+describe("the log past its history", () => {
+  const rendered: ChatItem[] = [
+    { kind: "user_message", text: "q1", turnId: "t1", recordSeq: 1, recordSession: "s" },
+    // A bubble the merge drew from a row, after the last record.
+    { kind: "user_message", text: "stopped", turnId: "t2", undelivered: "interrupted" },
+  ];
+  const live: ChatItem[] = [
+    { kind: "user_message", text: "running", turnId: "t3" },
+    { kind: "agent_message", text: "working", streaming: true },
+  ];
+
+  it("is what follows the last record-rendered item, less the bubbles a re-render draws", () => {
+    const fresh: ChatItem[] = [{ kind: "user_message", text: "q0", recordSeq: 1 }, ...rendered];
+    expect(pastHistory([...rendered, ...live], fresh)).toEqual(live);
+  });
+
+  it("is the whole log when nothing in it came from a record", () => {
+    expect(pastHistory(live, [])).toEqual(live);
   });
 });
 
@@ -991,6 +1015,7 @@ describe("spawn flow", () => {
       ...t,
       native_id: null,
       ended_at: null,
+      position: null,
     }));
     const read = vi.spyOn(api, "readSessionPage").mockResolvedValue({ records: [], older: null });
     const readTurns = vi.spyOn(api, "readUserTurns").mockResolvedValue(turns);

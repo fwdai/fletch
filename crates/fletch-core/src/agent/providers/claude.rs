@@ -23,8 +23,8 @@ use serde_json::Value;
 
 use crate::agent::args::model_args;
 use crate::agent::transcript::{
-    records_with_id, replace_field, write_new_jsonl, JsonlTail, RawRecord, ReadDiagnostics,
-    SubagentLayout, TranscriptReader,
+    content_text, is_subagent, records_with_id, replace_field, typed_prompt, write_new_jsonl,
+    JsonlTail, RawRecord, ReadDiagnostics, SubagentLayout, TranscriptReader,
 };
 use crate::error::{Error, Result};
 
@@ -124,7 +124,93 @@ pub(crate) static CLAUDE_TRANSCRIPT: TranscriptReader = TranscriptReader {
     }), // single persistent jsonl
     subagents: Some(CLAUDE_SUBAGENTS),
     write: Some(claude_write),
+    prompt_texts: claude_prompt_texts,
 };
+
+fn claude_prompt_texts(records: &[Value]) -> Vec<Option<String>> {
+    records.iter().map(claude_prompt).collect()
+}
+
+/// Flags claude sets on a record it wrote itself rather than took from the
+/// user: injected context (`isMeta` in the transcript, `isSynthetic` on the
+/// wire), a sidechain from before sub-agents got files of their own, and the
+/// summary that opens a compacted conversation.
+const NOT_TYPED: [&str; 4] = ["isMeta", "isSynthetic", "isSidechain", "isCompactSummary"];
+
+/// The prompt a claude record echoes, verified on real transcripts (2.1.x).
+/// A prompt that starts a turn is a `user` record with text content; one sent
+/// while a turn is running never becomes a `user` record but a
+/// `queued_command` attachment, which is the only trace of it. Neither counts
+/// when claude produced it: a flagged record (`NOT_TYPED`), a tool result, or
+/// a background task's `<task-notification>`, which arrives the same two ways.
+/// A slash command is logged as its `<command-name>` tags and comes back as
+/// the command line that was typed.
+fn claude_prompt(record: &Value) -> Option<String> {
+    if is_subagent(record)
+        || NOT_TYPED
+            .iter()
+            .any(|flag| record.get(*flag).and_then(Value::as_bool) == Some(true))
+    {
+        return None;
+    }
+    let text = match record.get("type").and_then(Value::as_str)? {
+        "user" => {
+            if record.pointer("/origin/kind").and_then(Value::as_str) == Some("task-notification") {
+                return None;
+            }
+            let content = record.pointer("/message/content")?;
+            let tool_result = content.as_array().is_some_and(|blocks| {
+                blocks
+                    .iter()
+                    .any(|b| b.get("type").and_then(Value::as_str) == Some("tool_result"))
+            });
+            if tool_result {
+                return None;
+            }
+            content_text(content, "\n")?
+        }
+        "attachment" => {
+            let attachment = record.get("attachment")?;
+            let queued = attachment.get("type").and_then(Value::as_str) == Some("queued_command");
+            let mode = attachment.get("commandMode").and_then(Value::as_str);
+            if !queued || mode.is_some_and(|m| m != "prompt") {
+                return None;
+            }
+            content_text(attachment.get("prompt")?, "\n")?
+        }
+        _ => return None,
+    };
+    if text.trim_start().starts_with("<task-notification>") {
+        return None;
+    }
+    typed_prompt(&slash_command(&text).unwrap_or(text))
+}
+
+/// The command line a slash command was typed as, from the tags claude logs
+/// it under (`<command-name>/review</command-name>` and its
+/// `<command-args>`). `None` when `text` holds no command.
+fn slash_command(text: &str) -> Option<String> {
+    let name = tag_body(text, "command-name")?;
+    let name = if name.starts_with('/') {
+        name.to_string()
+    } else {
+        format!("/{name}")
+    };
+    Some(
+        match tag_body(text, "command-args").filter(|a| !a.is_empty()) {
+            Some(args) => format!("{name} {args}"),
+            None => name,
+        },
+    )
+}
+
+/// The trimmed text between `<tag>` and `</tag>`.
+fn tag_body<'a>(text: &'a str, tag: &str) -> Option<&'a str> {
+    let open = format!("<{tag}>");
+    let start = text.find(&open)? + open.len();
+    let len = text[start..].find(&format!("</{tag}>"))?;
+    Some(text[start..start + len].trim())
+}
 
 /// Write `bodies` as claude session `session_id`, run in `cwd`: the file
 /// `--resume <session_id>` opens, `<projects>/<cwd as a dirname>/<id>.jsonl`
@@ -224,6 +310,7 @@ pub(crate) fn claude_one_shot_args(model: Option<&str>) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::transcript::SUBAGENT_TAG;
     use serde_json::json;
 
     #[test]
@@ -306,6 +393,110 @@ mod tests {
         let own =
             json!({ "type": "assistant", "isSidechain": true, "agentId": "abc", "message": {} });
         assert_eq!(claude_subagent_parent(&[notification, own], "abc"), None);
+    }
+
+    // ── prompt echoes ─────────────────────────────────────────────────────
+
+    #[test]
+    fn a_sessions_only_prompt_is_its_opening_user_record() {
+        let prompts = claude_prompt_texts(&session_lines());
+        let found: Vec<(usize, &str)> = prompts
+            .iter()
+            .enumerate()
+            .filter_map(|(i, p)| Some((i, p.as_deref()?)))
+            .collect();
+        // Line 0 is the metadata line `session_lines` opens with.
+        assert_eq!(found, [(1, "Add the spend chart.")]);
+    }
+
+    fn user(content: Value) -> Value {
+        json!({ "type": "user", "uuid": "u-1", "message": { "role": "user", "content": content } })
+    }
+
+    fn queued(prompt: Value, mode: &str) -> Value {
+        json!({ "type": "attachment", "uuid": "q-1", "attachment": {
+            "type": "queued_command", "prompt": prompt, "commandMode": mode } })
+    }
+
+    #[test]
+    fn a_prompt_sent_from_fletch_is_its_text_blocks() {
+        // `ManagedSession::send_user_message`: the text, then one block per
+        // attachment.
+        let sent = user(json!([
+            { "type": "text", "text": "look at this" },
+            { "type": "text", "text": "Attached file: /tmp/a.png" }
+        ]));
+        assert_eq!(
+            claude_prompt(&sent).as_deref(),
+            Some("look at this\nAttached file: /tmp/a.png")
+        );
+        assert_eq!(
+            claude_prompt(&user(json!(" yes\n"))).as_deref(),
+            Some("yes")
+        );
+    }
+
+    #[test]
+    fn a_prompt_sent_mid_turn_is_its_queued_command() {
+        let blocks = json!([{ "type": "text", "text": "also do X" }]);
+        assert_eq!(
+            claude_prompt(&queued(blocks, "prompt")).as_deref(),
+            Some("also do X")
+        );
+        assert_eq!(
+            claude_prompt(&queued(json!("also do Y"), "prompt")).as_deref(),
+            Some("also do Y")
+        );
+        let notification =
+            json!("<task-notification>\n<status>completed</status>\n</task-notification>");
+        assert_eq!(claude_prompt(&queued(notification, "prompt")), None);
+        assert_eq!(claude_prompt(&queued(json!("ls"), "bash")), None);
+        let other = json!({ "type": "attachment", "attachment": { "type": "hook_success" } });
+        assert_eq!(claude_prompt(&other), None);
+    }
+
+    #[test]
+    fn what_claude_wrote_itself_is_no_prompt() {
+        let flagged = |flag: &str| {
+            let mut record = user(json!("Continue from where you left off."));
+            record[flag] = json!(true);
+            record
+        };
+        for flag in NOT_TYPED {
+            assert_eq!(claude_prompt(&flagged(flag)), None, "{flag}");
+        }
+        let mut notification = user(json!(
+            "<task-notification><summary>done</summary></task-notification>"
+        ));
+        assert_eq!(claude_prompt(&notification), None);
+        notification["message"]["content"] = json!("Agent finished");
+        notification["origin"] = json!({ "kind": "task-notification" });
+        assert_eq!(claude_prompt(&notification), None);
+        // A tool result, an assistant record, and a sub-agent's prompt.
+        assert_eq!(
+            claude_prompt(&parent_record("completed", "abc", "toolu_1")),
+            None
+        );
+        let reply = json!({ "type": "assistant", "message": { "content": "yes" } });
+        assert_eq!(claude_prompt(&reply), None);
+        let mut nested = user(json!("look"));
+        nested[SUBAGENT_TAG] = json!("toolu_1");
+        assert_eq!(claude_prompt(&nested), None);
+        assert_eq!(claude_prompt(&user(json!([{ "type": "image" }]))), None);
+    }
+
+    #[test]
+    fn a_slash_command_is_the_line_that_was_typed() {
+        let logged = "<command-message>review</command-message>\n<command-name>/review</command-name>\n<command-args>  #12 </command-args>";
+        assert_eq!(
+            claude_prompt(&user(json!(logged))).as_deref(),
+            Some("/review #12")
+        );
+        let bare = "<command-name>compact</command-name>\n<command-message>compact</command-message>\n<command-args></command-args>";
+        assert_eq!(
+            claude_prompt(&user(json!(bare))).as_deref(),
+            Some("/compact")
+        );
     }
 
     // ── writing a session ─────────────────────────────────────────────────

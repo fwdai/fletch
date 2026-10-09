@@ -20,6 +20,7 @@
 // which is the end-of-turn signal.
 
 import { asRecord } from "@/adapters/shared/json";
+import { withRecordSeq } from "@/adapters/shared/record-seq";
 import {
   aliasToolInput,
   dedupAgainstLast,
@@ -55,7 +56,9 @@ function isToolError(state: Record<string, unknown>): boolean {
   return typeof meta.exit === "number" && meta.exit !== 0;
 }
 
-export function reduce(prev: ChatItem[], ev: RawEvent): ChatItem[] {
+export const reduce = withRecordSeq(reduceEvent);
+
+function reduceEvent(prev: ChatItem[], ev: RawEvent): ChatItem[] {
   const type = typeof ev.type === "string" ? ev.type : undefined;
 
   switch (type) {

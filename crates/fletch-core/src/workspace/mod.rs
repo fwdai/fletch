@@ -486,6 +486,10 @@ fn now_millis() -> i64 {
 /// verbatim shape. Normalized into ChatItems on read by the per-provider adapter.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct SessionRecord {
+    /// The session that produced the record. A stitched history read spans
+    /// several sessions whose seqs overlap, so `(session_id, seq)` is what
+    /// names a record there (and what a [`UserTurn::position`] is paired by).
+    pub session_id: String,
     /// Position in the owning session's own seq space. A stitched history read
     /// spans several sessions, so seqs there are only ordered per session.
     pub seq: i64,
@@ -513,6 +517,9 @@ pub struct SupersededSession {
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct UserTurn {
     pub turn_id: String,
+    /// The session the turn was sent in; its [`Self::position`] is in that
+    /// session's record seq space.
+    pub session_id: String,
     pub seq: i64,
     pub text: String,
     pub attachments: Vec<String>,
@@ -525,9 +532,52 @@ pub struct UserTurn {
     /// Wall-clock millis when the turn reached a terminal state. `None` while
     /// in flight — the live-timer signal.
     pub ended_at: Option<i64>,
+    /// How the turn ended ([`TurnOutcome::as_str`]), recorded by the backend
+    /// rather than inferred from the transcript, so a turn the provider never
+    /// logged (stopped before it wrote the prompt) still has a known fate.
+    /// `None` while in flight or awaiting delivery, and for rows written
+    /// before outcomes were recorded.
+    pub outcome: Option<String>,
+    /// Where the turn sits among its session's records (`TURN_POSITION`):
+    /// its prompt record's seq once paired, one past the records that existed
+    /// when it was sent for a turn that ended without the provider logging
+    /// it, `None` while in flight. What a renderer places the turn by.
+    pub position: Option<i64>,
     /// Shown through lineage from an ancestor session (see
     /// [`SessionRecord::inherited`]).
     pub inherited: bool,
+}
+
+/// How a user turn ended, as persisted in `session_user_turns.outcome`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TurnOutcome {
+    Completed,
+    /// The user stopped it.
+    Interrupted,
+    /// It errored, or its message was dropped before it ever ran.
+    Failed,
+}
+
+impl TurnOutcome {
+    /// The outcome of the turn a status transition closes. A pending user stop
+    /// wins over the status it lands on: the stop is why the turn ended, even
+    /// when the process it killed went down with an error.
+    pub fn closing(status: &AgentStatus, stop_pending: bool) -> Self {
+        match status {
+            _ if stop_pending => Self::Interrupted,
+            AgentStatus::Stopped => Self::Interrupted,
+            AgentStatus::Error => Self::Failed,
+            _ => Self::Completed,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Completed => "completed",
+            Self::Interrupted => "interrupted",
+            Self::Failed => "failed",
+        }
+    }
 }
 
 /// Stats for a turn that `mark_user_turn_ended` just closed, returned so the

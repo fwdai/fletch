@@ -23,6 +23,7 @@
 // the spawn call's id (`parent_tool_use_id`) so replay nests them under it.
 
 import { asRecord } from "@/adapters/shared/json";
+import { withRecordSeq } from "@/adapters/shared/record-seq";
 import {
   dedupAgainstLast,
   endTurn,
@@ -126,7 +127,7 @@ function appendErrorNotice(items: ChatItem[], text: string): ChatItem[] {
 
 // A replayed sub-agent record carries the spawn call's id; it reduces into
 // that tool_call's children rather than the main timeline.
-export const reduce = withSubagentRouting(reduceTop);
+export const reduce = withRecordSeq(withSubagentRouting(reduceTop));
 
 function reduceTop(prev: ChatItem[], ev: RawEvent): ChatItem[] {
   const type = typeof ev.type === "string" ? ev.type : undefined;

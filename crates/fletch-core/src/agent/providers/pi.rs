@@ -11,7 +11,8 @@ use serde_json::Value;
 
 use crate::agent::args::{model_args, push_opt};
 use crate::agent::transcript::{
-    jsonl_files_ending, records_with_id, replace_field, write_new_jsonl, RawRecord, ReadDiagnostics,
+    content_text, is_subagent, jsonl_files_ending, records_with_id, replace_field, typed_prompt,
+    write_new_jsonl, RawRecord, ReadDiagnostics,
 };
 use crate::agent::TurnArgs;
 use crate::error::{Error, Result};
@@ -104,6 +105,23 @@ pub(crate) fn pi_read(paths: &[PathBuf], diag: &mut ReadDiagnostics) -> Vec<RawR
         .collect();
     // Pi's JSONL lines carry a stable `id`.
     records_with_id(values, Some("id"))
+}
+
+pub(crate) fn pi_prompt_texts(records: &[Value]) -> Vec<Option<String>> {
+    records.iter().map(pi_prompt).collect()
+}
+
+/// The prompt a pi entry echoes: a `message` entry whose message is the
+/// user's (tool output is its own `toolResult` role). Its text blocks are
+/// joined as the frontend's `textOfBlocks` joins them.
+fn pi_prompt(record: &Value) -> Option<String> {
+    if is_subagent(record)
+        || record.get("type").and_then(Value::as_str) != Some("message")
+        || record.pointer("/message/role").and_then(Value::as_str) != Some("user")
+    {
+        return None;
+    }
+    typed_prompt(&content_text(record.pointer("/message/content")?, "")?)
 }
 
 /// Pi: `pi -p --mode json [--session <id>] <prompt>`. `-p` runs one turn
@@ -217,6 +235,16 @@ mod tests {
                                "provider": "anthropic", "model": "claude-opus-4-8",
                                "usage": usage, "stopReason": "stop"}}),
         ]
+    }
+
+    #[test]
+    fn a_sessions_prompt_is_its_user_message() {
+        let prompts = pi_prompt_texts(&session_lines());
+        // The header, model and thinking-level entries, the tool call, its
+        // result and the answer are not prompts.
+        let mut expected = vec![None; 7];
+        expected[3] = Some("ping".to_string());
+        assert_eq!(prompts, expected);
     }
 
     #[test]

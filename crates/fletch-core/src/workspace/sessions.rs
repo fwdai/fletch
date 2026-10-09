@@ -159,6 +159,7 @@ pub(super) fn query_newest_records(
                 let body = serde_json::from_str(&body_text)
                     .map_err(|e| Error::Other(format!("deserialize record body: {e}")))?;
                 Ok(SessionRecord {
+                    session_id: session_id.to_string(),
                     seq,
                     provider,
                     source,
@@ -687,7 +688,10 @@ mod tests {
         let pending = wm.read_all_pending_messages().unwrap();
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].1.turn_id, "q2");
-        assert!(wm.mark_user_turn_ended("a").unwrap().is_none());
+        assert!(wm
+            .mark_user_turn_ended("a", TurnOutcome::Completed)
+            .unwrap()
+            .is_none());
     }
 
     #[test]

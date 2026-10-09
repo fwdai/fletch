@@ -2,65 +2,72 @@
 
 use super::sessions::current_session_id;
 use super::*;
+use crate::agent::PromptTexts;
+
+/// Where a user turn sits among its session's records, as a SQL expression
+/// over `t` (`session_user_turns`) and `r` (its prompt record, LEFT JOINed on
+/// `native_id`): the prompt record's seq once paired. A turn that ended
+/// without one ran, or was stopped, without the provider logging its prompt,
+/// so it sits just past the records that existed when it was sent:
+/// `record_watermark + 1`. NULL for a turn still in flight (its echo may yet
+/// arrive) or a row from before watermarks, which have no position.
+///
+/// The cut a turn names is a record seq, and a turn placed this way shares
+/// it with whatever record came next, so a cut there drops it with that
+/// record's turn: an echo-less turn followed straight by another's prompt
+/// stays out of a branch cut before that next turn.
+pub(super) const TURN_POSITION: &str = "COALESCE(r.seq, CASE
+         WHEN t.native_id IS NULL AND t.ended_at IS NOT NULL THEN t.record_watermark + 1
+     END)";
 
 /// One session's user turns in seq order, each tagged `inherited` as given —
 /// the row decoder behind the stitched history read (`lineage`). `below`
-/// keeps only the turns whose matched prompt record lies below that seq; an
-/// unmatched turn has no position, so it is left out. `None` keeps every turn,
-/// pending ones included.
+/// keeps only the turns positioned below that seq ([`TURN_POSITION`]); a turn
+/// still in flight has no position yet, so it is left out. `None` keeps every
+/// turn, pending ones included.
 pub(super) fn query_turns(
     conn: &Connection,
     session_id: &str,
     below: Option<i64>,
     inherited: bool,
 ) -> Result<Vec<UserTurn>> {
-    let mut stmt = conn.prepare(
-        "SELECT t.turn_id, t.seq, t.text, t.attachments, t.native_id, t.started_at, t.ended_at
+    let mut stmt = conn.prepare(&format!(
+        "SELECT t.turn_id, t.seq, t.text, t.attachments, t.native_id, t.started_at, t.ended_at,
+                t.outcome, {TURN_POSITION}
          FROM session_user_turns t
          LEFT JOIN transcripts.session_records r ON r.session_id = t.session_id AND r.native_id = t.native_id
-         WHERE t.session_id = ?1 AND (?2 IS NULL OR r.seq < ?2)
+         WHERE t.session_id = ?1 AND (?2 IS NULL OR {TURN_POSITION} < ?2)
          ORDER BY t.seq ASC",
-    )?;
-    // (turn_id, seq, text, attachments, native_id, started_at, ended_at)
-    type UserTurnRow = (
-        String,
-        i64,
-        String,
-        String,
-        Option<String>,
-        Option<i64>,
-        Option<i64>,
-    );
-    let rows: Vec<UserTurnRow> = stmt
+    ))?;
+    let rows: Vec<(UserTurn, String)> = stmt
         .query_map(rusqlite::params![session_id, below], |r| {
             Ok((
-                r.get(0)?,
-                r.get(1)?,
-                r.get(2)?,
+                UserTurn {
+                    turn_id: r.get(0)?,
+                    session_id: session_id.to_string(),
+                    seq: r.get(1)?,
+                    text: r.get(2)?,
+                    attachments: Vec::new(),
+                    native_id: r.get(4)?,
+                    started_at: r.get(5)?,
+                    ended_at: r.get(6)?,
+                    outcome: r.get(7)?,
+                    position: r.get(8)?,
+                    inherited,
+                },
                 r.get(3)?,
-                r.get(4)?,
-                r.get(5)?,
-                r.get(6)?,
             ))
         })?
         .collect::<std::result::Result<_, rusqlite::Error>>()?;
     rows.into_iter()
-        .map(
-            |(turn_id, seq, text, attachments_text, native_id, started_at, ended_at)| {
-                let attachments = serde_json::from_str(&attachments_text)
-                    .map_err(|e| Error::Other(format!("deserialize attachments: {e}")))?;
-                Ok(UserTurn {
-                    turn_id,
-                    seq,
-                    text,
-                    attachments,
-                    native_id,
-                    started_at,
-                    ended_at,
-                    inherited,
-                })
-            },
-        )
+        .map(|(turn, attachments_text)| {
+            let attachments = serde_json::from_str(&attachments_text)
+                .map_err(|e| Error::Other(format!("deserialize attachments: {e}")))?;
+            Ok(UserTurn {
+                attachments,
+                ..turn
+            })
+        })
         .collect()
 }
 
@@ -108,15 +115,21 @@ impl WorkspaceManager {
         Ok(n > 0)
     }
 
-    /// Withdraw a turn that never reached the agent: the row
-    /// [`Self::insert_user_turn`] just created for a send that then failed,
-    /// before anything could match it. A matched turn is never removed.
-    pub fn delete_pending_user_turn(&self, turn_id: &str) -> Result<()> {
+    /// Withdraw turns that never reached the agent as themselves: the row
+    /// [`Self::insert_user_turn`] just created for a send that then failed, or
+    /// the rows of queued follow-ups that went out folded into another turn's
+    /// coalesced prompt. Only a row that never ran, never matched and has no
+    /// outcome is removed; any of those makes it a turn of its own.
+    pub fn delete_pending_user_turns(&self, turn_ids: &[String]) -> Result<()> {
         let conn = self.db.lock();
-        conn.execute(
-            "DELETE FROM session_user_turns WHERE turn_id = ?1 AND native_id IS NULL",
-            [turn_id],
+        let mut stmt = conn.prepare(
+            "DELETE FROM session_user_turns
+             WHERE turn_id = ?1 AND native_id IS NULL AND started_at IS NULL
+               AND outcome IS NULL",
         )?;
+        for turn_id in turn_ids {
+            stmt.execute([turn_id])?;
+        }
         Ok(())
     }
 
@@ -150,14 +163,18 @@ impl WorkspaceManager {
         Ok(())
     }
 
-    /// Close the in-flight turn at turn end by stamping `ended_at` on the open
-    /// turn (started, not yet ended) of the workspace's current session, and
-    /// return its stats for telemetry. `None` when none is open — e.g. the
+    /// Close the in-flight turn at turn end by stamping `ended_at` and
+    /// `outcome` on the open turn (started, not yet ended) of the workspace's
+    /// current session, and return its stats for telemetry. `None` when none is open — e.g. the
     /// resting Idle emitted at spawn, or a native turn with no timing row. At
     /// most one turn is ever open per session (each end closes the open turn
     /// before the next one starts), but the `WHERE` would safely close all open
     /// turns if one were ever stranded; duration then anchors on the earliest.
-    pub fn mark_user_turn_ended(&self, workspace_id: &str) -> Result<Option<ClosedTurn>> {
+    pub fn mark_user_turn_ended(
+        &self,
+        workspace_id: &str,
+        outcome: TurnOutcome,
+    ) -> Result<Option<ClosedTurn>> {
         let conn = self.db.lock();
         let Some(sid) = current_session_id(&conn, workspace_id) else {
             return Ok(None);
@@ -173,9 +190,9 @@ impl WorkspaceManager {
         };
         let now = now_millis();
         conn.execute(
-            "UPDATE session_user_turns SET ended_at = ?1
+            "UPDATE session_user_turns SET ended_at = ?1, outcome = ?3
              WHERE session_id = ?2 AND started_at IS NOT NULL AND ended_at IS NULL",
-            rusqlite::params![now, sid],
+            rusqlite::params![now, sid, outcome.as_str()],
         )?;
         // Records land before the terminal event that trips turn-end detection,
         // so the window is complete by the time we get here.
@@ -191,23 +208,58 @@ impl WorkspaceManager {
         }))
     }
 
-    /// Match pending (`native_id IS NULL`) user turns to their canonical
-    /// `session_records` user-message rows and fill in `native_id`. Run at
-    /// turn-end after transcript ingest. Matching: for each pending turn (seq
-    /// order) find the lowest-seq transcript record not already claimed, past
-    /// the turn's `record_watermark`, whose body contains the turn's
-    /// distinctive marker — the first attachment path (injected by the runner
-    /// as `Attached file: <path>`) when present, else the prompt text. Returns
-    /// the number newly associated.
+    /// Mark turns whose messages were dropped before they ever ran — queued
+    /// follow-ups an archive or discard throws away — as `failed`, so their
+    /// rows read as given up on rather than waiting forever. Only a row that
+    /// never started and has no outcome yet is touched; a message that was
+    /// queued without a row (the busy path writes none) has nothing to mark.
+    pub fn mark_user_turns_abandoned(&self, turn_ids: &[String]) -> Result<()> {
+        let conn = self.db.lock();
+        let mut stmt = conn.prepare(
+            "UPDATE session_user_turns SET outcome = ?2
+             WHERE turn_id = ?1 AND started_at IS NULL AND outcome IS NULL",
+        )?;
+        for turn_id in turn_ids {
+            stmt.execute(rusqlite::params![turn_id, TurnOutcome::Failed.as_str()])?;
+        }
+        Ok(())
+    }
+
+    /// Pair the pending (`native_id IS NULL`) user turns of the workspace's
+    /// current session with the transcript records that echo their prompts,
+    /// filling in `native_id`. Run after every transcript ingest. Returns the
+    /// number newly paired.
+    ///
+    /// Pairing is by position, the same for every provider: its reader names
+    /// which records are the session's own prompt echoes (`prompt_texts`), and
+    /// the pending turns, in send order, each take the first unclaimed echo
+    /// past both the turn's `record_watermark` and the echo the turn before it
+    /// took in this pass. Text only guards a pairing, it never finds one: the
+    /// echo must open with the turn's text as whole lines (so "fix" never takes
+    /// "fix the build"), or contain its first attachment path when it has
+    /// attachments (the runner adds an `Attached file: <path>` line, and a
+    /// path is the more distinctive of the two). The guard is what keeps a
+    /// prompt typed in the native terminal, which has no row, or a user record
+    /// the provider wrote itself from being taken by the wrong turn. At worst a
+    /// turn stays pending; a wrong claim would be worse, since every cut at the
+    /// turn (`resolve_anchor`) lands on the record it claimed.
+    ///
+    /// A turn left without an echo (stopped before the provider logged it)
+    /// stays pending without holding up the turns after it; it is placed by its
+    /// watermark instead (`query_turns`). Turns sent during one running turn
+    /// (claude's live injections), or before the previous turn's ingest
+    /// finished, share a watermark, and the order rule pairs them in send order.
     ///
     /// A record at or below the watermark was stored before the turn's row,
-    /// and so before its message went out (`insert_user_turn`): it can't be the
-    /// prompt. It can quote it, though, and a short prompt ("yes") is quoted
-    /// often; matched to that, every cut at the turn (`resolve_anchor`) would
-    /// land in the wrong place. A seq is fixed for good: a re-ingested record
-    /// keeps its first row (`append_session_records`). A row from before the
-    /// watermark existed has none, and matches any record, as it always did.
-    pub fn associate_pending_user_turns(&self, workspace_id: &str) -> Result<usize> {
+    /// and so before its message went out (`insert_user_turn`): it is never the
+    /// echo. A seq is fixed for good: a re-ingested record keeps its first row
+    /// (`append_session_records`). A row from before the watermark existed has
+    /// none, and is bounded by the order rule alone.
+    pub fn associate_pending_user_turns(
+        &self,
+        workspace_id: &str,
+        prompt_texts: PromptTexts,
+    ) -> Result<usize> {
         let conn = self.db.lock();
         let Some(sid) = current_session_id(&conn, workspace_id) else {
             return Ok(0);
@@ -228,17 +280,36 @@ impl WorkspaceManager {
             return Ok(0);
         }
 
-        // Transcript records, oldest first.
+        // Transcript records past the lowest watermark, oldest first: nothing
+        // at or below it can be any pending turn's echo.
+        let floor = pending
+            .iter()
+            .map(|(.., watermark)| watermark.unwrap_or(0))
+            .min()
+            .unwrap_or(0);
         let records: Vec<(i64, String, String)> = {
             let mut stmt = conn.prepare(
                 "SELECT seq, native_id, body FROM transcripts.session_records
-                 WHERE session_id = ?1 AND source = 'transcript' ORDER BY seq ASC",
+                 WHERE session_id = ?1 AND source = 'transcript' AND seq > ?2
+                 ORDER BY seq ASC",
             )?;
             let v = stmt
-                .query_map([&sid], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+                .query_map(rusqlite::params![sid, floor], |r| {
+                    Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+                })?
                 .collect::<std::result::Result<_, rusqlite::Error>>()?;
             v
         };
+        let bodies: Vec<serde_json::Value> = records
+            .iter()
+            .map(|(_, _, body)| serde_json::from_str(body).unwrap_or_default())
+            .collect();
+        // (seq, native_id, prompt text) of every echo, oldest first.
+        let echoes: Vec<(i64, &str, String)> = records
+            .iter()
+            .zip(prompt_texts(&bodies))
+            .filter_map(|((seq, nid, _), prompt)| Some((*seq, nid.as_str(), prompt?)))
+            .collect();
 
         // native_ids already claimed by any user turn for this session.
         let mut claimed: std::collections::HashSet<String> = {
@@ -254,34 +325,32 @@ impl WorkspaceManager {
 
         let tx = conn.unchecked_transaction()?;
         let mut associated = 0usize;
+        // The seq the previous turn of this pass took.
+        let mut taken = 0i64;
         for (turn_id, text, attachments_text, watermark) in pending {
             let attachments: Vec<String> =
                 serde_json::from_str(&attachments_text).unwrap_or_default();
-            // Distinctive needle: an attachment path beats the prompt text
-            // (paths are unique; text can be empty or duplicated).
-            let needle = attachments.first().cloned().unwrap_or(text);
-            if needle.is_empty() {
-                continue;
-            }
-            // The body is stored as serde_json::to_string(value), so characters
-            // like newlines appear JSON-escaped (\n) in the stored string. Escape
-            // the needle the same way so the substring match works for multi-line
-            // messages. serde_json::to_string wraps in quotes; strip them.
-            let needle_escaped = serde_json::to_string(&needle)
-                .map(|s| s[1..s.len() - 1].to_string())
-                .unwrap_or(needle.clone());
-            let hit = records.iter().find(|(seq, nid, body)| {
-                // `map_or`, not `is_none_or`: the crate's rust-version is 1.77.
-                watermark.map_or(true, |w| *seq > w)
-                    && !claimed.contains(nid)
-                    && body.contains(&needle_escaped)
-            });
-            if let Some((_, nid, _)) = hit {
+            let text = text.trim();
+            let fits = |echo: &str| match attachments.first() {
+                Some(path) => echo.contains(path.as_str()),
+                None => {
+                    !text.is_empty()
+                        && echo
+                            .strip_prefix(text)
+                            .is_some_and(|rest| rest.is_empty() || rest.starts_with('\n'))
+                }
+            };
+            let after = watermark.unwrap_or(0).max(taken);
+            let hit = echoes
+                .iter()
+                .find(|(seq, nid, echo)| *seq > after && !claimed.contains(*nid) && fits(echo));
+            if let Some((seq, nid, _)) = hit {
                 tx.execute(
                     "UPDATE session_user_turns SET native_id = ?1 WHERE turn_id = ?2",
                     rusqlite::params![nid, turn_id],
                 )?;
-                claimed.insert(nid.clone());
+                claimed.insert(nid.to_string());
+                taken = *seq;
                 associated += 1;
             }
         }

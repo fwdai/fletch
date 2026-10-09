@@ -1,4 +1,4 @@
-import { memo, useMemo } from "react";
+import { memo, type ReactNode, useMemo } from "react";
 import { AttachmentList } from "@/components/Composer/AttachmentList";
 import { Markdown } from "@/components/Markdown";
 import { CopyButton } from "@/components/ui/CopyButton";
@@ -17,6 +17,7 @@ import { getPresenter } from "./presenters";
 import { SubagentCard } from "./SubagentCard";
 import { ToolResultItem } from "./ToolResultItem";
 import { ToolRow } from "./ToolRow";
+import { UndeliveredMarker } from "./UndeliveredMarker";
 import { UserInput } from "./UserInput";
 import { isUserInputTool } from "./UserInput/parse";
 
@@ -91,6 +92,16 @@ export const MessageItem = memo(function MessageItem({
           attachments={item.attachments}
           turnId={turnId}
           rewind={agentId && item.turnId ? { agentId, turnId: item.turnId } : undefined}
+          undelivered={
+            item.undelivered && (
+              <UndeliveredMarker
+                reason={item.undelivered}
+                agentId={agentId}
+                text={item.text}
+                attachments={item.attachments}
+              />
+            )
+          }
         />
       );
     }
@@ -193,19 +204,22 @@ export const MessageItem = memo(function MessageItem({
 /** The user-prompt bubble, shared by the canonical `user_message` and the
  *  optimistic `queued_message` (a mid-turn follow-up not yet in the transcript)
  *  so both render identically aside from the queued marker. `rewind` names the
- *  agent and the turn a rewind to before this message goes back to. */
+ *  agent and the turn a rewind to before this message goes back to;
+ *  `undelivered` is the foot of a message the agent never read. */
 function UserBubble({
   text,
   attachments,
   queued,
   turnId,
   rewind,
+  undelivered,
 }: {
   text: string;
   attachments?: string[];
   queued?: boolean;
   turnId?: number;
   rewind?: { agentId: string; turnId: string };
+  undelivered?: ReactNode;
 }) {
   const display = stripSystemTurnMarker(stripInjectedInstructions(text));
   // A turn Fletch authored, not the user: the roadmap's settle review, a mid-run
@@ -234,6 +248,7 @@ function UserBubble({
           <AttachmentList paths={attachments} className="message-attachments" />
         )}
         {queued && <span className="m-user__queued-tag text-xs">queued</span>}
+        {undelivered}
       </div>
       {/* A still-queued follow-up isn't canonical yet, so skip its actions. */}
       {!queued && (
