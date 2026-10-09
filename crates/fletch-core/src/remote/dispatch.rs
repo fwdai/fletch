@@ -712,6 +712,7 @@ impl Dispatch for SupervisorDispatch {
                         a.issue_ref,
                         remote_purpose(a.purpose),
                         a.task,
+                        None,
                     )
                     .await)
                 }

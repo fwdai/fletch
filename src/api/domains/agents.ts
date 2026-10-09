@@ -45,6 +45,9 @@ export const agentsApi = {
      *  returned record and every snapshot already carry it — the sidebar row
      *  never shows an empty task while the process starts. */
     task?: string,
+    /** The provider account picked for this agent (an id, or `default`).
+     *  `undefined` follows the active account in Settings. */
+    account?: string,
   ) =>
     invoke<AgentRecord>("spawn_agent", {
       view,
@@ -61,6 +64,7 @@ export const agentsApi = {
       issueRef: issueRef ?? null,
       purpose: purpose ?? null,
       task: task ?? null,
+      account: account ?? null,
     }),
   /** A project's purpose-tagged chats, newest first (see `ROADMAP_PM_PURPOSE`).
    *  These never appear in the workspace snapshot, so the surface that owns

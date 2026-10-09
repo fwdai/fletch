@@ -14,6 +14,7 @@ import { spawnStageLabel } from "@/data/spawnStage";
 import { isAgentBusy } from "@/helpers";
 import { getLinearTeamId } from "@/storage/projectSettings";
 import { useAppStore } from "@/store";
+import { currentAccountId } from "./AccountPicker/choices";
 import { ChatWorkingStatus } from "./ChatWorkingStatus";
 
 export function ChatComposer({
@@ -46,6 +47,8 @@ export function ChatComposer({
   const send = useAppStore((s) => s.sendUserMessage);
   const setAgentEffort = useAppStore((s) => s.setAgentEffort);
   const setAgentModel = useAppStore((s) => s.setAgentModel);
+  const switchAccount = useAppStore((s) => s.switchAgentAccount);
+  const switchingAccount = useAppStore((s) => s.switchingAccount[agent.id] === true);
   const stop = useAppStore((s) => s.stop);
   const runLocalCommand = useAppStore((s) => s.runLocalCommand);
   const usage = useAppStore((s) => s.usage[agent.id]);
@@ -126,6 +129,11 @@ export function ChatComposer({
               setAgentModel(agent.id, model ?? null).catch((e) => {
                 console.error("set_agent_model failed", e);
               });
+            }}
+            account={{
+              current: currentAccountId(agent),
+              onPick: (id) => void switchAccount(agent.id, id),
+              locked: busy || switchingAccount,
             }}
             disabled={!canSend}
             placeholder={

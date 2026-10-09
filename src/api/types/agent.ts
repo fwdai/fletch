@@ -133,8 +133,9 @@ export interface AgentRecord {
    *  agents created before engine selection existed (they run sandbox-exec). */
   sandbox_engine?: string | null;
   /** The provider account (Settings › Providers) the agent's turns run under.
-   *  Stamped at creation from the active account; changing the active account
-   *  never moves it, only `switchAgentAccount` from the agent screen does.
+   *  Stamped at creation: the composer's pick, else the active account.
+   *  Changing the active account moves every agent; `switchAgentAccount` (the
+   *  composer's account strip) moves one until the next such change.
    *  Null for the CLI's own default account. */
   account?: string | null;
   /** The GitHub issue this workspace was started from (bare issue number as

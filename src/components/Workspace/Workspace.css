@@ -52,22 +52,10 @@
   color: var(--danger);
 }
 
-/* Account picker: a long account id is cut rather than pushing the header's
-   toggles off the strip. */
+/* The failed turn's "Switch account" menu anchor. */
 .acct-pick {
   flex-shrink: 1;
   min-width: 0;
-}
-.acct-pick-trigger {
-  gap: 5px;
-  max-width: 180px;
-  color: var(--fg-2);
-}
-.acct-pick-label {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 .acct-hint {
   flex-shrink: 0;

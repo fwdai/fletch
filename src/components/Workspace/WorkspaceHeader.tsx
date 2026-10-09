@@ -6,7 +6,6 @@ import { useAppStore } from "@/store";
 import { useGate } from "@/store/capabilities";
 import { firstLine, formatAge } from "@/util/format";
 import { useMinuteClock } from "@/util/hooks";
-import { AccountPicker } from "./AccountPicker";
 import { ForkMenu } from "./ForkMenu";
 import { ViewToggle } from "./ViewToggle";
 
@@ -63,8 +62,6 @@ export function WorkspaceHeader({ agent }: Props) {
           {age && <> · {age}</>}
         </div>
       </div>
-
-      <AccountPicker agent={agent} trigger="header" />
 
       {nativeView && (
         <ViewToggle

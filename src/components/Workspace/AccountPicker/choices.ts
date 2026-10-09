@@ -46,8 +46,8 @@ export function accountChoices(accounts: ProviderAccount[], current: string): Ac
 
 /** `hidden`: no switching here (see `useCanSwitchAccount`).
  *  `single`: at most one account in the loaded list is not signed out, so
- *  there is nothing to switch to; the header hides and the hint points at
- *  Settings instead.
+ *  there is nothing to switch to; the composer's picker hides its account
+ *  and the hint points at Settings instead.
  *  `disabled`: a turn or a switch is running; the host refuses until it ends. */
 export type PickerState = "hidden" | "single" | "disabled" | "ready";
 

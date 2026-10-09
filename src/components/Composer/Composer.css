@@ -330,6 +330,20 @@
   max-width: 170px;
   color: var(--fg-2);
 }
+/* The account, only when the provider has several: muted, and the first part
+   to give way when the chip runs out of room. */
+.model-chip-acct {
+  flex-shrink: 2;
+  min-width: 0;
+  max-width: 110px;
+  color: var(--fg-3);
+}
+.model-chip-acct::before {
+  content: "· ";
+}
+.model-chip-acct.is-spent {
+  color: var(--warn);
+}
 
 /* composer · token usage meter */
 .usage {

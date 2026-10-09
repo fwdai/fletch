@@ -51,6 +51,65 @@
   height: 1px;
   background: var(--bd-soft);
 }
+/* A section's trailing action (the account strip's "Manage accounts"). */
+.model-sect-act {
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  margin: -3px -4px -3px 0;
+  border-radius: 5px;
+  color: var(--fg-3);
+  transition:
+    background 0.12s var(--ease),
+    color 0.12s;
+}
+.model-sect-act:hover {
+  background: var(--hover);
+  color: var(--fg-0);
+}
+/* Account strip: one pill per account, wrapping when there are many. */
+.acct-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 2px 6px 6px;
+}
+.acct-pill {
+  gap: 5px;
+  min-width: 0;
+  max-width: 100%;
+  padding: 3px 9px;
+  border: 1px solid var(--bd-soft);
+  border-radius: 999px;
+  color: var(--fg-1);
+  transition:
+    background 0.12s var(--ease),
+    border-color 0.12s;
+}
+.acct-pill:not(.is-disabled):not(.active):hover {
+  background: var(--hover);
+}
+.acct-pill.active {
+  border-color: var(--accent);
+  background: var(--selected);
+  color: var(--fg-0);
+}
+/* .is-disabled, not :disabled — aria-disabled keeps the tooltip reachable. */
+.acct-pill.is-disabled {
+  opacity: 0.42;
+  cursor: default;
+}
+.acct-pill-dot {
+  flex-shrink: 0;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--warn);
+}
+.acct-strip-note {
+  padding: 0 10px 6px;
+  color: var(--fg-3);
+}
 /* Coding agent row: name, version, chevron. Hovering opens the side panel. */
 .model-agent-row {
   width: 100%;
@@ -70,7 +129,7 @@
   background: var(--selected);
 }
 /* .is-disabled, not :disabled — the row uses aria-disabled so it stays
- * hover-capable and can surface its tooltip (see ModelPicker.tsx). */
+ * hover-capable and can surface its tooltip (see AgentList.tsx). */
 .model-agent-row.is-disabled {
   opacity: 0.42;
   cursor: default;

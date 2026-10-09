@@ -925,5 +925,31 @@ fn selecting_a_signed_out_account_in_settings_is_refused() {
     });
 }
 
+/// A spawn that picks a signed-in account is stamped with it. (The default's
+/// probe reads this machine's own login, so it isn't asserted here.)
+#[test]
+fn a_spawn_picks_a_signed_in_account() {
+    in_root(|root| async move {
+        signed_in(&root, "home");
+        assert_eq!(
+            chosen_account("claude", " home ").await.unwrap().as_deref(),
+            Some("home")
+        );
+    });
+}
+
+#[test]
+fn a_spawn_picking_a_missing_or_signed_out_account_is_refused() {
+    in_root(|root| async move {
+        signed_out(&root, "home");
+        let missing = chosen_account("claude", "work").await.unwrap_err().to_string();
+        assert!(missing.contains("No claude account named `work`"), "{missing}");
+        let out = chosen_account("claude", "home").await.unwrap_err().to_string();
+        assert!(out.contains("`home` account isn't signed in"), "{out}");
+        let none = chosen_account("cursor", "home").await.unwrap_err().to_string();
+        assert!(none.contains("no accounts"), "{none}");
+    });
+}
+
 #[cfg(target_os = "macos")]
 mod launched;

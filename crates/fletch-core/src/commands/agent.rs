@@ -11,7 +11,7 @@ use crate::workspace::{AgentRecord, AgentView};
 /// The user-spawn field mapping: the argument defaults every caller funnels
 /// through on the way to `Supervisor::spawn_agent`. Shared by the desktop's
 /// `spawn_agent` command and the remote dispatcher, which passes `None` for the
-/// custom-agent fields the mobile surface does not expose.
+/// custom-agent fields and the account the mobile surface does not expose.
 #[allow(clippy::too_many_arguments)]
 pub async fn spawn_agent_impl(
     sup: Arc<Supervisor>,
@@ -30,6 +30,7 @@ pub async fn spawn_agent_impl(
     issue_ref: Option<String>,
     purpose: Option<String>,
     task: Option<String>,
+    account: Option<String>,
 ) -> Result<AgentRecord> {
     sup.spawn_agent(
         ctx,
@@ -62,6 +63,7 @@ pub async fn spawn_agent_impl(
             purpose,
             // The first prompt, when the caller sends it right after spawning.
             task,
+            account,
         },
     )
     .await

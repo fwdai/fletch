@@ -8,7 +8,7 @@ import type { ViewItem } from "../messages/pair";
 // Codex: "You've hit your usage limit", relayed "401 Unauthorized" / "429 Too
 // Many Requests" bodies, "could not be refreshed", "Please sign in again". Kept
 // to phrases an agent's own prose about auth code or rate limiters won't hit;
-// a miss only costs the hint, the header picker is always there.
+// a miss only costs the hint, the composer's picker is always there.
 const REPLY_ERROR =
   /API Error: 4(01|29)\b|run \/login\b|limit reached|hit your (\w+ )?limit|token has expired|401 Unauthorized|429 Too Many Requests|could not be refreshed|please sign in again|not signed in|not logged in|invalid api key|credit balance is too low/i;
 

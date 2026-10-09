@@ -4,7 +4,7 @@
 // announces it on `settings:changed`; these helpers fold such an announcement
 // into the map so the Settings pane follows without asking again.
 
-import { type AccountLimits, LIMITS_SETTING_PREFIX } from "@/api/types/providers";
+import { type AccountLimits, LIMITS_SETTING_PREFIX, type LimitWindow } from "@/api/types/providers";
 
 export type LimitsByProvider = Record<string, Record<string, AccountLimits>>;
 
@@ -46,4 +46,17 @@ export function withLimitsChange(
   if (row) forProvider[parts.account] = row;
   else delete forProvider[parts.account];
   return { ...current, [parts.provider]: forProvider };
+}
+
+/** The plan window an account has used up and that hasn't reset since the
+ *  reading, or null while it has room (or nothing is known). With both spent,
+ *  the one that resets last, since that is when the account frees up. */
+export function spentWindow(row: AccountLimits | undefined, nowMs: number): LimitWindow | null {
+  const limits = row?.limits;
+  if (!limits) return null;
+  const resetsMs = (w: LimitWindow) => (w.resets_at === null ? Infinity : w.resets_at * 1000);
+  const spent = [limits.five_hour, limits.seven_day].filter(
+    (w): w is LimitWindow => w !== null && w.percent >= 100 && resetsMs(w) > nowMs,
+  );
+  return spent.sort((a, b) => resetsMs(b) - resetsMs(a))[0] ?? null;
 }
