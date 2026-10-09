@@ -30,6 +30,19 @@ describe("accountActions", () => {
     expect(ids(account({ id: "default", managed: false, status: "signed_out" }))).toEqual([]);
   });
 
+  it("offers re-authenticate first, only when asked and only to a signed-in account", () => {
+    const ids = (a: ProviderAccount) => accountActions(a, "Claude Code", true).map((x) => x.id);
+    expect(ids(account({}))).toEqual(["reauth", "sign_out", "delete"]);
+    expect(ids(account({ status: "signed_out" }))).toEqual(["delete"]);
+    expect(ids(account({ id: "default", managed: false }))).toEqual(["reauth", "sign_out"]);
+  });
+
+  it("re-authenticate runs without a confirm", () => {
+    const [reauth] = accountActions(account({}), "Claude Code", true);
+    expect(reauth.id).toBe("reauth");
+    expect(reauth.confirm).toBeUndefined();
+  });
+
   it("warns that signing the default out signs the terminal out too", () => {
     const [signOut] = accountActions(account({ id: "default", managed: false }), "Claude Code");
     expect(signOut.confirm).toBe(
