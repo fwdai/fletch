@@ -151,8 +151,10 @@ describe("codexAdapter", () => {
         lines.map((_, i) => 100 + i),
       ),
     );
+    // The prompt carries its response_item twin's record (105), not the
+    // event's (106): the backend positions the turn there.
     expect(items.map((i) => [i.kind, i.recordSeq])).toEqual([
-      ["user_message", 106],
+      ["user_message", 105],
       ["agent_message", 109],
       ["tool_call", 111],
       ["tool_result", 111],

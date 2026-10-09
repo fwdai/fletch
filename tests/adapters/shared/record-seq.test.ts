@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import { reduce as claudeReduce } from "@/adapters/claude/reduce";
 import { getAdapter } from "@/adapters/index";
 import type { ChatItem, RawEvent } from "@/adapters/types";
+import { codexPromptIndices, readRecordFixture } from "./prompt-records";
 
 const adaptersDir = join(fileURLToPath(new URL(".", import.meta.url)), "..");
 
@@ -81,5 +82,58 @@ describe("recordSeq across records", () => {
       { kind: "user_message", text: "hi", recordSeq: 1 },
       { kind: "notice", subtype: "turn_end", text: "success", recordSeq: 2 },
     ]);
+  });
+});
+
+describe("prompt bubbles sit on the record the backend positions their turn on", () => {
+  // A turn row overlays only the user_message stamped with its position, so
+  // the two must agree or the prompt renders twice (bubble + row).
+  const seqOf = (i: number) => 100 + i; // offset so a seq can't pass for an index
+  function promptSeqs(provider: string, lines: Record<string, unknown>[]) {
+    const adapter = getAdapter(provider);
+    const items = adapter
+      .normalizeTranscript(
+        lines,
+        lines.map((_, i) => seqOf(i)),
+      )
+      .reduce<ChatItem[]>((acc, ev) => adapter.reduce(acc, ev), []);
+    return { items, prompts: items.filter((it) => it.kind === "user_message") };
+  }
+
+  it.each(["codex/fixtures/rollout.jsonl", "codex/fixtures/rollout-0153.jsonl"])(
+    "codex (%s): the response_item twin, else the event",
+    (fixture) => {
+      const lines = readRecordFixture(fixture);
+      const expected = codexPromptIndices(lines).map(seqOf);
+      expect(expected.length).toBeGreaterThan(0);
+      expect(promptSeqs("codex", lines).prompts.map((it) => it.recordSeq)).toEqual(expected);
+    },
+  );
+
+  it("codex: an event whose twin is absent or differs sits on itself", () => {
+    // 0.135: the user response_item before the event is AGENTS.md context.
+    const lines = readRecordFixture("codex/fixtures/rollout.jsonl");
+    const at = lines.findIndex((l) => (l.payload as { type?: string }).type === "user_message");
+    expect(codexPromptIndices(lines)).toEqual([at]);
+  });
+
+  it("claude: the user record itself", () => {
+    // `claude_prompt`: a top-level, unflagged `user` record that is no tool
+    // result. A slash command is one too, but draws as a notice, not a bubble.
+    const lines = readRecordFixture("claude/fixtures/transcript.jsonl");
+    const isPrompt = (l: Record<string, unknown>) =>
+      l.type === "user" &&
+      !["isMeta", "isSynthetic", "isSidechain", "isCompactSummary"].some((f) => l[f] === true) &&
+      !JSON.stringify(l).includes('"tool_result"');
+    const isSlash = (l: Record<string, unknown>) => JSON.stringify(l).includes("<command-name>");
+    const expected = lines.flatMap((l, i) => (isPrompt(l) && !isSlash(l) ? [seqOf(i)] : []));
+    const { items, prompts } = promptSeqs("claude", lines);
+    expect(expected.length).toBeGreaterThan(0);
+    expect(prompts.map((it) => it.recordSeq)).toEqual(expected);
+    const slash = lines.findIndex(isSlash);
+    expect(items.find((it) => it.recordSeq === seqOf(slash))).toMatchObject({
+      kind: "notice",
+      subtype: "slash_command",
+    });
   });
 });

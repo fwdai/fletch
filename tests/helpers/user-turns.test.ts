@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { ChatItem } from "@/adapters";
 import type { SessionRecord, UserTurn } from "@/api";
 import { mergeUserTurns, reduceRecords, turnsOnPage } from "@/helpers";
+import { codexPromptIndices, readRecordFixture } from "../adapters/shared/prompt-records";
 
 const OWN = "own";
 const PARENT = "parent";
@@ -305,6 +306,56 @@ describe("mergeUserTurns over reduced records", () => {
       ["agent_message", "a", undefined],
       ["user_message", "same", "o"],
       ["agent_message", "b", undefined],
+    ]);
+  });
+
+  // Each prompt paired at the record the backend positions it on renders
+  // exactly once, as its turn: the adapter's bubble carries that record.
+  const recordsOf = (provider: string, bodies: Record<string, unknown>[]): SessionRecord[] =>
+    bodies.map((body, i) => ({
+      session_id: OWN,
+      seq: i + 1,
+      provider,
+      source: "transcript",
+      native_id: `n${i + 1}`,
+      agent_version: null,
+      body,
+    }));
+  const prompts = (items: ChatItem[]) =>
+    items.flatMap((it) => (it.kind === "user_message" ? [[it.text, it.turnId]] : []));
+
+  it.each(["codex/fixtures/rollout.jsonl", "codex/fixtures/rollout-0153.jsonl"])(
+    "draws each codex prompt once (%s)",
+    (fixture) => {
+      const records = recordsOf("codex", readRecordFixture(fixture));
+      const turns = codexPromptIndices(records.map((r) => r.body)).map((at, n) =>
+        echoed(`t${n}`, "run echo hello", records[at].seq),
+      );
+      expect(turns.length).toBeGreaterThan(0);
+      const out = mergeUserTurns(reduceRecords("codex", records), turns);
+      expect(prompts(out)).toEqual(turns.map((t) => ["run echo hello", t.turn_id]));
+    },
+  );
+
+  it("draws each opencode prompt once, its parts joined", () => {
+    const records = recordsOf("opencode", [
+      { id: "m1", role: "user", sessionID: "s" },
+      { id: "p1", type: "text", messageID: "m1", text: "fix it" },
+      { id: "p2", type: "text", messageID: "m1", text: "and test it" },
+      { id: "m2", role: "assistant", sessionID: "s" },
+      { id: "p3", type: "text", messageID: "m2", text: "done" },
+      { id: "m3", role: "user", sessionID: "s" },
+      { id: "p4", type: "text", messageID: "m3", text: "thanks" },
+    ]);
+    // `opencode_prompt_texts` positions each prompt on its user message blob.
+    const out = mergeUserTurns(reduceRecords("opencode", records), [
+      echoed("t1", "fix it", records[0].seq),
+      echoed("t2", "thanks", records[5].seq),
+    ]);
+    expect(shape(out)).toEqual([
+      ["user_message", "fix it\nand test it", "t1"],
+      ["agent_message", "done", undefined],
+      ["user_message", "thanks", "t2"],
     ]);
   });
 });
