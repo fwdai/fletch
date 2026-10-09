@@ -101,6 +101,26 @@ impl WorkspaceManager {
         Ok(ids)
     }
 
+    /// Every live (non-archived) agent of `provider` with its account stamp,
+    /// for the active-account fan-out (`Supervisor::follow_active_account`).
+    /// The provider is read off the workspace's sessions, where it lives, the
+    /// same way `live_agents_on_account` finds it.
+    pub fn agents_on_provider(&self, provider: &str) -> Result<Vec<(String, Option<String>)>> {
+        let conn = self.db.lock();
+        let mut stmt = conn.prepare(
+            "SELECT w.id, w.provider_account FROM workspaces w
+              WHERE w.archived_at IS NULL
+                AND EXISTS (SELECT 1 FROM sessions s
+                             WHERE s.workspace_id = w.id AND s.provider = ?1)
+              ORDER BY w.created_at",
+        )?;
+        let rows = stmt
+            .query_map([provider], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(rows)
+    }
+
     pub fn add_agent(&self, record: &mut AgentRecord) -> Result<()> {
         let conn = self.db.lock();
         let tx = conn.unchecked_transaction()?;

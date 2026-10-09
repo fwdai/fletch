@@ -741,5 +741,189 @@ fn a_target_removed_before_the_restamp_is_refused() {
     });
 }
 
+// --- the active account moves the whole fleet ---
+
+/// A second resting agent `id` of `provider` stamped `account`, in its own
+/// checkout under `dir`, in the shared-db supervisor.
+async fn add_agent(sup: &Supervisor, dir: &Path, id: &str, provider: &str, account: Option<&str>) {
+    let checkout = committed_repo(dir, id).await;
+    let mut record = record_in_checkouts(sup, id, std::slice::from_ref(&checkout));
+    record.provider = provider.into();
+    record.account = account.map(str::to_string);
+    sup.workspace.add_agent(&mut record).unwrap();
+}
+
+fn stamp_of(sup: &Supervisor, id: &str) -> Option<String> {
+    sup.workspace.agent(id).unwrap().account
+}
+
+#[test]
+fn the_active_account_restamps_every_resting_agent_of_the_provider() {
+    in_root(|root| async move {
+        let td = tempfile::tempdir().unwrap();
+        signed_in(&root, "home");
+        let (sup, ctx, _db) = shared_db_agent(td.path()).await;
+        add_agent(&sup, td.path(), "denali", "claude", None).await;
+        add_agent(&sup, td.path(), "rainier", "claude", Some("home")).await;
+        add_agent(&sup, td.path(), "shasta", "codex", Some("work")).await;
+
+        let moved = sup
+            .follow_active_account(&ctx, "claude", Some("home"))
+            .await
+            .unwrap();
+
+        assert_eq!(moved, 2);
+        assert_eq!(stamp(&sup).as_deref(), Some("home"));
+        assert_eq!(stamp_of(&sup, "denali").as_deref(), Some("home"));
+        assert_eq!(stamp_of(&sup, "rainier").as_deref(), Some("home"));
+        assert_eq!(
+            stamp_of(&sup, "shasta").as_deref(),
+            Some("work"),
+            "another provider's agents stay"
+        );
+        assert!(
+            sup.agents.lock().is_empty(),
+            "resting agents launch nothing"
+        );
+    });
+}
+
+#[test]
+fn the_active_account_emits_one_workspace_change_and_none_when_nothing_moves() {
+    in_root(|root| async move {
+        let td = tempfile::tempdir().unwrap();
+        signed_in(&root, "home");
+        let (ctx, sink, _db) = crate::host::ctx::test_ctx();
+        let sup = Arc::new(Supervisor::new(Arc::new(
+            crate::workspace::WorkspaceManager::new(ctx.db.clone()),
+        )));
+        add_agent(&sup, td.path(), AGENT, "claude", Some("work")).await;
+
+        sup.follow_active_account(&ctx, "claude", Some("home"))
+            .await
+            .unwrap();
+        assert_eq!(event_names(&sink), vec!["workspace:changed".to_string()]);
+
+        let moved = sup
+            .follow_active_account(&ctx, "claude", Some("home"))
+            .await
+            .unwrap();
+        assert_eq!(moved, 0);
+        assert_eq!(event_names(&sink).len(), 1);
+    });
+}
+
+#[test]
+fn the_active_account_skips_archived_agents() {
+    in_root(|root| async move {
+        let td = tempfile::tempdir().unwrap();
+        signed_in(&root, "home");
+        let (sup, ctx, _db) = shared_db_agent(td.path()).await;
+        sup.workspace.begin_archive(AGENT).unwrap();
+
+        let moved = sup
+            .follow_active_account(&ctx, "claude", Some("home"))
+            .await
+            .unwrap();
+
+        assert_eq!(moved, 0);
+        assert_eq!(stamp(&sup).as_deref(), Some("work"));
+    });
+}
+
+/// The turn in flight finishes on the token it has; the respawn the turn
+/// end drains relaunches the agent under the new stamp.
+#[test]
+fn a_busy_agent_is_restamped_and_flagged_for_the_turn_end_respawn() {
+    in_root(|root| async move {
+        let td = tempfile::tempdir().unwrap();
+        signed_in(&root, "home");
+        let (sup, ctx, _db) = shared_db_agent(td.path()).await;
+        live_process(&sup, td.path());
+        sup.statuses
+            .lock()
+            .insert(AGENT.into(), AgentStatus::Running);
+        sup.logins.lock().rejected.insert(AGENT.into(), 42);
+
+        sup.follow_active_account(&ctx, "claude", Some("home"))
+            .await
+            .unwrap();
+        // The deferred respawn re-flags itself once it finds the agent busy.
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        assert_eq!(stamp(&sup).as_deref(), Some("home"));
+        assert!(sup.respawn_pending.lock().contains(AGENT));
+        assert!(
+            sup.agents.lock().contains_key(AGENT),
+            "mid-turn, nothing stopped"
+        );
+        assert!(!sup.logins.lock().rejected.contains_key(AGENT));
+    });
+}
+
+#[test]
+fn an_errored_resting_agent_is_rested_on_the_active_account() {
+    in_root(|root| async move {
+        let td = tempfile::tempdir().unwrap();
+        signed_in(&root, "home");
+        let (sup, ctx, _db) = shared_db_agent(td.path()).await;
+        sup.set_status(&ctx, AGENT, AgentStatus::Error, Some("limit".into()));
+
+        sup.follow_active_account(&ctx, "claude", Some("home"))
+            .await
+            .unwrap();
+
+        assert_eq!(stamp(&sup).as_deref(), Some("home"));
+        assert_ne!(sup.status_of(AGENT), Some(AgentStatus::Error));
+        assert_ne!(
+            sup.workspace.agent(AGENT).unwrap().status,
+            AgentStatus::Error
+        );
+    });
+}
+
+#[test]
+fn selecting_an_account_in_settings_moves_the_fleet_onto_it() {
+    in_root(|root| async move {
+        let td = tempfile::tempdir().unwrap();
+        signed_in(&root, "home");
+        let (sup, ctx, _db) = shared_db_agent(td.path()).await;
+
+        crate::commands::set_active_provider_account_impl(&sup, &ctx, "claude", Some("home"))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            crate::database::get_setting(&ctx.db.lock(), &accounts::active_setting_key("claude"))
+                .as_deref(),
+            Some("home")
+        );
+        assert_eq!(stamp(&sup).as_deref(), Some("home"));
+    });
+}
+
+/// The whole fleet would launch on a login the account doesn't have.
+#[test]
+fn selecting_a_signed_out_account_in_settings_is_refused() {
+    in_root(|root| async move {
+        let td = tempfile::tempdir().unwrap();
+        signed_out(&root, "home");
+        let (sup, ctx, _db) = shared_db_agent(td.path()).await;
+
+        let why =
+            crate::commands::set_active_provider_account_impl(&sup, &ctx, "claude", Some("home"))
+                .await
+                .unwrap_err()
+                .to_string();
+
+        assert!(why.contains("`home` account isn't signed in"), "{why}");
+        assert_eq!(
+            crate::database::get_setting(&ctx.db.lock(), &accounts::active_setting_key("claude")),
+            None
+        );
+        assert_eq!(stamp(&sup).as_deref(), Some("work"));
+    });
+}
+
 #[cfg(target_os = "macos")]
 mod launched;

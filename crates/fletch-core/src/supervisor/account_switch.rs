@@ -49,11 +49,17 @@ fn target_stamp(record: &AgentRecord, requested: &str) -> Result<Option<String>>
     Ok(target)
 }
 
+/// `Some(id)` for a managed account, `None` for the default however it is
+/// spelled — the one comparison every stamp check uses.
+pub(super) fn managed(account: Option<&str>) -> Option<&str> {
+    account.filter(|id| !accounts::is_default(id))
+}
+
 /// Refuse a target whose login the probe reads as signed out. `Unknown` is let
 /// through: the launch is the final word, and a wrong refusal would send the
 /// user chasing a login they already have. Blocking: a Keychain presence check
 /// or a file read.
-fn ensure_signed_in(provider: &str, target: Option<&str>) -> Result<()> {
+pub(super) fn ensure_signed_in(provider: &str, target: Option<&str>) -> Result<()> {
     let (status, detail) =
         accounts::probe_account(provider, target.unwrap_or(accounts::DEFAULT_ACCOUNT))?;
     if status != AuthStatus::SignedOut {
@@ -156,20 +162,7 @@ impl Supervisor {
         let rejection = self.take_rejection(agent_id);
         let live = self.agents.lock().contains_key(agent_id);
         if !live {
-            // The failure was the old account's; the next launch is the new
-            // one's to judge. No process, so no transition: the agent just
-            // rests as its record says.
-            if self.effective_status(agent_id, &record) == AgentStatus::Error {
-                if let Err(e) = self.workspace.clear_agent_error(agent_id) {
-                    tracing::warn!(agent_id, error = %e, "clearing the old account's error failed");
-                }
-                self.statuses.lock().remove(agent_id);
-                let rested = self
-                    .workspace
-                    .agent(agent_id)
-                    .map_or(AgentStatus::Idle, |r| r.status);
-                emit_status(ctx.sink.as_ref(), agent_id, rested, None);
-            }
+            self.rest_after_restamp(ctx, agent_id, &record);
             return Ok((record.account, target, false));
         }
 
@@ -191,6 +184,92 @@ impl Supervisor {
         self.restore_rejection(agent_id, rejection);
         emit_workspace_changed(ctx.sink.as_ref());
         Err(refusal)
+    }
+
+    /// A restamped session with no process: the failure it may be resting in
+    /// was the old account's, and the next launch is the new one's to judge.
+    /// No process, so no transition: the agent just rests as its record says.
+    fn rest_after_restamp(&self, ctx: &Arc<EngineCtx>, agent_id: &str, record: &AgentRecord) {
+        if self.effective_status(agent_id, record) != AgentStatus::Error {
+            return;
+        }
+        if let Err(e) = self.workspace.clear_agent_error(agent_id) {
+            tracing::warn!(agent_id, error = %e, "clearing the old account's error failed");
+        }
+        self.statuses.lock().remove(agent_id);
+        let rested = self
+            .workspace
+            .agent(agent_id)
+            .map_or(AgentStatus::Idle, |r| r.status);
+        emit_status(ctx.sink.as_ref(), agent_id, rested, None);
+    }
+
+    /// Move every live agent of `provider` onto `target` (`None` for the
+    /// default), the account Settings just made active: the selection names
+    /// the account every agent runs under, not only new ones. Each agent is
+    /// restamped at once, so the header and the usage attribution follow the
+    /// selection immediately; one with a live process is relaunched on its
+    /// own session the way a binary swap or a model change is
+    /// (`respawn_agent_preserving_session`): now when it is idle, at the next
+    /// turn end when it is mid-turn (the turn in flight finishes on the token
+    /// it has). Codex rebuilds its per-turn handle the same way, so its next
+    /// turn copies the new account's login. Rested sessions take the stamp
+    /// and drop an error the old account left. Agents already on `target`
+    /// (one switched there by hand) are left alone. The caller holds the
+    /// provider's account lock, so the target is still the signed-in account
+    /// it checked. Returns how many agents moved.
+    pub async fn follow_active_account(
+        self: &Arc<Self>,
+        ctx: &Arc<EngineCtx>,
+        provider: &str,
+        target: Option<&str>,
+    ) -> Result<usize> {
+        let target = managed(target);
+        let mut moved = 0;
+        for (agent_id, stamp) in self.workspace.agents_on_provider(provider)? {
+            if managed(stamp.as_deref()) == target {
+                continue;
+            }
+            let record = match self.workspace.agent(&agent_id) {
+                Ok(record) => record,
+                Err(_) => continue,
+            };
+            if let Err(e) = self.workspace.update_agent_account(&agent_id, target) {
+                tracing::warn!(agent_id, error = %e, "restamping the agent onto the active account failed");
+                continue;
+            }
+            moved += 1;
+            // The old account's rejected-token mark and spent retry were its
+            // own, and a token resolved for it must not sign in this launch.
+            self.take_rejection(&agent_id);
+            self.discard_prefetch(&agent_id);
+            if self.agents.lock().contains_key(&agent_id) {
+                // The process runs on the old login until the relaunch; a
+                // limit its turn hits meanwhile is the old account's
+                // (`observe_limit`).
+                self.mark_moved(&agent_id);
+                self.respawn_pending.lock().insert(agent_id.clone());
+                let sup = self.clone();
+                let ctx = ctx.clone();
+                crate::host::spawn(async move {
+                    // Fire-and-forget: a failed restart is logged and set on
+                    // the agent's status inside the call.
+                    let _ = sup.respawn_agent_preserving_session(&ctx, &agent_id).await;
+                });
+            } else {
+                self.rest_after_restamp(ctx, &agent_id, &record);
+            }
+        }
+        if moved > 0 {
+            tracing::info!(
+                provider,
+                to = label(target),
+                moved,
+                "moved the provider's agents onto the active account"
+            );
+            emit_workspace_changed(ctx.sink.as_ref());
+        }
+        Ok(moved)
     }
 }
 

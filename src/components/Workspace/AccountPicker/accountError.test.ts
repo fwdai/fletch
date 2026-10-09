@@ -49,6 +49,16 @@ describe("endedOnAccountError", () => {
     expect(endedOnAccountError(items)).toBe(true);
   });
 
+  it("flags claude's session limit reported in the reply", () => {
+    const items = [
+      user("go"),
+      reply("You've hit your session limit · resets 1pm (Asia/Bangkok)"),
+      error("Turn failed"),
+      turnEnd("error"),
+    ];
+    expect(endedOnAccountError(items)).toBe(true);
+  });
+
   it("flags claude's five-hour limit reported in the reply", () => {
     const items = [
       user("go"),

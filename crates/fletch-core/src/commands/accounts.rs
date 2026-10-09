@@ -91,10 +91,16 @@ pub async fn remove_provider_account_impl(ctx: &EngineCtx, provider: &str, id: &
     accounts::remove_account_dir(provider, id)
 }
 
-/// Name the account new agents of `provider` use. `None` or the default id
-/// means the CLI's own login. A managed id must exist on disk.
-pub fn set_active_provider_account_impl(
-    ctx: &EngineCtx,
+/// Name the account every agent of `provider` runs under: new ones from their
+/// creation, existing ones from their next turn
+/// (`Supervisor::follow_active_account`). `None` or the default id means the
+/// CLI's own login. A managed id must exist on disk, and the account must
+/// probe as signed in — the whole fleet is about to launch on it. Holds the
+/// provider's account lock from the probe through the restamps, so the
+/// account can't be removed or signed out in between.
+pub async fn set_active_provider_account_impl(
+    sup: &Arc<Supervisor>,
+    ctx: &Arc<EngineCtx>,
     provider: &str,
     id: Option<&str>,
 ) -> Result<()> {
@@ -110,11 +116,35 @@ pub fn set_active_provider_account_impl(
             return Err(Error::Other(format!("No account named `{id}`.")));
         }
     }
+    let _account = ctx.account_locks.lock(provider).await;
+    let (p, target) = (provider.to_string(), id.map(str::to_string));
+    tokio::task::spawn_blocking(move || ensure_active_signed_in(&p, target.as_deref()))
+        .await
+        .map_err(|e| Error::Other(format!("account probe failed: {e}")))??;
     let key = accounts::active_setting_key(provider);
     let value = id.unwrap_or(accounts::DEFAULT_ACCOUNT);
     database::set_setting(&ctx.db.lock(), &key, value)?;
     super::settings::announce(ctx, &key, Some(value));
+    if let Err(e) = sup.follow_active_account(ctx, provider, id).await {
+        tracing::warn!(provider, error = %e, "moving the agents onto the active account failed");
+    }
     Ok(())
+}
+
+/// Refuse to make a signed-out account the active one: every agent of the
+/// provider would be relaunched onto a login it doesn't have. `Unknown` is
+/// let through, as the per-agent switch does; the launch has the final word.
+fn ensure_active_signed_in(provider: &str, id: Option<&str>) -> Result<()> {
+    let (status, detail) =
+        accounts::probe_account(provider, id.unwrap_or(accounts::DEFAULT_ACCOUNT))?;
+    if status != crate::agent::AuthStatus::SignedOut {
+        return Ok(());
+    }
+    let why = detail.map(|d| format!(" ({d})")).unwrap_or_default();
+    Err(Error::Other(format!(
+        "The `{}` account isn't signed in{why}. Sign in first, then select it.",
+        id.unwrap_or(accounts::DEFAULT_ACCOUNT)
+    )))
 }
 
 /// How long a CLI's logout may run before it is taken as hung. It only clears

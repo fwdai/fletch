@@ -15,6 +15,7 @@ already made, and exactly what PR 3 has to deliver. Read it before touching code
 | host login 1 | `feat/claude-host-login` | the host owns every claude login: refresh, token injection on every engine, relaunch-on-expiry, attribution by stamp | draft (2026-10-08) |
 | host login 2 | `feat/account-switch` (stacked on host login 1) | mid-session account switch (`switch_agent_account`: restamp, relaunch on the other token via `relaunch_locked`) | draft (2026-10-08) |
 | host login 3 | `feat/codex-host-login` (stacked on host login 2) | the host owns every codex login: per-agent `CODEX_HOME` overlay, launch credential without a refresh token, host refresh; codex switching unlocked | draft (2026-10-08) |
+| global switch | `feat/global-account-switch` | the Settings selection moves every agent (`follow_active_account`); a turn that hit a limit is resent once under it (`observe_limit`, both providers) | draft (2026-10-09) |
 
 Merge #874 first, then #875. Manual checks Alex still owes before merging #875:
 a fresh Claude account click-through (add → sign in → make active → new agent)
@@ -23,8 +24,11 @@ screen in the agent terminal; and one account removal to confirm the Keychain
 delete raises no macOS prompt. The ignored kernel test
 `seatbelt_enforces_account_dir_grants` has been run on Alex's Mac and passes.
 
-Deferred on purpose: automatic account switching when a limit is hit. Do not
-build it in PR 3.
+Automatic account switching on a limit was deferred through PR 3 and the host
+login PRs; `feat/global-account-switch` (2026-10-09) adds the one form of it
+Alex asked for: a turn that hits a limit is resent once under the account
+Settings has active, when that differs. Fletch never picks an account on its
+own; the selection is the user's.
 
 ## The model
 
@@ -110,15 +114,44 @@ build it in PR 3.
   links only matter to the Settings sign-in now, since agents don't run there.)
 - The **active account** per provider is the settings key
   `provider_account_<provider>` (absent/blank/`default` = default). It is read
-  **only at agent creation** and stamped on the record
+  at agent creation and stamped on the record
   (`workspaces.provider_account`, migration 0049). Every later spawn uses the
-  stamp. Switching the radio moves new agents only. The stamp itself moves only
-  through `switch_agent_account` (the agent header's account picker), which
-  the host refuses mid-turn; the next turn runs under the new account in the
-  same workspace and conversation. Usage is credited by this stamp too: a
-  session Fletch ran belongs to its workspace's account
-  (`workspace::session_accounts`), and only transcripts matching no known
-  session fall back to "whose directory holds it".
+  stamp. **Switching the radio moves every agent of the provider**
+  (`set_active_provider_account_impl` → `Supervisor::follow_active_account`,
+  since 2026-10-09): the setter refuses a signed-out target (the fleet is
+  about to launch on it), holds the provider's account lock, writes the
+  setting, then restamps each live (non-archived) agent whose stamp differs
+  and relaunches the ones with a process the way a model change does
+  (`respawn_pending` + `respawn_agent_preserving_session`): now when idle,
+  at the turn end when mid-turn (the turn in flight finishes on the token it
+  has; a limit it hits is the old account's and is resent once from that
+  relaunch — `Logins::moved`). Rested sessions take the stamp and drop an `Error` the old account
+  left. An agent already on the target (switched there by hand) is left
+  alone. The stamp also moves through `switch_agent_account` (the agent
+  header's account picker, refused mid-turn), which is a per-agent override
+  until the next global change, and through `observe_limit` (below). Usage
+  is credited by this stamp too: a session Fletch ran belongs to its
+  workspace's account (`workspace::session_accounts`), and only transcripts
+  matching no known session fall back to "whose directory holds it".
+- **A turn that hits a usage limit is resent once under the active account**
+  (`supervisor/login_refresh.rs` `observe_limit`, read ahead of
+  `observe_login` on the managed claude stream and on the codex per-turn
+  stream). A limit is claude's error `result` with a 429, or whose text
+  names a limit ("hit your … limit", "usage limit", "limit reached", "rate
+  limit"; a device or budget limit is not one), or any `result` closing a
+  turn the stream already called a limit — a `rate_limit_event` marked
+  `rejected`, or claude's own `<synthetic>` assistant message naming one
+  (the "You've hit your session limit · resets 1pm" line; the result after
+  it may carry no error flag and no text); for codex, a `turn.failed` whose
+  message names one. When the Settings-active account
+  differs from the agent's stamp, exists and probes as signed in, the agent
+  is restamped onto it, the turn goes back to the head of the queue, and a
+  session-preserving respawn is flagged for the turn end (its launch signs
+  in as the new account, or copies its login into the codex overlay; its
+  flush resends the turn). One retry per attempt; a limit under the active
+  account itself, including on that retry, leaves the vendor's error in the
+  chat, which is how the user learns every account they chose is spent.
+  Fletch never picks another account on its own.
 - **Switching a workspace's account** (`Supervisor::switch_account`, command
   and remote op `switch_agent_account` with `{ agentId, account }`) restamps
   `workspaces.provider_account` and, when the agent has a live handle,
@@ -482,7 +515,9 @@ Accounts included: default and managed, for claude and codex.
   background polling. Alex approved reading the account's access token for a
   user-initiated refresh; it must never be logged or cross IPC.
 - Codex limits: on demand via the app-server, no model quota spent.
-- No auto-switching.
+- No auto-switching beyond the user's own Settings selection (see "The
+  model": a limit resends the turn once under the active account, never under
+  one Fletch picked).
 
 ### Data sources and shapes
 

@@ -11,7 +11,7 @@ import { AccountMenu } from "./AccountMenu";
 import { type AccountAction, accountActions } from "./accountActions";
 import { LimitsPanel } from "./LimitsPanel";
 
-/** One account: the radio that makes it the one new agents use, its name and
+/** One account: the radio that makes it the one every agent runs under, its name and
  *  sign-in state, Sign in when it needs one, and a corner menu for the rest
  *  (sign out, delete — see `accountActions`), each confirmed inline. Sign in
  *  opens the same embedded terminal as a single-login provider, run against

@@ -2030,8 +2030,15 @@ fn spawn_managed_agent(
     let on_event = move |event: Value| {
         crate::agent::limits::observe_stream_event(&limits_ctx, account.as_deref(), &event);
         // Read before the event closes the turn: a rejection must flag its
-        // respawn ahead of the turn-end drain (`observe_login`).
-        let login = login_sup.observe_login(&login_agent, &event);
+        // respawn ahead of the turn-end drain (`observe_login`). A spent
+        // quota is read first, since it is not a login rejection
+        // (`observe_limit`).
+        let login = match login_sup.observe_limit(&limits_ctx, &login_agent, &event) {
+            super::login_refresh::LoginVerdict::Fine => {
+                login_sup.observe_login(&login_agent, &event)
+            }
+            limit => limit,
+        };
         on_event(event);
         if login == super::login_refresh::LoginVerdict::GaveUp {
             login_sup.report_login_failure(&limits_ctx, &login_agent);
@@ -2064,7 +2071,17 @@ fn spawn_per_turn_agent(
     let id_for_exit = agent_id.clone();
     let sup_for_exit = sup.clone();
 
+    let limit_sup = sup.clone();
+    let limit_ctx = ctx.clone();
+    let limit_agent = agent_id.clone();
     let on_event = make_event_handler(sup, ctx, agent_id, TurnClose::OnProcessExit);
+    // A `turn.failed` on a spent quota flags its retry under the active
+    // account before the process exit closes the turn and drains the
+    // respawn (`observe_limit`).
+    let on_event = move |event: Value| {
+        limit_sup.observe_limit(&limit_ctx, &limit_agent, &event);
+        on_event(event);
+    };
     let on_session_id = move |sid: String| {
         if let Err(e) = sup_for_sid
             .workspace
