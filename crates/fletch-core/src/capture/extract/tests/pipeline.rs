@@ -29,6 +29,11 @@ fn assertion_json(about: &str, kind: &str, statement: &str, quote: &str, relatio
     )
 }
 
+/// `assertion` (from [`assertion_json`]) in `domain` instead.
+fn in_domain(assertion: String, domain: &str) -> String {
+    assertion.replace(r#""architectural""#, &format!(r#""{domain}""#))
+}
+
 fn answer(entities: &[String], assertions: &[String]) -> String {
     format!(
         r#"{{"entities": [{}], "assertions": [{}]}}"#,
@@ -166,7 +171,8 @@ fn the_run_records_prompt_version_3() {
 }
 
 /// A model that ignores the caps cannot flood the review: the first entity
-/// and the first three assertions are looked at, the rest only counted.
+/// and the first three assertions that pass the filters are proposed, the
+/// rest only counted.
 #[test]
 fn proposals_past_the_caps_are_counted_and_dropped() {
     let (service, _dir) = service();
@@ -198,20 +204,129 @@ fn proposals_past_the_caps_are_counted_and_dropped() {
     assert_eq!(statements, ["One", "Three", "Two"]);
 }
 
-/// The implementation domain is below the extractor's bar, whatever its
-/// evidence: counted, not held.
+/// Three implementation-domain items listed first are dropped before the
+/// cap, so they do not push out the business one after them.
+#[test]
+fn dropped_assertions_do_not_push_out_a_kept_one() {
+    let (service, _dir) = service();
+    seed_entity(&service, "auth");
+    let mut assertions: Vec<String> = ["One", "Two", "Three"]
+        .iter()
+        .map(|s| {
+            in_domain(
+                assertion_json("auth", "decision", s, AGENT_QUOTE, r#"{"kind": "new"}"#),
+                "implementation",
+            )
+        })
+        .collect();
+    assertions.push(in_domain(
+        assertion_json("auth", "fact", "Kept", AGENT_QUOTE, r#"{"kind": "new"}"#),
+        "business",
+    ));
+    let summary = run(&service, &Canned(answer(&[], &assertions)));
+    assert_eq!(summary.off_domain, 3);
+    assert_eq!(summary.capped, 0);
+    assert_eq!(summary.held, 1);
+    let held = held(&service);
+    assert_eq!(held[0].0.statement, "Kept");
+    assert_eq!(held[0].0.domain, Domain::Business);
+}
+
+/// The prompt no longer asks for `confirms` or `duplicate`; a model that
+/// still answers with one is restating a head, so nothing is held.
+#[test]
+fn a_confirms_or_duplicate_relation_is_dropped() {
+    let (service, _dir) = service();
+    let auth = seed_entity(&service, "auth");
+    let head = seed_decision(&service, &auth, "Use sessions", agent_stamp());
+    let summary = run(
+        &service,
+        &Canned(answer(
+            &[],
+            &[
+                assertion_json(
+                    "auth",
+                    "decision",
+                    "Sessions it is",
+                    AGENT_QUOTE,
+                    &format!(r#"{{"kind": "confirms", "target": "{head}"}}"#),
+                ),
+                assertion_json(
+                    "auth",
+                    "decision",
+                    "We use sessions",
+                    AGENT_QUOTE,
+                    &format!(r#"{{"kind": "duplicate", "target": "{head}"}}"#),
+                ),
+                assertion_json("auth", "fact", "Kept", AGENT_QUOTE, r#"{"kind": "new"}"#),
+            ],
+        )),
+    );
+    assert_eq!(summary.restated, 2);
+    assert_eq!(summary.held, 1);
+    assert_eq!(held(&service)[0].0.statement, "Kept");
+}
+
+/// "Always use pnpm" is implementation-flavoured, but a rule the user stated
+/// is the most reliable thing a run can find: held when quoted from the
+/// user's own turn, dropped when only the agent said it.
+#[test]
+fn a_user_stated_implementation_constraint_is_held() {
+    let (service, _dir) = service();
+    seed_entity(&service, "auth");
+    let summary = run(
+        &service,
+        &Canned(answer(
+            &[],
+            &[
+                in_domain(
+                    assertion_json(
+                        "auth",
+                        "constraint",
+                        "Never store tokens in local storage",
+                        "never store tokens in local storage",
+                        r#"{"kind": "new"}"#,
+                    ),
+                    "implementation",
+                ),
+                in_domain(
+                    assertion_json(
+                        "auth",
+                        "constraint",
+                        "Refresh hourly",
+                        AGENT_QUOTE,
+                        r#"{"kind": "new"}"#,
+                    ),
+                    "implementation",
+                ),
+            ],
+        )),
+    );
+    assert_eq!(summary.held, 1);
+    assert_eq!(summary.off_domain, 1);
+    let (input, stamp, ..) = &held(&service)[0];
+    assert_eq!(input.statement, "never store tokens in local storage");
+    assert_eq!(input.domain, Domain::Implementation);
+    assert_eq!(input.kind, AssertionKind::Constraint);
+    assert_eq!(stamp.source.kind, SourceKind::UserTurn);
+}
+
+/// Any other implementation-domain assertion is below the extractor's bar,
+/// even the user's own decision: counted, not held.
 #[test]
 fn an_implementation_domain_assertion_is_dropped() {
     let (service, _dir) = service();
     seed_entity(&service, "auth");
-    let implementation = assertion_json(
-        "auth",
-        "decision",
-        "Refresh in a loop",
-        USER_QUOTE,
-        r#"{"kind": "new"}"#,
-    )
-    .replace(r#""architectural""#, r#""implementation""#);
+    let implementation = in_domain(
+        assertion_json(
+            "auth",
+            "decision",
+            "Refresh in a loop",
+            USER_QUOTE,
+            r#"{"kind": "new"}"#,
+        ),
+        "implementation",
+    );
     let summary = run(
         &service,
         &Canned(answer(
@@ -229,17 +344,19 @@ fn an_implementation_domain_assertion_is_dropped() {
     assert_eq!(held[0].0.statement, "Kept");
 }
 
+/// The cap counts only what would be proposed: an entity the graph already
+/// has, listed first, does not take the run's one entity slot.
 #[test]
 fn an_existing_entity_is_skipped_and_a_new_one_is_proposed() {
     let (service, _dir) = service();
     seed_entity(&service, "auth");
-    // One entity per run, by the cap.
-    let mut summary = run(&service, &Canned(answer(&[entity_json("auth")], &[])));
+    let summary = run(
+        &service,
+        &Canned(answer(&[entity_json("auth"), entity_json("billing")], &[])),
+    );
     assert_eq!(summary.entities_skipped, 1);
-    assert_eq!(summary.entities_proposed, 0);
-    summary = run(&service, &Canned(answer(&[entity_json("billing")], &[])));
-    assert_eq!(summary.entities_skipped, 0);
     assert_eq!(summary.entities_proposed, 1);
+    assert_eq!(summary.capped, 0);
     let slugs: Vec<String> = pending_entities(&service)
         .into_iter()
         .map(|e| e.slug)

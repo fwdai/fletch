@@ -11,7 +11,8 @@ use crate::context::model::*;
 use crate::context::{compile, render};
 use crate::workspace::{SessionRecord, UserTurn};
 
-/// Budget for the turns' text; the oldest turns go first when it is over.
+/// Budget for the turns' text; over it, the newest turns wait for the next
+/// run.
 pub const MAX_TURNS_CHARS: usize = 30_000;
 /// Budget for the entity index.
 pub const INDEX_CHARS: usize = 2_000;
@@ -129,17 +130,20 @@ pub fn turns_since(
         .collect()
 }
 
-/// Drop the oldest turns until the text fits `max`; a lone turn that is
-/// still over is cut from its end.
+/// The oldest turns whose text fits `max`; a first turn that alone is over
+/// is kept, cut from its end. The newest go, not the oldest: the run's
+/// watermark is its last turn, so what is dropped here is read next run.
 fn cap_turns(mut turns: Vec<TurnText>, max: usize) -> Vec<TurnText> {
     let size = |t: &TurnText| t.user.len() + t.assistant.as_ref().map_or(0, String::len);
-    let mut total: usize = turns.iter().map(size).sum();
-    let mut drop = 0;
-    while total > max && drop + 1 < turns.len() {
-        total -= size(&turns[drop]);
-        drop += 1;
-    }
-    turns.drain(..drop);
+    let mut total = 0;
+    let keep = turns
+        .iter()
+        .take_while(|t| {
+            total += size(t);
+            total <= max
+        })
+        .count();
+    turns.truncate(keep.max(1));
     if let Some(only) = turns.first_mut().filter(|t| size(t) > max) {
         if let Some(reply) = &mut only.assistant {
             truncate(reply, max.saturating_sub(only.user.len()));

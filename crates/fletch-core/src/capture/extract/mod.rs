@@ -48,6 +48,12 @@ pub const TIMEOUT: Duration = Duration::from_secs(180);
 /// for more to accumulate.
 pub const MIN_USER_CHARS: usize = 200;
 
+/// The most runs an archive makes in a row. Each reads the oldest unread
+/// turns that fit the input's budget, so a long conversation drains over a
+/// few passes instead of leaving all but its first window unread; bounded so
+/// a runaway conversation cannot keep the provider busy.
+pub const ARCHIVE_PASSES: usize = 4;
+
 /// The source kind of a run's observation: the conversation as a whole, the
 /// agent's replies included (`user_turn` is reserved for what the user
 /// said). The pipeline writes it and the watermark reads it back; one
@@ -202,7 +208,9 @@ fn trigger(ctx: Arc<EngineCtx>, agent_id: String, is_archive: bool) {
 /// Decide, gather and run for one workspace. The debounce is checked first,
 /// off the watermark alone, so a turn-end inside it costs no transcript read;
 /// the rest of the gathering is a few short reads on the engine thread, and
-/// the model run goes to a blocking thread.
+/// the model run goes to a blocking thread. An archive runs again over what
+/// each pass left unread, up to [`ARCHIVE_PASSES`]; a failed pass stops it,
+/// and its turns stay past the watermark.
 async fn run_for_workspace(ctx: Arc<EngineCtx>, agent_id: String, is_archive: bool) -> Result<()> {
     let workspace = WorkspaceManager::new(ctx.db.clone());
     let record = workspace.agent(&agent_id)?;
@@ -223,62 +231,66 @@ async fn run_for_workspace(ctx: Arc<EngineCtx>, agent_id: String, is_archive: bo
     }
     let turns = workspace.read_history_turns(&agent_id)?;
     let records = workspace.read_session_records(&agent_id)?;
-    let new_turns = input::turns_since(
-        &turns,
-        &records,
-        watermark.as_ref().and_then(|w| w.turn_id.as_deref()),
-    );
-    if new_turns.is_empty() {
-        return Ok(());
-    }
-
-    let graph = service.store().load(&project.id)?;
     let plan = (!record.task.trim().is_empty()).then(|| record.task.clone());
-    let input = ExtractInput::new(plan, new_turns, &graph);
-    if input.user_chars() < MIN_USER_CHARS {
-        tracing::debug!(
-            agent_id,
-            chars = input.user_chars(),
-            "context extract: too little user text; waiting"
-        );
-        return Ok(());
-    }
-
     let primary = record.repos.first();
-    let commit_sha = match primary.and_then(|r| r.checkout_path(&agent_id).ok()) {
-        Some(checkout) => crate::git::rev_parse(&checkout, "HEAD").await.ok(),
-        None => None,
-    };
-    let provenance = Provenance {
-        workspace_id: Some(agent_id.clone()),
-        branch: primary.and_then(|r| r.branch.clone()),
-        commit_sha,
-        session_id: record.session_id.clone(),
-        turn_id: input.last_turn_id().map(str::to_string),
-        repo: primary.map(|r| r.subdir.clone()),
-    };
-    let author = Author::extractor(&agent_id, &record.provider);
-    let extractor = OneShotExtractor::new(
-        record.provider.clone(),
-        record.model.clone(),
-        tokio::runtime::Handle::current(),
-    );
-    tracing::info!(
-        agent_id,
-        turns = input.turns.len(),
-        is_archive,
-        "context extract: running"
-    );
-    let summary = tokio::task::spawn_blocking(move || {
-        pipeline::process(&service, &project, author, provenance, input, &extractor)
-    })
-    .await
-    .map_err(|e| Error::Other(format!("extraction task failed: {e}")))??;
-    match &summary.error {
-        Some(error) => {
-            tracing::warn!(agent_id, observation = %summary.observation_id, error, "context extract: run kept with error")
+
+    let passes = if is_archive { ARCHIVE_PASSES } else { 1 };
+    let mut after = watermark.and_then(|w| w.turn_id);
+    for pass in 0..passes {
+        let new_turns = input::turns_since(&turns, &records, after.as_deref());
+        if new_turns.is_empty() {
+            break;
         }
-        None => tracing::info!(agent_id, ?summary, "context extract: done"),
+        let graph = service.store().load(&project.id)?;
+        let input = ExtractInput::new(plan.clone(), new_turns, &graph);
+        // The tail of an archive is read however short; it gets no later run.
+        if pass == 0 && input.user_chars() < MIN_USER_CHARS {
+            tracing::debug!(
+                agent_id,
+                chars = input.user_chars(),
+                "context extract: too little user text; waiting"
+            );
+            break;
+        }
+        let last_turn = input.last_turn_id().map(str::to_string);
+        let commit_sha = match primary.and_then(|r| r.checkout_path(&agent_id).ok()) {
+            Some(checkout) => crate::git::rev_parse(&checkout, "HEAD").await.ok(),
+            None => None,
+        };
+        let provenance = Provenance {
+            workspace_id: Some(agent_id.clone()),
+            branch: primary.and_then(|r| r.branch.clone()),
+            commit_sha,
+            session_id: record.session_id.clone(),
+            turn_id: last_turn.clone(),
+            repo: primary.map(|r| r.subdir.clone()),
+        };
+        let author = Author::extractor(&agent_id, &record.provider);
+        let extractor = OneShotExtractor::new(
+            record.provider.clone(),
+            record.model.clone(),
+            tokio::runtime::Handle::current(),
+        );
+        let (service, project) = (service.clone(), project.clone());
+        tracing::info!(
+            agent_id,
+            pass,
+            turns = input.turns.len(),
+            is_archive,
+            "context extract: running"
+        );
+        let summary = tokio::task::spawn_blocking(move || {
+            pipeline::process(&service, &project, author, provenance, input, &extractor)
+        })
+        .await
+        .map_err(|e| Error::Other(format!("extraction task failed: {e}")))??;
+        if let Some(error) = &summary.error {
+            tracing::warn!(agent_id, observation = %summary.observation_id, error, "context extract: run kept with error");
+            break;
+        }
+        tracing::info!(agent_id, ?summary, "context extract: done");
+        // A run that was read is the new watermark: its last turn.
+        after = last_turn;
     }
     Ok(())
 }
