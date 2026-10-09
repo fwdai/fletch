@@ -21,6 +21,15 @@ fn an_archive_ignores_the_debounce() {
     assert!(due(Some(last), last + 1, true));
 }
 
+/// The archive is the primary run; turn-ends cover a long-lived workspace at
+/// most every four hours.
+#[test]
+fn the_debounce_is_four_hours() {
+    assert_eq!(DEBOUNCE_MS, 4 * 60 * 60 * 1000);
+    let last = 1_000_000;
+    assert!(!due(Some(last), last + 60 * 60 * 1000, false));
+}
+
 fn observation(
     id: &str,
     kind: SourceKind,

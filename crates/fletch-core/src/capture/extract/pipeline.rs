@@ -13,8 +13,10 @@
 //! (`trust::find_user_quote`) makes the assertion user-stated — `user_turn`
 //! source, `confirmed` once accepted. A quote found in the agent's text is
 //! evidence too, but leaves the assertion agent-stated and `provisional`.
-//! The store cleans every text it writes; only slugs are normalised here,
-//! since the store refuses a bad one.
+//! An assertion with no quote found anywhere is dropped, as is one past the
+//! run's caps or in the implementation domain. The store cleans every text
+//! it writes; only slugs are normalised here, since the store refuses a bad
+//! one.
 
 use std::time::Instant;
 
@@ -45,9 +47,13 @@ pub struct Summary {
     pub duplicates: usize,
     /// Assertions about nothing the graph or this run knows.
     pub assertions_skipped: usize,
-    /// Assertions none of whose quotes were found in the turns; held with no
-    /// evidence (counted in `held` too, duplicates aside).
+    /// Assertions none of whose quotes were found in the turns; the statement
+    /// may be invented, so nothing is held.
     pub unverified: usize,
+    /// Entities and assertions past the run's caps; never looked at.
+    pub capped: usize,
+    /// Implementation-domain assertions; below the extractor's bar, dropped.
+    pub off_domain: usize,
     /// Set when the run failed or its output could not be read; nothing was
     /// proposed then.
     pub error: Option<String>,
@@ -121,7 +127,7 @@ pub fn process(
         error: error.clone(),
         created_at: now_millis(),
     })?;
-    let Some(Ok(parsed)) = parsed else {
+    let Some(Ok(mut parsed)) = parsed else {
         summary.error = error;
         return Ok(summary);
     };
@@ -130,6 +136,20 @@ pub fn process(
             observation = %observation.id,
             malformed = parsed.malformed,
             "context extract: items of the wrong shape were skipped"
+        );
+    }
+    summary.capped = parsed.entities.len().saturating_sub(prompt::MAX_ENTITIES)
+        + parsed
+            .assertions
+            .len()
+            .saturating_sub(prompt::MAX_ASSERTIONS);
+    if summary.capped > 0 {
+        parsed.entities.truncate(prompt::MAX_ENTITIES);
+        parsed.assertions.truncate(prompt::MAX_ASSERTIONS);
+        tracing::info!(
+            observation = %observation.id,
+            capped = summary.capped,
+            "context extract: proposals past the run's caps dropped"
         );
     }
 
@@ -209,6 +229,11 @@ pub fn process(
         .collect();
 
     for assertion in parsed.assertions {
+        if assertion.domain == Domain::Implementation {
+            tracing::debug!(observation = %observation.id, statement = %assertion.statement, "context extract: implementation-domain assertion dropped");
+            summary.off_domain += 1;
+            continue;
+        }
         let (found, unknown) = resolve::entities(&graph, &assertion.about);
         let mut about: Vec<Id> = found.iter().map(|e| e.id.clone()).collect();
         about.dedup();
@@ -224,6 +249,16 @@ pub fn process(
             continue;
         }
         let verified = verify(&user_turns, &agent_turns, &assertion.evidence);
+        if verified.is_empty() {
+            summary.unverified += 1;
+            tracing::info!(
+                observation = %observation.id,
+                statement = %assertion.statement,
+                quotes = assertion.evidence.len(),
+                "context extract: no quote found in the turns"
+            );
+            continue;
+        }
         let user_stated = verified.iter().find_map(|q| q.user.clone());
         // A user-stated record states the user's words (the service holds
         // every writer to that); the model's sentence is its reading and
@@ -276,15 +311,6 @@ pub fn process(
         // The service applies the user's quote (statement, source, status);
         // the pipeline only hands over the proof.
         let stamp = agent_stamp();
-        if verified.is_empty() {
-            summary.unverified += 1;
-            tracing::info!(
-                observation = %observation.id,
-                statement = %input.statement,
-                quotes = assertion.evidence.len(),
-                "context extract: no quote found in the turns"
-            );
-        }
         let evidence = verified
             .into_iter()
             .map(|q| Evidence {
