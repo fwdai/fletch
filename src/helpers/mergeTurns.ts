@@ -67,10 +67,12 @@ function unplacedBubble(items: ChatItem[], t: UserTurn): ChatItem | null {
  *
  *  - A turn paired with its prompt record (`native_id`) overlays its metadata
  *    onto the `user_message` reduced from exactly that record.
+ *  - A turn paired with a record the adapter drew as a notice (a slash
+ *    command) adds nothing: the prompt is already on screen.
  *  - A turn with a position but no such bubble — never echoed (`native_id`
- *    null), or echoed in a record the adapter does not draw as a prompt — is
- *    drawn from its row, just before the first item of its session at or past
- *    its position, or after that session's last item. One stopped or dropped
+ *    null), or echoed in a record the adapter does not draw at all — is drawn
+ *    from its row, just before the first item of its session at or past its
+ *    position, or after that session's last item. One stopped or dropped
  *    before the agent read it is marked `undelivered`.
  *  - A turn with no position goes at the end, unless the log draws it already
  *    (see `unplacedBubble`).
@@ -81,6 +83,8 @@ export function mergeUserTurns(items: ChatItem[], turns: UserTurn[]): ChatItem[]
   if (turns.length === 0) return items;
   const result = items.slice();
   const prompts = new Map<string, number>();
+  // Records the log draws as a notice rather than a bubble (a slash command).
+  const noticed = new Set<string>();
   const bySession = new Map<string | undefined, number[]>();
   result.forEach((it, i) => {
     if (it.recordSeq === undefined) return;
@@ -88,6 +92,7 @@ export function mergeUserTurns(items: ChatItem[], turns: UserTurn[]): ChatItem[]
     idxs.push(i);
     bySession.set(it.recordSession, idxs);
     const key = recordKey(it.recordSession, it.recordSeq);
+    if (it.kind === "notice") noticed.add(key);
     if (it.kind === "user_message" && !prompts.has(key)) prompts.set(key, i);
   });
 
@@ -113,11 +118,17 @@ export function mergeUserTurns(items: ChatItem[], turns: UserTurn[]): ChatItem[]
       if (bubble) tail.push(bubble);
       continue;
     }
-    const at = t.native_id ? prompts.get(recordKey(t.session_id, t.position)) : undefined;
+    const key = recordKey(t.session_id, t.position);
+    const at = t.native_id ? prompts.get(key) : undefined;
     const prompt = at === undefined ? undefined : result[at];
     if (at !== undefined && !claimed.has(at) && prompt?.kind === "user_message") {
       claimed.add(at);
       result[at] = overlayTurn(prompt, t);
+    } else if (t.native_id && noticed.has(key)) {
+      // The adapter drew the paired record as a notice — a slash command — so
+      // the prompt is on screen in the form the adapter chose, and a bubble
+      // beside it would show it twice. The row's metadata has nothing to hang
+      // on there; a turn like that is not a fork anchor the UI offers anyway.
     } else {
       insert(slotOf(t.session_id, t.position), turnBubble(t));
     }

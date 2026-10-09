@@ -142,6 +142,26 @@ describe("mergeUserTurns", () => {
     expect(out[2]).not.toHaveProperty("undelivered");
   });
 
+  it("adds nothing for a turn whose record the adapter drew as a notice", () => {
+    // A slash command: claude logs it as a user record the backend pairs the
+    // turn with, and the adapter draws it as a slash_command notice.
+    const command: ChatItem = {
+      kind: "notice",
+      subtype: "slash_command",
+      text: "/review",
+      recordSeq: 3,
+      recordSession: OWN,
+    };
+    const items = [user("alpha", 1), agent("one", 2), command, agent("reviewed", 4)];
+    const out = mergeUserTurns(items, [echoed("t1", "alpha", 1), echoed("t2", "/review", 3)]);
+    expect(shape(out)).toEqual([
+      ["user_message", "alpha", "t1"],
+      ["agent_message", "one", undefined],
+      ["notice", "/review", undefined],
+      ["agent_message", "reviewed", undefined],
+    ]);
+  });
+
   it("puts a turn past every record after its session's last item", () => {
     const items = [user("a", 1, PARENT), agent("b", 2, PARENT), user("c", 1)];
     const stopped = (session: string) =>
