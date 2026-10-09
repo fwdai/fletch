@@ -344,7 +344,7 @@ fn the_overview_is_vision_constraints_modules_then_the_index() {
 }
 
 #[test]
-fn the_overview_fits_its_budget_and_never_drops_the_vision_or_a_constraint() {
+fn the_overview_drops_entities_before_constraints_and_never_the_vision() {
     let g = project(40);
     let b = overview(&g, 0);
     let md = render_markdown(&b);
@@ -358,15 +358,80 @@ fn the_overview_fits_its_budget_and_never_drops_the_vision_or_a_constraint() {
     assert!(md.contains("Payments never touch the main DB"), "{md}");
     assert!(md.contains("Prices are in cents"), "{md}");
     assert!(md.contains("Truncated to fit the budget"), "{md}");
+    assert!(!md.contains("constraints not shown"), "{md}");
 
-    // A budget nothing fits keeps the vision and the constraints anyway.
+    // A budget nothing fits keeps only the vision.
     let b = overview(&g, 1);
     assert!(b.vision.is_some());
-    assert_eq!(b.assertions.len(), 2);
+    assert!(b.assertions.is_empty());
+    assert_eq!(&b.truncated[b.truncated.len() - 2..], ["c2", "c1"]);
     assert_eq!(
         reasons(&b),
         [("v", EntryReason::Vision)],
         "every other entity dropped"
+    );
+}
+
+#[test]
+fn the_overview_sheds_low_ranked_constraints_to_meet_its_budget() {
+    let mut assertions = Vec::new();
+    for i in 0..300 {
+        let mut c = constraint(
+            &format!("c{i:03}"),
+            &["f1"],
+            &format!("Constraint number {i} holds"),
+            Domain::Architectural,
+        );
+        c.recorded_at = i;
+        assertions.push(c);
+    }
+    let g = graph(
+        vec![vision("v"), feature("f1", "billing")],
+        assertions,
+        Vec::new(),
+    );
+    let b = overview(&g, 0);
+    let md = render_markdown(&b);
+    assert!(
+        md.len() <= OVERVIEW_BUDGET_CHARS,
+        "{} chars:\n{md}",
+        md.len()
+    );
+    assert!(md.contains("## Vision\nShip the thing"), "{md}");
+    let shown = b.assertions.len();
+    assert!(shown > 0 && shown < 300, "{shown} shown");
+    assert_eq!(b.assertions[0].assertion.id, "c299", "newest first");
+    assert_eq!(b.truncated.first().map(String::as_str), Some("f1"));
+    let dropped: Vec<String> = (0..300 - shown).map(|i| format!("c{i:03}")).collect();
+    assert_eq!(b.truncated[1..], dropped, "oldest dropped, lowest first");
+    let line = format!(
+        "Truncated to fit the budget: {} constraints not shown; call context_get for the full set",
+        300 - shown
+    );
+    assert!(b.warnings.contains(&line), "{:?}", b.warnings);
+    assert!(md.contains(&line), "{md}");
+}
+
+#[test]
+fn overview_constraints_rank_user_then_confirmed_then_newest() {
+    let mut extracted = constraint("ext", &["f1"], "Extracted", Domain::Business);
+    extracted.author = Author::extractor("ws", "claude");
+    extracted.recorded_at = 50;
+    let mut user_provisional = constraint("user-prov", &["f1"], "Stated", Domain::Business);
+    user_provisional.status = AssertionStatus::Provisional;
+    let mut old = constraint("old", &["f1"], "Old", Domain::Business);
+    old.recorded_at = 1;
+    let mut new = constraint("new", &["f1"], "New", Domain::Business);
+    new.recorded_at = 2;
+    let g = graph(
+        vec![vision("v"), feature("f1", "billing")],
+        vec![extracted, user_provisional, old, new],
+        Vec::new(),
+    );
+    let b = overview(&g, 0);
+    assert_eq!(
+        ids(b.assertions.iter().map(|a| &a.assertion)),
+        ["new", "old", "user-prov", "ext"]
     );
 }
 

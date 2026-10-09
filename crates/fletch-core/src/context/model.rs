@@ -584,7 +584,8 @@ pub struct Bundle {
     /// Entry references that matched nothing — the coverage signal.
     pub misses: Vec<String>,
     pub warnings: Vec<String>,
-    /// Entities dropped to fit the budget, lowest-ranked first.
+    /// Entities dropped to fit the budget, lowest-ranked first; then, in an
+    /// overview that still did not fit, the constraints dropped, likewise.
     pub truncated: Vec<Id>,
 }
 
