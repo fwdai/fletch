@@ -13,10 +13,12 @@
 //! (`trust::find_user_quote`) makes the assertion user-stated — `user_turn`
 //! source, `confirmed` once accepted. A quote found in the agent's text is
 //! evidence too, but leaves the assertion agent-stated and `provisional`.
-//! An assertion with no quote found anywhere is dropped, as is one past the
-//! run's caps or in the implementation domain. The store cleans every text
-//! it writes; only slugs are normalised here, since the store refuses a bad
-//! one.
+//! An assertion with no quote found anywhere is dropped, as is one that only
+//! restates a head (`confirms`, `duplicate`) and one in the implementation
+//! domain, unless it is a constraint the user stated. The run's caps apply
+//! to what is left after those filters, so dropped items never crowd out
+//! real ones. The store cleans every text it writes; only slugs are
+//! normalised here, since the store refuses a bad one.
 
 use std::time::Instant;
 
@@ -49,10 +51,15 @@ pub struct Summary {
     /// Assertions none of whose quotes were found in the turns; the statement
     /// may be invented, so nothing is held.
     pub unverified: usize,
-    /// Entities and assertions past the run's caps; never looked at.
+    /// Entities and assertions that passed every filter but came after the
+    /// run's caps were full; not proposed.
     pub capped: usize,
-    /// Implementation-domain assertions; below the extractor's bar, dropped.
+    /// Implementation-domain assertions other than a user-stated constraint;
+    /// below the extractor's bar, dropped.
     pub off_domain: usize,
+    /// Assertions the model related as `confirms` or `duplicate`: a head
+    /// already says them, so nothing is held.
+    pub restated: usize,
     /// Set when the run failed or its output could not be read; nothing was
     /// proposed then.
     pub error: Option<String>,
@@ -124,7 +131,7 @@ pub fn process(
         error: error.clone(),
         created_at: now_millis(),
     })?;
-    let Some(Ok(mut parsed)) = parsed else {
+    let Some(Ok(parsed)) = parsed else {
         summary.error = error;
         return Ok(summary);
     };
@@ -133,20 +140,6 @@ pub fn process(
             observation = %observation.id,
             malformed = parsed.malformed,
             "context extract: items of the wrong shape were skipped"
-        );
-    }
-    summary.capped = parsed.entities.len().saturating_sub(prompt::MAX_ENTITIES)
-        + parsed
-            .assertions
-            .len()
-            .saturating_sub(prompt::MAX_ASSERTIONS);
-    if summary.capped > 0 {
-        parsed.entities.truncate(prompt::MAX_ENTITIES);
-        parsed.assertions.truncate(prompt::MAX_ASSERTIONS);
-        tracing::info!(
-            observation = %observation.id,
-            capped = summary.capped,
-            "context extract: proposals past the run's caps dropped"
         );
     }
 
@@ -172,6 +165,10 @@ pub fn process(
             || pending_slugs.contains(&input.slug);
         if known {
             summary.entities_skipped += 1;
+            continue;
+        }
+        if summary.entities_proposed >= prompt::MAX_ENTITIES {
+            summary.capped += 1;
             continue;
         }
         pending_slugs.push(input.slug.clone());
@@ -216,9 +213,13 @@ pub fn process(
         .collect();
 
     for assertion in parsed.assertions {
-        if assertion.domain == Domain::Implementation {
-            tracing::debug!(observation = %observation.id, statement = %assertion.statement, "context extract: implementation-domain assertion dropped");
-            summary.off_domain += 1;
+        if assertion
+            .relation
+            .as_ref()
+            .is_some_and(|r| matches!(r.kind, RelationKind::Confirms | RelationKind::Duplicate))
+        {
+            tracing::debug!(observation = %observation.id, statement = %assertion.statement, "context extract: restatement of a head dropped");
+            summary.restated += 1;
             continue;
         }
         let (found, unknown) = resolve::entities(&graph, &assertion.about);
@@ -247,6 +248,19 @@ pub fn process(
             continue;
         }
         let user_stated = verified.iter().find_map(|q| q.user.clone());
+        // A rule the user stated is worth keeping however implementation-
+        // flavoured ("always use pnpm"); any other implementation detail is not.
+        if assertion.domain == Domain::Implementation
+            && !(assertion.kind == AssertionKind::Constraint && user_stated.is_some())
+        {
+            tracing::debug!(observation = %observation.id, statement = %assertion.statement, "context extract: implementation-domain assertion dropped");
+            summary.off_domain += 1;
+            continue;
+        }
+        if summary.held >= prompt::MAX_ASSERTIONS {
+            summary.capped += 1;
+            continue;
+        }
         // A user-stated record states the user's words (the service holds
         // every writer to that); the model's sentence is its reading and
         // goes in the rationale when there is no other.
@@ -324,6 +338,13 @@ pub fn process(
                 tracing::warn!(observation = %observation.id, ?other, "context extract: the write policy did not hold an extractor write");
             }
         }
+    }
+    if summary.capped > 0 {
+        tracing::info!(
+            observation = %observation.id,
+            capped = summary.capped,
+            "context extract: proposals past the run's caps dropped"
+        );
     }
 
     store.mark_extracted(&observation.id)?;
