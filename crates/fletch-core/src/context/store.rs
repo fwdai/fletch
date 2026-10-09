@@ -538,6 +538,14 @@ impl ContextStore {
             AuthorKind::Extractor => true,
         };
         if held {
+            // A repeat of a card already waiting (another run, another
+            // workspace) is more evidence for it, not a card of its own.
+            if let Some(existing) = pending_assertion_like(conn, project_id, &input)? {
+                append_evidence(conn, &existing, evidence)?;
+                return Ok(Landing::Held {
+                    proposal_id: existing.id,
+                });
+            }
             let proposal = Proposal {
                 id: new_id(),
                 project_id: project_id.to_string(),
@@ -852,6 +860,29 @@ impl ContextStore {
         get_proposal(&conn, proposal_id)
     }
 
+    /// The pending entity proposal for `slug` (any case), if one is waiting:
+    /// the extractor proposes a slug once, not once per run.
+    pub fn pending_entity_proposal(
+        &self,
+        project_id: &str,
+        slug: &str,
+    ) -> Result<Option<Proposal>> {
+        let conn = self.db.lock();
+        Ok(conn
+            .query_row(
+                &format!(
+                    "SELECT {PROPOSAL_COLUMNS} FROM context.proposals
+                     WHERE project_id = ?1 AND status = 'pending'
+                       AND json_extract(payload, '$.type') = 'entity'
+                       AND lower(json_extract(payload, '$.input.slug')) = lower(?2)
+                     ORDER BY created_at, id LIMIT 1"
+                ),
+                params![project_id, slug],
+                proposal_from_row,
+            )
+            .optional()?)
+    }
+
     /// Lands a proposal and marks it `status` (`Accepted` by the user, `Auto`
     /// by rule). An entity proposal is recorded as is. An assertion proposal
     /// is rebuilt as a [`Candidate`] and goes through [`Self::land_in`] under
@@ -960,6 +991,29 @@ impl ContextStore {
                 Some(reason),
                 &ruled_by,
             )
+        })
+    }
+
+    /// [`Self::dismiss_proposal`] for every pending proposal of the project,
+    /// in one transaction; the same ruling on each. Returns how many.
+    pub(super) fn dismiss_all_pending(
+        &self,
+        project_id: &str,
+        reason: DismissReason,
+        ruled_by: Author,
+    ) -> Result<usize> {
+        self.write(project_id, |conn| {
+            let ids: Vec<Id> = conn
+                .prepare(
+                    "SELECT id FROM context.proposals
+                     WHERE project_id = ?1 AND status = 'pending'",
+                )?
+                .query_map([project_id], |r| r.get(0))?
+                .collect::<rusqlite::Result<_>>()?;
+            for id in &ids {
+                rule_proposal(conn, id, ProposalStatus::Dismissed, Some(reason), &ruled_by)?;
+            }
+            Ok(ids.len())
         })
     }
 
@@ -1855,6 +1909,62 @@ fn insert_proposal(conn: &Connection, proposal: &Proposal) -> Result<()> {
             proposal.ruled_at,
             proposal.ruled_by.as_ref().map(json).transpose()?,
         ],
+    )?;
+    Ok(())
+}
+
+/// The pending assertion proposal that says what `input` says: same kind,
+/// domain and stance, and the same statement as [`resolve::classify`]
+/// compares them. The oldest, should there be several.
+fn pending_assertion_like(
+    conn: &Connection,
+    project_id: &str,
+    input: &AssertionInput,
+) -> Result<Option<Proposal>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {PROPOSAL_COLUMNS} FROM context.proposals
+         WHERE project_id = ?1 AND status = 'pending'
+           AND json_extract(payload, '$.type') = 'assertion'
+           AND json_extract(payload, '$.input.kind') = ?2
+           AND json_extract(payload, '$.input.domain') = ?3
+           AND json_extract(payload, '$.input.stance') = ?4
+         ORDER BY created_at, id"
+    ))?;
+    let statement = resolve::normalise(&input.statement);
+    let rows = stmt.query_map(
+        params![
+            project_id,
+            tag(&input.kind)?,
+            tag(&input.domain)?,
+            tag(&input.stance)?,
+        ],
+        proposal_from_row,
+    )?;
+    for row in rows {
+        let proposal = row?;
+        if let ProposalPayload::Assertion { input, .. } = &proposal.payload {
+            if resolve::normalise(&input.statement) == statement {
+                return Ok(Some(proposal));
+            }
+        }
+    }
+    Ok(None)
+}
+
+/// Adds `evidence` to `proposal`, skipping quotes it already carries.
+fn append_evidence(conn: &Connection, proposal: &Proposal, evidence: Vec<Evidence>) -> Result<()> {
+    let mut merged = proposal.evidence.clone();
+    for e in evidence {
+        if !merged.iter().any(|m| m.quote == e.quote) {
+            merged.push(e);
+        }
+    }
+    if merged.len() == proposal.evidence.len() {
+        return Ok(());
+    }
+    conn.execute(
+        "UPDATE context.proposals SET evidence = ?2 WHERE id = ?1",
+        params![proposal.id, json(&merged)?],
     )?;
     Ok(())
 }

@@ -104,6 +104,12 @@ pub fn context_rule_proposal(
     engine::context_rule_proposal_impl(&ctx, &project_id, &proposal_id, verdict, dismiss_reason)
 }
 
+/// Dismiss every pending proposal as trivial; answers how many.
+#[tauri::command]
+pub fn context_dismiss_all(ctx: State<'_, Arc<EngineCtx>>, project_id: String) -> Result<usize> {
+    engine::context_dismiss_all_impl(&ctx, &project_id)
+}
+
 /// Close the tension between two assertions with a ruling (reasoning
 /// required); neither side changes.
 #[tauri::command]

@@ -250,6 +250,14 @@ export function entityName(graph: ContextGraph, id: string): string {
   return graph.entities.find((e) => e.id === id)?.name ?? id;
 }
 
+/** The review queue's order: most-repeated first (a repeat of a pending
+ *  proposal lands as another quote on it), then oldest first. */
+export function sortForReview(proposals: ContextProposal[]): ContextProposal[] {
+  return [...proposals].sort(
+    (a, b) => b.evidence.length - a.evidence.length || a.created_at - b.created_at,
+  );
+}
+
 /** One line for a proposal's payload: what would land if accepted. */
 export function summarizeProposal(proposal: ContextProposal): string {
   const p = proposal.payload;

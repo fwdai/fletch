@@ -36,7 +36,8 @@ pub struct Summary {
     pub observation_id: Id,
     /// Entities proposed for review.
     pub entities_proposed: usize,
-    /// Entities already in the graph, or with no usable slug.
+    /// Entities already in the graph or pending review, or with no usable
+    /// slug.
     pub entities_skipped: usize,
     /// Assertions held for review.
     pub held: usize,
@@ -154,6 +155,16 @@ pub fn process(
             || pending_slugs.contains(&input.slug);
         if known {
             summary.entities_skipped += 1;
+            continue;
+        }
+        // Already waiting from an earlier run: not proposed again, but this
+        // run's assertions may still name it.
+        if store
+            .pending_entity_proposal(project_id, &input.slug)?
+            .is_some()
+        {
+            summary.entities_skipped += 1;
+            pending_slugs.push(input.slug);
             continue;
         }
         pending_slugs.push(input.slug.clone());

@@ -328,6 +328,20 @@ impl ContextService {
         Ok(())
     }
 
+    /// Clears the review queue in one ruling; returns how many were dismissed.
+    pub fn dismiss_all_pending(
+        &self,
+        project: &Project,
+        reason: DismissReason,
+        by: Author,
+    ) -> Result<usize> {
+        let dismissed = self.store.dismiss_all_pending(&project.id, reason, by)?;
+        if dismissed > 0 {
+            self.changed(project);
+        }
+        Ok(dismissed)
+    }
+
     /// For the pipeline modules that need the raw connection for their own
     /// bookkeeping tables (observations, runs).
     pub fn with_conn<T>(&self, f: impl FnOnce(&Connection) -> T) -> T {

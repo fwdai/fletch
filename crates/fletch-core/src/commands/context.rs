@@ -283,6 +283,14 @@ pub fn context_rule_proposal_impl(
     Ok(recorded)
 }
 
+/// Dismiss every pending proposal as trivial: the way out of a backlog that
+/// is too long to rule on card by card. Answers how many were dismissed.
+pub fn context_dismiss_all_impl(ctx: &EngineCtx, project_id: &str) -> Result<usize> {
+    let service = ctx.context()?;
+    let project = open(ctx, project_id)?;
+    Ok(service.dismiss_all_pending(&project, DismissReason::Trivial, Author::user())?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -135,7 +135,7 @@ pub(super) fn is_live(status: AssertionStatus) -> bool {
 
 /// Lowercase, single-spaced, without trailing `.`/`!`, so restatements that
 /// differ only in typing compare equal.
-fn normalise(statement: &str) -> String {
+pub(super) fn normalise(statement: &str) -> String {
     statement
         .split_whitespace()
         .collect::<Vec<_>>()

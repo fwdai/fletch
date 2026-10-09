@@ -2053,3 +2053,118 @@ fn replay_keeps_a_hosts_seq_order_when_the_clock_moves_back() {
     assert_eq!(g.entities.len(), 1);
     assert_eq!(g.assertion(&s).unwrap().status, AssertionStatus::Confirmed);
 }
+
+fn quoted(quote: &str) -> Evidence {
+    Evidence {
+        session_id: None,
+        turn_id: Some("t1".into()),
+        quote: quote.into(),
+    }
+}
+
+/// A held candidate that restates a pending proposal (case, spacing and a
+/// trailing full stop aside) lands on it as evidence; a quote it already
+/// carries is not added twice. A different statement is a card of its own.
+#[test]
+fn a_repeated_held_candidate_merges_into_the_pending_proposal() {
+    let (store, _dir) = temp();
+    let e = store
+        .record_entity(P, entity("e", EntityKind::Module), stamp())
+        .unwrap();
+    let held = |statement: &str, quotes: &[&str]| {
+        let candidate = Candidate {
+            evidence: quotes.iter().map(|q| quoted(q)).collect(),
+            ..candidate(saying(&[&e], statement))
+        };
+        match store.land(P, candidate, extractor()).unwrap() {
+            Landing::Held { proposal_id } => proposal_id,
+            other => panic!("extractor writes are held, got {other:?}"),
+        }
+    };
+
+    let first = held("Tokens expire hourly", &["tokens expire hourly"]);
+    let again = held(
+        "tokens  expire hourly.",
+        &["tokens expire hourly", "the refresh job runs each hour"],
+    );
+    assert_eq!(again, first);
+    let quotes: Vec<String> = store
+        .proposal(&first)
+        .unwrap()
+        .unwrap()
+        .evidence
+        .into_iter()
+        .map(|e| e.quote)
+        .collect();
+    assert_eq!(
+        quotes,
+        ["tokens expire hourly", "the refresh job runs each hour"]
+    );
+
+    let other = held("Tokens expire daily", &["tokens expire hourly"]);
+    assert_ne!(other, first);
+    assert_eq!(
+        store
+            .proposals(P, Some(ProposalStatus::Pending))
+            .unwrap()
+            .len(),
+        2
+    );
+}
+
+/// Dismiss-all rules on every pending proposal as `dismiss_proposal` would,
+/// and leaves proposals already ruled on as they were.
+#[test]
+fn dismiss_all_rules_every_pending_proposal_and_nothing_else() {
+    let (store, _dir) = temp();
+    let e = store
+        .record_entity(P, entity("e", EntityKind::Module), stamp())
+        .unwrap();
+    let new = || related(RelationKind::New, None, None);
+    let accepted = assertion_proposal(saying(&[&e], "accepted one"), new());
+    let dismissed = assertion_proposal(saying(&[&e], "dismissed one"), new());
+    let pending = [
+        assertion_proposal(saying(&[&e], "pending one"), new()),
+        assertion_proposal(saying(&[&e], "pending two"), new()),
+        proposal(ProposalPayload::Entity {
+            input: entity("f", EntityKind::Module),
+            stamp: extractor(),
+        }),
+    ];
+    for p in pending.iter().chain([&accepted, &dismissed]) {
+        store.add_proposal(p).unwrap();
+    }
+    store
+        .accept_proposal(P, &accepted.id, ProposalStatus::Accepted, Author::user())
+        .unwrap();
+    store
+        .dismiss_proposal(P, &dismissed.id, DismissReason::Wrong, Author::user())
+        .unwrap();
+
+    let n = store
+        .dismiss_all_pending(P, DismissReason::Trivial, Author::user())
+        .unwrap();
+    assert_eq!(n, pending.len());
+    assert!(store
+        .proposals(P, Some(ProposalStatus::Pending))
+        .unwrap()
+        .is_empty());
+    for p in &pending {
+        let ruled = store.proposal(&p.id).unwrap().unwrap();
+        assert_eq!(ruled.status, ProposalStatus::Dismissed);
+        assert_eq!(ruled.dismiss_reason, Some(DismissReason::Trivial));
+        assert_eq!(ruled.ruled_by, Some(Author::user()));
+        assert!(ruled.ruled_at.is_some());
+    }
+    let accepted = store.proposal(&accepted.id).unwrap().unwrap();
+    assert_eq!(accepted.status, ProposalStatus::Accepted);
+    let dismissed = store.proposal(&dismissed.id).unwrap().unwrap();
+    assert_eq!(dismissed.dismiss_reason, Some(DismissReason::Wrong));
+
+    assert_eq!(
+        store
+            .dismiss_all_pending(P, DismissReason::Trivial, Author::user())
+            .unwrap(),
+        0
+    );
+}

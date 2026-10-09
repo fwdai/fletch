@@ -175,6 +175,66 @@ fn an_existing_entity_is_skipped_and_a_new_one_is_proposed() {
     assert_eq!(service.store().load(PROJECT).unwrap().entities.len(), 1);
 }
 
+/// An entity a run proposed and nobody has ruled on yet is not proposed
+/// again by the next run; that run's assertions about it still name it.
+#[test]
+fn a_pending_entity_is_not_proposed_again() {
+    let (service, _dir) = service();
+    let first = run(&service, &Canned(answer(&[entity_json("billing")], &[])));
+    assert_eq!(first.entities_proposed, 1);
+
+    let about_billing = assertion_json(
+        "billing",
+        "fact",
+        "Tokens expire hourly",
+        AGENT_QUOTE,
+        r#"{"kind": "new"}"#,
+    );
+    let second = run(
+        &service,
+        &Canned(answer(&[entity_json("billing")], &[about_billing])),
+    );
+    assert_eq!(second.entities_proposed, 0);
+    assert_eq!(second.entities_skipped, 1);
+    assert_eq!(second.held, 1);
+    let slugs: Vec<String> = pending_entities(&service)
+        .into_iter()
+        .map(|e| e.slug)
+        .collect();
+    assert_eq!(slugs, ["billing"]);
+    let (_, _, _, about_pending, _) = &held(&service)[0];
+    assert_eq!(about_pending, &["billing"]);
+}
+
+/// The same assertion from two runs is one card with both runs' quotes.
+#[test]
+fn a_repeated_assertion_is_one_proposal_with_both_quotes() {
+    let (service, _dir) = service();
+    seed_entity(&service, "auth");
+    let saying = |quote: &str| {
+        Canned(answer(
+            &[],
+            &[assertion_json(
+                "auth",
+                "fact",
+                "Tokens expire hourly",
+                quote,
+                r#"{"kind": "new"}"#,
+            )],
+        ))
+    };
+    assert_eq!(run(&service, &saying(AGENT_QUOTE)).held, 1);
+    assert_eq!(
+        run(&service, &saying("the refresh job runs each hour")).held,
+        1
+    );
+
+    let held = held(&service);
+    assert_eq!(held.len(), 1);
+    let quotes: Vec<&str> = held[0].4.iter().map(|e| e.quote.as_str()).collect();
+    assert_eq!(quotes, [AGENT_QUOTE, "the refresh job runs each hour"]);
+}
+
 /// Both a user-stated and an agent-stated assertion are held, each carrying
 /// the status it would land with: the user's word is `confirmed`, the
 /// agent's `provisional` until its branch's fate is known.
