@@ -616,8 +616,7 @@ impl Supervisor {
         // Stamp the provider account: the one the spawn picked, else the
         // active one in Settings. Later moves go through the switch, a
         // Settings change (`follow_active_account`) or a limit retry.
-        record.account =
-            chosen_account.unwrap_or_else(|| active_account(&ctx, &record.provider));
+        record.account = chosen_account.unwrap_or_else(|| active_account(&ctx, &record.provider));
         // Tag the agent with its owning run (workflow step spawn) so it's
         // hidden from the normal sidebar and cascaded on run delete.
         record.owner_run_id = owner_run_id;

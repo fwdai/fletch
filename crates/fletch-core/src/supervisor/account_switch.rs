@@ -79,7 +79,9 @@ pub(super) fn ensure_signed_in(provider: &str, target: Option<&str>) -> Result<(
 /// refuses an account removed since (`accounts::existing_account_dir`).
 pub(super) async fn chosen_account(provider: &str, requested: &str) -> Result<Option<String>> {
     if !accounts::supports_accounts(provider) {
-        return Err(Error::Other(format!("`{provider}` has no accounts to pick from.")));
+        return Err(Error::Other(format!(
+            "`{provider}` has no accounts to pick from."
+        )));
     }
     let target = managed(Some(requested.trim())).map(str::to_string);
     if let Some(id) = target.as_deref() {
