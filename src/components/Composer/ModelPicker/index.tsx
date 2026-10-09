@@ -9,12 +9,16 @@ import { PROVIDERS, providerLabel } from "@/data/providers";
 import { useAppStore } from "@/store";
 import { useAgentAvailability } from "../availability";
 import { ModelOptions } from "../ModelOptions";
-import { AccountStrip } from "./AccountStrip";
+import { AccountOptions } from "./AccountOptions";
+import { AccountRow } from "./AccountRow";
 import { AgentList, type OpenSettings } from "./AgentList";
-import { ModelFlyout } from "./ModelFlyout";
+import { SideFlyout } from "./SideFlyout";
 import { type AccountControl, useAccountView } from "./useAccountView";
 
 export type { AccountControl } from "./useAccountView";
+
+/** `hovered` while the account flyout is the one open; no provider id. */
+const ACCOUNT_FLY = "__account";
 
 interface Props {
   provider: string;
@@ -38,8 +42,9 @@ interface Props {
  *  agents and custom agents; hovering a coding agent opens a flyout on the
  *  right for model selection. Clicking an agent row commits its default model;
  *  leaving model unset preserves the provider CLI's default. Selections stay
- *  sticky via `onChange`. When the provider has several accounts, an account
- *  strip closes the menu and the chip names the account.
+ *  sticky via `onChange`. When the provider has several accounts, the chip
+ *  leads with an account icon and the menu opens on an account row, whose
+ *  flyout lists them the way an agent row's lists its models.
  *
  *  The menu always opens upward — the composer sits on the bottom edge of the
  *  window. A surface near the top of a panel wants a screen, not a menu that has
@@ -54,7 +59,8 @@ export function ModelPicker({
   account,
 }: Props) {
   const [open, setOpen] = useState(false);
-  // Coding agent whose model flyout is currently expanded (null = none).
+  // Coding agent whose model flyout is currently expanded, or ACCOUNT_FLY for
+  // the account flyout (null = none).
   const [hovered, setHovered] = useState<string | null>(null);
   const providerFlags = useAppStore((s) => s.providerFlags);
   const modelsByAgent = useAppStore((s) => s.modelsByAgent);
@@ -100,15 +106,17 @@ export function ModelPicker({
   // that in the chip tooltip, mirroring the effort chip.
   const restartOnChange =
     modelOnly && !!PROVIDER_DETAIL[provider as keyof typeof PROVIDER_DETAIL]?.restartToApply;
-  const chipTip = locked
+  const baseTip = locked
     ? (activeCustom?.name ?? selected.label)
     : modelOnly
       ? restartOnChange
         ? "Model — changing restarts the agent (rebuilds cache)"
-        : accountView
-          ? "Model and account"
-          : "Model"
+        : "Model"
       : "Agent and model";
+  // The chip shows the account as an icon only; its name is here.
+  const chipTip = accountView
+    ? `${baseTip} · ${accountView.spent ? "limit reached on " : ""}${accountView.label}`
+    : baseTip;
 
   function pickModel(providerId: string, id: string | undefined) {
     // A model-only pick (existing session) keeps the session's custom-agent
@@ -146,15 +154,33 @@ export function ModelPicker({
     );
   }
 
-  const accountStrip = accountView && (
-    <AccountStrip
+  // The full menu lists every agent, so it names whose accounts these are.
+  const accountTitle = modelOnly ? "Account" : `Account · ${providerLabel(provider)}`;
+  const accountRow = accountView && (
+    <AccountRow
       view={accountView}
-      // The full menu lists every agent, so it names whose accounts these are.
-      title={modelOnly ? "Account" : `Account · ${providerLabel(provider)}`}
-      onPick={pickAccount}
-      onManage={() => openSettings("providers")}
-      onMouseEnter={() => setHovered(null)}
+      title={accountTitle}
+      open={hovered === ACCOUNT_FLY}
+      onOpen={() => setHovered(ACCOUNT_FLY)}
     />
+  );
+  const accountFlyout = accountView && hovered === ACCOUNT_FLY && (
+    <SideFlyout
+      flyKey={ACCOUNT_FLY}
+      icon={
+        <span className="model-acct-icon flex-center">
+          <Icon name="user" size={13} />
+        </span>
+      }
+      title={providerLabel(provider)}
+      tag="account"
+    >
+      <AccountOptions
+        view={accountView}
+        onPick={pickAccount}
+        onManage={() => openSettings("providers")}
+      />
+    </SideFlyout>
   );
 
   return (
@@ -168,6 +194,13 @@ export function ModelPicker({
         tip={chipTip}
         className="model-chip"
       >
+        {accountView && (
+          <Icon
+            name="user"
+            size={12}
+            className={`model-chip-acct ${accountView.spent ? "is-spent" : ""}`}
+          />
+        )}
         {activeCustom ? (
           <>
             <Mono name={activeCustom.name} hue={activeCustom.color} size={15} />
@@ -183,11 +216,6 @@ export function ModelPicker({
             </span>
           </>
         )}
-        {accountView && (
-          <span className={`model-chip-acct truncate ${accountView.spent ? "is-spent" : ""}`}>
-            {accountView.label}
-          </span>
-        )}
         {!locked && <Icon name="chevD" size={9} />}
       </Chip>
 
@@ -199,6 +227,7 @@ export function ModelPicker({
            *  underneath the dropdown rather than floating beside it. */}
           <div className="model-dd-wrap" onMouseLeave={() => setHovered(null)}>
             <div className="model-dd-main">
+              {accountRow}
               <AgentList
                 provider={provider}
                 customAgentId={customAgentId}
@@ -211,12 +240,26 @@ export function ModelPicker({
                 onPickCustom={pickCustom}
                 onOpenSettings={openSettings}
               />
-              {accountStrip}
             </div>
 
             {hoveredAgent && (
-              <ModelFlyout agent={hoveredAgent}>{renderModelList(hoveredAgent)}</ModelFlyout>
+              <SideFlyout
+                flyKey={hoveredAgent.id}
+                icon={
+                  <ProviderIcon
+                    slug={hoveredAgent.id}
+                    short={hoveredAgent.short}
+                    hue={hoveredAgent.hue}
+                    size={20}
+                  />
+                }
+                title={hoveredAgent.label}
+                tag="model"
+              >
+                {renderModelList(hoveredAgent)}
+              </SideFlyout>
             )}
+            {accountFlyout}
           </div>
         </>
       )}
@@ -224,15 +267,19 @@ export function ModelPicker({
       {open && modelOnly && (
         <>
           <Scrim onClose={() => setOpen(false)} />
-          <div className="model-dd-wrap">
+          <div className="model-dd-wrap" onMouseLeave={() => setHovered(null)}>
             <div className="model-dd-main">
-              <div className="model-sect flex-center text-xs">
-                <span>Model</span>
-                <span className="model-sect-line" />
+              {accountRow}
+              {/* Leaving the account row for the models closes its flyout. */}
+              <div onMouseEnter={() => setHovered(null)}>
+                <div className="model-sect flex-center text-xs">
+                  <span>Model</span>
+                  <span className="model-sect-line" />
+                </div>
+                {renderModelList(selected)}
               </div>
-              {renderModelList(selected)}
-              {accountStrip}
             </div>
+            {accountFlyout}
           </div>
         </>
       )}

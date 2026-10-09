@@ -330,16 +330,11 @@
   max-width: 170px;
   color: var(--fg-2);
 }
-/* The account, only when the provider has several: muted, and the first part
-   to give way when the chip runs out of room. */
+/* The account, only when the provider has several: an icon ahead of the
+   agent, named in the chip's tooltip, amber when its limit is spent. */
 .model-chip-acct {
-  flex-shrink: 2;
-  min-width: 0;
-  max-width: 110px;
+  flex-shrink: 0;
   color: var(--fg-3);
-}
-.model-chip-acct::before {
-  content: "· ";
 }
 .model-chip-acct.is-spent {
   color: var(--warn);

@@ -51,65 +51,6 @@
   height: 1px;
   background: var(--bd-soft);
 }
-/* A section's trailing action (the account strip's "Manage accounts"). */
-.model-sect-act {
-  justify-content: center;
-  width: 18px;
-  height: 18px;
-  margin: -3px -4px -3px 0;
-  border-radius: 5px;
-  color: var(--fg-3);
-  transition:
-    background 0.12s var(--ease),
-    color 0.12s;
-}
-.model-sect-act:hover {
-  background: var(--hover);
-  color: var(--fg-0);
-}
-/* Account strip: one pill per account, wrapping when there are many. */
-.acct-strip {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  padding: 2px 6px 6px;
-}
-.acct-pill {
-  gap: 5px;
-  min-width: 0;
-  max-width: 100%;
-  padding: 3px 9px;
-  border: 1px solid var(--bd-soft);
-  border-radius: 999px;
-  color: var(--fg-1);
-  transition:
-    background 0.12s var(--ease),
-    border-color 0.12s;
-}
-.acct-pill:not(.is-disabled):not(.active):hover {
-  background: var(--hover);
-}
-.acct-pill.active {
-  border-color: var(--accent);
-  background: var(--selected);
-  color: var(--fg-0);
-}
-/* .is-disabled, not :disabled — aria-disabled keeps the tooltip reachable. */
-.acct-pill.is-disabled {
-  opacity: 0.42;
-  cursor: default;
-}
-.acct-pill-dot {
-  flex-shrink: 0;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--warn);
-}
-.acct-strip-note {
-  padding: 0 10px 6px;
-  color: var(--fg-3);
-}
 /* Coding agent row: name, version, chevron. Hovering opens the side panel. */
 .model-agent-row {
   width: 100%;
@@ -305,6 +246,51 @@
   .model-chip-agent {
     display: none;
   }
+}
+
+/* Account row and flyout. The row reuses the agent row; its icon stands in
+   for a provider logo at the same footprint. */
+.model-acct-icon {
+  flex-shrink: 0;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: 1px solid var(--bd-soft);
+  border-radius: 7px;
+  color: var(--fg-2);
+}
+.model-side-fly-head .model-acct-icon {
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+}
+.model-acct-icon.is-spent,
+.model-acct-spent,
+.model-option-desc.is-spent {
+  color: var(--warn);
+}
+.model-acct-note {
+  padding: 4px 9px 6px;
+  color: var(--fg-3);
+}
+.model-option.is-disabled {
+  opacity: 0.42;
+  cursor: default;
+}
+.model-option.is-disabled:hover {
+  background: none;
+}
+.model-acct-manage {
+  margin-top: 4px;
+  border-top: 1px solid var(--bd-soft);
+  border-radius: 0 0 8px 8px;
+}
+.model-acct-manage .model-option-name {
+  font-weight: 400;
+  color: var(--fg-2);
+}
+.model-option.model-acct-manage > svg {
+  color: var(--fg-3);
 }
 
 /* branch picker scroll buttons */
