@@ -1043,13 +1043,9 @@ impl Supervisor {
     ) -> Result<()> {
         let record = self.workspace.agent(agent_id)?;
         let per_turn = is_per_turn_provider(&record.provider);
-        // Claude carries a session id we generated at create time; per-turn
-        // agents (codex, cursor) are assigned one by the CLI on their first
-        // turn, so it may be None until then.
-        let session_id = record.session_id.clone();
-        if !per_turn && session_id.is_none() {
-            return Err(Error::Other("agent record missing session_id".into()));
-        }
+        // `None` only for a per-turn agent before its first turn
+        // (`AgentRecord::launch_session`).
+        let session_id = record.launch_session()?.map(str::to_string);
         let primary = record
             .repos
             .first()
@@ -1554,14 +1550,9 @@ impl Supervisor {
         if self.agents.lock().contains_key(agent_id) {
             return Ok(());
         }
-        // Per-turn agents are assigned a session id on their first turn, so
-        // a missing one is only an error for providers that generate it up
-        // front.
-        if !is_per_turn_provider(&record.provider) && record.session_id.is_none() {
-            return Err(Error::Other(
-                "Agent has no session id; remove and respawn.".into(),
-            ));
-        }
+        // Refused here, before the status flips, rather than deep in the
+        // launch (`AgentRecord::launch_session`).
+        record.launch_session()?;
         self.set_status(&ctx, agent_id, AgentStatus::Spawning, None);
         arm_spawn_timeout(self.clone(), ctx.clone(), agent_id.to_string());
 
