@@ -41,13 +41,18 @@ pub fn watermark(
     workspace_id: &str,
 ) -> Result<Option<Watermark>> {
     let conn = store.db().lock();
+    // The kind the pipeline stamps its observations with, as the JSON tag.
+    let kind = serde_json::to_value(super::OBSERVATION_SOURCE)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_string))
+        .unwrap_or_default();
     let latest = |extracted_only: bool| {
         conn.query_row(
             &format!(
                 "SELECT created_at, json_extract(source, '$.reference')
                  FROM context.observations
                  WHERE project_id = ?1
-                   AND json_extract(source, '$.kind') = 'user_turn'
+                   AND json_extract(source, '$.kind') = ?3
                    AND json_extract(provenance, '$.workspace_id') = ?2
                    {}
                  ORDER BY created_at DESC, id DESC
@@ -58,7 +63,7 @@ pub fn watermark(
                     ""
                 }
             ),
-            [project_id, workspace_id],
+            [project_id, workspace_id, kind.as_str()],
             |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Option<String>>(1)?)),
         )
         .optional()

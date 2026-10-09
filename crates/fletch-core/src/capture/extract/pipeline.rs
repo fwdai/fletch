@@ -82,13 +82,11 @@ pub fn process(
     let store = service.store();
     let project_id = project.id.as_str();
     let text = prompt::render(&input);
-    // The observation is of the conversation as a whole, agent's replies
-    // included; a `user_turn` source is reserved for what the user said.
     let observation = Observation {
         id: new_id(),
         project_id: project_id.to_string(),
         source: Source::new(
-            SourceKind::AgentTurn,
+            super::OBSERVATION_SOURCE,
             input.last_turn_id().map(str::to_string),
         ),
         provenance: provenance.clone(),
