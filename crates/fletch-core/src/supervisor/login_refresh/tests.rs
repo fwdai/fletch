@@ -291,10 +291,553 @@ fn teardown_forgets_everything_kept_about_the_login() {
     sup.logins.lock().rejected.insert("a1".into(), 42);
     sup.logins.lock().retrying.insert("a1".into());
     sup.remember_turn("a1", &msg());
+    sup.logins.lock().limited.insert("a1".into());
+    sup.mark_moved("a1");
     sup.forget_logins("a1");
     let logins = sup.logins.lock();
     assert!(logins.rejected.is_empty() && logins.retrying.is_empty());
     assert!(logins.last_turn.is_empty() && logins.prefetched.is_empty());
+    assert!(logins.limited.is_empty() && logins.moved.is_empty());
+}
+
+// --- a spent quota: the turn is resent once under the active account ---
+
+/// Claude's result once the five-hour window is spent, as seen in a real
+/// transcript; no `api_error_status` comes with it.
+fn session_limit_result() -> Value {
+    json!({
+        "type": "result",
+        "is_error": true,
+        "result": "You've hit your session limit · resets 1pm (Asia/Bangkok)",
+    })
+}
+
+fn codex_limit_failure() -> Value {
+    json!({
+        "type": "turn.failed",
+        "error": {"message": "You've hit your usage limit. Try again at 3pm."},
+    })
+}
+
+#[test]
+fn a_429_result_is_a_limit_rejection() {
+    assert!(is_limit_rejection(
+        &json!({"type": "result", "is_error": true, "api_error_status": 429, "result": "x"}),
+        false
+    ));
+}
+
+#[test]
+fn a_result_naming_a_spent_limit_is_a_limit_rejection() {
+    assert!(is_limit_rejection(&session_limit_result(), false));
+    for text in [
+        "Claude AI usage limit reached|1760000000",
+        "5-hour limit reached ∙ resets 3pm",
+        "You've hit your usage limit. Try again at 5pm.",
+        "API Error: 429 rate limit exceeded",
+    ] {
+        assert!(
+            is_limit_rejection(
+                &json!({"type": "result", "is_error": true, "result": text}),
+                false
+            ),
+            "{text}"
+        );
+    }
+}
+
+#[test]
+fn a_codex_turn_that_failed_on_a_usage_limit_is_a_limit_rejection() {
+    assert!(is_limit_rejection(&codex_limit_failure(), false));
+    assert!(!is_limit_rejection(
+        &json!({"type": "turn.failed", "error": {"message": "stream disconnected"}}),
+        false
+    ));
+}
+
+/// Claude's own message once the window is spent, as it reaches the stream:
+/// the CLI talking to itself under the `<synthetic>` model.
+fn synthetic_limit_message() -> Value {
+    json!({
+        "type": "assistant",
+        "message": {
+            "model": "<synthetic>",
+            "role": "assistant",
+            "content": [{"type": "text",
+                         "text": "You've hit your session limit · resets 1pm (Asia/Bangkok)"}],
+        },
+    })
+}
+
+/// Claude shrinks the result to "Turn failed" once the agent has spoken, and
+/// need not flag it as an error: what the stream said earlier — a rejected
+/// `rate_limit_event`, or its own limit message — settles the result.
+#[test]
+fn a_turn_the_stream_already_called_a_limit_ends_as_one_whatever_the_result_says() {
+    let bare = json!({"type": "result", "is_error": true, "result": "Turn failed"});
+    assert!(!is_limit_rejection(&bare, false));
+    assert!(is_limit_rejection(&bare, true));
+    assert!(is_limit_rejection(&ok_result(), true));
+    assert!(is_limit_rejected_event(&json!({
+        "type": "rate_limit_event",
+        "rate_limit_info": {"status": "rejected", "rateLimitType": "five_hour"},
+    })));
+    assert!(!is_limit_rejected_event(&json!({
+        "type": "rate_limit_event",
+        "rate_limit_info": {"status": "allowed"},
+    })));
+    assert!(is_limit_rejected_event(&synthetic_limit_message()));
+    assert!(is_limit_rejected_event(&json!({
+        "type": "assistant",
+        "message": {"model": "<synthetic>", "content": "Claude AI usage limit reached|176"},
+    })));
+}
+
+#[test]
+fn an_agents_own_words_about_limits_are_not_a_limit() {
+    assert!(!is_limit_rejected_event(&json!({
+        "type": "assistant",
+        "message": {"model": "claude-opus-5-5",
+                    "content": [{"type": "text", "text": "You've hit your usage limit, it says."}]},
+    })));
+    assert!(!is_limit_rejected_event(&json!({
+        "type": "assistant",
+        "message": {"model": "<synthetic>",
+                    "content": [{"type": "text", "text": "Request interrupted by user"}]},
+    })));
+}
+
+#[test]
+fn a_successful_turn_or_another_limit_is_not_a_limit_rejection() {
+    assert!(!is_limit_rejection(
+        &json!({"type": "result", "is_error": false, "result": "usage limit reached"}),
+        false
+    ));
+    for text in [
+        "account device limit reached",
+        "Budget limit reached ($5)",
+        "You've hit your device limit",
+        "You've hit your budget limit for this session",
+    ] {
+        assert!(
+            !is_limit_rejection(
+                &json!({"type": "result", "is_error": true, "result": text}),
+                false
+            ),
+            "{text}"
+        );
+    }
+    assert!(!is_limit_rejection(&rejected_result(), false));
+}
+
+/// Run `test` with the accounts root at a fresh tempdir, on its own runtime:
+/// the root is process-wide, so its lock has to be held across the awaits.
+fn in_root<F, Fut>(test: F)
+where
+    F: FnOnce(std::path::PathBuf) -> Fut,
+    Fut: std::future::Future<Output = ()>,
+{
+    crate::agent::accounts::with_test_root(|root| {
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(test(root.to_path_buf()));
+    });
+}
+
+/// A managed claude account holding a file login that needs no refresh.
+fn signed_in(root: &std::path::Path, id: &str) {
+    let dir = root.join("claude").join(id);
+    std::fs::create_dir_all(&dir).unwrap();
+    let blob = json!({
+        "claudeAiOauth": {
+            "accessToken": format!("sk-ant-oat01-test-{id}"),
+            "refreshToken": format!("sk-ant-ort01-test-{id}"),
+            "expiresAt": crate::agent::host_login::now_ms() + 7 * 24 * HOUR_MS,
+        }
+    });
+    std::fs::write(dir.join(".credentials.json"), blob.to_string()).unwrap();
+}
+
+/// A claude agent `a1` stamped `work`, with the active account set to
+/// `active`, its last turn remembered, in a supervisor over the ctx's db.
+async fn agent_on_work(
+    dir: &std::path::Path,
+    active: &str,
+) -> (Arc<Supervisor>, Arc<EngineCtx>, tempfile::TempDir) {
+    agent_on_work_for(dir, "claude", active).await
+}
+
+/// [`agent_on_work`] for an agent of `provider`.
+async fn agent_on_work_for(
+    dir: &std::path::Path,
+    provider: &str,
+    active: &str,
+) -> (Arc<Supervisor>, Arc<EngineCtx>, tempfile::TempDir) {
+    let (ctx, _sink, db_dir) = crate::host::ctx::test_ctx();
+    let sup = Arc::new(Supervisor::new(Arc::new(
+        crate::workspace::WorkspaceManager::new(ctx.db.clone()),
+    )));
+    let checkout = crate::supervisor::tests::committed_repo(dir, "repo").await;
+    let mut record =
+        crate::supervisor::tests::record_in_checkouts(&sup, "a1", std::slice::from_ref(&checkout));
+    record.provider = provider.into();
+    record.account = Some("work".into());
+    sup.workspace.add_agent(&mut record).unwrap();
+    set_active(&ctx, provider, active);
+    sup.remember_turn("a1", &msg());
+    (sup, ctx, db_dir)
+}
+
+fn stamp(sup: &Supervisor) -> Option<String> {
+    sup.workspace.agent("a1").unwrap().account
+}
+
+/// `observe_limit` for `a1`, off the runtime's workers: in the app the
+/// stream is read on a plain thread, and the limit path blocks on the
+/// provider's account lock there.
+fn observe(sup: &Arc<Supervisor>, ctx: &Arc<EngineCtx>, event: &Value) -> LoginVerdict {
+    tokio::task::block_in_place(|| sup.observe_limit(ctx, "a1", event))
+}
+
+#[test]
+fn a_limit_under_another_account_resends_the_turn_under_the_active_one() {
+    in_root(|root| async move {
+        let td = tempfile::tempdir().unwrap();
+        signed_in(&root, "home");
+        let (sup, ctx, _db) = agent_on_work(td.path(), "home").await;
+        sup.logins.lock().rejected.insert("a1".into(), 42);
+
+        assert_eq!(
+            observe(&sup, &ctx, &session_limit_result()),
+            LoginVerdict::Retrying
+        );
+
+        assert_eq!(stamp(&sup).as_deref(), Some("home"));
+        assert!(sup.respawn_pending.lock().contains("a1"));
+        assert_eq!(
+            sup.message_queue
+                .lock()
+                .drain_coalesced("a1")
+                .map(|m| m.text),
+            Some("fix the bug".to_string())
+        );
+        // The old account's rejected token is its own.
+        assert!(!sup.logins.lock().rejected.contains_key("a1"));
+    });
+}
+
+#[test]
+fn a_codex_turn_failed_on_a_limit_takes_the_same_path() {
+    in_root(|root| async move {
+        let td = tempfile::tempdir().unwrap();
+        signed_in(&root, "home");
+        let (sup, ctx, _db) = agent_on_work(td.path(), "home").await;
+
+        assert_eq!(
+            observe(&sup, &ctx, &codex_limit_failure()),
+            LoginVerdict::Retrying
+        );
+        assert_eq!(stamp(&sup).as_deref(), Some("home"));
+    });
+}
+
+/// A codex login that needs no refresh: an access token whose `exp` is a week
+/// out, distinct per account.
+fn codex_signed_in(root: &std::path::Path, id: &str) {
+    use base64::Engine as _;
+    let dir = root.join("codex").join(id);
+    std::fs::create_dir_all(&dir).unwrap();
+    let enc = |v: Value| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(v.to_string());
+    let exp = chrono::Utc::now().timestamp() + 7 * 24 * 3600;
+    let access = format!(
+        "{}.{}.sig-{id}",
+        enc(json!({"alg": "RS256"})),
+        enc(json!({"iat": exp - 10 * 24 * 3600, "exp": exp, "acct": id}))
+    );
+    let login = json!({
+        "auth_mode": "chatgpt",
+        "OPENAI_API_KEY": null,
+        "tokens": {"id_token": "id", "access_token": access,
+                   "refresh_token": format!("rt.{id}"), "account_id": id},
+        "last_refresh": "2026-10-01T00:00:00Z"
+    });
+    std::fs::write(dir.join("auth.json"), login.to_string()).unwrap();
+}
+
+fn set_active(ctx: &EngineCtx, provider: &str, id: &str) {
+    crate::database::set_setting(
+        &ctx.db.lock(),
+        &crate::agent::accounts::active_setting_key(provider),
+        id,
+    )
+    .unwrap();
+}
+
+/// Codex has no login reader to reset the budget on a clean turn, and
+/// reports one as `turn.completed`: a successful retry, then a later limit
+/// under another selection, is a fresh attempt and gets its own retry.
+#[test]
+fn a_codex_turn_completed_after_the_retry_resets_the_budget_for_a_later_limit() {
+    in_root(|root| async move {
+        let td = tempfile::tempdir().unwrap();
+        codex_signed_in(&root, "home");
+        codex_signed_in(&root, "work");
+        let (sup, ctx, _db) = agent_on_work_for(td.path(), "codex", "home").await;
+
+        assert_eq!(
+            observe(&sup, &ctx, &codex_limit_failure()),
+            LoginVerdict::Retrying
+        );
+        assert_eq!(stamp(&sup).as_deref(), Some("home"));
+        // The relaunch resent the turn and it went through.
+        sup.respawn_pending.lock().remove("a1");
+        sup.message_queue.lock().drain_coalesced("a1");
+        assert_eq!(
+            observe(&sup, &ctx, &json!({"type": "turn.completed", "usage": {}})),
+            LoginVerdict::Fine
+        );
+        assert!(!sup.logins.lock().retrying.contains("a1"));
+
+        set_active(&ctx, "codex", "work");
+        assert_eq!(
+            observe(&sup, &ctx, &codex_limit_failure()),
+            LoginVerdict::Retrying
+        );
+        assert_eq!(stamp(&sup).as_deref(), Some("work"));
+    });
+}
+
+/// The retry's read, probe and restamp run under the provider's account
+/// lock, after whoever holds it: a removal or a Settings change in flight
+/// can't slip between the check and the restamp.
+#[test]
+fn a_limit_retry_waits_for_the_provider_account_lock() {
+    in_root(|root| async move {
+        let td = tempfile::tempdir().unwrap();
+        signed_in(&root, "home");
+        let (sup, ctx, _db) = agent_on_work(td.path(), "home").await;
+
+        let held = ctx.account_locks.lock("claude").await;
+        let observing = {
+            let (sup, ctx) = (sup.clone(), ctx.clone());
+            tokio::task::spawn_blocking(move || {
+                sup.observe_limit(&ctx, "a1", &session_limit_result())
+            })
+        };
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(!observing.is_finished(), "the retry ran inside the lock");
+        assert_eq!(stamp(&sup).as_deref(), Some("work"));
+        drop(held);
+
+        assert_eq!(observing.await.unwrap(), LoginVerdict::Retrying);
+        assert_eq!(stamp(&sup).as_deref(), Some("home"));
+    });
+}
+
+/// The selection is read under the lock, so one that changed while the
+/// retry waited is the one it follows: back to the agent's own account
+/// here, which leaves nothing to retry on.
+#[test]
+fn a_selection_changed_while_the_retry_waited_is_the_one_it_follows() {
+    in_root(|root| async move {
+        let td = tempfile::tempdir().unwrap();
+        signed_in(&root, "home");
+        signed_in(&root, "work");
+        let (sup, ctx, _db) = agent_on_work(td.path(), "home").await;
+
+        let held = ctx.account_locks.lock("claude").await;
+        let observing = {
+            let (sup, ctx) = (sup.clone(), ctx.clone());
+            tokio::task::spawn_blocking(move || {
+                sup.observe_limit(&ctx, "a1", &session_limit_result())
+            })
+        };
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        set_active(&ctx, "claude", "work");
+        drop(held);
+
+        assert_eq!(observing.await.unwrap(), LoginVerdict::Fine);
+        assert_eq!(stamp(&sup).as_deref(), Some("work"));
+        assert!(!sup.respawn_pending.lock().contains("a1"));
+    });
+}
+
+/// The error stands in the chat: there is nothing else the user chose.
+#[test]
+fn a_limit_under_the_active_account_leaves_the_error_standing() {
+    in_root(|root| async move {
+        let td = tempfile::tempdir().unwrap();
+        signed_in(&root, "work");
+        let (sup, ctx, _db) = agent_on_work(td.path(), "work").await;
+
+        assert_eq!(
+            observe(&sup, &ctx, &session_limit_result()),
+            LoginVerdict::Fine
+        );
+
+        assert_eq!(stamp(&sup).as_deref(), Some("work"));
+        assert!(!sup.respawn_pending.lock().contains("a1"));
+        assert!(sup.message_queue.lock().is_empty("a1"));
+    });
+}
+
+/// The retry ran under the active account and hit a limit there too: both
+/// accounts are spent, and the second error is the user's to see.
+#[test]
+fn a_second_limit_on_the_retry_leaves_the_error_standing_and_the_new_stamp() {
+    in_root(|root| async move {
+        let td = tempfile::tempdir().unwrap();
+        signed_in(&root, "home");
+        let (sup, ctx, _db) = agent_on_work(td.path(), "home").await;
+        observe(&sup, &ctx, &session_limit_result());
+        sup.respawn_pending.lock().remove("a1");
+        sup.message_queue.lock().drain_coalesced("a1");
+
+        assert_eq!(
+            observe(&sup, &ctx, &session_limit_result()),
+            LoginVerdict::Fine
+        );
+
+        assert_eq!(stamp(&sup).as_deref(), Some("home"));
+        assert!(!sup.respawn_pending.lock().contains("a1"));
+        assert!(!sup.logins.lock().retrying.contains("a1"));
+        // A later attempt gets its own retry, like the login one does.
+        set_active(&ctx, "claude", "work");
+        signed_in(&root, "work");
+        assert_eq!(
+            observe(&sup, &ctx, &session_limit_result()),
+            LoginVerdict::Retrying
+        );
+    });
+}
+
+#[test]
+fn a_limit_with_the_active_account_signed_out_leaves_the_error_standing() {
+    in_root(|root| async move {
+        let td = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.join("claude").join("home")).unwrap();
+        let (sup, ctx, _db) = agent_on_work(td.path(), "home").await;
+
+        assert_eq!(
+            observe(&sup, &ctx, &session_limit_result()),
+            LoginVerdict::Fine
+        );
+
+        assert_eq!(stamp(&sup).as_deref(), Some("work"));
+        assert!(!sup.logins.lock().retrying.contains("a1"));
+    });
+}
+
+#[test]
+fn claudes_own_limit_message_settles_the_result_that_follows() {
+    in_root(|root| async move {
+        let td = tempfile::tempdir().unwrap();
+        signed_in(&root, "home");
+        let (sup, ctx, _db) = agent_on_work(td.path(), "home").await;
+
+        assert_eq!(
+            observe(&sup, &ctx, &synthetic_limit_message()),
+            LoginVerdict::Fine
+        );
+        assert_eq!(
+            observe(
+                &sup,
+                &ctx,
+                &json!({"type": "result", "is_error": false, "result": ""})
+            ),
+            LoginVerdict::Retrying
+        );
+
+        assert_eq!(stamp(&sup).as_deref(), Some("home"));
+        assert!(sup.respawn_pending.lock().contains("a1"));
+    });
+}
+
+/// The radio moved while a turn ran: the stamp already says the new account,
+/// but the process is still on the old login, and the limit is the old
+/// account's. The relaunch the fan-out flagged carries the resent turn.
+#[test]
+fn a_limit_on_the_turn_running_through_the_fan_out_is_resent_under_the_new_stamp() {
+    in_root(|root| async move {
+        let td = tempfile::tempdir().unwrap();
+        signed_in(&root, "home");
+        let (sup, ctx, _db) = agent_on_work(td.path(), "home").await;
+        live_with_login(&sup, td.path(), far_future());
+        sup.statuses
+            .lock()
+            .insert("a1".into(), AgentStatus::Running);
+        sup.follow_active_account(&ctx, "claude", Some("home"))
+            .await
+            .unwrap();
+        // The deferred respawn re-flags itself once it finds the agent busy.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(stamp(&sup).as_deref(), Some("home"));
+
+        assert_eq!(
+            observe(&sup, &ctx, &session_limit_result()),
+            LoginVerdict::Retrying
+        );
+
+        assert!(sup.respawn_pending.lock().contains("a1"));
+        assert_eq!(
+            sup.message_queue
+                .lock()
+                .drain_coalesced("a1")
+                .map(|m| m.text),
+            Some("fix the bug".to_string())
+        );
+        // One retry: a limit under the new login too is the user's to see.
+        assert_eq!(
+            observe(&sup, &ctx, &session_limit_result()),
+            LoginVerdict::Fine
+        );
+    });
+}
+
+/// Once the relaunch has read the new stamp, a limit is the new account's.
+#[tokio::test]
+async fn a_relaunch_clears_the_moved_mark() {
+    let (ctx, _sink, _dir) = crate::host::ctx::test_ctx();
+    let sup = Arc::new(test_supervisor());
+    sup.mark_moved("a1");
+    // No session to resume, so the start fails; the mark is cleared first.
+    let _ = sup.restart_taken(&ctx, "a1", None).await;
+    assert!(!sup.logins.lock().moved.contains("a1"));
+}
+
+fn far_future() -> i64 {
+    crate::agent::host_login::now_ms() + 7 * 24 * HOUR_MS
+}
+
+/// The rejected `rate_limit_event` settles the result that follows, whatever
+/// it says, and is spent by it: a later turn's result stands on its own.
+#[test]
+fn a_rejected_rate_limit_event_is_spent_by_its_turns_result() {
+    in_root(|root| async move {
+        let td = tempfile::tempdir().unwrap();
+        signed_in(&root, "home");
+        let (sup, ctx, _db) = agent_on_work(td.path(), "home").await;
+        let bare = json!({"type": "result", "is_error": true, "result": "Turn failed"});
+        assert_eq!(observe(&sup, &ctx, &bare), LoginVerdict::Fine);
+        assert_eq!(stamp(&sup).as_deref(), Some("work"));
+
+        observe(
+            &sup,
+            &ctx,
+            &json!({"type": "rate_limit_event", "rate_limit_info": {"status": "rejected"}}),
+        );
+        assert_eq!(observe(&sup, &ctx, &ok_result()), LoginVerdict::Retrying);
+        assert_eq!(stamp(&sup).as_deref(), Some("home"));
+        assert!(!sup.logins.lock().limited.contains("a1"));
+
+        // The retry's clean result is not a limit: the mark was spent, and
+        // the budget with it.
+        assert_eq!(observe(&sup, &ctx, &ok_result()), LoginVerdict::Fine);
+        assert_eq!(stamp(&sup).as_deref(), Some("home"));
+        assert!(!sup.logins.lock().retrying.contains("a1"));
+    });
 }
 
 #[cfg(target_os = "macos")]

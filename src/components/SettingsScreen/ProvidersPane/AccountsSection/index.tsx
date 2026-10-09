@@ -1,8 +1,9 @@
 // The accounts half of a provider that can hold several sign-ins (claude,
 // codex — `supportsAccounts`): every account Fletch knows for it, which one
-// new agents use, a Sign in per account, its plan limits, and a way to add
-// one. Takes the place of SignInSection for those providers; the single-login
-// providers keep SignInSection.
+// its agents run under (every agent, from its next turn — the host moves them),
+// a Sign in per account, its plan limits, and a way to add one. Takes the
+// place of SignInSection for those providers; the single-login providers keep
+// SignInSection.
 //
 // One sign-in terminal at a time, like SignInSection: the section tracks
 // which account's is open, so two logins can't race each other for the
@@ -90,8 +91,9 @@ export function AccountsSection({
       <div className="set-prov-acct-head text-sm">
         <span className="set-prov-dk">Accounts</span>
         <span>
-          New agents use the selected account. Each account keeps its own login and sessions;
-          settings, commands and skills are shared from your terminal setup.
+          Every agent runs under the selected account: new ones from the start, running ones from
+          their next turn. Each account keeps its own login and sessions; settings, commands and
+          skills are shared from your terminal setup.
         </span>
         <Button
           variant="outline"

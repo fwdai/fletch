@@ -3,13 +3,14 @@ import type { ViewItem } from "../messages/pair";
 // The vendors' own wording, which neither documents or keeps stable. Claude:
 // "API Error: 401 … OAuth access token has expired … Please run /login",
 // "Claude AI usage limit reached|…", "5-hour limit reached ∙ resets 3pm",
-// "You've hit your limit · resets …", "Invalid API key · Please run /login".
+// "You've hit your limit · resets …", "You've hit your session limit · resets
+// 1pm (Asia/Bangkok)", "Invalid API key · Please run /login".
 // Codex: "You've hit your usage limit", relayed "401 Unauthorized" / "429 Too
 // Many Requests" bodies, "could not be refreshed", "Please sign in again". Kept
 // to phrases an agent's own prose about auth code or rate limiters won't hit;
 // a miss only costs the hint, the header picker is always there.
 const REPLY_ERROR =
-  /API Error: 4(01|29)\b|run \/login\b|limit reached|hit your (usage )?limit|token has expired|401 Unauthorized|429 Too Many Requests|could not be refreshed|please sign in again|not signed in|not logged in|invalid api key|credit balance is too low/i;
+  /API Error: 4(01|29)\b|run \/login\b|limit reached|hit your (\w+ )?limit|token has expired|401 Unauthorized|429 Too Many Requests|could not be refreshed|please sign in again|not signed in|not logged in|invalid api key|credit balance is too low/i;
 
 // An error notice is the vendor speaking, never the agent, so codex's bare
 // "usage limit" and a bare "/login" are safe to read there.

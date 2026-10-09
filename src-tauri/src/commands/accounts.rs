@@ -64,14 +64,22 @@ pub async fn sign_out_provider_account(
     engine::sign_out_provider_account_impl(&ctx, &provider, &id).await
 }
 
-/// Name the account new agents of `provider` use; `None` means the CLI's own.
+/// Name the account every agent of `provider` runs under (new ones at
+/// creation, existing ones from their next turn); `None` means the CLI's own.
 #[tauri::command]
-pub fn set_active_provider_account(
+pub async fn set_active_provider_account(
+    supervisor: State<'_, Arc<Supervisor>>,
     ctx: State<'_, Arc<EngineCtx>>,
     provider: String,
     id: Option<String>,
 ) -> Result<()> {
-    engine::set_active_provider_account_impl(&ctx, &provider, id.as_deref())
+    engine::set_active_provider_account_impl(
+        supervisor.inner(),
+        ctx.inner(),
+        &provider,
+        id.as_deref(),
+    )
+    .await
 }
 
 /// Move an agent onto another account of its provider (`account` is an id or

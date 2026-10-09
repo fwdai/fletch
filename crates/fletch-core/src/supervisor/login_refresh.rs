@@ -9,6 +9,11 @@
 //! (`prefetch_login`): outside the lifecycle lock every agent shares, and
 //! before the spawn watchdog starts counting, so a slow sign-in server or a
 //! Keychain prompt costs neither.
+//!
+//! A turn that ended on a spent quota rides the same relaunch-and-resend
+//! path (`observe_limit`): when Settings names another account as the active
+//! one, the agent is restamped onto it and the turn is resent once from
+//! there. Both account providers' terminal events are read for it.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -16,13 +21,17 @@ use std::time::Duration;
 
 use serde_json::Value;
 
+use crate::agent::accounts;
 use crate::agent::host_login::claude::{self as claude_login, AccessToken};
 use crate::agent::Agent;
+use crate::database;
 use crate::error::{Error, Result};
 use crate::host::EngineCtx;
 use crate::message_queue::PendingMsg;
 use crate::workspace::{AgentRecord, AgentStatus};
 
+use super::account_switch::{ensure_signed_in, managed};
+use super::events::emit_workspace_changed;
 use super::lifecycle::arm_spawn_timeout;
 use super::Supervisor;
 
@@ -48,6 +57,18 @@ pub(super) struct Logins {
     last_turn: HashMap<String, PendingMsg>,
     /// Tokens resolved ahead of a launch (`prefetch_login`).
     pub(super) prefetched: HashMap<String, Prefetched>,
+    /// Agents whose current turn the stream already called a spent quota — a
+    /// `rate_limit_event` marked rejected, or claude's own `<synthetic>`
+    /// message saying so — ahead of the result that closes it. That result
+    /// is then a limit whatever it says: claude shrinks its text once the
+    /// agent has spoken, and need not flag it as an error at all.
+    limited: HashSet<String>,
+    /// Agents restamped by the active-account fan-out while their process
+    /// still ran on the old account's login (`follow_active_account`): the
+    /// turn in flight ends on that login, and a limit it hits is the old
+    /// account's, so it is resent once from the relaunch the fan-out already
+    /// flagged. Cleared by the relaunch (`restart_taken`).
+    moved: HashSet<String>,
 }
 
 pub(super) struct Prefetched {
@@ -119,6 +140,86 @@ fn is_auth_rejection(event: &Value) -> bool {
             .get("result")
             .and_then(Value::as_str)
             .is_some_and(|text| text.contains("API Error: 401")),
+    }
+}
+
+/// Whether a turn's terminal event says the account's quota is spent: a
+/// claude `result` closing a turn the stream already called a limit
+/// (`limited`, see `Logins::limited`), or an error result carrying a 429 or
+/// naming a limit in its text; codex's `turn.failed` whose message does.
+/// Short of the stream's own word, only an error result counts, so an answer
+/// that merely discusses limits never does.
+fn is_limit_rejection(event: &Value, limited: bool) -> bool {
+    match event.get("type").and_then(Value::as_str) {
+        Some("result") => {
+            if limited {
+                return true;
+            }
+            if event.get("is_error").and_then(Value::as_bool) != Some(true) {
+                return false;
+            }
+            event.get("api_error_status").and_then(Value::as_u64) == Some(429)
+                || event
+                    .get("result")
+                    .and_then(Value::as_str)
+                    .is_some_and(names_a_limit)
+        }
+        Some("turn.failed") => event
+            .pointer("/error/message")
+            .and_then(Value::as_str)
+            .is_some_and(names_a_limit),
+        _ => false,
+    }
+}
+
+/// The vendors' words for a spent quota: claude's "You've hit your session
+/// limit · resets 1pm" and "usage limit reached", codex's "You've hit your
+/// usage limit", a plain rate limit. A device or budget limit is not the
+/// account's quota, and another account would not lift it, however the
+/// sentence is built around it.
+fn names_a_limit(text: &str) -> bool {
+    let text = text.to_ascii_lowercase();
+    if text.contains("device limit") || text.contains("budget limit") {
+        return false;
+    }
+    (text.contains("hit your") && text.contains("limit"))
+        || text.contains("usage limit")
+        || text.contains("rate limit")
+        || text.contains("limit reached")
+}
+
+/// Whether a stream event, ahead of the result, already says the turn hit a
+/// limit: a claude `rate_limit_event` reporting the request refused, or the
+/// `assistant` message claude writes itself (model `<synthetic>`, the CLI
+/// talking to itself) whose text names one — "You've hit your session limit ·
+/// resets 1pm" is such a message, and the result after it may say nothing.
+fn is_limit_rejected_event(event: &Value) -> bool {
+    match event.get("type").and_then(Value::as_str) {
+        Some("rate_limit_event") => {
+            event
+                .pointer("/rate_limit_info/status")
+                .and_then(Value::as_str)
+                == Some("rejected")
+        }
+        Some("assistant") => {
+            event.pointer("/message/model").and_then(Value::as_str) == Some("<synthetic>")
+                && names_a_limit(&message_text(event))
+        }
+        _ => false,
+    }
+}
+
+/// The text of a stream-json `assistant` event's message: a plain string, or
+/// its text blocks joined.
+fn message_text(event: &Value) -> String {
+    match event.pointer("/message/content") {
+        Some(Value::String(text)) => text.clone(),
+        Some(Value::Array(blocks)) => blocks
+            .iter()
+            .filter_map(|block| block.get("text").and_then(Value::as_str))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => String::new(),
     }
 }
 
@@ -240,6 +341,14 @@ impl Supervisor {
         logins.retrying.remove(agent_id);
         logins.last_turn.remove(agent_id);
         logins.prefetched.remove(agent_id);
+        logins.limited.remove(agent_id);
+        logins.moved.remove(agent_id);
+    }
+
+    /// Note that the active-account fan-out restamped `agent_id` under a
+    /// running process (see `Logins::moved`).
+    pub(super) fn mark_moved(&self, agent_id: &str) {
+        self.logins.lock().moved.insert(agent_id.to_string());
     }
 
     /// Take `agent_id`'s process out of the `agents` map if it is idle. The
@@ -277,6 +386,9 @@ impl Supervisor {
         // Retire the old generation first, so its exit can't land on the new
         // process's status while the old one winds down.
         self.bump_generation(agent_id);
+        // The launch below reads the record, so it runs under the current
+        // stamp: nothing is left over from a restamp under the old process.
+        self.logins.lock().moved.remove(agent_id);
         if let Some(agent) = agent {
             let _ = agent.shutdown();
         }
@@ -456,6 +568,180 @@ impl Supervisor {
             self.message_queue.lock().requeue_front(agent_id, msg);
         }
         self.respawn_pending.lock().insert(agent_id.to_string());
+        LoginVerdict::Retrying
+    }
+
+    /// Read a turn's events for a spent quota, for either account provider.
+    /// Must run *before* the event reaches the turn-closing handler, like
+    /// `observe_login`, and before it: a limit result is not a login
+    /// rejection, and the other reader would clear the retry mark this sets.
+    ///
+    /// When Settings names another account as the active one, the agent is
+    /// restamped onto it, the turn is put back at the head of the queue, and
+    /// a session-preserving respawn is flagged for the turn end: its launch
+    /// signs in as the new account (claude) or copies its login into the
+    /// overlay (codex), and its flush resends the turn. One retry per
+    /// attempt, reset by a turn that ends on anything but a limit or a login
+    /// rejection (claude's clean `result`, codex's `turn.completed`); a limit
+    /// under the active account itself — including on that retry — leaves
+    /// the vendor's error standing in the chat, which is the user's cue that
+    /// every account they chose from is spent. The active account must exist
+    /// and probe as signed in, else nothing moves. No other account is ever
+    /// picked: the selection is the user's.
+    ///
+    /// Blocking: the stream is read on the agent's own thread
+    /// (`child_io::spawn_json_reader`), and the retry takes the provider's
+    /// account lock there, so it never runs on a runtime worker.
+    pub(super) fn observe_limit(
+        &self,
+        ctx: &Arc<EngineCtx>,
+        agent_id: &str,
+        event: &Value,
+    ) -> LoginVerdict {
+        if is_limit_rejected_event(event) {
+            self.logins.lock().limited.insert(agent_id.to_string());
+            return LoginVerdict::Fine;
+        }
+        let terminal = matches!(
+            event.get("type").and_then(Value::as_str),
+            Some("result") | Some("turn.failed") | Some("turn.completed")
+        );
+        if !terminal {
+            return LoginVerdict::Fine;
+        }
+        let limited = self.logins.lock().limited.remove(agent_id);
+        if !is_limit_rejection(event, limited) {
+            // A turn that ended on anything else is a fresh start: the next
+            // limit gets its own retry. A login rejection is left to the
+            // login reader, whose budget it is (claude only; codex reports
+            // every end here, as `turn.completed` or `turn.failed`).
+            if !is_auth_rejection(event) {
+                self.logins.lock().retrying.remove(agent_id);
+            }
+            return LoginVerdict::Fine;
+        }
+        self.retry_on_active_account(ctx, agent_id)
+    }
+
+    fn retry_on_active_account(&self, ctx: &Arc<EngineCtx>, agent_id: &str) -> LoginVerdict {
+        let Ok(provider) = self.workspace.agent(agent_id).map(|r| r.provider) else {
+            return LoginVerdict::Fine;
+        };
+        let provider = provider.as_str();
+        if !accounts::supports_accounts(provider) {
+            return LoginVerdict::Fine;
+        }
+        // Under the provider's account lock, like the Settings fan-out, the
+        // per-agent switch, removal and sign-out: the selection read here is
+        // the one that holds through the restamp (a Settings change lands
+        // before or after, never between), and the account it names can't be
+        // removed or signed out before the agent is on it. The record is read
+        // under it too: the fan-out may have just restamped this agent.
+        let _account = ctx.account_locks.blocking_lock(provider);
+        let Ok(record) = self.workspace.agent(agent_id) else {
+            return LoginVerdict::Fine;
+        };
+        let active = database::get_setting(&ctx.db.lock(), &accounts::active_setting_key(provider));
+        let active = managed(active.as_deref()).map(str::to_string);
+        let current = managed(record.account.as_deref());
+        let label = |stamp: Option<&str>| stamp.unwrap_or(accounts::DEFAULT_ACCOUNT).to_string();
+        if active.as_deref() == current {
+            let (was_retry, moved) = {
+                let mut logins = self.logins.lock();
+                (
+                    logins.retrying.remove(agent_id),
+                    logins.moved.contains(agent_id),
+                )
+            };
+            if was_retry {
+                tracing::warn!(
+                    agent_id,
+                    account = label(current),
+                    "the turn hit a usage limit under the active account too; the error stands"
+                );
+                return LoginVerdict::Fine;
+            }
+            if !moved {
+                tracing::info!(
+                    agent_id,
+                    account = label(current),
+                    "the turn hit a usage limit under the active account; nothing to retry on"
+                );
+                return LoginVerdict::Fine;
+            }
+            // The stamp says the active account, but the process that ran this
+            // turn was launched before the fan-out restamped it; the limit is
+            // the old account's. The relaunch the fan-out flagged brings the
+            // new login; the turn rides its flush.
+            let retry = {
+                let mut logins = self.logins.lock();
+                logins.retrying.insert(agent_id.to_string());
+                logins.last_turn.get(agent_id).cloned()
+            };
+            tracing::warn!(
+                agent_id,
+                to = label(current),
+                "the turn hit a usage limit on the login it started on; resending it once under the active account"
+            );
+            if let Some(msg) = retry {
+                self.message_queue.lock().requeue_front(agent_id, msg);
+            }
+            self.respawn_pending.lock().insert(agent_id.to_string());
+            return LoginVerdict::Retrying;
+        }
+        if !self.logins.lock().retrying.insert(agent_id.to_string()) {
+            self.logins.lock().retrying.remove(agent_id);
+            tracing::warn!(
+                agent_id,
+                "the retried turn hit a usage limit again; the error stands"
+            );
+            return LoginVerdict::Fine;
+        }
+        let target_exists = match active.as_deref() {
+            Some(id) => accounts::account_dir(provider, id).is_ok_and(|dir| dir.is_dir()),
+            None => true,
+        };
+        if !target_exists {
+            self.logins.lock().retrying.remove(agent_id);
+            tracing::warn!(
+                agent_id,
+                account = label(active.as_deref()),
+                "the active account has no directory; the usage limit stands"
+            );
+            return LoginVerdict::Fine;
+        }
+        if let Err(e) = ensure_signed_in(provider, active.as_deref()) {
+            self.logins.lock().retrying.remove(agent_id);
+            tracing::warn!(agent_id, error = %e, "the active account can't take the turn; the usage limit stands");
+            return LoginVerdict::Fine;
+        }
+        if let Err(e) = self
+            .workspace
+            .update_agent_account(agent_id, active.as_deref())
+        {
+            self.logins.lock().retrying.remove(agent_id);
+            tracing::warn!(agent_id, error = %e, "restamping onto the active account failed; the usage limit stands");
+            return LoginVerdict::Fine;
+        }
+        let retry = {
+            let mut logins = self.logins.lock();
+            // The old account's rejected token and prefetched login are its
+            // own; the launch under the new stamp resolves its own.
+            logins.rejected.remove(agent_id);
+            logins.prefetched.remove(agent_id);
+            logins.last_turn.get(agent_id).cloned()
+        };
+        tracing::warn!(
+            agent_id,
+            from = label(current),
+            to = label(active.as_deref()),
+            "the turn hit a usage limit; resending it once under the active account"
+        );
+        if let Some(msg) = retry {
+            self.message_queue.lock().requeue_front(agent_id, msg);
+        }
+        self.respawn_pending.lock().insert(agent_id.to_string());
+        emit_workspace_changed(ctx.sink.as_ref());
         LoginVerdict::Retrying
     }
 
