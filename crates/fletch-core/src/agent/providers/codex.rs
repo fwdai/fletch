@@ -38,7 +38,8 @@ use serde_json::Value;
 use crate::agent::args::{model_args, push_opt};
 use crate::agent::credential_file::{Entry, PrivateDir};
 use crate::agent::transcript::{
-    records_with_id, replace_field, RawRecord, ReadDiagnostics, SubagentLayout,
+    is_subagent, records_with_id, replace_field, typed_prompt, RawRecord, ReadDiagnostics,
+    SubagentLayout,
 };
 use crate::agent::TurnArgs;
 use crate::error::{Error, Result};
@@ -72,6 +73,77 @@ pub(crate) fn codex_read(paths: &[PathBuf], diag: &mut ReadDiagnostics) -> Vec<R
 /// (verified on 0.154.0), as [`codex_locate`] does. Its `session_meta` names
 /// the new thread (`id`, and `session_id` and `cwd` where present);
 /// everything else is copied as is.
+/// The prompts of a codex session. Codex logs each one twice, back to back:
+/// first as the `response_item` user message the model is sent, then as the
+/// `event_msg` the frontend replays (`user_message`, or from 0.153 an
+/// `item_completed` `UserMessage`). Only the event tells a typed prompt from
+/// the other user-role response items codex fills with injected context
+/// (AGENTS.md, environment, permissions), so it decides; but the prompt is
+/// placed on the response item when that immediately precedes it with the
+/// same text (every prompt of a few hundred real ones, both event shapes),
+/// since a cut before the turn has to drop what the model was sent.
+pub(crate) fn codex_prompt_texts(records: &[Value]) -> Vec<Option<String>> {
+    let mut out: Vec<Option<String>> = vec![None; records.len()];
+    for (i, record) in records.iter().enumerate() {
+        let Some(prompt) = codex_event_prompt(record) else {
+            continue;
+        };
+        let at = match i.checked_sub(1) {
+            Some(prev) if codex_model_input(&records[prev]).as_deref() == Some(prompt.as_str()) => {
+                prev
+            }
+            _ => i,
+        };
+        out[at] = typed_prompt(&prompt);
+    }
+    out
+}
+
+/// The text of a top-level prompt event, verbatim.
+fn codex_event_prompt(record: &Value) -> Option<String> {
+    if is_subagent(record) || record.get("type").and_then(Value::as_str) != Some("event_msg") {
+        return None;
+    }
+    let payload = record.get("payload")?;
+    match payload.get("type").and_then(Value::as_str)? {
+        "user_message" => payload.get("message")?.as_str().map(str::to_string),
+        "item_completed" => {
+            let item = payload.get("item")?;
+            if item.get("type").and_then(Value::as_str) != Some("UserMessage") {
+                return None;
+            }
+            joined_text(item.get("content")?)
+        }
+        _ => None,
+    }
+}
+
+/// The text of a top-level user-role `response_item` message, verbatim.
+fn codex_model_input(record: &Value) -> Option<String> {
+    if is_subagent(record) || record.get("type").and_then(Value::as_str) != Some("response_item") {
+        return None;
+    }
+    let payload = record.get("payload")?;
+    if payload.get("type").and_then(Value::as_str) != Some("message")
+        || payload.get("role").and_then(Value::as_str) != Some("user")
+    {
+        return None;
+    }
+    joined_text(payload.get("content")?)
+}
+
+/// Every content block's `text`, concatenated, whatever the block's type
+/// (`input_text`, `text`, `Text` across versions), as the frontend's
+/// `outputText` reads them.
+fn joined_text(content: &Value) -> Option<String> {
+    let texts: Vec<&str> = content
+        .as_array()?
+        .iter()
+        .filter_map(|block| block.get("text").and_then(Value::as_str))
+        .collect();
+    Some(texts.concat())
+}
+
 pub(crate) fn codex_write(
     session_id: &str,
     agent_id: &str,
@@ -600,6 +672,44 @@ mod tests {
             "call_id": "call_spawn", "arguments": "{\"task_name\":\"task\"}" } });
         assert_eq!(codex_subagent_parent(&[call], "child-1"), None);
         assert_eq!(codex_subagent_parent(&[], "child-1"), None);
+    }
+
+    // ── prompt echoes ─────────────────────────────────────────────────────
+
+    /// The `(index, prompt)` pairs of `records`.
+    fn prompts_of(records: &[Value]) -> Vec<(usize, String)> {
+        codex_prompt_texts(records)
+            .into_iter()
+            .enumerate()
+            .filter_map(|(i, p)| Some((i, p?)))
+            .collect()
+    }
+
+    #[test]
+    fn a_prompt_sits_on_the_model_input_its_event_follows() {
+        // 0.153: the user response item (5), then its `UserMessage` (6); the
+        // developer and injected items before them are not prompts.
+        assert_eq!(
+            prompts_of(&rollout_lines()),
+            [(5, "run echo hello".to_string())]
+        );
+        // Pre-0.153: the user response item at 4 is AGENTS.md, not the prompt, so
+        // the `user_message` event itself (5) is where it sits.
+        let legacy: Vec<Value> =
+            include_str!("../../../../../tests/adapters/codex/fixtures/rollout.jsonl")
+                .lines()
+                .map(|line| serde_json::from_str(line).unwrap())
+                .collect();
+        assert_eq!(prompts_of(&legacy), [(5, "run echo hello".to_string())]);
+    }
+
+    #[test]
+    fn a_sub_agents_prompt_is_not_the_sessions() {
+        let mut lines = rollout_lines();
+        for line in &mut lines {
+            line["parent_tool_use_id"] = json!("call_spawn");
+        }
+        assert!(prompts_of(&lines).is_empty());
     }
 
     // ── writing a thread ──────────────────────────────────────────────────

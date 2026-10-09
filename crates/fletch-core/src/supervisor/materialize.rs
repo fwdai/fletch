@@ -158,6 +158,7 @@ mod tests {
     use super::*;
     use crate::supervisor::tests::{record_in_checkouts, test_supervisor};
     use crate::supervisor::{ForkCode, ForkContext};
+    use crate::workspace::tests::test_prompts;
     use crate::workspace::Anchor;
 
     /// Workspace `id` of `provider`, working in `<td>/<id>/repo`, continuing
@@ -212,7 +213,9 @@ mod tests {
         sup.workspace
             .append_session_records(ws, "claude", "transcript", None, &batch)
             .unwrap();
-        sup.workspace.associate_pending_user_turns(ws).unwrap();
+        sup.workspace
+            .associate_pending_user_turns(ws, test_prompts)
+            .unwrap();
     }
 
     /// `ws`'s current transcript file, where claude looks for it.

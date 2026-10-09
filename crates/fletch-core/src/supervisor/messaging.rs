@@ -1242,7 +1242,7 @@ mod tests {
             .append_session_records("yosemite", "claude", "transcript", None, &records)
             .unwrap();
         sup.workspace
-            .associate_pending_user_turns("yosemite")
+            .associate_pending_user_turns("yosemite", crate::workspace::tests::test_prompts)
             .unwrap();
     }
 

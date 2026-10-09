@@ -52,7 +52,10 @@ pub use probe::{
 pub use probe::{parse_semver, resolve_agent_bin};
 pub(crate) use providers::claude::claude_session_has_messages;
 pub use spawn::{PerTurnSpec, SessionStart, SpawnSpec};
-pub use transcript::{read_jsonl_tail, ReadDiagnostics, SubagentLayout, TranscriptReader};
+pub(crate) use transcript::SUBAGENT_TAG;
+pub use transcript::{
+    read_jsonl_tail, PromptTexts, ReadDiagnostics, SubagentLayout, TranscriptReader,
+};
 
 pub enum Agent {
     Pty(PtyAgent),

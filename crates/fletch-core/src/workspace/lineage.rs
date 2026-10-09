@@ -18,7 +18,7 @@
 use rusqlite::OptionalExtension;
 
 use super::sessions::{current_session_id, query_newest_records};
-use super::turns::query_turns;
+use super::turns::{query_turns, TURN_POSITION};
 use super::*;
 
 /// The records a history page holds when the caller names no `limit`: enough
@@ -169,16 +169,18 @@ impl WorkspaceManager {
     ///
     /// The parent is the session that owns the anchor turn — an ancestor when
     /// the turn is inherited, which the new session then references directly.
-    /// `Before(T)` cuts at T's prompt record. `Through(T)` cuts at the prompt
-    /// record of the next turn after T, or at the end of T's session when no
-    /// later turn has one: a later turn without a record is still running or
-    /// was never delivered, so none of it is in the history to cut away. A cut
+    /// `Before(T)` cuts at T's position: its prompt record, or for a turn that
+    /// ended without the provider logging its prompt, just past the records
+    /// that existed when it was sent (`TURN_POSITION`). `Through(T)` cuts at
+    /// the position of the next turn after T, or at the end of T's session when
+    /// no later turn has one: a later turn without one is still running or was
+    /// never delivered, so none of it is in the history to cut away. A cut
     /// never reaches past what this conversation shows of the parent, so
     /// whatever an ancestor did after this branch left it stays out. `End` cuts
     /// at the end of the current session.
     ///
-    /// An anchor turn whose prompt hasn't been matched to a record yet is an
-    /// error, never "everything": it has no position to cut at.
+    /// An anchor turn still in flight with no record yet is an error, never
+    /// "everything": its echo may still arrive, so it has no position to cut at.
     pub fn resolve_anchor(&self, workspace_id: &str, anchor: Anchor) -> Result<SessionLineage> {
         let conn = self.db.lock();
         let current = current_session_id(&conn, workspace_id)
@@ -194,16 +196,19 @@ impl WorkspaceManager {
             Anchor::Through(turn_id) => (turn_id, true),
         };
 
-        // The turn's session and its prompt record's seq (None = unmatched).
-        let (origin, prompt_seq): (String, Option<i64>) = conn
+        // The turn's session, its position (None = none yet), and whether it
+        // has ended.
+        let (origin, prompt_seq, ended): (String, Option<i64>, bool) = conn
             .query_row(
-                "SELECT t.session_id, r.seq
-                   FROM session_user_turns t
-                   LEFT JOIN transcripts.session_records r
-                          ON r.session_id = t.session_id AND r.native_id = t.native_id
-                  WHERE t.turn_id = ?1",
+                &format!(
+                    "SELECT t.session_id, {TURN_POSITION}, t.ended_at IS NOT NULL
+                       FROM session_user_turns t
+                       LEFT JOIN transcripts.session_records r
+                              ON r.session_id = t.session_id AND r.native_id = t.native_id
+                      WHERE t.turn_id = ?1"
+                ),
                 [turn_id],
-                |r| Ok((r.get(0)?, r.get(1)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .optional()?
             .ok_or_else(|| Error::Other(format!("unknown turn {turn_id}")))?;
@@ -219,20 +224,33 @@ impl WorkspaceManager {
             .bound
             .unwrap_or(i64::MAX);
         let prompt_seq = prompt_seq.ok_or_else(|| {
-            Error::Other("That message is still syncing. Try again in a moment.".into())
+            Error::Other(if ended {
+                "That message has no place in the history to cut at.".into()
+            } else {
+                "That message is still syncing. Try again in a moment.".into()
+            })
         })?;
         if prompt_seq >= bound {
             return Err(elsewhere());
         }
 
         let cut_seq = if through {
+            // Two turns share a position only when one is placed by its
+            // watermark (`TURN_POSITION`). A placed later turn has no record to
+            // cut away, so it never ends this one there; a prompt record at this
+            // turn's own placed position does, and this turn goes with it.
             let next_prompt: Option<i64> = conn.query_row(
-                "SELECT MIN(r.seq)
-                   FROM session_user_turns t
-                   JOIN transcripts.session_records r
-                     ON r.session_id = t.session_id AND r.native_id = t.native_id
-                  WHERE t.session_id = ?1 AND r.seq > ?2",
-                rusqlite::params![origin, prompt_seq],
+                &format!(
+                    "SELECT MIN(pos) FROM (
+                         SELECT {TURN_POSITION} AS pos, t.native_id AS nid
+                           FROM session_user_turns t
+                           LEFT JOIN transcripts.session_records r
+                                  ON r.session_id = t.session_id AND r.native_id = t.native_id
+                          WHERE t.session_id = ?1 AND t.turn_id != ?3
+                     )
+                     WHERE pos > ?2 OR (pos = ?2 AND nid IS NOT NULL)"
+                ),
+                rusqlite::params![origin, prompt_seq, turn_id],
                 |r| r.get(0),
             )?;
             match next_prompt {
@@ -393,8 +411,8 @@ impl WorkspaceManager {
     }
 
     /// The user turns of [`Self::read_history_records`], in the same order:
-    /// each ancestor's turns whose prompt lies below its cut, then every turn
-    /// of the session's own, pending ones included.
+    /// each ancestor's turns positioned below its cut (`TURN_POSITION`), then
+    /// every turn of the session's own, pending ones included.
     pub fn read_history_turns(&self, workspace_id: &str) -> Result<Vec<UserTurn>> {
         let conn = self.db.lock();
         let Some(current) = current_session_id(&conn, workspace_id) else {

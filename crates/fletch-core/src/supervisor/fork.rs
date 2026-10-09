@@ -226,6 +226,7 @@ mod tests {
         committed_repo, pins, record_in_checkouts, test_supervisor, workspace_of,
     };
     use crate::supervisor::PinnedCheckout;
+    use crate::workspace::tests::test_prompts;
     use serde_json::json;
     use std::path::{Path, PathBuf};
 
@@ -277,7 +278,9 @@ mod tests {
         sup.workspace
             .append_session_records(ws, "claude", "transcript", None, &[(turn, &prompt)])
             .unwrap();
-        sup.workspace.associate_pending_user_turns(ws).unwrap();
+        sup.workspace
+            .associate_pending_user_turns(ws, test_prompts)
+            .unwrap();
     }
 
     fn edit(checkout: &Path, text: &str) {
