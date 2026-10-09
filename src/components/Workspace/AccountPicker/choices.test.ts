@@ -36,6 +36,16 @@ describe("pickerState", () => {
     expect(pickerState(true, accounts, false)).toBe("ready");
   });
 
+  it("offers the one usable account when the current one was signed out", () => {
+    const accounts = [account("default"), account("work", "signed_out")];
+    expect(pickerState(true, accounts, false, "work")).toBe("ready");
+    expect(pickerState(true, accounts, false, "default")).toBe("single");
+  });
+
+  it("offers the one usable account when the current one was removed", () => {
+    expect(pickerState(true, [account("default")], false, "work")).toBe("ready");
+  });
+
   it("disables the picker while the agent is running", () => {
     expect(pickerState(true, two, true)).toBe("disabled");
   });

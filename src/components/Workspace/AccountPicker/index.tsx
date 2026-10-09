@@ -24,7 +24,8 @@ export function AccountPicker({ agent }: { agent: AgentRecord }) {
   const switchAccount = useAppStore((s) => s.switchAgentAccount);
   const openSettingsScreen = useAppStore((s) => s.openSettingsScreen);
 
-  const state = pickerState(canSwitch, accounts, busy || switching);
+  const current = currentAccountId(agent);
+  const state = pickerState(canSwitch, accounts, busy || switching, current);
   const manage = () => openSettingsScreen("providers");
 
   if (state === "hidden") return null;
@@ -49,7 +50,7 @@ export function AccountPicker({ agent }: { agent: AgentRecord }) {
     >
       {(close) => (
         <AccountMenu
-          choices={accountChoices(accounts, currentAccountId(agent))}
+          choices={accountChoices(accounts, current)}
           onPick={(id) => {
             close();
             void switchAccount(agent.id, id);

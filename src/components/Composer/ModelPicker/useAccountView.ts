@@ -57,7 +57,9 @@ export function useAccountView(
   }, [canSwitch, refreshAccounts]);
 
   const locked = control?.locked ?? false;
-  const state = pickerState(canSwitch, accounts, locked);
+  // A pick that is no longer usable keeps the strip up, so a draft holding
+  // one can still move off it rather than fail every spawn.
+  const state = pickerState(canSwitch, accounts, locked, control?.current || undefined);
   if (state === "hidden" || state === "single") return null;
 
   const current = control?.current || (accounts.find((a) => a.active)?.id ?? DEFAULT_ACCOUNT_ID);
