@@ -390,6 +390,9 @@ fn land(
         Landing::Held { .. } => {
             tracing::info!(project = %project.id, line = %decision.line, "context ingest: decision held for review")
         }
+        Landing::Dismissed { .. } => {
+            tracing::debug!(project = %project.id, line = %decision.line, "context ingest: decision dismissed before; skipped")
+        }
         Landing::Duplicate { .. } => {
             tracing::debug!(project = %project.id, line = %decision.line, "context ingest: duplicate decision skipped")
         }

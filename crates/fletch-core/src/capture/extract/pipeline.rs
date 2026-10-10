@@ -1,8 +1,10 @@
 //! One extraction, end to end: record the observation, run the model, keep
 //! the run, then turn the answer into proposals. Nothing the extractor says
-//! lands on its own — entities become pending proposals, assertions go
-//! through `ContextService::record_decision`, where the one write policy
-//! holds every extractor write for review (or answers `Duplicate`). Pure
+//! lands on its own — entities go through `ContextService::propose_entity`,
+//! which decides known, waiting, ruled out, capped or proposed in one
+//! transaction; assertions go through `ContextService::record_decision`,
+//! where the one write policy holds every extractor write for review (or
+//! answers `Duplicate`), a repeat of a waiting card adding to it. Pure
 //! over its arguments apart from the service, so tests drive it with a fake
 //! extractor. The observation is marked extracted only when the run was
 //! read, so the turns of a failed one are picked up again by the next.
@@ -13,8 +15,12 @@
 //! (`trust::find_user_quote`) makes the assertion user-stated — `user_turn`
 //! source, `confirmed` once accepted. A quote found in the agent's text is
 //! evidence too, but leaves the assertion agent-stated and `provisional`.
-//! The store cleans every text it writes; only slugs are normalised here,
-//! since the store refuses a bad one.
+//! An assertion with no quote found anywhere is dropped, as is one that only
+//! restates a head (`confirms`, `duplicate`) and one in the implementation
+//! domain, unless it is a constraint the user stated. The run's caps apply
+//! to what is left after those filters, so dropped items never crowd out
+//! real ones. The store cleans every text it writes; only slugs are
+//! normalised here, since the store refuses a bad one.
 
 use std::time::Instant;
 
@@ -36,17 +42,29 @@ pub struct Summary {
     pub observation_id: Id,
     /// Entities proposed for review.
     pub entities_proposed: usize,
-    /// Entities already in the graph, or with no usable slug.
+    /// Entities already in the graph, pending review or dismissed by a
+    /// person, or with no usable slug.
     pub entities_skipped: usize,
     /// Assertions held for review.
     pub held: usize,
+    /// Assertions repeating a proposal a person dismissed; not held again.
+    pub redismissed: usize,
     /// Assertions that restate a current head; nothing kept.
     pub duplicates: usize,
     /// Assertions about nothing the graph or this run knows.
     pub assertions_skipped: usize,
-    /// Assertions none of whose quotes were found in the turns; held with no
-    /// evidence (counted in `held` too, duplicates aside).
+    /// Assertions none of whose quotes were found in the turns; the statement
+    /// may be invented, so nothing is held.
     pub unverified: usize,
+    /// Entities and assertions that passed every filter but came after the
+    /// run's caps were full; not proposed.
+    pub capped: usize,
+    /// Implementation-domain assertions other than a user-stated constraint;
+    /// below the extractor's bar, dropped.
+    pub off_domain: usize,
+    /// Assertions the model related as `confirms` or `duplicate`: a head
+    /// already says them, so nothing is held.
+    pub restated: usize,
     /// Set when the run failed or its output could not be read; nothing was
     /// proposed then.
     pub error: Option<String>,
@@ -76,13 +94,11 @@ pub fn process(
     let store = service.store();
     let project_id = project.id.as_str();
     let text = prompt::render(&input);
-    // The observation is of the conversation as a whole, agent's replies
-    // included; a `user_turn` source is reserved for what the user said.
     let observation = Observation {
         id: new_id(),
         project_id: project_id.to_string(),
         source: Source::new(
-            SourceKind::AgentTurn,
+            super::OBSERVATION_SOURCE,
             input.last_turn_id().map(str::to_string),
         ),
         provenance: provenance.clone(),
@@ -138,45 +154,41 @@ pub fn process(
         provenance: provenance.clone(),
     };
 
-    let graph = store.load(project_id)?;
-    // Slugs proposed by this run: an assertion about one carries it as
-    // `about_pending`, resolved when the entity is accepted.
+    // Slugs waiting for review, this run's and earlier ones it named: an
+    // assertion about one carries it as `about_pending`, resolved when the
+    // entity is accepted.
     let mut pending_slugs: Vec<String> = Vec::new();
     for entity in parsed.entities {
         let Some(input) = entity_input(entity) else {
             summary.entities_skipped += 1;
             continue;
         };
-        let known = std::iter::once(&input.slug)
-            .chain(std::iter::once(&input.name))
-            .chain(&input.aliases)
-            .any(|reference| resolve::entity(&graph, reference).is_ok())
-            || pending_slugs.contains(&input.slug);
-        if known {
-            summary.entities_skipped += 1;
-            continue;
-        }
-        pending_slugs.push(input.slug.clone());
-        service.add_proposal(
+        let slug = input.slug.clone();
+        let budget = prompt::MAX_ENTITIES.saturating_sub(summary.entities_proposed);
+        let landing = service.propose_entity(
             project,
-            &Proposal {
-                id: new_id(),
-                project_id: project_id.to_string(),
-                observation_id: Some(observation.id.clone()),
-                payload: ProposalPayload::Entity {
-                    input,
-                    stamp: agent_stamp(),
-                },
-                evidence: Vec::new(),
-                status: ProposalStatus::Pending,
-                dismiss_reason: None,
-                created_at: now_millis(),
-                ruled_at: None,
-                ruled_by: None,
-            },
+            input,
+            agent_stamp(),
+            Some(observation.id.clone()),
+            budget,
         )?;
-        summary.entities_proposed += 1;
+        match landing {
+            EntityLanding::Proposed { .. } => summary.entities_proposed += 1,
+            EntityLanding::Known { .. }
+            | EntityLanding::Pending { .. }
+            | EntityLanding::Dismissed { .. } => summary.entities_skipped += 1,
+            EntityLanding::Capped => summary.capped += 1,
+        }
+        if matches!(
+            landing,
+            EntityLanding::Proposed { .. } | EntityLanding::Pending { .. }
+        ) && !pending_slugs.contains(&slug)
+        {
+            pending_slugs.push(slug);
+        }
     }
+
+    let graph = store.load(project_id)?;
 
     let user_turns: Vec<UserTurnText> = input
         .turns
@@ -198,22 +210,62 @@ pub fn process(
         .collect();
 
     for assertion in parsed.assertions {
+        if assertion
+            .relation
+            .as_ref()
+            .is_some_and(|r| matches!(r.kind, RelationKind::Confirms | RelationKind::Duplicate))
+        {
+            tracing::debug!(observation = %observation.id, statement = %assertion.statement, "context extract: restatement of a head dropped");
+            summary.restated += 1;
+            continue;
+        }
         let (found, unknown) = resolve::entities(&graph, &assertion.about);
         let mut about: Vec<Id> = found.iter().map(|e| e.id.clone()).collect();
         about.dedup();
-        let (about_pending, unknown): (Vec<String>, Vec<String>) = unknown
-            .into_iter()
-            .map(|reference| slug(&reference).unwrap_or(reference))
-            .partition(|s| pending_slugs.contains(s));
-        if !unknown.is_empty() {
-            tracing::warn!(?unknown, statement = %assertion.statement, "context extract: unknown entity slugs dropped");
+        let (mut about_pending, mut still_unknown) = (Vec::new(), Vec::new());
+        for s in unknown.into_iter().map(|r| slug(&r).unwrap_or(r)) {
+            // The model is never shown pending entities, so it names one
+            // from an earlier run without listing it again.
+            let pending =
+                pending_slugs.contains(&s) || store.pending_entity_slug(project_id, &s)?;
+            if pending {
+                about_pending.push(s);
+            } else {
+                still_unknown.push(s);
+            }
+        }
+        if !still_unknown.is_empty() {
+            tracing::warn!(unknown = ?still_unknown, statement = %assertion.statement, "context extract: unknown entity slugs dropped");
         }
         if about.is_empty() && about_pending.is_empty() {
             summary.assertions_skipped += 1;
             continue;
         }
         let verified = verify(&user_turns, &agent_turns, &assertion.evidence);
+        if verified.is_empty() {
+            summary.unverified += 1;
+            tracing::info!(
+                observation = %observation.id,
+                statement = %assertion.statement,
+                quotes = assertion.evidence.len(),
+                "context extract: no quote found in the turns"
+            );
+            continue;
+        }
         let user_stated = verified.iter().find_map(|q| q.user.clone());
+        // A rule the user stated is worth keeping however implementation-
+        // flavoured ("always use pnpm"); any other implementation detail is not.
+        if assertion.domain == Domain::Implementation
+            && !(assertion.kind == AssertionKind::Constraint && user_stated.is_some())
+        {
+            tracing::debug!(observation = %observation.id, statement = %assertion.statement, "context extract: implementation-domain assertion dropped");
+            summary.off_domain += 1;
+            continue;
+        }
+        if summary.held >= prompt::MAX_ASSERTIONS {
+            summary.capped += 1;
+            continue;
+        }
         // A user-stated record states the user's words (the service holds
         // every writer to that); the model's sentence is its reading and
         // goes in the rationale when there is no other.
@@ -265,15 +317,6 @@ pub fn process(
         // The service applies the user's quote (statement, source, status);
         // the pipeline only hands over the proof.
         let stamp = agent_stamp();
-        if verified.is_empty() {
-            summary.unverified += 1;
-            tracing::info!(
-                observation = %observation.id,
-                statement = %input.statement,
-                quotes = assertion.evidence.len(),
-                "context extract: no quote found in the turns"
-            );
-        }
         let evidence = verified
             .into_iter()
             .map(|q| Evidence {
@@ -292,6 +335,10 @@ pub fn process(
         };
         match service.record_decision(project, candidate, stamp)? {
             Landing::Held { .. } => summary.held += 1,
+            Landing::Dismissed { proposal_id } => {
+                tracing::debug!(observation = %observation.id, %proposal_id, "context extract: repeats a dismissed proposal");
+                summary.redismissed += 1;
+            }
             Landing::Duplicate { id } => {
                 tracing::debug!(observation = %observation.id, head = %id, "context extract: duplicate of a head");
                 summary.duplicates += 1;
@@ -300,6 +347,13 @@ pub fn process(
                 tracing::warn!(observation = %observation.id, ?other, "context extract: the write policy did not hold an extractor write");
             }
         }
+    }
+    if summary.capped > 0 {
+        tracing::info!(
+            observation = %observation.id,
+            capped = summary.capped,
+            "context extract: proposals past the run's caps dropped"
+        );
     }
 
     store.mark_extracted(&observation.id)?;

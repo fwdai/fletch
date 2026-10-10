@@ -7,8 +7,8 @@ use crate::context::model::*;
 use crate::context::ContextService;
 
 use super::{
-    agent_stamp, extracted_at, run, run_row, seed_decision, seed_decision_as, seed_entity, service,
-    user_stamp, Canned, Failing, AGENT_QUOTE, PROJECT, REPO, USER_QUOTE,
+    agent_stamp, extracted_at, project, run, run_row, seed_decision, seed_decision_as, seed_entity,
+    service, user_stamp, Canned, Failing, AGENT_QUOTE, PROJECT, REPO, USER_QUOTE,
 };
 
 fn entity_json(slug: &str) -> String {
@@ -27,6 +27,11 @@ fn assertion_json(about: &str, kind: &str, statement: &str, quote: &str, relatio
             "statement": "{statement}", "rationale": "because",
             "relation": {relation}, "evidence": [{evidence}]}}"#
     )
+}
+
+/// `assertion` (from [`assertion_json`]) in `domain` instead.
+fn in_domain(assertion: String, domain: &str) -> String {
+    assertion.replace(r#""architectural""#, &format!(r#""{domain}""#))
 }
 
 fn answer(entities: &[String], assertions: &[String]) -> String {
@@ -149,30 +154,354 @@ fn a_failed_run_is_kept_with_its_error_and_not_marked_extracted() {
     assert!(extracted_at(&service, &summary.observation_id).is_none());
 }
 
+/// The prompt version the run is recorded with.
+#[test]
+fn the_run_records_prompt_version_3() {
+    let (service, _dir) = service();
+    let summary = run(&service, &Canned(answer(&[], &[])));
+    let version: String = service.with_conn(|conn| {
+        conn.query_row(
+            "SELECT prompt_version FROM context.extractor_runs WHERE observation_id = ?1",
+            [&summary.observation_id],
+            |r| r.get(0),
+        )
+        .unwrap()
+    });
+    assert_eq!(version, "3");
+}
+
+/// A model that ignores the caps cannot flood the review: the first entity
+/// and the first three assertions that pass the filters are proposed, the
+/// rest only counted.
+#[test]
+fn proposals_past_the_caps_are_counted_and_dropped() {
+    let (service, _dir) = service();
+    seed_entity(&service, "auth");
+    let assertions: Vec<String> = ["One", "Two", "Three", "Four", "Five"]
+        .iter()
+        .map(|s| assertion_json("auth", "fact", s, AGENT_QUOTE, r#"{"kind": "new"}"#))
+        .collect();
+    let summary = run(
+        &service,
+        &Canned(answer(
+            &[entity_json("billing"), entity_json("search")],
+            &assertions,
+        )),
+    );
+    assert_eq!(summary.capped, 3);
+    assert_eq!(summary.entities_proposed, 1);
+    assert_eq!(summary.held, 3);
+    let slugs: Vec<String> = pending_entities(&service)
+        .into_iter()
+        .map(|e| e.slug)
+        .collect();
+    assert_eq!(slugs, ["billing"]);
+    let mut statements: Vec<String> = held(&service)
+        .into_iter()
+        .map(|(input, ..)| input.statement)
+        .collect();
+    statements.sort();
+    assert_eq!(statements, ["One", "Three", "Two"]);
+}
+
+/// Three implementation-domain items listed first are dropped before the
+/// cap, so they do not push out the business one after them.
+#[test]
+fn dropped_assertions_do_not_push_out_a_kept_one() {
+    let (service, _dir) = service();
+    seed_entity(&service, "auth");
+    let mut assertions: Vec<String> = ["One", "Two", "Three"]
+        .iter()
+        .map(|s| {
+            in_domain(
+                assertion_json("auth", "decision", s, AGENT_QUOTE, r#"{"kind": "new"}"#),
+                "implementation",
+            )
+        })
+        .collect();
+    assertions.push(in_domain(
+        assertion_json("auth", "fact", "Kept", AGENT_QUOTE, r#"{"kind": "new"}"#),
+        "business",
+    ));
+    let summary = run(&service, &Canned(answer(&[], &assertions)));
+    assert_eq!(summary.off_domain, 3);
+    assert_eq!(summary.capped, 0);
+    assert_eq!(summary.held, 1);
+    let held = held(&service);
+    assert_eq!(held[0].0.statement, "Kept");
+    assert_eq!(held[0].0.domain, Domain::Business);
+}
+
+/// The prompt no longer asks for `confirms` or `duplicate`; a model that
+/// still answers with one is restating a head, so nothing is held.
+#[test]
+fn a_confirms_or_duplicate_relation_is_dropped() {
+    let (service, _dir) = service();
+    let auth = seed_entity(&service, "auth");
+    let head = seed_decision(&service, &auth, "Use sessions", agent_stamp());
+    let summary = run(
+        &service,
+        &Canned(answer(
+            &[],
+            &[
+                assertion_json(
+                    "auth",
+                    "decision",
+                    "Sessions it is",
+                    AGENT_QUOTE,
+                    &format!(r#"{{"kind": "confirms", "target": "{head}"}}"#),
+                ),
+                assertion_json(
+                    "auth",
+                    "decision",
+                    "We use sessions",
+                    AGENT_QUOTE,
+                    &format!(r#"{{"kind": "duplicate", "target": "{head}"}}"#),
+                ),
+                assertion_json("auth", "fact", "Kept", AGENT_QUOTE, r#"{"kind": "new"}"#),
+            ],
+        )),
+    );
+    assert_eq!(summary.restated, 2);
+    assert_eq!(summary.held, 1);
+    assert_eq!(held(&service)[0].0.statement, "Kept");
+}
+
+/// "Always use pnpm" is implementation-flavoured, but a rule the user stated
+/// is the most reliable thing a run can find: held when quoted from the
+/// user's own turn, dropped when only the agent said it.
+#[test]
+fn a_user_stated_implementation_constraint_is_held() {
+    let (service, _dir) = service();
+    seed_entity(&service, "auth");
+    let summary = run(
+        &service,
+        &Canned(answer(
+            &[],
+            &[
+                in_domain(
+                    assertion_json(
+                        "auth",
+                        "constraint",
+                        "Never store tokens in local storage",
+                        "never store tokens in local storage",
+                        r#"{"kind": "new"}"#,
+                    ),
+                    "implementation",
+                ),
+                in_domain(
+                    assertion_json(
+                        "auth",
+                        "constraint",
+                        "Refresh hourly",
+                        AGENT_QUOTE,
+                        r#"{"kind": "new"}"#,
+                    ),
+                    "implementation",
+                ),
+            ],
+        )),
+    );
+    assert_eq!(summary.held, 1);
+    assert_eq!(summary.off_domain, 1);
+    let (input, stamp, ..) = &held(&service)[0];
+    assert_eq!(input.statement, "never store tokens in local storage");
+    assert_eq!(input.domain, Domain::Implementation);
+    assert_eq!(input.kind, AssertionKind::Constraint);
+    assert_eq!(stamp.source.kind, SourceKind::UserTurn);
+}
+
+/// Any other implementation-domain assertion is below the extractor's bar,
+/// even the user's own decision: counted, not held.
+#[test]
+fn an_implementation_domain_assertion_is_dropped() {
+    let (service, _dir) = service();
+    seed_entity(&service, "auth");
+    let implementation = in_domain(
+        assertion_json(
+            "auth",
+            "decision",
+            "Refresh in a loop",
+            USER_QUOTE,
+            r#"{"kind": "new"}"#,
+        ),
+        "implementation",
+    );
+    let summary = run(
+        &service,
+        &Canned(answer(
+            &[],
+            &[
+                implementation,
+                assertion_json("auth", "fact", "Kept", AGENT_QUOTE, r#"{"kind": "new"}"#),
+            ],
+        )),
+    );
+    assert_eq!(summary.off_domain, 1);
+    assert_eq!(summary.held, 1);
+    let held = held(&service);
+    assert_eq!(held.len(), 1);
+    assert_eq!(held[0].0.statement, "Kept");
+}
+
+/// The cap counts only what would be proposed: an entity the graph already
+/// has, listed first, does not take the run's one entity slot.
 #[test]
 fn an_existing_entity_is_skipped_and_a_new_one_is_proposed() {
     let (service, _dir) = service();
     seed_entity(&service, "auth");
     let summary = run(
         &service,
-        &Canned(answer(
-            &[
-                entity_json("auth"),
-                entity_json("billing"),
-                entity_json("billing"),
-            ],
-            &[],
-        )),
+        &Canned(answer(&[entity_json("auth"), entity_json("billing")], &[])),
     );
-    // The known one and the repeat are skipped.
-    assert_eq!(summary.entities_skipped, 2);
+    assert_eq!(summary.entities_skipped, 1);
     assert_eq!(summary.entities_proposed, 1);
+    assert_eq!(summary.capped, 0);
     let slugs: Vec<String> = pending_entities(&service)
         .into_iter()
         .map(|e| e.slug)
         .collect();
     assert_eq!(slugs, ["billing"]);
     assert_eq!(service.store().load(PROJECT).unwrap().entities.len(), 1);
+}
+
+/// An entity a run proposed and nobody has ruled on yet is not proposed
+/// again by the next run; that run's assertions about it still name it.
+#[test]
+fn a_pending_entity_is_not_proposed_again() {
+    let (service, _dir) = service();
+    let first = run(&service, &Canned(answer(&[entity_json("billing")], &[])));
+    assert_eq!(first.entities_proposed, 1);
+
+    let about_billing = assertion_json(
+        "billing",
+        "fact",
+        "Tokens expire hourly",
+        AGENT_QUOTE,
+        r#"{"kind": "new"}"#,
+    );
+    let second = run(
+        &service,
+        &Canned(answer(&[entity_json("billing")], &[about_billing])),
+    );
+    assert_eq!(second.entities_proposed, 0);
+    assert_eq!(second.entities_skipped, 1);
+    assert_eq!(second.held, 1);
+    let slugs: Vec<String> = pending_entities(&service)
+        .into_iter()
+        .map(|e| e.slug)
+        .collect();
+    assert_eq!(slugs, ["billing"]);
+    let (_, _, _, about_pending, _) = &held(&service)[0];
+    assert_eq!(about_pending, &["billing"]);
+}
+
+/// An entity waiting from an earlier run, listed first, does not take the
+/// run's one entity slot: the new one after it is proposed.
+#[test]
+fn a_pending_entity_does_not_spend_the_cap() {
+    let (service, _dir) = service();
+    run(&service, &Canned(answer(&[entity_json("billing")], &[])));
+
+    let summary = run(
+        &service,
+        &Canned(answer(
+            &[entity_json("billing"), entity_json("search")],
+            &[],
+        )),
+    );
+    assert_eq!(summary.entities_skipped, 1);
+    assert_eq!(summary.entities_proposed, 1);
+    assert_eq!(summary.capped, 0);
+    let slugs: Vec<String> = pending_entities(&service)
+        .into_iter()
+        .map(|e| e.slug)
+        .collect();
+    assert_eq!(slugs, ["billing", "search"]);
+}
+
+/// The model is never shown pending entities, so a later run names one
+/// without listing it; the assertion still carries it as `about_pending`.
+#[test]
+fn an_assertion_naming_an_entity_pending_from_an_earlier_run_keeps_it() {
+    let (service, _dir) = service();
+    run(&service, &Canned(answer(&[entity_json("billing")], &[])));
+
+    let about_billing = assertion_json(
+        "billing",
+        "fact",
+        "Tokens expire hourly",
+        AGENT_QUOTE,
+        r#"{"kind": "new"}"#,
+    );
+    let summary = run(&service, &Canned(answer(&[], &[about_billing])));
+    assert_eq!(summary.held, 1);
+    assert_eq!(summary.assertions_skipped, 0);
+    let (input, _, _, about_pending, _) = &held(&service)[0];
+    assert!(input.about.is_empty());
+    assert_eq!(about_pending, &["billing"]);
+}
+
+/// What a person dismissed stays dismissed: the next run's proposal of the
+/// same entity is skipped, and its repeat of the same assertion is not held.
+#[test]
+fn a_dismissed_proposal_is_not_proposed_again() {
+    let (service, _dir) = service();
+    seed_entity(&service, "auth");
+    let about_auth = assertion_json(
+        "auth",
+        "fact",
+        "Tokens expire hourly",
+        AGENT_QUOTE,
+        r#"{"kind": "new"}"#,
+    );
+    let both = || {
+        Canned(answer(
+            &[entity_json("billing")],
+            std::slice::from_ref(&about_auth),
+        ))
+    };
+    run(&service, &both());
+    let shown: Vec<Id> = pending(&service).into_iter().map(|p| p.id).collect();
+    service
+        .dismiss_proposals(&project(), &shown, DismissReason::Wrong, Author::user())
+        .unwrap();
+
+    let again = run(&service, &both());
+    assert_eq!(again.entities_proposed, 0);
+    assert_eq!(again.entities_skipped, 1);
+    assert_eq!(again.held, 0);
+    assert_eq!(again.redismissed, 1);
+    assert!(pending(&service).is_empty());
+}
+
+/// The same assertion from two runs is one card with both runs' quotes.
+#[test]
+fn a_repeated_assertion_is_one_proposal_with_both_quotes() {
+    let (service, _dir) = service();
+    seed_entity(&service, "auth");
+    let saying = |quote: &str| {
+        Canned(answer(
+            &[],
+            &[assertion_json(
+                "auth",
+                "fact",
+                "Tokens expire hourly",
+                quote,
+                r#"{"kind": "new"}"#,
+            )],
+        ))
+    };
+    assert_eq!(run(&service, &saying(AGENT_QUOTE)).held, 1);
+    assert_eq!(
+        run(&service, &saying("the refresh job runs each hour")).held,
+        1
+    );
+
+    let held = held(&service);
+    assert_eq!(held.len(), 1);
+    let quotes: Vec<&str> = held[0].4.iter().map(|e| e.quote.as_str()).collect();
+    assert_eq!(quotes, [AGENT_QUOTE, "the refresh job runs each hour"]);
 }
 
 /// Both a user-stated and an agent-stated assertion are held, each carrying
@@ -250,10 +579,10 @@ fn stated_by_user_in_the_answer_does_not_make_it_user_stated() {
     assert_eq!(input.status, AssertionStatus::Provisional);
 }
 
-/// No quote found anywhere in the turns: the statement may be invented, so
-/// it is held with no evidence attached.
+/// No quote found anywhere in the turns — a paraphrase, one too short to
+/// match, or none at all: the statement may be invented, so nothing is held.
 #[test]
-fn an_assertion_without_a_verifiable_quote_is_held_without_evidence() {
+fn an_assertion_without_a_verifiable_quote_is_not_held() {
     let (service, _dir) = service();
     seed_entity(&service, "auth");
     let summary = run(
@@ -268,19 +597,15 @@ fn an_assertion_without_a_verifiable_quote_is_held_without_evidence() {
                     "sessions last a week or so",
                     r#"{"kind": "new"}"#,
                 ),
+                assertion_json("auth", "fact", "Too short", "JWT", r#"{"kind": "new"}"#),
                 assertion_json("auth", "fact", "Nothing cited", "", r#"{"kind": "new"}"#),
             ],
         )),
     );
-    assert_eq!(summary.unverified, 2);
-    assert_eq!(summary.held, 2);
-    let held = held(&service);
-    assert_eq!(held.len(), 2);
-    assert!(held.iter().all(|(.., evidence)| evidence.is_empty()));
-    assert!(held.iter().all(
-        |(input, stamp, ..)| stamp.source.kind == SourceKind::AgentTurn
-            && input.status == AssertionStatus::Provisional
-    ));
+    assert_eq!(summary.unverified, 3);
+    assert_eq!(summary.held, 0);
+    assert!(pending(&service).is_empty());
+    assert!(assertions(&service).is_empty());
 }
 
 /// A restatement of a current head is the policy's `Duplicate`: counted,
@@ -289,8 +614,8 @@ fn an_assertion_without_a_verifiable_quote_is_held_without_evidence() {
 fn a_duplicate_of_a_head_is_counted_and_not_held() {
     let (service, _dir) = service();
     let auth = seed_entity(&service, "auth");
-    // The head is the user's own sentence; a quoted restatement (whose
-    // statement becomes the quote) and an unquoted one both duplicate it.
+    // The head is the user's own sentence; a user-quoted restatement (whose
+    // statement becomes the quote) and an agent-quoted one both duplicate it.
     seed_decision(&service, &auth, "Use JWT for sessions.", user_stamp());
     let summary = run(
         &service,
@@ -308,7 +633,7 @@ fn a_duplicate_of_a_head_is_counted_and_not_held() {
                     "auth",
                     "decision",
                     "use JWT for sessions",
-                    "",
+                    AGENT_QUOTE,
                     r#"{"kind": "new"}"#,
                 ),
             ],
@@ -321,7 +646,8 @@ fn a_duplicate_of_a_head_is_counted_and_not_held() {
 }
 
 /// Case, whitespace and the quote marks a model wraps a citation in do not
-/// stop a verbatim quote from matching; a short or paraphrased one does not.
+/// stop a verbatim quote from matching; a paraphrased one does not (nor a
+/// short one: see `an_assertion_without_a_verifiable_quote_is_not_held`).
 #[test]
 fn quotes_are_matched_after_normalisation() {
     let (service, _dir) = service();
@@ -352,12 +678,11 @@ fn quotes_are_matched_after_normalisation() {
                     "tokens go stale every hour",
                     r#"{"kind": "new"}"#,
                 ),
-                assertion_json("auth", "fact", "Too short", "JWT", r#"{"kind": "new"}"#),
             ],
         )),
     );
-    assert_eq!(summary.held, 4);
-    assert_eq!(summary.unverified, 2);
+    assert_eq!(summary.held, 2);
+    assert_eq!(summary.unverified, 1);
     let held = held(&service);
     let by_statement = |s: &str| held.iter().find(|(i, ..)| i.statement == s).unwrap();
     // The statement is the quote as the user would read it: their case,
@@ -383,7 +708,7 @@ fn quotes_are_matched_after_normalisation() {
 
 /// Slugs are the store's to refuse, so they are normalised first: lowercase,
 /// runs of other characters to `-`, 64 at most. One with nothing left is
-/// skipped.
+/// skipped. One run each, by the cap.
 #[test]
 fn an_entity_slug_is_normalised_and_an_empty_one_is_skipped() {
     let (service, _dir) = service();
@@ -394,9 +719,14 @@ fn an_entity_slug_is_normalised_and_an_empty_one_is_skipped() {
         format!(r#"{{"slug": "{long}--", "kind": "topic", "name": "Long", "summary": "s"}}"#),
         r#"{"slug": "!!!", "kind": "topic", "name": "Nameless", "summary": "s"}"#.to_string(),
     ];
-    let summary = run(&service, &Canned(answer(&entities, &[])));
-    assert_eq!(summary.entities_proposed, 3);
-    assert_eq!(summary.entities_skipped, 1);
+    let (mut proposed, mut skipped) = (0, 0);
+    for entity in entities {
+        let summary = run(&service, &Canned(answer(&[entity], &[])));
+        proposed += summary.entities_proposed;
+        skipped += summary.entities_skipped;
+    }
+    assert_eq!(proposed, 3);
+    assert_eq!(skipped, 1);
     let slugs: Vec<String> = pending_entities(&service)
         .into_iter()
         .map(|e| e.slug)

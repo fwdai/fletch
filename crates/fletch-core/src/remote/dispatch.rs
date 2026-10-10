@@ -288,6 +288,7 @@ pub const OPS: &[&str] = &[
     "context_merge_entities",
     "context_link",
     "context_rule_proposal",
+    "context_dismiss_proposals",
     "context_resolve_contradiction",
     "context_bootstrap",
 ];
@@ -572,6 +573,7 @@ const OP_SCOPES: &[(&str, Scope)] = &[
     ("context_merge_entities", Scope::Projects),
     ("context_link", Scope::Projects),
     ("context_rule_proposal", Scope::Projects),
+    ("context_dismiss_proposals", Scope::Projects),
     ("context_resolve_contradiction", Scope::Projects),
     ("context_bootstrap", Scope::Projects),
 ];
@@ -1688,6 +1690,7 @@ impl Dispatch for SupervisorDispatch {
                 | "context_merge_entities"
                 | "context_link"
                 | "context_rule_proposal"
+                | "context_dismiss_proposals"
                 | "context_resolve_contradiction" => context_op(ctx, op, args),
 
                 // Reads the project's repo through git, so not one of the
@@ -1963,6 +1966,14 @@ fn context_op(ctx: &EngineCtx, op: &str, args: Value) -> DispatchResult {
                 &a.proposal_id,
                 a.verdict,
                 a.dismiss_reason,
+            ))
+        }
+        "context_dismiss_proposals" => {
+            let a: ContextDismissProposalsArgs = parse(args)?;
+            res(c::context_dismiss_proposals_impl(
+                ctx,
+                &a.project_id,
+                &a.proposal_ids,
             ))
         }
         "context_resolve_contradiction" => {
@@ -2561,6 +2572,13 @@ struct ContextRuleArgs {
     verdict: crate::commands::ProposalVerdict,
     #[serde(default)]
     dismiss_reason: Option<crate::context::DismissReason>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ContextDismissProposalsArgs {
+    project_id: String,
+    proposal_ids: Vec<String>,
 }
 
 #[derive(Deserialize)]

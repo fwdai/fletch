@@ -192,7 +192,7 @@ pub fn context_record_assertion_impl(
         .record_decision(&project, candidate, ui_stamp())?
     {
         Landing::Recorded { id, .. } | Landing::Duplicate { id } => id,
-        Landing::Related { .. } | Landing::Held { .. } => {
+        Landing::Related { .. } | Landing::Held { .. } | Landing::Dismissed { .. } => {
             return Err(Error::Other("a user write cannot be held".into()))
         }
     };
@@ -281,6 +281,24 @@ pub fn context_rule_proposal_impl(
         }
     };
     Ok(recorded)
+}
+
+/// Dismiss the named pending proposals as trivial: the way out of a backlog
+/// that is too long to rule on card by card. The caller passes the ids it
+/// showed, so nothing unseen is ruled on. Answers how many were dismissed.
+pub fn context_dismiss_proposals_impl(
+    ctx: &EngineCtx,
+    project_id: &str,
+    proposal_ids: &[String],
+) -> Result<usize> {
+    let service = ctx.context()?;
+    let project = open(ctx, project_id)?;
+    Ok(service.dismiss_proposals(
+        &project,
+        proposal_ids,
+        DismissReason::Trivial,
+        Author::user(),
+    )?)
 }
 
 #[cfg(test)]

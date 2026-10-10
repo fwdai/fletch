@@ -60,4 +60,8 @@ export const contextApi = {
       verdict,
       dismissReason: dismissReason ?? null,
     }),
+  /** Dismiss the named proposals (those still pending) as trivial; resolves
+   *  to how many. Pass exactly the ids on screen, so nothing unseen is ruled. */
+  contextDismissProposals: (projectId: string, proposalIds: string[]) =>
+    invoke<number>("context_dismiss_proposals", { projectId, proposalIds }),
 };

@@ -1,4 +1,5 @@
 use crate::capture::extract::schedule::{due, watermark, DEBOUNCE_MS};
+use crate::capture::extract::OBSERVATION_SOURCE;
 use crate::context::model::*;
 
 use super::{store, PROJECT};
@@ -19,6 +20,15 @@ fn a_turn_end_inside_the_debounce_waits_and_one_past_it_runs() {
 fn an_archive_ignores_the_debounce() {
     let last = 1_000_000;
     assert!(due(Some(last), last + 1, true));
+}
+
+/// The archive is the primary run; turn-ends cover a long-lived workspace at
+/// most every four hours.
+#[test]
+fn the_debounce_is_four_hours() {
+    assert_eq!(DEBOUNCE_MS, 4 * 60 * 60 * 1000);
+    let last = 1_000_000;
+    assert!(!due(Some(last), last + 60 * 60 * 1000, false));
 }
 
 fn observation(
@@ -44,21 +54,21 @@ fn observation(
 }
 
 #[test]
-fn the_watermark_is_the_workspaces_latest_user_turn_observation() {
+fn the_watermark_is_the_workspaces_latest_run_observation() {
     let (store, _dir) = store();
     assert_eq!(watermark(&store, PROJECT, "ws-1").unwrap(), None);
 
     store
-        .add_observation(&observation("o1", SourceKind::UserTurn, "t1", "ws-1", 100))
+        .add_observation(&observation("o1", OBSERVATION_SOURCE, "t1", "ws-1", 100))
         .unwrap();
     store.mark_extracted("o1").unwrap();
     store
-        .add_observation(&observation("o2", SourceKind::UserTurn, "t5", "ws-1", 300))
+        .add_observation(&observation("o2", OBSERVATION_SOURCE, "t5", "ws-1", 300))
         .unwrap();
     store.mark_extracted("o2").unwrap();
     // Another workspace's, and a PR observation of this one: neither counts.
     store
-        .add_observation(&observation("o3", SourceKind::UserTurn, "t9", "ws-2", 900))
+        .add_observation(&observation("o3", OBSERVATION_SOURCE, "t9", "ws-2", 900))
         .unwrap();
     store
         .add_observation(&observation("o4", SourceKind::Pr, "#12", "ws-1", 950))
@@ -76,11 +86,11 @@ fn the_watermark_is_the_workspaces_latest_user_turn_observation() {
 fn a_failed_run_debounces_but_does_not_advance_the_turn_watermark() {
     let (store, _dir) = store();
     store
-        .add_observation(&observation("o1", SourceKind::UserTurn, "t1", "ws-1", 100))
+        .add_observation(&observation("o1", OBSERVATION_SOURCE, "t1", "ws-1", 100))
         .unwrap();
     store.mark_extracted("o1").unwrap();
     store
-        .add_observation(&observation("o2", SourceKind::UserTurn, "t5", "ws-1", 300))
+        .add_observation(&observation("o2", OBSERVATION_SOURCE, "t5", "ws-1", 300))
         .unwrap();
 
     let found = watermark(&store, PROJECT, "ws-1").unwrap().unwrap();
@@ -89,11 +99,29 @@ fn a_failed_run_debounces_but_does_not_advance_the_turn_watermark() {
     assert!(!due(Some(found.last_run_at), 300 + DEBOUNCE_MS - 1, false));
 }
 
+/// The pipeline's own observation is what the watermark reads: a run that
+/// landed debounces the next turn-end and puts its turns behind it. (The
+/// two once disagreed on the source kind, and every turn-end re-extracted
+/// the whole conversation.)
+#[test]
+fn a_run_of_the_pipeline_advances_the_watermark() {
+    let (service, _dir) = super::service();
+    let answer = r#"{"entities": [], "assertions": []}"#;
+    let summary = super::run(&service, &super::Canned(answer.into()));
+    assert!(summary.error.is_none());
+
+    let found = watermark(service.store(), PROJECT, "ws-1")
+        .unwrap()
+        .expect("the run's observation is the watermark");
+    assert_eq!(found.turn_id.as_deref(), Some("t1"));
+    assert!(!due(Some(found.last_run_at), found.last_run_at + 1, false));
+}
+
 #[test]
 fn only_failed_runs_so_far_means_every_turn_is_still_new() {
     let (store, _dir) = store();
     store
-        .add_observation(&observation("o1", SourceKind::UserTurn, "t1", "ws-1", 100))
+        .add_observation(&observation("o1", OBSERVATION_SOURCE, "t1", "ws-1", 100))
         .unwrap();
 
     let found = watermark(&store, PROJECT, "ws-1").unwrap().unwrap();

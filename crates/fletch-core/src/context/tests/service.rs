@@ -140,7 +140,7 @@ fn a_project_from_before_the_gate_closed_is_refused() {
     );
 }
 
-/// A proposal is added to, and ruled on in, the project it was made for.
+/// A proposal is ruled on in the project it was made for.
 #[test]
 fn proposals_are_scoped_to_their_project() {
     let (service, _sink, _dir) = service();
@@ -149,31 +149,36 @@ fn proposals_are_scoped_to_their_project() {
         id: "ctx-other".into(),
         fletch_id: "fp-other".into(),
     };
-    let proposal = Proposal {
-        id: new_id(),
-        project_id: p.id.clone(),
-        observation_id: None,
-        payload: ProposalPayload::Entity {
-            input: entity("f"),
-            stamp: ui(),
-        },
-        evidence: vec![],
-        status: ProposalStatus::Pending,
-        dismiss_reason: None,
-        created_at: 0,
-        ruled_at: None,
-        ruled_by: None,
+    let EntityLanding::Proposed { proposal_id } = service
+        .propose_entity(&p, entity("f"), ui(), None, 1)
+        .unwrap()
+    else {
+        panic!("a new slug is proposed");
     };
-    assert!(service.add_proposal(&other, &proposal).is_err());
-    service.add_proposal(&p, &proposal).unwrap();
     let err = service
-        .accept_proposal(&other, &proposal.id, Author::user())
+        .accept_proposal(&other, &proposal_id, Author::user())
         .unwrap_err();
     assert!(
         matches!(&err, ContextError::Invalid(m) if m.contains("unknown proposal")),
         "{err}"
     );
     service
-        .accept_proposal(&p, &proposal.id, Author::user())
+        .accept_proposal(&p, &proposal_id, Author::user())
         .unwrap();
+}
+
+/// Proposing an entity pulses only when a proposal was written.
+#[test]
+fn proposing_an_entity_pulses_only_when_it_writes() {
+    let (service, sink, _dir) = service();
+    let p = project();
+    let propose = |budget| {
+        service
+            .propose_entity(&p, entity("f"), ui(), None, budget)
+            .unwrap()
+    };
+    assert_eq!(propose(0), EntityLanding::Capped);
+    assert!(matches!(propose(1), EntityLanding::Proposed { .. }));
+    assert!(matches!(propose(1), EntityLanding::Pending { .. }));
+    assert_eq!(sink.events().len(), 1);
 }

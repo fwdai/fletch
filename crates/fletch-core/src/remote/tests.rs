@@ -686,6 +686,7 @@ fn allowlist_matches_the_protocol_table() {
         "context_merge_entities",
         "context_link",
         "context_rule_proposal",
+        "context_dismiss_proposals",
         "context_resolve_contradiction",
         "context_bootstrap",
         "register_push",

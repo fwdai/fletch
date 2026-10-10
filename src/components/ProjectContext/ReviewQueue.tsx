@@ -2,9 +2,12 @@ import { useState } from "react";
 import { api, type ContextGraph, type ContextProposal, type DismissReason } from "@/api";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
+import { DismissAll } from "./DismissAll";
 import {
+  corroborationLabel,
   entityName,
   provenanceLabel,
+  sortForReview,
   sourceLabel,
   summarizeProposal,
   unacceptedPending,
@@ -29,7 +32,8 @@ export function ReviewQueue({
   }
   return (
     <div className="pc-list">
-      {proposals.map((p) => (
+      <DismissAll projectId={projectId} proposals={proposals} />
+      {sortForReview(proposals).map((p) => (
         <ProposalCard key={p.id} proposal={p} graph={graph} projectId={projectId} />
       ))}
     </div>
@@ -55,6 +59,7 @@ function ProposalCard({
   // A subject that is still only a proposal blocks Accept until it lands.
   const blocked = unacceptedPending(graph, pending);
   const detail = payload.type === "assertion" ? payload.input.rationale : payload.input.summary;
+  const corroborated = corroborationLabel(proposal);
 
   const rule = (verdict: "accept" | "dismiss") => {
     setBusy(true);
@@ -82,6 +87,7 @@ function ProposalCard({
           {provenanceLabel(payload.stamp.author, payload.stamp.provenance)} ·{" "}
           {sourceLabel(payload.stamp.source)}
         </Badge>
+        {corroborated && <Badge>{corroborated}</Badge>}
         {payload.type === "assertion" && (payload.input.about.length > 0 || pending.length > 0) && (
           <span className="pc-meta">
             about {payload.input.about.map((id) => entityName(graph, id)).join(", ")}
@@ -105,7 +111,8 @@ function ProposalCard({
         </div>
       )}
       {proposal.evidence.map((ev, i) => (
-        <blockquote key={`${ev.turn_id ?? i}`} className="pc-quote text-xs">
+        // biome-ignore lint/suspicious/noArrayIndexKey: evidence only grows, and a run can repeat a quote
+        <blockquote key={`${ev.turn_id ?? ""}:${i}`} className="pc-quote text-xs">
           {ev.quote}
         </blockquote>
       ))}

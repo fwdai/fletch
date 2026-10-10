@@ -3,8 +3,10 @@ use serde_json::{json, Value};
 use crate::capture::extract::input::{
     assistant_text, turns_since, MAX_HEADS_CHARS, MAX_TURNS_CHARS,
 };
-use crate::capture::extract::{ExtractInput, TurnText};
+use crate::capture::extract::schedule::watermark;
+use crate::capture::extract::{pipeline, ExtractInput, TurnText};
 use crate::context::fixtures;
+use crate::context::model::Author;
 use crate::workspace::{SessionRecord, UserTurn};
 
 fn turn(id: &str, text: &str, native_id: Option<&str>, inherited: bool) -> UserTurn {
@@ -117,21 +119,71 @@ fn assistant_text_reads_the_providers_shapes_and_skips_sidechains() {
     assert_eq!(assistant_text(&empty), None);
 }
 
+fn text(id: &str, user: &str) -> TurnText {
+    TurnText {
+        turn_id: id.into(),
+        user: user.into(),
+        assistant: None,
+    }
+}
+
+/// Over budget, the oldest turns that fit are kept: the run's watermark is
+/// its last turn, so the newest wait for the next run instead of the oldest
+/// being skipped for good.
 #[test]
-fn the_oldest_turns_go_first_when_over_budget() {
+fn the_newest_turns_wait_when_over_budget() {
     let big = "x".repeat(MAX_TURNS_CHARS / 2);
-    let turns = (0..5)
-        .map(|i| TurnText {
-            turn_id: format!("t{i}"),
-            user: big.clone(),
-            assistant: None,
-        })
-        .collect();
+    let turns = (0..5).map(|i| text(&format!("t{i}"), &big)).collect();
     let input = ExtractInput::new(None, turns, &fixtures::graph(vec![], vec![], vec![]));
     assert_eq!(input.turns.len(), 2);
-    assert_eq!(input.turns[0].turn_id, "t3");
-    assert_eq!(input.last_turn_id(), Some("t4"));
+    assert_eq!(input.turns[0].turn_id, "t0");
+    assert_eq!(input.last_turn_id(), Some("t1"));
     assert_eq!(input.user_chars(), MAX_TURNS_CHARS);
+}
+
+/// A first turn over the budget on its own is still read, cut from its end.
+#[test]
+fn an_oversize_first_turn_is_cut_and_read_alone() {
+    let turns = vec![
+        text("t0", &"x".repeat(MAX_TURNS_CHARS + 10)),
+        text("t1", "short"),
+    ];
+    let input = ExtractInput::new(None, turns, &fixtures::graph(vec![], vec![], vec![]));
+    assert_eq!(input.last_turn_id(), Some("t0"));
+    assert_eq!(input.user_chars(), MAX_TURNS_CHARS);
+}
+
+/// What the budget left out is past the watermark the run leaves, so the
+/// next run's `turns_since` starts where this one stopped.
+#[test]
+fn turns_past_the_budget_are_new_to_the_next_run() {
+    let (service, _dir) = super::service();
+    let big = "x".repeat(MAX_TURNS_CHARS / 2);
+    let turns: Vec<UserTurn> = (0..5)
+        .map(|i| turn(&format!("t{i}"), &big, None, false))
+        .collect();
+    let graph = service.store().load(super::PROJECT).unwrap();
+    let first = ExtractInput::new(None, turns_since(&turns, &[], None), &graph);
+    let summary = pipeline::process(
+        &service,
+        &super::project(),
+        Author::extractor("ws-1", "claude"),
+        super::provenance(),
+        first,
+        &super::Canned("{}".into()),
+    )
+    .unwrap();
+    assert!(summary.error.is_none());
+
+    let mark = watermark(service.store(), super::PROJECT, "ws-1")
+        .unwrap()
+        .unwrap();
+    assert_eq!(mark.turn_id.as_deref(), Some("t1"));
+    let rest = turns_since(&turns, &[], mark.turn_id.as_deref());
+    assert_eq!(
+        rest.iter().map(|t| t.turn_id.as_str()).collect::<Vec<_>>(),
+        ["t2", "t3", "t4"]
+    );
 }
 
 #[test]

@@ -162,16 +162,28 @@ Three paths, one pipeline, rising cost:
    involved, and a repo other than the primary is not read (its slugs would
    collide).
 2. **Background extraction** (`capture/extract/`). After a turn settles
-   (`session_sync`) — debounced to one run per workspace per 10 minutes, with
-   ≥1 new user turn and ≥200 chars of user text — and always at archive, a
+   (`session_sync`) — debounced to one run per workspace per 4 hours, with
+   ≥1 new user turn and ≥200 chars of user text — and always at archive (the
+   primary run, over the completed conversation), a
    one-shot, tool-less run of the session's own provider
    (`handoff::run::once`) reads the new user turns and the agent's final
    message per turn, the workspace task as the *plan*, the entity index and
-   the current heads, and returns strict JSON. Nothing it says lands:
-   entities become pending entity proposals, assertions are held by
+   the current heads, and returns strict JSON. The pipeline keeps at most
+   one entity and three assertions per run, and drops an
+   implementation-domain assertion or one with no evidence quote found in
+   the turns. Nothing it says lands:
+   entities become pending entity proposals through `propose_entity`
+   (known, already waiting, ruled out, over the cap or new: decided in the
+   same transaction as the insert), assertions are held by
    `land` (a restatement is dropped as a duplicate), and an assertion about
    a proposed entity carries its slug as `about_pending` until that entity
-   is accepted. The pilot gives model output no durable authority before its
+   is accepted. Two proposals are one claim when their `ClaimIdentity`
+   (kind, domain, stance, normalised statement, subjects as they stand now,
+   relation) is equal: a repeat of a waiting proposal adds its quotes to
+   that card instead of making another — keyed by session, turn and quote,
+   so the same words from another turn count as more corroboration; a
+   repeat of one a person dismissed as wrong, trivial or already known is
+   not proposed again. The pilot gives model output no durable authority before its
    precision is known; the user's acceptance is what lands it, confirmed. The
    observation, the run (model, prompt version, raw output, timing, error)
    and every proposal are kept, so a run can be audited and re-extracted later.
