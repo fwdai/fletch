@@ -86,7 +86,7 @@ pub fn compile(graph: &Graph, query: &CompileQuery, checkout: Option<&Path>) -> 
         0 => DEFAULT_BUDGET_CHARS,
         n => n,
     };
-    fit(ranked, budget, |ranked, truncated| {
+    fit(ranked, 0, budget, |ranked, truncated, _| {
         assemble(graph, query, ranked, &misses, truncated, missing.as_ref())
     })
 }
@@ -97,8 +97,10 @@ pub fn compile(graph: &Graph, query: &CompileQuery, checkout: Option<&Path>) -> 
 /// slug index). Entities the extractor minted are left out until something
 /// else revised them: model output never writes itself into the next model's
 /// instructions. Fitted to `budget_chars` (0 means [`OVERVIEW_BUDGET_CHARS`])
-/// by the loop [`compile`] uses; the vision and the constraints are never
-/// dropped.
+/// by the loop [`compile`] uses. The vision is never dropped; the constraints
+/// go only once every other entity has, lowest-ranked first
+/// ([`constraint_rank`]), so the overview meets its budget however many
+/// there are.
 pub fn overview(graph: &Graph, budget_chars: usize) -> Bundle {
     let mut entries = Entries::default();
     for e in active(graph).filter(|e| e.author.kind != AuthorKind::Extractor) {
@@ -110,7 +112,7 @@ pub fn overview(graph: &Graph, budget_chars: usize) -> Bundle {
             _ => entries.add(e, EntryReason::Named),
         }
     }
-    let constraints: Vec<&Assertion> = graph
+    let mut constraints: Vec<&Assertion> = graph
         .assertions
         .iter()
         .filter(|a| {
@@ -120,37 +122,82 @@ pub fn overview(graph: &Graph, budget_chars: usize) -> Bundle {
                 && is_current(graph, a)
         })
         .collect();
+    constraints.sort_by_key(|a| constraint_rank(a));
     let (assertions, contradictions) = bundle_assertions(graph, &constraints, false);
     let budget = match budget_chars {
         0 => OVERVIEW_BUDGET_CHARS,
         n => n,
     };
-    fit(entries.ranked(graph), budget, |ranked, truncated| Bundle {
-        project_id: graph.project_id.clone(),
-        vision: ranked
-            .iter()
-            .find(|(_, r)| *r == EntryReason::Vision)
-            .map(|(e, _)| (*e).clone()),
-        overview: true,
-        entities: bundle_entities(graph, ranked),
-        warnings: warnings(graph, &assertions, &contradictions, &[], truncated),
-        assertions: assertions.clone(),
-        contradictions: contradictions.clone(),
-        misses: Vec::new(),
-        truncated: truncated.to_vec(),
-    })
+    let sheddable = assertions.len();
+    fit(
+        entries.ranked(graph),
+        sheddable,
+        budget,
+        |ranked, truncated, kept| {
+            let (shown, shed) = assertions.split_at(kept);
+            let ids: HashSet<&str> = shown.iter().map(|a| a.assertion.id.as_str()).collect();
+            let contradictions: Vec<Contradiction> = contradictions
+                .iter()
+                .filter(|c| ids.contains(c.a.as_str()) || ids.contains(c.b.as_str()))
+                .cloned()
+                .collect();
+            let mut warnings = warnings(graph, shown, &contradictions, &[], truncated);
+            if !shed.is_empty() {
+                warnings.push(format!(
+                    "Truncated to fit the budget: {} constraints not shown; \
+                     call context_get for the full set",
+                    shed.len()
+                ));
+            }
+            Bundle {
+                project_id: graph.project_id.clone(),
+                vision: ranked
+                    .iter()
+                    .find(|(_, r)| *r == EntryReason::Vision)
+                    .map(|(e, _)| (*e).clone()),
+                overview: true,
+                entities: bundle_entities(graph, ranked),
+                warnings,
+                assertions: shown.to_vec(),
+                contradictions,
+                misses: Vec::new(),
+                truncated: truncated
+                    .iter()
+                    .cloned()
+                    .chain(shed.iter().rev().map(|a| a.assertion.id.clone()))
+                    .collect(),
+            }
+        },
+    )
+}
+
+/// Overview order: what the user stated before what anyone else did, merged
+/// before provisional, then newest first. "The user stated" is the user
+/// writing it or a verified quote of theirs (`user_turn` source), whoever
+/// recorded it.
+fn constraint_rank(a: &Assertion) -> (bool, bool, std::cmp::Reverse<i64>) {
+    let user_stated = a.author.kind == AuthorKind::User || a.source.kind == SourceKind::UserTurn;
+    (
+        !user_stated,
+        a.status == AssertionStatus::Provisional,
+        std::cmp::Reverse(a.recorded_at),
+    )
 }
 
 /// Drops the lowest-ranked entity until the rendered bundle fits `budget`;
-/// the vision is never dropped. Dropped ids go to `truncated`.
+/// the vision is never dropped. Dropped ids go to `truncated`. Once only the
+/// vision is left, `build` is asked to keep one fewer of its `sheddable`
+/// lower-priority items per pass (the overview's constraints), down to none.
 fn fit<'a>(
     mut ranked: Vec<(&'a Entity, EntryReason)>,
+    sheddable: usize,
     budget: usize,
-    build: impl Fn(&[(&'a Entity, EntryReason)], &[Id]) -> Bundle,
+    build: impl Fn(&[(&'a Entity, EntryReason)], &[Id], usize) -> Bundle,
 ) -> Bundle {
     let mut truncated = Vec::new();
+    let mut kept = sheddable;
     loop {
-        let bundle = build(&ranked, &truncated);
+        let bundle = build(&ranked, &truncated, kept);
         if render_markdown(&bundle).len() <= budget {
             return bundle;
         }
@@ -159,6 +206,7 @@ fn fit<'a>(
                 truncated.push(e.id.clone());
                 ranked.pop();
             }
+            _ if kept > 0 => kept -= 1,
             _ => return bundle,
         }
     }
