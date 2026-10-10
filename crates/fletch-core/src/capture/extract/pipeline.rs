@@ -1,8 +1,10 @@
 //! One extraction, end to end: record the observation, run the model, keep
 //! the run, then turn the answer into proposals. Nothing the extractor says
-//! lands on its own — entities become pending proposals, assertions go
-//! through `ContextService::record_decision`, where the one write policy
-//! holds every extractor write for review (or answers `Duplicate`). Pure
+//! lands on its own — entities go through `ContextService::propose_entity`,
+//! which decides known, waiting, ruled out, capped or proposed in one
+//! transaction; assertions go through `ContextService::record_decision`,
+//! where the one write policy holds every extractor write for review (or
+//! answers `Duplicate`), a repeat of a waiting card adding to it. Pure
 //! over its arguments apart from the service, so tests drive it with a fake
 //! extractor. The observation is marked extracted only when the run was
 //! read, so the turns of a failed one are picked up again by the next.
@@ -152,59 +154,41 @@ pub fn process(
         provenance: provenance.clone(),
     };
 
-    let graph = store.load(project_id)?;
-    // Slugs proposed by this run: an assertion about one carries it as
-    // `about_pending`, resolved when the entity is accepted.
+    // Slugs waiting for review, this run's and earlier ones it named: an
+    // assertion about one carries it as `about_pending`, resolved when the
+    // entity is accepted.
     let mut pending_slugs: Vec<String> = Vec::new();
     for entity in parsed.entities {
         let Some(input) = entity_input(entity) else {
             summary.entities_skipped += 1;
             continue;
         };
-        let known = std::iter::once(&input.slug)
-            .chain(std::iter::once(&input.name))
-            .chain(&input.aliases)
-            .any(|reference| resolve::entity(&graph, reference).is_ok())
-            || pending_slugs.contains(&input.slug);
-        if known {
-            summary.entities_skipped += 1;
-            continue;
-        }
-        // Waiting from an earlier run, or ruled out by a person: not
-        // proposed again, and not a slot used. This run's assertions may
-        // still name a waiting one.
-        if let Some(earlier) = store.entity_proposal(project_id, &input.slug)? {
-            summary.entities_skipped += 1;
-            if earlier.status == ProposalStatus::Pending {
-                pending_slugs.push(input.slug);
-            }
-            continue;
-        }
-        if summary.entities_proposed >= prompt::MAX_ENTITIES {
-            summary.capped += 1;
-            continue;
-        }
-        pending_slugs.push(input.slug.clone());
-        service.add_proposal(
+        let slug = input.slug.clone();
+        let budget = prompt::MAX_ENTITIES.saturating_sub(summary.entities_proposed);
+        let landing = service.propose_entity(
             project,
-            &Proposal {
-                id: new_id(),
-                project_id: project_id.to_string(),
-                observation_id: Some(observation.id.clone()),
-                payload: ProposalPayload::Entity {
-                    input,
-                    stamp: agent_stamp(),
-                },
-                evidence: Vec::new(),
-                status: ProposalStatus::Pending,
-                dismiss_reason: None,
-                created_at: now_millis(),
-                ruled_at: None,
-                ruled_by: None,
-            },
+            input,
+            agent_stamp(),
+            Some(observation.id.clone()),
+            budget,
         )?;
-        summary.entities_proposed += 1;
+        match landing {
+            EntityLanding::Proposed { .. } => summary.entities_proposed += 1,
+            EntityLanding::Known { .. }
+            | EntityLanding::Pending { .. }
+            | EntityLanding::Dismissed { .. } => summary.entities_skipped += 1,
+            EntityLanding::Capped => summary.capped += 1,
+        }
+        if matches!(
+            landing,
+            EntityLanding::Proposed { .. } | EntityLanding::Pending { .. }
+        ) && !pending_slugs.contains(&slug)
+        {
+            pending_slugs.push(slug);
+        }
     }
+
+    let graph = store.load(project_id)?;
 
     let user_turns: Vec<UserTurnText> = input
         .turns
@@ -242,10 +226,8 @@ pub fn process(
         for s in unknown.into_iter().map(|r| slug(&r).unwrap_or(r)) {
             // The model is never shown pending entities, so it names one
             // from an earlier run without listing it again.
-            let pending = pending_slugs.contains(&s)
-                || store
-                    .entity_proposal(project_id, &s)?
-                    .is_some_and(|p| p.status == ProposalStatus::Pending);
+            let pending =
+                pending_slugs.contains(&s) || store.pending_entity_slug(project_id, &s)?;
             if pending {
                 about_pending.push(s);
             } else {

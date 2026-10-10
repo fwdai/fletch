@@ -2284,6 +2284,183 @@ fn a_dismissed_claim_is_not_proposed_again_unless_it_was_a_duplicate() {
     assert_ne!(again, dup);
 }
 
+/// Two claims are one exactly when their identities are equal: the words as
+/// `normalise` has them, the subjects as they stand now (a merged subject is
+/// its destination, an accepted pending slug its entity) and the relation.
+/// A stored proposal has the identity of the candidate it was made from; an
+/// entity proposal has none.
+#[test]
+fn a_claims_identity_is_its_words_subjects_and_relation() {
+    let (store, _dir) = temp();
+    let a = store
+        .record_entity(P, entity("a", EntityKind::Module), stamp())
+        .unwrap();
+    let b = store
+        .record_entity(P, entity("b", EntityKind::Module), stamp())
+        .unwrap();
+    let new = related(RelationKind::New, None, None);
+    let of = |input: AssertionInput, pending: &[&str], relation: &ProposedRelation| {
+        let pending: Vec<String> = pending.iter().map(|s| s.to_string()).collect();
+        ClaimIdentity::of_candidate(&store.db.lock(), P, &input, &pending, relation).unwrap()
+    };
+    let first = of(saying(&[&a], "Use SQLite"), &[], &new);
+
+    assert_eq!(of(saying(&[&a], "use  sqlite."), &[], &new), first);
+    assert_ne!(of(saying(&[&a], "Use Postgres"), &[], &new), first);
+    assert_ne!(of(saying(&[&b], "Use SQLite"), &[], &new), first);
+    assert_ne!(of(saying(&[&a, &b], "Use SQLite"), &[], &new), first);
+    assert_ne!(of(saying(&[&a], "Use SQLite"), &["C"], &new), first);
+    let superseding = related(RelationKind::Supersedes, Some("head"), Some("faster"));
+    assert_ne!(of(saying(&[&a], "Use SQLite"), &[], &superseding), first);
+    assert_ne!(
+        of(
+            AssertionInput {
+                stance: Stance::Rejected,
+                ..saying(&[&a], "Use SQLite")
+            },
+            &[],
+            &new
+        ),
+        first
+    );
+
+    let stored = assertion_proposal(saying(&[&a], "Use SQLite"), new.clone());
+    let entity_proposal = proposal(ProposalPayload::Entity {
+        input: entity("c", EntityKind::Module),
+        stamp: extractor(),
+    });
+    {
+        let conn = store.db.lock();
+        assert_eq!(
+            ClaimIdentity::of_proposal(&conn, &stored).unwrap(),
+            Some(first.clone())
+        );
+        assert_eq!(
+            ClaimIdentity::of_proposal(&conn, &entity_proposal).unwrap(),
+            None
+        );
+    }
+
+    let about_pending_c = of(saying(&[&a], "Use SQLite"), &["C"], &new);
+    let c = store
+        .record_entity(P, entity("c", EntityKind::Module), stamp())
+        .unwrap();
+    assert_eq!(
+        of(saying(&[&a], "Use SQLite"), &["c"], &new),
+        of(saying(&[&a, &c], "Use SQLite"), &[], &new)
+    );
+    assert_ne!(
+        of(saying(&[&a], "Use SQLite"), &["c"], &new),
+        about_pending_c
+    );
+
+    store.merge_entities(P, &b, &a, stamp()).unwrap();
+    assert_eq!(of(saying(&[&b], "Use SQLite"), &[], &new), first);
+    assert_eq!(of(saying(&[&a, &b], "Use SQLite"), &[], &new), first);
+}
+
+fn quoted_in(turn_id: &str, quote: &str) -> Evidence {
+    Evidence {
+        turn_id: Some(turn_id.into()),
+        ..quoted(quote)
+    }
+}
+
+/// Evidence is its source and its words: the same quote from another turn
+/// is more corroboration and is kept; from the same turn it is not added
+/// twice; a repeat that brings none leaves the card as it was.
+#[test]
+fn evidence_is_kept_per_turn() {
+    let (store, _dir) = temp();
+    let e = store
+        .record_entity(P, entity("e", EntityKind::Module), stamp())
+        .unwrap();
+    let held = |evidence: Vec<Evidence>| {
+        let candidate = Candidate {
+            evidence,
+            ..candidate(saying(&[&e], "Tokens expire hourly"))
+        };
+        match store.land(P, candidate, extractor()).unwrap() {
+            Landing::Held { proposal_id } => proposal_id,
+            other => panic!("extractor writes are held, got {other:?}"),
+        }
+    };
+    let first = held(vec![quoted_in("t1", "tokens expire hourly")]);
+    assert_eq!(held(vec![quoted_in("t2", "tokens expire hourly")]), first);
+    assert_eq!(held(vec![quoted_in("t1", "tokens expire hourly")]), first);
+    assert_eq!(held(vec![]), first);
+
+    let evidence = store.proposal(&first).unwrap().unwrap().evidence;
+    assert_eq!(
+        evidence,
+        [
+            quoted_in("t1", "tokens expire hourly"),
+            quoted_in("t2", "tokens expire hourly")
+        ]
+    );
+}
+
+/// An extractor's entity goes through one door that decides, in the
+/// transaction that would insert it, whether it is known, waiting, ruled
+/// out, over the budget or new. Only a new one spends the budget.
+#[test]
+fn propose_entity_decides_known_pending_dismissed_capped_or_proposed() {
+    let (store, _dir) = temp();
+    let auth = store
+        .record_entity(P, entity("auth", EntityKind::Module), stamp())
+        .unwrap();
+    let propose = |input: EntityInput, budget: usize| {
+        store
+            .propose_entity(P, input, extractor(), None, budget)
+            .unwrap()
+    };
+
+    assert_eq!(
+        propose(entity("auth", EntityKind::Module), 1),
+        EntityLanding::Known { id: auth.clone() }
+    );
+    let by_name = EntityInput {
+        name: "Auth".into(),
+        ..entity("authentication", EntityKind::Module)
+    };
+    assert_eq!(propose(by_name, 1), EntityLanding::Known { id: auth });
+
+    let EntityLanding::Proposed { proposal_id } =
+        propose(entity("billing", EntityKind::Feature), 1)
+    else {
+        panic!("a new slug is proposed");
+    };
+    assert_eq!(
+        propose(entity("Billing", EntityKind::Feature), 0),
+        EntityLanding::Pending {
+            proposal_id: proposal_id.clone()
+        }
+    );
+    assert_eq!(
+        propose(entity("search", EntityKind::Feature), 0),
+        EntityLanding::Capped
+    );
+    assert_eq!(
+        store
+            .proposals(P, Some(ProposalStatus::Pending))
+            .unwrap()
+            .len(),
+        1
+    );
+
+    store
+        .dismiss_proposal(P, &proposal_id, DismissReason::Wrong, Author::user())
+        .unwrap();
+    assert_eq!(
+        propose(entity("billing", EntityKind::Feature), 1),
+        EntityLanding::Dismissed { proposal_id }
+    );
+    assert!(store
+        .proposals(P, Some(ProposalStatus::Pending))
+        .unwrap()
+        .is_empty());
+}
+
 /// Dismiss-all with `before` leaves a proposal made after it waiting: it
 /// arrived after the person was asked to confirm.
 #[test]

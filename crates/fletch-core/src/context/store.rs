@@ -543,9 +543,9 @@ impl ContextStore {
                 target: None,
                 reasoning: None,
             });
-            let like = |status| {
-                assertion_proposal_like(conn, project_id, &input, &about_pending, &relation, status)
-            };
+            let claim =
+                ClaimIdentity::of_candidate(conn, project_id, &input, &about_pending, &relation)?;
+            let like = |status| assertion_proposal_like(conn, project_id, &claim, status);
             // A person has already ruled this claim out; asking again is noise.
             if let Some(ruled) = like(ProposalStatus::Dismissed)? {
                 return Ok(Landing::Dismissed {
@@ -846,8 +846,67 @@ impl ContextStore {
         )
     }
 
+    /// A proposal as given, with none of the checks the writers' doors make;
+    /// for tests that need one in a known state.
+    #[cfg(test)]
     pub(super) fn add_proposal(&self, proposal: &Proposal) -> Result<()> {
         self.write(&proposal.project_id, |conn| insert_proposal(conn, proposal))
+    }
+
+    /// The one door for an extractor's entity: check the graph and the
+    /// proposals and insert under one transaction, so no other run can
+    /// propose the same slug in between. `budget` is how many more the
+    /// caller may propose; a slug that is known, waiting or ruled out does
+    /// not spend it. See [`EntityLanding`].
+    pub(super) fn propose_entity(
+        &self,
+        project_id: &str,
+        input: EntityInput,
+        stamp: Stamp,
+        observation_id: Option<Id>,
+        budget: usize,
+    ) -> Result<EntityLanding> {
+        self.write(project_id, |conn| {
+            let graph = load_graph(conn, project_id)?;
+            let known = std::iter::once(&input.slug)
+                .chain(std::iter::once(&input.name))
+                .chain(&input.aliases)
+                .find_map(|reference| resolve::entity(&graph, reference).ok());
+            if let Some(entity) = known {
+                return Ok(EntityLanding::Known {
+                    id: entity.id.clone(),
+                });
+            }
+            if let Some(earlier) = entity_proposal(conn, project_id, &input.slug)? {
+                return Ok(match earlier.status {
+                    ProposalStatus::Pending => EntityLanding::Pending {
+                        proposal_id: earlier.id,
+                    },
+                    _ => EntityLanding::Dismissed {
+                        proposal_id: earlier.id,
+                    },
+                });
+            }
+            if budget == 0 {
+                return Ok(EntityLanding::Capped);
+            }
+            let proposal = Proposal {
+                id: new_id(),
+                project_id: project_id.to_string(),
+                observation_id,
+                payload: ProposalPayload::Entity { input, stamp },
+                evidence: Vec::new(),
+                status: ProposalStatus::Pending,
+                dismiss_reason: None,
+                created_at: now_millis(),
+                ruled_at: None,
+                ruled_by: None,
+            };
+            insert_proposal(conn, &proposal)?;
+            Ok(EntityLanding::Proposed {
+                proposal_id: proposal.id,
+            })
+        })
     }
 
     pub fn proposals(
@@ -871,27 +930,12 @@ impl ContextStore {
         get_proposal(&conn, proposal_id)
     }
 
-    /// The entity proposal for `slug` (any case) that is waiting, or that a
-    /// person dismissed as wrong, trivial or already known; a waiting one
-    /// first. The extractor proposes a slug once, not once per run, and not
-    /// again once ruled out.
-    pub fn entity_proposal(&self, project_id: &str, slug: &str) -> Result<Option<Proposal>> {
+    /// Whether an entity proposal for `slug` (any case) is waiting: an
+    /// assertion may name it before it is accepted.
+    pub fn pending_entity_slug(&self, project_id: &str, slug: &str) -> Result<bool> {
         let conn = self.db.lock();
-        Ok(conn
-            .query_row(
-                &format!(
-                    "SELECT {PROPOSAL_COLUMNS} FROM context.proposals
-                     WHERE project_id = ?1
-                       AND (status = 'pending'
-                            OR (status = 'dismissed' AND dismiss_reason IN {SETTLED_DISMISSALS}))
-                       AND json_extract(payload, '$.type') = 'entity'
-                       AND lower(json_extract(payload, '$.input.slug')) = lower(?2)
-                     ORDER BY status = 'pending' DESC, created_at, id LIMIT 1"
-                ),
-                params![project_id, slug],
-                proposal_from_row,
-            )
-            .optional()?)
+        Ok(entity_proposal(&conn, project_id, slug)?
+            .is_some_and(|p| p.status == ProposalStatus::Pending))
     }
 
     /// Lands a proposal and marks it `status` (`Accepted` by the user, `Auto`
@@ -1881,6 +1925,11 @@ fn merge_by_clock(events: Vec<Event>) -> Vec<Event> {
 
 // ---------------------------------------------------------------------------
 // Proposals
+//
+// What makes two proposals one is decided inside the writing transaction:
+// [`ClaimIdentity`] for an assertion, the slug for an entity. The database
+// sits behind one mutex and `write` is one transaction, so a check and the
+// insert it guards cannot be raced.
 
 const PROPOSAL_COLUMNS: &str = "id, project_id, observation_id, payload, evidence, status, \
                                 dismiss_reason, created_at, ruled_at, ruled_by";
@@ -1932,17 +1981,84 @@ fn insert_proposal(conn: &Connection, proposal: &Proposal) -> Result<()> {
 /// asked again. `duplicate` is about the graph, which `classify` checks.
 const SETTLED_DISMISSALS: &str = "('wrong', 'trivial', 'already_known')";
 
-/// The `status` proposal that makes the claim `input` makes: same kind,
-/// domain and stance, the same statement as [`resolve::classify`] compares
-/// them, the same subjects (proposed ones too) and the same relation. A
-/// dismissed one counts only when the ruling was on the claim. The oldest,
-/// should there be several.
+/// What an assertion proposal claims, as it stands now. Two proposals make
+/// the same claim exactly when their identities are equal; this is the one
+/// answer to that question, for merging a repeat into a waiting card and for
+/// not asking again about one a person ruled out. [`resolve::classify`]
+/// answers a different one — does a claim restate a head already landed —
+/// and stays separate.
+///
+/// Computed, not stored: subjects are compared after merges and accepted
+/// entities, which a stored fingerprint would miss.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ClaimIdentity {
+    kind: AssertionKind,
+    domain: Domain,
+    stance: Stance,
+    /// As [`resolve::normalise`] has it: case, spacing and a trailing full
+    /// stop aside.
+    statement: String,
+    /// Active entity ids, merges followed (an inactive one as it was), with
+    /// any pending slug that has since been accepted.
+    subjects: BTreeSet<Id>,
+    /// Slugs, lower-cased, still only proposed.
+    pending: BTreeSet<String>,
+    relation: (RelationKind, Option<Id>),
+}
+
+impl ClaimIdentity {
+    fn of_candidate(
+        conn: &Connection,
+        project_id: &str,
+        input: &AssertionInput,
+        about_pending: &[String],
+        relation: &ProposedRelation,
+    ) -> Result<Self> {
+        let mut subjects: BTreeSet<Id> = input
+            .about
+            .iter()
+            .map(|id| active_entity(conn, project_id, id).unwrap_or_else(|_| id.clone()))
+            .collect();
+        let mut pending = BTreeSet::new();
+        for slug in about_pending {
+            match active_entity_by_slug(conn, project_id, slug)? {
+                Some(id) => subjects.insert(id),
+                None => pending.insert(slug.to_lowercase()),
+            };
+        }
+        Ok(Self {
+            kind: input.kind,
+            domain: input.domain,
+            stance: input.stance,
+            statement: resolve::normalise(&input.statement),
+            subjects,
+            pending,
+            relation: (relation.kind, relation.target.clone()),
+        })
+    }
+
+    /// `None` for an entity proposal: it makes no claim.
+    fn of_proposal(conn: &Connection, proposal: &Proposal) -> Result<Option<Self>> {
+        match &proposal.payload {
+            ProposalPayload::Assertion {
+                input,
+                relation,
+                about_pending,
+                ..
+            } => Self::of_candidate(conn, &proposal.project_id, input, about_pending, relation)
+                .map(Some),
+            ProposalPayload::Entity { .. } => Ok(None),
+        }
+    }
+}
+
+/// The oldest `status` proposal that makes `claim`. The query only narrows
+/// to the claim's kind, domain and stance; [`ClaimIdentity`] decides. A
+/// dismissed one counts only when the ruling was on the claim.
 fn assertion_proposal_like(
     conn: &Connection,
     project_id: &str,
-    input: &AssertionInput,
-    about_pending: &[String],
-    relation: &ProposedRelation,
+    claim: &ClaimIdentity,
     status: ProposalStatus,
 ) -> Result<Option<Proposal>> {
     let ruled = match status {
@@ -1958,61 +2074,44 @@ fn assertion_proposal_like(
            AND json_extract(payload, '$.input.stance') = ?5
          ORDER BY created_at, id"
     ))?;
-    let statement = resolve::normalise(&input.statement);
-    let subjects = subjects_now(conn, project_id, &input.about, about_pending)?;
     let rows = stmt.query_map(
         params![
             project_id,
             tag(&status)?,
-            tag(&input.kind)?,
-            tag(&input.domain)?,
-            tag(&input.stance)?,
+            tag(&claim.kind)?,
+            tag(&claim.domain)?,
+            tag(&claim.stance)?,
         ],
         proposal_from_row,
     )?;
     for row in rows {
         let proposal = row?;
-        let ProposalPayload::Assertion {
-            input: theirs,
-            relation: their_relation,
-            about_pending: their_pending,
-            ..
-        } = &proposal.payload
-        else {
-            continue;
-        };
-        if resolve::normalise(&theirs.statement) == statement
-            && their_relation.kind == relation.kind
-            && their_relation.target == relation.target
-            && subjects_now(conn, project_id, &theirs.about, their_pending)? == subjects
-        {
+        if ClaimIdentity::of_proposal(conn, &proposal)?.as_ref() == Some(claim) {
             return Ok(Some(proposal));
         }
     }
     Ok(None)
 }
 
-/// A claim's subjects as they stand now, for comparing two claims: active
-/// entity ids (merges followed; an inactive one as it was), and the slugs,
-/// lower-cased, that are still only proposed.
-fn subjects_now(
-    conn: &Connection,
-    project_id: &str,
-    about: &[Id],
-    about_pending: &[String],
-) -> Result<(BTreeSet<Id>, BTreeSet<String>)> {
-    let mut ids: BTreeSet<Id> = about
-        .iter()
-        .map(|id| active_entity(conn, project_id, id).unwrap_or_else(|_| id.clone()))
-        .collect();
-    let mut pending = BTreeSet::new();
-    for slug in about_pending {
-        match active_entity_by_slug(conn, project_id, slug)? {
-            Some(id) => ids.insert(id),
-            None => pending.insert(slug.to_lowercase()),
-        };
-    }
-    Ok((ids, pending))
+/// The entity proposal for `slug` (any case) that is waiting, or that a
+/// person dismissed as wrong, trivial or already known; a waiting one first.
+/// An entity proposal's identity is its slug.
+fn entity_proposal(conn: &Connection, project_id: &str, slug: &str) -> Result<Option<Proposal>> {
+    Ok(conn
+        .query_row(
+            &format!(
+                "SELECT {PROPOSAL_COLUMNS} FROM context.proposals
+                 WHERE project_id = ?1
+                   AND (status = 'pending'
+                        OR (status = 'dismissed' AND dismiss_reason IN {SETTLED_DISMISSALS}))
+                   AND json_extract(payload, '$.type') = 'entity'
+                   AND lower(json_extract(payload, '$.input.slug')) = lower(?2)
+                 ORDER BY status = 'pending' DESC, created_at, id LIMIT 1"
+            ),
+            params![project_id, slug],
+            proposal_from_row,
+        )
+        .optional()?)
 }
 
 /// A user-stated repeat of an agent-stated card makes the card the user's:
@@ -2046,11 +2145,20 @@ fn adopt_user_statement(
     Ok(())
 }
 
-/// Adds `evidence` to `proposal`, skipping quotes it already carries.
+/// Adds `evidence` to `proposal`, skipping what it already carries. A piece
+/// of evidence is its source and its words: the same quote from another
+/// turn is an independent observation and is kept, since the review queue
+/// ranks a card by its distinct turns (`ProjectContext/format.ts`).
 fn append_evidence(conn: &Connection, proposal: &Proposal, evidence: Vec<Evidence>) -> Result<()> {
+    if evidence.is_empty() {
+        return Ok(());
+    }
+    fn key(e: &Evidence) -> (Option<&str>, Option<&str>, &str) {
+        (e.session_id.as_deref(), e.turn_id.as_deref(), &e.quote)
+    }
     let mut merged = proposal.evidence.clone();
     for e in evidence {
-        if !merged.iter().any(|m| m.quote == e.quote) {
+        if !merged.iter().any(|m| key(m) == key(&e)) {
             merged.push(e);
         }
     }

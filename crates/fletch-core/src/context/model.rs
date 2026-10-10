@@ -717,6 +717,24 @@ pub enum Landing {
     Dismissed { proposal_id: Id },
 }
 
+/// The outcome of `ContextStore::propose_entity`, decided in one transaction
+/// so two runs naming the same new slug cannot both propose it:
+/// - `Known`: the slug, name or an alias resolves to an active entity;
+/// - `Pending`: a proposal for the slug (any case) is already waiting;
+/// - `Dismissed`: a person ruled one out as wrong, trivial or already known;
+/// - `Capped`: none of those, but the caller's budget is spent;
+/// - `Proposed`: a new pending proposal.
+///
+/// Only `Proposed` writes, so only it spends budget.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EntityLanding {
+    Known { id: Id },
+    Pending { proposal_id: Id },
+    Dismissed { proposal_id: Id },
+    Capped,
+    Proposed { proposal_id: Id },
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProposalStatus {

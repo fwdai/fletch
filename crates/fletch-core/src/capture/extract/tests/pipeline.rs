@@ -396,6 +396,30 @@ fn a_pending_entity_is_not_proposed_again() {
     assert_eq!(about_pending, &["billing"]);
 }
 
+/// An entity waiting from an earlier run, listed first, does not take the
+/// run's one entity slot: the new one after it is proposed.
+#[test]
+fn a_pending_entity_does_not_spend_the_cap() {
+    let (service, _dir) = service();
+    run(&service, &Canned(answer(&[entity_json("billing")], &[])));
+
+    let summary = run(
+        &service,
+        &Canned(answer(
+            &[entity_json("billing"), entity_json("search")],
+            &[],
+        )),
+    );
+    assert_eq!(summary.entities_skipped, 1);
+    assert_eq!(summary.entities_proposed, 1);
+    assert_eq!(summary.capped, 0);
+    let slugs: Vec<String> = pending_entities(&service)
+        .into_iter()
+        .map(|e| e.slug)
+        .collect();
+    assert_eq!(slugs, ["billing", "search"]);
+}
+
 /// The model is never shown pending entities, so a later run names one
 /// without listing it; the assertion still carries it as `about_pending`.
 #[test]

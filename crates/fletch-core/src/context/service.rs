@@ -293,20 +293,29 @@ impl ContextService {
         Ok(settled)
     }
 
-    /// Proposals: add one (held by a writer or the extractor), rule on one.
-    /// A ruling is scoped to the project the gate opened: a proposal id from
-    /// another project is unknown here (the store keeps that rule).
-    pub fn add_proposal(&self, project: &Project, proposal: &Proposal) -> Result<()> {
-        if proposal.project_id != project.id {
-            return Err(ContextError::Invalid(
-                "a proposal is added to the project it was made for".into(),
-            ));
+    /// Propose an entity for review: known, waiting, ruled out, over
+    /// `budget` or proposed, decided in one transaction ([`EntityLanding`]).
+    /// Assertions are proposed through [`Self::record_decision`].
+    pub fn propose_entity(
+        &self,
+        project: &Project,
+        input: EntityInput,
+        stamp: Stamp,
+        observation_id: Option<Id>,
+        budget: usize,
+    ) -> Result<EntityLanding> {
+        let landing =
+            self.store
+                .propose_entity(&project.id, input, stamp, observation_id, budget)?;
+        if matches!(landing, EntityLanding::Proposed { .. }) {
+            self.changed(project);
         }
-        self.store.add_proposal(proposal)?;
-        self.changed(project);
-        Ok(())
+        Ok(landing)
     }
 
+    /// Rule on a proposal. A ruling is scoped to the project the gate
+    /// opened: a proposal id from another project is unknown here (the store
+    /// keeps that rule).
     pub fn accept_proposal(&self, project: &Project, proposal_id: &str, by: Author) -> Result<Id> {
         let id =
             self.store

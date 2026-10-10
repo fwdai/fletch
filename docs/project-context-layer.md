@@ -172,11 +172,16 @@ Three paths, one pipeline, rising cost:
    one entity and three assertions per run, and drops an
    implementation-domain assertion or one with no evidence quote found in
    the turns. Nothing it says lands:
-   entities become pending entity proposals, assertions are held by
+   entities become pending entity proposals through `propose_entity`
+   (known, already waiting, ruled out, over the cap or new: decided in the
+   same transaction as the insert), assertions are held by
    `land` (a restatement is dropped as a duplicate), and an assertion about
    a proposed entity carries its slug as `about_pending` until that entity
-   is accepted. A repeat of a waiting proposal (same statement, subjects
-   and relation) adds its quotes to that card instead of making another; a
+   is accepted. Two proposals are one claim when their `ClaimIdentity`
+   (kind, domain, stance, normalised statement, subjects as they stand now,
+   relation) is equal: a repeat of a waiting proposal adds its quotes to
+   that card instead of making another — keyed by session, turn and quote,
+   so the same words from another turn count as more corroboration; a
    repeat of one a person dismissed as wrong, trivial or already known is
    not proposed again. The pilot gives model output no durable authority before its
    precision is known; the user's acceptance is what lands it, confirmed. The
