@@ -288,7 +288,7 @@ pub const OPS: &[&str] = &[
     "context_merge_entities",
     "context_link",
     "context_rule_proposal",
-    "context_dismiss_all",
+    "context_dismiss_proposals",
     "context_resolve_contradiction",
     "context_bootstrap",
 ];
@@ -573,7 +573,7 @@ const OP_SCOPES: &[(&str, Scope)] = &[
     ("context_merge_entities", Scope::Projects),
     ("context_link", Scope::Projects),
     ("context_rule_proposal", Scope::Projects),
-    ("context_dismiss_all", Scope::Projects),
+    ("context_dismiss_proposals", Scope::Projects),
     ("context_resolve_contradiction", Scope::Projects),
     ("context_bootstrap", Scope::Projects),
 ];
@@ -1690,7 +1690,7 @@ impl Dispatch for SupervisorDispatch {
                 | "context_merge_entities"
                 | "context_link"
                 | "context_rule_proposal"
-                | "context_dismiss_all"
+                | "context_dismiss_proposals"
                 | "context_resolve_contradiction" => context_op(ctx, op, args),
 
                 // Reads the project's repo through git, so not one of the
@@ -1968,9 +1968,13 @@ fn context_op(ctx: &EngineCtx, op: &str, args: Value) -> DispatchResult {
                 a.dismiss_reason,
             ))
         }
-        "context_dismiss_all" => {
-            let a: ContextDismissAllArgs = parse(args)?;
-            res(c::context_dismiss_all_impl(ctx, &a.project_id, a.before))
+        "context_dismiss_proposals" => {
+            let a: ContextDismissProposalsArgs = parse(args)?;
+            res(c::context_dismiss_proposals_impl(
+                ctx,
+                &a.project_id,
+                &a.proposal_ids,
+            ))
         }
         "context_resolve_contradiction" => {
             let a: ContextResolveArgs = parse(args)?;
@@ -2572,10 +2576,9 @@ struct ContextRuleArgs {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct ContextDismissAllArgs {
+struct ContextDismissProposalsArgs {
     project_id: String,
-    #[serde(default)]
-    before: Option<i64>,
+    proposal_ids: Vec<String>,
 }
 
 #[derive(Deserialize)]

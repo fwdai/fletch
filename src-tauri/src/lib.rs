@@ -1355,7 +1355,7 @@ pub fn run() {
             commands::context_merge_entities,
             commands::context_link,
             commands::context_rule_proposal,
-            commands::context_dismiss_all,
+            commands::context_dismiss_proposals,
             commands::context_resolve_contradiction,
             commands::context_bootstrap,
             probe_docker_engine,

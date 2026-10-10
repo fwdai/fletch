@@ -13,7 +13,6 @@ export function DismissAll({
   proposals: ContextProposal[];
 }) {
   const count = proposals.length;
-  const newest = proposals.reduce((max, p) => Math.max(max, p.created_at), 0);
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -22,7 +21,10 @@ export function DismissAll({
     setBusy(true);
     setError(null);
     api
-      .contextDismissAll(projectId, newest)
+      .contextDismissProposals(
+        projectId,
+        proposals.map((p) => p.id),
+      )
       .catch((e) => setError(String(e)))
       .finally(() => {
         setBusy(false);

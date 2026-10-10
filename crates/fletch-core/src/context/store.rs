@@ -1049,30 +1049,31 @@ impl ContextStore {
         })
     }
 
-    /// [`Self::dismiss_proposal`] for every pending proposal of the project,
-    /// in one transaction; the same ruling on each. With `before` (epoch ms),
-    /// only those made by then: the ones the person was shown, not any that
-    /// arrived while they confirmed. Returns how many.
-    pub(super) fn dismiss_all_pending(
+    /// [`Self::dismiss_proposal`] for each of `ids` that is a pending
+    /// proposal of the project, in one transaction; the same ruling on each.
+    /// The caller names exactly what the person was shown, so nothing that
+    /// arrived while they confirmed is ruled on. An id already ruled, or not
+    /// the project's, is skipped. Returns how many were dismissed.
+    pub(super) fn dismiss_proposals(
         &self,
         project_id: &str,
+        ids: &[Id],
         reason: DismissReason,
         ruled_by: Author,
-        before: Option<i64>,
     ) -> Result<usize> {
         self.write(project_id, |conn| {
-            let ids: Vec<Id> = conn
-                .prepare(
-                    "SELECT id FROM context.proposals
-                     WHERE project_id = ?1 AND status = 'pending'
-                       AND (?2 IS NULL OR created_at <= ?2)",
-                )?
-                .query_map(params![project_id, before], |r| r.get(0))?
-                .collect::<rusqlite::Result<_>>()?;
-            for id in &ids {
+            let mut dismissed = 0;
+            for id in ids {
+                let pending = get_proposal(conn, id)?.is_some_and(|p| {
+                    p.project_id == project_id && p.status == ProposalStatus::Pending
+                });
+                if !pending {
+                    continue;
+                }
                 rule_proposal(conn, id, ProposalStatus::Dismissed, Some(reason), &ruled_by)?;
+                dismissed += 1;
             }
-            Ok(ids.len())
+            Ok(dismissed)
         })
     }
 

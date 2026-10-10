@@ -2141,8 +2141,14 @@ fn dismiss_all_rules_every_pending_proposal_and_nothing_else() {
         .dismiss_proposal(P, &dismissed.id, DismissReason::Wrong, Author::user())
         .unwrap();
 
+    // Every id on the table, ruled or not: only the pending ones are ruled.
+    let all: Vec<Id> = pending
+        .iter()
+        .chain([&accepted, &dismissed])
+        .map(|p| p.id.clone())
+        .collect();
     let n = store
-        .dismiss_all_pending(P, DismissReason::Trivial, Author::user(), None)
+        .dismiss_proposals(P, &all, DismissReason::Trivial, Author::user())
         .unwrap();
     assert_eq!(n, pending.len());
     assert!(store
@@ -2163,7 +2169,7 @@ fn dismiss_all_rules_every_pending_proposal_and_nothing_else() {
 
     assert_eq!(
         store
-            .dismiss_all_pending(P, DismissReason::Trivial, Author::user(), None)
+            .dismiss_proposals(P, &all, DismissReason::Trivial, Author::user())
             .unwrap(),
         0
     );
@@ -2461,28 +2467,42 @@ fn propose_entity_decides_known_pending_dismissed_capped_or_proposed() {
         .is_empty());
 }
 
-/// Dismiss-all with `before` leaves a proposal made after it waiting: it
-/// arrived after the person was asked to confirm.
+/// Dismissing by id leaves a proposal that was not named waiting, however it
+/// is timed: it arrived after the person was asked to confirm. An id of
+/// another project is not the project's to rule.
 #[test]
-fn dismiss_all_before_leaves_newer_proposals_pending() {
+fn dismissing_named_proposals_leaves_unnamed_ones_pending() {
     let (store, _dir) = temp();
     let e = store
         .record_entity(P, entity("e", EntityKind::Module), stamp())
         .unwrap();
     let new = || related(RelationKind::New, None, None);
-    let shown = Proposal {
-        created_at: 1_000,
-        ..assertion_proposal(saying(&[&e], "shown"), new())
-    };
+    let shown = assertion_proposal(saying(&[&e], "shown"), new());
+    // The same millisecond as `shown`: a time cutoff could not tell them apart.
     let later = Proposal {
-        created_at: 2_000,
+        created_at: shown.created_at,
         ..assertion_proposal(saying(&[&e], "arrived later"), new())
     };
     store.add_proposal(&shown).unwrap();
     store.add_proposal(&later).unwrap();
 
+    store.own("q", "fq");
     let n = store
-        .dismiss_all_pending(P, DismissReason::Trivial, Author::user(), Some(1_000))
+        .dismiss_proposals(
+            "q",
+            std::slice::from_ref(&shown.id),
+            DismissReason::Trivial,
+            Author::user(),
+        )
+        .unwrap();
+    assert_eq!(n, 0);
+    let n = store
+        .dismiss_proposals(
+            P,
+            std::slice::from_ref(&shown.id),
+            DismissReason::Trivial,
+            Author::user(),
+        )
         .unwrap();
     assert_eq!(n, 1);
     let pending: Vec<Id> = store

@@ -462,8 +462,9 @@ fn a_dismissed_proposal_is_not_proposed_again() {
         ))
     };
     run(&service, &both());
+    let shown: Vec<Id> = pending(&service).into_iter().map(|p| p.id).collect();
     service
-        .dismiss_all_pending(&project(), DismissReason::Wrong, Author::user(), None)
+        .dismiss_proposals(&project(), &shown, DismissReason::Wrong, Author::user())
         .unwrap();
 
     let again = run(&service, &both());

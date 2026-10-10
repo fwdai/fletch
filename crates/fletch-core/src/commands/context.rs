@@ -283,17 +283,22 @@ pub fn context_rule_proposal_impl(
     Ok(recorded)
 }
 
-/// Dismiss every pending proposal as trivial: the way out of a backlog that
-/// is too long to rule on card by card. `before` (epoch ms) limits it to the
-/// proposals the person was shown. Answers how many were dismissed.
-pub fn context_dismiss_all_impl(
+/// Dismiss the named pending proposals as trivial: the way out of a backlog
+/// that is too long to rule on card by card. The caller passes the ids it
+/// showed, so nothing unseen is ruled on. Answers how many were dismissed.
+pub fn context_dismiss_proposals_impl(
     ctx: &EngineCtx,
     project_id: &str,
-    before: Option<i64>,
+    proposal_ids: &[String],
 ) -> Result<usize> {
     let service = ctx.context()?;
     let project = open(ctx, project_id)?;
-    Ok(service.dismiss_all_pending(&project, DismissReason::Trivial, Author::user(), before)?)
+    Ok(service.dismiss_proposals(
+        &project,
+        proposal_ids,
+        DismissReason::Trivial,
+        Author::user(),
+    )?)
 }
 
 #[cfg(test)]
