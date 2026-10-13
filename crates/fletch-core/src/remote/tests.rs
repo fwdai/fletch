@@ -4006,11 +4006,17 @@ async fn the_settings_ops_answer_through_the_dispatcher() {
 #[tokio::test]
 async fn every_settings_op_has_an_arm() {
     let (d, _dir) = wf_roadmap_dispatch();
+    // The accounts family's setter (`set_active_provider_account`) writes a
+    // setting too, but through the accounts commands, not `settings_op`.
     let settings_ops = dispatch::OPS.iter().filter(|op| {
         (op.starts_with("set_") || op.ends_with("_settings"))
             && !matches!(
                 **op,
-                "set_agent_model" | "set_agent_effort" | "set_repo_label" | "set_focused_pr"
+                "set_agent_model"
+                    | "set_agent_effort"
+                    | "set_repo_label"
+                    | "set_focused_pr"
+                    | "set_active_provider_account"
             )
     });
     let mut seen = 0;
