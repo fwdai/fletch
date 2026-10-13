@@ -1015,6 +1015,10 @@
   margin: 6px 0 0;
   color: var(--danger);
 }
+.set-prov-acct-detail {
+  margin: 6px 0 0;
+  color: var(--fg-3);
+}
 /* An account's plan limits under its line: two meters side by side, each
    with its reset, then how fresh the reading is. Muted throughout — the
    numbers are context for choosing an account, not an alarm. */

@@ -242,5 +242,48 @@ fn the_default_login_is_read_from_a_config_dir_the_login_shell_exports() {
     assert_eq!(store.file, dir.join(".credentials.json"));
 }
 
+/// A shell `CLAUDE_CONFIG_DIR` that only restates `~/.claude` (here with a
+/// trailing slash) names the plain Keychain item when no suffixed one
+/// exists, so a login kept under the default name isn't missed.
+#[test]
+fn a_config_dir_restating_the_default_falls_back_to_the_plain_item() {
+    let Some(home) = dirs::home_dir() else {
+        return;
+    };
+    let dir = format!("{}/.claude/", home.display());
+    let store = crate::bin_resolve::with_login_shell_env(&[("CLAUDE_CONFIG_DIR", &dir)], || {
+        HostStore::for_account(None)
+    })
+    .unwrap();
+    assert_eq!(
+        store.service,
+        crate::sandbox::container::auth::claude_keychain_service(None)
+    );
+}
+
+/// A default-account launch with no host login fails with where the login
+/// was looked for, unless the shell or the stored setup-token can sign it in.
+#[test]
+fn a_default_launch_without_a_login_is_refused_unless_something_else_signs_in() {
+    let store =
+        || "the Keychain item `Claude Code-credentials` or ~/.claude/.credentials.json".to_string();
+    assert_eq!(
+        default_launch_refusal(&LoginError::SignedOut, true, store),
+        None
+    );
+    let refusal = default_launch_refusal(&LoginError::SignedOut, false, store).unwrap();
+    assert!(refusal.contains("`Claude Code-credentials`"), "{refusal}");
+    assert!(
+        refusal.contains("Settings → Providers → Claude Code"),
+        "{refusal}"
+    );
+    let revoked = default_launch_refusal(&LoginError::Revoked, false, store).unwrap();
+    assert!(revoked.contains("revoked"), "{revoked}");
+    let unavailable =
+        default_launch_refusal(&LoginError::Unavailable("locked".into()), false, store).unwrap();
+    assert!(unavailable.contains("locked"), "{unavailable}");
+    assert!(unavailable.contains("Keychain"), "{unavailable}");
+}
+
 #[cfg(target_os = "macos")]
 mod live;

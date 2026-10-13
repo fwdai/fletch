@@ -174,8 +174,12 @@ async fn credential(account_dir: Option<&Path>, demand: Demand) -> Result<Access
 /// The token a claude agent stamped with `account` launches with. A managed
 /// account without a usable login fails the launch: running it under any
 /// other credential would be running it as someone else. The default account
-/// degrades to no token, leaving the stored setup-token and shell credentials
-/// (container chain) or claude's own lookup to answer, as before.
+/// degrades to no token only when something else can sign the launch in — a
+/// stored setup-token or an auth var in the user's shell. Otherwise it fails
+/// with the reason: every sandbox closes the Keychain and the credential
+/// files to the agent, so a claude launched with nothing would only end
+/// each turn on its own "Not logged in · Please run /login", which the user
+/// can't act on from a chat.
 /// `rejected_expires_at_ms` is set when the agent's last token drew a 401.
 pub async fn launch_token(
     account: Option<&str>,
@@ -189,12 +193,70 @@ pub async fn launch_token(
     match (token, dir) {
         (Ok(token), _) => Ok(Some(token)),
         (Err(e), Some(_)) => Err(e.into()),
-        (Err(LoginError::SignedOut), None) => Ok(None),
         (Err(e), None) => {
-            tracing::warn!(error = %e, "default claude login unusable; launching without a host token");
-            Ok(None)
+            // Both checks shell out (the login-shell env, `security`), so
+            // they run off the runtime.
+            let error = e.clone();
+            let refusal = tokio::task::spawn_blocking(move || {
+                let fallback = crate::sandbox::container::auth::fallback_login_present();
+                default_launch_refusal(&error, fallback, default_store_description)
+            })
+            .await
+            .unwrap_or(None);
+            match refusal {
+                None => {
+                    tracing::warn!(error = %e, "default claude login unusable; launching on the shell's own credential");
+                    Ok(None)
+                }
+                Some(reason) => {
+                    tracing::warn!(error = %e, "default claude login unusable and nothing else can sign the launch in");
+                    Err(crate::error::Error::Other(reason))
+                }
+            }
         }
     }
+}
+
+/// Why a default-account launch without a host login is refused, or `None`
+/// when `fallback` (a shell auth var or the stored setup-token) can sign it
+/// in instead. `store` names where the login was looked for, so a login kept
+/// under another name is diagnosable from the message alone.
+fn default_launch_refusal(
+    error: &LoginError,
+    fallback: bool,
+    store: impl FnOnce() -> String,
+) -> Option<String> {
+    if fallback {
+        return None;
+    }
+    const SIGN_IN: &str = "Sign in under Settings → Providers → Claude Code";
+    Some(match error {
+        LoginError::SignedOut => format!(
+            "No Claude Code login for Fletch to launch with: nothing in {}, and no API key \
+             or cloud-provider setup in your shell. Agents can't run /login themselves. \
+             {SIGN_IN}.",
+            store()
+        ),
+        LoginError::Revoked => {
+            format!("Claude Code's login expired or was revoked. {SIGN_IN}, then resend.")
+        }
+        LoginError::Unavailable(reason) => format!(
+            "Claude Code's login couldn't be used: {reason}. Agents can't reach the Keychain \
+             themselves, so the launch needs the host to read it. {SIGN_IN} if this persists."
+        ),
+    })
+}
+
+/// Where the default account's login was looked for, for a refusal message:
+/// the Keychain service (which carries no path) and the credentials file by
+/// its generic name, never a path that names the user.
+fn default_store_description() -> String {
+    let service = crate::sandbox::container::auth::default_keychain_service();
+    let dir = match accounts::claude_config_override() {
+        Some(_) => "the config dir your shell's CLAUDE_CONFIG_DIR names",
+        None => "~/.claude",
+    };
+    format!("the Keychain item `{service}` or {dir}/.credentials.json")
 }
 
 /// Whether a refresh of the account in `account_dir` was refused and nothing
@@ -431,8 +493,14 @@ impl HostStore {
             Some(dir) => dir.clone(),
             None => dirs::home_dir()?.join(".claude"),
         };
+        // The default account's item is the one Settings' presence probe
+        // names, so the two can't disagree on where the login is.
+        let service = match account_dir {
+            Some(dir) => crate::sandbox::container::auth::claude_keychain_service(Some(dir)),
+            None => crate::sandbox::container::auth::default_keychain_service(),
+        };
         Some(Self {
-            service: crate::sandbox::container::auth::claude_keychain_service(relocated.as_deref()),
+            service,
             file: dir.join(".credentials.json"),
         })
     }
