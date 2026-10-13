@@ -289,9 +289,12 @@ describe("the More sheet's account row and its picker", () => {
       });
 
     // A success for kamakura must not close arabia's picker.
-    vi.spyOn(api, "switchAgentAccount").mockImplementationOnce(() => held() as never);
+    // The row that is not the current account: the current one only closes.
+    const other = () => rows().find((r) => !r.querySelector(".check-ic")) as HTMLButtonElement;
+    const first = vi.spyOn(api, "switchAgentAccount").mockImplementationOnce(() => held() as never);
     await openPickerFor("kamakura");
-    await act(async () => rows()[1].click());
+    await act(async () => other().click());
+    expect(first).toHaveBeenCalledTimes(1);
     await act(async () => state().closeSheet());
     await openPickerFor("arabia");
     await act(async () => {
@@ -304,12 +307,16 @@ describe("the More sheet's account row and its picker", () => {
     });
     expect(stampOf("kamakura")).toBe("work");
 
-    // A refusal for arabia must not show in kamakura's picker — but the
-    // picker it was asked from does show it.
-    vi.spyOn(api, "switchAgentAccount").mockImplementationOnce(() => held() as never);
-    await act(async () => rows()[0].click());
+    // A refusal for kamakura must not show in arabia's picker.
     await act(async () => state().closeSheet());
     await openPickerFor("kamakura");
+    const second = vi
+      .spyOn(api, "switchAgentAccount")
+      .mockImplementationOnce(() => held() as never);
+    await act(async () => other().click());
+    expect(second).toHaveBeenCalledTimes(2);
+    await act(async () => state().closeSheet());
+    await openPickerFor("arabia");
     await act(async () => {
       settle.reject(new Error("Wait for the turn to finish before switching accounts."));
     });
@@ -317,7 +324,49 @@ describe("the More sheet's account row and its picker", () => {
     expect(state().sheet).toMatchObject({
       name: "accountPicker",
       open: true,
-      props: { agentId: "kamakura" },
+      props: { agentId: "arabia" },
     });
+  });
+});
+
+describe("a switch against the workspace reads around it", () => {
+  const hold = () => {
+    const read = api.getWorkspace;
+    let release: () => void = () => {};
+    vi.spyOn(api, "getWorkspace").mockImplementationOnce(async () => {
+      // Read before the switch: the answer carries the old stamp.
+      const snapshot = await read();
+      await new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      return snapshot;
+    });
+    return () => release();
+  };
+
+  it("is not undone by an older workspace read that answers after it", async () => {
+    // In step with the host first: the picker tests above answered a held
+    // switch with a record of their own.
+    await state().refreshWorkspace();
+    const was = stampOf("kamakura") ?? null;
+    const target = was ? "default" : "work";
+    const release = hold();
+    const stale = state().refreshWorkspace();
+    await state().switchAgentAccount("kamakura", target);
+    const switched = stampOf("kamakura") ?? null;
+    expect(switched).not.toBe(was);
+    release();
+    await stale;
+    expect(stampOf("kamakura") ?? null).toBe(switched);
+  });
+
+  it("lands only the newest of two workspace reads in flight", async () => {
+    const release = hold();
+    const first = state().refreshWorkspace();
+    await state().refreshWorkspace();
+    const after = state().workspace;
+    release();
+    await first;
+    expect(state().workspace).toBe(after);
   });
 });

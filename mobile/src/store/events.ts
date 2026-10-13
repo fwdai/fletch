@@ -54,18 +54,24 @@ import {
   prTransitionText,
 } from "./shipActivity";
 import { applyLiveEvent } from "./transcript";
+import { noteAgentPatch } from "./workspaceReads";
 
 type Set = (partial: Partial<MobileState> | ((s: MobileState) => Partial<MobileState>)) => void;
 type Get = () => MobileState;
 
+/** One record patched in the snapshot — and noted for any workspace read out
+ *  right now, which the event outranks (store/workspaceReads). */
 const patchAgent = (
   ws: Workspace,
   agentId: string,
   patch: Partial<Workspace["agents"][number]>,
-): Workspace => ({
-  ...ws,
-  agents: ws.agents.map((a) => (a.id === agentId ? { ...a, ...patch } : a)),
-});
+): Workspace => {
+  noteAgentPatch(agentId, patch);
+  return {
+    ...ws,
+    agents: ws.agents.map((a) => (a.id === agentId ? { ...a, ...patch } : a)),
+  };
+};
 
 /** A held `can_use_tool` prompt: control plane, not transcript. Record
  *  tool_use id → request id so the approval card can answer it, and never feed

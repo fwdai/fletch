@@ -61,6 +61,7 @@ import {
   type ShipActivityMap,
 } from "./shipActivity";
 import { type LoadedHistory, type LogLoad, pastHistory, renderHistory } from "./transcript";
+import { beginWorkspaceRead } from "./workspaceReads";
 
 export const client = createClient();
 export const api = createApi(client);
@@ -1030,15 +1031,22 @@ export const useStore = create<MobileState>()((set, get) => ({
   },
 
   async refreshWorkspace() {
+    // Only the newest read lands, with the patches made meanwhile replayed
+    // over its answer (store/workspaceReads).
+    const read = beginWorkspaceRead();
     try {
       const workspace = await api.getWorkspace();
-      if (workspace) {
-        set((s) => ({ workspace, sending: reconcileSending(s.sending, workspace.agents) }));
+      if (workspace && read.current()) {
+        const agents = read.apply(workspace.agents);
+        const next = agents === workspace.agents ? workspace : { ...workspace, agents };
+        set((s) => ({ workspace: next, sending: reconcileSending(s.sending, next.agents) }));
       }
       return true;
     } catch {
       // Best effort; the next event or resync recovers.
       return false;
+    } finally {
+      read.finish();
     }
   },
 

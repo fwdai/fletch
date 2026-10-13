@@ -29,6 +29,7 @@ import type { Api } from "../api";
 import { noteChatPatch, patchChatIn } from "./chats";
 import type { MobileState } from "./index";
 import type { LogLoad } from "./transcript";
+import { noteAgentPatch } from "./workspaceReads";
 
 type Set = (partial: Partial<MobileState> | ((s: MobileState) => Partial<MobileState>)) => void;
 type Get = () => MobileState;
@@ -257,6 +258,7 @@ export function createProviderAccountsSlice(
         // row naming an account the agent isn't on.
         const fields = { account: record.account ?? null };
         noteChatPatch(agentId, fields);
+        noteAgentPatch(agentId, fields);
         set((s) => ({
           workspace: s.workspace && {
             ...s.workspace,
