@@ -71,6 +71,11 @@ describe("switchAgentAccount over the mock host", () => {
     await state().setActiveProviderAccount("claude", "work");
 
     await vi.waitFor(() => expect(stampOf("kamakura")).toBe("work"));
+    // A loaded planning chat follows too: it is absent from the snapshot the
+    // radio's `workspace:changed` refreshes, so its own list is read again.
+    await vi.waitFor(() =>
+      expect(state().chats["prj-fletch"].find((c) => c.id === "sakura")?.account).toBe("work"),
+    );
   });
 });
 

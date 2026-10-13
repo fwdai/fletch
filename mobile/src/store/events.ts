@@ -342,6 +342,12 @@ export function registerRemoteEvents(client: RemoteClient, set: Set, get: Get): 
 
   on<null>("workspace:changed", () => {
     void get().refreshWorkspace();
+    // The planning chats are records too, held back from the snapshot and
+    // listed on their own: a change that restamps every record of a provider
+    // (the account radio moving) reaches them only through their own list.
+    for (const projectId of Object.keys(get().chats)) {
+      void get().loadChats(projectId).catch(ignore);
+    }
   });
 
   // The host's idle sweep archived something; `workspace:changed` already took
