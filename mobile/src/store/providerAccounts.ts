@@ -24,6 +24,7 @@ import { type LimitsByProvider, withLimitsChange } from "@desktop/data/providerL
 import type { Api } from "../api";
 import { patchChatIn } from "./chats";
 import type { MobileState } from "./index";
+import type { LogLoad } from "./transcript";
 
 type Set = (partial: Partial<MobileState> | ((s: MobileState) => Partial<MobileState>)) => void;
 type Get = () => MobileState;
@@ -39,9 +40,16 @@ export interface ProviderAccountsSlice {
   providerAccounts: Record<string, ProviderAccount[]>;
   /** Per provider, per account id, the host's stored limits row. */
   providerLimits: LimitsByProvider;
+  /** How the last whole read went — what tells a screen that is still waiting
+   *  (or whose read failed) apart from one looking at the host's answer. Null
+   *  until a read has been asked for. A failed read keeps the maps as they
+   *  were: stale meters beat empty ones. */
+  providerAccountsLoad: LogLoad | null;
   /** Re-read every provider's accounts and their limits rows. A no-op on a
-   *  host without the ops. Rejects with the host's reason: the screen that
-   *  asked is where the failure is shown. */
+   *  host without the ops. Rejects with the host's reason as well as recording
+   *  it in `providerAccountsLoad`. Only the newest read in flight lands, and a
+   *  `settings:changed` that arrived while it was out is applied over its
+   *  answer: the event is newer than the probe it overtook. */
   loadProviderAccounts(): Promise<void>;
   /** Move the provider's radio (`null` is the CLI's own login) and re-list.
    *  Rejects with the host's refusal — a signed-out target, a pairing without
@@ -116,25 +124,56 @@ export function createProviderAccountsSlice(
 ): ProviderAccountsSlice {
   const { api } = deps;
 
+  // The read in flight, and the writes the host announced while it was out.
+  // A list is probed on the host (a Keychain check per account), so an event
+  // can overtake the answer it is newer than; it is replayed over the answer
+  // once that lands. A read that another one has overtaken lands nothing.
+  let loadSeq = 0;
+  let overtaken: [string, string | null][] = [];
+  const loading = () => get().providerAccountsLoad?.status === "loading";
+
   return {
     providerAccounts: {},
     providerLimits: {},
+    providerAccountsLoad: null,
     switchingAccount: {},
 
     async loadProviderAccounts() {
       if (!get().hostSupports("list_provider_accounts")) return;
-      const accounts = groupByProvider(await api.listProviderAccounts());
-      const providers = Object.keys(accounts);
-      const rows = await Promise.all(
-        providers.map((p) =>
-          api.getProviderLimits(p).catch((): Record<string, AccountLimits> => ({})),
-        ),
-      );
-      const limits: LimitsByProvider = {};
-      providers.forEach((p, i) => {
-        limits[p] = rows[i];
-      });
-      set({ providerAccounts: accounts, providerLimits: limits });
+      const seq = ++loadSeq;
+      set({ providerAccountsLoad: { status: "loading" } });
+      try {
+        const accounts = groupByProvider(await api.listProviderAccounts());
+        const providers = Object.keys(accounts);
+        // A limits read that fails fails the whole read: an empty map would
+        // show every account as never read, which is a claim, not a failure.
+        const rows: Record<string, AccountLimits>[] = await Promise.all(
+          providers.map((p) => api.getProviderLimits(p)),
+        );
+        if (seq !== loadSeq) return;
+        const limits: LimitsByProvider = {};
+        providers.forEach((p, i) => {
+          limits[p] = rows[i];
+        });
+        set({
+          providerAccounts: accounts,
+          providerLimits: limits,
+          providerAccountsLoad: { status: "ready" },
+        });
+        const replay = overtaken;
+        overtaken = [];
+        for (const [key, value] of replay) get().applyProviderSettingsChange(key, value);
+      } catch (e) {
+        if (seq !== loadSeq) return;
+        overtaken = [];
+        set({
+          providerAccountsLoad: {
+            status: "error",
+            error: e instanceof Error ? e.message : String(e),
+          },
+        });
+        throw e;
+      }
     },
 
     async setActiveProviderAccount(provider, id) {
@@ -155,6 +194,9 @@ export function createProviderAccountsSlice(
     },
 
     applyProviderSettingsChange(key, value) {
+      // Applied now, over whatever is on screen — and again over the answer
+      // of the read it may have overtaken.
+      if (loading()) overtaken.push([key, value]);
       const provider = activeAccountKeyProvider(key);
       if (provider) {
         set((s) => {
