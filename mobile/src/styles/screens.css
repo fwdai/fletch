@@ -372,6 +372,12 @@
 .pv-acct-main[disabled] {
   pointer-events: none;
 }
+/* The active account is disabled only because there is nothing to tap, not
+   because it is unavailable: its name keeps the full tone a disabled row
+   otherwise dims to. */
+.pv-acct.on .pv-acct-main .lbl {
+  color: var(--fg-0);
+}
 .pv-acct-main .sub {
   white-space: normal;
 }
