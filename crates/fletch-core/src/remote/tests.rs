@@ -530,7 +530,7 @@ fn begin_pairing_names_the_preset_and_refuses_an_unknown_one() {
 
 #[test]
 fn allowlist_matches_the_protocol_table() {
-    // The 144 rows of docs/remote-protocol.md's op table, spelled out here so a
+    // The 148 rows of docs/remote-protocol.md's op table, spelled out here so a
     // silent widening of the wire surface fails this test. `register_push` is
     // the one the session layer answers itself (it needs the connection's
     // device identity), so it lives in `SESSION_OPS`; the two together are what
@@ -659,6 +659,10 @@ fn allowlist_matches_the_protocol_table() {
         "roadmap_accept_order_proposal",
         "roadmap_reject_order_proposal",
         "host_providers",
+        "list_provider_accounts",
+        "set_active_provider_account",
+        "get_provider_limits",
+        "refresh_provider_limits",
         "scan_usage_transcripts",
         "get_settings",
         "set_notify_turn_complete",
