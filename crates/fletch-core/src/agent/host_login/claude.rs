@@ -162,28 +162,36 @@ pub async fn replace_rejected_token(
     .await
 }
 
-/// The engine's flow for the account in `account_dir`, on a blocking task.
+/// The engine's flow for the account in `account_dir`, on a blocking task —
+/// including naming the store, which can ask the Keychain.
 async fn credential(account_dir: Option<&Path>, demand: Demand) -> Result<AccessToken, LoginError> {
-    let login = ClaudeLogin::for_account(account_dir).ok_or(LoginError::SignedOut)?;
-    tokio::task::spawn_blocking(move || HostLogin::new(login).credential(demand))
-        .await
-        .map_err(|e| LoginError::Unavailable(format!("credential store task failed: {e}")))?
-        .map_err(LoginError::from)
+    let account_dir = account_dir.map(Path::to_path_buf);
+    tokio::task::spawn_blocking(move || {
+        let login =
+            ClaudeLogin::for_account(account_dir.as_deref()).ok_or(LoginError::SignedOut)?;
+        HostLogin::new(login)
+            .credential(demand)
+            .map_err(LoginError::from)
+    })
+    .await
+    .map_err(|e| LoginError::Unavailable(format!("credential store task failed: {e}")))?
 }
 
 /// The token a claude agent stamped with `account` launches with. A managed
 /// account without a usable login fails the launch: running it under any
 /// other credential would be running it as someone else. The default account
-/// degrades to no token only when something else can sign the launch in — a
-/// stored setup-token or an auth var in the user's shell. Otherwise it fails
-/// with the reason: every sandbox closes the Keychain and the credential
-/// files to the agent, so a claude launched with nothing would only end
-/// each turn on its own "Not logged in · Please run /login", which the user
-/// can't act on from a chat.
+/// degrades to no token only when something else can sign the launch in — an
+/// auth var in the user's shell, or for a `containerized` launch the stored
+/// setup-token the container chain forwards. Otherwise it fails with the
+/// reason: every sandbox closes the Keychain and the credential files to the
+/// agent, so a claude launched with nothing would only end each turn on its
+/// own "Not logged in · Please run /login", which the user can't act on from
+/// a chat.
 /// `rejected_expires_at_ms` is set when the agent's last token drew a 401.
 pub async fn launch_token(
     account: Option<&str>,
     rejected_expires_at_ms: Option<i64>,
+    containerized: bool,
 ) -> crate::error::Result<Option<AccessToken>> {
     let dir = accounts::existing_account_dir("claude", account)?;
     let token = match rejected_expires_at_ms {
@@ -198,7 +206,8 @@ pub async fn launch_token(
             // they run off the runtime.
             let error = e.clone();
             let refusal = tokio::task::spawn_blocking(move || {
-                let fallback = crate::sandbox::container::auth::fallback_login_present();
+                let fallback =
+                    crate::sandbox::container::auth::fallback_login_present(containerized);
                 default_launch_refusal(&error, fallback, default_store_description)
             })
             .await

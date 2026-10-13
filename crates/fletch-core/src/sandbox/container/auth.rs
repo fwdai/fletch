@@ -144,12 +144,25 @@ fn credentials_config_dir(relocated: Option<PathBuf>, home: Option<&Path>) -> Op
 /// claude keeps under the default name isn't missed. Presence only; nothing
 /// is read.
 pub(crate) fn default_keychain_service() -> String {
-    let relocated = crate::agent::accounts::claude_config_override();
-    let suffixed = claude_keychain_service(relocated.as_deref());
-    let restates_default = relocated.as_deref().is_some_and(|dir| {
-        dirs::home_dir().is_some_and(|home| super::config_dir::config_dir_is_default(dir, &home))
+    default_keychain_service_from(
+        crate::agent::accounts::claude_config_override().as_deref(),
+        dirs::home_dir().as_deref(),
+        |service| crate::keychain::item_present(service, None),
+    )
+}
+
+/// [`default_keychain_service`] over its inputs: the relocated dir, the home
+/// dir, and whether a Keychain item of a given service exists.
+fn default_keychain_service_from(
+    relocated: Option<&Path>,
+    home: Option<&Path>,
+    present: impl Fn(&str) -> bool,
+) -> String {
+    let suffixed = claude_keychain_service(relocated);
+    let restates_default = relocated.is_some_and(|dir| {
+        home.is_some_and(|home| super::config_dir::config_dir_is_default(dir, home))
     });
-    if restates_default && !crate::keychain::item_present(&suffixed, None) {
+    if restates_default && !present(&suffixed) {
         return claude_keychain_service(None);
     }
     suffixed
@@ -165,13 +178,14 @@ const CLOUD_PROVIDER_VARS: [&str; 3] = [
 
 /// Whether a default-account launch that got no host login can still sign
 /// in some other way: an auth var in the app's env or the user's login shell,
-/// the stored setup-token containers use, a cloud provider routing var, or an
-/// `apiKeyHelper` in the user's claude settings. The Keychain and credentials
-/// file are deliberately not counted — the host just failed to use them, and
-/// every sandbox closes them to the agent.
-pub fn fallback_login_present() -> bool {
+/// a cloud provider routing var, an `apiKeyHelper` in the user's claude
+/// settings, or — for a `containerized` launch only, since nothing else
+/// forwards it — the stored setup-token. The Keychain and credentials file
+/// are deliberately not counted: the host just failed to use them, and every
+/// sandbox closes them to the agent.
+pub fn fallback_login_present(containerized: bool) -> bool {
     let (env, _) = chain_inputs();
-    stored_token().is_some()
+    (containerized && stored_token().is_some())
         || !matches!(
             resolve_from(None, None, env.as_ref()),
             ContainerAuth::Unavailable
@@ -705,19 +719,32 @@ mod tests {
         assert_eq!(service, "Claude Code-credentials-b634a9ea");
     }
 
-    /// A shell `CLAUDE_CONFIG_DIR` that only restates the default `~/.claude`
-    /// names the plain item while no suffixed one exists.
+    /// A `CLAUDE_CONFIG_DIR` that only restates the default `~/.claude` (here
+    /// with a trailing slash) names the plain item while no suffixed one
+    /// exists, and the suffixed one once claude has written it. Any other
+    /// dir is suffixed whatever the Keychain holds.
     #[test]
-    fn a_config_dir_restating_the_default_probes_the_plain_item() {
-        let Some(home) = dirs::home_dir() else {
-            return;
-        };
-        let restated = format!("{}/.claude/", home.display());
-        let service = crate::bin_resolve::with_login_shell_env(
-            &[("CLAUDE_CONFIG_DIR", &restated)],
-            default_keychain_service,
+    fn a_config_dir_restating_the_default_probes_the_plain_item_unless_suffixed_exists() {
+        let home = Path::new("/Users/u");
+        let restated = Path::new("/Users/u/.claude/");
+        let suffixed = claude_keychain_service(Some(restated));
+        assert_eq!(
+            default_keychain_service_from(Some(restated), Some(home), |_| false),
+            "Claude Code-credentials"
         );
-        assert_eq!(service, "Claude Code-credentials");
+        assert_eq!(
+            default_keychain_service_from(Some(restated), Some(home), |s| s == suffixed),
+            suffixed
+        );
+        let elsewhere = Path::new("/cfg/eve");
+        assert_eq!(
+            default_keychain_service_from(Some(elsewhere), Some(home), |_| false),
+            "Claude Code-credentials-b634a9ea"
+        );
+        assert_eq!(
+            default_keychain_service_from(None, Some(home), |_| true),
+            "Claude Code-credentials"
+        );
     }
 
     #[test]

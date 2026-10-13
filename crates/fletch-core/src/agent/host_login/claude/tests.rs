@@ -242,25 +242,6 @@ fn the_default_login_is_read_from_a_config_dir_the_login_shell_exports() {
     assert_eq!(store.file, dir.join(".credentials.json"));
 }
 
-/// A shell `CLAUDE_CONFIG_DIR` that only restates `~/.claude` (here with a
-/// trailing slash) names the plain Keychain item when no suffixed one
-/// exists, so a login kept under the default name isn't missed.
-#[test]
-fn a_config_dir_restating_the_default_falls_back_to_the_plain_item() {
-    let Some(home) = dirs::home_dir() else {
-        return;
-    };
-    let dir = format!("{}/.claude/", home.display());
-    let store = crate::bin_resolve::with_login_shell_env(&[("CLAUDE_CONFIG_DIR", &dir)], || {
-        HostStore::for_account(None)
-    })
-    .unwrap();
-    assert_eq!(
-        store.service,
-        crate::sandbox::container::auth::claude_keychain_service(None)
-    );
-}
-
 /// A default-account launch with no host login fails with where the login
 /// was looked for, unless the shell or the stored setup-token can sign it in.
 #[test]
