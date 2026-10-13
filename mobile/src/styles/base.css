@@ -613,6 +613,14 @@ a {
 .row:active {
   background: var(--bg-3);
 }
+/* A row that is there to read, not tap: an option the host would refuse, or an
+   action locked while something runs. */
+.row:disabled {
+  pointer-events: none;
+}
+.row:disabled .lbl {
+  color: var(--fg-2);
+}
 .row + .row::before {
   content: "";
   position: absolute;
@@ -899,6 +907,11 @@ a {
   color: var(--fg-0);
   font-weight: 600;
   margin-bottom: 4px;
+}
+
+/* A picker's word on how a pick went, under its list. */
+.picker-note {
+  margin-top: 12px;
 }
 
 /* Inline message (components/ui/Notice). One neutral surface; the tone lives

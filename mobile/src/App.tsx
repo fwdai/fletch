@@ -10,6 +10,7 @@ import { PairScreen } from "./screens/Pair";
 import { ProjectScreen } from "./screens/Project";
 import { ProvidersScreen } from "./screens/Providers";
 import { SubagentScreen } from "./screens/Subagent";
+import { AccountPickerSheet } from "./sheets/AccountPickerSheet";
 import { AddProjectSheet } from "./sheets/AddProjectSheet";
 import { AgentMoreSheet } from "./sheets/AgentMoreSheet";
 import { HostSheet } from "./sheets/HostSheet";
@@ -99,6 +100,11 @@ export function App() {
             open={isOpen("modelPicker")}
             onClose={closeSheet}
             {...props("modelPicker")}
+          />
+          <AccountPickerSheet
+            open={isOpen("accountPicker")}
+            onClose={closeSheet}
+            {...props("accountPicker")}
           />
           <PrSheet open={isOpen("pr")} onClose={closeSheet} {...props("pr")} />
         </>

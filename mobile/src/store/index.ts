@@ -83,6 +83,7 @@ export type SheetName =
   | "agentMore"
   | "shipMore"
   | "modelPicker"
+  | "accountPicker"
   | "pr";
 
 export interface NavItem {

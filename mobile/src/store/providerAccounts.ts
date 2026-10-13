@@ -9,7 +9,12 @@
 // the host announces the selection (`provider_account_<provider>`) and every
 // limits row (`provider_limits_<provider>_<account>`) that way, so a reading an
 // agent's own session produced lands on the phone without asking again.
+//
+// Also the per-agent switch the agent's More sheet offers: one agent moved onto
+// another account of its provider, an override until the next change of the
+// radio moves every agent again (`switch_agent_account`).
 
+import type { AgentRecord } from "@desktop/api/types/agent";
 import {
   type AccountLimits,
   DEFAULT_ACCOUNT_ID,
@@ -17,6 +22,7 @@ import {
 } from "@desktop/api/types/providers";
 import { type LimitsByProvider, withLimitsChange } from "@desktop/data/providerLimits";
 import type { Api } from "../api";
+import { patchChatIn } from "./chats";
 import type { MobileState } from "./index";
 
 type Set = (partial: Partial<MobileState> | ((s: MobileState) => Partial<MobileState>)) => void;
@@ -47,6 +53,16 @@ export interface ProviderAccountsSlice {
   /** Fold one `settings:changed` in when it is a selection or a limits row;
    *  any other key is ignored. */
   applyProviderSettingsChange(key: string, value: string | null): void;
+  /** Per agent id, a switch the host has not answered yet: the More sheet's
+   *  row reads "Switching…" and takes no second pick until it lands. */
+  switchingAccount: Record<string, boolean>;
+  /** Move one agent onto another account of its provider (an id, or
+   *  `default`) and take the stamp the host hands back. Resolves to the
+   *  restamped record, or null when nothing was asked: a host without the ops,
+   *  or a switch for the agent already in flight. Rejects with the host's
+   *  refusal (mid-turn, a signed-out or current target): the picker that
+   *  asked is where it is shown. */
+  switchAgentAccount(agentId: string, account: string): Promise<AgentRecord | null>;
 }
 
 export interface ProviderAccountsDeps {
@@ -87,6 +103,12 @@ export function withActiveAccount(
   );
 }
 
+/** Whether the host can both list an agent's accounts and move it between
+ *  them: the per-agent switch needs the list to offer anything at all. */
+export function canSwitchAgentAccount(s: Pick<MobileState, "hostSupports">): boolean {
+  return s.hostSupports("switch_agent_account") && s.hostSupports("list_provider_accounts");
+}
+
 export function createProviderAccountsSlice(
   set: Set,
   get: Get,
@@ -97,6 +119,7 @@ export function createProviderAccountsSlice(
   return {
     providerAccounts: {},
     providerLimits: {},
+    switchingAccount: {},
 
     async loadProviderAccounts() {
       if (!get().hostSupports("list_provider_accounts")) return;
@@ -148,6 +171,31 @@ export function createProviderAccountsSlice(
         const next = withLimitsChange(s.providerLimits, key, value);
         return next ? { providerLimits: next } : {};
       });
+    },
+
+    async switchAgentAccount(agentId, account) {
+      if (!canSwitchAgentAccount(get()) || get().switchingAccount[agentId]) return null;
+      const switching = (on: boolean) =>
+        set((s) => ({ switchingAccount: { ...s.switchingAccount, [agentId]: on } }));
+      switching(true);
+      try {
+        const record = await api.switchAgentAccount(agentId, account);
+        // Only the stamp, as on the desktop: the host relaunches the agent, and
+        // an `agent:status` that landed before this answer is newer than the
+        // record's. No optimistic stamp either, so a refusal never leaves the
+        // row naming an account the agent isn't on.
+        const fields = { account: record.account ?? null };
+        set((s) => ({
+          workspace: s.workspace && {
+            ...s.workspace,
+            agents: s.workspace.agents.map((a) => (a.id === agentId ? { ...a, ...fields } : a)),
+          },
+          chats: patchChatIn(s.chats, agentId, fields),
+        }));
+        return record;
+      } finally {
+        switching(false);
+      }
     },
   };
 }

@@ -63,6 +63,9 @@ const agent = (a: Partial<AgentRecord> & Pick<AgentRecord, "id" | "name" | "proj
     sandbox_engine: "sandbox-exec",
     issue_ref: null,
     purpose: null,
+    // Stamped at creation with the provider's active account, as the host
+    // does: claude's is the managed `work` one (`providerAccounts` below).
+    account: "work",
     ...a,
   }) as AgentRecord;
 
@@ -113,6 +116,8 @@ export const workspace: Workspace = {
       name: "caspian",
       project_id: "prj-atlas",
       provider: "codex",
+      // Codex runs on its terminal login, which the host stamps as null.
+      account: null,
       model: "gpt-5.4-codex",
       effort: "medium",
       status: "error",
@@ -648,6 +653,7 @@ export const protocol: HostProtocol = {
     "set_active_provider_account",
     "get_provider_limits",
     "refresh_provider_limits",
+    "switch_agent_account",
   ],
   events: [
     "agent:event",

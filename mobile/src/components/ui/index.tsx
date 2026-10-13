@@ -173,6 +173,8 @@ export interface PickerItem {
   sub?: string | null;
   right?: string | null;
   icon?: ReactNode;
+  /** Shown but not pickable: an option the host would refuse. */
+  disabled?: boolean;
 }
 
 export function PickerSheet({
@@ -184,6 +186,8 @@ export function PickerSheet({
   onChange,
   searchable,
   sectionLabel,
+  notice,
+  closeOnPick = true,
 }: {
   open: boolean;
   onClose: () => void;
@@ -193,6 +197,11 @@ export function PickerSheet({
   onChange: (id: string) => void;
   searchable?: boolean;
   sectionLabel?: string;
+  /** A line under the list: how a pick went, when the host has the last word. */
+  notice?: ReactNode;
+  /** `false` keeps the sheet up after a pick, for a choice the host may still
+   *  refuse; the caller closes it once the pick lands. */
+  closeOnPick?: boolean;
 }) {
   const [query, setQuery] = useState("");
   useEffect(() => {
@@ -234,9 +243,10 @@ export function PickerSheet({
             type="button"
             key={it.id}
             className="row"
+            disabled={it.disabled}
             onClick={() => {
               onChange(it.id);
-              onClose();
+              if (closeOnPick) onClose();
             }}
           >
             {it.icon}
@@ -254,6 +264,7 @@ export function PickerSheet({
         ))}
         {list.length === 0 && <div className="empty">No matches</div>}
       </div>
+      {notice}
     </Sheet>
   );
 }

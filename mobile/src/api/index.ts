@@ -253,6 +253,14 @@ export function createApi(client: RemoteClient) {
      *  as `settings:changed`, so a tap that times out here still lands. */
     refreshProviderLimits: (provider: string, account: string) =>
       call<AccountLimits>("refresh_provider_limits", { provider, account }),
+    /** Move one agent onto another signed-in account of its provider (an id,
+     *  or `default` for the CLI's own login) from its next turn, keeping its
+     *  workspace and conversation. Resolves to the restamped record; the host
+     *  refuses mid-turn and for a signed-out or current target, with its
+     *  reason. A write: the host relaunches the agent whether or not the phone
+     *  is still waiting. Gated on `hostSupports("switch_agent_account")`. */
+    switchAgentAccount: (agentId: string, account: string) =>
+      call<AgentRecord>("switch_agent_account", { agentId, account }),
     /** `path` may be `~`-relative; the host expands it and reports the
      *  absolute `base` it read, which is what the picker navigates from. */
     listDir: (path: string) => read<DirListing>("list_dir", { path }),

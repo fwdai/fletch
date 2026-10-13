@@ -298,8 +298,60 @@ export class MockHost {
     this.state.accounts = this.state.accounts.map((a) =>
       a.provider === provider ? { ...a, active: a.id === target } : a,
     );
+    // The radio moves every agent of the provider, one switched by hand
+    // included: a per-agent switch only holds until the next change here.
+    const stamp = this.activeStamp(provider);
+    this.state.workspace = {
+      ...this.state.workspace,
+      agents: this.state.workspace.agents.map((a) =>
+        a.provider === provider && !a.archive ? { ...a, account: stamp } : a,
+      ),
+    };
     this.event("settings:changed", { key: `provider_account_${provider}`, value: target });
+    this.event("workspace:changed", null);
     return null;
+  }
+
+  /** The stamp a new agent of `provider` gets: its active account, with the
+   *  CLI's own login spelled null, as the host stores it. */
+  private activeStamp(provider: string): string | null {
+    const active = this.state.accounts.find((a) => a.provider === provider && a.active);
+    return active && active.id !== "default" ? active.id : null;
+  }
+
+  /** One agent onto another account of its provider, refused the way the
+   *  engine refuses it (`supervisor/account_switch.rs`) and in its order: the
+   *  target first, its login next, a running turn last. The mock has no
+   *  process to relaunch, so the restamp is the whole switch. */
+  private switchAgentAccount(id: string, requested: string): AgentRecord {
+    const record = this.agent(id);
+    const { provider } = record;
+    if (!this.state.accounts.some((a) => a.provider === provider)) {
+      throw new Error(`\`${provider}\` has no accounts to switch between.`);
+    }
+    const label = (stamp: string | null) => stamp ?? "default";
+    const wanted = requested.trim();
+    const target = wanted && wanted !== "default" ? wanted : null;
+    const current = record.account && record.account !== "default" ? record.account : null;
+    if (target === current) {
+      throw new Error(`This agent already runs under the \`${label(current)}\` account.`);
+    }
+    const account = this.state.accounts.find(
+      (a) => a.provider === provider && a.id === label(target),
+    );
+    if (!account) throw new Error(`No ${provider} account named \`${label(target)}\`.`);
+    if (account.status === "signed_out") {
+      const why = account.detail ? ` (${account.detail})` : "";
+      throw new Error(
+        `The \`${label(target)}\` account isn't signed in${why}. Sign in under Settings → Providers, then switch.`,
+      );
+    }
+    if (record.status === "running" || record.status === "spawning") {
+      throw new Error("Wait for the turn to finish before switching accounts.");
+    }
+    this.patchAgent(id, { account: target });
+    this.event("workspace:changed", null);
+    return this.agent(id);
   }
 
   /** Ask the "vendor": the row's windows nudge up and its reading is now, and
@@ -738,6 +790,7 @@ export class MockHost {
           // A tagged workspace is a purpose chat: it stays out of the snapshot
           // from here on, as it does on a real host.
           purpose: (args.purpose as string) ?? null,
+          account: this.activeStamp(String(args.provider ?? "claude")),
         };
         this.state.workspace = {
           ...this.state.workspace,
@@ -979,6 +1032,8 @@ export class MockHost {
         return this.state.limits[this.accountProvider(String(args.provider ?? ""))] ?? {};
       case "refresh_provider_limits":
         return this.refreshLimits(String(args.provider ?? ""), String(args.account ?? ""));
+      case "switch_agent_account":
+        return this.switchAgentAccount(id, String(args.account ?? ""));
       // There is no APNs behind a browser, so the mock host only has to accept
       // the op — a registration that errored would surface as a real failure.
       case "register_push":
