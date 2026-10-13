@@ -689,6 +689,14 @@ export const useStore = create<MobileState>()((set, get) => ({
         void get().loadChats(projectId).catch(ignore);
       }
     };
+    // The Providers screen, when it is up: its selection and meters follow
+    // `settings:changed`, which a dropped socket or a suspended app misses
+    // like any other event, and the handshake carries none of it.
+    const refreshProviders = () => {
+      if (get().nav.some((n) => n.screen === "providers")) {
+        void get().loadProviderAccounts().catch(ignore);
+      }
+    };
     client.onSnapshot((snapshot) => {
       set({ hostInfo: snapshot.host, protocol: snapshot.protocol ?? null });
       // The client has folded the host's relay into its target; a reconnect
@@ -743,6 +751,7 @@ export const useStore = create<MobileState>()((set, get) => ({
       // and the events are only the deltas.
       void get().loadAutopilot().catch(ignore);
       refreshOpenAgent();
+      refreshProviders();
       // Every handshake — the first pairing and every reconnect — is when the
       // host is told the APNs token again.
       void syncPush().catch(ignore);
@@ -771,6 +780,7 @@ export const useStore = create<MobileState>()((set, get) => ({
       // A `pr:*` event that reached a suspended app may never have been read.
       void get().loadPrStatus();
       refreshOpenAgent();
+      refreshProviders();
       refreshChats();
     };
     if (typeof document !== "undefined") {
@@ -939,6 +949,7 @@ export const useStore = create<MobileState>()((set, get) => ({
       // …and the accounts and their meters are that host's logins.
       providerAccounts: {},
       providerLimits: {},
+      providerAccountsLoad: null,
       sheet: null,
       nav: [homeItem()],
       // The link that paired this host carried a code that is long spent;

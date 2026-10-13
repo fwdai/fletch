@@ -7,7 +7,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { providerLimits } from "../src/remote/mock/fixtures";
 import { ProvidersScreen } from "../src/screens/Providers";
-import { client, useStore } from "../src/store";
+import { api, client, useStore } from "../src/store";
 
 const state = () => useStore.getState();
 
@@ -129,5 +129,71 @@ describe("the host chip's providers screen", () => {
     });
     // The signed-out account was skipped, so it still has no row.
     expect(state().providerLimits.codex.personal).toBeUndefined();
+  });
+});
+
+describe("reading the accounts again", () => {
+  it("keeps the last readings and reports a limits read that failed", async () => {
+    const before = state().providerLimits;
+    vi.spyOn(api, "getProviderLimits").mockRejectedValueOnce(new Error("The Mac did not answer"));
+    await expect(state().loadProviderAccounts()).rejects.toThrow("The Mac did not answer");
+    expect(state().providerAccountsLoad).toEqual({
+      status: "error",
+      error: "The Mac did not answer",
+    });
+    expect(state().providerLimits).toBe(before);
+    await vi.waitFor(() => expect(host.textContent).toContain("The Mac did not answer"));
+    expect(host.querySelectorAll(".pv-acct").length).toBe(4);
+
+    // The next read clears it.
+    await state().loadProviderAccounts();
+    expect(state().providerAccountsLoad).toEqual({ status: "ready" });
+    await vi.waitFor(() => expect(host.textContent).not.toContain("The Mac did not answer"));
+  });
+
+  it("applies a change that overtook the read over the read's answer", async () => {
+    // The host probes each account before it answers; a selection written
+    // elsewhere meanwhile is announced before the (older) list arrives.
+    const list = api.listProviderAccounts;
+    let release: () => void = () => {};
+    vi.spyOn(api, "listProviderAccounts").mockImplementationOnce(async () => {
+      await new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      return list();
+    });
+    // The mock host has claude on the default since the tap above; the event
+    // says the selection has since moved to `work`.
+    expect((await list()).find((a) => a.provider === "claude" && a.active)?.id).toBe("default");
+    const read = state().loadProviderAccounts();
+    expect(state().providerAccountsLoad).toEqual({ status: "loading" });
+    hostEvent("settings:changed", { key: "provider_account_claude", value: "work" });
+    release();
+    await read;
+    // The list's older answer (the default) did not undo the newer word.
+    expect(state().providerAccounts.claude.find((a) => a.id === "work")?.active).toBe(true);
+  });
+
+  it("lands only the newest of two reads in flight", async () => {
+    const list = api.listProviderAccounts;
+    let releaseFirst: () => void = () => {};
+    vi.spyOn(api, "listProviderAccounts").mockImplementationOnce(async () => {
+      await new Promise<void>((resolve) => {
+        releaseFirst = resolve;
+      });
+      // A stale answer: claude on `work`, where the host now has the default.
+      return (await list()).map((a) =>
+        a.provider === "claude" ? { ...a, active: a.id === "work" } : a,
+      );
+    });
+    const first = state().loadProviderAccounts();
+    const second = state().loadProviderAccounts();
+    await second;
+    expect(state().providerAccounts.claude.find((a) => a.id === "default")?.active).toBe(true);
+    releaseFirst();
+    await first;
+    // The first read's stale answer never lands over the newer one's.
+    expect(state().providerAccounts.claude.find((a) => a.id === "default")?.active).toBe(true);
+    expect(state().providerAccountsLoad).toEqual({ status: "ready" });
   });
 });

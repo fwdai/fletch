@@ -5,10 +5,11 @@
 // host and kept current by its `settings:changed` events. The one thing to do
 // here is move the selection; adding and signing in stay on the Mac.
 
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import { Nav } from "../../components/ui";
 import { Notice } from "../../components/ui/Notice";
 import { useTick } from "../../lib/hooks";
+import { ignore } from "../../lib/ignore";
 import { useStore } from "../../store";
 import { ProviderSection } from "./ProviderSection";
 
@@ -19,28 +20,20 @@ export function ProvidersScreen() {
   const hostName = useStore((s) => s.hostInfo?.name);
   const supported = useStore((s) => s.hostSupports("list_provider_accounts"));
   const accounts = useStore((s) => s.providerAccounts);
-  const load = useStore((s) => s.loadProviderAccounts);
+  const load = useStore((s) => s.providerAccountsLoad);
+  const loadAccounts = useStore((s) => s.loadProviderAccounts);
   const pop = useStore((s) => s.pop);
-  const [loaded, setLoaded] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   useTick(CLOCK_MS);
 
   // Read whole on every open: a sign-in done on the Mac between two visits has
-  // no event, and the handshake carries none of this.
+  // no event, and the handshake carries none of this. While the screen is up,
+  // the store reads again on every reconnect and return to the foreground
+  // (store/index), since an event missed off-socket has no other way back.
+  // The outcome lands in `providerAccountsLoad`, so a read that fails here and
+  // succeeds there clears the message.
   useEffect(() => {
-    if (!supported) return;
-    let live = true;
-    load()
-      .then(() => {
-        if (live) setLoaded(true);
-      })
-      .catch((e) => {
-        if (live) setError(e instanceof Error ? e.message : String(e));
-      });
-    return () => {
-      live = false;
-    };
-  }, [load, supported]);
+    if (supported) void loadAccounts().catch(ignore);
+  }, [loadAccounts, supported]);
 
   const providers = Object.keys(accounts);
   const nowMs = Date.now();
@@ -59,8 +52,15 @@ export function ProvidersScreen() {
             This Mac's Fletch is too old to list its accounts.
           </div>
         )}
-        {error && <Notice tone="error">{error}</Notice>}
-        {supported && !loaded && !error && providers.length === 0 && (
+        {load?.status === "error" && (
+          <Notice
+            tone="error"
+            action={{ label: "Retry", onClick: () => void loadAccounts().catch(ignore) }}
+          >
+            {load.error}
+          </Notice>
+        )}
+        {supported && load?.status !== "error" && providers.length === 0 && (
           <div className="empty">Reading accounts from {hostName ?? "the Mac"}…</div>
         )}
         {providers.map((p) => (
