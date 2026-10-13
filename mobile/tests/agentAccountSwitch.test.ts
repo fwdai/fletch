@@ -113,6 +113,31 @@ describe("switchAgentAccount over the mock host", () => {
     expect(state().chats["prj-fletch"].find((c) => c.id === "sakura")?.account).toBe(fresh);
   });
 
+  it("keeps a chat resolved by id while its project's list was out", async () => {
+    // A notification tap resolves a chat the list (read before it existed)
+    // does not hold; the late answer must not drop it.
+    const list = api.listProjectChats;
+    let release: () => void = () => {};
+    vi.spyOn(api, "listProjectChats").mockImplementationOnce(async (projectId, purpose) => {
+      await new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      return list(projectId, purpose);
+    });
+    const sakura = state().chats["prj-fletch"].find((c) => c.id === "sakura");
+    const found = { ...(sakura as NonNullable<typeof sakura>), id: "found-later", name: "found" };
+    vi.spyOn(api, "getAgent").mockResolvedValueOnce(found);
+    const read = state().loadChats("prj-fletch");
+    await state().ensureAgent("found-later");
+    expect(state().chats["prj-fletch"].some((c) => c.id === "found-later")).toBe(true);
+    release();
+    await read;
+    expect(state().chats["prj-fletch"].some((c) => c.id === "found-later")).toBe(true);
+    // Not a fixture of the mock host: the next real list drops it again.
+    await state().loadChats("prj-fletch");
+    expect(state().chats["prj-fletch"].some((c) => c.id === "found-later")).toBe(false);
+  });
+
   it("lands only the newest of two chat lists in flight", async () => {
     const list = api.listProjectChats;
     let releaseFirst: () => void = () => {};
@@ -141,6 +166,26 @@ describe("switchAgentAccount over the mock host", () => {
     await vi.waitFor(() =>
       expect(state().chats["prj-fletch"].find((c) => c.id === "sakura")?.account).toBe("work"),
     );
+  });
+
+  // Last: it deletes the chat on the mock host.
+  it("keeps a chat deleted while its project's list was out deleted", async () => {
+    const list = api.listProjectChats;
+    let release: () => void = () => {};
+    vi.spyOn(api, "listProjectChats").mockImplementationOnce(async (projectId, purpose) => {
+      // Read before the delete: the answer still holds the chat.
+      const rows = await list(projectId, purpose);
+      await new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      return rows;
+    });
+    const read = state().loadChats("prj-fletch");
+    await state().deleteChat("sakura");
+    expect(state().chats["prj-fletch"].some((c) => c.id === "sakura")).toBe(false);
+    release();
+    await read;
+    expect(state().chats["prj-fletch"].some((c) => c.id === "sakura")).toBe(false);
   });
 });
 
