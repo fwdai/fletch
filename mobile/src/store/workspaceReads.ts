@@ -33,13 +33,26 @@ export function beginWorkspaceRead() {
   };
 }
 
-/** Record a patch to one agent's record for every read in flight. */
-export function noteAgentPatch(agentId: string, fields: Partial<AgentRecord>): void {
+/** Record a change to one agent's record for every read in flight: `change`
+ *  is applied to the record *as the answer holds it*, not to a copy of the
+ *  phone's — a change that edits part of a list (one repo's branch) must not
+ *  carry the rest of the phone's possibly older list over the answer's. */
+export function noteAgentChange(
+  agentId: string,
+  change: (record: AgentRecord) => AgentRecord,
+): void {
   for (const replays of inFlight) {
     replays.push((agents) =>
       agents.some((a) => a.id === agentId)
-        ? agents.map((a) => (a.id === agentId ? { ...a, ...fields } : a))
+        ? agents.map((a) => (a.id === agentId ? change(a) : a))
         : agents,
     );
   }
+}
+
+/** Record a patch of whole fields to one agent's record for every read in
+ *  flight. For a field that is a list the answer may know more about, use
+ *  [`noteAgentChange`] and edit the answer's list instead. */
+export function noteAgentPatch(agentId: string, fields: Partial<AgentRecord>): void {
+  noteAgentChange(agentId, (a) => ({ ...a, ...fields }));
 }

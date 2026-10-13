@@ -330,18 +330,27 @@ describe("the More sheet's account row and its picker", () => {
 });
 
 describe("a switch against the workspace reads around it", () => {
-  const hold = () => {
+  type Snapshot = Awaited<ReturnType<typeof api.getWorkspace>>;
+
+  /** Hold the next workspace read at the host: it reads its answer at once
+   *  (so the answer predates whatever follows), then waits to be released.
+   *  `armed` resolves once it holds — the moment to raise what overtakes it. */
+  const hold = (shape: (snapshot: Snapshot) => Snapshot = (s) => s) => {
     const read = api.getWorkspace;
     let release: () => void = () => {};
+    let arm: () => void = () => {};
+    const armed = new Promise<void>((resolve) => {
+      arm = resolve;
+    });
     vi.spyOn(api, "getWorkspace").mockImplementationOnce(async () => {
-      // Read before the switch: the answer carries the old stamp.
       const snapshot = await read();
+      arm();
       await new Promise<void>((resolve) => {
         release = resolve;
       });
-      return snapshot;
+      return shape(snapshot);
     });
-    return () => release();
+    return { armed, release: () => release() };
   };
 
   it("is not undone by an older workspace read that answers after it", async () => {
@@ -350,23 +359,71 @@ describe("a switch against the workspace reads around it", () => {
     await state().refreshWorkspace();
     const was = stampOf("kamakura") ?? null;
     const target = was ? "default" : "work";
-    const release = hold();
+    const held = hold();
     const stale = state().refreshWorkspace();
+    await held.armed;
     await state().switchAgentAccount("kamakura", target);
     const switched = stampOf("kamakura") ?? null;
     expect(switched).not.toBe(was);
-    release();
+    held.release();
     await stale;
     expect(stampOf("kamakura") ?? null).toBe(switched);
   });
 
   it("lands only the newest of two workspace reads in flight", async () => {
-    const release = hold();
+    const held = hold();
     const first = state().refreshWorkspace();
+    await held.armed;
     await state().refreshWorkspace();
     const after = state().workspace;
-    release();
+    held.release();
     await first;
     expect(state().workspace).toBe(after);
+  });
+
+  it("replays a branch change onto the read's own repo list", async () => {
+    // The host added a repo the phone has not seen; a branch event for the
+    // primary repo lands while the read that would show it is out.
+    const held = hold(
+      (snapshot) =>
+        snapshot && {
+          ...snapshot,
+          agents: snapshot.agents.map((a) =>
+            a.id === "kamakura"
+              ? {
+                  ...a,
+                  repos: [...a.repos, { ...a.repos[0], repo_path: "/x/extra", subdir: "extra" }],
+                }
+              : a,
+          ),
+        },
+    );
+    const primary = agentOf(state(), "kamakura")?.repos[0].subdir ?? "";
+    const pending = state().refreshWorkspace();
+    await held.armed;
+    hostEvent("agent:branch", { agent_id: "kamakura", subdir: primary, branch: "feat/overtook" });
+    held.release();
+    await pending;
+    const repos = agentOf(state(), "kamakura")?.repos ?? [];
+    expect(repos.map((r) => r.subdir)).toContain("extra");
+    expect(repos.find((r) => r.subdir === primary)?.branch).toBe("feat/overtook");
+  });
+
+  it("merges a repo added meanwhile by identity", async () => {
+    const held = hold();
+    const base = agentOf(state(), "kamakura")?.repos[0];
+    const added = { ...(base as NonNullable<typeof base>), repo_path: "/x/added", subdir: "added" };
+    const pending = state().refreshWorkspace();
+    await held.armed;
+    hostEvent("agent:repo_added", { agent_id: "kamakura", repo: added });
+    // Delivered twice, as a reconnect can: still one row.
+    hostEvent("agent:repo_added", { agent_id: "kamakura", repo: added });
+    held.release();
+    await pending;
+    const repos = agentOf(state(), "kamakura")?.repos ?? [];
+    expect(repos.filter((r) => r.repo_path === "/x/added")).toHaveLength(1);
+    // Back in step with the host, which never had it.
+    await state().refreshWorkspace();
+    expect(agentOf(state(), "kamakura")?.repos.some((r) => r.subdir === "added")).toBe(false);
   });
 });

@@ -10,6 +10,7 @@ import type {
   AgentGitActionEvent,
   AgentManagedEvent,
   AgentModelEvent,
+  AgentRecord,
   AgentRepoAddedEvent,
   AgentStatusEvent,
   AgentTaskEvent,
@@ -54,7 +55,7 @@ import {
   prTransitionText,
 } from "./shipActivity";
 import { applyLiveEvent } from "./transcript";
-import { noteAgentPatch } from "./workspaceReads";
+import { noteAgentChange, noteAgentPatch } from "./workspaceReads";
 
 type Set = (partial: Partial<MobileState> | ((s: MobileState) => Partial<MobileState>)) => void;
 type Get = () => MobileState;
@@ -70,6 +71,22 @@ const patchAgent = (
   return {
     ...ws,
     agents: ws.agents.map((a) => (a.id === agentId ? { ...a, ...patch } : a)),
+  };
+};
+
+/** One record changed by a function rather than a patch of whole fields —
+ *  for an edit inside a list (one repo's branch, one repo added), which a
+ *  read in flight replays against *its* list rather than the phone's, which
+ *  may lack a repo the host has since added (store/workspaceReads). */
+const updateAgent = (
+  ws: Workspace,
+  agentId: string,
+  change: (record: AgentRecord) => AgentRecord,
+): Workspace => {
+  noteAgentChange(agentId, change);
+  return {
+    ...ws,
+    agents: ws.agents.map((a) => (a.id === agentId ? change(a) : a)),
   };
 };
 
@@ -234,20 +251,26 @@ export function registerRemoteEvents(client: RemoteClient, set: Set, get: Get): 
 
   on<AgentBranchEvent>("agent:branch", (e) => {
     const ws = get().workspace;
-    const agent = ws?.agents.find((a) => a.id === e.agent_id);
-    if (!ws || !agent) return;
+    if (!ws?.agents.some((a) => a.id === e.agent_id)) return;
     set({
-      workspace: patchAgent(ws, e.agent_id, {
-        repos: agent.repos.map((r) => (r.subdir === e.subdir ? { ...r, branch: e.branch } : r)),
-      }),
+      workspace: updateAgent(ws, e.agent_id, (a) => ({
+        ...a,
+        repos: a.repos.map((r) => (r.subdir === e.subdir ? { ...r, branch: e.branch } : r)),
+      })),
     });
   });
 
+  // Merged by repo identity: the read this replays over may already hold it.
   on<AgentRepoAddedEvent>("agent:repo_added", (e) => {
     const ws = get().workspace;
-    const agent = ws?.agents.find((a) => a.id === e.agent_id);
-    if (!ws || !agent) return;
-    set({ workspace: patchAgent(ws, e.agent_id, { repos: [...agent.repos, e.repo] }) });
+    if (!ws?.agents.some((a) => a.id === e.agent_id)) return;
+    set({
+      workspace: updateAgent(ws, e.agent_id, (a) =>
+        a.repos.some((r) => r.repo_path === e.repo.repo_path)
+          ? a
+          : { ...a, repos: [...a.repos, e.repo] },
+      ),
+    });
   });
 
   // Ground truth that a git mutation landed: re-read the checkout's git and PR
