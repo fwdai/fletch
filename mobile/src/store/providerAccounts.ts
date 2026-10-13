@@ -20,7 +20,11 @@ import {
   DEFAULT_ACCOUNT_ID,
   type ProviderAccount,
 } from "@desktop/api/types/providers";
-import { type LimitsByProvider, withLimitsChange } from "@desktop/data/providerLimits";
+import {
+  type LimitsByProvider,
+  limitsKeyParts,
+  withLimitsChange,
+} from "@desktop/data/providerLimits";
 import type { Api } from "../api";
 import { noteChatPatch, patchChatIn } from "./chats";
 import type { MobileState } from "./index";
@@ -132,6 +136,15 @@ export function createProviderAccountsSlice(
   let overtaken: [string, string | null][] = [];
   const loading = () => get().providerAccountsLoad?.status === "loading";
 
+  // The limits refreshes out right now, per row (`provider/account`), and
+  // whether the row was announced while one was. The host stores and
+  // announces the row before it answers, so an answer that an announcement
+  // has overtaken carries nothing newer than what is already on screen — and
+  // applying it could put back a reading older than one an agent's own
+  // session reported meanwhile.
+  const refreshes = new Map<string, { overtaken: boolean }[]>();
+  const rowKey = (provider: string, account: string) => `${provider}/${account}`;
+
   return {
     providerAccounts: {},
     providerLimits: {},
@@ -184,7 +197,18 @@ export function createProviderAccountsSlice(
     },
 
     async refreshProviderLimits(provider, account) {
-      const row = await api.refreshProviderLimits(provider, account);
+      const key = rowKey(provider, account);
+      const flight = { overtaken: false };
+      refreshes.set(key, [...(refreshes.get(key) ?? []), flight]);
+      let row: AccountLimits;
+      try {
+        row = await api.refreshProviderLimits(provider, account);
+      } finally {
+        const rest = (refreshes.get(key) ?? []).filter((f) => f !== flight);
+        if (rest.length > 0) refreshes.set(key, rest);
+        else refreshes.delete(key);
+      }
+      if (flight.overtaken) return;
       set((s) => ({
         providerLimits: {
           ...s.providerLimits,
@@ -208,6 +232,11 @@ export function createProviderAccountsSlice(
             : { providerAccounts: { ...s.providerAccounts, [provider]: next } };
         });
         return;
+      }
+      const parts = limitsKeyParts(key);
+      if (!parts) return;
+      for (const flight of refreshes.get(rowKey(parts.provider, parts.account)) ?? []) {
+        flight.overtaken = true;
       }
       set((s) => {
         const next = withLimitsChange(s.providerLimits, key, value);

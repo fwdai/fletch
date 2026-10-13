@@ -2,6 +2,7 @@
 // client, the real store slice, the real screen. The jsdom URL in
 // vite.config.ts puts this file in mock mode (see `mockEnabled`).
 
+import type { AccountLimits } from "@desktop/api/types/providers";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -195,5 +196,44 @@ describe("reading the accounts again", () => {
     // The first read's stale answer never lands over the newer one's.
     expect(state().providerAccounts.claude.find((a) => a.id === "default")?.active).toBe(true);
     expect(state().providerAccountsLoad).toEqual({ status: "ready" });
+  });
+
+  it("does not let a refresh's answer put back a reading announced meanwhile", async () => {
+    // The host stores and announces the row before it answers the refresh; an
+    // agent's own session can announce a newer row in the same window.
+    let release: (row: AccountLimits) => void = () => {};
+    vi.spyOn(api, "refreshProviderLimits").mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          release = resolve;
+        }),
+    );
+    const refresh = state().refreshProviderLimits("codex", "default");
+    const stale = providerLimits(Date.now()).codex.default;
+    const newer = {
+      ...stale,
+      limits: {
+        ...stale.limits,
+        as_of: (stale.limits?.as_of ?? 0) + 60,
+        five_hour: { percent: 55, resets_at: null },
+      },
+    };
+    hostEvent("settings:changed", {
+      key: "provider_limits_codex_default",
+      value: JSON.stringify(newer),
+    });
+    release(stale);
+    await refresh;
+    expect(state().providerLimits.codex.default.limits?.five_hour?.percent).toBe(55);
+  });
+
+  it("applies a refresh's answer that nothing overtook", async () => {
+    const asked = Math.floor(Date.now() / 1000);
+    await state().refreshProviderLimits("codex", "default");
+    // The mock host announces and then answers the same row: either path
+    // lands the host's reading, taken now, over the one the event above put.
+    const row = state().providerLimits.codex.default.limits;
+    expect(row?.five_hour?.percent).not.toBe(55);
+    expect(row?.as_of).toBeGreaterThanOrEqual(asked);
   });
 });
