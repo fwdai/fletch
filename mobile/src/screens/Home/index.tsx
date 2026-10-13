@@ -96,8 +96,12 @@ export function HomeScreen() {
     Object.values(s.pendingToolUse).reduce((n, m) => n + Object.keys(m).length, 0),
   );
   const openSheet = useStore((s) => s.openSheet);
+  const push = useStore((s) => s.push);
   const hostName = useStore((s) => s.hostInfo?.name);
   const connection = useStore((s) => s.connection);
+  // The host's provider accounts, one tap from the host chip — on a Mac whose
+  // Fletch can list them. An older one shows the chip alone, as before.
+  const hasProviders = useStore((s) => s.hostSupports("list_provider_accounts"));
   // Planning chats are listed by their own op; a Mac without it shows nothing
   // new (docs/remote-protocol.md, "Compatibility").
   const canPlan = useStore((s) => s.hostSupports("list_project_chats"));
@@ -123,10 +127,22 @@ export function HomeScreen() {
     <>
       <div className="home-head">
         <Wordmark />
-        <button type="button" className="host" onClick={() => openSheet("host")}>
-          <span className={`dot ${connected ? "running" : settling ? "waiting" : "error"}`} />
-          {hostName ?? "Host"}
-        </button>
+        <div className={`host-pair${hasProviders ? "" : " alone"}`}>
+          <button type="button" className="host" onClick={() => openSheet("host")}>
+            <span className={`dot ${connected ? "running" : settling ? "waiting" : "error"}`} />
+            {hostName ?? "Host"}
+          </button>
+          {hasProviders && (
+            <button
+              type="button"
+              className="host-cog"
+              aria-label="Providers and accounts"
+              onClick={() => push("providers")}
+            >
+              <Icon name="settings" size={15} strokeWidth={1.9} />
+            </button>
+          )}
+        </div>
       </div>
       {showList && <ConnectionBanner />}
       {showList && <AutoArchivedNotice />}

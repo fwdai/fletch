@@ -61,6 +61,33 @@
   width: 7px;
   height: 7px;
 }
+/* The host chip and the providers button as one control: the chip keeps its
+   look on its own (`alone`, an older host), and gains a right-hand cog on a
+   host that lists its accounts. */
+.host-pair {
+  display: inline-flex;
+  align-items: stretch;
+  flex-shrink: 0;
+}
+.host-pair:not(.alone) .host {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+  border-right: 0;
+}
+.host-cog {
+  width: 34px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border-radius: 0 10px 10px 0;
+  background: var(--bg-1);
+  border: 1px solid var(--bd-soft);
+  color: var(--fg-2);
+  transition: background 0.15s;
+}
+.host-cog:active {
+  background: var(--bg-2);
+}
 .home-body {
   padding: 6px 16px 120px;
 }
@@ -314,6 +341,141 @@
 }
 .proj-tabs {
   padding: 0 16px 12px;
+}
+
+/* Providers: the host's accounts per provider, with each account's limits
+   under its row (screens/Providers). */
+.pv-body {
+  padding: 6px 16px 120px;
+}
+.pv-lead {
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--fg-2);
+  margin: 4px 4px 18px;
+}
+.pv-provider {
+  margin-bottom: 22px;
+}
+.pv-provider-head {
+  text-transform: none;
+  letter-spacing: 0;
+}
+.pv-provider-name {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--fg-0);
+}
+.pv-acct + .pv-acct {
+  border-top: 1px solid var(--bd-soft);
+}
+.pv-acct-main[disabled] {
+  pointer-events: none;
+}
+/* The active account is disabled only because there is nothing to tap, not
+   because it is unavailable: its name keeps the full tone a disabled row
+   otherwise dims to. */
+.pv-acct.on .pv-acct-main .lbl {
+  color: var(--fg-0);
+}
+.pv-acct-main .sub {
+  white-space: normal;
+}
+.pv-radio {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 1.5px solid var(--bd);
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  color: var(--accent-ink);
+}
+.pv-radio.on {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.pv-badge {
+  font-size: 11px;
+  font-weight: 500;
+  padding: 3px 7px;
+  border-radius: 6px;
+  background: var(--bg-3);
+  color: var(--fg-2);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.pv-badge.ok {
+  background: color-mix(in oklch, var(--success), transparent 86%);
+  color: var(--success);
+}
+.pv-badge.warn {
+  background: color-mix(in oklch, var(--warn), transparent 84%);
+  color: var(--warn);
+}
+.pv-limits,
+.pv-limits-empty {
+  padding: 0 14px 14px 48px;
+}
+.pv-limits-empty {
+  font-size: 12.5px;
+  color: var(--fg-3);
+  margin: 0;
+}
+.pv-limits-meters {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.pv-limit-top {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  color: var(--fg-2);
+  margin-bottom: 5px;
+}
+.pv-limit-pct {
+  font-family: var(--font-mono);
+  color: var(--fg-1);
+}
+.pv-bar {
+  height: 5px;
+  border-radius: 3px;
+  background: var(--bg-3);
+  overflow: hidden;
+}
+.pv-bar-fill {
+  height: 100%;
+  border-radius: 3px;
+  background: var(--accent);
+  transition: width 0.3s;
+}
+.pv-limit.warn .pv-bar-fill {
+  background: var(--warn);
+}
+.pv-limit.full .pv-bar-fill {
+  background: var(--danger);
+}
+.pv-limit.full .pv-limit-pct {
+  color: var(--danger);
+}
+.pv-limit-reset {
+  font-size: 11.5px;
+  color: var(--fg-3);
+  margin-top: 4px;
+}
+.pv-limits-meta {
+  font-size: 11.5px;
+  color: var(--fg-3);
+  margin-top: 10px;
+  line-height: 1.45;
+}
+.pv-limits-hint {
+  display: block;
+  color: var(--warn);
+}
+.pv-acct-error {
+  margin: 0 14px 12px 48px;
 }
 
 /* Host sheet */

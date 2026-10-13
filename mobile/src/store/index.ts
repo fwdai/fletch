@@ -50,6 +50,7 @@ import { registerRemoteEvents } from "./events";
 import { replayLiveTurn, runningTurnStart } from "./liveTurn";
 import { clearHost, loadDestParent, loadSettings, saveDestParent, saveSettings } from "./persist";
 import { createProposalsSlice, type ProposalsSlice } from "./proposals";
+import { createProviderAccountsSlice, type ProviderAccountsSlice } from "./providerAccounts";
 import { forgetPush, pushTab, startPush, syncPush } from "./push";
 import {
   appendActivity,
@@ -60,12 +61,21 @@ import {
   type ShipActivityMap,
 } from "./shipActivity";
 import { type LoadedHistory, type LogLoad, pastHistory, renderHistory } from "./transcript";
+import { beginWorkspaceRead } from "./workspaceReads";
 
 export const client = createClient();
 export const api = createApi(client);
 
 export type ThemeMode = "system" | "light" | "dark";
-export type ScreenName = "home" | "project" | "agent" | "subagent" | "code" | "file" | "diff";
+export type ScreenName =
+  | "home"
+  | "project"
+  | "agent"
+  | "subagent"
+  | "code"
+  | "file"
+  | "diff"
+  | "providers";
 export type SheetName =
   | "host"
   | "newAgent"
@@ -74,6 +84,7 @@ export type SheetName =
   | "agentMore"
   | "shipMore"
   | "modelPicker"
+  | "accountPicker"
   | "pr";
 
 export interface NavItem {
@@ -92,7 +103,7 @@ export interface SheetState {
   open: boolean;
 }
 
-export interface MobileState extends ChatsSlice, ProposalsSlice {
+export interface MobileState extends ChatsSlice, ProposalsSlice, ProviderAccountsSlice {
   ready: boolean;
   connection: ConnectionState;
   connectionError: string | null;
@@ -680,6 +691,14 @@ export const useStore = create<MobileState>()((set, get) => ({
         void get().loadChats(projectId).catch(ignore);
       }
     };
+    // The Providers screen, when it is up: its selection and meters follow
+    // `settings:changed`, which a dropped socket or a suspended app misses
+    // like any other event, and the handshake carries none of it.
+    const refreshProviders = () => {
+      if (get().nav.some((n) => n.screen === "providers")) {
+        void get().loadProviderAccounts().catch(ignore);
+      }
+    };
     client.onSnapshot((snapshot) => {
       set({ hostInfo: snapshot.host, protocol: snapshot.protocol ?? null });
       // The client has folded the host's relay into its target; a reconnect
@@ -734,6 +753,7 @@ export const useStore = create<MobileState>()((set, get) => ({
       // and the events are only the deltas.
       void get().loadAutopilot().catch(ignore);
       refreshOpenAgent();
+      refreshProviders();
       // Every handshake — the first pairing and every reconnect — is when the
       // host is told the APNs token again.
       void syncPush().catch(ignore);
@@ -762,6 +782,7 @@ export const useStore = create<MobileState>()((set, get) => ({
       // A `pr:*` event that reached a suspended app may never have been read.
       void get().loadPrStatus();
       refreshOpenAgent();
+      refreshProviders();
       refreshChats();
     };
     if (typeof document !== "undefined") {
@@ -927,6 +948,10 @@ export const useStore = create<MobileState>()((set, get) => ({
       // to the boards those chats propose onto.
       chats: {},
       proposals: {},
+      // …and the accounts and their meters are that host's logins.
+      providerAccounts: {},
+      providerLimits: {},
+      providerAccountsLoad: null,
       sheet: null,
       nav: [homeItem()],
       // The link that paired this host carried a code that is long spent;
@@ -1006,15 +1031,22 @@ export const useStore = create<MobileState>()((set, get) => ({
   },
 
   async refreshWorkspace() {
+    // Only the newest read lands, with the patches made meanwhile replayed
+    // over its answer (store/workspaceReads).
+    const read = beginWorkspaceRead();
     try {
       const workspace = await api.getWorkspace();
-      if (workspace) {
-        set((s) => ({ workspace, sending: reconcileSending(s.sending, workspace.agents) }));
+      if (workspace && read.current()) {
+        const agents = read.apply(workspace.agents);
+        const next = agents === workspace.agents ? workspace : { ...workspace, agents };
+        set((s) => ({ workspace: next, sending: reconcileSending(s.sending, next.agents) }));
       }
       return true;
     } catch {
       // Best effort; the next event or resync recovers.
       return false;
+    } finally {
+      read.finish();
     }
   },
 
@@ -1578,6 +1610,8 @@ export const useStore = create<MobileState>()((set, get) => ({
   }),
 
   ...createProposalsSlice(set, get, { api, guard: (fn) => guard(set, fn) }),
+
+  ...createProviderAccountsSlice(set, get, { api }),
 }));
 
 export type { RawEvent };

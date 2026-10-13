@@ -10,6 +10,7 @@ import type {
   AgentGitActionEvent,
   AgentManagedEvent,
   AgentModelEvent,
+  AgentRecord,
   AgentRepoAddedEvent,
   AgentStatusEvent,
   AgentTaskEvent,
@@ -35,6 +36,7 @@ import type {
   TurnSentEvent,
   TurnStartedEvent,
 } from "@desktop/api/types/session";
+import type { SettingsChangedEvent } from "@desktop/api/types/settings";
 import type { VerificationReportEvent } from "@desktop/api/types/verify";
 import { mirrorSentTurn } from "@desktop/helpers/mirrorTurn";
 import { dischargeSending } from "@desktop/helpers/sending";
@@ -43,7 +45,7 @@ import { getAdapter, type RawEvent } from "../adapters";
 import { ignore } from "../lib/ignore";
 import type { RemoteClient } from "../remote";
 import { dropTasks, foldTaskEvent } from "./backgroundTasks";
-import { patchChatIn } from "./chats";
+import { noteChatPatch, patchChatIn } from "./chats";
 import { agentOf, isAgentOpen, type MobileState } from "./index";
 import { isReplayed } from "./liveTurn";
 import {
@@ -53,18 +55,40 @@ import {
   prTransitionText,
 } from "./shipActivity";
 import { applyLiveEvent } from "./transcript";
+import { noteAgentChange, noteAgentPatch } from "./workspaceReads";
 
 type Set = (partial: Partial<MobileState> | ((s: MobileState) => Partial<MobileState>)) => void;
 type Get = () => MobileState;
 
+/** One record patched in the snapshot — and noted for any workspace read out
+ *  right now, which the event outranks (store/workspaceReads). */
 const patchAgent = (
   ws: Workspace,
   agentId: string,
   patch: Partial<Workspace["agents"][number]>,
-): Workspace => ({
-  ...ws,
-  agents: ws.agents.map((a) => (a.id === agentId ? { ...a, ...patch } : a)),
-});
+): Workspace => {
+  noteAgentPatch(agentId, patch);
+  return {
+    ...ws,
+    agents: ws.agents.map((a) => (a.id === agentId ? { ...a, ...patch } : a)),
+  };
+};
+
+/** One record changed by a function rather than a patch of whole fields —
+ *  for an edit inside a list (one repo's branch, one repo added), which a
+ *  read in flight replays against *its* list rather than the phone's, which
+ *  may lack a repo the host has since added (store/workspaceReads). */
+const updateAgent = (
+  ws: Workspace,
+  agentId: string,
+  change: (record: AgentRecord) => AgentRecord,
+): Workspace => {
+  noteAgentChange(agentId, change);
+  return {
+    ...ws,
+    agents: ws.agents.map((a) => (a.id === agentId ? change(a) : a)),
+  };
+};
 
 /** A held `can_use_tool` prompt: control plane, not transcript. Record
  *  tool_use id → request id so the approval card can answer it, and never feed
@@ -143,6 +167,8 @@ export function registerRemoteEvents(client: RemoteClient, set: Set, get: Get): 
   });
 
   on<AgentStatusEvent>("agent:status", (e) => {
+    // Noted for any chat list out right now, which this status outranks.
+    noteChatPatch(e.agent_id, { status: e.status, last_error: e.last_error ?? null });
     set((s) => {
       // Read before either registry changes: the discharge rule below needs
       // the status the agent is leaving.
@@ -225,20 +251,26 @@ export function registerRemoteEvents(client: RemoteClient, set: Set, get: Get): 
 
   on<AgentBranchEvent>("agent:branch", (e) => {
     const ws = get().workspace;
-    const agent = ws?.agents.find((a) => a.id === e.agent_id);
-    if (!ws || !agent) return;
+    if (!ws?.agents.some((a) => a.id === e.agent_id)) return;
     set({
-      workspace: patchAgent(ws, e.agent_id, {
-        repos: agent.repos.map((r) => (r.subdir === e.subdir ? { ...r, branch: e.branch } : r)),
-      }),
+      workspace: updateAgent(ws, e.agent_id, (a) => ({
+        ...a,
+        repos: a.repos.map((r) => (r.subdir === e.subdir ? { ...r, branch: e.branch } : r)),
+      })),
     });
   });
 
+  // Merged by repo identity: the read this replays over may already hold it.
   on<AgentRepoAddedEvent>("agent:repo_added", (e) => {
     const ws = get().workspace;
-    const agent = ws?.agents.find((a) => a.id === e.agent_id);
-    if (!ws || !agent) return;
-    set({ workspace: patchAgent(ws, e.agent_id, { repos: [...agent.repos, e.repo] }) });
+    if (!ws?.agents.some((a) => a.id === e.agent_id)) return;
+    set({
+      workspace: updateAgent(ws, e.agent_id, (a) =>
+        a.repos.some((r) => r.repo_path === e.repo.repo_path)
+          ? a
+          : { ...a, repos: [...a.repos, e.repo] },
+      ),
+    });
   });
 
   // Ground truth that a git mutation landed: re-read the checkout's git and PR
@@ -330,8 +362,23 @@ export function registerRemoteEvents(client: RemoteClient, set: Set, get: Get): 
 
   // Archive/restore reshapes `repos` and `archive`, which agent:status doesn't
   // cover — reload the snapshot.
+  // A host-owned setting was written, from whichever window or device. The
+  // phone follows two families: which account each provider's agents run
+  // under, and every limits reading the host stores — a meter moves when an
+  // agent's own session reports a window, with no tap here. Every other key is
+  // the slice's to ignore.
+  on<SettingsChangedEvent>("settings:changed", (e) => {
+    get().applyProviderSettingsChange(e.key, e.value);
+  });
+
   on<null>("workspace:changed", () => {
     void get().refreshWorkspace();
+    // The planning chats are records too, held back from the snapshot and
+    // listed on their own: a change that restamps every record of a provider
+    // (the account radio moving) reaches them only through their own list.
+    for (const projectId of Object.keys(get().chats)) {
+      void get().loadChats(projectId).catch(ignore);
+    }
   });
 
   // The host's idle sweep archived something; `workspace:changed` already took

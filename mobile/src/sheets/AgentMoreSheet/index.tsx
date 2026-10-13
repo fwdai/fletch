@@ -1,13 +1,15 @@
 import { Icon } from "@desktop/components/Icon";
 import { agentTitle } from "@desktop/util/agentTitle";
 import { useEffect, useState } from "react";
-import { Sheet } from "../components/ui";
-import { isBusy } from "../lib/agents";
-import { ignore } from "../lib/ignore";
-import { agentOf, useStore } from "../store";
+import { Sheet } from "../../components/ui";
+import { isBusy } from "../../lib/agents";
+import { ignore } from "../../lib/ignore";
+import { agentOf, useStore } from "../../store";
+import { AccountRow } from "./AccountRow";
 
-/** Stop, and then archive or delete. "Open on host", "Run script" and copying
- *  the branch are desktop-side actions with no remote op in the v1 allowlist.
+/** Stop, the provider account the agent runs under, and then archive or
+ *  delete. "Open on host", "Run script" and copying the branch are
+ *  desktop-side actions with no remote op in the v1 allowlist.
  *
  *  A planning chat is deleted rather than archived: an archived purpose chat is
  *  in neither the snapshot nor `list_project_chats`, so it would be gone with no
@@ -76,6 +78,7 @@ export function AgentMoreSheet({
             </div>
           </button>
         )}
+        <AccountRow agent={agent} open={open} />
         {purpose ? (
           canDiscard && (
             <button

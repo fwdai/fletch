@@ -11,7 +11,12 @@ import {
 import type { CheckoutFile, CheckoutFileContents, DirEntry } from "@desktop/api/types/checkout";
 import type { AutopilotCycle, AutopilotLogEntry, GitState } from "@desktop/api/types/git";
 import type { PrChecks, PrState } from "@desktop/api/types/pr";
-import type { GhRepoSummary, GhStatus } from "@desktop/api/types/providers";
+import type {
+  AccountLimits,
+  GhRepoSummary,
+  GhStatus,
+  ProviderAccount,
+} from "@desktop/api/types/providers";
 import type { RoadmapItem } from "@desktop/api/types/roadmap";
 import type { SessionRecord, UserTurn } from "@desktop/api/types/session";
 import type { AgentModels } from "@desktop/data/modelCatalog/types";
@@ -58,6 +63,9 @@ const agent = (a: Partial<AgentRecord> & Pick<AgentRecord, "id" | "name" | "proj
     sandbox_engine: "sandbox-exec",
     issue_ref: null,
     purpose: null,
+    // Stamped at creation with the provider's active account, as the host
+    // does: claude's is the managed `work` one (`providerAccounts` below).
+    account: "work",
     ...a,
   }) as AgentRecord;
 
@@ -108,6 +116,8 @@ export const workspace: Workspace = {
       name: "caspian",
       project_id: "prj-atlas",
       provider: "codex",
+      // Codex runs on its terminal login, which the host stamps as null.
+      account: null,
       model: "gpt-5.4-codex",
       effort: "medium",
       status: "error",
@@ -639,6 +649,11 @@ export const protocol: HostProtocol = {
     "autopilot_state",
     "autopilot_set",
     "autopilot_log",
+    "list_provider_accounts",
+    "set_active_provider_account",
+    "get_provider_limits",
+    "refresh_provider_limits",
+    "switch_agent_account",
   ],
   events: [
     "agent:event",
@@ -666,6 +681,7 @@ export const protocol: HostProtocol = {
     "autopilot:switches",
     "roadmap:item",
     "roadmap:item-deleted",
+    "settings:changed",
   ],
   features: [],
 };
@@ -767,6 +783,89 @@ export const filesystem: Record<string, DirEntry[]> = {
 };
 
 export const ghStatus: GhStatus = { installed: true, authenticated: true, login: "alexchaplinsky" };
+
+/** The fake Mac's provider accounts, as `list_provider_accounts` lists them:
+ *  the default first per provider. Claude runs on a managed work account;
+ *  codex has a second account that was never signed in, so the screen shows a
+ *  card the host would refuse to select. */
+export const providerAccounts: ProviderAccount[] = [
+  {
+    provider: "claude",
+    id: "default",
+    managed: false,
+    active: false,
+    status: "signed_in",
+    detail: null,
+  },
+  {
+    provider: "claude",
+    id: "work",
+    managed: true,
+    active: true,
+    status: "signed_in",
+    detail: null,
+  },
+  {
+    provider: "codex",
+    id: "default",
+    managed: false,
+    active: true,
+    status: "signed_in",
+    detail: null,
+  },
+  {
+    provider: "codex",
+    id: "personal",
+    managed: true,
+    active: false,
+    status: "signed_out",
+    detail: "no auth.json in the account directory",
+  },
+];
+
+/** Each account's stored limits as of `now` (epoch ms): the work account
+ *  deep into its five-hour window, the terminal login barely used, codex read
+ *  off its app-server, and the signed-out account with nothing. */
+export const providerLimits = (now: number): Record<string, Record<string, AccountLimits>> => {
+  const sec = Math.floor(now / 1000);
+  const hour = 3600;
+  return {
+    claude: {
+      default: {
+        limits: {
+          five_hour: { percent: 12, resets_at: sec + 4 * hour },
+          seven_day: { percent: 31, resets_at: sec + 3 * 24 * hour },
+          as_of: sec - 40 * 60,
+          source: "oauth_usage",
+        },
+        refresh: { status: "ok", at: sec - 40 * 60, next_allowed_at: null, failures: 0 },
+      },
+      work: {
+        limits: {
+          five_hour: { percent: 88, resets_at: sec + 70 * 60 },
+          seven_day: { percent: 64, resets_at: sec + 5 * 24 * hour },
+          as_of: sec - 3 * 60,
+          source: "stream",
+          models: [
+            { model: "Fable", percent: 41, resets_at: sec + 5 * 24 * hour, as_of: sec - 2 * hour },
+          ],
+        },
+        refresh: { status: "ok", at: sec - 2 * hour, next_allowed_at: null, failures: 0 },
+      },
+    },
+    codex: {
+      default: {
+        limits: {
+          five_hour: { percent: 23, resets_at: sec + 2 * hour },
+          seven_day: { percent: 9, resets_at: sec + 6 * 24 * hour },
+          as_of: sec - 15 * 60,
+          source: "app_server",
+        },
+        refresh: { status: "ok", at: sec - 15 * 60, next_allowed_at: null, failures: 0 },
+      },
+    },
+  };
+};
 
 export const ghRepos: GhRepoSummary[] = [
   {

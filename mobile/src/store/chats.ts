@@ -9,6 +9,7 @@
 import { type AgentRecord, ROADMAP_PM_PURPOSE } from "@desktop/api/types/agent";
 import { reconcileSending } from "@desktop/helpers/sending";
 import { PROJECT_MANAGER_NAME, PROJECT_MANAGER_PRESET } from "@desktop/starterPack/presets";
+import { newestWins } from "@desktop/util/newestWins";
 import type { Api } from "../api";
 import { primaryPath, projectById } from "../lib/projects";
 import { dropTasks } from "./backgroundTasks";
@@ -104,6 +105,65 @@ async function projectManager(api: Api) {
   };
 }
 
+/** Per project, the order of its chat lists: a handshake, a workspace change
+ *  and a return to the foreground can each start one, and only the newest
+ *  lands (util/newestWins). */
+const chatLists = new Map<string, ReturnType<typeof newestWins>>();
+const claimChatList = (projectId: string) => {
+  let order = chatLists.get(projectId);
+  if (!order) {
+    order = newestWins();
+    chatLists.set(projectId, order);
+  }
+  return order.claim();
+};
+
+/** One change made to the registry while a list was out, as a replay over the
+ *  list's answer for `projectId`: a patch to a row the answer holds, a record
+ *  added that the answer lacks, or a record removed that the answer still
+ *  holds. Scoped to the project it is replayed for: a change to another
+ *  project's chats is older than that project's own list may be by now. */
+type Replay = (projectId: string, list: AgentRecord[]) => AgentRecord[];
+
+/** The lists out right now, each with every change made to the registry since
+ *  it was sent. A list is answered off the host's records as they were when it
+ *  was read, and an `agent:status`, a chat resolved by id or a delete can reach
+ *  the phone first; they are replayed over the answer, as `approvals_list`
+ *  replays its events, so a chat that finished while its list was out stays
+ *  finished, one found meanwhile stays, and one deleted stays gone. */
+const listsInFlight = new Set<Replay[]>();
+
+function noteChatChange(replay: Replay): void {
+  for (const replays of listsInFlight) replays.push(replay);
+}
+
+/** Record a live patch to a chat for every list in flight. Called wherever a
+ *  chat record is patched from an event — the slice's `patchChat`, and the
+ *  status fold that patches inline for atomicity. */
+export function noteChatPatch(agentId: string, fields: Partial<AgentRecord>): void {
+  noteChatChange((_, list) =>
+    list.some((c) => c.id === agentId)
+      ? list.map((c) => (c.id === agentId ? { ...c, ...fields } : c))
+      : list,
+  );
+}
+
+/** Record a chat put into the registry outside a list (a spawn, a record
+ *  resolved by id), so a list read before it existed does not drop it. */
+export function noteChatAdded(record: AgentRecord): void {
+  noteChatChange((projectId, list) =>
+    projectId === record.project_id && !list.some((c) => c.id === record.id)
+      ? [record, ...list]
+      : list,
+  );
+}
+
+/** Record a chat taken out of the registry, so a list read before the delete
+ *  does not bring it back. */
+export function noteChatRemoved(agentId: string): void {
+  noteChatChange((_, list) => list.filter((c) => c.id !== agentId));
+}
+
 export function createChatsSlice(set: Set, get: Get, deps: ChatsDeps): ChatsSlice {
   const { api, guard, firstTurn } = deps;
   return {
@@ -112,18 +172,26 @@ export function createChatsSlice(set: Set, get: Get, deps: ChatsDeps): ChatsSlic
     async loadChats(projectId) {
       // Nothing to ask an older host, and asking would answer "unknown op".
       if (!get().hostSupports("list_project_chats")) return;
+      const claim = claimChatList(projectId);
+      const overtaken: Replay[] = [];
+      listsInFlight.add(overtaken);
       try {
         const rows = await api.listProjectChats(projectId, ROADMAP_PM_PURPOSE);
+        if (!claim.current()) return;
         // A fresh read of these records settles their `sending` bridge the way
         // a workspace snapshot settles a sidebar agent's (see helpers/sending):
         // chats are absent from that snapshot, so this is their only authority.
+        let list = rows;
+        for (const replay of overtaken) list = replay(projectId, list);
         set((s) => ({
-          chats: { ...s.chats, [projectId]: rows },
-          sending: reconcileSending(s.sending, rows),
+          chats: { ...s.chats, [projectId]: list },
+          sending: reconcileSending(s.sending, list),
         }));
       } catch {
         // Advisory, like the other list reads: the section stays as it was and
         // the next mount or reconnect tries again.
+      } finally {
+        listsInFlight.delete(overtaken);
       }
     },
 
@@ -156,6 +224,7 @@ export function createChatsSlice(set: Set, get: Get, deps: ChatsDeps): ChatsSlic
         );
         // Registered before the screen opens: `agentOf` resolves from here, and
         // the agent screen mounts on the very next frame.
+        noteChatAdded(record);
         set((s) => ({ chats: upsert(s.chats, record) }));
         await firstTurn({
           record,
@@ -177,8 +246,12 @@ export function createChatsSlice(set: Set, get: Get, deps: ChatsDeps): ChatsSlic
         // it is this registry's to hold. An untagged record is a sidebar agent
         // that was spawned after the snapshot was read — the workspace is what
         // has to catch up there, not this list.
-        if (record.purpose) set((s) => ({ chats: upsert(s.chats, record) }));
-        else await get().refreshWorkspace();
+        if (record.purpose) {
+          noteChatAdded(record);
+          set((s) => ({ chats: upsert(s.chats, record) }));
+        } else {
+          await get().refreshWorkspace();
+        }
       } catch {
         // Advisory: the screen stays as it was rather than the open failing,
         // and the next reconnect or open tries again.
@@ -193,6 +266,7 @@ export function createChatsSlice(set: Set, get: Get, deps: ChatsDeps): ChatsSlic
         // still-mounted chat would refetch the history of an agent that is
         // being deleted under it.
         if (chat) {
+          noteChatRemoved(agentId);
           set((s) => ({
             chats: {
               ...s.chats,
@@ -217,6 +291,7 @@ export function createChatsSlice(set: Set, get: Get, deps: ChatsDeps): ChatsSlic
     },
 
     patchChat(agentId, fields) {
+      noteChatPatch(agentId, fields);
       set((s) => {
         const chats = patchChatIn(s.chats, agentId, fields);
         return chats === s.chats ? {} : { chats };
