@@ -22,7 +22,7 @@ import {
 } from "@desktop/api/types/providers";
 import { type LimitsByProvider, withLimitsChange } from "@desktop/data/providerLimits";
 import type { Api } from "../api";
-import { patchChatIn } from "./chats";
+import { noteChatPatch, patchChatIn } from "./chats";
 import type { MobileState } from "./index";
 import type { LogLoad } from "./transcript";
 
@@ -227,6 +227,7 @@ export function createProviderAccountsSlice(
         // record's. No optimistic stamp either, so a refusal never leaves the
         // row naming an account the agent isn't on.
         const fields = { account: record.account ?? null };
+        noteChatPatch(agentId, fields);
         set((s) => ({
           workspace: s.workspace && {
             ...s.workspace,

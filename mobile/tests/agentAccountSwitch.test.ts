@@ -9,9 +9,15 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { AccountPickerSheet } from "../src/sheets/AccountPickerSheet";
 import { AgentMoreSheet } from "../src/sheets/AgentMoreSheet";
-import { agentOf, api, useStore } from "../src/store";
+import { agentOf, api, client, useStore } from "../src/store";
 
 const state = () => useStore.getState();
+
+/** Deliver a host event frame to the store's listeners, as the socket would. */
+const hostEvent = (event: string, payload: unknown) =>
+  (
+    client as unknown as { dispatchEvent(frame: { event: string; payload: unknown }): void }
+  ).dispatchEvent({ event, payload });
 const stampOf = (id: string) => agentOf(state(), id)?.account;
 
 beforeAll(async () => {
@@ -64,6 +70,44 @@ describe("switchAgentAccount over the mock host", () => {
     await state().switchAgentAccount("sakura", "default");
 
     expect(state().chats["prj-fletch"].find((c) => c.id === "sakura")?.account).toBeNull();
+  });
+
+  it("keeps a chat that finished while its list was out finished", async () => {
+    // The host answers the list off records read before the chat's turn
+    // ended, and the status that ends it reaches the phone first.
+    const list = api.listProjectChats;
+    let release: () => void = () => {};
+    vi.spyOn(api, "listProjectChats").mockImplementationOnce(async (projectId, purpose) => {
+      await new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      return (await list(projectId, purpose)).map((c) =>
+        c.id === "sakura" ? { ...c, status: "running" as const } : c,
+      );
+    });
+    const read = state().loadChats("prj-fletch");
+    hostEvent("agent:status", { agent_id: "sakura", status: "idle" });
+    release();
+    await read;
+    expect(state().chats["prj-fletch"].find((c) => c.id === "sakura")?.status).toBe("idle");
+  });
+
+  it("lands only the newest of two chat lists in flight", async () => {
+    const list = api.listProjectChats;
+    let releaseFirst: () => void = () => {};
+    vi.spyOn(api, "listProjectChats").mockImplementationOnce(async (projectId, purpose) => {
+      await new Promise<void>((resolve) => {
+        releaseFirst = resolve;
+      });
+      return (await list(projectId, purpose)).map((c) =>
+        c.id === "sakura" ? { ...c, status: "running" as const } : c,
+      );
+    });
+    const first = state().loadChats("prj-fletch");
+    await state().loadChats("prj-fletch");
+    releaseFirst();
+    await first;
+    expect(state().chats["prj-fletch"].find((c) => c.id === "sakura")?.status).toBe("idle");
   });
 
   it("holds only until the provider's selection next moves every agent", async () => {

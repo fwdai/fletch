@@ -9,6 +9,7 @@
 import { type AgentRecord, ROADMAP_PM_PURPOSE } from "@desktop/api/types/agent";
 import { reconcileSending } from "@desktop/helpers/sending";
 import { PROJECT_MANAGER_NAME, PROJECT_MANAGER_PRESET } from "@desktop/starterPack/presets";
+import { newestWins } from "@desktop/util/newestWins";
 import type { Api } from "../api";
 import { primaryPath, projectById } from "../lib/projects";
 import { dropTasks } from "./backgroundTasks";
@@ -104,6 +105,33 @@ async function projectManager(api: Api) {
   };
 }
 
+/** Per project, the order of its chat lists: a handshake, a workspace change
+ *  and a return to the foreground can each start one, and only the newest
+ *  lands (util/newestWins). */
+const chatLists = new Map<string, ReturnType<typeof newestWins>>();
+const claimChatList = (projectId: string) => {
+  let order = chatLists.get(projectId);
+  if (!order) {
+    order = newestWins();
+    chatLists.set(projectId, order);
+  }
+  return order.claim();
+};
+
+/** The lists out right now, each with every patch a live event made to a chat
+ *  since it was sent. A list is answered off the host's records as they were
+ *  when it was read, and an `agent:status` can reach the phone first; the
+ *  patches are replayed over the answer, as `approvals_list` replays its
+ *  events, so a chat that finished while its list was out stays finished. */
+const listsInFlight = new Set<[string, Partial<AgentRecord>][]>();
+
+/** Record a live patch to a chat for every list in flight. Called wherever a
+ *  chat record is patched from an event — the slice's `patchChat`, and the
+ *  status fold that patches inline for atomicity. */
+export function noteChatPatch(agentId: string, fields: Partial<AgentRecord>): void {
+  for (const patches of listsInFlight) patches.push([agentId, fields]);
+}
+
 export function createChatsSlice(set: Set, get: Get, deps: ChatsDeps): ChatsSlice {
   const { api, guard, firstTurn } = deps;
   return {
@@ -112,18 +140,25 @@ export function createChatsSlice(set: Set, get: Get, deps: ChatsDeps): ChatsSlic
     async loadChats(projectId) {
       // Nothing to ask an older host, and asking would answer "unknown op".
       if (!get().hostSupports("list_project_chats")) return;
+      const claim = claimChatList(projectId);
+      const overtaken: [string, Partial<AgentRecord>][] = [];
+      listsInFlight.add(overtaken);
       try {
         const rows = await api.listProjectChats(projectId, ROADMAP_PM_PURPOSE);
+        if (!claim.current()) return;
         // A fresh read of these records settles their `sending` bridge the way
         // a workspace snapshot settles a sidebar agent's (see helpers/sending):
         // chats are absent from that snapshot, so this is their only authority.
-        set((s) => ({
-          chats: { ...s.chats, [projectId]: rows },
-          sending: reconcileSending(s.sending, rows),
-        }));
+        set((s) => {
+          let chats = { ...s.chats, [projectId]: rows };
+          for (const [agentId, fields] of overtaken) chats = patchChatIn(chats, agentId, fields);
+          return { chats, sending: reconcileSending(s.sending, chats[projectId]) };
+        });
       } catch {
         // Advisory, like the other list reads: the section stays as it was and
         // the next mount or reconnect tries again.
+      } finally {
+        listsInFlight.delete(overtaken);
       }
     },
 
@@ -217,6 +252,7 @@ export function createChatsSlice(set: Set, get: Get, deps: ChatsDeps): ChatsSlic
     },
 
     patchChat(agentId, fields) {
+      noteChatPatch(agentId, fields);
       set((s) => {
         const chats = patchChatIn(s.chats, agentId, fields);
         return chats === s.chats ? {} : { chats };

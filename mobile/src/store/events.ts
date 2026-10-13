@@ -44,7 +44,7 @@ import { getAdapter, type RawEvent } from "../adapters";
 import { ignore } from "../lib/ignore";
 import type { RemoteClient } from "../remote";
 import { dropTasks, foldTaskEvent } from "./backgroundTasks";
-import { patchChatIn } from "./chats";
+import { noteChatPatch, patchChatIn } from "./chats";
 import { agentOf, isAgentOpen, type MobileState } from "./index";
 import { isReplayed } from "./liveTurn";
 import {
@@ -144,6 +144,8 @@ export function registerRemoteEvents(client: RemoteClient, set: Set, get: Get): 
   });
 
   on<AgentStatusEvent>("agent:status", (e) => {
+    // Noted for any chat list out right now, which this status outranks.
+    noteChatPatch(e.agent_id, { status: e.status, last_error: e.last_error ?? null });
     set((s) => {
       // Read before either registry changes: the discharge rule below needs
       // the status the agent is leaving.
