@@ -31,7 +31,6 @@ export function AccountPickerSheet({
   const limits = useStore((s) => (agent ? s.providerLimits[agent.provider] : undefined));
   const load = useStore((s) => s.loadProviderAccounts);
   const switchAccount = useStore((s) => s.switchAgentAccount);
-  const closeSheetIf = useStore((s) => s.closeSheetIf);
   const [error, setError] = useState<string | null>(null);
   const enabled = view !== null;
 
@@ -70,11 +69,22 @@ export function AccountPickerSheet({
   const pick = (id: string) => {
     if (id === view.current) return onClose();
     setError(null);
-    switchAccount(agent.id, id)
+    const forAgent = agent.id;
+    // The host's answer can land after this sheet was dismissed and opened
+    // again for another agent — the one component serves every picker — so
+    // only the picker the pick was made from closes or shows the refusal.
+    // The store finishes the switch either way.
+    const stillAsking = () => {
+      const sheet = useStore.getState().sheet;
+      return !!sheet?.open && sheet.name === "accountPicker" && sheet.props.agentId === forAgent;
+    };
+    switchAccount(forAgent, id)
       .then((record) => {
-        if (record) closeSheetIf("accountPicker");
+        if (record && stillAsking()) onClose();
       })
-      .catch((e) => setError(errorText(e)));
+      .catch((e) => {
+        if (stillAsking()) setError(errorText(e));
+      });
   };
 
   return (

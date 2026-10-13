@@ -9,7 +9,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { AccountPickerSheet } from "../src/sheets/AccountPickerSheet";
 import { AgentMoreSheet } from "../src/sheets/AgentMoreSheet";
-import { agentOf, useStore } from "../src/store";
+import { agentOf, api, useStore } from "../src/store";
 
 const state = () => useStore.getState();
 const stampOf = (id: string) => agentOf(state(), id)?.account;
@@ -153,5 +153,56 @@ describe("the More sheet's account row and its picker", () => {
 
     await vi.waitFor(() => expect(stampOf("kamakura")).toBeNull());
     expect(state().sheet?.open).toBe(false);
+  });
+
+  it("leaves another agent's picker alone when an earlier pick's answer lands", async () => {
+    // The host answers slowly; the user dismisses the picker and opens
+    // another agent's before it does.
+    const rows = () => [...host.querySelectorAll<HTMLButtonElement>(".sheet.stacked .row")];
+    const openPickerFor = async (agentId: string) => {
+      await act(async () => state().openSheet("accountPicker", { agentId }));
+      await render(agentId);
+      await vi.waitFor(() => expect(rows().length).toBe(2));
+    };
+    let settle: { resolve: (r: unknown) => void; reject: (e: Error) => void } = {
+      resolve: () => {},
+      reject: () => {},
+    };
+    const held = () =>
+      new Promise((resolve, reject) => {
+        settle = { resolve, reject };
+      });
+
+    // A success for kamakura must not close arabia's picker.
+    vi.spyOn(api, "switchAgentAccount").mockImplementationOnce(() => held() as never);
+    await openPickerFor("kamakura");
+    await act(async () => rows()[1].click());
+    await act(async () => state().closeSheet());
+    await openPickerFor("arabia");
+    await act(async () => {
+      settle.resolve({ ...agentOf(state(), "kamakura"), account: "work" });
+    });
+    expect(state().sheet).toMatchObject({
+      name: "accountPicker",
+      open: true,
+      props: { agentId: "arabia" },
+    });
+    expect(stampOf("kamakura")).toBe("work");
+
+    // A refusal for arabia must not show in kamakura's picker — but the
+    // picker it was asked from does show it.
+    vi.spyOn(api, "switchAgentAccount").mockImplementationOnce(() => held() as never);
+    await act(async () => rows()[0].click());
+    await act(async () => state().closeSheet());
+    await openPickerFor("kamakura");
+    await act(async () => {
+      settle.reject(new Error("Wait for the turn to finish before switching accounts."));
+    });
+    expect(host.querySelector(".notice-bar.error")).toBeNull();
+    expect(state().sheet).toMatchObject({
+      name: "accountPicker",
+      open: true,
+      props: { agentId: "kamakura" },
+    });
   });
 });
