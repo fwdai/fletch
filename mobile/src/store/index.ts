@@ -50,6 +50,7 @@ import { registerRemoteEvents } from "./events";
 import { replayLiveTurn, runningTurnStart } from "./liveTurn";
 import { clearHost, loadDestParent, loadSettings, saveDestParent, saveSettings } from "./persist";
 import { createProposalsSlice, type ProposalsSlice } from "./proposals";
+import { createProviderAccountsSlice, type ProviderAccountsSlice } from "./providerAccounts";
 import { forgetPush, pushTab, startPush, syncPush } from "./push";
 import {
   appendActivity,
@@ -65,7 +66,15 @@ export const client = createClient();
 export const api = createApi(client);
 
 export type ThemeMode = "system" | "light" | "dark";
-export type ScreenName = "home" | "project" | "agent" | "subagent" | "code" | "file" | "diff";
+export type ScreenName =
+  | "home"
+  | "project"
+  | "agent"
+  | "subagent"
+  | "code"
+  | "file"
+  | "diff"
+  | "providers";
 export type SheetName =
   | "host"
   | "newAgent"
@@ -92,7 +101,7 @@ export interface SheetState {
   open: boolean;
 }
 
-export interface MobileState extends ChatsSlice, ProposalsSlice {
+export interface MobileState extends ChatsSlice, ProposalsSlice, ProviderAccountsSlice {
   ready: boolean;
   connection: ConnectionState;
   connectionError: string | null;
@@ -927,6 +936,9 @@ export const useStore = create<MobileState>()((set, get) => ({
       // to the boards those chats propose onto.
       chats: {},
       proposals: {},
+      // …and the accounts and their meters are that host's logins.
+      providerAccounts: {},
+      providerLimits: {},
       sheet: null,
       nav: [homeItem()],
       // The link that paired this host carried a code that is long spent;
@@ -1578,6 +1590,8 @@ export const useStore = create<MobileState>()((set, get) => ({
   }),
 
   ...createProposalsSlice(set, get, { api, guard: (fn) => guard(set, fn) }),
+
+  ...createProviderAccountsSlice(set, get, { api }),
 }));
 
 export type { RawEvent };

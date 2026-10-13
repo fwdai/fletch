@@ -35,6 +35,7 @@ import type {
   TurnSentEvent,
   TurnStartedEvent,
 } from "@desktop/api/types/session";
+import type { SettingsChangedEvent } from "@desktop/api/types/settings";
 import type { VerificationReportEvent } from "@desktop/api/types/verify";
 import { mirrorSentTurn } from "@desktop/helpers/mirrorTurn";
 import { dischargeSending } from "@desktop/helpers/sending";
@@ -330,6 +331,15 @@ export function registerRemoteEvents(client: RemoteClient, set: Set, get: Get): 
 
   // Archive/restore reshapes `repos` and `archive`, which agent:status doesn't
   // cover — reload the snapshot.
+  // A host-owned setting was written, from whichever window or device. The
+  // phone follows two families: which account each provider's agents run
+  // under, and every limits reading the host stores — a meter moves when an
+  // agent's own session reports a window, with no tap here. Every other key is
+  // the slice's to ignore.
+  on<SettingsChangedEvent>("settings:changed", (e) => {
+    get().applyProviderSettingsChange(e.key, e.value);
+  });
+
   on<null>("workspace:changed", () => {
     void get().refreshWorkspace();
   });

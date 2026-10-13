@@ -244,12 +244,21 @@ pub const OPS: &[&str] = &[
     "roadmap_accept_order_proposal",
     "roadmap_reject_order_proposal",
     // Which provider CLIs this host has, and which of them are signed in.
-    // Read-only and the only provider op on the wire: a client spawns a
-    // provider *here*, so it needs to know before it offers one. Installing a
-    // provider and signing one in stay the operator's, on the host itself —
-    // `install_agent`, `open_provider_login` and the two desktop probes behind
-    // Settings › Providers are never exposed (docs/remote-protocol.md).
+    // Read-only: a client spawns a provider *here*, so it needs to know
+    // before it offers one. Installing a provider and signing one in stay the
+    // operator's, on the host itself — `install_agent`, `open_provider_login`
+    // and the two desktop probes behind Settings › Providers are never exposed
+    // (docs/remote-protocol.md).
     "host_providers",
+    // The host's provider accounts (protocol doc, "Provider accounts"): the
+    // list with each login's state, which one every agent runs under, and
+    // each account's plan limits — the same rows Settings › Providers shows.
+    // Creating, signing in, signing out and deleting an account stay off the
+    // wire with the login PTY they need.
+    "list_provider_accounts",
+    "set_active_provider_account",
+    "get_provider_limits",
+    "refresh_provider_limits",
     // Token usage read off this host's own Claude Code / Codex transcripts.
     // Read-only, and per-host by nature: the transcripts live on the machine
     // that ran the sessions, so a client aggregating several hosts asks each
@@ -538,6 +547,15 @@ const OP_SCOPES: &[(&str, Scope)] = &[
     ("roadmap_reject_order_proposal", Scope::Roadmap),
     // Read-only, and every device needs it before it offers to spawn anything.
     ("host_providers", Scope::Observe),
+    // The accounts and their limits are reads with no path or credential in
+    // the answer; a refresh asks the vendor and stores the reading, which is
+    // what the desktop's Refresh button does, and changes nothing else.
+    ("list_provider_accounts", Scope::Observe),
+    ("get_provider_limits", Scope::Observe),
+    ("refresh_provider_limits", Scope::Observe),
+    // Which account the host's agents run under is host configuration, like
+    // the binary overrides above it: it relaunches every agent of the provider.
+    ("set_active_provider_account", Scope::Projects),
     // Counts off transcripts already on disk; writes nothing.
     ("scan_usage_transcripts", Scope::Observe),
     // Both reads answer an allowlist with no secret on it.
@@ -1651,6 +1669,45 @@ impl Dispatch for SupervisorDispatch {
                 // is not offered, and to quote the command that would fix it.
                 "host_providers" => ok(crate::agent::host_providers().await),
 
+                // The host's provider accounts, each probed for its login.
+                // Ids and states only: the directory behind a managed account
+                // never crosses, as with `host_providers`.
+                "list_provider_accounts" => {
+                    res(crate::commands::list_provider_accounts_impl(ctx).await)
+                }
+
+                // The desktop radio: every agent of the provider moves onto
+                // the account from its next turn (`follow_active_account`).
+                // The engine refuses a signed-out target with its reason.
+                "set_active_provider_account" => {
+                    let a: ActiveAccountArgs = parse(args)?;
+                    res(crate::commands::set_active_provider_account_impl(
+                        sup,
+                        ctx,
+                        &a.provider,
+                        a.id.as_deref(),
+                    )
+                    .await)
+                }
+
+                // The stored limits rows of one provider's accounts; nothing
+                // is asked of the vendor.
+                "get_provider_limits" => {
+                    let a: ProviderArgs = parse(args)?;
+                    res(crate::commands::get_provider_limits_impl(ctx, &a.provider))
+                }
+
+                // Ask the vendor for one account's limits now. The engine's
+                // refresh floor and 429 back-off hand back the stored row
+                // unchanged, so a tap that comes too soon costs nothing.
+                "refresh_provider_limits" => {
+                    let a: ProviderAccountArgs = parse(args)?;
+                    res(
+                        crate::commands::refresh_provider_limits_impl(ctx, &a.provider, &a.account)
+                            .await,
+                    )
+                }
+
                 // This host's own token usage, read straight off its Claude
                 // Code and Codex transcripts. A blocking file walk measured in
                 // seconds, so it goes to a blocking worker rather than parking
@@ -2094,6 +2151,77 @@ mod provider_tests {
             home.is_empty() || !json.contains(&home),
             "the host's home directory reached the wire: {json}"
         );
+    }
+
+    /// The accounts list is the desktop's own rows: one per account of each
+    /// account-capable provider, the default first, with a login state and
+    /// never a directory. The limits read answers a map keyed by account id
+    /// for the same providers and refuses one without accounts.
+    #[tokio::test]
+    async fn provider_accounts_list_and_limits_answer_without_paths() {
+        let (ctx, _sink, _dir) = test_ctx();
+        let sup = Arc::new(Supervisor::new(Arc::new(WorkspaceManager::new(
+            ctx.db.clone(),
+        ))));
+        let dispatch = SupervisorDispatch::new(ctx, sup);
+
+        let reply = dispatch
+            .dispatch("list_provider_accounts", json!({}))
+            .await
+            .expect("a read-only probe is always answerable");
+        let rows = reply.as_array().expect("an array of accounts");
+        for provider in crate::agent::accounts::ACCOUNT_PROVIDERS {
+            let first = rows
+                .iter()
+                .find(|row| row["provider"] == provider)
+                .unwrap_or_else(|| panic!("{provider} lists no account at all"));
+            assert_eq!(first["id"], "default", "the default account comes first");
+            assert_eq!(first["managed"], false);
+        }
+        for row in rows {
+            let mut keys: Vec<&str> = row
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect();
+            keys.sort_unstable();
+            assert_eq!(
+                keys,
+                ["active", "detail", "id", "managed", "provider", "status"],
+                "the wire shape changed"
+            );
+            assert!(matches!(
+                row["status"].as_str(),
+                Some("signed_in" | "signed_out" | "unknown")
+            ));
+        }
+        let home = dirs::home_dir().unwrap_or_default();
+        let home = home.to_string_lossy().to_string();
+        assert!(
+            home.is_empty() || !reply.to_string().contains(&home),
+            "the host's home directory reached the wire"
+        );
+
+        let limits = dispatch
+            .dispatch("get_provider_limits", json!({ "provider": "claude" }))
+            .await
+            .expect("a read of stored rows is always answerable");
+        assert!(limits.is_object(), "a map keyed by account id");
+
+        let refused = dispatch
+            .dispatch("get_provider_limits", json!({ "provider": "cursor" }))
+            .await
+            .expect_err("a provider without accounts has no limits rows");
+        assert!(refused.contains("cursor"), "{refused}");
+        let refused = dispatch
+            .dispatch(
+                "set_active_provider_account",
+                json!({ "provider": "cursor", "id": null }),
+            )
+            .await
+            .expect_err("a provider without accounts has nothing to select");
+        assert!(refused.contains("cursor"), "{refused}");
     }
 }
 
@@ -2830,6 +2958,25 @@ struct EffortArgs {
 #[serde(rename_all = "camelCase")]
 struct AccountArgs {
     agent_id: String,
+    account: String,
+}
+
+#[derive(Deserialize)]
+struct ProviderArgs {
+    provider: String,
+}
+
+/// `id` is a managed account id, or `null` / `"default"` for the CLI's own
+/// login — the desktop command's own shape.
+#[derive(Deserialize)]
+struct ActiveAccountArgs {
+    provider: String,
+    id: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ProviderAccountArgs {
+    provider: String,
     account: String,
 }
 

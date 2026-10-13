@@ -18,7 +18,12 @@ import type {
   ShortStats,
 } from "@desktop/api/types/git";
 import type { AgentPrStatus, PrChecks, PrComments, PrLive, PrState } from "@desktop/api/types/pr";
-import type { GhRepoSummary, GhStatus } from "@desktop/api/types/providers";
+import type {
+  AccountLimits,
+  GhRepoSummary,
+  GhStatus,
+  ProviderAccount,
+} from "@desktop/api/types/providers";
 import type {
   ItemStatus,
   RoadmapItem,
@@ -229,6 +234,25 @@ export function createApi(client: RemoteClient) {
      *  what can be spawned. Gated on `hostSupports("host_providers")`; a host
      *  without it says nothing and the picker offers everything, as before. */
     hostProviders: () => read<HostProvider[]>("host_providers"),
+    /** The host's provider accounts (docs/remote-protocol.md, "Provider
+     *  accounts"): every sign-in of claude and codex, the default first, with
+     *  `active` on the one every agent of the provider runs under. Gated on
+     *  `hostSupports("list_provider_accounts")`. */
+    listProviderAccounts: () => read<ProviderAccount[]>("list_provider_accounts"),
+    /** The desktop radio: every agent of `provider` moves onto `id` (a managed
+     *  account, or `null` for the CLI's own login) from its next turn. The host
+     *  refuses a signed-out target with its reason. */
+    setActiveProviderAccount: (provider: string, id: string | null) =>
+      call<null>("set_active_provider_account", { provider, id }),
+    /** Each account's last known plan limits, keyed by account id — the rows
+     *  the host stored; nothing is asked of the vendor. */
+    getProviderLimits: (provider: string) =>
+      read<Record<string, AccountLimits>>("get_provider_limits", { provider }),
+    /** Ask the vendor for one account's limits now. A write: the host stores
+     *  the reading whether or not the phone is still waiting, and announces it
+     *  as `settings:changed`, so a tap that times out here still lands. */
+    refreshProviderLimits: (provider: string, account: string) =>
+      call<AccountLimits>("refresh_provider_limits", { provider, account }),
     /** `path` may be `~`-relative; the host expands it and reports the
      *  absolute `base` it read, which is what the picker navigates from. */
     listDir: (path: string) => read<DirListing>("list_dir", { path }),

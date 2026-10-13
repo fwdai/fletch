@@ -8,6 +8,7 @@ import { FileScreen } from "./screens/File";
 import { HomeScreen } from "./screens/Home";
 import { PairScreen } from "./screens/Pair";
 import { ProjectScreen } from "./screens/Project";
+import { ProvidersScreen } from "./screens/Providers";
 import { SubagentScreen } from "./screens/Subagent";
 import { AddProjectSheet } from "./sheets/AddProjectSheet";
 import { AgentMoreSheet } from "./sheets/AgentMoreSheet";
@@ -41,6 +42,8 @@ function Screen({ item }: { item: NavItem }) {
       return <FileScreen agentId={item.props.agentId} path={item.props.path} />;
     case "diff":
       return <DiffScreen agentId={item.props.agentId} path={item.props.path} />;
+    case "providers":
+      return <ProvidersScreen />;
     default:
       return null;
   }

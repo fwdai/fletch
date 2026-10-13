@@ -669,9 +669,9 @@ The six scopes, and what each one covers:
 
 | scope | covers |
 |---|---|
-| `observe` | every read: the workspace, transcripts, diffs, PR state, the workflow and roadmap boards, `gh_status`, `list_dir`, `dictation_status`, `host_providers`, `scan_usage_transcripts`, `approvals_list`, `get_settings`, `get_project_settings` |
+| `observe` | every read: the workspace, transcripts, diffs, PR state, the workflow and roadmap boards, `gh_status`, `list_dir`, `dictation_status`, `host_providers`, `list_provider_accounts`, `get_provider_limits`, `refresh_provider_limits` (a vendor read the host stores, as its own Refresh button does), `scan_usage_transcripts`, `approvals_list`, `get_settings`, `get_project_settings` |
 | `agents` | spawn, message, answer a tool-use prompt, stop/resume/archive/restore/discard, set model and effort, switch the provider account (`switch_agent_account`), dictation capture, attachment upload, and the working-tree moves that never leave the machine (`commit_agent`, `pull_agent`, `rebase_agent`, `stash_agent`, `discard_agent_changes`, `abort_merge_agent`, `clear_checkout_config`), and choosing which of a checkout's PRs is focused (`set_focused_pr`) |
-| `projects` | add, clone, create, rename, relocate, label, attach/detach and delete projects and their repos; every project setting (`set_project_setting`); and the host's own configuration — alerts, the idle sweep, code indexing, the sandbox engine and its launch knobs, provider binary overrides |
+| `projects` | add, clone, create, rename, relocate, label, attach/detach and delete projects and their repos; every project setting (`set_project_setting`); and the host's own configuration — alerts, the idle sweep, code indexing, the sandbox engine and its launch knobs, provider binary overrides, and which provider account the host's agents run under (`set_active_provider_account`) |
 | `workflows` | launch, cancel, resume, retry, approve, reject and delete runs; save, delete and import stored definitions |
 | `roadmap` | create, edit, rank, hand off, hold, release, reject, reopen and delete items; accept or reject the PM's proposals |
 | `publish` | the ops that leave this machine under the user's name: `push_agent`, `create_pr`, `merge_pr`, `roadmap_merge_item_pr`, `answer_publish_approval`, `delegate_git` — a delegation's own pushes and PRs are approved by the host without a prompt (see "Delegations"), so starting one is as much a publish as answering the prompt would be — and `autopilot_set`, for the same reason: an enrolled checkout's pushes skip the prompt (see "Autopilot"), so switching autopilot on is a standing publish grant; plus the five settings that decide how a publish happens: `set_publish_confirmation`, `set_publish_approval_wait`, `set_branch_prefix`, `set_draft_prs`, `set_agent_attribution_removed` |
@@ -886,6 +886,10 @@ allowlist; any op not listed returns `{ ok: false, error: "unknown op" }`.
 | `roadmap_accept_order_proposal` | `{ projectId }` — ranks the whole sequence in one transaction; rejects when the orderable set changed since the ask | `null` |
 | `roadmap_reject_order_proposal` | `{ projectId }` | `null` |
 | `host_providers` | `{}` — which provider CLIs this host has and which of them are signed in, so a client never offers to spawn one the host cannot run (see "Which providers a host can run"). Read-only; no desktop command of this name | `{ id, label, installed, version: string \| null, auth: "signed_in" \| "signed_out" \| "unknown" \| null, loginCommand: string \| null }[]` |
+| `list_provider_accounts` | `{}` — every account of every account-capable provider on this host (claude, codex), the default first, each probed for its login, with `active` on the one every agent of the provider runs under (see "Provider accounts"). Ids and states only; the directory behind a managed account never crosses | `{ provider, id, managed, active, status: "signed_in" \| "signed_out" \| "unknown", detail: string \| null }[]` |
+| `set_active_provider_account` | `{ provider, id: string \| null }` — the desktop radio: `id` a managed account or `null` / `"default"` for the CLI's own login. Every agent of the provider moves onto it from its next turn (a live process relaunches on its session); refused for a signed-out target, a provider without accounts, or an id with no account behind it, with the reason as the error | `null` |
+| `get_provider_limits` | `{ provider }` — each account's last known plan limits, keyed by account id, as the host stored them; nothing is asked of the vendor. Refused for a provider without accounts | `Record<accountId, AccountLimits>` |
+| `refresh_provider_limits` | `{ provider, account }` — ask the vendor for one account's limits now (`account` an id or `"default"`) and answer the row as stored. Inside the host's refresh floor or a 429 back-off the stored row comes back unchanged. Signed out, stale and rate limited are states on the row, not errors | `AccountLimits` — `{ limits: { five_hour, seven_day, as_of, source, models? } \| null, refresh: { status, at, next_allowed_at, failures } \| null }` |
 | `scan_usage_transcripts` | `{ sinceMs, untilMs }` — token counts read off *this host's* Claude Code and Codex transcripts over the half-open window, bucketed by local hour, provider and model, plus a span per contributing session. Uncached and slow (seconds over 90 days): ask for the widest window once and slice shorter ranges out of the answer. Read-only; the hours are the host's local hours and the ids are unique within the host only, so a client aggregating several hosts must tag each answer with the host it came from | `UsageScan` — `{ buckets: { hourStartMs, provider, model, tokens: { input, output, cacheRead, cacheWrite }, requests }[], sessions: { provider, id, firstMs, lastMs }[], scannedFiles, filesRead, bytesRead, sinceMs, untilMs }` |
 | `get_settings` | `{}` — the host-owned global settings, and only those (see "Settings"): absent keys are unset and read as their default. No secret is ever in the answer | `Record<key, string>` |
 | `set_notify_turn_complete` | `{ enabled: boolean }` — `notify_turn_complete`: a finished turn alerts at all (chime, banner, phone push) | `null` |
@@ -928,9 +932,12 @@ resolved binary paths), and the `run_*` family (`run_start`, `run_stop`,
 `run_verification` — this machine's own scripts). Autopilot's `fix-checks`
 verdict needs no `run_verification` on the wire: the ladder runs on the host,
 which calls its own verifier and reports it as `verify:report`. `host_providers` above is the
-read-only half of the provider surface and the only part of it on the wire:
-state and the command that would change it, never the change itself and never a
-path. Adding an op means adding a row here and a match arm in the dispatcher.
+read-only half of the provider surface: state and the command that would change
+it, never the change itself and never a path. The four `*_provider_accounts` /
+`*_provider_limits` ops are the one write beside it — choosing among logins the
+host already holds — and the reads around it (see "Provider accounts"); adding,
+signing in, signing out and deleting an account need the login PTY and stay on
+the host. Adding an op means adding a row here and a match arm in the dispatcher.
 
 Withheld on policy, not scope: `delete_branch_agent`. Every other Git-panel
 action acts inside the agent's own checkout, which is the reach `commit_agent`
@@ -982,6 +989,35 @@ client offers every provider as before.
 Settings › Providers stays this Mac's, whatever environment is active: it
 installs binaries and opens login PTYs here, and those ops are never on the
 wire. With a remote host active it says so in one line.
+
+### Provider accounts
+
+A host can hold several sign-ins for claude and codex (`docs/provider-accounts.md`),
+and one of them per provider is the account every agent of that provider runs
+under — the radio in Settings › Providers. A paired client sees the same list
+and can move the radio:
+
+- `list_provider_accounts` is the desktop's rows: per account, its id (`default`
+  is the CLI's own login), whether Fletch manages its directory, its login
+  state, and `active`. Ids and states only — the directory under
+  `~/.fletch/accounts` is the host's and never crosses.
+- `set_active_provider_account` is the desktop setter, with everything it does
+  there: the host refuses a signed-out target, writes `provider_account_<provider>`
+  (announced as `settings:changed`, readable through `get_settings`), and moves
+  every live agent of the provider onto the account from its next turn, relaunching
+  a live process on its own session. An agent switched by hand onto another
+  account (`switch_agent_account`) is left where it is until the next change.
+- `get_provider_limits` and `refresh_provider_limits` are the meters under each
+  row: the five-hour and weekly windows the host last read for the account, with
+  when each resets and where the reading came from, and the Refresh that asks
+  the vendor again. The host stores every reading as
+  `provider_limits_<provider>_<account>` and announces it as `settings:changed`,
+  so a client holding the rows follows a reading an agent's own session produced
+  without asking again.
+
+Adding an account, signing one in or out and deleting one need the login PTY,
+which is the host's alone; a client that wants a new account says so and points
+at the Mac.
 
 Adding a project from the phone reuses the desktop's commands unchanged. Two
 flows: **open an existing folder** on the Mac (`list_dir` to browse, then

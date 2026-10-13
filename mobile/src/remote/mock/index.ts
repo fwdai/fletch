@@ -12,6 +12,7 @@ import type {
   AutopilotSnapshot,
 } from "@desktop/api/types/git";
 import type { PrChecks } from "@desktop/api/types/pr";
+import type { AccountLimits, ProviderAccount } from "@desktop/api/types/providers";
 import type { RoadmapItem, RoadmapItemPatch } from "@desktop/api/types/roadmap";
 import type { SessionPage, SessionRecord, UserTurn } from "@desktop/api/types/session";
 import { appActionMessage, DELEGATION_KINDS, type DelegationKind } from "@desktop/delegation";
@@ -78,6 +79,10 @@ interface MockState {
     cycles: Record<string, AutopilotCycle>;
     log: AutopilotLogEntry[];
   };
+  /** The host's provider accounts and, per provider and account id, the limits
+   *  row it stored — what the Providers screen reads and moves. */
+  accounts: ProviderAccount[];
+  limits: Record<string, Record<string, AccountLimits>>;
 }
 
 /** The desktop's `checkoutKey`: the agent id for the primary repo. */
@@ -131,6 +136,8 @@ export class MockHost {
       filesystem: structuredClone(fx.filesystem),
       delegations: {},
       autopilot: { disabledProjects: [], pausedAgents: [], ...fx.autopilot(Date.now()) },
+      accounts: structuredClone(fx.providerAccounts),
+      limits: fx.providerLimits(Date.now()),
     };
   }
 
@@ -265,6 +272,72 @@ export class MockHost {
     const found = this.state.workspace.agents.find((a) => a.id === id);
     if (!found) throw new Error("agent not found");
     return found;
+  }
+
+  /** `provider` if it holds accounts, else the engine's refusal. */
+  private accountProvider(provider: string): string {
+    if (!this.state.accounts.some((a) => a.provider === provider)) {
+      throw new Error(`\`${provider}\` has no account directories.`);
+    }
+    return provider;
+  }
+
+  /** The desktop radio: refuse a signed-out target as the engine does, flip
+   *  `active`, and announce the key the host would write. */
+  private setActiveAccount(provider: string, id: string | null): null {
+    this.accountProvider(provider);
+    const target = id && id !== "default" ? id : "default";
+    const account = this.state.accounts.find((a) => a.provider === provider && a.id === target);
+    if (!account) throw new Error(`No account named \`${target}\`.`);
+    if (account.status === "signed_out") {
+      const why = account.detail ? ` (${account.detail})` : "";
+      throw new Error(
+        `The \`${target}\` account isn't signed in${why}. Sign in first, then select it.`,
+      );
+    }
+    this.state.accounts = this.state.accounts.map((a) =>
+      a.provider === provider ? { ...a, active: a.id === target } : a,
+    );
+    this.event("settings:changed", { key: `provider_account_${provider}`, value: target });
+    return null;
+  }
+
+  /** Ask the "vendor": the row's windows nudge up and its reading is now, and
+   *  the host announces the row it stored, as the real one does. */
+  private refreshLimits(provider: string, account: string): AccountLimits {
+    this.accountProvider(provider);
+    const row = this.state.accounts.find((a) => a.provider === provider && a.id === account);
+    if (!row) throw new Error(`No account named \`${account}\`.`);
+    const sec = Math.floor(Date.now() / 1000);
+    const stored = this.state.limits[provider]?.[account];
+    const bump = (w: { percent: number; resets_at: number | null } | null) =>
+      w ? { ...w, percent: Math.min(100, w.percent + 1) } : null;
+    const next: AccountLimits =
+      row.status === "signed_out"
+        ? {
+            limits: null,
+            refresh: { status: "signed_out", at: sec, next_allowed_at: null, failures: 1 },
+          }
+        : {
+            limits: {
+              five_hour: bump(
+                stored?.limits?.five_hour ?? { percent: 4, resets_at: sec + 5 * 3600 },
+              ),
+              seven_day: bump(
+                stored?.limits?.seven_day ?? { percent: 2, resets_at: sec + 7 * 86400 },
+              ),
+              as_of: sec,
+              source: provider === "codex" ? "app_server" : "oauth_usage",
+              models: stored?.limits?.models,
+            },
+            refresh: { status: "ok", at: sec, next_allowed_at: null, failures: 0 },
+          };
+    this.state.limits[provider] = { ...this.state.limits[provider], [account]: next };
+    this.event("settings:changed", {
+      key: `provider_limits_${provider}_${account}`,
+      value: JSON.stringify(next),
+    });
+    return next;
   }
 
   private patchAgent(id: string, patch: Partial<AgentRecord>) {
@@ -893,6 +966,19 @@ export class MockHost {
         return "main";
       case "discover_supported_models":
         return fx.supportedModels;
+      // The host's provider accounts (docs/remote-protocol.md, "Provider
+      // accounts"): the list, the radio, and the limits rows under each one.
+      case "list_provider_accounts":
+        return this.state.accounts;
+      case "set_active_provider_account":
+        return this.setActiveAccount(
+          String(args.provider ?? ""),
+          (args.id as string | null) ?? null,
+        );
+      case "get_provider_limits":
+        return this.state.limits[this.accountProvider(String(args.provider ?? ""))] ?? {};
+      case "refresh_provider_limits":
+        return this.refreshLimits(String(args.provider ?? ""), String(args.account ?? ""));
       // There is no APNs behind a browser, so the mock host only has to accept
       // the op — a registration that errored would surface as a real failure.
       case "register_push":
