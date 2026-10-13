@@ -92,6 +92,27 @@ describe("switchAgentAccount over the mock host", () => {
     expect(state().chats["prj-fletch"].find((c) => c.id === "sakura")?.status).toBe("idle");
   });
 
+  it("replays only its own project's patches over a list's answer", async () => {
+    // Project A's list is out; meanwhile a chat in project B is patched and B
+    // re-lists fresh. A's late answer must not put B's older patch back.
+    const list = api.listProjectChats;
+    let release: () => void = () => {};
+    vi.spyOn(api, "listProjectChats").mockImplementationOnce(async (projectId, purpose) => {
+      await new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      return list(projectId, purpose);
+    });
+    const atlas = state().loadChats("prj-atlas");
+    state().patchChat("sakura", { account: "stale" });
+    await state().loadChats("prj-fletch");
+    const fresh = state().chats["prj-fletch"].find((c) => c.id === "sakura")?.account;
+    expect(fresh).not.toBe("stale");
+    release();
+    await atlas;
+    expect(state().chats["prj-fletch"].find((c) => c.id === "sakura")?.account).toBe(fresh);
+  });
+
   it("lands only the newest of two chat lists in flight", async () => {
     const list = api.listProjectChats;
     let releaseFirst: () => void = () => {};

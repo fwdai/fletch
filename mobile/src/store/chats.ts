@@ -149,11 +149,18 @@ export function createChatsSlice(set: Set, get: Get, deps: ChatsDeps): ChatsSlic
         // A fresh read of these records settles their `sending` bridge the way
         // a workspace snapshot settles a sidebar agent's (see helpers/sending):
         // chats are absent from that snapshot, so this is their only authority.
-        set((s) => {
-          let chats = { ...s.chats, [projectId]: rows };
-          for (const [agentId, fields] of overtaken) chats = patchChatIn(chats, agentId, fields);
-          return { chats, sending: reconcileSending(s.sending, chats[projectId]) };
-        });
+        // Replayed over this project's rows only: a patch to another project's
+        // chat is older than that project's own list may be by now.
+        let list = rows;
+        for (const [agentId, fields] of overtaken) {
+          if (list.some((c) => c.id === agentId)) {
+            list = list.map((c) => (c.id === agentId ? { ...c, ...fields } : c));
+          }
+        }
+        set((s) => ({
+          chats: { ...s.chats, [projectId]: list },
+          sending: reconcileSending(s.sending, list),
+        }));
       } catch {
         // Advisory, like the other list reads: the section stays as it was and
         // the next mount or reconnect tries again.
