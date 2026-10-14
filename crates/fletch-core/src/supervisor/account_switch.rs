@@ -137,7 +137,7 @@ impl Supervisor {
             .map_err(|e| Error::Other(format!("account probe failed: {e}")))??;
         if self.agents.lock().contains_key(agent_id) {
             if let Err(e) = self
-                .prefetch_login_as(agent_id, &record.provider, target.as_deref(), None)
+                .prefetch_login_as(agent_id, &record, target.as_deref(), None)
                 .await
             {
                 self.discard_prefetch(agent_id);

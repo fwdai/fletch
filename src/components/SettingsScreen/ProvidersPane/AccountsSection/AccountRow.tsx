@@ -141,6 +141,11 @@ export function AccountRow({
 
       <LimitsPanel providerId={providerId} account={account} row={limits} nowMs={nowMs} />
 
+      {/* The probe's reason, in the open: a badge alone sends the user
+          chasing a login they may already have under another name. */}
+      {account.status === "signed_out" && account.detail && (
+        <p className="set-prov-acct-detail text-sm">{account.detail}</p>
+      )}
       {error && <p className="set-prov-acct-error text-sm">{error}</p>}
 
       {signingIn && command && (

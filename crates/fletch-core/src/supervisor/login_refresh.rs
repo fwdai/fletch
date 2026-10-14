@@ -32,7 +32,7 @@ use crate::workspace::{AgentRecord, AgentStatus};
 
 use super::account_switch::{ensure_signed_in, managed};
 use super::events::emit_workspace_changed;
-use super::lifecycle::arm_spawn_timeout;
+use super::lifecycle::{arm_spawn_timeout, stamped_engine};
 use super::Supervisor;
 
 const GAVE_UP_MSG: &str = "Claude rejected this account's login again after a refresh. \
@@ -240,13 +240,8 @@ impl Supervisor {
     pub(super) async fn prefetch_login(&self, agent_id: &str) -> Result<Option<AccessToken>> {
         let record = self.workspace.agent(agent_id)?;
         let rejected = self.logins.lock().rejected.get(agent_id).copied();
-        self.prefetch_login_as(
-            agent_id,
-            &record.provider,
-            record.account.as_deref(),
-            rejected,
-        )
-        .await
+        self.prefetch_login_as(agent_id, &record, record.account.as_deref(), rejected)
+            .await
     }
 
     /// [`Self::prefetch_login`] for a launch under `account` rather than the
@@ -255,14 +250,15 @@ impl Supervisor {
     pub(super) async fn prefetch_login_as(
         &self,
         agent_id: &str,
-        provider: &str,
+        record: &AgentRecord,
         account: Option<&str>,
         rejected: Option<i64>,
     ) -> Result<Option<AccessToken>> {
-        if provider != "claude" {
+        if record.provider != "claude" {
             return Ok(None);
         }
-        let token = claude_login::launch_token(account, rejected).await;
+        let containerized = stamped_engine(record).is_container();
+        let token = claude_login::launch_token(account, rejected, containerized).await;
         let kept = match &token {
             Ok(token) => Ok(token.clone()),
             Err(e) => Err(e.to_string()),
@@ -304,7 +300,8 @@ impl Supervisor {
             return kept.token.map_err(Error::Other);
         }
         let rejected = self.logins.lock().rejected.get(agent_id).copied();
-        claude_login::launch_token(record.account.as_deref(), rejected).await
+        let containerized = stamped_engine(record).is_container();
+        claude_login::launch_token(record.account.as_deref(), rejected, containerized).await
     }
 
     /// The launch replaced a rejected token, so the mark has done its job.

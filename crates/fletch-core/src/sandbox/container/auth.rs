@@ -138,9 +138,59 @@ fn credentials_config_dir(relocated: Option<PathBuf>, home: Option<&Path>) -> Op
 
 /// The Keychain item the default account's login lives under: the one claude
 /// names for the user's relocated config dir, the same dir a launch mounts
-/// and forwards.
-fn default_keychain_service() -> String {
+/// and forwards. Shared by the Settings probe and the host store, so the two
+/// can't disagree on where the login is.
+pub(crate) fn default_keychain_service() -> String {
     claude_keychain_service(crate::agent::accounts::claude_config_override().as_deref())
+}
+
+/// Env vars that route claude to a cloud provider's own credentials (AWS,
+/// GCP, Azure), which the agent reads from the shell and the home dir itself.
+const CLOUD_PROVIDER_VARS: [&str; 3] = [
+    "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_USE_VERTEX",
+    "CLAUDE_CODE_USE_FOUNDRY",
+];
+
+/// Whether a default-account launch that got no host login can still sign
+/// in some other way: an auth var in the app's env or the user's login shell,
+/// a cloud provider routing var, an `apiKeyHelper` in the user's claude
+/// settings, or — for a `containerized` launch only, since nothing else
+/// forwards it — the stored setup-token. The Keychain and credentials file
+/// are deliberately not counted: the host just failed to use them, and every
+/// sandbox closes them to the agent.
+pub fn fallback_login_present(containerized: bool) -> bool {
+    let (env, _) = chain_inputs();
+    (containerized && stored_token().is_some())
+        || !matches!(
+            resolve_from(None, None, env.as_ref()),
+            ContainerAuth::Unavailable
+        )
+        || CLOUD_PROVIDER_VARS
+            .iter()
+            .any(|var| crate::agent::env_key_present(var))
+        || settings_name_an_api_key_helper(
+            credentials_config_dir(
+                crate::agent::accounts::claude_config_override(),
+                dirs::home_dir().as_deref(),
+            )
+            .and_then(|dir| std::fs::read(dir.join("settings.json")).ok())
+            .as_deref(),
+        )
+}
+
+/// Whether a claude `settings.json` names an `apiKeyHelper`: a script claude
+/// runs for its key, so no stored login or env var is needed. The value is
+/// tested for emptiness only.
+pub(crate) fn settings_name_an_api_key_helper(contents: Option<&[u8]>) -> bool {
+    serde_json::from_slice::<serde_json::Value>(contents.unwrap_or_default())
+        .ok()
+        .and_then(|v| {
+            v.get("apiKeyHelper")?
+                .as_str()
+                .map(|s| !s.trim().is_empty())
+        })
+        .unwrap_or(false)
 }
 
 /// Walk the auth chain (first hit wins). May block on the first call: loading
@@ -643,6 +693,21 @@ mod tests {
             default_keychain_service,
         );
         assert_eq!(service, "Claude Code-credentials-b634a9ea");
+    }
+
+    #[test]
+    fn an_api_key_helper_counts_only_when_named_non_blank() {
+        assert!(settings_name_an_api_key_helper(Some(
+            br#"{"apiKeyHelper": "~/bin/key.sh", "model": "opus"}"#
+        )));
+        assert!(!settings_name_an_api_key_helper(Some(
+            br#"{"apiKeyHelper": "  "}"#
+        )));
+        assert!(!settings_name_an_api_key_helper(Some(
+            br#"{"model": "opus"}"#
+        )));
+        assert!(!settings_name_an_api_key_helper(Some(b"{not json")));
+        assert!(!settings_name_an_api_key_helper(None));
     }
 
     /// The chain's credentials-file step reads under a config dir only the

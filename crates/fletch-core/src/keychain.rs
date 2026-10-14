@@ -16,6 +16,42 @@
 //! Off macOS there is no equally cheap check, so the answer is always `false`;
 //! callers treat that as "no Keychain login to find here", not "signed out".
 
+/// The `-a` narrowings tried, in order, for the item of a service: the
+/// caller's account alone when it names one; else the user's own name first,
+/// then any account. `security` answers a service-only search with the
+/// *first* matching item, and a keychain can hold several under one service:
+/// claude writes and reads its login as `$USER`, while an older CLI left its
+/// item under the account `Claude Code` — a stale login that would otherwise
+/// shadow the real one forever (fwdai/fletch#914).
+#[cfg(target_os = "macos")]
+fn account_candidates(account: Option<&str>) -> Vec<Option<String>> {
+    candidates_from(account, std::env::var("USER").ok())
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn candidates_from(account: Option<&str>, user: Option<String>) -> Vec<Option<String>> {
+    if let Some(account) = account {
+        return vec![Some(account.to_string())];
+    }
+    user.filter(|u| !u.trim().is_empty())
+        .into_iter()
+        .map(Some)
+        .chain(std::iter::once(None))
+        .collect()
+}
+
+/// `security find-generic-password` for `service`, narrowed to `account`
+/// when given.
+#[cfg(target_os = "macos")]
+fn find_command(service: &str, account: Option<&str>) -> std::process::Command {
+    let mut command = std::process::Command::new("security");
+    command.args(["find-generic-password", "-s", service]);
+    if let Some(account) = account {
+        command.args(["-a", account]);
+    }
+    command
+}
+
 /// Whether a generic-password item exists for `service`, optionally narrowed to
 /// `account`. Exit status 0 means the item exists; a missing item, a locked
 /// keychain, or an unavailable `security` binary all read as `false`.
@@ -23,16 +59,13 @@
 /// Never passes `-w`, so no secret is read and no Keychain prompt appears.
 #[cfg(target_os = "macos")]
 pub(crate) fn item_present(service: &str, account: Option<&str>) -> bool {
-    let mut command = std::process::Command::new("security");
-    command.args(["find-generic-password", "-s", service]);
-    if let Some(account) = account {
-        command.args(["-a", account]);
-    }
-    command
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .is_ok_and(|status| status.success())
+    account_candidates(account).iter().any(|account| {
+        find_command(service, account.as_deref())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success())
+    })
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -43,18 +76,21 @@ pub(crate) fn item_present(_service: &str, _account: Option<&str>) -> bool {
 /// The `acct` and `mdat` attributes of the item for `service`, as `security`
 /// prints them without `-w`: whose item it is, and a value that changes
 /// whenever its password is rewritten. `None` when there is no item. Reads no
-/// secret, so it never prompts and may run on a polling path.
+/// secret, so it never prompts and may run on a polling path. The user's own
+/// item wins over one under another account ([`account_candidates`]), and
+/// [`read_password`] picks the same one.
 #[cfg(target_os = "macos")]
 pub(crate) fn item_stamp(service: &str) -> Option<ItemStamp> {
-    let out = std::process::Command::new("security")
-        .args(["find-generic-password", "-s", service])
-        .stderr(std::process::Stdio::null())
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    parse_item_stamp(&String::from_utf8_lossy(&out.stdout))
+    account_candidates(None).iter().find_map(|account| {
+        let out = find_command(service, account.as_deref())
+            .stderr(std::process::Stdio::null())
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        parse_item_stamp(&String::from_utf8_lossy(&out.stdout))
+    })
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -143,14 +179,17 @@ fn run_bounded(
     })
 }
 
-/// The password of the item for `service`. Reading it can raise the macOS
-/// "wants to use your confidential information" prompt, so only a launch or
-/// an explicit user action may call this, never a polling path; and it gives
-/// up after [`PROMPTABLE_TIMEOUT`].
+/// The password of the item for `service` under `account` — the one
+/// [`item_stamp`] reported, so the read can't land on a different item of
+/// the service than the stamp did; `None` narrows to nothing. Reading it can
+/// raise the macOS "wants to use your confidential information" prompt, so
+/// only a launch or an explicit user action may call this, never a polling
+/// path; and it gives up after [`PROMPTABLE_TIMEOUT`]. A denied or timed-out
+/// read is `None`, never another item's password.
 #[cfg(target_os = "macos")]
-pub(crate) fn read_password(service: &str) -> Option<String> {
-    let mut command = std::process::Command::new("security");
-    command.args(["find-generic-password", "-s", service, "-w"]);
+pub(crate) fn read_password(service: &str, account: Option<&str>) -> Option<String> {
+    let mut command = find_command(service, account);
+    command.arg("-w");
     let out = run_bounded(command, None, PROMPTABLE_TIMEOUT).ok()?;
     if !out.status.success() {
         return None;
@@ -161,7 +200,7 @@ pub(crate) fn read_password(service: &str) -> Option<String> {
 }
 
 #[cfg(not(target_os = "macos"))]
-pub(crate) fn read_password(_service: &str) -> Option<String> {
+pub(crate) fn read_password(_service: &str, _account: Option<&str>) -> Option<String> {
     None
 }
 
@@ -299,6 +338,24 @@ mod tests {
         );
     }
 
+    /// The user's own item is asked for before any item of the service, so a
+    /// stale login an older CLI left under another account can't answer
+    /// first; a caller naming an account gets that one alone.
+    #[test]
+    fn the_users_own_item_is_tried_before_any_items() {
+        let user = || Some("alex".to_string());
+        assert_eq!(
+            candidates_from(None, user()),
+            vec![Some("alex".to_string()), None]
+        );
+        assert_eq!(candidates_from(None, None), vec![None]);
+        assert_eq!(candidates_from(None, Some("  ".into())), vec![None]);
+        assert_eq!(
+            candidates_from(Some("cursor-user"), user()),
+            vec![Some("cursor-user".to_string())]
+        );
+    }
+
     #[test]
     fn item_stamp_reads_the_account_and_modification_date() {
         let attributes = r#"keychain: "/Users/x/Library/Keychains/login.keychain-db"
@@ -339,7 +396,10 @@ attributes:
         let big = format!("{{\"blob\":\"{}\"}}", "s".repeat(4500));
         let err = write_password(&service, &user, &big).unwrap_err();
         assert!(!err.contains("sss"), "{err}");
-        assert_eq!(read_password(&service).as_deref(), Some("{\"small\":true}"));
+        assert_eq!(
+            read_password(&service, Some(&user)).as_deref(),
+            Some("{\"small\":true}")
+        );
         delete_item(&service).unwrap();
     }
 
@@ -360,11 +420,14 @@ attributes:
         write_password(&service, &user, "{\"a\":1}").unwrap();
         let first = item_stamp(&service).expect("item written");
         assert_eq!(first.account.as_deref(), Some(user.as_str()));
-        assert_eq!(read_password(&service).as_deref(), Some("{\"a\":1}"));
+        assert_eq!(
+            read_password(&service, first.account.as_deref()).as_deref(),
+            Some("{\"a\":1}")
+        );
         // `mdat` has one-second resolution.
         std::thread::sleep(std::time::Duration::from_millis(1100));
         write_password(&service, &user, "{\"a\":2}").unwrap();
-        assert_eq!(read_password(&service).as_deref(), Some("{\"a\":2}"));
+        assert_eq!(read_password(&service, None).as_deref(), Some("{\"a\":2}"));
         assert_ne!(item_stamp(&service).unwrap().modified, first.modified);
         delete_item(&service).unwrap();
         assert!(item_stamp(&service).is_none());

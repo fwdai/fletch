@@ -37,6 +37,7 @@ use crate::exec_session::ExecSession;
 use crate::managed_session::ManagedSession;
 use crate::pty_session::PtySession;
 
+pub(crate) use auth_probe::env_key_present;
 pub use auth_probe::{probe_all_provider_auth, AuthStatus, ProviderAuthProbe};
 pub use capabilities::provider_bin_label;
 pub use capabilities::{

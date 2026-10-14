@@ -242,5 +242,29 @@ fn the_default_login_is_read_from_a_config_dir_the_login_shell_exports() {
     assert_eq!(store.file, dir.join(".credentials.json"));
 }
 
+/// A default-account launch with no host login fails with where the login
+/// was looked for, unless the shell or the stored setup-token can sign it in.
+#[test]
+fn a_default_launch_without_a_login_is_refused_unless_something_else_signs_in() {
+    let store =
+        || "the Keychain item `Claude Code-credentials` or ~/.claude/.credentials.json".to_string();
+    assert_eq!(
+        default_launch_refusal(&LoginError::SignedOut, true, store),
+        None
+    );
+    let refusal = default_launch_refusal(&LoginError::SignedOut, false, store).unwrap();
+    assert!(refusal.contains("`Claude Code-credentials`"), "{refusal}");
+    assert!(
+        refusal.contains("Settings → Providers → Claude Code"),
+        "{refusal}"
+    );
+    let revoked = default_launch_refusal(&LoginError::Revoked, false, store).unwrap();
+    assert!(revoked.contains("revoked"), "{revoked}");
+    let unavailable =
+        default_launch_refusal(&LoginError::Unavailable("locked".into()), false, store).unwrap();
+    assert!(unavailable.contains("locked"), "{unavailable}");
+    assert!(unavailable.contains("Keychain"), "{unavailable}");
+}
+
 #[cfg(target_os = "macos")]
 mod live;

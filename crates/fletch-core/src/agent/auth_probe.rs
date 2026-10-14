@@ -157,6 +157,15 @@ fn claude_probe() -> ProviderAuthProbe {
     }
     if crate::sandbox::container::auth::host_login_present() {
         entry_ok("claude")
+    } else if crate::agent::accounts::claude_config_override().is_some() {
+        // The probe follows the shell's relocation, so a login kept under the
+        // default dir's name doesn't count; say which dir was looked at.
+        entry(
+            "claude",
+            AuthStatus::SignedOut,
+            "no Keychain login or credentials file for the config dir your shell's \
+             CLAUDE_CONFIG_DIR names, and no Anthropic key in your shell",
+        )
     } else {
         entry(
             "claude",
