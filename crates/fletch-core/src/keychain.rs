@@ -179,27 +179,28 @@ fn run_bounded(
     })
 }
 
-/// The password of the item for `service`. Reading it can raise the macOS
-/// "wants to use your confidential information" prompt, so only a launch or
-/// an explicit user action may call this, never a polling path; and it gives
-/// up after [`PROMPTABLE_TIMEOUT`].
+/// The password of the item for `service` under `account` — the one
+/// [`item_stamp`] reported, so the read can't land on a different item of
+/// the service than the stamp did; `None` narrows to nothing. Reading it can
+/// raise the macOS "wants to use your confidential information" prompt, so
+/// only a launch or an explicit user action may call this, never a polling
+/// path; and it gives up after [`PROMPTABLE_TIMEOUT`]. A denied or timed-out
+/// read is `None`, never another item's password.
 #[cfg(target_os = "macos")]
-pub(crate) fn read_password(service: &str) -> Option<String> {
-    account_candidates(None).iter().find_map(|account| {
-        let mut command = find_command(service, account.as_deref());
-        command.arg("-w");
-        let out = run_bounded(command, None, PROMPTABLE_TIMEOUT).ok()?;
-        if !out.status.success() {
-            return None;
-        }
-        let text = String::from_utf8(out.stdout).ok()?;
-        let text = text.trim_end_matches('\n');
-        (!text.is_empty()).then(|| text.to_string())
-    })
+pub(crate) fn read_password(service: &str, account: Option<&str>) -> Option<String> {
+    let mut command = find_command(service, account);
+    command.arg("-w");
+    let out = run_bounded(command, None, PROMPTABLE_TIMEOUT).ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let text = String::from_utf8(out.stdout).ok()?;
+    let text = text.trim_end_matches('\n');
+    (!text.is_empty()).then(|| text.to_string())
 }
 
 #[cfg(not(target_os = "macos"))]
-pub(crate) fn read_password(_service: &str) -> Option<String> {
+pub(crate) fn read_password(_service: &str, _account: Option<&str>) -> Option<String> {
     None
 }
 
@@ -395,7 +396,10 @@ attributes:
         let big = format!("{{\"blob\":\"{}\"}}", "s".repeat(4500));
         let err = write_password(&service, &user, &big).unwrap_err();
         assert!(!err.contains("sss"), "{err}");
-        assert_eq!(read_password(&service).as_deref(), Some("{\"small\":true}"));
+        assert_eq!(
+            read_password(&service, Some(&user)).as_deref(),
+            Some("{\"small\":true}")
+        );
         delete_item(&service).unwrap();
     }
 
@@ -416,11 +420,14 @@ attributes:
         write_password(&service, &user, "{\"a\":1}").unwrap();
         let first = item_stamp(&service).expect("item written");
         assert_eq!(first.account.as_deref(), Some(user.as_str()));
-        assert_eq!(read_password(&service).as_deref(), Some("{\"a\":1}"));
+        assert_eq!(
+            read_password(&service, first.account.as_deref()).as_deref(),
+            Some("{\"a\":1}")
+        );
         // `mdat` has one-second resolution.
         std::thread::sleep(std::time::Duration::from_millis(1100));
         write_password(&service, &user, "{\"a\":2}").unwrap();
-        assert_eq!(read_password(&service).as_deref(), Some("{\"a\":2}"));
+        assert_eq!(read_password(&service, None).as_deref(), Some("{\"a\":2}"));
         assert_ne!(item_stamp(&service).unwrap().modified, first.modified);
         delete_item(&service).unwrap();
         assert!(item_stamp(&service).is_none());

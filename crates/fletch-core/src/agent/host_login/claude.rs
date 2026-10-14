@@ -540,7 +540,10 @@ impl HostStore {
 
     fn load(&self) -> Result<Option<(String, Place)>, String> {
         if let Some(item) = crate::keychain::item_stamp(&self.service) {
-            match crate::keychain::read_password(&self.service) {
+            // The item the stamp named, so a refused read can't fall through
+            // to another item of the service and launch (or write back) a
+            // login that isn't this one's.
+            match crate::keychain::read_password(&self.service, item.account.as_deref()) {
                 Some(json) if stored_access_token(json.as_bytes()).is_some() => {
                     let account = item
                         .account
