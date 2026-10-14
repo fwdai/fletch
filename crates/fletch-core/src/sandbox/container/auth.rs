@@ -138,34 +138,10 @@ fn credentials_config_dir(relocated: Option<PathBuf>, home: Option<&Path>) -> Op
 
 /// The Keychain item the default account's login lives under: the one claude
 /// names for the user's relocated config dir, the same dir a launch mounts
-/// and forwards. A `CLAUDE_CONFIG_DIR` that only restates the default
-/// `~/.claude` (exported explicitly, or with a trailing slash or symlink)
-/// falls back to the plain item when no suffixed one exists, so the login
-/// claude keeps under the default name isn't missed. Presence only; nothing
-/// is read.
+/// and forwards. Shared by the Settings probe and the host store, so the two
+/// can't disagree on where the login is.
 pub(crate) fn default_keychain_service() -> String {
-    default_keychain_service_from(
-        crate::agent::accounts::claude_config_override().as_deref(),
-        dirs::home_dir().as_deref(),
-        |service| crate::keychain::item_present(service, None),
-    )
-}
-
-/// [`default_keychain_service`] over its inputs: the relocated dir, the home
-/// dir, and whether a Keychain item of a given service exists.
-fn default_keychain_service_from(
-    relocated: Option<&Path>,
-    home: Option<&Path>,
-    present: impl Fn(&str) -> bool,
-) -> String {
-    let suffixed = claude_keychain_service(relocated);
-    let restates_default = relocated.is_some_and(|dir| {
-        home.is_some_and(|home| super::config_dir::config_dir_is_default(dir, home))
-    });
-    if restates_default && !present(&suffixed) {
-        return claude_keychain_service(None);
-    }
-    suffixed
+    claude_keychain_service(crate::agent::accounts::claude_config_override().as_deref())
 }
 
 /// Env vars that route claude to a cloud provider's own credentials (AWS,
@@ -717,34 +693,6 @@ mod tests {
             default_keychain_service,
         );
         assert_eq!(service, "Claude Code-credentials-b634a9ea");
-    }
-
-    /// A `CLAUDE_CONFIG_DIR` that only restates the default `~/.claude` (here
-    /// with a trailing slash) names the plain item while no suffixed one
-    /// exists, and the suffixed one once claude has written it. Any other
-    /// dir is suffixed whatever the Keychain holds.
-    #[test]
-    fn a_config_dir_restating_the_default_probes_the_plain_item_unless_suffixed_exists() {
-        let home = Path::new("/Users/u");
-        let restated = Path::new("/Users/u/.claude/");
-        let suffixed = claude_keychain_service(Some(restated));
-        assert_eq!(
-            default_keychain_service_from(Some(restated), Some(home), |_| false),
-            "Claude Code-credentials"
-        );
-        assert_eq!(
-            default_keychain_service_from(Some(restated), Some(home), |s| s == suffixed),
-            suffixed
-        );
-        let elsewhere = Path::new("/cfg/eve");
-        assert_eq!(
-            default_keychain_service_from(Some(elsewhere), Some(home), |_| false),
-            "Claude Code-credentials-b634a9ea"
-        );
-        assert_eq!(
-            default_keychain_service_from(None, Some(home), |_| true),
-            "Claude Code-credentials"
-        );
     }
 
     #[test]

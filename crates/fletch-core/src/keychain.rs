@@ -16,6 +16,42 @@
 //! Off macOS there is no equally cheap check, so the answer is always `false`;
 //! callers treat that as "no Keychain login to find here", not "signed out".
 
+/// The `-a` narrowings tried, in order, for the item of a service: the
+/// caller's account alone when it names one; else the user's own name first,
+/// then any account. `security` answers a service-only search with the
+/// *first* matching item, and a keychain can hold several under one service:
+/// claude writes and reads its login as `$USER`, while an older CLI left its
+/// item under the account `Claude Code` — a stale login that would otherwise
+/// shadow the real one forever (fwdai/fletch#914).
+#[cfg(target_os = "macos")]
+fn account_candidates(account: Option<&str>) -> Vec<Option<String>> {
+    candidates_from(account, std::env::var("USER").ok())
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn candidates_from(account: Option<&str>, user: Option<String>) -> Vec<Option<String>> {
+    if let Some(account) = account {
+        return vec![Some(account.to_string())];
+    }
+    user.filter(|u| !u.trim().is_empty())
+        .into_iter()
+        .map(Some)
+        .chain(std::iter::once(None))
+        .collect()
+}
+
+/// `security find-generic-password` for `service`, narrowed to `account`
+/// when given.
+#[cfg(target_os = "macos")]
+fn find_command(service: &str, account: Option<&str>) -> std::process::Command {
+    let mut command = std::process::Command::new("security");
+    command.args(["find-generic-password", "-s", service]);
+    if let Some(account) = account {
+        command.args(["-a", account]);
+    }
+    command
+}
+
 /// Whether a generic-password item exists for `service`, optionally narrowed to
 /// `account`. Exit status 0 means the item exists; a missing item, a locked
 /// keychain, or an unavailable `security` binary all read as `false`.
@@ -23,16 +59,13 @@
 /// Never passes `-w`, so no secret is read and no Keychain prompt appears.
 #[cfg(target_os = "macos")]
 pub(crate) fn item_present(service: &str, account: Option<&str>) -> bool {
-    let mut command = std::process::Command::new("security");
-    command.args(["find-generic-password", "-s", service]);
-    if let Some(account) = account {
-        command.args(["-a", account]);
-    }
-    command
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .is_ok_and(|status| status.success())
+    account_candidates(account).iter().any(|account| {
+        find_command(service, account.as_deref())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success())
+    })
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -43,18 +76,21 @@ pub(crate) fn item_present(_service: &str, _account: Option<&str>) -> bool {
 /// The `acct` and `mdat` attributes of the item for `service`, as `security`
 /// prints them without `-w`: whose item it is, and a value that changes
 /// whenever its password is rewritten. `None` when there is no item. Reads no
-/// secret, so it never prompts and may run on a polling path.
+/// secret, so it never prompts and may run on a polling path. The user's own
+/// item wins over one under another account ([`account_candidates`]), and
+/// [`read_password`] picks the same one.
 #[cfg(target_os = "macos")]
 pub(crate) fn item_stamp(service: &str) -> Option<ItemStamp> {
-    let out = std::process::Command::new("security")
-        .args(["find-generic-password", "-s", service])
-        .stderr(std::process::Stdio::null())
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    parse_item_stamp(&String::from_utf8_lossy(&out.stdout))
+    account_candidates(None).iter().find_map(|account| {
+        let out = find_command(service, account.as_deref())
+            .stderr(std::process::Stdio::null())
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        parse_item_stamp(&String::from_utf8_lossy(&out.stdout))
+    })
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -149,15 +185,17 @@ fn run_bounded(
 /// up after [`PROMPTABLE_TIMEOUT`].
 #[cfg(target_os = "macos")]
 pub(crate) fn read_password(service: &str) -> Option<String> {
-    let mut command = std::process::Command::new("security");
-    command.args(["find-generic-password", "-s", service, "-w"]);
-    let out = run_bounded(command, None, PROMPTABLE_TIMEOUT).ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let text = String::from_utf8(out.stdout).ok()?;
-    let text = text.trim_end_matches('\n');
-    (!text.is_empty()).then(|| text.to_string())
+    account_candidates(None).iter().find_map(|account| {
+        let mut command = find_command(service, account.as_deref());
+        command.arg("-w");
+        let out = run_bounded(command, None, PROMPTABLE_TIMEOUT).ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        let text = String::from_utf8(out.stdout).ok()?;
+        let text = text.trim_end_matches('\n');
+        (!text.is_empty()).then(|| text.to_string())
+    })
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -296,6 +334,24 @@ mod tests {
         assert_eq!(
             delete_item("fletch-keychain-probe-service-that-does-not-exist"),
             Ok(())
+        );
+    }
+
+    /// The user's own item is asked for before any item of the service, so a
+    /// stale login an older CLI left under another account can't answer
+    /// first; a caller naming an account gets that one alone.
+    #[test]
+    fn the_users_own_item_is_tried_before_any_items() {
+        let user = || Some("alex".to_string());
+        assert_eq!(
+            candidates_from(None, user()),
+            vec![Some("alex".to_string()), None]
+        );
+        assert_eq!(candidates_from(None, None), vec![None]);
+        assert_eq!(candidates_from(None, Some("  ".into())), vec![None]);
+        assert_eq!(
+            candidates_from(Some("cursor-user"), user()),
+            vec![Some("cursor-user".to_string())]
         );
     }
 
