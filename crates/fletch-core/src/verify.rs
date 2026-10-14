@@ -20,9 +20,12 @@
 //! * **Same ecosystem for install + test.** Detected commands come from the
 //!   highest-confidence config that actually defines a `test` row, and its
 //!   `install` pairs with it — so a mixed repo whose primary ecosystem has no
-//!   test script still runs a sibling's tests rather than degrading. `lint` is
-//!   resolved independently (its own highest-confidence config with a `lint`
-//!   row) so an ad-hoc lint check works even where no test command exists.
+//!   test script still runs a sibling's tests rather than degrading. Detected
+//!   `lint` comes from that same ecosystem too: every detected linter runs from
+//!   its ecosystem's dependencies (`node_modules`, `vendor`, a venv, a bundle),
+//!   which only that ecosystem's `install` provides. Where no test is detected
+//!   the setup ecosystem is the top-ranked one, so an ad-hoc lint check still
+//!   works without a test command.
 //! * **Project overrides win.** A non-empty `run.test` / `run.install` /
 //!   `run.lint` override beats detection, same layering as the tests gate.
 //! * **Graceful degrade off-macOS.** The seatbelt profile needs `sandbox-exec`;
@@ -380,8 +383,8 @@ struct Resolved {
 /// highest-confidence config that actually defines a `test` row (`detect_all` is
 /// confidence-sorted). This keeps `test` and `install` from the same ecosystem
 /// and lets a lower-ranked detector supply the test command when the top one has
-/// none. `lint` is resolved independently — its own highest-confidence config
-/// with a `lint` row — so an ad-hoc lint check works even where no test exists.
+/// none. Detected `lint` comes from the same config as `install`, since a
+/// sibling ecosystem's linter would run without its dependencies installed.
 fn resolve(
     worktree: &Path,
     test_override: &Option<String>,
@@ -409,9 +412,8 @@ fn resolve(
             .and_then(some_nonempty)
     });
     let lint = nonempty(lint_override.clone()).or_else(|| {
-        configs
-            .iter()
-            .find_map(|c| row(c, "lint"))
+        setup_config
+            .and_then(|c| row(c, "lint"))
             .and_then(some_nonempty)
     });
     Resolved {
@@ -551,6 +553,68 @@ mod tests {
         // manager — `bun test` would be bun's own runner (see `run_detect::node`).
         assert_eq!(r.test.as_deref(), Some("npm run test"));
         assert_eq!(r.install.as_deref(), Some("npm install"));
+    }
+
+    #[test]
+    fn resolve_takes_test_from_php_in_a_laravel_vite_repo() {
+        // Laravel + Vite: the lockfile-backed Node project ranks first but has
+        // no `test` script, so the tests gate takes test + install from PHP.
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            "package.json",
+            r#"{"scripts":{"dev":"vite","build":"vite build"}}"#,
+        );
+        write(dir.path(), "pnpm-lock.yaml", "");
+        write(
+            dir.path(),
+            "composer.json",
+            r#"{"require":{"laravel/framework":"^11.0"},"require-dev":{"laravel/pint":"^1"}}"#,
+        );
+        write(dir.path(), "composer.lock", "{}");
+        write(dir.path(), "artisan", "");
+        let r = resolve(dir.path(), &None, &None, &None);
+        assert_eq!(r.test.as_deref(), Some("php artisan test"));
+        assert_eq!(r.install.as_deref(), Some("composer install"));
+        assert_eq!(r.lint.as_deref(), Some("vendor/bin/pint --test"));
+    }
+
+    #[test]
+    fn resolve_skips_a_sibling_ecosystems_lint() {
+        // Node ranks first and has a test script but no lint; PHP declares Pint.
+        // Only `npm install` runs, so `vendor/bin/pint` would not exist: no
+        // detected lint rather than one that fails before checking anything.
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            "package.json",
+            r#"{"scripts":{"test":"vitest"}}"#,
+        );
+        write(dir.path(), "package-lock.json", "{}");
+        write(
+            dir.path(),
+            "composer.json",
+            r#"{"require-dev":{"laravel/pint":"^1"}}"#,
+        );
+        let r = resolve(dir.path(), &None, &None, &None);
+        assert_eq!(r.install.as_deref(), Some("npm install"));
+        assert!(r.lint.is_none());
+    }
+
+    #[test]
+    fn resolve_lint_without_test_uses_top_ecosystem() {
+        // No test anywhere: the top-ranked ecosystem is the setup one, and its
+        // lint still runs as an ad-hoc check.
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            "package.json",
+            r#"{"scripts":{"lint":"eslint ."}}"#,
+        );
+        let r = resolve(dir.path(), &None, &None, &None);
+        assert!(r.test.is_none());
+        assert_eq!(r.install.as_deref(), Some("npm install"));
+        assert_eq!(r.lint.as_deref(), Some("npm run lint"));
     }
 
     #[test]

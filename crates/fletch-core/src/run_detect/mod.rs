@@ -20,6 +20,7 @@ use std::path::Path;
 
 mod go;
 mod node;
+mod php;
 pub(crate) mod port;
 mod python;
 mod ruby;
@@ -64,7 +65,7 @@ impl DetectedRow {
 /// One ecosystem's worth of detected configuration.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct DetectedConfig {
-    /// "node" | "python" | "ruby" | "rust" | "go".
+    /// "node" | "python" | "ruby" | "rust" | "go" | "php".
     pub ecosystem: String,
     /// 0–100. Lockfile present → high; manifest only → medium;
     /// bare source files → low.
@@ -89,6 +90,7 @@ fn detectors() -> Vec<Box<dyn RunDetector>> {
         Box::new(ruby::RubyDetector),
         Box::new(rust::RustDetector),
         Box::new(go::GoDetector),
+        Box::new(php::PhpDetector),
     ]
 }
 

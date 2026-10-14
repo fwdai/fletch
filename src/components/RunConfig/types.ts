@@ -59,6 +59,7 @@ export const ECOSYSTEM_LABEL: Record<string, string> = {
   ruby: "Ruby",
   rust: "Rust",
   go: "Go",
+  php: "PHP",
 };
 
 /** Map detected rows from the backend to the display rows the editor renders,
