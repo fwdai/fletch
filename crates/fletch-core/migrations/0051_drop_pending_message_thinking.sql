@@ -3,4 +3,9 @@
 -- `thinking` tag on queued follow-ups is therefore dead — drop the column.
 -- Every per-turn CLI treats effort as a config/session value re-passed each
 -- invocation, so nothing was ever gained by varying it per message.
+--
+-- Written as 0025 alongside that change but never registered in `MIGRATIONS`
+-- (0025_worktree_pr_history took the slot), so it never ran. Appended here
+-- rather than slotted back in: `user_version` counts migrations, so inserting
+-- one mid-list would skip it on every existing database.
 ALTER TABLE pending_messages DROP COLUMN thinking;
