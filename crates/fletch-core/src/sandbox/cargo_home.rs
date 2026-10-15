@@ -59,10 +59,38 @@ pub fn overlay(cache_root: &Path) -> PathBuf {
 /// as a launched child would see it (the login shell's over the app's), else
 /// `~/.cargo`.
 pub fn user_home(home: &Path) -> PathBuf {
-    crate::bin_resolve::effective_env_var("CARGO_HOME")
-        .filter(|v| !v.is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| home.join(".cargo"))
+    user_home_from(crate::bin_resolve::effective_env_var("CARGO_HOME"), home)
+}
+
+/// Pure core of [`user_home`] — the env seam split the other resolvers in
+/// [`super::policy`] use, so it tests hermetically. Two values fall back to
+/// `~/.cargo`:
+///
+/// - **A relative path.** Cargo resolves a relative `CARGO_HOME` against each
+///   process's working directory, so there is no one config to link; and a
+///   relative link target would resolve from inside the overlay, never where
+///   `exists()` looked.
+/// - **A path inside the toolchain cache root.** A nested Fletch launched from
+///   the Run panel inherits the overlay as its `CARGO_HOME` (the Run env is
+///   its process env). Taken at face value, its own `prepare` would relink the
+///   overlay's config to *itself* — a dangling loop that hides the config from
+///   every instance sharing the overlay. The nested instance's real home is the
+///   same user's `~/.cargo`.
+fn user_home_from(value: Option<std::ffi::OsString>, home: &Path) -> PathBuf {
+    let default = home.join(".cargo");
+    let Some(v) = value.filter(|v| !v.is_empty()) else {
+        return default;
+    };
+    let dir = PathBuf::from(v);
+    let cache_root = super::policy::toolchain_cache_root(home);
+    if dir.is_relative()
+        || dir.starts_with(&cache_root)
+        || super::policy::resolve_existing_prefix(&dir)
+            .starts_with(super::policy::resolve_existing_prefix(&cache_root))
+    {
+        return default;
+    }
+    dir
 }
 
 /// Create (or repair) the overlay under `cache_root`, linking each shared file
@@ -72,6 +100,12 @@ pub fn user_home(home: &Path) -> PathBuf {
 /// real dir, and a file it left where a link belongs is replaced by the link —
 /// never the other way round, and never touching anything in `source`.
 /// `cache_root` itself must already exist and be the host's own.
+///
+/// The overlay is shared, so two launches can prepare it at once. Each step
+/// is a single syscall and idempotent, and a link that another launch created
+/// between our look and our `symlink` is accepted when it is the one we
+/// wanted — the only loser in that race would otherwise be a launch that
+/// found the overlay already correct.
 pub fn prepare(cache_root: &Path, source: &Path) -> std::io::Result<()> {
     let dir = PrivateDir::open(cache_root)?.subdir(SUBDIR)?;
     for item in SHARED_FILES {
@@ -83,7 +117,15 @@ pub fn prepare(cache_root: &Path, source: &Path) -> std::io::Result<()> {
             _ => dir.remove(item)?,
         }
         if wanted {
-            dir.symlink(&target, item)?;
+            match dir.symlink(&target, item) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    if dir.entry(item)? != Entry::Link(target) {
+                        return Err(e);
+                    }
+                }
+                Err(e) => return Err(e),
+            }
         }
     }
     Ok(())
@@ -108,6 +150,30 @@ mod tests {
         std::fs::create_dir_all(&cache_root).unwrap();
         std::fs::create_dir_all(&source).unwrap();
         (td, cache_root, source)
+    }
+
+    #[test]
+    fn user_home_honors_an_absolute_cargo_home_and_falls_back_otherwise() {
+        let home = Path::new("/Users/u");
+        let os = |s: &str| Some(std::ffi::OsString::from(s));
+        assert_eq!(user_home_from(None, home), home.join(".cargo"));
+        assert_eq!(user_home_from(os(""), home), home.join(".cargo"));
+        assert_eq!(
+            user_home_from(os("/opt/cargo"), home),
+            PathBuf::from("/opt/cargo")
+        );
+        // Relative: cargo resolves it per working directory, nothing to link.
+        assert_eq!(
+            user_home_from(os("vendor/cargo"), home),
+            home.join(".cargo")
+        );
+        // The overlay itself, as a nested Fletch inherits it from the Run env:
+        // linking the overlay's config to itself would hide it from everyone.
+        let inherited = overlay(&super::super::policy::toolchain_cache_root(home));
+        assert_eq!(
+            user_home_from(Some(inherited.into_os_string()), home),
+            home.join(".cargo")
+        );
     }
 
     #[test]
@@ -183,6 +249,32 @@ mod tests {
             std::fs::read_to_string(source.join("config.toml")).unwrap(),
             "a"
         );
+    }
+
+    #[test]
+    fn prepare_survives_concurrent_launches_on_a_fresh_overlay() {
+        let (_td, cache_root, source) = roots();
+        for item in SHARED_FILES {
+            std::fs::write(source.join(item), item).unwrap();
+        }
+        // Every launch prepares the same shared overlay; on first use they all
+        // see the links missing and race to create them. None may fail.
+        let results: Vec<std::io::Result<()>> = std::thread::scope(|s| {
+            let handles: Vec<_> = (0..8)
+                .map(|_| s.spawn(|| prepare(&cache_root, &source)))
+                .collect();
+            handles.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+        for r in results {
+            r.unwrap();
+        }
+        let overlay = overlay(&cache_root);
+        for item in SHARED_FILES {
+            assert_eq!(
+                std::fs::read_link(overlay.join(item)).unwrap(),
+                source.join(item)
+            );
+        }
     }
 
     #[cfg(unix)]
