@@ -504,16 +504,14 @@ pub fn toolchain_cache_root(home: &Path) -> PathBuf {
 /// *already installed* toolchain — only writing to it fails, and failing loudly
 /// beats silently pretending the user has no Rust.
 ///
-/// The cost is that toolchains with no cache-only variable are **not served at
-/// all**: `cargo` still can't fetch a crate it hasn't downloaded, and Ruby/JVM
-/// dependency installs still fail closed, exactly as before this mechanism
-/// existed. Granting a cache island under the real home
-/// (`~/.cargo/registry`) was tried and is *not* sufficient on its own — cargo
-/// also locks `~/.cargo/.package-cache`, `.package-cache-mutate` and
-/// `.global-cache`, siblings of the island, so the grant only converts a write
-/// error into a lock error. Closing that needs file-literal grants alongside the
-/// dir-oriented ones (the treatment [`CLAUDE_CREDENTIALS_FILE`] already gets),
-/// which is its own change and wants testing under a real profile.
+/// The cost is that toolchains with no cache-only variable are **not served by
+/// this table**: Ruby/JVM dependency installs still fail closed, exactly as
+/// before this mechanism existed. Cargo is the one home-only toolchain served
+/// anyway, by a different mechanism: [`super::cargo_home`] builds a Fletch-owned
+/// `CARGO_HOME` under the cache root with the user's config and credentials
+/// *linked in*, which is what makes redirecting that home safe. (Islands under
+/// the real `~/.cargo` were considered and rejected there — `registry/src` is
+/// code the user's next host build runs.)
 ///
 /// Verified empirically on macOS against the installed toolchain at the time of
 /// writing: bun 1.3, npm 10.9, pnpm 10.33, yarn 1.22, deno 2.6, pip 25.3,
@@ -530,8 +528,9 @@ const TOOLCHAIN_CACHE_VARS: &[(&str, &str)] = &[
     ("npm_config_store_dir", "pnpm"), // NOT PNPM_STORE_DIR — see above
     ("YARN_CACHE_FOLDER", "yarn"),
     ("DENO_DIR", "deno"),
-    // Go (Rust is served by the ~/.cargo islands in `agent_scratch_dirs`:
-    // CARGO_HOME/RUSTUP_HOME would hide the user's config and toolchains.)
+    // Go (Rust is served by the `cargo_home` overlay, not this table: a bare
+    // CARGO_HOME/RUSTUP_HOME redirect would hide the user's config and
+    // toolchains.)
     ("GOMODCACHE", "go/mod"),
     ("GOCACHE", "go/build"),
     // Python
@@ -930,9 +929,11 @@ mod tests {
     /// registry credentials that would silently vanish.
     ///
     /// Every one of these was in the table at one point. Where a toolchain
-    /// still needs somewhere writable, the answer is a cache island under its
-    /// real home (plus any sibling lock files it takes) — never a redirected
-    /// home.
+    /// still needs somewhere writable, the answer is a redirected home that
+    /// *links the user's config and credentials back in*, built host-side
+    /// before launch — [`super::super::cargo_home`] for cargo — never a bare
+    /// row here, and never a cache island under the real home (its unpacked
+    /// sources are code the user's next host build runs).
     #[test]
     fn redirect_never_claims_a_toolchain_home() {
         const FORBIDDEN: &[&str] = &[
