@@ -345,6 +345,13 @@
     background-position: -100% 0;
   }
 }
+/* One shared width for every row: as wide as the longest line (so long lines
+   scroll horizontally instead of clipping), never narrower than the panel —
+   keeps add/rem row tints spanning the full scroll width. */
+.code-diff-inner {
+  width: max-content;
+  min-width: 100%;
+}
 .code-hunk-h {
   padding: 6px 12px;
   background: color-mix(in oklch, var(--accent), var(--bg-0) 88%);
@@ -379,8 +386,6 @@
   user-select: none;
 }
 .code-diff .dl-text {
-  overflow: hidden;
-  text-overflow: clip;
   position: relative;
   color: var(--fg-1);
 }

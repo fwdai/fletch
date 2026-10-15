@@ -73,19 +73,21 @@ export function DiffBody({
 }) {
   return (
     <div className={`code-diff text-sm ${isBuiltInTheme ? "cq" : ""} ${live ? "live" : ""}`}>
-      {hunks.map((h, i) => (
-        <div key={i}>
-          <div className="code-hunk-h text-xs">{h.header}</div>
-          {h.lines.map((l, j) => (
-            <DiffLineRow
-              key={j}
-              line={l}
-              lang={lang}
-              fresh={!!(freshKeys && l.op === "add" && freshKeys.has(`${l.n}:${l.t}`))}
-            />
-          ))}
-        </div>
-      ))}
+      <div className="code-diff-inner">
+        {hunks.map((h, i) => (
+          <div key={i}>
+            <div className="code-hunk-h text-xs">{h.header}</div>
+            {h.lines.map((l, j) => (
+              <DiffLineRow
+                key={j}
+                line={l}
+                lang={lang}
+                fresh={!!(freshKeys && l.op === "add" && freshKeys.has(`${l.n}:${l.t}`))}
+              />
+            ))}
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
