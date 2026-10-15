@@ -7,8 +7,8 @@ use std::sync::Arc;
 
 use crate::database::connection::{
     get_migrations, get_transcript_migrations, migrate_legacy_db_name, open_db, prune_backups,
-    quarantine_orphaned_wal, relocate_batch, BACKUPS_TO_KEEP, MIGRATIONS, MIN_READER_VERSION,
-    MIN_READER_VERSION_KEY, TRANSCRIPT_MIGRATIONS,
+    quarantine_orphaned_wal, relocate_batch, BACKUPS_TO_KEEP, CONTEXT_MIGRATIONS, MIGRATIONS,
+    MIN_READER_VERSION, MIN_READER_VERSION_KEY, TRANSCRIPT_MIGRATIONS,
 };
 use crate::database::*;
 use crate::error::Error;
@@ -1957,4 +1957,63 @@ fn init_returns_a_connection_with_fk_enforcement_on() {
         .query_row("PRAGMA foreign_keys", [], |r| r.get(0))
         .unwrap();
     assert_eq!(fk, 1, "the app's connection must enforce foreign keys");
+}
+
+/// Every `.sql` file in `dir`, in filename order, must be exactly the list
+/// `init` applies — no file left unregistered, none registered twice or out
+/// of order — and the `NNNN_` prefixes must count 1, 2, 3… with no duplicates.
+fn assert_list_matches_dir(dir: &str, list: &[&str]) {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(dir);
+    let mut files: Vec<String> = std::fs::read_dir(&path)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|n| n.ends_with(".sql"))
+        .collect();
+    files.sort();
+
+    for (i, name) in files.iter().enumerate() {
+        let id: usize = name.split('_').next().unwrap().parse().unwrap();
+        assert_eq!(
+            id,
+            i + 1,
+            "{dir}/{name}: migration ids must be unique and consecutive"
+        );
+    }
+    assert_eq!(
+        files.len(),
+        list.len(),
+        "{dir} holds {} migrations but {} are registered",
+        files.len(),
+        list.len()
+    );
+    for (name, &sql) in files.iter().zip(list) {
+        let on_disk = std::fs::read_to_string(path.join(name)).unwrap();
+        assert_eq!(
+            on_disk, sql,
+            "{dir}/{name} is not registered at its position"
+        );
+    }
+}
+
+#[test]
+fn every_migration_file_is_registered_in_order() {
+    assert_list_matches_dir("migrations", MIGRATIONS);
+    assert_list_matches_dir("migrations_transcripts", TRANSCRIPT_MIGRATIONS);
+    assert_list_matches_dir("migrations_context", CONTEXT_MIGRATIONS);
+}
+
+/// 0051 is the drop first written as an orphaned 0025 that never ran; the
+/// column must be gone after a full upgrade.
+#[test]
+fn pending_messages_has_no_thinking_column() {
+    let db = test_db();
+    let conn = db.lock();
+    let n: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('pending_messages') WHERE name = 'thinking'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(n, 0);
 }
