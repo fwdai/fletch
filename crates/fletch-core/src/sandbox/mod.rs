@@ -41,7 +41,10 @@ pub use seatbelt::{
 /// before the redirect existed, never that the sandbox is looser. Cargo in
 /// particular is redirected only when its global config stays visible from
 /// `cwd` and its overlay is in place ([`cargo_home::config_reachable`]);
-/// otherwise `CARGO_HOME` is left alone, cargo reads its real home exactly
+/// otherwise the child gets cargo's *real* home as `CARGO_HOME`, set
+/// explicitly rather than left to inheritance — a nested Fletch's own process
+/// env carries the overlay it inherited, and a child that merely inherited
+/// that would be redirected after all. Cargo then reads its real home exactly
 /// as on the host, and its writes fail closed.
 pub fn prepare_toolchain_cache(
     home: &std::path::Path,
@@ -51,20 +54,30 @@ pub fn prepare_toolchain_cache(
     let _ = std::fs::create_dir_all(&root);
     let mut env = toolchain_cache_env(&root);
     let user_home = cargo_home::user_home(home);
+    let keep_real_home = |env: &mut Vec<(String, String)>| {
+        env.push((
+            "CARGO_HOME".to_string(),
+            user_home.to_string_lossy().into_owned(),
+        ));
+    };
     if !cargo_home::config_reachable(&user_home, cwd) {
         tracing::info!(
             cwd = %cwd.display(),
             cargo_home = %user_home.display(),
             "cargo keeps its real home: its global config would not be found from this directory"
         );
+        keep_real_home(&mut env);
         return env;
     }
     match cargo_home::prepare(&root, &user_home) {
         Ok(()) => env.extend(cargo_home::env(&root, &user_home)),
-        Err(e) => tracing::warn!(
-            error = %e,
-            "could not prepare the sandboxed cargo home; cargo writes will fail closed"
-        ),
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "could not prepare the sandboxed cargo home; cargo writes will fail closed"
+            );
+            keep_real_home(&mut env);
+        }
     }
     env
 }
