@@ -305,6 +305,29 @@ mod tests {
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
 
+    /// Run `hook` on `msg`, retried on `ETXTBSY`. The tests run in parallel
+    /// threads, and on Linux another test's fork can hold the script this one
+    /// just wrote open for the instant before its own exec; exec'ing it in
+    /// that window fails with "Text file busy". Nothing but timing is wrong,
+    /// so trying again is the fix — the same treatment `child_io` and
+    /// `handoff::run` give their test scripts.
+    fn run_hook(hook: &Path, msg: &Path, armed: &str) -> std::process::ExitStatus {
+        for attempt in 0.. {
+            match std::process::Command::new(hook)
+                .arg(msg)
+                .env(ENV, armed)
+                .status()
+            {
+                Ok(status) => return status,
+                Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy && attempt < 10 => {
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+                Err(e) => panic!("running the hook failed: {e}"),
+            }
+        }
+        unreachable!()
+    }
+
     /// The hook's `grep` and [`is_attribution_line`] are one rule, line for line.
     #[test]
     fn hook_agrees_with_the_rust_matcher() {
@@ -320,12 +343,7 @@ mod tests {
         let input = all.join("\n") + "\n";
         let run = |armed: &str| {
             std::fs::write(&msg, &input).unwrap();
-            let ok = std::process::Command::new(&hook)
-                .arg(&msg)
-                .env(ENV, armed)
-                .status()
-                .unwrap();
-            assert!(ok.success());
+            assert!(run_hook(&hook, &msg, armed).success());
             std::fs::read_to_string(&msg).unwrap()
         };
         assert_eq!(run("1").lines().collect::<Vec<_>>(), HUMAN_LINES);
@@ -342,13 +360,7 @@ mod tests {
         write_exec(&orig, b"#!/bin/sh\necho 'Change-Id: I1' >> \"$1\"\n");
         let msg = td.path().join("MSG");
         std::fs::write(&msg, "feat: x\n").unwrap();
-        let run = || {
-            std::process::Command::new(&hook)
-                .arg(&msg)
-                .env(ENV, "1")
-                .status()
-                .unwrap()
-        };
+        let run = || run_hook(&hook, &msg, "1");
         assert!(run().success());
         assert_eq!(
             std::fs::read_to_string(&msg).unwrap(),
