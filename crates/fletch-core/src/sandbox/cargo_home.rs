@@ -1,6 +1,7 @@
 //! The `CARGO_HOME` every sandboxed toolchain runs with: a Fletch-owned
-//! overlay under the toolchain cache root, with the user's cargo config and
-//! registry credentials linked in from their real home.
+//! overlay under the toolchain cache root, with the user's registry
+//! credentials linked in from their real home and their global config reached
+//! the way cargo already reaches it, by walking up from the working directory.
 //!
 //! Cargo keeps its registry and git caches under `CARGO_HOME` and has no
 //! cache-only variable to move them, so it can't take the plain env redirect
@@ -19,24 +20,45 @@
 //!   An agent that edits one poisons the user's **next host build**, outside
 //!   any sandbox — the class invariants 3 and 4 in [`super::policy`] close.
 //!
-//! The overlay keeps both properties. Cargo sees its config through links into
-//! the real home (reads are unrestricted; a write through a link resolves to
-//! the ungranted real file and is denied), while everything it *writes* lands
-//! in a tree only sandboxed processes ever build from: a crate tampered with
-//! here is compiled only under the agent or Run profile, never by the user's
-//! host cargo. The cost is one re-download of a project's crates into the
-//! overlay; after that every agent and the Run panel share it, like every
-//! other redirected cache. The rustup `cargo` proxy is unaffected — it locates
+//! The overlay keeps both properties. Everything cargo *writes* lands in a tree
+//! only sandboxed processes ever build from: a crate tampered with here is
+//! compiled only under the agent or Run profile, never by the user's host
+//! cargo. The cost is one re-download of a project's crates into the overlay;
+//! after that every agent and the Run panel share it, like every other
+//! redirected cache. The rustup `cargo` proxy is unaffected — it locates
 //! toolchains through `RUSTUP_HOME`, which stays the user's.
 //!
+//! What cargo *reads* from its home splits in two:
+//!
+//! - **`credentials.toml`** (and the legacy `credentials`) is read from
+//!   `CARGO_HOME` only, holds tokens and no paths, so it is linked in. Reads
+//!   are unrestricted; a write through the link resolves to the ungranted real
+//!   file and is denied, so a token rotation fails closed rather than landing
+//!   in the overlay.
+//! - **`config.toml`** is deliberately **not** linked. Cargo resolves every
+//!   relative value in a config file — `include`, `paths`, `[patch]` paths,
+//!   `target-dir`, runners, `[env] relative = true` — against the parent of
+//!   the directory the file was *found* in, without resolving symlinks; a link
+//!   in the overlay would rebase `~/.cargo/config.toml` from `~` onto the cache
+//!   root (measured: `target-dir = "tgt"` lands in `~/.fletch/toolchain-cache/`).
+//!   Cargo already finds the real file by its other route: it walks every
+//!   ancestor of the working directory for a `.cargo/config.toml`, and a
+//!   project anywhere under `~` reaches `~/.cargo/config.toml` that way with
+//!   the exact documented semantics (and loads it only once; a link would add
+//!   a second, wrongly-based copy). Every agent checkout lives under `~`.
+//!   The residual is a Run target outside `~`, or a non-default absolute
+//!   `CARGO_HOME` whose parent is not an ancestor of the project: those builds
+//!   run without the user's global config, which is fail-closed and visible,
+//!   where a mis-based link would be a silent wrong answer.
+//!
 //! What an agent can do to the overlay is bounded the way the checkout is. It
-//! may replace the `config.toml` link with a file of its own, which steers only
-//! sandboxed cargo runs — the Run panel included, but an agent already steers
-//! those through the project's own `.cargo/config.toml` or a `build.rs` (the
+//! may drop a `config.toml` of its own in there, which steers only sandboxed
+//! cargo runs — the Run panel included, but an agent already steers those
+//! through the project's own `.cargo/config.toml` or a `build.rs` (the
 //! documented Run trade-off, `seatbelt::RUN_TOOLCHAIN_DIRS`), and the next
-//! launch puts the link back. `cargo install` lands binaries in the overlay's
-//! `bin/`, which is never on the user's PATH — invariant 1 is exactly why a
-//! redirected home is safe to grant where the real `~/.cargo` is not.
+//! launch removes it. `cargo install` lands binaries in the overlay's `bin/`,
+//! which is never on the user's PATH — invariant 1 is exactly why a redirected
+//! home is safe to grant where the real `~/.cargo` is not.
 
 use std::path::{Path, PathBuf};
 
@@ -45,10 +67,14 @@ use crate::agent::credential_file::{Entry, PrivateDir};
 /// Subdir of the toolchain cache root serving as the sandboxed `CARGO_HOME`.
 pub const SUBDIR: &str = "cargo";
 
-/// What cargo reads from its home that is *not* cache, linked in from the
-/// user's real home: the global config (current and legacy name) and the
-/// registry credentials (likewise).
-const SHARED_FILES: &[&str] = &["config.toml", "config", "credentials.toml", "credentials"];
+/// What is linked in from the user's real home: the registry credentials,
+/// current and legacy name. Never the config — see the module doc.
+const SHARED_FILES: &[&str] = &["credentials.toml", "credentials"];
+
+/// What the overlay must never carry: a config file. One the agent planted
+/// would steer every sandboxed cargo run that shares the overlay, and one
+/// Fletch linked would be resolved against the wrong base (module doc).
+const CONFIG_FILES: &[&str] = &["config.toml", "config"];
 
 /// The overlay under `cache_root` — the value of `CARGO_HOME` a child gets.
 pub fn overlay(cache_root: &Path) -> PathBuf {
@@ -67,15 +93,15 @@ pub fn user_home(home: &Path) -> PathBuf {
 /// `~/.cargo`:
 ///
 /// - **A relative path.** Cargo resolves a relative `CARGO_HOME` against each
-///   process's working directory, so there is no one config to link; and a
-///   relative link target would resolve from inside the overlay, never where
-///   `exists()` looked.
+///   process's working directory, so there is no one credentials file to
+///   link; and a relative link target would resolve from inside the overlay,
+///   never where `exists()` looked.
 /// - **A path inside the toolchain cache root.** A nested Fletch launched from
 ///   the Run panel inherits the overlay as its `CARGO_HOME` (the Run env is
 ///   its process env). Taken at face value, its own `prepare` would relink the
-///   overlay's config to *itself* — a dangling loop that hides the config from
-///   every instance sharing the overlay. The nested instance's real home is the
-///   same user's `~/.cargo`.
+///   overlay's credentials to *themselves* — a dangling loop that hides them
+///   from every instance sharing the overlay. The nested instance's real home
+///   is the same user's `~/.cargo`.
 fn user_home_from(value: Option<std::ffi::OsString>, home: &Path) -> PathBuf {
     let default = home.join(".cargo");
     let Some(v) = value.filter(|v| !v.is_empty()) else {
@@ -94,12 +120,13 @@ fn user_home_from(value: Option<std::ffi::OsString>, home: &Path) -> PathBuf {
 }
 
 /// Create (or repair) the overlay under `cache_root`, linking each shared file
-/// that exists in `source` and dropping a link whose source is gone. The
-/// overlay is agent-writable, so every step goes through a no-follow handle
-/// ([`PrivateDir`]): an overlay the agent swapped for a link is replaced by a
-/// real dir, and a file it left where a link belongs is replaced by the link —
-/// never the other way round, and never touching anything in `source`.
-/// `cache_root` itself must already exist and be the host's own.
+/// that exists in `source`, dropping a link whose source is gone, and removing
+/// any config file. The overlay is agent-writable, so every step goes through
+/// a no-follow handle ([`PrivateDir`]): an overlay the agent swapped for a link
+/// is replaced by a real dir, and a file it left where a link belongs is
+/// replaced by the link — never the other way round, and never touching
+/// anything in `source`. `cache_root` itself must already exist and be the
+/// host's own.
 ///
 /// The overlay is shared, so two launches can prepare it at once. Each step
 /// is a single syscall and idempotent, and a link that another launch created
@@ -108,6 +135,9 @@ fn user_home_from(value: Option<std::ffi::OsString>, home: &Path) -> PathBuf {
 /// found the overlay already correct.
 pub fn prepare(cache_root: &Path, source: &Path) -> std::io::Result<()> {
     let dir = PrivateDir::open(cache_root)?.subdir(SUBDIR)?;
+    for item in CONFIG_FILES {
+        dir.remove(item)?;
+    }
     for item in SHARED_FILES {
         let target = source.join(item);
         let wanted = target.exists();
@@ -186,9 +216,8 @@ mod tests {
     }
 
     #[test]
-    fn prepare_links_only_the_shared_files_that_exist() {
+    fn prepare_links_only_the_credentials_that_exist() {
         let (_td, cache_root, source) = roots();
-        std::fs::write(source.join("config.toml"), "[build]\njobs = 2\n").unwrap();
         std::fs::write(
             source.join("credentials.toml"),
             "[registry]\ntoken = \"t\"\n",
@@ -199,54 +228,81 @@ mod tests {
 
         let overlay = overlay(&cache_root);
         assert!(overlay.is_dir());
-        for item in ["config.toml", "credentials.toml"] {
-            let link = overlay.join(item);
-            assert_eq!(
-                std::fs::read_link(&link).unwrap(),
-                source.join(item),
-                "{item}"
-            );
-        }
-        for item in ["config", "credentials"] {
+        assert_eq!(
+            std::fs::read_link(overlay.join("credentials.toml")).unwrap(),
+            source.join("credentials.toml")
+        );
+        assert!(
+            overlay.join("credentials").symlink_metadata().is_err(),
+            "the legacy name has no source, so no link"
+        );
+        // Cargo reads the token through the link.
+        assert_eq!(
+            std::fs::read_to_string(overlay.join("credentials.toml")).unwrap(),
+            "[registry]\ntoken = \"t\"\n"
+        );
+    }
+
+    /// The global config is never linked: cargo resolves a config file's
+    /// relative values (`include`, `paths`, `[patch]`, `target-dir`, …)
+    /// against the parent of the dir it *found* the file in, unresolved, so a
+    /// link here would rebase `~/.cargo/config.toml` onto the cache root. The
+    /// real file is reached by cargo's ancestor walk instead (module doc).
+    #[test]
+    fn prepare_never_links_the_config_and_removes_a_planted_one() {
+        let (_td, cache_root, source) = roots();
+        std::fs::write(
+            source.join("config.toml"),
+            "include = [\"company.toml\"]\n[build]\ntarget-dir = \"tgt\"\n",
+        )
+        .unwrap();
+        std::fs::write(source.join("config"), "legacy").unwrap();
+
+        prepare(&cache_root, &source).unwrap();
+        let overlay = overlay(&cache_root);
+        for item in CONFIG_FILES {
             assert!(
                 overlay.join(item).symlink_metadata().is_err(),
-                "{item} has no source, so no link"
+                "{item} must not be linked into the overlay"
             );
         }
-        // Cargo reads the config through the link.
-        assert_eq!(
-            std::fs::read_to_string(overlay.join("config.toml")).unwrap(),
-            "[build]\njobs = 2\n"
-        );
+
+        // An agent planted a config to steer every run sharing the overlay;
+        // the next launch removes it. The user's own files are untouched.
+        std::fs::write(overlay.join("config.toml"), "[alias]\nb = \"evil\"\n").unwrap();
+        prepare(&cache_root, &source).unwrap();
+        assert!(overlay.join("config.toml").symlink_metadata().is_err());
+        assert!(source.join("config.toml").is_file());
+        assert!(source.join("config").is_file());
     }
 
     #[test]
     fn prepare_repairs_what_the_agent_changed_and_drops_dangling_links() {
         let (_td, cache_root, source) = roots();
-        std::fs::write(source.join("config.toml"), "a").unwrap();
-        std::fs::write(source.join("credentials.toml"), "b").unwrap();
+        std::fs::write(source.join("credentials.toml"), "a").unwrap();
+        std::fs::write(source.join("credentials"), "b").unwrap();
         prepare(&cache_root, &source).unwrap();
         let overlay = overlay(&cache_root);
 
-        // An agent swapped the config link for a file of its own, and the user
-        // deleted their credentials since the last launch.
-        std::fs::remove_file(overlay.join("config.toml")).unwrap();
-        std::fs::write(overlay.join("config.toml"), "[alias]\nb = \"evil\"\n").unwrap();
-        std::fs::remove_file(source.join("credentials.toml")).unwrap();
+        // An agent swapped one link for a file of its own, and the user
+        // deleted the legacy file since the last launch.
+        std::fs::remove_file(overlay.join("credentials.toml")).unwrap();
+        std::fs::write(overlay.join("credentials.toml"), "token = \"stolen\"\n").unwrap();
+        std::fs::remove_file(source.join("credentials")).unwrap();
 
         prepare(&cache_root, &source).unwrap();
 
         assert_eq!(
-            std::fs::read_link(overlay.join("config.toml")).unwrap(),
-            source.join("config.toml")
+            std::fs::read_link(overlay.join("credentials.toml")).unwrap(),
+            source.join("credentials.toml")
         );
         assert!(
-            overlay.join("credentials.toml").symlink_metadata().is_err(),
+            overlay.join("credentials").symlink_metadata().is_err(),
             "a link whose source is gone is removed, not left dangling"
         );
         // The user's own file is untouched throughout.
         assert_eq!(
-            std::fs::read_to_string(source.join("config.toml")).unwrap(),
+            std::fs::read_to_string(source.join("credentials.toml")).unwrap(),
             "a"
         );
     }
@@ -281,10 +337,12 @@ mod tests {
     #[test]
     fn prepare_never_follows_an_overlay_the_agent_swapped_for_a_link() {
         let (_td, cache_root, source) = roots();
-        std::fs::write(source.join("config.toml"), "a").unwrap();
+        std::fs::write(source.join("credentials.toml"), "a").unwrap();
+        std::fs::write(source.join("config.toml"), "c").unwrap();
         // The agent replaced the whole overlay with a link to the user's real
         // cargo home. A host that followed it would unlink the user's
-        // `config.toml` and plant a self-referential link in its place.
+        // `config.toml` outright and replace their `credentials.toml` with a
+        // self-referential link.
         std::os::unix::fs::symlink(&source, overlay(&cache_root)).unwrap();
 
         prepare(&cache_root, &source).unwrap();
@@ -295,19 +353,24 @@ mod tests {
             "the overlay is a real directory again"
         );
         assert_eq!(
-            std::fs::read_link(overlay.join("config.toml")).unwrap(),
-            source.join("config.toml")
+            std::fs::read_to_string(source.join("config.toml")).unwrap(),
+            "c",
+            "the user's config survived the config sweep"
+        );
+        assert_eq!(
+            std::fs::read_link(overlay.join("credentials.toml")).unwrap(),
+            source.join("credentials.toml")
         );
         assert!(
             source
-                .join("config.toml")
+                .join("credentials.toml")
                 .symlink_metadata()
                 .unwrap()
                 .is_file(),
-            "the user's config is still their regular file"
+            "the user's credentials are still their regular file"
         );
         assert_eq!(
-            std::fs::read_to_string(source.join("config.toml")).unwrap(),
+            std::fs::read_to_string(source.join("credentials.toml")).unwrap(),
             "a"
         );
     }
