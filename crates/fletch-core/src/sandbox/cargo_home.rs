@@ -45,11 +45,24 @@
 //!   ancestor of the working directory for a `.cargo/config.toml`, and a
 //!   project anywhere under `~` reaches `~/.cargo/config.toml` that way with
 //!   the exact documented semantics (and loads it only once; a link would add
-//!   a second, wrongly-based copy). Every agent checkout lives under `~`.
-//!   The residual is a Run target outside `~`, or a non-default absolute
-//!   `CARGO_HOME` whose parent is not an ancestor of the project: those builds
-//!   run without the user's global config, which is fail-closed and visible,
-//!   where a mis-based link would be a silent wrong answer.
+//!   a second, wrongly-based copy).
+//!
+//! When that walk would **not** reach an existing global config — a checkout
+//! outside `~` (`FLETCH_WORKSPACES_ROOT`), a Run target outside `~`, or a
+//! non-default `CARGO_HOME` — cargo is **not redirected** ([`config_reachable`]).
+//! It keeps its real home, so its config is exactly what it is on the host;
+//! under the agent profile it then can't fetch a crate it hasn't got, which is
+//! what every layout had before the overlay existed, and the Run profile
+//! grants the real home anyway. Losing the global config silently is the
+//! regression that reverted the bare redirect, and it is never traded for a
+//! fetch. The route that would serve those layouts too — a host-written
+//! overlay `config.toml` holding an absolute `include` of the real file, which
+//! keeps the included file's own definition path (measured on cargo 1.97) —
+//! is not taken yet: `include` is stable only since cargo 1.94 (March 2026),
+//! and an older cargo ignores the key without a word (measured on 1.90), which
+//! is that same silent loss; and for a project under `~` it would load the
+//! file a second time behind the walk and double every array value (aliases,
+//! `rustflags`, `paths`). Revisit when 1.94 is the oldest cargo Fletch serves.
 //!
 //! What an agent can do to the overlay is bounded the way the checkout is. It
 //! may drop a `config.toml` of its own in there, which steers only sandboxed
@@ -76,6 +89,11 @@ const SHARED_FILES: &[&str] = &["credentials.toml", "credentials"];
 /// Fletch linked would be resolved against the wrong base (module doc).
 const CONFIG_FILES: &[&str] = &["config.toml", "config"];
 
+/// The env var carrying the user's real cargo home to a redirected child, so
+/// a nested Fletch — which inherits the overlay as its own `CARGO_HOME` —
+/// still knows where the credentials come from ([`user_home_from`]).
+pub const USER_HOME_ENV: &str = "FLETCH_CARGO_USER_HOME";
+
 /// The overlay under `cache_root` — the value of `CARGO_HOME` a child gets.
 pub fn overlay(cache_root: &Path) -> PathBuf {
     cache_root.join(SUBDIR)
@@ -85,38 +103,70 @@ pub fn overlay(cache_root: &Path) -> PathBuf {
 /// as a launched child would see it (the login shell's over the app's), else
 /// `~/.cargo`.
 pub fn user_home(home: &Path) -> PathBuf {
-    user_home_from(crate::bin_resolve::effective_env_var("CARGO_HOME"), home)
+    user_home_from(
+        crate::bin_resolve::effective_env_var("CARGO_HOME"),
+        std::env::var_os(USER_HOME_ENV),
+        home,
+    )
 }
 
 /// Pure core of [`user_home`] — the env seam split the other resolvers in
-/// [`super::policy`] use, so it tests hermetically. Two values fall back to
-/// `~/.cargo`:
+/// [`super::policy`] use, so it tests hermetically. Two values fall back:
 ///
-/// - **A relative path.** Cargo resolves a relative `CARGO_HOME` against each
-///   process's working directory, so there is no one credentials file to
-///   link; and a relative link target would resolve from inside the overlay,
-///   never where `exists()` looked.
-/// - **A path inside the toolchain cache root.** A nested Fletch launched from
-///   the Run panel inherits the overlay as its `CARGO_HOME` (the Run env is
-///   its process env). Taken at face value, its own `prepare` would relink the
-///   overlay's credentials to *themselves* — a dangling loop that hides them
-///   from every instance sharing the overlay. The nested instance's real home
-///   is the same user's `~/.cargo`.
-fn user_home_from(value: Option<std::ffi::OsString>, home: &Path) -> PathBuf {
+/// - **A relative path** falls back to `~/.cargo`. Cargo resolves a relative
+///   `CARGO_HOME` against each process's working directory, so there is no one
+///   credentials file to link; and a relative link target would resolve from
+///   inside the overlay, never where `exists()` looked.
+/// - **A path inside the toolchain cache root** is an *inherited* overlay: a
+///   nested Fletch launched from the Run panel gets the overlay as its
+///   `CARGO_HOME` (the Run env is its process env). Taken at face value, its
+///   own `prepare` would relink the overlay's credentials to *themselves* — a
+///   dangling loop that hides them from every instance sharing the overlay.
+///   The real home is the one the parent resolved and passed down in
+///   [`USER_HOME_ENV`] (`propagated`), so a custom `/opt/cargo` survives the
+///   nesting; without it, `~/.cargo`.
+fn user_home_from(
+    cargo_home: Option<std::ffi::OsString>,
+    propagated: Option<std::ffi::OsString>,
+    home: &Path,
+) -> PathBuf {
     let default = home.join(".cargo");
-    let Some(v) = value.filter(|v| !v.is_empty()) else {
+    let absolute = |v: Option<std::ffi::OsString>| {
+        v.filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+            .filter(|p| p.is_absolute())
+    };
+    let Some(dir) = absolute(cargo_home) else {
         return default;
     };
-    let dir = PathBuf::from(v);
     let cache_root = super::policy::toolchain_cache_root(home);
-    if dir.is_relative()
-        || dir.starts_with(&cache_root)
+    let inherited = dir.starts_with(&cache_root)
         || super::policy::resolve_existing_prefix(&dir)
-            .starts_with(super::policy::resolve_existing_prefix(&cache_root))
-    {
-        return default;
+            .starts_with(super::policy::resolve_existing_prefix(&cache_root));
+    if inherited {
+        return absolute(propagated).unwrap_or(default);
     }
     dir
+}
+
+/// Whether cargo, run in `cwd` with the overlay as its home, still sees the
+/// user's global config: either `user_home` holds none, or cargo's ancestor
+/// walk reaches it — the home is a `.cargo` dir and `cwd` lies under its
+/// parent (the walk looks for `<ancestor>/.cargo/config.toml`, so a home
+/// named anything else is never found that way). When this is false the
+/// launch keeps cargo's real home rather than lose the config (module doc).
+pub fn config_reachable(user_home: &Path, cwd: &Path) -> bool {
+    if !CONFIG_FILES.iter().any(|f| user_home.join(f).exists()) {
+        return true;
+    }
+    if user_home.file_name() != Some(std::ffi::OsStr::new(".cargo")) {
+        return false;
+    }
+    let Some(parent) = user_home.parent() else {
+        return false;
+    };
+    let cwd = super::policy::resolve_existing_prefix(cwd);
+    cwd.starts_with(parent) || cwd.starts_with(super::policy::resolve_existing_prefix(parent))
 }
 
 /// Create (or repair) the overlay under `cache_root`, linking each shared file
@@ -161,12 +211,19 @@ pub fn prepare(cache_root: &Path, source: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// The env pair pointing cargo at the overlay.
-pub fn env(cache_root: &Path) -> (String, String) {
-    (
-        "CARGO_HOME".to_string(),
-        overlay(cache_root).to_string_lossy().into_owned(),
-    )
+/// The env pointing cargo at the overlay, and telling a nested Fletch which
+/// real home it was prepared from.
+pub fn env(cache_root: &Path, user_home: &Path) -> [(String, String); 2] {
+    [
+        (
+            "CARGO_HOME".to_string(),
+            overlay(cache_root).to_string_lossy().into_owned(),
+        ),
+        (
+            USER_HOME_ENV.to_string(),
+            user_home.to_string_lossy().into_owned(),
+        ),
+    ]
 }
 
 #[cfg(test)]
@@ -186,33 +243,99 @@ mod tests {
     fn user_home_honors_an_absolute_cargo_home_and_falls_back_otherwise() {
         let home = Path::new("/Users/u");
         let os = |s: &str| Some(std::ffi::OsString::from(s));
-        assert_eq!(user_home_from(None, home), home.join(".cargo"));
-        assert_eq!(user_home_from(os(""), home), home.join(".cargo"));
+        assert_eq!(user_home_from(None, None, home), home.join(".cargo"));
+        assert_eq!(user_home_from(os(""), None, home), home.join(".cargo"));
         assert_eq!(
-            user_home_from(os("/opt/cargo"), home),
+            user_home_from(os("/opt/cargo"), None, home),
             PathBuf::from("/opt/cargo")
         );
         // Relative: cargo resolves it per working directory, nothing to link.
         assert_eq!(
-            user_home_from(os("vendor/cargo"), home),
+            user_home_from(os("vendor/cargo"), None, home),
             home.join(".cargo")
         );
-        // The overlay itself, as a nested Fletch inherits it from the Run env:
-        // linking the overlay's config to itself would hide it from everyone.
-        let inherited = overlay(&super::super::policy::toolchain_cache_root(home));
+        // The propagated value only matters for an inherited overlay.
         assert_eq!(
-            user_home_from(Some(inherited.into_os_string()), home),
+            user_home_from(os("/opt/cargo"), os("/elsewhere"), home),
+            PathBuf::from("/opt/cargo")
+        );
+    }
+
+    /// A nested Fletch inherits the overlay as its `CARGO_HOME`. Linking the
+    /// overlay's credentials to themselves would hide them from everyone, and
+    /// assuming `~/.cargo` would swap a parent's custom home for the default;
+    /// the parent's resolved home travels in [`USER_HOME_ENV`].
+    #[test]
+    fn user_home_of_a_nested_fletch_is_the_one_its_parent_passed_down() {
+        let home = Path::new("/Users/u");
+        let os = |s: &str| Some(std::ffi::OsString::from(s));
+        let inherited =
+            || Some(overlay(&super::super::policy::toolchain_cache_root(home)).into_os_string());
+        assert_eq!(
+            user_home_from(inherited(), os("/opt/cargo"), home),
+            PathBuf::from("/opt/cargo")
+        );
+        assert_eq!(user_home_from(inherited(), None, home), home.join(".cargo"));
+        // A relative or blank hand-me-down is no better than none.
+        assert_eq!(
+            user_home_from(inherited(), os("cargo"), home),
+            home.join(".cargo")
+        );
+        assert_eq!(
+            user_home_from(inherited(), os(""), home),
             home.join(".cargo")
         );
     }
 
     #[test]
-    fn env_points_inside_the_granted_root() {
+    fn env_points_inside_the_granted_root_and_passes_the_user_home_down() {
         let root = Path::new("/Users/u/.fletch/toolchain-cache");
-        let (var, value) = env(root);
+        let user = Path::new("/opt/cargo");
+        let [(var, value), (passed_var, passed)] = env(root, user);
         assert_eq!(var, "CARGO_HOME");
         let p = PathBuf::from(value);
         assert!(p.starts_with(root) && p != root);
+        assert_eq!(passed_var, USER_HOME_ENV);
+        assert_eq!(PathBuf::from(passed), user);
+    }
+
+    /// The redirect happens only where cargo's ancestor walk still reaches an
+    /// existing global config: a `.cargo` home whose parent is above `cwd`.
+    /// Anything else keeps the real home rather than lose the config.
+    #[test]
+    fn config_is_reachable_only_from_under_the_home_dir_of_a_dot_cargo_home() {
+        let td = tempfile::tempdir().unwrap();
+        let user_home = td.path().join(".cargo");
+        let project = td.path().join("code/proj");
+        std::fs::create_dir_all(&user_home).unwrap();
+        std::fs::create_dir_all(&project).unwrap();
+        let outside = tempfile::tempdir().unwrap();
+
+        // No config at all: nothing to lose, redirect from anywhere.
+        assert!(config_reachable(&user_home, &project));
+        assert!(config_reachable(&user_home, outside.path()));
+
+        std::fs::write(user_home.join("config.toml"), "[build]\n").unwrap();
+        assert!(config_reachable(&user_home, &project));
+        assert!(config_reachable(&user_home, td.path()));
+        assert!(!config_reachable(&user_home, outside.path()));
+        // A checkout that doesn't exist yet still resolves by its prefix.
+        assert!(config_reachable(
+            &user_home,
+            &td.path().join("later/checkout")
+        ));
+
+        // The legacy name counts as a config too.
+        std::fs::remove_file(user_home.join("config.toml")).unwrap();
+        std::fs::write(user_home.join("config"), "[build]\n").unwrap();
+        assert!(!config_reachable(&user_home, outside.path()));
+
+        // A custom home is never found by the walk, which looks only for
+        // `<ancestor>/.cargo/config.toml`.
+        let custom = td.path().join("opt/cargo");
+        std::fs::create_dir_all(&custom).unwrap();
+        std::fs::write(custom.join("config.toml"), "[build]\n").unwrap();
+        assert!(!config_reachable(&custom, &td.path().join("opt/proj")));
     }
 
     #[test]

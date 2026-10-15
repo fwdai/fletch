@@ -32,21 +32,35 @@ pub use seatbelt::{
 /// the shared root created host-side, the cargo overlay prepared
 /// ([`cargo_home`]), and the env pointing every toolchain at them. Agents and
 /// Run commands call this alike, so both halves of the app share one warm
-/// cache instead of maintaining two.
+/// cache instead of maintaining two. `cwd` is where the child's commands run
+/// (the agent's checkout, the Run target).
 ///
 /// Creating the root here matters: the profile grants `(subpath <root>)`,
 /// which lets a tool create the root itself but not its parent. Best-effort
 /// throughout — a failure means the toolchain's writes fail the way they did
 /// before the redirect existed, never that the sandbox is looser. Cargo in
-/// particular is only redirected once its overlay is in place: without the
-/// linked-in config, a bare redirect would hide the user's cargo config, so a
-/// failed overlay leaves `CARGO_HOME` alone and cargo writes fail closed.
-pub fn prepare_toolchain_cache(home: &std::path::Path) -> Vec<(String, String)> {
+/// particular is redirected only when its global config stays visible from
+/// `cwd` and its overlay is in place ([`cargo_home::config_reachable`]);
+/// otherwise `CARGO_HOME` is left alone, cargo reads its real home exactly
+/// as on the host, and its writes fail closed.
+pub fn prepare_toolchain_cache(
+    home: &std::path::Path,
+    cwd: &std::path::Path,
+) -> Vec<(String, String)> {
     let root = toolchain_cache_root(home);
     let _ = std::fs::create_dir_all(&root);
     let mut env = toolchain_cache_env(&root);
-    match cargo_home::prepare(&root, &cargo_home::user_home(home)) {
-        Ok(()) => env.push(cargo_home::env(&root)),
+    let user_home = cargo_home::user_home(home);
+    if !cargo_home::config_reachable(&user_home, cwd) {
+        tracing::info!(
+            cwd = %cwd.display(),
+            cargo_home = %user_home.display(),
+            "cargo keeps its real home: its global config would not be found from this directory"
+        );
+        return env;
+    }
+    match cargo_home::prepare(&root, &user_home) {
+        Ok(()) => env.extend(cargo_home::env(&root, &user_home)),
         Err(e) => tracing::warn!(
             error = %e,
             "could not prepare the sandboxed cargo home; cargo writes will fail closed"
