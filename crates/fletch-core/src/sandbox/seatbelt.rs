@@ -85,14 +85,8 @@ impl SandboxEngine for SandboxExecEngine {
         // root the profile grants, so host toolchains (bun, cargo, gem, …) have
         // somewhere legitimate to write instead of failing closed — or being
         // redirected into the checkout by an improvising agent. See
-        // `policy::toolchain_cache_root`.
-        let cache_root = policy::toolchain_cache_root(ctx.home);
-        // Create it host-side: the profile grants `(subpath <root>)`, which lets
-        // a tool create the root itself but not its parent, and best-effort is
-        // right — a failure here just means the toolchain writes fail the way
-        // they do today, never that the sandbox is looser.
-        let _ = std::fs::create_dir_all(&cache_root);
-        let mut env = policy::toolchain_cache_env(&cache_root);
+        // `policy::toolchain_cache_root` and `cargo_home`.
+        let mut env = super::prepare_toolchain_cache(ctx.home);
         // Claude reads it once at start and ranks it above any `/login`
         // credential in the config dir, and it can't refresh it — which is the
         // point: refreshing is the host's job (`agent::host_login::claude`).

@@ -1,3 +1,4 @@
+pub mod cargo_home;
 pub(crate) mod container;
 pub mod docker;
 mod engine;
@@ -26,6 +27,33 @@ pub use seatbelt::{
     build_run_profile, cleanup_nested_checkouts_roots, cleanup_nested_rpc_roots,
     nested_checkouts_root, nested_rpc_root, profile_args, SANDBOX_EXEC,
 };
+
+/// Everything a confined child needs to use the redirected toolchain caches:
+/// the shared root created host-side, the cargo overlay prepared
+/// ([`cargo_home`]), and the env pointing every toolchain at them. Agents and
+/// Run commands call this alike, so both halves of the app share one warm
+/// cache instead of maintaining two.
+///
+/// Creating the root here matters: the profile grants `(subpath <root>)`,
+/// which lets a tool create the root itself but not its parent. Best-effort
+/// throughout — a failure means the toolchain's writes fail the way they did
+/// before the redirect existed, never that the sandbox is looser. Cargo in
+/// particular is only redirected once its overlay is in place: without the
+/// linked-in config, a bare redirect would hide the user's cargo config, so a
+/// failed overlay leaves `CARGO_HOME` alone and cargo writes fail closed.
+pub fn prepare_toolchain_cache(home: &std::path::Path) -> Vec<(String, String)> {
+    let root = toolchain_cache_root(home);
+    let _ = std::fs::create_dir_all(&root);
+    let mut env = toolchain_cache_env(&root);
+    match cargo_home::prepare(&root, &cargo_home::user_home(home)) {
+        Ok(()) => env.push(cargo_home::env(&root)),
+        Err(e) => tracing::warn!(
+            error = %e,
+            "could not prepare the sandboxed cargo home; cargo writes will fail closed"
+        ),
+    }
+    env
+}
 
 /// The `settings` key holding the user's engine choice; values are
 /// [`EngineKind::as_setting`] spellings, default `sandbox-exec`.
