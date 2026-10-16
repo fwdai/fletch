@@ -1,28 +1,20 @@
 import type { ReactNode } from "react";
 import { Icon } from "@/components/Icon";
-import type { ActionTone, GitPanelState, StatusKind } from "@/components/RightPanel/primaryActions";
+import type { ActionTone } from "@/components/RightPanel/primaryActions";
 import { SplitAction, type SplitActionItem } from "./SplitAction";
-import { GitLink, Spinner } from "./shared";
+import { Spinner } from "./shared";
 
-/** States whose idle status would only repeat the header: the pill and its
- *  text already say "PR #7 · checks failing", "#7 · closed", "#7 → main". The
- *  slot stays empty and the action button stands alone. */
-const HEADER_SAYS_IT: readonly GitPanelState[] = ["pr-open", "pr-closed", "merged"];
-
-/** The pinned footer's action row: a single status slot (busy spinner →
- *  delegation → transient notice → the idle status) followed by the split
- *  action button. The idle status says only what the header doesn't. */
+/** The pinned footer's action row: one status slot about *now* — a busy
+ *  spinner, the agent's delegation, a transient notice, why the button is dead
+ *  — then the split action button. What is wrong and what comes next is the
+ *  ladder's to say, so at rest the slot carries only `idle`: the one note that
+ *  is an affordance rather than a status (who writes the commit message). */
 export function ActionBar({
-  statusKind,
-  statusLabel,
   idle,
   busy,
   delegationLabel,
   autoAttempt,
   notice,
-  panelState,
-  pushedLink,
-  aheadCount,
   items,
   selectedKey,
   tone,
@@ -31,10 +23,7 @@ export function ActionBar({
   onSelect,
   onRun,
 }: {
-  statusKind: StatusKind;
-  statusLabel: string;
-  /** Replaces `statusLabel` in the idle slot when set — the changes state's
-   *  "who writes the commit message" note (see `CommitStatus`). */
+  /** The resting note beside the button, when one is worth the space. */
   idle?: ReactNode;
   busy: string | null;
   delegationLabel: string | null;
@@ -43,9 +32,6 @@ export function ActionBar({
    *  user wants to know before it gives up. */
   autoAttempt: number | null;
   notice: string | null;
-  panelState: GitPanelState;
-  pushedLink: string | null;
-  aheadCount: number;
   items: SplitActionItem[];
   selectedKey: string;
   tone: ActionTone;
@@ -58,7 +44,6 @@ export function ActionBar({
   onSelect: (key: string) => void;
   onRun: () => void;
 }) {
-  const showIdle = idle != null || !HEADER_SAYS_IT.includes(panelState);
   return (
     <div className="git-act flex-center">
       {busy ? (
@@ -95,23 +80,9 @@ export function ActionBar({
           <Icon name="alert" size={11} />
           <span>{mainReason}</span>
         </div>
-      ) : showIdle ? (
-        <div className={`git-act-status flex-center text-xs ${statusKind}`}>
-          <span className="d" />
-          <span className="lbl">
-            {idle != null ? (
-              idle
-            ) : panelState === "pushed" && pushedLink ? (
-              <>
-                <GitLink href={pushedLink}>
-                  {aheadCount === 1 ? "1 commit" : `${aheadCount} commits`}
-                </GitLink>
-                {" pushed · no PR yet"}
-              </>
-            ) : (
-              statusLabel
-            )}
-          </span>
+      ) : idle != null ? (
+        <div className="git-act-status flex-center text-xs">
+          <span className="lbl">{idle}</span>
         </div>
       ) : null}
       <SplitAction

@@ -19,25 +19,17 @@ function checkTone(run: CheckRun): "ok" | "fail" | "skip" | "run" {
   }
 }
 
+/** The check runs, one row each, under the ladder's Checks row (which carries
+ *  the rollup). Failing first, then running, then the rest — the actionable
+ *  rows lead. */
 export function ChecksSection({ checks, prUrl }: { checks: PrChecks; prUrl: string }) {
   if (checks.total === 0) return null;
-  // Failing first, then running, then the rest — the actionable rows lead.
   const weight = (r: CheckRun) => (checkTone(r) === "fail" ? 0 : checkTone(r) === "run" ? 1 : 2);
   const runs = [...checks.runs].sort((a, b) => weight(a) - weight(b));
   const shown = runs.slice(0, 6);
   const hidden = runs.length - shown.length;
-  const summary =
-    checks.rollup === "failing"
-      ? `${checks.failed} failing`
-      : checks.rollup === "pending"
-        ? `${checks.total - checks.pending} of ${checks.total} done`
-        : "all passing";
   return (
     <div className="pr-checks">
-      <div className="pr-checks-h text-xs">
-        <span>Checks</span>
-        <span className={`pr-checks-sum ${checks.rollup}`}>{summary}</span>
-      </div>
       {shown.map((r) => {
         const tone = checkTone(r);
         return (

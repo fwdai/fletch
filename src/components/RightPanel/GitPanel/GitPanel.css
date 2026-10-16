@@ -9,112 +9,135 @@
   container-type: inline-size;
 }
 
-/* ── color-coded status header ──────────────────────────────────────
-   The panel's at-a-glance state signal: a tinted strip whose color carries the
-   state before a word is read. clean=green · uncommitted=amber · pushed/PR=blue
-   · fixable (can't merge / conflicts)=orange · ready=green · merged=purple. */
-.git-hdr {
+/* ── lanes: the header ───────────────────────────────────────────────
+   One row per branch-and-PR of the checkout (lanes.ts). Quiet chrome — bg-1
+   and a soft rule — because the colour that matters is the PR chip's (the
+   app-wide PR tint) and the ladder's marks below it; a tinted strip here would
+   shout over both. With one lane the row simply is the header. */
+.git-lanes {
   flex-shrink: 0;
-  gap: 8px;
-  min-height: 40px;
-  box-sizing: border-box;
-  padding: 9px 14px;
+  display: flex;
+  flex-direction: column;
+  padding: 4px 0;
+  background: var(--bg-1);
   border-bottom: 1px solid var(--bd-soft);
-  background: transparent;
-  transition:
-    background 0.25s var(--ease),
-    border-color 0.25s var(--ease);
 }
-@media (prefers-reduced-motion: reduce) {
-  .git-hdr {
-    transition: none;
-  }
+.git-lane {
+  gap: 8px;
+  min-height: 32px;
+  padding: 0 10px 0 14px;
+  color: var(--fg-2);
 }
-.git-hdr .pill {
-  flex-shrink: 0;
-  font-weight: 700;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-  padding: 2px 7px;
-  border-radius: 999px;
-  white-space: nowrap;
-}
-/* the pill as the PR link (pr-open / closed / merged): same look, plus a ↗ and
-   a hover, so the one link out to the PR is the thing that names it */
-.git-hdr .pill-link {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  border: 0;
-  /* family only — the `font` shorthand would also reset the .text-xs size */
-  font-family: inherit;
-  font-weight: 700;
+/* several lanes: each row picks which one the ladder describes. Inset and
+   rounded like a list row, so the group reads as choices, not a header. */
+.git-lanes.pick .git-lane {
+  margin: 0 6px;
+  padding: 0 4px 0 8px;
+  border-radius: var(--r-sm);
   cursor: pointer;
-  transition: filter 0.12s;
+  transition: var(--transition-ui);
 }
-.git-hdr .pill-link:hover {
-  filter: brightness(1.15);
+.git-lanes.pick .git-lane:hover {
+  background: var(--hover);
 }
-.git-hdr .pill-link svg {
-  opacity: 0.7;
+.git-lanes.pick .git-lane.viewed {
+  background: var(--selected);
 }
-.git-hdr .hdr-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--fg-3);
+.git-lanes.pick .git-lane:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 1px var(--accent-line);
+}
+/* the branch glyph is lit on the lane the working tree is on */
+.ln-tree {
+  display: inline-flex;
+  color: var(--fg-3);
   flex-shrink: 0;
 }
-.git-hdr .bn {
+.git-lane.current .ln-tree {
+  color: var(--fg-1);
+}
+.ln-branch {
+  flex: 0 1 auto;
+  min-width: 6ch;
   font-family: var(--font-mono);
   color: var(--fg-1);
-  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.git-hdr .base {
+.git-lane.current .ln-branch,
+.git-lane.viewed .ln-branch {
+  color: var(--fg-0);
+}
+.ln-base {
   font-family: var(--font-mono);
   color: var(--fg-3);
   flex-shrink: 0;
 }
-.git-hdr .hdr-meta {
+/* the PR chip is the one link out to the PR; the tint is the app's PR tint */
+.ln-pr {
+  display: inline-flex;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.ln-pr:hover .ag-badge {
+  background: color-mix(in oklch, var(--badge-color), transparent 74%);
+}
+.ln-pr:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 1px var(--accent-line);
+}
+/* the slot a PR will fill: dashed, so the absence is a shape, not a gap */
+.ln-pr-none {
+  height: 16px;
+  padding: 0 5px;
+  border: 1px dashed var(--bd-strong);
+  border-radius: 4px;
+  line-height: 14px;
+  font-family: var(--font-mono);
+  color: var(--fg-3);
+  flex-shrink: 0;
+}
+.ln-meta {
   margin-left: auto;
-  display: flex;
-  align-items: center;
   gap: 10px;
   flex-shrink: 0;
 }
-.git-hdr .hdr-diff {
-  display: flex;
-  gap: 8px;
-  font-family: var(--font-mono);
+.ln-meta:empty {
+  display: none;
 }
-.git-hdr .hdr-diff .add {
+/* the tree's diff, on the lane it is on */
+.ln-diff {
+  display: flex;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+.ln-diff .add {
   color: var(--success);
 }
-.git-hdr .hdr-diff .rem {
+.ln-diff .rem {
   color: var(--danger);
 }
-.git-hdr .hdr-ext {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--fg-3);
-  padding: 2px;
-  border-radius: var(--r-sm);
-  cursor: pointer;
-  transition:
-    color 0.12s,
-    background 0.12s;
+/* a narrow panel keeps the branch name and the PR chip — what the lane is —
+   and lets go of the base, then the tree's diff (the Changes row counts it) */
+@container (max-width: 300px) {
+  .ln-base {
+    display: none;
+  }
 }
-.git-hdr .hdr-ext:hover {
-  color: var(--fg-1);
-  background: var(--hover);
+@container (max-width: 250px) {
+  .ln-diff {
+    display: none;
+  }
 }
-/* autopilot switch — same footprint as the GitHub link beside it. Lit zap = on
-   (the accent the "started automatically" mark uses), struck zap = off. */
-.git-hdr .hdr-auto {
+/* autopilot switch, on the focused PR's lane — the lane it governs. Lit zap =
+   on (the accent the "started automatically" mark uses), struck zap = off. */
+.git-lanes .hdr-auto {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -129,70 +152,18 @@
     background 0.12s,
     opacity 0.12s;
 }
-.git-hdr .hdr-auto.off {
+.git-lanes .hdr-auto.off {
   color: var(--fg-3);
 }
-.git-hdr .hdr-auto:hover:not(:disabled) {
+.git-lanes .hdr-auto:hover:not(:disabled) {
   background: var(--hover);
 }
-.git-hdr .hdr-auto.off:hover:not(:disabled) {
+.git-lanes .hdr-auto.off:hover:not(:disabled) {
   color: var(--fg-1);
 }
-.git-hdr .hdr-auto:disabled {
+.git-lanes .hdr-auto:disabled {
   opacity: 0.45;
   cursor: default;
-}
-
-/* per-state tints — header background, bottom border, and pill */
-.git-hdr.k-clean {
-  background: color-mix(in oklch, var(--success), transparent 94%);
-}
-.git-hdr.k-clean .hdr-dot {
-  background: var(--success);
-}
-.git-hdr.k-changes {
-  background: color-mix(in oklch, var(--warn), transparent 91%);
-  border-bottom-color: color-mix(in oklch, var(--warn), transparent 78%);
-}
-.git-hdr.k-changes .pill {
-  background: color-mix(in oklch, var(--warn), transparent 80%);
-  color: var(--warn);
-}
-.git-hdr.k-info {
-  background: color-mix(in oklch, var(--info), transparent 91%);
-  border-bottom-color: color-mix(in oklch, var(--info), transparent 78%);
-}
-.git-hdr.k-info .pill {
-  background: color-mix(in oklch, var(--info), transparent 80%);
-  color: var(--info);
-}
-.git-hdr.k-att {
-  background: color-mix(in oklch, var(--att), transparent 88%);
-  border-bottom-color: color-mix(in oklch, var(--att), transparent 70%);
-}
-.git-hdr.k-att .pill {
-  background: color-mix(in oklch, var(--att), transparent 78%);
-  color: var(--att);
-}
-.git-hdr.k-ready {
-  background: color-mix(in oklch, var(--success), transparent 89%);
-  border-bottom-color: color-mix(in oklch, var(--success), transparent 72%);
-}
-.git-hdr.k-ready .pill {
-  background: color-mix(in oklch, var(--success), transparent 78%);
-  color: var(--success);
-}
-.git-hdr.k-merged {
-  background: color-mix(in oklch, var(--merged), transparent 88%);
-  border-bottom-color: color-mix(in oklch, var(--merged), transparent 72%);
-}
-.git-hdr.k-merged .pill {
-  background: color-mix(in oklch, var(--merged), transparent 76%);
-  color: var(--merged);
-}
-.git-hdr.k-neutral .pill {
-  background: var(--bg-3);
-  color: var(--fg-2);
 }
 
 /* the one quiet line under the header while sub-agents work in their own
@@ -226,44 +197,257 @@
     transition: none;
   }
 }
-.git-files {
+/* ── the ladder: the body ─────────────────────────────────────────────
+   The stages ladder.ts derives — changes · commits · pull request · checks ·
+   review — on one rail. The rail is the panel's one structural line: it says
+   these rows are steps of a single thing, not sections that happen to stack.
+   Marks sit on the rail; what a row has to show hangs to its right. */
+.git-ladder {
+  list-style: none;
+  margin: 0;
+  padding: 10px 18px 12px;
   display: flex;
   flex-direction: column;
 }
-
-/* files list */
-.git-files-h {
-  position: sticky;
-  top: 0;
-  z-index: 1;
-  background: var(--bg-1);
-  padding: 8px 18px 7px;
-  font-weight: 600;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--fg-3);
-  border-top: 1px solid var(--bd-soft);
-  border-bottom: 1px solid var(--bd-soft);
-  justify-content: space-between;
+.git-rung {
+  position: relative;
+  padding-left: 24px;
+}
+/* the rail: from under this mark to the next row's */
+.git-rung::before {
+  content: "";
+  position: absolute;
+  left: 6px;
+  top: 21px;
+  bottom: -6px;
+  width: 1px;
+  background: var(--bd-soft);
+}
+.git-rung:last-child::before {
+  display: none;
+}
+.rg-row {
+  gap: 4px;
+  min-height: 26px;
+}
+.rg-head {
+  flex: 1;
+  min-width: 0;
+  gap: 7px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  text-align: left;
+}
+button.rg-head {
+  cursor: pointer;
+}
+/* the mark: 13px on the rail, centred on the row's line */
+.rg-mark {
+  position: absolute;
+  left: 0;
+  top: 6.5px;
+  width: 13px;
+  height: 13px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+}
+.rg-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+/* the tones — one variable per row, so a mark and its summary agree */
+.t-warn {
+  --rg-tone: var(--warn);
+}
+.t-att {
+  --rg-tone: var(--att);
+}
+.t-danger {
+  --rg-tone: var(--danger);
+}
+.t-info {
+  --rg-tone: var(--info);
+}
+.t-merged {
+  --rg-tone: var(--merged);
+}
+.t-neutral {
+  --rg-tone: var(--fg-2);
+}
+/* not reached: a hollow ring */
+.m-idle .rg-dot {
+  border: 1px solid var(--bd-strong);
+}
+/* wants attention: a filled dot in its tone; the current step gets a halo */
+.m-attention .rg-dot {
+  background: var(--rg-tone);
+}
+.m-attention.current .rg-mark {
+  background: color-mix(in oklch, var(--rg-tone), transparent 84%);
+}
+/* done: a check on a soft green disc (purple once landed) */
+.m-done .rg-mark {
+  color: var(--success);
+  background: color-mix(in oklch, var(--success), transparent 86%);
+}
+.m-done.t-merged .rg-mark {
+  color: var(--merged);
+  background: color-mix(in oklch, var(--merged), transparent 86%);
+}
+.m-running .rg-mark {
+  color: var(--info);
+}
+/* title · summary: the title holds its weight, the summary says the state */
+.rg-title {
+  flex-shrink: 0;
+  font-weight: 500;
+  color: var(--fg-2);
+}
+.rg-sum {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
+  color: var(--fg-3);
 }
-.git-files-h .n {
-  font-family: var(--font-mono);
-  letter-spacing: 0;
+.rg-sum::before {
+  content: "·";
+  margin-right: 7px;
+  color: var(--fg-3);
+}
+.m-attention .rg-title {
   color: var(--fg-1);
-  margin-left: 4px;
 }
-.git-files-h .actions {
-  display: flex;
-  gap: 2px;
+.m-attention .rg-sum {
+  color: var(--rg-tone);
+}
+.m-running .rg-sum {
+  color: var(--info);
+}
+.m-idle .rg-title {
+  color: var(--fg-3);
+}
+.git-rung.current .rg-title {
+  color: var(--fg-0);
+  font-weight: 600;
+}
+/* the disclosure chevron appears on hover and stays while open */
+.rg-chev {
+  margin-left: auto;
+  flex-shrink: 0;
+  color: var(--fg-3);
   opacity: 0;
-  transition: opacity 0.15s;
+  transition:
+    opacity 0.12s,
+    transform 0.15s var(--ease);
 }
-.git-files-h:hover .actions {
+.rg-head:hover .rg-chev,
+.rg-head:focus-visible .rg-chev,
+.git-rung.open .rg-chev {
   opacity: 1;
 }
+.git-rung.open .rg-chev {
+  transform: rotate(90deg);
+}
+.rg-head:focus-visible {
+  outline: none;
+  border-radius: var(--r-xs);
+  box-shadow: 0 0 0 1px var(--accent-line);
+}
+@media (prefers-reduced-motion: reduce) {
+  .rg-chev {
+    transition: none;
+  }
+}
+/* a row's own control (the changes refresh), shown on hover */
+.rg-act {
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+.rg-row:hover .rg-act,
+.rg-act:focus-visible {
+  opacity: 1;
+}
+/* what opens under a row */
+.rg-body {
+  padding: 2px 0 10px;
+}
+.rg-line {
+  color: var(--fg-2);
+}
+/* the proposal itself: title, provenance, the ways in */
+.rg-pr-title {
+  color: var(--fg-0);
+  line-height: var(--lh-snug);
+}
+.rg-pr-from {
+  gap: 5px;
+  margin-top: 3px;
+  color: var(--fg-3);
+  font-family: var(--font-mono);
+}
+.rg-pr-branch {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rg-pr-origin {
+  flex-shrink: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-sans);
+}
+.rg-pr-origin-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--fg-2);
+  font: inherit;
+  cursor: pointer;
+}
+.rg-pr-origin-link:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}
+.rg-links {
+  gap: 14px;
+  margin-top: 8px;
+}
+.rg-link {
+  gap: 5px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--fg-2);
+  cursor: pointer;
+}
+.rg-link:hover {
+  color: var(--fg-0);
+}
+/* the lists that live under a row sit flush with its text, with their hover
+   bleeding a little past it — the row's rail stays untouched */
+.rg-body .pr-checks,
+.rg-body .pr-comments {
+  margin-top: 0;
+}
+.rg-body .git-file {
+  padding: 5px 8px;
+  margin: 0 -8px;
+  border-radius: var(--r-sm);
+}
+
+/* files list */
 .git-file-list {
-  padding: 4px 0;
+  padding: 0;
 }
 .git-file {
   gap: 10px;
@@ -376,107 +560,7 @@
   gap: 8px;
 }
 
-.git-card {
-  padding: 18px;
-  border-bottom: 1px solid var(--bd-soft);
-}
-.git-card-h {
-  font-weight: 600;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--fg-3);
-  margin-bottom: 8px;
-}
-.git-card-title {
-  font-weight: 500;
-  color: var(--fg-0);
-  line-height: var(--lh-snug);
-}
-.git-card-meta {
-  color: var(--fg-2);
-  margin-top: 4px;
-  font-family: var(--font-mono);
-}
-/* the PR's head branch: quiet provenance under the meta, one line however long */
-.git-card-branch {
-  gap: 5px;
-  margin-top: 3px;
-  color: var(--fg-3);
-  font-family: var(--font-mono);
-}
-.git-card-branch-name {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-/* "opened by <sub-agent>" — provenance on the branch line; the branch name
- * truncates first, the sub-agent label after it. */
-.git-card-origin {
-  flex-shrink: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-family: var(--font-sans);
-}
-.git-card-origin-link {
-  padding: 0;
-  border: 0;
-  background: none;
-  color: var(--fg-2);
-  font: inherit;
-  cursor: pointer;
-}
-.git-card-origin-link:hover {
-  color: var(--accent);
-  text-decoration: underline;
-}
-.git-card-row {
-  display: flex;
-  gap: 12px;
-  margin-top: 12px;
-  color: var(--fg-2);
-}
-.git-card-row .ok {
-  color: var(--success);
-}
-.git-card-row .att {
-  color: var(--att);
-}
-.git-card-row .sep {
-  color: var(--fg-3);
-}
-.git-card-link {
-  gap: 5px;
-  margin-top: 10px;
-  font-size: var(--fs-sm);
-  color: var(--fg-2);
-  text-decoration: none;
-  width: fit-content;
-  background: none;
-  border: 0;
-  padding: 0;
-  cursor: pointer;
-}
-.git-card-link:hover {
-  color: var(--fg-0);
-}
-.git-card-link svg {
-  width: 11px;
-  height: 11px;
-}
-/* row of quiet links in the PR card (Overview · Files · Commits) */
-.git-card-links {
-  display: flex;
-  gap: 14px;
-  margin-top: 12px;
-}
-.git-card-links .git-card-link {
-  margin-top: 0;
-}
-
-/* quiet inline link in copy (e.g. the pushed-state commit/compare link) */
+/* quiet inline link in copy (e.g. the commits row's compare link) */
 .git-link {
   gap: 2px;
   background: none;
@@ -661,34 +745,6 @@
   flex: 1 1 auto;
   min-width: 0;
   color: var(--fg-2);
-}
-.git-act-status .d {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--warn);
-  flex-shrink: 0;
-}
-.git-act-status.clean .d {
-  background: var(--success);
-}
-.git-act-status.ready .d {
-  background: var(--success);
-}
-.git-act-status.info .d {
-  background: var(--info);
-}
-.git-act-status.attention .d {
-  background: var(--att);
-}
-.git-act-status.attention .lbl {
-  color: var(--att);
-}
-.git-act-status.merged .d {
-  background: var(--merged);
-}
-.git-act-status.alert .d {
-  background: var(--danger);
 }
 .git-act-status .lbl {
   min-width: 0;
@@ -1242,45 +1298,6 @@
   color: var(--fg-3);
   background: var(--bg-1);
   border-bottom: 1px solid var(--bd-soft);
-}
-
-/* ── PR switcher: a checkout's PRs as chips under the status header ─────────
-   The focused PR's chip is filled, the rest outlined in their own tint, so the
-   row says both "which PR is this panel" and "what state is each in". */
-.git-pr-switch {
-  flex-shrink: 0;
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 14px;
-  background: var(--bg-1);
-  border-bottom: 1px solid var(--bd-soft);
-}
-.git-pr-switch-chip {
-  display: inline-flex;
-  padding: 0;
-  border: none;
-  border-radius: 4px;
-  background: none;
-  cursor: pointer;
-}
-.git-pr-switch-chip:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 1px var(--accent-line);
-}
-.git-pr-switch .git-pr-switch-chip .ag-badge {
-  background: transparent;
-  box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--badge-color), transparent 55%);
-}
-.git-pr-switch .git-pr-switch-chip[aria-pressed="true"] .ag-badge {
-  background: var(--badge-color);
-  box-shadow: none;
-  color: var(--bg-0);
-  cursor: default;
-}
-.git-pr-switch .git-pr-switch-chip[aria-pressed="false"]:hover .ag-badge {
-  background: color-mix(in oklch, var(--badge-color), transparent 86%);
 }
 
 /* ── Autopilot's mark in the status slot ───────────────────────────────────
