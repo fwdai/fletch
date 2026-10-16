@@ -1,6 +1,5 @@
 import { useCallback, useMemo } from "react";
 import type { MergeState, TrackedRepo } from "@/api";
-import { deriveState } from "@/components/RightPanel/primaryActions";
 import { useAppStore } from "@/store";
 import { checkoutKey } from "@/store/git";
 import { prSnapshot } from "@/util/prState";
@@ -69,16 +68,12 @@ export function useGitPanelData(agentId: string, repo?: TrackedRepo, subdir?: st
   const mergeState: MergeState | null =
     checks?.merge_state ?? (prOpen && prChecksEntry === undefined ? "unknown" : null);
 
-  const panelState = deriveState(gitState, prState);
-
   return {
     gitState,
     prState,
     checks,
     comments,
     mergeState,
-    prOpen,
-    panelState,
     fetchGitState,
     fetchPrState,
   };

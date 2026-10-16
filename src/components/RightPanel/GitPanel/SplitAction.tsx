@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { type KeyboardEvent, useEffect, useRef, useState } from "react";
 import { Icon } from "@/components/Icon";
 import type { ActionTone } from "@/components/RightPanel/primaryActions";
 import {
@@ -16,7 +16,8 @@ import { Spinner } from "./shared";
 // commit mode) select rather than run — the mark on the current pick is what
 // says so. Every other row runs on click; a destructive one asks for a second
 // click, the first swapping in its question. The menu opens upward, since the
-// button is pinned to the panel footer.
+// button is pinned to the panel footer, and walks with the arrow keys: focus
+// lands on the first row when it opens, Escape hands it back to the caret.
 export function SplitAction({
   primary,
   groups,
@@ -44,11 +45,48 @@ export function SplitAction({
   const [open, setOpen] = useState(false);
   // The destructive row waiting for its second click, or null.
   const [armed, setArmed] = useState<string | null>(null);
+  const caretRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
   const busy = busyLabel != null;
   const hasMenu = groups.length > 0;
-  const close = () => {
+  const close = (refocus = false) => {
     setOpen(false);
     setArmed(null);
+    if (refocus) caretRef.current?.focus();
+  };
+
+  // The rows a keyboard can reach, in menu order.
+  const rows = () =>
+    Array.from(menuRef.current?.querySelectorAll<HTMLButtonElement>("button.dd-item") ?? []).filter(
+      (b) => !b.disabled,
+    );
+  useEffect(() => {
+    if (open) rows()[0]?.focus();
+  }, [open]);
+  const onMenuKey = (e: KeyboardEvent<HTMLDivElement>) => {
+    const list = rows();
+    const at = list.findIndex((b) => b === document.activeElement);
+    const go = (i: number) => list[(i + list.length) % list.length]?.focus();
+    switch (e.key) {
+      case "ArrowDown":
+        go(at + 1);
+        break;
+      case "ArrowUp":
+        go(at - 1);
+        break;
+      case "Home":
+        go(0);
+        break;
+      case "End":
+        go(list.length - 1);
+        break;
+      case "Escape":
+        close(true);
+        break;
+      default:
+        return;
+    }
+    e.preventDefault();
   };
 
   const toneClass = tone !== "accent" ? tone : "";
@@ -67,10 +105,12 @@ export function SplitAction({
       </button>
       {hasMenu && (
         <button
+          ref={caretRef}
           type="button"
           className="gsa-caret tip"
           data-tip="More actions"
           aria-label="More actions"
+          aria-haspopup="menu"
           aria-expanded={open}
           disabled={busy}
           onClick={() => (open ? close() : setOpen(true))}
@@ -80,8 +120,8 @@ export function SplitAction({
       )}
       {open && (
         <>
-          <div style={{ position: "fixed", inset: 0, zIndex: 199 }} onClick={close} />
-          <DropdownMenu className="gsa-menu" role="menu">
+          <div style={{ position: "fixed", inset: 0, zIndex: 199 }} onClick={() => close()} />
+          <DropdownMenu ref={menuRef} className="gsa-menu" role="menu" onKeyDown={onMenuKey}>
             {groups.map((g, gi) => (
               <div key={g.title ?? `group-${gi}`} role={g.radio ? "group" : undefined}>
                 {gi > 0 && <DropdownSeparator />}
@@ -105,7 +145,7 @@ export function SplitAction({
                           return;
                         }
                         onPick(a.key);
-                        close();
+                        close(true);
                       }}
                     >
                       <div className="di-i">

@@ -70,23 +70,19 @@ export function GitRepoSection({
   viewed: Lane | null;
   onView: (laneId: string) => void;
 }) {
-  const {
-    gitState,
-    prState,
-    checks,
-    comments,
-    mergeState,
-    panelState,
-    fetchGitState,
-    fetchPrState,
-  } = useGitPanelData(agent.id, repo, subdir);
+  const { gitState, prState, checks, comments, mergeState, fetchGitState, fetchPrState } =
+    useGitPanelData(agent.id, repo, subdir);
 
   const key = checkoutKey(agent.id, subdir);
   const { busy, runBusy, notice, showNotice } = useTransientFeedback(agent.id);
+  // Something to commit: uncommitted files, none of them conflicted (a
+  // conflict is the agent's to reconcile first, not a message to write).
+  const committable =
+    (gitState?.files.length ?? 0) > 0 && !gitState?.files.some((f) => f.kind === "conflicted");
   // A half-written message is this checkout's: a multi-repo workspace drops
   // it when the lane in view moves to another repo, never carrying it across.
   const { override, msg, setMsg, commitRef, customActive, openOverride, revertOverride } =
-    useCommitDraft(key, panelState);
+    useCommitDraft(key, committable);
 
   // This checkout's in-flight delegation, for display only — the lifecycle that
   // clears it runs on the host. Its settled outcome arrives the same way: the
@@ -244,7 +240,7 @@ export function GitRepoSection({
 
   // The commit composer yields while the agent holds a delegation, and only
   // belongs to the lane whose tree it commits.
-  const showCommit = acting && panelState === "changes" && !delegation;
+  const showCommit = acting && committable && !delegation;
   // Keys Fletch refuses to run git over here. While any remain, the git state is
   // stale and every action would fail, so the card replaces the body and the
   // footer steps aside.
