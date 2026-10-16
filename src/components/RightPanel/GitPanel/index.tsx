@@ -64,7 +64,7 @@ export function GitPanel({ agent }: { agent: AgentRecord }) {
             label: sc.repo.label ?? basename(sc.repo.repo_path),
           }
         : undefined;
-      return buildLanes(sets[i], focused, checks[i], gits[i], scope);
+      return buildLanes(sets[i], focused, checks[i], gits[i], scope, sc.repo.branch);
     });
   }, [scopes, gits, prs, checks, sets, delegated]);
 

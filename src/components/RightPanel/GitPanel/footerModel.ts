@@ -13,6 +13,7 @@ import type { IconName } from "@/components/Icon";
 import type { ActionTone, GitCommitAction } from "@/components/RightPanel/primaryActions";
 import { describeMergeGate } from "@/mergeGate";
 import { nextRung, type Rung } from "@/readiness";
+import { plural } from "@/util/format";
 import type { LadderInput } from "./ladderModel";
 
 export interface FooterAction {
@@ -54,8 +55,6 @@ export interface FooterInput extends LadderInput {
   githubConnected: boolean;
   hasOrigin: boolean;
 }
-
-const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
 /** The commit modes as the footer offers them, in the order of how much they
  *  do. The ladder's `commitMode` is the same triple without the prefix. */
@@ -176,11 +175,13 @@ export function buildFooter(input: FooterInput): Footer {
     : { do: "wait", why: "unknown-state" };
   const unblock = githubUnblock(input);
   const primary = primaryOf(rung, input, unblock);
+  // Nothing is known yet: no menu either, rather than a Pull that would run
+  // against a checkout the panel hasn't read.
+  if (!git) return { primary, groups: [] };
 
-  const files = git?.files.length ?? 0;
-  const conflicted = git?.files.some((f) => f.kind === "conflicted") ?? false;
-  const unpushed = git?.unpushed ?? 0;
-  const ahead = git?.ahead ?? 0;
+  const files = git.files.length;
+  const conflicted = git.files.some((f) => f.kind === "conflicted");
+  const { unpushed, ahead } = git;
   const prOpen = pr?.state === "open";
   const gate = prOpen
     ? describeMergeGate(mergeState, {

@@ -17,6 +17,9 @@ export function useCapsuleData(agentId: string) {
   const prState = usePrState(agentId);
   const checks = useAppStore((s) => s.prChecks[agentId] ?? null);
   const prSet = useAppStore((s) => s.prSets[agentId]);
+  const knownBranch = useAppStore(
+    (s) => s.workspace?.agents.find((a) => a.id === agentId)?.repos[0]?.branch ?? null,
+  );
   const prOpen = prState?.state === "open";
   const focusedChecks = prOpen ? checks : null;
 
@@ -25,8 +28,8 @@ export function useCapsuleData(agentId: string) {
     [prSet, prState, focusedChecks],
   );
   const lanes = useMemo(
-    () => buildLanes(prSet, prState, focusedChecks, gitState),
-    [prSet, prState, focusedChecks, gitState],
+    () => buildLanes(prSet, prState, focusedChecks, gitState, undefined, knownBranch),
+    [prSet, prState, focusedChecks, gitState, knownBranch],
   );
 
   return { shortstats, gitState, prState, checks: focusedChecks, prs, lanes };

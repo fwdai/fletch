@@ -10,7 +10,7 @@
 }
 
 /* ── lanes: the header ───────────────────────────────────────────────
-   One row per branch-and-PR of the checkout (lanes.ts). Quiet chrome — bg-1
+   One row per branch-and-PR of the workspace (laneModel.ts). Quiet chrome — bg-1
    and a soft rule — because the colour that matters is the PR chip's (the
    app-wide PR tint) and the ladder's marks below it; a tinted strip here would
    shout over both. With one lane the row simply is the header. */
@@ -210,7 +210,7 @@
   }
 }
 /* ── the ladder: the body ─────────────────────────────────────────────
-   The stages ladder.ts derives — changes · commits · pull request · checks ·
+   The stages ladderModel.ts derives — changes · commits · pull request · checks ·
    review — on one rail. The rail is the panel's one structural line: it says
    these rows are steps of a single thing, not sections that happen to stack.
    Marks sit on the rail; what a row has to show hangs to its right. */
@@ -1318,9 +1318,6 @@ button.rg-head {
 .rg-end {
   gap: 6px;
   margin-top: 12px;
-}
-.rg-end .btn-t svg {
-  margin-right: 5px;
 }
 
 /* ── Autopilot's mark in the status slot ───────────────────────────────────

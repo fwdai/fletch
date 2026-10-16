@@ -118,7 +118,7 @@ export function useGitActions(ctx: GitActionsCtx) {
 
     // Same backstop for the environment: a host from before this action's op
     // existed answers `unknown op`, so say why instead of calling it. The main
-    // button is already dead for this (`useActionBarModel`), but the dispatch
+    // button is already dead for this (`useFooterModel`), but the dispatch
     // has callers that never consult it — the commit composer's Cmd/Ctrl+Enter
     // was dispatching a refused op — so the refusal belongs here too.
     const gateClosed = activeActionGateReason(key);

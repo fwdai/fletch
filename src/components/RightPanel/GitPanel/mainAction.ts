@@ -14,7 +14,7 @@ export interface MainActionState {
 }
 
 export function mainActionState(input: {
-  /** The action the button would run (`useActionBarModel`'s `effectiveKey`). */
+  /** The action the button would run (the footer's `primary.key`). */
   effectiveKey: string;
   delegationActive: boolean;
   /** `describeMergeGate`'s verdict — review, checks and mergeability. Its own

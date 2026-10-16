@@ -66,8 +66,11 @@ export function buildLanes(
   focusedChecks: PrChecks | null,
   git: GitState | null,
   scope?: LaneScope,
+  /** The branch the repo record remembers, for the moment before the first
+   *  git read lands — so a checkout doesn't flash "no branch yet". */
+  knownBranch?: string | null,
 ): Lane[] {
-  const branch = git?.branch || null;
+  const branch = git?.branch || (git ? null : knownBranch) || null;
   const common = scope ? { git, scope } : { git };
   const prLanes: Lane[] = checkoutPrs(set, focused, focusedChecks).map((entry) => {
     const isFocused = entry.state.number === focused?.number;

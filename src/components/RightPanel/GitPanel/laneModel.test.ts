@@ -36,6 +36,14 @@ describe("buildLanes", () => {
     ]);
   });
 
+  it("says the repo's remembered branch while the first git read is in flight", () => {
+    const [lane] = buildLanes(undefined, null, null, null, undefined, "feat-a");
+    expect(lane).toMatchObject({ id: "branch:feat-a", branch: "feat-a", current: true });
+    // Once git has answered, the tree's own branch is the truth, even detached.
+    const [read] = buildLanes(undefined, null, null, git({ branch: "" }), undefined, "feat-a");
+    expect(read.branch).toBeNull();
+  });
+
   it("a detached checkout is one lane with no branch yet", () => {
     const [lane] = buildLanes(undefined, null, null, git({ branch: "" }));
     expect(lane).toMatchObject({ id: "detached", branch: null, current: true });

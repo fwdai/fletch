@@ -11,7 +11,7 @@ import type { LadderRow, RungKey } from "./ladderModel";
 import { GitLink } from "./shared";
 
 // ── The ladder: the panel's body ─────────────────────────────────────────────
-// The rows `ladder.ts` derives, drawn as a rail: a mark per stage on one
+// The rows `ladderModel.ts` derives, drawn as a rail: a mark per stage on one
 // vertical line, so the body reads as a single way to landing rather than a
 // pile of sections. Every row is one line — title · summary — and a row with
 // something to show underneath (files, runs, threads, the PR itself) opens on

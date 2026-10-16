@@ -80,15 +80,17 @@ export function GitRepoSection({
     fetchPrState,
   } = useGitPanelData(agent.id, repo, subdir);
 
+  const key = checkoutKey(agent.id, subdir);
   const { busy, runBusy, notice, showNotice } = useTransientFeedback(agent.id);
+  // A half-written message is this checkout's: a multi-repo workspace drops
+  // it when the lane in view moves to another repo, never carrying it across.
   const { override, msg, setMsg, commitRef, customActive, openOverride, revertOverride } =
-    useCommitDraft(agent.id, panelState);
+    useCommitDraft(key, panelState);
 
   // This checkout's in-flight delegation, for display only — the lifecycle that
   // clears it runs on the host. Its settled outcome arrives the same way: the
   // host's `done` / `abandoned` event posts it to the store, and we merge it
   // with this section's own action notices.
-  const key = checkoutKey(agent.id, subdir);
   const delegation = useAppStore((s) => s.delegations[key]);
   const delegationNotice = useAppStore((s) => s.delegationNotices[key]);
   // Autopilot is how the agent behaves on the focused PR (switched per project
@@ -293,7 +295,7 @@ export function GitRepoSection({
 
             {/* What the agent did on this PR by itself — under the ladder it
              *  describes. Renders nothing until it has actually done something. */}
-            <AutopilotHistory agentId={agent.id} subdir={subdir} />
+            {acting && <AutopilotHistory agentId={agent.id} subdir={subdir} />}
           </>
         )}
       </div>

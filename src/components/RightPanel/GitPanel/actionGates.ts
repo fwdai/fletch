@@ -2,7 +2,7 @@
 // asked to run — by the key `runAction` dispatches.
 //
 // The table sits beside the panel rather than inside a hook because both halves
-// of the panel need the same answer: `useActionBarModel` in render (through
+// of the panel need the same answer: `useFooterModel` in render (through
 // `useGateFor`) to leave the button dead, and `useGitActions.runAction` outside
 // render to refuse the dispatch. Disabling the button alone was not enough —
 // the commit composer's Cmd/Ctrl+Enter calls `runAction` directly, so an older

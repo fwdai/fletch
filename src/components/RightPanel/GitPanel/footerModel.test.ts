@@ -70,8 +70,10 @@ const group = (f: ReturnType<typeof buildFooter>, title: string | undefined) =>
   f.groups.find((g) => g.title === title);
 
 describe("buildFooter · primary follows the ladder", () => {
-  it("loads before the first git read", () => {
-    expect(footer({ git: null }).primary.key).toBe("loading");
+  it("loads before the first git read, with no menu to run blind", () => {
+    const f = footer({ git: null });
+    expect(f.primary.key).toBe("loading");
+    expect(f.groups).toEqual([]);
   });
 
   it("commits uncommitted work in the sticky mode", () => {
