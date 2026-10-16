@@ -100,6 +100,9 @@ export interface ProvidersSlice {
 // into the two views; init() rebuilds it in the background when stale.
 const cachedCatalog = loadCachedCatalog();
 
+/** The limits refreshes out right now, per `provider/account`. */
+const limitsRefreshes = new Map<string, Promise<void>>();
+
 export const createProvidersSlice: SliceCreator<ProvidersSlice> = (set, get) => ({
   providerFlags: {},
   providerVersions: {},
@@ -183,14 +186,30 @@ export const createProvidersSlice: SliceCreator<ProvidersSlice> = (set, get) => 
       // Non-fatal: the meters keep their last reading.
     }
   },
-  refreshProviderLimits: async (provider, account) => {
-    const row = await api.refreshProviderLimits(provider, account);
-    set((s) => ({
-      providerLimits: {
-        ...s.providerLimits,
-        [provider]: { ...s.providerLimits[provider], [account]: row },
-      },
-    }));
+  refreshProviderLimits: (provider, account) => {
+    // One request per account at a time: a second caller (the section's
+    // Refresh limits over a card's own Refresh, or the reverse) joins the one
+    // in flight rather than asking the vendor twice. The engine's refresh
+    // floor is checked before it awaits the vendor, so it wouldn't catch the
+    // overlap itself.
+    const key = `${provider}/${account}`;
+    const inFlight = limitsRefreshes.get(key);
+    if (inFlight) return inFlight;
+    const request = (async () => {
+      try {
+        const row = await api.refreshProviderLimits(provider, account);
+        set((s) => ({
+          providerLimits: {
+            ...s.providerLimits,
+            [provider]: { ...s.providerLimits[provider], [account]: row },
+          },
+        }));
+      } finally {
+        limitsRefreshes.delete(key);
+      }
+    })();
+    limitsRefreshes.set(key, request);
+    return request;
   },
   applyProviderLimitsChange: (key, value) => {
     const next = withLimitsChange(get().providerLimits, key, value);

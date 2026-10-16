@@ -46,8 +46,24 @@ describe("resetLabel", () => {
     expect(resetLabel(secs(at), NOW)).toBe(`resets ${day} ${formatClockTime(at)} · in 3d`);
   });
 
+  it("rounds the clock text to the minute, so one boundary reads the same for every window", () => {
+    const at = NOW + 3 * 24 * HOUR;
+    const day = new Date(at).toLocaleDateString(undefined, { weekday: "short" });
+    const clock = `resets ${day} ${formatClockTime(at)}`;
+    // The countdown still goes by the exact instant.
+    expect(resetLabel(secs(at) - 1, NOW)).toBe(`${clock} · in 2d 23h`);
+    expect(resetLabel(secs(at) + 29, NOW)).toBe(`${clock} · in 3d`);
+  });
+
   it("marks a reset that already passed since the reading", () => {
     expect(resetLabel(secs(NOW - MIN), NOW)).toBe("reset since this reading");
+  });
+
+  it("goes by the exact instant, not the rounded one, to tell a reset has passed", () => {
+    // 19 s away, but rounds down to a minute already behind `now`.
+    const at = NOW + 19_000;
+    expect(resetLabel(secs(at), NOW)).toBe(`resets ${formatClockTime(at)} · in <1m`);
+    expect(resetLabel(secs(NOW - 1000), NOW)).toBe("reset since this reading");
   });
 
   it("has nothing to say without a reset time", () => {
