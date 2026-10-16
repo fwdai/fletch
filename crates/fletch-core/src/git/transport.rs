@@ -65,6 +65,33 @@ pub async fn push_head_to_branch(checkout: &Path, branch: &str) -> Result<()> {
 /// push caller (agent broker, PR broker, Git panel, publish), so the defence
 /// lives here.
 pub async fn push(checkout: &Path, branch: &str, force: bool) -> Result<String> {
+    let source = format!("refs/heads/{branch}");
+    push_source(checkout, &source, branch, force).await
+}
+
+/// [`push`] of one exact commit to `refs/heads/<branch>`: the commit a check
+/// just read, so nothing that lands on the branch between the check and the
+/// push is published. The lease applies as it does for `push`. Git sets no
+/// upstream for a non-branch source, so the tracking ref is set afterwards.
+pub async fn push_commit(
+    checkout: &Path,
+    commit: &str,
+    branch: &str,
+    force: bool,
+) -> Result<String> {
+    let summary = push_source(checkout, commit, branch, force).await?;
+    // Best effort, as `-u` is: a local branch that no longer exists has nothing
+    // to track, and the push already happened.
+    let upstream = format!("origin/{branch}");
+    let _ = super::cmd::git_output(
+        checkout,
+        &["branch", "--set-upstream-to", &upstream, branch],
+    )
+    .await;
+    Ok(summary)
+}
+
+async fn push_source(checkout: &Path, source: &str, branch: &str, force: bool) -> Result<String> {
     // See `push_head_to_branch`: push executes `remote.<origin>.receivepack` /
     // `core.sshCommand` / `core.gitProxy` over ssh/local transport, transport keys
     // that neither hardening layer neutralises, so the refusal runs before we spawn.
@@ -74,7 +101,7 @@ pub async fn push(checkout: &Path, branch: &str, force: bool) -> Result<String> 
     if force {
         cmd.args(["--force-with-lease", "--force-if-includes"]);
     }
-    let refspec = format!("refs/heads/{branch}:refs/heads/{branch}");
+    let refspec = format!("{source}:refs/heads/{branch}");
     cmd.args(["origin", refspec.as_str()]);
     // Auth for the https transport. `pre-push` would fire on the host, but
     // hooks are already neutralised at the spawn seam (`git::hardening`).
