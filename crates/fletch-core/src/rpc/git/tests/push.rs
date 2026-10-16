@@ -203,6 +203,78 @@ async fn git_push_refuses_commits_made_as_someone_else() {
 }
 
 #[tokio::test]
+async fn push_commit_publishes_the_checked_commit_not_the_moved_branch() {
+    let td = tempfile::tempdir().unwrap();
+    let remote = td.path().join("origin.git");
+    run_git(
+        td.path(),
+        &["init", "-q", "--bare", remote.to_str().unwrap()],
+    );
+    let repo = td.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    run_git(&repo, &["init", "-q", "-b", "main"]);
+    run_git(&repo, &["config", "user.email", "t@example.com"]);
+    run_git(&repo, &["config", "user.name", "Tester"]);
+    run_git(
+        &repo,
+        &["remote", "add", "origin", remote.to_str().unwrap()],
+    );
+    std::fs::write(repo.join("a.txt"), b"x").unwrap();
+    run_git(&repo, &["add", "-A"]);
+    run_git(&repo, &["commit", "-q", "-m", "init"]);
+    run_git(&repo, &["checkout", "-q", "-b", "fix/pinned"]);
+    let rev = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .current_dir(&repo)
+            .args(args)
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+    // What a check read: the tip now. Then the branch moves, as it could while
+    // a publish prompt is open — here as someone else would, with another
+    // committer email.
+    let checked = rev(&["rev-parse", "HEAD"]);
+    std::fs::write(repo.join("b.txt"), b"y").unwrap();
+    run_git(&repo, &["add", "-A"]);
+    run_git(
+        &repo,
+        &[
+            "-c",
+            "user.email=late@example.com",
+            "commit",
+            "-q",
+            "-m",
+            "late",
+        ],
+    );
+
+    let summary = crate::git::push_commit(&repo, &checked, "fix/pinned", false)
+        .await
+        .expect("push");
+    assert_eq!(summary, "pushed");
+    let remote_tip = std::process::Command::new("git")
+        .args([
+            "--git-dir",
+            remote.to_str().unwrap(),
+            "rev-parse",
+            "refs/heads/fix/pinned",
+        ])
+        .output()
+        .expect("git");
+    assert_eq!(
+        String::from_utf8_lossy(&remote_tip.stdout).trim(),
+        checked,
+        "origin must hold the checked commit, not the late one"
+    );
+    // The tracking ref is set, as `push -u` would have set it.
+    assert_eq!(
+        rev(&["rev-parse", "--abbrev-ref", "fix/pinned@{upstream}"]),
+        "origin/fix/pinned"
+    );
+}
+
+#[tokio::test]
 async fn git_push_detached_without_branch_arg_errors() {
     let td = tempfile::tempdir().unwrap();
     let repo = td.path().join("repo");

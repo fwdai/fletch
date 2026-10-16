@@ -1,12 +1,13 @@
 //! Whose commits a push would publish. GitHub attributes a commit, and verifies
 //! its signature, by the committer email; one made under an overridden identity
 //! lands as nobody's and unverified, and only a rewrite fixes it. Checked
-//! before the push, while the rewrite is still local.
+//! before the push, while the rewrite is still local — and the check names the
+//! exact commit it read, so the push can publish that one and no later.
 
 use std::path::Path;
 
 use super::cmd::git_output;
-use crate::error::Result;
+use crate::error::{Error, Result};
 
 /// The checkout's `user.email`, or `None` when unset.
 pub async fn configured_email(repo: &Path) -> Result<Option<String>> {
@@ -15,19 +16,28 @@ pub async fn configured_email(repo: &Path) -> Result<Option<String>> {
     Ok((!email.is_empty()).then_some(email))
 }
 
-/// Committer emails other than `email` on the commits of `branch` that origin
-/// lacks, deduplicated. Committer, not author: a cherry-pick keeps its author,
-/// but the committer is always the local identity unless it was overridden.
-pub async fn foreign_committers(repo: &Path, branch: &str, email: &str) -> Result<Vec<String>> {
-    // The full ref and a trailing `--`, so a branch named like a path (`docs`
-    // beside a docs/ directory) is a revision here, as it is for `push`.
+/// The commit `refs/heads/<branch>` points at — the full ref, so a branch
+/// named like a path (`docs` beside a docs/ directory) is a revision.
+pub async fn branch_tip(repo: &Path, branch: &str) -> Result<String> {
     let rev = format!("refs/heads/{branch}");
+    let out = git_output(repo, &["rev-parse", "--verify", "--quiet", &rev]).await?;
+    if !out.status.success() {
+        return Err(Error::Git(format!("no local branch {branch}")));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+/// Committer emails other than `email` on the commits reachable from `tip`
+/// that origin lacks, deduplicated. Committer, not author: a cherry-pick keeps
+/// its author, but the committer is always the local identity unless it was
+/// overridden.
+pub async fn foreign_committers(repo: &Path, tip: &str, email: &str) -> Result<Vec<String>> {
     let out = git_output(
         repo,
         &[
             "log",
             "--format=%ce",
-            &rev,
+            tip,
             "--not",
             "--remotes=origin",
             "--",
@@ -35,8 +45,8 @@ pub async fn foreign_committers(repo: &Path, branch: &str, email: &str) -> Resul
     )
     .await?;
     if !out.status.success() {
-        return Err(crate::error::Error::Git(format!(
-            "log {branch} failed: {}",
+        return Err(Error::Git(format!(
+            "log {tip} failed: {}",
             String::from_utf8_lossy(&out.stderr).trim()
         )));
     }
@@ -56,17 +66,28 @@ pub async fn foreign_committers(repo: &Path, branch: &str, email: &str) -> Resul
     Ok(seen)
 }
 
-/// Why `branch` must not be pushed, or `None`. Skipped when no email is
-/// configured: nothing to compare against.
-pub async fn refuse_foreign_identity(repo: &Path, branch: &str) -> Result<Option<String>> {
+/// What the identity check found at the branch's tip.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Identity {
+    /// Every new commit is the checkout's own; `tip` is the commit the check
+    /// read, which is the one to push.
+    Own { tip: String },
+    /// Why the branch must not be pushed as it stands.
+    Foreign(String),
+}
+
+/// Check the commits `branch` would publish. A checkout with no email
+/// configured has nothing to compare against and passes with its tip.
+pub async fn check_identity(repo: &Path, branch: &str) -> Result<Identity> {
+    let tip = branch_tip(repo, branch).await?;
     let Some(email) = configured_email(repo).await? else {
-        return Ok(None);
+        return Ok(Identity::Own { tip });
     };
-    let foreign = foreign_committers(repo, branch, &email).await?;
+    let foreign = foreign_committers(repo, &tip, &email).await?;
     if foreign.is_empty() {
-        return Ok(None);
+        return Ok(Identity::Own { tip });
     }
-    Ok(Some(format!(
+    Ok(Identity::Foreign(format!(
         "refusing to push '{branch}': new commits were made as {}, not the checkout's \
          {email} — GitHub would show them as nobody's and unverified. Rewrite them with \
          the configured identity (`git rebase <base> --exec 'git commit --amend --no-edit'` \
@@ -93,6 +114,15 @@ mod tests {
         );
     }
 
+    fn head(repo: &Path) -> String {
+        let out = std::process::Command::new("git")
+            .current_dir(repo)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
     fn repo_with_commit(dir: &Path) {
         std::fs::create_dir_all(dir).unwrap();
         run(dir, &["init", "-q", "-b", "main"]);
@@ -104,7 +134,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn own_commits_pass_and_an_overridden_committer_is_named() {
+    async fn own_commits_pass_with_their_tip_and_an_overridden_committer_is_named() {
         let td = tempfile::tempdir().unwrap();
         let repo = td.path().join("repo");
         repo_with_commit(&repo);
@@ -112,10 +142,10 @@ mod tests {
             configured_email(&repo).await.unwrap().as_deref(),
             Some("me@example.com")
         );
-        assert!(refuse_foreign_identity(&repo, "main")
-            .await
-            .unwrap()
-            .is_none());
+        assert_eq!(
+            check_identity(&repo, "main").await.unwrap(),
+            Identity::Own { tip: head(&repo) }
+        );
 
         std::fs::write(repo.join("b.txt"), b"y").unwrap();
         run(&repo, &["add", "-A"]);
@@ -130,10 +160,9 @@ mod tests {
                 "as the bot",
             ],
         );
-        let why = refuse_foreign_identity(&repo, "main")
-            .await
-            .unwrap()
-            .expect("an overridden committer must be refused");
+        let Identity::Foreign(why) = check_identity(&repo, "main").await.unwrap() else {
+            panic!("an overridden committer must be refused");
+        };
         assert!(why.contains("bot@example.com"), "{why}");
         assert!(why.contains("me@example.com"), "{why}");
         assert!(why.contains("--amend --no-edit"), "{why}");
@@ -155,10 +184,10 @@ mod tests {
         run(&repo, &["commit", "-q", "-m", "docs"]);
         // Bare `docs` would be both a revision and a path to git; the check
         // must read the branch, not refuse the push.
-        assert!(refuse_foreign_identity(&repo, "docs")
-            .await
-            .unwrap()
-            .is_none());
+        assert_eq!(
+            check_identity(&repo, "docs").await.unwrap(),
+            Identity::Own { tip: head(&repo) }
+        );
     }
 
     #[tokio::test]
@@ -178,10 +207,10 @@ mod tests {
                 "--author=Them <them@example.com>",
             ],
         );
-        assert!(refuse_foreign_identity(&repo, "main")
-            .await
-            .unwrap()
-            .is_none());
+        assert!(matches!(
+            check_identity(&repo, "main").await.unwrap(),
+            Identity::Own { .. }
+        ));
     }
 
     #[tokio::test]
@@ -212,10 +241,10 @@ mod tests {
             ],
         );
         run(&repo, &["push", "-q", "origin", "main"]);
-        assert!(refuse_foreign_identity(&repo, "main")
-            .await
-            .unwrap()
-            .is_none());
+        assert!(matches!(
+            check_identity(&repo, "main").await.unwrap(),
+            Identity::Own { .. }
+        ));
     }
 
     #[tokio::test]
@@ -224,11 +253,24 @@ mod tests {
         let repo = td.path().join("repo");
         repo_with_commit(&repo);
         run(&repo, &["config", "--unset", "user.email"]);
-        // A global user.email may still answer; either way nothing is refused.
-        let email = configured_email(&repo).await.unwrap();
-        let why = refuse_foreign_identity(&repo, "main").await.unwrap();
-        if email.is_none() {
-            assert!(why.is_none());
+        // Only the repo's own config is cleared; the developer's global one may
+        // still answer, in which case the commit (made as me@example.com) is
+        // rightly foreign to it. With no email at all, the check passes.
+        let verdict = check_identity(&repo, "main").await.unwrap();
+        match configured_email(&repo).await.unwrap() {
+            None => assert!(matches!(verdict, Identity::Own { .. })),
+            Some(global) => assert!(
+                matches!(&verdict, Identity::Foreign(why) if why.contains(&global)),
+                "{verdict:?}"
+            ),
         }
+    }
+
+    #[tokio::test]
+    async fn a_missing_branch_is_an_error_not_a_pass() {
+        let td = tempfile::tempdir().unwrap();
+        let repo = td.path().join("repo");
+        repo_with_commit(&repo);
+        assert!(check_identity(&repo, "nope").await.is_err());
     }
 }

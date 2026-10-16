@@ -107,7 +107,7 @@ impl GitDispatcher {
             return (Response::err(id, why), effects);
         }
         // Before the prompt, so nobody approves a push the host then refuses…
-        if let Some(resp) = refuse_foreign_identity(id, &t.cwd, &branch).await {
+        if let Err(resp) = checked_tip(id, &t.cwd, &branch).await {
             return (resp, effects);
         }
         if let Some(why) = self
@@ -120,12 +120,13 @@ impl GitDispatcher {
         {
             return (Response::err(id, why), effects);
         }
-        // …and again after it: the branch may have moved while the prompt was
-        // open, and it is the commits at push time that get published.
-        if let Some(resp) = refuse_foreign_identity(id, &t.cwd, &branch).await {
-            return (resp, effects);
-        }
-        if let Err(e) = crate::git::push(&t.cwd, &branch, false).await {
+        // …and again after it, pushing the very commit it read: the branch may
+        // move while the prompt is open, or between here and the push.
+        let tip = match checked_tip(id, &t.cwd, &branch).await {
+            Ok(tip) => tip,
+            Err(resp) => return (resp, effects),
+        };
+        if let Err(e) = crate::git::push_commit(&t.cwd, &tip, &branch, false).await {
             return (
                 Response::err(id, format!("open_pr push failed: {e}")),
                 effects,
@@ -194,7 +195,7 @@ impl GitDispatcher {
         if let Some(why) = self.caps.refuses_branch(&branch, &t.base_branch) {
             return (Response::err(id, why), effects);
         }
-        if let Some(resp) = refuse_foreign_identity(id, &t.cwd, &branch).await {
+        if let Err(resp) = checked_tip(id, &t.cwd, &branch).await {
             return (resp, effects);
         }
         if let Some(why) = self
@@ -207,11 +208,13 @@ impl GitDispatcher {
         {
             return (Response::err(id, why), effects);
         }
-        // The branch may have moved while the prompt was open; it is the
-        // commits at push time that get published.
-        if let Some(resp) = refuse_foreign_identity(id, &t.cwd, &branch).await {
-            return (resp, effects);
-        }
+        // Checked again after the prompt, and the push publishes the very commit
+        // it read: the branch may move while the prompt is open, or between
+        // here and the push.
+        let tip = match checked_tip(id, &t.cwd, &branch).await {
+            Ok(tip) => tip,
+            Err(resp) => return (resp, effects),
+        };
 
         // Lease-based, so a stale local view can't clobber remote work it hasn't seen.
         let force = arg_bool(args, "force");
@@ -223,21 +226,22 @@ impl GitDispatcher {
                 return (Response::err(id, why), effects);
             }
         }
-        match crate::git::push(&t.cwd, &branch, force).await {
+        match crate::git::push_commit(&t.cwd, &tip, &branch, force).await {
             Ok(summary) => (Response::ok(id, 0, summary, String::new()), effects),
             Err(e) => (Response::err(id, e.to_string()), effects),
         }
     }
 }
 
-/// Commits made as someone other than the checkout's `user.email` are refused
-/// before the approval prompt (see `git::identity`); an unreadable log refuses
-/// too, rather than push blind.
-async fn refuse_foreign_identity(id: &str, cwd: &Path, branch: &str) -> Option<Response> {
-    match crate::git::refuse_foreign_identity(cwd, branch).await {
-        Ok(None) => None,
-        Ok(Some(why)) => Some(Response::err(id, why)),
-        Err(e) => Some(Response::err(
+/// The tip of `branch` once its new commits are known to be the checkout's own
+/// (see `git::identity`) — the commit to push, so nothing that lands after the
+/// check is published. A foreign committer, or an unreadable branch, is the
+/// refusal to answer with: better than pushing blind.
+async fn checked_tip(id: &str, cwd: &Path, branch: &str) -> std::result::Result<String, Response> {
+    match crate::git::check_identity(cwd, branch).await {
+        Ok(crate::git::Identity::Own { tip }) => Ok(tip),
+        Ok(crate::git::Identity::Foreign(why)) => Err(Response::err(id, why)),
+        Err(e) => Err(Response::err(
             id,
             format!("could not read the commits '{branch}' would publish: {e}"),
         )),
