@@ -114,8 +114,10 @@ export function LaneRow({
         .join(" · ")
     : undefined;
 
+  // Only the row itself: the PR chip and the autopilot switch inside it keep
+  // their own Enter and Space.
   const onKey = (e: KeyboardEvent<HTMLDivElement>) => {
-    if (e.key === "Enter" || e.key === " ") {
+    if (e.target === e.currentTarget && (e.key === "Enter" || e.key === " ")) {
       e.preventDefault();
       onView?.();
     }

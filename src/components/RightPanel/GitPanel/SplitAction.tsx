@@ -63,6 +63,14 @@ export function SplitAction({
   useEffect(() => {
     if (open) rows()[0]?.focus();
   }, [open]);
+  // Work starting under an open menu — an action of ours, or the agent's turn —
+  // closes it: a row confirmed into a busy checkout would race that work.
+  useEffect(() => {
+    if (busy) {
+      setOpen(false);
+      setArmed(null);
+    }
+  }, [busy]);
   const onMenuKey = (e: KeyboardEvent<HTMLDivElement>) => {
     const list = rows();
     const at = list.indexOf(document.activeElement as HTMLButtonElement);
