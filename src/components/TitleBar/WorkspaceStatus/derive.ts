@@ -1,5 +1,4 @@
-import type { AgentStatus, GitState, PrChecks, PrState } from "@/api";
-import type { IconName } from "@/components/Icon";
+import type { AgentStatus } from "@/api";
 
 /** The four glanceable states the capsule dot collapses to. Distinct from
  *  AgentStatus: `waiting` is derived (running + a pending question), and
@@ -32,32 +31,4 @@ export function agentDotStatus(
 ): DotStatus {
   const working = status === "running" || status === "spawning";
   return dotStatus(status, working && Object.keys(pending ?? {}).length > 0);
-}
-
-export type PrBadge = "open" | "draft" | "conflicts" | "merged" | "closed";
-
-export const PR_META: Record<PrBadge, { label: string; icon: IconName; cls: string }> = {
-  open: { label: "Open", icon: "branch", cls: "open" },
-  draft: { label: "Draft", icon: "branch", cls: "draft" },
-  conflicts: { label: "Conflicts", icon: "merge", cls: "conflicts" },
-  merged: { label: "Merged", icon: "merge", cls: "merged" },
-  closed: { label: "Closed", icon: "branch", cls: "draft" },
-};
-
-/** Refine a remote PR into its tinted badge state using local conflict markers
- *  and GitHub's merge gate (draft/dirty) — the same signals the Git panel uses. */
-export function prBadge(pr: PrState, git: GitState | null, checks: PrChecks | null): PrBadge {
-  if (pr.state === "merged") return "merged";
-  if (pr.state === "closed") return "closed";
-  const conflicted =
-    git?.files.some((f) => f.kind === "conflicted") || checks?.merge_state === "dirty";
-  if (conflicted) return "conflicts";
-  if (checks?.merge_state === "draft") return "draft";
-  return "open";
-}
-
-/** "owner/repo" from a github remote URL (https or ssh form), else null. */
-export function repoSlug(remoteUrl: string | null | undefined): string | null {
-  const m = remoteUrl?.match(/github\.com[/:]([^/]+\/[^/\s]+?)(?:\.git)?$/);
-  return m ? m[1] : null;
 }

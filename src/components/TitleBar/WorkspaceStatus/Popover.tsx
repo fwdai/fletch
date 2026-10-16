@@ -1,35 +1,25 @@
-import type { AgentRecord, GitState, PrSetEntry, PrState } from "@/api";
+import type { AgentRecord, PrChecks } from "@/api";
 import { Icon } from "@/components/Icon";
 import { ProviderIcon } from "@/components/ProviderIcon";
+import { LaneRow } from "@/components/RightPanel/GitPanel/Lanes";
+import type { Lane } from "@/components/RightPanel/GitPanel/laneModel";
 import { providerChip } from "@/data/providers";
 import { type DotStatus, STATUS_LABEL } from "./derive";
-import { PrBlock } from "./PrBlock";
 import { StatusDot } from "./StatusDot";
 
 interface Props {
   agent: AgentRecord;
   status: DotStatus;
-  git: GitState | null;
-  pr: PrState | null;
-  /** The checkout's whole PR set, focused first. */
-  prs: readonly PrSetEntry[];
-  onViewPr: () => void;
-  onOpenDiff: () => void;
+  /** The checkout's lanes, exactly as the Git panel's header draws them. */
+  lanes: Lane[];
+  onOpenPanel: () => void;
 }
 
-/** The hover/focus details popover: who + what, branch, diff, and the PR block
- *  (every PR of the checkout, each with its check breakdown), plus the two
- *  contextual actions. */
-export function Popover({ agent, git, pr, prs, status, onViewPr, onOpenDiff }: Props) {
-  const branch = git?.branch ?? agent.repos[0]?.branch ?? null;
-  const base = git?.parent_branch ?? null;
-  const add = git?.additions ?? 0;
-  const rem = git?.deletions ?? 0;
-  const fileCount = git?.files.length ?? 0;
-  // Nothing to act on when the tree is clean and there's no PR — Diff / Open PR
-  // would be dead buttons, so drop the whole actions block (and its divider).
-  const showActions = !!pr || add > 0 || rem > 0 || fileCount > 0;
-
+/** The hover/focus details popover: who + what, then the checkout's lanes —
+ *  the same rows as the Git panel's header, each open PR with its check
+ *  breakdown — and one way in: the panel, where every action lives. The PR
+ *  chip on a lane is the link to GitHub, as it is in the panel. */
+export function Popover({ agent, status, lanes, onOpenPanel }: Props) {
   return (
     <div className="ws-pop" role="dialog">
       <div className="ws-pop-head">
@@ -46,62 +36,71 @@ export function Popover({ agent, git, pr, prs, status, onViewPr, onOpenDiff }: P
 
       <div className="ws-pop-div" />
 
-      {branch && (
-        <div className="ws-pop-row">
-          <Icon name="branch" size={12} />
-          <span className="mono ws-pop-branch">{branch}</span>
-          {base && base !== branch && <span className="ws-pop-base mono">← {base}</span>}
-          <span className="ws-pop-ab">
-            <span className="up">
-              <Icon name="arrowUp" size={10} />
-              {git?.ahead ?? 0}
-            </span>
-            <span className="dn">
-              <Icon name="arrowDown" size={10} />
-              {git?.behind ?? 0}
-            </span>
-          </span>
-        </div>
-      )}
-
-      <div className="ws-pop-row">
-        <Icon name="diff" size={12} />
-        {add || rem ? (
-          <>
-            <span className="ws-pop-diff">
-              <b className="add">+{add}</b>
-              <b className="rem">−{rem}</b>
-            </span>
-            <span className="ws-pop-dim">
-              {fileCount} file{fileCount === 1 ? "" : "s"} changed
-            </span>
-          </>
-        ) : (
-          <span className="ws-pop-dim">No uncommitted changes</span>
-        )}
+      <div className="ws-pop-lanes">
+        {lanes.map((lane) => (
+          <div key={lane.id} className="ws-pop-lane">
+            <LaneRow lane={lane} trailing={lane.current ? <AheadBehind lane={lane} /> : null} />
+            {lane.pr?.state.state === "open" && lane.pr.checks && lane.pr.checks.total > 0 && (
+              <CheckDetail checks={lane.pr.checks} />
+            )}
+          </div>
+        ))}
       </div>
 
-      {pr && <PrBlock prs={prs} git={git} />}
+      <div className="ws-pop-div" />
+      <div className="ws-pop-actions">
+        <button type="button" className="ws-act primary" onClick={onOpenPanel}>
+          <Icon name="branch" size={12} /> Open Git panel
+        </button>
+      </div>
+    </div>
+  );
+}
 
-      {showActions && (
-        <>
-          <div className="ws-pop-div" />
-          <div className="ws-pop-actions">
-            {pr?.url ? (
-              <button type="button" className="ws-act primary" onClick={onViewPr}>
-                <Icon name="external" size={12} /> View pull request
-              </button>
-            ) : (
-              <button type="button" className="ws-act primary" onClick={onOpenDiff}>
-                <Icon name="pr" size={12} /> Open pull request
-              </button>
-            )}
-            <button type="button" className="ws-act" onClick={onOpenDiff}>
-              <Icon name="diff" size={12} /> Diff
-            </button>
-          </div>
-        </>
-      )}
+/** The tree's distance from its base and its upstream, on the lane it is on. */
+function AheadBehind({ lane }: { lane: Lane }) {
+  const git = lane.git;
+  if (!git) return null;
+  return (
+    <span className="ws-pop-ab">
+      <span className="up">
+        <Icon name="arrowUp" size={10} />
+        {git.ahead}
+      </span>
+      <span className="dn">
+        <Icon name="arrowDown" size={10} />
+        {git.behind}
+      </span>
+    </span>
+  );
+}
+
+function CheckDetail({ checks }: { checks: PrChecks }) {
+  return (
+    <div className="ws-checkblock">
+      <div className="ws-checkbar" role="img" aria-label="check status">
+        {checks.passed > 0 && <i className="p" style={{ flex: checks.passed }} />}
+        {checks.failed > 0 && <i className="f" style={{ flex: checks.failed }} />}
+        {checks.pending > 0 && <i className="w" style={{ flex: checks.pending }} />}
+      </div>
+      <div className="ws-checkcounts">
+        <span className="ok">
+          <Icon name="check" size={10} />
+          {checks.passed} passed
+        </span>
+        {checks.failed > 0 && (
+          <span className="bad">
+            <Icon name="close" size={10} />
+            {checks.failed} failed
+          </span>
+        )}
+        {checks.pending > 0 && (
+          <span className="pend">
+            <span className="ws-spin sm" />
+            {checks.pending} running
+          </span>
+        )}
+      </div>
     </div>
   );
 }

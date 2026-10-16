@@ -20,7 +20,7 @@ import { useTransientFeedback } from "./hooks/useTransientFeedback";
 import { Ladder } from "./Ladder";
 import { Lanes } from "./Lanes";
 import { buildLadder, buildPrLadder } from "./ladderModel";
-import { buildLanes, defaultLane } from "./laneModel";
+import type { Lane } from "./laneModel";
 import { branchMismatch } from "./mainAction";
 import { WorktreesNote } from "./WorktreesNote";
 
@@ -38,33 +38,36 @@ const LANE_GROUPS: FooterGroup[] = [
   { items: [{ key: "view-pr", label: "View on GitHub", icon: "github" }] },
 ];
 
-/** One repo's worth of git panel: lanes (header) · ladder (body) · action bar
- *  (footer), scoped to a single checkout of the agent. For a single-repo agent
- *  this IS the whole panel. `subdir` is undefined for the agent's primary repo
- *  (index 0) — that section reads/writes the plain agent-keyed store entries
- *  that live events and bulk polls update — and the checkout's directory name
- *  for secondaries, which read/write under `checkoutKey(agentId, subdir)`.
+/** The git panel: lanes (header) · ladder (body) · action bar (footer). The
+ *  lanes span the workspace (`GitPanel` builds them); the ladder and the footer
+ *  describe and act on the checkout the viewed lane belongs to — `repo` and
+ *  `subdir`, undefined for the agent's primary repo (index 0), which reads and
+ *  writes the plain agent-keyed store entries that live events and bulk polls
+ *  update; secondaries read/write under `checkoutKey(agentId, subdir)`.
  *
  *  The component is a thin orchestrator: live reads + polling live in
  *  `useGitPanelData`, the commit draft in `useCommitDraft`, busy/notice in
- *  `useTransientFeedback`, the dispatch table in `useGitActions`, the
- *  split-button model in `useActionBarModel`, and the two projections the body
- *  draws in `lanes.ts` / `ladder.ts`. The agent-handoff lifecycle is NOT here —
- *  it belongs to the host (`supervisor::delegation`), so a delegation completes
- *  whether or not this section, or any window, is on screen; the section only
- *  reads the store's mirror of it to render it. */
+ *  `useTransientFeedback`, the dispatch table in `useGitActions`, the footer
+ *  in `useFooterModel`, and the projections the body draws in `laneModel.ts` /
+ *  `ladderModel.ts`. The agent-handoff lifecycle is NOT here — it belongs to
+ *  the host (`supervisor::delegation`), so a delegation completes whether or
+ *  not this section, or any window, is on screen; the section only reads the
+ *  store's mirror of it to render it. */
 export function GitRepoSection({
   agent,
   repo,
   subdir,
-  autopilotSwitch = true,
+  lanes,
+  viewed,
+  onView,
 }: {
   agent: AgentRecord;
   repo: TrackedRepo | undefined;
   subdir?: string;
-  /** Whether this section's header carries the workspace's autopilot switch.
-   *  It is per agent, not per checkout, so a multi-repo panel shows it once. */
-  autopilotSwitch?: boolean;
+  /** Every lane of the workspace, and the one the ladder describes. */
+  lanes: Lane[];
+  viewed: Lane | null;
+  onView: (laneId: string) => void;
 }) {
   const {
     gitState,
@@ -146,22 +149,7 @@ export function GitRepoSection({
     else runAction(k);
   };
 
-  // ── Lanes: every branch-and-PR of the checkout, and the one in view ────────
-  // The PR set holds every PR of the checkout (sub-agents each open their own;
-  // a workspace that kept working after a merge holds the merged one too).
-  const prSet = useAppStore((s) => s.prSets[key]);
-  const lanes = useMemo(
-    () => buildLanes(prSet, prState, checks, gitState),
-    [prSet, prState, checks, gitState],
-  );
-  // Which lane the ladder describes: the user's pick while it exists, else the
-  // default (the focused PR's, or the tree's). Local to this section — viewing
-  // a lane never moves the host's focus.
-  // The pick remembers which agent it was made for, so a switch to another
-  // workspace starts from that one's default rather than a stale lane id.
-  const [pick, setPick] = useState<{ agentId: string; laneId: string } | null>(null);
-  const picked = pick?.agentId === agent.id ? pick.laneId : null;
-  const viewed = (picked ? lanes.find((l) => l.id === picked) : undefined) ?? defaultLane(lanes);
+  // ── The lane in view ───────────────────────────────────────────────────────
   // The lane the footer's actions apply to: the focused PR's lane, or the
   // tree's own lane when no PR covers its branch. Any other lane can only be
   // looked at — and focused.
@@ -257,11 +245,8 @@ export function GitRepoSection({
       <Lanes
         lanes={lanes}
         viewedId={viewed?.id ?? null}
-        onView={(laneId) => setPick({ agentId: agent.id, laneId })}
-        git={gitState}
-        controls={
-          autopilotSwitch && <AutopilotSwitch agentId={agent.id} projectId={agent.project_id} />
-        }
+        onView={onView}
+        controls={<AutopilotSwitch agentId={agent.id} projectId={agent.project_id} />}
       />
 
       <WorktreesNote worktrees={gitState?.worktrees} />

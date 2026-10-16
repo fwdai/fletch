@@ -30,8 +30,9 @@ const entry = (state: PrState): PrSetEntry => ({ state, checks: null });
 
 describe("buildLanes", () => {
   it("a checkout with no PR is one bare lane on the tree's branch", () => {
-    expect(buildLanes(undefined, null, null, git())).toEqual([
-      { id: "branch:feat-a", branch: "feat-a", pr: null, current: true, focused: false },
+    const g = git();
+    expect(buildLanes(undefined, null, null, g)).toEqual([
+      { id: "branch:feat-a", branch: "feat-a", pr: null, current: true, focused: false, git: g },
     ]);
   });
 
@@ -71,7 +72,15 @@ describe("buildLanes", () => {
     expect(lanes[0].current).toBe(false);
   });
 
-  it("defaults to the focused lane, else the tree's", () => {
+  it("scopes a checkout's lanes to its repo in a multi-repo workspace", () => {
+    const p = pr(12, { branch: "feat-a" });
+    const scope = { id: "backend", subdir: "backend", label: "backend" };
+    const lanes = buildLanes([entry(p)], p, null, git({ branch: "feat-c" }), scope);
+    expect(lanes.map((l) => l.id)).toEqual(["backend/pr:12", "backend/branch:feat-c"]);
+    expect(lanes.every((l) => l.scope === scope)).toBe(true);
+  });
+
+  it("defaults to the first lane: the focused PR's, else the tree's", () => {
     const b = pr(13, { branch: "feat-b" });
     const lanes = buildLanes([entry(b)], b, null, git({ branch: "feat-c" }));
     expect(defaultLane(lanes)?.id).toBe("pr:13");

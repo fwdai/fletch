@@ -1,33 +1,31 @@
 import { open } from "@tauri-apps/plugin-shell";
 import type { KeyboardEvent, ReactNode } from "react";
-import type { GitState } from "@/api";
 import { Icon } from "@/components/Icon";
 import { Badge } from "@/components/ui/Badge";
 import { prTint } from "@/util/prSummary";
 import type { Lane } from "./laneModel";
 
 // ── The lanes: the panel's header ────────────────────────────────────────────
-// One row per branch-and-PR of the checkout (see `lanes.ts`). With one lane the
-// row simply is the header: branch, base, the PR chip, the tree's diff. With
-// several, the rows are a radio group — the viewed lane is the one the ladder
-// below describes — and the row carrying the autopilot switch is the focused
-// PR's, since the switch governs exactly that lane. Viewing a lane is a local
+// One row per branch-and-PR of the workspace (see `laneModel.ts`). With one
+// lane the row simply is the header: branch, base, the PR chip, the tree's
+// diff. With several, the rows are a radio group — the viewed lane is the one
+// the ladder below describes — and the row carrying the autopilot switch is
+// the first, the focused PR's whenever there is one. Viewing a lane is a local
 // choice; it never moves the host's focus (that is the footer's "Focus this
-// PR", explicit).
+// PR", explicit). In a multi-repo workspace each lane says its repo.
+//
+// `LaneRow` is also the title bar popover's row, so a PR reads the same there.
 
 export function Lanes({
   lanes,
   viewedId,
   onView,
-  git,
   controls,
 }: {
   lanes: Lane[];
   viewedId: string | null;
   onView: (id: string) => void;
-  git: GitState | null;
-  /** The workspace's autopilot switch — rendered on the first lane, which is
-   *  the focused PR's whenever there is one. */
+  /** The workspace's autopilot switch — rendered on the first lane. */
   controls?: ReactNode;
 }) {
   const selectable = lanes.length > 1;
@@ -44,7 +42,6 @@ export function Lanes({
           viewed={lane.id === viewedId}
           selectable={selectable}
           onView={() => onView(lane.id)}
-          git={git}
           trailing={i === 0 ? controls : null}
         />
       ))}
@@ -52,22 +49,20 @@ export function Lanes({
   );
 }
 
-function LaneRow({
+export function LaneRow({
   lane,
-  viewed,
-  selectable,
+  viewed = false,
+  selectable = false,
   onView,
-  git,
   trailing,
 }: {
   lane: Lane;
-  viewed: boolean;
-  selectable: boolean;
-  onView: () => void;
-  git: GitState | null;
-  trailing: ReactNode;
+  viewed?: boolean;
+  selectable?: boolean;
+  onView?: () => void;
+  trailing?: ReactNode;
 }) {
-  const { pr } = lane;
+  const { pr, git } = lane;
   const tint = pr ? prTint(pr.state, pr.checks) : null;
   const base = git?.parent_branch;
   // The tree's diff belongs to the lane it is on, and to no other.
@@ -82,7 +77,7 @@ function LaneRow({
   const onKey = (e: KeyboardEvent<HTMLDivElement>) => {
     if (e.key === "Enter" || e.key === " ") {
       e.preventDefault();
-      onView();
+      onView?.();
     }
   };
 
@@ -110,6 +105,7 @@ function LaneRow({
       >
         <Icon name="branch" size={12} />
       </span>
+      {lane.scope && <span className="ln-repo text-xs">{lane.scope.label}</span>}
       <span className="ln-branch text-sm" title={lane.branch ?? undefined}>
         {lane.branch ?? "no branch yet"}
       </span>

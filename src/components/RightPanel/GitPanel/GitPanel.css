@@ -56,6 +56,18 @@
 .git-lane.current .ln-tree {
   color: var(--fg-1);
 }
+/* a multi-repo workspace: the repo's name before the branch, in the muted
+   mono of the base — context, not the subject */
+.ln-repo {
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  color: var(--fg-3);
+}
+.ln-repo::after {
+  content: "/";
+  margin-left: 2px;
+  opacity: 0.6;
+}
 .ln-branch {
   flex: 0 1 auto;
   min-width: 6ch;
@@ -1309,36 +1321,6 @@ button.rg-head {
 }
 .rg-end .btn-t svg {
   margin-right: 5px;
-}
-
-/* ── multi-repo: one section per active repo, slim repo-name headers ──
-   Single-repo agents never render these — their lone GitRepoSection keeps the
-   classic .git-wrap layout untouched. Sections split the panel height evenly;
-   each keeps its own scrollable body and pinned footer. */
-.git-multi {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-}
-.git-repo-sect {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-}
-.git-repo-sect + .git-repo-sect {
-  border-top: 2px solid var(--bd);
-}
-.git-repo-name {
-  flex-shrink: 0;
-  padding: 5px 14px;
-  font-weight: 700;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-  color: var(--fg-3);
-  background: var(--bg-1);
-  border-bottom: 1px solid var(--bd-soft);
 }
 
 /* ── Autopilot's mark in the status slot ───────────────────────────────────
