@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import type { AgentRecord, TrackedRepo } from "@/api";
 import { isCommitAction } from "@/components/RightPanel/primaryActions";
 import { delegationLabel } from "@/delegation";
+import { hasWorkSinceMerge } from "@/readiness";
 import { useAppStore } from "@/store";
 import { checkoutKey } from "@/store/git";
 import { ActionBar } from "./ActionBar";
@@ -112,6 +113,25 @@ export function GitRepoSection({
   // instead, which picks a conventional name and creates the branch.
   const hasBranch = Boolean(branch);
 
+  // ── The lane in view ───────────────────────────────────────────────────────
+  // The lane the footer's actions apply to: the focused PR's lane, or the
+  // tree's own lane when no PR covers its branch. Any other lane can only be
+  // looked at — and focused.
+  const acting = viewed == null || viewed.pr == null || viewed.focused;
+  // What the ladder AND the footer describe, so they can never disagree: the
+  // focused PR's live state on its own lane; nothing on the tree's bare lane
+  // while another PR is focused (a commit from there lands on its branch, a
+  // push from there wants its own proposal — not that PR's merge).
+  const laneHasPr = viewed?.pr != null;
+  const lanePr = laneHasPr ? prState : null;
+  const laneChecks = laneHasPr ? checks : null;
+  const laneMergeState = laneHasPr ? mergeState : null;
+  const laneComments = laneHasPr ? comments : null;
+  // The PR in view with everything the store knows about it: the focused PR's
+  // live state when it is the one in view, else the set entry's snapshot.
+  const viewedPr = viewed?.pr ? (acting ? prState : viewed.pr.state) : null;
+  const viewedChecks = viewed?.pr ? (acting ? checks : viewed.pr.checks) : null;
+
   const { runAction, addCommentToChat } = useGitActions({
     agentId: agent.id,
     subdir,
@@ -119,9 +139,9 @@ export function GitRepoSection({
     hasBranch,
     customActive,
     msg,
-    checks,
-    comments,
-    prUrl: prState?.url,
+    checks: laneChecks,
+    comments: laneComments,
+    prUrl: lanePr?.url,
     githubConnected,
     hasOrigin,
     runBusy,
@@ -134,10 +154,10 @@ export function GitRepoSection({
   // The footer: the ladder's next step as the primary, the rest as a menu.
   const { primary, groups, tone, mainDisabled, mainReason } = useFooterModel({
     gitState,
-    prState,
-    checks,
-    mergeState,
-    comments,
+    prState: lanePr,
+    checks: laneChecks,
+    mergeState: laneMergeState,
+    comments: laneComments,
     base,
     customActive,
     delegationActive: delegation != null,
@@ -151,31 +171,18 @@ export function GitRepoSection({
     else runAction(k);
   };
 
-  // ── The lane in view ───────────────────────────────────────────────────────
-  // The lane the footer's actions apply to: the focused PR's lane, or the
-  // tree's own lane when no PR covers its branch. Any other lane can only be
-  // looked at — and focused.
-  const acting = viewed == null || viewed.pr == null || viewed.focused;
-  // The PR in view with everything the store knows about it: the focused PR's
-  // live state when it is the one in view, else the set entry's snapshot.
-  const viewedPr = viewed?.pr ? (acting ? prState : viewed.pr.state) : null;
-  const viewedChecks = viewed?.pr ? (acting ? checks : viewed.pr.checks) : null;
-
   const rows = useMemo(() => {
     if (!viewed) return [];
     if (!acting && viewed.pr) return buildPrLadder(viewed.pr, base);
-    // The tree's own lane while another PR is focused describes the tree with
-    // no proposal: whatever it commits lands on its branch, not on that PR.
-    const withPr = viewed.pr != null;
     return buildLadder({
       git: gitState,
-      pr: withPr ? prState : null,
-      checks: withPr ? checks : null,
-      mergeState: withPr ? mergeState : null,
-      comments: withPr ? comments : null,
+      pr: lanePr,
+      checks: laneChecks,
+      mergeState: laneMergeState,
+      comments: laneComments,
       base,
     });
-  }, [viewed, acting, gitState, prState, checks, mergeState, comments, base]);
+  }, [viewed, acting, gitState, lanePr, laneChecks, laneMergeState, laneComments, base]);
 
   // The focus action for a lane that isn't the focused PR's.
   const focusPr = useAppStore((s) => s.focusPr);
@@ -207,18 +214,21 @@ export function GitRepoSection({
     gitState && viewedPr?.branch && viewedPr.branch !== gitState.branch ? viewedPr.branch : null;
   // Which sub-agent opened the PR in view, when one did — its row says so.
   const prOrigin = usePrOrigin(agent.id, viewedPr?.number);
-  // A merged PR's row ends its branch. Archiving and deleting are bound to that
-  // branch, so from a tree on another one they say why they can't (the same
-  // rule that gates the footer's branch-bound actions).
+  // A merged PR's row ends its branch. Archiving removes the clone and deleting
+  // the branch its ref, so both are dead while work since the merge is still
+  // only here (uncommitted, or commits origin lacks) — and from a tree on
+  // another branch, which they say (the footer's branch-bound rule).
   const ending: Parameters<typeof Ladder>[0]["bodies"]["ending"] = acting
     ? {
         onArchive: () => runAction("archive"),
         onDeleteBranch: () => runAction("delete-branch"),
-        reason: branchMismatch({
-          effectiveKey: "archive",
-          prBranch: prState?.branch ?? null,
-          checkoutBranch: gitState?.branch || null,
-        }),
+        reason:
+          branchMismatch({
+            effectiveKey: "archive",
+            prBranch: lanePr?.branch ?? null,
+            checkoutBranch: gitState?.branch || null,
+          }) ??
+          (gitState && hasWorkSinceMerge(gitState) ? "Work since the merge is only here" : null),
       }
     : null;
 
