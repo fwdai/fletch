@@ -38,6 +38,11 @@ describe("prTint", () => {
     });
   });
 
+  it("reads a draft as quiet grey, not open blue, whatever its checks", () => {
+    const draft: PrChecks = { ...checks("passing"), merge_state: "draft" };
+    expect(prTint(pr(1), draft)).toEqual({ variant: "pr-closed", word: "draft" });
+  });
+
   it("tints an open PR failing > conflicts > pending > passing", () => {
     expect(prTint(pr(1, { mergeable: "conflicting" }), checks("failing")).variant).toBe("pr-fail");
     expect(prTint(pr(1, { mergeable: "conflicting" }), checks("passing"))).toEqual({

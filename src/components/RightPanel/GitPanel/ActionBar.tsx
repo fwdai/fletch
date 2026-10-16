@@ -1,40 +1,30 @@
 import type { ReactNode } from "react";
 import { Icon } from "@/components/Icon";
-import type { ActionTone, GitPanelState, StatusKind } from "@/components/RightPanel/primaryActions";
-import { SplitAction, type SplitActionItem } from "./SplitAction";
-import { GitLink, Spinner } from "./shared";
+import type { ActionTone } from "@/components/RightPanel/primaryActions";
+import type { FooterAction, FooterGroup } from "./footerModel";
+import { SplitAction } from "./SplitAction";
+import { Spinner } from "./shared";
 
-/** States whose idle status would only repeat the header: the pill and its
- *  text already say "PR #7 · checks failing", "#7 · closed", "#7 → main". The
- *  slot stays empty and the action button stands alone. */
-const HEADER_SAYS_IT: readonly GitPanelState[] = ["pr-open", "pr-closed", "merged"];
-
-/** The pinned footer's action row: a single status slot (busy spinner →
- *  delegation → transient notice → the idle status) followed by the split
- *  action button. The idle status says only what the header doesn't. */
+/** The pinned footer's action row: one status slot about *now* — a busy
+ *  spinner, the agent's delegation, a transient notice, why the button is dead
+ *  — then the split action button. What is wrong and what comes next is the
+ *  ladder's to say, so at rest the slot carries only `idle`: the one note that
+ *  is an affordance rather than a status (who writes the commit message). */
 export function ActionBar({
-  statusKind,
-  statusLabel,
   idle,
   busy,
   delegationLabel,
   autoAttempt,
   notice,
-  panelState,
-  pushedLink,
-  aheadCount,
-  items,
-  selectedKey,
+  primary,
+  groups,
   tone,
   mainDisabled,
   mainReason,
-  onSelect,
+  onPick,
   onRun,
 }: {
-  statusKind: StatusKind;
-  statusLabel: string;
-  /** Replaces `statusLabel` in the idle slot when set — the changes state's
-   *  "who writes the commit message" note (see `CommitStatus`). */
+  /** The resting note beside the button, when one is worth the space. */
   idle?: ReactNode;
   busy: string | null;
   delegationLabel: string | null;
@@ -43,22 +33,18 @@ export function ActionBar({
    *  user wants to know before it gives up. */
   autoAttempt: number | null;
   notice: string | null;
-  panelState: GitPanelState;
-  pushedLink: string | null;
-  aheadCount: number;
-  items: SplitActionItem[];
-  selectedKey: string;
+  primary: FooterAction;
+  groups: FooterGroup[];
   tone: ActionTone;
   mainDisabled: boolean;
-  /** Why the selected action can't run here — a capability the environment
-   *  lacks, which nothing the user does in the panel will change. Shown in the
-   *  status slot below the transient states, which still take precedence: what
-   *  is happening right now is more urgent than what cannot happen at all. */
+  /** Why the primary can't run here — a capability the environment lacks, or
+   *  a branch the checkout isn't on — which nothing the user does in the panel
+   *  will change. Shown below the transient states, which still take
+   *  precedence: what is happening now outranks what cannot happen at all. */
   mainReason?: string | null;
-  onSelect: (key: string) => void;
+  onPick: (key: string) => void;
   onRun: () => void;
 }) {
-  const showIdle = idle != null || !HEADER_SAYS_IT.includes(panelState);
   return (
     <div className="git-act flex-center">
       {busy ? (
@@ -95,33 +81,19 @@ export function ActionBar({
           <Icon name="alert" size={11} />
           <span>{mainReason}</span>
         </div>
-      ) : showIdle ? (
-        <div className={`git-act-status flex-center text-xs ${statusKind}`}>
-          <span className="d" />
-          <span className="lbl">
-            {idle != null ? (
-              idle
-            ) : panelState === "pushed" && pushedLink ? (
-              <>
-                <GitLink href={pushedLink}>
-                  {aheadCount === 1 ? "1 commit" : `${aheadCount} commits`}
-                </GitLink>
-                {" pushed · no PR yet"}
-              </>
-            ) : (
-              statusLabel
-            )}
-          </span>
+      ) : idle != null ? (
+        <div className="git-act-status flex-center text-xs">
+          <span className="lbl">{idle}</span>
         </div>
       ) : null}
       <SplitAction
-        items={items}
-        selectedKey={selectedKey}
+        primary={primary}
+        groups={groups}
         tone={tone}
         mainDisabled={mainDisabled}
         mainReason={mainReason}
         busyLabel={busy ?? (delegationLabel ? "Agent working…" : null)}
-        onSelect={onSelect}
+        onPick={onPick}
         onRun={onRun}
       />
     </div>

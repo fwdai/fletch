@@ -16,6 +16,12 @@ export function joinPath(dir: string, name: string): string {
   return dir ? `${dir}/${name}` : name;
 }
 
+/** A count with its noun: "1 file", "3 files". Pass `many` for an irregular
+ *  plural. */
+export function plural(n: number, one: string, many = `${one}s`): string {
+  return `${n} ${n === 1 ? one : many}`;
+}
+
 export function firstLine(s: string, max = 56): string {
   const idx = s.indexOf("\n");
   const head = idx === -1 ? s : s.slice(0, idx);

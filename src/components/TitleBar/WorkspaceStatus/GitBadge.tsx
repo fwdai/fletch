@@ -1,7 +1,6 @@
 import type { GitState, PrChecks, PrSetEntry, PrState, ShortStats } from "@/api";
 import { Icon } from "@/components/Icon";
-import { summarizePrSet } from "@/util/prSummary";
-import { PR_META, prBadge } from "./derive";
+import { type PrTint, prTint, summarizePrSet } from "@/util/prSummary";
 
 interface Props {
   pr: PrState | null;
@@ -12,22 +11,39 @@ interface Props {
   prs: readonly PrSetEntry[];
 }
 
+/** The badge's tint class for a PR tint — the app-wide vocabulary
+ *  (`prTint`), with the checkout's own conflict markers folded in: a local
+ *  conflict is the checkout's, and only the focused PR's badge should read it. */
+function badgeClass(tint: PrTint["variant"], localConflict: boolean): string {
+  if (localConflict || tint === "warn") return "conflicts";
+  switch (tint) {
+    case "pr-fail":
+      return "failing";
+    case "pr-merged":
+      return "merged";
+    case "pr-closed":
+      return "closed";
+    default:
+      return "open";
+  }
+}
+
 /** The one badge that summarizes the checkout: PR (state-tinted, with number)
  *  once one exists, else the uncommitted diff, else a clean-tree check. With
  *  several PRs it keeps the focused `#N`, adds a quiet `+K` for the rest, and
  *  takes the set's worst tint — the popover lists them all. */
 export function GitBadge({ pr, git, checks, stats, prs }: Props) {
   if (pr) {
-    const badge = prBadge(pr, git, checks);
-    const meta = PR_META[badge];
+    const localConflict = git?.files.some((f) => f.kind === "conflicted") ?? false;
+    const own = badgeClass(prTint(pr, checks).variant, localConflict);
     const others = prs.length - 1;
     // A set takes its worst tint when that is failing CI or a conflict, so a
     // sibling in trouble never hides behind a calm focused PR.
     const set = others > 0 ? summarizePrSet(prs).variant : null;
-    const cls = set === "pr-fail" ? "failing" : set === "warn" ? "conflicts" : meta.cls;
+    const cls = set === "pr-fail" ? "failing" : set === "warn" ? "conflicts" : own;
     return (
       <span className={`ws-badge pr-${cls}`}>
-        <Icon name={meta.icon} size={11} />
+        <Icon name={pr.state === "merged" ? "merge" : "branch"} size={11} />
         <span className="mono">#{pr.number}</span>
         {others > 0 && (
           <span className="ws-badge-more mono" aria-label={`and ${others} more`}>

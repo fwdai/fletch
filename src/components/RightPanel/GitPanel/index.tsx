@@ -1,84 +1,48 @@
-import type { AgentRecord, GitState, TrackedRepo } from "@/api";
-import type { Delegation } from "@/delegation";
-import { useAppStore } from "@/store";
+import { useState } from "react";
+import type { AgentRecord } from "@/api";
 import { checkoutKey } from "@/store/git";
-import { basename } from "@/util/format";
+import { AutopilotSwitch } from "./Autopilot";
 import { GitRepoSection } from "./GitRepoSection";
+import { scopeOf, useWorkspaceLanes } from "./hooks/useWorkspaceLanes";
+import { Lanes } from "./Lanes";
+import { defaultLane } from "./laneModel";
 
-/** A repo of the agent plus the scope its section reads/writes under:
- *  `subdir` is undefined for the primary repo (index 0 — plain agent-keyed
- *  state, shared with live events and bulk polls) and the checkout's
- *  directory name for secondaries. */
-interface RepoScope {
-  repo: TrackedRepo;
-  subdir?: string;
-}
-
-const scopesFor = (agent: AgentRecord): RepoScope[] =>
-  agent.repos.map((repo, i) => ({ repo, subdir: i === 0 ? undefined : repo.subdir }));
-
-/** A repo earns its own section once it has anything git-worthy to show:
- *  uncommitted changes, a named branch, or a bound PR. A repo with an in-flight
- *  delegation stays pinned regardless, so its progress doesn't vanish mid-flight
- *  (e.g. when a commit empties the file list before the branch materializes). */
-const repoActive = (
-  scope: RepoScope,
-  gitStates: Record<string, GitState>,
-  delegations: Record<string, Delegation>,
-  agentId: string,
-) => {
-  const key = checkoutKey(agentId, scope.subdir);
-  return (
-    delegations[key] != null ||
-    (gitStates[key]?.files.length ?? 0) > 0 ||
-    Boolean(scope.repo.branch) ||
-    scope.repo.pr_number != null
-  );
-};
-
-/** State-aware git panel driven by live git state from the Tauri backend.
- *  Single-repo agents render one `GitRepoSection` — exactly the panel as it
- *  always was. Multi-repo agents render one section per ACTIVE repo (changes,
- *  branch, or PR), each under a slim repo-name header; when nothing is active
- *  yet, just the primary repo's section (its empty state) without a header. */
+/** State-aware git panel driven by live git state from the Tauri backend: one
+ *  header of lanes, one ladder, one footer, whatever the number of repos.
+ *
+ *  The lanes are the workspace's, so they live here, above the section, and
+ *  survive a change of checkout — keyboard focus on a lane stays where it is
+ *  when the arrow keys cross into another repo. The section describes the
+ *  lane in view and acts on its checkout, and is mounted per checkout, so
+ *  everything transient in it (a push in flight, its notice, a half-written
+ *  commit message) is that checkout's and never shows on another. */
 export function GitPanel({ agent }: { agent: AgentRecord }) {
-  if (agent.repos.length <= 1) {
-    return <GitRepoSection agent={agent} repo={agent.repos[0]} />;
-  }
-  return <MultiRepoGitPanel agent={agent} />;
-}
+  const { lanes, scopes } = useWorkspaceLanes(agent);
 
-function MultiRepoGitPanel({ agent }: { agent: AgentRecord }) {
-  const gitStates = useAppStore((s) => s.gitStates);
-  // Delegations are keyed per checkout, so a section just looks up its own —
-  // no sentinel needed to tell "no delegation" from "targets the primary".
-  const delegations = useAppStore((s) => s.delegations);
-
-  const scopes = scopesFor(agent);
-  const active = scopes.filter((sc) => repoActive(sc, gitStates, delegations, agent.id));
-  // Nothing active yet → the primary repo's section (today's empty state),
-  // with no section header.
-  const sections = active.length > 0 ? active : [scopes[0]];
+  // Which lane the ladder describes: the user's pick while it exists, else the
+  // default. Local to the panel — viewing a lane never moves the host's focus.
+  // The pick remembers which agent it was made for, so a switch to another
+  // workspace starts from that one's default rather than a stale lane id.
+  const [pick, setPick] = useState<{ agentId: string; laneId: string } | null>(null);
+  const picked = pick?.agentId === agent.id ? pick.laneId : null;
+  const viewed = (picked ? lanes.find((l) => l.id === picked) : undefined) ?? defaultLane(lanes);
+  const scope = scopeOf(viewed, scopes);
 
   return (
-    <div className="git-multi">
-      {sections.map((sc, i) => (
-        <section key={sc.repo.subdir} className="git-repo-sect">
-          {active.length > 0 && (
-            <div className="git-repo-name text-xs">
-              {sc.repo.label ?? basename(sc.repo.repo_path)}
-            </div>
-          )}
-          {/* The autopilot switch is per workspace, so only the first section
-              carries it — one switch, however many repos. */}
-          <GitRepoSection
-            agent={agent}
-            repo={sc.repo}
-            subdir={sc.subdir}
-            autopilotSwitch={i === 0}
-          />
-        </section>
-      ))}
+    <div className="git-wrap">
+      <Lanes
+        lanes={lanes}
+        viewedId={viewed?.id ?? null}
+        onView={(laneId) => setPick({ agentId: agent.id, laneId })}
+        controls={<AutopilotSwitch agentId={agent.id} projectId={agent.project_id} />}
+      />
+      <GitRepoSection
+        key={checkoutKey(agent.id, scope?.subdir)}
+        agent={agent}
+        repo={scope?.repo}
+        subdir={scope?.subdir}
+        viewed={viewed}
+      />
     </div>
   );
 }

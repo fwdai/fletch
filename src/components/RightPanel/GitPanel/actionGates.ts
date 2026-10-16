@@ -2,7 +2,7 @@
 // asked to run — by the key `runAction` dispatches.
 //
 // The table sits beside the panel rather than inside a hook because both halves
-// of the panel need the same answer: `useActionBarModel` in render (through
+// of the panel need the same answer: `useFooterModel` in render (through
 // `useGateFor`) to leave the button dead, and `useGitActions.runAction` outside
 // render to refuse the dispatch. Disabling the button alone was not enough —
 // the commit composer's Cmd/Ctrl+Enter calls `runAction` directly, so an older
@@ -25,6 +25,7 @@ export const ACTION_GATES: Partial<Record<string, GateName>> = {
   "agent-resolve": "delegateGit",
   "agent-update-branch": "delegateGit",
   "agent-fix": "delegateGit",
+  "agent-resolve-comments": "delegateGit",
   merge: "mergePr",
   pull: "pull",
   rebase: "rebase",
@@ -33,6 +34,7 @@ export const ACTION_GATES: Partial<Record<string, GateName>> = {
   abort: "abortMerge",
   "clear-config": "clearCheckoutConfig",
   "delete-branch": "deleteBranch",
+  "focus-pr": "focusPr",
 };
 
 /** Why `env` cannot run the panel action `key`, or null when it can — which is

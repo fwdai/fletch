@@ -41,6 +41,8 @@ function openRank(e: PrSetEntry): OpenRank {
 export function prTint(state: PrState, checks: PrChecks | null): PrTint {
   if (state.state === "merged") return { variant: "pr-merged", word: "merged" };
   if (state.state === "closed") return { variant: "pr-closed", word: "closed" };
+  // A draft isn't proposed yet: the quiet grey of a closed PR, not open blue.
+  if (checks?.merge_state === "draft") return { variant: "pr-closed", word: "draft" };
   switch (openRank({ state, checks })) {
     case RANK.failing:
       return { variant: "pr-fail", word: "checks failing" };

@@ -1,102 +1,127 @@
-import { useEffect, useState } from "react";
+import { useMemo } from "react";
 import type { AgentRecord, TrackedRepo } from "@/api";
+import { isCommitAction } from "@/components/RightPanel/primaryActions";
 import { delegationLabel } from "@/delegation";
 import { useAppStore } from "@/store";
 import { checkoutKey } from "@/store/git";
 import { ActionBar } from "./ActionBar";
-import { AutopilotHistory, AutopilotSwitch } from "./Autopilot";
-import { ChangesList } from "./ChangesList";
+import { AutopilotHistory } from "./Autopilot";
 import { CommitComposer, CommitStatus } from "./CommitComposer";
-import { BlockedConfigCard, ClosedPRCard, ConflictCard, PRCard } from "./cards";
-import { EmptyState } from "./EmptyState";
-import { FileDiffView } from "./FileDiffView";
-import { useActionBarModel } from "./hooks/useActionBarModel";
+import { BlockedConfigCard } from "./cards";
 import { useCommitDraft } from "./hooks/useCommitDraft";
+import { useFooterModel } from "./hooks/useFooterModel";
 import { useGitActions } from "./hooks/useGitActions";
 import { useGitPanelData } from "./hooks/useGitPanelData";
 import { usePrOrigin } from "./hooks/usePrOrigin";
 import { useTransientFeedback } from "./hooks/useTransientFeedback";
-import { PrSwitcher } from "./PrSwitcher";
-import { StatusHeader } from "./StatusHeader";
+import type { LadderBodies } from "./Ladder";
+import { LaneBody } from "./LaneBody";
+import { buildLadder } from "./ladderModel";
+import type { Lane } from "./laneModel";
 import { WorktreesNote } from "./WorktreesNote";
 
-/** One repo's worth of git panel: the full header / body / footer stack,
- *  scoped to a single checkout of the agent. For a single-repo agent this IS
- *  the whole panel. `subdir` is undefined for the agent's primary repo (index
- *  0) — that section reads/writes the plain agent-keyed store entries that
- *  live events and bulk polls update — and the checkout's directory name for
- *  secondaries, which read/write under `checkoutKey(agentId, subdir)`.
+/** The git panel: lanes (header) · ladder (body) · action bar (footer). The
+ *  lanes span the workspace (`GitPanel` builds them); the ladder and the footer
+ *  describe and act on the checkout the viewed lane belongs to — `repo` and
+ *  `subdir`, undefined for the agent's primary repo (index 0), which reads and
+ *  writes the plain agent-keyed store entries that live events and bulk polls
+ *  update; secondaries read/write under `checkoutKey(agentId, subdir)`.
  *
  *  The component is a thin orchestrator: live reads + polling live in
  *  `useGitPanelData`, the commit draft in `useCommitDraft`, busy/notice in
- *  `useTransientFeedback`, the dispatch table in `useGitActions`, and the
- *  split-button model in `useActionBarModel`. The agent-handoff lifecycle is
- *  NOT here — it belongs to the host (`supervisor::delegation`), so a
- *  delegation completes whether or not this section, or any window, is on
- *  screen; the section only reads the store's mirror of it to render it. */
+ *  `useTransientFeedback`, the dispatch table in `useGitActions`, the footer
+ *  in `useFooterModel`, and the projections the body draws in `laneModel.ts` /
+ *  `ladderModel.ts`. The agent-handoff lifecycle is NOT here — it belongs to
+ *  the host (`supervisor::delegation`), so a delegation completes whether or
+ *  not this section, or any window, is on screen; the section only reads the
+ *  store's mirror of it to render it. */
 export function GitRepoSection({
   agent,
   repo,
   subdir,
-  autopilotSwitch = true,
+  viewed,
 }: {
   agent: AgentRecord;
   repo: TrackedRepo | undefined;
   subdir?: string;
-  /** Whether this section's header carries the workspace's autopilot switch.
-   *  It is per agent, not per checkout, so a multi-repo panel shows it once. */
-  autopilotSwitch?: boolean;
+  /** The lane the ladder describes, from this checkout. */
+  viewed: Lane | null;
 }) {
-  const {
-    gitState,
-    prState,
-    checks,
-    comments,
-    mergeState,
-    prOpen,
-    panelState,
-    fetchGitState,
-    fetchPrState,
-  } = useGitPanelData(agent.id, repo, subdir);
+  const { gitState, prState, checks, comments, mergeState, fetchGitState, fetchPrState } =
+    useGitPanelData(agent.id, repo, subdir);
 
-  const { busy, runBusy, notice, showNotice } = useTransientFeedback(agent.id);
+  const key = checkoutKey(agent.id, subdir);
+  const { busy, runBusy, notice, showNotice } = useTransientFeedback(key);
+  // Something to commit: uncommitted files, none of them conflicted (a
+  // conflict is the agent's to reconcile first, not a message to write).
+  const committable =
+    (gitState?.files.length ?? 0) > 0 && !gitState?.files.some((f) => f.kind === "conflicted");
+  // A half-written message is this checkout's: a multi-repo workspace drops
+  // it when the lane in view moves to another repo, never carrying it across.
   const { override, msg, setMsg, commitRef, customActive, openOverride, revertOverride } =
-    useCommitDraft(agent.id, panelState);
+    useCommitDraft(key, committable);
 
   // This checkout's in-flight delegation, for display only — the lifecycle that
   // clears it runs on the host. Its settled outcome arrives the same way: the
   // host's `done` / `abandoned` event posts it to the store, and we merge it
   // with this section's own action notices.
-  const key = checkoutKey(agent.id, subdir);
   const delegation = useAppStore((s) => s.delegations[key]);
   const delegationNotice = useAppStore((s) => s.delegationNotices[key]);
-  // Autopilot is how the agent behaves on this PR (switched per project in
-  // settings, pausable per workspace from the header). The action bar's status
-  // slot carries the one thing worth knowing about it: that the in-flight turn
-  // was started automatically. What it did afterwards is the body's history.
+  // Autopilot is how the agent behaves on the focused PR (switched per project
+  // in settings, pausable per workspace from the lanes). The action bar's
+  // status slot carries the one thing worth knowing about it: that the
+  // in-flight turn was started automatically. What it did afterwards is the
+  // body's history.
   const autopilot = useAppStore((s) => s.autopilot[key]);
   const autoAttempt = autopilot?.cycle?.phase === "working" ? autopilot.cycle.attempt : null;
-
-  // The changed file whose diff is open in place of the list; null shows the
-  // list. Falls back to the list when the file leaves it (e.g. after a commit).
-  const [viewing, setViewing] = useState<string | null>(null);
-  useEffect(() => {
-    setViewing((prev) => (prev && gitState?.files.some((f) => f.path === prev) ? prev : null));
-  }, [gitState]);
-  // A multi-repo agent's checkout paths are addressed as `<subdir>/<path>` (as
-  // in the Code tab's tree), which is how `get_file_diff` picks the checkout.
-  const repoDir = agent.repos.length > 1 ? repo?.subdir : undefined;
 
   const githubConnected = useAppStore((s) => s.github?.authenticated ?? false);
   const hasOrigin = gitState?.has_origin ?? true;
 
-  const branch = gitState?.branch || repo?.branch || "(no branch yet)";
+  const branch = gitState?.branch || repo?.branch || "";
   const base = gitState?.parent_branch || repo?.parent_branch || "main";
   // The checkout is detached until its first push; a branch is only born from
   // an agent that names it. So a direct (agent-bypassed) action that needs a
   // branch — push, open PR — can't run yet: it routes through the agent
   // instead, which picks a conventional name and creates the branch.
-  const hasBranch = Boolean(gitState?.branch || repo?.branch);
+  const hasBranch = Boolean(branch);
+
+  // ── The lane in view ───────────────────────────────────────────────────────
+  // The lane the footer's actions apply to: the focused PR's lane, or the
+  // tree's own lane when no PR covers its branch. Any other lane can only be
+  // looked at — and focused.
+  const acting = viewed == null || viewed.pr == null || viewed.focused;
+  // What the ladder AND the footer describe, so they can never disagree: the
+  // focused PR's live state on its own lane; nothing on the tree's bare lane
+  // while another PR is focused (a commit from there lands on its branch, a
+  // push from there wants its own proposal — not that PR's merge).
+  const laneHasPr = viewed?.pr != null;
+  const lanePr = laneHasPr ? prState : null;
+  const laneChecks = laneHasPr ? checks : null;
+  const laneMergeState = laneHasPr ? mergeState : null;
+  const laneComments = laneHasPr ? comments : null;
+  // The PR in view with everything the store knows about it: the focused PR's
+  // live state when it is the one in view, else the set entry's snapshot.
+  const viewedPr = viewed?.pr ? (acting ? prState : viewed.pr.state) : null;
+  const viewedChecks = viewed?.pr ? (acting ? checks : viewed.pr.checks) : null;
+
+  // The footer: the ladder's next step as the primary, the rest as a menu —
+  // or, for a lane the panel only looks at, the way to focus it. Every action
+  // carries the one gate; the dispatch below re-runs it.
+  const { primary, groups, tone, mainDisabled, mainReason, ending, gate } = useFooterModel({
+    mode: acting ? "acting" : "focus",
+    gitState,
+    prState: acting ? lanePr : (viewedPr ?? null),
+    checks: laneChecks,
+    mergeState: laneMergeState,
+    comments: laneComments,
+    base,
+    customActive,
+    delegationActive: delegation != null,
+    busy: busy != null,
+    githubConnected,
+    primaryCheckout: subdir === undefined,
+  });
 
   const { runAction, addCommentToChat } = useGitActions({
     agentId: agent.id,
@@ -105,8 +130,11 @@ export function GitRepoSection({
     hasBranch,
     customActive,
     msg,
-    checks,
-    prUrl: prState?.url,
+    checks: laneChecks,
+    comments: laneComments,
+    prUrl: viewedPr?.url,
+    prNumber: viewedPr?.number,
+    gate,
     githubConnected,
     hasOrigin,
     runBusy,
@@ -115,89 +143,84 @@ export function GitRepoSection({
     revertOverride,
     fetchPrState,
   });
+  const setCommitMode = useAppStore((s) => s.setGitCommitAction);
+  // A menu row: a commit mode becomes the sticky default (and so, while there
+  // is something to commit, the primary); anything else runs.
+  const onPick = (k: string) => {
+    if (isCommitAction(k)) setCommitMode(k);
+    else runAction(k);
+  };
 
-  const { primary, items, effectiveKey, tone, mainDisabled, mainReason, onSelectAction } =
-    useActionBarModel({
-      agentId: agent.id,
-      panelState,
-      gitState,
-      prState,
-      checks,
-      mergeState,
-      prOpen,
+  // The same five rows for every lane. A lane only looked at — another PR of
+  // the checkout — is drawn from its set entry, with the tree's rows and the
+  // review row idle and saying why.
+  const rows = useMemo(() => {
+    if (!viewed) return [];
+    if (!acting && viewed.pr) {
+      return buildLadder({
+        git: gitState,
+        pr: viewed.pr.state,
+        checks: viewed.pr.checks,
+        mergeState: viewed.pr.checks?.merge_state ?? null,
+        comments: null,
+        base,
+        lane: { tree: false, focused: false },
+      });
+    }
+    return buildLadder({
+      git: gitState,
+      pr: lanePr,
+      checks: laneChecks,
+      mergeState: laneMergeState,
+      comments: laneComments,
       base,
-      customActive,
-      delegationActive: delegation != null,
-      githubConnected,
     });
+  }, [viewed, acting, gitState, lanePr, laneChecks, laneMergeState, laneComments, base]);
 
-  // Pushed state: link the commit count out to GitHub — a single commit when
-  // only one is ahead, otherwise the base..branch compare (commit list + full
-  // diff). Gated on nothing being unpushed, so the tip is on origin and the
-  // link can't 404. Needs the origin web base (github.com remotes only).
+  // ── Ladder bodies ──────────────────────────────────────────────────────────
+  // Pushed commits link out to GitHub — a single commit when only one is ahead,
+  // otherwise the base..branch compare (commit list + full diff). Gated on
+  // nothing being unpushed, so the tip is on origin and the link can't 404.
+  // Needs the origin web base (github.com remotes only).
   const webBase = gitState?.remote_url ?? null;
   const aheadCount = gitState?.ahead ?? 0;
   const unpushed = gitState?.unpushed ?? 0;
-  const pushedLink: string | null =
-    webBase && unpushed === 0 && aheadCount > 0
+  // The PR's head branch, said on its row when the tree is on another one —
+  // the same rule that gates the actions bound to that branch. Not before the
+  // git state loads, so the line doesn't flash on every open.
+  const prBranch =
+    gitState && viewedPr?.branch && viewedPr.branch !== gitState.branch ? viewedPr.branch : null;
+  // No link then either: the compare would be the tree's branch, not the PR's.
+  const commitsLink: string | null =
+    webBase && unpushed === 0 && aheadCount > 0 && !prBranch
       ? aheadCount === 1 && gitState?.head_sha
         ? `${webBase}/commit/${gitState.head_sha}`
         : `${webBase}/compare/${base}...${branch}`
       : null;
+  // Which sub-agent opened the PR in view, when one did — its row says so.
+  const prOrigin = usePrOrigin(agent.id, viewedPr?.number);
+  // A merged PR's row ends its branch: the two actions, each through the one
+  // gate (branch, scope, host, work since the merge), run like any other.
+  const laneEnding: LadderBodies["ending"] = ending ? { actions: ending, onRun: runAction } : null;
 
-  // Show the changes list only when there are uncommitted files to display.
-  // The commit composer yields while the agent holds a delegation.
-  const showFiles = panelState === "changes" || panelState === "conflicts";
-  const showCommit = panelState === "changes" && !delegation;
+  // A multi-repo agent's checkout paths are addressed as `<subdir>/<path>` (as
+  // in the Code tab's tree), which is how `get_file_diff` picks the checkout.
+  const repoDir = agent.repos.length > 1 ? repo?.subdir : undefined;
+
+  // The commit composer yields while the agent holds a delegation, and only
+  // belongs to the lane whose tree it commits.
+  const showCommit = acting && committable && !delegation;
   // Keys Fletch refuses to run git over here. While any remain, the git state is
-  // stale and every action would fail, so the header says so, the card replaces
-  // the body and the footer steps aside.
+  // stale and every action would fail, so the card replaces the body and the
+  // footer steps aside.
   const blockedConfig = useAppStore((s) => s.gitBlocked[key]);
   const blocked = blockedConfig != null;
 
-  // Every PR of this checkout — sub-agents each open their own, and a workspace
-  // that kept working after a merge holds the merged one too.
-  const prSet = useAppStore((s) => s.prSets[key]);
-  const hasPrSet = (prSet?.length ?? 0) >= 2;
-  // The focused PR's head branch, said on its card when the checkout is on
-  // another one — the same rule that gates the actions bound to that branch.
-  // Not before the git state loads, so the line doesn't flash on every open.
-  const prBranch =
-    gitState && prState?.branch && prState.branch !== gitState.branch ? prState.branch : null;
-  // Which sub-agent opened the focused PR, when one did — the card says so.
-  const prOrigin = usePrOrigin(agent.id, prState?.number);
-
   return (
-    <div className="git-wrap">
-      {/* ── color-coded status header: the at-a-glance state signal ── */}
-      <StatusHeader
-        state={panelState}
-        branch={branch}
-        base={base}
-        git={gitState}
-        pr={prState}
-        mergeState={mergeState}
-        checksFailed={checks?.failed ?? 0}
-        blocked={blocked}
-        controls={
-          autopilotSwitch && <AutopilotSwitch agentId={agent.id} projectId={agent.project_id} />
-        }
-      />
-
+    <>
       <WorktreesNote worktrees={gitState?.worktrees} />
 
-      {/* Two or more PRs → switch between them; the panel below follows the
-          focused one. One PR keeps the panel exactly as it was. */}
-      {prSet && hasPrSet && (
-        <PrSwitcher
-          agentId={agent.id}
-          subdir={subdir}
-          entries={prSet}
-          focused={prState?.number ?? null}
-        />
-      )}
-
-      {/* ── scrollable body: the changes are the focus ── */}
+      {/* ── scrollable body: the lane's way to landing ── */}
       <div className={`git-body ${busy ? "busy" : ""}`}>
         {blockedConfig ? (
           <BlockedConfigCard
@@ -205,44 +228,34 @@ export function GitRepoSection({
             busy={busy != null}
             onRemove={() => runAction("clear-config")}
           />
-        ) : showFiles && viewing ? (
-          <FileDiffView
-            agentId={agent.id}
-            files={gitState?.files ?? []}
-            path={viewing}
-            repoDir={repoDir}
-            onSelect={setViewing}
-            onBack={() => setViewing(null)}
-          />
         ) : (
           <>
-            {panelState === "pr-open" && prState && (
-              <PRCard
-                pr={prState}
-                branch={prBranch}
-                origin={prOrigin}
-                base={base}
-                checks={checks}
-                comments={comments}
-                onAddToChat={addCommentToChat}
+            {viewed && (
+              <LaneBody
+                key={viewed.id}
+                agentId={agent.id}
+                repoDir={repoDir}
+                rows={rows}
+                bodies={{
+                  files: acting ? (gitState?.files ?? []) : [],
+                  onRefresh: () => void fetchGitState(agent.id),
+                  commitsLink: acting ? commitsLink : null,
+                  commitsAhead: aheadCount,
+                  pr: viewedPr,
+                  prBranch,
+                  origin: prOrigin,
+                  checks: viewedChecks,
+                  comments: acting ? comments : null,
+                  onAddToChat: addCommentToChat,
+                  ending: laneEnding,
+                }}
               />
             )}
-            {panelState === "pr-closed" && prState && <ClosedPRCard pr={prState} />}
-            {panelState === "conflicts" && gitState && <ConflictCard files={gitState.files} />}
 
-            {showFiles && (
-              <ChangesList
-                files={gitState?.files ?? []}
-                onOpen={setViewing}
-                onRefresh={() => void fetchGitState(agent.id)}
-              />
-            )}
-
-            {/* What the agent did on this PR by itself — with the PR/changes it
-             *  describes. Renders nothing until it has actually done something. */}
-            <AutopilotHistory agentId={agent.id} subdir={subdir} />
-
-            <EmptyState state={panelState} base={base} />
+            {/* What the agent did on the focused PR by itself — under that PR's
+             *  ladder, and no other lane's. Renders nothing until it has done
+             *  something. */}
+            {viewed?.focused && <AutopilotHistory agentId={agent.id} subdir={subdir} />}
           </>
         )}
       </div>
@@ -263,16 +276,15 @@ export function GitRepoSection({
             // the checkout. `runAction` refuses the first of those by itself,
             // but the shortcut should be as dead as the button for all three.
             onSubmit={() => {
-              if (!mainDisabled) runAction(effectiveKey);
+              if (!mainDisabled) runAction(primary.key);
             }}
           />
         )}
 
         <ActionBar
-          statusKind={primary.statusKind}
-          statusLabel={primary.statusLabel}
-          // In the changes state the status is who writes the message — the
-          // header and the button already say "uncommitted" and "commit".
+          // The resting note: who writes the commit message while there is one
+          // to write (the ladder already says "3 files" and the button
+          // "commit"); on a lane only looked at, what focusing would change.
           idle={
             showCommit ? (
               <CommitStatus
@@ -280,24 +292,23 @@ export function GitRepoSection({
                 hasMsg={msg.trim().length > 0}
                 onOpen={openOverride}
               />
-            ) : undefined
+            ) : acting ? undefined : (
+              "Merge, checks and autopilot follow the focused PR"
+            )
           }
           busy={busy}
           delegationLabel={delegation ? delegationLabel(delegation.kind) : null}
           autoAttempt={autoAttempt}
           notice={notice ?? delegationNotice ?? null}
-          panelState={panelState}
-          pushedLink={pushedLink}
-          aheadCount={aheadCount}
-          items={items}
-          selectedKey={effectiveKey}
+          primary={primary}
+          groups={groups}
           tone={tone}
           mainDisabled={mainDisabled}
           mainReason={mainReason}
-          onSelect={onSelectAction}
-          onRun={() => runAction(effectiveKey)}
+          onPick={onPick}
+          onRun={() => runAction(primary.key)}
         />
       </div>
-    </div>
+    </>
   );
 }

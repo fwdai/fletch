@@ -177,7 +177,7 @@
   border-color: color-mix(in oklch, var(--success), transparent 65%);
   background: color-mix(in oklch, var(--success), transparent 90%);
 }
-.ws-badge.pr-draft {
+.ws-badge.pr-closed {
   color: var(--fg-2);
 }
 .ws-badge.pr-conflicts {
@@ -344,36 +344,35 @@
   margin: 11px 0;
 }
 
-.ws-pop-row {
+/* the checkout's lanes — the Git panel's own rows (`LaneRow`), flush with the
+   popover's padding rather than the panel's, and never pickable here */
+.ws-pop-lanes {
   display: flex;
-  align-items: center;
+  flex-direction: column;
   gap: 8px;
-  font-size: 11.5px;
-  color: var(--fg-1);
-  min-height: 20px;
+  /* capped so several PRs keep the popover a glance, not a page */
+  max-height: 260px;
+  overflow-y: auto;
 }
-.ws-pop-row + .ws-pop-row {
-  margin-top: 7px;
+.ws-pop-lane {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
-.ws-pop-row > svg {
-  color: var(--fg-3);
-  flex-shrink: 0;
+.ws-pop-lane .git-lane {
+  padding: 0;
+  min-height: 24px;
 }
-.ws-pop-branch {
-  color: var(--fg-0);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.ws-pop-base {
-  color: var(--fg-3);
-  font-size: 10.5px;
-  flex-shrink: 0;
+/* every lane here shares the workspace's base, and the row is 316px wide with
+   a chip, a diff and ahead/behind to fit — the base arrow is the one thing
+   worth giving up so the branch name isn't */
+.ws-pop-lane .ln-base {
+  display: none;
 }
 .ws-pop-ab {
-  margin-left: auto;
   display: inline-flex;
   gap: 8px;
+  font-size: 11px;
   font-variant-numeric: tabular-nums;
   flex-shrink: 0;
 }
@@ -387,95 +386,6 @@
 .ws-pop-ab svg {
   color: var(--fg-3);
 }
-.ws-pop-diff {
-  display: inline-flex;
-  gap: 7px;
-  font-family: var(--font-mono);
-  font-size: 11px;
-}
-/* qualified with the .ws-pop ancestor so specificity matches the .ws-badge.diff
- * .add/.rem rules above — otherwise this later, lower-specificity selector reads
- * as descending (noDescendingSpecificity) even though it targets other nodes. */
-.ws-pop .ws-pop-diff .add {
-  color: var(--success);
-}
-.ws-pop .ws-pop-diff .rem {
-  color: var(--danger);
-}
-.ws-pop-dim {
-  color: var(--fg-3);
-  font-size: 10.5px;
-  margin-left: auto;
-  flex-shrink: 0;
-}
-
-/* PR block — one entry per PR of the checkout, focused first */
-.ws-pop-prs {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  /* capped so several PRs keep the popover a glance, not a page */
-  max-height: 260px;
-  overflow-y: auto;
-}
-
-.ws-pop-pr {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-.ws-pr-head {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-}
-.ws-pr-tag {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  height: 20px;
-  padding: 0 8px;
-  border-radius: 6px;
-  font-size: 11px;
-  font-weight: 600;
-}
-.ws-pr-tag.pr-open {
-  color: var(--success);
-  background: color-mix(in oklch, var(--success), transparent 88%);
-}
-.ws-pr-tag.pr-draft {
-  color: var(--fg-2);
-  background: var(--bg-2);
-}
-.ws-pr-tag.pr-conflicts {
-  color: var(--warn);
-  background: color-mix(in oklch, var(--warn), transparent 86%);
-}
-.ws-pr-tag.pr-merged {
-  color: oklch(0.68 0.16 295);
-  background: color-mix(in oklch, oklch(0.68 0.16 295), transparent 88%);
-}
-.theme-light .ws-pr-tag.pr-merged {
-  color: oklch(0.45 0.16 295);
-}
-.ws-pr-num {
-  color: var(--fg-2);
-  font-size: 11px;
-}
-.ws-pop-repo {
-  color: var(--fg-3);
-  font-size: 10.5px;
-  margin-left: auto;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.ws-pr-title {
-  font-size: 12px;
-  color: var(--fg-0);
-  line-height: 1.35;
-}
-
 .ws-checkblock {
   display: flex;
   flex-direction: column;
@@ -552,7 +462,7 @@
   color: var(--fg-0);
 }
 .ws-act.primary {
-  flex: 1.6;
+  flex: 1;
   border-color: var(--accent-line);
   color: var(--accent);
   background: var(--accent-soft);

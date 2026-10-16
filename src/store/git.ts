@@ -81,6 +81,18 @@ export interface GitSlice {
    *  `abandoned` event carries. Rendered by the matching Git panel section if
    *  one is mounted; self-expires, so an outcome nobody was looking at lapses. */
   delegationNotices: Record<string, string>;
+  /** The Git panel's own action in flight per checkout, keyed by
+   *  `gitScopeKey` (environment + checkout) — the present-tense verb it shows
+   *  ("Pushing…"). Here rather than in the panel because the panel mounts per
+   *  checkout: the lock must outlive a switch to another repo and back, or the
+   *  same push could be dispatched twice. Scoped by environment because hosts
+   *  reuse agent ids and the push belongs to the host running it; so it is
+   *  deliberately NOT stashed on an environment switch — the entry stays put
+   *  and its completion clears exactly it, whichever host is on screen. */
+  gitBusy: Record<string, string>;
+  /** The Git panel's transient confirmation per checkout ("Pushed to origin"),
+   *  keyed like `gitBusy`, self-expiring like `delegationNotices`. */
+  gitNotices: Record<string, string>;
   /** Latest turn-end verification report per agent (keyed by agent_id), from
    *  the opt-in `verify:report` event. Feeds the Mission Control card's tests
    *  chip. Absent = never verified (no chip). */
@@ -152,6 +164,14 @@ export interface GitSlice {
   loadDelegations: () => Promise<void>;
   /** Post a settled delegation's outcome for the panel to show, if mounted. */
   noteDelegationOutcome: (key: string, text: string) => void;
+  /** Run one of the panel's own actions under the busy lock of `scoped` (a
+   *  `gitScopeKey`, taken by the caller when the action starts so the lock
+   *  and its outcome belong to that host however the user moves meanwhile).
+   *  Exclusive: a call while the lock is held does nothing and resolves
+   *  `undefined`, and only the holder's completion releases it. */
+  runGitBusy: (scoped: string, label: string, fn: () => Promise<unknown>) => Promise<unknown>;
+  /** Post a panel action's outcome under `scoped`, to lapse on its own. */
+  noteGitAction: (scoped: string, text: string) => void;
   setGitCommitAction: (action: GitCommitAction) => void;
   setPublishApprovalWait: (secs: number) => Promise<void>;
   setAutoArchiveIdleDays: (days: number) => Promise<void>;
@@ -328,6 +348,17 @@ const DELEGATION_NOTICE_MS = 3500;
 /** Live expiry timers for `delegationNotices`, by checkout key. Module scope
  *  because they're side-channel cleanup, not observable state. */
 const noticeTimers = new Map<string, ReturnType<typeof setTimeout>>();
+/** The panel's own confirmations lapse on the same clock, one timer per checkout. */
+const GIT_NOTICE_MS = 3500;
+const gitNoticeTimers = new Map<string, ReturnType<typeof setTimeout>>();
+/** Who holds each busy lock, so a completion releases only its own. */
+const gitBusyOwners = new Map<string, object>();
+
+/** The key `gitBusy` / `gitNotices` use: the environment the action runs on
+ *  plus its checkout, since hosts reuse agent ids. */
+export function gitScopeKey(environmentId: string, checkout: string): string {
+  return `${environmentId}:${checkout}`;
+}
 
 /** The mirror entry a host delegation report becomes, or null for one that has
  *  ended (`done` / `abandoned`). */
@@ -424,6 +455,8 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
   prSets: {},
   delegations: {},
   delegationNotices: {},
+  gitBusy: {},
+  gitNotices: {},
   verificationReports: {},
   gitCommitAction: "agent-commit-pr" as GitCommitAction,
   publishApprovalWait: DEFAULT_PUBLISH_APPROVAL_WAIT,
@@ -671,6 +704,39 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
           return { delegationNotices: rest };
         });
       }, DELEGATION_NOTICE_MS),
+    );
+  },
+
+  runGitBusy: async (k, label, fn) => {
+    if (gitBusyOwners.has(k)) return undefined;
+    const owner = {};
+    gitBusyOwners.set(k, owner);
+    set((s) => ({ gitBusy: { ...s.gitBusy, [k]: label } }));
+    try {
+      return await fn();
+    } finally {
+      if (gitBusyOwners.get(k) === owner) {
+        gitBusyOwners.delete(k);
+        set((s) => {
+          const { [k]: _done, ...rest } = s.gitBusy;
+          return { gitBusy: rest };
+        });
+      }
+    }
+  },
+
+  noteGitAction: (k, text) => {
+    set((s) => ({ gitNotices: { ...s.gitNotices, [k]: text } }));
+    clearTimeout(gitNoticeTimers.get(k));
+    gitNoticeTimers.set(
+      k,
+      setTimeout(() => {
+        gitNoticeTimers.delete(k);
+        set((s) => {
+          const { [k]: _expired, ...rest } = s.gitNotices;
+          return { gitNotices: rest };
+        });
+      }, GIT_NOTICE_MS),
     );
   },
 
