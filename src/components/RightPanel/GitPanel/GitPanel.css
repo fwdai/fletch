@@ -43,9 +43,26 @@
 .git-lanes.pick .git-lane.viewed {
   background: var(--selected);
 }
-.git-lanes.pick .git-lane:focus-visible {
+/* the lane's name is the radio: a button in the row's own type, beside the
+   PR chip and the switch rather than around them */
+.ln-pick {
+  flex: 0 1 auto;
+  min-width: 0;
+  gap: 8px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+button.ln-pick {
+  cursor: pointer;
+  border-radius: var(--r-xs);
+}
+button.ln-pick:focus-visible {
   outline: none;
-  box-shadow: inset 0 0 0 1px var(--accent-line);
+  box-shadow: 0 0 0 1px var(--accent-line);
 }
 /* the branch glyph is lit on the lane the working tree is on */
 .ln-tree {

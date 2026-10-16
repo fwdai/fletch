@@ -1,12 +1,16 @@
 import { useState } from "react";
 import type { AgentRecord } from "@/api";
+import { checkoutKey } from "@/store/git";
 import { GitRepoSection } from "./GitRepoSection";
 import { scopeOf, useWorkspaceLanes } from "./hooks/useWorkspaceLanes";
 import { defaultLane } from "./laneModel";
 
 /** State-aware git panel driven by live git state from the Tauri backend: one
  *  header of lanes, one ladder, one footer, whatever the number of repos. The
- *  section describes the lane in view and acts on its checkout. */
+ *  section describes the lane in view and acts on its checkout — and is
+ *  mounted per checkout, so everything transient in it (a push in flight, its
+ *  notice, a half-written commit message) is that checkout's and never shows
+ *  on another. */
 export function GitPanel({ agent }: { agent: AgentRecord }) {
   const { lanes, scopes } = useWorkspaceLanes(agent);
 
@@ -21,6 +25,7 @@ export function GitPanel({ agent }: { agent: AgentRecord }) {
 
   return (
     <GitRepoSection
+      key={checkoutKey(agent.id, scope?.subdir)}
       agent={agent}
       repo={scope?.repo}
       subdir={scope?.subdir}

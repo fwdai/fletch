@@ -28,7 +28,13 @@ export interface GateContext {
   delegationActive: boolean;
   /** The checkout is the agent's primary repo. */
   primaryCheckout: boolean;
+  /** Uncommitted files or commits origin lacks since the PR merged — work
+   *  that archiving the workspace or deleting the branch would take with it. */
+  workSinceMerge: boolean;
 }
+
+/** The two ways to end a merged branch: both remove work only this checkout holds. */
+const ENDS_BRANCH = new Set(["archive", "delete-branch"]);
 
 /** The agent playbooks that work on the PR itself (its checks, its base, its
  *  threads) and the two ways to end a merged branch. From a tree on another
@@ -68,6 +74,9 @@ export function gateAction(key: string, ctx: GateContext): Gate | null {
         reason: `Checkout is on ${ctx.checkoutBranch}; this PR's branch is ${ctx.laneBranch}`,
       };
     }
+  }
+  if (ENDS_BRANCH.has(key) && ctx.workSinceMerge) {
+    return { reason: "Work since the merge is only here" };
   }
   if (key === "merge" && !ctx.mergeAllowed) {
     return { reason: "GitHub's merge gate is closed — see the Pull request row" };

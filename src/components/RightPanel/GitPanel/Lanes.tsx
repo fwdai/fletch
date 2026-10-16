@@ -35,8 +35,11 @@ export function Lanes({
   const selectable = lanes.length > 1;
   const groupRef = useRef<HTMLDivElement>(null);
 
-  // Arrows move the view and the focus together, wrapping at the ends.
+  // Arrows move the view and the focus together, wrapping at the ends. Only
+  // from a radio itself: the PR chip and the autopilot switch beside it keep
+  // their keys.
   const onGroupKey = (e: KeyboardEvent<HTMLDivElement>) => {
+    if ((e.target as HTMLElement).getAttribute("role") !== "radio") return;
     const at = lanes.findIndex((l) => l.id === viewedId);
     const step = (to: number) => {
       const next = lanes[(to + lanes.length) % lanes.length];
@@ -114,32 +117,11 @@ export function LaneRow({
         .join(" · ")
     : undefined;
 
-  // Only the row itself: the PR chip and the autopilot switch inside it keep
-  // their own Enter and Space.
-  const onKey = (e: KeyboardEvent<HTMLDivElement>) => {
-    if (e.target === e.currentTarget && (e.key === "Enter" || e.key === " ")) {
-      e.preventDefault();
-      onView?.();
-    }
-  };
-
-  return (
-    <div
-      className={[
-        "git-lane",
-        "flex-center",
-        lane.current ? "current" : "",
-        selectable && viewed ? "viewed" : "",
-      ]
-        .filter(Boolean)
-        .join(" ")}
-      role={selectable ? "radio" : undefined}
-      aria-checked={selectable ? viewed : undefined}
-      // Roving tab stop: only the viewed lane is in the tab order.
-      tabIndex={selectable ? (viewed ? 0 : -1) : undefined}
-      onClick={selectable ? onView : undefined}
-      onKeyDown={selectable ? onKey : undefined}
-    >
+  // The radio is the lane's name — glyph, repo, branch, base — a real button,
+  // so Enter and Space are its own. The PR chip and the trailing controls are
+  // its siblings, never its children: each keeps its own keys and focus.
+  const name = (
+    <>
       {/* The branch glyph is lit on the lane the working tree is on — the
           lane whose changes and commits the ladder counts. */}
       <span
@@ -153,6 +135,44 @@ export function LaneRow({
         {lane.branch ?? "no branch yet"}
       </span>
       {base && <span className="ln-base text-xs">→ {base}</span>}
+    </>
+  );
+
+  return (
+    <div
+      className={[
+        "git-lane",
+        "flex-center",
+        lane.current ? "current" : "",
+        selectable && viewed ? "viewed" : "",
+      ]
+        .filter(Boolean)
+        .join(" ")}
+      // A click on the row's blank space views the lane too; a click on any
+      // button in it — the radio, the chip, the switch — is that button's.
+      onClick={
+        selectable
+          ? (e) => {
+              if ((e.target as Element).closest("button") == null) onView?.();
+            }
+          : undefined
+      }
+    >
+      {selectable ? (
+        <button
+          type="button"
+          className="ln-pick flex-center"
+          role="radio"
+          aria-checked={viewed}
+          // Roving tab stop: only the viewed lane is in the tab order.
+          tabIndex={viewed ? 0 : -1}
+          onClick={onView}
+        >
+          {name}
+        </button>
+      ) : (
+        <span className="ln-pick flex-center">{name}</span>
+      )}
       {pr && tint ? (
         <button
           type="button"

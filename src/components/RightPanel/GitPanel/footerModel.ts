@@ -59,6 +59,16 @@ export function focusFooter(): Footer {
   };
 }
 
+/** The two ways to end a merged PR's branch, offered on its row rather than
+ *  the footer: ending a workspace is a decision, not the ladder's next step.
+ *  Gated like every other action (`applyGate` on each). */
+export function endingActions(): FooterAction[] {
+  return [
+    { key: "archive", label: "Archive workspace", icon: "archive" },
+    { key: "delete-branch", label: "Delete branch", icon: "trash", danger: true },
+  ];
+}
+
 /** The footer with one gate run over every action it offers: a closed gate
  *  disables the row and carries its reason; the primary's reason comes back
  *  as `mainReason`, or null when the gate asked for quiet. Radio rows (the

@@ -31,6 +31,7 @@ const open: GateContext = {
   mergeAllowed: true,
   delegationActive: false,
   primaryCheckout: true,
+  workSinceMerge: false,
 };
 const reason = (key: string, over: Partial<GateContext> = {}) =>
   gateAction(key, { ...open, ...over })?.reason ?? null;
@@ -82,6 +83,18 @@ describe("gateAction", () => {
     for (const key of ["push", "pull", "delete-branch", "agent-commit-pr"]) {
       expect(reason(key, { primaryCheckout: false })).toBeNull();
     }
+  });
+
+  it("keeps a merged branch's ends apart: scope gates archive, not delete-branch", () => {
+    // A secondary repo's merged PR: the workspace is archived from the primary,
+    // but this checkout's own branch can still be deleted.
+    expect(reason("archive", { primaryCheckout: false })).toMatch(/primary repo/);
+    expect(reason("delete-branch", { primaryCheckout: false })).toBeNull();
+    // Work since the merge that only this checkout holds stops both.
+    for (const key of ["archive", "delete-branch"]) {
+      expect(reason(key, { workSinceMerge: true })).toMatch(/since the merge/);
+    }
+    expect(reason("push", { workSinceMerge: true })).toBeNull();
   });
 
   it("closes Merge with the gate, loudly enough for a menu row's tooltip", () => {

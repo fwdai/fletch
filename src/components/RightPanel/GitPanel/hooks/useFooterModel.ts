@@ -2,14 +2,23 @@ import { useCallback } from "react";
 import type { GitState, MergeState, PrChecks, PrComments, PrState } from "@/api";
 import type { ActionTone } from "@/components/RightPanel/primaryActions";
 import { describeMergeGate } from "@/mergeGate";
+import { hasWorkSinceMerge } from "@/readiness";
 import { useAppStore } from "@/store";
 import { activeEntry } from "@/store/capabilities";
 import { type Gate, gateAction } from "../actionGate";
-import { applyGate, buildFooter, type Footer, focusFooter } from "../footerModel";
+import {
+  applyGate,
+  buildFooter,
+  endingActions,
+  type Footer,
+  type FooterAction,
+  focusFooter,
+} from "../footerModel";
 
 /** The footer as the panel renders it: `buildFooter` (or `focusFooter` for a
  *  lane the panel only looks at) with the one action gate applied to every
- *  action, plus that gate for the dispatch to re-run. */
+ *  action; the merged PR row's ending actions through the same gate; and that
+ *  gate for the dispatch to re-run. */
 export function useFooterModel(input: {
   /** `acting`: the lane the footer's actions apply to. `focus`: another PR of
    *  the checkout, which can only be focused or viewed on GitHub. */
@@ -28,6 +37,8 @@ export function useFooterModel(input: {
   tone: ActionTone;
   mainDisabled: boolean;
   mainReason: string | null;
+  /** Archive and delete-branch, gated, for a merged PR the footer acts on. */
+  ending: FooterAction[] | null;
   gate: (key: string) => Gate | null;
 } {
   const { mode, gitState, prState, checks, mergeState, comments, base, customActive } = input;
@@ -42,6 +53,7 @@ export function useFooterModel(input: {
   });
   const laneBranch = prState?.branch ?? null;
   const checkoutBranch = gitState?.branch || null;
+  const workSinceMerge = gitState != null && hasWorkSinceMerge(gitState);
   const { delegationActive, primaryCheckout } = input;
   const gate = useCallback(
     (key: string) =>
@@ -52,8 +64,17 @@ export function useFooterModel(input: {
         mergeAllowed,
         delegationActive,
         primaryCheckout,
+        workSinceMerge,
       }),
-    [env, laneBranch, checkoutBranch, mergeAllowed, delegationActive, primaryCheckout],
+    [
+      env,
+      laneBranch,
+      checkoutBranch,
+      mergeAllowed,
+      delegationActive,
+      primaryCheckout,
+      workSinceMerge,
+    ],
   );
 
   const footer =
@@ -75,5 +96,17 @@ export function useFooterModel(input: {
           hasOrigin: gitState?.has_origin ?? true,
         });
   const { primary, groups, mainDisabled, mainReason } = applyGate(footer, gate);
-  return { primary, groups, tone: primary.tone ?? "accent", mainDisabled, mainReason, gate };
+  const ending =
+    mode === "acting" && prState?.state === "merged"
+      ? applyGate({ primary, groups: [{ items: endingActions() }] }, gate).groups[0].items
+      : null;
+  return {
+    primary,
+    groups,
+    tone: primary.tone ?? "accent",
+    mainDisabled,
+    mainReason,
+    ending,
+    gate,
+  };
 }

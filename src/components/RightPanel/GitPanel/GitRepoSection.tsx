@@ -2,7 +2,6 @@ import { useMemo } from "react";
 import type { AgentRecord, TrackedRepo } from "@/api";
 import { isCommitAction } from "@/components/RightPanel/primaryActions";
 import { delegationLabel } from "@/delegation";
-import { hasWorkSinceMerge } from "@/readiness";
 import { useAppStore } from "@/store";
 import { checkoutKey } from "@/store/git";
 import { ActionBar } from "./ActionBar";
@@ -114,7 +113,7 @@ export function GitRepoSection({
   // The footer: the ladder's next step as the primary, the rest as a menu —
   // or, for a lane the panel only looks at, the way to focus it. Every action
   // carries the one gate; the dispatch below re-runs it.
-  const { primary, groups, tone, mainDisabled, mainReason, gate } = useFooterModel({
+  const { primary, groups, tone, mainDisabled, mainReason, ending, gate } = useFooterModel({
     mode: acting ? "acting" : "focus",
     gitState,
     prState: acting ? lanePr : (viewedPr ?? null),
@@ -203,19 +202,9 @@ export function GitRepoSection({
     gitState && viewedPr?.branch && viewedPr.branch !== gitState.branch ? viewedPr.branch : null;
   // Which sub-agent opened the PR in view, when one did — its row says so.
   const prOrigin = usePrOrigin(agent.id, viewedPr?.number);
-  // A merged PR's row ends its branch. Both actions pass the one gate (branch,
-  // scope, host), and both are dead while work since the merge is still only
-  // here — uncommitted, or commits origin lacks — since archiving removes it.
-  const ending: LadderBodies["ending"] = acting
-    ? {
-        onArchive: () => runAction("archive"),
-        onDeleteBranch: () => runAction("delete-branch"),
-        reason:
-          gate("archive")?.reason ??
-          gate("delete-branch")?.reason ??
-          (gitState && hasWorkSinceMerge(gitState) ? "Work since the merge is only here" : null),
-      }
-    : null;
+  // A merged PR's row ends its branch: the two actions, each through the one
+  // gate (branch, scope, host, work since the merge), run like any other.
+  const laneEnding: LadderBodies["ending"] = ending ? { actions: ending, onRun: runAction } : null;
 
   // A multi-repo agent's checkout paths are addressed as `<subdir>/<path>` (as
   // in the Code tab's tree), which is how `get_file_diff` picks the checkout.
@@ -269,14 +258,15 @@ export function GitRepoSection({
                   checks: viewedChecks,
                   comments: acting ? comments : null,
                   onAddToChat: addCommentToChat,
-                  ending,
+                  ending: laneEnding,
                 }}
               />
             )}
 
-            {/* What the agent did on this PR by itself — under the ladder it
-             *  describes. Renders nothing until it has actually done something. */}
-            {acting && <AutopilotHistory agentId={agent.id} subdir={subdir} />}
+            {/* What the agent did on the focused PR by itself — under that PR's
+             *  ladder, and no other lane's. Renders nothing until it has done
+             *  something. */}
+            {viewed?.focused && <AutopilotHistory agentId={agent.id} subdir={subdir} />}
           </>
         )}
       </div>

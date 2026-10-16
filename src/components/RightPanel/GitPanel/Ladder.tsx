@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/Button";
 import { IconButton } from "@/components/ui/IconButton";
 import { ChangesList } from "./ChangesList";
 import { ChecksSection, CommentsSection } from "./cards";
+import type { FooterAction } from "./footerModel";
 import type { PrOrigin } from "./hooks/usePrOrigin";
 import type { LadderRow, RungKey } from "./ladderModel";
 import { GitLink } from "./shared";
@@ -33,10 +34,10 @@ export interface LadderBodies {
   checks: PrChecks | null;
   comments: PrComments | null;
   onAddToChat: (c: PrComment) => void;
-  /** How a merged PR's branch ends, on its row: archive the workspace or delete
-   *  the branch. Null for a lane the footer doesn't act on. `reason` is why
-   *  neither can run from here (the tree is on another branch), or null. */
-  ending: { onArchive: () => void; onDeleteBranch: () => void; reason: string | null } | null;
+  /** How a merged PR's branch ends, on its row: archive the workspace, delete
+   *  the branch — each gated on its own (`useFooterModel`). Null for a lane the
+   *  footer doesn't act on. */
+  ending: { actions: FooterAction[]; onRun: (key: string) => void } | null;
 }
 
 /** Mount one per lane (`key={lane.id}`): the open/closed choices are the
@@ -211,28 +212,24 @@ function PrBody({
         ))}
       </div>
       {ending && (
-        // Shipped: the branch is done. Quiet outline buttons, not the footer —
-        // ending a workspace is a decision, not the next step of the ladder.
-        <div className="rg-end flex-center" title={ending.reason ?? undefined}>
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={ending.reason != null}
-            onClick={ending.onArchive}
-          >
-            <Icon name="archive" size={12} />
-            Archive workspace
-          </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            danger
-            disabled={ending.reason != null}
-            onClick={ending.onDeleteBranch}
-          >
-            <Icon name="trash" size={12} />
-            Delete branch
-          </Button>
+        // Shipped: the branch is done. Quiet buttons, not the footer — ending a
+        // workspace is a decision, not the next step of the ladder. Each is
+        // gated on its own; a disabled one says why on hover.
+        <div className="rg-end flex-center">
+          {ending.actions.map((a) => (
+            <span key={a.key} title={a.reason}>
+              <Button
+                variant={a.danger ? "ghost" : "outline"}
+                danger={a.danger}
+                size="sm"
+                disabled={a.disabled}
+                onClick={() => ending.onRun(a.key)}
+              >
+                <Icon name={a.icon} size={12} />
+                {a.label}
+              </Button>
+            </span>
+          ))}
         </div>
       )}
     </div>
