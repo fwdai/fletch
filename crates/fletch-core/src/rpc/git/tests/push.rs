@@ -150,8 +150,7 @@ async fn git_push_refuses_commits_made_as_someone_else() {
     run_git(&repo, &["checkout", "-q", "-b", "fix/identity"]);
     std::fs::write(repo.join("b.txt"), b"y").unwrap();
     run_git(&repo, &["add", "-A"]);
-    // The mistake under test: an agent stamping the account email it was shown
-    // onto the commit instead of trusting the checkout's config.
+    // The mistake under test: an overridden committer email.
     run_git(
         &repo,
         &[
@@ -193,7 +192,7 @@ async fn git_push_refuses_commits_made_as_someone_else() {
         "nothing may reach the remote"
     );
 
-    // Rewritten as the checkout's own identity, the same push goes through.
+    // Rewritten as the checkout's identity, the push goes through.
     run_git(
         &repo,
         &["commit", "-q", "--amend", "--no-edit", "--reset-author"],

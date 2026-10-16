@@ -218,12 +218,9 @@ impl GitDispatcher {
     }
 }
 
-/// The commits a push would publish must be the checkout's own: a committer
-/// email other than its `user.email` lands on GitHub as nobody's and
-/// unverified, and only a rewrite fixes that — cheap now, a force push later.
-/// Checked after the branch gates and before approval, so the user is never
-/// asked to approve a push the host would then refuse. A read failure refuses
-/// too: pushing blind is the one outcome this guard exists to prevent.
+/// Commits made as someone other than the checkout's `user.email` are refused
+/// before the approval prompt (see `git::identity`); an unreadable log refuses
+/// too, rather than push blind.
 async fn refuse_foreign_identity(id: &str, cwd: &Path, branch: &str) -> Option<Response> {
     match crate::git::refuse_foreign_identity(cwd, branch).await {
         Ok(None) => None,
