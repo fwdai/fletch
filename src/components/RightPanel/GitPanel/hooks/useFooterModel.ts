@@ -31,6 +31,7 @@ export function useFooterModel(input: {
   base: string;
   customActive: boolean;
   delegationActive: boolean;
+  busy: boolean;
   githubConnected: boolean;
   primaryCheckout: boolean;
 }): Footer & {
@@ -54,7 +55,7 @@ export function useFooterModel(input: {
   const laneBranch = prState?.branch ?? null;
   const checkoutBranch = gitState?.branch || null;
   const workSinceMerge = gitState != null && hasWorkSinceMerge(gitState);
-  const { delegationActive, primaryCheckout } = input;
+  const { delegationActive, busy, primaryCheckout } = input;
   const gate = useCallback(
     (key: string) =>
       gateAction(key, {
@@ -63,6 +64,7 @@ export function useFooterModel(input: {
         checkoutBranch,
         mergeAllowed,
         delegationActive,
+        busy,
         primaryCheckout,
         workSinceMerge,
       }),
@@ -72,6 +74,7 @@ export function useFooterModel(input: {
       checkoutBranch,
       mergeAllowed,
       delegationActive,
+      busy,
       primaryCheckout,
       workSinceMerge,
     ],

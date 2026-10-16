@@ -30,6 +30,7 @@ const open: GateContext = {
   checkoutBranch: "feat/first",
   mergeAllowed: true,
   delegationActive: false,
+  busy: false,
   primaryCheckout: true,
   workSinceMerge: false,
 };
@@ -107,10 +108,14 @@ describe("gateAction", () => {
     expect(gateAction("agent-commit", { ...open, delegationActive: true })).toMatchObject({
       quiet: true,
     });
-    // A working agent is no reason to keep a page, the focus or the connect
-    // flow from the user: none of them touch the checkout.
+    // An action of ours in flight holds the rest the same way, and the lock
+    // lives in the store, so it holds across a remount of the section.
+    expect(gateAction("push", { ...open, busy: true })).toMatchObject({ quiet: true });
+    // A working agent, or our own push, is no reason to keep a page, the
+    // focus or the connect flow from the user: none of them touch the checkout.
     for (const key of ["view-pr", "focus-pr", "connect-github"]) {
       expect(gateAction(key, { ...open, delegationActive: true })).toBeNull();
+      expect(gateAction(key, { ...open, busy: true })).toBeNull();
     }
     // …but the host gate still applies to them.
     expect(reason("focus-pr", { env: oldHost, delegationActive: true })).toBe(

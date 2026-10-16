@@ -51,7 +51,7 @@ export function GitRepoSection({
     useGitPanelData(agent.id, repo, subdir);
 
   const key = checkoutKey(agent.id, subdir);
-  const { busy, runBusy, notice, showNotice } = useTransientFeedback(agent.id);
+  const { busy, runBusy, notice, showNotice } = useTransientFeedback(key);
   // Something to commit: uncommitted files, none of them conflicted (a
   // conflict is the agent's to reconcile first, not a message to write).
   const committable =
@@ -118,6 +118,7 @@ export function GitRepoSection({
     base,
     customActive,
     delegationActive: delegation != null,
+    busy: busy != null,
     githubConnected,
     primaryCheckout: subdir === undefined,
   });

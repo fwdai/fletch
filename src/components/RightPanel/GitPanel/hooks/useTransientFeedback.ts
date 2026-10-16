@@ -1,41 +1,26 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback } from "react";
+import { useAppStore } from "@/store";
 
 /** Two short-lived UI signals the panel shows for actions that otherwise
  *  leave no visible trace:
  *  - `busy`: the in-flight async verb (dimmed body, spinner, busy CTA),
  *  - `notice`: a transient confirmation toast (push/pull/rebase, delegation).
- *  Both reset on agent switch so they don't leak between checkouts. */
-export function useTransientFeedback(agentId: string) {
-  // In-flight async action — holds the present-tense verb to show.
-  const [busy, setBusy] = useState<string | null>(null);
-  const runBusy = useCallback(async (label: string, fn: () => Promise<unknown>) => {
-    setBusy(label);
-    try {
-      return await fn();
-    } finally {
-      setBusy(null);
-    }
-  }, []);
-
-  // Transient confirmation for fire-and-forget actions.
-  const [notice, setNotice] = useState<string | null>(null);
-  const noticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const showNotice = useCallback((m: string) => {
-    setNotice(m);
-    if (noticeTimer.current) clearTimeout(noticeTimer.current);
-    noticeTimer.current = setTimeout(() => setNotice(null), 3500);
-  }, []);
-  useEffect(
-    () => () => {
-      if (noticeTimer.current) clearTimeout(noticeTimer.current);
-    },
-    [],
+ *  Both live in the store, keyed by checkout: an action outlives the section
+ *  that started it (the section mounts per checkout), so the lock and its
+ *  outcome have to as well, or coming back to the checkout mid-push would
+ *  offer the push again. */
+export function useTransientFeedback(checkout: string) {
+  const busy = useAppStore((s) => s.gitBusy[checkout] ?? null);
+  const notice = useAppStore((s) => s.gitNotices[checkout] ?? null);
+  const runGitBusy = useAppStore((s) => s.runGitBusy);
+  const noteGitAction = useAppStore((s) => s.noteGitAction);
+  const runBusy = useCallback(
+    (label: string, fn: () => Promise<unknown>) => runGitBusy(checkout, label, fn),
+    [checkout, runGitBusy],
   );
-
-  useEffect(() => {
-    setNotice(null);
-    setBusy(null);
-  }, [agentId]);
-
+  const showNotice = useCallback(
+    (text: string) => noteGitAction(checkout, text),
+    [checkout, noteGitAction],
+  );
   return { busy, runBusy, notice, showNotice };
 }

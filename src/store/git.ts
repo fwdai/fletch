@@ -81,6 +81,14 @@ export interface GitSlice {
    *  `abandoned` event carries. Rendered by the matching Git panel section if
    *  one is mounted; self-expires, so an outcome nobody was looking at lapses. */
   delegationNotices: Record<string, string>;
+  /** The Git panel's own action in flight per checkout (`checkoutKey`) — the
+   *  present-tense verb it shows ("Pushing…"). Here rather than in the panel
+   *  because the panel mounts per checkout: the lock must outlive a switch to
+   *  another repo and back, or the same push could be dispatched twice. */
+  gitBusy: Record<string, string>;
+  /** The Git panel's transient confirmation per checkout ("Pushed to origin"),
+   *  self-expiring like `delegationNotices`. */
+  gitNotices: Record<string, string>;
   /** Latest turn-end verification report per agent (keyed by agent_id), from
    *  the opt-in `verify:report` event. Feeds the Mission Control card's tests
    *  chip. Absent = never verified (no chip). */
@@ -152,6 +160,10 @@ export interface GitSlice {
   loadDelegations: () => Promise<void>;
   /** Post a settled delegation's outcome for the panel to show, if mounted. */
   noteDelegationOutcome: (key: string, text: string) => void;
+  /** Run one of the panel's own actions under the checkout's busy lock. */
+  runGitBusy: (key: string, label: string, fn: () => Promise<unknown>) => Promise<unknown>;
+  /** Post a panel action's outcome for the checkout, to lapse on its own. */
+  noteGitAction: (key: string, text: string) => void;
   setGitCommitAction: (action: GitCommitAction) => void;
   setPublishApprovalWait: (secs: number) => Promise<void>;
   setAutoArchiveIdleDays: (days: number) => Promise<void>;
@@ -328,6 +340,9 @@ const DELEGATION_NOTICE_MS = 3500;
 /** Live expiry timers for `delegationNotices`, by checkout key. Module scope
  *  because they're side-channel cleanup, not observable state. */
 const noticeTimers = new Map<string, ReturnType<typeof setTimeout>>();
+/** The panel's own confirmations lapse on the same clock, one timer per checkout. */
+const GIT_NOTICE_MS = 3500;
+const gitNoticeTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
 /** The mirror entry a host delegation report becomes, or null for one that has
  *  ended (`done` / `abandoned`). */
@@ -424,6 +439,8 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
   prSets: {},
   delegations: {},
   delegationNotices: {},
+  gitBusy: {},
+  gitNotices: {},
   verificationReports: {},
   gitCommitAction: "agent-commit-pr" as GitCommitAction,
   publishApprovalWait: DEFAULT_PUBLISH_APPROVAL_WAIT,
@@ -671,6 +688,33 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
           return { delegationNotices: rest };
         });
       }, DELEGATION_NOTICE_MS),
+    );
+  },
+
+  runGitBusy: async (key, label, fn) => {
+    set((s) => ({ gitBusy: { ...s.gitBusy, [key]: label } }));
+    try {
+      return await fn();
+    } finally {
+      set((s) => {
+        const { [key]: _done, ...rest } = s.gitBusy;
+        return { gitBusy: rest };
+      });
+    }
+  },
+
+  noteGitAction: (key, text) => {
+    set((s) => ({ gitNotices: { ...s.gitNotices, [key]: text } }));
+    clearTimeout(gitNoticeTimers.get(key));
+    gitNoticeTimers.set(
+      key,
+      setTimeout(() => {
+        gitNoticeTimers.delete(key);
+        set((s) => {
+          const { [key]: _expired, ...rest } = s.gitNotices;
+          return { gitNotices: rest };
+        });
+      }, GIT_NOTICE_MS),
     );
   },
 

@@ -26,6 +26,8 @@ export interface GateContext {
   /** GitHub's merge gate is open (`describeMergeGate`). */
   mergeAllowed: boolean;
   delegationActive: boolean;
+  /** One of the panel's own actions is in flight on this checkout. */
+  busy: boolean;
   /** The checkout is the agent's primary repo. */
   primaryCheckout: boolean;
   /** Uncommitted files or commits origin lacks since the PR merged — work
@@ -68,6 +70,9 @@ export function gateAction(key: string, ctx: GateContext): Gate | null {
   if (key === "loading") return { reason: "Loading git state", quiet: true };
   if (ctx.delegationActive && !HARMLESS.has(key)) {
     return { reason: "The agent is working on this checkout", quiet: true };
+  }
+  if (ctx.busy && !HARMLESS.has(key)) {
+    return { reason: "An action is already running on this checkout", quiet: true };
   }
   const env = actionGateReason(ctx.env, key);
   if (env) return { reason: env };

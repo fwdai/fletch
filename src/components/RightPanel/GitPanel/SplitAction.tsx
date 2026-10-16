@@ -98,18 +98,23 @@ export function SplitAction({
   };
 
   const toneClass = tone !== "accent" ? tone : "";
+  // Work in flight shows on the main button only while the gate holds the
+  // primary for it; a primary the gate lets through (viewing the PR, focusing
+  // it) stays itself, and the menu stays reachable — its rows carry their own
+  // gates — so the status slot narrates the work without locking the panel.
+  const showBusy = busy && mainDisabled;
 
   return (
-    <div className={`git-split ${toneClass} ${busy ? "busy" : ""}`}>
+    <div className={`git-split ${toneClass} ${showBusy ? "busy" : ""}`}>
       <button
         type="button"
         className="gsa-main text-base"
-        disabled={mainDisabled || busy}
+        disabled={mainDisabled}
         title={mainReason ?? undefined}
         onClick={onRun}
       >
-        {busy ? <Spinner /> : <Icon name={primary.icon} />}
-        <span className="gsa-label">{busy ? busyLabel : primary.label}</span>
+        {showBusy ? <Spinner /> : <Icon name={primary.icon} />}
+        <span className="gsa-label">{showBusy ? busyLabel : primary.label}</span>
       </button>
       {hasMenu && (
         <button
@@ -120,7 +125,6 @@ export function SplitAction({
           aria-label="More actions"
           aria-haspopup="menu"
           aria-expanded={open}
-          disabled={busy}
           onClick={() => (open ? close() : setOpen(true))}
         >
           <Icon name="chevU" />
@@ -148,36 +152,38 @@ export function SplitAction({
                 {g.items.map((a) => {
                   const isArmed = armed === a.key;
                   return (
-                    <DropdownItem
-                      key={a.key}
-                      as="button"
-                      role={g.radio ? "menuitemradio" : "menuitem"}
-                      aria-checked={g.radio ? a.active : undefined}
-                      active={a.active}
-                      disabled={a.disabled}
-                      danger={a.danger || isArmed}
-                      className={g.radio ? "gsa-radio" : undefined}
-                      title={a.reason}
-                      onMouseDown={(e) => e.preventDefault()}
-                      onClick={() => {
-                        if (a.confirm && !isArmed) {
-                          setArmed(a.key);
-                          return;
-                        }
-                        onPick(a.key);
-                        close(true);
-                      }}
-                    >
-                      <div className="di-i">
-                        <Icon name={a.icon} size={12} />
-                      </div>
-                      <span className="di-l">{isArmed ? a.confirm : a.label}</span>
-                      {g.radio && a.active && (
-                        <span className="di-m gsa-default" aria-hidden>
-                          default
-                        </span>
-                      )}
-                    </DropdownItem>
+                    // A disabled button takes no pointer events in the WebView,
+                    // so the reason sits on a wrapper that does.
+                    <div key={a.key} title={a.disabled ? a.reason : undefined}>
+                      <DropdownItem
+                        as="button"
+                        role={g.radio ? "menuitemradio" : "menuitem"}
+                        aria-checked={g.radio ? a.active : undefined}
+                        active={a.active}
+                        disabled={a.disabled}
+                        danger={a.danger || isArmed}
+                        className={g.radio ? "gsa-radio" : undefined}
+                        onMouseDown={(e) => e.preventDefault()}
+                        onClick={() => {
+                          if (a.confirm && !isArmed) {
+                            setArmed(a.key);
+                            return;
+                          }
+                          onPick(a.key);
+                          close(true);
+                        }}
+                      >
+                        <div className="di-i">
+                          <Icon name={a.icon} size={12} />
+                        </div>
+                        <span className="di-l">{isArmed ? a.confirm : a.label}</span>
+                        {g.radio && a.active && (
+                          <span className="di-m gsa-default" aria-hidden>
+                            default
+                          </span>
+                        )}
+                      </DropdownItem>
+                    </div>
                   );
                 })}
               </div>
