@@ -1,5 +1,5 @@
 import { open } from "@tauri-apps/plugin-shell";
-import type { KeyboardEvent, ReactNode } from "react";
+import { type KeyboardEvent, type ReactNode, useRef } from "react";
 import { Icon } from "@/components/Icon";
 import { Badge } from "@/components/ui/Badge";
 import { prTint } from "@/util/prSummary";
@@ -15,6 +15,10 @@ import type { Lane } from "./laneModel";
 // PR", explicit). In a multi-repo workspace each lane says its repo.
 //
 // `LaneRow` is also the title bar popover's row, so a PR reads the same there.
+//
+// The group is a radio group proper: one tab stop, on the viewed lane, and the
+// arrow keys move the view (Home and End to the ends). Enter and Space on a
+// row view it too, for anyone who tabbed in and reached for them.
 
 export function Lanes({
   lanes,
@@ -29,11 +33,47 @@ export function Lanes({
   controls?: ReactNode;
 }) {
   const selectable = lanes.length > 1;
+  const groupRef = useRef<HTMLDivElement>(null);
+
+  // Arrows move the view and the focus together, wrapping at the ends.
+  const onGroupKey = (e: KeyboardEvent<HTMLDivElement>) => {
+    const at = lanes.findIndex((l) => l.id === viewedId);
+    const step = (to: number) => {
+      const next = lanes[(to + lanes.length) % lanes.length];
+      if (!next) return;
+      onView(next.id);
+      groupRef.current
+        ?.querySelectorAll<HTMLElement>('[role="radio"]')
+        [(to + lanes.length) % lanes.length]?.focus();
+    };
+    switch (e.key) {
+      case "ArrowDown":
+      case "ArrowRight":
+        step(at + 1);
+        break;
+      case "ArrowUp":
+      case "ArrowLeft":
+        step(at - 1);
+        break;
+      case "Home":
+        step(0);
+        break;
+      case "End":
+        step(lanes.length - 1);
+        break;
+      default:
+        return;
+    }
+    e.preventDefault();
+  };
+
   return (
     <div
+      ref={groupRef}
       className={`git-lanes ${selectable ? "pick" : ""}`}
       role={selectable ? "radiogroup" : undefined}
       aria-label="Branches and pull requests"
+      onKeyDown={selectable ? onGroupKey : undefined}
     >
       {lanes.map((lane, i) => (
         <LaneRow
@@ -93,7 +133,8 @@ export function LaneRow({
         .join(" ")}
       role={selectable ? "radio" : undefined}
       aria-checked={selectable ? viewed : undefined}
-      tabIndex={selectable ? 0 : undefined}
+      // Roving tab stop: only the viewed lane is in the tab order.
+      tabIndex={selectable ? (viewed ? 0 : -1) : undefined}
       onClick={selectable ? onView : undefined}
       onKeyDown={selectable ? onKey : undefined}
     >
