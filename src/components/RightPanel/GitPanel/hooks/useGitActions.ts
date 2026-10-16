@@ -1,6 +1,6 @@
 import { open } from "@tauri-apps/plugin-shell";
 import { useCallback } from "react";
-import type { PrChecks, PrComment } from "@/api";
+import type { PrChecks, PrComment, PrComments } from "@/api";
 import { formatCommentForChat } from "@/components/RightPanel/prComments";
 import { useAppStore } from "@/store";
 import { activeActionGateReason } from "../actionGates";
@@ -29,6 +29,7 @@ interface GitActionsCtx {
   customActive: boolean;
   msg: string;
   checks: PrChecks | null;
+  comments: PrComments | null;
   prUrl: string | undefined;
   /** GitHub connection + origin presence — gate push/PR actions to a connect
    *  or publish prompt so nothing fails on click in local/offline mode. */
@@ -54,6 +55,7 @@ export function useGitActions(ctx: GitActionsCtx) {
     customActive,
     msg,
     checks,
+    comments,
     prUrl,
     githubConnected,
     hasOrigin,
@@ -167,6 +169,13 @@ export function useGitActions(ctx: GitActionsCtx) {
       case "agent-fix":
         delegate("fix-checks", { failing: (checks?.required_failing ?? []).join(", ") });
         break;
+      case "agent-resolve-comments": {
+        // The threads waiting on us — not the ones we pushed back on, which a
+        // person has to settle (the same split `readiness.ts` makes).
+        const waiting = (comments?.unresolved ?? []).filter((t) => !t.we_replied_last).length;
+        delegate("resolve-comments", { count: String(waiting) });
+        break;
+      }
       // ── direct, agent bypassed (user typed their own message) ──
       case "commit-direct":
         if (!customActive) {

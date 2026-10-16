@@ -1,37 +1,34 @@
 import { useState } from "react";
-import { Icon, type IconName } from "@/components/Icon";
+import { Icon } from "@/components/Icon";
 import type { ActionTone } from "@/components/RightPanel/primaryActions";
-import { DropdownItem, DropdownMenu } from "@/components/ui/Dropdown";
+import {
+  DropdownItem,
+  DropdownMenu,
+  DropdownSection,
+  DropdownSeparator,
+} from "@/components/ui/Dropdown";
+import type { FooterAction, FooterGroup } from "./footerModel";
 import { Spinner } from "./shared";
 
-/** One action as presented by the split button — the unified shape the main
- *  button, the menu, and the dispatcher all key off. */
-export interface SplitActionItem {
-  key: string;
-  label: string;
-  icon: IconName;
-  kbd?: string;
-}
-
 // ── Split action button ───────────────────────────────────────────
-// A split button with a *selectable* default: the main button shows the
-// currently-selected action and runs it on click; the caret opens a menu of
-// every action for this state. Picking a menu item only changes which action
-// the main button will perform — it does NOT execute. The state's primary is
-// tagged "default"; the active selection is highlighted. The menu opens
-// upward, since the button is pinned to the panel footer.
+// The main button is the ladder's next step and runs it. The caret opens the
+// rest of what the checkout can do, in groups. Rows in a radio group (the
+// commit mode) select rather than run — the mark on the current pick is what
+// says so. Every other row runs on click; a destructive one asks for a second
+// click, the first swapping in its question. The menu opens upward, since the
+// button is pinned to the panel footer.
 export function SplitAction({
-  items,
-  selectedKey,
+  primary,
+  groups,
   tone,
   mainDisabled,
   mainReason,
   busyLabel,
-  onSelect,
+  onPick,
   onRun,
 }: {
-  items: SplitActionItem[];
-  selectedKey: string;
+  primary: FooterAction;
+  groups: FooterGroup[];
   tone: ActionTone;
   mainDisabled: boolean;
   /** Why the main click is dead, when that is worth saying. A plain `title`
@@ -40,61 +37,90 @@ export function SplitAction({
    *  sentence is printed in the bar, which is what the user actually reads. */
   mainReason?: string | null;
   busyLabel: string | null;
-  onSelect: (key: string) => void;
+  /** A menu row: a radio row's key to make it the default, any other's to run. */
+  onPick: (key: string) => void;
   onRun: () => void;
 }) {
   const [open, setOpen] = useState(false);
-  const selected = items.find((a) => a.key === selectedKey) ?? items[0];
-  const hasMenu = items.length > 1;
+  // The destructive row waiting for its second click, or null.
+  const [armed, setArmed] = useState<string | null>(null);
   const busy = busyLabel != null;
-  if (!selected) return null;
+  const hasMenu = groups.length > 0;
+  const close = () => {
+    setOpen(false);
+    setArmed(null);
+  };
 
   const toneClass = tone !== "accent" ? tone : "";
 
   return (
     <div className={`git-split ${toneClass} ${busy ? "busy" : ""}`}>
       <button
+        type="button"
         className="gsa-main text-base"
         disabled={mainDisabled || busy}
         title={mainReason ?? undefined}
         onClick={onRun}
       >
-        {busy ? <Spinner /> : <Icon name={selected.icon} />}
-        <span className="gsa-label">{busy ? busyLabel : selected.label}</span>
+        {busy ? <Spinner /> : <Icon name={primary.icon} />}
+        <span className="gsa-label">{busy ? busyLabel : primary.label}</span>
       </button>
       {hasMenu && (
         <button
+          type="button"
           className="gsa-caret tip"
-          data-tip="Choose action"
-          aria-label="Choose action"
+          data-tip="More actions"
+          aria-label="More actions"
+          aria-expanded={open}
           disabled={busy}
-          onClick={() => setOpen((v) => !v)}
+          onClick={() => (open ? close() : setOpen(true))}
         >
           <Icon name="chevU" />
         </button>
       )}
       {open && (
         <>
-          <div
-            style={{ position: "fixed", inset: 0, zIndex: 199 }}
-            onClick={() => setOpen(false)}
-          />
-          <DropdownMenu className="gsa-menu">
-            {items.map((a) => (
-              <DropdownItem
-                key={a.key}
-                active={a.key === selectedKey}
-                onClick={() => {
-                  onSelect(a.key);
-                  setOpen(false);
-                }}
-              >
-                <div className="di-i">
-                  <Icon name={a.icon} size={12} />
-                </div>
-                <span className="di-l">{a.label}</span>
-                {a.kbd && <span className="di-m">{a.kbd}</span>}
-              </DropdownItem>
+          <div style={{ position: "fixed", inset: 0, zIndex: 199 }} onClick={close} />
+          <DropdownMenu className="gsa-menu" role="menu">
+            {groups.map((g, gi) => (
+              <div key={g.title ?? `group-${gi}`} role={g.radio ? "group" : undefined}>
+                {gi > 0 && <DropdownSeparator />}
+                {g.title && <DropdownSection>{g.title}</DropdownSection>}
+                {g.items.map((a) => {
+                  const isArmed = armed === a.key;
+                  return (
+                    <DropdownItem
+                      key={a.key}
+                      as="button"
+                      role={g.radio ? "menuitemradio" : "menuitem"}
+                      aria-checked={g.radio ? a.active : undefined}
+                      active={a.active}
+                      disabled={a.disabled}
+                      danger={a.danger || isArmed}
+                      className={g.radio ? "gsa-radio" : undefined}
+                      onMouseDown={(e) => e.preventDefault()}
+                      onClick={() => {
+                        if (a.confirm && !isArmed) {
+                          setArmed(a.key);
+                          return;
+                        }
+                        onPick(a.key);
+                        close();
+                      }}
+                    >
+                      <div className="di-i">
+                        <Icon name={a.icon} size={12} />
+                      </div>
+                      <span className="di-l">{isArmed ? a.confirm : a.label}</span>
+                      {g.radio && a.active && (
+                        <span className="di-m gsa-default" aria-hidden>
+                          default
+                        </span>
+                      )}
+                    </DropdownItem>
+                  );
+                })}
+              </div>
             ))}
           </DropdownMenu>
         </>

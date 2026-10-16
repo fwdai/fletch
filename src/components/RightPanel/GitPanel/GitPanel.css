@@ -1253,13 +1253,45 @@ button.rg-head {
   white-space: nowrap;
 }
 
-/* menu opens upward from the split button (reuses .dd / .dd-item base) */
+/* menu opens upward from the split button (reuses .dd / .dd-item base). Its
+   groups are the checkout's: commit mode · branch · pull request · the
+   destructive tail. The commit mode is a radio: the current default carries a
+   quiet "default" tag, and that tag — not a highlight — is what says these
+   rows select rather than run. */
 .git-split .gsa-menu {
   bottom: calc(100% + 6px);
   left: auto;
   right: 0;
   width: max-content;
   min-width: 100%;
+  max-width: 300px;
+}
+.gsa-menu .dd-sect {
+  padding-top: 5px;
+}
+.gsa-menu .dd-item {
+  width: 100%;
+  font-size: var(--fs-sm);
+  text-align: left;
+}
+.gsa-menu .gsa-default {
+  margin-left: 12px;
+  color: var(--fg-3);
+  font-family: var(--font-sans);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.gsa-menu .dd-item.active .gsa-default {
+  color: var(--accent);
+  opacity: 0.8;
+}
+/* an armed destructive row asks its question in red */
+.gsa-menu .dd-item.danger {
+  color: var(--danger);
+}
+.gsa-menu .dd-item.danger:hover {
+  background: color-mix(in oklch, var(--danger), transparent 90%);
+  color: var(--danger);
 }
 .dd-item.is-disabled {
   opacity: 0.45;
@@ -1268,6 +1300,15 @@ button.rg-head {
 .dd-item.is-disabled:hover {
   background: transparent;
   color: var(--fg-1);
+}
+
+/* the merged PR's row ends its branch: outline to archive, ghost to delete */
+.rg-end {
+  gap: 6px;
+  margin-top: 12px;
+}
+.rg-end .btn-t svg {
+  margin-right: 5px;
 }
 
 /* ── multi-repo: one section per active repo, slim repo-name headers ──

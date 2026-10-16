@@ -2,6 +2,7 @@ import { open } from "@tauri-apps/plugin-shell";
 import { type ReactNode, useState } from "react";
 import type { FileStatus, PrChecks, PrComment, PrComments, PrState } from "@/api";
 import { Icon } from "@/components/Icon";
+import { Button } from "@/components/ui/Button";
 import { IconButton } from "@/components/ui/IconButton";
 import { ChangesList } from "./ChangesList";
 import { ChecksSection, CommentsSection } from "./cards";
@@ -32,6 +33,10 @@ export interface LadderBodies {
   checks: PrChecks | null;
   comments: PrComments | null;
   onAddToChat: (c: PrComment) => void;
+  /** How a merged PR's branch ends, on its row: archive the workspace or delete
+   *  the branch. Null for a lane the footer doesn't act on. `reason` is why
+   *  neither can run from here (the tree is on another branch), or null. */
+  ending: { onArchive: () => void; onDeleteBranch: () => void; reason: string | null } | null;
 }
 
 /** Mount one per lane (`key={lane.id}`): the open/closed choices are the
@@ -135,7 +140,14 @@ function rowBody(row: LadderRow, b: LadderBodies): ReactNode {
         </div>
       ) : null;
     case "pr":
-      return b.pr ? <PrBody pr={b.pr} branch={b.prBranch} origin={b.origin} /> : null;
+      return b.pr ? (
+        <PrBody
+          pr={b.pr}
+          branch={b.prBranch}
+          origin={b.origin}
+          ending={b.pr.state === "merged" ? b.ending : null}
+        />
+      ) : null;
     case "checks":
       return b.checks && b.checks.total > 0 && b.pr ? (
         <ChecksSection checks={b.checks} prUrl={b.pr.url} />
@@ -147,16 +159,18 @@ function rowBody(row: LadderRow, b: LadderBodies): ReactNode {
   }
 }
 
-/** The proposal itself: its title, where it came from, and the three ways
- *  into it on GitHub. */
+/** The proposal itself: its title, where it came from, the three ways into it
+ *  on GitHub — and, once it has merged, the two ways to end its branch. */
 function PrBody({
   pr,
   branch,
   origin,
+  ending,
 }: {
   pr: PrState;
   branch: string | null;
   origin: PrOrigin | null;
+  ending: LadderBodies["ending"];
 }) {
   const links: { label: string; icon: "github" | "diff" | "commit"; path: string }[] =
     pr.state === "closed"
@@ -196,6 +210,31 @@ function PrBody({
           </button>
         ))}
       </div>
+      {ending && (
+        // Shipped: the branch is done. Quiet outline buttons, not the footer —
+        // ending a workspace is a decision, not the next step of the ladder.
+        <div className="rg-end flex-center" title={ending.reason ?? undefined}>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={ending.reason != null}
+            onClick={ending.onArchive}
+          >
+            <Icon name="archive" size={12} />
+            Archive workspace
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            danger
+            disabled={ending.reason != null}
+            onClick={ending.onDeleteBranch}
+          >
+            <Icon name="trash" size={12} />
+            Delete branch
+          </Button>
+        </div>
+      )}
     </div>
   );
 }

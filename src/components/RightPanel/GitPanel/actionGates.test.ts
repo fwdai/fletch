@@ -67,7 +67,7 @@ describe("actionGateReason", () => {
     // op — or a device paired without `publish`, whose descriptor omits it —
     // says so instead of sending a trigger nothing watches.
     const agentKeys = Object.keys(ACTION_GATES).filter((k) => k.startsWith("agent-"));
-    expect(agentKeys).toHaveLength(7);
+    expect(agentKeys).toHaveLength(8);
     for (const key of agentKeys) {
       expect(actionGateReason(host([...V2_DEFAULT_OPS]), key)).toBe(GATES.delegateGit.reason);
       expect(actionGateReason(host([...V2_DEFAULT_OPS, "delegate_git"]), key)).toBeNull();

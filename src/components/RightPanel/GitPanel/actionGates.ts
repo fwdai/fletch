@@ -25,6 +25,7 @@ export const ACTION_GATES: Partial<Record<string, GateName>> = {
   "agent-resolve": "delegateGit",
   "agent-update-branch": "delegateGit",
   "agent-fix": "delegateGit",
+  "agent-resolve-comments": "delegateGit",
   merge: "mergePr",
   pull: "pull",
   rebase: "rebase",

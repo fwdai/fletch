@@ -1,7 +1,8 @@
 import type { ReactNode } from "react";
 import { Icon } from "@/components/Icon";
 import type { ActionTone } from "@/components/RightPanel/primaryActions";
-import { SplitAction, type SplitActionItem } from "./SplitAction";
+import type { FooterAction, FooterGroup } from "./footerModel";
+import { SplitAction } from "./SplitAction";
 import { Spinner } from "./shared";
 
 /** The pinned footer's action row: one status slot about *now* — a busy
@@ -15,12 +16,12 @@ export function ActionBar({
   delegationLabel,
   autoAttempt,
   notice,
-  items,
-  selectedKey,
+  primary,
+  groups,
   tone,
   mainDisabled,
   mainReason,
-  onSelect,
+  onPick,
   onRun,
 }: {
   /** The resting note beside the button, when one is worth the space. */
@@ -32,16 +33,16 @@ export function ActionBar({
    *  user wants to know before it gives up. */
   autoAttempt: number | null;
   notice: string | null;
-  items: SplitActionItem[];
-  selectedKey: string;
+  primary: FooterAction;
+  groups: FooterGroup[];
   tone: ActionTone;
   mainDisabled: boolean;
-  /** Why the selected action can't run here — a capability the environment
-   *  lacks, which nothing the user does in the panel will change. Shown in the
-   *  status slot below the transient states, which still take precedence: what
-   *  is happening right now is more urgent than what cannot happen at all. */
+  /** Why the primary can't run here — a capability the environment lacks, or
+   *  a branch the checkout isn't on — which nothing the user does in the panel
+   *  will change. Shown below the transient states, which still take
+   *  precedence: what is happening now outranks what cannot happen at all. */
   mainReason?: string | null;
-  onSelect: (key: string) => void;
+  onPick: (key: string) => void;
   onRun: () => void;
 }) {
   return (
@@ -86,13 +87,13 @@ export function ActionBar({
         </div>
       ) : null}
       <SplitAction
-        items={items}
-        selectedKey={selectedKey}
+        primary={primary}
+        groups={groups}
         tone={tone}
         mainDisabled={mainDisabled}
         mainReason={mainReason}
         busyLabel={busy ?? (delegationLabel ? "Agent working…" : null)}
-        onSelect={onSelect}
+        onPick={onPick}
         onRun={onRun}
       />
     </div>

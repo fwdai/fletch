@@ -64,7 +64,7 @@ const BRANCH_BOUND_ACTIONS = new Set([
  *  that PR's checks or updating its branch from here would land on the branch
  *  checked out, and a merged PR's archive / delete-branch would end work that
  *  is not that PR's. */
-function branchMismatch(input: {
+export function branchMismatch(input: {
   effectiveKey: string;
   prBranch: string | null;
   checkoutBranch: string | null;

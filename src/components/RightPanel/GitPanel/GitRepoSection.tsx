@@ -1,6 +1,7 @@
 import { open } from "@tauri-apps/plugin-shell";
 import { useEffect, useMemo, useState } from "react";
 import type { AgentRecord, TrackedRepo } from "@/api";
+import { isCommitAction } from "@/components/RightPanel/primaryActions";
 import { delegationLabel } from "@/delegation";
 import { useAppStore } from "@/store";
 import { checkoutKey } from "@/store/git";
@@ -9,8 +10,9 @@ import { AutopilotHistory, AutopilotSwitch } from "./Autopilot";
 import { CommitComposer, CommitStatus } from "./CommitComposer";
 import { BlockedConfigCard } from "./cards";
 import { FileDiffView } from "./FileDiffView";
-import { useActionBarModel } from "./hooks/useActionBarModel";
+import type { FooterAction, FooterGroup } from "./footerModel";
 import { useCommitDraft } from "./hooks/useCommitDraft";
+import { useFooterModel } from "./hooks/useFooterModel";
 import { useGitActions } from "./hooks/useGitActions";
 import { useGitPanelData } from "./hooks/useGitPanelData";
 import { usePrOrigin } from "./hooks/usePrOrigin";
@@ -19,16 +21,21 @@ import { Ladder } from "./Ladder";
 import { Lanes } from "./Lanes";
 import { buildLadder, buildPrLadder } from "./ladderModel";
 import { buildLanes, defaultLane } from "./laneModel";
-import type { SplitActionItem } from "./SplitAction";
+import { branchMismatch } from "./mainAction";
 import { WorktreesNote } from "./WorktreesNote";
 
 /** The footer of a lane the panel can only look at — another PR of the
  *  checkout than the focused one. The host's PR actions and autopilot work on
  *  the focused PR, so acting on this one means focusing it first; that is the
  *  one place the panel moves the focus, and it says so. */
-const LANE_ITEMS: SplitActionItem[] = [
-  { key: "focus-pr", label: "Focus this PR", icon: "pr" },
-  { key: "view-pr", label: "View on GitHub", icon: "github" },
+const LANE_PRIMARY: FooterAction = {
+  key: "focus-pr",
+  label: "Focus this PR",
+  icon: "pr",
+  tone: "ghost",
+};
+const LANE_GROUPS: FooterGroup[] = [
+  { items: [{ key: "view-pr", label: "View on GitHub", icon: "github" }] },
 ];
 
 /** One repo's worth of git panel: lanes (header) · ladder (body) · action bar
@@ -65,7 +72,6 @@ export function GitRepoSection({
     checks,
     comments,
     mergeState,
-    prOpen,
     panelState,
     fetchGitState,
     fetchPrState,
@@ -109,6 +115,7 @@ export function GitRepoSection({
     customActive,
     msg,
     checks,
+    comments,
     prUrl: prState?.url,
     githubConnected,
     hasOrigin,
@@ -119,21 +126,25 @@ export function GitRepoSection({
     fetchPrState,
   });
 
-  const { items, effectiveKey, tone, mainDisabled, mainReason, onSelectAction } = useActionBarModel(
-    {
-      agentId: agent.id,
-      panelState,
-      gitState,
-      prState,
-      checks,
-      mergeState,
-      prOpen,
-      base,
-      customActive,
-      delegationActive: delegation != null,
-      githubConnected,
-    },
-  );
+  // The footer: the ladder's next step as the primary, the rest as a menu.
+  const { primary, groups, tone, mainDisabled, mainReason } = useFooterModel({
+    gitState,
+    prState,
+    checks,
+    mergeState,
+    comments,
+    base,
+    customActive,
+    delegationActive: delegation != null,
+    githubConnected,
+  });
+  const setCommitMode = useAppStore((s) => s.setGitCommitAction);
+  // A menu row: a commit mode becomes the sticky default (and so, while there
+  // is something to commit, the primary); anything else runs.
+  const onPick = (k: string) => {
+    if (isCommitAction(k)) setCommitMode(k);
+    else runAction(k);
+  };
 
   // ── Lanes: every branch-and-PR of the checkout, and the one in view ────────
   // The PR set holds every PR of the checkout (sub-agents each open their own;
@@ -178,7 +189,6 @@ export function GitRepoSection({
 
   // The focus action for a lane that isn't the focused PR's.
   const focusPr = useAppStore((s) => s.focusPr);
-  const [laneKey, setLaneKey] = useState("focus-pr");
   const runLaneAction = (k: string) => {
     const pr = viewed?.pr?.state;
     if (!pr) return;
@@ -207,6 +217,20 @@ export function GitRepoSection({
     gitState && viewedPr?.branch && viewedPr.branch !== gitState.branch ? viewedPr.branch : null;
   // Which sub-agent opened the PR in view, when one did — its row says so.
   const prOrigin = usePrOrigin(agent.id, viewedPr?.number);
+  // A merged PR's row ends its branch. Archiving and deleting are bound to that
+  // branch, so from a tree on another one they say why they can't (the same
+  // rule that gates the footer's branch-bound actions).
+  const ending: Parameters<typeof Ladder>[0]["bodies"]["ending"] = acting
+    ? {
+        onArchive: () => runAction("archive"),
+        onDeleteBranch: () => runAction("delete-branch"),
+        reason: branchMismatch({
+          effectiveKey: "archive",
+          prBranch: prState?.branch ?? null,
+          checkoutBranch: gitState?.branch || null,
+        }),
+      }
+    : null;
 
   // The changed file whose diff is open in place of the ladder; null shows the
   // ladder. Falls back when the file leaves the list (e.g. after a commit).
@@ -277,6 +301,7 @@ export function GitRepoSection({
                   checks: viewedChecks,
                   comments: acting ? comments : null,
                   onAddToChat: addCommentToChat,
+                  ending,
                 }}
               />
             )}
@@ -304,7 +329,7 @@ export function GitRepoSection({
             // the checkout. `runAction` refuses the first of those by itself,
             // but the shortcut should be as dead as the button for all three.
             onSubmit={() => {
-              if (!mainDisabled) runAction(effectiveKey);
+              if (!mainDisabled) runAction(primary.key);
             }}
           />
         )}
@@ -326,13 +351,13 @@ export function GitRepoSection({
             delegationLabel={delegation ? delegationLabel(delegation.kind) : null}
             autoAttempt={autoAttempt}
             notice={notice ?? delegationNotice ?? null}
-            items={items}
-            selectedKey={effectiveKey}
+            primary={primary}
+            groups={groups}
             tone={tone}
             mainDisabled={mainDisabled}
             mainReason={mainReason}
-            onSelect={onSelectAction}
-            onRun={() => runAction(effectiveKey)}
+            onPick={onPick}
+            onRun={() => runAction(primary.key)}
           />
         ) : (
           <ActionBar
@@ -341,12 +366,12 @@ export function GitRepoSection({
             delegationLabel={delegation ? delegationLabel(delegation.kind) : null}
             autoAttempt={autoAttempt}
             notice={notice ?? delegationNotice ?? null}
-            items={LANE_ITEMS}
-            selectedKey={laneKey}
+            primary={LANE_PRIMARY}
+            groups={LANE_GROUPS}
             tone="ghost"
             mainDisabled={false}
-            onSelect={setLaneKey}
-            onRun={() => runLaneAction(laneKey)}
+            onPick={runLaneAction}
+            onRun={() => runLaneAction("focus-pr")}
           />
         )}
       </div>
