@@ -55,11 +55,10 @@ export function SplitAction({
     if (refocus) caretRef.current?.focus();
   };
 
-  // The rows a keyboard can reach, in menu order.
+  // The rows a keyboard can reach, in menu order — a gated row included, so
+  // its reason can be reached and read, not only hovered.
   const rows = () =>
-    Array.from(menuRef.current?.querySelectorAll<HTMLButtonElement>("button.dd-item") ?? []).filter(
-      (b) => !b.disabled,
-    );
+    Array.from(menuRef.current?.querySelectorAll<HTMLButtonElement>("button.dd-item") ?? []);
   useEffect(() => {
     if (open) rows()[0]?.focus();
   }, [open]);
@@ -88,9 +87,6 @@ export function SplitAction({
       case "End":
         go(list.length - 1);
         break;
-      case "Escape":
-        close(true);
-        break;
       default:
         return;
     }
@@ -105,7 +101,16 @@ export function SplitAction({
   const showBusy = busy && mainDisabled;
 
   return (
-    <div className={`git-split ${toneClass} ${showBusy ? "busy" : ""}`}>
+    <div
+      className={`git-split ${toneClass} ${showBusy ? "busy" : ""}`}
+      // Escape closes the menu from anywhere in the control, the caret included.
+      onKeyDown={(e) => {
+        if (open && e.key === "Escape") {
+          e.preventDefault();
+          close(true);
+        }
+      }}
+    >
       <button
         type="button"
         className="gsa-main text-base"
@@ -152,38 +157,44 @@ export function SplitAction({
                 {g.items.map((a) => {
                   const isArmed = armed === a.key;
                   return (
-                    // A disabled button takes no pointer events in the WebView,
-                    // so the reason sits on a wrapper that does.
-                    <div key={a.key} title={a.disabled ? a.reason : undefined}>
-                      <DropdownItem
-                        as="button"
-                        role={g.radio ? "menuitemradio" : "menuitem"}
-                        aria-checked={g.radio ? a.active : undefined}
-                        active={a.active}
-                        disabled={a.disabled}
-                        danger={a.danger || isArmed}
-                        className={g.radio ? "gsa-radio" : undefined}
-                        onMouseDown={(e) => e.preventDefault()}
-                        onClick={() => {
-                          if (a.confirm && !isArmed) {
-                            setArmed(a.key);
-                            return;
-                          }
-                          onPick(a.key);
-                          close(true);
-                        }}
-                      >
-                        <div className="di-i">
-                          <Icon name={a.icon} size={12} />
-                        </div>
-                        <span className="di-l">{isArmed ? a.confirm : a.label}</span>
-                        {g.radio && a.active && (
-                          <span className="di-m gsa-default" aria-hidden>
-                            default
-                          </span>
-                        )}
-                      </DropdownItem>
-                    </div>
+                    // A gated row stays focusable (`aria-disabled`, not the
+                    // native attribute) and says why beneath its label, so the
+                    // reason reaches keyboard and screen-reader users too.
+                    <DropdownItem
+                      key={a.key}
+                      as="button"
+                      role={g.radio ? "menuitemradio" : "menuitem"}
+                      aria-checked={g.radio ? a.active : undefined}
+                      aria-disabled={a.disabled || undefined}
+                      active={a.active}
+                      danger={a.danger || isArmed}
+                      className={[g.radio ? "gsa-radio" : "", a.disabled ? "is-disabled" : ""]
+                        .filter(Boolean)
+                        .join(" ")}
+                      onMouseDown={(e) => e.preventDefault()}
+                      onClick={() => {
+                        if (a.disabled) return;
+                        if (a.confirm && !isArmed) {
+                          setArmed(a.key);
+                          return;
+                        }
+                        onPick(a.key);
+                        close(true);
+                      }}
+                    >
+                      <div className="di-i">
+                        <Icon name={a.icon} size={12} />
+                      </div>
+                      <span className="di-l">
+                        {isArmed ? a.confirm : a.label}
+                        {a.disabled && a.reason && <span className="gsa-why">{a.reason}</span>}
+                      </span>
+                      {g.radio && a.active && (
+                        <span className="di-m gsa-default" aria-hidden>
+                          default
+                        </span>
+                      )}
+                    </DropdownItem>
                   );
                 })}
               </div>

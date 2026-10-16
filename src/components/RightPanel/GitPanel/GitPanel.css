@@ -1320,6 +1320,17 @@ button.rg-head {
   background: var(--hover);
   color: var(--fg-0);
 }
+/* a gated row says why beneath its label — part of the row, so it is read
+   with it and reachable without a pointer */
+.gsa-menu .gsa-why {
+  display: block;
+  margin-top: 2px;
+  font-family: var(--font-sans);
+  font-size: var(--fs-xs);
+  line-height: var(--lh-snug);
+  color: var(--fg-3);
+  white-space: normal;
+}
 /* an armed destructive row asks its question in red */
 .gsa-menu .dd-item.danger {
   color: var(--danger);
