@@ -1,8 +1,11 @@
 import { useCallback, useState } from "react";
 import type { AccountLimits, ProviderAccount } from "@/api/types/providers";
+import { Icon } from "@/components/Icon";
 import { ProviderAuthBadge } from "@/components/SettingsScreen/ProviderAuthBadge";
 import { ProviderLoginTerminal } from "@/components/SettingsScreen/ProviderLogin";
 import { Button } from "@/components/ui/Button";
+import { IconButton } from "@/components/ui/IconButton";
+import { Spinner } from "@/components/ui/Spinner";
 import { accountLabel } from "@/data/providerAccounts";
 import { loginCommand } from "@/data/providerDetail";
 import type { ProviderId } from "@/data/providers";
@@ -10,18 +13,22 @@ import { useAppStore } from "@/store";
 import { AccountMenu } from "./AccountMenu";
 import { type AccountAction, accountActions } from "./accountActions";
 import { LimitsPanel } from "./LimitsPanel";
+import { agoLabel } from "./limitsFormat";
 
-/** One account: the radio that makes it the one every agent runs under, its name and
- *  sign-in state, Sign in when it needs one, and a corner menu for the rest
- *  (re-authenticate, sign out, delete — see `accountActions`), the destructive
- *  ones confirmed inline. Sign in and re-authenticate open the same embedded
- *  terminal as a single-login provider, run against this account's directory.
- *  Under it, the account's plan limits. */
+/** One account: the radio that makes it the one every agent runs under, its
+ *  name, a Refresh for its own limits and how old the reading is, Sign in when
+ *  it needs one, and a corner menu for the rest (re-authenticate, sign out,
+ *  delete — see `accountActions`), the destructive ones confirmed inline. An
+ *  account listed here is signed in unless it says otherwise: only a
+ *  signed-out one wears a badge. Sign in and re-authenticate open the same
+ *  embedded terminal as a single-login provider, run against this account's
+ *  directory. Under it, the account's plan limits. */
 export function AccountRow({
   account,
   providerId,
   providerLabel,
   signingIn,
+  refreshingAll,
   onSignIn,
   onCloseSignIn,
   limits,
@@ -31,6 +38,9 @@ export function AccountRow({
   providerId: ProviderId;
   providerLabel: string;
   signingIn: boolean;
+  /** The section's Refresh limits is running over every account, this one
+   *  included: its own Refresh spins along and takes no second press. */
+  refreshingAll: boolean;
   limits: AccountLimits | undefined;
   nowMs: number;
   onSignIn: () => void;
@@ -39,11 +49,13 @@ export function AccountRow({
   const setActive = useAppStore((s) => s.setActiveProviderAccount);
   const remove = useAppStore((s) => s.removeProviderAccount);
   const signOut = useAppStore((s) => s.signOutProviderAccount);
+  const refreshLimits = useAppStore((s) => s.refreshProviderLimits);
   // Stable (a zustand action), so the terminal's one-shot outcome effect
   // isn't re-armed by a parent re-render — same contract as SignInSection.
   const refreshAccounts = useAppStore((s) => s.refreshProviderAccounts);
   const [confirming, setConfirming] = useState<AccountAction | null>(null);
   const [busy, setBusy] = useState(false);
+  const [refreshingOwn, setRefreshingOwn] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const command = loginCommand(providerId);
@@ -79,6 +91,32 @@ export function AccountRow({
     }
   };
 
+  // This account's limits alone. A signed-out account can't be read (limits
+  // come with its own login), so the button waits for Sign in. The engine
+  // holds back an account inside its refresh floor or a 429 back-off and
+  // answers with the stored row, so pressing again is harmless.
+  const refreshing = refreshingAll || refreshingOwn;
+  const refreshOwn = async () => {
+    setError(null);
+    setRefreshingOwn(true);
+    try {
+      await refreshLimits(providerId, account.id);
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setRefreshingOwn(false);
+    }
+  };
+  // Beside the name: what the default account is, and how old the reading
+  // the meters show is — the thing Refresh changes, next to the button.
+  const asOf = limits?.limits?.as_of;
+  const sub = [
+    account.managed ? null : "Your CLI's own login, shared with the terminal",
+    asOf === undefined ? null : `updated ${agoLabel(asOf, nowMs)}`,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+
   const refresh = useCallback(() => void refreshAccounts(), [refreshAccounts]);
   // Re-probe on both endings, as SignInSection does: a user who closes the
   // terminal after finishing in a browser tab gets the same refresh.
@@ -100,12 +138,18 @@ export function AccountRow({
         <label htmlFor={inputId} className="set-prov-acct-name text-base">
           {accountLabel(account)}
         </label>
-        <ProviderAuthBadge status={account.status} detail={account.detail} />
-        <span className="set-prov-acct-sub mono text-xs truncate">
-          {account.managed
-            ? `~/.fletch/accounts/${providerId}/${account.id}`
-            : "Your CLI's own login, shared with the terminal"}
-        </span>
+        <IconButton
+          size="xs"
+          tip="Refresh usage"
+          disabled={refreshing || signingIn || account.status === "signed_out"}
+          onClick={() => void refreshOwn()}
+        >
+          {refreshing ? <Spinner size={12} /> : <Icon name="refresh" size={12} />}
+        </IconButton>
+        {account.status !== "signed_in" && (
+          <ProviderAuthBadge status={account.status} detail={account.detail} />
+        )}
+        <span className="set-prov-acct-sub text-xs truncate">{sub}</span>
 
         {confirming ? (
           <>

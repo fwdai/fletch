@@ -46,6 +46,15 @@ describe("resetLabel", () => {
     expect(resetLabel(secs(at), NOW)).toBe(`resets ${day} ${formatClockTime(at)} · in 3d`);
   });
 
+  it("rounds the instant to the minute, so one boundary reads the same for every window", () => {
+    const at = NOW + 3 * 24 * HOUR;
+    const day = new Date(at).toLocaleDateString(undefined, { weekday: "short" });
+    const exact = resetLabel(secs(at), NOW);
+    expect(resetLabel(secs(at) - 1, NOW)).toBe(exact);
+    expect(resetLabel(secs(at) + 29, NOW)).toBe(exact);
+    expect(exact).toBe(`resets ${day} ${formatClockTime(at)} · in 3d`);
+  });
+
   it("marks a reset that already passed since the reading", () => {
     expect(resetLabel(secs(NOW - MIN), NOW)).toBe("reset since this reading");
   });

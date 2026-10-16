@@ -113,6 +113,7 @@ export function AccountsSection({
           providerId={providerId}
           providerLabel={providerLabel}
           signingIn={signingIn === account.id}
+          refreshingAll={refreshing}
           onSignIn={() => setSigningIn(account.id)}
           onCloseSignIn={() => setSigningIn(null)}
           limits={limits?.[account.id]}

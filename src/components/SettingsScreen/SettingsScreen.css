@@ -962,13 +962,14 @@
 }
 
 /* Accounts list for a provider that can hold several sign-ins
-   (ProvidersPane/AccountsSection). Each account is a framed line: the radio
-   that makes it the one new agents use, its name and badge, its directory,
-   then its actions; a sign-in terminal opens inside the frame. */
+   (ProvidersPane/AccountsSection). Each account is a framed card: the radio
+   that makes it the one new agents use, its name, its own Refresh and how
+   old its reading is, then its actions; a sign-in terminal opens inside the
+   frame. */
 .set-prov-accounts {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
   margin-top: 12px;
 }
 .set-prov-acct-head {
@@ -984,7 +985,7 @@
   border: 0.5px solid var(--bd-soft);
   border-radius: var(--r-sm);
   background: var(--bg-1);
-  padding: 6px 10px;
+  padding: 10px 14px 12px;
 }
 .set-prov-acct.active {
   border-color: var(--accent);
@@ -1019,16 +1020,23 @@
   margin: 6px 0 0;
   color: var(--fg-3);
 }
-/* An account's plan limits under its line: two meters side by side, each
-   with its reset, then how fresh the reading is. Muted throughout — the
-   numbers are context for choosing an account, not an alarm. */
+/* An account's plan limits under its line, in two columns: the five-hour
+   meter on the left, the weekly meters (plan, then per model) stacked on the
+   right, each with its reset. Muted throughout — the numbers are context for
+   choosing an account, not an alarm. */
 .set-prov-limits {
-  margin: 6px 0 2px 21px;
+  margin: 10px 0 0 21px;
 }
 .set-prov-limits-meters {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 14px;
+  gap: 16px;
+  align-items: start;
+}
+.set-prov-limits-weekly {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
 }
 .set-prov-limit-top {
   justify-content: space-between;
@@ -1040,6 +1048,15 @@
   color: var(--fg-1);
   font-variant-numeric: tabular-nums;
 }
+/* Thicker than the shared download bar: these are read at a glance across
+   several cards, not watched filling up. */
+.set-prov-limit .set-prov-limit-bar {
+  height: 5px;
+  border-radius: 3px;
+}
+.set-prov-limit .set-prov-limit-bar i {
+  border-radius: 3px;
+}
 .set-prov-limit.warn .set-prov-limit-bar i {
   background: var(--warn);
 }
@@ -1050,16 +1067,16 @@
   color: var(--danger);
 }
 .set-prov-limit-reset {
-  margin-top: 3px;
-  color: var(--fg-3);
+  margin-top: 4px;
+  color: var(--fg-2);
 }
 .set-prov-limits-meta {
   gap: 6px;
-  margin-top: 5px;
+  margin-top: 8px;
   color: var(--fg-3);
 }
 .set-prov-limits-empty {
-  margin: 4px 0 0 21px;
+  margin: 6px 0 0 21px;
   color: var(--fg-3);
 }
 .set-prov-acct-add {

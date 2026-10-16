@@ -23,10 +23,13 @@ export function formatCountdown(ms: number): string {
 
 /** "resets 14:30 · in 2h 13m"; a reset more than a day out names its weekday
  *  ("resets Fri 09:00 · in 3d 4h"). A reset already passed means the reading
- *  predates it. Null when the source gave no reset time. */
+ *  predates it. Null when the source gave no reset time. The instant is
+ *  rounded to the minute first: the vendor hands back the same boundary as
+ *  06:00:00 for one window and 05:59:59 for another, and truncating would
+ *  show two different times for one reset. */
 export function resetLabel(resetsAt: number | null, nowMs: number): string | null {
   if (resetsAt === null) return null;
-  const at = resetsAt * 1000;
+  const at = Math.round((resetsAt * 1000) / MINUTE_MS) * MINUTE_MS;
   const left = at - nowMs;
   if (left <= 0) return "reset since this reading";
   const clock = formatClockTime(at);
@@ -46,7 +49,8 @@ export const SOURCE_LABEL: Record<LimitSource, string> = {
   rollout: "session log",
 };
 
-function agoLabel(asOf: number, nowMs: number): string {
+/** How old a reading is: "5m ago", or "just now" under a minute. */
+export function agoLabel(asOf: number, nowMs: number): string {
   const age = formatAge(asOf * 1000, nowMs);
   return age === "now" ? "just now" : `${age} ago`;
 }
