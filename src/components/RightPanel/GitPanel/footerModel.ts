@@ -26,6 +26,8 @@ export interface FooterAction {
   tone?: ActionTone;
   /** Dimmed and inert: offered so the user knows it exists, but not now. */
   disabled?: boolean;
+  /** Why it is disabled, when that is worth a tooltip (`applyGate`). */
+  reason?: string;
   /** The current pick in a radio group. */
   active?: boolean;
   danger?: boolean;
@@ -44,6 +46,38 @@ export interface FooterGroup {
 export interface Footer {
   primary: FooterAction;
   groups: FooterGroup[];
+}
+
+/** The footer of a lane the panel can only look at — another PR of the
+ *  checkout than the focused one. The host's PR actions and autopilot work on
+ *  the focused PR, so acting on this one means focusing it first; that is the
+ *  one place the panel moves the focus, and it says so. */
+export function focusFooter(): Footer {
+  return {
+    primary: { key: "focus-pr", label: "Focus this PR", icon: "pr", tone: "ghost" },
+    groups: [{ items: [{ key: "view-pr", label: "View on GitHub", icon: "github" }] }],
+  };
+}
+
+/** The footer with one gate run over every action it offers: a closed gate
+ *  disables the row and carries its reason; the primary's reason comes back
+ *  as `mainReason`, or null when the gate asked for quiet. Radio rows (the
+ *  commit mode) are a choice, not a dispatch, so they are never gated. */
+export function applyGate(
+  footer: Footer,
+  gate: (key: string) => { reason: string; quiet?: boolean } | null,
+): Footer & { mainDisabled: boolean; mainReason: string | null } {
+  const gated = (a: FooterAction): FooterAction => {
+    const g = gate(a.key);
+    return g ? { ...a, disabled: true, reason: g.reason } : a;
+  };
+  const main = gate(footer.primary.key);
+  return {
+    primary: gated(footer.primary),
+    groups: footer.groups.map((g) => (g.radio ? g : { ...g, items: g.items.map(gated) })),
+    mainDisabled: main != null,
+    mainReason: main && !main.quiet ? main.reason : null,
+  };
 }
 
 export interface FooterInput extends LadderInput {

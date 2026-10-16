@@ -3,7 +3,7 @@ import { useCallback } from "react";
 import type { PrChecks, PrComment, PrComments } from "@/api";
 import { formatCommentForChat } from "@/components/RightPanel/prComments";
 import { useAppStore } from "@/store";
-import { activeActionGateReason } from "../actionGates";
+import type { Gate } from "../actionGate";
 
 // Actions that push to / read from GitHub. In local/offline mode these are
 // intercepted in `runAction` and replaced with connect-or-publish, so none of
@@ -30,7 +30,12 @@ interface GitActionsCtx {
   msg: string;
   checks: PrChecks | null;
   comments: PrComments | null;
+  /** The PR the lane in view is about: its page, and its number for `focus-pr`. */
   prUrl: string | undefined;
+  prNumber: number | undefined;
+  /** The one gate (`actionGate.ts`), re-run here so no caller of the dispatch
+   *  — a stale menu, the composer's shortcut — reaches the host past it. */
+  gate: (key: string) => Gate | null;
   /** GitHub connection + origin presence — gate push/PR actions to a connect
    *  or publish prompt so nothing fails on click in local/offline mode. */
   githubConnected: boolean;
@@ -57,6 +62,8 @@ export function useGitActions(ctx: GitActionsCtx) {
     checks,
     comments,
     prUrl,
+    prNumber,
+    gate,
     githubConnected,
     hasOrigin,
     runBusy,
@@ -81,6 +88,7 @@ export function useGitActions(ctx: GitActionsCtx) {
   const clearCheckoutConfig = useAppStore((s) => s.clearCheckoutConfig);
   const deleteBranch = useAppStore((s) => s.deleteBranch);
   const delegateAction = useAppStore((s) => s.delegateAction);
+  const focusPr = useAppStore((s) => s.focusPr);
   const seedComposer = useAppStore((s) => s.seedComposer);
   const openGithubConnect = useAppStore((s) => s.openGithubConnect);
 
@@ -116,18 +124,21 @@ export function useGitActions(ctx: GitActionsCtx) {
     if (NEEDS_GITHUB.has(key) && !githubConnected) key = "connect-github";
     else if (NEEDS_GITHUB.has(key) && !hasOrigin) key = "publish";
 
-    // Same backstop for the environment: a host from before this action's op
-    // existed answers `unknown op`, so say why instead of calling it. The main
-    // button is already dead for this (`useFooterModel`), but the dispatch
-    // has callers that never consult it — the commit composer's Cmd/Ctrl+Enter
-    // was dispatching a refused op — so the refusal belongs here too.
-    const gateClosed = activeActionGateReason(key);
-    if (gateClosed) {
-      showNotice(gateClosed);
+    // The same gate the footer rendered with: a closed one says why instead
+    // of dispatching. Quiet gates (loading, a delegation in flight) are already
+    // on the status slot.
+    const closed = gate(key);
+    if (closed) {
+      if (!closed.quiet) showNotice(closed.reason);
       return;
     }
 
     switch (key) {
+      case "focus-pr":
+        // The one place the panel moves the host's focus: to the PR of the
+        // lane in view, so its actions and autopilot follow it.
+        if (prNumber != null) void focusPr(agentId, prNumber, subdir);
+        break;
       case "connect-github":
         // Start the OAuth device flow right here (in the app-level modal), so a
         // single click begins connecting instead of detouring through Settings.

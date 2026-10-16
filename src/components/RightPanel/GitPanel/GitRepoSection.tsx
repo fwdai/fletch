@@ -1,4 +1,3 @@
-import { open } from "@tauri-apps/plugin-shell";
 import { useEffect, useMemo, useState } from "react";
 import type { AgentRecord, TrackedRepo } from "@/api";
 import { isCommitAction } from "@/components/RightPanel/primaryActions";
@@ -11,7 +10,6 @@ import { AutopilotHistory, AutopilotSwitch } from "./Autopilot";
 import { CommitComposer, CommitStatus } from "./CommitComposer";
 import { BlockedConfigCard } from "./cards";
 import { FileDiffView } from "./FileDiffView";
-import type { FooterAction, FooterGroup } from "./footerModel";
 import { useCommitDraft } from "./hooks/useCommitDraft";
 import { useFooterModel } from "./hooks/useFooterModel";
 import { useGitActions } from "./hooks/useGitActions";
@@ -22,22 +20,7 @@ import { Ladder } from "./Ladder";
 import { Lanes } from "./Lanes";
 import { buildLadder, buildPrLadder } from "./ladderModel";
 import type { Lane } from "./laneModel";
-import { branchMismatch } from "./mainAction";
 import { WorktreesNote } from "./WorktreesNote";
-
-/** The footer of a lane the panel can only look at — another PR of the
- *  checkout than the focused one. The host's PR actions and autopilot work on
- *  the focused PR, so acting on this one means focusing it first; that is the
- *  one place the panel moves the focus, and it says so. */
-const LANE_PRIMARY: FooterAction = {
-  key: "focus-pr",
-  label: "Focus this PR",
-  icon: "pr",
-  tone: "ghost",
-};
-const LANE_GROUPS: FooterGroup[] = [
-  { items: [{ key: "view-pr", label: "View on GitHub", icon: "github" }] },
-];
 
 /** The git panel: lanes (header) · ladder (body) · action bar (footer). The
  *  lanes span the workspace (`GitPanel` builds them); the ladder and the footer
@@ -128,6 +111,23 @@ export function GitRepoSection({
   const viewedPr = viewed?.pr ? (acting ? prState : viewed.pr.state) : null;
   const viewedChecks = viewed?.pr ? (acting ? checks : viewed.pr.checks) : null;
 
+  // The footer: the ladder's next step as the primary, the rest as a menu —
+  // or, for a lane the panel only looks at, the way to focus it. Every action
+  // carries the one gate; the dispatch below re-runs it.
+  const { primary, groups, tone, mainDisabled, mainReason, gate } = useFooterModel({
+    mode: acting ? "acting" : "focus",
+    gitState,
+    prState: acting ? lanePr : (viewedPr ?? null),
+    checks: laneChecks,
+    mergeState: laneMergeState,
+    comments: laneComments,
+    base,
+    customActive,
+    delegationActive: delegation != null,
+    githubConnected,
+    primaryCheckout: subdir === undefined,
+  });
+
   const { runAction, addCommentToChat } = useGitActions({
     agentId: agent.id,
     subdir,
@@ -137,7 +137,9 @@ export function GitRepoSection({
     msg,
     checks: laneChecks,
     comments: laneComments,
-    prUrl: lanePr?.url,
+    prUrl: viewedPr?.url,
+    prNumber: viewedPr?.number,
+    gate,
     githubConnected,
     hasOrigin,
     runBusy,
@@ -145,19 +147,6 @@ export function GitRepoSection({
     openOverride,
     revertOverride,
     fetchPrState,
-  });
-
-  // The footer: the ladder's next step as the primary, the rest as a menu.
-  const { primary, groups, tone, mainDisabled, mainReason } = useFooterModel({
-    gitState,
-    prState: lanePr,
-    checks: laneChecks,
-    mergeState: laneMergeState,
-    comments: laneComments,
-    base,
-    customActive,
-    delegationActive: delegation != null,
-    githubConnected,
   });
   const setCommitMode = useAppStore((s) => s.setGitCommitAction);
   // A menu row: a commit mode becomes the sticky default (and so, while there
@@ -180,15 +169,6 @@ export function GitRepoSection({
     });
   }, [viewed, acting, gitState, lanePr, laneChecks, laneMergeState, laneComments, base]);
 
-  // The focus action for a lane that isn't the focused PR's.
-  const focusPr = useAppStore((s) => s.focusPr);
-  const runLaneAction = (k: string) => {
-    const pr = viewed?.pr?.state;
-    if (!pr) return;
-    if (k === "focus-pr") void focusPr(agent.id, pr.number, subdir);
-    else void open(pr.url);
-  };
-
   // ── Ladder bodies ──────────────────────────────────────────────────────────
   // Pushed commits link out to GitHub — a single commit when only one is ahead,
   // otherwise the base..branch compare (commit list + full diff). Gated on
@@ -210,20 +190,16 @@ export function GitRepoSection({
     gitState && viewedPr?.branch && viewedPr.branch !== gitState.branch ? viewedPr.branch : null;
   // Which sub-agent opened the PR in view, when one did — its row says so.
   const prOrigin = usePrOrigin(agent.id, viewedPr?.number);
-  // A merged PR's row ends its branch. Archiving removes the clone and deleting
-  // the branch its ref, so both are dead while work since the merge is still
-  // only here (uncommitted, or commits origin lacks) — and from a tree on
-  // another branch, which they say (the footer's branch-bound rule).
+  // A merged PR's row ends its branch. Both actions pass the one gate (branch,
+  // scope, host), and both are dead while work since the merge is still only
+  // here — uncommitted, or commits origin lacks — since archiving removes it.
   const ending: Parameters<typeof Ladder>[0]["bodies"]["ending"] = acting
     ? {
         onArchive: () => runAction("archive"),
         onDeleteBranch: () => runAction("delete-branch"),
         reason:
-          branchMismatch({
-            effectiveKey: "archive",
-            prBranch: lanePr?.branch ?? null,
-            checkoutBranch: gitState?.branch || null,
-          }) ??
+          gate("archive")?.reason ??
+          gate("delete-branch")?.reason ??
           (gitState && hasWorkSinceMerge(gitState) ? "Work since the merge is only here" : null),
       }
     : null;
@@ -327,46 +303,33 @@ export function GitRepoSection({
           />
         )}
 
-        {acting ? (
-          <ActionBar
-            // In the changes state the resting note is who writes the message —
-            // the ladder already says "3 files" and the button says "commit".
-            idle={
-              showCommit ? (
-                <CommitStatus
-                  writing={override}
-                  hasMsg={msg.trim().length > 0}
-                  onOpen={openOverride}
-                />
-              ) : undefined
-            }
-            busy={busy}
-            delegationLabel={delegation ? delegationLabel(delegation.kind) : null}
-            autoAttempt={autoAttempt}
-            notice={notice ?? delegationNotice ?? null}
-            primary={primary}
-            groups={groups}
-            tone={tone}
-            mainDisabled={mainDisabled}
-            mainReason={mainReason}
-            onPick={onPick}
-            onRun={() => runAction(primary.key)}
-          />
-        ) : (
-          <ActionBar
-            idle="Merge, checks and autopilot follow the focused PR"
-            busy={busy}
-            delegationLabel={delegation ? delegationLabel(delegation.kind) : null}
-            autoAttempt={autoAttempt}
-            notice={notice ?? delegationNotice ?? null}
-            primary={LANE_PRIMARY}
-            groups={LANE_GROUPS}
-            tone="ghost"
-            mainDisabled={false}
-            onPick={runLaneAction}
-            onRun={() => runLaneAction("focus-pr")}
-          />
-        )}
+        <ActionBar
+          // The resting note: who writes the commit message while there is one
+          // to write (the ladder already says "3 files" and the button
+          // "commit"); on a lane only looked at, what focusing would change.
+          idle={
+            showCommit ? (
+              <CommitStatus
+                writing={override}
+                hasMsg={msg.trim().length > 0}
+                onOpen={openOverride}
+              />
+            ) : acting ? undefined : (
+              "Merge, checks and autopilot follow the focused PR"
+            )
+          }
+          busy={busy}
+          delegationLabel={delegation ? delegationLabel(delegation.kind) : null}
+          autoAttempt={autoAttempt}
+          notice={notice ?? delegationNotice ?? null}
+          primary={primary}
+          groups={groups}
+          tone={tone}
+          mainDisabled={mainDisabled}
+          mainReason={mainReason}
+          onPick={onPick}
+          onRun={() => runAction(primary.key)}
+        />
       </div>
     </div>
   );

@@ -138,6 +138,7 @@ export function SplitAction({
                       disabled={a.disabled}
                       danger={a.danger || isArmed}
                       className={g.radio ? "gsa-radio" : undefined}
+                      title={a.reason}
                       onMouseDown={(e) => e.preventDefault()}
                       onClick={() => {
                         if (a.confirm && !isArmed) {
