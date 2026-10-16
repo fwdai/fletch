@@ -75,7 +75,7 @@ export function Lanes({
       ref={groupRef}
       className={`git-lanes ${selectable ? "pick" : ""}`}
       role={selectable ? "radiogroup" : undefined}
-      aria-label="Branches and pull requests"
+      aria-label={selectable ? "Branches and pull requests" : undefined}
       onKeyDown={selectable ? onGroupKey : undefined}
     >
       {lanes.map((lane, i) => (

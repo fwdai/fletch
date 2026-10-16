@@ -5,7 +5,7 @@ import { delegationLabel } from "@/delegation";
 import { useAppStore } from "@/store";
 import { checkoutKey } from "@/store/git";
 import { ActionBar } from "./ActionBar";
-import { AutopilotHistory, AutopilotSwitch } from "./Autopilot";
+import { AutopilotHistory } from "./Autopilot";
 import { CommitComposer, CommitStatus } from "./CommitComposer";
 import { BlockedConfigCard } from "./cards";
 import { useCommitDraft } from "./hooks/useCommitDraft";
@@ -16,7 +16,6 @@ import { usePrOrigin } from "./hooks/usePrOrigin";
 import { useTransientFeedback } from "./hooks/useTransientFeedback";
 import type { LadderBodies } from "./Ladder";
 import { LaneBody } from "./LaneBody";
-import { Lanes } from "./Lanes";
 import { buildLadder } from "./ladderModel";
 import type { Lane } from "./laneModel";
 import { WorktreesNote } from "./WorktreesNote";
@@ -40,17 +39,13 @@ export function GitRepoSection({
   agent,
   repo,
   subdir,
-  lanes,
   viewed,
-  onView,
 }: {
   agent: AgentRecord;
   repo: TrackedRepo | undefined;
   subdir?: string;
-  /** Every lane of the workspace, and the one the ladder describes. */
-  lanes: Lane[];
+  /** The lane the ladder describes, from this checkout. */
   viewed: Lane | null;
-  onView: (laneId: string) => void;
 }) {
   const { gitState, prState, checks, comments, mergeState, fetchGitState, fetchPrState } =
     useGitPanelData(agent.id, repo, subdir);
@@ -189,17 +184,18 @@ export function GitRepoSection({
   const webBase = gitState?.remote_url ?? null;
   const aheadCount = gitState?.ahead ?? 0;
   const unpushed = gitState?.unpushed ?? 0;
-  const commitsLink: string | null =
-    webBase && unpushed === 0 && aheadCount > 0
-      ? aheadCount === 1 && gitState?.head_sha
-        ? `${webBase}/commit/${gitState.head_sha}`
-        : `${webBase}/compare/${base}...${branch}`
-      : null;
   // The PR's head branch, said on its row when the tree is on another one —
   // the same rule that gates the actions bound to that branch. Not before the
   // git state loads, so the line doesn't flash on every open.
   const prBranch =
     gitState && viewedPr?.branch && viewedPr.branch !== gitState.branch ? viewedPr.branch : null;
+  // No link then either: the compare would be the tree's branch, not the PR's.
+  const commitsLink: string | null =
+    webBase && unpushed === 0 && aheadCount > 0 && !prBranch
+      ? aheadCount === 1 && gitState?.head_sha
+        ? `${webBase}/commit/${gitState.head_sha}`
+        : `${webBase}/compare/${base}...${branch}`
+      : null;
   // Which sub-agent opened the PR in view, when one did — its row says so.
   const prOrigin = usePrOrigin(agent.id, viewedPr?.number);
   // A merged PR's row ends its branch: the two actions, each through the one
@@ -220,15 +216,7 @@ export function GitRepoSection({
   const blocked = blockedConfig != null;
 
   return (
-    <div className="git-wrap">
-      {/* ── lanes: the checkout's branches and PRs, one in view ── */}
-      <Lanes
-        lanes={lanes}
-        viewedId={viewed?.id ?? null}
-        onView={onView}
-        controls={<AutopilotSwitch agentId={agent.id} projectId={agent.project_id} />}
-      />
-
+    <>
       <WorktreesNote worktrees={gitState?.worktrees} />
 
       {/* ── scrollable body: the lane's way to landing ── */}
@@ -320,6 +308,6 @@ export function GitRepoSection({
           onRun={() => runAction(primary.key)}
         />
       </div>
-    </div>
+    </>
   );
 }

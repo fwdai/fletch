@@ -59,9 +59,14 @@ const AGENT_SCOPED: Record<string, string> = {
   archive: "Archive the workspace from its primary repo's lane",
 };
 
+/** Actions that touch neither the checkout nor its branch — a page on GitHub,
+ *  the host's focus, the connect flow — so a working agent is no reason to
+ *  hold them. */
+const HARMLESS = new Set(["view-pr", "focus-pr", "connect-github"]);
+
 export function gateAction(key: string, ctx: GateContext): Gate | null {
   if (key === "loading") return { reason: "Loading git state", quiet: true };
-  if (ctx.delegationActive) {
+  if (ctx.delegationActive && !HARMLESS.has(key)) {
     return { reason: "The agent is working on this checkout", quiet: true };
   }
   const env = actionGateReason(ctx.env, key);

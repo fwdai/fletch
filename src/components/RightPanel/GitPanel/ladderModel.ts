@@ -217,15 +217,16 @@ export function buildLadder(input: LadderInput): LadderRow[] {
 
   const rows: LadderRow[] = [];
 
+  // The tree is on another branch than this PR's: its changes and commits say
+  // so, since a commit from here lands there, not on the PR.
+  const where = pr?.branch && git.branch && pr.branch !== git.branch ? ` on ${git.branch}` : "";
+
   // ── Changes ────────────────────────────────────────────────────────────────
   if (!lane.tree) {
     rows.push(idle("changes", git.branch ? `working tree is on ${git.branch}` : "not this lane's"));
   } else {
     const files = git.files.length;
     const conflicted = git.files.filter((f) => f.kind === "conflicted").length;
-    // The tree is on another branch than this PR's: say so, since a commit
-    // from here lands there, not on the PR.
-    const where = pr?.branch && git.branch && pr.branch !== git.branch ? ` on ${git.branch}` : "";
     if (conflicted > 0) {
       const inFiles = conflicted === files ? "" : ` in ${plural(files, "file")}`;
       rows.push(
@@ -279,9 +280,9 @@ export function buildLadder(input: LadderInput): LadderRow[] {
       rows.push(
         row("commits", {
           summary:
-            ahead > unpushed
+            (ahead > unpushed
               ? `${ahead} ahead of ${base} · ${unpushed} not pushed`
-              : `${plural(unpushed, "commit")} · not pushed`,
+              : `${plural(unpushed, "commit")} · not pushed`) + where,
           mark: "attention",
           tone: "warn",
           current: is("commits"),
@@ -290,7 +291,7 @@ export function buildLadder(input: LadderInput): LadderRow[] {
     } else if (ahead > 0) {
       rows.push(
         row("commits", {
-          summary: `${ahead} ahead of ${base} · pushed`,
+          summary: `${ahead} ahead of ${base} · pushed${where}`,
           mark: "done",
           current: false,
         }),

@@ -129,7 +129,18 @@ export function SplitAction({
       {open && (
         <>
           <div style={{ position: "fixed", inset: 0, zIndex: 199 }} onClick={() => close()} />
-          <DropdownMenu ref={menuRef} className="gsa-menu" role="menu" onKeyDown={onMenuKey}>
+          <DropdownMenu
+            ref={menuRef}
+            className="gsa-menu"
+            role="menu"
+            onKeyDown={onMenuKey}
+            // Tabbing out closes it, like a click outside would.
+            onBlur={(e) => {
+              const to = e.relatedTarget as Node | null;
+              if (to && (menuRef.current?.contains(to) || caretRef.current === to)) return;
+              close();
+            }}
+          >
             {groups.map((g, gi) => (
               <div key={g.title ?? `group-${gi}`} role={g.radio ? "group" : undefined}>
                 {gi > 0 && <DropdownSeparator />}

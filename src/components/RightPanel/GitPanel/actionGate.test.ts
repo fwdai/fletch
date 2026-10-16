@@ -107,5 +107,14 @@ describe("gateAction", () => {
     expect(gateAction("agent-commit", { ...open, delegationActive: true })).toMatchObject({
       quiet: true,
     });
+    // A working agent is no reason to keep a page, the focus or the connect
+    // flow from the user: none of them touch the checkout.
+    for (const key of ["view-pr", "focus-pr", "connect-github"]) {
+      expect(gateAction(key, { ...open, delegationActive: true })).toBeNull();
+    }
+    // …but the host gate still applies to them.
+    expect(reason("focus-pr", { env: oldHost, delegationActive: true })).toBe(
+      actionGateReason(oldHost, "focus-pr"),
+    );
   });
 });
