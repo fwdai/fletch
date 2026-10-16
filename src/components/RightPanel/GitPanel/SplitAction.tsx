@@ -65,7 +65,7 @@ export function SplitAction({
   }, [open]);
   const onMenuKey = (e: KeyboardEvent<HTMLDivElement>) => {
     const list = rows();
-    const at = list.findIndex((b) => b === document.activeElement);
+    const at = list.indexOf(document.activeElement as HTMLButtonElement);
     const go = (i: number) => list[(i + list.length) % list.length]?.focus();
     switch (e.key) {
       case "ArrowDown":
