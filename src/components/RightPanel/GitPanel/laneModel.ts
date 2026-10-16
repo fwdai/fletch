@@ -32,8 +32,9 @@ export interface Lane {
    *  or the checkout is detached. */
   branch: string | null;
   pr: PrSetEntry | null;
-  /** The working tree is on this branch — uncommitted changes and unpushed
-   *  commits are this lane's. */
+  /** The working tree is on this lane — exactly one per checkout. Several PRs
+   *  can share a branch (a reused name, a follow-up); the tree belongs to the
+   *  focused one, else the newest open one, else the newest. */
   current: boolean;
   /** The checkout's focused PR: what Merge / Fix checks / Update branch act on
    *  and what autopilot nurses. Exactly one PR lane per checkout with a PR. */
@@ -72,20 +73,31 @@ export function buildLanes(
 ): Lane[] {
   const branch = git?.branch || (git ? null : knownBranch) || null;
   const common = scope ? { git, scope } : { git };
-  const prLanes: Lane[] = checkoutPrs(set, focused, focusedChecks).map((entry) => {
+  const entries = checkoutPrs(set, focused, focusedChecks);
+  // The lanes whose branch the tree is on; one of them gets to be current.
+  const onTree = (entry: PrSetEntry, isFocused: boolean) =>
+    entry.state.branch != null
+      ? branch != null && entry.state.branch === branch
+      : isFocused && branch != null;
+  const candidates = entries.filter((e) => onTree(e, e.state.number === focused?.number));
+  const current =
+    candidates.find((e) => e.state.number === focused?.number) ??
+    candidates.find((e) => e.state.state === "open") ??
+    candidates[0] ??
+    null;
+
+  const prLanes: Lane[] = entries.map((entry) => {
     const isFocused = entry.state.number === focused?.number;
-    const prBranch = entry.state.branch ?? null;
-    const current =
-      prBranch != null ? branch != null && prBranch === branch : isFocused && branch != null;
+    const isCurrent = entry === current;
     const lane = {
-      branch: prBranch ?? (current ? branch : null),
+      branch: entry.state.branch ?? (isCurrent ? branch : null),
       pr: entry,
-      current,
+      current: isCurrent,
       focused: isFocused,
     };
     return { id: laneId(lane, scope), ...lane, ...common };
   });
-  if (prLanes.some((l) => l.current)) return prLanes;
+  if (current) return prLanes;
   // The tree is on a branch no PR covers (or on no branch yet): its own lane.
   const bare = { branch, pr: null, current: true, focused: false };
   const bareLane: Lane = { id: laneId(bare, scope), ...bare, ...common };

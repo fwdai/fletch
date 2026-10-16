@@ -80,6 +80,29 @@ describe("buildLanes", () => {
     expect(lanes[0].current).toBe(false);
   });
 
+  it("marks exactly one lane current when several PRs share the tree's branch", () => {
+    // A reused branch name: #9 merged on it, #12 open on it, #12 focused.
+    const open12 = pr(12, { branch: "feat-a" });
+    const merged9 = pr(9, { branch: "feat-a", state: "merged" });
+    const lanes = buildLanes([entry(open12), entry(merged9)], open12, null, git());
+    expect(lanes.map((l) => [l.id, l.current])).toEqual([
+      ["pr:12", true],
+      ["pr:9", false],
+    ]);
+    // Focused elsewhere: the newest open PR on the branch takes the tree.
+    const other = pr(13, { branch: "feat-b" });
+    const lanes2 = buildLanes([entry(open12), entry(merged9), entry(other)], other, null, git());
+    expect(lanes2.filter((l) => l.current).map((l) => l.id)).toEqual(["pr:12"]);
+    // Only history on the branch: the newest of it, never two.
+    const lanes3 = buildLanes(
+      [entry(merged9), entry(pr(8, { branch: "feat-a", state: "closed" }))],
+      merged9,
+      null,
+      git(),
+    );
+    expect(lanes3.filter((l) => l.current).map((l) => l.id)).toEqual(["pr:9"]);
+  });
+
   it("scopes a checkout's lanes to its repo in a multi-repo workspace", () => {
     const p = pr(12, { branch: "feat-a" });
     const scope = { id: "backend", subdir: "backend", label: "backend" };

@@ -1,6 +1,7 @@
 import { useCallback } from "react";
 import type { AgentRecord } from "@/api";
 import { Icon } from "@/components/Icon";
+import { useWorkspaceLanes } from "@/components/RightPanel/GitPanel/hooks/useWorkspaceLanes";
 import { SandboxBadge } from "@/components/ui";
 import { useAppStore } from "@/store";
 import { agentDotStatus } from "./derive";
@@ -27,7 +28,8 @@ export function Capsule({ agent, repoPath, projectName }: Props) {
   const rightCollapsed = useAppStore((s) => s.rightCollapsed);
   const toggleRight = useAppStore((s) => s.toggleRight);
   const setRightPanelTab = useAppStore((s) => s.setRightPanelTab);
-  const { shortstats, gitState, prState, checks, prs, lanes } = useCapsuleData(agent.id);
+  const { shortstats, gitState, prState, checks, prs } = useCapsuleData(agent.id);
+  const { lanes } = useWorkspaceLanes(agent);
 
   const status = agentDotStatus(agent.status, pending);
 

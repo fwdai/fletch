@@ -3,13 +3,15 @@
 // and what to do next. This module renders that ordering as the Git panel's
 // body: a fixed sequence of stages — changes, commits, pull request, checks,
 // review — each with a mark (done / attention / running / not yet) and a
-// one-line summary. Rows never appear or vanish with state; they change their
-// mark. The row the ladder's next step is about is `current`, so the body and
-// the footer's primary action always point at the same thing.
+// one-line summary. Rows never appear or vanish with state, nor with the lane
+// in view: a lane the tree isn't on, or whose threads aren't read, shows the
+// same rows marked not-yet and says why. The row the ladder's next step is
+// about is `current`, so the body and the footer's primary action always
+// point at the same thing.
 //
 // Pure and store-free, like `readiness.ts`, so every state has a test.
 
-import type { GitState, MergeState, PrChecks, PrComments, PrSetEntry, PrState } from "@/api";
+import type { GitState, MergeState, PrChecks, PrComments, PrState } from "@/api";
 import { describeMergeGate, type MergeGate } from "@/mergeGate";
 import { type Blocker, detectBlockers, nextRung, type Rung } from "@/readiness";
 import { plural } from "@/util/format";
@@ -49,6 +51,12 @@ export interface LadderInput {
   mergeState: MergeState | null;
   comments: PrComments | null;
   base: string;
+  /** How the lane relates to the checkout. `tree`: its changes and commits are
+   *  the working tree's (the focused PR's lane, or the tree's own); otherwise
+   *  the tree is on another branch and those rows say so. `focused`: the host
+   *  reads its threads and the ladder has a next step; a lane only looked at
+   *  has neither. Both default to true. */
+  lane?: { tree: boolean; focused: boolean };
 }
 
 const TITLE: Record<RungKey, string> = {
@@ -63,6 +71,9 @@ const TITLE: Record<RungKey, string> = {
 function row(key: RungKey, rest: Omit<LadderRow, "key" | "title">): LadderRow {
   return { key, title: TITLE[key], ...rest };
 }
+
+const idle = (key: RungKey, summary: string): LadderRow =>
+  row(key, { summary, mark: "idle", current: false });
 
 /** Which row a blocker lives on. */
 function rowOfBlocker(kind: Blocker["kind"]): RungKey {
@@ -103,15 +114,6 @@ export function currentRow(rung: Rung, pr: PrState | null): RungKey | null {
     case "wait":
       return rung.why === "gate-computing" ? "checks" : null;
   }
-}
-
-/** The gate of an open PR: GitHub's merge gate when the checks read carries
- *  it, else the PR's own coarse `mergeable` (`describeMergeGate` picks). */
-function gateOf(pr: PrState, checks: PrChecks | null, mergeState: MergeState | null): MergeGate {
-  return describeMergeGate(mergeState, {
-    checksFailed: checks?.required_failing.length ?? 0,
-    mergeable: pr.mergeable,
-  });
 }
 
 /** The pull request row for an open PR. Its own concern is that a proposal
@@ -172,11 +174,9 @@ function checksRow(checks: PrChecks | null, reading: boolean, current: boolean):
   if (!checks) {
     return reading
       ? row("checks", { summary: "checking…", mark: "running", current })
-      : row("checks", { summary: "unavailable", mark: "idle", current: false });
+      : idle("checks", "unavailable");
   }
-  if (checks.total === 0) {
-    return row("checks", { summary: "none configured", mark: "idle", current: false });
-  }
+  if (checks.total === 0) return idle("checks", "none configured");
   switch (checks.rollup) {
     case "failing":
       return row("checks", {
@@ -196,30 +196,19 @@ function checksRow(checks: PrChecks | null, reading: boolean, current: boolean):
   }
 }
 
-/** The ladder of a PR the panel can only see from its set entry — another PR
- *  of the checkout than the focused one. The host reads checks for every PR of
- *  the set but threads only for the focused one, and the tree's changes and
- *  commits belong to the branch checked out, so this is the PR and its checks:
- *  what can be known, nothing current to act on. */
-export function buildPrLadder(entry: PrSetEntry, base: string): LadderRow[] {
-  const { state: pr, checks } = entry;
-  if (pr.state !== "open") return [closedPrRow(pr, base, false, false)];
-  const gate = gateOf(pr, checks, checks?.merge_state ?? null);
-  return [openPrRow(pr, gate, base, false), checksRow(checks, false, false)];
-}
-
 export function buildLadder(input: LadderInput): LadderRow[] {
   const { git, pr, checks, mergeState, comments, base } = input;
+  const lane = input.lane ?? { tree: true, focused: true };
   if (!git) return [];
 
   const blockers = detectBlockers({ git, pr, checks, comments });
   const has = (kind: Blocker["kind"]) => blockers.some((b) => b.kind === kind);
-  // The commit mode only shapes the delegation's kind, never which row it is
-  // about, so any mode gives the same row.
-  const current = currentRow(
-    nextRung({ git, pr, checks, comments }, { base, commitMode: "commit" }),
-    pr,
-  );
+  // The next step belongs to the lane the tree is on; a lane only looked at
+  // has none. The commit mode only shapes the delegation's kind, never which
+  // row it is about, so any mode gives the same row.
+  const current = lane.tree
+    ? currentRow(nextRung({ git, pr, checks, comments }, { base, commitMode: "commit" }), pr)
+    : null;
   const is = (key: RungKey) => current === key;
 
   const prOpen = pr?.state === "open";
@@ -229,7 +218,9 @@ export function buildLadder(input: LadderInput): LadderRow[] {
   const rows: LadderRow[] = [];
 
   // ── Changes ────────────────────────────────────────────────────────────────
-  {
+  if (!lane.tree) {
+    rows.push(idle("changes", git.branch ? `working tree is on ${git.branch}` : "not this lane's"));
+  } else {
     const files = git.files.length;
     const conflicted = git.files.filter((f) => f.kind === "conflicted").length;
     // The tree is on another branch than this PR's: say so, since a commit
@@ -259,17 +250,17 @@ export function buildLadder(input: LadderInput): LadderRow[] {
       // produced; a fresh checkout has nothing to have committed.
       const anyWork = git.ahead > 0 || git.unpushed > 0 || pr != null;
       rows.push(
-        row("changes", {
-          summary: anyWork ? "all committed" : "none",
-          mark: anyWork ? "done" : "idle",
-          current: false,
-        }),
+        anyWork
+          ? row("changes", { summary: "all committed", mark: "done", current: false })
+          : idle("changes", "none"),
       );
     }
   }
 
   // ── Commits ────────────────────────────────────────────────────────────────
-  {
+  if (!lane.tree) {
+    rows.push(idle("commits", "not checked out"));
+  } else {
     const { ahead, unpushed } = git;
     if (prMerged) {
       // `ahead` still counts what landed (the local base is stale until the next
@@ -305,27 +296,35 @@ export function buildLadder(input: LadderInput): LadderRow[] {
         }),
       );
     } else {
-      rows.push(row("commits", { summary: "none", mark: "idle", current: false }));
+      rows.push(idle("commits", "none"));
     }
   }
 
   // ── Pull request ───────────────────────────────────────────────────────────
-  const gate = prOpen && pr ? gateOf(pr, checks, mergeState) : null;
+  const gate =
+    prOpen && pr
+      ? describeMergeGate(mergeState, {
+          checksFailed: checks?.required_failing.length ?? 0,
+          mergeable: pr.mergeable,
+        })
+      : null;
   if (!pr) {
     // "Unsubmitted" is the ladder saying the pushed commits want a proposal.
-    const wanted = has("unsubmitted");
+    const wanted = lane.tree && has("unsubmitted");
     rows.push(
-      row("pr", {
-        summary: wanted ? "none yet · ready to open" : "none yet",
-        mark: wanted ? "attention" : "idle",
-        tone: wanted ? "info" : undefined,
-        current: is("pr"),
-      }),
+      wanted
+        ? row("pr", {
+            summary: "none yet · ready to open",
+            mark: "attention",
+            tone: "info",
+            current: is("pr"),
+          })
+        : idle("pr", "none yet"),
     );
   } else if (gate) {
     rows.push(openPrRow(pr, gate, base, is("pr")));
   } else {
-    rows.push(closedPrRow(pr, base, is("pr"), has("unsubmitted")));
+    rows.push(closedPrRow(pr, base, is("pr"), lane.tree && has("unsubmitted")));
   }
 
   // Checks and review only exist for an open proposal.
@@ -334,51 +333,52 @@ export function buildLadder(input: LadderInput): LadderRow[] {
   rows.push(checksRow(checks, mergeState === "unknown", is("checks")));
 
   // ── Review ─────────────────────────────────────────────────────────────────
-  {
-    const threads = comments?.unresolved ?? [];
-    const ours = threads.filter((t) => t.we_replied_last).length;
-    const theirs = threads.length - ours;
-    if (theirs > 0) {
-      rows.push(
-        row("review", {
-          summary: `${plural(theirs, "thread")} waiting on you`,
-          mark: "attention",
-          tone: "att",
-          current: is("review"),
-        }),
-      );
-    } else if (ours > 0) {
-      rows.push(
-        row("review", {
-          summary: `${plural(ours, "thread")} awaiting their reply`,
-          mark: "attention",
-          tone: "info",
-          current: is("review"),
-        }),
-      );
-    } else if (gate.situation === "review-required") {
-      rows.push(
-        row("review", {
-          summary: "approval required",
-          mark: "attention",
-          tone: "att",
-          current: is("review"),
-        }),
-      );
-    } else if (comments == null) {
-      rows.push(row("review", { summary: "unavailable", mark: "idle", current: false }));
-    } else {
-      // Nothing waiting on anyone. It reads as done only once the gate is
-      // positively open; before that it is simply not in the way.
-      const settled = gate.situation === "ready" || gate.situation === "mergeable-soft";
-      rows.push(
-        row("review", {
-          summary: "no open threads",
-          mark: settled ? "done" : "idle",
-          current: false,
-        }),
-      );
-    }
+  if (!lane.focused) {
+    // Threads are read for the focused PR only.
+    rows.push(idle("review", "read for the focused PR"));
+    return rows;
+  }
+  const threads = comments?.unresolved ?? [];
+  const ours = threads.filter((t) => t.we_replied_last).length;
+  const theirs = threads.length - ours;
+  if (theirs > 0) {
+    rows.push(
+      row("review", {
+        summary: `${plural(theirs, "thread")} waiting on you`,
+        mark: "attention",
+        tone: "att",
+        current: is("review"),
+      }),
+    );
+  } else if (ours > 0) {
+    rows.push(
+      row("review", {
+        summary: `${plural(ours, "thread")} awaiting their reply`,
+        mark: "attention",
+        tone: "info",
+        current: is("review"),
+      }),
+    );
+  } else if (gate.situation === "review-required") {
+    rows.push(
+      row("review", {
+        summary: "approval required",
+        mark: "attention",
+        tone: "att",
+        current: is("review"),
+      }),
+    );
+  } else if (comments == null) {
+    rows.push(idle("review", "unavailable"));
+  } else {
+    // Nothing waiting on anyone. It reads as done only once the gate is
+    // positively open; before that it is simply not in the way.
+    const settled = gate.situation === "ready" || gate.situation === "mergeable-soft";
+    rows.push(
+      settled
+        ? row("review", { summary: "no open threads", mark: "done", current: false })
+        : idle("review", "no open threads"),
+    );
   }
 
   return rows;

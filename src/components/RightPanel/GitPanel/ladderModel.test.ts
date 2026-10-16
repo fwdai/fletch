@@ -264,6 +264,29 @@ describe("buildLadder", () => {
     expect(row(rows, "changes")?.summary).toBe("1 file on feat-b");
   });
 
+  it("keeps the same rows for a lane only looked at, and says why they're idle", () => {
+    // Another PR of the checkout: the tree is on a different branch, its
+    // threads are not read, nothing is the next step.
+    const rows = ladder({
+      git: git({ branch: "feat-a", files: [file("modified")], ahead: 2 }),
+      pr: pr({ branch: "feat-b" }),
+      checks: checks({ rollup: "failing", failed: 1, passed: 2, merge_state: "unstable" }),
+      mergeState: "unstable",
+      lane: { tree: false, focused: false },
+    });
+    expect(rows.map((r) => r.key)).toEqual(["changes", "commits", "pr", "checks", "review"]);
+    expect(row(rows, "changes")).toMatchObject({
+      mark: "idle",
+      summary: "working tree is on feat-a",
+    });
+    expect(row(rows, "commits")).toMatchObject({ mark: "idle", summary: "not checked out" });
+    // What the set entry knows about the PR still shows with its marks.
+    expect(row(rows, "pr")?.summary).toBe("#7 · open");
+    expect(row(rows, "checks")).toMatchObject({ mark: "attention", tone: "danger" });
+    expect(row(rows, "review")).toMatchObject({ mark: "idle", summary: "read for the focused PR" });
+    expect(current(rows)).toBeNull();
+  });
+
   it("renders nothing before the first git read", () => {
     expect(ladder({ git: null })).toEqual([]);
   });

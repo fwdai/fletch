@@ -1,25 +1,20 @@
 import { useMemo } from "react";
-import { buildLanes } from "@/components/RightPanel/GitPanel/laneModel";
 import { useAppStore } from "@/store";
 import { usePrState } from "@/util/prState";
 import { checkoutPrs } from "@/util/prSummary";
 
-/** The title-bar capsule's view of the active agent's git/PR state.
- *
- *  A pure read: `useGitSync` keeps all of this current. Checks are surfaced only
+/** The title-bar capsule's view of the active agent's primary checkout, for
+ *  the badge: `useGitSync` keeps all of this current. Checks are surfaced only
  *  while the PR is open, since that's the only state the chip renders. `prs` is
- *  the primary checkout's whole PR set, focused first (the focused PR alone
- *  when no set is known); `lanes` is the same checkout as the Git panel's
- *  header draws it, so the popover and the panel list the same rows. */
+ *  the checkout's whole PR set, focused first (the focused PR alone when no set
+ *  is known). The popover's lanes come from `useWorkspaceLanes`, the same
+ *  derivation as the Git panel's header. */
 export function useCapsuleData(agentId: string) {
   const shortstats = useAppStore((s) => s.gitShortstats[agentId] ?? null);
   const gitState = useAppStore((s) => s.gitStates[agentId] ?? null);
   const prState = usePrState(agentId);
   const checks = useAppStore((s) => s.prChecks[agentId] ?? null);
   const prSet = useAppStore((s) => s.prSets[agentId]);
-  const knownBranch = useAppStore(
-    (s) => s.workspace?.agents.find((a) => a.id === agentId)?.repos[0]?.branch ?? null,
-  );
   const prOpen = prState?.state === "open";
   const focusedChecks = prOpen ? checks : null;
 
@@ -27,10 +22,6 @@ export function useCapsuleData(agentId: string) {
     () => checkoutPrs(prSet, prState, focusedChecks),
     [prSet, prState, focusedChecks],
   );
-  const lanes = useMemo(
-    () => buildLanes(prSet, prState, focusedChecks, gitState, undefined, knownBranch),
-    [prSet, prState, focusedChecks, gitState, knownBranch],
-  );
 
-  return { shortstats, gitState, prState, checks: focusedChecks, prs, lanes };
+  return { shortstats, gitState, prState, checks: focusedChecks, prs };
 }

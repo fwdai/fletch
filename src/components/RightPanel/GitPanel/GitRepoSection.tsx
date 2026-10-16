@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo } from "react";
 import type { AgentRecord, TrackedRepo } from "@/api";
 import { isCommitAction } from "@/components/RightPanel/primaryActions";
 import { delegationLabel } from "@/delegation";
@@ -9,16 +9,16 @@ import { ActionBar } from "./ActionBar";
 import { AutopilotHistory, AutopilotSwitch } from "./Autopilot";
 import { CommitComposer, CommitStatus } from "./CommitComposer";
 import { BlockedConfigCard } from "./cards";
-import { FileDiffView } from "./FileDiffView";
 import { useCommitDraft } from "./hooks/useCommitDraft";
 import { useFooterModel } from "./hooks/useFooterModel";
 import { useGitActions } from "./hooks/useGitActions";
 import { useGitPanelData } from "./hooks/useGitPanelData";
 import { usePrOrigin } from "./hooks/usePrOrigin";
 import { useTransientFeedback } from "./hooks/useTransientFeedback";
-import { Ladder } from "./Ladder";
+import type { LadderBodies } from "./Ladder";
+import { LaneBody } from "./LaneBody";
 import { Lanes } from "./Lanes";
-import { buildLadder, buildPrLadder } from "./ladderModel";
+import { buildLadder } from "./ladderModel";
 import type { Lane } from "./laneModel";
 import { WorktreesNote } from "./WorktreesNote";
 
@@ -156,9 +156,22 @@ export function GitRepoSection({
     else runAction(k);
   };
 
+  // The same five rows for every lane. A lane only looked at — another PR of
+  // the checkout — is drawn from its set entry, with the tree's rows and the
+  // review row idle and saying why.
   const rows = useMemo(() => {
     if (!viewed) return [];
-    if (!acting && viewed.pr) return buildPrLadder(viewed.pr, base);
+    if (!acting && viewed.pr) {
+      return buildLadder({
+        git: gitState,
+        pr: viewed.pr.state,
+        checks: viewed.pr.checks,
+        mergeState: viewed.pr.checks?.merge_state ?? null,
+        comments: null,
+        base,
+        lane: { tree: false, focused: false },
+      });
+    }
     return buildLadder({
       git: gitState,
       pr: lanePr,
@@ -193,7 +206,7 @@ export function GitRepoSection({
   // A merged PR's row ends its branch. Both actions pass the one gate (branch,
   // scope, host), and both are dead while work since the merge is still only
   // here — uncommitted, or commits origin lacks — since archiving removes it.
-  const ending: Parameters<typeof Ladder>[0]["bodies"]["ending"] = acting
+  const ending: LadderBodies["ending"] = acting
     ? {
         onArchive: () => runAction("archive"),
         onDeleteBranch: () => runAction("delete-branch"),
@@ -204,12 +217,6 @@ export function GitRepoSection({
       }
     : null;
 
-  // The changed file whose diff is open in place of the ladder; null shows the
-  // ladder. Falls back when the file leaves the list (e.g. after a commit).
-  const [viewing, setViewing] = useState<string | null>(null);
-  useEffect(() => {
-    setViewing((prev) => (prev && gitState?.files.some((f) => f.path === prev) ? prev : null));
-  }, [gitState]);
   // A multi-repo agent's checkout paths are addressed as `<subdir>/<path>` (as
   // in the Code tab's tree), which is how `get_file_diff` picks the checkout.
   const repoDir = agent.repos.length > 1 ? repo?.subdir : undefined;
@@ -243,24 +250,16 @@ export function GitRepoSection({
             busy={busy != null}
             onRemove={() => runAction("clear-config")}
           />
-        ) : viewing ? (
-          <FileDiffView
-            agentId={agent.id}
-            files={gitState?.files ?? []}
-            path={viewing}
-            repoDir={repoDir}
-            onSelect={setViewing}
-            onBack={() => setViewing(null)}
-          />
         ) : (
           <>
             {viewed && (
-              <Ladder
+              <LaneBody
                 key={viewed.id}
+                agentId={agent.id}
+                repoDir={repoDir}
                 rows={rows}
                 bodies={{
                   files: acting ? (gitState?.files ?? []) : [],
-                  onOpenFile: setViewing,
                   onRefresh: () => void fetchGitState(agent.id),
                   commitsLink: acting ? commitsLink : null,
                   commitsAhead: aheadCount,
