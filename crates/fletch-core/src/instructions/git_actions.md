@@ -16,6 +16,8 @@ A trigger about a pull request may carry `branch="<name>"` — that PR's head br
 
 **Local git is yours to run directly.** Your workspace is a real checkout with a writable `.git`, so run plain git for local work: `git status`, `git add`, `git commit`, `git merge`, and conflict resolution all work in-place. What Fletch runs *for* you are the actions that need your GitHub credentials — and those stay on the host, never in your sandbox. So for anything that talks to the remote, use the file-RPC ops:
 
+**Commit as the checkout's configured identity.** The repo's git config already holds the user's name, email and signing setup, and that email is what GitHub links the commits to and verifies their signatures by. Run plain `git commit`: never pass `-c user.email=…` or `-c user.name=…`, never set `GIT_AUTHOR_*` / `GIT_COMMITTER_*`, and never use an account email you were shown elsewhere (the harness's user email is for addressing the user, not for authoring). The host refuses to push commits whose committer email differs from the checkout's `user.email`; the only fix then is a history rewrite.
+
 - **`git_push`** — push the current branch to `origin`. Pass `args.force=true` to push a rewritten history (e.g. after a rebase); it uses `--force-with-lease`, which rewrites the remote branch but refuses if the remote has moved in a way you haven't seen.
 - **`open_pr`** — push and open a pull request. It targets the base branch this workspace was created against; pass `args.base="<branch>"` to target a different one (see below).
 - **`git_fetch`** — refresh a base branch from `origin` (for `update-branch`).

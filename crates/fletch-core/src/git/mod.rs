@@ -10,6 +10,7 @@ mod cmd;
 mod diff;
 mod files;
 pub(crate) mod hardening;
+mod identity;
 mod transport;
 mod worktree;
 
@@ -18,5 +19,6 @@ pub use branch::*;
 pub(crate) use cmd::*;
 pub use diff::*;
 pub use files::*;
+pub use identity::*;
 pub use transport::*;
 pub use worktree::*;

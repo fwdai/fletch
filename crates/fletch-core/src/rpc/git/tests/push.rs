@@ -128,6 +128,85 @@ async fn git_push_refuses_the_review_base() {
 }
 
 #[tokio::test]
+async fn git_push_refuses_commits_made_as_someone_else() {
+    let td = tempfile::tempdir().unwrap();
+    let remote = td.path().join("origin.git");
+    run_git(
+        td.path(),
+        &["init", "-q", "--bare", remote.to_str().unwrap()],
+    );
+    let repo = td.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    run_git(&repo, &["init", "-q", "-b", "main"]);
+    run_git(&repo, &["config", "user.email", "t@example.com"]);
+    run_git(&repo, &["config", "user.name", "Tester"]);
+    run_git(
+        &repo,
+        &["remote", "add", "origin", remote.to_str().unwrap()],
+    );
+    std::fs::write(repo.join("a.txt"), b"x").unwrap();
+    run_git(&repo, &["add", "-A"]);
+    run_git(&repo, &["commit", "-q", "-m", "init"]);
+    run_git(&repo, &["checkout", "-q", "-b", "fix/identity"]);
+    std::fs::write(repo.join("b.txt"), b"y").unwrap();
+    run_git(&repo, &["add", "-A"]);
+    // The mistake under test: an agent stamping the account email it was shown
+    // onto the commit instead of trusting the checkout's config.
+    run_git(
+        &repo,
+        &[
+            "-c",
+            "user.email=agent@example.com",
+            "commit",
+            "-q",
+            "-m",
+            "as the agent",
+        ],
+    );
+
+    let rpc_dir = td.path().join("rpc");
+    ensure_mailbox(&rpc_dir).unwrap();
+    let requests = rpc_dir.join("requests");
+    let disp = dispatcher(&repo);
+
+    write_request(&requests, "p1.json", r#"{"id":"p1","op":"git_push"}"#);
+    process_pending(&rpc_dir, &disp).await;
+    let v: Value =
+        serde_json::from_str(&std::fs::read_to_string(rpc_dir.join("responses/p1.json")).unwrap())
+            .unwrap();
+    assert_eq!(v["ok"], false, "a foreign committer must be refused: {v}");
+    let err = v["error"].as_str().unwrap();
+    assert!(
+        err.contains("agent@example.com"),
+        "names the stray email: {err}"
+    );
+    assert!(
+        err.contains("t@example.com"),
+        "names the configured one: {err}"
+    );
+    let refs = std::process::Command::new("git")
+        .args(["--git-dir", remote.to_str().unwrap(), "for-each-ref"])
+        .output()
+        .expect("git");
+    assert!(
+        String::from_utf8_lossy(&refs.stdout).trim().is_empty(),
+        "nothing may reach the remote"
+    );
+
+    // Rewritten as the checkout's own identity, the same push goes through.
+    run_git(
+        &repo,
+        &["commit", "-q", "--amend", "--no-edit", "--reset-author"],
+    );
+    write_request(&requests, "p2.json", r#"{"id":"p2","op":"git_push"}"#);
+    process_pending(&rpc_dir, &disp).await;
+    let v: Value =
+        serde_json::from_str(&std::fs::read_to_string(rpc_dir.join("responses/p2.json")).unwrap())
+            .unwrap();
+    assert_eq!(v["ok"], true, "the rewritten branch must push: {v}");
+}
+
+#[tokio::test]
 async fn git_push_detached_without_branch_arg_errors() {
     let td = tempfile::tempdir().unwrap();
     let repo = td.path().join("repo");

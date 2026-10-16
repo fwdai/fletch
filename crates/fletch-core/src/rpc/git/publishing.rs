@@ -106,6 +106,9 @@ impl GitDispatcher {
         if let Some(why) = self.caps.refuses_branch(&branch, &t.base_branch) {
             return (Response::err(id, why), effects);
         }
+        if let Some(resp) = refuse_foreign_identity(id, &t.cwd, &branch).await {
+            return (resp, effects);
+        }
         if let Some(why) = self
             .refuse_unless_publish_approved(
                 "open_pr",
@@ -194,6 +197,9 @@ impl GitDispatcher {
         if let Some(why) = self.caps.refuses_branch(&branch, &t.base_branch) {
             return (Response::err(id, why), effects);
         }
+        if let Some(resp) = refuse_foreign_identity(id, &t.cwd, &branch).await {
+            return (resp, effects);
+        }
 
         // Lease-based, so a stale local view can't clobber remote work it hasn't seen.
         let force = arg_bool(args, "force");
@@ -209,6 +215,23 @@ impl GitDispatcher {
             Ok(summary) => (Response::ok(id, 0, summary, String::new()), effects),
             Err(e) => (Response::err(id, e.to_string()), effects),
         }
+    }
+}
+
+/// The commits a push would publish must be the checkout's own: a committer
+/// email other than its `user.email` lands on GitHub as nobody's and
+/// unverified, and only a rewrite fixes that — cheap now, a force push later.
+/// Checked after the branch gates and before approval, so the user is never
+/// asked to approve a push the host would then refuse. A read failure refuses
+/// too: pushing blind is the one outcome this guard exists to prevent.
+async fn refuse_foreign_identity(id: &str, cwd: &Path, branch: &str) -> Option<Response> {
+    match crate::git::refuse_foreign_identity(cwd, branch).await {
+        Ok(None) => None,
+        Ok(Some(why)) => Some(Response::err(id, why)),
+        Err(e) => Some(Response::err(
+            id,
+            format!("could not read the commits '{branch}' would publish: {e}"),
+        )),
     }
 }
 
