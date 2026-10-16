@@ -193,10 +193,7 @@ async fn git_push_refuses_commits_made_as_someone_else() {
     );
 
     // Rewritten as the checkout's identity, the push goes through.
-    run_git(
-        &repo,
-        &["commit", "-q", "--amend", "--no-edit", "--reset-author"],
-    );
+    run_git(&repo, &["commit", "-q", "--amend", "--no-edit"]);
     write_request(&requests, "p2.json", r#"{"id":"p2","op":"git_push"}"#);
     process_pending(&rpc_dir, &disp).await;
     let v: Value =

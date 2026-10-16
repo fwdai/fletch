@@ -106,6 +106,7 @@ impl GitDispatcher {
         if let Some(why) = self.caps.refuses_branch(&branch, &t.base_branch) {
             return (Response::err(id, why), effects);
         }
+        // Before the prompt, so nobody approves a push the host then refuses…
         if let Some(resp) = refuse_foreign_identity(id, &t.cwd, &branch).await {
             return (resp, effects);
         }
@@ -118,6 +119,11 @@ impl GitDispatcher {
             .await
         {
             return (Response::err(id, why), effects);
+        }
+        // …and again after it: the branch may have moved while the prompt was
+        // open, and it is the commits at push time that get published.
+        if let Some(resp) = refuse_foreign_identity(id, &t.cwd, &branch).await {
+            return (resp, effects);
         }
         if let Err(e) = crate::git::push(&t.cwd, &branch, false).await {
             return (
@@ -182,6 +188,15 @@ impl GitDispatcher {
         if let Some(resp) = refuse_option_like(id, "git_push", "branch", &branch) {
             return (resp, effects);
         }
+        // Earliest point `branch` is known. Every refusal the host can make on
+        // its own comes before the prompt, so nobody approves a push the host
+        // then refuses.
+        if let Some(why) = self.caps.refuses_branch(&branch, &t.base_branch) {
+            return (Response::err(id, why), effects);
+        }
+        if let Some(resp) = refuse_foreign_identity(id, &t.cwd, &branch).await {
+            return (resp, effects);
+        }
         if let Some(why) = self
             .refuse_unless_publish_approved(
                 "git_push",
@@ -192,11 +207,8 @@ impl GitDispatcher {
         {
             return (Response::err(id, why), effects);
         }
-
-        // Earliest point `branch` is known; must precede the push.
-        if let Some(why) = self.caps.refuses_branch(&branch, &t.base_branch) {
-            return (Response::err(id, why), effects);
-        }
+        // The branch may have moved while the prompt was open; it is the
+        // commits at push time that get published.
         if let Some(resp) = refuse_foreign_identity(id, &t.cwd, &branch).await {
             return (resp, effects);
         }

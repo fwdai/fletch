@@ -19,9 +19,19 @@ pub async fn configured_email(repo: &Path) -> Result<Option<String>> {
 /// lacks, deduplicated. Committer, not author: a cherry-pick keeps its author,
 /// but the committer is always the local identity unless it was overridden.
 pub async fn foreign_committers(repo: &Path, branch: &str, email: &str) -> Result<Vec<String>> {
+    // The full ref and a trailing `--`, so a branch named like a path (`docs`
+    // beside a docs/ directory) is a revision here, as it is for `push`.
+    let rev = format!("refs/heads/{branch}");
     let out = git_output(
         repo,
-        &["log", "--format=%ce", branch, "--not", "--remotes=origin"],
+        &[
+            "log",
+            "--format=%ce",
+            &rev,
+            "--not",
+            "--remotes=origin",
+            "--",
+        ],
     )
     .await?;
     if !out.status.success() {
@@ -59,8 +69,9 @@ pub async fn refuse_foreign_identity(repo: &Path, branch: &str) -> Result<Option
     Ok(Some(format!(
         "refusing to push '{branch}': new commits were made as {}, not the checkout's \
          {email} — GitHub would show them as nobody's and unverified. Rewrite them with \
-         the configured identity (`git rebase <base> --exec 'git commit --amend --no-edit \
-         --reset-author'`), then push again with `args.force=true`",
+         the configured identity (`git rebase <base> --exec 'git commit --amend --no-edit'` \
+         re-stamps the committer and keeps each author), then push again with \
+         `args.force=true`",
         foreign.join(", ")
     )))
 }
@@ -125,7 +136,29 @@ mod tests {
             .expect("an overridden committer must be refused");
         assert!(why.contains("bot@example.com"), "{why}");
         assert!(why.contains("me@example.com"), "{why}");
-        assert!(why.contains("--reset-author"), "{why}");
+        assert!(why.contains("--amend --no-edit"), "{why}");
+        assert!(
+            !why.contains("--reset-author"),
+            "must not erase authors: {why}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_branch_named_like_a_path_is_still_a_branch() {
+        let td = tempfile::tempdir().unwrap();
+        let repo = td.path().join("repo");
+        repo_with_commit(&repo);
+        run(&repo, &["checkout", "-q", "-b", "docs"]);
+        std::fs::create_dir_all(repo.join("docs")).unwrap();
+        std::fs::write(repo.join("docs/a.md"), b"#").unwrap();
+        run(&repo, &["add", "-A"]);
+        run(&repo, &["commit", "-q", "-m", "docs"]);
+        // Bare `docs` would be both a revision and a path to git; the check
+        // must read the branch, not refuse the push.
+        assert!(refuse_foreign_identity(&repo, "docs")
+            .await
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]
