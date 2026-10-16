@@ -164,12 +164,14 @@ export interface GitSlice {
   loadDelegations: () => Promise<void>;
   /** Post a settled delegation's outcome for the panel to show, if mounted. */
   noteDelegationOutcome: (key: string, text: string) => void;
-  /** Run one of the panel's own actions under the checkout's busy lock. The
-   *  lock is exclusive: a call while one is held does nothing and resolves
+  /** Run one of the panel's own actions under the busy lock of `scoped` (a
+   *  `gitScopeKey`, taken by the caller when the action starts so the lock
+   *  and its outcome belong to that host however the user moves meanwhile).
+   *  Exclusive: a call while the lock is held does nothing and resolves
    *  `undefined`, and only the holder's completion releases it. */
-  runGitBusy: (key: string, label: string, fn: () => Promise<unknown>) => Promise<unknown>;
-  /** Post a panel action's outcome for the checkout, to lapse on its own. */
-  noteGitAction: (key: string, text: string) => void;
+  runGitBusy: (scoped: string, label: string, fn: () => Promise<unknown>) => Promise<unknown>;
+  /** Post a panel action's outcome under `scoped`, to lapse on its own. */
+  noteGitAction: (scoped: string, text: string) => void;
   setGitCommitAction: (action: GitCommitAction) => void;
   setPublishApprovalWait: (secs: number) => Promise<void>;
   setAutoArchiveIdleDays: (days: number) => Promise<void>;
@@ -705,8 +707,7 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
     );
   },
 
-  runGitBusy: async (key, label, fn) => {
-    const k = gitScopeKey(activeEnvironmentId(), key);
+  runGitBusy: async (k, label, fn) => {
     if (gitBusyOwners.has(k)) return undefined;
     const owner = {};
     gitBusyOwners.set(k, owner);
@@ -724,8 +725,7 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
     }
   },
 
-  noteGitAction: (key, text) => {
-    const k = gitScopeKey(activeEnvironmentId(), key);
+  noteGitAction: (k, text) => {
     set((s) => ({ gitNotices: { ...s.gitNotices, [k]: text } }));
     clearTimeout(gitNoticeTimers.get(k));
     gitNoticeTimers.set(

@@ -9,8 +9,9 @@ import { gitScopeKey } from "@/store/git";
  *  Both live in the store, keyed by environment and checkout: an action
  *  outlives the section that started it (the section mounts per checkout),
  *  so the lock and its outcome have to as well, or coming back to the
- *  checkout mid-push would offer the push again — and a push on one host must
- *  never read as this one's. */
+ *  checkout mid-push would offer the push again. The key is taken here, when
+ *  the action starts, and travels with it — a push begun on one host posts
+ *  its outcome to that host however the user moves meanwhile. */
 export function useTransientFeedback(checkout: string) {
   const envId = useAppStore((s) => s.activeEnvironmentId);
   const scoped = gitScopeKey(envId, checkout);
@@ -19,12 +20,12 @@ export function useTransientFeedback(checkout: string) {
   const runGitBusy = useAppStore((s) => s.runGitBusy);
   const noteGitAction = useAppStore((s) => s.noteGitAction);
   const runBusy = useCallback(
-    (label: string, fn: () => Promise<unknown>) => runGitBusy(checkout, label, fn),
-    [checkout, runGitBusy],
+    (label: string, fn: () => Promise<unknown>) => runGitBusy(scoped, label, fn),
+    [scoped, runGitBusy],
   );
   const showNotice = useCallback(
-    (text: string) => noteGitAction(checkout, text),
-    [checkout, noteGitAction],
+    (text: string) => noteGitAction(scoped, text),
+    [scoped, noteGitAction],
   );
   return { busy, runBusy, notice, showNotice };
 }
