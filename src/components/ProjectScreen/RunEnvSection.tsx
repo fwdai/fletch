@@ -4,8 +4,8 @@ import {
   persistRunOverrides,
   RunConfigEditor,
   reconcileOverrides,
-  rowsOrFallback,
   type SetupRow,
+  withFallbackRows,
 } from "@/components/RunConfig";
 import { useGate } from "@/store/capabilities";
 
@@ -20,9 +20,9 @@ interface Props {
  *  panel sheet — which stages a draft and applies on restart — this edits the
  *  project defaults directly, so changes autosave per row. */
 export function RunEnvSection({ projectId, rows: detected, ecosystem, initialOverrides }: Props) {
-  // Nothing detected still gets the empty fallback fields — a project with an
-  // unrecognized stack should be configurable, not hidden.
-  const rows = rowsOrFallback(detected);
+  // Every core field is shown, detected or not — a row the detector couldn't
+  // fill (or an unrecognized stack) should be configurable, not hidden.
+  const rows = withFallbackRows(detected);
   const [overrides, setOverrides] = useState<Record<string, string>>(initialOverrides);
   // The host's verifier and Run panel read these rows.
   const gate = useGate("projectSettings");

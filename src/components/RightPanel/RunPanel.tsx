@@ -6,9 +6,9 @@ import {
   loadRunOverrides,
   persistRunOverrides,
   reconcileOverrides,
-  rowsOrFallback,
   type SetupRow,
   toSetupRows,
+  withFallbackRows,
 } from "@/components/RunConfig";
 import { useAppStore } from "@/store";
 import { useXterm } from "@/util/useXterm";
@@ -209,10 +209,10 @@ export function RunPanel({ agent }: { agent: AgentRecord }) {
 
   // What each row inherits: the project setting when one exists, else the
   // detected value. Agent-level overrides compare against these, so a value
-  // matching the project setting never reads as an override. Falling back to
-  // the empty rows lets a project-configured command surface here even when
-  // the repo detected nothing.
-  const effectiveRows = rowsOrFallback(rows).map((r) =>
+  // matching the project setting never reads as an override. Merging in the
+  // empty fallback rows lets a project-configured command surface here even
+  // when the repo didn't detect that row.
+  const effectiveRows = withFallbackRows(rows).map((r) =>
     projectValues[r.id] != null
       ? { ...r, value: projectValues[r.id], origin: "project" as const }
       : r,
