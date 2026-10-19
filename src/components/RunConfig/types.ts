@@ -45,11 +45,18 @@ function row(id: string, group: string, key: string, placeholder: string): Setup
   return { id, group: GROUP_LABEL[group], key, value: "", source: "", placeholder };
 }
 
-/** Rows a surface should render: the detected ones when the repo yielded
- *  any, else the empty fallback set so run config is always editable rather
- *  than hidden behind a "nothing detected" state. */
-export function rowsOrFallback(rows: SetupRow[]): SetupRow[] {
-  return rows.length > 0 ? rows : [...FALLBACK_ROWS];
+/** Rows a surface should render: every fallback row, filled by the detected
+ *  row of the same id when there is one, then any detected extras (e.g. `env`).
+ *  A detector that can't fill a core row (a Node repo with no `test` script)
+ *  must still leave it editable — the tests gate reads `run.test`. */
+export function withFallbackRows(detected: SetupRow[]): SetupRow[] {
+  const byId = new Map(detected.map((r) => [r.id, r]));
+  const core = FALLBACK_ROWS.map((f) => {
+    const d = byId.get(f.id);
+    return d ? { ...f, ...d } : f;
+  });
+  const extras = detected.filter((r) => !FALLBACK_ROWS.some((f) => f.id === r.id));
+  return [...core, ...extras];
 }
 
 /** Ecosystem key → display label. */
