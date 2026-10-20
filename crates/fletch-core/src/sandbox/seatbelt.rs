@@ -2372,8 +2372,17 @@ mod tests {
     fn agent_profile_denies_the_users_git_credentials() {
         let (_td, root, rpc, home) = sandbox_dirs();
         let home = std::fs::canonicalize(&home).unwrap();
-        let profile = build_profile(&root, &rpc, &home, None, None, None, None).unwrap();
-        let block = deny_host_git_credentials(&home);
+        // The deny follows XDG_CONFIG_HOME / GH_CONFIG_DIR, and CI runners
+        // export the former: blank both so the defaults are what is asserted.
+        let (profile, block) = crate::bin_resolve::with_login_shell_env(
+            &[("XDG_CONFIG_HOME", ""), ("GH_CONFIG_DIR", "")],
+            || {
+                (
+                    build_profile(&root, &rpc, &home, None, None, None, None).unwrap(),
+                    deny_host_git_credentials(&home),
+                )
+            },
+        );
         let deny_at = profile.find(&block).expect("the git credentials deny");
         assert!(deny_at > profile.find("(allow file-write*").unwrap());
         for dir in [".ssh", ".config/gh"] {
@@ -2425,7 +2434,10 @@ mod tests {
         }
         // A relative XDG root relocates nothing: the defaults stay denied.
         let block = crate::bin_resolve::with_login_shell_env(
-            &[("XDG_CONFIG_HOME", "relative/config")],
+            &[
+                ("XDG_CONFIG_HOME", "relative/config"),
+                ("GH_CONFIG_DIR", ""),
+            ],
             || deny_host_git_credentials(&home),
         );
         assert!(block.contains(&format!("(subpath \"{}/.config/gh\")", home.display())));
