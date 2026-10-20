@@ -3,7 +3,8 @@
 //! transport. Endpoint knowledge lives in `github::` (the parent module);
 //! everything here is transport.
 //!
-//! The token comes from the app's own OAuth device flow (`repo` scope) and is
+//! The token comes from the app's own OAuth device flow (`repo` + `workflow`
+//! scopes) and is
 //! persisted via `crate::secrets` — the OS keychain on release macOS builds,
 //! the `settings` table in dev — isolated behind `set_token`/`token` so the
 //! storage backend never leaks into API code. The token must never appear in

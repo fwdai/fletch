@@ -2,9 +2,11 @@
 //! are both supported.
 //!
 //! Google is identity-only: its token reads the profile once, then drops.
-//! GitHub requests the `repo` scope and its token is persisted (the app's
-//! secret store + the in-process registry) — it powers the GitHub API client
-//! and git's https auth, replacing the `gh` CLI dependency.
+//! GitHub requests the `repo` and `workflow` scopes and its token is persisted
+//! (the app's secret store + the in-process registry) — it powers the GitHub
+//! API client and git's https auth, replacing the `gh` CLI dependency. A token
+//! granted before `workflow` was requested keeps its old scopes: the user has
+//! to disconnect and sign in again to pick it up.
 //!
 //! A device flow has no loopback listener and no browser dependency: the user
 //! is shown a code and a URL and types it in on whatever device they like.
@@ -71,9 +73,11 @@ fn provider_cfg(provider: &str, creds: Credentials) -> Result<ProviderCfg, Strin
         "github" => Ok(ProviderCfg {
             device_code_url: "https://github.com/login/device/code",
             token_url: "https://github.com/login/oauth/access_token",
-            // `repo` powers PR/clone/push via the API + git https auth; the
+            // `repo` powers PR/clone/push via the API + git https auth;
+            // `workflow` lets a push carry changes under `.github/workflows/`,
+            // which GitHub refuses from an OAuth App token without it; the
             // read scopes cover the profile (name, primary email).
-            scope: "repo read:user user:email",
+            scope: "repo workflow read:user user:email",
             creds,
         }),
         "google" => Ok(ProviderCfg {
