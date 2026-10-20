@@ -285,7 +285,7 @@ pub async fn pr_checks_live(
 ) -> Result<Option<PrChecks>> {
     Ok(match pr_checks_read(checkout, source_repo, number).await? {
         ChecksRead::Checks(checks) => Some(checks),
-        ChecksRead::NoSuchPr | ChecksRead::Unavailable(_) => None,
+        ChecksRead::NotFound | ChecksRead::Unavailable(_) => None,
     })
 }
 
@@ -294,8 +294,11 @@ pub async fn pr_checks_live(
 #[derive(Debug)]
 pub enum ChecksRead {
     Checks(PrChecks),
-    /// GitHub answered 404 for the PR: it is not in this repository.
-    NoSuchPr,
+    /// GitHub answered 404 for the PR. That is "not found *or* not visible":
+    /// GitHub hides a private resource the token cannot read behind the same
+    /// 404, so a wrong account or a token without repository access lands here
+    /// too. Absence is not established.
+    NotFound,
     /// No answer this round, with the reason: a backoff, an unresolvable slug,
     /// no token, a non-success status, a PR with no head commit, or a failed
     /// check read. The PR's existence is not established either way.
@@ -329,7 +332,7 @@ pub async fn pr_checks_read(
         .rest_get_conditional(&format!("/repos/{owner}/{repo}/pulls/{number}"))
         .await?;
     if status == reqwest::StatusCode::NOT_FOUND {
-        return Ok(ChecksRead::NoSuchPr);
+        return Ok(ChecksRead::NotFound);
     }
     if !status.is_success() {
         return Ok(Unavailable(format!("GitHub answered {status} for the PR")));

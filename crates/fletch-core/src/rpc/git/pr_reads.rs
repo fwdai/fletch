@@ -46,15 +46,25 @@ pub(super) fn comment_limit(args: &Value) -> Result<u32, String> {
         .min(crate::github::CONVERSATION_COMMENTS_MAX))
 }
 
+/// GitHub answers "not found" for what the token cannot see as well as for
+/// what is not there, so no read may claim absence outright.
+const NO_BRANCH_PR: &str =
+    "no pull request for this branch, or the host's GitHub account cannot see this repository";
+
+fn not_found_or_hidden(number: u32) -> String {
+    format!(
+        "pull request #{number} was not found in this repository, or is not visible to the \
+         host's GitHub account"
+    )
+}
+
 /// The current branch's PR number. Reaches the fetcher only after
-/// `pr_read_target`, so `None` here is a branch with no PR.
+/// `pr_read_target`, so `None` here is a branch with no PR — or a repository
+/// the token cannot read, which GitHub reports the same way.
 async fn branch_pr_number(id: &str, op: &str, cwd: &Path) -> Result<u32, Response> {
     match crate::github::pr_view(cwd).await {
         Ok(Some(pr)) => Ok(pr.number),
-        Ok(None) => Err(Response::err(
-            id,
-            format!("{op}: no pull request for this branch"),
-        )),
+        Ok(None) => Err(Response::err(id, format!("{op}: {NO_BRANCH_PR}"))),
         Err(e) => Err(Response::err(id, format!("{op}: {e}"))),
     }
 }
@@ -96,7 +106,7 @@ impl GitDispatcher {
         };
         match crate::github::pr_view(&t.cwd).await {
             Ok(Some(pr)) => json_ok(id, "pr_view", &pr),
-            Ok(None) => Response::err(id, "pr_view: no pull request for this branch"),
+            Ok(None) => Response::err(id, format!("pr_view: {NO_BRANCH_PR}")),
             Err(e) => Response::err(id, format!("pr_view: {e}")),
         }
     }
@@ -118,14 +128,13 @@ impl GitDispatcher {
                 Err(resp) => return resp,
             },
         };
-        // Absence is reported only when GitHub positively said so (a 404 for
-        // the PR); any other silence is a retry, not a wrong-PR hunt.
+        // A 404 is "not found or not visible" and says so; any other silence
+        // is a retry, not a wrong-PR hunt.
         match crate::github::pr_checks_read(&t.cwd, None, number).await {
             Ok(crate::github::ChecksRead::Checks(checks)) => json_ok(id, "pr_checks", &checks),
-            Ok(crate::github::ChecksRead::NoSuchPr) => Response::err(
-                id,
-                format!("pr_checks: GitHub has no pull request #{number} in this repository"),
-            ),
+            Ok(crate::github::ChecksRead::NotFound) => {
+                Response::err(id, format!("pr_checks: {}", not_found_or_hidden(number)))
+            }
             Ok(crate::github::ChecksRead::Unavailable(why)) => Response::err(
                 id,
                 format!("pr_checks: GitHub did not answer ({why}); try again shortly"),
@@ -151,10 +160,7 @@ impl GitDispatcher {
         };
         match crate::github::pr_conversation_comments(&t.cwd, number, limit).await {
             Ok(Some(comments)) => json_ok(id, "pr_comments", &comments),
-            Ok(None) => Response::err(
-                id,
-                format!("pr_comments: GitHub has no pull request #{number} in this repository"),
-            ),
+            Ok(None) => Response::err(id, format!("pr_comments: {}", not_found_or_hidden(number))),
             Err(e) => Response::err(id, format!("pr_comments: {e}")),
         }
     }

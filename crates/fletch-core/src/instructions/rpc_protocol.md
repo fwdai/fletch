@@ -69,9 +69,9 @@ To read your branch's pull request, use `pr_view` (state, URL, mergeability),
 (the newest conversation comments, oldest first, with author, body, time and
 URL; optional `args.limit`, default 50, max 100) and `pr_threads` (unresolved
 review threads). Each returns JSON in `stdout`; an error names the reason (no
-PR yet, not a GitHub origin, host not signed in, or a rate-limit pause to retry
-after). Do not call `gh` or the GitHub API directly: your sandbox has no GitHub
-credentials.
+PR yet or none visible to the host's account, not a GitHub origin, host not
+signed in, or a rate-limit pause to retry after). Do not call `gh` or the
+GitHub API directly: your sandbox has no GitHub credentials.
 
 ### Workspace title
 
