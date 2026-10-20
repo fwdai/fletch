@@ -27,6 +27,26 @@ pub(crate) async fn repo_ref(checkout: &Path) -> Option<(String, String)> {
     Some((parts.next()?.to_string(), parts.next()?.to_string()))
 }
 
+/// The HTTPS form of a github.com SSH remote, path kept as written
+/// (`git@github.com:o/r.git` → `https://github.com/o/r.git`; the
+/// `ssh://git@github.com[:22]/o/r` forms too). Anything else — HTTPS already,
+/// another host — comes back unchanged. Sandbox clones get this as their
+/// `origin` so git there talks HTTPS, where it has no credential, rather than
+/// SSH with the user's key.
+pub fn github_https_remote(remote: &str) -> String {
+    let r = remote.trim();
+    let path = r
+        .strip_prefix("git@github.com:")
+        .or_else(|| r.strip_prefix("ssh://git@github.com/"))
+        .or_else(|| r.strip_prefix("ssh://git@github.com:22/"))
+        .map(|p| p.trim_start_matches('/'))
+        .filter(|p| !p.is_empty());
+    match path {
+        Some(path) => format!("https://github.com/{path}"),
+        None => r.to_string(),
+    }
+}
+
 pub(crate) async fn require_repo_ref(checkout: &Path) -> Result<(String, String)> {
     repo_ref(checkout).await.ok_or_else(|| {
         Error::Gh("this repository's `origin` remote is not a GitHub repository".into())
@@ -332,6 +352,34 @@ pub async fn pr_status_batch(refs: &[PrRef]) -> Result<Vec<Option<PrBatchRow>>> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn github_ssh_remotes_map_to_https() {
+        for (remote, https) in [
+            ("git@github.com:o/r.git", "https://github.com/o/r.git"),
+            ("git@github.com:o/r", "https://github.com/o/r"),
+            ("ssh://git@github.com/o/r.git", "https://github.com/o/r.git"),
+            ("ssh://git@github.com:22/o/r", "https://github.com/o/r"),
+            ("  git@github.com:o/r.git\n", "https://github.com/o/r.git"),
+        ] {
+            assert_eq!(github_https_remote(remote), https, "{remote}");
+        }
+    }
+
+    #[test]
+    fn other_remotes_are_left_as_they_are() {
+        for remote in [
+            "https://github.com/o/r.git",
+            "https://github.com/o/r",
+            "git@gitlab.com:o/r.git",
+            "ssh://git@gitlab.com/o/r.git",
+            "git@github.com.evil.example:o/r.git",
+            "/Users/me/src/repo",
+            "git@github.com:",
+        ] {
+            assert_eq!(github_https_remote(remote), remote, "{remote}");
+        }
+    }
 
     fn pr_node(state: &str, number: u32, mergeable: &str) -> Value {
         json!({

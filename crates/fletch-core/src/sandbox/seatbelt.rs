@@ -108,12 +108,20 @@ impl SandboxEngine for SandboxExecEngine {
                 board.to_string_lossy().into_owned(),
             ));
         }
+        // A direct `git fetch`/`push` over https has no credential in the
+        // sandbox: fail at once rather than hang on a username prompt. Publishing
+        // goes through the host-brokered RPC ops.
+        env.push(("GIT_TERMINAL_PROMPT".to_string(), "0".to_string()));
         let mut prefix_args = profile_args(&profile_text).to_vec();
         prefix_args.push(agent_bin.to_string());
         Ok(LaunchPlan {
             program: PathBuf::from(SANDBOX_EXEC),
             prefix_args,
             env,
+            // The login shell exports the user's ssh-agent socket; without it
+            // ssh finds no agent (the profile also denies connecting to the
+            // launchd listener — see `deny_host_git_credentials`).
+            env_remove: vec!["SSH_AUTH_SOCK".to_string()],
             // sandbox-exec is a plain process wrapper — the session's own
             // process-group escalation tears everything down; the trait's
             // default no-op `kill` applies.
@@ -873,6 +881,10 @@ pub fn build_profile(
 
     let deny_codex_logins = deny_host_codex_logins(&home);
 
+    // Agent profile only: the Run profile is the documented weaker boundary
+    // and a project's toolchain may legitimately pull private deps over SSH.
+    let deny_git_credentials = deny_host_git_credentials(&home);
+
     let deny_claude_logins = deny_host_claude_logins(&home, relocated_claude_dir.as_deref());
 
     // Invariant 4, agent profile only — same Run-vs-agent asymmetry as invariant
@@ -908,6 +920,8 @@ pub fn build_profile(
 {deny_claude_logins}
 
 {deny_codex_logins}
+
+{deny_git_credentials}
 
 {KEYCHAIN_MACH_DENY}
 
@@ -1001,6 +1015,32 @@ fn deny_host_codex_logins(home: &Path) -> String {
     }
     deny.block()
 }
+
+/// SBPL deny of the user's own GitHub credentials: `~/.ssh` (keys, config),
+/// the `gh` CLI login (`~/.config/gh/hosts.yml`), and connecting to the
+/// launchd-held ssh-agent socket (`/private/tmp/com.apple.launchd.*/Listeners`
+/// — `SSH_AUTH_SOCK` is dropped from the env too, but the socket path can be
+/// globbed). The GitHub token stays on the host: an agent publishes only
+/// through the host-brokered git RPC ops, which enforce its capabilities,
+/// the own-branch rule and the approval prompt. With any of these an agent
+/// could push as the user and skip all of that. Agent profile only. MUST
+/// follow the `(allow file-write* …)` block.
+fn deny_host_git_credentials(home: &Path) -> String {
+    let mut deny = LoginDeny::default();
+    deny.subpath(&home.join(".ssh"));
+    deny.subpath(&home.join(".config").join("gh"));
+    format!(
+        ";; The user's ssh keys, ssh-agent and gh login: git in the sandbox has no\n\
+         ;; credential path; publishing goes through the host-brokered RPC ops.\n\
+         {}\n\
+         {SSH_AGENT_NETWORK_DENY}",
+        deny.block()
+    )
+}
+
+/// The launchd-managed ssh-agent listener every login session gets.
+const SSH_AGENT_NETWORK_DENY: &str =
+    r##"(deny network-outbound (regex #"^/private/tmp/com\.apple\.launchd\.[^/]+/Listeners$"))"##;
 
 /// The clauses of a login deny, each path in its literal and resolved form,
 /// like the grants (the sandbox checks resolved paths).
@@ -2290,6 +2330,116 @@ mod tests {
             !profile.contains("com.apple.trustd"),
             "TLS trust stays reachable"
         );
+    }
+
+    /// The agent profile withholds the user's ssh keys, `gh` login and
+    /// ssh-agent socket, after the write allow-list (last match wins); the Run
+    /// profile keeps them, since project toolchains may fetch private deps.
+    #[test]
+    fn agent_profile_denies_the_users_git_credentials() {
+        let (_td, root, rpc, home) = sandbox_dirs();
+        let home = std::fs::canonicalize(&home).unwrap();
+        let profile = build_profile(&root, &rpc, &home, None, None, None, None).unwrap();
+        let block = deny_host_git_credentials(&home);
+        let deny_at = profile.find(&block).expect("the git credentials deny");
+        assert!(deny_at > profile.find("(allow file-write*").unwrap());
+        for dir in [".ssh", ".config/gh"] {
+            let clause = format!("(subpath \"{}/{dir}\")", home.display());
+            assert!(block.contains(&clause), "{clause} not in {block}");
+        }
+        assert!(block.contains("(deny file-read* file-write*\n"), "{block}");
+        assert!(block.contains(SSH_AGENT_NETWORK_DENY));
+        assert!(SSH_AGENT_NETWORK_DENY.contains(
+            r#"(deny network-outbound (regex #"^/private/tmp/com\.apple\.launchd\.[^/]+/Listeners$"))"#
+        ));
+
+        let checkout = root.join("checkout");
+        std::fs::create_dir_all(&checkout).unwrap();
+        let run = build_run_profile(&checkout, &home, &[]).unwrap();
+        assert!(!run.contains(&format!("{}/.ssh", home.display())), "{run}");
+        assert!(!run.contains("network-outbound"), "{run}");
+    }
+
+    /// An agent's env drops the inherited ssh-agent socket and turns off git's
+    /// credential prompt, whatever the provider.
+    #[test]
+    fn agent_launch_drops_the_ssh_agent_and_git_prompt() {
+        let (_td, root, rpc, home) = sandbox_dirs();
+        for provider in ["claude", "codex"] {
+            let ctx = AgentLaunchCtx {
+                agent_id: "a1",
+                provider,
+                writable_root: &root,
+                source_repos: &[],
+                rpc_dir: &rpc,
+                cwd: &root,
+                home: &home,
+                interactive: false,
+                blackboard: None,
+                account_dir: None,
+                oauth_token: None,
+                codex_home: None,
+            };
+            let plan = SandboxExecEngine
+                .launch_agent(&ctx, "/usr/local/bin/agent")
+                .unwrap();
+            assert_eq!(plan.env_remove, vec!["SSH_AUTH_SOCK".to_string()]);
+            assert!(plan
+                .env
+                .iter()
+                .any(|(k, v)| k == "GIT_TERMINAL_PROMPT" && v == "0"));
+            assert!(!plan.env.iter().any(|(k, _)| k == "SSH_AUTH_SOCK"));
+        }
+    }
+
+    /// The kernel half of `agent_profile_denies_the_users_git_credentials`
+    /// (same caveats as `seatbelt_denies_writing_git_config`): the profile
+    /// parses, `~/.ssh` and `~/.config/gh` are unreadable, and a socket at the
+    /// launchd ssh-agent path can't be connected to, while a control profile
+    /// without the deny can. Run with:
+    ///   cargo test --lib seatbelt_hides_the_users_git_credentials -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    #[cfg(target_os = "macos")]
+    fn seatbelt_hides_the_users_git_credentials() {
+        let (_td, root, rpc, home) = sandbox_dirs();
+        let key = home.join(".ssh/id_ed25519");
+        let gh = home.join(".config/gh/hosts.yml");
+        for file in [&key, &gh] {
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(file, "secret").unwrap();
+        }
+        let profile = build_profile(&root, &rpc, &home, None, None, None, None).unwrap();
+        let run = |profile: &str, args: &[&str]| {
+            std::process::Command::new(SANDBOX_EXEC)
+                .args(profile_args(profile))
+                .args(args)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .expect("sandbox-exec")
+                .success()
+        };
+        assert!(run(&profile, &["/usr/bin/true"]), "the profile must parse");
+        assert!(!run(&profile, &["/bin/cat", &key.to_string_lossy()]));
+        assert!(!run(&profile, &["/bin/cat", &gh.to_string_lossy()]));
+
+        let dir = PathBuf::from(format!(
+            "/private/tmp/com.apple.launchd.fletch-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let sock = dir.join("Listeners");
+        let _ = std::fs::remove_file(&sock);
+        let _listener = std::os::unix::net::UnixListener::bind(&sock).unwrap();
+        let sock_s = sock.to_string_lossy().into_owned();
+        let connect = ["/usr/bin/nc", "-z", "-U", sock_s.as_str()];
+        let control = "(version 1)\n(allow default)";
+        let control_ok = run(control, &connect);
+        let denied_ok = run(&profile, &connect);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(control_ok, "the control must reach the socket");
+        assert!(!denied_ok, "the agent profile must not reach the ssh-agent");
     }
 
     /// A claude launch carries the host-resolved token as

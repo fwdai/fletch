@@ -318,7 +318,7 @@ impl Agent {
         let claude = agent_bin_for("claude", "claude", "Claude Code", engine.as_ref(), &home)?;
         let mcp = resolve_mcp("claude", spec.mcp_servers, &spec.sandbox_root)?;
         let agent_args = prepare_pty_args(&spec, &mcp.args);
-        let account = account_launch("claude", spec.account)?;
+        let mut account = account_launch("claude", spec.account)?;
 
         let ctx = AgentLaunchCtx {
             agent_id: spec.agent_id,
@@ -338,8 +338,10 @@ impl Agent {
             program,
             prefix_args,
             env: launch_env,
+            env_remove,
             kill,
         } = engine.launch_agent(&ctx, &claude)?;
+        account.unset.extend(env_remove);
         let mut args = prefix_args;
         args.extend(agent_args);
         let mut env = launch_env;
@@ -410,7 +412,7 @@ impl Agent {
             spec.instructions,
             &mcp.args,
         );
-        let account = account_launch(provider, spec.account)?;
+        let mut account = account_launch(provider, spec.account)?;
         // The TUI is one long process and gets its credential once, here: a
         // TUI left open past the access token's expiry has to be reopened.
         let codex = CodexHome::prepare(
@@ -442,8 +444,10 @@ impl Agent {
             program,
             prefix_args,
             env: launch_env,
+            env_remove,
             kill,
         } = engine.launch_agent(&ctx, &bin)?;
+        account.unset.extend(env_remove);
         let mut args = prefix_args;
         args.extend(agent_args);
         let mut env = launch_env;
@@ -494,7 +498,7 @@ impl Agent {
         let claude = agent_bin_for("claude", "claude", "Claude Code", engine.as_ref(), &home)?;
         let mcp = resolve_mcp("claude", spec.mcp_servers, &spec.sandbox_root)?;
         let agent_args = prepare_managed_args(&spec, &mcp.args);
-        let account = account_launch("claude", spec.account)?;
+        let mut account = account_launch("claude", spec.account)?;
 
         let ctx = AgentLaunchCtx {
             agent_id: spec.agent_id,
@@ -514,8 +518,10 @@ impl Agent {
             program,
             prefix_args,
             env: launch_env,
+            env_remove,
             kill,
         } = engine.launch_agent(&ctx, &claude)?;
+        account.unset.extend(env_remove);
         let mut args = prefix_args;
         args.extend(agent_args);
         let mut env = launch_env;
@@ -653,7 +659,7 @@ impl Agent {
             .ok_or_else(|| Error::Other("agent bin path not utf-8".into()))?;
         // Resolved once for the session: every turn's process runs under the
         // same account, from the env captured here.
-        let account = account_launch(provider, spec.account.as_deref())?;
+        let mut account = account_launch(provider, spec.account.as_deref())?;
         let codex = CodexHome::prepare(
             provider,
             &spec.agent_id,
@@ -680,8 +686,10 @@ impl Agent {
             program: launch_program,
             prefix_args,
             env: launch_env,
+            env_remove,
             kill,
         } = sandbox::engine_for(spec.engine)?.launch_agent(&ctx, agent_bin)?;
+        account.unset.extend(env_remove);
         let mut env = launch_env;
         env.extend(rpc_env(&spec.rpc_dir));
         env.extend(mcp_env);

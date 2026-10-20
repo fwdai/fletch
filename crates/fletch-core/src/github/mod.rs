@@ -34,6 +34,7 @@ pub use comments::{pr_reply_thread, pr_resolve_thread, pr_threads_number};
 pub use issues::*;
 pub use live::*;
 pub use pr::*;
+pub use query::github_https_remote;
 pub use repo::*;
 pub use types::*;
 

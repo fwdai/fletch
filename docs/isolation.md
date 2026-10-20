@@ -175,8 +175,10 @@ cannot go quietly unstated the way a doc caveat can. The
 **An agent CAN:**
 
 - **Read your disk — under seatbelt.** The seatbelt profile confines writes, not
-  reads; the agent runs as your user and can read anything you can. Under Docker
-  it can read only what is mounted into the container.
+  reads; the agent runs as your user and can read anything you can, except the
+  carve-outs the profile denies by name: Fletch's app data, the host's provider
+  logins, `~/.ssh`, `~/.config/gh` and the Keychain. Under Docker it can read
+  only what is mounted into the container.
 - **Open network connections — under both engines.** Neither engine restricts
   the network. Seatbelt's `(allow default)` leaves it open; the Docker launch
   sets no `--network` flag, so the container gets the default bridge. Treat every
@@ -193,7 +195,11 @@ cannot go quietly unstated the way a doc caveat can. The
   sandbox. They are brokered: the agent writes a request to its RPC mailbox, and
   Fletch runs the operation **host-side**, where the credentials live
   (`rpc/git.rs`, ops `git_push`, `open_pr`, `git_fetch`). Credentials never enter
-  the sandbox.
+  the sandbox. Under seatbelt the profile also withholds your own: `~/.ssh`, the
+  launchd ssh-agent socket (and `SSH_AUTH_SOCK` is dropped from the agent's env)
+  and the `gh` CLI login in `~/.config/gh`. Every sandbox clone, and a workflow's
+  run repo, gets a GitHub SSH origin rewritten to HTTPS, so git inside the
+  sandbox has no credential to publish with.
 
 **What publication *is* gated by.** Every brokered op is checked against the
 agent's **capability grant**, stamped when it spawns and never re-read, so a

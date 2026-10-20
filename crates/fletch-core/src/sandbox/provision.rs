@@ -465,6 +465,14 @@ where
 /// would let `git push -u origin <branch>` silently create branches and
 /// objects inside the user's source repo. With no remote at all, push fails
 /// cleanly — the same terminal state the source repo itself is in.
+///
+/// A github.com SSH remote is written in its HTTPS form
+/// ([`crate::github::github_https_remote`]), always, token or not: over SSH git in
+/// the sandbox would publish with the user's key, bypassing the host-brokered
+/// git ops (capabilities, own-branch rule, approval). Over HTTPS it has no
+/// credential; the host's token reaches git only from host-side calls. A user
+/// without a GitHub sign-in in Fletch loses only the base fetch, which falls
+/// back to the local ref.
 async fn rewrite_origin(spec: &CheckoutSpec<'_>) -> Result<()> {
     let out = git::git_output(spec.source_repo, &["remote", "get-url", "origin"]).await?;
     if !out.status.success() {
@@ -480,7 +488,7 @@ async fn rewrite_origin(spec: &CheckoutSpec<'_>) -> Result<()> {
         .await?;
         return Ok(());
     }
-    let url = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let url = crate::github::github_https_remote(&String::from_utf8_lossy(&out.stdout));
     git::run_git(
         spec.dest,
         &["remote", "set-url", "origin", &url],
@@ -1186,6 +1194,35 @@ mod tests {
         assert_eq!(
             run(&dest, &["remote", "get-url", "origin"]),
             "https://github.com/acme/widget.git"
+        );
+    }
+
+    /// An SSH GitHub origin becomes HTTPS in the clone, so git in the sandbox
+    /// can't publish with the user's SSH key.
+    #[tokio::test]
+    async fn clone_rewrites_an_ssh_github_origin_to_https() {
+        let td = tempfile::tempdir().unwrap();
+        let (repo, _first, head) = fixture_repo(td.path());
+        run(
+            &repo,
+            &["remote", "add", "origin", "git@github.com:acme/widget.git"],
+        );
+        let dest = td.path().join("clone");
+        let spec = CheckoutSpec {
+            source_repo: &repo,
+            base_ref: &head,
+            dest: &dest,
+        };
+
+        provision(&spec).await.unwrap();
+        assert_eq!(
+            run(&dest, &["remote", "get-url", "origin"]),
+            "https://github.com/acme/widget.git"
+        );
+        assert_eq!(
+            run(&repo, &["remote", "get-url", "origin"]),
+            "git@github.com:acme/widget.git",
+            "the user's own repo keeps its remote"
         );
     }
 
