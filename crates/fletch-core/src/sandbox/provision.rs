@@ -738,6 +738,17 @@ async fn set_executable(path: &Path) -> Result<()> {
 /// the signed-in profile / neutral default. This is the same fallback
 /// `git::identity_env` applied, but persisted into the clone so in-container
 /// git sees it. Clones are ephemeral, so freezing the value here is harmless.
+///
+/// Commit signing is frozen **off** in the same place. The seatbelt engine, unlike
+/// a container, lets git read the host's global gitconfig, so a user with
+/// `commit.gpgsign=true` hands the sandbox a signing *policy* without the key:
+/// `~/.ssh` and the ssh-agent socket are denied to agents (`seatbelt::
+/// deny_host_git_credentials`), and gpg's keyring is nothing the sandbox should
+/// hold either. Every `git commit` would then die with "failed to write commit
+/// object". The clone's local scope outranks global, so this one key makes the
+/// sandbox match the container engines — unsigned — while the user's own repos
+/// keep signing. Where a signature is wanted, the host — which holds the key —
+/// is the place to make it.
 async fn seed_identity(spec: &CheckoutSpec<'_>) -> Result<()> {
     let (fallback_name, fallback_email) = crate::git_dist::fallback_identity();
     for (key, fallback) in [("user.name", fallback_name), ("user.email", fallback_email)] {
@@ -757,6 +768,12 @@ async fn seed_identity(spec: &CheckoutSpec<'_>) -> Result<()> {
         )
         .await?;
     }
+    git::run_git(
+        spec.dest,
+        &["config", "commit.gpgsign", "false"],
+        "config commit.gpgsign",
+    )
+    .await?;
     Ok(())
 }
 
@@ -1223,6 +1240,57 @@ mod tests {
             run(&repo, &["remote", "get-url", "origin"]),
             "git@github.com:acme/widget.git",
             "the user's own repo keeps its remote"
+        );
+    }
+
+    /// A global gitconfig that signs every commit with an SSH key the sandbox
+    /// cannot read must not stop an agent committing in its clone. The clone's
+    /// own config switches signing off; the user's repo keeps the global policy.
+    #[tokio::test]
+    async fn clone_commits_unsigned_under_a_signing_global_config() {
+        let td = tempfile::tempdir().unwrap();
+        let (repo, _first, head) = fixture_repo(td.path());
+        let dest = td.path().join("clone");
+        let spec = CheckoutSpec {
+            source_repo: &repo,
+            base_ref: &head,
+            dest: &dest,
+        };
+        provision(&spec).await.unwrap();
+        assert_eq!(run(&dest, &["config", "--local", "commit.gpgsign"]), "false");
+
+        // The host's global config, as the seatbelt engine lets git read it: a
+        // signing policy whose key is unreachable from the sandbox.
+        let global = td.path().join("gitconfig");
+        std::fs::write(
+            &global,
+            "[commit]\n\tgpgsign = true\n[gpg]\n\tformat = ssh\n[user]\n\tsigningkey = /nonexistent/id_ed25519.pub\n",
+        )
+        .unwrap();
+        let commit = |cwd: &Path| {
+            std::fs::write(cwd.join("c.txt"), b"three").unwrap();
+            std::process::Command::new("git")
+                .current_dir(cwd)
+                .env("GIT_CONFIG_GLOBAL", &global)
+                .args(["add", "-A"])
+                .status()
+                .unwrap();
+            std::process::Command::new("git")
+                .current_dir(cwd)
+                .env("GIT_CONFIG_GLOBAL", &global)
+                .args(["commit", "-q", "-m", "third"])
+                .output()
+                .unwrap()
+        };
+        assert!(
+            !commit(&repo).status.success(),
+            "sanity: the global config must be in force and the key unreachable"
+        );
+        let out = commit(&dest);
+        assert!(
+            out.status.success(),
+            "the clone must commit unsigned: {}",
+            String::from_utf8_lossy(&out.stderr)
         );
     }
 

@@ -158,6 +158,12 @@ After either clone, three fixups run (`sandbox/provision.rs`):
 - **A git identity is frozen** into the clone's own config, so in-container git
   (which can't see your global gitconfig) can commit without failing on "Please
   tell me who you are."
+- **Commit signing is switched off** in the clone's own config
+  (`commit.gpgsign=false`). The seatbelt engine, unlike a container, lets git
+  read your global gitconfig, so a `commit.gpgsign=true` there would reach the
+  sandbox while the key it names (`~/.ssh`, the ssh-agent, a gpg keyring) stays
+  denied — and every agent commit would fail with "failed to write commit
+  object". Your own repos keep signing; the clone's local scope outranks global.
 
 ## What an agent can and cannot do
 

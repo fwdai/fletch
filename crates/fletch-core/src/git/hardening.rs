@@ -65,9 +65,12 @@ use crate::error::{Error, Result};
 /// is why membership is limited to keys Fletch's automated git never legitimately
 /// needs. Deliberately absent: `credential.helper`, `core.sshCommand` and
 /// `gpg.program`. Each carries a user's real remote auth or signing setup, so
-/// clearing it would break `fetch` against a non-GitHub remote or an initial
-/// commit under `commit.gpgsign` — and each needs a config *write* to exploit,
-/// which policy invariant 3 denies. The boundary belongs there, not here.
+/// clearing it would break `fetch` against a non-GitHub remote or a host-side
+/// commit in the user's own repo under `commit.gpgsign` — and each needs a
+/// config *write* to exploit, which policy invariant 3 denies. The boundary
+/// belongs there, not here. (Agent clones are a different matter: the sandbox
+/// cannot reach a signing key, so provisioning freezes `commit.gpgsign=false`
+/// into each clone — `sandbox::provision::seed_identity`.)
 ///
 /// Verified against git 2.50: without its row, each of `core.hooksPath` and
 /// `core.fsmonitor` executes agent-authored code host-side.
