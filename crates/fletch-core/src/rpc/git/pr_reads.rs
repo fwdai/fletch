@@ -1,23 +1,23 @@
 //! Read-only PR ops: the sanctioned way for an agent to see its PR, CI and
 //! conversation, since it holds no GitHub credentials of its own. Not gated by
 //! `AgentCaps` and never an `EVENT_ACTION_DONE`: reading changes nothing.
+//!
+//! The fetchers answer `Ok(None)` for every quiet degradation alike — no
+//! origin, no token, a rate-limit pause, a PR that isn't there — because their
+//! other callers poll in the background. An agent acts on the answer, so each
+//! op tells those apart up front ([`GitDispatcher::pr_read_target`]) and only
+//! then reads "none" as "no such pull request".
+
+use std::path::Path;
 
 use serde::Serialize;
 use serde_json::Value;
 
+use super::targets::Target;
 use super::GitDispatcher;
 use crate::rpc::Response;
 
 const DEFAULT_COMMENT_LIMIT: u32 = 50;
-/// `issue_comments` reads one 100-item page, so a larger limit could not be honoured.
-const MAX_COMMENT_LIMIT: u32 = 100;
-
-fn not_answered(op: &str) -> String {
-    format!(
-        "{op}: GitHub did not answer (not connected, not a GitHub origin, or rate-limited); \
-         try again shortly"
-    )
-}
 
 fn json_ok(id: &str, op: &str, value: &impl Serialize) -> Response {
     match serde_json::to_string_pretty(value) {
@@ -43,11 +43,12 @@ fn positive_u32_arg(args: &Value, key: &str) -> Result<Option<u32>, String> {
 pub(super) fn comment_limit(args: &Value) -> Result<u32, String> {
     Ok(positive_u32_arg(args, "limit")?
         .unwrap_or(DEFAULT_COMMENT_LIMIT)
-        .min(MAX_COMMENT_LIMIT))
+        .min(crate::github::CONVERSATION_COMMENTS_MAX))
 }
 
-/// The current branch's PR number, or the error response to return.
-async fn branch_pr_number(id: &str, op: &str, cwd: &std::path::Path) -> Result<u32, Response> {
+/// The current branch's PR number. Reaches the fetcher only after
+/// `pr_read_target`, so `None` here is a branch with no PR.
+async fn branch_pr_number(id: &str, op: &str, cwd: &Path) -> Result<u32, Response> {
     match crate::github::pr_view(cwd).await {
         Ok(Some(pr)) => Ok(pr.number),
         Ok(None) => Err(Response::err(
@@ -59,8 +60,37 @@ async fn branch_pr_number(id: &str, op: &str, cwd: &std::path::Path) -> Result<u
 }
 
 impl GitDispatcher {
+    /// The target checkout once the reasons a read could answer nothing have
+    /// been ruled out, each with its own message: an origin that isn't GitHub,
+    /// no host token, a rate-limit pause (retryable). Checked in that order so
+    /// a checkout with no remote answers the same with or without a token.
+    async fn pr_read_target(&self, id: &str, op: &str, args: &Value) -> Result<Target, Response> {
+        let t = self.target(id, args)?;
+        if crate::github::repo_ref(&t.cwd).await.is_none() {
+            return Err(Response::err(
+                id,
+                format!("{op}: origin is not a GitHub repository (or there is no origin)"),
+            ));
+        }
+        if crate::github::client::token().is_none() {
+            return Err(Response::err(
+                id,
+                format!("{op}: the host is not connected to GitHub — the user must sign in"),
+            ));
+        }
+        if crate::github::client::is_backing_off() {
+            return Err(Response::err(
+                id,
+                format!(
+                    "{op}: GitHub rate limit reached; the host is backing off — try again shortly"
+                ),
+            ));
+        }
+        Ok(t)
+    }
+
     pub(super) async fn pr_view(&self, id: &str, args: &Value) -> Response {
-        let t = match self.target(id, args) {
+        let t = match self.pr_read_target(id, "pr_view", args).await {
             Ok(t) => t,
             Err(resp) => return resp,
         };
@@ -77,7 +107,7 @@ impl GitDispatcher {
             Ok(n) => n,
             Err(e) => return Response::err(id, format!("pr_checks: {e}")),
         };
-        let t = match self.target(id, args) {
+        let t = match self.pr_read_target(id, "pr_checks", args).await {
             Ok(t) => t,
             Err(resp) => return resp,
         };
@@ -90,19 +120,24 @@ impl GitDispatcher {
         };
         match crate::github::pr_checks_live(&t.cwd, None, number).await {
             Ok(Some(checks)) => json_ok(id, "pr_checks", &checks),
-            Ok(None) => Response::err(id, not_answered("pr_checks")),
+            // Past the preflight, the fetcher has nothing only when the PR
+            // itself (or its head commit) isn't served.
+            Ok(None) => Response::err(
+                id,
+                format!("pr_checks: GitHub has no pull request #{number} in this repository (or its head commit is gone)"),
+            ),
             Err(e) => Response::err(id, format!("pr_checks: {e}")),
         }
     }
 
-    /// The PR's conversation (issue) comments, newest `args.limit` kept. Review
-    /// threads are `pr_threads`.
+    /// The newest `args.limit` conversation comments on the branch's PR,
+    /// oldest first. Review threads are `pr_threads`.
     pub(super) async fn pr_comments(&self, id: &str, args: &Value) -> Response {
         let limit = match comment_limit(args) {
             Ok(l) => l,
             Err(e) => return Response::err(id, format!("pr_comments: {e}")),
         };
-        let t = match self.target(id, args) {
+        let t = match self.pr_read_target(id, "pr_comments", args).await {
             Ok(t) => t,
             Err(resp) => return resp,
         };
@@ -110,9 +145,12 @@ impl GitDispatcher {
             Ok(n) => n,
             Err(resp) => return resp,
         };
-        match crate::github::issue_comments(&t.cwd, &number.to_string(), limit).await {
+        match crate::github::pr_conversation_comments(&t.cwd, number, limit).await {
             Ok(Some(comments)) => json_ok(id, "pr_comments", &comments),
-            Ok(None) => Response::err(id, not_answered("pr_comments")),
+            Ok(None) => Response::err(
+                id,
+                format!("pr_comments: GitHub has no pull request #{number} in this repository"),
+            ),
             Err(e) => Response::err(id, format!("pr_comments: {e}")),
         }
     }

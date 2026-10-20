@@ -200,8 +200,10 @@ async fn pr_comments_rejects_a_bad_limit_before_any_lookup() {
     );
 }
 
-/// A checkout with no `origin` resolves no GitHub repo, so the branch has no
-/// PR, without touching the network.
+/// A checkout with no `origin` resolves no GitHub repo, which the reads report
+/// as such — before the token or backoff checks, so the answer is the same
+/// whatever the process-global token registry holds — without touching the
+/// network.
 fn repo_without_origin(root: &std::path::Path) -> std::path::PathBuf {
     let repo = root.join("repo");
     std::fs::create_dir_all(&repo).unwrap();
@@ -215,7 +217,7 @@ fn repo_without_origin(root: &std::path::Path) -> std::path::PathBuf {
 }
 
 #[tokio::test]
-async fn pr_reads_report_no_pull_request_and_emit_nothing() {
+async fn pr_reads_name_a_non_github_origin_and_emit_nothing() {
     let td = tempfile::tempdir().unwrap();
     let repo = repo_without_origin(td.path());
     let disp = dispatcher(&repo);
@@ -224,14 +226,32 @@ async fn pr_reads_report_no_pull_request_and_emit_nothing() {
         assert!(!resp.ok, "{op}");
         assert_eq!(
             resp.error.as_deref(),
-            Some(format!("{op}: no pull request for this branch").as_str())
+            Some(
+                format!("{op}: origin is not a GitHub repository (or there is no origin)").as_str()
+            )
         );
         assert!(effects.is_empty(), "{op} is a read: {effects:?}");
     }
 }
 
+/// An explicit `args.number` still goes through the preflight: a checkout
+/// that can't reach GitHub is told so rather than "no checks".
+#[tokio::test]
+async fn pr_checks_by_number_still_needs_a_github_origin() {
+    let td = tempfile::tempdir().unwrap();
+    let repo = repo_without_origin(td.path());
+    let (resp, _fx) = dispatcher(&repo)
+        .dispatch_inner("c", "pr_checks", &json!({ "number": 7 }))
+        .await;
+    assert_eq!(
+        resp.error.as_deref(),
+        Some("pr_checks: origin is not a GitHub repository (or there is no origin)")
+    );
+}
+
 /// Reads are not publishing: a run-owned step agent and the advisory PM chat
-/// reach the op (here: its "no PR" answer) instead of the caps refusal.
+/// reach the op (here: its "not a GitHub origin" answer) instead of the caps
+/// refusal.
 #[tokio::test]
 async fn pr_reads_are_not_refused_by_denied_caps() {
     use crate::rpc::caps::AgentCaps;
@@ -244,7 +264,7 @@ async fn pr_reads_are_not_refused_by_denied_caps() {
             let (resp, _fx) = disp.dispatch_inner("r", op, &Value::Null).await;
             let err = resp.error.unwrap_or_default();
             assert!(
-                err.contains("no pull request for this branch"),
+                err.contains("origin is not a GitHub repository"),
                 "{op} under {caps:?} must reach the op, got: {err}"
             );
         }
