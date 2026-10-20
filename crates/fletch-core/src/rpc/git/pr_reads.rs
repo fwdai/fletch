@@ -118,13 +118,17 @@ impl GitDispatcher {
                 Err(resp) => return resp,
             },
         };
-        match crate::github::pr_checks_live(&t.cwd, None, number).await {
-            Ok(Some(checks)) => json_ok(id, "pr_checks", &checks),
-            // Past the preflight, the fetcher has nothing only when the PR
-            // itself (or its head commit) isn't served.
-            Ok(None) => Response::err(
+        // Absence is reported only when GitHub positively said so (a 404 for
+        // the PR); any other silence is a retry, not a wrong-PR hunt.
+        match crate::github::pr_checks_read(&t.cwd, None, number).await {
+            Ok(crate::github::ChecksRead::Checks(checks)) => json_ok(id, "pr_checks", &checks),
+            Ok(crate::github::ChecksRead::NoSuchPr) => Response::err(
                 id,
-                format!("pr_checks: GitHub has no pull request #{number} in this repository (or its head commit is gone)"),
+                format!("pr_checks: GitHub has no pull request #{number} in this repository"),
+            ),
+            Ok(crate::github::ChecksRead::Unavailable(why)) => Response::err(
+                id,
+                format!("pr_checks: GitHub did not answer ({why}); try again shortly"),
             ),
             Err(e) => Response::err(id, format!("pr_checks: {e}")),
         }

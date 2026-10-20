@@ -276,21 +276,48 @@ pub(crate) fn parse_pr_refs(pr: &Value) -> Option<PrRefs> {
 ///
 /// `Ok(None)` means "no rollup this round" — backoff, unresolvable slug, gone
 /// PR, or a failed commit read. Callers keep their last-known tint rather than
-/// rendering a false "no checks".
+/// rendering a false "no checks". A caller that must tell a missing PR from a
+/// read that merely failed reads [`pr_checks_read`] instead.
 pub async fn pr_checks_live(
     checkout: &Path,
     source_repo: Option<&Path>,
     number: u32,
 ) -> Result<Option<PrChecks>> {
+    Ok(match pr_checks_read(checkout, source_repo, number).await? {
+        ChecksRead::Checks(checks) => Some(checks),
+        ChecksRead::NoSuchPr | ChecksRead::Unavailable(_) => None,
+    })
+}
+
+/// Why a checks read has no rollup, for a caller that acts on the answer
+/// rather than keeping its last tint.
+#[derive(Debug)]
+pub enum ChecksRead {
+    Checks(PrChecks),
+    /// GitHub answered 404 for the PR: it is not in this repository.
+    NoSuchPr,
+    /// No answer this round, with the reason: a backoff, an unresolvable slug,
+    /// no token, a non-success status, a PR with no head commit, or a failed
+    /// check read. The PR's existence is not established either way.
+    Unavailable(String),
+}
+
+/// [`pr_checks_live`] with its silence explained — see [`ChecksRead`].
+pub async fn pr_checks_read(
+    checkout: &Path,
+    source_repo: Option<&Path>,
+    number: u32,
+) -> Result<ChecksRead> {
+    use ChecksRead::Unavailable;
     if client::is_backing_off() {
-        return Ok(None);
+        return Ok(Unavailable("rate-limit backoff in effect".into()));
     }
     let Some((owner, repo)) = resolve_slug(checkout, source_repo).await else {
-        return Ok(None);
+        return Ok(Unavailable("origin is not a GitHub repository".into()));
     };
     // Background poll path: not being connected is a normal state, not an error.
     let Ok(client) = client::Client::new() else {
-        return Ok(None);
+        return Ok(Unavailable("not connected to GitHub".into()));
     };
 
     // The PR object again — `resolve_pr_state` just read this same path, so this
@@ -301,12 +328,15 @@ pub async fn pr_checks_live(
     let (status, pr) = client
         .rest_get_conditional(&format!("/repos/{owner}/{repo}/pulls/{number}"))
         .await?;
+    if status == reqwest::StatusCode::NOT_FOUND {
+        return Ok(ChecksRead::NoSuchPr);
+    }
     if !status.is_success() {
-        return Ok(None);
+        return Ok(Unavailable(format!("GitHub answered {status} for the PR")));
     }
     let Some(sha) = pr["head"]["sha"].as_str().filter(|s| !s.is_empty()) else {
         // A PR whose head ref is gone has no commit to read checks from.
-        return Ok(None);
+        return Ok(Unavailable("the PR's head commit is gone".into()));
     };
     let merge_state = parse_merge_state(pr["mergeable_state"].as_str().unwrap_or("unknown"));
 
@@ -327,10 +357,10 @@ pub async fn pr_checks_live(
         )
         .await,
     ) else {
-        return Ok(None);
+        return Ok(Unavailable("the commit's check reads failed".into()));
     };
 
-    Ok(Some(rollup_checks(
+    Ok(ChecksRead::Checks(rollup_checks(
         merge_state,
         parse_commit_checks(&check_runs, &statuses),
     )))
