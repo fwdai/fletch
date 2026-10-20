@@ -164,6 +164,13 @@ After either clone, three fixups run (`sandbox/provision.rs`):
   sandbox while the key it names (`~/.ssh`, the ssh-agent, a gpg keyring) stays
   denied — and every agent commit would fail with "failed to write commit
   object". Your own repos keep signing; the clone's local scope outranks global.
+  When your global config signs, **the host signs on publish** instead: the
+  `git_push` and `open_pr` ops replace the commits origin lacks with signed
+  copies (same tree, parents, author, committer and message), move the branch
+  to the signed tip and push that. Published history keeps its hashes. The
+  signature is made where the key lives and at the moment you approve the push,
+  so it vouches for exactly what you let out. A key the host cannot use fails
+  the push with the reason rather than publishing unsigned.
 
 ## What an agent can and cannot do
 
