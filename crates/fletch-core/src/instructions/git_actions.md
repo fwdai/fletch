@@ -63,7 +63,7 @@ The pull request can't merge cleanly because `base` has advanced. First refresh 
 
 ### fix-checks — params: `failing` (check names)
 
-CI checks are failing on this branch's pull request. Investigate the failures, fix them, commit the fix with plain git (`git add -A` && `git commit`), and push by calling the `git_push` op so the checks re-run.
+CI checks are failing on this branch's pull request. Investigate the failures (the `pr_checks` op lists each run's conclusion and URL), fix them, commit the fix with plain git (`git add -A` && `git commit`), and push by calling the `git_push` op so the checks re-run.
 
 ### resolve-comments — params: `count`
 

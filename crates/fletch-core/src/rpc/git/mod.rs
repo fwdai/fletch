@@ -1,5 +1,6 @@
 mod args;
 mod commands;
+mod pr_reads;
 mod publishing;
 mod review_threads;
 mod targets;
@@ -116,6 +117,9 @@ impl GitDispatcher {
             "git_push" => self.git_push(id, args).await,
             "git_fetch" => (self.git_fetch(id, args).await, Vec::new()),
             "signal_git_action" => self.signal_git_action(id, args),
+            "pr_view" => (self.pr_view(id, args).await, Vec::new()),
+            "pr_checks" => (self.pr_checks(id, args).await, Vec::new()),
+            "pr_comments" => (self.pr_comments(id, args).await, Vec::new()),
             "pr_threads" => (self.pr_threads(id, args).await, Vec::new()),
             "reply_thread" => (self.reply_thread(id, args).await, Vec::new()),
             "resolve_thread" => (self.resolve_thread(id, args).await, Vec::new()),

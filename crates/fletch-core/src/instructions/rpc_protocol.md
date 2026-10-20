@@ -64,6 +64,12 @@ actions that need host-held GitHub credentials — `git_push`, `open_pr`, and
 dispatcher also exposes `echo` as a simple round-trip check. Future app features
 can define their own ops on top of the same mailbox.
 
+To read your branch's pull request, use `pr_view` (state, URL, mergeability),
+`pr_checks` (CI results; optional `args.number` for another PR), `pr_comments`
+(conversation comments; optional `args.limit`, max 100) and `pr_threads`
+(unresolved review threads). Each returns JSON in `stdout`. Do not call `gh` or
+the GitHub API directly: your sandbox has no GitHub credentials.
+
 ### Workspace title
 
 `set_title` names the work for the sidebar: 3–6 words, max 80 chars, no

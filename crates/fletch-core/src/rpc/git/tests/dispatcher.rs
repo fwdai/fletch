@@ -131,6 +131,127 @@ async fn signal_git_action_rejects_unknown_action() {
 }
 
 #[tokio::test]
+async fn an_unknown_op_is_still_refused_by_name() {
+    let td = tempfile::tempdir().unwrap();
+    let (resp, effects) = dispatcher(td.path())
+        .dispatch_inner("u", "pr_merge", &Value::Null)
+        .await;
+    assert!(!resp.ok);
+    assert_eq!(resp.error.as_deref(), Some("unknown op: pr_merge"));
+    assert!(effects.is_empty());
+}
+
+#[tokio::test]
+async fn pr_checks_rejects_a_number_that_is_not_a_positive_integer() {
+    let td = tempfile::tempdir().unwrap();
+    let disp = dispatcher(td.path());
+    for bad in [
+        json!(0),
+        json!(-3),
+        json!(1.5),
+        json!("12"),
+        json!(true),
+        json!(u64::from(u32::MAX) + 1),
+    ] {
+        let (resp, effects) = disp
+            .dispatch_inner("c", "pr_checks", &json!({ "number": bad }))
+            .await;
+        assert!(!resp.ok, "{bad} must be refused");
+        let err = resp.error.unwrap();
+        assert!(
+            err.starts_with("pr_checks: `number` must be a positive integer"),
+            "{bad}: {err}"
+        );
+        assert!(effects.is_empty());
+    }
+}
+
+#[test]
+fn pr_comments_limit_defaults_and_clamps() {
+    use crate::rpc::git::pr_reads::comment_limit;
+    assert_eq!(comment_limit(&Value::Null), Ok(50));
+    assert_eq!(comment_limit(&json!({})), Ok(50));
+    assert_eq!(comment_limit(&json!({ "limit": null })), Ok(50));
+    assert_eq!(comment_limit(&json!({ "limit": 7 })), Ok(7));
+    assert_eq!(comment_limit(&json!({ "limit": 100 })), Ok(100));
+    assert_eq!(comment_limit(&json!({ "limit": 5000 })), Ok(100));
+    for bad in [json!(0), json!(-1), json!("10"), json!(2.5)] {
+        assert!(
+            comment_limit(&json!({ "limit": bad })).is_err(),
+            "{bad} must be refused"
+        );
+    }
+}
+
+#[tokio::test]
+async fn pr_comments_rejects_a_bad_limit_before_any_lookup() {
+    let td = tempfile::tempdir().unwrap();
+    let (resp, _fx) = dispatcher(td.path())
+        .dispatch_inner("c", "pr_comments", &json!({ "limit": 0 }))
+        .await;
+    assert!(!resp.ok);
+    assert!(
+        resp.error
+            .as_deref()
+            .unwrap()
+            .starts_with("pr_comments: `limit` must be a positive integer"),
+        "{:?}",
+        resp.error
+    );
+}
+
+/// A checkout with no `origin` resolves no GitHub repo, so the branch has no
+/// PR, without touching the network.
+fn repo_without_origin(root: &std::path::Path) -> std::path::PathBuf {
+    let repo = root.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    run_git(&repo, &["init", "-q", "-b", "feat/x"]);
+    run_git(&repo, &["config", "user.email", "t@example.com"]);
+    run_git(&repo, &["config", "user.name", "Tester"]);
+    std::fs::write(repo.join("a.txt"), b"x").unwrap();
+    run_git(&repo, &["add", "-A"]);
+    run_git(&repo, &["commit", "-q", "-m", "init"]);
+    repo
+}
+
+#[tokio::test]
+async fn pr_reads_report_no_pull_request_and_emit_nothing() {
+    let td = tempfile::tempdir().unwrap();
+    let repo = repo_without_origin(td.path());
+    let disp = dispatcher(&repo);
+    for op in ["pr_view", "pr_checks", "pr_comments"] {
+        let (resp, effects) = disp.dispatch_inner("r", op, &Value::Null).await;
+        assert!(!resp.ok, "{op}");
+        assert_eq!(
+            resp.error.as_deref(),
+            Some(format!("{op}: no pull request for this branch").as_str())
+        );
+        assert!(effects.is_empty(), "{op} is a read: {effects:?}");
+    }
+}
+
+/// Reads are not publishing: a run-owned step agent and the advisory PM chat
+/// reach the op (here: its "no PR" answer) instead of the caps refusal.
+#[tokio::test]
+async fn pr_reads_are_not_refused_by_denied_caps() {
+    use crate::rpc::caps::AgentCaps;
+    use crate::rpc::git::GitDispatcher;
+    let td = tempfile::tempdir().unwrap();
+    let repo = repo_without_origin(td.path());
+    for caps in [AgentCaps::run_owned(), AgentCaps::advisory()] {
+        let disp = GitDispatcher::new(repo.clone(), "main".to_string(), caps);
+        for op in ["pr_view", "pr_checks", "pr_comments"] {
+            let (resp, _fx) = disp.dispatch_inner("r", op, &Value::Null).await;
+            let err = resp.error.unwrap_or_default();
+            assert!(
+                err.contains("no pull request for this branch"),
+                "{op} under {caps:?} must reach the op, got: {err}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
 async fn read_only_and_failed_ops_emit_no_action_done() {
     let td = tempfile::tempdir().unwrap();
     let repo = td.path().join("repo");

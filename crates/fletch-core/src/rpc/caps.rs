@@ -117,6 +117,9 @@ mod tests {
         for open in [
             "git_fetch",
             "git_status",
+            "pr_view",
+            "pr_checks",
+            "pr_comments",
             "pr_threads",
             "reply_thread",
             "echo",
