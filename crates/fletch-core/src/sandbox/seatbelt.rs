@@ -2431,15 +2431,55 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let sock = dir.join("Listeners");
         let _ = std::fs::remove_file(&sock);
-        let _listener = std::os::unix::net::UnixListener::bind(&sock).unwrap();
-        let sock_s = sock.to_string_lossy().into_owned();
-        let connect = ["/usr/bin/nc", "-z", "-U", sock_s.as_str()];
+        let listener = std::os::unix::net::UnixListener::bind(&sock).unwrap();
+        listener.set_nonblocking(true).unwrap();
         let control = "(version 1)\n(allow default)";
-        let control_ok = run(control, &connect);
-        let denied_ok = run(&profile, &connect);
+        let control_ok = reaches_socket(control, &sock, &listener);
+        let denied_ok = reaches_socket(&profile, &sock, &listener);
         let _ = std::fs::remove_dir_all(&dir);
         assert!(control_ok, "the control must reach the socket");
         assert!(!denied_ok, "the agent profile must not reach the ssh-agent");
+    }
+
+    /// Whether `nc -U sock` run under `profile` gets as far as connecting,
+    /// observed from the listener's side: macOS `nc -z` exits 1 against a unix
+    /// socket even when the connect succeeded, so its status says nothing.
+    /// Without `-z` nc connects and waits on stdin, so it is killed once the
+    /// listener has (or, within the deadline, has not) seen it.
+    #[cfg(target_os = "macos")]
+    fn reaches_socket(
+        profile: &str,
+        sock: &Path,
+        listener: &std::os::unix::net::UnixListener,
+    ) -> bool {
+        let mut child = std::process::Command::new(SANDBOX_EXEC)
+            .args(profile_args(profile))
+            .args(["/usr/bin/nc", "-U", &sock.to_string_lossy()])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("sandbox-exec");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        let mut connected = false;
+        while std::time::Instant::now() < deadline {
+            match listener.accept() {
+                Ok(_) => {
+                    connected = true;
+                    break;
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+                Err(e) => panic!("accept: {e}"),
+            }
+            // A denied connect makes nc exit at once; stop waiting on it.
+            if let Ok(Some(_)) = child.try_wait() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+        connected
     }
 
     /// A claude launch carries the host-resolved token as
