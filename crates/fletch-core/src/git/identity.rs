@@ -80,6 +80,13 @@ pub enum Identity {
 /// configured has nothing to compare against and passes with its tip.
 pub async fn check_identity(repo: &Path, branch: &str) -> Result<Identity> {
     let tip = branch_tip(repo, branch).await?;
+    check_identity_of(repo, branch, tip).await
+}
+
+/// [`check_identity`] of an exact commit: `tip` is what a push of `branch`
+/// would publish, whether or not the branch exists locally (a workflow run
+/// pushes a pinned ref from a detached HEAD).
+pub async fn check_identity_of(repo: &Path, branch: &str, tip: String) -> Result<Identity> {
     let Some(email) = configured_email(repo).await? else {
         return Ok(Identity::Own { tip });
     };
@@ -102,16 +109,7 @@ mod tests {
     use super::*;
 
     fn run(repo: &Path, args: &[&str]) {
-        let out = std::process::Command::new("git")
-            .current_dir(repo)
-            .args(args)
-            .output()
-            .unwrap();
-        assert!(
-            out.status.success(),
-            "git {args:?}: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
+        super::super::testing::git(repo, args);
     }
 
     fn head(repo: &Path) -> String {

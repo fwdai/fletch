@@ -534,15 +534,16 @@ pub(crate) async fn finalize_run(
     // agent path. Idempotent; `None` (a normal launch) leaves the empty body
     // untouched.
     let body = crate::github::with_closes_trailer("", run.issue_ref.as_deref());
-    let outcome = gitops::finalize(
+    let outcome = gitops::finalize(&gitops::Finalize {
         run_repo,
-        &final_ref,
-        &run.branch,
-        &base,
-        &title,
-        &body,
-        fin.open_pr,
-    )
+        source_repo: std::path::Path::new(&run.repo_path),
+        final_ref: &final_ref,
+        branch: &run.branch,
+        base: &base,
+        title: &title,
+        body: &body,
+        open_pr: fin.open_pr,
+    })
     .await?;
     let conn = ctx.db.lock();
     journal_event(

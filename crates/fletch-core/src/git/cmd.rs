@@ -84,6 +84,46 @@ pub(crate) async fn git_output_env(
         .map_err(Error::from)
 }
 
+/// `git_output_env` feeding `stdin` to the process — for the plumbing that
+/// reads its payload there (`commit-tree` takes the message that way, which is
+/// the only form that preserves it byte for byte). Same hardening and timeout.
+pub(crate) async fn git_output_stdin(
+    dir: &Path,
+    args: &[&str],
+    env: &[(String, String)],
+    stdin: &[u8],
+) -> Result<std::process::Output> {
+    use tokio::io::AsyncWriteExt;
+    super::hardening::refuse_steerable_config(dir).await?;
+    let mut cmd = crate::git_dist::command(dir);
+    cmd.args(args)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
+    let run = async {
+        let mut child = cmd.spawn()?;
+        if let Some(mut pipe) = child.stdin.take() {
+            pipe.write_all(stdin).await?;
+            drop(pipe);
+        }
+        child.wait_with_output().await
+    };
+    tokio::time::timeout(LOCAL_TIMEOUT, run)
+        .await
+        .map_err(|_| {
+            Error::Git(format!(
+                "git {} timed out after {}s",
+                args.first().copied().unwrap_or(""),
+                LOCAL_TIMEOUT.as_secs()
+            ))
+        })?
+        .map_err(Error::from)
+}
+
 /// Run `git <args>` in `dir` and require a zero exit, returning the `Output` so
 /// callers can read stdout. On a non-zero exit returns
 /// `Error::Git("<label> failed: <stderr>")` — `label` names the op for the

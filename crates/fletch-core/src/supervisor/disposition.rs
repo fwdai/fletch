@@ -910,16 +910,7 @@ mod tests {
     }
 
     fn git(repo: &Path, args: &[&str]) {
-        let out = std::process::Command::new("git")
-            .current_dir(repo)
-            .args(args)
-            .output()
-            .unwrap();
-        assert!(
-            out.status.success(),
-            "git {args:?}: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
+        crate::git::testing::git(repo, args);
     }
 
     /// Every step of a workflow run is archived as it finishes, and each one

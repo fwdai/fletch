@@ -120,13 +120,13 @@ impl GitDispatcher {
         {
             return (Response::err(id, why), effects);
         }
-        // …and again after it, pushing the very commit it read: the branch may
-        // move while the prompt is open, or between here and the push.
+        // …and again after it, publishing the very commit it read: the branch
+        // may move while the prompt is open, or between here and the push.
         let tip = match checked_tip(id, &t.cwd, &branch).await {
             Ok(tip) => tip,
             Err(resp) => return (resp, effects),
         };
-        if let Err(e) = crate::git::push_commit(&t.cwd, &tip, &branch, false).await {
+        if let Err(e) = t.publish(&branch, &tip, false).await {
             return (
                 Response::err(id, format!("open_pr push failed: {e}")),
                 effects,
@@ -208,6 +208,18 @@ impl GitDispatcher {
         {
             return (Response::err(id, why), effects);
         }
+        // Lease-based, so a stale local view can't clobber remote work it hasn't seen.
+        let force = arg_bool(args, "force");
+        // SECURITY: the lease passes for any branch the agent just fetched, so a force
+        // is authorized against the spawn-stable own branch and fails closed when none
+        // is recorded. Non-force pushes are untouched. Refused before anything
+        // below touches the checkout: publishing may rewrite the unpublished
+        // commits (signing), and a refused request must leave no trace.
+        if force {
+            if let Some(why) = self.caps.refuses_force(&branch, t.own_branch.as_deref()) {
+                return (Response::err(id, why), effects);
+            }
+        }
         // Checked again after the prompt, and the push publishes the very commit
         // it read: the branch may move while the prompt is open, or between
         // here and the push.
@@ -215,21 +227,28 @@ impl GitDispatcher {
             Ok(tip) => tip,
             Err(resp) => return (resp, effects),
         };
-
-        // Lease-based, so a stale local view can't clobber remote work it hasn't seen.
-        let force = arg_bool(args, "force");
-        // SECURITY: the lease passes for any branch the agent just fetched, so a force
-        // is authorized against the spawn-stable own branch and fails closed when none
-        // is recorded. Non-force pushes are untouched.
-        if force {
-            if let Some(why) = self.caps.refuses_force(&branch, t.own_branch.as_deref()) {
-                return (Response::err(id, why), effects);
-            }
-        }
-        match crate::git::push_commit(&t.cwd, &tip, &branch, force).await {
+        match t.publish(&branch, &tip, force).await {
             Ok(summary) => (Response::ok(id, 0, summary, String::new()), effects),
             Err(e) => (Response::err(id, e.to_string()), effects),
         }
+    }
+}
+
+impl Target {
+    /// Publish `tip` to `branch` through the host publication layer, which
+    /// signs when the user's repository does (`git::publish`).
+    async fn publish(&self, branch: &str, tip: &str, force: bool) -> crate::error::Result<String> {
+        let published = crate::git::publish(
+            &crate::git::Publication {
+                checkout: &self.cwd,
+                source_repo: &self.source_repo,
+                branch,
+                force,
+            },
+            crate::git::Tip::Commit(tip),
+        )
+        .await?;
+        Ok(published.summary)
     }
 }
 

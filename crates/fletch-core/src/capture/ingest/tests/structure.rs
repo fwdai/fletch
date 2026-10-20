@@ -468,16 +468,7 @@ fn a_renamed_directory_is_a_move() {
 }
 
 fn git(dir: &Path, args: &[&str]) {
-    let out = std::process::Command::new("git")
-        .current_dir(dir)
-        .args(args)
-        .output()
-        .unwrap();
-    assert!(
-        out.status.success(),
-        "git {args:?}: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
+    crate::git::testing::git(dir, args);
 }
 
 /// The merge is made on the remote, so the source repo has to fetch it. A

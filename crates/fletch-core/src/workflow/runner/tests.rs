@@ -2,7 +2,6 @@ use super::*;
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
-use std::process::Command as Sh;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
@@ -14,38 +13,18 @@ use crate::workflow::driver::{BoxFuture, SpawnedAgent, TurnUsage};
 use crate::workflow::spec::{AgentSpec, Finalize, Integrate, Join, Parallel};
 
 fn sh(dir: &Path, args: &[&str]) {
-    let out = Sh::new("git")
-        .current_dir(dir)
-        .args(args)
-        .output()
-        .expect("git");
-    assert!(
-        out.status.success(),
-        "git {:?}: {}",
-        args,
-        String::from_utf8_lossy(&out.stderr)
-    );
+    crate::git::testing::git(dir, args);
 }
 
 fn git_out(dir: &Path, args: &[&str]) -> String {
-    let out = Sh::new("git")
-        .current_dir(dir)
-        .args(args)
-        .output()
-        .expect("git");
+    let out = crate::git::testing::git_output(dir, args);
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
 /// Whether `git <args>` exits zero — for the predicate commands whose answer is
 /// the exit status, not stdout.
 fn git_ok(dir: &Path, args: &[&str]) -> bool {
-    Sh::new("git")
-        .current_dir(dir)
-        .args(args)
-        .output()
-        .expect("git")
-        .status
-        .success()
+    crate::git::testing::git_output(dir, args).status.success()
 }
 
 /// How the stub "agent" behaves for one run. Everything the kernel's phases can
@@ -247,6 +226,9 @@ fn fixture_repo(tmp: &Path) -> (PathBuf, PathBuf, String) {
     sh(&source, &["init", "-q", "-b", "main"]);
     sh(&source, &["config", "user.email", "t@t.t"]);
     sh(&source, &["config", "user.name", "t"]);
+    // The user's repo decides signing at finalize (`git::publish`); this one
+    // does not sign, whatever the developer's global config says.
+    sh(&source, &["config", "commit.gpgsign", "false"]);
     std::fs::write(source.join("README"), "base").unwrap();
     sh(&source, &["add", "-A"]);
     sh(&source, &["commit", "-qm", "base"]);

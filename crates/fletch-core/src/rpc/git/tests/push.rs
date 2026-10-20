@@ -249,9 +249,19 @@ async fn push_commit_publishes_the_checked_commit_not_the_moved_branch() {
         ],
     );
 
-    let summary = crate::git::push_commit(&repo, &checked, "fix/pinned", false)
-        .await
-        .expect("push");
+    unsigned(&repo);
+    let summary = crate::git::publish(
+        &crate::git::Publication {
+            checkout: &repo,
+            source_repo: &repo,
+            branch: "fix/pinned",
+            force: false,
+        },
+        crate::git::Tip::Commit(&checked),
+    )
+    .await
+    .expect("push")
+    .summary;
     assert_eq!(summary, "pushed");
     let remote_tip = std::process::Command::new("git")
         .args([

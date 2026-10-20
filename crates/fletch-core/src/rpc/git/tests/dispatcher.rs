@@ -259,7 +259,7 @@ async fn pr_reads_are_not_refused_by_denied_caps() {
     let td = tempfile::tempdir().unwrap();
     let repo = repo_without_origin(td.path());
     for caps in [AgentCaps::run_owned(), AgentCaps::advisory()] {
-        let disp = GitDispatcher::new(repo.clone(), "main".to_string(), caps);
+        let disp = GitDispatcher::new(repo.clone(), repo.clone(), "main".to_string(), caps);
         for op in ["pr_view", "pr_checks", "pr_comments"] {
             let (resp, _fx) = disp.dispatch_inner("r", op, &Value::Null).await;
             let err = resp.error.unwrap_or_default();

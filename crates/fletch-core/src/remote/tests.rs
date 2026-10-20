@@ -1321,12 +1321,7 @@ fn supervisor() -> (tempfile::TempDir, crate::supervisor::Supervisor) {
 /// to find one.
 fn git_init(dir: &std::path::Path) {
     std::fs::create_dir_all(dir).unwrap();
-    assert!(std::process::Command::new("git")
-        .current_dir(dir)
-        .args(["init", "-q"])
-        .status()
-        .unwrap()
-        .success());
+    crate::git::testing::git(dir, &["init", "-q"]);
 }
 
 #[tokio::test]

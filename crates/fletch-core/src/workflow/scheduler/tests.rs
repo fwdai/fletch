@@ -2,21 +2,10 @@ use super::*;
 use crate::supervisor::StatusEvent;
 use crate::workspace::AgentStatus;
 use std::collections::BTreeMap;
-use std::process::Command as Sh;
 use tokio::sync::broadcast;
 
 fn sh(dir: &Path, args: &[&str]) {
-    let out = Sh::new("git")
-        .current_dir(dir)
-        .args(args)
-        .output()
-        .expect("git");
-    assert!(
-        out.status.success(),
-        "git {:?}: {}",
-        args,
-        String::from_utf8_lossy(&out.stderr)
-    );
+    crate::git::testing::git(dir, args);
 }
 
 /// A real-git stub driver: on spawn it provisions a real `--shared` clone
@@ -309,6 +298,9 @@ async fn linear_two_step_run_reaches_done_and_pushes() {
     sh(&source, &["init", "-q", "-b", "main"]);
     sh(&source, &["config", "user.email", "t@t.t"]);
     sh(&source, &["config", "user.name", "t"]);
+    // The user's repo decides signing at finalize (`git::publish`); this one
+    // does not sign, whatever the developer's global config says.
+    sh(&source, &["config", "commit.gpgsign", "false"]);
     std::fs::write(source.join("README"), "base").unwrap();
     sh(&source, &["add", "-A"]);
     sh(&source, &["commit", "-qm", "base"]);
@@ -317,11 +309,7 @@ async fn linear_two_step_run_reaches_done_and_pushes() {
         &["remote", "add", "origin", bare.to_str().unwrap()],
     );
     let base_sha = {
-        let out = Sh::new("git")
-            .current_dir(&source)
-            .args(["rev-parse", "HEAD"])
-            .output()
-            .unwrap();
+        let out = crate::git::testing::git_output(&source, &["rev-parse", "HEAD"]);
         String::from_utf8_lossy(&out.stdout).trim().to_string()
     };
 
@@ -412,17 +400,13 @@ async fn linear_two_step_run_reaches_done_and_pushes() {
 
     // The branch was pushed to the bare remote, two commits above base
     // (step 2 building on step 1).
-    let pushed = Sh::new("git")
-        .current_dir(&bare)
-        .args(["rev-parse", &format!("refs/heads/{branch}")])
-        .output()
-        .unwrap();
+    let pushed =
+        crate::git::testing::git_output(&bare, &["rev-parse", &format!("refs/heads/{branch}")]);
     assert!(pushed.status.success(), "branch pushed");
-    let count = Sh::new("git")
-        .current_dir(&bare)
-        .args(["rev-list", "--count", &format!("refs/heads/{branch}")])
-        .output()
-        .unwrap();
+    let count = crate::git::testing::git_output(
+        &bare,
+        &["rev-list", "--count", &format!("refs/heads/{branch}")],
+    );
     assert_eq!(
         String::from_utf8_lossy(&count.stdout).trim(),
         "3",
@@ -448,15 +432,12 @@ fn scaffold_one_step(tmp: &Path, run_id: &str, branch: &str, gate: Gate) -> (Db,
     sh(&source, &["init", "-q", "-b", "main"]);
     sh(&source, &["config", "user.email", "t@t.t"]);
     sh(&source, &["config", "user.name", "t"]);
+    sh(&source, &["config", "commit.gpgsign", "false"]);
     std::fs::write(source.join("README"), "base").unwrap();
     sh(&source, &["add", "-A"]);
     sh(&source, &["commit", "-qm", "base"]);
     let base_sha = {
-        let o = Sh::new("git")
-            .current_dir(&source)
-            .args(["rev-parse", "HEAD"])
-            .output()
-            .unwrap();
+        let o = crate::git::testing::git_output(&source, &["rev-parse", "HEAD"]);
         String::from_utf8_lossy(&o.stdout).trim().to_string()
     };
     let run_dir = tmp.join("rundir");
@@ -1514,15 +1495,12 @@ fn scaffold_steps(
     sh(&source, &["init", "-q", "-b", "main"]);
     sh(&source, &["config", "user.email", "t@t.t"]);
     sh(&source, &["config", "user.name", "t"]);
+    sh(&source, &["config", "commit.gpgsign", "false"]);
     std::fs::write(source.join("README"), "base").unwrap();
     sh(&source, &["add", "-A"]);
     sh(&source, &["commit", "-qm", "base"]);
     let base_sha = {
-        let o = Sh::new("git")
-            .current_dir(&source)
-            .args(["rev-parse", "HEAD"])
-            .output()
-            .unwrap();
+        let o = crate::git::testing::git_output(&source, &["rev-parse", "HEAD"]);
         String::from_utf8_lossy(&o.stdout).trim().to_string()
     };
     let run_dir = tmp.join("rundir");
@@ -2303,11 +2281,7 @@ fn scaffold_parallel_integrate(
     sh(&source, &["add", "-A"]);
     sh(&source, &["commit", "-qm", "base"]);
     let base_sha = {
-        let o = Sh::new("git")
-            .current_dir(&source)
-            .args(["rev-parse", "HEAD"])
-            .output()
-            .unwrap();
+        let o = crate::git::testing::git_output(&source, &["rev-parse", "HEAD"]);
         String::from_utf8_lossy(&o.stdout).trim().to_string()
     };
     let run_dir = tmp.join(format!("rd-{run_id}"));
@@ -2584,11 +2558,7 @@ fn pick_winners_selects_the_right_branch() {
 }
 
 fn sh_out(dir: &Path, args: &[&str]) -> String {
-    let out = Sh::new("git")
-        .current_dir(dir)
-        .args(args)
-        .output()
-        .expect("git");
+    let out = crate::git::testing::git_output(dir, args);
     String::from_utf8_lossy(&out.stdout).to_string()
 }
 
@@ -3114,15 +3084,12 @@ fn scaffold_loop(
     sh(&source, &["init", "-q", "-b", "main"]);
     sh(&source, &["config", "user.email", "t@t.t"]);
     sh(&source, &["config", "user.name", "t"]);
+    sh(&source, &["config", "commit.gpgsign", "false"]);
     std::fs::write(source.join("README"), "base").unwrap();
     sh(&source, &["add", "-A"]);
     sh(&source, &["commit", "-qm", "base"]);
     let base_sha = {
-        let o = Sh::new("git")
-            .current_dir(&source)
-            .args(["rev-parse", "HEAD"])
-            .output()
-            .unwrap();
+        let o = crate::git::testing::git_output(&source, &["rev-parse", "HEAD"]);
         String::from_utf8_lossy(&o.stdout).trim().to_string()
     };
     let run_dir = tmp.join("rundir");
@@ -3666,15 +3633,12 @@ fn scaffold_orchestrate(
     sh(&source, &["init", "-q", "-b", "main"]);
     sh(&source, &["config", "user.email", "t@t.t"]);
     sh(&source, &["config", "user.name", "t"]);
+    sh(&source, &["config", "commit.gpgsign", "false"]);
     std::fs::write(source.join("README"), "base").unwrap();
     sh(&source, &["add", "-A"]);
     sh(&source, &["commit", "-qm", "base"]);
     let base_sha = {
-        let o = Sh::new("git")
-            .current_dir(&source)
-            .args(["rev-parse", "HEAD"])
-            .output()
-            .unwrap();
+        let o = crate::git::testing::git_output(&source, &["rev-parse", "HEAD"]);
         String::from_utf8_lossy(&o.stdout).trim().to_string()
     };
     let run_dir = tmp.join("rundir");
@@ -4297,15 +4261,12 @@ fn scaffold_compose(tmp: &Path, run_id: &str) -> (Db, PathBuf, PathBuf) {
     sh(&source, &["init", "-q", "-b", "main"]);
     sh(&source, &["config", "user.email", "t@t.t"]);
     sh(&source, &["config", "user.name", "t"]);
+    sh(&source, &["config", "commit.gpgsign", "false"]);
     std::fs::write(source.join("README"), "base").unwrap();
     sh(&source, &["add", "-A"]);
     sh(&source, &["commit", "-qm", "base"]);
     let base_sha = {
-        let o = Sh::new("git")
-            .current_dir(&source)
-            .args(["rev-parse", "HEAD"])
-            .output()
-            .unwrap();
+        let o = crate::git::testing::git_output(&source, &["rev-parse", "HEAD"]);
         String::from_utf8_lossy(&o.stdout).trim().to_string()
     };
     let run_dir = tmp.join("rundir");

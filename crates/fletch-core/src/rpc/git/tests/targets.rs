@@ -4,8 +4,19 @@ use crate::rpc::git::test_support::*;
 use serde_json::{json, Value};
 
 use crate::rpc::caps::AgentCaps;
-use crate::rpc::git::{GitDispatcher, EVENT_BRANCH_CREATED};
+use crate::rpc::git::{GitDispatcher, RepoTarget, EVENT_BRANCH_CREATED};
 use crate::rpc::RpcEvent;
+
+/// A fixture checkout as its own source (see `test_support::dispatcher`).
+fn repo_target(subdir: &str, cwd: &std::path::Path) -> RepoTarget {
+    RepoTarget {
+        subdir: subdir.into(),
+        cwd: cwd.to_path_buf(),
+        source_repo: cwd.to_path_buf(),
+        base_branch: "main".into(),
+        own_branch: None,
+    }
+}
 
 #[test]
 fn the_primary_checkout_is_reported_as_no_repo() {
@@ -25,11 +36,13 @@ async fn repo_arg_targets_sibling_checkout() {
     }
     std::fs::write(b.join("x.txt"), b"x").unwrap();
 
-    let disp =
-        GitDispatcher::new(a.clone(), "main".into(), AgentCaps::interactive()).with_repos(vec![
-            ("a".into(), a.clone(), "main".into(), None),
-            ("b".into(), b.clone(), "main".into(), None),
-        ]);
+    let disp = GitDispatcher::new(
+        a.clone(),
+        a.clone(),
+        "main".into(),
+        AgentCaps::interactive(),
+    )
+    .with_repos(vec![repo_target("a", &a), repo_target("b", &b)]);
 
     let (resp, _fx) = disp
         .dispatch_inner("s1", "git_status", &json!({"repo": "b"}))
@@ -63,11 +76,13 @@ async fn branch_events_carry_the_targeted_repo() {
         run_git(repo, &["checkout", "-q", "--detach"]);
     }
 
-    let disp =
-        GitDispatcher::new(a.clone(), "main".into(), AgentCaps::interactive()).with_repos(vec![
-            ("a".into(), a.clone(), "main".into(), None),
-            ("b".into(), b.clone(), "main".into(), None),
-        ]);
+    let disp = GitDispatcher::new(
+        a.clone(),
+        a.clone(),
+        "main".into(),
+        AgentCaps::interactive(),
+    )
+    .with_repos(vec![repo_target("a", &a), repo_target("b", &b)]);
 
     let (_resp, fx) = disp
         .dispatch_inner(
@@ -107,8 +122,13 @@ async fn unknown_repo_arg_is_rejected_with_tracked_names() {
     std::fs::create_dir_all(&a).unwrap();
     run_git(&a, &["init", "-q", "-b", "main"]);
 
-    let disp = GitDispatcher::new(a.clone(), "main".into(), AgentCaps::interactive())
-        .with_repos(vec![("a".into(), a.clone(), "main".into(), None)]);
+    let disp = GitDispatcher::new(
+        a.clone(),
+        a.clone(),
+        "main".into(),
+        AgentCaps::interactive(),
+    )
+    .with_repos(vec![repo_target("a", &a)]);
     let (resp, fx) = disp
         .dispatch_inner("p", "git_push", &json!({"repo": "nope"}))
         .await;

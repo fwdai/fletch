@@ -170,8 +170,18 @@ fn resolve_uncached() -> Option<GitBin> {
 /// cwd. When nothing resolves, falls back to bare `git` so the failure
 /// surfaces as the same spawn error it always did — callers need no new path.
 pub fn command(dir: &Path) -> tokio::process::Command {
-    let mut cmd = bare_command();
-    cmd.current_dir(dir);
+    let mut cmd = match resolve() {
+        Some(bin) => {
+            let mut cmd = tokio::process::Command::new(&bin.program);
+            for (k, v) in &bin.env {
+                cmd.env(k, v);
+            }
+            cmd
+        }
+        None => tokio::process::Command::new("git"),
+    };
+    cmd.current_dir(dir)
+        .args(crate::git::hardening::config_overrides_for(dir));
     cmd
 }
 
@@ -191,16 +201,18 @@ pub fn std_command(dir: &Path) -> std::process::Command {
         None => std::process::Command::new("git"),
     };
     cmd.current_dir(dir)
-        .args(crate::git::hardening::config_overrides());
+        .args(crate::git::hardening::config_overrides_for(dir));
     cmd
 }
 
 /// [`command`] without a cwd — for the rare op whose target dir doesn't exist
-/// yet (`git init <path>`).
+/// yet (`git init <path>`), and so without the directory-scoped overrides: an
+/// op with no directory creates no commit.
 ///
-/// This and [`std_command`] are the two seams where every git invocation picks
-/// up [`crate::git::hardening`]'s overrides, so a repository's own config can
-/// never steer host-side git — including from call sites written later.
+/// This, [`command`] and [`std_command`] are the seams where every git
+/// invocation picks up [`crate::git::hardening`]'s overrides, so a
+/// repository's own config can never steer host-side git — including from
+/// call sites written later.
 pub fn bare_command() -> tokio::process::Command {
     let mut cmd = match resolve() {
         Some(bin) => {
