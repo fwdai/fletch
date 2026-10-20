@@ -177,8 +177,8 @@ cannot go quietly unstated the way a doc caveat can. The
 - **Read your disk — under seatbelt.** The seatbelt profile confines writes, not
   reads; the agent runs as your user and can read anything you can, except the
   carve-outs the profile denies by name: Fletch's app data, the host's provider
-  logins, `~/.ssh`, `~/.config/gh` and the Keychain. Under Docker it can read
-  only what is mounted into the container.
+  logins, `~/.ssh`, the `gh` login, git's stored credentials and the Keychain.
+  Under Docker it can read only what is mounted into the container.
 - **Open network connections — under both engines.** Neither engine restricts
   the network. Seatbelt's `(allow default)` leaves it open; the Docker launch
   sets no `--network` flag, so the container gets the default bridge. Treat every
@@ -195,11 +195,16 @@ cannot go quietly unstated the way a doc caveat can. The
   sandbox. They are brokered: the agent writes a request to its RPC mailbox, and
   Fletch runs the operation **host-side**, where the credentials live
   (`rpc/git.rs`, ops `git_push`, `open_pr`, `git_fetch`). Credentials never enter
-  the sandbox. Under seatbelt the profile also withholds your own: `~/.ssh`, the
-  launchd ssh-agent socket (and `SSH_AUTH_SOCK` is dropped from the agent's env)
-  and the `gh` CLI login in `~/.config/gh`. Every sandbox clone, and a workflow's
-  run repo, gets a GitHub SSH origin rewritten to HTTPS, so git inside the
-  sandbox has no credential to publish with.
+  the sandbox. Under seatbelt the profile also withholds your own, at their
+  standard locations: `~/.ssh` and the launchd ssh-agent socket (`SSH_AUTH_SOCK`
+  is dropped from the agent's env), the `gh` CLI login (`~/.config/gh`,
+  `$XDG_CONFIG_HOME/gh` or `$GH_CONFIG_DIR`) and git's stored credentials
+  (`~/.git-credentials`, `~/.config/git/credentials`). `GH_TOKEN` and
+  `GITHUB_TOKEN` are stripped from the agent's env. Every sandbox clone, and a
+  workflow's run repo, gets a GitHub SSH origin rewritten to HTTPS, so git inside
+  the sandbox has no credential to publish with. Not covered: a credential store
+  at a path only your git config names, or an ssh-agent at another socket path
+  (1Password, gpg-agent).
 
 **What publication *is* gated by.** Every brokered op is checked against the
 agent's **capability grant**, stamped when it spawns and never re-read, so a
