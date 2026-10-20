@@ -26,6 +26,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use super::cmd::{git_output, git_output_stdin, output_timed};
+use super::identity::{check_identity, Identity};
 use crate::error::{Error, Result};
 
 /// Whether the host's git config asks for signed commits — in the scopes the
@@ -57,14 +58,24 @@ pub(crate) fn signing_requested(show_scope: &str) -> bool {
         .is_some_and(|(_, value)| value.trim() == "true")
 }
 
-/// `tip` as the host will publish it: `tip` itself when the host does not
-/// sign, else with its unpublished commits replaced by signed copies
-/// ([`sign_unpublished`]).
-pub async fn sign_for_publish(repo: &Path, branch: &str, tip: &str) -> Result<String> {
-    if !host_signs_commits(repo).await? {
-        return Ok(tip.to_string());
+/// The tip `branch` may publish when the host signs: its remote refs
+/// refreshed, its new commits identity-checked over *those* refs, and then
+/// signed ([`sign_unpublished`]). `Own { tip }` is the signed tip to push;
+/// `Foreign` is the identity check's refusal, unchanged.
+///
+/// The order is the point. The refresh can widen "what origin lacks" past
+/// what an earlier identity check saw (a stale `origin/main` covering an
+/// unpushed commit), and signing must never reach a commit that check did
+/// not: the check runs after the refresh, on the same refs the signing range
+/// is cut from.
+pub async fn signed_publishable_tip(repo: &Path, branch: &str) -> Result<Identity> {
+    refresh_remote_refs(repo).await?;
+    match check_identity(repo, branch).await? {
+        Identity::Own { tip } => Ok(Identity::Own {
+            tip: sign_unpublished(repo, branch, &tip).await?,
+        }),
+        foreign => Ok(foreign),
     }
-    sign_unpublished(repo, branch, tip).await
 }
 
 /// `git fetch --prune origin`: the clone's `origin/*` refs as origin has them
@@ -93,14 +104,14 @@ async fn refresh_remote_refs(repo: &Path) -> Result<()> {
 
 /// Replace the commits `tip` reaches that origin lacks with signed copies and
 /// move `refs/heads/<branch>` from `tip` to the new tip, which is returned —
-/// `tip` itself when origin already has everything. The remote refs are
-/// refreshed first, and every commit in the range is signed afresh, including
-/// one that already carries a `gpgsig` header: the clone is agent-writable, so
-/// an existing header proves nothing. The branch move is compare-and-swap on
-/// `tip`, so a commit that lands on the branch meanwhile fails the move
-/// rather than being dropped.
+/// `tip` itself when origin already has everything. "What origin lacks" is
+/// read from the clone's `origin/*` refs as they stand — refresh them first
+/// ([`signed_publishable_tip`] does). Every commit in the range is signed
+/// afresh, including one that already carries a `gpgsig` header: the clone is
+/// agent-writable, so an existing header proves nothing. The branch move is
+/// compare-and-swap on `tip`, so a commit that lands on the branch meanwhile
+/// fails the move rather than being dropped.
 pub async fn sign_unpublished(repo: &Path, branch: &str, tip: &str) -> Result<String> {
-    refresh_remote_refs(repo).await?;
     let out = git_output(
         repo,
         &[
@@ -490,8 +501,12 @@ mod tests {
             "the stale ref hides the ancestor"
         );
 
-        let signed = sign_unpublished(&repo, "main", &tip).await.unwrap();
+        let Identity::Own { tip: signed } = signed_publishable_tip(&repo, "main").await.unwrap()
+        else {
+            panic!("own commits must pass");
+        };
 
+        assert_ne!(signed, tip);
         assert_eq!(run(&repo, &["rev-parse", "refs/remotes/origin/main"]), base);
         assert_eq!(
             run(&repo, &["rev-list", "--count", "origin/main..main"]),
@@ -503,6 +518,51 @@ mod tests {
             "the hidden ancestor is signed too"
         );
         assert_eq!(run(&repo, &["rev-parse", "main~2"]), base);
+    }
+
+    /// The same stale ref can hide a commit the identity check would refuse.
+    /// The check runs on the refreshed refs, before signing, so the refresh
+    /// never turns a foreign commit into a signed and published one.
+    #[tokio::test]
+    async fn a_foreign_commit_a_stale_ref_hid_is_refused_not_signed() {
+        let td = tempfile::tempdir().unwrap();
+        let (repo, _base) = signing_repo(td.path());
+        std::fs::write(repo.join("theirs.txt"), b"theirs").unwrap();
+        run(&repo, &["add", "-A"]);
+        run(
+            &repo,
+            &[
+                "-c",
+                "user.email=bot@example.com",
+                "commit",
+                "-q",
+                "-m",
+                "theirs",
+            ],
+        );
+        let foreign = run(&repo, &["rev-parse", "HEAD"]);
+        run(&repo, &["update-ref", "refs/remotes/origin/main", &foreign]);
+        let tip = commit_file(&repo, "two.txt", &[]);
+        assert!(
+            matches!(
+                check_identity(&repo, "main").await.unwrap(),
+                Identity::Own { .. }
+            ),
+            "against the stale ref the check sees only the honest commit"
+        );
+
+        let verdict = signed_publishable_tip(&repo, "main").await.unwrap();
+
+        let Identity::Foreign(why) = verdict else {
+            panic!("the foreign ancestor must be refused: {verdict:?}");
+        };
+        assert!(why.contains("bot@example.com"), "{why}");
+        assert_eq!(
+            run(&repo, &["rev-parse", "refs/heads/main"]),
+            tip,
+            "nothing was signed or moved"
+        );
+        assert!(!verified(&repo, &tip));
     }
 
     #[tokio::test]

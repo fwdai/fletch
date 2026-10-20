@@ -169,7 +169,9 @@ After either clone, three fixups run (`sandbox/provision.rs`):
   copies (same tree, parents, author, committer and message), move the branch
   to the signed tip and push that. Published history keeps its hashes. The
   remote refs are refreshed first, so "what origin lacks" is origin's answer
-  and not a stale clone's, and every commit in that range is signed afresh —
+  and not a stale clone's; the own-committer check then runs over those same
+  refs, so signing never reaches a commit it did not; and every commit in
+  that range is signed afresh —
   the clone's `.git` is agent-writable, so a signature header already on a
   commit is only a claim and is never what gets it published. The
   signature is made where the key lives and at the moment you approve the push,

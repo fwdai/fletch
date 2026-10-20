@@ -122,11 +122,7 @@ impl GitDispatcher {
         }
         // …and again after it, pushing the very commit it read: the branch may
         // move while the prompt is open, or between here and the push.
-        let tip = match checked_tip(id, &t.cwd, &branch).await {
-            Ok(tip) => tip,
-            Err(resp) => return (resp, effects),
-        };
-        let tip = match signed_tip(id, &t.cwd, &branch, tip).await {
+        let tip = match publish_tip(id, &t.cwd, &branch).await {
             Ok(tip) => tip,
             Err(resp) => return (resp, effects),
         };
@@ -215,11 +211,7 @@ impl GitDispatcher {
         // Checked again after the prompt, and the push publishes the very commit
         // it read: the branch may move while the prompt is open, or between
         // here and the push.
-        let tip = match checked_tip(id, &t.cwd, &branch).await {
-            Ok(tip) => tip,
-            Err(resp) => return (resp, effects),
-        };
-        let tip = match signed_tip(id, &t.cwd, &branch, tip).await {
+        let tip = match publish_tip(id, &t.cwd, &branch).await {
             Ok(tip) => tip,
             Err(resp) => return (resp, effects),
         };
@@ -256,31 +248,34 @@ async fn checked_tip(id: &str, cwd: &Path, branch: &str) -> std::result::Result<
     }
 }
 
-/// `tip` as the host publishes it: when the host's own git config signs
-/// commits, the unpublished commits are replaced by signed copies and the
-/// branch moved to the new tip (`git::sign_for_publish`); otherwise `tip` as
-/// read. Runs after the prompt and on the tip the identity check read, so the
-/// signature vouches for exactly the commits the user approved. A key the host
-/// cannot use is a refusal: the user asked for signed commits, and an unsigned
-/// push behind their back is the one thing that setting must never produce.
-async fn signed_tip(
-    id: &str,
-    cwd: &Path,
-    branch: &str,
-    tip: String,
-) -> std::result::Result<String, Response> {
-    crate::git::sign_for_publish(cwd, branch, &tip)
+/// The post-prompt [`checked_tip`], as the host publishes it. When the host's
+/// own git config does not sign, that is the identity-checked tip as read.
+/// When it does, the remote refs are refreshed, the identity check runs over
+/// them and the new commits are replaced by signed copies
+/// (`git::signed_publishable_tip`) — in that order, so signing never reaches a
+/// commit the check did not. The signature then vouches for exactly the
+/// commits the user approved. A key the host cannot use is a refusal: the user
+/// asked for signed commits, and an unsigned push behind their back is the one
+/// thing that setting must never produce.
+async fn publish_tip(id: &str, cwd: &Path, branch: &str) -> std::result::Result<String, Response> {
+    let signs = crate::git::host_signs_commits(cwd)
         .await
-        .map_err(|e| {
-            Response::err(
-                id,
-                format!(
-                    "could not sign the commits '{branch}' would publish: {e}. Your global \
-                     gitconfig sets commit.gpgsign=true, so Fletch signs on push with the key \
-                     it names; make that key available to Fletch, or set commit.gpgsign=false"
-                ),
-            )
-        })
+        .map_err(|e| Response::err(id, format!("could not read the host's signing config: {e}")))?;
+    if !signs {
+        return checked_tip(id, cwd, branch).await;
+    }
+    match crate::git::signed_publishable_tip(cwd, branch).await {
+        Ok(crate::git::Identity::Own { tip }) => Ok(tip),
+        Ok(crate::git::Identity::Foreign(why)) => Err(Response::err(id, why)),
+        Err(e) => Err(Response::err(
+            id,
+            format!(
+                "could not sign the commits '{branch}' would publish: {e}. Your global \
+                 gitconfig sets commit.gpgsign=true, so Fletch signs on push with the key \
+                 it names; make that key available to Fletch, or set commit.gpgsign=false"
+            ),
+        )),
+    }
 }
 
 async fn create_branch(
