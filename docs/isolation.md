@@ -172,6 +172,30 @@ After either clone, three fixups run (`sandbox/provision.rs`):
   so it vouches for exactly what you let out. A key the host cannot use fails
   the push with the reason rather than publishing unsigned.
 
+### Why signing works this way
+
+A signature is a statement by whoever holds the key, so the design follows
+from who is taking responsibility for an agent's commits, and when. Fletch's
+answer is that the user is responsible and the agent is a tool: commits carry
+the user's identity, the host refuses a foreign committer, and the user
+approves each publish. The approval is the honest moment for the user's key to
+vouch, and it is the one place the key is reachable. Alternatives considered:
+
+- **Your key, or your ssh-agent, in the sandbox.** Rejected: an agent could
+  sign anything, at any time, and push over SSH past every host-side guard.
+  This is the hole the credential denies closed.
+- **A host-brokered `git commit` op.** Rejected: every commit becomes an RPC,
+  "local git is yours" stops being true, and the signature vouches for
+  intermediate commits nobody has looked at.
+- **A signing key per agent, in the sandbox** — the agent as a co-worker with
+  its own identity. Rejected for now: it is only coherent if the agent has an
+  identity GitHub recognises. A key registered on your account verifies as
+  you, which is the first option with extra steps; a bot account or GitHub App
+  means a different author and committer, so the frozen identity, the
+  own-committer push check and the attribution hook would all change. Worth
+  reopening if agents gain a GitHub identity of their own, for example on a
+  host shared by several people.
+
 ## What an agent can and cannot do
 
 Stated plainly, because the trust anchor earns trust by naming its limits.
