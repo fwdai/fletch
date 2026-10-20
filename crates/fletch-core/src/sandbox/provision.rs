@@ -1257,7 +1257,10 @@ mod tests {
             dest: &dest,
         };
         provision(&spec).await.unwrap();
-        assert_eq!(run(&dest, &["config", "--local", "commit.gpgsign"]), "false");
+        assert_eq!(
+            run(&dest, &["config", "--local", "commit.gpgsign"]),
+            "false"
+        );
 
         // The host's global config, as the seatbelt engine lets git read it: a
         // signing policy whose key is unreachable from the sandbox.

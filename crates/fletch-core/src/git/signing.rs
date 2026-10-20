@@ -299,7 +299,10 @@ mod tests {
         run(&repo, &["init", "-q", "-b", "main"]);
         run(&repo, &["config", "user.email", "me@example.com"]);
         run(&repo, &["config", "user.name", "Me"]);
-        run(&repo, &["remote", "add", "origin", origin.to_str().unwrap()]);
+        run(
+            &repo,
+            &["remote", "add", "origin", origin.to_str().unwrap()],
+        );
         let base = commit_file(&repo, "base.txt", &[]);
         run(&repo, &["push", "-q", "-u", "origin", "main"]);
 
@@ -308,7 +311,11 @@ mod tests {
             .args(["-q", "-t", "ed25519", "-N", "", "-f", key.to_str().unwrap()])
             .output()
             .unwrap();
-        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
         let public = std::fs::read_to_string(dir.join("signing_key.pub")).unwrap();
         let mut parts = public.split_whitespace();
         let (kind, blob) = (parts.next().unwrap(), parts.next().unwrap());
@@ -318,7 +325,11 @@ mod tests {
         run(&repo, &["config", "user.signingkey", key.to_str().unwrap()]);
         run(
             &repo,
-            &["config", "gpg.ssh.allowedSignersFile", signers.to_str().unwrap()],
+            &[
+                "config",
+                "gpg.ssh.allowedSignersFile",
+                signers.to_str().unwrap(),
+            ],
         );
         (repo, base)
     }
@@ -363,20 +374,37 @@ mod tests {
 
         assert_ne!(signed, tip);
         assert_eq!(run(&repo, &["rev-parse", "refs/heads/main"]), signed);
-        assert_eq!(run(&repo, &["rev-list", "--count", "origin/main..main"]), "2");
-        assert!(verified(&repo, &signed), "the tip must carry a valid signature");
+        assert_eq!(
+            run(&repo, &["rev-list", "--count", "origin/main..main"]),
+            "2"
+        );
+        assert!(
+            verified(&repo, &signed),
+            "the tip must carry a valid signature"
+        );
         assert!(verified(&repo, "main~1"), "so must the commit under it");
-        assert_eq!(shape(&repo, "origin/main..main"), before, "a copy changes nothing else");
+        assert_eq!(
+            shape(&repo, "origin/main..main"),
+            before,
+            "a copy changes nothing else"
+        );
         assert_eq!(
             run(&repo, &["rev-parse", "main~2"]),
             base,
             "the published commit keeps its hash"
         );
         assert_ne!(run(&repo, &["rev-parse", "main~1"]), one);
-        assert_eq!(run(&repo, &["status", "--porcelain"]), "", "the tree is untouched");
+        assert_eq!(
+            run(&repo, &["status", "--porcelain"]),
+            "",
+            "the tree is untouched"
+        );
 
         // Already signed: nothing to do, and the tip stays.
-        assert_eq!(sign_unpublished(&repo, "main", &signed).await.unwrap(), signed);
+        assert_eq!(
+            sign_unpublished(&repo, "main", &signed).await.unwrap(),
+            signed
+        );
     }
 
     #[tokio::test]
@@ -387,7 +415,10 @@ mod tests {
         run(&repo, &["checkout", "-q", "-b", "side", &base]);
         commit_file(&repo, "side.txt", &[]);
         run(&repo, &["checkout", "-q", "main"]);
-        run(&repo, &["merge", "-q", "--no-ff", "-m", "merge side", "side"]);
+        run(
+            &repo,
+            &["merge", "-q", "--no-ff", "-m", "merge side", "side"],
+        );
         let tip = run(&repo, &["rev-parse", "HEAD"]);
 
         let signed = sign_unpublished(&repo, "main", &tip).await.unwrap();
