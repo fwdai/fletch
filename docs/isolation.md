@@ -168,6 +168,10 @@ After either clone, three fixups run (`sandbox/provision.rs`):
   `git_push` and `open_pr` ops replace the commits origin lacks with signed
   copies (same tree, parents, author, committer and message), move the branch
   to the signed tip and push that. Published history keeps its hashes. The
+  remote refs are refreshed first, so "what origin lacks" is origin's answer
+  and not a stale clone's, and every commit in that range is signed afresh —
+  the clone's `.git` is agent-writable, so a signature header already on a
+  commit is only a claim and is never what gets it published. The
   signature is made where the key lives and at the moment you approve the push,
   so it vouches for exactly what you let out. A key the host cannot use fails
   the push with the reason rather than publishing unsigned.

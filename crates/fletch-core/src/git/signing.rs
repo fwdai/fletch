@@ -12,13 +12,20 @@
 //! keeps its hashes and the push stays a fast-forward. The branch is moved to
 //! the signed tip, so the agent's next commit builds on it.
 //!
+//! Two things are deliberately *not* trusted. The clone's `origin/*` refs:
+//! they are what the last fetch left, and a clone whose spawn-time fetch
+//! failed carries the source repo's local heads under that name, so the refs
+//! are refreshed from origin first. And a signature already on an unpublished
+//! commit: the clone's `.git` is agent-writable, so a `gpgsig` header there
+//! is just bytes — every unpublished commit is re-signed, whatever it claims.
+//!
 //! Residual: a commit's `encoding` and `mergetag` headers are not carried over
 //! (neither has a `commit-tree` spelling). Fletch never produces either.
 
 use std::collections::HashMap;
 use std::path::Path;
 
-use super::cmd::{git_output, git_output_stdin};
+use super::cmd::{git_output, git_output_stdin, output_timed};
 use crate::error::{Error, Result};
 
 /// Whether the host's git config asks for signed commits — in the scopes the
@@ -60,12 +67,40 @@ pub async fn sign_for_publish(repo: &Path, branch: &str, tip: &str) -> Result<St
     sign_unpublished(repo, branch, tip).await
 }
 
+/// `git fetch --prune origin`: the clone's `origin/*` refs as origin has them
+/// right now, so "what origin lacks" is answered by origin rather than by
+/// whatever the last fetch left — the source repo's own local heads, when the
+/// spawn-time fetch failed (`provision`), or a branch since deleted. Runs with
+/// the host's token, like the push that follows it.
+async fn refresh_remote_refs(repo: &Path) -> Result<()> {
+    // A fetch runs the transport-executing keys (`core.sshCommand`,
+    // `remote.<name>.uploadpack`) the `-c` overrides cannot neutralise.
+    super::hardening::refuse_steerable_config(repo).await?;
+    let mut cmd = crate::git_dist::command(repo);
+    cmd.args(["fetch", "--quiet", "--prune", "origin"]);
+    for (k, v) in crate::github::git_auth_env() {
+        cmd.env(k, v);
+    }
+    let out = output_timed(&mut cmd, "git fetch").await?;
+    if !out.status.success() {
+        return Err(Error::Git(format!(
+            "refreshing origin before signing failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
+    Ok(())
+}
+
 /// Replace the commits `tip` reaches that origin lacks with signed copies and
-/// move `refs/heads/<branch>` from `tip` to the new tip, which is returned.
-/// `tip` comes back unchanged when every such commit already carries a
-/// signature. The branch move is compare-and-swap on `tip`, so a commit that
-/// lands on the branch meanwhile fails the move rather than being dropped.
+/// move `refs/heads/<branch>` from `tip` to the new tip, which is returned —
+/// `tip` itself when origin already has everything. The remote refs are
+/// refreshed first, and every commit in the range is signed afresh, including
+/// one that already carries a `gpgsig` header: the clone is agent-writable, so
+/// an existing header proves nothing. The branch move is compare-and-swap on
+/// `tip`, so a commit that lands on the branch meanwhile fails the move
+/// rather than being dropped.
 pub async fn sign_unpublished(repo: &Path, branch: &str, tip: &str) -> Result<String> {
+    refresh_remote_refs(repo).await?;
     let out = git_output(
         repo,
         &[
@@ -110,11 +145,6 @@ pub async fn sign_unpublished(repo: &Path, branch: &str, tip: &str) -> Result<St
             .iter()
             .map(|p| signed.get(p).cloned().unwrap_or_else(|| p.clone()))
             .collect();
-        // A commit that is already signed keeps its signature — unless a parent
-        // was rewritten, which changes its content and so voids it.
-        if commit.signed && parents == commit.parents {
-            continue;
-        }
         let copy = commit_signed(repo, &commit, &parents).await?;
         signed.insert(sha.clone(), copy);
     }
@@ -192,8 +222,6 @@ struct RawCommit {
     parents: Vec<String>,
     author: Ident,
     committer: Ident,
-    /// Carries a `gpgsig` header.
-    signed: bool,
     /// Everything after the header block, untouched.
     message: Vec<u8>,
 }
@@ -207,9 +235,9 @@ impl RawCommit {
         let mut parents = Vec::new();
         let mut author = None;
         let mut committer = None;
-        let mut signed = false;
         for line in headers.lines() {
-            // A continuation line of a multi-line header (the signature body).
+            // A continuation line of a multi-line header (a signature body).
+            // Any `gpgsig` header is dropped with it: the copy gets its own.
             if line.starts_with(' ') {
                 continue;
             }
@@ -218,7 +246,6 @@ impl RawCommit {
                 Some(("parent", v)) => parents.push(v.to_string()),
                 Some(("author", v)) => author = Ident::parse(v),
                 Some(("committer", v)) => committer = Ident::parse(v),
-                Some(("gpgsig" | "gpgsig-sha256", _)) => signed = true,
                 _ => {}
             }
         }
@@ -227,7 +254,6 @@ impl RawCommit {
             parents,
             author: author?,
             committer: committer?,
-            signed,
             message,
         })
     }
@@ -399,11 +425,84 @@ mod tests {
             "the tree is untouched"
         );
 
-        // Already signed: nothing to do, and the tip stays.
+        // Signing again (a push that failed and is retried) keeps the branch
+        // signed and the published history intact; it does not trust the
+        // signatures it finds, so the tip may or may not change.
+        let again = sign_unpublished(&repo, "main", &signed).await.unwrap();
+        assert!(verified(&repo, &again));
         assert_eq!(
-            sign_unpublished(&repo, "main", &signed).await.unwrap(),
-            signed
+            run(&repo, &["rev-list", "--count", "origin/main..main"]),
+            "2"
         );
+        assert_eq!(run(&repo, &["rev-parse", "main~2"]), base);
+    }
+
+    /// The clone's `.git` is agent-writable, so a `gpgsig` header on an
+    /// unpublished commit is only a claim. A commit forged with one is
+    /// re-signed like any other, never published on the strength of it.
+    #[tokio::test]
+    async fn a_forged_signature_header_is_replaced_not_trusted() {
+        let td = tempfile::tempdir().unwrap();
+        let (repo, _base) = signing_repo(td.path());
+        let honest = commit_file(&repo, "one.txt", &[]);
+        let raw = run(&repo, &["cat-file", "commit", &honest]);
+        let (headers, message) = raw.split_once("\n\n").unwrap();
+        let forged = format!(
+            "{headers}\ngpgsig -----BEGIN SSH SIGNATURE-----\n not a signature\n -----END SSH SIGNATURE-----\n\n{message}\n"
+        );
+        let out = std::process::Command::new("git")
+            .current_dir(&repo)
+            .args(["hash-object", "-t", "commit", "-w", "--stdin"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .and_then(|mut child| {
+                use std::io::Write;
+                child.stdin.take().unwrap().write_all(forged.as_bytes())?;
+                child.wait_with_output()
+            })
+            .unwrap();
+        let fake = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        run(&repo, &["update-ref", "refs/heads/main", &fake]);
+        assert!(!verified(&repo, &fake), "the forgery must not verify");
+
+        let signed = sign_unpublished(&repo, "main", &fake).await.unwrap();
+
+        assert_ne!(signed, fake);
+        assert!(verified(&repo, &signed));
+        assert_eq!(run(&repo, &["rev-parse", "refs/heads/main"]), signed);
+    }
+
+    /// `origin/*` in the clone is whatever the last fetch left — the source
+    /// repo's own local heads when the spawn-time fetch failed. A commit that
+    /// a stale `origin/main` claims as published, and origin does not have,
+    /// is signed with the rest.
+    #[tokio::test]
+    async fn a_stale_remote_ref_does_not_hide_an_unpublished_ancestor() {
+        let td = tempfile::tempdir().unwrap();
+        let (repo, base) = signing_repo(td.path());
+        let stale = commit_file(&repo, "stale.txt", &[]);
+        run(&repo, &["update-ref", "refs/remotes/origin/main", &stale]);
+        let tip = commit_file(&repo, "two.txt", &[]);
+        assert_eq!(
+            run(&repo, &["rev-list", "--count", "origin/main..main"]),
+            "1",
+            "the stale ref hides the ancestor"
+        );
+
+        let signed = sign_unpublished(&repo, "main", &tip).await.unwrap();
+
+        assert_eq!(run(&repo, &["rev-parse", "refs/remotes/origin/main"]), base);
+        assert_eq!(
+            run(&repo, &["rev-list", "--count", "origin/main..main"]),
+            "2"
+        );
+        assert!(verified(&repo, &signed));
+        assert!(
+            verified(&repo, "main~1"),
+            "the hidden ancestor is signed too"
+        );
+        assert_eq!(run(&repo, &["rev-parse", "main~2"]), base);
     }
 
     #[tokio::test]
