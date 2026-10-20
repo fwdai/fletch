@@ -194,6 +194,21 @@ pub struct PrComments {
     pub unresolved: Vec<PrComment>,
 }
 
+/// One comment on a PR's conversation tab (an issue comment, not a review
+/// thread). Read newest-last for the agent's `pr_comments` op.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct PrConversationComment {
+    /// Author's login; empty for a deleted account (GitHub's "ghost").
+    pub author: String,
+    /// True when the author is a GitHub App / bot (`__typename == "Bot"`).
+    pub is_bot: bool,
+    pub body: String,
+    /// ISO-8601 as GitHub gives it.
+    pub created_at: String,
+    /// Permalink to the comment.
+    pub url: String,
+}
+
 /// A PR's branch pair. Read for callers that hold a PR number but no checkout
 /// of its branch — the roadmap board, whose items are built in disposable run
 /// repos: `head` is the branch a fix agent must fork from to work *on* the PR,
