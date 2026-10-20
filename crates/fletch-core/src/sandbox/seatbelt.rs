@@ -1062,11 +1062,22 @@ fn deny_host_git_credentials(home: &Path) -> String {
     if let Some(gh_dir) = env_dir("GH_CONFIG_DIR") {
         deny.subpath(&gh_dir);
     }
+    // `credential.helper=cache` serves the token over a unix socket at git's
+    // documented locations: `$XDG_CACHE_HOME/git/credential/socket` (default
+    // `~/.cache/…`) and the legacy `~/.git-credential-cache/socket`. A socket
+    // named only by `cache --socket <path>` is not covered.
+    let cache_root = env_dir("XDG_CACHE_HOME").unwrap_or_else(|| home.join(".cache"));
+    let cache_sockets = socket_deny([
+        cache_root.join("git").join("credential").join("socket"),
+        home.join(".git-credential-cache").join("socket"),
+    ]);
     format!(
-        ";; The user's ssh keys, ssh-agent and gh login: git in the sandbox has no\n\
-         ;; credential path; publishing goes through the host-brokered RPC ops.\n\
+        ";; The user's ssh keys, ssh-agent, gh login and git credential stores: git in\n\
+         ;; the sandbox has no credential path; publishing goes through the host-brokered\n\
+         ;; RPC ops.\n\
          {}\n\
-         {SSH_AGENT_NETWORK_DENY}",
+         {SSH_AGENT_NETWORK_DENY}\n\
+         {cache_sockets}",
         deny.block()
     )
 }
@@ -1074,6 +1085,22 @@ fn deny_host_git_credentials(home: &Path) -> String {
 /// The launchd-managed ssh-agent listener every login session gets.
 const SSH_AGENT_NETWORK_DENY: &str =
     r##"(deny network-outbound (regex #"^/private/tmp/com\.apple\.launchd\.[^/]+/Listeners$"))"##;
+
+/// One `network-outbound` deny over unix sockets at `paths`, each in its
+/// literal and resolved form like the file denies — connecting to a socket
+/// is a network operation to the sandbox, so a file deny would not stop it.
+fn socket_deny(paths: impl IntoIterator<Item = PathBuf>) -> String {
+    let mut clauses: Vec<String> = Vec::new();
+    for path in paths {
+        for form in LoginDeny::forms(&path) {
+            let clause = format!("  (literal {})", sbpl_string(&form.to_string_lossy()));
+            if !clauses.contains(&clause) {
+                clauses.push(clause);
+            }
+        }
+    }
+    format!("(deny network-outbound\n{})", clauses.join("\n"))
+}
 
 /// The clauses of a login deny, each path in its literal and resolved form,
 /// like the grants (the sandbox checks resolved paths).
@@ -2375,7 +2402,11 @@ mod tests {
         // The deny follows XDG_CONFIG_HOME / GH_CONFIG_DIR, and CI runners
         // export the former: blank both so the defaults are what is asserted.
         let (profile, block) = crate::bin_resolve::with_login_shell_env(
-            &[("XDG_CONFIG_HOME", ""), ("GH_CONFIG_DIR", "")],
+            &[
+                ("XDG_CONFIG_HOME", ""),
+                ("GH_CONFIG_DIR", ""),
+                ("XDG_CACHE_HOME", ""),
+            ],
             || {
                 (
                     build_profile(&root, &rpc, &home, None, None, None, None).unwrap(),
@@ -2392,6 +2423,19 @@ mod tests {
         for file in [".git-credentials", ".config/git/credentials"] {
             let clause = format!("(literal \"{}/{file}\")", home.display());
             assert!(block.contains(&clause), "{clause} not in {block}");
+        }
+        let sockets = socket_deny([
+            home.join(".cache/git/credential/socket"),
+            home.join(".git-credential-cache/socket"),
+        ]);
+        assert!(block.contains(&sockets), "{sockets} not in {block}");
+        assert!(sockets.starts_with("(deny network-outbound\n"));
+        for sock in [
+            ".cache/git/credential/socket",
+            ".git-credential-cache/socket",
+        ] {
+            let clause = format!("(literal \"{}/{sock}\")", home.display());
+            assert!(sockets.contains(&clause), "{clause} not in {sockets}");
         }
         assert!(block.contains("(deny file-read* file-write*\n"), "{block}");
         assert!(block.contains(SSH_AGENT_NETWORK_DENY));
@@ -2416,8 +2460,14 @@ mod tests {
         let gh_dir = home.join("gh-elsewhere");
         let xdg_s = xdg.to_string_lossy().into_owned();
         let gh_s = gh_dir.to_string_lossy().into_owned();
+        let cache = home.join("xdg-cache");
+        let cache_s = cache.to_string_lossy().into_owned();
         let block = crate::bin_resolve::with_login_shell_env(
-            &[("XDG_CONFIG_HOME", &xdg_s), ("GH_CONFIG_DIR", &gh_s)],
+            &[
+                ("XDG_CONFIG_HOME", &xdg_s),
+                ("GH_CONFIG_DIR", &gh_s),
+                ("XDG_CACHE_HOME", &cache_s),
+            ],
             || {
                 let _ = build_profile(&root, &rpc, &home, None, None, None, None).unwrap();
                 deny_host_git_credentials(&home)
@@ -2429,6 +2479,11 @@ mod tests {
             format!("(subpath \"{gh_s}\")"),
             format!("(subpath \"{}/.ssh\")", home.display()),
             format!("(literal \"{}/.git-credentials\")", home.display()),
+            format!("(literal \"{cache_s}/git/credential/socket\")"),
+            format!(
+                "(literal \"{}/.git-credential-cache/socket\")",
+                home.display()
+            ),
         ] {
             assert!(block.contains(&clause), "{clause} not in {block}");
         }
@@ -2437,10 +2492,15 @@ mod tests {
             &[
                 ("XDG_CONFIG_HOME", "relative/config"),
                 ("GH_CONFIG_DIR", ""),
+                ("XDG_CACHE_HOME", "relative/cache"),
             ],
             || deny_host_git_credentials(&home),
         );
         assert!(block.contains(&format!("(subpath \"{}/.config/gh\")", home.display())));
+        assert!(block.contains(&format!(
+            "(literal \"{}/.cache/git/credential/socket\")",
+            home.display()
+        )));
     }
 
     /// An agent's env drops the inherited ssh-agent socket and the ambient
@@ -2527,6 +2587,18 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         assert!(control_ok, "the control must reach the socket");
         assert!(!denied_ok, "the agent profile must not reach the ssh-agent");
+
+        // git's credential-cache daemon, at its legacy socket under the home
+        // this profile was built for.
+        let cache_sock = home.join(".git-credential-cache/socket");
+        std::fs::create_dir_all(cache_sock.parent().unwrap()).unwrap();
+        let cache_listener = std::os::unix::net::UnixListener::bind(&cache_sock).unwrap();
+        cache_listener.set_nonblocking(true).unwrap();
+        assert!(reaches_socket(control, &cache_sock, &cache_listener));
+        assert!(
+            !reaches_socket(&profile, &cache_sock, &cache_listener),
+            "the agent profile must not reach git's credential cache"
+        );
     }
 
     /// Whether `nc -U sock` run under `profile` gets as far as connecting,

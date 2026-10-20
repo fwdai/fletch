@@ -182,11 +182,13 @@ impl Guarantee {
                 "credentials stay host-side: the profile also withholds your own at their \
                  standard locations — ~/.ssh and the launchd ssh-agent socket, the gh login \
                  (~/.config/gh, $XDG_CONFIG_HOME/gh or $GH_CONFIG_DIR), git's stored \
-                 credentials (~/.git-credentials, ~/.config/git/credentials) — strips GH_TOKEN \
-                 and GITHUB_TOKEN from the agent's env, and sandbox clones use an HTTPS GitHub \
-                 origin, so git in the sandbox has no credential path. Not covered: a credential \
-                 store at a path only your git config names, or an ssh-agent at another socket \
-                 path (1Password, gpg-agent). ",
+                 credentials (~/.git-credentials, ~/.config/git/credentials) and its \
+                 credential-cache socket (~/.cache/git/credential/socket, \
+                 ~/.git-credential-cache/socket) — strips GH_TOKEN and GITHUB_TOKEN from the \
+                 agent's env, and sandbox clones use an HTTPS GitHub origin, so git in the \
+                 sandbox has no credential path. Not covered: a credential store or cache \
+                 socket at a path only your git config names, or an ssh-agent at another \
+                 socket path (1Password, gpg-agent). ",
                 brokered_publish_gating!(),
             )),
             (Self::HostHeldCredentials, Docker | Podman) => Coverage::Partial(concat!(

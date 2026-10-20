@@ -198,13 +198,14 @@ cannot go quietly unstated the way a doc caveat can. The
   the sandbox. Under seatbelt the profile also withholds your own, at their
   standard locations: `~/.ssh` and the launchd ssh-agent socket (`SSH_AUTH_SOCK`
   is dropped from the agent's env), the `gh` CLI login (`~/.config/gh`,
-  `$XDG_CONFIG_HOME/gh` or `$GH_CONFIG_DIR`) and git's stored credentials
-  (`~/.git-credentials`, `~/.config/git/credentials`). `GH_TOKEN` and
-  `GITHUB_TOKEN` are stripped from the agent's env. Every sandbox clone, and a
-  workflow's run repo, gets a GitHub SSH origin rewritten to HTTPS, so git inside
-  the sandbox has no credential to publish with. Not covered: a credential store
-  at a path only your git config names, or an ssh-agent at another socket path
-  (1Password, gpg-agent).
+  `$XDG_CONFIG_HOME/gh` or `$GH_CONFIG_DIR`), git's stored credentials
+  (`~/.git-credentials`, `~/.config/git/credentials`) and git's credential-cache
+  socket (`$XDG_CACHE_HOME/git/credential/socket`, `~/.git-credential-cache/socket`).
+  `GH_TOKEN` and `GITHUB_TOKEN` are stripped from the agent's env. Every sandbox
+  clone, and a workflow's run repo, gets a GitHub SSH origin rewritten to HTTPS,
+  so git inside the sandbox has no credential to publish with. Not covered: a
+  credential store or cache socket at a path only your git config names, or an
+  ssh-agent at another socket path (1Password, gpg-agent).
 
 **What publication *is* gated by.** Every brokered op is checked against the
 agent's **capability grant**, stamped when it spawns and never re-read, so a
