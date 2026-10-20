@@ -40,6 +40,7 @@ pub(super) fn dispatcher(db: &Db, project_id: &str) -> RoadmapDispatcher {
         project_id: project_id.to_string(),
         git: GitDispatcher::new(
             std::env::temp_dir(),
+            std::env::temp_dir(),
             "main".to_string(),
             AgentCaps::advisory(),
         ),

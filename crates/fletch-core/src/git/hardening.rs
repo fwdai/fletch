@@ -65,12 +65,20 @@ use crate::error::{Error, Result};
 /// is why membership is limited to keys Fletch's automated git never legitimately
 /// needs. Deliberately absent: `credential.helper`, `core.sshCommand` and
 /// `gpg.program`. Each carries a user's real remote auth or signing setup, so
-/// clearing it would break `fetch` against a non-GitHub remote or a host-side
-/// commit in the user's own repo under `commit.gpgsign` — and each needs a
+/// clearing it would break `fetch` against a non-GitHub remote or the signer
+/// (`git::signing`), which runs in the user's own repo — and each needs a
 /// config *write* to exploit, which policy invariant 3 denies. The boundary
-/// belongs there, not here. (Agent clones are a different matter: the sandbox
-/// cannot reach a signing key, so provisioning freezes `commit.gpgsign=false`
-/// into each clone — `sandbox::provision::seed_identity`.)
+/// belongs there, not here.
+///
+/// `commit.gpgsign` / `tag.gpgsign` are here for the opposite reason: implicit
+/// signing reads its key and helpers (`user.signingKey`, `gpg.format`,
+/// `gpg.ssh.defaultKeyCommand` — a *program*) from the repository's config,
+/// and host-side git commits inside agent-writable checkouts (the Git panel's
+/// commit, a `pull`'s merge, a workflow boundary commit). An agent's local
+/// config must never choose the host's signing key or run a key command, so
+/// host-side git never signs implicitly anywhere. Signatures are made in one
+/// place only: the publication layer (`git::publish`), which signs explicitly
+/// (`-S`) with the config of the user's own repository.
 ///
 /// Verified against git 2.50: without its row, each of `core.hooksPath` and
 /// `core.fsmonitor` executes agent-authored code host-side.
@@ -91,6 +99,8 @@ const NEUTRALISED: &[(&str, &str)] = &[
     ("core.pager", "cat"),           // Fletch captures output; a pager only adds a program
     ("core.editor", "false"),        // an interactive editor would hang an automated op
     ("sequence.editor", "false"),    // `rebase -i`'s todo-list editor, same hazard
+    ("commit.gpgsign", "false"),     // signing reads key config from the checkout; see above
+    ("tag.gpgsign", "false"),        // same, for `git tag`
 ];
 
 /// The `-c key=value` arguments that make a host-side git invocation safe to run
@@ -121,6 +131,10 @@ const EXEC_CONFIG: &[(&str, &str)] = &[
     ("core", "gitproxy"),
     ("core", "alternaterefscommand"),
     ("gpg", "program"),
+    // `gpg.ssh.defaultKeyCommand`: run to pick a signing key. Unreachable now
+    // that host-side git never signs in a checkout (`NEUTRALISED`), kept as the
+    // second wall.
+    ("gpg", "defaultkeycommand"),
     ("credential", "helper"),
     ("diff", "external"),
     // The wildcard family — the reason this check exists at all.
@@ -529,13 +543,7 @@ mod tests {
         let root = td.path().join("workspaces");
         let repo = root.join("agent-1/repo");
         std::fs::create_dir_all(&repo).unwrap();
-        let git = |args: &[&str]| {
-            std::process::Command::new("git")
-                .current_dir(&repo)
-                .args(args)
-                .output()
-                .expect("git")
-        };
+        let git = |args: &[&str]| crate::git::testing::git_output(&repo, args);
         git(&["init", "-q"]);
 
         // Clean to begin with, so a false positive would show up here first.
@@ -576,13 +584,7 @@ mod tests {
         let root = td.path().join("workspaces");
         let repo = root.join("agent-1/repo");
         std::fs::create_dir_all(&repo).unwrap();
-        let git = |args: &[&str]| {
-            std::process::Command::new("git")
-                .current_dir(&repo)
-                .args(args)
-                .output()
-                .expect("git")
-        };
+        let git = |args: &[&str]| crate::git::testing::git_output(&repo, args);
         git(&["init", "-q"]);
 
         // Clean to begin with, so a false positive would show up here first.
@@ -620,13 +622,7 @@ mod tests {
         let root = td.path().join("workspaces");
         let repo = root.join("agent-1/repo");
         std::fs::create_dir_all(&repo).unwrap();
-        let git = |args: &[&str]| {
-            std::process::Command::new("git")
-                .current_dir(&repo)
-                .args(args)
-                .output()
-                .expect("git")
-        };
+        let git = |args: &[&str]| crate::git::testing::git_output(&repo, args);
         git(&["init", "-q"]);
 
         // Each key git would execute during ssh/local push or fetch must trip the
@@ -664,13 +660,7 @@ mod tests {
         let repo = root.join("agent-1/repo");
         std::fs::create_dir_all(&repo).unwrap();
         let dir = repo.clone();
-        let git = move |args: &[&str]| {
-            std::process::Command::new("git")
-                .current_dir(&dir)
-                .args(args)
-                .output()
-                .expect("git")
-        };
+        let git = move |args: &[&str]| crate::git::testing::git_output(&dir, args);
         git(&["init", "-q"]);
         (td, root, repo, git)
     }
@@ -753,13 +743,7 @@ mod tests {
         let fired = td.path().join("fired");
         std::fs::create_dir_all(&repo).unwrap();
 
-        let git = |args: &[&str]| {
-            std::process::Command::new("git")
-                .current_dir(&repo)
-                .args(args)
-                .output()
-                .expect("git")
-        };
+        let git = |args: &[&str]| crate::git::testing::git_output(&repo, args);
         // Every invocation past the plant carries the overrides — an unhardened
         // `add` would trip the fsmonitor itself and mask the result.
         let overrides = config_overrides();
@@ -814,13 +798,7 @@ mod tests {
         let repo = root.join("agent-1/repo");
         let fired = td.path().join("fired");
         std::fs::create_dir_all(repo.join(".githooks")).unwrap();
-        let git = |args: &[&str]| {
-            std::process::Command::new("git")
-                .current_dir(&repo)
-                .args(args)
-                .output()
-                .expect("git")
-        };
+        let git = |args: &[&str]| crate::git::testing::git_output(&repo, args);
         let overrides = config_overrides();
         let hardened = |args: &[&str]| {
             let mut all: Vec<&str> = overrides.iter().map(String::as_str).collect();

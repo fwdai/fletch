@@ -120,13 +120,13 @@ impl GitDispatcher {
         {
             return (Response::err(id, why), effects);
         }
-        // …and again after it, pushing the very commit it read: the branch may
-        // move while the prompt is open, or between here and the push.
-        let tip = match publish_tip(id, &t.cwd, &branch).await {
+        // …and again after it, publishing the very commit it read: the branch
+        // may move while the prompt is open, or between here and the push.
+        let tip = match checked_tip(id, &t.cwd, &branch).await {
             Ok(tip) => tip,
             Err(resp) => return (resp, effects),
         };
-        if let Err(e) = crate::git::push_commit(&t.cwd, &tip, &branch, false).await {
+        if let Err(e) = t.publish(&branch, &tip, false).await {
             return (
                 Response::err(id, format!("open_pr push failed: {e}")),
                 effects,
@@ -208,28 +208,47 @@ impl GitDispatcher {
         {
             return (Response::err(id, why), effects);
         }
-        // Checked again after the prompt, and the push publishes the very commit
-        // it read: the branch may move while the prompt is open, or between
-        // here and the push.
-        let tip = match publish_tip(id, &t.cwd, &branch).await {
-            Ok(tip) => tip,
-            Err(resp) => return (resp, effects),
-        };
-
         // Lease-based, so a stale local view can't clobber remote work it hasn't seen.
         let force = arg_bool(args, "force");
         // SECURITY: the lease passes for any branch the agent just fetched, so a force
         // is authorized against the spawn-stable own branch and fails closed when none
-        // is recorded. Non-force pushes are untouched.
+        // is recorded. Non-force pushes are untouched. Refused before anything
+        // below touches the checkout: publishing may rewrite the unpublished
+        // commits (signing), and a refused request must leave no trace.
         if force {
             if let Some(why) = self.caps.refuses_force(&branch, t.own_branch.as_deref()) {
                 return (Response::err(id, why), effects);
             }
         }
-        match crate::git::push_commit(&t.cwd, &tip, &branch, force).await {
+        // Checked again after the prompt, and the push publishes the very commit
+        // it read: the branch may move while the prompt is open, or between
+        // here and the push.
+        let tip = match checked_tip(id, &t.cwd, &branch).await {
+            Ok(tip) => tip,
+            Err(resp) => return (resp, effects),
+        };
+        match t.publish(&branch, &tip, force).await {
             Ok(summary) => (Response::ok(id, 0, summary, String::new()), effects),
             Err(e) => (Response::err(id, e.to_string()), effects),
         }
+    }
+}
+
+impl Target {
+    /// Publish `tip` to `branch` through the host publication layer, which
+    /// signs when the user's repository does (`git::publish`).
+    async fn publish(&self, branch: &str, tip: &str, force: bool) -> crate::error::Result<String> {
+        let published = crate::git::publish(
+            &crate::git::Publication {
+                checkout: &self.cwd,
+                source_repo: &self.source_repo,
+                branch,
+                force,
+            },
+            crate::git::Tip::Commit(tip),
+        )
+        .await?;
+        Ok(published.summary)
     }
 }
 
@@ -244,36 +263,6 @@ async fn checked_tip(id: &str, cwd: &Path, branch: &str) -> std::result::Result<
         Err(e) => Err(Response::err(
             id,
             format!("could not read the commits '{branch}' would publish: {e}"),
-        )),
-    }
-}
-
-/// The post-prompt [`checked_tip`], as the host publishes it. When the host's
-/// own git config does not sign, that is the identity-checked tip as read.
-/// When it does, the remote refs are refreshed, the identity check runs over
-/// them and the new commits are replaced by signed copies
-/// (`git::signed_publishable_tip`) — in that order, so signing never reaches a
-/// commit the check did not. The signature then vouches for exactly the
-/// commits the user approved. A key the host cannot use is a refusal: the user
-/// asked for signed commits, and an unsigned push behind their back is the one
-/// thing that setting must never produce.
-async fn publish_tip(id: &str, cwd: &Path, branch: &str) -> std::result::Result<String, Response> {
-    let signs = crate::git::host_signs_commits(cwd)
-        .await
-        .map_err(|e| Response::err(id, format!("could not read the host's signing config: {e}")))?;
-    if !signs {
-        return checked_tip(id, cwd, branch).await;
-    }
-    match crate::git::signed_publishable_tip(cwd, branch).await {
-        Ok(crate::git::Identity::Own { tip }) => Ok(tip),
-        Ok(crate::git::Identity::Foreign(why)) => Err(Response::err(id, why)),
-        Err(e) => Err(Response::err(
-            id,
-            format!(
-                "could not sign the commits '{branch}' would publish: {e}. Your global \
-                 gitconfig sets commit.gpgsign=true, so Fletch signs on push with the key \
-                 it names; make that key available to Fletch, or set commit.gpgsign=false"
-            ),
         )),
     }
 }

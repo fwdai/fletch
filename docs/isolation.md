@@ -164,19 +164,35 @@ After either clone, three fixups run (`sandbox/provision.rs`):
   sandbox while the key it names (`~/.ssh`, the ssh-agent, a gpg keyring) stays
   denied — and every agent commit would fail with "failed to write commit
   object". Your own repos keep signing; the clone's local scope outranks global.
-  When your global config signs, **the host signs on publish** instead: the
-  `git_push` and `open_pr` ops replace the commits origin lacks with signed
-  copies (same tree, parents, author, committer and message), move the branch
-  to the signed tip and push that. Published history keeps its hashes. The
-  remote refs are refreshed first, so "what origin lacks" is origin's answer
-  and not a stale clone's; the own-committer check then runs over those same
-  refs, so signing never reaches a commit it did not; and every commit in
-  that range is signed afresh —
-  the clone's `.git` is agent-writable, so a signature header already on a
-  commit is only a claim and is never what gets it published. The
-  signature is made where the key lives and at the moment you approve the push,
-  so it vouches for exactly what you let out. A key the host cannot use fails
-  the push with the reason rather than publishing unsigned.
+  Host-side git never signs implicitly in a checkout either (every invocation
+  carries `-c commit.gpgsign=false`): implicit signing reads the key and its
+  helpers — `user.signingKey`, `gpg.ssh.defaultKeyCommand`, a *program* — from
+  the checkout's config, which is the agent's to write.
+
+### Signing on publish
+
+When **your repository** signs its commits (`commit.gpgsign=true` as your own
+`git commit` there would see it), Fletch signs agent work at the moment it is
+published. Every push Fletch makes — the agent's `git_push` and `open_pr` ops,
+the Git panel's Push, a workflow run's finalize, a new project's first
+publish — goes through one publication layer (`git::publish`), so none can
+skip it. It replaces the commits origin lacks with signed copies (same tree,
+parents, author, committer and message), moves the branch to the signed tip
+and pushes that. Published history keeps its hashes.
+
+- **The signer runs in your repository, not the checkout.** `commit-tree -S`
+  reads its key and helper programs from the repo it runs in, so it runs in the
+  user-owned repo the checkout was cloned from — which no agent can write —
+  with the checkout supplying objects only. Nothing in a checkout's
+  `.git/config` can choose the key or run a command on the host.
+- **The remote refs are refreshed first**, so "what origin lacks" is origin's
+  answer and not a stale clone's; the own-committer check then runs over those
+  same refs, so signing never reaches a commit it did not.
+- **Every commit in the range is signed afresh.** The checkout's `.git` is
+  agent-writable, so a signature header already on a commit is only a claim.
+- The signature is made where the key lives and at the moment you approve the
+  push, so it vouches for exactly what you let out. A key the host cannot use
+  fails the push with the reason rather than publishing unsigned.
 
 ### Why signing works this way
 

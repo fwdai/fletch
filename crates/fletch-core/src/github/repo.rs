@@ -147,7 +147,18 @@ pub async fn repo_create_and_push(
     )
     .await?;
     let branch = require_current_branch(target, "publish").await?;
-    crate::git::push(target, &branch, false).await?;
+    // The user's own repo is what is pushed, so it is its own source: signed
+    // with its own config when that signs.
+    crate::git::publish(
+        &crate::git::Publication {
+            checkout: target,
+            source_repo: target,
+            branch: &branch,
+            force: false,
+        },
+        crate::git::Tip::Branch,
+    )
+    .await?;
     Ok(format!("https://github.com/{full_name}"))
 }
 

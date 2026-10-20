@@ -886,17 +886,7 @@ mod tests {
     use std::path::PathBuf;
 
     fn run(repo: &Path, args: &[&str]) -> String {
-        let out = std::process::Command::new("git")
-            .current_dir(repo)
-            .args(args)
-            .output()
-            .unwrap();
-        assert!(
-            out.status.success(),
-            "git {args:?}: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-        String::from_utf8_lossy(&out.stdout).trim().to_string()
+        crate::git::testing::git(repo, args)
     }
 
     /// Init a source repo with two commits; returns (repo, first_sha, head_sha).
