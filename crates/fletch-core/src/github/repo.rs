@@ -147,8 +147,9 @@ pub async fn repo_create_and_push(
     )
     .await?;
     let branch = require_current_branch(target, "publish").await?;
-    // The user's own repo is what is pushed, so it is its own source: signed
-    // with its own config when that signs.
+    // The user's own repo is what is pushed, so it is its own source — which
+    // the publication layer publishes as it stands: its history is the user's,
+    // other committers and all, and already signed as the user chose.
     crate::git::publish(
         &crate::git::Publication {
             checkout: target,

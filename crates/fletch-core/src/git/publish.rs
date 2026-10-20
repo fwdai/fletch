@@ -40,7 +40,8 @@ pub struct Publication<'a> {
     /// The user's own repository `checkout` was cloned from — the one
     /// repository on this machine no agent can write. Its config decides
     /// whether commits are signed and with what; the signer runs there.
-    /// The same path as `checkout` when the user's repo is what is pushed.
+    /// The same path as `checkout` when the user's repo is what is pushed,
+    /// which is then published as is: no identity check, no signing pass.
     pub source_repo: &'a Path,
     /// The remote branch, `refs/heads/<branch>` on `origin`. Also the local
     /// branch moved onto the signed tip, when there is one.
@@ -64,7 +65,13 @@ pub async fn publish(p: &Publication<'_>, tip: Tip<'_>) -> Result<Published> {
         Tip::Branch => branch_tip(p.checkout, p.branch).await?,
         Tip::Commit(sha) => sha.to_string(),
     };
-    let tip = if host_signs_commits(p.source_repo).await? {
+    // Signing on publish is for work made where the key is not: an agent's
+    // checkout. The user's own repository is pushed as it stands — its commits
+    // already carry whatever signature the user's git gave them, its history
+    // legitimately holds other committers, and a first publish must not
+    // rewrite every commit the user ever made.
+    let agent_work = p.checkout != p.source_repo;
+    let tip = if agent_work && host_signs_commits(p.source_repo).await? {
         signed(p, tip).await?
     } else {
         tip
@@ -316,12 +323,39 @@ mod tests {
         );
     }
 
-    /// A new project's first publish pushes the user's repo itself: the
-    /// checkout and the source are one, and the user's own config signs.
+    /// A new project's first publish pushes the user's repo itself, to a
+    /// remote with no history: every commit the user ever made is "what
+    /// origin lacks", and the history holds a teammate's commits. It goes out
+    /// exactly as it stands — no committer check, no rewrite.
     #[tokio::test]
-    async fn the_users_own_repo_publishes_signed_too() {
+    async fn the_users_own_repo_is_published_as_it_stands() {
         let td = tempfile::tempdir().unwrap();
         let fx = signing_repos(td.path());
+        let fresh = td.path().join("fresh.git");
+        git(
+            td.path(),
+            &["init", "-q", "--bare", fresh.to_str().unwrap()],
+        );
+        git(
+            &fx.source,
+            &["remote", "set-url", "origin", fresh.to_str().unwrap()],
+        );
+        // An old commit by someone else, made unsigned.
+        std::fs::write(fx.source.join("theirs.txt"), b"theirs").unwrap();
+        git(&fx.source, &["add", "-A"]);
+        git(
+            &fx.source,
+            &[
+                "-c",
+                "user.email=teammate@example.com",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-q",
+                "-m",
+                "theirs",
+            ],
+        );
         let tip = commit_file(&fx.source, "one.txt");
 
         let out = publish(
@@ -336,16 +370,12 @@ mod tests {
         .await
         .unwrap();
 
-        // The user's own git already signed `tip` under that config, and an
-        // ed25519 signature over the same bytes is the same bytes, so the copy
-        // may well be the commit itself. What matters is what origin holds.
-        assert_eq!(origin_tip(&fx, "main"), out.tip);
-        assert_eq!(git(&fx.source, &["rev-parse", "refs/heads/main"]), out.tip);
-        assert!(verified(&fx, &out.tip));
-        assert_eq!(
-            git(&fx.source, &["rev-parse", &format!("{}~1", out.tip)]),
-            fx.base
+        assert_eq!(out.tip, tip, "no rewrite");
+        assert_eq!(origin_tip(&fx, "main"), tip);
+        assert_eq!(git(&fx.source, &["rev-parse", "refs/heads/main"]), tip);
+        assert!(
+            !verified(&fx, &format!("{tip}~1")),
+            "the teammate's commit went out as it was"
         );
-        let _ = tip;
     }
 }

@@ -176,9 +176,13 @@ When **your repository** signs its commits (`commit.gpgsign=true` as your own
 published. Every push Fletch makes — the agent's `git_push` and `open_pr` ops,
 the Git panel's Push, a workflow run's finalize, a new project's first
 publish — goes through one publication layer (`git::publish`), so none can
-skip it. It replaces the commits origin lacks with signed copies (same tree,
-parents, author, committer and message), moves the branch to the signed tip
-and pushes that. Published history keeps its hashes.
+skip it. For work made in a checkout it replaces the commits origin lacks with
+signed copies (same tree, parents, author, committer and message), moves the
+branch to the signed tip and pushes that. Published history keeps its hashes.
+Your own repository, when it is what gets pushed (a new project's first
+publish), goes out exactly as it stands: its commits already carry whatever
+signature your git gave them, and its history is yours, other committers and
+all.
 
 - **The signer runs in your repository, not the checkout.** `commit-tree -S`
   reads its key and helper programs from the repo it runs in, so it runs in the
