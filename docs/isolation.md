@@ -197,10 +197,14 @@ cannot go quietly unstated the way a doc caveat can. The
   (`rpc/git.rs`, ops `git_push`, `open_pr`, `git_fetch`). Credentials never enter
   the sandbox. Under seatbelt the profile also withholds your own, at their
   standard locations: `~/.ssh` and the launchd ssh-agent socket (`SSH_AUTH_SOCK`
-  is dropped from the agent's env), the `gh` CLI login (`~/.config/gh`,
-  `$XDG_CONFIG_HOME/gh` or `$GH_CONFIG_DIR`), git's stored credentials
-  (`~/.git-credentials`, `~/.config/git/credentials`) and git's credential-cache
-  socket (`$XDG_CACHE_HOME/git/credential/socket`, `~/.git-credential-cache/socket`).
+  is dropped from the agent's env), the `gh` CLI login (`~/.config/gh`, plus
+  `$XDG_CONFIG_HOME/gh` and `$GH_CONFIG_DIR` when set), git's stored credentials
+  (`~/.git-credentials`, `~/.config/git/credentials`, plus
+  `$XDG_CONFIG_HOME/git/credentials`) and git's credential-cache socket
+  (`~/.cache/git/credential/socket`, `~/.git-credential-cache/socket`, plus
+  `$XDG_CACHE_HOME/git/credential/socket`). The home defaults are denied whether
+  or not a relocation is set: an agent can change those variables in its own
+  shell, and older files at the defaults would otherwise still work.
   `GH_TOKEN` and `GITHUB_TOKEN` are stripped from the agent's env. Every sandbox
   clone, and a workflow's run repo, gets a GitHub SSH origin rewritten to HTTPS,
   so git inside the sandbox has no credential to publish with. Not covered: a

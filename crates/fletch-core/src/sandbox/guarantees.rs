@@ -181,10 +181,11 @@ impl Guarantee {
             (Self::HostHeldCredentials, SandboxExec) => Coverage::Partial(concat!(
                 "credentials stay host-side: the profile also withholds your own at their \
                  standard locations — ~/.ssh and the launchd ssh-agent socket, the gh login \
-                 (~/.config/gh, $XDG_CONFIG_HOME/gh or $GH_CONFIG_DIR), git's stored \
-                 credentials (~/.git-credentials, ~/.config/git/credentials) and its \
-                 credential-cache socket (~/.cache/git/credential/socket, \
-                 ~/.git-credential-cache/socket) — strips GH_TOKEN and GITHUB_TOKEN from the \
+                 (~/.config/gh, plus $XDG_CONFIG_HOME/gh and $GH_CONFIG_DIR when set), git's \
+                 stored credentials (~/.git-credentials, ~/.config/git/credentials, plus \
+                 $XDG_CONFIG_HOME/git/credentials) and its credential-cache socket \
+                 (~/.cache/git/credential/socket, ~/.git-credential-cache/socket, plus \
+                 $XDG_CACHE_HOME/git/credential/socket) — strips GH_TOKEN and GITHUB_TOKEN from the \
                  agent's env, and sandbox clones use an HTTPS GitHub origin, so git in the \
                  sandbox has no credential path. Not covered: a credential store or cache \
                  socket at a path only your git config names, or an ssh-agent at another \

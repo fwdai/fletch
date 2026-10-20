@@ -1029,7 +1029,8 @@ fn deny_host_codex_logins(home: &Path) -> String {
 }
 
 /// SBPL deny of the user's own GitHub credentials at every location the tools
-/// read them from by default or by the env the login shell exports:
+/// read them from: the home defaults always, plus any relocation the login
+/// shell's env exports (both, never one or the other — see the body):
 /// `~/.ssh` (keys, config); the `gh` CLI login (`~/.config/gh`, or
 /// `$XDG_CONFIG_HOME/gh`, or `$GH_CONFIG_DIR`); git's `credential.helper=store`
 /// file (`~/.git-credentials`, `~/.config/git/credentials`, or
@@ -1046,19 +1047,24 @@ fn deny_host_codex_logins(home: &Path) -> String {
 /// user and skip all of that. Agent profile only. MUST follow the
 /// `(allow file-write* …)` block.
 fn deny_host_git_credentials(home: &Path) -> String {
+    // The home defaults are denied unconditionally — an agent can unset or
+    // change the XDG variables in its own shell, and whatever a tool wrote at
+    // the default path before the user relocated it (or a cache daemon still
+    // listening there) would otherwise stay usable. A relocation the login
+    // shell exports is denied *in addition*, when it is an absolute path.
     let mut deny = LoginDeny::default();
     deny.subpath(&home.join(".ssh"));
     deny.literal(&home.join(".git-credentials"));
-    // The XDG config root, as the agent's child would see it: the login
-    // shell's value over the app's. Only an absolute path relocates anything.
     let env_dir = |name: &str| {
         crate::bin_resolve::effective_env_var(name)
             .map(PathBuf::from)
             .filter(|p| p.is_absolute())
     };
-    let config_root = env_dir("XDG_CONFIG_HOME").unwrap_or_else(|| home.join(".config"));
-    deny.subpath(&config_root.join("gh"));
-    deny.literal(&config_root.join("git").join("credentials"));
+    let config_roots = std::iter::once(home.join(".config")).chain(env_dir("XDG_CONFIG_HOME"));
+    for root in config_roots {
+        deny.subpath(&root.join("gh"));
+        deny.literal(&root.join("git").join("credentials"));
+    }
     if let Some(gh_dir) = env_dir("GH_CONFIG_DIR") {
         deny.subpath(&gh_dir);
     }
@@ -1066,11 +1072,14 @@ fn deny_host_git_credentials(home: &Path) -> String {
     // documented locations: `$XDG_CACHE_HOME/git/credential/socket` (default
     // `~/.cache/…`) and the legacy `~/.git-credential-cache/socket`. A socket
     // named only by `cache --socket <path>` is not covered.
-    let cache_root = env_dir("XDG_CACHE_HOME").unwrap_or_else(|| home.join(".cache"));
-    let cache_sockets = socket_deny([
-        cache_root.join("git").join("credential").join("socket"),
-        home.join(".git-credential-cache").join("socket"),
-    ]);
+    let cache_roots = std::iter::once(home.join(".cache")).chain(env_dir("XDG_CACHE_HOME"));
+    let cache_sockets = socket_deny(
+        cache_roots
+            .map(|root| root.join("git").join("credential").join("socket"))
+            .chain(std::iter::once(
+                home.join(".git-credential-cache").join("socket"),
+            )),
+    );
     format!(
         ";; The user's ssh keys, ssh-agent, gh login and git credential stores: git in\n\
          ;; the sandbox has no credential path; publishing goes through the host-brokered\n\
@@ -2482,6 +2491,14 @@ mod tests {
             format!("(literal \"{cache_s}/git/credential/socket\")"),
             format!(
                 "(literal \"{}/.git-credential-cache/socket\")",
+                home.display()
+            ),
+            // The defaults stay denied alongside the relocations: an agent can
+            // unset the variables, and old files at the defaults still work.
+            format!("(subpath \"{}/.config/gh\")", home.display()),
+            format!("(literal \"{}/.config/git/credentials\")", home.display()),
+            format!(
+                "(literal \"{}/.cache/git/credential/socket\")",
                 home.display()
             ),
         ] {
