@@ -271,16 +271,9 @@ pub async fn ensure_head_commit(repo: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokio::process::Command;
 
     async fn config(repo: &Path, key: &str, val: &str) {
-        let out = Command::new("git")
-            .current_dir(repo)
-            .args(["config", key, val])
-            .output()
-            .await
-            .unwrap();
-        assert!(out.status.success());
+        crate::git::testing::git(repo, &["config", key, val]);
     }
 
     /// Write an executable `.git/hooks/<name>` that drops `sentinel` and fails.

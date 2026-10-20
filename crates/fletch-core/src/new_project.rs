@@ -240,11 +240,7 @@ mod tests {
         ensure_git_repo(&dir).await.unwrap();
 
         assert!(dir.join(".git").exists());
-        let head = std::process::Command::new("git")
-            .current_dir(&dir)
-            .args(["rev-parse", "HEAD"])
-            .output()
-            .unwrap();
+        let head = crate::git::testing::git_output(&dir, &["rev-parse", "HEAD"]);
         assert!(
             head.status.success(),
             "an adopted folder must have a HEAD commit: {}",
@@ -263,12 +259,7 @@ mod tests {
         let td = tempfile::tempdir().unwrap();
         let dir = td.path().join("empty-repo");
         std::fs::create_dir(&dir).unwrap();
-        assert!(std::process::Command::new("git")
-            .current_dir(&dir)
-            .args(["init", "-q"])
-            .status()
-            .unwrap()
-            .success());
+        crate::git::testing::git(&dir, &["init", "-q"]);
         // Precondition: initialized, but HEAD is unborn.
         assert!(dir.join(".git").exists());
         assert!(
@@ -287,12 +278,9 @@ mod tests {
     }
 
     fn head_resolves(dir: &Path) -> bool {
-        std::process::Command::new("git")
-            .current_dir(dir)
-            .args(["rev-parse", "--verify", "HEAD"])
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
+        crate::git::testing::git_output(dir, &["rev-parse", "--verify", "HEAD"])
+            .status
+            .success()
     }
 
     /// A folder nested inside an existing repository must be rejected with a
@@ -303,12 +291,7 @@ mod tests {
         let td = tempfile::tempdir().unwrap();
         let repo = td.path().join("repo");
         std::fs::create_dir(&repo).unwrap();
-        assert!(std::process::Command::new("git")
-            .current_dir(&repo)
-            .args(["init", "-q"])
-            .status()
-            .unwrap()
-            .success());
+        crate::git::testing::git(&repo, &["init", "-q"]);
         let nested = repo.join("src");
         std::fs::create_dir(&nested).unwrap();
 
