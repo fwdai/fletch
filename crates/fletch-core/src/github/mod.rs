@@ -37,6 +37,7 @@ pub use comments::{
 pub use issues::*;
 pub use live::*;
 pub use pr::*;
+pub use query::github_https_remote;
 pub use repo::*;
 pub use types::*;
 

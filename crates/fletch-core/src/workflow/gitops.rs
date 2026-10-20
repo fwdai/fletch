@@ -92,10 +92,15 @@ async fn seed_identity(source_repo: &Path, dest: &Path) -> Result<()> {
 /// push reaches the user's remote, not the local source path). Removes the
 /// clone's local-path `origin` when the source has none — the same discipline as
 /// `sandbox/provision.rs::rewrite_origin`.
+///
+/// A github.com SSH remote is written in its HTTPS form, always, as the
+/// sandbox clones are: workflow step agents adopt this tree inside the
+/// sandbox, and over SSH their git would publish with the user's key,
+/// bypassing the host-brokered git ops. Over HTTPS it has no credential.
 async fn rewrite_origin(source_repo: &Path, dest: &Path) -> Result<()> {
     let out = git::git_output(source_repo, &["remote", "get-url", "origin"]).await?;
     if out.status.success() {
-        let url = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        let url = crate::github::github_https_remote(&String::from_utf8_lossy(&out.stdout));
         git::run_git(
             dest,
             &["remote", "set-url", "origin", &url],
@@ -518,6 +523,34 @@ mod tests {
         let in_run = git::rev_parse(&run_repo, &refname).await.unwrap();
         assert_eq!(in_run, bc.head);
         assert_eq!(in_run, head(&ws_a));
+    }
+
+    /// Step agents adopt the run repo inside the sandbox, so an SSH GitHub
+    /// origin becomes HTTPS there, as in a sandbox clone.
+    #[tokio::test]
+    async fn run_repo_rewrites_an_ssh_github_origin_to_https() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source = tmp.path().join("source");
+        std::fs::create_dir_all(&source).unwrap();
+        init_repo(&source);
+        write(&source, "README", "base");
+        git(&source, &["add", "-A"]);
+        git(&source, &["commit", "-qm", "base"]);
+        git(
+            &source,
+            &["remote", "add", "origin", "git@github.com:acme/widget.git"],
+        );
+
+        let run_repo = provision_run_repo(&source, &tmp.path().join("run"))
+            .await
+            .unwrap();
+        let out = git::git_output(&run_repo, &["remote", "get-url", "origin"])
+            .await
+            .unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout).trim(),
+            "https://github.com/acme/widget.git"
+        );
     }
 
     /// §16 gitops transport: finalize pushes the run branch from the run repo
