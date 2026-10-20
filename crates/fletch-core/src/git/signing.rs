@@ -292,7 +292,7 @@ pub(crate) mod fixtures {
 
     use std::path::{Path, PathBuf};
 
-    use super::super::testing::{commit_file, git, init_repo};
+    use super::super::testing::{commit_file, git, init_repo, ssh_signing};
 
     /// `source` (the user's repo, origin = `origin.git`, one commit pushed,
     /// signing with a throwaway ssh key and verification wired to it),
@@ -316,35 +316,7 @@ pub(crate) mod fixtures {
         let base = commit_file(&source, "base.txt");
         git(&source, &["push", "-q", "-u", "origin", "main"]);
 
-        let key = dir.join("signing_key");
-        let out = std::process::Command::new("ssh-keygen")
-            .args(["-q", "-t", "ed25519", "-N", "", "-f", key.to_str().unwrap()])
-            .output()
-            .unwrap();
-        assert!(
-            out.status.success(),
-            "{}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-        let public = std::fs::read_to_string(dir.join("signing_key.pub")).unwrap();
-        let mut parts = public.split_whitespace();
-        let (kind, blob) = (parts.next().unwrap(), parts.next().unwrap());
-        let signers = dir.join("allowed_signers");
-        std::fs::write(&signers, format!("me@example.com {kind} {blob}\n")).unwrap();
-        git(&source, &["config", "gpg.format", "ssh"]);
-        git(
-            &source,
-            &["config", "user.signingkey", key.to_str().unwrap()],
-        );
-        git(
-            &source,
-            &[
-                "config",
-                "gpg.ssh.allowedSignersFile",
-                signers.to_str().unwrap(),
-            ],
-        );
-        git(&source, &["config", "commit.gpgsign", "true"]);
+        ssh_signing(dir, &source);
 
         let checkout = dir.join("checkout");
         git(

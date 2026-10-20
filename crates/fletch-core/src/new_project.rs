@@ -277,6 +277,28 @@ mod tests {
         ensure_git_repo(&dir).await.unwrap();
     }
 
+    /// The first commit Fletch makes in a user's repository is the user's: it
+    /// signs as that repository's config asks, like any commit the user makes
+    /// there. (Only agent-writable trees switch implicit signing off.)
+    #[tokio::test]
+    async fn ensure_git_repo_signs_the_seeded_commit_as_the_users_config_asks() {
+        let td = tempfile::tempdir().unwrap();
+        let dir = td.path().join("signed-notes");
+        std::fs::create_dir(&dir).unwrap();
+        crate::git::testing::git(&dir, &["init", "-q"]);
+        crate::git::testing::git(&dir, &["config", "user.email", "me@example.com"]);
+        crate::git::testing::git(&dir, &["config", "user.name", "Me"]);
+        crate::git::testing::ssh_signing(td.path(), &dir);
+
+        ensure_git_repo(&dir).await.unwrap();
+
+        assert!(head_resolves(&dir));
+        assert!(
+            crate::git::testing::verified(&dir, "HEAD"),
+            "the seeded commit must carry the signature the repo's config asks for"
+        );
+    }
+
     fn head_resolves(dir: &Path) -> bool {
         crate::git::testing::git_output(dir, &["rev-parse", "--verify", "HEAD"])
             .status

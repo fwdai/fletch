@@ -88,6 +88,11 @@ security-framework = "3"
 
 [dev-dependencies]
 tempfile = "3"
+# Runs `git::testing::isolate_git_config` before any test: the test process
+# sees no global or system git config, so neither fixtures nor the code under
+# test read the developer's own (a signing policy there failed every fixture
+# commit on a machine whose key the test process cannot reach).
+ctor = "0.2"
 # `test-util` unlocks the paused-time test clock (`#[tokio::test(start_paused)]`)
 # the workflow attempt tests use to exercise spawn/turn/stall deadlines
 # deterministically. Test-only (unioned with the runtime `full` feature); it

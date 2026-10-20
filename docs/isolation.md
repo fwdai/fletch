@@ -165,9 +165,12 @@ After either clone, three fixups run (`sandbox/provision.rs`):
   denied — and every agent commit would fail with "failed to write commit
   object". Your own repos keep signing; the clone's local scope outranks global.
   Host-side git never signs implicitly in a checkout either (every invocation
-  carries `-c commit.gpgsign=false`): implicit signing reads the key and its
-  helpers — `user.signingKey`, `gpg.ssh.defaultKeyCommand`, a *program* — from
-  the checkout's config, which is the agent's to write.
+  inside an agent-writable tree carries `-c commit.gpgsign=false`): implicit
+  signing reads the key and its helpers — `user.signingKey`,
+  `gpg.ssh.defaultKeyCommand`, a *program* — from the checkout's config, which
+  is the agent's to write. In your own repositories Fletch's git signs as your
+  config asks, so the first commit of a new project is signed like any of
+  yours.
 
 ### Signing on publish
 
