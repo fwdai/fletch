@@ -46,8 +46,7 @@ pub(crate) fn signing_requested(show_scope: &str) -> bool {
     show_scope
         .lines()
         .filter_map(|line| line.split_once('\t'))
-        .filter(|(scope, _)| matches!(*scope, "system" | "global"))
-        .next_back()
+        .rfind(|(scope, _)| matches!(*scope, "system" | "global"))
         .is_some_and(|(_, value)| value.trim() == "true")
 }
 
