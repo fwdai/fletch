@@ -470,7 +470,17 @@ pub fn agent_scratch_dirs(home: &Path) -> Vec<PathBuf> {
 ///
 /// Shared across agents on purpose — a per-workspace cache would defeat pnpm's
 /// hardlink store, re-download a toolchain per agent, and duplicate hundreds of
-/// MB per workspace.
+/// MB per workspace. The trust boundary this draws is sandbox-to-host, not
+/// agent-to-agent: everything under the root is *executed by sandboxed
+/// processes* — cargo compiles `registry/src`, go builds its module cache, pnpm
+/// hardlinks its store into every checkout, `npx` runs what `_npx/` holds, and
+/// Playwright launches the browser it downloaded — and every agent and Run
+/// command can write all of it. An agent that tampers with any of these can
+/// reach another agent's or project's sandboxed process, under the same
+/// profile and with that project's shared Run env; what it cannot reach is the
+/// host, which never runs anything from here. Cross-agent isolation within the
+/// cache is not a goal of this layout; it would have to be a per-project cache
+/// root for the whole table, not an exception for one row.
 ///
 /// Not per-build-split (unlike [`crate::workspace::checkouts_root`]): that split
 /// exists to keep name allocation DB-authoritative, which a content cache has no

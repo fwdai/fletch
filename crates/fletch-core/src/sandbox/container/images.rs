@@ -26,10 +26,12 @@ pub(crate) const BASE_IMAGE: &str = "node:22-bookworm-slim";
 /// Chromium list (`playwright-core` `nativeDeps.js`, plus its Latin font): the
 /// browser binary itself is downloaded into the shared toolchain cache like any
 /// package, but the system libraries it links against can only come from the
-/// image, which is why [`BASE_IMAGE`] pins bookworm.
+/// image, which is why [`BASE_IMAGE`] pins bookworm. `unzip` is for Puppeteer's
+/// installer, which shells out to it to unpack its Chrome archive and fails
+/// with "no zip archiver is available" without it (Playwright unpacks in-process).
 pub(crate) const DOCKERFILE: &str = r#"FROM node:22-bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    git curl ca-certificates ripgrep jq procps \
+    git curl ca-certificates ripgrep jq procps unzip \
     libasound2 libatk-bridge2.0-0 libatk1.0-0 libatspi2.0-0 libcairo2 libcups2 \
     libdbus-1-3 libdrm2 libgbm1 libglib2.0-0 libnspr4 libnss3 libpango-1.0-0 \
     libx11-6 libxcb1 libxcomposite1 libxdamage1 libxext6 libxfixes3 \
@@ -60,7 +62,7 @@ exec "$@"
 /// `~/.codex` mount and/or `OPENAI_API_KEY`, so no provider config is baked in.
 pub(crate) const CODEX_DOCKERFILE: &str = r#"FROM node:22-bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    git curl ca-certificates ripgrep jq procps \
+    git curl ca-certificates ripgrep jq procps unzip \
     libasound2 libatk-bridge2.0-0 libatk1.0-0 libatspi2.0-0 libcairo2 libcups2 \
     libdbus-1-3 libdrm2 libgbm1 libglib2.0-0 libnspr4 libnss3 libpango-1.0-0 \
     libx11-6 libxcb1 libxcomposite1 libxdamage1 libxext6 libxfixes3 \
@@ -87,7 +89,7 @@ exec "$@"
 /// data-dir mount and/or an API-key env var, so no provider config is baked in.
 pub(crate) const OPENCODE_DOCKERFILE: &str = r#"FROM node:22-bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    git curl ca-certificates ripgrep jq procps \
+    git curl ca-certificates ripgrep jq procps unzip \
     libasound2 libatk-bridge2.0-0 libatk1.0-0 libatspi2.0-0 libcairo2 libcups2 \
     libdbus-1-3 libdrm2 libgbm1 libglib2.0-0 libnspr4 libnss3 libpango-1.0-0 \
     libx11-6 libxcb1 libxcomposite1 libxdamage1 libxext6 libxfixes3 \
@@ -113,7 +115,7 @@ exec "$@"
 /// comes from the read-write `~/.pi` mount and/or an API-key env var.
 pub(crate) const PI_DOCKERFILE: &str = r#"FROM node:22-bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    git curl ca-certificates ripgrep jq procps \
+    git curl ca-certificates ripgrep jq procps unzip \
     libasound2 libatk-bridge2.0-0 libatk1.0-0 libatspi2.0-0 libcairo2 libcups2 \
     libdbus-1-3 libdrm2 libgbm1 libglib2.0-0 libnspr4 libnss3 libpango-1.0-0 \
     libx11-6 libxcb1 libxcomposite1 libxdamage1 libxext6 libxfixes3 \
@@ -148,7 +150,7 @@ exec "$@"
 /// — `cursor-agent login` writes the host keychain, which a container can't read.
 pub(crate) const CURSOR_DOCKERFILE: &str = r#"FROM node:22-bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    git curl ca-certificates ripgrep jq procps \
+    git curl ca-certificates ripgrep jq procps unzip \
     libasound2 libatk-bridge2.0-0 libatk1.0-0 libatspi2.0-0 libcairo2 libcups2 \
     libdbus-1-3 libdrm2 libgbm1 libglib2.0-0 libnspr4 libnss3 libpango-1.0-0 \
     libx11-6 libxcb1 libxcomposite1 libxdamage1 libxext6 libxfixes3 \
@@ -308,7 +310,7 @@ mod tests {
     /// the frozen bytes below; accidental ones revert the constant instead.
     #[test]
     fn claude_image_is_unchanged() {
-        const FROZEN_DOCKERFILE: &str = "FROM node:22-bookworm-slim\nRUN apt-get update && apt-get install -y --no-install-recommends \\\n    git curl ca-certificates ripgrep jq procps \\\n    libasound2 libatk-bridge2.0-0 libatk1.0-0 libatspi2.0-0 libcairo2 libcups2 \\\n    libdbus-1-3 libdrm2 libgbm1 libglib2.0-0 libnspr4 libnss3 libpango-1.0-0 \\\n    libx11-6 libxcb1 libxcomposite1 libxdamage1 libxext6 libxfixes3 \\\n    libxkbcommon0 libxrandr2 fonts-liberation \\\n && rm -rf /var/lib/apt/lists/*\nLABEL fletch.agent=claude\nRUN npm install -g @anthropic-ai/claude-code\nCOPY entrypoint.sh /entrypoint.sh\nRUN chmod +x /entrypoint.sh\nENTRYPOINT [\"/entrypoint.sh\"]\n";
+        const FROZEN_DOCKERFILE: &str = "FROM node:22-bookworm-slim\nRUN apt-get update && apt-get install -y --no-install-recommends \\\n    git curl ca-certificates ripgrep jq procps unzip \\\n    libasound2 libatk-bridge2.0-0 libatk1.0-0 libatspi2.0-0 libcairo2 libcups2 \\\n    libdbus-1-3 libdrm2 libgbm1 libglib2.0-0 libnspr4 libnss3 libpango-1.0-0 \\\n    libx11-6 libxcb1 libxcomposite1 libxdamage1 libxext6 libxfixes3 \\\n    libxkbcommon0 libxrandr2 fonts-liberation \\\n && rm -rf /var/lib/apt/lists/*\nLABEL fletch.agent=claude\nRUN npm install -g @anthropic-ai/claude-code\nCOPY entrypoint.sh /entrypoint.sh\nRUN chmod +x /entrypoint.sh\nENTRYPOINT [\"/entrypoint.sh\"]\n";
         const FROZEN_ENTRYPOINT: &str = "#!/bin/sh\nset -e\nmkdir -p \"$HOME\"\nif [ ! -f \"$HOME/.claude.json\" ]; then\n  printf '{\"hasCompletedOnboarding\": true}\\n' > \"$HOME/.claude.json\"\nfi\nexec \"$@\"\n";
         assert_eq!(DOCKERFILE, FROZEN_DOCKERFILE, "claude Dockerfile changed");
         assert_eq!(
