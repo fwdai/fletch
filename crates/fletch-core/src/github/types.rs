@@ -285,6 +285,87 @@ pub struct CheckLog {
     pub note: Option<String>,
 }
 
+/// One GitHub Actions workflow run, as the agent's `run_list` answers: what
+/// agents read through `gh run list --branch … --workflow …` to see whether
+/// a deploy ran after a merge, which `pr_checks` cannot say once there is no
+/// pull request to ask about.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct WorkflowRun {
+    pub id: u64,
+    /// The workflow's name (`name:` in its file).
+    pub name: String,
+    /// The workflow file, as `run_list`'s `workflow` filter and
+    /// `workflow_dispatch` take it (`ci.yml`), without the `.github/workflows/` prefix.
+    pub workflow: String,
+    /// The run's title: the commit subject or the PR title.
+    pub title: String,
+    pub branch: String,
+    pub head_sha: String,
+    /// What triggered it: `push`, `pull_request`, `workflow_dispatch`, `schedule`, …
+    pub event: String,
+    /// "queued" | "in_progress" | "completed" | "waiting" | …
+    pub status: String,
+    /// "success" | "failure" | "cancelled" | "skipped" | "timed_out" | … —
+    /// `None` until completed.
+    pub conclusion: Option<String>,
+    pub url: String,
+    pub run_number: u64,
+    pub run_attempt: u64,
+    /// ISO-8601 as GitHub gives them.
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// What `run_list` asks for. Every field optional but the cap.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct RunListFilter {
+    pub branch: Option<String>,
+    /// A workflow file name (`ci.yml`) or numeric id; the runs of that
+    /// workflow only.
+    pub workflow: Option<String>,
+    /// GitHub's `status` filter: a status (`queued`, `in_progress`,
+    /// `completed`, …) or a conclusion (`success`, `failure`, …).
+    pub status: Option<String>,
+    pub event: Option<String>,
+    pub limit: u32,
+}
+
+/// One file attached to a release.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct ReleaseAsset {
+    pub name: String,
+    pub size: u64,
+    pub download_count: u64,
+    /// The browser download URL.
+    pub url: String,
+}
+
+/// A GitHub release, as the agent's `release_list` and `release_view`
+/// answer: what agents read through `gh release list` / `view` to see what
+/// shipped last and what a tag carries.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct Release {
+    pub id: u64,
+    pub tag: String,
+    /// The release title; empty when it was published without one.
+    pub name: String,
+    pub draft: bool,
+    pub prerelease: bool,
+    pub url: String,
+    pub author: String,
+    /// The branch or commit the tag was cut from.
+    pub target: String,
+    /// ISO-8601 as GitHub gives them; `published_at` is absent for a draft.
+    pub created_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub published_at: Option<String>,
+    /// The release notes. Left out of `release_list` rows; `release_view`
+    /// carries them.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub body: Option<String>,
+    pub assets: Vec<ReleaseAsset>,
+}
+
 /// One unresolved PR review thread, flattened to its root comment. Surfaced
 /// in the Git panel so review feedback (Greptile, other bots, humans) is
 /// visible without leaving the app, with a quick action to hand it to the

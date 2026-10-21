@@ -42,9 +42,34 @@ pub(crate) fn with_query(path: &str, params: &[(&str, &str)]) -> String {
     }
 }
 
+/// `path` with `segment` appended as one percent-encoded path segment. A
+/// release tag may carry `@`, `+` or `/` (`v1.0.0@rc1`, `releases/2026`),
+/// all valid to git and GitHub but not safe to splice into a path by hand:
+/// a `/` would read as another segment, a `?` as a query.
+pub(crate) fn with_segment(path: &str, segment: &str) -> String {
+    let mut url = reqwest::Url::parse(&format!("{API_BASE}{path}"))
+        .expect("the API base and a repository path form a URL");
+    url.path_segments_mut()
+        .expect("an https URL has path segments")
+        .push(segment);
+    url.path().to_string()
+}
+
 #[cfg(test)]
 mod query_tests {
-    use super::with_query;
+    use super::{with_query, with_segment};
+
+    #[test]
+    fn a_path_segment_is_percent_encoded_whole() {
+        assert_eq!(
+            with_segment("/repos/o/r/releases/tags", "v1.0.0@rc1+build/7"),
+            "/repos/o/r/releases/tags/v1.0.0@rc1+build%2F7"
+        );
+        assert_eq!(
+            with_segment("/repos/o/r/releases/tags", "a b?c#d"),
+            "/repos/o/r/releases/tags/a%20b%3Fc%23d"
+        );
+    }
 
     #[test]
     fn query_values_are_percent_encoded() {

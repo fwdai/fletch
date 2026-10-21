@@ -7,9 +7,13 @@
 
 /// `git_fetch` is credentialed but read-only, so deliberately not gated.
 /// `pr_merge` is: merging lands the work on the base, which is what a denied
-/// grant must never do.
+/// grant must never do. So is `workflow_dispatch`: it runs the repository's
+/// workflows, and their secrets, against a ref of the agent's choosing.
 fn is_publish_op(op: &str) -> bool {
-    matches!(op, "git_push" | "open_pr" | "pr_merge")
+    matches!(
+        op,
+        "git_push" | "open_pr" | "pr_merge" | "workflow_dispatch"
+    )
 }
 
 /// Protected whatever the repo's base is; compared case-insensitively.
@@ -117,6 +121,7 @@ mod tests {
         assert!(is_publish_op("git_push"));
         assert!(is_publish_op("open_pr"));
         assert!(is_publish_op("pr_merge"));
+        assert!(is_publish_op("workflow_dispatch"));
         for open in [
             "git_fetch",
             "git_ls_remote",
@@ -126,6 +131,10 @@ mod tests {
             "repo_view",
             "pr_checks",
             "pr_check_log",
+            "run_list",
+            "run_log",
+            "release_list",
+            "release_view",
             "pr_comments",
             "pr_threads",
             "reply_thread",
@@ -167,7 +176,7 @@ mod tests {
     #[test]
     fn a_run_owned_agent_is_refused_before_git_runs() {
         let caps = AgentCaps::run_owned();
-        for op in ["git_push", "open_pr"] {
+        for op in ["git_push", "open_pr", "pr_merge", "workflow_dispatch"] {
             let why = caps.refuses(op).expect("must be refused");
             assert!(
                 why.contains("finalizes"),
@@ -201,7 +210,7 @@ mod tests {
     #[test]
     fn an_advisory_chat_cannot_publish_anything() {
         let caps = AgentCaps::advisory();
-        for op in ["git_push", "open_pr"] {
+        for op in ["git_push", "open_pr", "pr_merge", "workflow_dispatch"] {
             let why = caps.refuses(op).expect("must be refused");
             assert!(
                 why.contains("roadmap item"),

@@ -4,7 +4,9 @@ mod issue_reads;
 mod pr_reads;
 mod pr_writes;
 mod publishing;
+mod releases;
 mod review_threads;
+mod runs;
 mod targets;
 
 #[cfg(test)]
@@ -50,6 +52,7 @@ fn is_mutating_op(op: &str) -> bool {
             | "pr_comment"
             | "pr_close"
             | "pr_merge"
+            | "workflow_dispatch"
             | "issue_comment"
             | "reply_thread"
             | "resolve_thread"
@@ -160,6 +163,11 @@ impl GitDispatcher {
             "issue_list" => (self.issue_list(id, args).await, Vec::new()),
             "pr_checks" => (self.pr_checks(id, args).await, Vec::new()),
             "pr_check_log" => (self.pr_check_log(id, args).await, Vec::new()),
+            "run_list" => (self.run_list(id, args).await, Vec::new()),
+            "run_log" => (self.run_log(id, args).await, Vec::new()),
+            "workflow_dispatch" => (self.workflow_dispatch(id, args).await, Vec::new()),
+            "release_list" => (self.release_list(id, args).await, Vec::new()),
+            "release_view" => (self.release_view(id, args).await, Vec::new()),
             "pr_comments" => (self.pr_comments(id, args).await, Vec::new()),
             "pr_edit" => self.pr_edit(id, args).await,
             "pr_comment" => (self.pr_comment(id, args).await, Vec::new()),

@@ -1,25 +1,42 @@
+//! Review threads: read the open ones, answer one, resolve one. The read is
+//! like the other PR reads — the repository is the user's, the checkout
+//! supplies only its branch, and the reasons a read can answer nothing are
+//! told apart up front (`pr_read_target`).
+
 use serde_json::Value;
 
+use super::pr_reads::{branch_pr, json_ok, positive_u32_arg};
 use super::GitDispatcher;
 use crate::rpc::Response;
 
 impl GitDispatcher {
+    /// The unresolved review threads of the branch's PR (or `args.number`),
+    /// each with the `id` that `reply_thread` and `resolve_thread` take.
     pub(super) async fn pr_threads(&self, id: &str, args: &Value) -> Response {
-        let t = match self.target(id, args) {
+        let number = match positive_u32_arg(args, "number") {
+            Ok(n) => n,
+            Err(e) => return Response::err(id, format!("pr_threads: {e}")),
+        };
+        let t = match self.pr_read_target(id, "pr_threads", args).await {
             Ok(t) => t,
             Err(resp) => return resp,
         };
-        let number = match crate::github::pr_view(&t.cwd).await {
-            Ok(Some(pr)) => pr.number,
-            Ok(None) => return Response::err(id, "pr_threads: no pull request for this branch"),
-            Err(e) => return Response::err(id, format!("pr_threads: {e}")),
-        };
-        match crate::github::pr_threads_number(&t.cwd, None, number).await {
-            Ok(Some(threads)) => match serde_json::to_string_pretty(&threads.unresolved) {
-                Ok(json) => Response::ok(id, 0, json, String::new()),
-                Err(e) => Response::err(id, format!("pr_threads: {e}")),
+        let number = match number {
+            Some(n) => n,
+            None => match branch_pr(id, "pr_threads", &t).await {
+                Ok(pr) => pr.number,
+                Err(resp) => return resp,
             },
-            Ok(None) => Response::ok(id, 0, "[]".to_string(), String::new()),
+        };
+        match crate::github::pr_threads_number(&t.source_repo, None, number).await {
+            Ok(Some(threads)) => json_ok(id, "pr_threads", &threads.unresolved),
+            Ok(None) => Response::err(
+                id,
+                format!(
+                    "pr_threads: pull request #{number} was not found in this repository, or \
+                     GitHub did not answer; try again shortly"
+                ),
+            ),
             Err(e) => Response::err(id, format!("pr_threads: {e}")),
         }
     }
@@ -69,7 +86,8 @@ pub(super) fn thread_arg(args: &Value) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::thread_arg;
-    use serde_json::json;
+    use crate::rpc::git::test_support::*;
+    use serde_json::{json, Value};
 
     #[test]
     fn thread_is_read_under_every_name_the_playbook_uses() {
@@ -92,5 +110,36 @@ mod tests {
         assert_eq!(thread_arg(&json!({ "thread": "" })), None);
         assert_eq!(thread_arg(&json!({ "id": 42 })), None);
         assert_eq!(thread_arg(&json!({ "body": "x" })), None);
+    }
+
+    /// The read goes through the PR reads' preflight now: a bad number is
+    /// refused first, and a checkout with no GitHub origin is told so instead
+    /// of "no pull request for this branch".
+    #[tokio::test]
+    async fn pr_threads_validates_and_names_a_non_github_origin() {
+        let td = tempfile::tempdir().unwrap();
+        let (resp, fx) = dispatcher(td.path())
+            .dispatch_inner("t", "pr_threads", &json!({ "number": 0 }))
+            .await;
+        assert!(resp
+            .error
+            .unwrap()
+            .starts_with("pr_threads: `number` must be a positive integer"));
+        assert!(fx.is_empty());
+
+        let repo = td.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        run_git(&repo, &["init", "-q", "-b", "feat/x"]);
+        for args in [Value::Null, json!({ "number": 7 })] {
+            let (resp, fx) = dispatcher(&repo)
+                .dispatch_inner("t", "pr_threads", &args)
+                .await;
+            assert_eq!(
+                resp.error.as_deref(),
+                Some("pr_threads: origin is not a GitHub repository (or there is no origin)"),
+                "{args}"
+            );
+            assert!(fx.is_empty());
+        }
     }
 }

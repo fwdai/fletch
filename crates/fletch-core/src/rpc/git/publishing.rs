@@ -145,8 +145,11 @@ impl GitDispatcher {
             note_branch_born(&t, &branch, &mut effects);
         }
         // By the branch just published, not the checkout's HEAD: with
-        // `args.head` the two differ.
-        match crate::github::pr_create_head(&t.cwd, &branch, title, body, &base).await {
+        // `args.head` the two differ. In the user's repository, like every
+        // other GitHub op; the checkout only lends its last commit to an
+        // empty title.
+        match crate::github::pr_create_in(&t.source_repo, &t.cwd, &branch, title, body, &base).await
+        {
             Ok(pr) => {
                 crate::telemetry::track("pr_opened", json!({ "source": "agent_rpc" }));
                 // Enough to log the PR into its checkout's set the moment it

@@ -79,13 +79,34 @@ job log tail and annotations: `args.check` is a run's `id` or `name` from
 `pr_checks`, `args.lines` how many trailing lines, default 200, max 2000), `pr_comments`
 (the newest conversation comments, oldest first, with author, body, time and
 URL; optional `args.limit`, default 50, max 100) and `pr_threads` (unresolved
-review threads). Each returns JSON in `stdout`; an error names the reason (no
+review threads; optional `args.number` for another PR). Each returns JSON in `stdout`; an error names the reason (no
 PR yet or none visible to the host's account, not a GitHub origin, host not
 signed in, or a rate-limit pause to retry after). Do not call `gh` or the
 GitHub API directly: your sandbox has no GitHub credentials.
 
 `repo_view` describes the repository behind origin: visibility, default
 branch, the merge methods it allows and whether merged branches are deleted.
+
+GitHub Actions beyond a pull request — a deploy on `main` after a merge, a
+scheduled job — is read with `run_list` (the repository's workflow runs,
+newest first: `id`, `name`, `workflow` file, `title`, `branch`, `event`,
+`status`, `conclusion`, URL; `args.branch`, `args.workflow` (a file name like
+`ci.yml`), `args.status` (a status or conclusion such as `in_progress` or
+`failure`) and `args.event` narrow them, `args.limit` default 20, max 100) and
+`run_log` (`args.run` is a run's `id`; returns the log tail and annotations
+of its first failing job, or of `args.job` by id or name, with `args.lines`
+as for `pr_check_log`, plus the run's `jobs`). `workflow_dispatch` triggers
+a workflow that has a `workflow_dispatch` trigger: `args.workflow` (the file
+name, as `run_list` spells it), `args.ref` (a branch or tag on origin; your
+checked-out branch when absent) and `args.inputs` (an object of up to ten
+string values). It asks the user first when publish confirmation is on, and
+GitHub reports no run id: find the run with `run_list` afterwards. Only
+dispatch a workflow when the user asked for it.
+
+Releases: `release_list` (newest first: `tag`, `name`, `draft`,
+`prerelease`, URL, author, `published_at`, assets; `args.limit` default 20,
+max 100) and `release_view` (one release with its notes and assets:
+`args.tag`, or the latest published release without it).
 
 Issues of the repository: `issue_view` (`args.number`; title, state, body,
 labels, assignees, author and the newest `args.comments` comments, default
