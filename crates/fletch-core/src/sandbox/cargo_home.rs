@@ -98,6 +98,15 @@ const CONFIG_FILES: &[&str] = &["config.toml", "config"];
 /// still knows where the credentials come from ([`user_home_from`]).
 pub const USER_HOME_ENV: &str = "FLETCH_CARGO_USER_HOME";
 
+/// The env var naming the overlay Fletch set `CARGO_HOME` to, set beside
+/// [`USER_HOME_ENV`]. A nested Fletch compares its `CARGO_HOME` against it:
+/// equal means the overlay was inherited and the propagated home is the real
+/// one; different means something after Fletch — a project's Run env, the
+/// command itself — chose a home of its own, which is honoured as on the
+/// host. Stated by Fletch rather than inferred from a path prefix, so the
+/// answer is exact wherever the cache lives.
+pub const OVERLAY_ENV: &str = "FLETCH_CARGO_OVERLAY";
+
 /// The overlay under `cache_root` — the value of `CARGO_HOME` a child gets.
 ///
 /// Keyed by the child's [`BoxPlatform`], like the Playwright and npm rows of
@@ -117,22 +126,35 @@ pub fn overlay(cache_root: &Path, platform: BoxPlatform) -> PathBuf {
 pub fn user_home(home: &Path) -> PathBuf {
     user_home_from(
         crate::bin_resolve::effective_env_var("CARGO_HOME"),
-        std::env::var_os(USER_HOME_ENV),
+        Inherited {
+            overlay: std::env::var_os(OVERLAY_ENV),
+            user_home: std::env::var_os(USER_HOME_ENV),
+        },
         home,
     )
+}
+
+/// What a nested Fletch finds in its process env from the parent's launch:
+/// the overlay the parent set `CARGO_HOME` to ([`OVERLAY_ENV`]) and the real
+/// home it was prepared from ([`USER_HOME_ENV`]). Both `None` on the host.
+#[derive(Default)]
+struct Inherited {
+    overlay: Option<std::ffi::OsString>,
+    user_home: Option<std::ffi::OsString>,
 }
 
 /// Pure core of [`user_home`] — the env seam split the other resolvers in
 /// [`super::policy`] use, so it tests hermetically.
 ///
-/// `propagated` ([`USER_HOME_ENV`]) being set at all is the signal that
-/// `cargo_home` is an *inherited* overlay: Fletch only ever sets the two
-/// together, and a nested Fletch launched from the Run panel gets both in its
-/// process env. Taken at face value, that `CARGO_HOME` would have the nested
-/// instance's own `prepare` relink the overlay's credentials to *themselves*,
-/// a dangling loop that hides them from every launch sharing the overlay. So
-/// the propagated value wins, which also keeps a parent's custom `/opt/cargo`
-/// across the nesting.
+/// `cargo_home` equal to the inherited overlay means a nested Fletch launched
+/// from the Run panel is looking at its parent's redirect. Taken at face
+/// value, that `CARGO_HOME` would have the nested instance's own `prepare`
+/// relink the overlay's credentials to *themselves*, a dangling loop that
+/// hides them from every launch sharing the overlay. So the propagated home
+/// wins there, which also keeps a parent's custom `/opt/cargo` across the
+/// nesting. Any other absolute `CARGO_HOME` is the user's choice — made on
+/// the host, or by a project's Run env over the parent's redirect — and is
+/// honoured as such.
 ///
 /// A blank or relative value falls back to `~/.cargo`: cargo resolves a
 /// relative `CARGO_HOME` against each process's working directory, so there is
@@ -140,15 +162,29 @@ pub fn user_home(home: &Path) -> PathBuf {
 /// from inside the overlay, never where `exists()` looked.
 fn user_home_from(
     cargo_home: Option<std::ffi::OsString>,
-    propagated: Option<std::ffi::OsString>,
+    inherited: Inherited,
     home: &Path,
 ) -> PathBuf {
-    propagated
-        .or(cargo_home)
-        .filter(|v| !v.is_empty())
-        .map(PathBuf::from)
-        .filter(|p| p.is_absolute())
-        .unwrap_or_else(|| home.join(".cargo"))
+    let absolute = |v: Option<std::ffi::OsString>| {
+        v.filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+            .filter(|p| p.is_absolute())
+    };
+    let cargo_home = absolute(cargo_home);
+    let is_overlay = match (&cargo_home, absolute(inherited.overlay)) {
+        (Some(set), Some(overlay)) => {
+            *set == overlay
+                || super::policy::resolve_existing_prefix(set)
+                    == super::policy::resolve_existing_prefix(&overlay)
+        }
+        _ => false,
+    };
+    if is_overlay {
+        absolute(inherited.user_home)
+    } else {
+        cargo_home
+    }
+    .unwrap_or_else(|| home.join(".cargo"))
 }
 
 /// Whether cargo, run in `cwd` with the overlay as its home, still sees the
@@ -216,13 +252,12 @@ pub fn prepare(cache_root: &Path, source: &Path, platform: BoxPlatform) -> std::
 }
 
 /// The env pointing cargo at the overlay, and telling a nested Fletch which
-/// real home it was prepared from.
-pub fn env(cache_root: &Path, user_home: &Path, platform: BoxPlatform) -> [(String, String); 2] {
+/// overlay that was and which real home it was prepared from.
+pub fn env(cache_root: &Path, user_home: &Path, platform: BoxPlatform) -> [(String, String); 3] {
+    let overlay = overlay(cache_root, platform).to_string_lossy().into_owned();
     [
-        (
-            "CARGO_HOME".to_string(),
-            overlay(cache_root, platform).to_string_lossy().into_owned(),
-        ),
+        ("CARGO_HOME".to_string(), overlay.clone()),
+        (OVERLAY_ENV.to_string(), overlay),
         (
             USER_HOME_ENV.to_string(),
             user_home.to_string_lossy().into_owned(),
@@ -247,56 +282,77 @@ mod tests {
     fn user_home_honors_an_absolute_cargo_home_and_falls_back_otherwise() {
         let home = Path::new("/Users/u");
         let os = |s: &str| Some(std::ffi::OsString::from(s));
-        assert_eq!(user_home_from(None, None, home), home.join(".cargo"));
-        assert_eq!(user_home_from(os(""), None, home), home.join(".cargo"));
+        let none = Inherited::default;
+        assert_eq!(user_home_from(None, none(), home), home.join(".cargo"));
+        assert_eq!(user_home_from(os(""), none(), home), home.join(".cargo"));
         assert_eq!(
-            user_home_from(os("/opt/cargo"), None, home),
+            user_home_from(os("/opt/cargo"), none(), home),
             PathBuf::from("/opt/cargo")
         );
         // Relative: cargo resolves it per working directory, nothing to link.
         assert_eq!(
-            user_home_from(os("vendor/cargo"), None, home),
+            user_home_from(os("vendor/cargo"), none(), home),
             home.join(".cargo")
         );
     }
 
     /// A nested Fletch inherits the overlay as its `CARGO_HOME` together with
-    /// [`USER_HOME_ENV`]. Linking the overlay's credentials to themselves would
-    /// hide them from everyone, and assuming `~/.cargo` would swap a parent's
-    /// custom home for the default, so the propagated home wins whatever
-    /// `CARGO_HOME` says.
+    /// [`OVERLAY_ENV`] and [`USER_HOME_ENV`]. Linking the overlay's credentials
+    /// to themselves would hide them from everyone, and assuming `~/.cargo`
+    /// would swap a parent's custom home for the default, so when `CARGO_HOME`
+    /// *is* the inherited overlay the propagated home wins. When it is
+    /// anything else — a project's Run env chose `/srv/cargo` over the
+    /// parent's redirect — that choice is honoured exactly as on the host, the
+    /// markers notwithstanding.
     #[test]
     fn user_home_of_a_nested_fletch_is_the_one_its_parent_passed_down() {
         let home = Path::new("/Users/u");
         let os = |s: &str| Some(std::ffi::OsString::from(s));
-        let inherited = || {
-            let root = Path::new("/Users/u/.fletch/toolchain-cache/p1");
-            Some(overlay(root, BoxPlatform::host()).into_os_string())
+        let overlay = overlay(
+            Path::new("/Users/u/.fletch/toolchain-cache/p1"),
+            BoxPlatform::host(),
+        );
+        let inherited = |user_home: &str| Inherited {
+            overlay: Some(overlay.clone().into_os_string()),
+            user_home: os(user_home),
         };
         assert_eq!(
-            user_home_from(inherited(), os("/opt/cargo"), home),
+            user_home_from(
+                Some(overlay.clone().into_os_string()),
+                inherited("/opt/cargo"),
+                home
+            ),
             PathBuf::from("/opt/cargo")
+        );
+        // An explicit override over the parent's redirect is the user's.
+        assert_eq!(
+            user_home_from(os("/srv/cargo"), inherited("/opt/cargo"), home),
+            PathBuf::from("/srv/cargo")
         );
         // A relative or blank hand-me-down is no better than none, and never
         // lets the inherited overlay through.
-        assert_eq!(
-            user_home_from(inherited(), os("cargo"), home),
-            home.join(".cargo")
-        );
-        assert_eq!(
-            user_home_from(inherited(), os(""), home),
-            home.join(".cargo")
-        );
+        for bad in ["cargo", ""] {
+            assert_eq!(
+                user_home_from(Some(overlay.clone().into_os_string()), inherited(bad), home),
+                home.join(".cargo")
+            );
+        }
     }
 
     #[test]
-    fn env_points_inside_the_granted_root_and_passes_the_user_home_down() {
+    fn env_points_inside_the_granted_root_and_passes_the_overlay_and_user_home_down() {
         let root = Path::new("/Users/u/.fletch/toolchain-cache/p1");
         let user = Path::new("/opt/cargo");
-        let [(var, value), (passed_var, passed)] = env(root, user, BoxPlatform::host());
+        let [(var, value), (overlay_var, overlay_value), (passed_var, passed)] =
+            env(root, user, BoxPlatform::host());
         assert_eq!(var, "CARGO_HOME");
-        let p = PathBuf::from(value);
+        let p = PathBuf::from(&value);
         assert!(p.starts_with(root) && p != root);
+        assert_eq!(overlay_var, OVERLAY_ENV);
+        assert_eq!(
+            overlay_value, value,
+            "the marker names the home that was set"
+        );
         assert_eq!(passed_var, USER_HOME_ENV);
         assert_eq!(PathBuf::from(passed), user);
     }
