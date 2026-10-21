@@ -24,8 +24,8 @@
 //! only sandboxed processes ever build from: a crate tampered with here is
 //! compiled only under the agent or Run profile, never by the user's host
 //! cargo. The cost is one re-download of a project's crates into the overlay;
-//! after that every agent and the Run panel share it, like every other
-//! redirected cache. The rustup `cargo` proxy is unaffected — it locates
+//! after that every agent and the Run panel of that project share it, like
+//! every other redirected cache. The rustup `cargo` proxy is unaffected — it locates
 //! toolchains through `RUSTUP_HOME`, which stays the user's.
 //!
 //! What cargo *reads* from its home splits in two:
@@ -117,7 +117,7 @@ pub fn user_home(home: &Path) -> PathBuf {
 ///   `CARGO_HOME` against each process's working directory, so there is no one
 ///   credentials file to link; and a relative link target would resolve from
 ///   inside the overlay, never where `exists()` looked.
-/// - **A path inside the toolchain cache root** is an *inherited* overlay: a
+/// - **A path inside any project's toolchain cache root** is an *inherited* overlay: a
 ///   nested Fletch launched from the Run panel gets the overlay as its
 ///   `CARGO_HOME` (the Run env is its process env). Taken at face value, its
 ///   own `prepare` would relink the overlay's credentials to *themselves* — a
@@ -139,7 +139,9 @@ fn user_home_from(
     let Some(dir) = absolute(cargo_home) else {
         return default;
     };
-    let cache_root = super::policy::toolchain_cache_root(home);
+    // Any project's overlay counts: the one a nested Fletch inherits is keyed by
+    // its parent's project, which this instance knows nothing about.
+    let cache_root = super::policy::toolchain_cache_parent(home);
     let inherited = dir.starts_with(&cache_root)
         || super::policy::resolve_existing_prefix(&dir)
             .starts_with(super::policy::resolve_existing_prefix(&cache_root));
@@ -269,8 +271,10 @@ mod tests {
     fn user_home_of_a_nested_fletch_is_the_one_its_parent_passed_down() {
         let home = Path::new("/Users/u");
         let os = |s: &str| Some(std::ffi::OsString::from(s));
-        let inherited =
-            || Some(overlay(&super::super::policy::toolchain_cache_root(home)).into_os_string());
+        let inherited = || {
+            let root = super::super::policy::toolchain_cache_root(home, "p1").unwrap();
+            Some(overlay(&root).into_os_string())
+        };
         assert_eq!(
             user_home_from(inherited(), os("/opt/cargo"), home),
             PathBuf::from("/opt/cargo")
@@ -289,7 +293,7 @@ mod tests {
 
     #[test]
     fn env_points_inside_the_granted_root_and_passes_the_user_home_down() {
-        let root = Path::new("/Users/u/.fletch/toolchain-cache");
+        let root = Path::new("/Users/u/.fletch/toolchain-cache/p1");
         let user = Path::new("/opt/cargo");
         let [(var, value), (passed_var, passed)] = env(root, user);
         assert_eq!(var, "CARGO_HOME");

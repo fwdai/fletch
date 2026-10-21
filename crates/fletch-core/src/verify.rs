@@ -118,6 +118,9 @@ pub struct Verifier {
     setup_override: Option<String>,
     /// Project override for the lint command (`run.lint`); wins over detection.
     lint_override: Option<String>,
+    /// The project whose checks these are, which keys the toolchain cache the
+    /// Run profile grants them ([`crate::sandbox::toolchain_cache_root`]).
+    project_id: String,
     home: PathBuf,
     timeout: Duration,
     /// Worktrees whose setup command has already succeeded — setup runs once per
@@ -127,6 +130,7 @@ pub struct Verifier {
 
 impl Verifier {
     pub fn new(
+        project_id: String,
         test_override: Option<String>,
         setup_override: Option<String>,
         lint_override: Option<String>,
@@ -138,6 +142,7 @@ impl Verifier {
             test_override,
             setup_override,
             lint_override,
+            project_id,
             home,
             timeout: Duration::from_secs(timeout_secs),
             setup_done: Mutex::new(HashSet::new()),
@@ -323,8 +328,12 @@ impl Verifier {
             crate::supervisor::run::run_target_git_common_dir(worktree)
                 .into_iter()
                 .collect();
-        let profile_text =
-            crate::sandbox::build_run_profile(worktree, &self.home, &extra_writable)?;
+        let profile_text = crate::sandbox::build_run_profile(
+            worktree,
+            &self.home,
+            &self.project_id,
+            &extra_writable,
+        )?;
         let shell = crate::run_session::user_shell();
         let shell_str = shell
             .to_str()

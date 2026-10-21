@@ -227,6 +227,7 @@ impl SandboxEngine for DockerEngine {
                 interactive: ctx.interactive,
                 name: &name,
                 agent_id: ctx.agent_id,
+                project_id: ctx.project_id,
                 writable_root: ctx.writable_root,
                 rpc_dir: ctx.rpc_dir,
                 home: ctx.home,

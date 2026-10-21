@@ -1440,6 +1440,7 @@ impl Supervisor {
                     })?;
                     let spec = SpawnSpec {
                         agent_id: &agent_id_str,
+                        project_id: &record.project_id,
                         cwd,
                         sandbox_root,
                         source_repos: &source_repos,
@@ -1478,6 +1479,7 @@ impl Supervisor {
                     &record.provider,
                     PerTurnSpec {
                         agent_id: agent_id_str.clone(),
+                        project_id: record.project_id.clone(),
                         cwd,
                         sandbox_root,
                         source_repos: source_repos.clone(),
@@ -1510,6 +1512,7 @@ impl Supervisor {
             let oauth_token = self.launch_login(agent_id, record).await?;
             let spec = SpawnSpec {
                 agent_id: &agent_id_str,
+                project_id: &record.project_id,
                 cwd,
                 sandbox_root,
                 source_repos: &source_repos,

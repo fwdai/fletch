@@ -104,6 +104,8 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::error::{Error, Result};
+
 /// Every provider whose host-persistence dirs seatbelt's provider-agnostic
 /// profile grants — the enumeration [`all_provider_state_dirs`] folds over.
 /// A superset of Docker's supported providers (Docker has no `gemini` image
@@ -443,8 +445,9 @@ pub fn agent_scratch_dirs(home: &Path) -> Vec<PathBuf> {
     .collect()
 }
 
-/// Shared scratch root every sandboxed toolchain is *redirected into*, rather
-/// than granted at its own default location: `~/.fletch/toolchain-cache/`.
+/// Scratch root every sandboxed toolchain of one project is *redirected into*,
+/// rather than granted at its own default location:
+/// `~/.fletch/toolchain-cache/<project id>/`.
 ///
 /// This is the answer to a class of bug, not a single one. A seatbelt agent runs
 /// the **host's** toolchains (unlike Docker, which owns its filesystem), and
@@ -468,24 +471,56 @@ pub fn agent_scratch_dirs(home: &Path) -> Vec<PathBuf> {
 /// the user's PATH, so a relocated `CARGO_HOME` or `GEM_HOME` carrying a `bin/`
 /// cannot hijack a later host shell.
 ///
-/// Shared across agents on purpose — a per-workspace cache would defeat pnpm's
-/// hardlink store, re-download a toolchain per agent, and duplicate hundreds of
-/// MB per workspace. The trust boundary this draws is sandbox-to-host, not
-/// agent-to-agent: everything under the root is *executed by sandboxed
-/// processes* — cargo compiles `registry/src`, go builds its module cache, pnpm
-/// hardlinks its store into every checkout, `npx` runs what `_npx/` holds, and
-/// Playwright launches the browser it downloaded — and every agent and Run
-/// command can write all of it. An agent that tampers with any of these can
-/// reach another agent's or project's sandboxed process, under the same
-/// profile and with that project's shared Run env; what it cannot reach is the
-/// host, which never runs anything from here. Cross-agent isolation within the
-/// cache is not a goal of this layout; it would have to be a per-project cache
-/// root for the whole table, not an exception for one row.
+/// One root per project, because the project is the trust domain. Everything
+/// under the root is *executed by sandboxed processes* — cargo compiles
+/// `registry/src`, go builds its module cache, pnpm hardlinks its store into
+/// every checkout, `npx` runs what `_npx/` holds, Playwright launches the
+/// browser it downloaded — and every writer of the root can plant what those
+/// run. A root shared across projects let an agent of project A plant code that
+/// project B's Run command later executed under the looser Run profile
+/// ([`crate::sandbox::build_run_profile`]) with B's shared `.env`. Keyed by
+/// project, no other project can write what this one executes; the host never
+/// runs anything from here either way.
+///
+/// Within a project the agents and the Run panel share the root on purpose:
+/// one warm cache, and pnpm's hardlink store still dedupes across the many
+/// workspaces of a project, which is where the duplication was — a
+/// per-workspace root would re-download a toolchain per agent. That leaves an
+/// agent able to plant what its own project's Run executes, which is the
+/// documented agent-to-Run trade-off (an agent already edits the
+/// `package.json` scripts Run runs; see the Run profile's toolchain dirs), not
+/// a new delta. What Run still holds that an agent does not is the Keychain
+/// (denied to agents, open to Run pending a separate decision) and its own
+/// toolchain-dir grants; the host login files are denied to both.
+///
+/// Every profile grants exactly the project's subtree, never the parent: a
+/// grant on [`toolchain_cache_parent`] would hand back every other project's
+/// cache. The flat pre-project layout (`npm/`, `bun/`, `playwright/` … directly
+/// under the parent) is stale and safe to delete by hand; nothing sweeps it.
+///
+/// `project_id` is a project's UUID (`workspace::query`), so it is path-safe by
+/// construction; anything that is not a single plain path component is refused
+/// here, where it enters a path, so a bad id fails the launch instead of
+/// widening the grant (`""` or `"."` would name the parent, `"../x"` a sibling).
 ///
 /// Not per-build-split (unlike [`crate::workspace::checkouts_root`]): that split
 /// exists to keep name allocation DB-authoritative, which a content cache has no
 /// stake in — dev and release sharing warm caches is a feature.
-pub fn toolchain_cache_root(home: &Path) -> PathBuf {
+pub fn toolchain_cache_root(home: &Path, project_id: &str) -> Result<PathBuf> {
+    let mut parts = Path::new(project_id).components();
+    match (parts.next(), parts.next()) {
+        (Some(std::path::Component::Normal(_)), None) if !project_id.contains('/') => {
+            Ok(toolchain_cache_parent(home).join(project_id))
+        }
+        _ => Err(Error::InvalidPath(format!(
+            "project id {project_id:?} cannot key a toolchain cache root"
+        ))),
+    }
+}
+
+/// The directory holding every project's [`toolchain_cache_root`]. Never
+/// granted to a sandbox; only for recognising a path as Fletch-owned cache.
+pub fn toolchain_cache_parent(home: &Path) -> PathBuf {
     home.join(".fletch").join("toolchain-cache")
 }
 
@@ -959,12 +994,12 @@ mod tests {
     #[test]
     fn toolchain_cache_env_stays_inside_the_granted_root() {
         let home = Path::new("/Users/u");
-        let root = toolchain_cache_root(home);
+        let root = toolchain_cache_root(home, "p1").unwrap();
 
         // Fletch-owned, and never on the user's PATH — which is *why* rows like
         // `CARGO_HOME`/`GEM_HOME` (whose trees contain `bin/`) are safe here
         // when granting their real `~/.cargo`/`~/.gem` would not be.
-        assert_eq!(root, home.join(".fletch/toolchain-cache"));
+        assert_eq!(root, home.join(".fletch/toolchain-cache/p1"));
 
         for platform in [BoxPlatform::host(), BoxPlatform::linux()] {
             for (var, value) in toolchain_cache_env(&root, platform) {
@@ -990,12 +1025,31 @@ mod tests {
         );
     }
 
+    /// The project id becomes one path component under the shared parent. An id
+    /// that named the parent itself (`""`, `"."`) or escaped it would hand a
+    /// profile every other project's cache, so those fail rather than resolve.
+    #[test]
+    fn toolchain_cache_root_is_one_component_under_the_parent() {
+        let home = Path::new("/Users/u");
+        let id = "0b9f3c1e-6a4d-4e8b-9c2f-1d7e5a3b8c90";
+        let root = toolchain_cache_root(home, id).unwrap();
+        assert_eq!(root.parent(), Some(toolchain_cache_parent(home).as_path()));
+        assert!(root.ends_with(id));
+
+        for bad in ["", ".", "..", "../other", "a/b", "a/", "/abs", "a/../b"] {
+            assert!(
+                toolchain_cache_root(home, bad).is_err(),
+                "{bad:?} must not key a cache root"
+            );
+        }
+    }
+
     /// A macOS agent and a Linux container share one root, so a platform-keyed
     /// row (Playwright) must diverge between them while every unkeyed row stays
     /// shared — otherwise the Linux box trusts the Mac's install marker.
     #[test]
     fn platform_keyed_rows_split_host_and_linux_and_nothing_else() {
-        let root = toolchain_cache_root(Path::new("/Users/u"));
+        let root = toolchain_cache_root(Path::new("/Users/u"), "p1").unwrap();
         let host = toolchain_cache_env(&root, BoxPlatform::host());
         let linux = toolchain_cache_env(&root, BoxPlatform::linux());
         let arch = std::env::consts::ARCH;

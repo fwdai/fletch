@@ -120,6 +120,10 @@ pub(crate) struct RunSpec<'a> {
     pub interactive: bool,
     pub name: &'a str,
     pub agent_id: &'a str,
+    /// The agent's project, which keys the toolchain cache root bound
+    /// ([`toolchain_cache_root`]). An id, not the path, so [`run_args`] and
+    /// [`mount_sources`] derive the one mount the same way.
+    pub project_id: &'a str,
     pub writable_root: &'a Path,
     pub rpc_dir: &'a Path,
     pub home: &'a Path,
@@ -212,11 +216,14 @@ pub(crate) fn run_args(spec: &RunSpec<'_>) -> Vec<String> {
         args.push("no-new-privileges".into());
     }
     // Mounts at identical host paths (invariant 1). Exactly these — nothing
-    // else from the host enters the container. The toolchain cache is the one
-    // seatbelt grants too, so both engines share one warm cache and the
-    // forwarded cache vars resolve unchanged.
-    let cache_root = toolchain_cache_root(spec.home);
-    for path in [spec.writable_root, spec.rpc_dir, &cache_root] {
+    // else from the host enters the container. The toolchain cache is the
+    // project's root seatbelt grants too, so both engines share one warm cache
+    // and the forwarded cache vars resolve unchanged.
+    for path in [spec.writable_root, spec.rpc_dir]
+        .into_iter()
+        .map(Path::to_path_buf)
+        .chain(toolchain_mount(spec))
+    {
         let path = path.to_string_lossy();
         args.push("-v".into());
         args.push(format!("{path}:{path}"));
@@ -339,17 +346,22 @@ pub(crate) fn run_args(spec: &RunSpec<'_>) -> Vec<String> {
     args
 }
 
+/// The project's toolchain cache root, bound read-write — never the parent
+/// holding every project's. An id that cannot key a root binds nothing, the
+/// narrower failure; `launch::prepare` has already refused such a launch, so
+/// no real launch gets here with one.
+fn toolchain_mount(spec: &RunSpec<'_>) -> Option<PathBuf> {
+    toolchain_cache_root(spec.home, spec.project_id).ok()
+}
+
 /// Every *host* path [`run_args`] turns into a bind mount, in argv order —
 /// excluding the tmpfs overlays (no source) and the `projects/` target (its
 /// source, `projects_src`, is listed). A runtime that vets mount sources before
 /// launching (see `podman::machine`) must see exactly what will be bound, so a
 /// mount added to [`run_args`] without an entry here would go unvetted.
 pub(crate) fn mount_sources(spec: &RunSpec<'_>) -> Vec<PathBuf> {
-    let mut out: Vec<PathBuf> = vec![
-        spec.writable_root.into(),
-        spec.rpc_dir.into(),
-        toolchain_cache_root(spec.home),
-    ];
+    let mut out: Vec<PathBuf> = vec![spec.writable_root.into(), spec.rpc_dir.into()];
+    out.extend(toolchain_mount(spec));
     if let Some(mapped) = spec.run_as_user {
         out.push(mapped.passwd_file.into());
     }
@@ -474,6 +486,7 @@ fn push_claude_config_mount(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sandbox::policy::toolchain_cache_parent;
 
     /// Podman refuses a launch whose sources its machine doesn't share, so an
     /// unvetted `-v` would be bound and arrive empty. Run in the uid-mapped
@@ -519,6 +532,7 @@ mod tests {
                 interactive: true,
                 name: "fletch-agent-test",
                 agent_id: "agent-1",
+                project_id: "p1",
                 writable_root: root,
                 rpc_dir: rpc,
                 home,
@@ -580,6 +594,7 @@ mod tests {
             interactive: false,
             name: "fletch-agent-test",
             agent_id: "agent-1",
+            project_id: "p1",
             writable_root: root,
             rpc_dir: Path::new("/tmp/fletch-adopt/rpc"),
             home: Path::new("/tmp/fletch-adopt/home"),
@@ -608,5 +623,57 @@ mod tests {
         let w = args.iter().position(|a| a == "-w").expect("-w");
         assert_eq!(args[w + 1], tree.to_string_lossy());
         assert!(mount_sources(&spec).contains(&tree.to_path_buf()));
+    }
+
+    /// Each project's container binds its own cache root and nothing above it,
+    /// so a container agent cannot reach what another project executes. An id
+    /// that cannot key a root binds no cache at all rather than the parent.
+    #[test]
+    fn the_toolchain_cache_bind_is_the_projects_own_root() {
+        let home = Path::new("/tmp/fletch-cache/home");
+        let projects = home.join("claude-projects");
+        let spec = |project_id| RunSpec {
+            interactive: false,
+            name: "fletch-agent-test",
+            agent_id: "agent-1",
+            project_id,
+            writable_root: Path::new("/tmp/fletch-cache/work"),
+            rpc_dir: Path::new("/tmp/fletch-cache/rpc"),
+            home,
+            cwd: Path::new("/tmp/fletch-cache/work"),
+            blackboard: None,
+            adopted_workspace: None,
+            mounts: ProviderMounts::Pi {
+                data_dir: &projects,
+            },
+            borrowed_object_stores: &[],
+            memory: DEFAULT_MEMORY,
+            cpus: DEFAULT_CPUS,
+            run_as_user: None,
+            image: "fletch-agent:cafe00000000",
+            agent_bin: "pi",
+            auth_vars: &[],
+            toolchain_vars: &[],
+        };
+        let cache_binds = |args: &[String]| -> Vec<String> {
+            let parent = toolchain_cache_parent(home).to_string_lossy().into_owned();
+            args.iter()
+                .filter(|a| a.starts_with(&parent))
+                .cloned()
+                .collect()
+        };
+
+        for id in ["project-a", "project-b"] {
+            let root = toolchain_cache_root(home, id).unwrap();
+            let bind = format!("{0}:{0}", root.to_string_lossy());
+            assert_eq!(cache_binds(&run_args(&spec(id))), vec![bind]);
+            let sources = mount_sources(&spec(id));
+            assert!(sources.contains(&root));
+            assert!(!sources.contains(&toolchain_cache_parent(home)));
+        }
+
+        for bad in ["", ".", ".."] {
+            assert!(cache_binds(&run_args(&spec(bad))).is_empty(), "{bad:?}");
+        }
     }
 }

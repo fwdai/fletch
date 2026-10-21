@@ -51,10 +51,24 @@ Writes are permitted only to: the agent's workspace root, its private RPC
 mailbox, the optional workflow blackboard, the standard scratch/state locations
 (`/private/tmp`, `/private/var/folders`, `/private/var/tmp`), each provider's
 own on-disk state dirs (so the agent CLI can persist transcripts, config, and
-refreshed auth), and `~/.claude.json`. Fletch's own application-data directory
-(`fletch.db` — transcripts and settings) is explicitly denied **both read and
-write**, so a confined agent can neither exfiltrate nor forge app state
-(`sandbox/seatbelt.rs`).
+refreshed auth), `~/.claude.json`, and its project's toolchain cache. Fletch's
+own application-data directory (`fletch.db` — transcripts and settings) is
+explicitly denied **both read and write**, so a confined agent can neither
+exfiltrate nor forge app state (`sandbox/seatbelt.rs`).
+
+The toolchain cache (`~/.fletch/toolchain-cache/<project id>`) is where every
+package manager, the cargo overlay and the headless browsers are redirected, and
+what is in it gets executed by later sandboxed processes. So it is keyed by
+project, the trust domain: a project's agents and its Run panel share one warm
+cache, and every profile and container mount names that project's subtree,
+never the parent, so no project can write what another one executes. Within a
+project an agent can still plant what that project's Run executes — the same
+accepted trade-off as an agent editing the `package.json` scripts Run runs
+(`sandbox/policy.rs`, `toolchain_cache_root`). The Run profile denies the host's
+claude and codex login files as the agent profile does; it leaves the Keychain
+open, a separate decision. The flat layout from before the per-project key
+(`npm/`, `bun/`, `playwright/` … directly under `~/.fletch/toolchain-cache`) is
+stale and can be deleted by hand; nothing sweeps it.
 
 One carve-out runs the other way, inside the writable checkout: each
 repository's **git-executable configuration** — `.git/config`,
@@ -113,9 +127,10 @@ already the weaker boundary by design.
 
 ### What the Docker container mounts
 
-Only the agent's writable root, its RPC mailbox and the shared toolchain cache
-(`~/.fletch/toolchain-cache`, the same root seatbelt grants) are mounted
-read-write, at their identical host paths. The provider's config/data dirs are mounted per
+Only the agent's writable root, its RPC mailbox and its project's toolchain
+cache (`~/.fletch/toolchain-cache/<project id>`, the same root seatbelt grants
+that project — never the parent) are mounted read-write, at their identical host
+paths. The provider's config/data dirs are mounted per
 provider (Claude's `~/.claude` is read-only except its `.credentials.json` and a
 per-agent transcripts dir; the others are read-write). Crucially, the source
 repo's `.git` is **never** mounted; only its borrowed git object store is

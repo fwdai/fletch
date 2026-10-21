@@ -157,19 +157,20 @@ pub(crate) fn prepare(
         ("TERM".into(), "xterm-256color".into()),
         ("COLORTERM".into(), "truecolor".into()),
     ];
-    // The one toolchain cache seatbelt agents and Run commands share, so a
-    // recreated container starts warm instead of re-downloading every package
-    // and browser. `run_args` binds its root at the identical host path; a
-    // missing source would be materialized root-owned, locking the user's own
-    // seatbelt agents out of it, so fail closed rather than bind one.
+    // The toolchain cache the project's seatbelt agents and Run commands share,
+    // so a recreated container starts warm instead of re-downloading every
+    // package and browser. `run_args` binds the project's root at the identical
+    // host path; a missing source would be materialized root-owned, locking the
+    // user's own seatbelt agents out of it, so fail closed rather than bind one.
     let toolchain_start = env.len();
     env.extend(crate::sandbox::prepare_toolchain_cache(
         ctx.home,
+        ctx.project_id,
         ctx.cwd,
         crate::sandbox::BoxPlatform::linux(),
-    ));
+    )?);
     let toolchain = toolchain_start..env.len();
-    let cache_root = crate::sandbox::toolchain_cache_root(ctx.home);
+    let cache_root = crate::sandbox::toolchain_cache_root(ctx.home, ctx.project_id)?;
     if !cache_root.is_dir() {
         return Err(Error::Other(format!(
             "preparing container sandbox toolchain cache {} failed",
@@ -472,6 +473,7 @@ mod tests {
         std::fs::write(account.join("auth.json"), "{}").unwrap();
         let ctx = AgentLaunchCtx {
             agent_id: "a1",
+            project_id: "p1",
             provider: "codex",
             writable_root: &root,
             source_repos: &[],
@@ -526,6 +528,7 @@ mod tests {
         std::os::unix::fs::symlink("/etc", overlay.join("prompts")).unwrap();
         let ctx = AgentLaunchCtx {
             agent_id: "a1",
+            project_id: "p1",
             provider: "codex",
             writable_root: &root,
             source_repos: &[],
@@ -570,6 +573,7 @@ mod tests {
         let token = crate::agent::host_login::claude::AccessToken::for_test("sk-ant-oat-test", 1);
         let ctx = AgentLaunchCtx {
             agent_id: "a1",
+            project_id: "p1",
             provider: "claude",
             writable_root: &root,
             source_repos: &[],
@@ -599,9 +603,10 @@ mod tests {
         }
     }
 
-    /// A container launch gets the same toolchain cache seatbelt does: the root
-    /// exists before `-v` sees it, and the redirect env is the shared table's,
-    /// forwarded as plain vars rather than credentials.
+    /// A container launch gets the same toolchain cache seatbelt does: its
+    /// project's root exists before `-v` sees it, and the redirect env is the
+    /// shared table's, forwarded as plain vars rather than credentials. An id
+    /// that cannot key a root refuses the launch.
     #[test]
     fn a_launch_prepares_the_shared_toolchain_cache() {
         let td = tempfile::tempdir().unwrap();
@@ -614,6 +619,7 @@ mod tests {
         let token = crate::agent::host_login::claude::AccessToken::for_test("sk-ant-oat-test", 1);
         let ctx = AgentLaunchCtx {
             agent_id: "a1",
+            project_id: "p1",
             provider: "claude",
             writable_root: &root,
             source_repos: &[],
@@ -629,7 +635,7 @@ mod tests {
 
         let launch = prepare(&ctx, ContainerProvider::Claude, None).unwrap();
 
-        let cache_root = crate::sandbox::toolchain_cache_root(&home);
+        let cache_root = crate::sandbox::toolchain_cache_root(&home, "p1").unwrap();
         assert!(cache_root.is_dir());
         let vars = launch.toolchain_vars();
         for (var, value) in
@@ -640,6 +646,12 @@ mod tests {
         }
         assert!(vars.contains(&"CARGO_HOME"), "{vars:?}");
         assert!(!launch.auth_vars().iter().any(|v| vars.contains(v)));
+
+        let bad = AgentLaunchCtx {
+            project_id: "..",
+            ..ctx
+        };
+        assert!(prepare(&bad, ContainerProvider::Claude, None).is_err());
     }
 
     /// A `CLAUDE_CONFIG_DIR` only the login shell exports is the dir the host
@@ -657,6 +669,7 @@ mod tests {
         let token = crate::agent::host_login::claude::AccessToken::for_test("sk-ant-oat-test", 1);
         let ctx = AgentLaunchCtx {
             agent_id: "a1",
+            project_id: "p1",
             provider: "claude",
             writable_root: &root,
             source_repos: &[],

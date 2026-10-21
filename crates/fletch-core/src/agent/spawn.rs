@@ -27,6 +27,9 @@ use super::{Agent, ManagedAgent, PerTurnAgent, PerTurnDescriptor, PtyAgent, Turn
 pub struct PerTurnSpec {
     /// The agent's id, forwarded to the sandbox engine's launch context.
     pub agent_id: String,
+    /// The agent's project (`AgentRecord.project_id`), forwarded to the sandbox
+    /// engine to key its toolchain cache (see `AgentLaunchCtx::project_id`).
+    pub project_id: String,
     /// The agent's working directory — the primary repo's checkout.
     pub cwd: PathBuf,
     /// Sandbox writable root — the agent's parent dir (same role as
@@ -85,6 +88,9 @@ impl SessionStart {
 
 pub struct SpawnSpec<'a> {
     pub agent_id: &'a str,
+    /// The agent's project (`AgentRecord.project_id`), forwarded to the sandbox
+    /// engine to key its toolchain cache (see `AgentLaunchCtx::project_id`).
+    pub project_id: &'a str,
     /// Claude's working directory — the primary repo's checkout.
     pub cwd: PathBuf,
     /// Sandbox writable root — the agent's parent dir, which may
@@ -322,6 +328,7 @@ impl Agent {
 
         let ctx = AgentLaunchCtx {
             agent_id: spec.agent_id,
+            project_id: spec.project_id,
             provider: "claude",
             writable_root: &spec.sandbox_root,
             source_repos: spec.source_repos,
@@ -426,6 +433,7 @@ impl Agent {
         // agents are confined exactly like claude.
         let ctx = AgentLaunchCtx {
             agent_id: spec.agent_id,
+            project_id: spec.project_id,
             provider,
             writable_root: &spec.sandbox_root,
             source_repos: spec.source_repos,
@@ -498,6 +506,7 @@ impl Agent {
 
         let ctx = AgentLaunchCtx {
             agent_id: spec.agent_id,
+            project_id: spec.project_id,
             provider: "claude",
             writable_root: &spec.sandbox_root,
             source_repos: spec.source_repos,
@@ -664,6 +673,7 @@ impl Agent {
 
         let ctx = AgentLaunchCtx {
             agent_id: &spec.agent_id,
+            project_id: &spec.project_id,
             provider,
             writable_root: &spec.sandbox_root,
             source_repos: &spec.source_repos,
@@ -1097,6 +1107,7 @@ mod tests {
                 .unwrap();
         let ctx = AgentLaunchCtx {
             agent_id: "live",
+            project_id: "live",
             provider: "codex",
             writable_root: &root,
             source_repos: &[],

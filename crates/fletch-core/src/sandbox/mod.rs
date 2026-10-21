@@ -22,18 +22,23 @@ pub use podman::{
     availability as podman_availability, launch_blocker as podman_launch_blocker,
     PodmanAvailability,
 };
-pub use policy::{toolchain_cache_env, toolchain_cache_root, BoxPlatform};
+pub use policy::{toolchain_cache_env, toolchain_cache_parent, toolchain_cache_root, BoxPlatform};
 pub use seatbelt::{
     build_run_profile, cleanup_nested_checkouts_roots, cleanup_nested_rpc_roots,
     nested_checkouts_root, nested_rpc_root, profile_args, SANDBOX_EXEC,
 };
 
 /// Everything a confined child needs to use the redirected toolchain caches:
-/// the shared root created host-side, the cargo overlay prepared
+/// its project's root created host-side, the cargo overlay prepared
 /// ([`cargo_home`]), and the env pointing every toolchain at them. Agents and
-/// Run commands call this alike, so both halves of the app share one warm
-/// cache instead of maintaining two. `cwd` is where the child's commands run
+/// Run commands of a project call this alike, so both halves of the app share
+/// one warm cache instead of maintaining two; other projects get their own
+/// ([`toolchain_cache_root`] says why). `cwd` is where the child's commands run
 /// (the agent's checkout, the Run target).
+///
+/// The one fallible step is `project_id` itself: an id that cannot key a root
+/// fails the launch, since the profile built from the same id would refuse it
+/// too.
 ///
 /// Creating the root here matters: the profile grants `(subpath <root>)`,
 /// which lets a tool create the root itself but not its parent. Best-effort
@@ -49,13 +54,14 @@ pub use seatbelt::{
 ///
 /// `platform` is what the child runs on — [`BoxPlatform::host`] for seatbelt,
 /// [`BoxPlatform::linux`] for a container — so rows whose contents are
-/// per-platform land in their own subdir of the one shared root.
+/// per-platform land in their own subdir of the project's root.
 pub fn prepare_toolchain_cache(
     home: &std::path::Path,
+    project_id: &str,
     cwd: &std::path::Path,
     platform: BoxPlatform,
-) -> Vec<(String, String)> {
-    let root = toolchain_cache_root(home);
+) -> Result<Vec<(String, String)>> {
+    let root = toolchain_cache_root(home, project_id)?;
     let _ = std::fs::create_dir_all(&root);
     let mut env = toolchain_cache_env(&root, platform);
     let user_home = cargo_home::user_home(home);
@@ -72,7 +78,7 @@ pub fn prepare_toolchain_cache(
             "cargo keeps its real home: its global config would not be found from this directory"
         );
         keep_real_home(&mut env);
-        return env;
+        return Ok(env);
     }
     match cargo_home::prepare(&root, &user_home) {
         Ok(()) => env.extend(cargo_home::env(&root, &user_home)),
@@ -84,7 +90,7 @@ pub fn prepare_toolchain_cache(
             keep_real_home(&mut env);
         }
     }
-    env
+    Ok(env)
 }
 
 /// The `settings` key holding the user's engine choice; values are

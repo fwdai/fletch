@@ -153,6 +153,7 @@ impl SandboxEngine for PodmanEngine {
                 interactive: ctx.interactive,
                 name: &name,
                 agent_id: ctx.agent_id,
+                project_id: ctx.project_id,
                 writable_root: ctx.writable_root,
                 rpc_dir: ctx.rpc_dir,
                 home: ctx.home,
@@ -327,7 +328,8 @@ mod tests {
         let home = td.path().join("home");
         std::fs::create_dir_all(&root).unwrap();
         std::fs::create_dir_all(&rpc).unwrap();
-        std::fs::create_dir_all(crate::sandbox::toolchain_cache_root(&home)).unwrap();
+        std::fs::create_dir_all(crate::sandbox::toolchain_cache_root(&home, "p1").unwrap())
+            .unwrap();
         std::fs::write(root.join("marker.txt"), "hello from the host\n").unwrap();
         prepare_config_mount_dir(&home.join(".claude")).unwrap();
         let target = machine::resolve_launch_target().unwrap();
@@ -341,6 +343,7 @@ mod tests {
             interactive: false,
             name: &name,
             agent_id: "podman-int-test",
+            project_id: "p1",
             writable_root: &root,
             rpc_dir: &rpc,
             home: &home,
