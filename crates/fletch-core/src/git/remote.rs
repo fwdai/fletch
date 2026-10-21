@@ -1,21 +1,25 @@
 //! Transport from a checkout, run with the **user's repository's**
-//! configuration.
+//! configuration, and the remotes' state read over the wire.
 //!
 //! A checkout's `.git` is the agent's to write: its config (`remote.*`,
 //! `url.*.insteadOf`, `http.*`, `fetch.recurseSubmodules`, …), its submodule
-//! configs under `.git/modules`, its refs. Host-side git runs fetch, push and
-//! ls-remote with the user's credentials — the app's GitHub token, and in the
-//! user's own repository their agent socket — so a transport that read any of
-//! that from the checkout could be steered: an unapproved `git_fetch` made to
-//! authenticate against whatever repository the agent named, a push recursing
-//! into a submodule the agent pointed elsewhere. Listing the keys that steer
-//! transport and refusing them one by one is a race against git's config
-//! surface.
+//! configs under `.git/modules`, and every one of its refs. Host-side git runs
+//! fetch, push and ls-remote with the user's credentials — the app's GitHub
+//! token, and in the user's own repository their agent socket — so a transport
+//! that read any of that from the checkout could be steered: an unapproved
+//! `git_fetch` made to authenticate against whatever repository the agent
+//! named, a push recursing into a submodule the agent pointed elsewhere, a
+//! planted ref passing an unsigned commit off as published. Listing what to
+//! refuse one key or one ref at a time is a race against git's surface.
 //!
-//! So transport in a checkout reads **no** checkout configuration at all. It
-//! runs the way the signer does (`git::signing`): in the user's own repository,
-//! which no agent can write, with the checkout supplying only what it must.
-//! Git's own worktree mechanism makes that exact split:
+//! So transport reads **no** checkout configuration, and the decisions that
+//! depend on a remote's state — what is already published, what a force
+//! push's lease must expect — read that state from the remote itself
+//! ([`Transport::published_tips`], [`Transport::push_tip`]), never from a ref
+//! in the checkout. It runs the way the signer does (`git::signing`): in the
+//! user's own repository, which no agent can write, with the checkout
+//! supplying only what it must. Git's own worktree mechanism makes that
+//! exact split:
 //!
 //! - `GIT_COMMON_DIR` is the user's repository's `.git`, so configuration —
 //!   the remote, its push URLs, the user's `insteadOf` rewrites and proxies and
@@ -28,27 +32,27 @@
 //!   the user's config) rather than `origin`, so git maintains no
 //!   remote-tracking ref in the common dir.
 //!
-//! The checkout's `refs/remotes/origin/*` is then reconciled from what was
-//! fetched, by plain `update-ref` in the checkout. Recursion into submodules
-//! is switched off on every invocation, and the agreement check that the
-//! checkout's own `origin` still names the user's remote stays: a checkout an
-//! agent repointed is refused outright rather than silently served from the
-//! real remote.
+//! The checkout's `refs/remotes/origin/*` is reconciled from what was fetched
+//! by plain `update-ref` in the checkout, for the agent's own use; nothing
+//! host-side trusts it. Recursion into submodules is switched off on every
+//! invocation, and the agreement check that the checkout's own `origin` still
+//! names the user's remote stays: a checkout an agent repointed is refused
+//! outright rather than silently served from the real remote.
 //!
 //! The user's own repository, when it is what is pushed (a new project's first
-//! publish), needs none of this: git runs in it plainly, with `origin` by name.
+//! publish), needs none of the split: git runs in it plainly, with `origin`
+//! by name.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use super::cmd::{git_output, git_output_stdin};
 use crate::error::{Error, Result};
 
-/// Scratch namespace, per-worktree, for what the fetch remote has.
+/// Scratch namespace, per-worktree, a fetch lands branches in before they are
+/// reconciled into `refs/remotes/origin/*`.
 const FETCHED: &str = "refs/worktree/fletch/origin";
-/// Scratch namespace, per-worktree, for what each push remote has — one
-/// subtree per push URL, in `git remote get-url --push --all` order.
-const PUSHED: &str = "refs/worktree/fletch/push";
 
 /// Configuration every transport invocation carries, over the user's own.
 /// Recursion is what a push or fetch must never do here: it would run the
@@ -181,9 +185,8 @@ impl Transport {
             .collect())
     }
 
-    /// Mirror `which` branches into the checkout's `refs/remotes/origin/*`
-    /// (and, for [`Branches::All`], each push remote's branches into
-    /// [`PUSHED`]), under the network timeout.
+    /// Mirror `which` branches into the checkout's `refs/remotes/origin/*`,
+    /// under the network timeout.
     pub async fn fetch_branches(&self, which: Branches<'_>) -> Result<()> {
         self.fetch_branches_within(which, super::cmd::NET_TIMEOUT)
             .await
@@ -198,77 +201,108 @@ impl Transport {
         let remote = self.fetch_remote().await?;
         match which {
             Branches::One(branch) => {
+                // A ref named like an ancestor or a descendant of `branch`
+                // (`feat` beside `feat/sub`) would block the one about to be
+                // written, in the scratch namespace and the tracking one.
+                for namespace in [FETCHED, "refs/remotes/origin"] {
+                    self.clear_conflicting(namespace, branch).await?;
+                }
                 let refspec = format!("+refs/heads/{branch}:{FETCHED}/{branch}");
                 self.fetch(&remote, &[&refspec], false, timeout).await?;
                 self.reconcile_tracking(Some(branch)).await
             }
             Branches::All => {
-                self.fetch(
-                    &remote,
-                    &[&format!("+refs/heads/*:{FETCHED}/*")],
-                    true,
-                    timeout,
-                )
-                .await?;
-                self.reconcile_tracking(None).await?;
-                self.fetch_push_tips(timeout).await
+                // Each push remote's branches too, so that what a fork alone
+                // has is in the checkout's store — the published tips a
+                // signed publish must not rewrite are then present locally.
+                let mut remotes = vec![remote];
+                for url in self.push_remotes().await? {
+                    if !remotes.contains(&url) {
+                        remotes.push(url);
+                    }
+                }
+                for (i, url) in remotes.iter().enumerate() {
+                    let subtree = if i == 0 {
+                        FETCHED.to_string()
+                    } else {
+                        format!("{FETCHED}-push{i}")
+                    };
+                    self.fetch(url, &[&format!("+refs/heads/*:{subtree}/*")], true, timeout)
+                        .await?;
+                }
+                self.reconcile_tracking(None).await
             }
         }
     }
 
-    /// Each push remote's branches into its [`PUSHED`] subtree, pruned; a
-    /// push remote that is the fetch remote is copied from what was just
-    /// fetched rather than asked again.
-    async fn fetch_push_tips(&self, timeout: Duration) -> Result<()> {
-        if self.split.is_none() {
-            return Ok(());
-        }
-        let fetch_remote = self.fetch_remote().await?;
-        for (i, url) in self.push_remotes().await?.iter().enumerate() {
-            let subtree = format!("{PUSHED}/{i}");
-            if *url == fetch_remote {
-                self.copy_namespace(FETCHED, &subtree).await?;
-            } else {
-                self.fetch(url, &[&format!("+refs/heads/*:{subtree}/*")], true, timeout)
-                    .await?;
+    /// Every branch tip the fetch remote and each push remote advertise right
+    /// now, read over the wire — the commits that are **published**, for a
+    /// signed publish to stop at. Deliberately not read from any ref in the
+    /// checkout, which the agent could write to pass an unsigned commit off as
+    /// published.
+    pub(crate) async fn published_tips(&self) -> Result<Vec<String>> {
+        let mut remotes = vec![self.fetch_remote().await?];
+        for url in self.push_remotes().await? {
+            if !remotes.contains(&url) {
+                remotes.push(url);
             }
         }
-        Ok(())
+        let mut tips = BTreeSet::new();
+        for remote in &remotes {
+            for (_, sha) in self.heads(remote).await? {
+                tips.insert(sha);
+            }
+        }
+        Ok(tips.into_iter().collect())
     }
 
-    /// The commit a push's lease should expect at `branch` on the push
-    /// remote `index`, refreshed from that remote right now: `None` when it
-    /// has no such branch.
+    /// The commit a push's lease should expect at `branch` on the push remote
+    /// `index`, as that remote advertises it right now: `None` when it has no
+    /// such branch.
     pub(crate) async fn push_tip(&self, index: usize, branch: &str) -> Result<Option<String>> {
         let Some(url) = self.push_remotes().await?.get(index).cloned() else {
             return Ok(None);
         };
-        let subtree = format!("{PUSHED}/{index}");
-        if self.split.is_some() {
-            self.fetch(
-                &url,
-                &[&format!("+refs/heads/*:{subtree}/*")],
-                true,
-                super::cmd::NET_TIMEOUT,
-            )
-            .await?;
-            resolve(&self.checkout, &format!("{subtree}/{branch}")).await
-        } else {
-            // The user's own repository: git's tracking ref, as git keeps it.
-            resolve(&self.checkout, &format!("refs/remotes/origin/{branch}")).await
-        }
+        Ok(self
+            .heads(&url)
+            .await?
+            .into_iter()
+            .find(|(name, _)| name == branch)
+            .map(|(_, sha)| sha))
     }
 
-    /// Record that `branch` on every push remote, and `origin/<branch>`, now
-    /// stand at `commit` — what a named-remote push would have left behind.
-    pub(crate) async fn record_pushed(&self, branch: &str, commit: &str) -> Result<()> {
-        let mut script = format!("update refs/remotes/origin/{branch} {commit}\n");
-        if self.split.is_some() {
-            for i in 0..self.push_remotes().await?.len() {
-                script.push_str(&format!("update {PUSHED}/{i}/{branch} {commit}\n"));
-            }
+    /// `(branch, commit)` for every branch `remote` advertises.
+    async fn heads(&self, remote: &str) -> Result<Vec<(String, String)>> {
+        let mut cmd = self.command();
+        cmd.args(["ls-remote", "--heads", remote]);
+        let out = super::cmd::output_timed(&mut cmd, "git ls-remote").await?;
+        if !out.status.success() {
+            return Err(Error::Git(format!(
+                "ls-remote {remote} failed: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            )));
         }
-        self.update_refs(&script).await
+        Ok(String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter_map(|line| {
+                let (sha, name) = line.split_once('\t')?;
+                let branch = name.trim().strip_prefix("refs/heads/")?;
+                Some((branch.to_string(), sha.trim().to_string()))
+            })
+            .collect())
+    }
+
+    /// Record that `origin/<branch>` now stands at `commit` — what a
+    /// named-remote push would have left behind, for the agent's view. The
+    /// user's own repository pushed `origin` by name, so git did this itself.
+    pub(crate) async fn record_pushed(&self, branch: &str, commit: &str) -> Result<()> {
+        if self.split.is_none() {
+            return Ok(());
+        }
+        self.clear_conflicting("refs/remotes/origin", branch)
+            .await?;
+        self.update_refs(&format!("update refs/remotes/origin/{branch} {commit}\n"))
+            .await
     }
 
     /// Fetch `commit` itself into the checkout (`FETCH_HEAD` only): a tip whose
@@ -365,19 +399,38 @@ impl Transport {
 
     /// `to/*` made equal to `from/*`: every ref under `from` written under
     /// `to`, every other ref under `to` deleted (a symref such as
-    /// `origin/HEAD` kept).
+    /// `origin/HEAD` kept). Deletions go first, on their own: a branch
+    /// renamed from `feat` to `feat/sub` (or back) needs the old name gone
+    /// before the new one can exist beneath or above it.
     async fn copy_namespace(&self, from: &str, to: &str) -> Result<()> {
         let wanted = self.refs_under(from).await?;
         let current = self.refs_under(to).await?;
-        let mut script = String::new();
-        for (name, sha) in &wanted {
-            script.push_str(&format!("update {to}/{name} {sha}\n"));
-        }
-        for (name, _) in &current {
-            if !wanted.iter().any(|(n, _)| n == name) {
-                script.push_str(&format!("delete {to}/{name}\n"));
-            }
-        }
+        let deletions: String = current
+            .iter()
+            .filter(|(name, _)| !wanted.iter().any(|(n, _)| n == name))
+            .map(|(name, _)| format!("delete {to}/{name}\n"))
+            .collect();
+        self.update_refs(&deletions).await?;
+        let updates: String = wanted
+            .iter()
+            .map(|(name, sha)| format!("update {to}/{name} {sha}\n"))
+            .collect();
+        self.update_refs(&updates).await
+    }
+
+    /// Delete every ref under `namespace` that would stop `branch` from being
+    /// written there: one named like an ancestor of it (`feat` for
+    /// `feat/sub`) or a descendant (`feat/sub` for `feat`).
+    async fn clear_conflicting(&self, namespace: &str, branch: &str) -> Result<()> {
+        let script: String = self
+            .refs_under(namespace)
+            .await?
+            .into_iter()
+            .filter(|(name, _)| {
+                branch.starts_with(&format!("{name}/")) || name.starts_with(&format!("{branch}/"))
+            })
+            .map(|(name, _)| format!("delete {namespace}/{name}\n"))
+            .collect();
         self.update_refs(&script).await
     }
 
@@ -458,9 +511,7 @@ async fn git_path(repo: &Path, what: &str) -> Result<PathBuf> {
 }
 
 /// The checkout's `origin` must still name the remote the user's repository
-/// names, in the https form provisioning wrote (both sides compared in that
-/// form, since `git remote get-url` reports URLs after the user's own
-/// `insteadOf` rewrites, which show on both alike). Transport never reads the
+/// names, in the https form provisioning wrote. Transport never reads the
 /// checkout's `origin`; this is the tamper check, and the pull-request reads
 /// — which resolve the repository from the checkout's origin — rely on it.
 /// Nothing to check when `checkout` is the user's repository itself.
@@ -505,7 +556,7 @@ async fn origin_url(repo: &Path) -> Result<Option<String>> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::super::testing::{commit_file, git, init_repo};
     use super::*;
 
@@ -555,7 +606,7 @@ mod tests {
 
     /// A bare remote whose default branch is `main`, so a clone of it is born
     /// on `main` once `main` is pushed.
-    fn bare(dir: &Path, name: &str) -> PathBuf {
+    pub(crate) fn bare(dir: &Path, name: &str) -> PathBuf {
         let path = dir.join(name);
         git(dir, &["init", "-q", "--bare", path.to_str().unwrap()]);
         git(&path, &["symbolic-ref", "HEAD", "refs/heads/main"]);
@@ -575,6 +626,17 @@ mod tests {
         out.status
             .success()
             .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+    }
+
+    fn tracking_refs(checkout: &Path) -> String {
+        git(
+            checkout,
+            &[
+                "for-each-ref",
+                "--format=%(refname)",
+                "refs/remotes/origin/",
+            ],
+        )
     }
 
     #[tokio::test]
@@ -614,8 +676,8 @@ mod tests {
     }
 
     /// `git remote get-url` reports a URL after the user's own `insteadOf`
-    /// rewrites, on both sides alike; the agreement check must see through
-    /// them rather than report an unchanged checkout as repointed.
+    /// rewrites; the agreement check reads the configured value, so a
+    /// rewrite on both sides changes nothing.
     #[tokio::test]
     async fn the_users_insteadof_rewrite_does_not_read_as_a_change() {
         let td = tempfile::tempdir().unwrap();
@@ -673,10 +735,7 @@ mod tests {
         );
         let t = Transport::open(&fx.checkout, &fx.source).await.unwrap();
         t.fetch_branches(Branches::All).await.unwrap();
-        let refs = git(
-            &fx.checkout,
-            &["for-each-ref", "--format=%(refname)", "refs/remotes/"],
-        );
+        let refs = tracking_refs(&fx.checkout);
         assert!(refs.contains("refs/remotes/origin/main"), "{refs}");
         assert!(
             !refs.contains("planted"),
@@ -693,10 +752,7 @@ mod tests {
             ],
         );
         t.fetch_branches(Branches::All).await.unwrap();
-        let refs = git(
-            &fx.checkout,
-            &["for-each-ref", "--format=%(refname)", "refs/remotes/"],
-        );
+        let refs = tracking_refs(&fx.checkout);
         assert!(refs.contains("refs/remotes/origin/planted"), "{refs}");
     }
 
@@ -746,26 +802,10 @@ mod tests {
 
         // Every branch, pruned: `side` appears, and a since-deleted branch goes.
         t.fetch_branches(Branches::All).await.unwrap();
-        assert!(
-            git(
-                &fx.checkout,
-                &["rev-parse", "--verify", "refs/remotes/origin/side"]
-            )
-            .len()
-                == 40
-        );
+        assert!(tracking_refs(&fx.checkout).contains("origin/side"));
         git(&other, &["push", "-q", "origin", "--delete", "side"]);
         t.fetch_branches(Branches::All).await.unwrap();
-        let out = super::super::testing::git_output(
-            &fx.checkout,
-            &[
-                "rev-parse",
-                "--verify",
-                "--quiet",
-                "refs/remotes/origin/side",
-            ],
-        );
-        assert!(!out.status.success(), "pruned");
+        assert!(!tracking_refs(&fx.checkout).contains("side"), "pruned");
         assert_eq!(git(&fx.source, &["for-each-ref"]), source_refs_before);
     }
 
@@ -801,10 +841,8 @@ mod tests {
         git(&sub, &["config", "user.name", "Me"]);
         let sub_local = commit_file(&sub, "local.txt");
         git(&fx.checkout, &["add", "sub"]);
-        let tip = {
-            git(&fx.checkout, &["commit", "-q", "-m", "bump sub"]);
-            git(&fx.checkout, &["rev-parse", "HEAD"])
-        };
+        git(&fx.checkout, &["commit", "-q", "-m", "bump sub"]);
+        let tip = git(&fx.checkout, &["rev-parse", "HEAD"]);
         let secret = commit_file(&seed, "secret.txt");
         git(&seed, &["push", "-q", private.to_str().unwrap(), "main"]);
         // Recursion asked for everywhere it can be.
@@ -840,8 +878,8 @@ mod tests {
         assert_ne!(sub_local, secret);
     }
 
-    /// The user's `pushurl`s are where pushes go, every one of them; a force
-    /// can lease on only one, so it needs exactly one.
+    /// The user's `pushurl`s are where pushes go, every one of them, and a
+    /// force's lease asks the push remote itself for its tip.
     #[tokio::test]
     async fn pushes_go_to_every_push_url() {
         let td = tempfile::tempdir().unwrap();
@@ -877,6 +915,7 @@ mod tests {
                 fork_b.to_string_lossy().into_owned()
             ]
         );
+        assert_eq!(t.push_tip(0, "main").await.unwrap(), None);
         let tip = commit_file(&fx.checkout, "one.txt");
         for i in 0..2 {
             let out = t
@@ -891,14 +930,97 @@ mod tests {
             branch_tip(&fx.origin, "main").as_deref(),
             Some(fx.base.as_str())
         );
-        t.record_pushed("main", &tip).await.unwrap();
-        assert_eq!(
-            t.push_tip(0, "main").await.unwrap().as_deref(),
-            Some(tip.as_str())
-        );
         assert_eq!(
             t.push_tip(1, "main").await.unwrap().as_deref(),
             Some(tip.as_str())
+        );
+    }
+
+    /// What is published is what the remotes advertise, asked of them — and
+    /// not any ref in the checkout, which the agent can write.
+    #[tokio::test]
+    async fn published_tips_come_from_the_remotes_not_the_checkouts_refs() {
+        let td = tempfile::tempdir().unwrap();
+        let fx = repos(td.path());
+        let fork = bare(td.path(), "fork.git");
+        git(
+            &fx.source,
+            &[
+                "remote",
+                "set-url",
+                "--push",
+                "origin",
+                fork.to_str().unwrap(),
+            ],
+        );
+        let fork_only = commit_file(&fx.source, "fork.txt");
+        git(
+            &fx.source,
+            &["push", "-q", fork.to_str().unwrap(), "main:feat"],
+        );
+        git(&fx.source, &["reset", "-q", "--hard", &fx.base]);
+        let planted = commit_file(&fx.checkout, "unsigned.txt");
+        for refname in [
+            "refs/remotes/origin/planted",
+            "refs/worktree/fletch/origin/planted",
+            "refs/worktree/fletch/push/0/planted",
+        ] {
+            git(&fx.checkout, &["update-ref", refname, &planted]);
+        }
+
+        let t = Transport::open(&fx.checkout, &fx.source).await.unwrap();
+        let tips = t.published_tips().await.unwrap();
+
+        assert_eq!(tips, {
+            let mut want = vec![fx.base.clone(), fork_only.clone()];
+            want.sort();
+            want
+        });
+        assert!(!tips.contains(&planted));
+    }
+
+    /// A branch renamed to a name nested under its old one (or the reverse)
+    /// reconciles, whether every branch is fetched or that one alone.
+    #[tokio::test]
+    async fn a_branch_replaced_by_a_nested_name_reconciles() {
+        let td = tempfile::tempdir().unwrap();
+        let fx = repos(td.path());
+        let t = Transport::open(&fx.checkout, &fx.source).await.unwrap();
+        git(&fx.source, &["push", "-q", "origin", "main:feat"]);
+        t.fetch_branches(Branches::All).await.unwrap();
+        assert!(tracking_refs(&fx.checkout).contains("origin/feat"));
+
+        git(&fx.source, &["push", "-q", "origin", "--delete", "feat"]);
+        git(&fx.source, &["push", "-q", "origin", "main:feat/sub"]);
+        t.fetch_branches(Branches::All).await.unwrap();
+        let refs = tracking_refs(&fx.checkout);
+        assert!(refs.contains("refs/remotes/origin/feat/sub"), "{refs}");
+        assert!(
+            !refs.lines().any(|r| r == "refs/remotes/origin/feat"),
+            "{refs}"
+        );
+
+        git(
+            &fx.source,
+            &["push", "-q", "origin", "--delete", "feat/sub"],
+        );
+        git(&fx.source, &["push", "-q", "origin", "main:feat"]);
+        t.fetch_branches(Branches::One("feat")).await.unwrap();
+        let refs = tracking_refs(&fx.checkout);
+        assert!(
+            refs.lines().any(|r| r == "refs/remotes/origin/feat"),
+            "{refs}"
+        );
+        assert!(!refs.contains("feat/sub"), "{refs}");
+
+        git(&fx.source, &["push", "-q", "origin", "--delete", "feat"]);
+        git(&fx.source, &["push", "-q", "origin", "main:feat/sub"]);
+        t.fetch_branches(Branches::One("feat/sub")).await.unwrap();
+        let refs = tracking_refs(&fx.checkout);
+        assert!(refs.contains("refs/remotes/origin/feat/sub"), "{refs}");
+        assert!(
+            !refs.lines().any(|r| r == "refs/remotes/origin/feat"),
+            "{refs}"
         );
     }
 

@@ -234,9 +234,15 @@ all.
   outright — the pull-request reads, which resolve the repository from the
   checkout's origin, refuse the same way. Pushes go to every push URL you
   configured; a force needs exactly one, since its lease can hold one
-  remote's tip, refreshed from that remote just before. What any of your
-  push remotes already has counts as published, so a signed publish never
-  re-signs it.
+  remote's tip. Every decision that depends on a remote's state is made
+  from what the remote advertises over the wire, never from a ref in the
+  checkout, which the agent can write: the lease expects the tip the push
+  remote reports just before the force, and a signed publish stops at the
+  tips your fetch and push remotes report, so what any of them already has
+  is never re-signed and a planted ref can never pass an unsigned commit
+  off as published. The Git panel's pull fetches this way and then joins
+  the histories with git's own `pull`, so your `pull.rebase` and `pull.ff`
+  still decide how.
 
 ### Why signing works this way
 

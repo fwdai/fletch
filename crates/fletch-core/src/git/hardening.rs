@@ -432,6 +432,9 @@ struct SubmoduleConfig {
 }
 
 /// Every `config` under `<common dir>/modules`, nested submodules included.
+/// Directory symlinks are not followed: the tree is the agent's, and two
+/// links back to `.` would otherwise make the walk exponential. A `config`
+/// that is itself a link is read, as git would read it.
 async fn submodule_configs(dir: &Path) -> Vec<SubmoduleConfig> {
     let out = crate::git_dist::command(dir)
         .args(["rev-parse", "--path-format=absolute", "--git-common-dir"])
@@ -442,16 +445,37 @@ async fn submodule_configs(dir: &Path) -> Vec<SubmoduleConfig> {
     };
     let common = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim());
     let mut found = Vec::new();
-    let mut pending = vec![common.join("modules")];
-    while let Some(root) = pending.pop() {
+    // Bounded, because the tree is the agent's: no deeper than submodules
+    // realistically nest, and no more entries than a scan should ever
+    // visit, so a planted directory bomb cannot keep the app busy.
+    const MAX_DEPTH: usize = 8;
+    const MAX_ENTRIES: usize = 10_000;
+    let mut visited = 0usize;
+    let mut pending = vec![(common.join("modules"), 0usize)];
+    while let Some((root, depth)) = pending.pop() {
         let Ok(entries) = std::fs::read_dir(&root) else {
             continue;
         };
         for entry in entries.flatten() {
+            visited += 1;
+            if visited > MAX_ENTRIES {
+                tracing::warn!(
+                    dir = %dir.display(),
+                    "submodule config scan stopped after {MAX_ENTRIES} entries"
+                );
+                return found;
+            }
             let path = entry.path();
-            if path.is_dir() {
-                pending.push(path);
+            // `file_type` does not follow links; `is_file` below does.
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
+            if kind.is_dir() {
+                if depth < MAX_DEPTH {
+                    pending.push((path, depth + 1));
+                }
             } else if path.file_name().is_some_and(|n| n == "config")
+                && path.is_file()
                 && path.with_file_name("HEAD").exists()
             {
                 let name = path
@@ -893,6 +917,40 @@ mod tests {
         assert!(!std::fs::read_to_string(&sub_config)
             .unwrap()
             .contains("pwn"));
+    }
+
+    /// Links back into the tree under `.git/modules` are not followed, so the
+    /// scan ends — and still finds the real submodule config beside them.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_submodule_scan_does_not_follow_directory_links() {
+        let (_td, _root, repo, git) = scoped_repo();
+        git(&["config", "user.email", "t@example.com"]);
+        git(&["config", "user.name", "T"]);
+        git(&["commit", "-q", "--allow-empty", "-m", "base"]);
+        let out = git(&[
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "add",
+            "-q",
+            repo.to_str().unwrap(),
+            "sub",
+        ]);
+        assert!(out.status.success());
+        let modules = repo.join(".git/modules");
+        for link in ["loop-a", "loop-b"] {
+            std::os::unix::fs::symlink(".", modules.join(link)).unwrap();
+        }
+        std::os::unix::fs::symlink("..", modules.join("sub/up")).unwrap();
+
+        let found: Vec<String> = submodule_configs(&repo)
+            .await
+            .into_iter()
+            .map(|c| c.name)
+            .collect();
+
+        assert_eq!(found, vec!["modules/sub/config".to_string()]);
     }
 
     /// A fresh repo at `<tmp>/workspaces/agent-1/repo`, with `workspaces` as its

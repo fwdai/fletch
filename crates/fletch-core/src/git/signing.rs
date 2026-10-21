@@ -80,33 +80,40 @@ pub(crate) fn signing_requested(show_scope: &str) -> bool {
 /// matter as much as the fetch remote: with a `pushurl`, a branch published
 /// to the fork alone is published all the same, and signing it again would
 /// change its commits (an OpenPGP signature carries its creation time).
-pub(crate) async fn refresh_remote_refs(checkout: &Path, source_repo: &Path) -> Result<()> {
-    super::remote::Transport::open(checkout, source_repo)
-        .await?
-        .fetch_branches(super::remote::Branches::All)
+///
+/// Returns the **published tips**: every branch tip the remotes advertise,
+/// asked of the remotes themselves. That, and not any ref in the checkout,
+/// is where a signed publish stops — the checkout's refs are the agent's to
+/// write, and a planted one would pass an unsigned commit off as published.
+pub(crate) async fn refresh_remote_refs(
+    checkout: &Path,
+    source_repo: &Path,
+) -> Result<Vec<String>> {
+    let t = super::remote::Transport::open(checkout, source_repo).await?;
+    t.fetch_branches(super::remote::Branches::All)
         .await
-        .map_err(|e| Error::Git(format!("refreshing the remotes before signing failed: {e}")))
+        .map_err(|e| Error::Git(format!("refreshing the remotes before signing failed: {e}")))?;
+    t.published_tips().await.map_err(|e| {
+        Error::Git(format!(
+            "reading the remotes' tips before signing failed: {e}"
+        ))
+    })
 }
 
-/// The commits `tip` reaches that no remote has — neither the fetch remote
-/// (`refs/remotes/origin/*`) nor any push remote (`Transport`'s saved tips) —
-/// oldest first, parents before children. Read from the checkout's refs as
-/// they stand, so refresh them first ([`refresh_remote_refs`]).
-pub(crate) async fn unpublished_commits(checkout: &Path, tip: &str) -> Result<Vec<String>> {
-    let out = git_output(
-        checkout,
-        &[
-            "rev-list",
-            "--reverse",
-            "--topo-order",
-            tip,
-            "--not",
-            "--remotes=origin",
-            "--glob=refs/worktree/fletch/push/",
-            "--",
-        ],
-    )
-    .await?;
+/// The commits `tip` reaches that none of `published` (the remotes' tips, as
+/// [`refresh_remote_refs`] read them) reaches — oldest first, parents before
+/// children. A published tip the checkout does not hold cannot reach
+/// anything in it, so it is left out of the walk rather than tripping it.
+pub(crate) async fn unpublished_commits(
+    checkout: &Path,
+    tip: &str,
+    published: &[String],
+) -> Result<Vec<String>> {
+    let present = present_commits(checkout, published).await?;
+    let mut args = vec!["rev-list", "--reverse", "--topo-order", tip, "--not"];
+    args.extend(present.iter().map(String::as_str));
+    args.push("--");
+    let out = git_output(checkout, &args).await?;
     if !out.status.success() {
         return Err(Error::Git(format!(
             "rev-list {tip} failed: {}",
@@ -121,17 +128,45 @@ pub(crate) async fn unpublished_commits(checkout: &Path, tip: &str) -> Result<Ve
         .collect())
 }
 
-/// Replace the commits `tip` reaches that no remote has with signed copies
-/// and return the new tip — `tip` itself when the remotes already have
-/// everything. No ref is moved: the caller owns the branch. The range is
-/// [`unpublished_commits`], so refresh the remote refs first. Every commit in
-/// the range is signed afresh, including one that already carries a `gpgsig`
-/// header: the checkout is agent-writable, so an existing header proves
-/// nothing. The signatures are made in `source_repo` (see the module doc),
-/// which is also where a signing failure comes from: a key the host cannot
-/// use is an error, never an unsigned result.
-pub async fn sign_unpublished(checkout: &Path, source_repo: &Path, tip: &str) -> Result<String> {
-    let unpublished = unpublished_commits(checkout, tip).await?;
+/// Those of `commits` that are commits in `checkout`'s store.
+async fn present_commits(checkout: &Path, commits: &[String]) -> Result<Vec<String>> {
+    if commits.is_empty() {
+        return Ok(Vec::new());
+    }
+    let input = commits.join("\n") + "\n";
+    let out = git_output_stdin(
+        checkout,
+        &["cat-file", "--batch-check"],
+        &[],
+        input.as_bytes(),
+    )
+    .await?;
+    Ok(String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|line| {
+            let mut parts = line.split(' ');
+            let sha = parts.next()?;
+            (parts.next() == Some("commit")).then(|| sha.to_string())
+        })
+        .collect())
+}
+
+/// Replace the commits `tip` reaches that no remote has — nothing in
+/// `published`, the remotes' tips as [`refresh_remote_refs`] read them —
+/// with signed copies and return the new tip; `tip` itself when the remotes
+/// already have everything. No ref is moved: the caller owns the branch.
+/// Every commit in the range is signed afresh, including one that already
+/// carries a `gpgsig` header: the checkout is agent-writable, so an existing
+/// header proves nothing. The signatures are made in `source_repo` (see the
+/// module doc), which is also where a signing failure comes from: a key the
+/// host cannot use is an error, never an unsigned result.
+pub async fn sign_unpublished(
+    checkout: &Path,
+    source_repo: &Path,
+    tip: &str,
+    published: &[String],
+) -> Result<String> {
+    let unpublished = unpublished_commits(checkout, tip, published).await?;
     if unpublished.is_empty() {
         return Ok(tip.to_string());
     }
@@ -374,6 +409,22 @@ mod tests {
     use super::fixtures::{signing_repos, verified, Signing};
     use super::*;
 
+    /// The remotes' tips, asked of them, as a publish learns them.
+    async fn published(fx: &Signing) -> Vec<String> {
+        super::super::remote::Transport::open(&fx.checkout, &fx.source)
+            .await
+            .unwrap()
+            .published_tips()
+            .await
+            .unwrap()
+    }
+
+    /// `sign_unpublished` against what the remotes advertise right now.
+    async fn sign(fx: &Signing, tip: &str) -> Result<String> {
+        let published = published(fx).await;
+        sign_unpublished(&fx.checkout, &fx.source, tip, &published).await
+    }
+
     #[test]
     fn every_scope_but_the_command_line_decides() {
         assert!(signing_requested("global\ttrue\n"));
@@ -440,7 +491,7 @@ mod tests {
         assert!(!verified(&fx, &tip), "fixture commits are unsigned");
         let before = shape(repo, "origin/main..main");
 
-        let signed = sign_unpublished(repo, &fx.source, &tip).await.unwrap();
+        let signed = sign(&fx, &tip).await.unwrap();
 
         assert_ne!(signed, tip);
         assert_eq!(
@@ -530,7 +581,7 @@ mod tests {
                 planted.display()
             ),
         );
-        let signed = sign_unpublished(repo, &fx.source, &tip).await.unwrap();
+        let signed = sign(&fx, &tip).await.unwrap();
         // Only the user's key is in the allowed signers, so this is the proof.
         assert!(
             verified(&fx, &signed),
@@ -548,7 +599,7 @@ mod tests {
                 marker.display()
             ),
         );
-        let signed = sign_unpublished(repo, &fx.source, &tip).await.unwrap();
+        let signed = sign(&fx, &tip).await.unwrap();
         assert!(
             !marker.exists(),
             "the checkout's key command ran on the host"
@@ -585,7 +636,7 @@ mod tests {
         git(repo, &["update-ref", "refs/heads/main", &fake]);
         assert!(!verified(&fx, &fake), "the forgery must not verify");
 
-        let signed = sign_unpublished(repo, &fx.source, &fake).await.unwrap();
+        let signed = sign(&fx, &fake).await.unwrap();
 
         assert_ne!(signed, fake);
         assert!(verified(&fx, &signed));
@@ -606,7 +657,7 @@ mod tests {
         );
         let tip = git(repo, &["rev-parse", "HEAD"]);
 
-        let signed = sign_unpublished(repo, &fx.source, &tip).await.unwrap();
+        let signed = sign(&fx, &tip).await.unwrap();
 
         assert!(verified(&fx, &signed));
         let parents = git(repo, &["log", "-1", "--format=%P", &signed]);
@@ -655,35 +706,83 @@ mod tests {
         .unwrap()
         .tip;
 
-        refresh_remote_refs(&fx.checkout, &fx.source).await.unwrap();
+        let remotes = refresh_remote_refs(&fx.checkout, &fx.source).await.unwrap();
 
         assert!(
             !git(&fx.checkout, &["for-each-ref", "refs/remotes/origin/"]).contains("feat"),
             "the fetch remote never had the branch"
         );
+        assert!(
+            remotes.contains(&published),
+            "the fork's tip is a published tip"
+        );
         assert_eq!(
-            unpublished_commits(&fx.checkout, &published).await.unwrap(),
+            unpublished_commits(&fx.checkout, &published, &remotes)
+                .await
+                .unwrap(),
             Vec::<String>::new(),
             "what the fork has is published"
         );
         assert_eq!(
-            sign_unpublished(&fx.checkout, &fx.source, &published)
+            sign_unpublished(&fx.checkout, &fx.source, &published, &remotes)
                 .await
                 .unwrap(),
             published
         );
     }
 
+    /// Every ref in the checkout is the agent's to write, so none of them
+    /// decides what is published: a ref planted anywhere — under
+    /// `refs/remotes/origin`, in the fetch scratch space, in a namespace of
+    /// the agent's own invention — leaves an unsigned tip unpublished and
+    /// signed.
+    #[tokio::test]
+    async fn a_planted_ref_does_not_hide_an_unsigned_commit() {
+        let td = tempfile::tempdir().unwrap();
+        let fx = signing_repos(td.path());
+        let tip = commit_file(&fx.checkout, "one.txt");
+        for refname in [
+            "refs/remotes/origin/planted",
+            "refs/remotes/origin/main",
+            "refs/worktree/fletch/origin/planted",
+            "refs/worktree/fletch/push/0/planted",
+            "refs/fletch/pushed/planted",
+        ] {
+            git(&fx.checkout, &["update-ref", refname, &tip]);
+        }
+
+        let remotes = refresh_remote_refs(&fx.checkout, &fx.source).await.unwrap();
+
+        assert_eq!(
+            remotes,
+            vec![fx.base.clone()],
+            "the remote advertises base alone"
+        );
+        assert_eq!(
+            unpublished_commits(&fx.checkout, &tip, &remotes)
+                .await
+                .unwrap(),
+            vec![tip.clone()]
+        );
+        // The plants that lie about `origin/*` were reconciled away; one in
+        // a namespace of the agent's own stays, read by nothing.
+        assert_eq!(
+            git(&fx.checkout, &["rev-parse", "refs/remotes/origin/main"]),
+            fx.base
+        );
+        assert!(verified(
+            &fx,
+            &sign_unpublished(&fx.checkout, &fx.source, &tip, &remotes)
+                .await
+                .unwrap()
+        ));
+    }
+
     #[tokio::test]
     async fn nothing_unpublished_leaves_the_tip_alone() {
         let td = tempfile::tempdir().unwrap();
         let fx = signing_repos(td.path());
-        assert_eq!(
-            sign_unpublished(&fx.checkout, &fx.source, &fx.base)
-                .await
-                .unwrap(),
-            fx.base
-        );
+        assert_eq!(sign(&fx, &fx.base).await.unwrap(), fx.base);
     }
 
     #[tokio::test]
@@ -695,9 +794,7 @@ mod tests {
             &fx.source,
             &["config", "user.signingkey", "/nonexistent/key"],
         );
-        let err = sign_unpublished(&fx.checkout, &fx.source, &tip)
-            .await
-            .unwrap_err();
+        let err = sign(&fx, &tip).await.unwrap_err();
         assert!(err.to_string().contains("signing failed"), "{err}");
     }
 
@@ -721,7 +818,7 @@ mod tests {
                 .enable_all()
                 .build()
                 .unwrap()
-                .block_on(sign_unpublished(&fx.checkout, &fx.source, tip))
+                .block_on(sign(fx, tip))
         })
     }
 

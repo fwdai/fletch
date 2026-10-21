@@ -87,12 +87,12 @@ pub async fn publish(p: &Publication<'_>, tip: Tip<'_>) -> Result<Published> {
 /// check did not — so the check runs after the refresh, on the same refs the
 /// signing range is cut from.
 async fn signed(p: &Publication<'_>, tip: String) -> Result<String> {
-    refresh_remote_refs(p.checkout, p.source_repo).await?;
+    let published = refresh_remote_refs(p.checkout, p.source_repo).await?;
     let tip = match check_identity_of(p.checkout, p.branch, tip).await? {
         Identity::Own { tip } => tip,
         Identity::Foreign(why) => return Err(Error::Git(why)),
     };
-    let signed = sign_unpublished(p.checkout, p.source_repo, &tip)
+    let signed = sign_unpublished(p.checkout, p.source_repo, &tip, &published)
         .await
         .map_err(|e| {
             Error::Git(format!(

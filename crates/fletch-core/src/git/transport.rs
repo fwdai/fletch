@@ -193,15 +193,21 @@ pub async fn pull(checkout: &Path, source_repo: &Path) -> Result<()> {
         .fetch_branches(Branches::One(&branch))
         .await
         .map_err(|e| Error::Git(format!("pull failed: {e}")))?;
-    // The merge runs in the checkout, so it runs `merge.<name>.driver` — a
-    // wildcard key the `-c` overrides cannot neutralise by name; `git_output_env`
-    // applies the config refusal. Identity because a pull may create a merge
-    // commit; merge hooks are neutralised at the spawn seam.
+    // The join runs in the checkout as git's own `pull`, from the checkout
+    // itself (`.`) at the tracking ref just refreshed — no network, no
+    // credentials — so `pull.rebase` and `pull.ff` decide how the histories
+    // meet, exactly as a `git pull` would. It merges or rebases, so it runs
+    // `merge.<name>.driver` — a wildcard key the `-c` overrides cannot
+    // neutralise by name; `git_output_env` applies the config refusal.
+    // Identity because a pull may create a merge commit; hooks are
+    // neutralised at the spawn seam.
     let out = git_output_env(
         checkout,
         &[
-            "merge",
+            "pull",
+            "--no-recurse-submodules",
             "--no-edit",
+            ".",
             &format!("refs/remotes/origin/{branch}"),
         ],
         &identity_env(checkout).await,
@@ -474,6 +480,102 @@ mod tests {
             String::from_utf8_lossy(&out.stderr)
         );
         String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    /// A source repo with `origin`, a `--shared` checkout of it on `main`, and
+    /// a second clone (`other`) that can move `origin` from outside.
+    fn pull_repos(dir: &Path) -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
+        use super::super::testing::{commit_file, git, init_repo};
+        let origin = dir.join("origin.git");
+        git(dir, &["init", "-q", "--bare", origin.to_str().unwrap()]);
+        git(&origin, &["symbolic-ref", "HEAD", "refs/heads/main"]);
+        let source = dir.join("source");
+        init_repo(&source);
+        git(
+            &source,
+            &["remote", "add", "origin", origin.to_str().unwrap()],
+        );
+        commit_file(&source, "base.txt");
+        git(&source, &["push", "-q", "origin", "main"]);
+        let checkout = dir.join("checkout");
+        git(
+            dir,
+            &[
+                "clone",
+                "-q",
+                "--shared",
+                source.to_str().unwrap(),
+                checkout.to_str().unwrap(),
+            ],
+        );
+        git(
+            &checkout,
+            &["remote", "set-url", "origin", origin.to_str().unwrap()],
+        );
+        git(&checkout, &["config", "user.email", "me@example.com"]);
+        git(&checkout, &["config", "user.name", "Me"]);
+        git(&checkout, &["config", "commit.gpgsign", "false"]);
+        let other = dir.join("other");
+        git(
+            dir,
+            &[
+                "clone",
+                "-q",
+                origin.to_str().unwrap(),
+                other.to_str().unwrap(),
+            ],
+        );
+        git(&other, &["config", "user.email", "o@example.com"]);
+        git(&other, &["config", "user.name", "O"]);
+        (source, checkout, other)
+    }
+
+    /// The fetch is the protected one, but how the histories meet is still
+    /// the user's `pull.rebase` / `pull.ff` call, as with `git pull`.
+    #[tokio::test]
+    async fn pull_honours_the_rebase_and_fast_forward_settings() {
+        use super::super::testing::{commit_file, git};
+        let td = tempfile::tempdir().unwrap();
+        let (source, checkout, other) = pull_repos(td.path());
+        // Divergence: theirs on origin, ours local.
+        let theirs = commit_file(&other, "theirs.txt");
+        git(&other, &["push", "-q", "origin", "main"]);
+        commit_file(&checkout, "ours.txt");
+        git(&checkout, &["config", "pull.rebase", "true"]);
+
+        pull(&checkout, &source).await.unwrap();
+
+        assert_eq!(
+            git(&checkout, &["rev-parse", "HEAD~1"]),
+            theirs,
+            "rebased onto theirs, no merge commit"
+        );
+        assert_eq!(
+            git(&checkout, &["rev-list", "--merges", "--count", "HEAD"]),
+            "0"
+        );
+
+        // Diverge again; a fast-forward-only pull refuses to join them.
+        commit_file(&other, "theirs2.txt");
+        git(&other, &["push", "-q", "origin", "main"]);
+        commit_file(&checkout, "ours2.txt");
+        git(&checkout, &["config", "--unset", "pull.rebase"]);
+        git(&checkout, &["config", "pull.ff", "only"]);
+        let before = git(&checkout, &["rev-parse", "HEAD"]);
+
+        let err = pull(&checkout, &source).await.unwrap_err();
+
+        assert!(err.to_string().contains("pull failed"), "{err}");
+        assert_eq!(
+            git(&checkout, &["rev-parse", "HEAD"]),
+            before,
+            "nothing joined"
+        );
+        assert_eq!(
+            git(&checkout, &["rev-parse", "refs/remotes/origin/main"]),
+            git(&other, &["rev-parse", "HEAD"]),
+            "the fetch itself happened"
+        );
     }
 
     /// The agent owns its `.git/HEAD`/`refs`, so the `branch` string reaching
