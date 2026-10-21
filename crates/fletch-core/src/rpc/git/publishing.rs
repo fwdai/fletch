@@ -76,14 +76,20 @@ impl GitDispatcher {
         };
 
         let mut effects = Vec::new();
-        let branch = match (current, requested) {
-            (Some(cur), None) => cur,
-            (Some(cur), Some(req)) if req == cur => cur,
-            (Some(_), Some(req)) => match create_branch(&t, &req, &mut effects).await {
+        // `args.head` names an existing local branch other than the checked-out
+        // one — a stack's next PR is opened without checking each branch out.
+        // Nothing is materialized for it: a head that isn't there fails the
+        // identity read below, which names it.
+        let head = arg_branch_named(args, "head");
+        let branch = match (head, current, requested) {
+            (Some(head), _, _) => head,
+            (None, Some(cur), None) => cur,
+            (None, Some(cur), Some(req)) if req == cur => cur,
+            (None, Some(_), Some(req)) => match create_branch(&t, &req, &mut effects).await {
                 Ok(name) => name,
                 Err(e) => return (Response::err(id, format!("open_pr: {e}")), effects),
             },
-            (None, req) => {
+            (None, None, req) => {
                 let desired = req.unwrap_or_else(|| fallback_branch(title));
                 match create_branch(&t, &desired, &mut effects).await {
                     Ok(name) => name,
@@ -130,7 +136,9 @@ impl GitDispatcher {
         if born_on_origin {
             note_branch_born(&t, &branch, &mut effects);
         }
-        match crate::github::pr_create(&t.cwd, title, body, &base).await {
+        // By the branch just published, not the checkout's HEAD: with
+        // `args.head` the two differ.
+        match crate::github::pr_create_head(&t.cwd, &branch, title, body, &base).await {
             Ok(pr) => {
                 crate::telemetry::track("pr_opened", json!({ "source": "agent_rpc" }));
                 // Enough to log the PR into its checkout's set the moment it
