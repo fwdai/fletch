@@ -1,6 +1,6 @@
-//! What a failing check left behind: the job log and the annotations. Read by
-//! the agent's `pr_check_log` op once `pr_checks` has named the check; the id
-//! on a [`CheckRun`] is the handle.
+//! GitHub Actions: workflow runs and what a failing job left behind (the job
+//! log and the annotations). Read by the agent's `run_list`, `run_log` and
+//! `pr_check_log` ops; the id on a [`CheckRun`] is the handle.
 //!
 //! A GitHub Actions job and its check run share one id, so the Actions log
 //! endpoint takes the check-run id directly. Checks from other apps have no
@@ -20,6 +20,122 @@ use super::types::*;
 /// Most lines a caller may ask for; the whole log of a long job is megabytes.
 pub const CHECK_LOG_MAX_LINES: usize = 2000;
 pub const CHECK_LOG_DEFAULT_LINES: usize = 200;
+
+/// GitHub's page cap for the runs and jobs lists.
+pub const RUN_LIST_MAX: u32 = 100;
+
+/// The repository's workflow runs matching `filter`, newest first, over
+/// REST. `Ok(None)` when GitHub answers anything but success: a repository
+/// the token cannot see, or a `workflow` that names no workflow file.
+pub async fn run_list(checkout: &Path, filter: &RunListFilter) -> Result<Option<Vec<WorkflowRun>>> {
+    let (owner, repo) = require_repo_ref(checkout).await?;
+    let client = client::Client::new()?;
+    let base = match &filter.workflow {
+        Some(workflow) => format!("/repos/{owner}/{repo}/actions/workflows/{workflow}/runs"),
+        None => format!("/repos/{owner}/{repo}/actions/runs"),
+    };
+    let per_page = filter.limit.clamp(1, RUN_LIST_MAX).to_string();
+    let mut params = vec![("per_page", per_page.as_str())];
+    for (key, value) in [
+        ("branch", &filter.branch),
+        ("status", &filter.status),
+        ("event", &filter.event),
+    ] {
+        if let Some(value) = value {
+            params.push((key, value));
+        }
+    }
+    let (status, body) = client
+        .rest_get_observed(&client::with_query(&base, &params))
+        .await?;
+    if !status.is_success() {
+        return Ok(None);
+    }
+    Ok(Some(parse_run_list(&body)))
+}
+
+/// The jobs of run `id` (its latest attempt), as [`CheckRun`]s: a job and
+/// its check run share an id, so the same shape names the log to read.
+/// `Ok(None)` when GitHub answers anything but success for the run.
+pub async fn run_jobs(checkout: &Path, id: u64) -> Result<Option<Vec<CheckRun>>> {
+    let (owner, repo) = require_repo_ref(checkout).await?;
+    let client = client::Client::new()?;
+    let per_page = RUN_LIST_MAX.to_string();
+    let path = client::with_query(
+        &format!("/repos/{owner}/{repo}/actions/runs/{id}/jobs"),
+        &[("filter", "latest"), ("per_page", &per_page)],
+    );
+    let (status, body) = client.rest_get_observed(&path).await?;
+    if !status.is_success() {
+        return Ok(None);
+    }
+    Ok(Some(parse_run_jobs(&body)))
+}
+
+/// The REST `workflow_runs` array → [`WorkflowRun`]s. Pure; a body without
+/// the array is an empty list.
+pub(crate) fn parse_run_list(body: &Value) -> Vec<WorkflowRun> {
+    let text = |v: &Value, key: &str| v[key].as_str().unwrap_or_default().to_string();
+    body["workflow_runs"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .map(|run| WorkflowRun {
+                    id: run["id"].as_u64().unwrap_or_default(),
+                    name: text(run, "name"),
+                    workflow: workflow_file(run["path"].as_str().unwrap_or_default()),
+                    title: text(run, "display_title"),
+                    branch: text(run, "head_branch"),
+                    head_sha: text(run, "head_sha"),
+                    event: text(run, "event"),
+                    status: text(run, "status"),
+                    conclusion: run["conclusion"]
+                        .as_str()
+                        .filter(|c| !c.is_empty())
+                        .map(str::to_string),
+                    url: text(run, "html_url"),
+                    run_number: run["run_number"].as_u64().unwrap_or_default(),
+                    run_attempt: run["run_attempt"].as_u64().unwrap_or(1),
+                    created_at: text(run, "created_at"),
+                    updated_at: text(run, "updated_at"),
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// `.github/workflows/ci.yml` → `ci.yml`: the spelling the workflow
+/// endpoints take, so a row's `workflow` can be passed straight back.
+pub(crate) fn workflow_file(path: &str) -> String {
+    path.rsplit('/').next().unwrap_or(path).to_string()
+}
+
+/// The REST `jobs` array → [`CheckRun`]s, the run's jobs in order. Pure.
+pub(crate) fn parse_run_jobs(body: &Value) -> Vec<CheckRun> {
+    let str_of = |v: &Value, key: &str| -> Option<String> {
+        v[key]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    };
+    body["jobs"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .map(|job| CheckRun {
+                    id: job["id"].as_u64(),
+                    name: str_of(job, "name").unwrap_or_else(|| "job".into()),
+                    status: str_of(job, "status").unwrap_or_else(|| "queued".into()),
+                    conclusion: str_of(job, "conclusion"),
+                    required: false,
+                    url: str_of(job, "html_url"),
+                    started_at: str_of(job, "started_at"),
+                    completed_at: str_of(job, "completed_at"),
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
 
 /// The tail of check `id`'s job log and its annotations. Errors only when
 /// nothing can be read: no token, no GitHub origin, a transport failure, or a
@@ -185,6 +301,47 @@ mod tests {
             "a stamp without fractional seconds still counts"
         );
         assert_eq!(strip_runner_timestamp("nospace"), "nospace");
+    }
+
+    #[test]
+    fn run_list_parses_rows_and_names_the_workflow_file() {
+        let body = json!({ "total_count": 2, "workflow_runs": [
+            { "id": 9001, "name": "CI", "path": ".github/workflows/ci.yml",
+              "display_title": "fix: login", "head_branch": "fix/login", "head_sha": "abc",
+              "event": "push", "status": "completed", "conclusion": "failure",
+              "html_url": "https://github.com/o/r/actions/runs/9001",
+              "run_number": 41, "run_attempt": 2,
+              "created_at": "2026-10-21T10:00:00Z", "updated_at": "2026-10-21T10:05:00Z" },
+            { "id": 9002, "name": "Deploy", "path": "dynamic/pages/pages-build-deployment",
+              "head_branch": "main", "event": "dynamic", "status": "in_progress", "conclusion": null }
+        ]});
+        let runs = parse_run_list(&body);
+        assert_eq!(runs.len(), 2);
+        assert_eq!(runs[0].workflow, "ci.yml");
+        assert_eq!(runs[0].conclusion.as_deref(), Some("failure"));
+        assert_eq!(runs[0].run_attempt, 2);
+        assert_eq!(runs[1].workflow, "pages-build-deployment");
+        assert_eq!(runs[1].conclusion, None);
+        assert_eq!(runs[1].run_attempt, 1, "an absent attempt is the first");
+        assert!(parse_run_list(&json!({ "message": "Not Found" })).is_empty());
+    }
+
+    #[test]
+    fn run_jobs_parse_as_check_runs() {
+        let body = json!({ "jobs": [
+            { "id": 77, "name": "test (ubuntu)", "status": "completed", "conclusion": "failure",
+              "html_url": "https://github.com/o/r/actions/runs/9001/job/77",
+              "started_at": "2026-10-21T10:00:00Z", "completed_at": "2026-10-21T10:04:00Z" },
+            { "id": 78, "name": "lint", "status": "queued", "conclusion": null }
+        ]});
+        let jobs = parse_run_jobs(&body);
+        assert_eq!(jobs.len(), 2);
+        assert_eq!(jobs[0].id, Some(77));
+        assert_eq!(jobs[0].name, "test (ubuntu)");
+        assert!(super::super::checks::is_failing(&jobs[0]));
+        assert_eq!(jobs[1].status, "queued");
+        assert_eq!(jobs[1].conclusion, None);
+        assert!(parse_run_jobs(&json!([])).is_empty());
     }
 
     #[test]

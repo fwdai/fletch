@@ -5,6 +5,7 @@ mod pr_reads;
 mod pr_writes;
 mod publishing;
 mod review_threads;
+mod runs;
 mod targets;
 
 #[cfg(test)]
@@ -160,6 +161,8 @@ impl GitDispatcher {
             "issue_list" => (self.issue_list(id, args).await, Vec::new()),
             "pr_checks" => (self.pr_checks(id, args).await, Vec::new()),
             "pr_check_log" => (self.pr_check_log(id, args).await, Vec::new()),
+            "run_list" => (self.run_list(id, args).await, Vec::new()),
+            "run_log" => (self.run_log(id, args).await, Vec::new()),
             "pr_comments" => (self.pr_comments(id, args).await, Vec::new()),
             "pr_edit" => self.pr_edit(id, args).await,
             "pr_comment" => (self.pr_comment(id, args).await, Vec::new()),

@@ -77,21 +77,24 @@ pub(crate) fn parse_merge_state(raw: &str) -> MergeState {
     }
 }
 
+/// A conclusion that counts as a failure, for the rollup and for picking the
+/// job of a run worth reading the log of (`run_log`).
+pub(crate) fn is_failing(r: &CheckRun) -> bool {
+    matches!(
+        r.conclusion.as_deref(),
+        Some("failure")
+            | Some("timed_out")
+            | Some("cancelled")
+            | Some("action_required")
+            | Some("startup_failure")
+    )
+}
+
 /// Roll a normalized run list up into the spec §6 summary. Pure, and shared by
 /// both transports — the GraphQL `statusCheckRollup` parser below and the REST
 /// check-runs/statuses parser — so the pass/fail/pending arithmetic is defined
 /// and tested exactly once regardless of where the runs came from.
 pub(crate) fn rollup_checks(merge_state: MergeState, runs: Vec<CheckRun>) -> PrChecks {
-    let is_failing = |r: &CheckRun| {
-        matches!(
-            r.conclusion.as_deref(),
-            Some("failure")
-                | Some("timed_out")
-                | Some("cancelled")
-                | Some("action_required")
-                | Some("startup_failure")
-        )
-    };
     let total = runs.len() as u32;
     let pending = runs.iter().filter(|r| r.status != "completed").count() as u32;
     let failed = runs.iter().filter(|r| is_failing(r)).count() as u32;

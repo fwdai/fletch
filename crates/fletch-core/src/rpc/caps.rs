@@ -126,6 +126,8 @@ mod tests {
             "repo_view",
             "pr_checks",
             "pr_check_log",
+            "run_list",
+            "run_log",
             "pr_comments",
             "pr_threads",
             "reply_thread",

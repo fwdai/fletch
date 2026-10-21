@@ -87,6 +87,16 @@ GitHub API directly: your sandbox has no GitHub credentials.
 `repo_view` describes the repository behind origin: visibility, default
 branch, the merge methods it allows and whether merged branches are deleted.
 
+GitHub Actions beyond a pull request — a deploy on `main` after a merge, a
+scheduled job — is read with `run_list` (the repository's workflow runs,
+newest first: `id`, `name`, `workflow` file, `title`, `branch`, `event`,
+`status`, `conclusion`, URL; `args.branch`, `args.workflow` (a file name like
+`ci.yml`), `args.status` (a status or conclusion such as `in_progress` or
+`failure`) and `args.event` narrow them, `args.limit` default 20, max 100) and
+`run_log` (`args.run` is a run's `id`; returns the log tail and annotations
+of its first failing job, or of `args.job` by id or name, with `args.lines`
+as for `pr_check_log`, plus the run's `jobs`).
+
 Issues of the repository: `issue_view` (`args.number`; title, state, body,
 labels, assignees, author and the newest `args.comments` comments, default
 50) and `issue_list` (`args.state` open (default), closed or all,
