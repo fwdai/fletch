@@ -16,6 +16,7 @@
 use serde::Serialize;
 use serde_json::Value;
 
+use super::args::{arg_branch_named, refuse_option_like};
 use super::targets::Target;
 use super::GitDispatcher;
 use crate::rpc::Response;
@@ -196,6 +197,39 @@ impl GitDispatcher {
         }
     }
 
+    /// The repository's pull requests: `args.state` open (default), closed or
+    /// all; `args.head` / `args.base` narrow to a branch; `args.limit` default
+    /// 20, max 100. Agents listed PRs to find their branch's number, to walk a
+    /// stack and to see what merged lately, through `gh pr list` in 24
+    /// sessions.
+    pub(super) async fn pr_list(&self, id: &str, args: &Value) -> Response {
+        let filter = match pr_list_filter(args) {
+            Ok(f) => f,
+            Err(e) => return Response::err(id, format!("pr_list: {e}")),
+        };
+        for (kind, value) in [("head", &filter.head), ("base", &filter.base)] {
+            if let Some(resp) = value
+                .as_deref()
+                .and_then(|v| refuse_option_like(id, "pr_list", kind, v))
+            {
+                return resp;
+            }
+        }
+        let t = match self.pr_read_target(id, "pr_list", args).await {
+            Ok(t) => t,
+            Err(resp) => return resp,
+        };
+        match crate::github::pr_list_filtered(&t.source_repo, &filter).await {
+            Ok(Some(rows)) => json_ok(id, "pr_list", &rows),
+            Ok(None) => Response::err(
+                id,
+                "pr_list: GitHub did not list this repository's pull requests — it may not be \
+                 visible to the host's GitHub account; try again shortly",
+            ),
+            Err(e) => Response::err(id, format!("pr_list: {e}")),
+        }
+    }
+
     /// The tail of one check's job log plus its annotations. `args.check` is
     /// the run's `id` or `name` as `pr_checks` lists them; `args.lines` (default
     /// 200, max 2000) is how much of the log's end to return; `args.number`
@@ -269,6 +303,30 @@ impl GitDispatcher {
             Err(e) => Response::err(id, format!("pr_check_log: {e}")),
         }
     }
+}
+
+const PR_LIST_DEFAULT_LIMIT: u32 = 20;
+
+pub(super) fn pr_list_filter(args: &Value) -> Result<crate::github::PrListFilter, String> {
+    let state = match args.get("state") {
+        None | Some(Value::Null) => "open".to_string(),
+        Some(Value::String(s)) if matches!(s.trim(), "open" | "closed" | "all") => {
+            s.trim().to_string()
+        }
+        Some(other) => {
+            return Err(format!(
+                "`state` must be \"open\", \"closed\" or \"all\", got {other}"
+            ))
+        }
+    };
+    Ok(crate::github::PrListFilter {
+        state,
+        head: arg_branch_named(args, "head"),
+        base: arg_branch_named(args, "base"),
+        limit: positive_u32_arg(args, "limit")?
+            .unwrap_or(PR_LIST_DEFAULT_LIMIT)
+            .min(crate::github::PR_LIST_MAX),
+    })
 }
 
 /// How a request names a check: by the id `pr_checks` reported, or by name.

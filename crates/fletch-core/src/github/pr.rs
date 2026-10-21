@@ -393,6 +393,64 @@ pub async fn pr_list(checkout: &Path, limit: u32) -> Result<Vec<PrSummary>> {
         .collect())
 }
 
+/// GitHub's page cap for the pulls list.
+pub const PR_LIST_MAX: u32 = 100;
+
+/// The repository's pull requests matching `filter`, newest-updated first,
+/// over REST. `Ok(None)` when GitHub answers anything but success (a
+/// repository the token cannot see) or while a rate-limit backoff is active.
+pub async fn pr_list_filtered(
+    checkout: &Path,
+    filter: &PrListFilter,
+) -> Result<Option<Vec<PrListEntry>>> {
+    if client::is_backing_off() {
+        return Ok(None);
+    }
+    let (owner, repo) = require_repo_ref(checkout).await?;
+    let client = client::Client::new()?;
+    let mut path = format!(
+        "/repos/{owner}/{repo}/pulls?state={}&sort=updated&direction=desc&per_page={}",
+        filter.state,
+        filter.limit.clamp(1, PR_LIST_MAX)
+    );
+    // `head` is `owner:branch` to GitHub; the branch is of this repository.
+    if let Some(head) = &filter.head {
+        path.push_str(&format!("&head={owner}:{head}"));
+    }
+    if let Some(base) = &filter.base {
+        path.push_str(&format!("&base={base}"));
+    }
+    let (status, body) = client.rest_get_observed(&path).await?;
+    if !status.is_success() {
+        return Ok(None);
+    }
+    Ok(Some(parse_pr_list(&body)))
+}
+
+/// The REST pulls array as rows. Pure; a non-array body is an empty list.
+pub(crate) fn parse_pr_list(body: &Value) -> Vec<PrListEntry> {
+    body.as_array()
+        .map(|arr| {
+            arr.iter()
+                .map(|pr| {
+                    let state = super::live::parse_pr_state_rest(pr);
+                    PrListEntry {
+                        number: state.number,
+                        title: state.title,
+                        state: state.state,
+                        draft: pr["draft"].as_bool().unwrap_or(false),
+                        branch: pr["head"]["ref"].as_str().unwrap_or_default().to_string(),
+                        base: pr["base"]["ref"].as_str().unwrap_or_default().to_string(),
+                        url: state.url,
+                        author: pr["user"]["login"].as_str().unwrap_or_default().to_string(),
+                        updated_at: pr["updated_at"].as_str().unwrap_or_default().to_string(),
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Whether a create failure means a PR for this branch already exists (the
 /// REST 422 message is "A pull request already exists for owner:branch.").
 /// Used to make `pr_create` idempotent across retries.
@@ -759,6 +817,34 @@ mod tests {
         assert_eq!(draft_only.patch_payload(), None);
         assert!(!draft_only.is_empty());
         assert!(PrEdit::default().is_empty());
+    }
+
+    #[test]
+    fn pr_list_rows_carry_branch_base_and_merged_state() {
+        let rows = parse_pr_list(&json!([
+            { "number": 5, "title": "open one", "state": "open", "merged": false, "draft": true,
+              "html_url": "https://github.com/o/r/pull/5",
+              "head": { "ref": "feat/a" }, "base": { "ref": "main" },
+              "user": { "login": "octocat" }, "updated_at": "2026-10-21T09:00:00Z" },
+            { "number": 4, "title": "merged one", "state": "closed", "merged_at": "2026-10-20T09:00:00Z",
+              "head": { "ref": "feat/b" }, "base": { "ref": "feat/a" }, "user": { "login": "alice" } }
+        ]));
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].number, 5);
+        assert!(rows[0].draft);
+        assert_eq!(rows[0].state, PrStatus::Open);
+        assert_eq!(
+            (rows[0].branch.as_str(), rows[0].base.as_str()),
+            ("feat/a", "main")
+        );
+        assert_eq!(rows[0].author, "octocat");
+        assert_eq!(
+            rows[1].state,
+            PrStatus::Merged,
+            "merged_at makes a closed PR merged"
+        );
+        assert_eq!(rows[1].base, "feat/a", "a stacked PR names its parent");
+        assert!(parse_pr_list(&json!({ "message": "Not Found" })).is_empty());
     }
 
     #[test]

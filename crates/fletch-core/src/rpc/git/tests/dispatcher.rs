@@ -194,6 +194,43 @@ async fn pr_check_log_needs_a_check_and_sane_numbers() {
     }
 }
 
+#[tokio::test]
+async fn pr_list_validates_its_filter_before_any_lookup() {
+    let td = tempfile::tempdir().unwrap();
+    let disp = dispatcher(td.path());
+    for (args, needle) in [
+        (json!({ "state": "merged" }), "`state` must be"),
+        (json!({ "state": 1 }), "`state` must be"),
+        (json!({ "limit": 0 }), "`limit` must be a positive integer"),
+        (json!({ "head": "--all" }), "option-like head"),
+        (json!({ "base": "-x" }), "option-like base"),
+    ] {
+        let (resp, fx) = disp.dispatch_inner("l", "pr_list", &args).await;
+        assert!(!resp.ok, "{args}");
+        let err = resp.error.unwrap();
+        assert!(err.contains(needle), "{args}: {err}");
+        assert!(fx.is_empty());
+    }
+}
+
+#[test]
+fn pr_list_filter_defaults_and_clamps() {
+    use crate::rpc::git::pr_reads::pr_list_filter;
+    let f = pr_list_filter(&json!({})).unwrap();
+    assert_eq!(
+        (f.state.as_str(), f.limit, f.head, f.base),
+        ("open", 20, None, None)
+    );
+    let f = pr_list_filter(
+        &json!({ "state": "all", "limit": 500, "head": " feat/x ", "base": "main" }),
+    )
+    .unwrap();
+    assert_eq!(f.state, "all");
+    assert_eq!(f.limit, 100);
+    assert_eq!(f.head.as_deref(), Some("feat/x"));
+    assert_eq!(f.base.as_deref(), Some("main"));
+}
+
 #[test]
 fn a_check_is_named_by_id_or_name() {
     use crate::rpc::git::pr_reads::CheckRef;
@@ -310,7 +347,13 @@ async fn pr_reads_name_a_non_github_origin_and_emit_nothing() {
     let td = tempfile::tempdir().unwrap();
     let repo = repo_without_origin(td.path());
     let disp = dispatcher(&repo);
-    for op in ["pr_view", "pr_checks", "pr_comments", "pr_check_log"] {
+    for op in [
+        "pr_view",
+        "pr_checks",
+        "pr_comments",
+        "pr_check_log",
+        "pr_list",
+    ] {
         let args = if op == "pr_check_log" {
             json!({ "check": "test" })
         } else {

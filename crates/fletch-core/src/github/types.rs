@@ -100,6 +100,35 @@ pub struct PrDetail {
     pub closed_at: Option<String>,
 }
 
+/// One row of `pr_list`: enough to find the PR for a branch, walk a stack
+/// (`branch` → `base`) or see what merged lately, without a second read.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct PrListEntry {
+    pub number: u32,
+    pub title: String,
+    pub state: PrStatus,
+    pub draft: bool,
+    /// Head branch name.
+    pub branch: String,
+    pub base: String,
+    pub url: String,
+    pub author: String,
+    /// ISO-8601 as GitHub gives it.
+    pub updated_at: String,
+}
+
+/// What `pr_list` asks for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrListFilter {
+    /// "open" | "closed" | "all" — GitHub's own vocabulary; a merged PR is
+    /// a closed one whose row says `merged`.
+    pub state: String,
+    /// Head branch, in this repository.
+    pub head: Option<String>,
+    pub base: Option<String>,
+    pub limit: u32,
+}
+
 /// Lightweight PR summary for the composer's "#" mention autocomplete —
 /// just enough to list and reference a PR by number.
 #[derive(Debug, Clone, serde::Serialize)]
