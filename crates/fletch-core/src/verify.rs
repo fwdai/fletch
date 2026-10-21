@@ -118,8 +118,8 @@ pub struct Verifier {
     setup_override: Option<String>,
     /// Project override for the lint command (`run.lint`); wins over detection.
     lint_override: Option<String>,
-    /// The project whose checks these are, which keys the toolchain cache the
-    /// Run profile grants them ([`crate::sandbox::toolchain_cache_root`]).
+    /// The project whose checks these are, which keys the toolchain cache they
+    /// run with, shared with the project's agents and Run panel.
     project_id: String,
     home: PathBuf,
     timeout: Duration,
@@ -314,43 +314,22 @@ impl Verifier {
         )
     }
 
-    /// Build the `sandbox-exec -p <profile> <shell> -lic <cmd>` invocation under
-    /// the Run-panel profile (writable root = the checkout). The profile travels
-    /// in argv rather than a tempfile — see [`crate::sandbox::profile_args`] —
-    /// so there is nothing for the caller to keep alive.
-    fn sandbox_command(&self, worktree: &Path, cmd: &str) -> Result<(PathBuf, Vec<String>)> {
-        // Grant the target's git *common dir* (as the Run panel does) so commands
-        // that touch git — e.g. `git worktree add` — work in a linked worktree
-        // checkout, whose common dir lives outside `worktree`. For a plain
-        // `--shared` clone this is `<worktree>/.git`, already writable, so the
-        // grant is harmless.
-        let extra_writable: Vec<PathBuf> =
-            crate::supervisor::run::run_target_git_common_dir(worktree)
-                .into_iter()
-                .collect();
-        let profile_text = crate::sandbox::build_run_profile(
+    /// Run `cmd` in `worktree` exactly as the Run panel would
+    /// ([`crate::supervisor::run::sandboxed_run_command`]): the Run profile,
+    /// with the project's toolchain cache, and the shared run `env` over it.
+    async fn run_sandboxed(&self, worktree: &Path, cmd: &str, env: &[(String, String)]) -> Bounded {
+        let run = match crate::supervisor::run::sandboxed_run_command(
             worktree,
+            cmd,
             &self.home,
             &self.project_id,
-            &extra_writable,
-        )?;
-        let shell = crate::run_session::user_shell();
-        let shell_str = shell
-            .to_str()
-            .ok_or_else(|| Error::Other("shell path not utf-8".into()))?
-            .to_string();
-        let mut args = crate::sandbox::profile_args(&profile_text).to_vec();
-        args.push(shell_str);
-        args.extend(crate::run_session::shell_args(cmd));
-        Ok((PathBuf::from(crate::sandbox::SANDBOX_EXEC), args))
-    }
-
-    async fn run_sandboxed(&self, worktree: &Path, cmd: &str, env: &[(String, String)]) -> Bounded {
-        let (program, args) = match self.sandbox_command(worktree, cmd) {
-            Ok(t) => t,
+        ) {
+            Ok(run) => run,
             Err(e) => return Bounded::Unrunnable(format!("could not build sandbox profile: {e}")),
         };
-        run_bounded(&program, &args, worktree, self.timeout, env).await
+        let mut run_env = run.env;
+        run_env.extend_from_slice(env);
+        run_bounded(&run.program, &run.args, worktree, self.timeout, &run_env).await
     }
 }
 

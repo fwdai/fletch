@@ -5,7 +5,7 @@
 //!
 //! Cargo keeps its registry and git caches under `CARGO_HOME` and has no
 //! cache-only variable to move them, so it can't take the plain env redirect
-//! [`super::policy::TOOLCHAIN_CACHE_VARS`] gives every other toolchain. Two
+//! [`super::toolchain_cache`] gives every other toolchain. Two
 //! other routes were tried or proposed and are rejected:
 //!
 //! - **Redirecting `CARGO_HOME` bare** (e8b54deb, reverted in c86d3235) hid
@@ -23,10 +23,11 @@
 //! The overlay keeps both properties. Everything cargo *writes* lands in a tree
 //! only sandboxed processes ever build from: a crate tampered with here is
 //! compiled only under the agent or Run profile, never by the user's host
-//! cargo. The cost is one re-download of a project's crates into the overlay;
-//! after that every agent and the Run panel of that project share it, like
-//! every other redirected cache. The rustup `cargo` proxy is unaffected — it locates
-//! toolchains through `RUSTUP_HOME`, which stays the user's.
+//! cargo. The cost is one re-download of a project's crates per project and
+//! per platform (the overlay is keyed by both, see [`overlay`]); after that
+//! every agent and the Run panel of that project on that platform share it,
+//! like every other redirected cache. The rustup `cargo` proxy is unaffected —
+//! it locates toolchains through `RUSTUP_HOME`, which stays the user's.
 //!
 //! What cargo *reads* from its home splits in two:
 //!
@@ -34,13 +35,15 @@
 //!   `CARGO_HOME` only, holds tokens and no paths, so it is linked in. Reads
 //!   are unrestricted; a write through the link resolves to the ungranted real
 //!   file and is denied, so a token rotation fails closed rather than landing
-//!   in the overlay.
+//!   in the overlay. In a Linux container the host `~/.cargo` is not mounted,
+//!   so the links dangle and cargo treats the credentials as absent (no image
+//!   ships cargo today).
 //! - **`config.toml`** is deliberately **not** linked. Cargo resolves every
 //!   relative value in a config file — `include`, `paths`, `[patch]` paths,
 //!   `target-dir`, runners, `[env] relative = true` — against the parent of
 //!   the directory the file was *found* in, without resolving symlinks; a link
 //!   in the overlay would rebase `~/.cargo/config.toml` from `~` onto the cache
-//!   root (measured: `target-dir = "tgt"` lands in `~/.fletch/toolchain-cache/`).
+//!   root (measured: `target-dir = "tgt"` lands in the cache root).
 //!   Cargo already finds the real file by its other route: it walks every
 //!   ancestor of the working directory for a `.cargo/config.toml`, and a
 //!   project anywhere under `~` reaches `~/.cargo/config.toml` that way with
@@ -75,7 +78,7 @@
 
 use std::path::{Path, PathBuf};
 
-use super::policy::BoxPlatform;
+use super::toolchain_cache::BoxPlatform;
 use crate::agent::credential_file::{Entry, PrivateDir};
 
 /// Subdir of the toolchain cache root serving as the sandboxed `CARGO_HOME`.
@@ -120,47 +123,32 @@ pub fn user_home(home: &Path) -> PathBuf {
 }
 
 /// Pure core of [`user_home`] — the env seam split the other resolvers in
-/// [`super::policy`] use, so it tests hermetically. Two values fall back:
+/// [`super::policy`] use, so it tests hermetically.
 ///
-/// - **A relative path** falls back to `~/.cargo`. Cargo resolves a relative
-///   `CARGO_HOME` against each process's working directory, so there is no one
-///   credentials file to link; and a relative link target would resolve from
-///   inside the overlay, never where `exists()` looked.
-/// - **A path inside any project's toolchain cache root** is an *inherited* overlay: a
-///   nested Fletch launched from the Run panel gets the overlay as its
-///   `CARGO_HOME` (the Run env is its process env). Taken at face value, its
-///   own `prepare` would relink the overlay's credentials to *themselves* — a
-///   dangling loop that hides them from every instance sharing the overlay.
-///   The real home is the one the parent resolved and passed down in
-///   [`USER_HOME_ENV`] (`propagated`), so a custom `/opt/cargo` survives the
-///   nesting; without it, `~/.cargo`.
+/// `propagated` ([`USER_HOME_ENV`]) being set at all is the signal that
+/// `cargo_home` is an *inherited* overlay: Fletch only ever sets the two
+/// together, and a nested Fletch launched from the Run panel gets both in its
+/// process env. Taken at face value, that `CARGO_HOME` would have the nested
+/// instance's own `prepare` relink the overlay's credentials to *themselves*,
+/// a dangling loop that hides them from every launch sharing the overlay. So
+/// the propagated value wins, which also keeps a parent's custom `/opt/cargo`
+/// across the nesting.
+///
+/// A blank or relative value falls back to `~/.cargo`: cargo resolves a
+/// relative `CARGO_HOME` against each process's working directory, so there is
+/// no one credentials file to link, and a relative link target would resolve
+/// from inside the overlay, never where `exists()` looked.
 fn user_home_from(
     cargo_home: Option<std::ffi::OsString>,
     propagated: Option<std::ffi::OsString>,
     home: &Path,
 ) -> PathBuf {
-    let default = home.join(".cargo");
-    let absolute = |v: Option<std::ffi::OsString>| {
-        v.filter(|v| !v.is_empty())
-            .map(PathBuf::from)
-            .filter(|p| p.is_absolute())
-    };
-    let Some(dir) = absolute(cargo_home) else {
-        return default;
-    };
-    // Any project's overlay counts: the one a nested Fletch inherits is keyed by
-    // its parent's project, which this instance knows nothing about. Checked
-    // against the *default* parent, not this instance's possibly overridden one
-    // (`TOOLCHAIN_CACHE_PARENT_ENV`): the outer instance's overlay sits under
-    // the default, while a nested instance's own parent is a subdir of it.
-    let cache_root = super::policy::default_toolchain_cache_parent(home);
-    let inherited = dir.starts_with(&cache_root)
-        || super::policy::resolve_existing_prefix(&dir)
-            .starts_with(super::policy::resolve_existing_prefix(&cache_root));
-    if inherited {
-        return absolute(propagated).unwrap_or(default);
-    }
-    dir
+    propagated
+        .or(cargo_home)
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .unwrap_or_else(|| home.join(".cargo"))
 }
 
 /// Whether cargo, run in `cwd` with the overlay as its home, still sees the
@@ -270,31 +258,27 @@ mod tests {
             user_home_from(os("vendor/cargo"), None, home),
             home.join(".cargo")
         );
-        // The propagated value only matters for an inherited overlay.
-        assert_eq!(
-            user_home_from(os("/opt/cargo"), os("/elsewhere"), home),
-            PathBuf::from("/opt/cargo")
-        );
     }
 
-    /// A nested Fletch inherits the overlay as its `CARGO_HOME`. Linking the
-    /// overlay's credentials to themselves would hide them from everyone, and
-    /// assuming `~/.cargo` would swap a parent's custom home for the default;
-    /// the parent's resolved home travels in [`USER_HOME_ENV`].
+    /// A nested Fletch inherits the overlay as its `CARGO_HOME` together with
+    /// [`USER_HOME_ENV`]. Linking the overlay's credentials to themselves would
+    /// hide them from everyone, and assuming `~/.cargo` would swap a parent's
+    /// custom home for the default, so the propagated home wins whatever
+    /// `CARGO_HOME` says.
     #[test]
     fn user_home_of_a_nested_fletch_is_the_one_its_parent_passed_down() {
         let home = Path::new("/Users/u");
         let os = |s: &str| Some(std::ffi::OsString::from(s));
         let inherited = || {
-            let root = super::super::policy::toolchain_cache_root(home, "p1").unwrap();
-            Some(overlay(&root, BoxPlatform::host()).into_os_string())
+            let root = Path::new("/Users/u/.fletch/toolchain-cache/p1");
+            Some(overlay(root, BoxPlatform::host()).into_os_string())
         };
         assert_eq!(
             user_home_from(inherited(), os("/opt/cargo"), home),
             PathBuf::from("/opt/cargo")
         );
-        assert_eq!(user_home_from(inherited(), None, home), home.join(".cargo"));
-        // A relative or blank hand-me-down is no better than none.
+        // A relative or blank hand-me-down is no better than none, and never
+        // lets the inherited overlay through.
         assert_eq!(
             user_home_from(inherited(), os("cargo"), home),
             home.join(".cargo")

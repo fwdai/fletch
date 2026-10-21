@@ -59,7 +59,7 @@ pub fn data_dir_under(base: PathBuf) -> PathBuf {
 /// data dir: agent checkouts (`<data-dir>/workspaces`), RPC mailboxes
 /// (`<data-dir>/rpc`) and toolchain caches (`<data-dir>/toolchain-cache`).
 ///
-/// The engine already splits those two roots per *build*
+/// The engine already splits those roots per *build*
 /// (`fletch_core::build_state_subpath`: `dev/` under debug) and the reason is
 /// exclusivity, not tidiness. Agent ids are drawn from a ~300-entry pool of
 /// place names and recycled after archive, with the database as the only
@@ -84,9 +84,9 @@ pub fn data_dir_under(base: PathBuf) -> PathBuf {
 /// profile denies a confined process read *and* write on the data dir this
 /// engine was configured with (`boot` publishes it through
 /// `sandbox::set_data_dir`; see `sandbox::seatbelt`'s `deny_engine_data_dir`) and
-/// then re-allows exactly the two roots below — so the database, `remote/` and
-/// the admin socket stay unreachable while the agent keeps its checkout and its
-/// mailbox. A container sees nothing but the paths bound into it and needs none
+/// then re-allows exactly the roots below — so the database, `remote/` and
+/// the admin socket stay unreachable while the agent keeps its checkout, its
+/// mailbox and its project's caches. A container sees nothing but the paths bound into it and needs none
 /// of this.
 ///
 /// Anything already set — an operator's own layout, a disk with room for
@@ -107,18 +107,13 @@ fn claim_state_roots(data_dir: &Path) {
             .map(|cwd| cwd.join(data_dir))
             .unwrap_or_else(|_| data_dir.to_path_buf())
     };
-    for (key, root) in [
-        (fletch_core::workspace::WORKSPACES_ROOT_ENV, base.clone()),
-        (fletch_core::rpc::RPC_ROOT_ENV, base.clone()),
-        // The cache's env names the parent itself, not a base under which the
-        // engine appends its own leaf.
-        (
-            fletch_core::sandbox::TOOLCHAIN_CACHE_PARENT_ENV,
-            base.join("toolchain-cache"),
-        ),
+    for key in [
+        fletch_core::workspace::WORKSPACES_ROOT_ENV,
+        fletch_core::rpc::RPC_ROOT_ENV,
+        fletch_core::sandbox::TOOLCHAIN_CACHE_ROOT_ENV,
     ] {
         if std::env::var_os(key).filter(|v| !v.is_empty()).is_none() {
-            std::env::set_var(key, root);
+            std::env::set_var(key, &base);
         }
     }
 }
@@ -301,7 +296,7 @@ mod tests {
         let checkouts = fletch_core::workspace::checkouts_root().expect("a checkouts root");
         let mailboxes = fletch_core::rpc::mailbox_dir("orkney").expect("a mailbox dir");
         let home = std::path::Path::new("/Users/u");
-        let caches = fletch_core::sandbox::toolchain_cache_build_dir(home);
+        let caches = fletch_core::sandbox::toolchain_cache_dir(home);
         for path in [&checkouts, &mailboxes, &caches] {
             assert!(
                 path.starts_with(&data_dir),
@@ -311,6 +306,6 @@ mod tests {
         }
         assert!(checkouts.ends_with("dev/workspaces"), "{checkouts:?}");
         assert!(mailboxes.ends_with("dev/rpc/orkney"), "{mailboxes:?}");
-        assert!(caches.ends_with("toolchain-cache/dev"), "{caches:?}");
+        assert!(caches.ends_with("dev/toolchain-cache"), "{caches:?}");
     }
 }

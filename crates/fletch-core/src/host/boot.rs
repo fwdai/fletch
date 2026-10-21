@@ -125,7 +125,7 @@ pub type ExitHook = Box<dyn FnOnce() + Send>;
 /// checkouts root (`$FLETCH_WORKSPACES_ROOT`, default `~/.fletch/workspaces`),
 /// the RPC mailbox root (`$FLETCH_RPC_ROOT`, default `~/.fletch/rpc`) and the
 /// toolchain cache (`$FLETCH_TOOLCHAIN_CACHE_ROOT`, default
-/// `~/.fletch/toolchain-cache`).
+/// `~/.fletch/toolchain-cache`; see `sandbox::toolchain_cache`).
 ///
 /// "Owns" means: this engine's database is the only authority over what lives
 /// under those roots, so [`boot`]'s startup housekeeping may treat anything the
@@ -152,13 +152,18 @@ impl StateRoots {
     /// — the one case where the roots are not ours to sweep.
     pub fn from_env() -> Self {
         Self::from_overrides(
-            [crate::workspace::WORKSPACES_ROOT_ENV, rpc::RPC_ROOT_ENV].map(std::env::var_os),
+            [
+                crate::workspace::WORKSPACES_ROOT_ENV,
+                rpc::RPC_ROOT_ENV,
+                sandbox::TOOLCHAIN_CACHE_ROOT_ENV,
+            ]
+            .map(std::env::var_os),
         )
     }
 
     /// Pure core of [`Self::from_env`], so the desktop's rule is testable
     /// without mutating the process-global env vars.
-    fn from_overrides(overrides: [Option<std::ffi::OsString>; 2]) -> Self {
+    fn from_overrides(overrides: [Option<std::ffi::OsString>; 3]) -> Self {
         if overrides.iter().flatten().any(|v| !v.is_empty()) {
             Self::Inherited
         } else {
@@ -176,8 +181,8 @@ impl StateRoots {
 pub struct BootConfig {
     /// Fletch's data directory. Must already exist.
     pub data_dir: PathBuf,
-    /// Whether the checkout and RPC mailbox roots this engine will use are
-    /// this engine's to sweep. See [`StateRoots`].
+    /// Whether the checkout, RPC mailbox and toolchain cache roots this engine
+    /// will use are this engine's to sweep. See [`StateRoots`].
     pub state_roots: StateRoots,
     /// Where the engine's events go — the desktop webview, or nothing at all.
     /// [`boot`] wraps it in a fanout with its own broadcast (see
@@ -591,9 +596,7 @@ pub fn boot(cfg: BootConfig) -> Result<Engine, BootError> {
         }
         // Toolchain caches of projects deleted while no engine ran (or that a
         // deletion's own reclaim failed to remove), and the pre-project
-        // layout. Owned for the same reason; published so project deletion
-        // reclaims too.
-        sandbox::own_toolchain_caches();
+        // layout. Owned for the same reason.
         match (workspace.project_ids(), dirs::home_dir()) {
             (Ok(live), Some(home)) => sandbox::reclaim_toolchain_caches(&home, &live),
             (Err(e), _) => tracing::warn!(error = %e, "skipping toolchain cache reclaim"),
@@ -1064,10 +1067,13 @@ mod tests {
     #[test]
     fn only_a_redirected_desktop_disowns_its_roots() {
         let temp = |s: &str| Some(std::ffi::OsString::from(s));
-        assert!(StateRoots::from_overrides([None, None]).owned());
-        assert!(StateRoots::from_overrides([temp(""), None]).owned());
-        assert!(!StateRoots::from_overrides([temp("/tmp/fletch-worktrees/9/x"), None]).owned());
-        assert!(!StateRoots::from_overrides([None, temp("/tmp/fletch-rpc/9/x")]).owned());
+        assert!(StateRoots::from_overrides([None, None, None]).owned());
+        assert!(StateRoots::from_overrides([temp(""), None, None]).owned());
+        assert!(
+            !StateRoots::from_overrides([temp("/tmp/fletch-worktrees/9/x"), None, None]).owned()
+        );
+        assert!(!StateRoots::from_overrides([None, temp("/tmp/fletch-rpc/9/x"), None]).owned());
+        assert!(!StateRoots::from_overrides([None, None, temp("/cache/p1/nested")]).owned());
     }
 
     /// A host that configured its own RPC root still has to sweep it. The sweep

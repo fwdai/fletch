@@ -100,7 +100,7 @@ fn test_spec<'a>(interactive: bool) -> RunSpec<'a> {
         interactive,
         name: "fletch-orkney-deadbeef",
         agent_id: "orkney",
-        project_id: "p1",
+        toolchain_cache: Path::new(CACHE_ROOT),
         writable_root: Path::new("/Users/u/.fletch/worktrees/orkney"),
         rpc_dir: Path::new("/Users/u/.fletch/rpc/orkney"),
         home: Path::new("/Users/u"),
@@ -139,7 +139,7 @@ fn rw_config_spec<'a>(
         interactive: false,
         name: "fletch-orkney-deadbeef",
         agent_id: "orkney",
-        project_id: "p1",
+        toolchain_cache: Path::new(CACHE_ROOT),
         writable_root: Path::new("/Users/u/.fletch/worktrees/orkney"),
         rpc_dir: Path::new("/Users/u/.fletch/rpc/orkney"),
         home: Path::new("/Users/u"),
@@ -181,15 +181,9 @@ fn codex_spec<'a>() -> RunSpec<'a> {
     )
 }
 
-/// The test spec's toolchain cache bind. Computed, since the root carries the
-/// build's segment (`dev/` under debug).
-fn cache_bind() -> &'static str {
-    static BIND: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    BIND.get_or_init(|| {
-        let root = crate::sandbox::toolchain_cache_root(Path::new("/Users/u"), "p1").unwrap();
-        format!("{0}:{0}", root.display())
-    })
-}
+/// The test specs' toolchain cache root, and its bind.
+const CACHE_ROOT: &str = "/Users/u/.fletch/toolchain-cache/p1";
+const CACHE_BIND: &str = "/Users/u/.fletch/toolchain-cache/p1:/Users/u/.fletch/toolchain-cache/p1";
 
 /// Two-token flag lookup: the value following `flag` each time it appears.
 fn values_of<'a>(args: &'a [String], flag: &str) -> Vec<&'a str> {
@@ -212,7 +206,7 @@ fn argv_mounts_exactly_the_three_dirs_at_identical_paths() {
         vec![
             "/Users/u/.fletch/worktrees/orkney:/Users/u/.fletch/worktrees/orkney",
             "/Users/u/.fletch/rpc/orkney:/Users/u/.fletch/rpc/orkney",
-            cache_bind(),
+            CACHE_BIND,
             "/Users/u/.claude:/Users/u/.claude:ro",
             "/Users/u/.fletch/worktrees/orkney/.fletch-claude-projects:/Users/u/.claude/projects",
         ],
@@ -255,7 +249,7 @@ fn argv_maps_the_host_user_on_linux() {
             "/Users/u/Library/Application Support/fletch-host/sandbox/passwd:/etc/passwd:ro",
             "/Users/u/.fletch/worktrees/orkney:/Users/u/.fletch/worktrees/orkney",
             "/Users/u/.fletch/rpc/orkney:/Users/u/.fletch/rpc/orkney",
-            cache_bind(),
+            CACHE_BIND,
             "/Users/u/.claude:/Users/u/.claude:ro",
             "/Users/u/.fletch/worktrees/orkney/.fletch-claude-projects:/Users/u/.claude/projects",
         ],
@@ -294,30 +288,15 @@ fn argv_maps_the_host_user_on_linux() {
 
 /// The toolchain cache is the project's root seatbelt grants, bound read-write
 /// at its identical host path so the redirected cache vars resolve unchanged
-/// inside the box and every engine shares one warm cache per project. Never the
-/// parent: that would hand the container every other project's cache. The vars
+/// inside the box and every engine shares one warm cache per project. The vars
 /// ride by bare name, exactly the set the launch prepared.
 #[test]
 fn argv_shares_the_toolchain_cache_and_forwards_its_vars() {
     let mut spec = test_spec(false);
     spec.toolchain_vars = &["npm_config_cache", "PLAYWRIGHT_BROWSERS_PATH", "CARGO_HOME"];
     let args = run_args(&spec);
-    let root = crate::sandbox::toolchain_cache_root(spec.home, spec.project_id).unwrap();
-    assert!(root.ends_with(spec.project_id));
-    let bind = format!("{0}:{0}", root.to_string_lossy());
-    let binds = values_of(&args, "-v");
-    assert!(binds.contains(&bind.as_str()), "{args:?}");
-    assert!(mount_sources(&spec).contains(&root));
-    let parent = crate::sandbox::toolchain_cache_parent(spec.home);
-    assert!(
-        !binds
-            .iter()
-            .any(|b| b.starts_with(&format!("{}:", parent.display()))),
-        "{args:?}"
-    );
-    assert!(!mount_sources(&spec).contains(&parent));
-    let build_dir = crate::sandbox::toolchain_cache_build_dir(spec.home);
-    assert!(!mount_sources(&spec).contains(&build_dir));
+    assert!(values_of(&args, "-v").contains(&CACHE_BIND), "{args:?}");
+    assert!(mount_sources(&spec).contains(&PathBuf::from(CACHE_ROOT)));
     let forwarded = values_of(&args, "-e");
     for var in spec.toolchain_vars {
         assert!(
@@ -521,7 +500,7 @@ fn argv_mounts_borrowed_object_store_read_only() {
         vec![
             "/Users/u/.fletch/worktrees/orkney:/Users/u/.fletch/worktrees/orkney",
             "/Users/u/.fletch/rpc/orkney:/Users/u/.fletch/rpc/orkney",
-            cache_bind(),
+            CACHE_BIND,
             "/Users/u/repo/.git/objects:/Users/u/repo/.git/objects:ro",
             "/Users/u/.claude:/Users/u/.claude:ro",
             "/Users/u/.fletch/worktrees/orkney/.fletch-claude-projects:/Users/u/.claude/projects",
@@ -541,7 +520,7 @@ fn argv_codex_mounts_its_overlay_and_never_the_codex_home() {
         vec![
             "/Users/u/.fletch/worktrees/orkney:/Users/u/.fletch/worktrees/orkney",
             "/Users/u/.fletch/rpc/orkney:/Users/u/.fletch/rpc/orkney",
-            cache_bind(),
+            CACHE_BIND,
             "/Users/u/.fletch/worktrees/orkney/.fletch-codex-home:/Users/u/.fletch/worktrees/orkney/.fletch-codex-home",
             "/Users/u/.codex/config.toml:/Users/u/.codex/config.toml:ro",
             "/Users/u/.codex/skills:/Users/u/.codex/skills:ro",
@@ -657,7 +636,7 @@ fn argv_opencode_mounts_data_dir_read_write() {
         vec![
             "/Users/u/.fletch/worktrees/orkney:/Users/u/.fletch/worktrees/orkney",
             "/Users/u/.fletch/rpc/orkney:/Users/u/.fletch/rpc/orkney",
-            cache_bind(),
+            CACHE_BIND,
             // data dir read-write: no `:ro` suffix.
             "/Users/u/.local/share/opencode:/Users/u/.local/share/opencode",
         ],
@@ -712,7 +691,7 @@ fn argv_pi_mounts_dot_pi_read_write() {
         vec![
             "/Users/u/.fletch/worktrees/orkney:/Users/u/.fletch/worktrees/orkney",
             "/Users/u/.fletch/rpc/orkney:/Users/u/.fletch/rpc/orkney",
-            cache_bind(),
+            CACHE_BIND,
             "/Users/u/.pi:/Users/u/.pi",
         ],
     );
@@ -745,7 +724,7 @@ fn argv_cursor_mounts_dot_cursor_read_write() {
         vec![
             "/Users/u/.fletch/worktrees/orkney:/Users/u/.fletch/worktrees/orkney",
             "/Users/u/.fletch/rpc/orkney:/Users/u/.fletch/rpc/orkney",
-            cache_bind(),
+            CACHE_BIND,
             "/Users/u/.cursor:/Users/u/.cursor",
         ],
     );
@@ -1341,11 +1320,8 @@ fn docker_run_echo_round_trip() {
     let root = td.path().join("root");
     let rpc = td.path().join("rpc");
     let home = td.path().join("home");
-    for d in [
-        &root,
-        &rpc,
-        &crate::sandbox::toolchain_cache_root(&home, "p1").unwrap(),
-    ] {
+    let cache = td.path().join("toolchain-cache");
+    for d in [&root, &rpc, &cache] {
         std::fs::create_dir_all(d).unwrap();
     }
     // Same mount-source/mountpoint prep `launch_agent` does, so the tmpfs
@@ -1363,7 +1339,7 @@ fn docker_run_echo_round_trip() {
         interactive: false,
         name: &name,
         agent_id: "b2-int-test",
-        project_id: "p1",
+        toolchain_cache: &cache,
         writable_root: &root,
         rpc_dir: &rpc,
         home: &home,

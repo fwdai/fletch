@@ -31,6 +31,9 @@ pub(crate) struct ContainerLaunch {
     /// Object stores every checkout under the agent's writable root borrows via
     /// git alternates, each bound read-only at its identical host path.
     pub borrowed_object_stores: Vec<PathBuf>,
+    /// The project's toolchain cache root, bound read-write at its identical
+    /// host path so the forwarded cache vars resolve unchanged inside the box.
+    pub toolchain_cache: PathBuf,
 
     provider: ContainerProvider,
     /// The span of [`env`](Self::env) holding the toolchain-cache vars, so
@@ -159,24 +162,16 @@ pub(crate) fn prepare(
     ];
     // The toolchain cache the project's seatbelt agents and Run commands share,
     // so a recreated container starts warm instead of re-downloading every
-    // package and browser. `run_args` binds the project's root at the identical
-    // host path; a missing source would be materialized root-owned, locking the
-    // user's own seatbelt agents out of it, so fail closed rather than bind one.
-    let toolchain_start = env.len();
-    env.extend(crate::sandbox::prepare_toolchain_cache(
+    // package and browser.
+    let cache = crate::sandbox::prepare_toolchain_cache(
         ctx.home,
         ctx.project_id,
         ctx.cwd,
         crate::sandbox::BoxPlatform::linux(),
-    )?);
+    )?;
+    let toolchain_start = env.len();
+    env.extend(cache.env);
     let toolchain = toolchain_start..env.len();
-    let cache_root = crate::sandbox::toolchain_cache_root(ctx.home, ctx.project_id)?;
-    if !cache_root.is_dir() {
-        return Err(Error::Other(format!(
-            "preparing container sandbox toolchain cache {} failed",
-            cache_root.display()
-        )));
-    }
     // Pushed before the provider match sets `auth_start`, so it forwards as a
     // plain env var rather than an auth var.
     if let Some(board) = ctx.blackboard {
@@ -381,6 +376,7 @@ pub(crate) fn prepare(
     Ok(ContainerLaunch {
         env,
         borrowed_object_stores,
+        toolchain_cache: cache.root,
         provider,
         toolchain,
         auth_start,
@@ -604,9 +600,10 @@ mod tests {
     }
 
     /// A container launch gets the same toolchain cache seatbelt does: its
-    /// project's root exists before `-v` sees it, and the redirect env is the
-    /// shared table's, forwarded as plain vars rather than credentials. An id
-    /// that cannot key a root refuses the launch.
+    /// project's root, never the directory of every project's root, exists
+    /// before `-v` sees it, and the redirect env is the shared table's,
+    /// forwarded as plain vars rather than credentials. An id that cannot key
+    /// a root refuses the launch.
     #[test]
     fn a_launch_prepares_the_shared_toolchain_cache() {
         let td = tempfile::tempdir().unwrap();
@@ -636,11 +633,18 @@ mod tests {
         let launch = prepare(&ctx, ContainerProvider::Claude, None).unwrap();
 
         let cache_root = crate::sandbox::toolchain_cache_root(&home, "p1").unwrap();
+        assert_eq!(launch.toolchain_cache, cache_root);
+        assert_ne!(
+            launch.toolchain_cache,
+            crate::sandbox::toolchain_cache_dir(&home),
+            "the container would see every project's cache"
+        );
         assert!(cache_root.is_dir());
         let vars = launch.toolchain_vars();
-        for (var, value) in
-            crate::sandbox::toolchain_cache_env(&cache_root, crate::sandbox::BoxPlatform::linux())
-        {
+        for (var, value) in crate::sandbox::toolchain_cache::toolchain_cache_env(
+            &cache_root,
+            crate::sandbox::BoxPlatform::linux(),
+        ) {
             assert!(vars.contains(&var.as_str()), "{var} not forwarded");
             assert!(launch.env.contains(&(var, value)));
         }

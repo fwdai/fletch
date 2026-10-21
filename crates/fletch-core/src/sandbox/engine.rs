@@ -55,9 +55,9 @@ impl EngineKind {
 pub struct AgentLaunchCtx<'a> {
     pub agent_id: &'a str,
     /// The agent's project (`AgentRecord.project_id`), which keys the
-    /// toolchain cache root the launch is granted or mounted
-    /// ([`super::policy::toolchain_cache_root`]): agents of one project share a
-    /// cache, and no other project's processes can write it.
+    /// toolchain cache the launch prepares and is granted or mounted
+    /// ([`super::toolchain_cache`]): agents of one project share a cache, and
+    /// no other project's processes can write it.
     pub project_id: &'a str,
     /// The provider launching (`AgentRecord.provider`). Seatbelt ignores it —
     /// its profile is provider-agnostic — while the Docker engine branches on it
