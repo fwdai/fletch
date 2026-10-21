@@ -25,8 +25,8 @@
 //!   credential helpers — is the user's, exactly as their terminal reads it;
 //! - `GIT_OBJECT_DIRECTORY` is the checkout's object store, so what a fetch
 //!   brings lands in the checkout (and what a push sends is read from it);
-//! - `GIT_DIR` is the checkout's, so per-worktree refs (`refs/worktree/*`,
-//!   `FETCH_HEAD`) land in the checkout — and the user's refs are never
+//! - `GIT_DIR` is the checkout's, so per-worktree refs (`refs/worktree/*`)
+//!   land in the checkout — and the user's refs are never
 //!   touched, because every fetch and push names an explicit URL (taken from
 //!   the user's config) rather than `origin`, so git maintains no
 //!   remote-tracking ref in the common dir.
@@ -254,11 +254,32 @@ impl Transport {
                         .fetch(&self.fetch_remote, &[refspec], false, timeout)
                         .await;
                 }
-                self.fetch(&self.fetch_remote, &[refspec], false, timeout)
+                // Into a scratch ref of this fetch's own, never `FETCH_HEAD`:
+                // that file is one per checkout, and a fetch the agent runs
+                // alongside (its own `git_fetch`, say) would overwrite it
+                // between our fetch and our read, and another branch's tip
+                // would land under `origin/<branch>`. The scratch name is
+                // flat, so nothing stale can block it.
+                let scratch = format!(
+                    "refs/worktree/fletch/fetch/{}-{}",
+                    std::process::id(),
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_nanos())
+                        .unwrap_or_default()
+                );
+                self.fetch(
+                    &self.fetch_remote,
+                    &[format!("+{refspec}:{scratch}")],
+                    false,
+                    timeout,
+                )
+                .await?;
+                let fetched = resolve(&self.checkout, &scratch).await?;
+                self.update_refs(&format!("option no-deref\ndelete {scratch}\n"))
                     .await?;
-                let fetched = resolve(&self.checkout, "FETCH_HEAD")
-                    .await?
-                    .ok_or_else(|| Error::Git(format!("fetched nothing for {branch}")))?;
+                let fetched =
+                    fetched.ok_or_else(|| Error::Git(format!("fetched nothing for {branch}")))?;
                 self.set_tracking(branch, &fetched).await
             }
             Branches::All => {
@@ -277,9 +298,9 @@ impl Transport {
                 if self.split.is_some() {
                     self.mirror_fetched().await?;
                 }
-                // Each push remote's branches too, by name and into
-                // `FETCH_HEAD` only (a name, not an id: every server serves
-                // an advertised ref, not every one an unadvertised want), so
+                // Each push remote's branches too, by name and for their
+                // objects only (a name, not an id: every server serves an
+                // advertised ref, not every one an unadvertised want), so
                 // that what a fork alone has is in the checkout's store: the
                 // published tips a signed publish stops at must be present
                 // locally.
@@ -393,7 +414,7 @@ impl Transport {
         self.set_tracking(branch, commit).await
     }
 
-    /// Fetch `commit` itself into the checkout (`FETCH_HEAD` only): a tip whose
+    /// Fetch `commit` itself into the checkout's store, no ref: a tip whose
     /// branch is gone, still reachable on the remote.
     pub(crate) async fn fetch_commit(&self, commit: &str) -> Result<()> {
         self.fetch(
@@ -418,8 +439,10 @@ impl Transport {
         super::cmd::output_timed(&mut cmd, "git push").await
     }
 
-    /// `git fetch` from `remote`, the refspecs on stdin: a push remote can
-    /// advertise more tips than an argument list holds.
+    /// `git fetch` from `remote`, the refspecs on stdin (a push remote can
+    /// advertise more tips than an argument list holds), and never writing
+    /// `FETCH_HEAD`: nothing here reads it, and it is shared with whatever
+    /// else fetches in the checkout.
     async fn fetch(
         &self,
         remote: &str,
@@ -428,7 +451,7 @@ impl Transport {
         timeout: Duration,
     ) -> Result<()> {
         let mut cmd = self.command();
-        cmd.args(["fetch", "--quiet", "--stdin"]);
+        cmd.args(["fetch", "--quiet", "--stdin", "--no-write-fetch-head"]);
         if prune {
             cmd.arg("--prune");
         }
@@ -569,6 +592,42 @@ async fn origin_url(repo: &Path) -> Result<Option<String>> {
 mod tests {
     use super::super::testing::{bare, clone_elsewhere, commit_file, git, init_repo, repos};
     use super::*;
+
+    /// `FETCH_HEAD` is one file per checkout, shared with whatever else
+    /// fetches there; a single-branch fetch takes its tip from a ref of its
+    /// own, never from that file, and leaves it alone.
+    #[tokio::test]
+    async fn a_single_branch_fetch_never_reads_or_writes_fetch_head() {
+        let td = tempfile::tempdir().unwrap();
+        let fx = repos(td.path());
+        let other = clone_elsewhere(td.path(), &fx.origin, "other");
+        let moved = commit_file(&other, "moved.txt");
+        git(&other, &["push", "-q", "origin", "main"]);
+        // What a concurrent fetch of another branch would leave behind.
+        let planted = format!("{}\t\tbranch 'side' of elsewhere\n", fx.base);
+        std::fs::write(fx.checkout.join(".git/FETCH_HEAD"), &planted).unwrap();
+
+        let t = Transport::open(&fx.checkout, &fx.source).await.unwrap();
+        t.fetch_branches(Branches::One("main")).await.unwrap();
+
+        assert_eq!(
+            git(&fx.checkout, &["rev-parse", "refs/remotes/origin/main"]),
+            moved
+        );
+        assert_eq!(
+            std::fs::read_to_string(fx.checkout.join(".git/FETCH_HEAD")).unwrap(),
+            planted,
+            "left to whoever wrote it"
+        );
+        assert!(
+            git(
+                &fx.checkout,
+                &["for-each-ref", "refs/worktree/fletch/fetch/"]
+            )
+            .is_empty(),
+            "the scratch ref is gone"
+        );
+    }
 
     /// With `extensions.worktreeConfig` in the user's repository, git reads
     /// the checkout's `config.worktree` above the user's config — the remote
@@ -739,7 +798,7 @@ mod tests {
     }
 
     /// What a fetch brings lands in the checkout — objects, `origin/*`,
-    /// `FETCH_HEAD` — and nothing lands in the user's repository.
+    /// and nothing lands in the user's repository, not even `FETCH_HEAD`.
     #[tokio::test]
     async fn a_fetch_lands_in_the_checkout_and_leaves_the_users_repo_untouched() {
         let td = tempfile::tempdir().unwrap();
@@ -759,7 +818,6 @@ mod tests {
             git(&fx.checkout, &["rev-parse", "refs/remotes/origin/main"]),
             moved
         );
-        assert!(fx.checkout.join(".git/FETCH_HEAD").exists());
         assert!(!fx.source.join(".git/FETCH_HEAD").exists());
         assert_eq!(git(&fx.source, &["for-each-ref"]), source_refs_before);
         assert!(
