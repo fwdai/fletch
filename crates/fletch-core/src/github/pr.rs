@@ -522,7 +522,9 @@ pub async fn pr_create(checkout: &Path, title: &str, body: &str, base: &str) -> 
 /// a detached HEAD (e.g. a workflow run's step checkout, whose `wf/…` branch
 /// exists only on the remote after a detached push) and so can't derive the
 /// head from `current_branch`. When `title` is empty, the last commit's
-/// subject/body fill in.
+/// subject/body fill in. The repository is the checkout's own origin; an
+/// agent checkout, whose origin is the agent's to repoint, goes through
+/// [`pr_create_in`] with the user's repository instead.
 pub async fn pr_create_head(
     checkout: &Path,
     head: &str,
@@ -530,7 +532,23 @@ pub async fn pr_create_head(
     body: &str,
     base: &str,
 ) -> Result<PrState> {
-    let (owner, repo) = require_repo_ref(checkout).await?;
+    pr_create_in(checkout, checkout, head, title, body, base).await
+}
+
+/// [`pr_create_head`] with the repository resolved from `source_repo`'s
+/// origin — the user's repository, which no agent can write — while an empty
+/// `title` still fills in from `checkout`'s last commit, the one being
+/// published. The split the agent's `open_pr` needs: its checkout supplies
+/// the commits, never the remote.
+pub async fn pr_create_in(
+    source_repo: &Path,
+    checkout: &Path,
+    head: &str,
+    title: &str,
+    body: &str,
+    base: &str,
+) -> Result<PrState> {
+    let (owner, repo) = require_repo_ref(source_repo).await?;
 
     let (title, body) = if title.is_empty() {
         crate::git::last_commit_message(checkout).await?
@@ -572,7 +590,7 @@ pub async fn pr_create_head(
         // one, so the caller isn't stuck erroring forever over a PR that's
         // actually there.
         if pr_already_exists(&message) {
-            if let Some(pr) = pr_view_branch(checkout, head).await? {
+            if let Some(pr) = pr_view_branch(source_repo, head).await? {
                 return Ok(pr);
             }
         }
@@ -586,7 +604,7 @@ pub async fn pr_create_head(
     // create response itself rather than reporting the PR as lost: that error
     // left agents without the URL of a PR GitHub had just opened.
     let number = resp["number"].as_u64().unwrap_or_default() as u32;
-    match pr_view_number(checkout, None, number).await {
+    match pr_view_number(source_repo, None, number).await {
         Ok(Some(pr)) => Ok(pr),
         Ok(None) => Ok(created_pr_state(&resp)),
         Err(e) => {
