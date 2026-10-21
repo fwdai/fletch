@@ -77,12 +77,22 @@ pub(super) async fn push_commit(
 /// remote-tracking ref for it, so what `push origin` would have done through
 /// `remote.origin.*` is done here explicitly, with the same safety:
 ///
-/// - the lease carries the tracking ref's value (`--force-with-lease=
-///   <branch>:<expected>`, "absent" when there is none), which is what a bare
-///   `--force-with-lease` reads for a named remote — and `--force-if-includes`,
-///   a no-op once the expected value is explicit, is [`require_integrated`];
+/// - the lease carries the push destination's last known tip
+///   (`--force-with-lease=<branch>:<expected>`, "absent" when there is none),
+///   which is what a bare `--force-with-lease` reads for a named remote — and
+///   `--force-if-includes`, a no-op once the expected value is explicit, is
+///   [`require_integrated`];
 /// - `refs/remotes/origin/<branch>` is moved to the pushed commit afterwards,
 ///   as a named-remote push would move it.
+///
+/// That last known tip is `refs/remotes/origin/<branch>` when pushes go where
+/// fetches come from. With a `pushurl` (a fork) it is not: `origin/*` is the
+/// fetch remote's view, refreshed and pruned from there before a signed
+/// publish, and never holds a branch that exists on the fork alone. The fork's
+/// tip is kept apart, under `refs/fletch/pushed/<branch>`, and before a force
+/// it is refreshed from the fork itself — the lease then holds exactly what
+/// the fork has, and [`require_integrated`] is what refuses a tip nobody here
+/// has looked at.
 async fn push_source(
     checkout: &Path,
     source_repo: &Path,
@@ -96,7 +106,16 @@ async fn push_source(
     super::hardening::refuse_steerable_config(checkout).await?;
     let url = super::remote::trusted_remote(checkout, source_repo).await?;
     let tracking = format!("refs/remotes/origin/{branch}");
-    let expected = resolve(checkout, &tracking).await?;
+    let triangular = url.push != url.fetch;
+    let lease_ref = if triangular {
+        format!("refs/fletch/pushed/{branch}")
+    } else {
+        tracking.clone()
+    };
+    if force && triangular {
+        refresh_push_tip(checkout, &url.push, branch, &lease_ref).await?;
+    }
+    let expected = resolve(checkout, &lease_ref).await?;
     let pushed = resolve(checkout, source).await?;
     let mut cmd = crate::git_dist::command(checkout);
     cmd.args(["push"]);
@@ -128,12 +147,14 @@ async fn push_source(
         )));
     }
     if let Some(pushed) = pushed {
-        run_git(
-            checkout,
-            &["update-ref", &tracking, &pushed],
-            "update remote-tracking ref",
-        )
-        .await?;
+        for refname in std::iter::once(&tracking).chain(triangular.then_some(&lease_ref)) {
+            run_git(
+                checkout,
+                &["update-ref", refname, &pushed],
+                "update remote-tracking ref",
+            )
+            .await?;
+        }
     }
     // git reports "Everything up-to-date" on stderr when there was nothing new.
     let combined = format!(
@@ -146,6 +167,39 @@ async fn push_source(
     } else {
         Ok("pushed".to_string())
     }
+}
+
+/// `lease_ref` set to `branch` as the push remote at `push_url` has it right
+/// now, or deleted when the remote has no such branch — so a lease built on
+/// it expects exactly the remote's current state. The config refusal has
+/// already run for this checkout.
+async fn refresh_push_tip(
+    checkout: &Path,
+    push_url: &str,
+    branch: &str,
+    lease_ref: &str,
+) -> Result<()> {
+    let mut cmd = crate::git_dist::command(checkout);
+    cmd.args([
+        "fetch",
+        "--quiet",
+        push_url,
+        &format!("+refs/heads/{branch}:{lease_ref}"),
+    ]);
+    super::cmd::apply_github_auth(&mut cmd);
+    let out = output_timed(&mut cmd, "git fetch push tip").await?;
+    if out.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    if stderr.contains("couldn't find remote ref") {
+        let _ = git_output(checkout, &["update-ref", "-d", lease_ref]).await;
+        return Ok(());
+    }
+    Err(Error::Git(format!(
+        "could not read '{branch}' from the push remote before forcing: {}",
+        stderr.trim()
+    )))
 }
 
 /// `rev` as a commit, or `None` when it names nothing.

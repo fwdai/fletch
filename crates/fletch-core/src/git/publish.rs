@@ -360,6 +360,85 @@ mod tests {
         assert_eq!(origin_tip(&fx, "main"), fx.base, "the fetch remote did not");
     }
 
+    /// With a `pushurl`, the refresh before signing takes `origin/*` from the
+    /// fetch remote, which never has the agent's branch; the lease for a
+    /// force must instead hold the fork's own tip, refreshed from the fork.
+    #[tokio::test]
+    async fn a_force_publish_to_a_fork_leases_on_the_forks_tip() {
+        let td = tempfile::tempdir().unwrap();
+        let fx = signing_repos(td.path());
+        let fork = td.path().join("fork.git");
+        git(td.path(), &["init", "-q", "--bare", fork.to_str().unwrap()]);
+        git(
+            &fx.source,
+            &[
+                "remote",
+                "set-url",
+                "--push",
+                "origin",
+                fork.to_str().unwrap(),
+            ],
+        );
+        let fork_tip = |branch: &str| {
+            git(
+                td.path(),
+                &[
+                    "--git-dir",
+                    fork.to_str().unwrap(),
+                    "rev-parse",
+                    &format!("refs/heads/{branch}"),
+                ],
+            )
+        };
+        git(&fx.checkout, &["checkout", "-q", "-b", "feat"]);
+        commit_file(&fx.checkout, "one.txt");
+        let first = publish(&publication(&fx, "feat"), Tip::Branch)
+            .await
+            .unwrap();
+        assert_eq!(fork_tip("feat"), first.tip);
+
+        // A rewrite, force-published: the fork still holds what we sent.
+        git(
+            &fx.checkout,
+            &["commit", "-q", "--amend", "-m", "one, amended"],
+        );
+        let forced = Publication {
+            force: true,
+            ..publication(&fx, "feat")
+        };
+        let second = publish(&forced, Tip::Branch).await.unwrap();
+        assert_ne!(second.tip, first.tip);
+        assert_eq!(fork_tip("feat"), second.tip);
+
+        // Someone else moves the fork's branch; a force that never integrated
+        // their commit is refused, and the fork keeps it.
+        let other = td.path().join("other");
+        git(
+            td.path(),
+            &[
+                "clone",
+                "-q",
+                fork.to_str().unwrap(),
+                other.to_str().unwrap(),
+            ],
+        );
+        git(&other, &["config", "user.email", "o@example.com"]);
+        git(&other, &["config", "user.name", "O"]);
+        git(&other, &["config", "commit.gpgsign", "false"]);
+        git(&other, &["checkout", "-q", "feat"]);
+        let theirs = commit_file(&other, "theirs.txt");
+        git(&other, &["push", "-q", "origin", "feat"]);
+        git(
+            &fx.checkout,
+            &["commit", "-q", "--amend", "-m", "one, again"],
+        );
+
+        let err = publish(&forced, Tip::Branch).await.unwrap_err();
+
+        assert!(err.to_string().contains("stale info"), "{err}");
+        assert_eq!(fork_tip("feat"), theirs, "the fork kept their commit");
+    }
+
     #[tokio::test]
     async fn a_branch_that_moved_since_its_tip_was_read_is_not_published() {
         let td = tempfile::tempdir().unwrap();
