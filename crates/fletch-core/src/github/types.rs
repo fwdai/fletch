@@ -359,6 +359,26 @@ pub struct PrLive {
     pub checks: Option<PrChecks>,
 }
 
+/// The repository behind a checkout's origin, as the agent's `repo_view`
+/// answers: what agents asked `GET /repos/{o}/{r}` for before deciding how
+/// to land work — visibility, the default branch, the merge methods allowed,
+/// whether merged branches are deleted.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct RepoInfo {
+    pub full_name: String,
+    pub url: String,
+    pub private: bool,
+    pub archived: bool,
+    pub default_branch: String,
+    pub allow_squash_merge: bool,
+    pub allow_merge_commit: bool,
+    pub allow_rebase_merge: bool,
+    pub delete_branch_on_merge: bool,
+    pub has_issues: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
 /// GitHub connection state. Drives the New Project UI and readiness rows.
 /// `installed` is a legacy of the gh-CLI era kept for IPC compatibility —
 /// there is no binary to install anymore, so it is always `true`; what

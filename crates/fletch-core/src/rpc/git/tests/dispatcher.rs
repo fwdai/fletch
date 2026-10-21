@@ -353,6 +353,7 @@ async fn pr_reads_name_a_non_github_origin_and_emit_nothing() {
         "pr_comments",
         "pr_check_log",
         "pr_list",
+        "repo_view",
     ] {
         let args = if op == "pr_check_log" {
             json!({ "check": "test" })
@@ -397,7 +398,13 @@ async fn pr_reads_are_not_refused_by_denied_caps() {
     let repo = repo_without_origin(td.path());
     for caps in [AgentCaps::run_owned(), AgentCaps::advisory()] {
         let disp = GitDispatcher::new(repo.clone(), repo.clone(), "main".to_string(), caps);
-        for op in ["pr_view", "pr_checks", "pr_comments"] {
+        for op in [
+            "pr_view",
+            "pr_checks",
+            "pr_comments",
+            "pr_list",
+            "repo_view",
+        ] {
             let (resp, _fx) = disp.dispatch_inner("r", op, &Value::Null).await;
             let err = resp.error.unwrap_or_default();
             assert!(

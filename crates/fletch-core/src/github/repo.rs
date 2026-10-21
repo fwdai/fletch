@@ -9,8 +9,75 @@ use crate::error::{Error, Result};
 
 use super::client;
 use super::pr::detailed_rest_error;
-use super::query::require_current_branch;
+use super::query::{require_current_branch, require_repo_ref};
 use super::types::*;
+
+/// The repository a checkout's origin points at, over REST. `Ok(None)` when
+/// GitHub answers anything but success for it (a repository the token
+/// cannot see).
+pub async fn repo_view(checkout: &Path) -> Result<Option<RepoInfo>> {
+    let (owner, repo) = require_repo_ref(checkout).await?;
+    let client = client::Client::new()?;
+    let (status, body) = client
+        .rest_get_conditional(&format!("/repos/{owner}/{repo}"))
+        .await?;
+    if !status.is_success() {
+        return Ok(None);
+    }
+    Ok(Some(parse_repo_info(&body)))
+}
+
+/// The REST repository object → [`RepoInfo`]. Merge-method flags default to
+/// permitted when absent, as GitHub's defaults are.
+pub(crate) fn parse_repo_info(body: &serde_json::Value) -> RepoInfo {
+    let flag = |key: &str, default: bool| body[key].as_bool().unwrap_or(default);
+    let text = |key: &str| body[key].as_str().unwrap_or_default().to_string();
+    RepoInfo {
+        full_name: text("full_name"),
+        url: text("html_url"),
+        private: flag("private", false),
+        archived: flag("archived", false),
+        default_branch: text("default_branch"),
+        allow_squash_merge: flag("allow_squash_merge", true),
+        allow_merge_commit: flag("allow_merge_commit", true),
+        allow_rebase_merge: flag("allow_rebase_merge", true),
+        delete_branch_on_merge: flag("delete_branch_on_merge", false),
+        has_issues: flag("has_issues", true),
+        description: body["description"]
+            .as_str()
+            .filter(|d| !d.is_empty())
+            .map(str::to_string),
+    }
+}
+
+#[cfg(test)]
+mod repo_info_tests {
+    use super::parse_repo_info;
+    use serde_json::json;
+
+    #[test]
+    fn repo_info_reads_visibility_default_branch_and_merge_methods() {
+        let info = parse_repo_info(&json!({
+            "full_name": "fwdai/fletch", "html_url": "https://github.com/fwdai/fletch",
+            "private": true, "archived": false, "default_branch": "main",
+            "allow_squash_merge": false, "allow_merge_commit": true, "allow_rebase_merge": true,
+            "delete_branch_on_merge": true, "has_issues": true, "description": ""
+        }));
+        assert_eq!(info.full_name, "fwdai/fletch");
+        assert!(info.private);
+        assert_eq!(info.default_branch, "main");
+        assert!(!info.allow_squash_merge);
+        assert!(info.delete_branch_on_merge);
+        assert_eq!(info.description, None, "a blank description is none");
+
+        let sparse = parse_repo_info(&json!({ "full_name": "o/r" }));
+        assert!(
+            sparse.allow_squash_merge && sparse.allow_merge_commit && sparse.allow_rebase_merge,
+            "absent merge flags read as GitHub's permissive defaults"
+        );
+        assert!(!sparse.private);
+    }
+}
 
 /// GitHub connection probe. Never errors — no token, an invalid token, and a
 /// network failure all report as not-authenticated fields, not failures.

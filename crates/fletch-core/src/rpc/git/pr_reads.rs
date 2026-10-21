@@ -197,6 +197,25 @@ impl GitDispatcher {
         }
     }
 
+    /// The repository behind origin: visibility, default branch, merge
+    /// methods, branch deletion on merge. Agents read `GET /repos/{o}/{r}`
+    /// for these in 10 sessions before deciding how a stack would land.
+    pub(super) async fn repo_view(&self, id: &str, args: &Value) -> Response {
+        let t = match self.pr_read_target(id, "repo_view", args).await {
+            Ok(t) => t,
+            Err(resp) => return resp,
+        };
+        match crate::github::repo_view(&t.source_repo).await {
+            Ok(Some(info)) => json_ok(id, "repo_view", &info),
+            Ok(None) => Response::err(
+                id,
+                "repo_view: the repository was not found, or is not visible to the host's \
+                 GitHub account",
+            ),
+            Err(e) => Response::err(id, format!("repo_view: {e}")),
+        }
+    }
+
     /// The repository's pull requests: `args.state` open (default), closed or
     /// all; `args.head` / `args.base` narrow to a branch; `args.limit` default
     /// 20, max 100. Agents listed PRs to find their branch's number, to walk a

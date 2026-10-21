@@ -84,6 +84,9 @@ PR yet or none visible to the host's account, not a GitHub origin, host not
 signed in, or a rate-limit pause to retry after). Do not call `gh` or the
 GitHub API directly: your sandbox has no GitHub credentials.
 
+`repo_view` describes the repository behind origin: visibility, default
+branch, the merge methods it allows and whether merged branches are deleted.
+
 Issues of the repository: `issue_view` (`args.number`; title, state, body,
 labels, assignees, author and the newest `args.comments` comments, default
 50) and `issue_list` (`args.state` open (default), closed or all,

@@ -123,6 +123,7 @@ mod tests {
             "git_status",
             "pr_view",
             "pr_list",
+            "repo_view",
             "pr_checks",
             "pr_check_log",
             "pr_comments",
