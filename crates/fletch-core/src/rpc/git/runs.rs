@@ -1,8 +1,11 @@
-//! GitHub Actions ops: the workflow runs of the repository and a run's job
-//! log. `pr_checks` answers for a pull request; once the work has merged
-//! there is no PR to ask, and "did the deploy run on main?" was the single
-//! most common thing agents read through `gh run list`. Reads, like the PR
-//! reads: not gated by `AgentCaps` and never an `EVENT_ACTION_DONE`.
+//! GitHub Actions ops: the workflow runs of the repository, a run's job
+//! log, and triggering a workflow. `pr_checks` answers for a pull request;
+//! once the work has merged there is no PR to ask, and "did the deploy run
+//! on main?" was the single most common thing agents read through `gh run
+//! list`. The reads are like the PR reads: not gated by `AgentCaps` and
+//! never an `EVENT_ACTION_DONE`. `workflow_dispatch` is a publish op: it
+//! runs the repository's secrets against a ref, so a grant that may not
+//! publish is refused and the user is asked first, as for a push.
 
 use serde_json::{json, Value};
 
@@ -11,6 +14,10 @@ use super::pr_reads::{find_run, json_ok, positive_u32_arg, CheckRef};
 use super::GitDispatcher;
 use crate::github::RunListFilter;
 use crate::rpc::Response;
+
+/// GitHub takes at most ten inputs; refusing more here names the limit
+/// instead of relaying a 422.
+const MAX_DISPATCH_INPUTS: usize = 10;
 
 const RUN_LIST_DEFAULT_LIMIT: u32 = 20;
 
@@ -150,6 +157,122 @@ impl GitDispatcher {
     }
 }
 
+impl GitDispatcher {
+    /// Trigger `args.workflow` (a file name like `deploy.yml`, or its id) on
+    /// `args.ref` (the checked-out branch when absent) with `args.inputs`.
+    /// What agents did with `gh workflow run` to kick a deploy. Gated like a
+    /// push: the prompt names the workflow and the ref.
+    pub(super) async fn workflow_dispatch(&self, id: &str, args: &Value) -> Response {
+        let workflow = match workflow_arg(args) {
+            Ok(Some(w)) => w,
+            Ok(None) => {
+                return Response::err(
+                    id,
+                    "workflow_dispatch requires `workflow`: a workflow file name like \
+                     \"deploy.yml\" (as run_list's `workflow` spells it) or its id",
+                )
+            }
+            Err(e) => return Response::err(id, format!("workflow_dispatch: {e}")),
+        };
+        let inputs = match dispatch_inputs(args) {
+            Ok(inputs) => inputs,
+            Err(e) => return Response::err(id, format!("workflow_dispatch: {e}")),
+        };
+        let requested_ref = match args.get("ref") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(s)) if !s.trim().is_empty() => Some(s.trim().to_string()),
+            Some(other) => {
+                return Response::err(
+                    id,
+                    format!("workflow_dispatch: `ref` must be a branch or tag name, got {other}"),
+                )
+            }
+        };
+        if let Some(resp) = requested_ref
+            .as_deref()
+            .and_then(|r| refuse_option_like(id, "workflow_dispatch", "ref", r))
+        {
+            return resp;
+        }
+        let t = match self.pr_read_target(id, "workflow_dispatch", args).await {
+            Ok(t) => t,
+            Err(resp) => return resp,
+        };
+        let git_ref =
+            match requested_ref {
+                Some(r) => r,
+                None => match crate::git::current_branch(&t.cwd).await {
+                    Ok(Some(branch)) => branch,
+                    Ok(None) => return Response::err(
+                        id,
+                        "workflow_dispatch: HEAD is detached — pass `args.ref` (a branch or tag \
+                         on origin) to run the workflow on",
+                    ),
+                    Err(e) => return Response::err(id, format!("workflow_dispatch: {e}")),
+                },
+            };
+        if let Some(why) = self
+            .refuse_unless_publish_approved(
+                "workflow_dispatch",
+                t.subdir.as_deref(),
+                &format!("run workflow {workflow} on {git_ref}"),
+            )
+            .await
+        {
+            return Response::err(id, why);
+        }
+        match crate::github::workflow_dispatch(&t.source_repo, &workflow, &git_ref, &inputs).await {
+            Ok(runs_url) => json_ok(
+                id,
+                "workflow_dispatch",
+                &json!({
+                    "workflow": workflow,
+                    "ref": git_ref,
+                    "inputs": inputs,
+                    "dispatched": true,
+                    "runs_url": runs_url,
+                    "note": "GitHub reports no run id for a dispatch; run_list with this \
+                             workflow and branch finds the run once it is queued",
+                }),
+            ),
+            Err(e) => Response::err(id, format!("workflow_dispatch: {e}")),
+        }
+    }
+}
+
+/// `args.inputs` as GitHub takes them: an object of at most ten string
+/// values. Numbers and booleans are spelled out, since every workflow input
+/// is a string to GitHub; anything else is refused rather than sent.
+pub(super) fn dispatch_inputs(args: &Value) -> Result<serde_json::Map<String, Value>, String> {
+    let object = match args.get("inputs") {
+        None | Some(Value::Null) => return Ok(serde_json::Map::new()),
+        Some(Value::Object(o)) => o,
+        Some(other) => return Err(format!("`inputs` must be an object, got {other}")),
+    };
+    if object.len() > MAX_DISPATCH_INPUTS {
+        return Err(format!(
+            "`inputs` holds {} values; GitHub takes at most {MAX_DISPATCH_INPUTS}",
+            object.len()
+        ));
+    }
+    object
+        .iter()
+        .map(|(key, value)| {
+            let text = match value {
+                Value::String(s) => s.clone(),
+                Value::Number(n) => n.to_string(),
+                Value::Bool(b) => b.to_string(),
+                other => {
+                    return Err(format!(
+                        "`inputs.{key}` must be a string, number or boolean, got {other}"
+                    ))
+                }
+            };
+            Ok((key.clone(), Value::String(text)))
+        })
+        .collect()
+}
+
 /// `Ok(None)` when `key` is absent or null; an error for anything but a
 /// positive integer. Run ids outgrow a u32.
 pub(super) fn positive_u64_arg(args: &Value, key: &str) -> Result<Option<u64>, String> {
@@ -207,6 +330,8 @@ pub(super) fn workflow_arg(args: &Value) -> Result<Option<String>, String> {
                 ))
             }
         },
+        // Blank reads as absent: no filter for `run_list`, "required" for a dispatch.
+        Some(Value::String(s)) if s.trim().is_empty() => return Ok(None),
         Some(Value::String(s)) => s.trim(),
         Some(other) => {
             return Err(format!(

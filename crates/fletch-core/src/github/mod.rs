@@ -32,7 +32,8 @@ pub use client::{git_auth_env, seed_token, set_token, TOKEN_SETTING};
 pub(crate) use closes::with_closes_trailer;
 
 pub use actions::{
-    check_log, run_jobs, run_list, CHECK_LOG_DEFAULT_LINES, CHECK_LOG_MAX_LINES, RUN_LIST_MAX,
+    check_log, run_jobs, run_list, workflow_dispatch, CHECK_LOG_DEFAULT_LINES, CHECK_LOG_MAX_LINES,
+    RUN_LIST_MAX,
 };
 pub use checks::*;
 pub use comments::{

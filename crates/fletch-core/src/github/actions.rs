@@ -72,6 +72,54 @@ pub async fn run_jobs(checkout: &Path, id: u64) -> Result<Option<Vec<CheckRun>>>
     Ok(Some(parse_run_jobs(&body)))
 }
 
+/// Trigger `workflow` (a file name or id) on `git_ref` with `inputs`, as
+/// `gh workflow run` does. GitHub answers 204 with no run id; the returned
+/// URL is the workflow's runs page, and `run_list` narrowed to the workflow
+/// and branch finds the run. A workflow without a `workflow_dispatch`
+/// trigger, a missing required input or an unknown ref is GitHub's 422,
+/// surfaced with its message.
+pub async fn workflow_dispatch(
+    checkout: &Path,
+    workflow: &str,
+    git_ref: &str,
+    inputs: &serde_json::Map<String, Value>,
+) -> Result<String> {
+    let (owner, repo) = require_repo_ref(checkout).await?;
+    let client = client::Client::new()?;
+    let mut payload = serde_json::json!({ "ref": git_ref });
+    if !inputs.is_empty() {
+        payload["inputs"] = Value::Object(inputs.clone());
+    }
+    let (status, body) = client
+        .rest(
+            reqwest::Method::POST,
+            &format!("/repos/{owner}/{repo}/actions/workflows/{workflow}/dispatches"),
+            Some(&payload),
+        )
+        .await?;
+    if !status.is_success() {
+        let why = match status.as_u16() {
+            404 => format!(
+                "workflow {workflow:?} was not found in this repository, or the repository is \
+                 not visible to the host's GitHub account"
+            ),
+            _ => super::pr::detailed_rest_error(&body),
+        };
+        return Err(Error::Gh(format!("workflow dispatch failed: {why}")));
+    }
+    Ok(workflow_runs_url(&owner, &repo, workflow))
+}
+
+/// Where the runs of `workflow` are listed on GitHub: the workflow's own
+/// page for a file name, the repository's Actions tab for a numeric id.
+pub(crate) fn workflow_runs_url(owner: &str, repo: &str, workflow: &str) -> String {
+    if workflow.bytes().all(|b| b.is_ascii_digit()) {
+        format!("https://github.com/{owner}/{repo}/actions")
+    } else {
+        format!("https://github.com/{owner}/{repo}/actions/workflows/{workflow}")
+    }
+}
+
 /// The REST `workflow_runs` array → [`WorkflowRun`]s. Pure; a body without
 /// the array is an empty list.
 pub(crate) fn parse_run_list(body: &Value) -> Vec<WorkflowRun> {
@@ -324,6 +372,18 @@ mod tests {
         assert_eq!(runs[1].conclusion, None);
         assert_eq!(runs[1].run_attempt, 1, "an absent attempt is the first");
         assert!(parse_run_list(&json!({ "message": "Not Found" })).is_empty());
+    }
+
+    #[test]
+    fn a_dispatched_workflow_is_pointed_at_by_file_or_the_actions_tab() {
+        assert_eq!(
+            workflow_runs_url("o", "r", "deploy.yml"),
+            "https://github.com/o/r/actions/workflows/deploy.yml"
+        );
+        assert_eq!(
+            workflow_runs_url("o", "r", "4242"),
+            "https://github.com/o/r/actions"
+        );
     }
 
     #[test]

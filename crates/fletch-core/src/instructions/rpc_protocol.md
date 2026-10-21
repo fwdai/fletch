@@ -95,7 +95,13 @@ newest first: `id`, `name`, `workflow` file, `title`, `branch`, `event`,
 `failure`) and `args.event` narrow them, `args.limit` default 20, max 100) and
 `run_log` (`args.run` is a run's `id`; returns the log tail and annotations
 of its first failing job, or of `args.job` by id or name, with `args.lines`
-as for `pr_check_log`, plus the run's `jobs`).
+as for `pr_check_log`, plus the run's `jobs`). `workflow_dispatch` triggers
+a workflow that has a `workflow_dispatch` trigger: `args.workflow` (the file
+name, as `run_list` spells it), `args.ref` (a branch or tag on origin; your
+checked-out branch when absent) and `args.inputs` (an object of up to ten
+string values). It asks the user first when publish confirmation is on, and
+GitHub reports no run id: find the run with `run_list` afterwards. Only
+dispatch a workflow when the user asked for it.
 
 Releases: `release_list` (newest first: `tag`, `name`, `draft`,
 `prerelease`, URL, author, `published_at`, assets; `args.limit` default 20,

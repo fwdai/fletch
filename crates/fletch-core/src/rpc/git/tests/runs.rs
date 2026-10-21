@@ -156,8 +156,89 @@ fn a_failing_job_is_picked_by_default_and_a_tie_lists_the_jobs() {
     assert!(pick_job(&[], None).unwrap_err().contains("no jobs yet"));
 }
 
-/// Both reads go through the PR reads' preflight: a checkout with no GitHub
-/// origin is told so, with nothing emitted.
+#[tokio::test]
+async fn workflow_dispatch_validates_before_any_lookup() {
+    let td = tempfile::tempdir().unwrap();
+    let disp = dispatcher(td.path());
+    for (args, needle) in [
+        (json!({}), "requires `workflow`"),
+        (json!({ "workflow": "" }), "requires `workflow`"),
+        (
+            json!({ "workflow": "../x.yml" }),
+            "`workflow` must be a workflow file name",
+        ),
+        (
+            json!({ "workflow": "deploy.yml", "ref": "--force" }),
+            "option-like ref",
+        ),
+        (
+            json!({ "workflow": "deploy.yml", "ref": 7 }),
+            "`ref` must be a branch or tag name",
+        ),
+        (
+            json!({ "workflow": "deploy.yml", "inputs": ["a"] }),
+            "`inputs` must be an object",
+        ),
+        (
+            json!({ "workflow": "deploy.yml", "inputs": { "env": { "x": 1 } } }),
+            "`inputs.env` must be a string, number or boolean",
+        ),
+    ] {
+        let (resp, fx) = disp.dispatch_inner("d", "workflow_dispatch", &args).await;
+        assert!(!resp.ok, "{args}");
+        let err = resp.error.unwrap();
+        assert!(err.contains(needle), "{args}: {err}");
+        assert!(fx.is_empty(), "{args}: {fx:?}");
+    }
+}
+
+#[test]
+fn dispatch_inputs_are_spelled_as_strings_and_capped() {
+    use crate::rpc::git::runs::dispatch_inputs;
+    assert!(dispatch_inputs(&json!({})).unwrap().is_empty());
+    let got = dispatch_inputs(&json!({ "inputs": {
+        "environment": "prod", "replicas": 3, "dry_run": false
+    }}))
+    .unwrap();
+    assert_eq!(got["environment"], json!("prod"));
+    assert_eq!(got["replicas"], json!("3"), "a number is sent as text");
+    assert_eq!(got["dry_run"], json!("false"), "a boolean is sent as text");
+
+    let many: serde_json::Map<String, Value> =
+        (0..11).map(|i| (format!("k{i}"), json!("v"))).collect();
+    let err = dispatch_inputs(&json!({ "inputs": many })).unwrap_err();
+    assert!(err.contains("at most 10"), "{err}");
+}
+
+/// Dispatching runs the repository's secrets on a ref: a grant that may not
+/// publish is refused before anything is looked up, like a push.
+#[tokio::test]
+async fn workflow_dispatch_is_refused_for_grants_that_may_not_publish() {
+    use crate::rpc::caps::AgentCaps;
+    use crate::rpc::git::GitDispatcher;
+    let td = tempfile::tempdir().unwrap();
+    let repo = repo_without_origin(td.path());
+    for (caps, needle) in [
+        (AgentCaps::run_owned(), "finalizes"),
+        (AgentCaps::advisory(), "roadmap item"),
+    ] {
+        let disp = GitDispatcher::new(repo.clone(), repo.clone(), "main".to_string(), caps);
+        let (resp, fx) = disp
+            .dispatch_inner(
+                "d",
+                "workflow_dispatch",
+                &json!({ "workflow": "deploy.yml" }),
+            )
+            .await;
+        assert!(!resp.ok);
+        assert!(resp.error.unwrap().contains(needle), "{caps:?}");
+        assert!(fx.is_empty());
+    }
+    assert!(crate::rpc::git::is_mutating_op("workflow_dispatch"));
+}
+
+/// Every Actions op goes through the PR reads' preflight: a checkout with no
+/// GitHub origin is told so, with nothing emitted.
 #[tokio::test]
 async fn run_reads_name_a_non_github_origin() {
     let td = tempfile::tempdir().unwrap();
@@ -166,6 +247,7 @@ async fn run_reads_name_a_non_github_origin() {
     for (op, args) in [
         ("run_list", Value::Null),
         ("run_log", json!({ "run": 9001 })),
+        ("workflow_dispatch", json!({ "workflow": "deploy.yml" })),
     ] {
         let (resp, fx) = disp.dispatch_inner("r", op, &args).await;
         assert_eq!(
