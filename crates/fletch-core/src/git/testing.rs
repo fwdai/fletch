@@ -12,7 +12,7 @@
 //! The helpers below set the same two variables themselves, so a fixture
 //! reads the same with or without the constructor.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 /// No global or system git config for this process. A constructor, not a
@@ -101,4 +101,110 @@ pub(crate) fn ssh_signing(dir: &Path, repo: &Path) {
 /// confirm ([`ssh_signing`]).
 pub(crate) fn verified(repo: &Path, rev: &str) -> bool {
     git_output(repo, &["verify-commit", rev]).status.success()
+}
+
+/// A bare remote under `dir` whose default branch is `main`, so a clone of
+/// it is born on `main` once `main` is pushed.
+pub(crate) fn bare(dir: &Path, name: &str) -> PathBuf {
+    let path = dir.join(name);
+    git(dir, &["init", "-q", "--bare", path.to_str().unwrap()]);
+    git(&path, &["symbolic-ref", "HEAD", "refs/heads/main"]);
+    path
+}
+
+/// A plain clone of `from` at `dir/name` with its own identity and no
+/// signing: someone else moving a remote from outside.
+pub(crate) fn clone_elsewhere(dir: &Path, from: &Path, name: &str) -> PathBuf {
+    let path = dir.join(name);
+    git(
+        dir,
+        &[
+            "clone",
+            "-q",
+            from.to_str().unwrap(),
+            path.to_str().unwrap(),
+        ],
+    );
+    git(&path, &["config", "user.email", "other@example.com"]);
+    git(&path, &["config", "user.name", "Other"]);
+    git(&path, &["config", "commit.gpgsign", "false"]);
+    path
+}
+
+/// A user's repository and an agent checkout of it, as provisioning leaves
+/// them.
+pub(crate) struct Repos {
+    /// The bare remote, default branch `main`.
+    pub origin: PathBuf,
+    /// The user's repository: `origin` set, `base` pushed to `main`.
+    pub source: PathBuf,
+    /// A `--shared` clone of `source` with `origin` pointed at the bare
+    /// remote, an identity of its own and implicit signing off.
+    pub checkout: PathBuf,
+    /// The one commit pushed.
+    pub base: String,
+}
+
+pub(crate) fn repos(dir: &Path) -> Repos {
+    let origin = bare(dir, "origin.git");
+    let source = dir.join("source");
+    init_repo(&source);
+    git(
+        &source,
+        &["remote", "add", "origin", origin.to_str().unwrap()],
+    );
+    let base = commit_file(&source, "base.txt");
+    git(&source, &["push", "-q", "origin", "main"]);
+    let checkout = dir.join("checkout");
+    git(
+        dir,
+        &[
+            "clone",
+            "-q",
+            "--shared",
+            source.to_str().unwrap(),
+            checkout.to_str().unwrap(),
+        ],
+    );
+    git(
+        &checkout,
+        &["remote", "set-url", "origin", origin.to_str().unwrap()],
+    );
+    git(&checkout, &["config", "user.email", "me@example.com"]);
+    git(&checkout, &["config", "user.name", "Me"]);
+    git(&checkout, &["config", "commit.gpgsign", "false"]);
+    Repos {
+        origin,
+        source,
+        checkout,
+        base,
+    }
+}
+
+/// [`repos`] with `source` signing its commits ([`ssh_signing`], the key
+/// under `dir`).
+pub(crate) fn signing_repos(dir: &Path) -> Repos {
+    let fx = repos(dir);
+    ssh_signing(dir, &fx.source);
+    fx
+}
+
+impl Repos {
+    /// `git verify-commit` in `source`, where the allowed signers live, of a
+    /// commit in the checkout's store.
+    pub(crate) fn verified(&self, rev: &str) -> bool {
+        Command::new("git")
+            .current_dir(&self.source)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env(
+                "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+                self.checkout.join(".git").join("objects"),
+            )
+            .args(["verify-commit", rev])
+            .output()
+            .unwrap()
+            .status
+            .success()
+    }
 }

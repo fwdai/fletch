@@ -166,66 +166,116 @@ fn resolve_uncached() -> Option<GitBin> {
     installed_portable_git()
 }
 
-/// A tokio Command for the resolved git, with its env applied and `dir` as
-/// cwd. When nothing resolves, falls back to bare `git` so the failure
-/// surfaces as the same spawn error it always did — callers need no new path.
-pub fn command(dir: &Path) -> tokio::process::Command {
-    let mut cmd = match resolve() {
-        Some(bin) => {
-            let mut cmd = tokio::process::Command::new(&bin.program);
-            for (k, v) in &bin.env {
-                cmd.env(k, v);
-            }
-            cmd
+/// Environment the programs git runs on the host's behalf read, as the user's
+/// own terminal would provide it. A Dock-launched app inherits launchd's sparse
+/// environment: Homebrew is not on its PATH, and the ssh-agent socket a shell
+/// rc exports (1Password's, a custom agent's) is not set. Signing is where that
+/// bites — the signer (`git::signing`) and the first commit Fletch makes in a
+/// user's repository both make git run `gpg` or `ssh-keygen`, and a key held
+/// by an agent is reached only through `SSH_AUTH_SOCK` — and the failure is
+/// "gpg: command not found" or "no key", for a setup that works in every
+/// terminal. The login shell's value wins over the process's
+/// ([`crate::bin_resolve::effective_env_var`]), as for every other helper the
+/// app launches, and a value the shell exports blank counts as unset: the
+/// variable is removed rather than left to the process's own.
+///
+/// Two of these are **credentials**, and reach only git run in a **trusted**
+/// directory — the user's own repository, where the signer runs and Fletch's
+/// own commits are made. Inside an agent-writable tree they are removed,
+/// whatever the process holds: an agent can repoint `remote.origin.url` at an
+/// ssh remote of its choosing (the hardening refusal covers programs, not
+/// URLs), and a host-side `git fetch` there — which needs no publish approval
+/// — would then authenticate with the user's agent and land private objects
+/// in the checkout. Host-side transport in a checkout is https to GitHub with
+/// the app's own token (`github::git_auth_env`), so nothing legitimate loses
+/// out. `PATH` carries no secret and is set everywhere.
+const HELPER_ENV: &[&str] = &["PATH"];
+const CREDENTIAL_ENV: &[&str] = &["SSH_AUTH_SOCK", "GNUPGHOME"];
+
+/// The [`HELPER_ENV`] variables, plus [`CREDENTIAL_ENV`] when `trusted`, as a
+/// host-side git spawn gets them: `None` for one to remove.
+pub(crate) fn helper_env(trusted: bool) -> Vec<(&'static str, Option<std::ffi::OsString>)> {
+    let shell = |name: &&'static str| (*name, crate::bin_resolve::effective_env_var(name));
+    let mut env: Vec<_> = HELPER_ENV.iter().map(shell).collect();
+    if trusted {
+        env.extend(CREDENTIAL_ENV.iter().map(shell));
+    } else {
+        env.extend(CREDENTIAL_ENV.iter().map(|name| (*name, None)));
+    }
+    env
+}
+
+/// Apply [`helper_env`] to `cmd`: each variable is first removed, so a blank
+/// shell export leaves it unset rather than inherited, then set when the shell
+/// or process has a value for it.
+fn apply_helper_env(cmd: &mut StdCommand, trusted: bool) {
+    for (name, value) in helper_env(trusted) {
+        cmd.env_remove(name);
+        if let Some(value) = value {
+            cmd.env(name, value);
         }
-        None => tokio::process::Command::new("git"),
+    }
+}
+
+/// The resolved git with [`helper_env`] under its own relocation env, in `dir`
+/// with the directory-scoped hardening overrides, or with no cwd and the
+/// directory-free overrides. When nothing resolves, falls back to bare `git`
+/// so the failure surfaces as the same spawn error it always did — callers
+/// need no new path. `trusted` is whether the repository the command acts on
+/// is outside every agent-writable tree, which decides the credential
+/// variables.
+fn resolved(dir: Option<&Path>, trusted: bool) -> StdCommand {
+    let bin = resolve();
+    let mut cmd = match &bin {
+        Some(bin) => StdCommand::new(&bin.program),
+        None => StdCommand::new("git"),
     };
-    cmd.current_dir(dir)
-        .args(crate::git::hardening::config_overrides_for(dir));
+    apply_helper_env(&mut cmd, trusted);
+    if let Some(bin) = &bin {
+        for (k, v) in &bin.env {
+            cmd.env(k, v);
+        }
+    }
+    match dir {
+        Some(dir) => {
+            cmd.current_dir(dir)
+                .args(crate::git::hardening::config_overrides_for(dir));
+        }
+        None => {
+            cmd.args(crate::git::hardening::config_overrides());
+        }
+    }
     cmd
+}
+
+/// A tokio Command for the resolved git, with its env applied and `dir` as
+/// cwd.
+pub fn command(dir: &Path) -> tokio::process::Command {
+    tokio::process::Command::from(std_command(dir))
 }
 
 /// Synchronous sibling of [`command`] — for the rare caller outside an async
 /// context. The Run sandbox builder resolves the target's git common dir while
 /// assembling the profile (a sync path, before the PTY spawns), so it can't
 /// await. Same resolved binary, env, and hardening.
-pub fn std_command(dir: &Path) -> std::process::Command {
-    let mut cmd = match resolve() {
-        Some(bin) => {
-            let mut c = std::process::Command::new(&bin.program);
-            for (k, v) in &bin.env {
-                c.env(k, v);
-            }
-            c
-        }
-        None => std::process::Command::new("git"),
-    };
-    cmd.current_dir(dir)
-        .args(crate::git::hardening::config_overrides_for(dir));
-    cmd
+pub fn std_command(dir: &Path) -> StdCommand {
+    resolved(Some(dir), !crate::git::hardening::agent_writable(dir))
 }
 
-/// [`command`] without a cwd — for the rare op whose target dir doesn't exist
-/// yet (`git init <path>`), and so without the directory-scoped overrides: an
-/// op with no directory creates no commit.
+/// [`command`] without a cwd — for the rare op whose target doesn't exist
+/// yet (`git init <path>`, `git clone <url> <path>`), and so without the
+/// directory-scoped overrides: an op with no directory creates no commit.
+/// Always trusted: its callers are the user's own clone and `git init` into
+/// a place of their choosing, which carry their agent socket — an ssh clone
+/// URL's key may live there.
 ///
 /// This, [`command`] and [`std_command`] are the seams where every git
 /// invocation picks up [`crate::git::hardening`]'s overrides, so a
 /// repository's own config can never steer host-side git — including from
-/// call sites written later.
+/// call sites written later — and [`helper_env`], so the programs git runs
+/// are found the way the user's terminal finds them.
 pub fn bare_command() -> tokio::process::Command {
-    let mut cmd = match resolve() {
-        Some(bin) => {
-            let mut cmd = tokio::process::Command::new(&bin.program);
-            for (k, v) in &bin.env {
-                cmd.env(k, v);
-            }
-            cmd
-        }
-        None => tokio::process::Command::new("git"),
-    };
-    cmd.args(crate::git::hardening::config_overrides());
-    cmd
+    tokio::process::Command::from(resolved(None, true))
 }
 
 /// Extra env for spawned agent/terminal children so *their* `git status` /
@@ -601,6 +651,98 @@ mod tests {
 
         assert!(extract_dist(&tarball, &dest).is_err());
         assert!(!dest.exists());
+    }
+
+    /// What `cmd` would do to `name`: `Some(Some(v))` sets it, `Some(None)`
+    /// removes it, `None` leaves the process's own in place.
+    fn env_of(cmd: &StdCommand, name: &str) -> Option<Option<std::ffi::OsString>> {
+        cmd.get_envs()
+            .find(|(k, _)| *k == name)
+            .map(|(_, v)| v.map(|v| v.to_os_string()))
+    }
+
+    const SHELL: &[(&str, &str)] = &[
+        ("PATH", "/opt/homebrew/bin:/usr/bin"),
+        ("SSH_AUTH_SOCK", "/tmp/agent.sock"),
+        ("GNUPGHOME", "/Users/someone/.gnupg-elsewhere"),
+        ("HOME", "/Users/someone"),
+    ];
+
+    /// In the user's own repository, host-side git carries the login shell's
+    /// PATH, agent socket and keyring over the process's own, so the programs
+    /// git runs for signing are found the way the user's terminal finds them.
+    #[test]
+    fn host_git_in_a_trusted_dir_carries_the_login_shells_helper_env() {
+        // Every managed variable is stubbed, so nothing the test process
+        // itself exports (a developer's GNUPGHOME, say) can fall through.
+        let td = tempfile::tempdir().unwrap();
+        let cmd = crate::bin_resolve::with_login_shell_env(SHELL, || std_command(td.path()));
+        assert_eq!(
+            env_of(&cmd, "PATH"),
+            Some(Some("/opt/homebrew/bin:/usr/bin".into()))
+        );
+        assert_eq!(
+            env_of(&cmd, "SSH_AUTH_SOCK"),
+            Some(Some("/tmp/agent.sock".into()))
+        );
+        assert_eq!(
+            env_of(&cmd, "GNUPGHOME"),
+            Some(Some("/Users/someone/.gnupg-elsewhere".into()))
+        );
+        assert_eq!(env_of(&cmd, "HOME"), None, "nothing else the shell exports");
+        // A shell that exports none leaves the process's own in place.
+        let env = crate::bin_resolve::with_login_shell_env(&[], || helper_env(true));
+        assert_eq!(
+            env.iter()
+                .find(|(k, _)| *k == "PATH")
+                .map(|(_, v)| v.clone()),
+            Some(std::env::var_os("PATH"))
+        );
+    }
+
+    /// Inside an agent-writable tree the credential variables are removed
+    /// whatever the shell or the process holds — an agent's `git fetch` must
+    /// never reach the user's ssh-agent — while PATH still comes along.
+    #[test]
+    fn host_git_in_an_agent_writable_dir_gets_no_credentials() {
+        let mut cmd = StdCommand::new("git");
+        crate::bin_resolve::with_login_shell_env(SHELL, || apply_helper_env(&mut cmd, false));
+        assert_eq!(
+            env_of(&cmd, "PATH"),
+            Some(Some("/opt/homebrew/bin:/usr/bin".into()))
+        );
+        assert_eq!(env_of(&cmd, "SSH_AUTH_SOCK"), Some(None), "removed");
+        assert_eq!(env_of(&cmd, "GNUPGHOME"), Some(None), "removed");
+    }
+
+    /// A clone or init into a place of the user's choosing is the user's own
+    /// repository in the making, so it carries their agent socket: an ssh
+    /// clone URL's key may live there.
+    #[test]
+    fn a_users_clone_target_is_trusted_with_the_agent_socket() {
+        let cmd = crate::bin_resolve::with_login_shell_env(SHELL, || bare_command().into_std());
+        assert_eq!(
+            env_of(&cmd, "SSH_AUTH_SOCK"),
+            Some(Some("/tmp/agent.sock".into()))
+        );
+        assert_eq!(
+            env_of(&cmd, "GNUPGHOME"),
+            Some(Some("/Users/someone/.gnupg-elsewhere".into()))
+        );
+    }
+
+    /// A value the login shell exports blank is unset there, so the spawn
+    /// removes the variable rather than inheriting whatever the app process
+    /// holds — an inherited GNUPGHOME would pick the wrong keyring.
+    #[test]
+    fn a_blank_shell_value_removes_the_variable_rather_than_inheriting_it() {
+        let td = tempfile::tempdir().unwrap();
+        let cmd = crate::bin_resolve::with_login_shell_env(
+            &[("GNUPGHOME", ""), ("SSH_AUTH_SOCK", "")],
+            || std_command(td.path()),
+        );
+        assert_eq!(env_of(&cmd, "GNUPGHOME"), Some(None));
+        assert_eq!(env_of(&cmd, "SSH_AUTH_SOCK"), Some(None));
     }
 
     /// Relocation env points only at dirs that exist, so a layout change in a

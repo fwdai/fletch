@@ -7,8 +7,11 @@
 //! other callers poll in the background. An agent acts on the answer, so each
 //! op tells those apart up front ([`GitDispatcher::pr_read_target`]) and only
 //! then reads "none" as "no such pull request".
-
-use std::path::Path;
+//!
+//! The repository is resolved from the user's repository (`Target::source_repo`),
+//! whose `origin` no agent can write, never from the checkout's: a repointed
+//! checkout origin would otherwise read another repository's pull requests
+//! with the user's token. The checkout supplies only its current branch.
 
 use serde::Serialize;
 use serde_json::Value;
@@ -58,25 +61,31 @@ fn not_found_or_hidden(number: u32) -> String {
     )
 }
 
-/// The current branch's PR number. Reaches the fetcher only after
-/// `pr_read_target`, so `None` here is a branch with no PR — or a repository
-/// the token cannot read, which GitHub reports the same way.
-async fn branch_pr_number(id: &str, op: &str, cwd: &Path) -> Result<u32, Response> {
-    match crate::github::pr_view(cwd).await {
-        Ok(Some(pr)) => Ok(pr.number),
+/// The PR for the branch checked out in `t.cwd`, looked up in the user's
+/// repository. Reaches the fetcher only after `pr_read_target`, so `None`
+/// here is a branch with no PR (or a detached HEAD) — or a repository the
+/// token cannot read, which GitHub reports the same way.
+async fn branch_pr(id: &str, op: &str, t: &Target) -> Result<crate::github::PrState, Response> {
+    let fail = |e: crate::error::Error| Response::err(id, format!("{op}: {e}"));
+    let Some(branch) = crate::git::current_branch(&t.cwd).await.map_err(fail)? else {
+        return Err(Response::err(id, format!("{op}: {NO_BRANCH_PR}")));
+    };
+    match crate::github::pr_view_branch(&t.source_repo, &branch).await {
+        Ok(Some(pr)) => Ok(pr),
         Ok(None) => Err(Response::err(id, format!("{op}: {NO_BRANCH_PR}"))),
-        Err(e) => Err(Response::err(id, format!("{op}: {e}"))),
+        Err(e) => Err(fail(e)),
     }
 }
 
 impl GitDispatcher {
-    /// The target checkout once the reasons a read could answer nothing have
-    /// been ruled out, each with its own message: an origin that isn't GitHub,
-    /// no host token, a rate-limit pause (retryable). Checked in that order so
-    /// a checkout with no remote answers the same with or without a token.
+    /// The target once the reasons a read could answer nothing have been
+    /// ruled out, each with its own message: a user's repository whose origin
+    /// isn't GitHub, no host token, a rate-limit pause (retryable). Checked in
+    /// that order so a repository with no remote answers the same with or
+    /// without a token.
     async fn pr_read_target(&self, id: &str, op: &str, args: &Value) -> Result<Target, Response> {
         let t = self.target(id, args)?;
-        if crate::github::repo_ref(&t.cwd).await.is_none() {
+        if crate::github::repo_ref(&t.source_repo).await.is_none() {
             return Err(Response::err(
                 id,
                 format!("{op}: origin is not a GitHub repository (or there is no origin)"),
@@ -104,10 +113,9 @@ impl GitDispatcher {
             Ok(t) => t,
             Err(resp) => return resp,
         };
-        match crate::github::pr_view(&t.cwd).await {
-            Ok(Some(pr)) => json_ok(id, "pr_view", &pr),
-            Ok(None) => Response::err(id, format!("pr_view: {NO_BRANCH_PR}")),
-            Err(e) => Response::err(id, format!("pr_view: {e}")),
+        match branch_pr(id, "pr_view", &t).await {
+            Ok(pr) => json_ok(id, "pr_view", &pr),
+            Err(resp) => resp,
         }
     }
 
@@ -123,14 +131,14 @@ impl GitDispatcher {
         };
         let number = match number {
             Some(n) => n,
-            None => match branch_pr_number(id, "pr_checks", &t.cwd).await {
-                Ok(n) => n,
+            None => match branch_pr(id, "pr_checks", &t).await {
+                Ok(pr) => pr.number,
                 Err(resp) => return resp,
             },
         };
         // A 404 is "not found or not visible" and says so; any other silence
         // is a retry, not a wrong-PR hunt.
-        match crate::github::pr_checks_read(&t.cwd, None, number).await {
+        match crate::github::pr_checks_read(&t.source_repo, None, number).await {
             Ok(crate::github::ChecksRead::Checks(checks)) => json_ok(id, "pr_checks", &checks),
             Ok(crate::github::ChecksRead::NotFound) => {
                 Response::err(id, format!("pr_checks: {}", not_found_or_hidden(number)))
@@ -154,11 +162,11 @@ impl GitDispatcher {
             Ok(t) => t,
             Err(resp) => return resp,
         };
-        let number = match branch_pr_number(id, "pr_comments", &t.cwd).await {
-            Ok(n) => n,
+        let number = match branch_pr(id, "pr_comments", &t).await {
+            Ok(pr) => pr.number,
             Err(resp) => return resp,
         };
-        match crate::github::pr_conversation_comments(&t.cwd, number, limit).await {
+        match crate::github::pr_conversation_comments(&t.source_repo, number, limit).await {
             Ok(Some(comments)) => json_ok(id, "pr_comments", &comments),
             Ok(None) => Response::err(id, format!("pr_comments: {}", not_found_or_hidden(number))),
             Err(e) => Response::err(id, format!("pr_comments: {e}")),

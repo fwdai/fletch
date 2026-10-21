@@ -62,7 +62,7 @@ impl GitDispatcher {
         // Only the requested base is probed, so a typo can't leave a pushed branch
         // with no PR. `None` means "couldn't ask" and must not block.
         if requested_base.is_some()
-            && crate::git::remote_branch_exists(&t.cwd, &base).await == Some(false)
+            && crate::git::remote_branch_exists(&t.cwd, &t.source_repo, &base).await == Some(false)
         {
             return (
                 Response::err(

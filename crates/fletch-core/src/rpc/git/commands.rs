@@ -24,7 +24,10 @@ impl GitDispatcher {
 
     /// Fetches with the host-held token so the agent can merge `origin/<base>`
     /// natively without the token entering the sandbox. Hooks are disabled for the
-    /// same reason as push.
+    /// same reason as push. The remote is the user's repository's, never the
+    /// checkout's `origin` (`git::remote`): this op needs no approval, so a
+    /// checkout whose origin the agent repointed would otherwise make the host
+    /// fetch any repository the token can read into the agent's reach.
     pub(super) async fn git_fetch(&self, id: &str, args: &Value) -> Response {
         let t = match self.target(id, args) {
             Ok(t) => t,
@@ -38,22 +41,19 @@ impl GitDispatcher {
         if let Some(resp) = refuse_option_like(id, "git_fetch", "ref", &branch) {
             return resp;
         }
-        let auth = crate::github::git_auth_env();
-        let resp = run_git_command(id, &cwd, &["fetch", "origin", &branch], &auth).await;
-        // `run_git_command` reports `ok` for any git that ran; a non-zero fetch must be
-        // a hard error or the agent merges a stale `origin/<branch>`.
-        if !resp.ok || resp.exit_code == Some(0) {
-            return resp;
+        let transport = match crate::git::Transport::open(&cwd, &t.source_repo).await {
+            Ok(transport) => transport,
+            Err(e) => return Response::err(id, format!("git_fetch: {e}")),
+        };
+        // A failed fetch is a hard error, or the agent merges a stale
+        // `origin/<branch>`.
+        match transport
+            .fetch_branches(crate::git::Branches::One(&branch))
+            .await
+        {
+            Ok(()) => Response::ok(id, 0, String::new(), String::new()),
+            Err(e) => Response::err(id, format!("git_fetch: fetch origin {branch} failed: {e}")),
         }
-        let detail = resp
-            .stderr
-            .filter(|s| !s.trim().is_empty())
-            .or(resp.stdout)
-            .unwrap_or_default();
-        Response::err(
-            id,
-            format!("git_fetch: fetch origin {branch} failed: {}", detail.trim()),
-        )
     }
 }
 

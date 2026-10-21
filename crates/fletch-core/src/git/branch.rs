@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use crate::error::{Error, Result};
 
-use super::cmd::{apply_github_auth, git_output, run_git};
+use super::cmd::{git_output, run_git};
 
 /// Hard cap on the spawn-time `git fetch`. A fetch over a hung SSH/TCP
 /// connection can otherwise block for the OS keep-alive window (75–120s), far
@@ -39,31 +39,22 @@ const FETCH_TIMEOUT: Duration = Duration::from_secs(8);
 ///
 /// Never errors: a missing `origin`, an offline machine, or a purely local
 /// branch are all expected and simply mean "use local state".
-pub async fn fetch_fork_point(repo: &Path, branch: &str) -> Option<String> {
-    // A fetch over ssh or a local path runs the transport-executing keys
-    // `core.sshCommand`, `core.gitProxy` and `remote.<origin>.uploadpack` — which
-    // `config_overrides` omits, so this direct-build path needs the refusal
-    // explicitly. `repo` is the clone `dest`, an agent checkout under
-    // `checkouts_root`; a refusal degrades to a local ref, the same outcome as an
-    // offline fetch, so `config_is_safe` (which logs and returns false) fits the
-    // never-errors contract.
-    if !super::hardening::config_is_safe(repo).await {
-        return None;
-    }
-    // `kill_on_drop` so a timeout actually tears down the hung git process
-    // (and its SSH child) rather than orphaning it to keep blocking on the
-    // dead connection.
-    let mut fetch_cmd = crate::git_dist::command(repo);
-    fetch_cmd
-        .args(["fetch", "origin", branch])
-        .kill_on_drop(true);
-    apply_github_auth(&mut fetch_cmd);
-    let fetched = tokio::time::timeout(FETCH_TIMEOUT, fetch_cmd.output()).await;
-    // Timed out, failed to spawn, or non-zero exit → the caller degrades.
-    match fetched {
-        Ok(Ok(out)) if out.status.success() => {}
-        _ => return None,
-    }
+pub async fn fetch_fork_point(repo: &Path, source_repo: &Path, branch: &str) -> Option<String> {
+    // Through `Transport`: the user's remote and config, the checkout's objects
+    // and tracking refs. A refused config, a repointed origin, a missing
+    // origin, a timeout (the transport kills the hung process) or a failed
+    // fetch all degrade to a local ref, the never-errors contract. `repo` is
+    // the clone `dest`, an agent checkout under `checkouts_root`.
+    let t = match super::remote::Transport::open(repo, source_repo).await {
+        Ok(t) => t,
+        Err(e) => {
+            tracing::warn!(repo = %repo.display(), error = %e, "fork-point fetch skipped");
+            return None;
+        }
+    };
+    t.fetch_branches_within(super::remote::Branches::One(branch), FETCH_TIMEOUT)
+        .await
+        .ok()?;
     // Resolve the remote-tracking ref to a SHA here, in the repo the fetch
     // updated. This both confirms the refspec mapped the branch into
     // refs/remotes and pins the base to the fetched tip.
@@ -329,7 +320,7 @@ mod tests {
         std::fs::write(repo.join("a.txt"), b"x").unwrap();
         commit_all(repo, "first").await.unwrap();
 
-        assert_eq!(fetch_fork_point(repo, "main").await, None);
+        assert_eq!(fetch_fork_point(repo, repo, "main").await, None);
     }
 
     #[tokio::test]
@@ -361,7 +352,7 @@ mod tests {
         let stale_local = rev_parse(&source, "main").await.unwrap();
         assert_ne!(stale_local, upstream_tip);
 
-        let base = fetch_fork_point(&source, "main").await.unwrap();
+        let base = fetch_fork_point(&source, &source, "main").await.unwrap();
         assert_eq!(base, upstream_tip);
     }
 

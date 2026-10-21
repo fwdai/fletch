@@ -15,7 +15,7 @@ use crate::error::{Error, Result};
 /// not on slow-but-progressing work. NOT used for `clone` (a large repo can
 /// legitimately take minutes); clone's retry wedge is handled by self-heal in
 /// `new_project::clone` instead.
-const NET_TIMEOUT: Duration = Duration::from_secs(60);
+pub(crate) const NET_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Run a network-bound command under `NET_TIMEOUT`, killing the process (and
 /// its SSH/HTTP child) on expiry via `kill_on_drop` rather than orphaning it.
@@ -44,7 +44,7 @@ pub(crate) async fn output_timed(cmd: &mut Command, what: &str) -> Result<std::p
 /// actions, outside the spawn watchdog, so without a bound here a hung commit
 /// or rebase has nothing to stop it. Network ops use `NET_TIMEOUT` via
 /// `output_timed` instead, which carries a network-specific hint.
-const LOCAL_TIMEOUT: Duration = Duration::from_secs(120);
+pub(crate) const LOCAL_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Spawn `git <args>` in `dir` under `LOCAL_TIMEOUT`, killing a hung process
 /// (via `kill_on_drop`) on expiry rather than orphaning it. Returns the raw
@@ -86,42 +86,85 @@ pub(crate) async fn git_output_env(
 
 /// `git_output_env` feeding `stdin` to the process — for the plumbing that
 /// reads its payload there (`commit-tree` takes the message that way, which is
-/// the only form that preserves it byte for byte). Same hardening and timeout.
+/// the only form that preserves it byte for byte; `cat-file --batch-check`
+/// and `update-ref --stdin` take a line per object). Same hardening and
+/// timeout.
 pub(crate) async fn git_output_stdin(
     dir: &Path,
     args: &[&str],
     env: &[(String, String)],
     stdin: &[u8],
 ) -> Result<std::process::Output> {
-    use tokio::io::AsyncWriteExt;
     super::hardening::refuse_steerable_config(dir).await?;
     let mut cmd = crate::git_dist::command(dir);
-    cmd.args(args)
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .kill_on_drop(true);
+    cmd.args(args);
     for (k, v) in env {
         cmd.env(k, v);
     }
+    let what = format!("git {}", args.first().copied().unwrap_or(""));
+    output_with_stdin(cmd, stdin, LOCAL_TIMEOUT, &what).await
+}
+
+/// Run `cmd` with `stdin` fed to it, under `timeout`, killing it on expiry.
+/// `what` names the op for the timeout message.
+///
+/// Input is written while output is drained, never one after the other: a
+/// batch command answers each line as it arrives, and once its stdout pipe
+/// is full it blocks on us reading it while we would block on it reading
+/// the rest of the input — a deadlock a long branch list reaches easily.
+pub(crate) async fn output_with_stdin(
+    mut cmd: Command,
+    stdin: &[u8],
+    timeout: Duration,
+    what: &str,
+) -> Result<std::process::Output> {
+    use tokio::io::AsyncWriteExt;
+    cmd.stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
     let run = async {
         let mut child = cmd.spawn()?;
-        if let Some(mut pipe) = child.stdin.take() {
-            pipe.write_all(stdin).await?;
-            drop(pipe);
+        let input = child.stdin.take();
+        let write = async move {
+            if let Some(mut pipe) = input {
+                pipe.write_all(stdin).await?;
+            }
+            Ok::<_, std::io::Error>(())
+        };
+        let (written, stdout, stderr) = tokio::join!(
+            write,
+            read_all(child.stdout.take()),
+            read_all(child.stderr.take())
+        );
+        let status = child.wait().await?;
+        // A child that quit early closes its stdin on us; what it said is the
+        // answer, not the broken pipe.
+        if let Err(e) = written {
+            if e.kind() != std::io::ErrorKind::BrokenPipe {
+                return Err(e);
+            }
         }
-        child.wait_with_output().await
+        Ok(std::process::Output {
+            status,
+            stdout: stdout?,
+            stderr: stderr?,
+        })
     };
-    tokio::time::timeout(LOCAL_TIMEOUT, run)
+    tokio::time::timeout(timeout, run)
         .await
-        .map_err(|_| {
-            Error::Git(format!(
-                "git {} timed out after {}s",
-                args.first().copied().unwrap_or(""),
-                LOCAL_TIMEOUT.as_secs()
-            ))
-        })?
+        .map_err(|_| Error::Git(format!("{what} timed out after {}s", timeout.as_secs())))?
         .map_err(Error::from)
+}
+
+/// Everything `pipe` yields until it closes; nothing for no pipe.
+async fn read_all(pipe: Option<impl tokio::io::AsyncRead + Unpin>) -> std::io::Result<Vec<u8>> {
+    use tokio::io::AsyncReadExt;
+    let mut buf = Vec::new();
+    if let Some(mut pipe) = pipe {
+        pipe.read_to_end(&mut buf).await?;
+    }
+    Ok(buf)
 }
 
 /// Run `git <args>` in `dir` and require a zero exit, returning the `Output` so
@@ -329,5 +372,28 @@ mod tests {
             config_value_for(&merged, "core.autocrlf").as_deref(),
             Some("false")
         );
+    }
+
+    /// A batch command answers each input line as it arrives. With more
+    /// input than a pipe holds, writing it all before reading anything would
+    /// deadlock against the child's full stdout; input is streamed while
+    /// output is drained, so the whole batch comes back.
+    #[tokio::test]
+    async fn stdin_is_streamed_while_output_is_drained() {
+        let td = tempfile::tempdir().unwrap();
+        let repo = td.path();
+        crate::git::testing::init_repo(repo);
+        let sha = crate::git::testing::commit_file(repo, "a.txt");
+        // Well past a 64 KiB pipe on both sides: each line in produces a
+        // line out.
+        let lines = 20_000;
+        let input: String = std::iter::repeat_n(format!("{sha}\n"), lines).collect();
+
+        let out = git_output_stdin(repo, &["cat-file", "--batch-check"], &[], input.as_bytes())
+            .await
+            .unwrap();
+
+        assert!(out.status.success());
+        assert_eq!(String::from_utf8_lossy(&out.stdout).lines().count(), lines);
     }
 }

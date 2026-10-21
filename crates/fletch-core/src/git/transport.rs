@@ -5,22 +5,16 @@ use std::path::Path;
 
 use crate::error::{Error, Result};
 
-use super::cmd::{git_output, git_output_env, identity_env, merge_git_env, output_timed, run_git};
+use super::cmd::{
+    git_output, git_output_env, git_output_stdin, identity_env, output_timed, run_git,
+};
+use super::remote::{resolve, Branches, Transport};
 
-/// Push the current branch to `origin`. Uses `-u` to set the upstream
-/// tracking ref on the first push.
-/// When `force` is set, pushes with `--force-with-lease --force-if-includes`:
-/// the safe force that rewrites the remote branch (e.g. after a local rebase)
-/// but refuses if the remote moved in a way we haven't seen, so we never
-/// silently clobber someone else's work. `--force-if-includes` is essential
-/// here, not redundant: bare `--force-with-lease` only compares the *local*
-/// `refs/remotes/origin/<branch>` tracking ref, which git also opportunistically
-/// refreshes from the push's own ref advertisement — so a stale or never-fetched
-/// tracking ref (the clone-workspace case, where only the base branch is
-/// refreshed) would pass the lease and overwrite unseen commits. `--force-if-
-/// includes` additionally requires the remote tip to be reachable from the local
-/// branch's reflog — proof we actually integrated it — and fails safe otherwise.
-/// A plain `--force` is intentionally not offered.
+/// Push `branch` to `origin`'s push URLs (see [`push_source`]). When `force`
+/// is set, the push is a lease-guarded force: it rewrites the remote branch
+/// (e.g. after a local rebase) only when the remote is where this checkout
+/// last integrated it, so someone else's work is never silently clobbered. A
+/// plain `--force` is intentionally not offered.
 /// Returns `"up-to-date"` when the remote already had everything (a no-op
 /// push), otherwise `"pushed"`. Lets the UI confirm the outcome instead of
 /// silently doing nothing when there was nothing to send.
@@ -37,26 +31,32 @@ use super::cmd::{git_output, git_output_env, identity_env, merge_git_env, output
 /// push caller (agent broker, PR broker, Git panel, publish), so the defence
 /// lives here.
 #[cfg(test)]
-pub(super) async fn push(checkout: &Path, branch: &str, force: bool) -> Result<String> {
+pub(super) async fn push(
+    checkout: &Path,
+    source_repo: &Path,
+    branch: &str,
+    force: bool,
+) -> Result<String> {
     let source = format!("refs/heads/{branch}");
-    push_source(checkout, &source, branch, force).await
+    push_source(checkout, source_repo, &source, branch, force).await
 }
 
 /// [`push`] of one exact commit to `refs/heads/<branch>`: the commit a check
 /// just read, so nothing that lands on the branch between the check and the
-/// push is published. The lease applies as it does for `push`. Git sets no
-/// upstream for a non-branch source, so the tracking ref is set afterwards.
-/// Private to `git`: [`super::publish`] is the one caller, so no push can skip
-/// what publishing involves.
+/// push is published. The lease applies as it does for `push`. The push names
+/// a URL, not a remote, so git sets no upstream; the tracking ref is set
+/// afterwards. Private to `git`: [`super::publish`] is the one caller, so no
+/// push can skip what publishing involves.
 pub(super) async fn push_commit(
     checkout: &Path,
+    source_repo: &Path,
     commit: &str,
     branch: &str,
     force: bool,
 ) -> Result<String> {
-    let summary = push_source(checkout, commit, branch, force).await?;
-    // Best effort, as `-u` is: a local branch that no longer exists has nothing
-    // to track, and the push already happened.
+    let summary = push_source(checkout, source_repo, commit, branch, force).await?;
+    // Best effort, as `-u` would be: a local branch that no longer exists has
+    // nothing to track, and the push already happened.
     let upstream = format!("origin/{branch}");
     let _ = super::cmd::git_output(
         checkout,
@@ -66,64 +66,146 @@ pub(super) async fn push_commit(
     Ok(summary)
 }
 
-async fn push_source(checkout: &Path, source: &str, branch: &str, force: bool) -> Result<String> {
-    // See `push_head_to_branch`: push executes `remote.<origin>.receivepack` /
-    // `core.sshCommand` / `core.gitProxy` over ssh/local transport, transport keys
-    // that neither hardening layer neutralises, so the refusal runs before we spawn.
-    super::hardening::refuse_steerable_config(checkout).await?;
-    let mut cmd = crate::git_dist::command(checkout);
-    cmd.args(["push", "-u"]);
-    if force {
-        cmd.args(["--force-with-lease", "--force-if-includes"]);
-    }
-    let refspec = format!("{source}:refs/heads/{branch}");
-    cmd.args(["origin", refspec.as_str()]);
-    // Auth for the https transport. `pre-push` would fire on the host, but
-    // hooks are already neutralised at the spawn seam (`git::hardening`).
-    for (k, v) in crate::github::git_auth_env() {
-        cmd.env(k, v);
-    }
-    let out = output_timed(&mut cmd, "git push").await?;
-    if !out.status.success() {
+/// The push runs through [`Transport`]: the user's repository's remote and
+/// configuration, the checkout's objects. It names each push URL rather than
+/// `origin`, so git keeps no remote-tracking ref for it:
+///
+/// - a plain push goes to every push URL, as git's would; a force needs
+///   exactly one, since one lease cannot describe two remotes;
+/// - the lease expects the tip the push remote advertises right now
+///   (`--force-with-lease=<branch>:<expected>`, empty for "absent"), and the
+///   check `--force-if-includes` would make — skipped by git once the
+///   expected value is explicit — is [`require_integrated`];
+/// - a push that changes nothing is up to date, not forced;
+/// - `refs/remotes/origin/<branch>` is moved to the pushed commit afterwards,
+///   as a named-remote push would move it.
+async fn push_source(
+    checkout: &Path,
+    source_repo: &Path,
+    source: &str,
+    branch: &str,
+    force: bool,
+) -> Result<String> {
+    let t = Transport::open(checkout, source_repo).await?;
+    let remotes = t.push_remotes();
+    if force && remotes.len() > 1 {
         return Err(Error::Git(format!(
-            "push failed: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
+            "refusing to force-push '{branch}': origin has {} push URLs and a lease can hold \
+             only one remote's tip; push without force, or configure a single push URL",
+            remotes.len()
         )));
     }
-    // git reports "Everything up-to-date" on stderr when there was nothing new.
-    let combined = format!(
-        "{}{}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr),
-    );
-    if combined.contains("Everything up-to-date") {
-        Ok("up-to-date".to_string())
-    } else {
-        Ok("pushed".to_string())
+    let pushed = resolve(checkout, source).await?;
+    let mut lease = Vec::new();
+    if force {
+        let expected = t.tip(&remotes[0], branch).await?;
+        // As git does, a push that changes nothing is up to date, not forced.
+        if let Some(expected) = expected
+            .as_deref()
+            .filter(|e| Some(*e) != pushed.as_deref())
+        {
+            require_integrated(checkout, branch, expected).await?;
+        }
+        lease.push(format!(
+            "--force-with-lease=refs/heads/{branch}:{}",
+            expected.as_deref().unwrap_or_default()
+        ));
     }
+    let refspec = format!("{source}:refs/heads/{branch}");
+    let mut up_to_date = true;
+    for url in remotes {
+        let out = t.push(url, &lease, &refspec).await?;
+        if !out.status.success() {
+            return Err(Error::Git(format!(
+                "push failed: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            )));
+        }
+        // git reports "Everything up-to-date" on stderr when there was nothing new.
+        let combined = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr),
+        );
+        up_to_date &= combined.contains("Everything up-to-date");
+    }
+    if let Some(pushed) = pushed {
+        t.record_pushed(branch, &pushed).await?;
+    }
+    Ok(if up_to_date { "up-to-date" } else { "pushed" }.to_string())
 }
 
-/// Pull latest from the tracking remote branch.
-/// Requires `push -u` to have been called first to establish an upstream.
-pub async fn pull(checkout: &Path) -> Result<()> {
-    // A pull merges, so it runs `merge.<name>.driver` — a wildcard key the `-c`
-    // overrides cannot neutralise by name. This builds its command directly, so it
-    // needs the config guard explicitly, the same as `push` above (which runs the
-    // transport-executing keys) and every other direct-build path on an agent
-    // checkout.
-    super::hardening::refuse_steerable_config(checkout).await?;
-    let mut cmd = crate::git_dist::command(checkout);
-    cmd.args(["pull"]);
-    // Auth for the https transport; identity because a pull may create a merge
-    // commit. Merge so the auth `GIT_CONFIG_*` set and the identity vars don't
-    // clobber each other. Merge hooks are neutralised at the spawn seam.
-    for (k, v) in merge_git_env(&[
-        &crate::github::git_auth_env(),
-        &identity_env(checkout).await,
-    ]) {
-        cmd.env(k, v);
+/// What `--force-if-includes` checks, for a lease with an explicit value
+/// (where git skips it): the remote tip the lease expects, `expected`, must be
+/// reachable from one of the local branch's reflog entries — proof it was
+/// integrated at some point, so a force cannot drop commits that a fetch
+/// brought in but nobody looked at. A rewrite (an amend, a rebase) keeps the
+/// pre-rewrite tip in the reflog, so it passes; a branch with no reflog has
+/// integrated nothing and is refused.
+async fn require_integrated(checkout: &Path, branch: &str, expected: &str) -> Result<()> {
+    let refname = format!("refs/heads/{branch}");
+    let out = git_output(checkout, &["log", "-g", "--format=%H", &refname]).await?;
+    // The reflog entries go in on stdin, `^` before each: a long-lived
+    // branch's reflog can outgrow an argument list.
+    let entries: String = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(|sha| format!("^{sha}\n"))
+        .collect();
+    let integrated = !entries.is_empty() && {
+        let revs = format!("{expected}\n{entries}");
+        let out = git_output_stdin(
+            checkout,
+            &["rev-list", "-n", "1", "--stdin"],
+            &[],
+            revs.as_bytes(),
+        )
+        .await?;
+        out.status.success() && out.stdout.iter().all(u8::is_ascii_whitespace)
+    };
+    if integrated {
+        return Ok(());
     }
-    let out = output_timed(&mut cmd, "git pull").await?;
+    Err(Error::Git(format!(
+        "push failed: ! [rejected] {branch} (stale info): origin/{branch} is at {expected}, \
+         which this checkout has never integrated; fetch and rebase onto it first"
+    )))
+}
+
+/// Pull the current branch's remote counterpart into it: a fetch through
+/// [`Transport`], then a merge in the checkout. A detached HEAD has no branch
+/// to pull.
+pub async fn pull(checkout: &Path, source_repo: &Path) -> Result<()> {
+    let Some(branch) = super::branch::current_branch(checkout).await? else {
+        return Err(Error::Git(
+            "pull failed: HEAD is detached — no branch to pull into".into(),
+        ));
+    };
+    Transport::open(checkout, source_repo)
+        .await?
+        .fetch_branches(Branches::One(&branch))
+        .await
+        .map_err(|e| Error::Git(format!("pull failed: {e}")))?;
+    // The join runs in the checkout as git's own `pull`, from the checkout
+    // itself (`.`) at the tracking ref just refreshed — no network, no
+    // credentials — so `pull.rebase` and `pull.ff` decide how the histories
+    // meet, exactly as a `git pull` would. It merges or rebases, so it runs
+    // `merge.<name>.driver` — a wildcard key the `-c` overrides cannot
+    // neutralise by name; `git_output_env` applies the config refusal.
+    // Identity because a pull may create a merge commit; hooks are
+    // neutralised at the spawn seam.
+    let out = git_output_env(
+        checkout,
+        &[
+            "pull",
+            "--no-edit",
+            ".",
+            &format!("refs/remotes/origin/{branch}"),
+        ],
+        &identity_env(checkout).await,
+    )
+    .await?;
     if !out.status.success() {
         return Err(Error::Git(format!(
             "pull failed: {}",
@@ -191,46 +273,19 @@ pub async fn fetch_commit(source_repo: &Path, sha: &str) -> Result<()> {
 /// [`super::resolve_base`] does) reports any branch created since the last fetch
 /// as missing — fine for measuring staleness, wrong for a pre-flight check on a
 /// branch name a request just supplied.
-pub async fn remote_branch_exists(checkout: &Path, branch: &str) -> Option<bool> {
-    // Same reasoning as `push_head_to_branch`: this runs the transport, so a
-    // steerable config in an agent-writable checkout is refused before git does.
-    super::hardening::refuse_steerable_config(checkout)
-        .await
-        .ok()?;
-    let mut cmd = crate::git_dist::command(checkout);
-    // The pattern is always prefixed `refs/heads/`, so `branch` can never reach
-    // git in an option position however the request spelled it.
-    cmd.args([
-        "ls-remote",
-        "--exit-code",
-        "--heads",
-        "origin",
-        &format!("refs/heads/{branch}"),
-    ]);
-    for (k, v) in crate::github::git_auth_env() {
-        cmd.env(k, v);
-    }
-    let out = output_timed(&mut cmd, "git ls-remote").await.ok()?;
-    match (out.status.success(), out.status.code()) {
-        // Exit status alone is not the answer: `ls-remote`'s ref argument is a
-        // *pattern*, so `refs/heads/feat/*` matches `refs/heads/feat/x` and exits
-        // 0 while naming something GitHub will reject as a literal base. Require
-        // the ref back verbatim, so only an exact branch counts as present and a
-        // glob resolves to "absent" like any other name that isn't a branch.
-        (true, _) => {
-            let want = format!("refs/heads/{branch}");
-            Some(
-                String::from_utf8_lossy(&out.stdout)
-                    .lines()
-                    .any(|line| line.split('\t').nth(1).map(str::trim) == Some(want.as_str())),
-            )
-        }
-        // `--exit-code` reserves 2 for "matched nothing". Every other non-zero
-        // code is a failure to ask (128 for a missing remote or a rejected
-        // credential), which must not read as absence.
-        (false, Some(2)) => Some(false),
-        _ => None,
-    }
+pub async fn remote_branch_exists(
+    checkout: &Path,
+    source_repo: &Path,
+    branch: &str,
+) -> Option<bool> {
+    // Through `Transport`: the user's remote and config. A refused config, a
+    // repointed origin or a failed `ls-remote` (a missing remote, a rejected
+    // credential, a timeout) is "couldn't ask", never absence. `tip` matches
+    // the name verbatim, so a glob GitHub would reject as a literal base is
+    // absent like any other name that isn't a branch.
+    let t = Transport::open(checkout, source_repo).await.ok()?;
+    let tip = t.tip(t.fetch_remote(), branch).await.ok()?;
+    Some(tip.is_some())
 }
 
 /// Rebase the current branch onto `base` (e.g. "main"). Used by the clean-state
@@ -398,6 +453,56 @@ mod tests {
         String::from_utf8_lossy(&out.stdout).trim().to_string()
     }
 
+    /// The fetch is the protected one, but how the histories meet is still
+    /// the user's `pull.rebase` / `pull.ff` call, as with `git pull`.
+    #[tokio::test]
+    async fn pull_honours_the_rebase_and_fast_forward_settings() {
+        use super::super::testing::{clone_elsewhere, commit_file, git, repos};
+        let td = tempfile::tempdir().unwrap();
+        let fx = repos(td.path());
+        let (source, checkout) = (fx.source, fx.checkout);
+        let other = clone_elsewhere(td.path(), &fx.origin, "other");
+        // Divergence: theirs on origin, ours local.
+        let theirs = commit_file(&other, "theirs.txt");
+        git(&other, &["push", "-q", "origin", "main"]);
+        commit_file(&checkout, "ours.txt");
+        git(&checkout, &["config", "pull.rebase", "true"]);
+
+        pull(&checkout, &source).await.unwrap();
+
+        assert_eq!(
+            git(&checkout, &["rev-parse", "HEAD~1"]),
+            theirs,
+            "rebased onto theirs, no merge commit"
+        );
+        assert_eq!(
+            git(&checkout, &["rev-list", "--merges", "--count", "HEAD"]),
+            "0"
+        );
+
+        // Diverge again; a fast-forward-only pull refuses to join them.
+        commit_file(&other, "theirs2.txt");
+        git(&other, &["push", "-q", "origin", "main"]);
+        commit_file(&checkout, "ours2.txt");
+        git(&checkout, &["config", "--unset", "pull.rebase"]);
+        git(&checkout, &["config", "pull.ff", "only"]);
+        let before = git(&checkout, &["rev-parse", "HEAD"]);
+
+        let err = pull(&checkout, &source).await.unwrap_err();
+
+        assert!(err.to_string().contains("pull failed"), "{err}");
+        assert_eq!(
+            git(&checkout, &["rev-parse", "HEAD"]),
+            before,
+            "nothing joined"
+        );
+        assert_eq!(
+            git(&checkout, &["rev-parse", "refs/remotes/origin/main"]),
+            git(&other, &["rev-parse", "HEAD"]),
+            "the fetch itself happened"
+        );
+    }
+
     /// The agent owns its `.git/HEAD`/`refs`, so the `branch` string reaching
     /// `push` can be an option-looking name (`--mirror`, `--all`). Pushing a
     /// fully-qualified refspec must make such a name only ever a destination
@@ -470,8 +575,8 @@ mod tests {
 
             // Drive the real primitive both ways. Neither may mirror or redirect:
             // as a refspec `{opt}` is only ever a plain destination branch.
-            push(&attacker, opt, false).await.unwrap();
-            push(&attacker, opt, true).await.unwrap();
+            push(&attacker, &attacker, opt, false).await.unwrap();
+            push(&attacker, &attacker, opt, true).await.unwrap();
 
             // Protected main is untouched; the attack achieves at most a harmless
             // same-named remote branch pointing at the attacker's own commit.

@@ -209,9 +209,10 @@ When **your repository** signs its commits (`commit.gpgsign=true` as your own
 published. Every push Fletch makes — the agent's `git_push` and `open_pr` ops,
 the Git panel's Push, a workflow run's finalize, a new project's first
 publish — goes through one publication layer (`git::publish`), so none can
-skip it. For work made in a checkout it replaces the commits origin lacks with
-signed copies (same tree, parents, author, committer and message), moves the
-branch to the signed tip and pushes that. Published history keeps its hashes.
+skip it. For work made in a checkout it replaces the commits no remote has yet
+with signed copies (same tree, parents, author, committer and message), moves
+the branch to the signed tip and pushes that. Published history keeps its
+hashes.
 Your own repository, when it is what gets pushed (a new project's first
 publish), goes out exactly as it stands: its commits already carry whatever
 signature your git gave them, and its history is yours, other committers and
@@ -222,14 +223,49 @@ all.
   user-owned repo the checkout was cloned from — which no agent can write —
   with the checkout supplying objects only. Nothing in a checkout's
   `.git/config` can choose the key or run a command on the host.
-- **The remote refs are refreshed first**, so "what origin lacks" is origin's
-  answer and not a stale clone's; the own-committer check then runs over those
-  same refs, so signing never reaches a commit it did not.
+- **What is published is asked of the remotes.** A signed publish stops at
+  the branch tips your fetch and push remotes advertise over the wire right
+  then, all fetched first: what any of them has is never re-signed, and no ref
+  in the checkout can pass an unsigned commit off as published. The
+  own-committer check runs after that refresh, so signing never reaches a
+  commit it did not.
 - **Every commit in the range is signed afresh.** The checkout's `.git` is
   agent-writable, so a signature header already on a commit is only a claim.
 - The signature is made where the key lives and at the moment you approve the
   push, so it vouches for exactly what you let out. A key the host cannot use
   fails the push with the reason rather than publishing unsigned.
+- **Host-side git finds your tools the way your terminal does.** An app
+  launched from the Dock inherits launchd's sparse environment, not your
+  shell's. Host-side git carries `PATH` from your login shell everywhere, and
+  the credentials `SSH_AUTH_SOCK` and `GNUPGHOME` only in **your own
+  repository** — where the signer runs and Fletch's own commits are made —
+  never in an agent-writable checkout, whatever the app process holds
+  (`git_dist::helper_env`). So a Homebrew `gpg`, a key held by an agent your
+  shell rc starts (1Password's, say) and a relocated keyring work from Fletch
+  as they do from a terminal. A value your shell exports blank counts as
+  unset, not inherited from the app.
+- **Host-side transport reads none of the checkout's configuration.** A
+  checkout's `.git` is the agent's to write: its config, its submodule configs
+  under `.git/modules`, its refs. Every fetch, push and ls-remote the host
+  runs for a checkout — the agent's `git_fetch`, which needs no approval, the
+  publish, the Git panel's pull, the restore-time recovery fetches — runs in
+  **your repository**, with your configuration (your remote and push URLs,
+  `insteadOf` rewrites, proxies, credential helpers), over the checkout's
+  objects, with per-worktree refs in the checkout (`git::remote::Transport`,
+  on git's own worktree split). It names explicit URLs from your config, so
+  git keeps no tracking refs in your repository; the checkout's `origin/*` is
+  set afterwards, for the agent's own use. Every decision that depends on a
+  remote's state is read from the remote over the wire, never from a ref in
+  the checkout. Host-side git never recurses into submodules. As policy, the
+  checkout's `origin` must still name your repository's remote: a checkout
+  an agent repointed is refused outright.
+- **Pushes, leases and pulls behave as your git's would.** A push goes to
+  every push URL you configured; a force needs exactly one, since its lease
+  can hold one remote's tip, and expects the tip that remote reports just
+  before the force — refused unless this checkout integrated it, as
+  `--force-if-includes` would. The Git panel's pull fetches this way and then
+  joins the histories with git's own `pull`, so your `pull.rebase` and
+  `pull.ff` still decide how.
 
 ### Why signing works this way
 

@@ -4,7 +4,7 @@
 //! what a publish involves is decided once, here, and no path can skip it:
 //!
 //! - **Signing.** When the user's own repository signs its commits, the
-//!   commits origin lacks are replaced by signed copies before the push
+//!   commits no remote has yet are replaced by signed copies before the push
 //!   (`git::signing`). The decision and the key come from the user's repo, the
 //!   `source_repo`; the agent's checkout contributes objects only.
 //! - **Identity, when signing.** A signature is the user vouching, so a commit
@@ -46,7 +46,9 @@ pub struct Publication<'a> {
     /// The remote branch, `refs/heads/<branch>` on `origin`. Also the local
     /// branch moved onto the signed tip, when there is one.
     pub branch: &'a str,
-    /// A lease-guarded force push (`--force-with-lease --force-if-includes`).
+    /// A lease-guarded force push: it expects the tip the push remote
+    /// advertises right now, and refuses one this checkout never integrated
+    /// (`git::transport::push_source`). Needs exactly one push URL.
     pub force: bool,
 }
 
@@ -76,23 +78,23 @@ pub async fn publish(p: &Publication<'_>, tip: Tip<'_>) -> Result<Published> {
     } else {
         tip
     };
-    let summary = push_commit(p.checkout, &tip, p.branch, p.force).await?;
+    let summary = push_commit(p.checkout, p.source_repo, &tip, p.branch, p.force).await?;
     Ok(Published { summary, tip })
 }
 
 /// `tip` with its unpublished commits signed, and the local branch moved onto
-/// the result. The order is the point: the refresh can widen "what origin
-/// lacks" past what an earlier identity check saw (a stale `origin/main`
+/// the result. The order is the point: the refresh can widen "what is
+/// unpublished" past what an earlier identity check saw (a stale `origin/main`
 /// covering an unpushed commit), and signing must never reach a commit the
 /// check did not — so the check runs after the refresh, on the same refs the
 /// signing range is cut from.
 async fn signed(p: &Publication<'_>, tip: String) -> Result<String> {
-    refresh_remote_refs(p.checkout).await?;
+    let published = refresh_remote_refs(p.checkout, p.source_repo).await?;
     let tip = match check_identity_of(p.checkout, p.branch, tip).await? {
         Identity::Own { tip } => tip,
         Identity::Foreign(why) => return Err(Error::Git(why)),
     };
-    let signed = sign_unpublished(p.checkout, p.source_repo, &tip)
+    let signed = sign_unpublished(p.checkout, p.source_repo, &tip, &published)
         .await
         .map_err(|e| {
             Error::Git(format!(
@@ -147,11 +149,10 @@ async fn move_branch(checkout: &Path, branch: &str, from: &str, to: &str) -> Res
 
 #[cfg(test)]
 mod tests {
-    use super::super::signing::fixtures::{signing_repos, verified, Signing};
-    use super::super::testing::{commit_file, git};
+    use super::super::testing::{clone_elsewhere, commit_file, git, signing_repos, Repos};
     use super::*;
 
-    fn origin_tip(fx: &Signing, branch: &str) -> String {
+    fn origin_tip(fx: &Repos, branch: &str) -> String {
         git(
             &fx.source,
             &["ls-remote", "origin", &format!("refs/heads/{branch}")],
@@ -162,7 +163,7 @@ mod tests {
         .to_string()
     }
 
-    fn publication<'a>(fx: &'a Signing, branch: &'a str) -> Publication<'a> {
+    fn publication<'a>(fx: &'a Repos, branch: &'a str) -> Publication<'a> {
         Publication {
             checkout: &fx.checkout,
             source_repo: &fx.source,
@@ -189,8 +190,8 @@ mod tests {
             git(&fx.checkout, &["rev-parse", "refs/heads/main"]),
             out.tip
         );
-        assert!(verified(&fx, &out.tip));
-        assert!(verified(&fx, &format!("{}~1", out.tip)));
+        assert!(fx.verified(&out.tip));
+        assert!(fx.verified(&format!("{}~1", out.tip)));
         assert_eq!(
             git(&fx.checkout, &["rev-parse", &format!("{}~2", out.tip)]),
             fx.base
@@ -216,7 +217,7 @@ mod tests {
 
         assert_eq!(out.tip, tip);
         assert_eq!(origin_tip(&fx, "main"), tip);
-        assert!(!verified(&fx, &tip));
+        assert!(!fx.verified(&tip));
     }
 
     /// `origin/*` in the checkout is whatever the last fetch left — the
@@ -238,9 +239,9 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(verified(&fx, &out.tip));
+        assert!(fx.verified(&out.tip));
         assert!(
-            verified(&fx, &format!("{}~1", out.tip)),
+            fx.verified(&format!("{}~1", out.tip)),
             "the hidden ancestor is signed too"
         );
         assert_eq!(
@@ -281,7 +282,216 @@ mod tests {
         assert!(err.to_string().contains("bot@example.com"), "{err}");
         assert_eq!(origin_tip(&fx, "main"), fx.base, "nothing was pushed");
         assert_eq!(git(repo, &["rev-parse", "refs/heads/main"]), tip);
-        assert!(!verified(&fx, &tip));
+        assert!(!fx.verified(&tip));
+    }
+
+    /// The checkout's `origin` is the agent's to rewrite; a publish talks only
+    /// to the user's repository's remote and refuses when they differ.
+    #[tokio::test]
+    async fn a_checkout_whose_origin_was_repointed_is_not_published() {
+        let td = tempfile::tempdir().unwrap();
+        let fx = signing_repos(td.path());
+        let elsewhere = td.path().join("elsewhere.git");
+        git(
+            td.path(),
+            &["init", "-q", "--bare", elsewhere.to_str().unwrap()],
+        );
+        git(
+            &fx.checkout,
+            &["remote", "set-url", "origin", elsewhere.to_str().unwrap()],
+        );
+        let tip = commit_file(&fx.checkout, "one.txt");
+
+        let err = publish(&publication(&fx, "main"), Tip::Branch)
+            .await
+            .unwrap_err();
+
+        assert!(err.to_string().contains("refusing"), "{err}");
+        assert_eq!(
+            git(&fx.checkout, &["rev-parse", "refs/heads/main"]),
+            tip,
+            "nothing was rewritten"
+        );
+        let refs = git(
+            td.path(),
+            &["--git-dir", elsewhere.to_str().unwrap(), "for-each-ref"],
+        );
+        assert!(refs.is_empty(), "nothing reached the repointed remote");
+        assert_eq!(origin_tip(&fx, "main"), fx.base, "nor the real one");
+    }
+
+    /// The user's repository pushes to its `pushurl` when it has one; so does
+    /// a checkout of it.
+    #[tokio::test]
+    async fn a_publish_goes_to_the_source_repos_pushurl() {
+        let td = tempfile::tempdir().unwrap();
+        let fx = signing_repos(td.path());
+        let fork = td.path().join("fork.git");
+        git(td.path(), &["init", "-q", "--bare", fork.to_str().unwrap()]);
+        git(
+            &fx.source,
+            &[
+                "remote",
+                "set-url",
+                "--push",
+                "origin",
+                fork.to_str().unwrap(),
+            ],
+        );
+        commit_file(&fx.checkout, "one.txt");
+
+        let out = publish(&publication(&fx, "main"), Tip::Branch)
+            .await
+            .unwrap();
+
+        assert_eq!(out.summary, "pushed");
+        assert_eq!(
+            git(
+                td.path(),
+                &[
+                    "--git-dir",
+                    fork.to_str().unwrap(),
+                    "rev-parse",
+                    "refs/heads/main"
+                ]
+            ),
+            out.tip,
+            "the fork received the publish"
+        );
+        assert_eq!(origin_tip(&fx, "main"), fx.base, "the fetch remote did not");
+    }
+
+    /// With a `pushurl`, the refresh before signing takes `origin/*` from the
+    /// fetch remote, which never has the agent's branch; the lease for a
+    /// force must instead hold the fork's own tip, refreshed from the fork.
+    #[tokio::test]
+    async fn a_force_publish_to_a_fork_leases_on_the_forks_tip() {
+        let td = tempfile::tempdir().unwrap();
+        let fx = signing_repos(td.path());
+        let fork = td.path().join("fork.git");
+        git(td.path(), &["init", "-q", "--bare", fork.to_str().unwrap()]);
+        git(
+            &fx.source,
+            &[
+                "remote",
+                "set-url",
+                "--push",
+                "origin",
+                fork.to_str().unwrap(),
+            ],
+        );
+        let fork_tip = |branch: &str| {
+            git(
+                td.path(),
+                &[
+                    "--git-dir",
+                    fork.to_str().unwrap(),
+                    "rev-parse",
+                    &format!("refs/heads/{branch}"),
+                ],
+            )
+        };
+        git(&fx.checkout, &["checkout", "-q", "-b", "feat"]);
+        commit_file(&fx.checkout, "one.txt");
+        let first = publish(&publication(&fx, "feat"), Tip::Branch)
+            .await
+            .unwrap();
+        assert_eq!(fork_tip("feat"), first.tip);
+
+        // A rewrite, force-published: the fork still holds what we sent.
+        git(
+            &fx.checkout,
+            &["commit", "-q", "--amend", "-m", "one, amended"],
+        );
+        let forced = Publication {
+            force: true,
+            ..publication(&fx, "feat")
+        };
+        let second = publish(&forced, Tip::Branch).await.unwrap();
+        assert_ne!(second.tip, first.tip);
+        assert_eq!(fork_tip("feat"), second.tip);
+
+        // Someone else moves the fork's branch; a force that never integrated
+        // their commit is refused, and the fork keeps it.
+        let other = clone_elsewhere(td.path(), &fork, "other");
+        git(&other, &["checkout", "-q", "feat"]);
+        let theirs = commit_file(&other, "theirs.txt");
+        git(&other, &["push", "-q", "origin", "feat"]);
+        git(
+            &fx.checkout,
+            &["commit", "-q", "--amend", "-m", "one, again"],
+        );
+
+        let err = publish(&forced, Tip::Branch).await.unwrap_err();
+
+        assert!(err.to_string().contains("stale info"), "{err}");
+        assert_eq!(fork_tip("feat"), theirs, "the fork kept their commit");
+    }
+
+    /// A saved fork tip outlives its branch (nothing prunes it); a later
+    /// branch nested under the old name must still publish, forced or not.
+    #[tokio::test]
+    async fn a_stale_fork_tip_does_not_block_a_nested_branch_name() {
+        let td = tempfile::tempdir().unwrap();
+        let fx = signing_repos(td.path());
+        let fork = td.path().join("fork.git");
+        git(td.path(), &["init", "-q", "--bare", fork.to_str().unwrap()]);
+        git(
+            &fx.source,
+            &[
+                "remote",
+                "set-url",
+                "--push",
+                "origin",
+                fork.to_str().unwrap(),
+            ],
+        );
+        git(&fx.checkout, &["checkout", "-q", "-b", "feat"]);
+        commit_file(&fx.checkout, "one.txt");
+        publish(&publication(&fx, "feat"), Tip::Branch)
+            .await
+            .unwrap();
+        // The branch goes away everywhere; the saved tip stays behind.
+        git(&fx.checkout, &["checkout", "-q", "main"]);
+        git(&fx.checkout, &["branch", "-q", "-D", "feat"]);
+        git(
+            td.path(),
+            &[
+                "--git-dir",
+                fork.to_str().unwrap(),
+                "update-ref",
+                "-d",
+                "refs/heads/feat",
+            ],
+        );
+
+        git(&fx.checkout, &["checkout", "-q", "-b", "feat/sub"]);
+        commit_file(&fx.checkout, "two.txt");
+        let out = publish(&publication(&fx, "feat/sub"), Tip::Branch)
+            .await
+            .unwrap();
+        assert_eq!(out.summary, "pushed");
+        git(
+            &fx.checkout,
+            &["commit", "-q", "--amend", "-m", "two, amended"],
+        );
+        let forced = Publication {
+            force: true,
+            ..publication(&fx, "feat/sub")
+        };
+        let out = publish(&forced, Tip::Branch).await.unwrap();
+        assert_eq!(
+            git(
+                td.path(),
+                &[
+                    "--git-dir",
+                    fork.to_str().unwrap(),
+                    "rev-parse",
+                    "refs/heads/feat/sub"
+                ]
+            ),
+            out.tip
+        );
     }
 
     #[tokio::test]
@@ -315,7 +525,7 @@ mod tests {
             .unwrap();
 
         assert_ne!(out.tip, pinned);
-        assert!(verified(&fx, &out.tip));
+        assert!(fx.verified(&out.tip));
         assert_eq!(origin_tip(&fx, "wf/run-1"), out.tip);
         assert!(
             !git(&fx.checkout, &["branch", "--list", "wf/run-1"]).contains("wf/run-1"),
@@ -374,7 +584,7 @@ mod tests {
         assert_eq!(origin_tip(&fx, "main"), tip);
         assert_eq!(git(&fx.source, &["rev-parse", "refs/heads/main"]), tip);
         assert!(
-            !verified(&fx, &format!("{tip}~1")),
+            !fx.verified(&format!("{tip}~1")),
             "the teammate's commit went out as it was"
         );
     }

@@ -76,7 +76,7 @@ async fn git_push_without_remote_reports_error() {
     assert_eq!(v["ok"], false);
     let err = v["error"].as_str().unwrap();
     assert!(!err.contains("unknown op"), "got: {err}");
-    assert!(err.contains("push failed"), "got: {err}");
+    assert!(err.contains("no origin remote"), "got: {err}");
 }
 
 #[tokio::test]
@@ -464,7 +464,7 @@ async fn git_push_force_refuses_a_branch_the_agent_does_not_own() {
     let (resp, _fx) = disp.dispatch_inner("p2", "git_push", &Value::Null).await;
     let err = resp.error.as_deref().unwrap_or_default();
     assert!(
-        err.contains("push failed") && !err.contains("force is limited"),
+        err.contains("no origin remote") && !err.contains("force is limited"),
         "a non-force push must reach the transport, not the force gate: {err:?}"
     );
 }
