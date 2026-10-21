@@ -136,10 +136,21 @@ pub(crate) async fn unpublished_commits(
             missing.join(", ")
         )));
     }
-    let mut args = vec!["rev-list", "--reverse", "--topo-order", tip, "--not"];
-    args.extend(published.iter().map(String::as_str));
-    args.push("--");
-    let out = git_output(checkout, &args).await?;
+    // The revisions go in on stdin, one per line, `^` for the published
+    // ones: a remote can advertise more tips than an argument list holds.
+    let mut revs = format!("{tip}\n");
+    for sha in published {
+        revs.push('^');
+        revs.push_str(sha);
+        revs.push('\n');
+    }
+    let out = git_output_stdin(
+        checkout,
+        &["rev-list", "--reverse", "--topo-order", "--stdin", "--"],
+        &[],
+        revs.as_bytes(),
+    )
+    .await?;
     if !out.status.success() {
         return Err(Error::Git(format!(
             "rev-list {tip} failed: {}",
@@ -167,7 +178,7 @@ async fn missing_commits(checkout: &Path, commits: &[String]) -> Result<Vec<Stri
         input.as_bytes(),
     )
     .await?;
-    let present: Vec<String> = String::from_utf8_lossy(&out.stdout)
+    let present: std::collections::HashSet<String> = String::from_utf8_lossy(&out.stdout)
         .lines()
         .filter_map(|line| {
             let mut parts = line.split(' ');
@@ -177,7 +188,7 @@ async fn missing_commits(checkout: &Path, commits: &[String]) -> Result<Vec<Stri
         .collect();
     Ok(commits
         .iter()
-        .filter(|c| !present.contains(c))
+        .filter(|c| !present.contains(*c))
         .cloned()
         .collect())
 }
@@ -848,6 +859,69 @@ mod tests {
             tip,
             "nothing rewritten"
         );
+    }
+
+    /// A remote can advertise far more tips than fit an argument list or a
+    /// linear scan: the check and the walk both take them by the thousand.
+    #[tokio::test]
+    async fn tens_of_thousands_of_published_tips_are_handled() {
+        let td = tempfile::tempdir().unwrap();
+        let fx = signing_repos(td.path());
+        let repo = fx.checkout.as_path();
+        // Distinct commits, each a published tip in its own right: empty
+        // commits off base, made in one `fast-import`.
+        let count = 20_000;
+        let mut stream = String::new();
+        for i in 0..count {
+            let message = format!("tip {i}\n");
+            stream.push_str(&format!(
+                "commit refs/fletch-test/tip-{i}\ncommitter Me <me@example.com> 1700000000 +0000\n\
+                 data {}\n{message}from {}\n\n",
+                message.len(),
+                fx.base
+            ));
+        }
+        let mut child = std::process::Command::new("git")
+            .current_dir(repo)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .args(["fast-import", "--quiet"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(stream.as_bytes())
+            .unwrap();
+        assert!(child.wait().unwrap().success());
+        let tips: Vec<String> = git(
+            repo,
+            &[
+                "for-each-ref",
+                "--format=%(objectname)",
+                "refs/fletch-test/",
+            ],
+        )
+        .lines()
+        .map(str::to_string)
+        .collect();
+        assert_eq!(tips.len(), count);
+        let local = commit_file(repo, "one.txt");
+
+        assert_eq!(
+            unpublished_commits(repo, &local, &tips).await.unwrap(),
+            vec![local.clone()],
+            "only the local commit is unpublished"
+        );
+        let mut claimed = tips.clone();
+        claimed.push("0123456789012345678901234567890123456789".to_string());
+        let err = unpublished_commits(repo, &local, &claimed)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("0123456789"), "{err}");
     }
 
     #[tokio::test]
