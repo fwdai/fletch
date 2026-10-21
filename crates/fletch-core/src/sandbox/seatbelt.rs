@@ -2606,7 +2606,7 @@ mod tests {
             ],
             || {
                 (
-                    build_profile(&root, &rpc, &home, None, None, None, None).unwrap(),
+                    build_profile(&root, &rpc, &home, PROJECT, None, None, None, None).unwrap(),
                     deny_host_git_credentials(&home),
                 )
             },
@@ -2642,7 +2642,7 @@ mod tests {
 
         let checkout = root.join("checkout");
         std::fs::create_dir_all(&checkout).unwrap();
-        let run = build_run_profile(&checkout, &home, &[]).unwrap();
+        let run = build_run_profile(&checkout, &home, PROJECT, &[]).unwrap();
         assert!(!run.contains(&format!("{}/.ssh", home.display())), "{run}");
         assert!(!run.contains("network-outbound"), "{run}");
     }
@@ -2666,7 +2666,7 @@ mod tests {
                 ("XDG_CACHE_HOME", &cache_s),
             ],
             || {
-                let _ = build_profile(&root, &rpc, &home, None, None, None, None).unwrap();
+                let _ = build_profile(&root, &rpc, &home, PROJECT, None, None, None, None).unwrap();
                 deny_host_git_credentials(&home)
             },
         );
@@ -2718,6 +2718,7 @@ mod tests {
             let ctx = AgentLaunchCtx {
                 agent_id: "a1",
                 provider,
+                project_id: PROJECT,
                 writable_root: &root,
                 source_repos: &[],
                 rpc_dir: &rpc,
@@ -2761,7 +2762,7 @@ mod tests {
             std::fs::create_dir_all(file.parent().unwrap()).unwrap();
             std::fs::write(file, "secret").unwrap();
         }
-        let profile = build_profile(&root, &rpc, &home, None, None, None, None).unwrap();
+        let profile = build_profile(&root, &rpc, &home, PROJECT, None, None, None, None).unwrap();
         let run = |profile: &str, args: &[&str]| {
             std::process::Command::new(SANDBOX_EXEC)
                 .args(profile_args(profile))
