@@ -453,18 +453,22 @@ pub async fn pr_list_filtered(
     }
     let (owner, repo) = require_repo_ref(checkout).await?;
     let client = client::Client::new()?;
-    let mut path = format!(
-        "/repos/{owner}/{repo}/pulls?state={}&sort=updated&direction=desc&per_page={}",
-        filter.state,
-        filter.limit.clamp(1, PR_LIST_MAX)
-    );
+    let per_page = filter.limit.clamp(1, PR_LIST_MAX).to_string();
     // `head` is `owner:branch` to GitHub; the branch is of this repository.
-    if let Some(head) = &filter.head {
-        path.push_str(&format!("&head={owner}:{head}"));
+    let head = filter.head.as_ref().map(|h| format!("{owner}:{h}"));
+    let mut params = vec![
+        ("state", filter.state.as_str()),
+        ("sort", "updated"),
+        ("direction", "desc"),
+        ("per_page", per_page.as_str()),
+    ];
+    if let Some(head) = &head {
+        params.push(("head", head));
     }
     if let Some(base) = &filter.base {
-        path.push_str(&format!("&base={base}"));
+        params.push(("base", base));
     }
+    let path = client::with_query(&format!("/repos/{owner}/{repo}/pulls"), &params);
     let (status, body) = client.rest_get_observed(&path).await?;
     if !status.is_success() {
         return Ok(None);

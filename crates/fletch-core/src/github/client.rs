@@ -29,6 +29,37 @@ const GRAPHQL_URL: &str = "https://api.github.com/graphql";
 /// stalled connection (mirrors `git.rs`'s NET_TIMEOUT rationale).
 const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// `path` with `params` as its percent-encoded query. A branch named
+/// `feat/#12` or a label holding `&` is valid to git and GitHub but cuts a
+/// hand-built query short, so every list endpoint builds its query here and
+/// never by string concatenation.
+pub(crate) fn with_query(path: &str, params: &[(&str, &str)]) -> String {
+    let url = reqwest::Url::parse_with_params(&format!("{API_BASE}{path}"), params)
+        .expect("the API base and a repository path form a URL");
+    match url.query().filter(|q| !q.is_empty()) {
+        Some(query) => format!("{}?{query}", url.path()),
+        None => url.path().to_string(),
+    }
+}
+
+#[cfg(test)]
+mod query_tests {
+    use super::with_query;
+
+    #[test]
+    fn query_values_are_percent_encoded() {
+        let path = with_query(
+            "/repos/o/r/pulls",
+            &[("state", "open"), ("head", "o:feat/#12 x"), ("base", "a&b")],
+        );
+        assert_eq!(
+            path,
+            "/repos/o/r/pulls?state=open&head=o%3Afeat%2F%2312+x&base=a%26b"
+        );
+        assert_eq!(with_query("/repos/o/r", &[]), "/repos/o/r");
+    }
+}
+
 /// The token, cached in-process, with where it came from. Seeded from the DB
 /// at startup and updated on login, so API calls (deep in poll paths, with no
 /// DB handle) never touch the DB — the same pattern as `bin_resolve`'s override
