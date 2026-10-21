@@ -380,12 +380,26 @@ pub async fn pr_create_head(
     }
 
     // The create response carries no `mergeable` verdict yet (GitHub computes
-    // it async) — fetch the same shape every other path returns.
+    // it async) — fetch the same shape every other path returns. The PR exists
+    // either way, so a re-read that answers nothing (a rate-limit pause, a
+    // replica that has not caught up, a transport hiccup) falls back to the
+    // create response itself rather than reporting the PR as lost: that error
+    // left agents without the URL of a PR GitHub had just opened.
     let number = resp["number"].as_u64().unwrap_or_default() as u32;
-    match pr_view_number(checkout, None, number).await? {
-        Some(pr) => Ok(pr),
-        None => Err(Error::Gh("PR was created but could not be fetched".into())),
+    match pr_view_number(checkout, None, number).await {
+        Ok(Some(pr)) => Ok(pr),
+        Ok(None) => Ok(created_pr_state(&resp)),
+        Err(e) => {
+            tracing::debug!(number, error = %e, "pr create: re-read failed, using the create response");
+            Ok(created_pr_state(&resp))
+        }
     }
+}
+
+/// The state of a PR as the create response describes it: open, with
+/// `mergeable` still unknown. Same REST shape `GET /pulls/{n}` returns.
+fn created_pr_state(resp: &Value) -> PrState {
+    super::live::parse_pr_state_rest(resp)
 }
 
 /// GitHub's 422 for a draft PR on a repo whose plan doesn't include them:
@@ -612,6 +626,28 @@ mod tests {
         assert!(queue);
 
         assert!(merge_target(&json!({"isMergeQueueEnabled": false})).is_none());
+    }
+
+    /// What `POST /pulls` answers: an open PR whose `mergeable` is still
+    /// `null`. Read as the create result when the re-read answers nothing,
+    /// so the caller still gets the number and URL of the PR it just opened.
+    #[test]
+    fn a_create_response_reads_as_an_open_pr_with_unknown_mergeability() {
+        let pr = created_pr_state(&json!({
+            "number": 93,
+            "html_url": "https://github.com/o/r/pull/93",
+            "title": "feat: thing",
+            "state": "open",
+            "mergeable": null,
+            "merged": false,
+            "created_at": "2026-10-21T10:00:00Z",
+            "head": { "ref": "feat/thing" }
+        }));
+        assert_eq!(pr.number, 93);
+        assert_eq!(pr.url, "https://github.com/o/r/pull/93");
+        assert!(matches!(pr.state, PrStatus::Open));
+        assert_eq!(pr.mergeable, MergeableState::Unknown);
+        assert_eq!(pr.branch.as_deref(), Some("feat/thing"));
     }
 
     #[test]
