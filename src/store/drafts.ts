@@ -1,5 +1,6 @@
 import { api } from "@/api";
 import { composeIssueBrief } from "@/components/Workspace/MissionControl/inbox";
+import { FIRST_TASK_PROMPT } from "@/data/firstTask";
 import { DEFAULT_PROVIDER_ID, PROVIDERS } from "@/data/providers";
 import { discoverCommands } from "@/data/slashCommands";
 import {
@@ -12,6 +13,7 @@ import {
   whileSending,
 } from "@/helpers";
 import { setSetting } from "@/storage/settings";
+import { track } from "@/util/track";
 import { adoptSpawnedAgent } from "./adoptSpawnedAgent";
 import { refreshWorkspace } from "./refreshWorkspace";
 import type { AppState, SliceCreator } from "./types";
@@ -49,6 +51,10 @@ export interface DraftAgent {
    *  board card). The link can only be recorded once the agent exists, so it
    *  rides the draft until the first send spawns one — see `spawnFromDraft`. */
   roadmapItemId?: string;
+  /** Set on the draft that opens on its own right after a project is added
+   *  (`draftAfterProjectAdd`). `seeded` = its composer was prefilled with the
+   *  suggested first task. Only read for telemetry at spawn. */
+  afterProjectAdd?: { seeded: boolean };
 }
 
 export interface DraftsSlice {
@@ -87,6 +93,13 @@ export interface DraftsSlice {
    *  ref so the agent's PR closes it. Lands the user in the composer, ready
    *  to launch. */
   startWorkFromIssue: (repoPath: string, issue: import("@/api").TrackerIssue) => Promise<void>;
+  /** The hand-off after a project is added: open a draft on it, so the user
+   *  lands one keypress from a running agent instead of back where they were
+   *  with a new sidebar row. The user's first project (`first`) also gets the
+   *  composer prefilled with `FIRST_TASK_PROMPT`; a later one opens empty,
+   *  since a user with projects already has a task in mind. Never throws —
+   *  the project landed, and a failed draft must not read as a failed add. */
+  draftAfterProjectAdd: (repoPath: string, first: boolean) => Promise<void>;
   /** Remember the last project an agent was started in and persist it. */
   setLastRepoPath: (repoPath: string) => void;
   /** Remember the base branch picked for a project and persist it, so the next
@@ -203,6 +216,21 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get) => ({
     }));
     get().setLastRepoPath(repoPath);
     return draft.id;
+  },
+
+  draftAfterProjectAdd: async (repoPath, first) => {
+    try {
+      const id = await get().createDraft(repoPath, first ? FIRST_TASK_PROMPT : undefined);
+      if (!id) return;
+      get().updateDraft(id, { afterProjectAdd: { seeded: first } });
+      // The project page takes the center pane over a draft (App.tsx), so a
+      // project added from the sidebar while one is open would leave the
+      // draft invisible behind it.
+      get().closeProjectScreen();
+      track("project_add_draft_opened", { seeded: first });
+    } catch (e) {
+      get().setLastError(`Couldn't start a new agent: ${String(e)}`);
+    }
   },
 
   startWorkFromIssue: async (repoPath, issue) => {
@@ -376,6 +404,14 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get) => ({
       // `roadmap:item`, so the card grows the agent chip without a refetch.
       if (draft.roadmapItemId) {
         void api.roadmapHandOffItem(draft.roadmapItemId, rec.id).catch(() => {});
+      }
+      // The other half of `project_add_draft_opened`: the hand-off draft became
+      // an agent. Compared on what the user typed, not the rewritten prompt.
+      if (draft.afterProjectAdd) {
+        track("project_add_draft_spawned", {
+          seeded: draft.afterProjectAdd.seeded,
+          kept_seed: draft.afterProjectAdd.seeded && text.trim() === FIRST_TASK_PROMPT,
+        });
       }
       // Apply the selection, draft cleanup and log seed immediately, ahead of
       // the guarded workspace refresh, so this user-intent state can never be

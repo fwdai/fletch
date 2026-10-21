@@ -89,6 +89,14 @@ interface EventMap {
   // ── activation ───────────────────────────────────────────────────────────
   /** A project landed in the sidebar. `first` marks the activation moment. */
   project_added: { method: ProjectAddMethod; first: boolean };
+  /** The draft that opens on its own right after a project is added
+   *  (`draftAfterProjectAdd`). `seeded` = the composer was prefilled with the
+   *  suggested first task, which only the user's first project gets. */
+  project_add_draft_opened: { seeded: boolean };
+  /** That draft became a running agent. `kept_seed` = the prompt sent was the
+   *  suggested task verbatim (always false when the draft was not seeded).
+   *  Opened-without-spawned is the drop this pair exists to measure. */
+  project_add_draft_spawned: { seeded: boolean; kept_seed: boolean };
 }
 
 export type TrackedEvent = keyof EventMap;
