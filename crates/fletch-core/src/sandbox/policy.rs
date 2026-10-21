@@ -515,12 +515,29 @@ pub fn toolchain_cache_root(home: &Path) -> PathBuf {
 ///
 /// Verified empirically on macOS against the installed toolchain at the time of
 /// writing: bun 1.3, npm 10.9, pnpm 10.33, yarn 1.22, deno 2.6, pip 25.3,
-/// uv 0.11, gem 3.5. The rest are documentation-derived — safe per the
-/// fail-closed note above, but unproven.
+/// uv 0.11, gem 3.5, playwright 1.58. The rest are documentation-derived —
+/// safe per the fail-closed note above, but unproven.
 ///
 /// `pnpm` is the cautionary row: it does **not** read `PNPM_STORE_DIR` (silently
 /// ignored, store stays at the default). It takes config through npm's env
 /// convention, hence `npm_config_store_dir`.
+///
+/// Headless browsers are downloaded tools like any package cache, so they ride
+/// the same rows. They only ever run inside sandboxes: the host's own Playwright
+/// keeps its default store, so a Chromium an agent downloads (or tampers with)
+/// under this root never runs on the host — the same reasoning as the cargo
+/// overlay. Chromium's own process sandbox cannot start inside seatbelt or a
+/// default container; Playwright handles that by passing `--no-sandbox` by
+/// default.
+///
+/// A [`PLATFORM_PLACEHOLDER`] in a subdir keys it by the child's
+/// [`BoxPlatform`], because a macOS agent and a Linux container share this
+/// root. Only two rows need it. Playwright names its folders without an OS
+/// (`chromium-1208/` plus an `INSTALLATION_COMPLETE` marker), so a Linux box
+/// would see the Mac install, skip its download, and fail to launch. Poetry's
+/// cache holds `virtualenvs/`, which are per-platform builds. The other rows
+/// are safe to share: npm/pnpm/bun/yarn store tarballs, go's `GOCACHE`, uv
+/// and Puppeteer key by platform internally, and pip checks wheel tags.
 const TOOLCHAIN_CACHE_VARS: &[(&str, &str)] = &[
     // JavaScript / TypeScript
     ("BUN_INSTALL_CACHE_DIR", "bun"),
@@ -536,13 +553,16 @@ const TOOLCHAIN_CACHE_VARS: &[(&str, &str)] = &[
     // Python
     ("PIP_CACHE_DIR", "pip"),
     ("UV_CACHE_DIR", "uv"),
-    ("POETRY_CACHE_DIR", "poetry"),
+    ("POETRY_CACHE_DIR", "poetry/{platform}"), // virtualenvs/ are per-platform
     // Ruby — the spec cache only; GEM_HOME is where gems are *installed*.
     ("GEM_SPEC_CACHE", "gem/spec-cache"),
     // PHP — the cache only; COMPOSER_HOME holds auth.json.
     ("COMPOSER_CACHE_DIR", "composer/cache"),
     // .NET — the global packages folder is a restore target, not a config home.
     ("NUGET_PACKAGES", "nuget"),
+    // Browsers — downloaded binaries, executed only inside sandboxes.
+    ("PLAYWRIGHT_BROWSERS_PATH", "playwright/{platform}"), // folders carry no OS
+    ("PUPPETEER_CACHE_DIR", "puppeteer"),
     // Elixir is absent for the same reason as Rust/Ruby/PHP homes: MIX_HOME and
     // HEX_HOME hold archives and `hex.config` (which can carry an API key), not
     // just cache.
@@ -561,16 +581,52 @@ const TOOLCHAIN_CACHE_VARS: &[(&str, &str)] = &[
 /// safe but pointless: [`agent_scratch_dirs`] already grants `~/.cache` and
 /// `~/Library/Caches` whole, so XDG-conformant tools never fail in the first
 /// place. This table is for the toolchains that *don't* follow XDG.
-pub fn toolchain_cache_env(root: &Path) -> Vec<(String, String)> {
+pub fn toolchain_cache_env(root: &Path, platform: BoxPlatform) -> Vec<(String, String)> {
+    let key = platform.key();
     TOOLCHAIN_CACHE_VARS
         .iter()
         .map(|(var, subdir)| {
+            let subdir = subdir.replace(PLATFORM_PLACEHOLDER, &key);
             (
                 (*var).to_string(),
                 root.join(subdir).to_string_lossy().into_owned(),
             )
         })
         .collect()
+}
+
+/// Substituted with [`BoxPlatform::key`] in a [`TOOLCHAIN_CACHE_VARS`] subdir.
+const PLATFORM_PLACEHOLDER: &str = "{platform}";
+
+/// The OS and CPU a confined child runs on, keying the cache rows whose
+/// contents differ per platform (see [`TOOLCHAIN_CACHE_VARS`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BoxPlatform {
+    os: &'static str,
+    arch: &'static str,
+}
+
+impl BoxPlatform {
+    /// The host itself — seatbelt agents and Run commands.
+    pub fn host() -> Self {
+        Self {
+            os: std::env::consts::OS,
+            arch: std::env::consts::ARCH,
+        }
+    }
+
+    /// A Linux container, which runs on the host's CPU.
+    pub fn linux() -> Self {
+        Self {
+            os: "linux",
+            arch: std::env::consts::ARCH,
+        }
+    }
+
+    /// The subdir key, e.g. `macos-aarch64` or `linux-x86_64`.
+    pub fn key(&self) -> String {
+        format!("{}-{}", self.os, self.arch)
+    }
 }
 
 /// OpenCode's data dir: `$XDG_DATA_HOME/opencode` if set, else
@@ -897,16 +953,19 @@ mod tests {
         // when granting their real `~/.cargo`/`~/.gem` would not be.
         assert_eq!(root, home.join(".fletch/toolchain-cache"));
 
-        let env = toolchain_cache_env(&root);
-        assert_eq!(env.len(), TOOLCHAIN_CACHE_VARS.len());
-        for (var, value) in &env {
-            let p = PathBuf::from(value);
-            assert!(
-                p.starts_with(&root) && p != root,
-                "{var} points outside the granted root: {value}"
-            );
+        for platform in [BoxPlatform::host(), BoxPlatform::linux()] {
+            for (var, value) in toolchain_cache_env(&root, platform) {
+                let p = PathBuf::from(&value);
+                assert!(
+                    p.starts_with(&root) && p != root,
+                    "{var} points outside the granted root: {value}"
+                );
+                assert!(!value.contains('{'), "{var} kept a placeholder: {value}");
+            }
         }
 
+        let env = toolchain_cache_env(&root, BoxPlatform::host());
+        assert_eq!(env.len(), TOOLCHAIN_CACHE_VARS.len());
         let mut names: Vec<&str> = env.iter().map(|(v, _)| v.as_str()).collect();
         names.sort_unstable();
         let before = names.len();
@@ -916,6 +975,43 @@ mod tests {
             names.len(),
             "duplicate env var in the redirect table"
         );
+    }
+
+    /// A macOS agent and a Linux container share one root, so a platform-keyed
+    /// row (Playwright) must diverge between them while every unkeyed row stays
+    /// shared — otherwise the Linux box trusts the Mac's install marker.
+    #[test]
+    fn platform_keyed_rows_split_host_and_linux_and_nothing_else() {
+        let root = toolchain_cache_root(Path::new("/Users/u"));
+        let host = toolchain_cache_env(&root, BoxPlatform::host());
+        let linux = toolchain_cache_env(&root, BoxPlatform::linux());
+        let arch = std::env::consts::ARCH;
+
+        let get = |env: &[(String, String)], var: &str| {
+            env.iter().find(|(v, _)| v == var).unwrap().1.clone()
+        };
+        let pw = "PLAYWRIGHT_BROWSERS_PATH";
+        assert_eq!(
+            get(&linux, pw),
+            root.join(format!("playwright/linux-{arch}"))
+                .to_string_lossy()
+        );
+        assert_eq!(
+            get(&host, pw),
+            root.join(format!("playwright/{}-{arch}", std::env::consts::OS))
+                .to_string_lossy()
+        );
+
+        for ((var, h), (_, l)) in host.iter().zip(&linux) {
+            let keyed = TOOLCHAIN_CACHE_VARS
+                .iter()
+                .any(|(v, sub)| v == var && sub.contains(PLATFORM_PLACEHOLDER));
+            if !keyed {
+                assert_eq!(h, l, "{var} is unkeyed but differs across platforms");
+            } else if cfg!(not(target_os = "linux")) {
+                assert_ne!(h, l, "{var} is keyed but shared across platforms");
+            }
+        }
     }
 
     /// The redirect must never claim a variable naming a toolchain *home*.

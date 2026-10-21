@@ -113,8 +113,9 @@ already the weaker boundary by design.
 
 ### What the Docker container mounts
 
-Only the agent's writable root and its RPC mailbox are mounted read-write, at
-their identical host paths. The provider's config/data dirs are mounted per
+Only the agent's writable root, its RPC mailbox and the shared toolchain cache
+(`~/.fletch/toolchain-cache`, the same root seatbelt grants) are mounted
+read-write, at their identical host paths. The provider's config/data dirs are mounted per
 provider (Claude's `~/.claude` is read-only except its `.credentials.json` and a
 per-agent transcripts dir; the others are read-write). Crucially, the source
 repo's `.git` is **never** mounted; only its borrowed git object store is

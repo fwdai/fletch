@@ -22,7 +22,7 @@ pub use podman::{
     availability as podman_availability, launch_blocker as podman_launch_blocker,
     PodmanAvailability,
 };
-pub use policy::{toolchain_cache_env, toolchain_cache_root};
+pub use policy::{toolchain_cache_env, toolchain_cache_root, BoxPlatform};
 pub use seatbelt::{
     build_run_profile, cleanup_nested_checkouts_roots, cleanup_nested_rpc_roots,
     nested_checkouts_root, nested_rpc_root, profile_args, SANDBOX_EXEC,
@@ -46,13 +46,18 @@ pub use seatbelt::{
 /// env carries the overlay it inherited, and a child that merely inherited
 /// that would be redirected after all. Cargo then reads its real home exactly
 /// as on the host, and its writes fail closed.
+///
+/// `platform` is what the child runs on — [`BoxPlatform::host`] for seatbelt,
+/// [`BoxPlatform::linux`] for a container — so rows whose contents are
+/// per-platform land in their own subdir of the one shared root.
 pub fn prepare_toolchain_cache(
     home: &std::path::Path,
     cwd: &std::path::Path,
+    platform: BoxPlatform,
 ) -> Vec<(String, String)> {
     let root = toolchain_cache_root(home);
     let _ = std::fs::create_dir_all(&root);
-    let mut env = toolchain_cache_env(&root);
+    let mut env = toolchain_cache_env(&root, platform);
     let user_home = cargo_home::user_home(home);
     let keep_real_home = |env: &mut Vec<(String, String)>| {
         env.push((

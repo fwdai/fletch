@@ -10,7 +10,8 @@ use std::path::{Path, PathBuf};
 
 use crate::error::{Error, Result};
 use crate::sandbox::policy::{
-    CLAUDE_CREDENTIALS_FILE, CLAUDE_EPHEMERAL_RUNTIME_SUBDIRS, CLAUDE_PROJECTS_SUBDIR,
+    toolchain_cache_root, CLAUDE_CREDENTIALS_FILE, CLAUDE_EPHEMERAL_RUNTIME_SUBDIRS,
+    CLAUDE_PROJECTS_SUBDIR,
 };
 
 use super::labels;
@@ -157,6 +158,14 @@ pub(crate) struct RunSpec<'a> {
     ///
     /// [`resolve`]: crate::sandbox::container::auth::resolve
     pub auth_vars: &'a [&'a str],
+    /// Toolchain-cache var names `launch::prepare` set
+    /// ([`ContainerLaunch::toolchain_vars`]), forwarded like the other plain
+    /// vars. Taken from the prepared env, not the table, so cargo's
+    /// conditional vars forward exactly when set — a bare `-e NAME` for one it
+    /// didn't set would pass through whatever the runtime CLI inherited.
+    ///
+    /// [`ContainerLaunch::toolchain_vars`]: super::launch::ContainerLaunch::toolchain_vars
+    pub toolchain_vars: &'a [&'a str],
 }
 
 /// The `run` argv (everything after the runtime binary), ending with
@@ -203,8 +212,11 @@ pub(crate) fn run_args(spec: &RunSpec<'_>) -> Vec<String> {
         args.push("no-new-privileges".into());
     }
     // Mounts at identical host paths (invariant 1). Exactly these — nothing
-    // else from the host enters the container.
-    for path in [spec.writable_root, spec.rpc_dir] {
+    // else from the host enters the container. The toolchain cache is the one
+    // seatbelt grants too, so both engines share one warm cache and the
+    // forwarded cache vars resolve unchanged.
+    let cache_root = toolchain_cache_root(spec.home);
+    for path in [spec.writable_root, spec.rpc_dir, &cache_root] {
         let path = path.to_string_lossy();
         args.push("-v".into());
         args.push(format!("{path}:{path}"));
@@ -286,6 +298,7 @@ pub(crate) fn run_args(spec: &RunSpec<'_>) -> Vec<String> {
     // Arms (`1`) or disarms (`0`) the attribution `commit-msg` hook; set on the
     // runtime CLI's env by the spawn path (`attribution::agent_env`).
     forwarded.push(crate::attribution::ENV);
+    forwarded.extend(spec.toolchain_vars.iter().copied());
     if spec.blackboard.is_some() {
         forwarded.push(crate::workflow::blackboard::WF_BLACKBOARD_ENV);
     }
@@ -332,7 +345,11 @@ pub(crate) fn run_args(spec: &RunSpec<'_>) -> Vec<String> {
 /// launching (see `podman::machine`) must see exactly what will be bound, so a
 /// mount added to [`run_args`] without an entry here would go unvetted.
 pub(crate) fn mount_sources(spec: &RunSpec<'_>) -> Vec<PathBuf> {
-    let mut out: Vec<PathBuf> = vec![spec.writable_root.into(), spec.rpc_dir.into()];
+    let mut out: Vec<PathBuf> = vec![
+        spec.writable_root.into(),
+        spec.rpc_dir.into(),
+        toolchain_cache_root(spec.home),
+    ];
     if let Some(mapped) = spec.run_as_user {
         out.push(mapped.passwd_file.into());
     }
@@ -519,6 +536,7 @@ mod tests {
                 image: "fletch-agent:cafe00000000",
                 agent_bin: "claude",
                 auth_vars: &["ANTHROPIC_API_KEY"],
+                toolchain_vars: &["npm_config_cache"],
             };
             let sources = mount_sources(&spec);
             let args = run_args(&spec);
@@ -581,6 +599,7 @@ mod tests {
             image: "fletch-agent:cafe00000000",
             agent_bin: "claude",
             auth_vars: &[],
+            toolchain_vars: &[],
         };
         let args = run_args(&spec);
         let bind = format!("{0}:{0}", tree.to_string_lossy());

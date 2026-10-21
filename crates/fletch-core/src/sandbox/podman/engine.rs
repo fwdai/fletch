@@ -148,6 +148,7 @@ impl SandboxEngine for PodmanEngine {
 
         let prefix_args = {
             let auth_vars = prep.auth_vars();
+            let toolchain_vars = prep.toolchain_vars();
             let mut spec = RunSpec {
                 interactive: ctx.interactive,
                 name: &name,
@@ -177,6 +178,7 @@ impl SandboxEngine for PodmanEngine {
                 image: "",
                 agent_bin,
                 auth_vars: &auth_vars,
+                toolchain_vars: &toolchain_vars,
             };
             // Before the image, not just before the run: an unshared source
             // mounts empty rather than failing, and the refusal shouldn't come
@@ -325,7 +327,7 @@ mod tests {
         let home = td.path().join("home");
         std::fs::create_dir_all(&root).unwrap();
         std::fs::create_dir_all(&rpc).unwrap();
-        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(crate::sandbox::toolchain_cache_root(&home)).unwrap();
         std::fs::write(root.join("marker.txt"), "hello from the host\n").unwrap();
         prepare_config_mount_dir(&home.join(".claude")).unwrap();
         let target = machine::resolve_launch_target().unwrap();
@@ -360,6 +362,7 @@ mod tests {
             image: "busybox",
             agent_bin: "cat",
             auth_vars: &[],
+            toolchain_vars: &[],
         });
         let mut argv: Vec<&str> = args.iter().map(String::as_str).collect();
         let marker = root.join("marker.txt").to_string_lossy().into_owned();

@@ -222,6 +222,7 @@ impl SandboxEngine for DockerEngine {
 
         let prefix_args = {
             let auth_vars = prep.auth_vars();
+            let toolchain_vars = prep.toolchain_vars();
             run_args(&RunSpec {
                 interactive: ctx.interactive,
                 name: &name,
@@ -240,6 +241,7 @@ impl SandboxEngine for DockerEngine {
                 image: &image,
                 agent_bin,
                 auth_vars: &auth_vars,
+                toolchain_vars: &toolchain_vars,
             })
         };
 

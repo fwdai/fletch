@@ -33,6 +33,10 @@ pub(crate) struct ContainerLaunch {
     pub borrowed_object_stores: Vec<PathBuf>,
 
     provider: ContainerProvider,
+    /// The span of [`env`](Self::env) holding the toolchain-cache vars, so
+    /// exactly the names that call produced get forwarded: cargo's set
+    /// depends on whether its overlay could be prepared.
+    toolchain: std::ops::Range<usize>,
     /// Index into [`env`](Self::env) where the credential names to forward
     /// begin. Only the resolved set is forwarded: an ambient credential the
     /// chain didn't pick must not reach the container and override the
@@ -62,6 +66,15 @@ impl ContainerLaunch {
         self.mapped
             .as_ref()
             .map(|(user, passwd_file)| MappedUser { user, passwd_file })
+    }
+
+    /// The toolchain-cache var *names* to forward — exactly what
+    /// [`prepare_toolchain_cache`](crate::sandbox::prepare_toolchain_cache) set.
+    pub(crate) fn toolchain_vars(&self) -> Vec<&str> {
+        self.env[self.toolchain.clone()]
+            .iter()
+            .map(|(k, _)| k.as_str())
+            .collect()
     }
 
     /// The auth var *names* to forward — exactly the tail [`prepare`] appended.
@@ -144,6 +157,25 @@ pub(crate) fn prepare(
         ("TERM".into(), "xterm-256color".into()),
         ("COLORTERM".into(), "truecolor".into()),
     ];
+    // The one toolchain cache seatbelt agents and Run commands share, so a
+    // recreated container starts warm instead of re-downloading every package
+    // and browser. `run_args` binds its root at the identical host path; a
+    // missing source would be materialized root-owned, locking the user's own
+    // seatbelt agents out of it, so fail closed rather than bind one.
+    let toolchain_start = env.len();
+    env.extend(crate::sandbox::prepare_toolchain_cache(
+        ctx.home,
+        ctx.cwd,
+        crate::sandbox::BoxPlatform::linux(),
+    ));
+    let toolchain = toolchain_start..env.len();
+    let cache_root = crate::sandbox::toolchain_cache_root(ctx.home);
+    if !cache_root.is_dir() {
+        return Err(Error::Other(format!(
+            "preparing container sandbox toolchain cache {} failed",
+            cache_root.display()
+        )));
+    }
     // Pushed before the provider match sets `auth_start`, so it forwards as a
     // plain env var rather than an auth var.
     if let Some(board) = ctx.blackboard {
@@ -349,6 +381,7 @@ pub(crate) fn prepare(
         env,
         borrowed_object_stores,
         provider,
+        toolchain,
         auth_start,
         claude_config_dir,
         claude_credentials_rw,
@@ -564,6 +597,49 @@ mod tests {
             ProviderMounts::Claude { credentials_rw, .. } => assert!(!credentials_rw),
             _ => panic!("expected claude mounts"),
         }
+    }
+
+    /// A container launch gets the same toolchain cache seatbelt does: the root
+    /// exists before `-v` sees it, and the redirect env is the shared table's,
+    /// forwarded as plain vars rather than credentials.
+    #[test]
+    fn a_launch_prepares_the_shared_toolchain_cache() {
+        let td = tempfile::tempdir().unwrap();
+        let home = td.path().join("home");
+        let root = td.path().join("w");
+        let rpc = td.path().join("rpc");
+        for dir in [&home, &root, &rpc] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        let token = crate::agent::host_login::claude::AccessToken::for_test("sk-ant-oat-test", 1);
+        let ctx = AgentLaunchCtx {
+            agent_id: "a1",
+            provider: "claude",
+            writable_root: &root,
+            source_repos: &[],
+            rpc_dir: &rpc,
+            cwd: &root,
+            home: &home,
+            interactive: false,
+            blackboard: None,
+            account_dir: None,
+            oauth_token: Some(&token),
+            codex_home: None,
+        };
+
+        let launch = prepare(&ctx, ContainerProvider::Claude, None).unwrap();
+
+        let cache_root = crate::sandbox::toolchain_cache_root(&home);
+        assert!(cache_root.is_dir());
+        let vars = launch.toolchain_vars();
+        for (var, value) in
+            crate::sandbox::toolchain_cache_env(&cache_root, crate::sandbox::BoxPlatform::linux())
+        {
+            assert!(vars.contains(&var.as_str()), "{var} not forwarded");
+            assert!(launch.env.contains(&(var, value)));
+        }
+        assert!(vars.contains(&"CARGO_HOME"), "{vars:?}");
+        assert!(!launch.auth_vars().iter().any(|v| vars.contains(v)));
     }
 
     /// A `CLAUDE_CONFIG_DIR` only the login shell exports is the dir the host

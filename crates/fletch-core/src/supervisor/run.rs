@@ -466,7 +466,8 @@ fn sandboxed_run_command(cwd: &Path, cmd: &str) -> Result<SandboxedRunCommand> {
     // Same package-manager cache redirection the agent gets, so a `bun install`
     // or `cargo build` run from the Run panel and one run by the agent share a
     // warm cache instead of maintaining two. The profile grants this root above.
-    let mut env = crate::sandbox::prepare_toolchain_cache(&home, cwd);
+    let mut env =
+        crate::sandbox::prepare_toolchain_cache(&home, cwd, crate::sandbox::BoxPlatform::host());
     // A nested Fletch (dogfooding) can't reach the host's `~/.fletch/{rpc,
     // worktrees}` under this profile; steer both to sandbox-writable roots.
     // Harmless for any other Run target — nothing but Fletch reads these.
