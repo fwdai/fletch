@@ -36,6 +36,10 @@ pub enum RunPhase {
 pub struct RunStateSnapshot {
     pub phase: RunPhase,
     pub last_error: Option<String>,
+    /// The port the dev server was launched on, once the run phase spawned:
+    /// the port-safe one, which may differ from the configured port. `None`
+    /// before the run phase, after a stop, and for a command with no port.
+    pub port: Option<u16>,
     /// Cumulative PTY output bytes (latest first dropped on overflow).
     /// Encoded as a byte array so the frontend can render or strip
     /// ANSI without re-decoding.
@@ -59,6 +63,7 @@ pub struct RunSession {
 struct RunSessionInner {
     phase: RunPhase,
     last_error: Option<String>,
+    port: Option<u16>,
     log: LogBuffer,
     pty: Option<PtySession>,
     /// Bumped on every `start` and `stop`. The PTY exit handler
@@ -74,6 +79,7 @@ impl Default for RunSession {
             inner: Mutex::new(RunSessionInner {
                 phase: RunPhase::Idle,
                 last_error: None,
+                port: None,
                 log: LogBuffer::new(LOG_BUFFER_CAP),
                 pty: None,
                 generation: 0,
@@ -92,6 +98,7 @@ impl RunSession {
         RunStateSnapshot {
             phase: inner.phase,
             last_error: inner.last_error.clone(),
+            port: inner.port,
             log: inner.log.bytes().to_vec(),
             log_seq: inner.log.total(),
         }
@@ -103,6 +110,13 @@ impl RunSession {
 
     pub fn is_active(&self) -> bool {
         matches!(self.phase(), RunPhase::Setup | RunPhase::Running)
+    }
+
+    /// The port the run phase is launching on, recorded as it spawns so the
+    /// agent's `run_status` can name it; the panel hears the same port on
+    /// `run:port`. Cleared by every start and stop.
+    pub fn set_port(&self, port: Option<u16>) {
+        self.inner.lock().port = port;
     }
 
     /// Append PTY output to the rolling buffer. Called from the per-spawn
@@ -131,6 +145,7 @@ impl RunSession {
             inner.generation = inner.generation.wrapping_add(1);
             inner.phase = RunPhase::Stopped;
             inner.last_error = None;
+            inner.port = None;
             (prior, pty)
         };
         if let Some(pty) = pty {
@@ -149,6 +164,7 @@ impl RunSession {
         inner.generation = inner.generation.wrapping_add(1);
         inner.phase = phase;
         inner.last_error = None;
+        inner.port = None;
         inner.generation
     }
 
@@ -183,6 +199,7 @@ impl RunSession {
         inner.pty = None;
         inner.phase = RunPhase::Stopped;
         inner.last_error = error;
+        inner.port = None;
     }
 }
 
@@ -334,6 +351,27 @@ mod tests {
         s.stop();
         assert_eq!(s.phase(), RunPhase::Stopped);
         assert!(!s.is_current_generation(g1));
+    }
+
+    #[test]
+    fn the_port_lives_with_the_running_phase() {
+        let s = RunSession::new();
+        assert_eq!(s.snapshot().port, None);
+        s.begin_phase(RunPhase::Running);
+        s.set_port(Some(3001));
+        assert_eq!(s.snapshot().port, Some(3001));
+        s.stop();
+        assert_eq!(s.snapshot().port, None, "a stopped run binds no port");
+        s.begin_phase(RunPhase::Setup);
+        s.set_port(Some(3001));
+        s.mark_stopped(Some("crashed".into()));
+        assert_eq!(s.snapshot().port, None);
+        s.begin_phase(RunPhase::Running);
+        assert_eq!(
+            s.snapshot().port,
+            None,
+            "a fresh start forgets the old port"
+        );
     }
 
     #[test]

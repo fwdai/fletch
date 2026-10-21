@@ -1316,7 +1316,7 @@ these names to every authenticated connection:
 agent:event            agent:status           agent:task
 agent:spawn-progress
 agent:title            agent:branch           agent:model
-agent:effort
+agent:effort           agent:notify
 agent:repo_added       agent:git-action       session:records-appended
 turn:sent              turn:started           workspace:changed
 workspace:auto-archived

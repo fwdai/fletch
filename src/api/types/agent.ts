@@ -267,6 +267,15 @@ export interface AgentTitleEvent {
   title: string;
 }
 
+/** The agent asked for the user's attention (its `notify` mailbox op): a
+ *  headline and an optional body for a native notification. Nothing is
+ *  stored; the turn's reply carries the substance. */
+export interface AgentNotifyEvent {
+  agent_id: string;
+  title: string;
+  body: string;
+}
+
 export interface AgentBranchEvent {
   agent_id: string;
   subdir: string;

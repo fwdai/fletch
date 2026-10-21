@@ -28,6 +28,9 @@ pub mod git;
 #[path = "rpc/roadmap/mod.rs"]
 pub mod roadmap;
 
+/// The Run panel's process and a notification, as mailbox ops.
+pub mod run;
+
 /// `id` comes from the filename, not the body; unknown body fields are ignored.
 #[derive(Debug, Deserialize)]
 pub struct Request {

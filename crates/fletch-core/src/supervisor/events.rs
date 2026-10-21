@@ -345,6 +345,28 @@ pub(super) fn emit_title(sink: &dyn EventSink, agent_id: &str, title: String) {
 }
 
 #[derive(Clone, serde::Serialize)]
+struct AgentNotifyPayload {
+    agent_id: String,
+    title: String,
+    body: String,
+}
+
+/// The agent asked for the user's attention via the `notify` mailbox op. A
+/// client shows it as a native notification under its own mute; nothing is
+/// stored, and the turn's reply still carries the substance.
+pub(super) fn emit_notify(sink: &dyn EventSink, agent_id: &str, title: String, body: String) {
+    emit(
+        sink,
+        "agent:notify",
+        AgentNotifyPayload {
+            agent_id: agent_id.to_string(),
+            title,
+            body,
+        },
+    );
+}
+
+#[derive(Clone, serde::Serialize)]
 struct AgentBranchPayload {
     agent_id: String,
     subdir: String,

@@ -131,6 +131,27 @@ Git panel does — auto-merge while checks run, never past a merge queue — and
 asks the user first when publish confirmation is on; only do it when the user
 asked you to merge.
 
+### Running the app
+
+The Run panel's process — the project's setup and run command, in your
+checkout, under the host's sandbox — is yours to drive when you need to see a
+change working: `run_start` (starts it, or reports it already running; setup
+runs first the one time it has never completed), `run_status` (`phase` idle,
+setup, running or stopped, the `port` the dev server launched on, and the last
+error), `run_log` (the last `args.lines` lines of its output, default 200, max
+2000, escapes stripped; `args.raw: true` keeps them) and `run_stop`. The start
+returns at once: poll `run_status` until the phase is `running` and the port is
+known, then talk to the app on that port. Stop what you started when you are
+done with it.
+
+### Notify
+
+`notify` (`args.title`, up to 120 characters; optional `args.body`, up to 500)
+raises a native notification for the user, under their own mute. Use it when
+the user is likely away and something needs them — a long task finished, a
+question is blocking you — and keep the substance in your reply; it is not
+a log. Fire-and-forget, like `set_title`.
+
 ### Workspace title
 
 `set_title` names the work for the sidebar: 3–6 words, max 80 chars, no

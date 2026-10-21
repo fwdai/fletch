@@ -8,7 +8,7 @@ use std::time::Duration;
 use crate::host::EngineCtx;
 use crate::rpc;
 
-use super::events::{emit_branch, emit_git_action, emit_title};
+use super::events::{emit_branch, emit_git_action, emit_notify, emit_title};
 use super::Supervisor;
 
 /// How often the per-agent RPC watcher scans its mailbox for new requests.
@@ -263,6 +263,23 @@ fn handle_rpc_event(sup: &Supervisor, ctx: &Arc<EngineCtx>, agent_id: &str, even
                     "set_title: failed to persist workspace title"
                 ),
             }
+        }
+        rpc::RpcEvent::Named { name, payload } if name == rpc::run::EVENT_NOTIFY => {
+            // The agent asked for the user's attention. Nothing to persist:
+            // the clients show it (under their own mute) and that is all.
+            let text = |key: &str| {
+                payload
+                    .get(key)
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string()
+            };
+            let title = text("title");
+            if title.is_empty() {
+                tracing::warn!(payload = %payload, "notify: event without a title");
+                return;
+            }
+            emit_notify(ctx.sink.as_ref(), agent_id, title, text("body"));
         }
         rpc::RpcEvent::Named { name, payload } => {
             tracing::debug!(event = %name, payload = %payload, "rpc: unhandled event");
