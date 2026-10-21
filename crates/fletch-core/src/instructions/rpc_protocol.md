@@ -135,8 +135,9 @@ asked you to merge.
 
 The Run panel's process — the project's setup and run command, in your
 checkout, under the host's sandbox — is yours to drive when you need to see a
-change working: `run_start` (starts it, or reports it already running; setup
-runs first the one time it has never completed), `run_status` (`phase` idle,
+change working: `run_start` (starts it, or reports it already running or
+already finished when the command is a short one; setup runs first the one
+time it has never completed), `run_status` (`phase` idle,
 setup, running or stopped, the `port` the dev server launched on, and the last
 error), `run_log` (the last `args.lines` lines of its output, default 200, max
 2000, escapes stripped; `args.raw: true` keeps them) and `run_stop`. The start

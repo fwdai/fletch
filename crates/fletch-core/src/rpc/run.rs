@@ -74,19 +74,22 @@ impl RunDispatcher {
             return Response::err(id, format!("run_start: {e}"));
         }
         let after = self.control.state(&self.agent_id);
-        // `start` answers Ok and leaves the phase alone when the project has
-        // no run command; the agent needs to hear that, not "started".
-        if matches!(after.phase, RunPhase::Idle | RunPhase::Stopped) {
+        // `start` answers Ok and touches nothing when the project has no run
+        // command; the agent needs to hear that, not "started". A command
+        // that ran is told apart from that by its output: the host writes
+        // the `$ cmd` header the moment a phase begins, so even a command
+        // that finished before this second look advanced the log.
+        let started = already_running
+            || matches!(after.phase, RunPhase::Setup | RunPhase::Running)
+            || after.log_seq > before.log_seq;
+        if !started {
             return Response::err(
                 id,
-                match &after.last_error {
-                    Some(why) => format!("run_start: {why}"),
-                    None => "run_start: nothing to run — the project has no run command; the \
-                             user sets one in Project Settings › Run"
-                        .to_string(),
-                },
+                "run_start: nothing to run — the project has no run command; the user sets one \
+                 in Project Settings › Run",
             );
         }
+        let exited = matches!(after.phase, RunPhase::Stopped);
         json_ok(
             id,
             "run_start",
@@ -94,8 +97,14 @@ impl RunDispatcher {
                 "phase": after.phase,
                 "port": after.port,
                 "already_running": already_running,
-                "note": "run_status reports the phase and port; the run phase follows setup \
-                         when setup had never completed",
+                "exited": exited,
+                "last_error": after.last_error,
+                "note": if exited {
+                    "the command already finished; run_log has its output"
+                } else {
+                    "run_status reports the phase and port; the run phase follows setup \
+                     when setup had never completed"
+                },
             }),
         )
     }
@@ -257,14 +266,20 @@ pub(crate) fn tail_lines(log: &str, lines: usize, raw: bool) -> (String, bool) {
 }
 
 /// A PTY transcript as plain lines: ANSI stripped, `\r\n` as a line break,
-/// and a bare `\r` as the overwrite it is — only what follows the last one on
-/// a line survives.
+/// and a bare `\r` as the overwrite it is — what follows the last one on a
+/// line replaces what came before. A `\r` with nothing after it yet (a
+/// progress line caught mid-update) only moved the cursor, so the text
+/// before it is what the terminal still shows.
 fn plain_text(log: &str) -> String {
     let stripped = crate::sandbox::docker::setup_token::strip_ansi(log);
     stripped
         .replace("\r\n", "\n")
         .lines()
-        .map(|line| line.rsplit('\r').next().unwrap_or(line))
+        .map(|line| {
+            line.rsplit('\r')
+                .find(|segment| !segment.is_empty())
+                .unwrap_or("")
+        })
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -308,6 +323,14 @@ mod tests {
             let mut s = self.state.lock();
             if matches!(s.phase, RunPhase::Setup | RunPhase::Running) {
                 return Ok(());
+            }
+            // Idle stands for "nothing to run": the host touches nothing.
+            // Any other next phase is a command that began, header line
+            // and all — Stopped being one that finished before the
+            // dispatcher looked again.
+            if !matches!(self.next_phase, RunPhase::Idle) {
+                s.log.extend_from_slice(b"$ cmd\r\n");
+                s.log_seq += 7;
             }
             s.phase = self.next_phase;
             s.port = self.port;
@@ -400,6 +423,42 @@ mod tests {
             "{:?}",
             resp.error
         );
+    }
+
+    /// A short command can finish before the dispatcher looks again. Its
+    /// output moved the log, so it ran — reported as exited, not as
+    /// unconfigured.
+    #[tokio::test]
+    async fn a_command_that_finished_at_once_is_reported_as_exited_not_missing() {
+        let run = FakeRun::new(RunPhase::Stopped, None);
+        let disp = dispatcher(run.clone());
+        let (resp, _) = disp.dispatch("s", "run_start", &Value::Null).await;
+        assert!(resp.ok, "{:?}", resp.error);
+        let out = stdout(&resp);
+        assert_eq!(out["phase"], "stopped");
+        assert_eq!(out["exited"], true);
+        assert_eq!(out["already_running"], false);
+        assert!(out["note"].as_str().unwrap().contains("run_log"));
+
+        // Stopped before and stopped after, with no output: nothing ran.
+        let idle = FakeRun::new(RunPhase::Idle, None);
+        idle.state.lock().phase = RunPhase::Stopped;
+        let (resp, _) = dispatcher(idle)
+            .dispatch("s", "run_start", &Value::Null)
+            .await;
+        assert!(resp.error.as_deref().unwrap().contains("nothing to run"));
+    }
+
+    /// A progress line caught at its carriage return still shows its text;
+    /// only what follows a `\r` on the same line overwrites it.
+    #[test]
+    fn a_bare_trailing_carriage_return_keeps_the_visible_text() {
+        assert_eq!(plain_text("Progress 50%\r"), "Progress 50%");
+        assert_eq!(plain_text("Progress 50%\rProgress 90%\r"), "Progress 90%");
+        assert_eq!(plain_text("a\rb\r\nc"), "b\nc");
+        assert_eq!(plain_text("\r"), "");
+        let (tail, _) = tail_lines("line one\nProgress 50%\r", 5, false);
+        assert_eq!(tail, "line one\nProgress 50%");
     }
 
     #[tokio::test]
