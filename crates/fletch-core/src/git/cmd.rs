@@ -86,14 +86,21 @@ pub(crate) async fn git_output_env(
 
 /// `git_output_env` feeding `stdin` to the process — for the plumbing that
 /// reads its payload there (`commit-tree` takes the message that way, which is
-/// the only form that preserves it byte for byte). Same hardening and timeout.
+/// the only form that preserves it byte for byte; `cat-file --batch-check`
+/// and `update-ref --stdin` take a line per object). Same hardening and
+/// timeout.
+///
+/// Input is written while output is drained, never one after the other: a
+/// batch command answers each line as it arrives, and once its stdout pipe
+/// is full it blocks on us reading it while we would block on it reading
+/// the rest of the input — a deadlock a long branch list reaches easily.
 pub(crate) async fn git_output_stdin(
     dir: &Path,
     args: &[&str],
     env: &[(String, String)],
     stdin: &[u8],
 ) -> Result<std::process::Output> {
-    use tokio::io::AsyncWriteExt;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
     super::hardening::refuse_steerable_config(dir).await?;
     let mut cmd = crate::git_dist::command(dir);
     cmd.args(args)
@@ -106,11 +113,44 @@ pub(crate) async fn git_output_stdin(
     }
     let run = async {
         let mut child = cmd.spawn()?;
-        if let Some(mut pipe) = child.stdin.take() {
-            pipe.write_all(stdin).await?;
-            drop(pipe);
+        let mut input = child.stdin.take();
+        let mut out_pipe = child.stdout.take();
+        let mut err_pipe = child.stderr.take();
+        let write = async {
+            if let Some(pipe) = input.as_mut() {
+                pipe.write_all(stdin).await?;
+            }
+            drop(input);
+            Ok::<_, std::io::Error>(())
+        };
+        let read = |pipe: Option<tokio::process::ChildStdout>| async move {
+            let mut buf = Vec::new();
+            if let Some(mut pipe) = pipe {
+                pipe.read_to_end(&mut buf).await?;
+            }
+            Ok::<_, std::io::Error>(buf)
+        };
+        let read_err = async {
+            let mut buf = Vec::new();
+            if let Some(pipe) = err_pipe.as_mut() {
+                pipe.read_to_end(&mut buf).await?;
+            }
+            Ok::<_, std::io::Error>(buf)
+        };
+        let (written, stdout, stderr) = tokio::join!(write, read(out_pipe.take()), read_err);
+        let status = child.wait().await?;
+        // A child that quit early closes its stdin on us; what it said is the
+        // answer, not the broken pipe.
+        if let Err(e) = written {
+            if e.kind() != std::io::ErrorKind::BrokenPipe {
+                return Err(e);
+            }
         }
-        child.wait_with_output().await
+        Ok(std::process::Output {
+            status,
+            stdout: stdout?,
+            stderr: stderr?,
+        })
     };
     tokio::time::timeout(LOCAL_TIMEOUT, run)
         .await
@@ -329,5 +369,28 @@ mod tests {
             config_value_for(&merged, "core.autocrlf").as_deref(),
             Some("false")
         );
+    }
+
+    /// A batch command answers each input line as it arrives. With more
+    /// input than a pipe holds, writing it all before reading anything would
+    /// deadlock against the child's full stdout; input is streamed while
+    /// output is drained, so the whole batch comes back.
+    #[tokio::test]
+    async fn stdin_is_streamed_while_output_is_drained() {
+        let td = tempfile::tempdir().unwrap();
+        let repo = td.path();
+        crate::git::testing::init_repo(repo);
+        let sha = crate::git::testing::commit_file(repo, "a.txt");
+        // Well past a 64 KiB pipe on both sides: each line in produces a
+        // line out.
+        let lines = 20_000;
+        let input: String = std::iter::repeat_n(format!("{sha}\n"), lines).collect();
+
+        let out = git_output_stdin(repo, &["cat-file", "--batch-check"], &[], input.as_bytes())
+            .await
+            .unwrap();
+
+        assert!(out.status.success());
+        assert_eq!(String::from_utf8_lossy(&out.stdout).lines().count(), lines);
     }
 }

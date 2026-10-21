@@ -85,33 +85,59 @@ pub(crate) fn signing_requested(show_scope: &str) -> bool {
 /// asked of the remotes themselves. That, and not any ref in the checkout,
 /// is where a signed publish stops — the checkout's refs are the agent's to
 /// write, and a planted one would pass an unsigned commit off as published.
+///
+/// The set is complete by construction: every tip it holds is in the
+/// checkout's store, because the walk that stops at it needs it there. A
+/// remote that moves between the fetch and the asking leaves a tip the fetch
+/// did not bring; the refresh then runs again, and gives up — never a
+/// shorter set, which would read published ancestors as unpublished and
+/// rewrite them — when the remotes keep moving.
 pub(crate) async fn refresh_remote_refs(
     checkout: &Path,
     source_repo: &Path,
 ) -> Result<Vec<String>> {
+    const ATTEMPTS: usize = 3;
     let t = super::remote::Transport::open(checkout, source_repo).await?;
-    t.fetch_branches(super::remote::Branches::All)
-        .await
-        .map_err(|e| Error::Git(format!("refreshing the remotes before signing failed: {e}")))?;
-    t.published_tips().await.map_err(|e| {
-        Error::Git(format!(
-            "reading the remotes' tips before signing failed: {e}"
-        ))
-    })
+    for _ in 0..ATTEMPTS {
+        t.fetch_branches(super::remote::Branches::All)
+            .await
+            .map_err(|e| {
+                Error::Git(format!("refreshing the remotes before signing failed: {e}"))
+            })?;
+        let tips = t.published_tips().await.map_err(|e| {
+            Error::Git(format!(
+                "reading the remotes' tips before signing failed: {e}"
+            ))
+        })?;
+        if missing_commits(checkout, &tips).await?.is_empty() {
+            return Ok(tips);
+        }
+    }
+    Err(Error::Git(format!(
+        "the remotes kept moving while the publish was being prepared ({ATTEMPTS} attempts); \
+         try again"
+    )))
 }
 
 /// The commits `tip` reaches that none of `published` (the remotes' tips, as
 /// [`refresh_remote_refs`] read them) reaches — oldest first, parents before
-/// children. A published tip the checkout does not hold cannot reach
-/// anything in it, so it is left out of the walk rather than tripping it.
+/// children. Every published tip must be in the checkout's store: one that
+/// is not would be left out of the walk, and its already-published
+/// ancestors read as unpublished and rewritten, so that is an error here.
 pub(crate) async fn unpublished_commits(
     checkout: &Path,
     tip: &str,
     published: &[String],
 ) -> Result<Vec<String>> {
-    let present = present_commits(checkout, published).await?;
+    let missing = missing_commits(checkout, published).await?;
+    if !missing.is_empty() {
+        return Err(Error::Git(format!(
+            "published tips {} are not in the checkout; refresh the remotes first",
+            missing.join(", ")
+        )));
+    }
     let mut args = vec!["rev-list", "--reverse", "--topo-order", tip, "--not"];
-    args.extend(present.iter().map(String::as_str));
+    args.extend(published.iter().map(String::as_str));
     args.push("--");
     let out = git_output(checkout, &args).await?;
     if !out.status.success() {
@@ -128,8 +154,8 @@ pub(crate) async fn unpublished_commits(
         .collect())
 }
 
-/// Those of `commits` that are commits in `checkout`'s store.
-async fn present_commits(checkout: &Path, commits: &[String]) -> Result<Vec<String>> {
+/// Those of `commits` that are not commits in `checkout`'s store.
+async fn missing_commits(checkout: &Path, commits: &[String]) -> Result<Vec<String>> {
     if commits.is_empty() {
         return Ok(Vec::new());
     }
@@ -141,13 +167,18 @@ async fn present_commits(checkout: &Path, commits: &[String]) -> Result<Vec<Stri
         input.as_bytes(),
     )
     .await?;
-    Ok(String::from_utf8_lossy(&out.stdout)
+    let present: Vec<String> = String::from_utf8_lossy(&out.stdout)
         .lines()
         .filter_map(|line| {
             let mut parts = line.split(' ');
             let sha = parts.next()?;
             (parts.next() == Some("commit")).then(|| sha.to_string())
         })
+        .collect();
+    Ok(commits
+        .iter()
+        .filter(|c| !present.contains(c))
+        .cloned()
         .collect())
 }
 
@@ -776,6 +807,47 @@ mod tests {
                 .await
                 .unwrap()
         ));
+    }
+
+    /// A published tip the checkout does not hold must stop the signing, not
+    /// drop out of the walk: without it, its already-published ancestors
+    /// would read as unpublished and be rewritten.
+    #[tokio::test]
+    async fn a_published_tip_missing_locally_is_an_error_not_a_shorter_boundary() {
+        let td = tempfile::tempdir().unwrap();
+        let fx = signing_repos(td.path());
+        let tip = commit_file(&fx.checkout, "one.txt");
+        // A commit the remote could have advanced to, which the checkout has
+        // never fetched: made elsewhere, on top of what is published.
+        let elsewhere = td.path().join("elsewhere");
+        git(
+            td.path(),
+            &[
+                "clone",
+                "-q",
+                fx.source.to_str().unwrap(),
+                elsewhere.to_str().unwrap(),
+            ],
+        );
+        git(&elsewhere, &["config", "user.email", "e@example.com"]);
+        git(&elsewhere, &["config", "user.name", "E"]);
+        git(&elsewhere, &["config", "commit.gpgsign", "false"]);
+        let unseen = commit_file(&elsewhere, "unseen.txt");
+        let claimed = vec![fx.base.clone(), unseen.clone()];
+
+        let err = unpublished_commits(&fx.checkout, &tip, &claimed)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains(&unseen), "{err}");
+        let err = sign_unpublished(&fx.checkout, &fx.source, &tip, &claimed)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("not in the checkout"), "{err}");
+        assert_eq!(
+            git(&fx.checkout, &["rev-parse", "refs/heads/main"]),
+            tip,
+            "nothing rewritten"
+        );
     }
 
     #[tokio::test]
