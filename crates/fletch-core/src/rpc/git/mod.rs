@@ -48,6 +48,8 @@ fn is_mutating_op(op: &str) -> bool {
             | "open_pr"
             | "pr_edit"
             | "pr_comment"
+            | "pr_close"
+            | "pr_merge"
             | "issue_comment"
             | "reply_thread"
             | "resolve_thread"
@@ -160,6 +162,8 @@ impl GitDispatcher {
             "pr_comments" => (self.pr_comments(id, args).await, Vec::new()),
             "pr_edit" => self.pr_edit(id, args).await,
             "pr_comment" => (self.pr_comment(id, args).await, Vec::new()),
+            "pr_close" => (self.pr_close(id, args).await, Vec::new()),
+            "pr_merge" => (self.pr_merge(id, args).await, Vec::new()),
             "issue_comment" => (self.issue_comment(id, args).await, Vec::new()),
             "pr_threads" => (self.pr_threads(id, args).await, Vec::new()),
             "reply_thread" => (self.reply_thread(id, args).await, Vec::new()),

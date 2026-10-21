@@ -418,6 +418,26 @@ pub async fn post_comment(checkout: &Path, number: u32, body: &str) -> Result<St
     Ok(resp["html_url"].as_str().unwrap_or_default().to_string())
 }
 
+/// Close pull request `number` without merging (REST PATCH `state: closed`).
+pub async fn pr_close(checkout: &Path, number: u32) -> Result<()> {
+    let (owner, repo) = require_repo_ref(checkout).await?;
+    let client = client::Client::new()?;
+    let (status, resp) = client
+        .rest(
+            reqwest::Method::PATCH,
+            &format!("/repos/{owner}/{repo}/pulls/{number}"),
+            Some(&json!({ "state": "closed" })),
+        )
+        .await?;
+    if !status.is_success() {
+        return Err(Error::Gh(format!(
+            "pr close failed: {}",
+            detailed_rest_error(&resp)
+        )));
+    }
+    Ok(())
+}
+
 /// GitHub's page cap for the pulls list.
 pub const PR_LIST_MAX: u32 = 100;
 

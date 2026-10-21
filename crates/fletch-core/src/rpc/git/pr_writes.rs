@@ -130,6 +130,91 @@ impl GitDispatcher {
         }
     }
 
+    /// Close the branch's PR (or `args.number`) without merging; an optional
+    /// `args.comment` is posted first to say why. Agents asked to tidy a
+    /// superseded stack could only hand the user a list of numbers to close.
+    pub(super) async fn pr_close(&self, id: &str, args: &Value) -> Response {
+        let number = match positive_u32_arg(args, "number") {
+            Ok(n) => n,
+            Err(e) => return Response::err(id, format!("pr_close: {e}")),
+        };
+        let comment = match args.get("comment") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(s)) => Some(s.trim().to_string()).filter(|s| !s.is_empty()),
+            Some(other) => {
+                return Response::err(
+                    id,
+                    format!("pr_close: `comment` must be a string, got {other}"),
+                )
+            }
+        };
+        let t = match self.pr_read_target(id, "pr_close", args).await {
+            Ok(t) => t,
+            Err(resp) => return resp,
+        };
+        let number = match number {
+            Some(n) => n,
+            None => match branch_pr(id, "pr_close", &t).await {
+                Ok(pr) => pr.number,
+                Err(resp) => return resp,
+            },
+        };
+        if let Some(comment) = comment {
+            if let Err(e) = crate::github::post_comment(&t.source_repo, number, &comment).await {
+                return Response::err(id, format!("pr_close: {e}"));
+            }
+        }
+        match crate::github::pr_close(&t.source_repo, number).await {
+            Ok(()) => json_ok(
+                id,
+                "pr_close",
+                &json!({ "number": number, "state": "closed" }),
+            ),
+            Err(e) => Response::err(id, format!("pr_close: {e}")),
+        }
+    }
+
+    /// Merge the branch's PR (or `args.number`): auto-merge when checks are
+    /// still running, an immediate merge when there is nothing to wait for,
+    /// never past a merge queue (`github::pr_merge_number`). A publish op:
+    /// refused for grants that may not publish, and behind the same approval
+    /// prompt as a push, naming the PR.
+    pub(super) async fn pr_merge(&self, id: &str, args: &Value) -> Response {
+        let number = match positive_u32_arg(args, "number") {
+            Ok(n) => n,
+            Err(e) => return Response::err(id, format!("pr_merge: {e}")),
+        };
+        let t = match self.pr_read_target(id, "pr_merge", args).await {
+            Ok(t) => t,
+            Err(resp) => return resp,
+        };
+        let number = match number {
+            Some(n) => n,
+            None => match branch_pr(id, "pr_merge", &t).await {
+                Ok(pr) => pr.number,
+                Err(resp) => return resp,
+            },
+        };
+        if let Some(why) = self
+            .refuse_unless_publish_approved(
+                "pr_merge",
+                t.subdir.as_deref(),
+                &format!("merge pull request #{number}"),
+            )
+            .await
+        {
+            return Response::err(id, why);
+        }
+        match crate::github::pr_merge_number(&t.source_repo, number).await {
+            Ok(()) => json_ok(
+                id,
+                "pr_merge",
+                &json!({ "number": number, "merge": "requested" }),
+            ),
+            Err(e) => Response::err(id, format!("pr_merge: {e}")),
+        }
+    }
+
     /// The issue the primary checkout's PR closes, read live so a composer
     /// pick made after spawn still reaches the trailer. `None` for a sibling
     /// checkout, whose PR is not the one bound to the issue.

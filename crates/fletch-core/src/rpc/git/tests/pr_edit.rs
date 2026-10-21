@@ -1,6 +1,6 @@
 use crate::rpc::git::test_support::*;
 
-use serde_json::json;
+use serde_json::{json, Value};
 
 fn repo_without_origin(root: &std::path::Path) -> std::path::PathBuf {
     let repo = root.join("repo");
@@ -98,6 +98,81 @@ async fn comments_need_a_body_and_issues_need_a_number() {
         let err = resp.error.unwrap();
         assert!(err.contains(needle), "{op} {args}: {err}");
         assert!(fx.is_empty());
+    }
+}
+
+/// Merging lands work on the base: a grant that may not publish is refused
+/// before anything is looked up, with the same reason as for a push.
+#[tokio::test]
+async fn pr_merge_is_refused_for_grants_that_may_not_publish() {
+    use crate::rpc::caps::AgentCaps;
+    use crate::rpc::git::GitDispatcher;
+    let td = tempfile::tempdir().unwrap();
+    let repo = repo_without_origin(td.path());
+    for (caps, needle) in [
+        (AgentCaps::run_owned(), "finalizes"),
+        (AgentCaps::advisory(), "roadmap item"),
+    ] {
+        let disp = GitDispatcher::new(repo.clone(), repo.clone(), "main".to_string(), caps);
+        let (resp, fx) = disp
+            .dispatch_inner("m", "pr_merge", &json!({ "number": 3 }))
+            .await;
+        assert!(!resp.ok);
+        assert!(resp.error.unwrap().contains(needle), "{caps:?}");
+        assert!(fx.is_empty());
+        // Closing publishes nothing and stays reachable (here: its preflight).
+        let (resp, _fx) = disp
+            .dispatch_inner("c", "pr_close", &json!({ "number": 3 }))
+            .await;
+        assert!(
+            resp.error
+                .unwrap()
+                .contains("origin is not a GitHub repository"),
+            "{caps:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn pr_close_and_pr_merge_validate_and_name_a_non_github_origin() {
+    let td = tempfile::tempdir().unwrap();
+    let disp = dispatcher(td.path());
+    for (op, args, needle) in [
+        (
+            "pr_close",
+            json!({ "number": 0 }),
+            "`number` must be a positive integer",
+        ),
+        (
+            "pr_close",
+            json!({ "comment": 5 }),
+            "`comment` must be a string",
+        ),
+        (
+            "pr_merge",
+            json!({ "number": "7" }),
+            "`number` must be a positive integer",
+        ),
+    ] {
+        let (resp, fx) = disp.dispatch_inner("x", op, &args).await;
+        assert!(!resp.ok, "{op} {args}");
+        assert!(resp.error.unwrap().contains(needle), "{op} {args}");
+        assert!(fx.is_empty());
+    }
+    let repo = repo_without_origin(td.path());
+    let disp = dispatcher(&repo);
+    for op in ["pr_close", "pr_merge"] {
+        let (resp, fx) = disp.dispatch_inner("x", op, &Value::Null).await;
+        assert_eq!(
+            resp.error.as_deref(),
+            Some(
+                format!("{op}: origin is not a GitHub repository (or there is no origin)").as_str()
+            )
+        );
+        assert!(fx.is_empty(), "{op}: {fx:?}");
+    }
+    for op in ["pr_close", "pr_merge"] {
+        assert!(crate::rpc::git::is_mutating_op(op), "{op}");
     }
 }
 

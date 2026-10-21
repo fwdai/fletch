@@ -9,7 +9,7 @@ use crate::rpc::{approval, Response, RpcEvent};
 
 impl GitDispatcher {
     /// Fails closed when the gate is on but there is no window to ask through.
-    async fn refuse_unless_publish_approved(
+    pub(super) async fn refuse_unless_publish_approved(
         &self,
         op: &str,
         repo: Option<&str>,

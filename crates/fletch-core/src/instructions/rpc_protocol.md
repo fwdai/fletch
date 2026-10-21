@@ -98,7 +98,12 @@ Refresh the description with it whenever follow-up commits make the one you
 wrote at `open_pr` stale. `pr_comment` (`args.body`; `args.number` for another
 PR) posts on the PR's conversation — say what a follow-up push changed there —
 and `issue_comment` (`args.number`, `args.body`) on an issue. Review threads
-are answered with `reply_thread`, not a comment.
+are answered with `reply_thread`, not a comment. `pr_close` closes a PR
+without merging (`args.number`; `args.comment` says why), for a superseded PR
+of a stack. `pr_merge` merges the branch's PR (or `args.number`) the way the
+Git panel does — auto-merge while checks run, never past a merge queue — and
+asks the user first when publish confirmation is on; only do it when the user
+asked you to merge.
 
 ### Workspace title
 

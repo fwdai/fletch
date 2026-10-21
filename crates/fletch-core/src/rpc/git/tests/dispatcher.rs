@@ -134,10 +134,10 @@ async fn signal_git_action_rejects_unknown_action() {
 async fn an_unknown_op_is_still_refused_by_name() {
     let td = tempfile::tempdir().unwrap();
     let (resp, effects) = dispatcher(td.path())
-        .dispatch_inner("u", "pr_merge", &Value::Null)
+        .dispatch_inner("u", "pr_rocket", &Value::Null)
         .await;
     assert!(!resp.ok);
-    assert_eq!(resp.error.as_deref(), Some("unknown op: pr_merge"));
+    assert_eq!(resp.error.as_deref(), Some("unknown op: pr_rocket"));
     assert!(effects.is_empty());
 }
 
