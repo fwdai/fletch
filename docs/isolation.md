@@ -174,6 +174,72 @@ After either clone, three fixups run (`sandbox/provision.rs`):
 - **A git identity is frozen** into the clone's own config, so in-container git
   (which can't see your global gitconfig) can commit without failing on "Please
   tell me who you are."
+- **Commit signing is switched off** in the clone's own config
+  (`commit.gpgsign=false`). The seatbelt engine, unlike a container, lets git
+  read your global gitconfig, so a `commit.gpgsign=true` there would reach the
+  sandbox while the key it names (`~/.ssh`, the ssh-agent, a gpg keyring) stays
+  denied — and every agent commit would fail with "failed to write commit
+  object". Your own repos keep signing; the clone's local scope outranks global.
+  Host-side git never signs implicitly in a checkout either (every invocation
+  inside an agent-writable tree carries `-c commit.gpgsign=false`): implicit
+  signing reads the key and its helpers — `user.signingKey`,
+  `gpg.ssh.defaultKeyCommand`, a *program* — from the checkout's config, which
+  is the agent's to write. In your own repositories Fletch's git signs as your
+  config asks, so the first commit of a new project is signed like any of
+  yours.
+
+### Signing on publish
+
+When **your repository** signs its commits (`commit.gpgsign=true` as your own
+`git commit` there would see it), Fletch signs agent work at the moment it is
+published. Every push Fletch makes — the agent's `git_push` and `open_pr` ops,
+the Git panel's Push, a workflow run's finalize, a new project's first
+publish — goes through one publication layer (`git::publish`), so none can
+skip it. For work made in a checkout it replaces the commits origin lacks with
+signed copies (same tree, parents, author, committer and message), moves the
+branch to the signed tip and pushes that. Published history keeps its hashes.
+Your own repository, when it is what gets pushed (a new project's first
+publish), goes out exactly as it stands: its commits already carry whatever
+signature your git gave them, and its history is yours, other committers and
+all.
+
+- **The signer runs in your repository, not the checkout.** `commit-tree -S`
+  reads its key and helper programs from the repo it runs in, so it runs in the
+  user-owned repo the checkout was cloned from — which no agent can write —
+  with the checkout supplying objects only. Nothing in a checkout's
+  `.git/config` can choose the key or run a command on the host.
+- **The remote refs are refreshed first**, so "what origin lacks" is origin's
+  answer and not a stale clone's; the own-committer check then runs over those
+  same refs, so signing never reaches a commit it did not.
+- **Every commit in the range is signed afresh.** The checkout's `.git` is
+  agent-writable, so a signature header already on a commit is only a claim.
+- The signature is made where the key lives and at the moment you approve the
+  push, so it vouches for exactly what you let out. A key the host cannot use
+  fails the push with the reason rather than publishing unsigned.
+
+### Why signing works this way
+
+A signature is a statement by whoever holds the key, so the design follows
+from who is taking responsibility for an agent's commits, and when. Fletch's
+answer is that the user is responsible and the agent is a tool: commits carry
+the user's identity, the host refuses a foreign committer, and the user
+approves each publish. The approval is the honest moment for the user's key to
+vouch, and it is the one place the key is reachable. Alternatives considered:
+
+- **Your key, or your ssh-agent, in the sandbox.** Rejected: an agent could
+  sign anything, at any time, and push over SSH past every host-side guard.
+  This is the hole the credential denies closed.
+- **A host-brokered `git commit` op.** Rejected: every commit becomes an RPC,
+  "local git is yours" stops being true, and the signature vouches for
+  intermediate commits nobody has looked at.
+- **A signing key per agent, in the sandbox** — the agent as a co-worker with
+  its own identity. Rejected for now: it is only coherent if the agent has an
+  identity GitHub recognises. A key registered on your account verifies as
+  you, which is the first option with extra steps; a bot account or GitHub App
+  means a different author and committer, so the frozen identity, the
+  own-committer push check and the attribution hook would all change. Worth
+  reopening if agents gain a GitHub identity of their own, for example on a
+  host shared by several people.
 
 ## What an agent can and cannot do
 
@@ -191,8 +257,10 @@ cannot go quietly unstated the way a doc caveat can. The
 **An agent CAN:**
 
 - **Read your disk — under seatbelt.** The seatbelt profile confines writes, not
-  reads; the agent runs as your user and can read anything you can. Under Docker
-  it can read only what is mounted into the container.
+  reads; the agent runs as your user and can read anything you can, except the
+  carve-outs the profile denies by name: Fletch's app data, the host's provider
+  logins, `~/.ssh`, the `gh` login, git's stored credentials and the Keychain.
+  Under Docker it can read only what is mounted into the container.
 - **Open network connections — under both engines.** Neither engine restricts
   the network. Seatbelt's `(allow default)` leaves it open; the Docker launch
   sets no `--network` flag, so the container gets the default bridge. Treat every
@@ -209,7 +277,21 @@ cannot go quietly unstated the way a doc caveat can. The
   sandbox. They are brokered: the agent writes a request to its RPC mailbox, and
   Fletch runs the operation **host-side**, where the credentials live
   (`rpc/git.rs`, ops `git_push`, `open_pr`, `git_fetch`). Credentials never enter
-  the sandbox.
+  the sandbox. Under seatbelt the profile also withholds your own, at their
+  standard locations: `~/.ssh` and the launchd ssh-agent socket (`SSH_AUTH_SOCK`
+  is dropped from the agent's env), the `gh` CLI login (`~/.config/gh`, plus
+  `$XDG_CONFIG_HOME/gh` and `$GH_CONFIG_DIR` when set), git's stored credentials
+  (`~/.git-credentials`, `~/.config/git/credentials`, plus
+  `$XDG_CONFIG_HOME/git/credentials`) and git's credential-cache socket
+  (`~/.cache/git/credential/socket`, `~/.git-credential-cache/socket`, plus
+  `$XDG_CACHE_HOME/git/credential/socket`). The home defaults are denied whether
+  or not a relocation is set: an agent can change those variables in its own
+  shell, and older files at the defaults would otherwise still work.
+  `GH_TOKEN` and `GITHUB_TOKEN` are stripped from the agent's env. Every sandbox
+  clone, and a workflow's run repo, gets a GitHub SSH origin rewritten to HTTPS,
+  so git inside the sandbox has no credential to publish with. Not covered: a
+  credential store or cache socket at a path only your git config names, or an
+  ssh-agent at another socket path (1Password, gpg-agent).
 
 **What publication *is* gated by.** Every brokered op is checked against the
 agent's **capability grant**, stamped when it spawns and never re-read, so a

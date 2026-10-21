@@ -10,6 +10,10 @@ use crate::rpc::Response;
 pub(super) struct Target {
     pub(super) subdir: Option<String>,
     pub(super) cwd: PathBuf,
+    /// The user's own repository `cwd` was cloned from: where a publish reads
+    /// its signing config and signs (`git::publish`). Never `cwd`, which the
+    /// agent writes.
+    pub(super) source_repo: PathBuf,
     pub(super) base_branch: String,
     /// The force-push anchor. `None` until the host has recorded the branch and the
     /// dispatcher was rebuilt, which fails a force closed.
@@ -27,15 +31,17 @@ impl GitDispatcher {
             None => Ok(Target {
                 subdir: self.default_subdir.clone(),
                 cwd: self.cwd.clone(),
+                source_repo: self.source_repo.clone(),
                 base_branch: self.base_branch.clone(),
                 own_branch: self.own_branch.clone(),
             }),
             Some(name) => match self.repos.get(name) {
-                Some((cwd, base, own)) => Ok(Target {
+                Some(repo) => Ok(Target {
                     subdir: Some(name.to_string()),
-                    cwd: cwd.clone(),
-                    base_branch: base.clone(),
-                    own_branch: own.clone(),
+                    cwd: repo.cwd.clone(),
+                    source_repo: repo.source_repo.clone(),
+                    base_branch: repo.base_branch.clone(),
+                    own_branch: repo.own_branch.clone(),
                 }),
                 None => {
                     let mut known: Vec<&str> = self.repos.keys().map(String::as_str).collect();

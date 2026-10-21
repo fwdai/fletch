@@ -171,6 +171,7 @@ async fn open_pr_base_override_does_not_unlock_the_recorded_base() {
 
     let disp = GitDispatcher::new(
         repo.clone(),
+        repo.clone(),
         "release/2.0".to_string(),
         AgentCaps::interactive(),
     );

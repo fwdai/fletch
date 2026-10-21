@@ -1098,7 +1098,13 @@ impl Supervisor {
             // when the host materialized it. Threaded here so a force push is
             // fenced to it; `None` until the branch exists and this dispatcher is
             // rebuilt on the next resume/turn (see `rpc::caps::refuses_force`).
-            repo_targets.push((r.subdir.clone(), checkout, base, r.branch.clone()));
+            repo_targets.push(rpc::git::RepoTarget {
+                subdir: r.subdir.clone(),
+                cwd: checkout,
+                source_repo: r.repo_path.clone(),
+                base_branch: base,
+                own_branch: r.branch.clone(),
+            });
         }
         // A workspace started from an issue carries its ref here ("123" for
         // GitHub, "ENG-123" for Linear); it seeds the agent's live issue ref,
@@ -1118,10 +1124,11 @@ impl Supervisor {
             (_, Some(_)) => rpc::caps::AgentCaps::run_owned(),
             _ => rpc::caps::AgentCaps::interactive(),
         };
-        let git_dispatcher = rpc::git::GitDispatcher::new(cwd.clone(), base_branch, caps)
-            .with_repos(repo_targets)
-            .with_close_issue(agent_id, close_issue)
-            .with_approval(ctx.sink.clone(), agent_id);
+        let git_dispatcher =
+            rpc::git::GitDispatcher::new(cwd.clone(), primary.repo_path.clone(), base_branch, caps)
+                .with_repos(repo_targets)
+                .with_close_issue(agent_id, close_issue)
+                .with_approval(ctx.sink.clone(), agent_id);
         // A run-owned step agent also gets the workflow comms ops (wf_report /
         // wf_ask / wf_notify, §10); a roadmap PM chat gets the roadmap ops
         // (roadmap_list / roadmap_propose), scoped to its own project. Both

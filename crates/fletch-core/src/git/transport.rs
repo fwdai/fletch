@@ -7,34 +7,6 @@ use crate::error::{Error, Result};
 
 use super::cmd::{git_output, git_output_env, identity_env, merge_git_env, output_timed, run_git};
 
-/// Push the detached `HEAD` to `refs/heads/<branch>` on `origin`, creating the
-/// remote branch without needing a local one (so it never collides with a
-/// linked worktree's checkout). Same auth as [`push`], so the https transport
-/// authenticates with the app's token; a workspace `pre-push` hook cannot fire
-/// because hooks are neutralised at the spawn seam (`git::hardening`).
-pub async fn push_head_to_branch(checkout: &Path, branch: &str) -> Result<()> {
-    // A push over ssh or a local path runs the transport-executing config keys
-    // `remote.<origin>.receivepack`, `core.sshCommand` and `core.gitProxy` — which
-    // `config_overrides` deliberately omits (they carry a user's real auth), so
-    // neither hardening layer neutralises them for push. Refuse a steerable
-    // checkout here, before the transport runs a planted one. Scoped to
-    // `checkouts_root`, so a push against a non-agent target is a no-op.
-    super::hardening::refuse_steerable_config(checkout).await?;
-    let mut cmd = crate::git_dist::command(checkout);
-    cmd.args(["push", "origin", &format!("HEAD:refs/heads/{branch}")]);
-    for (k, v) in crate::github::git_auth_env() {
-        cmd.env(k, v);
-    }
-    let out = output_timed(&mut cmd, "git push").await?;
-    if !out.status.success() {
-        return Err(Error::Git(format!(
-            "push failed: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        )));
-    }
-    Ok(())
-}
-
 /// Push the current branch to `origin`. Uses `-u` to set the upstream
 /// tracking ref on the first push.
 /// When `force` is set, pushes with `--force-with-lease --force-if-includes`:
@@ -64,7 +36,8 @@ pub async fn push_head_to_branch(checkout: &Path, branch: &str) -> Result<()> {
 /// redirect to a trunk. This primitive is the single choke point behind every
 /// push caller (agent broker, PR broker, Git panel, publish), so the defence
 /// lives here.
-pub async fn push(checkout: &Path, branch: &str, force: bool) -> Result<String> {
+#[cfg(test)]
+pub(super) async fn push(checkout: &Path, branch: &str, force: bool) -> Result<String> {
     let source = format!("refs/heads/{branch}");
     push_source(checkout, &source, branch, force).await
 }
@@ -73,7 +46,9 @@ pub async fn push(checkout: &Path, branch: &str, force: bool) -> Result<String> 
 /// just read, so nothing that lands on the branch between the check and the
 /// push is published. The lease applies as it does for `push`. Git sets no
 /// upstream for a non-branch source, so the tracking ref is set afterwards.
-pub async fn push_commit(
+/// Private to `git`: [`super::publish`] is the one caller, so no push can skip
+/// what publishing involves.
+pub(super) async fn push_commit(
     checkout: &Path,
     commit: &str,
     branch: &str,
@@ -405,17 +380,7 @@ mod tests {
     }
 
     async fn git_ok(dir: &Path, args: &[&str]) {
-        let out = Command::new("git")
-            .current_dir(dir)
-            .args(args)
-            .output()
-            .await
-            .unwrap();
-        assert!(
-            out.status.success(),
-            "git {args:?}: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
+        super::super::testing::git(dir, args);
     }
 
     async fn rev(dir: &Path, refname: &str) -> String {

@@ -166,9 +166,83 @@ pub async fn pr_reply_thread(thread_id: &str, body: &str) -> Result<()> {
     Ok(())
 }
 
+/// GraphQL caps a connection page at this many nodes.
+pub const CONVERSATION_COMMENTS_MAX: u32 = 100;
+
+/// The newest `last` conversation comments on a PR, oldest first, by number.
+/// One request: GraphQL's `comments(last:N)` reads the tail of the
+/// conversation directly, where the REST list is oldest-first and paged, so
+/// its first page is exactly the part a long conversation does not need.
+///
+/// `Ok(None)` when the PR or slug can't be resolved, with no token, or while a
+/// rate-limit backoff is active — callers that need to tell those apart check
+/// them before calling. `last` is clamped to [`CONVERSATION_COMMENTS_MAX`].
+pub async fn pr_conversation_comments(
+    checkout: &Path,
+    number: u32,
+    last: u32,
+) -> Result<Option<Vec<PrConversationComment>>> {
+    let last = last.clamp(1, CONVERSATION_COMMENTS_MAX);
+    let fields = format!(
+        "comments(last:{last}){{ nodes{{ author{{ login __typename }} body createdAt url }} }}"
+    );
+    let Some((node, _viewer)) = pr_node_and_viewer(checkout, None, number, &fields).await? else {
+        return Ok(None);
+    };
+    Ok(Some(parse_conversation_comments(&node)))
+}
+
+/// Pure extractor for [`pr_conversation_comments`]'s selection.
+pub(crate) fn parse_conversation_comments(pr: &Value) -> Vec<PrConversationComment> {
+    pr["comments"]["nodes"]
+        .as_array()
+        .map(|nodes| {
+            nodes
+                .iter()
+                .map(|c| PrConversationComment {
+                    author: c["author"]["login"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_string(),
+                    is_bot: c["author"]["__typename"].as_str() == Some("Bot"),
+                    body: c["body"].as_str().unwrap_or_default().to_string(),
+                    created_at: c["createdAt"].as_str().unwrap_or_default().to_string(),
+                    url: c["url"].as_str().unwrap_or_default().to_string(),
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A deleted author is `null`; a bot is told apart by `__typename`.
+    #[test]
+    fn conversation_comments_parse_authors_bots_and_ghosts() {
+        let pr = json!({
+            "comments": { "nodes": [
+                { "author": { "login": "octocat", "__typename": "User" },
+                  "body": "first", "createdAt": "2026-10-19T10:00:00Z",
+                  "url": "https://github.com/o/r/pull/1#issuecomment-1" },
+                { "author": { "login": "greptile-apps", "__typename": "Bot" },
+                  "body": "review", "createdAt": "2026-10-19T11:00:00Z",
+                  "url": "https://github.com/o/r/pull/1#issuecomment-2" },
+                { "author": null, "body": "gone", "createdAt": "2026-10-19T12:00:00Z",
+                  "url": "https://github.com/o/r/pull/1#issuecomment-3" }
+            ] }
+        });
+        let got = parse_conversation_comments(&pr);
+        assert_eq!(got.len(), 3);
+        assert_eq!(got[0].author, "octocat");
+        assert!(!got[0].is_bot);
+        assert!(got[1].is_bot);
+        assert_eq!(got[2].author, "");
+        assert_eq!(got[2].body, "gone");
+        assert_eq!(got[1].url, "https://github.com/o/r/pull/1#issuecomment-2");
+        assert!(parse_conversation_comments(&json!({})).is_empty());
+    }
 
     fn review_threads_fixture() -> Vec<Value> {
         serde_json::from_str(

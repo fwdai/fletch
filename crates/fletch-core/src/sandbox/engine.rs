@@ -193,6 +193,10 @@ pub struct LaunchPlan {
     pub program: std::path::PathBuf,
     pub prefix_args: Vec<String>,
     pub env: Vec<(String, String)>,
+    /// Vars to strip from the child's inherited and login-shell env (merged
+    /// into the session's `env_remove`, applied before `env`). Seatbelt drops
+    /// `SSH_AUTH_SOCK` here; the container engines pass no host env to strip.
+    pub env_remove: Vec<String>,
     pub kill: KillHandle,
 }
 

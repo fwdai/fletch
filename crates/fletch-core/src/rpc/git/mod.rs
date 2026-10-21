@@ -1,5 +1,6 @@
 mod args;
 mod commands;
+mod pr_reads;
 mod publishing;
 mod review_threads;
 mod targets;
@@ -45,15 +46,32 @@ fn is_signalable_action(action: &str) -> bool {
     matches!(action, "git_commit" | "git_update_branch")
 }
 
+/// One checkout the dispatcher can act on, as `with_repos` records it.
+#[derive(Clone)]
+pub struct RepoTarget {
+    /// The checkout's folder name under the agent dir; what `args.repo` names.
+    pub subdir: String,
+    pub cwd: PathBuf,
+    /// The user's own repository `cwd` was cloned from (`Target::source_repo`).
+    pub source_repo: PathBuf,
+    pub base_branch: String,
+    /// The agent's own branch on this checkout, once the host recorded it.
+    pub own_branch: Option<String>,
+}
+
 #[derive(Clone)]
 pub struct GitDispatcher {
     cwd: PathBuf,
+    /// The user's own repository `cwd` was cloned from — required, never
+    /// defaulted to `cwd`: a publish reads its signing config there, and `cwd`
+    /// is the agent's to write.
+    source_repo: PathBuf,
     base_branch: String,
     default_subdir: Option<String>,
     /// Force-push anchor for the default checkout; `None` fails a force closed.
     own_branch: Option<String>,
     /// Primary included. Empty without `with_repos`, so `args.repo` is then rejected.
-    repos: std::collections::HashMap<String, (PathBuf, String, Option<String>)>,
+    repos: std::collections::HashMap<String, RepoTarget>,
     /// Resolved at open_pr time, not construction, so a mid-session issue pick
     /// reaches the closing trailer.
     issue_agent: Option<String>,
@@ -65,10 +83,12 @@ pub struct GitDispatcher {
 }
 
 impl GitDispatcher {
-    /// `caps` is required rather than defaulted: its wrong value is a security bug.
-    pub fn new(cwd: PathBuf, base_branch: String, caps: AgentCaps) -> Self {
+    /// `caps` is required rather than defaulted: its wrong value is a security
+    /// bug. So is `source_repo`, for the same reason (see the field).
+    pub fn new(cwd: PathBuf, source_repo: PathBuf, base_branch: String, caps: AgentCaps) -> Self {
         Self {
             cwd,
+            source_repo,
             base_branch,
             default_subdir: None,
             own_branch: None,
@@ -96,14 +116,14 @@ impl GitDispatcher {
         self
     }
 
-    pub fn with_repos(mut self, repos: Vec<(String, PathBuf, String, Option<String>)>) -> Self {
+    pub fn with_repos(mut self, repos: Vec<RepoTarget>) -> Self {
         self.repos = repos
             .into_iter()
-            .map(|(subdir, cwd, base, own)| (subdir, (cwd, base, own)))
+            .map(|repo| (repo.subdir.clone(), repo))
             .collect();
-        let primary = self.repos.iter().find(|(_, (cwd, _, _))| *cwd == self.cwd);
-        self.default_subdir = primary.map(|(subdir, _)| subdir.clone());
-        self.own_branch = primary.and_then(|(_, (_, _, own))| own.clone());
+        let primary = self.repos.values().find(|repo| repo.cwd == self.cwd);
+        self.default_subdir = primary.map(|repo| repo.subdir.clone());
+        self.own_branch = primary.and_then(|repo| repo.own_branch.clone());
         self
     }
 
@@ -116,6 +136,9 @@ impl GitDispatcher {
             "git_push" => self.git_push(id, args).await,
             "git_fetch" => (self.git_fetch(id, args).await, Vec::new()),
             "signal_git_action" => self.signal_git_action(id, args),
+            "pr_view" => (self.pr_view(id, args).await, Vec::new()),
+            "pr_checks" => (self.pr_checks(id, args).await, Vec::new()),
+            "pr_comments" => (self.pr_comments(id, args).await, Vec::new()),
             "pr_threads" => (self.pr_threads(id, args).await, Vec::new()),
             "reply_thread" => (self.reply_thread(id, args).await, Vec::new()),
             "resolve_thread" => (self.resolve_thread(id, args).await, Vec::new()),

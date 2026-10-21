@@ -234,8 +234,9 @@ pub fn multi_repo_workspace_note(repos: &[crate::workspace::TrackedRepo]) -> Opt
          under the workspace root:\n\n{lines}\n\
          Work across whichever checkouts the task requires (e.g. `cd ../{}`), committing per \
          repository with plain git. The host git ops (`git_push`, `open_pr`, `git_fetch`, \
-         `git_status`) target your starting repository by default — pass `\"repo\": \
-         \"<checkout dir name>\"` inside `args` to run one against a sibling checkout instead.",
+         `git_status`, and the `pr_*` reads) target your starting repository by default — pass \
+         `\"repo\": \"<checkout dir name>\"` inside `args` to run one against a sibling checkout \
+         instead.",
         repos.len(),
         repos[1].subdir,
     ))

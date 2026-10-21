@@ -143,16 +143,9 @@ mod tests {
     use super::super::worktree::{commit_all, init_repo};
     use super::*;
     use std::path::PathBuf;
-    use tokio::process::Command;
 
     async fn config(repo: &Path, key: &str, val: &str) {
-        let out = Command::new("git")
-            .current_dir(repo)
-            .args(["config", key, val])
-            .output()
-            .await
-            .unwrap();
-        assert!(out.status.success());
+        crate::git::testing::git(repo, &["config", key, val]);
     }
 
     async fn commit(repo: &Path, file: &str, body: &str) -> String {
@@ -174,13 +167,7 @@ mod tests {
             .unwrap();
 
         let clone = td.join("clone");
-        let out = Command::new("git")
-            .current_dir(td)
-            .args(["clone", source.to_str().unwrap(), "clone"])
-            .output()
-            .await
-            .unwrap();
-        assert!(out.status.success());
+        crate::git::testing::git(td, &["clone", source.to_str().unwrap(), "clone"]);
         config(&clone, "user.email", "t@example.com").await;
         config(&clone, "user.name", "Tester").await;
         let tip = rev_parse(&clone, "refs/remotes/origin/main").await.unwrap();

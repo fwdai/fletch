@@ -312,16 +312,9 @@ mod tests {
     use super::super::worktree::{commit_all, init_repo};
     use super::*;
     use std::path::PathBuf;
-    use tokio::process::Command;
 
     async fn config(repo: &Path, key: &str, val: &str) {
-        let out = Command::new("git")
-            .current_dir(repo)
-            .args(["config", key, val])
-            .output()
-            .await
-            .unwrap();
-        assert!(out.status.success());
+        crate::git::testing::git(repo, &["config", key, val]);
     }
 
     #[tokio::test]
@@ -359,13 +352,7 @@ mod tests {
 
         // `source` is the user's repo, cloned before upstream advanced.
         let source = td.path().join("source");
-        let out = Command::new("git")
-            .current_dir(td.path())
-            .args(["clone", upstream.to_str().unwrap(), "source"])
-            .output()
-            .await
-            .unwrap();
-        assert!(out.status.success());
+        crate::git::testing::git(td.path(), &["clone", upstream.to_str().unwrap(), "source"]);
 
         // Upstream advances; the source's local `main` is now stale.
         std::fs::write(upstream.join("b.txt"), b"two").unwrap();
@@ -396,13 +383,7 @@ mod tests {
             .unwrap();
 
         let clone = td.join("clone");
-        let out = Command::new("git")
-            .current_dir(td)
-            .args(["clone", upstream.to_str().unwrap(), "clone"])
-            .output()
-            .await
-            .unwrap();
-        assert!(out.status.success());
+        crate::git::testing::git(td, &["clone", upstream.to_str().unwrap(), "clone"]);
         (upstream, clone)
     }
 

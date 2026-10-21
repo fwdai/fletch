@@ -198,6 +198,7 @@ impl SandboxEngine for PodmanEngine {
             program: podman,
             prefix_args,
             env: prep.env,
+            env_remove: Vec::new(),
             kill: KillHandle::Engine {
                 engine: PodmanEngine::shared(),
                 plan: KillPlan::Container { name, connection },

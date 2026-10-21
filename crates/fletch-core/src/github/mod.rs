@@ -30,12 +30,16 @@ pub use client::{git_auth_env, seed_token, set_token, TOKEN_SETTING};
 pub(crate) use closes::with_closes_trailer;
 
 pub use checks::*;
-pub use comments::{pr_reply_thread, pr_resolve_thread, pr_threads_number};
+pub use comments::{
+    pr_conversation_comments, pr_reply_thread, pr_resolve_thread, pr_threads_number,
+    CONVERSATION_COMMENTS_MAX,
+};
 pub use issues::*;
 pub use live::*;
 pub use pr::*;
+pub use query::github_https_remote;
 pub use repo::*;
 pub use types::*;
 
 pub(crate) use pr::{pr_body, pr_body_and_merge, pr_files, pr_update_body};
-pub(crate) use query::{pr_status_batch, resolve_slug, PrBatchRow, PrRef};
+pub(crate) use query::{pr_status_batch, repo_ref, resolve_slug, PrBatchRow, PrRef};

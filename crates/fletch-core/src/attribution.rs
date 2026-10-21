@@ -434,16 +434,7 @@ mod tests {
     async fn agent_start_installs_the_hook_in_a_checkout_that_predates_it() {
         let td = tempfile::tempdir().unwrap();
         let git = |dir: &Path, args: &[&str]| {
-            let out = std::process::Command::new("git")
-                .current_dir(dir)
-                .args(args)
-                .output()
-                .unwrap();
-            assert!(
-                out.status.success(),
-                "{}",
-                String::from_utf8_lossy(&out.stderr)
-            );
+            crate::git::testing::git(dir, args);
         };
         let source = td.path().join("source");
         std::fs::create_dir_all(&source).unwrap();

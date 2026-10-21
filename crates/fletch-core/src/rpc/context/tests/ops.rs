@@ -477,11 +477,7 @@ async fn a_live_repo_addition_is_seen_and_routes_to_its_own_checkout() {
     fn checkout(path: &std::path::Path, marker: &str) -> String {
         std::fs::create_dir_all(path).unwrap();
         let git = |args: &[&str]| {
-            let output = std::process::Command::new("git")
-                .current_dir(path)
-                .args(args)
-                .output()
-                .unwrap();
+            let output = crate::git::testing::git_output(path, args);
             assert!(
                 output.status.success(),
                 "git {args:?}: {}",

@@ -45,6 +45,23 @@ macro_rules! git_config_host_backstop {
     };
 }
 
+/// The engine-independent half of [`Guarantee::HostHeldCredentials`]'s
+/// shortfall: what gates the brokered publish ops. A macro for the same reason
+/// as [`git_config_host_backstop`]: one copy of user-facing text, prefixed per
+/// engine.
+macro_rules! brokered_publish_gating {
+    () => {
+        "The brokered publish ops are capability-gated (crate::rpc::caps): a workflow step \
+         agent cannot publish at all, and no agent can push the branch its work is reviewed \
+         against. Approval for the act itself (crate::rpc::approval) is available but OFF by \
+         default, so until it is enabled an agent publishes its own branch under your identity \
+         without asking. Enabling it does not disturb autopilot or a clicked Git action — both \
+         are recognised as already authorized — but it remains a secondary control either way: \
+         with egress unrestricted, an agent never needed git_push to exfiltrate, so what this \
+         gains is attribution, not confidentiality"
+    };
+}
+
 /// A security property Fletch's isolation claims.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Guarantee {
@@ -143,7 +160,9 @@ impl Guarantee {
 
             (Self::ConfinedReads, SandboxExec) => Coverage::Unenforced(
                 "the profile starts from (allow default) and confines writes only — the agent \
-                 runs as you and can read anything you can",
+                 runs as you and can read anything you can, except the carve-outs it denies by \
+                 name: Fletch's app data, the host's provider logins, ~/.ssh, ~/.config/gh and \
+                 the Keychain",
             ),
             // Both container runtimes mount only the paths `container::run_args`
             // lists, so nothing else on the disk is reachable to read.
@@ -156,17 +175,29 @@ impl Guarantee {
 
             // Push/PR never run in the sandbox — they are brokered host-side
             // (`crate::rpc::git`), so no credential enters an agent's process.
-            (Self::HostHeldCredentials, _) => Coverage::Partial(
-                "credentials stay host-side, and the brokered publish ops are capability-gated \
-                 (crate::rpc::caps): a workflow step agent cannot publish at all, and no agent \
-                 can push the branch its work is reviewed against. Approval for the act itself \
-                 (crate::rpc::approval) is available but OFF by default, so until it is enabled an \
-                 agent publishes its own branch under your identity without asking. Enabling it \
-                 does not disturb autopilot or a clicked Git action — both are recognised as \
-                 already authorized — but it remains a secondary control either way: with egress \
-                 unrestricted, an agent never needed git_push to exfiltrate, so what this gains is \
-                 attribution, not confidentiality",
-            ),
+            // Seatbelt shares the host filesystem and env, so it has to withhold
+            // the user's own git credentials by name (`seatbelt::
+            // deny_host_git_credentials`); a container never had them.
+            (Self::HostHeldCredentials, SandboxExec) => Coverage::Partial(concat!(
+                "credentials stay host-side: the profile also withholds your own at their \
+                 standard locations — ~/.ssh and the launchd ssh-agent socket, the gh login \
+                 (~/.config/gh, plus $XDG_CONFIG_HOME/gh and $GH_CONFIG_DIR when set), git's \
+                 stored credentials (~/.git-credentials, ~/.config/git/credentials, plus \
+                 $XDG_CONFIG_HOME/git/credentials) and its credential-cache socket \
+                 (~/.cache/git/credential/socket, ~/.git-credential-cache/socket, plus \
+                 $XDG_CACHE_HOME/git/credential/socket) — strips GH_TOKEN and GITHUB_TOKEN from the \
+                 agent's env, and sandbox clones use an HTTPS GitHub origin, so git in the \
+                 sandbox has no credential path. Not covered: a credential store or cache \
+                 socket at a path only your git config names, or an ssh-agent at another \
+                 socket path (1Password, gpg-agent). ",
+                brokered_publish_gating!(),
+            )),
+            (Self::HostHeldCredentials, Docker | Podman) => Coverage::Partial(concat!(
+                "credentials stay host-side: no GitHub credential is mounted or passed in, and \
+                 sandbox clones use an HTTPS GitHub origin, so git in the sandbox has no \
+                 credential path. ",
+                brokered_publish_gating!(),
+            )),
         }
     }
 

@@ -65,9 +65,16 @@ use crate::error::{Error, Result};
 /// is why membership is limited to keys Fletch's automated git never legitimately
 /// needs. Deliberately absent: `credential.helper`, `core.sshCommand` and
 /// `gpg.program`. Each carries a user's real remote auth or signing setup, so
-/// clearing it would break `fetch` against a non-GitHub remote or an initial
-/// commit under `commit.gpgsign` — and each needs a config *write* to exploit,
-/// which policy invariant 3 denies. The boundary belongs there, not here.
+/// clearing it would break `fetch` against a non-GitHub remote or the signer
+/// (`git::signing`), which runs in the user's own repo — and each needs a
+/// config *write* to exploit, which policy invariant 3 denies. The boundary
+/// belongs there, not here.
+///
+/// `commit.gpgsign` / `tag.gpgsign` are deliberately absent too, for the same
+/// reason: a user's own repository signs its commits as its config asks, and
+/// Fletch's commits there (a new project's first commit, an unborn HEAD
+/// seeded on adoption) must sign like any of the user's. Inside an
+/// agent-writable tree they are switched off — [`NO_IMPLICIT_SIGNING`].
 ///
 /// Verified against git 2.50: without its row, each of `core.hooksPath` and
 /// `core.fsmonitor` executes agent-authored code host-side.
@@ -90,11 +97,45 @@ const NEUTRALISED: &[(&str, &str)] = &[
     ("sequence.editor", "false"),    // `rebase -i`'s todo-list editor, same hazard
 ];
 
+/// Implicit signing, switched off — for host-side git inside an
+/// **agent-writable tree** only. Implicit signing reads its key and helpers
+/// (`user.signingKey`, `gpg.format`, `gpg.ssh.defaultKeyCommand` — a
+/// *program*) from the repository's config, and host-side git commits inside
+/// agent checkouts (the Git panel's commit, a `pull`'s merge, a workflow
+/// boundary commit). An agent's local config must never choose the host's
+/// signing key or run a key command, so inside those trees host-side git
+/// never signs implicitly; agent work is signed in one place only, the
+/// publication layer (`git::publish`), explicitly (`-S`) and with the config
+/// of the user's own repository. That repository is outside every such tree,
+/// so Fletch's commits there sign as the user's config asks.
+const NO_IMPLICIT_SIGNING: &[(&str, &str)] =
+    &[("commit.gpgsign", "false"), ("tag.gpgsign", "false")];
+
 /// The `-c key=value` arguments that make a host-side git invocation safe to run
 /// against a repository Fletch does not control the config of.
 pub(crate) fn config_overrides() -> Vec<String> {
-    NEUTRALISED
-        .iter()
+    c_flags(NEUTRALISED)
+}
+
+/// The `-c` arguments for a host-side git invocation **in `dir`**: every
+/// [`config_overrides`] row, plus [`NO_IMPLICIT_SIGNING`] when `dir` is inside
+/// an agent-writable tree ([`agent_writable_root`]).
+pub(crate) fn config_overrides_for(dir: &Path) -> Vec<String> {
+    config_overrides_scoped(agent_writable_root(dir).is_some())
+}
+
+/// Pure seam of [`config_overrides_for`]: the flags for a directory that is
+/// (`agent_writable`) or is not inside an agent-writable tree.
+fn config_overrides_scoped(agent_writable: bool) -> Vec<String> {
+    let mut flags = config_overrides();
+    if agent_writable {
+        flags.extend(c_flags(NO_IMPLICIT_SIGNING));
+    }
+    flags
+}
+
+fn c_flags(rows: &[(&str, &str)]) -> Vec<String> {
+    rows.iter()
         .flat_map(|(key, value)| ["-c".to_string(), format!("{key}={value}")])
         .collect()
 }
@@ -118,6 +159,10 @@ const EXEC_CONFIG: &[(&str, &str)] = &[
     ("core", "gitproxy"),
     ("core", "alternaterefscommand"),
     ("gpg", "program"),
+    // `gpg.ssh.defaultKeyCommand`: run to pick a signing key. Unreachable now
+    // that host-side git never signs in a checkout (`NO_IMPLICIT_SIGNING`),
+    // kept as the second wall.
+    ("gpg", "defaultkeycommand"),
     ("credential", "helper"),
     ("diff", "external"),
     // The wildcard family — the reason this check exists at all.
@@ -481,13 +526,34 @@ mod tests {
         );
     }
 
+    /// Implicit signing is switched off inside an agent-writable tree and
+    /// nowhere else: the user's own repository, where Fletch seeds a first
+    /// commit, signs as its config asks.
+    #[test]
+    fn implicit_signing_is_off_only_in_agent_writable_trees() {
+        let inside = config_overrides_scoped(true);
+        assert_eq!(
+            value_of(&inside, "commit.gpgsign").as_deref(),
+            Some("false")
+        );
+        assert_eq!(value_of(&inside, "tag.gpgsign").as_deref(), Some("false"));
+        let outside = config_overrides_scoped(false);
+        assert_eq!(value_of(&outside, "commit.gpgsign"), None);
+        assert_eq!(value_of(&outside, "tag.gpgsign"), None);
+        assert_eq!(outside, config_overrides());
+        // Neither list is in the other.
+        for (key, _) in NO_IMPLICIT_SIGNING {
+            assert!(!NEUTRALISED.iter().any(|(k, _)| k == key), "{key}");
+        }
+    }
+
     /// A key the `-c` overrides already neutralise can never reach host-side git,
     /// so refusing it only bricks the checkout — which is exactly what a
     /// husky-style `prepare` script (`git config core.hooksPath .githooks`) did on
     /// every `npm install`. The two lists must stay disjoint.
     #[test]
     fn neutralised_keys_are_never_refused() {
-        for (key, _) in NEUTRALISED {
+        for (key, _) in NEUTRALISED.iter().chain(NO_IMPLICIT_SIGNING) {
             assert!(
                 !executes_a_program(key),
                 "{key} is neutralised by -c, so refusing it gains nothing"
@@ -526,13 +592,7 @@ mod tests {
         let root = td.path().join("workspaces");
         let repo = root.join("agent-1/repo");
         std::fs::create_dir_all(&repo).unwrap();
-        let git = |args: &[&str]| {
-            std::process::Command::new("git")
-                .current_dir(&repo)
-                .args(args)
-                .output()
-                .expect("git")
-        };
+        let git = |args: &[&str]| crate::git::testing::git_output(&repo, args);
         git(&["init", "-q"]);
 
         // Clean to begin with, so a false positive would show up here first.
@@ -573,13 +633,7 @@ mod tests {
         let root = td.path().join("workspaces");
         let repo = root.join("agent-1/repo");
         std::fs::create_dir_all(&repo).unwrap();
-        let git = |args: &[&str]| {
-            std::process::Command::new("git")
-                .current_dir(&repo)
-                .args(args)
-                .output()
-                .expect("git")
-        };
+        let git = |args: &[&str]| crate::git::testing::git_output(&repo, args);
         git(&["init", "-q"]);
 
         // Clean to begin with, so a false positive would show up here first.
@@ -617,13 +671,7 @@ mod tests {
         let root = td.path().join("workspaces");
         let repo = root.join("agent-1/repo");
         std::fs::create_dir_all(&repo).unwrap();
-        let git = |args: &[&str]| {
-            std::process::Command::new("git")
-                .current_dir(&repo)
-                .args(args)
-                .output()
-                .expect("git")
-        };
+        let git = |args: &[&str]| crate::git::testing::git_output(&repo, args);
         git(&["init", "-q"]);
 
         // Each key git would execute during ssh/local push or fetch must trip the
@@ -661,13 +709,7 @@ mod tests {
         let repo = root.join("agent-1/repo");
         std::fs::create_dir_all(&repo).unwrap();
         let dir = repo.clone();
-        let git = move |args: &[&str]| {
-            std::process::Command::new("git")
-                .current_dir(&dir)
-                .args(args)
-                .output()
-                .expect("git")
-        };
+        let git = move |args: &[&str]| crate::git::testing::git_output(&dir, args);
         git(&["init", "-q"]);
         (td, root, repo, git)
     }
@@ -750,13 +792,7 @@ mod tests {
         let fired = td.path().join("fired");
         std::fs::create_dir_all(&repo).unwrap();
 
-        let git = |args: &[&str]| {
-            std::process::Command::new("git")
-                .current_dir(&repo)
-                .args(args)
-                .output()
-                .expect("git")
-        };
+        let git = |args: &[&str]| crate::git::testing::git_output(&repo, args);
         // Every invocation past the plant carries the overrides — an unhardened
         // `add` would trip the fsmonitor itself and mask the result.
         let overrides = config_overrides();
@@ -811,13 +847,7 @@ mod tests {
         let repo = root.join("agent-1/repo");
         let fired = td.path().join("fired");
         std::fs::create_dir_all(repo.join(".githooks")).unwrap();
-        let git = |args: &[&str]| {
-            std::process::Command::new("git")
-                .current_dir(&repo)
-                .args(args)
-                .output()
-                .expect("git")
-        };
+        let git = |args: &[&str]| crate::git::testing::git_output(&repo, args);
         let overrides = config_overrides();
         let hardened = |args: &[&str]| {
             let mut all: Vec<&str> = overrides.iter().map(String::as_str).collect();

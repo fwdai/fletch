@@ -2101,12 +2101,7 @@ pub(super) mod tests {
         let checkout = td.path().join("checkout");
         std::fs::create_dir_all(&checkout).unwrap();
         let git = |args: &[&str]| {
-            let out = std::process::Command::new("git")
-                .current_dir(&checkout)
-                .args(args)
-                .output()
-                .unwrap();
-            assert!(out.status.success(), "git {args:?}");
+            crate::git::testing::git(&checkout, args);
         };
         git(&["init", "-q", "-b", "main"]);
         git(&[

@@ -5,7 +5,7 @@ name = "fletch-core"
 # four agree. This is the version a paired client reads as `HostInfo.appVersion`
 # (`remote::mod`), so a crate version of its own would report a number no
 # release ever had. Bump all four together; see docs/RELEASING.md.
-version = "0.8.11"
+version = "0.8.12"
 description = "The Fletch engine: agents, sandboxes, workspaces, workflows and the remote host, with no Tauri in the dependency graph"
 authors = ["Alex Chaplinsky", "fwdai.org"]
 license = "AGPL-3.0-only"
@@ -88,6 +88,11 @@ security-framework = "3"
 
 [dev-dependencies]
 tempfile = "3"
+# Runs `git::testing::isolate_git_config` before any test: the test process
+# sees no global or system git config, so neither fixtures nor the code under
+# test read the developer's own (a signing policy there failed every fixture
+# commit on a machine whose key the test process cannot reach).
+ctor = "0.2"
 # `test-util` unlocks the paused-time test clock (`#[tokio::test(start_paused)]`)
 # the workflow attempt tests use to exercise spawn/turn/stall deadlines
 # deterministically. Test-only (unioned with the runtime `full` feature); it

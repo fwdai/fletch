@@ -92,10 +92,15 @@ async fn seed_identity(source_repo: &Path, dest: &Path) -> Result<()> {
 /// push reaches the user's remote, not the local source path). Removes the
 /// clone's local-path `origin` when the source has none — the same discipline as
 /// `sandbox/provision.rs::rewrite_origin`.
+///
+/// A github.com SSH remote is written in its HTTPS form, always, as the
+/// sandbox clones are: workflow step agents adopt this tree inside the
+/// sandbox, and over SSH their git would publish with the user's key,
+/// bypassing the host-brokered git ops. Over HTTPS it has no credential.
 async fn rewrite_origin(source_repo: &Path, dest: &Path) -> Result<()> {
     let out = git::git_output(source_repo, &["remote", "get-url", "origin"]).await?;
     if out.status.success() {
-        let url = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        let url = crate::github::github_https_remote(&String::from_utf8_lossy(&out.stdout));
         git::run_git(
             dest,
             &["remote", "set-url", "origin", &url],
@@ -209,19 +214,41 @@ pub struct FinalizeOutcome {
     pub pr_error: Option<String>,
 }
 
+/// What [`finalize`] publishes.
+#[derive(Clone, Copy)]
+pub struct Finalize<'a> {
+    pub run_repo: &'a Path,
+    /// The user's repo the run was cloned from; decides and does the signing.
+    pub source_repo: &'a Path,
+    /// The pinned ref whose commit is pushed.
+    pub final_ref: &'a str,
+    /// The `wf/` run branch on origin.
+    pub branch: &'a str,
+    pub base: &'a str,
+    pub title: &'a str,
+    pub body: &'a str,
+    pub open_pr: bool,
+}
+
 /// Push the run branch to the origin from the **run repo** (§12.2) — HEAD is
 /// moved to the final ferried ref first, so this works even after every step
 /// workspace is deleted. The PR is best-effort (`pr_base` threaded through from
-/// the spec's `finalize`). Push is guarded to the `wf/` namespace.
-pub async fn finalize(
-    run_repo: &Path,
-    final_ref: &str,
-    branch: &str,
-    base: &str,
-    title: &str,
-    body: &str,
-    open_pr: bool,
-) -> Result<FinalizeOutcome> {
+/// the spec's `finalize`). Push is guarded to the `wf/` namespace and goes
+/// through the publication layer like every push: when `source_repo` (the
+/// user's repo the run was cloned from) signs its commits, the run's commits
+/// are published as signed copies, and `final_ref` is re-pinned to the copy
+/// that went out so the run repo agrees with origin.
+pub async fn finalize(f: &Finalize<'_>) -> Result<FinalizeOutcome> {
+    let Finalize {
+        run_repo,
+        source_repo,
+        final_ref,
+        branch,
+        base,
+        title,
+        body,
+        open_pr,
+    } = *f;
     if !is_run_branch(branch) {
         return Err(Error::Other(format!(
             "refusing to push: '{branch}' is not a wf/ run branch"
@@ -233,7 +260,31 @@ pub async fn finalize(
         "checkout final ref",
     )
     .await?;
-    git::push_head_to_branch(run_repo, branch).await?;
+    let head = head_sha(run_repo).await?;
+    let published = git::publish(
+        &git::Publication {
+            checkout: run_repo,
+            source_repo,
+            branch,
+            force: false,
+        },
+        git::Tip::Commit(&head),
+    )
+    .await?;
+    if published.tip != head {
+        git::run_git(
+            run_repo,
+            &["update-ref", final_ref, &published.tip, &head],
+            "re-pin final ref to its signed copy",
+        )
+        .await?;
+        git::run_git(
+            run_repo,
+            &["checkout", "--detach", &published.tip],
+            "checkout signed final ref",
+        )
+        .await?;
+    }
 
     let (pr_url, pr_number, pr_error) = if open_pr {
         match crate::github::pr_create_head(run_repo, branch, title, body, base).await {
@@ -446,23 +497,18 @@ mod tests {
     use std::process::Command;
 
     fn git(dir: &Path, args: &[&str]) {
-        let out = Command::new("git")
-            .current_dir(dir)
-            .args(args)
-            .output()
-            .expect("run git");
-        assert!(
-            out.status.success(),
-            "git {:?} failed: {}",
-            args,
-            String::from_utf8_lossy(&out.stderr)
-        );
+        crate::git::testing::git(dir, args);
     }
 
+    /// The user's repo of these runs. It does not sign: finalize publishes
+    /// through `git::publish`, which reads this repo's policy, and a global
+    /// `commit.gpgsign=true` with a key the test process cannot reach would
+    /// otherwise fail the push. Signing is `git::publish`'s own tests' job.
     fn init_repo(dir: &Path) {
         git(dir, &["init", "-q", "-b", "main"]);
         git(dir, &["config", "user.email", "t@t.t"]);
         git(dir, &["config", "user.name", "t"]);
+        git(dir, &["config", "commit.gpgsign", "false"]);
     }
 
     fn write(dir: &Path, name: &str, body: &str) {
@@ -520,6 +566,34 @@ mod tests {
         assert_eq!(in_run, head(&ws_a));
     }
 
+    /// Step agents adopt the run repo inside the sandbox, so an SSH GitHub
+    /// origin becomes HTTPS there, as in a sandbox clone.
+    #[tokio::test]
+    async fn run_repo_rewrites_an_ssh_github_origin_to_https() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source = tmp.path().join("source");
+        std::fs::create_dir_all(&source).unwrap();
+        init_repo(&source);
+        write(&source, "README", "base");
+        git(&source, &["add", "-A"]);
+        git(&source, &["commit", "-qm", "base"]);
+        git(
+            &source,
+            &["remote", "add", "origin", "git@github.com:acme/widget.git"],
+        );
+
+        let run_repo = provision_run_repo(&source, &tmp.path().join("run"))
+            .await
+            .unwrap();
+        let out = git::git_output(&run_repo, &["remote", "get-url", "origin"])
+            .await
+            .unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout).trim(),
+            "https://github.com/acme/widget.git"
+        );
+    }
+
     /// §16 gitops transport: finalize pushes the run branch from the run repo
     /// with the step workspace deleted, proving durability doesn't depend on the
     /// disposable workspaces.
@@ -569,9 +643,18 @@ mod tests {
         // The workspace is now disposable.
         std::fs::remove_dir_all(&ws_a).unwrap();
 
-        let outcome = finalize(&run_repo, &refname, "wf/test-abc", "main", "t", "b", false)
-            .await
-            .unwrap();
+        let outcome = finalize(&Finalize {
+            run_repo: &run_repo,
+            source_repo: &source,
+            final_ref: &refname,
+            branch: "wf/test-abc",
+            base: "main",
+            title: "t",
+            body: "b",
+            open_pr: false,
+        })
+        .await
+        .unwrap();
         assert!(outcome.pushed);
 
         // The branch landed on the bare remote at the ferried commit.

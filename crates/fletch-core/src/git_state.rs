@@ -914,16 +914,7 @@ mod tests {
     // --- check_for_disposal (fail-closed) ---
 
     fn git(repo: &Path, args: &[&str]) {
-        let out = std::process::Command::new("git")
-            .current_dir(repo)
-            .args(args)
-            .output()
-            .unwrap();
-        assert!(
-            out.status.success(),
-            "git {args:?}: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
+        crate::git::testing::git(repo, args);
     }
 
     /// A repo with one commit on `main`, an `origin` that already has it, and
@@ -1240,23 +1231,10 @@ mod tests {
         // report the checkout as ahead of a base it is identical to.
         let td = tempfile::tempdir().unwrap();
         let run = |dir: &Path, args: &[&str]| {
-            let out = std::process::Command::new("git")
-                .current_dir(dir)
-                .args(args)
-                .output()
-                .unwrap();
-            assert!(
-                out.status.success(),
-                "git {args:?}: {}",
-                String::from_utf8_lossy(&out.stderr)
-            );
+            crate::git::testing::git(dir, args);
         };
         let capture = |dir: &Path, args: &[&str]| {
-            let out = std::process::Command::new("git")
-                .current_dir(dir)
-                .args(args)
-                .output()
-                .unwrap();
+            let out = crate::git::testing::git_output(dir, args);
             String::from_utf8_lossy(&out.stdout).trim().to_string()
         };
 
@@ -1299,16 +1277,7 @@ mod tests {
     // --- query_unpushed ---
 
     fn git_run(dir: &Path, args: &[&str]) {
-        let out = std::process::Command::new("git")
-            .current_dir(dir)
-            .args(args)
-            .output()
-            .unwrap();
-        assert!(
-            out.status.success(),
-            "git {args:?}: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
+        crate::git::testing::git(dir, args);
     }
 
     fn commit(dir: &Path, name: &str) {
@@ -1384,23 +1353,10 @@ mod tests {
         // base the clone never fetched) is still countable in the clone.
         let td = tempfile::tempdir().unwrap();
         let run = |dir: &Path, args: &[&str]| {
-            let out = std::process::Command::new("git")
-                .current_dir(dir)
-                .args(args)
-                .output()
-                .unwrap();
-            assert!(
-                out.status.success(),
-                "git {args:?}: {}",
-                String::from_utf8_lossy(&out.stderr)
-            );
+            crate::git::testing::git(dir, args);
         };
         let capture = |dir: &Path, args: &[&str]| {
-            let out = std::process::Command::new("git")
-                .current_dir(dir)
-                .args(args)
-                .output()
-                .unwrap();
+            let out = crate::git::testing::git_output(dir, args);
             String::from_utf8_lossy(&out.stdout).trim().to_string()
         };
 

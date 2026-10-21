@@ -33,7 +33,19 @@ pub async fn push_agent_impl(
 ) -> Result<String> {
     let (repo, checkout) = agent_repo_checkout(supervisor, &agent_id, subdir)?;
     let branch = repo_branch(&repo)?.to_string();
-    let summary = git::push(&checkout, &branch, false).await?;
+    // Through the publication layer, like every push: signed when the user's
+    // repo signs, with the key and config of that repo.
+    let summary = git::publish(
+        &git::Publication {
+            checkout: &checkout,
+            source_repo: &repo.repo_path,
+            branch: &branch,
+            force: false,
+        },
+        git::Tip::Branch,
+    )
+    .await?
+    .summary;
     // After successful push, fetch PR state in background
     supervisor.fetch_and_emit_pr_state(ctx, agent_id);
     Ok(summary)

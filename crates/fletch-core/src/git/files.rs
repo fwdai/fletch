@@ -277,13 +277,7 @@ mod file_diff_tests {
     use super::*;
 
     async fn config(repo: &Path, key: &str, val: &str) {
-        let out = tokio::process::Command::new("git")
-            .current_dir(repo)
-            .args(["config", key, val])
-            .output()
-            .await
-            .unwrap();
-        assert!(out.status.success());
+        crate::git::testing::git(repo, &["config", key, val]);
     }
 
     async fn base_repo() -> (tempfile::TempDir, std::path::PathBuf) {
