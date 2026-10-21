@@ -69,6 +69,8 @@ CI checks are failing on this branch's pull request. Investigate the failures (t
 
 Unresolved review threads on this branch's pull request need addressing. Read them with the `pr_threads` op (`{"op":"pr_threads"}`), which returns each open thread's `id`, author, `is_bot`, body, and file anchor.
 
+Address a thread by that `id`: `{"op":"reply_thread","args":{"thread":"<id>","body":"…"}}` and `{"op":"resolve_thread","args":{"thread":"<id>"}}` (build the body with `jq -n --arg`).
+
 Judge each thread on its merits and take exactly one of three outcomes:
 
 1. **Valid — fix it.** Make the change, then `reply_thread` saying what you changed, then `resolve_thread`.
