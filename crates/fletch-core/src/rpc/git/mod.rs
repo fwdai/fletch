@@ -4,6 +4,7 @@ mod issue_reads;
 mod pr_reads;
 mod pr_writes;
 mod publishing;
+mod releases;
 mod review_threads;
 mod runs;
 mod targets;
@@ -163,6 +164,8 @@ impl GitDispatcher {
             "pr_check_log" => (self.pr_check_log(id, args).await, Vec::new()),
             "run_list" => (self.run_list(id, args).await, Vec::new()),
             "run_log" => (self.run_log(id, args).await, Vec::new()),
+            "release_list" => (self.release_list(id, args).await, Vec::new()),
+            "release_view" => (self.release_view(id, args).await, Vec::new()),
             "pr_comments" => (self.pr_comments(id, args).await, Vec::new()),
             "pr_edit" => self.pr_edit(id, args).await,
             "pr_comment" => (self.pr_comment(id, args).await, Vec::new()),

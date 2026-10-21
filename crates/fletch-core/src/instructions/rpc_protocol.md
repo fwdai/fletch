@@ -97,6 +97,11 @@ newest first: `id`, `name`, `workflow` file, `title`, `branch`, `event`,
 of its first failing job, or of `args.job` by id or name, with `args.lines`
 as for `pr_check_log`, plus the run's `jobs`).
 
+Releases: `release_list` (newest first: `tag`, `name`, `draft`,
+`prerelease`, URL, author, `published_at`, assets; `args.limit` default 20,
+max 100) and `release_view` (one release with its notes and assets:
+`args.tag`, or the latest published release without it).
+
 Issues of the repository: `issue_view` (`args.number`; title, state, body,
 labels, assignees, author and the newest `args.comments` comments, default
 50) and `issue_list` (`args.state` open (default), closed or all,

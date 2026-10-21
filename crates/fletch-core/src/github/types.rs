@@ -330,6 +330,42 @@ pub struct RunListFilter {
     pub limit: u32,
 }
 
+/// One file attached to a release.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct ReleaseAsset {
+    pub name: String,
+    pub size: u64,
+    pub download_count: u64,
+    /// The browser download URL.
+    pub url: String,
+}
+
+/// A GitHub release, as the agent's `release_list` and `release_view`
+/// answer: what agents read through `gh release list` / `view` to see what
+/// shipped last and what a tag carries.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct Release {
+    pub id: u64,
+    pub tag: String,
+    /// The release title; empty when it was published without one.
+    pub name: String,
+    pub draft: bool,
+    pub prerelease: bool,
+    pub url: String,
+    pub author: String,
+    /// The branch or commit the tag was cut from.
+    pub target: String,
+    /// ISO-8601 as GitHub gives them; `published_at` is absent for a draft.
+    pub created_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub published_at: Option<String>,
+    /// The release notes. Left out of `release_list` rows; `release_view`
+    /// carries them.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub body: Option<String>,
+    pub assets: Vec<ReleaseAsset>,
+}
+
 /// One unresolved PR review thread, flattened to its root comment. Surfaced
 /// in the Git panel so review feedback (Greptile, other bots, humans) is
 /// visible without leaving the app, with a quick action to hand it to the

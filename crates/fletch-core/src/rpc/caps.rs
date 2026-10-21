@@ -128,6 +128,8 @@ mod tests {
             "pr_check_log",
             "run_list",
             "run_log",
+            "release_list",
+            "release_view",
             "pr_comments",
             "pr_threads",
             "reply_thread",

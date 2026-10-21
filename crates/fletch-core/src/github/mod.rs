@@ -24,6 +24,7 @@ mod issues;
 mod live;
 mod pr;
 mod query;
+mod releases;
 mod repo;
 mod types;
 
@@ -42,6 +43,7 @@ pub use issues::*;
 pub use live::*;
 pub use pr::*;
 pub use query::github_https_remote;
+pub use releases::*;
 pub use repo::*;
 pub use types::*;
 
