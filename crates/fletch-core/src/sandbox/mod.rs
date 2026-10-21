@@ -16,7 +16,7 @@ use parking_lot::RwLock;
 
 use crate::error::{Error, Result};
 
-pub use cache_gc::{own_toolchain_caches, reclaim_toolchain_caches};
+pub use cache_gc::{own_toolchain_caches, reclaim_toolchain_caches, remove_project_cache};
 pub use docker::{availability as docker_availability, DockerAvailability};
 pub use engine::{AgentLaunchCtx, EngineKind, KillHandle, LaunchPlan, SandboxEngine};
 pub use guarantees::{describe as describe_isolation, IsolationReport};

@@ -703,13 +703,17 @@ impl Supervisor {
         }
         workflows.finish_project_runs(run_cleanup);
         self.teardown_project_checkouts(&agents).await;
-        // The project's toolchain cache, by the same rule boot applies: the
-        // row is gone, so its root is no longer live. Still under the agent
-        // lock, so no spawn can create a root this listing has not seen.
-        match (self.workspace.project_ids(), dirs::home_dir()) {
-            (Ok(live), Some(home)) => crate::sandbox::reclaim_toolchain_caches(&home, &live),
-            (Err(e), _) => tracing::warn!(error = %e, "skipping toolchain cache reclaim"),
-            (_, None) => tracing::warn!("skipping toolchain cache reclaim: no home directory"),
+        // The project's toolchain cache: its row is gone, so its root is no
+        // longer live, and nothing can race the removal (a re-created project
+        // gets a fresh id). Off the runtime and detached, so a registry or a
+        // browser worth of `remove_dir_all` neither blocks a worker nor holds
+        // the lifecycle locks above, which other projects' spawns wait on.
+        // Best-effort like the checkouts; boot's sweep catches what fails.
+        if let Some(home) = dirs::home_dir() {
+            let project_id = project_id.to_string();
+            tokio::task::spawn_blocking(move || {
+                crate::sandbox::remove_project_cache(&home, &project_id)
+            });
         }
 
         Ok(ProjectDeleteResult {

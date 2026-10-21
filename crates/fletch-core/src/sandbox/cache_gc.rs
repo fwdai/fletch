@@ -55,6 +55,28 @@ pub fn reclaim_toolchain_caches(home: &Path, live_project_ids: &HashSet<String>)
     reclaim_in(&parent, legacy, live_project_ids);
 }
 
+/// Remove one deleted project's root ([`super::toolchain_cache_root`]), the
+/// deletion-time half of the reclaim. Project deletion knows the id it just
+/// removed, so it needs no listing and no live set: nothing can race it, since
+/// a re-created project gets a fresh id. The caller runs it off the async
+/// runtime and after its lifecycle locks are released (`remove_dir_all` of a
+/// registry or a browser is seconds of blocking I/O), which is also why it is
+/// not folded into the full sweep. Same ownership gate and best-effort posture
+/// as [`reclaim_toolchain_caches`]; a bad id is refused by the root function
+/// and logged, never resolved to anything.
+pub fn remove_project_cache(home: &Path, project_id: &str) {
+    if !OWNED.load(Ordering::Relaxed) {
+        return;
+    }
+    match super::toolchain_cache_root(home, project_id) {
+        Ok(root) if std::fs::symlink_metadata(&root).is_ok() => {
+            remove(&root, "a deleted project's toolchain cache")
+        }
+        Ok(_) => {}
+        Err(e) => tracing::warn!(project_id, error = %e, "not reclaiming a toolchain cache"),
+    }
+}
+
 /// [`reclaim_toolchain_caches`] under an explicit parent, ownership already
 /// established, so tests need neither the process env nor a real home.
 fn reclaim_in(parent: &Path, sweep_legacy: bool, live_project_ids: &HashSet<String>) {
@@ -182,6 +204,32 @@ mod tests {
         );
         // A legacy name that is a link is not the old layout's directory.
         assert!(std::fs::symlink_metadata(parent.join("npm")).is_ok());
+    }
+
+    /// Deletion removes exactly the one root it was told about: a sibling
+    /// project's root and the legacy layout are untouched, and a missing root
+    /// is not an error. Ownership is a process-wide claim, so this test
+    /// establishes it and never un-claims (nothing else here depends on it
+    /// being unset).
+    #[test]
+    fn remove_project_cache_takes_only_that_projects_root() {
+        let td = tempfile::tempdir().unwrap();
+        let home = td.path();
+        let root = |id: &str| super::super::toolchain_cache_root(home, id).unwrap();
+        let (doomed, live) = (root(DELETED), root(LIVE));
+        let parent = toolchain_cache_parent(home);
+        for dir in [&doomed, &live] {
+            mkdir(&dir.join("npm"));
+        }
+        mkdir(&parent.join("npm"));
+
+        own_toolchain_caches();
+        remove_project_cache(home, DELETED);
+        remove_project_cache(home, "6e5d4c3b-2a19-4f8e-9d7c-6b5a4f3e2d1c");
+
+        assert!(!doomed.exists());
+        assert!(live.join("npm").is_dir());
+        assert!(parent.join("npm").is_dir());
     }
 
     /// The legacy names come from the table, so a row added later is covered
