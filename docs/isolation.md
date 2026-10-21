@@ -211,12 +211,22 @@ all.
   blank is treated as unset, not inherited from the app.
 - **Inside a checkout, host-side git has no agent socket and no keyring.**
   The two credential variables are removed there whatever the app process
-  holds. A checkout's config is the agent's to write and the hardening refusal
-  covers programs, not URLs, so an agent could point `origin` at an ssh
-  remote of its choosing and ask for a fetch — which needs no approval. With
-  no socket, that fetch cannot authenticate as you. Host-side transport in a
-  checkout is https to GitHub with the app's own token, so nothing legitimate
-  needs ssh there.
+  holds. Host-side transport in a checkout is https to GitHub with the app's
+  own token, so nothing legitimate needs ssh there. This narrows what a
+  checkout can reach; the boundary itself is the next point.
+- **Host-side transport never trusts the checkout's `origin`.** A checkout's
+  config is the agent's to write, and `remote.origin.url` is one line in it.
+  Every fetch, push and ls-remote the host runs in a checkout — the agent's
+  `git_fetch`, which needs no approval, the publish, the restore-time
+  recovery fetches — names the remote **your repository** records, as an
+  explicit URL (`git::remote`), and first checks that the checkout's `origin`
+  still says the same; when it does not, the operation is refused and the
+  reply names both URLs. The config that could redirect even an explicit URL
+  or its credentials (`url.*.insteadOf`, a proxy, `http.sslVerify=false`,
+  `http.extraHeader`) is refused in a checkout like the program-executing
+  keys. So an agent that repoints its origin at another repository your token
+  can read gets nothing fetched from it, and the pull-request reads refuse
+  the same way.
 
 ### Why signing works this way
 

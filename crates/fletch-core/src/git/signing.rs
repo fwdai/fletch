@@ -72,17 +72,26 @@ pub(crate) fn signing_requested(show_scope: &str) -> bool {
         .is_some_and(|(_, value)| value.trim() == "true")
 }
 
-/// `git fetch --prune origin`: the checkout's `origin/*` refs as origin has
-/// them right now, so "what origin lacks" is answered by origin rather than by
-/// whatever the last fetch left — the source repo's own local heads, when the
-/// spawn-time fetch failed (`provision`), or a branch since deleted. Runs with
-/// the host's token, like the push that follows it.
-pub(crate) async fn refresh_remote_refs(checkout: &Path) -> Result<()> {
+/// `git fetch --prune` of every branch: the checkout's `origin/*` refs as the
+/// remote has them right now, so "what origin lacks" is answered by the remote
+/// rather than by whatever the last fetch left — the source repo's own local
+/// heads, when the spawn-time fetch failed (`provision`), or a branch since
+/// deleted. The remote is the user's repository's (`git::remote`), never the
+/// checkout's `origin`; runs with the host's token, like the push that
+/// follows it.
+pub(crate) async fn refresh_remote_refs(checkout: &Path, source_repo: &Path) -> Result<()> {
     // A fetch runs the transport-executing keys (`core.sshCommand`,
     // `remote.<name>.uploadpack`) the `-c` overrides cannot neutralise.
     super::hardening::refuse_steerable_config(checkout).await?;
+    let url = super::remote::trusted_remote(checkout, source_repo).await?;
     let mut cmd = crate::git_dist::command(checkout);
-    cmd.args(["fetch", "--quiet", "--prune", "origin"]);
+    cmd.args([
+        "fetch",
+        "--quiet",
+        "--prune",
+        &url,
+        super::remote::ALL_TRACKING_REFSPEC,
+    ]);
     for (k, v) in crate::github::git_auth_env() {
         cmd.env(k, v);
     }

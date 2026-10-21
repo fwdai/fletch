@@ -12,6 +12,7 @@ mod files;
 pub(crate) mod hardening;
 mod identity;
 mod publish;
+mod remote;
 mod signing;
 #[cfg(test)]
 pub(crate) mod testing;
@@ -25,6 +26,7 @@ pub use diff::*;
 pub use files::*;
 pub use identity::*;
 pub use publish::*;
+pub use remote::*;
 pub use signing::*;
 pub use transport::*;
 pub use worktree::*;

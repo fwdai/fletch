@@ -193,6 +193,34 @@ const EXEC_CONFIG: &[(&str, &str)] = &[
     ("remote", "receivepack"),
 ];
 
+/// `(section, leaf)` of every config key that would **redirect a transport or
+/// its credentials**, matched like [`EXEC_CONFIG`]. Host-side transport in a
+/// checkout names the user's repository's remote as an explicit URL
+/// (`git::remote`), so the checkout's `remote.origin.url` is only ever
+/// checked, never used — but git rewrites even an explicit URL through
+/// `url.<base>.insteadOf`, routes it through `http.proxy` / `remote.<name>.proxy`,
+/// and with `http.sslVerify=false` would hand the token's header to whoever
+/// answers. None of these has a place in an agent checkout; a user's own
+/// repository may carry them (a corporate proxy), and that repository is not
+/// agent-writable, so the refusal does not reach it.
+const TRANSPORT_STEERING_CONFIG: &[(&str, &str)] = &[
+    ("url", "insteadof"),
+    ("url", "pushinsteadof"),
+    ("remote", "pushurl"),
+    ("remote", "proxy"),
+    ("remote", "proxyauthmethod"),
+    ("http", "proxy"),
+    ("http", "proxyauthmethod"),
+    ("http", "sslverify"),
+    ("http", "sslcainfo"),
+    ("http", "sslcapath"),
+    ("http", "sslcert"),
+    ("http", "sslkey"),
+    ("http", "extraheader"),
+    ("http", "cookiefile"),
+    ("http", "savecookies"),
+];
+
 /// Refuse to run host-side git in `dir` when the checkout's own config would make
 /// git execute a program.
 ///
@@ -385,9 +413,11 @@ fn steerable_keys(listing: &str) -> Vec<String> {
     keys
 }
 
-/// Whether `key` names an executable setting, comparing only its first and last
-/// dot-separated segments so any subsection matches. The last segment is correct
-/// even for a key whose subsection contains dots (`credential.https://x.y.helper`).
+/// Whether `key` names an executable setting ([`EXEC_CONFIG`]) or one that
+/// redirects a transport ([`TRANSPORT_STEERING_CONFIG`]), comparing only its
+/// first and last dot-separated segments so any subsection matches. The last
+/// segment is correct even for a key whose subsection contains dots
+/// (`credential.https://x.y.helper`).
 fn executes_a_program(key: &str) -> bool {
     let mut parts = key.split('.');
     let (Some(section), Some(leaf)) = (parts.next(), key.rsplit('.').next()) else {
@@ -395,6 +425,7 @@ fn executes_a_program(key: &str) -> bool {
     };
     EXEC_CONFIG
         .iter()
+        .chain(TRANSPORT_STEERING_CONFIG)
         .any(|(s, l)| section.eq_ignore_ascii_case(s) && leaf.eq_ignore_ascii_case(l))
 }
 
@@ -692,12 +723,25 @@ mod tests {
         git(&["init", "-q"]);
 
         // Each key git would execute during ssh/local push or fetch must trip the
-        // refusal on its own, so the guard covers the whole transport family.
+        // refusal on its own, so the guard covers the whole transport family —
+        // and so must each key that would redirect an explicit URL or its
+        // credentials (`TRANSPORT_STEERING_CONFIG`).
         for (key, value) in [
             ("remote.origin.receivepack", "/tmp/pwn.sh"),
             ("remote.origin.uploadpack", "/tmp/pwn.sh"),
             ("core.sshCommand", "/tmp/pwn.sh -o foo=bar"),
             ("core.gitProxy", "/tmp/pwn.sh"),
+            ("url.https://evil.example/.insteadOf", "https://github.com/"),
+            (
+                "url.https://evil.example/.pushInsteadOf",
+                "https://github.com/",
+            ),
+            ("remote.origin.pushurl", "https://evil.example/x.git"),
+            ("remote.origin.proxy", "http://evil.example:8080"),
+            ("http.proxy", "http://evil.example:8080"),
+            ("http.https://github.com/.proxy", "http://evil.example:8080"),
+            ("http.sslVerify", "false"),
+            ("http.extraHeader", "Authorization: basic x"),
         ] {
             refuse_steerable_config_under(&repo, &root)
                 .await

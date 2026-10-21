@@ -72,8 +72,11 @@ async fn branch_pr_number(id: &str, op: &str, cwd: &Path) -> Result<u32, Respons
 impl GitDispatcher {
     /// The target checkout once the reasons a read could answer nothing have
     /// been ruled out, each with its own message: an origin that isn't GitHub,
-    /// no host token, a rate-limit pause (retryable). Checked in that order so
-    /// a checkout with no remote answers the same with or without a token.
+    /// an origin the agent changed (the reads resolve the repository from the
+    /// checkout's origin, so a repointed one would read another repository's
+    /// pull requests with the user's token), no host token, a rate-limit pause
+    /// (retryable). Checked in that order so a checkout with no remote answers
+    /// the same with or without a token.
     async fn pr_read_target(&self, id: &str, op: &str, args: &Value) -> Result<Target, Response> {
         let t = self.target(id, args)?;
         if crate::github::repo_ref(&t.cwd).await.is_none() {
@@ -81,6 +84,9 @@ impl GitDispatcher {
                 id,
                 format!("{op}: origin is not a GitHub repository (or there is no origin)"),
             ));
+        }
+        if let Err(e) = crate::git::trusted_remote(&t.cwd, &t.source_repo).await {
+            return Err(Response::err(id, format!("{op}: {e}")));
         }
         if crate::github::client::token().is_none() {
             return Err(Response::err(

@@ -76,7 +76,7 @@ pub async fn publish(p: &Publication<'_>, tip: Tip<'_>) -> Result<Published> {
     } else {
         tip
     };
-    let summary = push_commit(p.checkout, &tip, p.branch, p.force).await?;
+    let summary = push_commit(p.checkout, p.source_repo, &tip, p.branch, p.force).await?;
     Ok(Published { summary, tip })
 }
 
@@ -87,7 +87,7 @@ pub async fn publish(p: &Publication<'_>, tip: Tip<'_>) -> Result<Published> {
 /// check did not — so the check runs after the refresh, on the same refs the
 /// signing range is cut from.
 async fn signed(p: &Publication<'_>, tip: String) -> Result<String> {
-    refresh_remote_refs(p.checkout).await?;
+    refresh_remote_refs(p.checkout, p.source_repo).await?;
     let tip = match check_identity_of(p.checkout, p.branch, tip).await? {
         Identity::Own { tip } => tip,
         Identity::Foreign(why) => return Err(Error::Git(why)),
@@ -282,6 +282,41 @@ mod tests {
         assert_eq!(origin_tip(&fx, "main"), fx.base, "nothing was pushed");
         assert_eq!(git(repo, &["rev-parse", "refs/heads/main"]), tip);
         assert!(!verified(&fx, &tip));
+    }
+
+    /// The checkout's `origin` is the agent's to rewrite; a publish talks only
+    /// to the user's repository's remote and refuses when they differ.
+    #[tokio::test]
+    async fn a_checkout_whose_origin_was_repointed_is_not_published() {
+        let td = tempfile::tempdir().unwrap();
+        let fx = signing_repos(td.path());
+        let elsewhere = td.path().join("elsewhere.git");
+        git(
+            td.path(),
+            &["init", "-q", "--bare", elsewhere.to_str().unwrap()],
+        );
+        git(
+            &fx.checkout,
+            &["remote", "set-url", "origin", elsewhere.to_str().unwrap()],
+        );
+        let tip = commit_file(&fx.checkout, "one.txt");
+
+        let err = publish(&publication(&fx, "main"), Tip::Branch)
+            .await
+            .unwrap_err();
+
+        assert!(err.to_string().contains("refusing"), "{err}");
+        assert_eq!(
+            git(&fx.checkout, &["rev-parse", "refs/heads/main"]),
+            tip,
+            "nothing was rewritten"
+        );
+        let refs = git(
+            td.path(),
+            &["--git-dir", elsewhere.to_str().unwrap(), "for-each-ref"],
+        );
+        assert!(refs.is_empty(), "nothing reached the repointed remote");
+        assert_eq!(origin_tip(&fx, "main"), fx.base, "nor the real one");
     }
 
     #[tokio::test]

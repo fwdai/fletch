@@ -70,8 +70,8 @@ pub async fn pull_agent_impl(
     agent_id: &str,
     subdir: Option<&str>,
 ) -> Result<()> {
-    let (_repo, checkout) = agent_repo_checkout(supervisor, agent_id, subdir)?;
-    git::pull(&checkout).await
+    let (repo, checkout) = agent_repo_checkout(supervisor, agent_id, subdir)?;
+    git::pull(&checkout, &repo.repo_path).await
 }
 
 /// Rebase the agent's branch onto its parent (base) branch — the clean-state

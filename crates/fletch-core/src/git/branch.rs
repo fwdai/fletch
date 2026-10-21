@@ -39,7 +39,7 @@ const FETCH_TIMEOUT: Duration = Duration::from_secs(8);
 ///
 /// Never errors: a missing `origin`, an offline machine, or a purely local
 /// branch are all expected and simply mean "use local state".
-pub async fn fetch_fork_point(repo: &Path, branch: &str) -> Option<String> {
+pub async fn fetch_fork_point(repo: &Path, source_repo: &Path, branch: &str) -> Option<String> {
     // A fetch over ssh or a local path runs the transport-executing keys
     // `core.sshCommand`, `core.gitProxy` and `remote.<origin>.uploadpack` — which
     // `config_overrides` omits, so this direct-build path needs the refusal
@@ -50,12 +50,17 @@ pub async fn fetch_fork_point(repo: &Path, branch: &str) -> Option<String> {
     if !super::hardening::config_is_safe(repo).await {
         return None;
     }
+    // The remote is `source_repo`'s, never the clone's `origin` (`git::remote`);
+    // a refusal there reads as "no origin", which degrades the same way.
+    let url = super::remote::trusted_remote(repo, source_repo)
+        .await
+        .ok()?;
     // `kill_on_drop` so a timeout actually tears down the hung git process
     // (and its SSH child) rather than orphaning it to keep blocking on the
     // dead connection.
     let mut fetch_cmd = crate::git_dist::command(repo);
     fetch_cmd
-        .args(["fetch", "origin", branch])
+        .args(["fetch", &url, &super::remote::tracking_refspec(branch)])
         .kill_on_drop(true);
     apply_github_auth(&mut fetch_cmd);
     let fetched = tokio::time::timeout(FETCH_TIMEOUT, fetch_cmd.output()).await;
@@ -329,7 +334,7 @@ mod tests {
         std::fs::write(repo.join("a.txt"), b"x").unwrap();
         commit_all(repo, "first").await.unwrap();
 
-        assert_eq!(fetch_fork_point(repo, "main").await, None);
+        assert_eq!(fetch_fork_point(repo, repo, "main").await, None);
     }
 
     #[tokio::test]
@@ -361,7 +366,7 @@ mod tests {
         let stale_local = rev_parse(&source, "main").await.unwrap();
         assert_ne!(stale_local, upstream_tip);
 
-        let base = fetch_fork_point(&source, "main").await.unwrap();
+        let base = fetch_fork_point(&source, &source, "main").await.unwrap();
         assert_eq!(base, upstream_tip);
     }
 
