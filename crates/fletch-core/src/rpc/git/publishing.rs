@@ -120,11 +120,15 @@ impl GitDispatcher {
             Ok(tip) => tip,
             Err(resp) => return (resp, effects),
         };
+        let born_on_origin = born_on_origin_by_this_push(&t, &branch, &effects).await;
         if let Err(e) = t.publish(&branch, &tip, false).await {
             return (
                 Response::err(id, format!("open_pr push failed: {e}")),
                 effects,
             );
+        }
+        if born_on_origin {
+            note_branch_born(&t, &branch, &mut effects);
         }
         match crate::github::pr_create(&t.cwd, title, body, &base).await {
             Ok(pr) => {
@@ -221,11 +225,44 @@ impl GitDispatcher {
             Ok(tip) => tip,
             Err(resp) => return (resp, effects),
         };
+        let born_on_origin = born_on_origin_by_this_push(&t, &branch, &effects).await;
         match t.publish(&branch, &tip, force).await {
-            Ok(summary) => (Response::ok(id, 0, summary, String::new()), effects),
+            Ok(summary) => {
+                if born_on_origin {
+                    note_branch_born(&t, &branch, &mut effects);
+                }
+                (Response::ok(id, 0, summary, String::new()), effects)
+            }
             Err(e) => (Response::err(id, e.to_string()), effects),
         }
     }
+}
+
+/// Whether the push about to happen is what puts `branch` on origin — the
+/// moment it becomes this agent's own branch (the force-push anchor,
+/// `caps::refuses_force`). The host already knows when it materialized the
+/// branch itself (`EVENT_BRANCH_CREATED` is in `effects`); a branch the agent
+/// made with plain `git checkout -b` is only known by asking origin. Without
+/// that, an agent that named its own branch could never force-push it:
+/// "no recorded work branch" was refused in 23 sessions. Skipped when the
+/// branch is already recorded, and a probe that can't answer records
+/// nothing, so a flaky network never widens force.
+async fn born_on_origin_by_this_push(t: &Target, branch: &str, effects: &[RpcEvent]) -> bool {
+    let already_noted = effects.iter().any(|e| {
+        let RpcEvent::Named { name, .. } = e;
+        name == EVENT_BRANCH_CREATED
+    });
+    if already_noted || t.own_branch.as_deref() == Some(branch) {
+        return false;
+    }
+    crate::git::remote_branch_exists(&t.cwd, &t.source_repo, branch).await == Some(false)
+}
+
+fn note_branch_born(t: &Target, branch: &str, effects: &mut Vec<RpcEvent>) {
+    effects.push(RpcEvent::named(
+        EVENT_BRANCH_CREATED,
+        with_repo(json!({ "branch": branch }), &t.subdir),
+    ));
 }
 
 impl Target {

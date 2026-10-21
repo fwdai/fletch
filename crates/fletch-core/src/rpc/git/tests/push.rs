@@ -357,6 +357,92 @@ async fn git_push_detached_materializes_named_branch() {
     );
 }
 
+/// A branch the agent made with plain `git checkout -b` becomes its own the
+/// moment its push puts it on origin: the event the host records the branch
+/// from is emitted then, and not again on the next push.
+#[tokio::test]
+async fn git_push_of_a_locally_created_branch_records_it_as_own_once() {
+    let td = tempfile::tempdir().unwrap();
+    let remote = td.path().join("origin.git");
+    run_git(
+        td.path(),
+        &["init", "-q", "--bare", remote.to_str().unwrap()],
+    );
+    let repo = td.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    run_git(&repo, &["init", "-q", "-b", "main"]);
+    run_git(&repo, &["config", "user.email", "t@example.com"]);
+    run_git(&repo, &["config", "user.name", "Tester"]);
+    run_git(
+        &repo,
+        &["remote", "add", "origin", remote.to_str().unwrap()],
+    );
+    std::fs::write(repo.join("a.txt"), b"x").unwrap();
+    run_git(&repo, &["add", "-A"]);
+    run_git(&repo, &["commit", "-q", "-m", "init"]);
+    run_git(&repo, &["checkout", "-q", "-b", "fix/local"]);
+
+    let disp = dispatcher(&repo);
+    let (resp, fx) = disp.dispatch_inner("p1", "git_push", &Value::Null).await;
+    assert!(resp.ok, "{resp:?}");
+    let born = |fx: &[RpcEvent]| {
+        fx.iter().any(|e| {
+            matches!(
+                e,
+                RpcEvent::Named { name, payload }
+                    if name == EVENT_BRANCH_CREATED && payload["branch"] == "fix/local"
+            )
+        })
+    };
+    assert!(
+        born(&fx),
+        "the push that creates the branch on origin must record it: {fx:?}"
+    );
+
+    std::fs::write(repo.join("b.txt"), b"y").unwrap();
+    run_git(&repo, &["add", "-A"]);
+    run_git(&repo, &["commit", "-q", "-m", "more"]);
+    let (resp, fx) = disp.dispatch_inner("p2", "git_push", &Value::Null).await;
+    assert!(resp.ok, "{resp:?}");
+    assert!(
+        !born(&fx),
+        "a branch already on origin is not born again: {fx:?}"
+    );
+}
+
+/// A branch the host already recorded is not probed or re-recorded.
+#[tokio::test]
+async fn git_push_of_the_recorded_own_branch_emits_no_branch_event() {
+    let td = tempfile::tempdir().unwrap();
+    let remote = td.path().join("origin.git");
+    run_git(
+        td.path(),
+        &["init", "-q", "--bare", remote.to_str().unwrap()],
+    );
+    let repo = td.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    run_git(&repo, &["init", "-q", "-b", "main"]);
+    run_git(&repo, &["config", "user.email", "t@example.com"]);
+    run_git(&repo, &["config", "user.name", "Tester"]);
+    run_git(
+        &repo,
+        &["remote", "add", "origin", remote.to_str().unwrap()],
+    );
+    std::fs::write(repo.join("a.txt"), b"x").unwrap();
+    run_git(&repo, &["add", "-A"]);
+    run_git(&repo, &["commit", "-q", "-m", "init"]);
+    run_git(&repo, &["checkout", "-q", "-b", "fix/known"]);
+
+    let disp = dispatcher(&repo).with_own_branch(Some("fix/known".to_string()));
+    let (resp, fx) = disp.dispatch_inner("p", "git_push", &Value::Null).await;
+    assert!(resp.ok, "{resp:?}");
+    assert!(
+        !fx.iter()
+            .any(|e| matches!(e, RpcEvent::Named { name, .. } if name == EVENT_BRANCH_CREATED)),
+        "{fx:?}"
+    );
+}
+
 #[tokio::test]
 async fn git_push_force_rewrites_diverged_remote() {
     let td = tempfile::tempdir().unwrap();
