@@ -83,8 +83,8 @@ pub fn prepare_toolchain_cache(
         keep_real_home(&mut env);
         return Ok(env);
     }
-    match cargo_home::prepare(&root, &user_home) {
-        Ok(()) => env.extend(cargo_home::env(&root, &user_home)),
+    match cargo_home::prepare(&root, &user_home, platform) {
+        Ok(()) => env.extend(cargo_home::env(&root, &user_home, platform)),
         Err(e) => {
             tracing::warn!(
                 error = %e,

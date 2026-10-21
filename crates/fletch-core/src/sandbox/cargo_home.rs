@@ -75,6 +75,7 @@
 
 use std::path::{Path, PathBuf};
 
+use super::policy::BoxPlatform;
 use crate::agent::credential_file::{Entry, PrivateDir};
 
 /// Subdir of the toolchain cache root serving as the sandboxed `CARGO_HOME`.
@@ -95,8 +96,16 @@ const CONFIG_FILES: &[&str] = &["config.toml", "config"];
 pub const USER_HOME_ENV: &str = "FLETCH_CARGO_USER_HOME";
 
 /// The overlay under `cache_root` — the value of `CARGO_HOME` a child gets.
-pub fn overlay(cache_root: &Path) -> PathBuf {
-    cache_root.join(SUBDIR)
+///
+/// Keyed by the child's [`BoxPlatform`], like the Playwright and npm rows of
+/// the cache table: `cargo install` puts its binaries and install records
+/// (`bin/`, `.crates.toml`) in the home, so a macOS agent and a Linux
+/// container of one project would otherwise overwrite each other's tools. The
+/// registry and git caches beside them are platform-neutral and could be
+/// shared, but cargo has no variable to split one from the other, and a
+/// second download of a project's crates per platform is the cheaper price.
+pub fn overlay(cache_root: &Path, platform: BoxPlatform) -> PathBuf {
+    cache_root.join(SUBDIR).join(platform.key())
 }
 
 /// The user's own cargo home, where the shared files come from: `CARGO_HOME`
@@ -188,8 +197,10 @@ pub fn config_reachable(user_home: &Path, cwd: &Path) -> bool {
 /// between our look and our `symlink` is accepted when it is the one we
 /// wanted — the only loser in that race would otherwise be a launch that
 /// found the overlay already correct.
-pub fn prepare(cache_root: &Path, source: &Path) -> std::io::Result<()> {
-    let dir = PrivateDir::open(cache_root)?.subdir(SUBDIR)?;
+pub fn prepare(cache_root: &Path, source: &Path, platform: BoxPlatform) -> std::io::Result<()> {
+    let dir = PrivateDir::open(cache_root)?
+        .subdir(SUBDIR)?
+        .subdir(&platform.key())?;
     for item in CONFIG_FILES {
         dir.remove(item)?;
     }
@@ -218,11 +229,11 @@ pub fn prepare(cache_root: &Path, source: &Path) -> std::io::Result<()> {
 
 /// The env pointing cargo at the overlay, and telling a nested Fletch which
 /// real home it was prepared from.
-pub fn env(cache_root: &Path, user_home: &Path) -> [(String, String); 2] {
+pub fn env(cache_root: &Path, user_home: &Path, platform: BoxPlatform) -> [(String, String); 2] {
     [
         (
             "CARGO_HOME".to_string(),
-            overlay(cache_root).to_string_lossy().into_owned(),
+            overlay(cache_root, platform).to_string_lossy().into_owned(),
         ),
         (
             USER_HOME_ENV.to_string(),
@@ -276,7 +287,7 @@ mod tests {
         let os = |s: &str| Some(std::ffi::OsString::from(s));
         let inherited = || {
             let root = super::super::policy::toolchain_cache_root(home, "p1").unwrap();
-            Some(overlay(&root).into_os_string())
+            Some(overlay(&root, BoxPlatform::host()).into_os_string())
         };
         assert_eq!(
             user_home_from(inherited(), os("/opt/cargo"), home),
@@ -298,7 +309,7 @@ mod tests {
     fn env_points_inside_the_granted_root_and_passes_the_user_home_down() {
         let root = Path::new("/Users/u/.fletch/toolchain-cache/p1");
         let user = Path::new("/opt/cargo");
-        let [(var, value), (passed_var, passed)] = env(root, user);
+        let [(var, value), (passed_var, passed)] = env(root, user, BoxPlatform::host());
         assert_eq!(var, "CARGO_HOME");
         let p = PathBuf::from(value);
         assert!(p.starts_with(root) && p != root);
@@ -354,9 +365,9 @@ mod tests {
         )
         .unwrap();
 
-        prepare(&cache_root, &source).unwrap();
+        prepare(&cache_root, &source, BoxPlatform::host()).unwrap();
 
-        let overlay = overlay(&cache_root);
+        let overlay = overlay(&cache_root, BoxPlatform::host());
         assert!(overlay.is_dir());
         assert_eq!(
             std::fs::read_link(overlay.join("credentials.toml")).unwrap(),
@@ -388,8 +399,8 @@ mod tests {
         .unwrap();
         std::fs::write(source.join("config"), "legacy").unwrap();
 
-        prepare(&cache_root, &source).unwrap();
-        let overlay = overlay(&cache_root);
+        prepare(&cache_root, &source, BoxPlatform::host()).unwrap();
+        let overlay = overlay(&cache_root, BoxPlatform::host());
         for item in CONFIG_FILES {
             assert!(
                 overlay.join(item).symlink_metadata().is_err(),
@@ -400,7 +411,7 @@ mod tests {
         // An agent planted a config to steer every run sharing the overlay;
         // the next launch removes it. The user's own files are untouched.
         std::fs::write(overlay.join("config.toml"), "[alias]\nb = \"evil\"\n").unwrap();
-        prepare(&cache_root, &source).unwrap();
+        prepare(&cache_root, &source, BoxPlatform::host()).unwrap();
         assert!(overlay.join("config.toml").symlink_metadata().is_err());
         assert!(source.join("config.toml").is_file());
         assert!(source.join("config").is_file());
@@ -411,8 +422,8 @@ mod tests {
         let (_td, cache_root, source) = roots();
         std::fs::write(source.join("credentials.toml"), "a").unwrap();
         std::fs::write(source.join("credentials"), "b").unwrap();
-        prepare(&cache_root, &source).unwrap();
-        let overlay = overlay(&cache_root);
+        prepare(&cache_root, &source, BoxPlatform::host()).unwrap();
+        let overlay = overlay(&cache_root, BoxPlatform::host());
 
         // An agent swapped one link for a file of its own, and the user
         // deleted the legacy file since the last launch.
@@ -420,7 +431,7 @@ mod tests {
         std::fs::write(overlay.join("credentials.toml"), "token = \"stolen\"\n").unwrap();
         std::fs::remove_file(source.join("credentials")).unwrap();
 
-        prepare(&cache_root, &source).unwrap();
+        prepare(&cache_root, &source, BoxPlatform::host()).unwrap();
 
         assert_eq!(
             std::fs::read_link(overlay.join("credentials.toml")).unwrap(),
@@ -447,14 +458,14 @@ mod tests {
         // see the links missing and race to create them. None may fail.
         let results: Vec<std::io::Result<()>> = std::thread::scope(|s| {
             let handles: Vec<_> = (0..8)
-                .map(|_| s.spawn(|| prepare(&cache_root, &source)))
+                .map(|_| s.spawn(|| prepare(&cache_root, &source, BoxPlatform::host())))
                 .collect();
             handles.into_iter().map(|h| h.join().unwrap()).collect()
         });
         for r in results {
             r.unwrap();
         }
-        let overlay = overlay(&cache_root);
+        let overlay = overlay(&cache_root, BoxPlatform::host());
         for item in SHARED_FILES {
             assert_eq!(
                 std::fs::read_link(overlay.join(item)).unwrap(),
@@ -472,12 +483,22 @@ mod tests {
         // The agent replaced the whole overlay with a link to the user's real
         // cargo home. A host that followed it would unlink the user's
         // `config.toml` outright and replace their `credentials.toml` with a
-        // self-referential link.
-        std::os::unix::fs::symlink(&source, overlay(&cache_root)).unwrap();
+        // self-referential link. The overlay is two levels down (`cargo/<platform>`)
+        // and either level can be the one swapped, so both are tried.
+        let overlay = overlay(&cache_root, BoxPlatform::host());
+        for swapped in [overlay.parent().unwrap(), overlay.as_path()] {
+            let _ = std::fs::remove_dir_all(&cache_root);
+            std::fs::create_dir_all(swapped.parent().unwrap()).unwrap();
+            std::os::unix::fs::symlink(&source, swapped).unwrap();
 
-        prepare(&cache_root, &source).unwrap();
+            prepare(&cache_root, &source, BoxPlatform::host()).unwrap();
 
-        let overlay = overlay(&cache_root);
+            assert!(
+                swapped.symlink_metadata().unwrap().is_dir(),
+                "{} is a real directory again",
+                swapped.display()
+            );
+        }
         assert!(
             overlay.symlink_metadata().unwrap().is_dir(),
             "the overlay is a real directory again"
