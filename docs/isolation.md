@@ -200,6 +200,13 @@ all.
 - The signature is made where the key lives and at the moment you approve the
   push, so it vouches for exactly what you let out. A key the host cannot use
   fails the push with the reason rather than publishing unsigned.
+- **The signer finds your tools the way your terminal does.** An app launched
+  from the Dock inherits launchd's sparse environment, not your shell's. Every
+  host-side git carries `PATH`, `SSH_AUTH_SOCK` and `GNUPGHOME` from your
+  login shell (`git_dist::helper_env`), so a Homebrew `gpg`, a key held by an
+  agent your shell rc starts (1Password's, say) and a relocated keyring all
+  work from Fletch exactly as they do from a terminal. The same is true of the
+  first commit Fletch makes in your own repository.
 
 ### Why signing works this way
 

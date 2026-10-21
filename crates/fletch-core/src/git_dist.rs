@@ -166,43 +166,70 @@ fn resolve_uncached() -> Option<GitBin> {
     installed_portable_git()
 }
 
-/// A tokio Command for the resolved git, with its env applied and `dir` as
-/// cwd. When nothing resolves, falls back to bare `git` so the failure
-/// surfaces as the same spawn error it always did — callers need no new path.
-pub fn command(dir: &Path) -> tokio::process::Command {
-    let mut cmd = match resolve() {
-        Some(bin) => {
-            let mut cmd = tokio::process::Command::new(&bin.program);
-            for (k, v) in &bin.env {
-                cmd.env(k, v);
-            }
-            cmd
-        }
-        None => tokio::process::Command::new("git"),
+/// Environment the programs git runs on the host's behalf read, as the user's
+/// own terminal would provide it. A Dock-launched app inherits launchd's sparse
+/// environment: Homebrew is not on its PATH, and the ssh-agent socket a shell
+/// rc exports (1Password's, a custom agent's) is not set. Signing is where that
+/// bites — the signer (`git::signing`) and the first commit Fletch makes in a
+/// user's repository both make git run `gpg` or `ssh-keygen`, and a key held
+/// by an agent is reached only through `SSH_AUTH_SOCK` — and the failure is
+/// "gpg: command not found" or "no key", for a setup that works in every
+/// terminal. The login shell's value wins over the process's
+/// ([`crate::bin_resolve::effective_env_var`]), as for every other helper the
+/// app launches.
+const HELPER_ENV: &[&str] = &["PATH", "SSH_AUTH_SOCK", "GNUPGHOME"];
+
+/// The [`HELPER_ENV`] variables as a host-side git spawn gets them.
+pub(crate) fn helper_env() -> Vec<(&'static str, std::ffi::OsString)> {
+    HELPER_ENV
+        .iter()
+        .filter_map(|name| crate::bin_resolve::effective_env_var(name).map(|v| (*name, v)))
+        .collect()
+}
+
+/// The resolved git with [`helper_env`] under its own relocation env, in `dir`
+/// with the directory-scoped hardening overrides, or with no cwd and the
+/// directory-free overrides. When nothing resolves, falls back to bare `git`
+/// so the failure surfaces as the same spawn error it always did — callers
+/// need no new path.
+fn resolved(dir: Option<&Path>) -> StdCommand {
+    let bin = resolve();
+    let mut cmd = match &bin {
+        Some(bin) => StdCommand::new(&bin.program),
+        None => StdCommand::new("git"),
     };
-    cmd.current_dir(dir)
-        .args(crate::git::hardening::config_overrides_for(dir));
+    for (k, v) in helper_env() {
+        cmd.env(k, v);
+    }
+    if let Some(bin) = &bin {
+        for (k, v) in &bin.env {
+            cmd.env(k, v);
+        }
+    }
+    match dir {
+        Some(dir) => {
+            cmd.current_dir(dir)
+                .args(crate::git::hardening::config_overrides_for(dir));
+        }
+        None => {
+            cmd.args(crate::git::hardening::config_overrides());
+        }
+    }
     cmd
+}
+
+/// A tokio Command for the resolved git, with its env applied and `dir` as
+/// cwd.
+pub fn command(dir: &Path) -> tokio::process::Command {
+    tokio::process::Command::from(resolved(Some(dir)))
 }
 
 /// Synchronous sibling of [`command`] — for the rare caller outside an async
 /// context. The Run sandbox builder resolves the target's git common dir while
 /// assembling the profile (a sync path, before the PTY spawns), so it can't
 /// await. Same resolved binary, env, and hardening.
-pub fn std_command(dir: &Path) -> std::process::Command {
-    let mut cmd = match resolve() {
-        Some(bin) => {
-            let mut c = std::process::Command::new(&bin.program);
-            for (k, v) in &bin.env {
-                c.env(k, v);
-            }
-            c
-        }
-        None => std::process::Command::new("git"),
-    };
-    cmd.current_dir(dir)
-        .args(crate::git::hardening::config_overrides_for(dir));
-    cmd
+pub fn std_command(dir: &Path) -> StdCommand {
+    resolved(Some(dir))
 }
 
 /// [`command`] without a cwd — for the rare op whose target dir doesn't exist
@@ -212,20 +239,10 @@ pub fn std_command(dir: &Path) -> std::process::Command {
 /// This, [`command`] and [`std_command`] are the seams where every git
 /// invocation picks up [`crate::git::hardening`]'s overrides, so a
 /// repository's own config can never steer host-side git — including from
-/// call sites written later.
+/// call sites written later — and [`helper_env`], so the programs git runs
+/// are found the way the user's terminal finds them.
 pub fn bare_command() -> tokio::process::Command {
-    let mut cmd = match resolve() {
-        Some(bin) => {
-            let mut cmd = tokio::process::Command::new(&bin.program);
-            for (k, v) in &bin.env {
-                cmd.env(k, v);
-            }
-            cmd
-        }
-        None => tokio::process::Command::new("git"),
-    };
-    cmd.args(crate::git::hardening::config_overrides());
-    cmd
+    tokio::process::Command::from(resolved(None))
 }
 
 /// Extra env for spawned agent/terminal children so *their* `git status` /
@@ -601,6 +618,46 @@ mod tests {
 
         assert!(extract_dist(&tarball, &dest).is_err());
         assert!(!dest.exists());
+    }
+
+    /// A host-side git spawn carries the login shell's PATH and agent socket,
+    /// over the process's own, so the programs git runs for signing are found
+    /// the way the user's terminal finds them.
+    #[test]
+    fn host_git_carries_the_login_shells_helper_env() {
+        let env = crate::bin_resolve::with_login_shell_env(
+            &[
+                ("PATH", "/opt/homebrew/bin:/usr/bin"),
+                ("SSH_AUTH_SOCK", "/tmp/agent.sock"),
+                ("HOME", "/Users/someone"),
+            ],
+            helper_env,
+        );
+        assert_eq!(
+            env,
+            vec![
+                ("PATH", "/opt/homebrew/bin:/usr/bin".into()),
+                ("SSH_AUTH_SOCK", "/tmp/agent.sock".into()),
+            ],
+            "only the named variables, and nothing else the shell exports"
+        );
+        // A shell that exports none leaves the process's own in place.
+        let env = crate::bin_resolve::with_login_shell_env(&[], helper_env);
+        let process_path = std::env::var_os("PATH");
+        assert_eq!(
+            env.iter()
+                .find(|(k, _)| *k == "PATH")
+                .map(|(_, v)| v.clone()),
+            process_path
+        );
+        let cmd =
+            crate::bin_resolve::with_login_shell_env(&[("PATH", "/only/here")], || resolved(None));
+        let path = cmd
+            .get_envs()
+            .find(|(k, _)| *k == "PATH")
+            .and_then(|(_, v)| v)
+            .map(|v| v.to_os_string());
+        assert_eq!(path, Some("/only/here".into()));
     }
 
     /// Relocation env points only at dirs that exist, so a layout change in a

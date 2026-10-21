@@ -367,9 +367,10 @@ pub(crate) mod fixtures {
 #[cfg(test)]
 mod tests {
     use std::io::Write;
+    use std::process::Command;
 
     use super::super::testing::{commit_file, git};
-    use super::fixtures::{signing_repos, verified};
+    use super::fixtures::{signing_repos, verified, Signing};
     use super::*;
 
     #[test]
@@ -641,5 +642,275 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.to_string().contains("signing failed"), "{err}");
+    }
+
+    // ── The environment the signer's helpers read ──────────────────────────
+    //
+    // A Dock-launched app inherits launchd's sparse environment, not the
+    // user's shell's: no Homebrew on PATH, no ssh-agent socket a shell rc
+    // exports, no GNUPGHOME. Host-side git carries those from the login shell
+    // (`git_dist::helper_env`), so the signer finds the user's gpg, agent and
+    // keyring the way their terminal does. Each test below stands a login
+    // shell in (`bin_resolve::with_login_shell_env`, thread-local) and signs
+    // on that thread, first with a shell that exports nothing — the process's
+    // own environment, which cannot reach the key — then with the shell that
+    // can.
+
+    /// `sign_unpublished` on this thread with `shell` as the login shell's
+    /// exported environment.
+    fn sign_with_shell_env(fx: &Signing, tip: &str, shell: &[(&str, &str)]) -> Result<String> {
+        crate::bin_resolve::with_login_shell_env(shell, || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(sign_unpublished(&fx.checkout, &fx.source, tip))
+        })
+    }
+
+    fn signing_failed(err: Error) {
+        assert!(err.to_string().contains("signing failed"), "{err}");
+    }
+
+    fn on_process_path(name: &str) -> PathBuf {
+        std::env::var_os("PATH")
+            .and_then(|path| {
+                std::env::split_paths(&path)
+                    .map(|dir| dir.join(name))
+                    .find(|candidate| candidate.is_file())
+            })
+            .unwrap_or_else(|| panic!("{name} on PATH"))
+    }
+
+    /// A signing program that exists under its configured name only on the
+    /// login shell's PATH — the Homebrew `gpg` a GUI launch cannot see.
+    #[test]
+    fn the_signing_program_is_found_on_the_login_shells_path() {
+        let td = tempfile::tempdir().unwrap();
+        let fx = signing_repos(td.path());
+        let bin = td.path().join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        std::os::unix::fs::symlink(
+            on_process_path("ssh-keygen"),
+            bin.join("fletch-test-ssh-keygen"),
+        )
+        .unwrap();
+        git(
+            &fx.source,
+            &["config", "gpg.ssh.program", "fletch-test-ssh-keygen"],
+        );
+        let tip = commit_file(&fx.checkout, "one.txt");
+
+        signing_failed(sign_with_shell_env(&fx, &tip, &[]).unwrap_err());
+
+        let shell_path = std::env::join_paths(
+            std::iter::once(bin).chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+        )
+        .unwrap();
+        let signed =
+            sign_with_shell_env(&fx, &tip, &[("PATH", shell_path.to_str().unwrap())]).unwrap();
+        // Verification runs outside the stub, so it names the program by path.
+        git(&fx.source, &["config", "--unset", "gpg.ssh.program"]);
+        assert!(verified(&fx, &signed));
+    }
+
+    /// An ssh-agent for one test, holding `key`, on a socket beside it (the
+    /// default under `~/.ssh/agent` is not writable everywhere tests run);
+    /// killed on drop.
+    struct Agent {
+        sock: String,
+        pid: String,
+    }
+
+    impl Agent {
+        fn start(key: &Path) -> Self {
+            let sock = key.with_file_name("agent.sock");
+            let out = Command::new("ssh-agent")
+                .args(["-s", "-a"])
+                .arg(&sock)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "ssh-agent: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            let text = String::from_utf8_lossy(&out.stdout);
+            let pid = text
+                .lines()
+                .find_map(|line| line.strip_prefix("SSH_AGENT_PID="))
+                .and_then(|rest| rest.split(';').next())
+                .unwrap_or_else(|| panic!("SSH_AGENT_PID in ssh-agent output: {text}"))
+                .to_string();
+            let agent = Self {
+                sock: sock.to_string_lossy().into_owned(),
+                pid,
+            };
+            let out = Command::new("ssh-add")
+                .env("SSH_AUTH_SOCK", &agent.sock)
+                .arg(key)
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "ssh-add: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            agent
+        }
+    }
+
+    impl Drop for Agent {
+        fn drop(&mut self) {
+            let _ = Command::new("ssh-agent")
+                .arg("-k")
+                .env("SSH_AGENT_PID", &self.pid)
+                .output();
+        }
+    }
+
+    /// A key the user names by its public half (`key::…`) and keeps in an
+    /// agent — 1Password's, or one a shell rc starts — is reached through the
+    /// socket that shell exports.
+    #[test]
+    fn an_agent_held_key_signs_through_the_login_shells_socket() {
+        let td = tempfile::tempdir().unwrap();
+        let fx = signing_repos(td.path());
+        let key = td.path().join("signing_key");
+        let agent = Agent::start(&key);
+        let public = std::fs::read_to_string(td.path().join("signing_key.pub")).unwrap();
+        git(
+            &fx.source,
+            &[
+                "config",
+                "user.signingkey",
+                &format!("key::{}", public.trim()),
+            ],
+        );
+        // The private half lives in the agent only.
+        std::fs::remove_file(&key).unwrap();
+        let tip = commit_file(&fx.checkout, "one.txt");
+
+        signing_failed(sign_with_shell_env(&fx, &tip, &[]).unwrap_err());
+
+        let signed = sign_with_shell_env(&fx, &tip, &[("SSH_AUTH_SOCK", &agent.sock)]).unwrap();
+        assert!(verified(&fx, &signed));
+    }
+
+    /// A gpg keyring for one test under its own `GNUPGHOME`, with one
+    /// passphrase-less signing key; the agent gpg starts there is killed on
+    /// drop. `None` when the machine has no gpg.
+    struct Gpg {
+        home: PathBuf,
+        fingerprint: String,
+    }
+
+    impl Gpg {
+        fn create(dir: &Path) -> Option<Self> {
+            let present = Command::new("gpg")
+                .arg("--version")
+                .output()
+                .is_ok_and(|out| out.status.success());
+            if !present {
+                return None;
+            }
+            let home = Self::home(dir, "gnupg");
+            let out = Command::new("gpg")
+                .env("GNUPGHOME", &home)
+                .args([
+                    "--batch",
+                    "--pinentry-mode",
+                    "loopback",
+                    "--passphrase",
+                    "",
+                    "--quick-generate-key",
+                    "Me <me@example.com>",
+                    "ed25519",
+                    "sign",
+                    "never",
+                ])
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "gpg --quick-generate-key: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            let out = Command::new("gpg")
+                .env("GNUPGHOME", &home)
+                .args(["--list-secret-keys", "--with-colons"])
+                .output()
+                .unwrap();
+            let fingerprint = String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .find(|line| line.starts_with("fpr:"))
+                .and_then(|line| line.split(':').nth(9))
+                .expect("a fingerprint")
+                .to_string();
+            Some(Self { home, fingerprint })
+        }
+
+        /// An empty keyring directory with the permissions gpg insists on.
+        fn home(dir: &Path, name: &str) -> PathBuf {
+            use std::os::unix::fs::PermissionsExt;
+            let home = dir.join(name);
+            std::fs::create_dir(&home).unwrap();
+            std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o700)).unwrap();
+            home
+        }
+
+        /// `git verify-commit` against this keyring, of a commit in the
+        /// checkout's store.
+        fn verified(&self, fx: &Signing, rev: &str) -> bool {
+            Command::new("git")
+                .current_dir(&fx.source)
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GNUPGHOME", &self.home)
+                .env(
+                    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+                    fx.checkout.join(".git").join("objects"),
+                )
+                .args(["verify-commit", rev])
+                .output()
+                .unwrap()
+                .status
+                .success()
+        }
+    }
+
+    impl Drop for Gpg {
+        fn drop(&mut self) {
+            let _ = Command::new("gpgconf")
+                .env("GNUPGHOME", &self.home)
+                .args(["--kill", "gpg-agent"])
+                .output();
+        }
+    }
+
+    /// The other signing format: a gpg key, in the keyring the login shell's
+    /// `GNUPGHOME` names.
+    #[test]
+    fn a_gpg_key_signs_through_the_login_shells_gnupghome() {
+        let td = tempfile::tempdir().unwrap();
+        let fx = signing_repos(td.path());
+        let Some(gpg) = Gpg::create(td.path()) else {
+            eprintln!("skipped: no gpg on this machine");
+            return;
+        };
+        git(&fx.source, &["config", "gpg.format", "openpgp"]);
+        git(&fx.source, &["config", "user.signingkey", &gpg.fingerprint]);
+        let tip = commit_file(&fx.checkout, "one.txt");
+
+        // A keyring without the key — not the developer's own, which the
+        // test must not touch.
+        let empty = Gpg::home(td.path(), "empty-gnupg");
+        signing_failed(
+            sign_with_shell_env(&fx, &tip, &[("GNUPGHOME", empty.to_str().unwrap())]).unwrap_err(),
+        );
+
+        let signed =
+            sign_with_shell_env(&fx, &tip, &[("GNUPGHOME", gpg.home.to_str().unwrap())]).unwrap();
+        assert!(gpg.verified(&fx, &signed));
     }
 }
