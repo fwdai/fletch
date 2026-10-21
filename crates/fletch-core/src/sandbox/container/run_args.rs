@@ -486,7 +486,7 @@ fn push_claude_config_mount(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sandbox::policy::toolchain_cache_parent;
+    use crate::sandbox::policy::{toolchain_cache_build_dir, toolchain_cache_parent};
 
     /// Podman refuses a launch whose sources its machine doesn't share, so an
     /// unvetted `-v` would be bound and arrive empty. Run in the uid-mapped
@@ -670,6 +670,7 @@ mod tests {
             let sources = mount_sources(&spec(id));
             assert!(sources.contains(&root));
             assert!(!sources.contains(&toolchain_cache_parent(home)));
+            assert!(!sources.contains(&toolchain_cache_build_dir(home)));
         }
 
         for bad in ["", ".", ".."] {

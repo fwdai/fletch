@@ -703,6 +703,14 @@ impl Supervisor {
         }
         workflows.finish_project_runs(run_cleanup);
         self.teardown_project_checkouts(&agents).await;
+        // The project's toolchain cache, by the same rule boot applies: the
+        // row is gone, so its root is no longer live. Still under the agent
+        // lock, so no spawn can create a root this listing has not seen.
+        match (self.workspace.project_ids(), dirs::home_dir()) {
+            (Ok(live), Some(home)) => crate::sandbox::reclaim_toolchain_caches(&home, &live),
+            (Err(e), _) => tracing::warn!(error = %e, "skipping toolchain cache reclaim"),
+            (_, None) => tracing::warn!("skipping toolchain cache reclaim: no home directory"),
+        }
 
         Ok(ProjectDeleteResult {
             workspace: self.current_workspace().expect("workspace initialized"),

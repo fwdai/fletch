@@ -181,6 +181,16 @@ fn codex_spec<'a>() -> RunSpec<'a> {
     )
 }
 
+/// The test spec's toolchain cache bind. Computed, since the root carries the
+/// build's segment (`dev/` under debug).
+fn cache_bind() -> &'static str {
+    static BIND: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    BIND.get_or_init(|| {
+        let root = crate::sandbox::toolchain_cache_root(Path::new("/Users/u"), "p1").unwrap();
+        format!("{0}:{0}", root.display())
+    })
+}
+
 /// Two-token flag lookup: the value following `flag` each time it appears.
 fn values_of<'a>(args: &'a [String], flag: &str) -> Vec<&'a str> {
     args.windows(2)
@@ -202,7 +212,7 @@ fn argv_mounts_exactly_the_three_dirs_at_identical_paths() {
         vec![
             "/Users/u/.fletch/worktrees/orkney:/Users/u/.fletch/worktrees/orkney",
             "/Users/u/.fletch/rpc/orkney:/Users/u/.fletch/rpc/orkney",
-            "/Users/u/.fletch/toolchain-cache/p1:/Users/u/.fletch/toolchain-cache/p1",
+            cache_bind(),
             "/Users/u/.claude:/Users/u/.claude:ro",
             "/Users/u/.fletch/worktrees/orkney/.fletch-claude-projects:/Users/u/.claude/projects",
         ],
@@ -245,7 +255,7 @@ fn argv_maps_the_host_user_on_linux() {
             "/Users/u/Library/Application Support/fletch-host/sandbox/passwd:/etc/passwd:ro",
             "/Users/u/.fletch/worktrees/orkney:/Users/u/.fletch/worktrees/orkney",
             "/Users/u/.fletch/rpc/orkney:/Users/u/.fletch/rpc/orkney",
-            "/Users/u/.fletch/toolchain-cache/p1:/Users/u/.fletch/toolchain-cache/p1",
+            cache_bind(),
             "/Users/u/.claude:/Users/u/.claude:ro",
             "/Users/u/.fletch/worktrees/orkney/.fletch-claude-projects:/Users/u/.claude/projects",
         ],
@@ -306,6 +316,8 @@ fn argv_shares_the_toolchain_cache_and_forwards_its_vars() {
         "{args:?}"
     );
     assert!(!mount_sources(&spec).contains(&parent));
+    let build_dir = crate::sandbox::toolchain_cache_build_dir(spec.home);
+    assert!(!mount_sources(&spec).contains(&build_dir));
     let forwarded = values_of(&args, "-e");
     for var in spec.toolchain_vars {
         assert!(
@@ -509,7 +521,7 @@ fn argv_mounts_borrowed_object_store_read_only() {
         vec![
             "/Users/u/.fletch/worktrees/orkney:/Users/u/.fletch/worktrees/orkney",
             "/Users/u/.fletch/rpc/orkney:/Users/u/.fletch/rpc/orkney",
-            "/Users/u/.fletch/toolchain-cache/p1:/Users/u/.fletch/toolchain-cache/p1",
+            cache_bind(),
             "/Users/u/repo/.git/objects:/Users/u/repo/.git/objects:ro",
             "/Users/u/.claude:/Users/u/.claude:ro",
             "/Users/u/.fletch/worktrees/orkney/.fletch-claude-projects:/Users/u/.claude/projects",
@@ -529,7 +541,7 @@ fn argv_codex_mounts_its_overlay_and_never_the_codex_home() {
         vec![
             "/Users/u/.fletch/worktrees/orkney:/Users/u/.fletch/worktrees/orkney",
             "/Users/u/.fletch/rpc/orkney:/Users/u/.fletch/rpc/orkney",
-            "/Users/u/.fletch/toolchain-cache/p1:/Users/u/.fletch/toolchain-cache/p1",
+            cache_bind(),
             "/Users/u/.fletch/worktrees/orkney/.fletch-codex-home:/Users/u/.fletch/worktrees/orkney/.fletch-codex-home",
             "/Users/u/.codex/config.toml:/Users/u/.codex/config.toml:ro",
             "/Users/u/.codex/skills:/Users/u/.codex/skills:ro",
@@ -645,7 +657,7 @@ fn argv_opencode_mounts_data_dir_read_write() {
         vec![
             "/Users/u/.fletch/worktrees/orkney:/Users/u/.fletch/worktrees/orkney",
             "/Users/u/.fletch/rpc/orkney:/Users/u/.fletch/rpc/orkney",
-            "/Users/u/.fletch/toolchain-cache/p1:/Users/u/.fletch/toolchain-cache/p1",
+            cache_bind(),
             // data dir read-write: no `:ro` suffix.
             "/Users/u/.local/share/opencode:/Users/u/.local/share/opencode",
         ],
@@ -700,7 +712,7 @@ fn argv_pi_mounts_dot_pi_read_write() {
         vec![
             "/Users/u/.fletch/worktrees/orkney:/Users/u/.fletch/worktrees/orkney",
             "/Users/u/.fletch/rpc/orkney:/Users/u/.fletch/rpc/orkney",
-            "/Users/u/.fletch/toolchain-cache/p1:/Users/u/.fletch/toolchain-cache/p1",
+            cache_bind(),
             "/Users/u/.pi:/Users/u/.pi",
         ],
     );
@@ -733,7 +745,7 @@ fn argv_cursor_mounts_dot_cursor_read_write() {
         vec![
             "/Users/u/.fletch/worktrees/orkney:/Users/u/.fletch/worktrees/orkney",
             "/Users/u/.fletch/rpc/orkney:/Users/u/.fletch/rpc/orkney",
-            "/Users/u/.fletch/toolchain-cache/p1:/Users/u/.fletch/toolchain-cache/p1",
+            cache_bind(),
             "/Users/u/.cursor:/Users/u/.cursor",
         ],
     );

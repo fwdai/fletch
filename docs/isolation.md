@@ -71,10 +71,18 @@ its own project ids, which that grant would not let it create as siblings, so
 the Run panel points it (`FLETCH_TOOLCHAIN_CACHE_ROOT`, like the RPC and
 checkout roots) at a `nested/` level inside the outer project's own root:
 writable under that profile, and still the outer project's trust domain, since
-the nested instance is that project's Run process. The flat layout from before
-the per-project key (`npm/`, `bun/`, `playwright/` … directly under
-`~/.fletch/toolchain-cache`) is stale and can be deleted by hand; nothing
-sweeps it.
+the nested instance is that project's Run process.
+
+Project roots are split per build like the checkout and mailbox roots: a
+release install keeps them at `~/.fletch/toolchain-cache/<project id>`, a debug
+build under `~/.fletch/toolchain-cache/dev/`, since the two mint project ids
+from separate databases (a `fletch-host` keeps its own under its data dir for
+the same reason). That makes the database the authority over its build's
+directory, so a root whose project it no longer holds is reclaimed at startup
+and when a project is deleted, along with the flat layout from before the
+per-project key (`npm/`, `bun/`, `playwright/` … directly under the parent).
+Only UUID-named roots and that fixed set of legacy names are ever removed, and
+removal does not follow symlinks an agent planted (`sandbox/cache_gc.rs`).
 
 One carve-out runs the other way, inside the writable checkout: each
 repository's **git-executable configuration** — `.git/config`,

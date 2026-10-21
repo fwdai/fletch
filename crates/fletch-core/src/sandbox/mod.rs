@@ -1,3 +1,4 @@
+mod cache_gc;
 pub mod cargo_home;
 pub(crate) mod container;
 pub mod docker;
@@ -15,6 +16,7 @@ use parking_lot::RwLock;
 
 use crate::error::{Error, Result};
 
+pub use cache_gc::{own_toolchain_caches, reclaim_toolchain_caches};
 pub use docker::{availability as docker_availability, DockerAvailability};
 pub use engine::{AgentLaunchCtx, EngineKind, KillHandle, LaunchPlan, SandboxEngine};
 pub use guarantees::{describe as describe_isolation, IsolationReport};
@@ -23,8 +25,8 @@ pub use podman::{
     PodmanAvailability,
 };
 pub use policy::{
-    nested_toolchain_cache_parent, toolchain_cache_env, toolchain_cache_parent,
-    toolchain_cache_root, BoxPlatform, TOOLCHAIN_CACHE_PARENT_ENV,
+    nested_toolchain_cache_parent, toolchain_cache_build_dir, toolchain_cache_env,
+    toolchain_cache_parent, toolchain_cache_root, BoxPlatform, TOOLCHAIN_CACHE_PARENT_ENV,
 };
 pub use seatbelt::{
     build_run_profile, cleanup_nested_checkouts_roots, cleanup_nested_rpc_roots,

@@ -55,9 +55,9 @@ pub fn data_dir_under(base: PathBuf) -> PathBuf {
     }
 }
 
-/// Claim this host's roots for the two kinds of state the engine keeps outside
-/// its data dir: agent checkouts (`<data-dir>/workspaces`) and RPC mailboxes
-/// (`<data-dir>/rpc`).
+/// Claim this host's roots for the kinds of state the engine keeps outside its
+/// data dir: agent checkouts (`<data-dir>/workspaces`), RPC mailboxes
+/// (`<data-dir>/rpc`) and toolchain caches (`<data-dir>/toolchain-cache`).
 ///
 /// The engine already splits those two roots per *build*
 /// (`fletch_core::build_state_subpath`: `dev/` under debug) and the reason is
@@ -67,6 +67,9 @@ pub fn data_dir_under(base: PathBuf) -> PathBuf {
 /// eventually hand out the same name, land two live agents in one checkout
 /// directory (which provision clears, believing it can only be its own
 /// crash-orphan), and read each other's live mailboxes as orphans to sweep.
+/// Toolchain caches are keyed by project id instead, but reclaimed the same
+/// DB-authoritative way (`fletch_core::sandbox::reclaim_toolchain_caches`), so
+/// a shared directory would have each engine delete the other's caches.
 ///
 /// A host beside a desktop is exactly two such engines — and so is a host
 /// beside another host. `--data-dir` is what separates two hosts (its database,
@@ -104,12 +107,18 @@ fn claim_state_roots(data_dir: &Path) {
             .map(|cwd| cwd.join(data_dir))
             .unwrap_or_else(|_| data_dir.to_path_buf())
     };
-    for key in [
-        fletch_core::workspace::WORKSPACES_ROOT_ENV,
-        fletch_core::rpc::RPC_ROOT_ENV,
+    for (key, root) in [
+        (fletch_core::workspace::WORKSPACES_ROOT_ENV, base.clone()),
+        (fletch_core::rpc::RPC_ROOT_ENV, base.clone()),
+        // The cache's env names the parent itself, not a base under which the
+        // engine appends its own leaf.
+        (
+            fletch_core::sandbox::TOOLCHAIN_CACHE_PARENT_ENV,
+            base.join("toolchain-cache"),
+        ),
     ] {
         if std::env::var_os(key).filter(|v| !v.is_empty()).is_none() {
-            std::env::set_var(key, &base);
+            std::env::set_var(key, root);
         }
     }
 }
@@ -291,7 +300,9 @@ mod tests {
         claim_state_roots(&data_dir);
         let checkouts = fletch_core::workspace::checkouts_root().expect("a checkouts root");
         let mailboxes = fletch_core::rpc::mailbox_dir("orkney").expect("a mailbox dir");
-        for path in [&checkouts, &mailboxes] {
+        let home = std::path::Path::new("/Users/u");
+        let caches = fletch_core::sandbox::toolchain_cache_build_dir(home);
+        for path in [&checkouts, &mailboxes, &caches] {
             assert!(
                 path.starts_with(&data_dir),
                 "{} is outside this host's data dir, so --data-dir does not isolate it",
@@ -300,5 +311,6 @@ mod tests {
         }
         assert!(checkouts.ends_with("dev/workspaces"), "{checkouts:?}");
         assert!(mailboxes.ends_with("dev/rpc/orkney"), "{mailboxes:?}");
+        assert!(caches.ends_with("toolchain-cache/dev"), "{caches:?}");
     }
 }

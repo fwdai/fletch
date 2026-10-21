@@ -495,27 +495,52 @@ pub fn agent_scratch_dirs(home: &Path) -> Vec<PathBuf> {
 ///
 /// Every profile grants exactly the project's subtree, never the parent: a
 /// grant on [`toolchain_cache_parent`] would hand back every other project's
-/// cache. The flat pre-project layout (`npm/`, `bun/`, `playwright/` … directly
-/// under the parent) is stale and safe to delete by hand; nothing sweeps it.
+/// cache.
 ///
 /// `project_id` is a project's UUID (`workspace::query`), so it is path-safe by
 /// construction; anything that is not a single plain path component is refused
 /// here, where it enters a path, so a bad id fails the launch instead of
 /// widening the grant (`""` or `"."` would name the parent, `"../x"` a sibling).
 ///
-/// Not per-build-split (unlike [`crate::workspace::checkouts_root`]): that split
-/// exists to keep name allocation DB-authoritative, which a content cache has no
-/// stake in — dev and release sharing warm caches is a feature.
+/// Per-build-split ([`toolchain_cache_build_dir`]), like every root holding
+/// state keyed by a DB's ids ([`crate::build_state_subpath`]): a debug instance
+/// and a release install mint project ids from separate DBs, so they never
+/// shared a warm cache anyway, and from one shared directory each build's
+/// reclaim ([`super::reclaim_toolchain_caches`]) would see the other's live
+/// projects as deleted ones.
 pub fn toolchain_cache_root(home: &Path, project_id: &str) -> Result<PathBuf> {
+    toolchain_cache_root_in(&toolchain_cache_build_dir(home), project_id)
+}
+
+/// [`toolchain_cache_root`] under an explicit build dir, so the override path
+/// is testable without touching the process environment.
+fn toolchain_cache_root_in(build_dir: &Path, project_id: &str) -> Result<PathBuf> {
     let mut parts = Path::new(project_id).components();
     match (parts.next(), parts.next()) {
         (Some(std::path::Component::Normal(_)), None) if !project_id.contains('/') => {
-            Ok(toolchain_cache_parent(home).join(project_id))
+            Ok(build_dir.join(project_id))
         }
         _ => Err(Error::InvalidPath(format!(
             "project id {project_id:?} cannot key a toolchain cache root"
         ))),
     }
+}
+
+/// The directory holding this build's project roots: the parent itself for
+/// release, `dev/` under it for debug. The segment is appended to an overridden
+/// parent too, the way [`crate::workspace::checkouts_root`] appends it to an
+/// overridden base, so neither path can bypass the split.
+pub fn toolchain_cache_build_dir(home: &Path) -> PathBuf {
+    toolchain_cache_build_dir_in(&toolchain_cache_parent(home))
+}
+
+/// [`toolchain_cache_build_dir`] under an explicit parent. `components` drops
+/// the trailing separator a release build's empty segment would leave.
+pub(super) fn toolchain_cache_build_dir_in(parent: &Path) -> PathBuf {
+    parent
+        .join(crate::build_state_subpath(""))
+        .components()
+        .collect()
 }
 
 /// The directory holding every project's [`toolchain_cache_root`]. Never
@@ -528,7 +553,10 @@ pub fn toolchain_cache_root(home: &Path, project_id: &str) -> Result<PathBuf> {
 /// not create a sibling for one of its projects. The Run panel points it at
 /// [`nested_toolchain_cache_parent`] instead, inside the outer project's own
 /// root — writable under that profile, and exactly the outer project's trust
-/// domain, since the nested instance *is* that project's Run process.
+/// domain, since the nested instance *is* that project's Run process. A
+/// `fletch-host` sets it too, under its own data dir, for the reason it claims
+/// its other state roots there: its database is not the desktop's, so sharing
+/// one directory would make each one's reclaim delete the other's caches.
 pub fn toolchain_cache_parent(home: &Path) -> PathBuf {
     toolchain_cache_parent_from(home, std::env::var_os(TOOLCHAIN_CACHE_PARENT_ENV))
 }
@@ -549,7 +577,7 @@ pub fn default_toolchain_cache_parent(home: &Path) -> PathBuf {
 }
 
 /// Env var naming the directory [`toolchain_cache_parent`] returns. Set by the
-/// Run panel for a nested Fletch; nothing else reads it.
+/// Run panel for a nested Fletch and by `fletch-host` for itself.
 pub const TOOLCHAIN_CACHE_PARENT_ENV: &str = "FLETCH_TOOLCHAIN_CACHE_ROOT";
 
 /// Where a nested Fletch launched from `project_root` (the outer project's
@@ -621,7 +649,7 @@ pub fn nested_toolchain_cache_parent(project_root: &Path) -> PathBuf {
 /// platform would reuse rather than install its own. The other rows are safe
 /// to share: pnpm/bun/yarn store tarballs, go's `GOCACHE`, uv and Puppeteer
 /// key by platform internally, and pip checks wheel tags.
-const TOOLCHAIN_CACHE_VARS: &[(&str, &str)] = &[
+pub(super) const TOOLCHAIN_CACHE_VARS: &[(&str, &str)] = &[
     // JavaScript / TypeScript
     ("BUN_INSTALL_CACHE_DIR", "bun"),
     ("npm_config_cache", "npm/{platform}"), // _npx/ holds installed packages
@@ -1034,7 +1062,11 @@ mod tests {
         // Fletch-owned, and never on the user's PATH — which is *why* rows like
         // `CARGO_HOME`/`GEM_HOME` (whose trees contain `bin/`) are safe here
         // when granting their real `~/.cargo`/`~/.gem` would not be.
-        assert_eq!(root, home.join(".fletch/toolchain-cache/p1"));
+        assert_eq!(
+            root,
+            home.join(".fletch/toolchain-cache")
+                .join(crate::build_state_subpath("p1"))
+        );
 
         for platform in [BoxPlatform::host(), BoxPlatform::linux()] {
             for (var, value) in toolchain_cache_env(&root, platform) {
@@ -1060,16 +1092,26 @@ mod tests {
         );
     }
 
-    /// The project id becomes one path component under the shared parent. An id
-    /// that named the parent itself (`""`, `"."`) or escaped it would hand a
-    /// profile every other project's cache, so those fail rather than resolve.
+    /// The project id becomes one path component under this build's directory.
+    /// An id that named the directory itself (`""`, `"."`) or escaped it would
+    /// hand a profile every other project's cache, so those fail rather than
+    /// resolve.
     #[test]
-    fn toolchain_cache_root_is_one_component_under_the_parent() {
+    fn toolchain_cache_root_is_one_component_under_the_build_dir() {
         let home = Path::new("/Users/u");
         let id = "0b9f3c1e-6a4d-4e8b-9c2f-1d7e5a3b8c90";
         let root = toolchain_cache_root(home, id).unwrap();
-        assert_eq!(root.parent(), Some(toolchain_cache_parent(home).as_path()));
+        let build_dir = toolchain_cache_build_dir(home);
+        assert_eq!(root.parent(), Some(build_dir.as_path()));
         assert!(root.ends_with(id));
+        // Debug and release DBs mint their ids separately, so their roots are
+        // siblings rather than one namespace.
+        let expected = if cfg!(debug_assertions) {
+            toolchain_cache_parent(home).join("dev")
+        } else {
+            toolchain_cache_parent(home)
+        };
+        assert_eq!(build_dir.as_os_str(), expected.as_os_str());
 
         for bad in ["", ".", "..", "../other", "a/b", "a/", "/abs", "a/../b"] {
             assert!(
@@ -1089,8 +1131,18 @@ mod tests {
         let nested_parent = nested_toolchain_cache_parent(&outer);
         assert_eq!(nested_parent, outer.join("nested"));
 
-        let inner = toolchain_cache_parent_from(home, Some(nested_parent.into())).join("inner");
-        assert_eq!(inner, outer.join("nested").join("inner"));
+        // The build segment is appended under the override as well.
+        let nested_build_dir = toolchain_cache_build_dir_in(&toolchain_cache_parent_from(
+            home,
+            Some(nested_parent.into()),
+        ));
+        let inner = toolchain_cache_root_in(&nested_build_dir, "inner").unwrap();
+        assert_eq!(
+            inner,
+            outer
+                .join("nested")
+                .join(crate::build_state_subpath("inner"))
+        );
         assert!(
             inner.starts_with(&outer),
             "inside the outer project's grant"

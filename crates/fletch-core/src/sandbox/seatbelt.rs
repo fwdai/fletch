@@ -233,11 +233,12 @@ fn deny_engine_data_dir(home_s: &str, state_roots: &[&Path]) -> String {
 /// agent executes those binaries, and the engine runs the same ones unsandboxed.
 ///
 /// The second is `state_roots`: the roots this profile was handed — the agent's
-/// writable checkout parent and its RPC mailbox — which a host derives under its data
-/// dir (`<data-dir>/workspaces/<agent>`, `<data-dir>/rpc/<agent>`, with a
+/// writable checkout parent, its RPC mailbox and its project's toolchain cache
+/// root — which a host derives under its data dir (`<data-dir>/workspaces/<agent>`,
+/// `<data-dir>/rpc/<agent>`, `<data-dir>/toolchain-cache/<project>`, with a
 /// per-build `dev/` segment; see `fletch_core::build_state_subpath`). Without
-/// giving them back, the deny would take the agent's own working tree and its
-/// own mailbox with it. They are already granted in the allow block, so these
+/// giving them back, the deny would take the agent's own working tree, its own
+/// mailbox and its project's caches with it. They are already granted in the allow block, so these
 /// lines re-grant what was granted and add only the read that `allow default`
 /// gave anyway.
 ///
@@ -575,9 +576,8 @@ pub fn build_run_profile(
     // Run executes what the root holds. Run also keeps RUN_TOOLCHAIN_DIRS below,
     // so a build that ignores the redirect env still writes its default location
     // — belt and braces, since Run's boundary is deliberately the looser one.
-    subpaths.push(sbpl_string(
-        &policy::toolchain_cache_root(&home, project_id)?.to_string_lossy(),
-    ));
+    let cache_root = policy::toolchain_cache_root(&home, project_id)?;
+    subpaths.push(sbpl_string(&cache_root.to_string_lossy()));
     // Run-only toolchain + broad-state dirs, including the whole `~/.config`
     // and `~/.local` the agent profile pointedly withholds (see the const's
     // doc-comment). `~/.local` here supersets the scratch `~/.local/share`/
@@ -602,10 +602,15 @@ pub fn build_run_profile(
     let deny_app_data = deny_app_data_dir(&home_s);
     // …and this engine's own data dir, which no bundle-id rule matches. A Run
     // command's `writable_root` is the checkout it runs in, which on a host is
-    // under that data dir, so it is the one root given back here (a Run process
-    // has no mailbox). On the desktop only the read-only portable-git exception
-    // is emitted — see `deny_engine_data_dir`.
-    let deny_engine_data = block_after(deny_engine_data_dir(&home_s, &[writable_root.as_path()]));
+    // under that data dir, so it is given back here with the project's cache
+    // root, which a host keeps there too (a Run process has no mailbox). On the
+    // desktop only the read-only portable-git exception is emitted — see
+    // `deny_engine_data_dir`.
+    let resolved_cache_root = policy::resolve_existing_prefix(&cache_root);
+    let deny_engine_data = block_after(deny_engine_data_dir(
+        &home_s,
+        &[writable_root.as_path(), resolved_cache_root.as_path()],
+    ));
     let app_data_dev = sbpl_string(&format!(
         "{home_s}/Library/Application Support/{}/dev",
         crate::BUNDLE_ID
@@ -882,13 +887,12 @@ pub fn build_profile(
     // `launch_agent`). This is the one grant that replaces an open-ended list of
     // per-toolchain default locations — and it is the project's subtree, never
     // the shared parent; see `policy::toolchain_cache_root`.
+    let cache_root = policy::toolchain_cache_root(&home, project_id)?;
     let policy_dirs = subpath_grants(
         policy::all_provider_state_dirs(&home)
             .into_iter()
             .chain(policy::agent_scratch_dirs(&home))
-            .chain(std::iter::once(policy::toolchain_cache_root(
-                &home, project_id,
-            )?)),
+            .chain(std::iter::once(cache_root.clone())),
     )
     .join("\n");
 
@@ -896,12 +900,18 @@ pub fn build_profile(
     // touch any Fletch data dir, dev or otherwise.
     let deny_app_data = deny_app_data_dir(&home_s);
     // …plus the data dir this engine was actually configured with, which nothing
-    // bundle-id-derived matches. A host derives both roots below it, so the deny
-    // hands back exactly the two this profile was given. On the desktop only the
+    // bundle-id-derived matches. A host derives its roots below it, so the deny
+    // hands back exactly the three this profile was given (the cache root in
+    // resolved form, which is what the deny matches). On the desktop only the
     // read-only portable-git exception is emitted — see `deny_engine_data_dir`.
+    let resolved_cache_root = policy::resolve_existing_prefix(&cache_root);
     let deny_engine_data = block_after(deny_engine_data_dir(
         &home_s,
-        &[writable_root.as_path(), rpc_root.as_path()],
+        &[
+            writable_root.as_path(),
+            rpc_root.as_path(),
+            resolved_cache_root.as_path(),
+        ],
     ));
 
     // Invariant 3, agent profile only. The Run profile deliberately does NOT
@@ -1691,30 +1701,28 @@ mod tests {
         let canonical_home = std::fs::canonicalize(&home).unwrap();
         let cache_root = policy::toolchain_cache_root(&canonical_home, PROJECT).unwrap();
         let expected = format!("(subpath \"{}\")", cache_root.display());
-        let parent = format!(
-            "(subpath \"{}\")",
-            policy::toolchain_cache_parent(&canonical_home).display()
-        );
+        // Neither the parent nor this build's directory: each holds every
+        // project's root.
+        let above = [
+            policy::toolchain_cache_parent(&canonical_home),
+            policy::toolchain_cache_build_dir(&canonical_home),
+        ]
+        .map(|dir| format!("(subpath \"{}\")", dir.display()));
 
         let agent = build_profile(&root, &rpc, &home, PROJECT, None, None, None, None).unwrap();
-        assert!(
-            agent.contains(&expected),
-            "agent profile is missing the toolchain cache root"
-        );
-        assert!(
-            !agent.contains(&parent),
-            "agent profile grants every project's cache"
-        );
-
         let run = build_run_profile(&root, &home, PROJECT, &[]).unwrap();
-        assert!(
-            run.contains(&expected),
-            "run profile is missing the toolchain cache root"
-        );
-        assert!(
-            !run.contains(&parent),
-            "run profile grants every project's cache"
-        );
+        for (name, profile) in [("agent", &agent), ("run", &run)] {
+            assert!(
+                profile.contains(&expected),
+                "{name} profile is missing the toolchain cache root"
+            );
+            for dir in &above {
+                assert!(
+                    !profile.contains(dir),
+                    "{name} profile grants every project's cache: {dir}"
+                );
+            }
+        }
 
         assert!(build_profile(&root, &rpc, &home, "..", None, None, None, None).is_err());
         assert!(build_run_profile(&root, &home, "", &[]).is_err());
@@ -3168,9 +3176,13 @@ mod tests {
         );
 
         // …and the re-allows follow the deny, or the agent loses its own
-        // checkout and its own mailbox.
+        // checkout, its own mailbox and its project's toolchain cache (which a
+        // host keeps under its data dir too).
+        let cache_root = policy::resolve_existing_prefix(
+            &policy::toolchain_cache_root(&canonical_home, PROJECT).unwrap(),
+        );
         let mut reallow_at = Vec::new();
-        for given_back in [&root, &rpc] {
+        for given_back in [&root, &rpc, &cache_root] {
             let allow = format!(
                 "(allow file-read* file-write* (subpath \"{}\"))",
                 given_back.display()
@@ -3296,13 +3308,18 @@ mod tests {
             "(deny file-read* file-write* (subpath \"{}\"))",
             data_dir.display()
         );
-        let allow = format!(
-            "(allow file-read* file-write* (subpath \"{}\"))",
-            checkout.display()
-        );
         assert!(profile.contains(&deny), "missing {deny}");
-        assert!(profile.contains(&allow), "missing {allow}");
-        assert!(profile.find(&deny).unwrap() < profile.find(&allow).unwrap());
+        let cache_root = policy::resolve_existing_prefix(
+            &policy::toolchain_cache_root(&std::fs::canonicalize(&home).unwrap(), PROJECT).unwrap(),
+        );
+        for given_back in [&checkout, &cache_root] {
+            let allow = format!(
+                "(allow file-read* file-write* (subpath \"{}\"))",
+                given_back.display()
+            );
+            assert!(profile.contains(&allow), "missing {allow}");
+            assert!(profile.find(&deny).unwrap() < profile.find(&allow).unwrap());
+        }
     }
 
     /// Manual/local acceptance check (macOS-only, `#[ignore]`d so it stays off
