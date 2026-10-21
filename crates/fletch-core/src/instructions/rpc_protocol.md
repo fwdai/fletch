@@ -95,7 +95,10 @@ To change your pull request after opening it, use `pr_edit` with any of
 `## Decisions` section), `args.base` (retarget; must exist on origin) and
 `args.draft` (true/false); `args.number` edits another PR of the repository.
 Refresh the description with it whenever follow-up commits make the one you
-wrote at `open_pr` stale.
+wrote at `open_pr` stale. `pr_comment` (`args.body`; `args.number` for another
+PR) posts on the PR's conversation — say what a follow-up push changed there —
+and `issue_comment` (`args.number`, `args.body`) on an issue. Review threads
+are answered with `reply_thread`, not a comment.
 
 ### Workspace title
 

@@ -393,6 +393,31 @@ pub async fn pr_list(checkout: &Path, limit: u32) -> Result<Vec<PrSummary>> {
         .collect())
 }
 
+/// Post a comment on the conversation of pull request or issue `number` (one
+/// endpoint serves both) and return the comment's URL. The body gets the
+/// attribution scrub every PR body gets.
+pub async fn post_comment(checkout: &Path, number: u32, body: &str) -> Result<String> {
+    if body.trim().is_empty() {
+        return Err(Error::Gh("comment body is empty".into()));
+    }
+    let (owner, repo) = require_repo_ref(checkout).await?;
+    let client = client::Client::new()?;
+    let (status, resp) = client
+        .rest(
+            reqwest::Method::POST,
+            &format!("/repos/{owner}/{repo}/issues/{number}/comments"),
+            Some(&json!({ "body": crate::attribution::scrub_pr_body(body) })),
+        )
+        .await?;
+    if !status.is_success() {
+        return Err(Error::Gh(format!(
+            "comment failed: {}",
+            detailed_rest_error(&resp)
+        )));
+    }
+    Ok(resp["html_url"].as_str().unwrap_or_default().to_string())
+}
+
 /// GitHub's page cap for the pulls list.
 pub const PR_LIST_MAX: u32 = 100;
 

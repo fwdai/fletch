@@ -44,7 +44,13 @@ const MAX_TITLE_CHARS: usize = 80;
 fn is_mutating_op(op: &str) -> bool {
     matches!(
         op,
-        "git_push" | "open_pr" | "pr_edit" | "reply_thread" | "resolve_thread"
+        "git_push"
+            | "open_pr"
+            | "pr_edit"
+            | "pr_comment"
+            | "issue_comment"
+            | "reply_thread"
+            | "resolve_thread"
     )
 }
 
@@ -153,6 +159,8 @@ impl GitDispatcher {
             "pr_check_log" => (self.pr_check_log(id, args).await, Vec::new()),
             "pr_comments" => (self.pr_comments(id, args).await, Vec::new()),
             "pr_edit" => self.pr_edit(id, args).await,
+            "pr_comment" => (self.pr_comment(id, args).await, Vec::new()),
+            "issue_comment" => (self.issue_comment(id, args).await, Vec::new()),
             "pr_threads" => (self.pr_threads(id, args).await, Vec::new()),
             "reply_thread" => (self.reply_thread(id, args).await, Vec::new()),
             "resolve_thread" => (self.resolve_thread(id, args).await, Vec::new()),

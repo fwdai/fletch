@@ -66,10 +66,59 @@ async fn pr_edit_names_a_non_github_origin_and_emits_nothing() {
     assert!(fx.is_empty());
 }
 
-/// A successful edit is a mutation the panel attributes to the agent's turn.
+/// A successful edit or comment is a mutation the panel attributes to the
+/// agent's turn.
 #[test]
-fn pr_edit_is_a_mutating_op() {
-    assert!(crate::rpc::git::is_mutating_op("pr_edit"));
+fn pr_writes_are_mutating_ops() {
+    for op in ["pr_edit", "pr_comment", "issue_comment"] {
+        assert!(crate::rpc::git::is_mutating_op(op), "{op}");
+    }
+}
+
+#[tokio::test]
+async fn comments_need_a_body_and_issues_need_a_number() {
+    let td = tempfile::tempdir().unwrap();
+    let disp = dispatcher(td.path());
+    for (op, args, needle) in [
+        ("pr_comment", json!({}), "requires a non-empty `body`"),
+        (
+            "pr_comment",
+            json!({ "body": "  " }),
+            "requires a non-empty `body`",
+        ),
+        (
+            "pr_comment",
+            json!({ "body": "x", "number": 0 }),
+            "`number` must be a positive integer",
+        ),
+        ("issue_comment", json!({ "body": "x" }), "requires `number`"),
+    ] {
+        let (resp, fx) = disp.dispatch_inner("c", op, &args).await;
+        assert!(!resp.ok, "{op} {args}");
+        let err = resp.error.unwrap();
+        assert!(err.contains(needle), "{op} {args}: {err}");
+        assert!(fx.is_empty());
+    }
+}
+
+#[tokio::test]
+async fn comments_name_a_non_github_origin_and_emit_nothing() {
+    let td = tempfile::tempdir().unwrap();
+    let repo = repo_without_origin(td.path());
+    let disp = dispatcher(&repo);
+    for (op, args) in [
+        ("pr_comment", json!({ "body": "done" })),
+        ("issue_comment", json!({ "body": "done", "number": 3 })),
+    ] {
+        let (resp, fx) = disp.dispatch_inner("c", op, &args).await;
+        assert_eq!(
+            resp.error.as_deref(),
+            Some(
+                format!("{op}: origin is not a GitHub repository (or there is no origin)").as_str()
+            )
+        );
+        assert!(fx.is_empty(), "{op}: {fx:?}");
+    }
 }
 
 #[test]

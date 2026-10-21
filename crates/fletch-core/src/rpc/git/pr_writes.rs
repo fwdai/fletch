@@ -89,6 +89,47 @@ impl GitDispatcher {
         }
     }
 
+    /// A comment on the PR's conversation (`args.body`; `args.number` for
+    /// another PR). The place to say what a follow-up push changed, which
+    /// agents did with `gh pr comment` and three guessed op names.
+    pub(super) async fn pr_comment(&self, id: &str, args: &Value) -> Response {
+        self.comment_on(id, "pr_comment", args, false).await
+    }
+
+    /// A comment on issue `args.number` (required).
+    pub(super) async fn issue_comment(&self, id: &str, args: &Value) -> Response {
+        self.comment_on(id, "issue_comment", args, true).await
+    }
+
+    async fn comment_on(&self, id: &str, op: &str, args: &Value, issue: bool) -> Response {
+        let body = match args.get("body").and_then(Value::as_str).map(str::trim) {
+            Some(b) if !b.is_empty() => b.to_string(),
+            _ => return Response::err(id, format!("{op} requires a non-empty `body`")),
+        };
+        let number = match positive_u32_arg(args, "number") {
+            Ok(n) => n,
+            Err(e) => return Response::err(id, format!("{op}: {e}")),
+        };
+        if issue && number.is_none() {
+            return Response::err(id, format!("{op} requires `number`"));
+        }
+        let t = match self.pr_read_target(id, op, args).await {
+            Ok(t) => t,
+            Err(resp) => return resp,
+        };
+        let number = match number {
+            Some(n) => n,
+            None => match branch_pr(id, op, &t).await {
+                Ok(pr) => pr.number,
+                Err(resp) => return resp,
+            },
+        };
+        match crate::github::post_comment(&t.source_repo, number, &body).await {
+            Ok(url) => json_ok(id, op, &json!({ "number": number, "url": url })),
+            Err(e) => Response::err(id, format!("{op}: {e}")),
+        }
+    }
+
     /// The issue the primary checkout's PR closes, read live so a composer
     /// pick made after spawn still reaches the trailer. `None` for a sibling
     /// checkout, whose PR is not the one bound to the issue.
