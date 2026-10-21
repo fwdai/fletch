@@ -167,6 +167,36 @@ pub struct IssueSummary {
     pub body: Option<String>,
 }
 
+/// One comment on an issue, as the agent's `issue_view` returns it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct IssueCommentRow {
+    /// Author's login; empty for a deleted account.
+    pub author: String,
+    pub body: String,
+    /// ISO-8601 as GitHub gives it.
+    pub created_at: String,
+}
+
+/// An issue, whole, for an agent asked to work on or triage it. Also the row
+/// shape of `issue_list`, where `comments` is left empty.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct IssueDetail {
+    pub number: u32,
+    pub title: String,
+    /// "open" | "closed"
+    pub state: String,
+    pub url: String,
+    pub author: String,
+    pub labels: Vec<String>,
+    pub assignees: Vec<String>,
+    pub body: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub comments_count: u32,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub comments: Vec<IssueCommentRow>,
+}
+
 /// GitHub's combined merge gate (`mergeStateStatus`), normalized. This — not
 /// `mergeable` — is what actually decides whether a PR can land (spec §6).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]

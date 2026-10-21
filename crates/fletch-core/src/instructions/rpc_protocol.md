@@ -84,6 +84,12 @@ PR yet or none visible to the host's account, not a GitHub origin, host not
 signed in, or a rate-limit pause to retry after). Do not call `gh` or the
 GitHub API directly: your sandbox has no GitHub credentials.
 
+Issues of the repository: `issue_view` (`args.number`; title, state, body,
+labels, assignees, author and the newest `args.comments` comments, default
+50) and `issue_list` (`args.state` open (default), closed or all,
+`args.labels` as a comma-separated string or a list, `args.limit` default 20,
+max 100).
+
 To change your pull request after opening it, use `pr_edit` with any of
 `args.title`, `args.body` (replaces the whole description — keep the
 `## Decisions` section), `args.base` (retarget; must exist on origin) and

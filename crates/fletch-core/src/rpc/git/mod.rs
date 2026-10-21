@@ -1,5 +1,6 @@
 mod args;
 mod commands;
+mod issue_reads;
 mod pr_reads;
 mod pr_writes;
 mod publishing;
@@ -146,6 +147,8 @@ impl GitDispatcher {
             "signal_git_action" => self.signal_git_action(id, args),
             "pr_view" => (self.pr_view(id, args).await, Vec::new()),
             "pr_list" => (self.pr_list(id, args).await, Vec::new()),
+            "issue_view" => (self.issue_view(id, args).await, Vec::new()),
+            "issue_list" => (self.issue_list(id, args).await, Vec::new()),
             "pr_checks" => (self.pr_checks(id, args).await, Vec::new()),
             "pr_check_log" => (self.pr_check_log(id, args).await, Vec::new()),
             "pr_comments" => (self.pr_comments(id, args).await, Vec::new()),
