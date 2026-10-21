@@ -300,6 +300,18 @@ impl WorkspaceManager {
         Ok(self.current().expect("workspace initialized"))
     }
 
+    /// Every project id in this build's DB: what the toolchain cache reclaim
+    /// keeps (`sandbox::reclaim_toolchain_caches`). Fails rather than skipping
+    /// a row it cannot read, since a missing id is a cache deleted.
+    pub fn project_ids(&self) -> Result<std::collections::HashSet<String>> {
+        let conn = self.db.lock();
+        let mut stmt = conn.prepare("SELECT id FROM projects")?;
+        let ids = stmt
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        Ok(ids)
+    }
+
     /// Atomically delete a project and its workflow runs after filesystem and
     /// runtime cleanup has been staged by the supervisor. Workflow runs do not
     /// have a project FK, so they share this transaction explicitly, as does

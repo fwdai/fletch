@@ -80,7 +80,13 @@ impl SandboxTestRunner {
         run_env: RunEnvSource,
     ) -> Result<Self> {
         // The tests gate never lints; `lint_override` is `None`.
-        let verifier = Verifier::new(test_override, setup_override, None, timeout_secs)?;
+        let verifier = Verifier::new(
+            run_env.project_id.clone(),
+            test_override,
+            setup_override,
+            None,
+            timeout_secs,
+        )?;
         Ok(Self { verifier, run_env })
     }
 }

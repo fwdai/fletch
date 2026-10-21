@@ -378,19 +378,20 @@ fn spawn_run_phase(
     // config), so a malicious agent could otherwise plant a script that runs
     // unsandboxed with full user privilege the moment the user clicks ▶. Reads
     // and network stay open (dev servers need them); only writes are fenced.
-    let (program, args, mut env) = sandboxed_run_command(&cwd, &cmd)?;
+    // The agent's project keys the toolchain cache the command may write, so
+    // without the record there is no cache to grant and the run fails.
+    let record = sup.workspace.agent(&agent_id)?;
+    let (program, args, mut env) = sandboxed_run_command(&cwd, &cmd, &record.project_id)?;
     // Layer the project's opt-in Run environment: the `.env` variables the user
     // chose to share into the sandbox (mirrored live from the source repo's
     // `.env` or overridden per project, with `{{agent_id}}`/`{{worktree}}`
     // interpolated). Nothing is shared unless explicitly enabled in Project
-    // Settings. Best-effort — a missing record/repo just injects nothing.
-    if let Ok(record) = sup.workspace.agent(&agent_id) {
-        if let Some(primary) = record.repos.first() {
-            let project_env =
-                sup.workspace
-                    .run_env(&record.project_id, &primary.repo_path, &agent_id, &cwd);
-            env.extend(project_env);
-        }
+    // Settings. Best-effort — a record with no repo just injects nothing.
+    if let Some(primary) = record.repos.first() {
+        let project_env =
+            sup.workspace
+                .run_env(&record.project_id, &primary.repo_path, &agent_id, &cwd);
+        env.extend(project_env);
     }
     // Pin the resolved (port-safe) PORT last so it wins over anything the
     // sandbox layer — or the project env above — set.
@@ -443,8 +444,9 @@ type SandboxedRunCommand = (PathBuf, Vec<String>, Vec<(String, String)>);
 /// `sandbox-exec -p <profile> <shell> -lic <cmd>`. Returns the program, argv,
 /// and env. The profile travels in argv rather than a tempfile — see
 /// [`crate::sandbox::profile_args`] for why a file would be racy — so there is
-/// nothing for the caller to keep alive.
-fn sandboxed_run_command(cwd: &Path, cmd: &str) -> Result<SandboxedRunCommand> {
+/// nothing for the caller to keep alive. `project_id` is the agent's project,
+/// whose toolchain cache the command shares with that project's agents.
+fn sandboxed_run_command(cwd: &Path, cmd: &str, project_id: &str) -> Result<SandboxedRunCommand> {
     let home =
         dirs::home_dir().ok_or_else(|| Error::Other("HOME directory not available".into()))?;
     // Grant the target's git *common dir* so `git worktree add` (and later
@@ -453,7 +455,7 @@ fn sandboxed_run_command(cwd: &Path, cmd: &str) -> Result<SandboxedRunCommand> {
     // worktree (the dogfooding case) it's the source repo's real `.git`,
     // outside `writable_root`, which would otherwise fail closed.
     let extra_writable: Vec<PathBuf> = run_target_git_common_dir(cwd).into_iter().collect();
-    let profile_text = crate::sandbox::build_run_profile(cwd, &home, &extra_writable)?;
+    let profile_text = crate::sandbox::build_run_profile(cwd, &home, project_id, &extra_writable)?;
     let shell = user_shell();
     let shell_str = shell
         .to_str()
@@ -464,12 +466,23 @@ fn sandboxed_run_command(cwd: &Path, cmd: &str) -> Result<SandboxedRunCommand> {
     args.push(shell_str);
     args.extend(shell_args(cmd));
     // Same package-manager cache redirection the agent gets, so a `bun install`
-    // or `cargo build` run from the Run panel and one run by the agent share a
-    // warm cache instead of maintaining two. The profile grants this root above.
-    let mut env = crate::sandbox::prepare_toolchain_cache(&home, cwd);
+    // or `cargo build` run from the Run panel and one run by the project's
+    // agents share a warm cache instead of maintaining two. The profile grants
+    // this root above.
+    let mut env = crate::sandbox::prepare_toolchain_cache(
+        &home,
+        project_id,
+        cwd,
+        crate::sandbox::BoxPlatform::host(),
+    )?;
     // A nested Fletch (dogfooding) can't reach the host's `~/.fletch/{rpc,
     // worktrees}` under this profile; steer both to sandbox-writable roots.
-    // Harmless for any other Run target — nothing but Fletch reads these.
+    // Its toolchain cache goes the same way: it mints its own project ids, and
+    // this profile grants only *this* project's root, so its projects cache
+    // under a `nested/` level of that root rather than failing to create a
+    // sibling (`policy::nested_toolchain_cache_parent`). Harmless for any other
+    // Run target — nothing but Fletch reads these.
+    let project_root = crate::sandbox::toolchain_cache_root(&home, project_id)?;
     env.extend([
         (
             crate::rpc::RPC_ROOT_ENV.to_string(),
@@ -480,6 +493,12 @@ fn sandboxed_run_command(cwd: &Path, cmd: &str) -> Result<SandboxedRunCommand> {
         (
             crate::workspace::WORKSPACES_ROOT_ENV.to_string(),
             crate::sandbox::nested_checkouts_root(cwd)
+                .to_string_lossy()
+                .into_owned(),
+        ),
+        (
+            crate::sandbox::TOOLCHAIN_CACHE_PARENT_ENV.to_string(),
+            crate::sandbox::nested_toolchain_cache_parent(&project_root)
                 .to_string_lossy()
                 .into_owned(),
         ),

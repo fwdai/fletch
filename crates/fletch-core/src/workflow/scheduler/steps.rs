@@ -675,6 +675,7 @@ async fn assemble_gate_evidence(
     // caller that runs checks; `&[]` when the checks are skipped.
     let verification = if run_checks {
         match crate::verify::Verifier::new(
+            env.project_id.to_string(),
             env.test_override.clone(),
             env.setup_override.clone(),
             None,

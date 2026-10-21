@@ -114,6 +114,7 @@ fn seatbelt_run(
     let claude = crate::agent::resolve_agent_bin("claude", "claude", "Claude Code", &home).unwrap();
     let ctx = AgentLaunchCtx {
         agent_id: "live",
+        project_id: "live",
         provider: "claude",
         writable_root: root,
         source_repos: &[],

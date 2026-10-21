@@ -61,32 +61,22 @@ pub async fn run_verification_impl(
         supervisor: supervisor.clone(),
         agent_id: agent_id.to_string(),
     };
-    let project_id = supervisor
-        .workspace
-        .agent(agent_id)
-        .map(|r| r.project_id)
-        .unwrap_or_default();
-    let setting = |key: &str| -> Option<String> {
-        if project_id.is_empty() {
-            None
-        } else {
-            supervisor.workspace.project_setting(&project_id, key)
-        }
-    };
+    // The project keys the toolchain cache the checks may write, so an agent
+    // without a record has no cache to grant and cannot be verified — the same
+    // rule the Run panel applies (`supervisor::run::spawn_run_phase`).
+    let project_id = supervisor.workspace.agent(agent_id)?.project_id;
+    let setting = |key: &str| supervisor.workspace.project_setting(&project_id, key);
     let verifier = Verifier::new(
+        project_id.clone(),
         setting("run.test"),
         setting("run.install"),
         setting("run.lint"),
         VERIFY_TIMEOUT_SECS,
     )?;
     // The project's shared run env — the same membrane as the Run panel.
-    let env = if project_id.is_empty() {
-        Vec::new()
-    } else {
-        supervisor
-            .workspace
-            .run_env(&project_id, &repo.repo_path, agent_id, &checkout)
-    };
+    let env = supervisor
+        .workspace
+        .run_env(&project_id, &repo.repo_path, agent_id, &checkout);
     let report = verifier.verify(&checkout, &env).await;
     tracing::info!(
         agent_id = %agent_id,

@@ -73,6 +73,7 @@ impl SandboxEngine for SandboxExecEngine {
             ctx.writable_root,
             ctx.rpc_dir,
             ctx.home,
+            ctx.project_id,
             claude_config_dir.as_deref(),
             ctx.blackboard,
             ctx.adopted_workspace(),
@@ -81,12 +82,17 @@ impl SandboxEngine for SandboxExecEngine {
         // A workflow step agent's blackboard is granted writable in the profile
         // above; also point the agent at it via `WF_BLACKBOARD` (the same host
         // path the sandbox sees — seatbelt shares the host filesystem).
-        // Redirect every package-manager cache/store into the one Fletch-owned
-        // root the profile grants, so host toolchains (bun, cargo, gem, …) have
-        // somewhere legitimate to write instead of failing closed — or being
-        // redirected into the checkout by an improvising agent. See
+        // Redirect every package-manager cache/store into the project's
+        // Fletch-owned root the profile grants, so host toolchains (bun, cargo,
+        // gem, …) have somewhere legitimate to write instead of failing closed —
+        // or being redirected into the checkout by an improvising agent. See
         // `policy::toolchain_cache_root` and `cargo_home`.
-        let mut env = super::prepare_toolchain_cache(ctx.home, ctx.cwd);
+        let mut env = super::prepare_toolchain_cache(
+            ctx.home,
+            ctx.project_id,
+            ctx.cwd,
+            super::BoxPlatform::host(),
+        )?;
         // Claude reads it once at start and ranks it above any `/login`
         // credential in the config dir, and it can't refresh it — which is the
         // point: refreshing is the host's job (`agent::host_login::claude`).
@@ -227,11 +233,12 @@ fn deny_engine_data_dir(home_s: &str, state_roots: &[&Path]) -> String {
 /// agent executes those binaries, and the engine runs the same ones unsandboxed.
 ///
 /// The second is `state_roots`: the roots this profile was handed — the agent's
-/// writable checkout parent and its RPC mailbox — which a host derives under its data
-/// dir (`<data-dir>/workspaces/<agent>`, `<data-dir>/rpc/<agent>`, with a
+/// writable checkout parent, its RPC mailbox and its project's toolchain cache
+/// root — which a host derives under its data dir (`<data-dir>/workspaces/<agent>`,
+/// `<data-dir>/rpc/<agent>`, `<data-dir>/toolchain-cache/<project>`, with a
 /// per-build `dev/` segment; see `fletch_core::build_state_subpath`). Without
-/// giving them back, the deny would take the agent's own working tree and its
-/// own mailbox with it. They are already granted in the allow block, so these
+/// giving them back, the deny would take the agent's own working tree, its own
+/// mailbox and its project's caches with it. They are already granted in the allow block, so these
 /// lines re-grant what was granted and add only the read that `allow default`
 /// gave anyway.
 ///
@@ -522,6 +529,16 @@ const RUN_TOOLCHAIN_DIRS: &[&str] = &[
 /// Unlike the agent profile it needs no rpc mailbox or agent state dirs — a
 /// Run process neither speaks RPC nor persists agent transcripts.
 ///
+/// It carries the agent profile's host-login file denies, but not
+/// [`KEYCHAIN_MACH_DENY`]: taking the Keychain away also takes the trust roots
+/// some TLS stacks read from it (it broke codex until it was pointed at the
+/// system bundle), and project builds run arbitrary toolchains — Rust ones
+/// among them — that would hit the same wall with no per-tool fix. So Run can
+/// still look up a Keychain login; closing that is a separate decision.
+///
+/// `project_id` picks the toolchain cache root granted, the same one the
+/// project's agents get ([`policy::toolchain_cache_root`]).
+///
 /// `extra_writable` grants additional out-of-checkout paths the specific Run
 /// target needs. The Run panel passes the target's resolved git *common dir*:
 /// a project may write its own git metadata (objects, refs, `worktrees/`
@@ -533,6 +550,7 @@ const RUN_TOOLCHAIN_DIRS: &[&str] = &[
 pub fn build_run_profile(
     writable_root: &Path,
     home: &Path,
+    project_id: &str,
     extra_writable: &[PathBuf],
 ) -> Result<String> {
     let writable_root = canonical(writable_root)?;
@@ -553,13 +571,13 @@ pub fn build_run_profile(
             .iter()
             .map(|p| sbpl_string(&p.to_string_lossy())),
     );
-    // The redirected toolchain cache root, granted here too so a Run command
-    // shares the agent's warm caches. Run also keeps RUN_TOOLCHAIN_DIRS below,
+    // The project's redirected toolchain cache root, granted here too so a Run
+    // command shares its agents' warm caches — and only that project's, since
+    // Run executes what the root holds. Run also keeps RUN_TOOLCHAIN_DIRS below,
     // so a build that ignores the redirect env still writes its default location
     // — belt and braces, since Run's boundary is deliberately the looser one.
-    subpaths.push(sbpl_string(
-        &policy::toolchain_cache_root(&home).to_string_lossy(),
-    ));
+    let cache_root = policy::toolchain_cache_root(&home, project_id)?;
+    subpaths.push(sbpl_string(&cache_root.to_string_lossy()));
     // Run-only toolchain + broad-state dirs, including the whole `~/.config`
     // and `~/.local` the agent profile pointedly withholds (see the const's
     // doc-comment). `~/.local` here supersets the scratch `~/.local/share`/
@@ -584,14 +602,25 @@ pub fn build_run_profile(
     let deny_app_data = deny_app_data_dir(&home_s);
     // …and this engine's own data dir, which no bundle-id rule matches. A Run
     // command's `writable_root` is the checkout it runs in, which on a host is
-    // under that data dir, so it is the one root given back here (a Run process
-    // has no mailbox). On the desktop only the read-only portable-git exception
-    // is emitted — see `deny_engine_data_dir`.
-    let deny_engine_data = block_after(deny_engine_data_dir(&home_s, &[writable_root.as_path()]));
+    // under that data dir, so it is given back here with the project's cache
+    // root, which a host keeps there too (a Run process has no mailbox). On the
+    // desktop only the read-only portable-git exception is emitted — see
+    // `deny_engine_data_dir`.
+    let resolved_cache_root = policy::resolve_existing_prefix(&cache_root);
+    let deny_engine_data = block_after(deny_engine_data_dir(
+        &home_s,
+        &[writable_root.as_path(), resolved_cache_root.as_path()],
+    ));
     let app_data_dev = sbpl_string(&format!(
         "{home_s}/Library/Application Support/{}/dev",
         crate::BUNDLE_ID
     ));
+    // The host's provider logins, denied exactly as for an agent: nothing a
+    // project runs has a use for a refresh token, and Run's env carries the
+    // project's shared secrets, so it is the last profile that should read one.
+    // Same deny functions, so the two profiles name the same files.
+    let deny_claude_logins = deny_host_claude_logins(&home, None);
+    let deny_codex_logins = deny_host_codex_logins(&home);
 
     Ok(format!(
         r#"(version 1)
@@ -609,6 +638,10 @@ pub fn build_run_profile(
 ;; touch the dev instance's state — acceptable because it's dev-only and the Run
 ;; panel already runs arbitrary project code the developer chose to run.
 (allow file-read* file-write* (subpath {app_data_dev}))
+
+{deny_claude_logins}
+
+{deny_codex_logins}
 
 {DEVICE_WRITE_RULES}
 "#
@@ -730,10 +763,14 @@ pub(crate) fn pid_alive(_pid: i32) -> bool {
 /// `codex_home` is the per-agent `CODEX_HOME` overlay a codex launch runs in
 /// (`agent::codex_home`), granted whole bar its `config.toml` (`None` for
 /// every other provider).
+/// `project_id` is the agent's project, which picks the toolchain cache root
+/// granted ([`policy::toolchain_cache_root`]).
+#[allow(clippy::too_many_arguments)]
 pub fn build_profile(
     writable_root: &Path,
     rpc_dir: &Path,
     home: &Path,
+    project_id: &str,
     claude_config_dir: Option<&Path>,
     blackboard: Option<&Path>,
     adopted_workspace: Option<&Path>,
@@ -845,15 +882,17 @@ pub fn build_profile(
     // policy withholds every PATH-resolved bin dir (`~/.local/bin`) and config
     // root (`~/.config`), granting only `~/.local/share`+`~/.local/state` and the
     // specific `~/.config/opencode` — see the policy module's invariants.
-    // Plus the single toolchain scratch root every package-manager cache is
+    // Plus the project's toolchain scratch root every package-manager cache is
     // redirected into (`policy::toolchain_cache_env`, layered onto the child in
     // `launch_agent`). This is the one grant that replaces an open-ended list of
-    // per-toolchain default locations — see `policy::toolchain_cache_root`.
+    // per-toolchain default locations — and it is the project's subtree, never
+    // the shared parent; see `policy::toolchain_cache_root`.
+    let cache_root = policy::toolchain_cache_root(&home, project_id)?;
     let policy_dirs = subpath_grants(
         policy::all_provider_state_dirs(&home)
             .into_iter()
             .chain(policy::agent_scratch_dirs(&home))
-            .chain(std::iter::once(policy::toolchain_cache_root(&home))),
+            .chain(std::iter::once(cache_root.clone())),
     )
     .join("\n");
 
@@ -861,12 +900,18 @@ pub fn build_profile(
     // touch any Fletch data dir, dev or otherwise.
     let deny_app_data = deny_app_data_dir(&home_s);
     // …plus the data dir this engine was actually configured with, which nothing
-    // bundle-id-derived matches. A host derives both roots below it, so the deny
-    // hands back exactly the two this profile was given. On the desktop only the
+    // bundle-id-derived matches. A host derives its roots below it, so the deny
+    // hands back exactly the three this profile was given (the cache root in
+    // resolved form, which is what the deny matches). On the desktop only the
     // read-only portable-git exception is emitted — see `deny_engine_data_dir`.
+    let resolved_cache_root = policy::resolve_existing_prefix(&cache_root);
     let deny_engine_data = block_after(deny_engine_data_dir(
         &home_s,
-        &[writable_root.as_path(), rpc_root.as_path()],
+        &[
+            writable_root.as_path(),
+            rpc_root.as_path(),
+            resolved_cache_root.as_path(),
+        ],
     ));
 
     // Invariant 3, agent profile only. The Run profile deliberately does NOT
@@ -993,8 +1038,9 @@ fn user_sets_a_ca_bundle() -> bool {
 /// managed claude account dir. Each can hold a refresh token, and a
 /// sandboxed claude signs in with the host-resolved access token instead
 /// (`agent::host_login::claude`), so nothing in the sandbox has a use for them.
-/// Every agent's profile carries it, whatever its provider; the Keychain items
-/// are closed off separately ([`KEYCHAIN_MACH_DENY`]). Paths in literal and
+/// Every agent's profile carries it, whatever its provider, and so does the
+/// Run profile; the Keychain items are closed off separately, for agents only
+/// ([`KEYCHAIN_MACH_DENY`]). Paths in literal and
 /// resolved form, like the grants. MUST follow the `(allow file-write* …)`
 /// block.
 fn deny_host_claude_logins(home: &Path, relocated_claude_dir: Option<&Path>) -> String {
@@ -1332,6 +1378,9 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
+    /// The project every test profile is built for.
+    const PROJECT: &str = "project-a";
+
     #[test]
     fn profile_includes_writable_root_and_denies_writes_by_default() {
         let td = tempfile::tempdir().unwrap();
@@ -1342,7 +1391,7 @@ mod tests {
         std::fs::create_dir_all(&rpc).unwrap();
         std::fs::create_dir_all(&home).unwrap();
 
-        let profile = build_profile(&root, &rpc, &home, None, None, None, None).unwrap();
+        let profile = build_profile(&root, &rpc, &home, PROJECT, None, None, None, None).unwrap();
         let canonical_root = std::fs::canonicalize(&root).unwrap();
         let canonical_rpc = std::fs::canonicalize(&rpc).unwrap();
 
@@ -1371,7 +1420,7 @@ mod tests {
         for d in [&root, &rpc, &home] {
             std::fs::create_dir_all(d).unwrap();
         }
-        let profile = build_profile(&root, &rpc, &home, None, None, None, None).unwrap();
+        let profile = build_profile(&root, &rpc, &home, PROJECT, None, None, None, None).unwrap();
         let canonical_root = std::fs::canonicalize(&root).unwrap();
         let escaped = sbpl_regex_escape(&canonical_root.to_string_lossy());
 
@@ -1424,7 +1473,7 @@ mod tests {
         for d in [&rpc, &home, &repo.join(".git/hooks")] {
             std::fs::create_dir_all(d).unwrap();
         }
-        let profile = build_profile(&root, &rpc, &home, None, None, None, None).unwrap();
+        let profile = build_profile(&root, &rpc, &home, PROJECT, None, None, None, None).unwrap();
 
         // `sh -c 'printf x > <path>'` under the profile: exit 0 means the write
         // landed, non-zero means the sandbox refused it. The path is single-quoted
@@ -1494,8 +1543,17 @@ mod tests {
                 .success()
         };
 
-        let profile =
-            build_profile(&root, &rpc, &home, None, None, None, Some(codex.as_path())).unwrap();
+        let profile = build_profile(
+            &root,
+            &rpc,
+            &home,
+            PROJECT,
+            None,
+            None,
+            None,
+            Some(codex.as_path()),
+        )
+        .unwrap();
         let rollout = codex.join("sessions/rollout.jsonl");
         assert!(run(&profile, format!("printf x > '{}'", rollout.display())));
         let config = codex.join("config.toml");
@@ -1505,8 +1563,17 @@ mod tests {
         ));
         assert!(config.symlink_metadata().unwrap().file_type().is_symlink());
 
-        let profile =
-            build_profile(&root, &rpc, &home, Some(claude.as_path()), None, None, None).unwrap();
+        let profile = build_profile(
+            &root,
+            &rpc,
+            &home,
+            PROJECT,
+            Some(claude.as_path()),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
         let transcript = claude.join("projects/s.jsonl");
         assert!(run(
             &profile,
@@ -1550,6 +1617,7 @@ mod tests {
                 &root,
                 &rpc,
                 &home,
+                PROJECT,
                 None,
                 None,
                 None,
@@ -1589,7 +1657,7 @@ mod tests {
             std::fs::create_dir_all(d).unwrap();
         }
         let home = std::fs::canonicalize(&home).unwrap();
-        let profile = build_profile(&root, &rpc, &home, None, None, None, None).unwrap();
+        let profile = build_profile(&root, &rpc, &home, PROJECT, None, None, None, None).unwrap();
 
         let denied = policy::provider_exec_config_denials(&home);
         assert!(!denied.files.is_empty() && !denied.dirs.is_empty());
@@ -1615,10 +1683,12 @@ mod tests {
         }
     }
 
-    /// Both profiles grant the redirected toolchain cache root. If the agent
-    /// profile ever loses it, every package-manager write fails closed again and
-    /// agents go back to improvising a cache dir inside the checkout; if Run
-    /// loses it, the two halves silently maintain separate caches.
+    /// Both profiles grant the project's toolchain cache root, and neither grants
+    /// the parent. If the agent profile ever loses its root, every
+    /// package-manager write fails closed again and agents go back to
+    /// improvising a cache dir inside the checkout; if Run loses it, the two
+    /// halves silently maintain separate caches. If either grants the parent,
+    /// any project can plant what another project's Run executes.
     #[test]
     fn both_profiles_grant_the_toolchain_cache_root() {
         let td = tempfile::tempdir().unwrap();
@@ -1629,20 +1699,77 @@ mod tests {
             std::fs::create_dir_all(d).unwrap();
         }
         let canonical_home = std::fs::canonicalize(&home).unwrap();
-        let cache_root = policy::toolchain_cache_root(&canonical_home);
-        let expected = format!("\"{}\"", cache_root.display());
+        let cache_root = policy::toolchain_cache_root(&canonical_home, PROJECT).unwrap();
+        let expected = format!("(subpath \"{}\")", cache_root.display());
+        // Neither the parent nor this build's directory: each holds every
+        // project's root.
+        let above = [
+            policy::toolchain_cache_parent(&canonical_home),
+            policy::toolchain_cache_build_dir(&canonical_home),
+        ]
+        .map(|dir| format!("(subpath \"{}\")", dir.display()));
 
-        let agent = build_profile(&root, &rpc, &home, None, None, None, None).unwrap();
-        assert!(
-            agent.contains(&expected),
-            "agent profile is missing the toolchain cache root"
-        );
+        let agent = build_profile(&root, &rpc, &home, PROJECT, None, None, None, None).unwrap();
+        let run = build_run_profile(&root, &home, PROJECT, &[]).unwrap();
+        for (name, profile) in [("agent", &agent), ("run", &run)] {
+            assert!(
+                profile.contains(&expected),
+                "{name} profile is missing the toolchain cache root"
+            );
+            for dir in &above {
+                assert!(
+                    !profile.contains(dir),
+                    "{name} profile grants every project's cache: {dir}"
+                );
+            }
+        }
 
-        let run = build_run_profile(&root, &home, &[]).unwrap();
-        assert!(
-            run.contains(&expected),
-            "run profile is missing the toolchain cache root"
-        );
+        assert!(build_profile(&root, &rpc, &home, "..", None, None, None, None).is_err());
+        assert!(build_run_profile(&root, &home, "", &[]).is_err());
+    }
+
+    /// Run gets the agent's host-login file denies: it runs with the project's
+    /// shared env and executes whatever the project's agents left in its cache,
+    /// so it must not be the profile that can read a refresh token from disk.
+    /// After the allow block, since SBPL is last-match-wins.
+    #[test]
+    fn run_profile_denies_the_hosts_claude_and_codex_logins() {
+        crate::agent::accounts::with_test_root(|accounts| {
+            let td = tempfile::tempdir().unwrap();
+            let checkout = td.path().join("checkout");
+            let home = td.path().join("home");
+            for d in [&checkout, &home] {
+                std::fs::create_dir_all(d).unwrap();
+            }
+            let home = std::fs::canonicalize(&home).unwrap();
+            let profile = build_run_profile(&checkout, &home, PROJECT, &[]).unwrap();
+            let allow_at = profile.find("(allow file-write*").unwrap();
+            let denied_at = |clause: String| {
+                profile
+                    .find(&clause)
+                    .unwrap_or_else(|| panic!("{clause} not in {profile}"))
+            };
+            for clause in [
+                format!(
+                    "(literal \"{}\")",
+                    home.join(".claude")
+                        .join(policy::CLAUDE_CREDENTIALS_FILE)
+                        .display()
+                ),
+                format!("(subpath \"{}\")", accounts.join("claude").display()),
+                format!(
+                    "(literal \"{}\")",
+                    policy::codex_home_dir(&home).join("auth.json").display()
+                ),
+                format!("(subpath \"{}\")", accounts.join("codex").display()),
+            ] {
+                assert!(denied_at(clause) > allow_at);
+            }
+            assert!(
+                !profile.contains("com.apple.SecurityServer"),
+                "the Keychain deny is an agent-only decision for now"
+            );
+        });
     }
 
     #[test]
@@ -1653,7 +1780,7 @@ mod tests {
         // It grants the narrow replacements instead, and every provider dot-dir
         // and cache dir stays exactly as before.
         let (_td, root, rpc, home) = sandbox_dirs();
-        let profile = build_profile(&root, &rpc, &home, None, None, None, None).unwrap();
+        let profile = build_profile(&root, &rpc, &home, PROJECT, None, None, None, None).unwrap();
         let canonical_home = std::fs::canonicalize(&home).unwrap();
         let h = canonical_home.display();
 
@@ -1775,7 +1902,7 @@ mod tests {
         std::fs::create_dir_all(&target).unwrap();
         std::os::unix::fs::symlink(&target, home.join(".claude")).unwrap();
 
-        let profile = build_profile(&root, &rpc, &home, None, None, None, None).unwrap();
+        let profile = build_profile(&root, &rpc, &home, PROJECT, None, None, None, None).unwrap();
         let canonical_home = std::fs::canonicalize(&home).unwrap();
         // The login read-deny names the credentials file through the link
         // too (the sandbox checks resolved paths); only the grants matter.
@@ -1803,8 +1930,17 @@ mod tests {
         let cfg = home.join(".local/bin/claude-cfg");
         std::fs::create_dir_all(&cfg).unwrap();
 
-        let profile =
-            build_profile(&root, &rpc, &home, Some(cfg.as_path()), None, None, None).unwrap();
+        let profile = build_profile(
+            &root,
+            &rpc,
+            &home,
+            PROJECT,
+            Some(cfg.as_path()),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
         assert!(
             !profile.contains(".local/bin"),
             "bin-resident CLAUDE_CONFIG_DIR must not appear on the allow-list"
@@ -1820,15 +1956,24 @@ mod tests {
         let canonical_board = std::fs::canonicalize(&board).unwrap();
 
         // Absent by default: an ordinary (non-workflow) agent gets no grant.
-        let plain = build_profile(&root, &rpc, &home, None, None, None, None).unwrap();
+        let plain = build_profile(&root, &rpc, &home, PROJECT, None, None, None, None).unwrap();
         assert!(
             !plain.contains(&canonical_board.to_string_lossy().to_string()),
             "no blackboard grant without a blackboard"
         );
 
         // Granted: the *exact* blackboard dir is a writable subpath.
-        let granted =
-            build_profile(&root, &rpc, &home, None, Some(board.as_path()), None, None).unwrap();
+        let granted = build_profile(
+            &root,
+            &rpc,
+            &home,
+            PROJECT,
+            None,
+            Some(board.as_path()),
+            None,
+            None,
+        )
+        .unwrap();
         assert!(
             granted.contains(&format!("(subpath \"{}\")", canonical_board.display())),
             "granted profile must allow writing inside the blackboard"
@@ -1854,14 +1999,23 @@ mod tests {
         std::fs::create_dir_all(&tree).unwrap();
         let canonical_tree = std::fs::canonicalize(&tree).unwrap();
 
-        let plain = build_profile(&root, &rpc, &home, None, None, None, None).unwrap();
+        let plain = build_profile(&root, &rpc, &home, PROJECT, None, None, None, None).unwrap();
         assert!(
             !plain.contains(&canonical_tree.to_string_lossy().to_string()),
             "no adoption grant for an agent that owns its checkout"
         );
 
-        let granted =
-            build_profile(&root, &rpc, &home, None, None, Some(tree.as_path()), None).unwrap();
+        let granted = build_profile(
+            &root,
+            &rpc,
+            &home,
+            PROJECT,
+            None,
+            None,
+            Some(tree.as_path()),
+            None,
+        )
+        .unwrap();
         assert!(
             granted.contains(&format!("(subpath \"{}\")", canonical_tree.display())),
             "the adopted tree must be writable: it is the agent's checkout"
@@ -1903,8 +2057,17 @@ mod tests {
         let cfg = home.join(".claude-eve");
         std::fs::create_dir_all(&cfg).unwrap();
 
-        let profile =
-            build_profile(&root, &rpc, &home, Some(cfg.as_path()), None, None, None).unwrap();
+        let profile = build_profile(
+            &root,
+            &rpc,
+            &home,
+            PROJECT,
+            Some(cfg.as_path()),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
         // The emitted paths must be canonical (symlink-resolved) so they match
         // what the sandbox resolves at write time — e.g. on macOS the tempdir
         // lives under /var → /private/var.
@@ -1944,8 +2107,17 @@ mod tests {
         std::fs::create_dir_all(&cfg).unwrap();
         let canonical_cfg = std::fs::canonicalize(&cfg).unwrap();
 
-        let profile =
-            build_profile(&root, &rpc, &home, Some(cfg.as_path()), None, None, None).unwrap();
+        let profile = build_profile(
+            &root,
+            &rpc,
+            &home,
+            PROJECT,
+            Some(cfg.as_path()),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
         assert!(
             profile.contains(&format!(
                 "(literal \"{}\")",
@@ -1970,11 +2142,20 @@ mod tests {
             canonical_cfg.join("settings.json").display()
         );
 
-        let plain = build_profile(&root, &rpc, &home, None, None, None, None).unwrap();
+        let plain = build_profile(&root, &rpc, &home, PROJECT, None, None, None, None).unwrap();
         assert!(!plain.contains(&deny));
 
-        let profile =
-            build_profile(&root, &rpc, &home, Some(cfg.as_path()), None, None, None).unwrap();
+        let profile = build_profile(
+            &root,
+            &rpc,
+            &home,
+            PROJECT,
+            Some(cfg.as_path()),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
         let grant = format!(
             "(literal \"{}\")",
             canonical_cfg.join(".claude.json").display()
@@ -1999,13 +2180,14 @@ mod tests {
         std::fs::create_dir_all(&account).unwrap();
         let canonical_account = std::fs::canonicalize(&account).unwrap();
 
-        let plain = build_profile(&root, &rpc, &home, None, None, None, None).unwrap();
+        let plain = build_profile(&root, &rpc, &home, PROJECT, None, None, None, None).unwrap();
         assert!(!plain.contains(&canonical_account.to_string_lossy().to_string()));
 
         let profile = build_profile(
             &root,
             &rpc,
             &home,
+            PROJECT,
             None,
             None,
             None,
@@ -2034,7 +2216,8 @@ mod tests {
         crate::agent::accounts::with_test_root(|accounts| {
             let (_td, root, rpc, home) = sandbox_dirs();
             let home = std::fs::canonicalize(&home).unwrap();
-            let profile = build_profile(&root, &rpc, &home, None, None, None, None).unwrap();
+            let profile =
+                build_profile(&root, &rpc, &home, PROJECT, None, None, None, None).unwrap();
             let deny_at = profile
                 .find("(deny file-read* file-write*\n")
                 .expect("a read deny block");
@@ -2066,7 +2249,8 @@ mod tests {
     fn profile_denies_the_limits_reads_temporary_home() {
         crate::agent::accounts::with_test_root(|_| {
             let (_td, root, rpc, home) = sandbox_dirs();
-            let profile = build_profile(&root, &rpc, &home, None, None, None, None).unwrap();
+            let profile =
+                build_profile(&root, &rpc, &home, PROJECT, None, None, None, None).unwrap();
             let parent = crate::agent::limits::app_server::limits_parent().unwrap();
             let deny_at = profile
                 .find("(deny file-read* file-write*\n")
@@ -2091,6 +2275,7 @@ mod tests {
         let profile_for = |provider: &str| {
             let ctx = AgentLaunchCtx {
                 agent_id: "a1",
+                project_id: PROJECT,
                 provider,
                 writable_root: &root,
                 source_repos: &[],
@@ -2135,8 +2320,17 @@ mod tests {
             let (td, root, rpc, home) = sandbox_dirs();
             let home = std::fs::canonicalize(&home).unwrap();
             let relocated = std::fs::canonicalize(td.path()).unwrap().join("cfg");
-            let profile =
-                build_profile(&root, &rpc, &home, Some(&relocated), None, None, None).unwrap();
+            let profile = build_profile(
+                &root,
+                &rpc,
+                &home,
+                PROJECT,
+                Some(&relocated),
+                None,
+                None,
+                None,
+            )
+            .unwrap();
             let deny_at = profile
                 .find("(deny file-read* file-write*\n")
                 .expect("a read deny block");
@@ -2180,7 +2374,8 @@ mod tests {
                 std::fs::create_dir_all(file.parent().unwrap()).unwrap();
                 std::fs::write(file, "{}").unwrap();
             }
-            let profile = build_profile(&root, &rpc, &home, None, None, None, None).unwrap();
+            let profile =
+                build_profile(&root, &rpc, &home, PROJECT, None, None, None, None).unwrap();
             let reads = |file: &Path| {
                 std::process::Command::new(SANDBOX_EXEC)
                     .args(profile_args(&profile))
@@ -2242,7 +2437,7 @@ mod tests {
     #[cfg(target_os = "macos")]
     fn seatbelt_keeps_https_working_under_the_keychain_deny() {
         let (_td, root, rpc, home) = sandbox_dirs();
-        let profile = build_profile(&root, &rpc, &home, None, None, None, None).unwrap();
+        let profile = build_profile(&root, &rpc, &home, PROJECT, None, None, None, None).unwrap();
         let out = std::process::Command::new(SANDBOX_EXEC)
             .args(profile_args(&profile))
             .args([
@@ -2286,6 +2481,7 @@ mod tests {
         let codex = crate::agent::resolve_agent_bin("codex", "codex", "Codex", &home).unwrap();
         let ctx = AgentLaunchCtx {
             agent_id: "live",
+            project_id: PROJECT,
             provider: "codex",
             writable_root: &root,
             source_repos: &[],
@@ -2393,7 +2589,7 @@ mod tests {
     #[test]
     fn agent_profile_denies_the_keychain_services() {
         let (_td, root, rpc, home) = sandbox_dirs();
-        let profile = build_profile(&root, &rpc, &home, None, None, None, None).unwrap();
+        let profile = build_profile(&root, &rpc, &home, PROJECT, None, None, None, None).unwrap();
         assert!(profile.contains(KEYCHAIN_MACH_DENY));
         assert!(
             !profile.contains("com.apple.trustd"),
@@ -2418,7 +2614,7 @@ mod tests {
             ],
             || {
                 (
-                    build_profile(&root, &rpc, &home, None, None, None, None).unwrap(),
+                    build_profile(&root, &rpc, &home, PROJECT, None, None, None, None).unwrap(),
                     deny_host_git_credentials(&home),
                 )
             },
@@ -2454,7 +2650,7 @@ mod tests {
 
         let checkout = root.join("checkout");
         std::fs::create_dir_all(&checkout).unwrap();
-        let run = build_run_profile(&checkout, &home, &[]).unwrap();
+        let run = build_run_profile(&checkout, &home, PROJECT, &[]).unwrap();
         assert!(!run.contains(&format!("{}/.ssh", home.display())), "{run}");
         assert!(!run.contains("network-outbound"), "{run}");
     }
@@ -2478,7 +2674,7 @@ mod tests {
                 ("XDG_CACHE_HOME", &cache_s),
             ],
             || {
-                let _ = build_profile(&root, &rpc, &home, None, None, None, None).unwrap();
+                let _ = build_profile(&root, &rpc, &home, PROJECT, None, None, None, None).unwrap();
                 deny_host_git_credentials(&home)
             },
         );
@@ -2530,6 +2726,7 @@ mod tests {
             let ctx = AgentLaunchCtx {
                 agent_id: "a1",
                 provider,
+                project_id: PROJECT,
                 writable_root: &root,
                 source_repos: &[],
                 rpc_dir: &rpc,
@@ -2573,7 +2770,7 @@ mod tests {
             std::fs::create_dir_all(file.parent().unwrap()).unwrap();
             std::fs::write(file, "secret").unwrap();
         }
-        let profile = build_profile(&root, &rpc, &home, None, None, None, None).unwrap();
+        let profile = build_profile(&root, &rpc, &home, PROJECT, None, None, None, None).unwrap();
         let run = |profile: &str, args: &[&str]| {
             std::process::Command::new(SANDBOX_EXEC)
                 .args(profile_args(profile))
@@ -2668,6 +2865,7 @@ mod tests {
         let token = crate::agent::host_login::claude::AccessToken::for_test("sk-ant-oat-test", 1);
         let ctx = AgentLaunchCtx {
             agent_id: "a1",
+            project_id: PROJECT,
             provider: "claude",
             writable_root: &root,
             source_repos: &[],
@@ -2742,6 +2940,7 @@ mod tests {
             &root,
             &rpc,
             &home,
+            PROJECT,
             Some(default_claude.as_path()),
             None,
             None,
@@ -2774,7 +2973,7 @@ mod tests {
         // credential file. `settings.json` (host hooks), `plugins/`, `CLAUDE.md`,
         // etc. must be covered by no grant.
         let (_td, root, rpc, home) = sandbox_dirs();
-        let profile = build_profile(&root, &rpc, &home, None, None, None, None).unwrap();
+        let profile = build_profile(&root, &rpc, &home, PROJECT, None, None, None, None).unwrap();
         let canonical_home = std::fs::canonicalize(&home).unwrap();
         let claude = canonical_home.join(".claude");
         let h = canonical_home.display();
@@ -2840,7 +3039,7 @@ mod tests {
         // reads (exfiltration) and writes (forging state). The deny only bites if
         // it comes AFTER the write allow-list, since SBPL is last-match-wins.
         let (_td, root, rpc, home) = sandbox_dirs();
-        let profile = build_profile(&root, &rpc, &home, None, None, None, None).unwrap();
+        let profile = build_profile(&root, &rpc, &home, PROJECT, None, None, None, None).unwrap();
         let canonical_home = std::fs::canonicalize(&home).unwrap();
 
         let deny = format!(
@@ -2937,7 +3136,7 @@ mod tests {
         let (_td, _unused, _unused_rpc, home) = sandbox_dirs();
         let (root, rpc) = host_state_roots(data_dir);
 
-        let profile = build_profile(&root, &rpc, &home, None, None, None, None).unwrap();
+        let profile = build_profile(&root, &rpc, &home, PROJECT, None, None, None, None).unwrap();
         let canonical_home = std::fs::canonicalize(&home).unwrap();
 
         let deny = format!(
@@ -2977,9 +3176,13 @@ mod tests {
         );
 
         // …and the re-allows follow the deny, or the agent loses its own
-        // checkout and its own mailbox.
+        // checkout, its own mailbox and its project's toolchain cache (which a
+        // host keeps under its data dir too).
+        let cache_root = policy::resolve_existing_prefix(
+            &policy::toolchain_cache_root(&canonical_home, PROJECT).unwrap(),
+        );
         let mut reallow_at = Vec::new();
-        for given_back in [&root, &rpc] {
+        for given_back in [&root, &rpc, &cache_root] {
             let allow = format!(
                 "(allow file-read* file-write* (subpath \"{}\"))",
                 given_back.display()
@@ -3100,18 +3303,23 @@ mod tests {
         let (_td, _unused, _unused_rpc, home) = sandbox_dirs();
         let (checkout, _rpc) = host_state_roots(data_dir);
 
-        let profile = build_run_profile(&checkout, &home, &[]).unwrap();
+        let profile = build_run_profile(&checkout, &home, PROJECT, &[]).unwrap();
         let deny = format!(
             "(deny file-read* file-write* (subpath \"{}\"))",
             data_dir.display()
         );
-        let allow = format!(
-            "(allow file-read* file-write* (subpath \"{}\"))",
-            checkout.display()
-        );
         assert!(profile.contains(&deny), "missing {deny}");
-        assert!(profile.contains(&allow), "missing {allow}");
-        assert!(profile.find(&deny).unwrap() < profile.find(&allow).unwrap());
+        let cache_root = policy::resolve_existing_prefix(
+            &policy::toolchain_cache_root(&std::fs::canonicalize(&home).unwrap(), PROJECT).unwrap(),
+        );
+        for given_back in [&checkout, &cache_root] {
+            let allow = format!(
+                "(allow file-read* file-write* (subpath \"{}\"))",
+                given_back.display()
+            );
+            assert!(profile.contains(&allow), "missing {allow}");
+            assert!(profile.find(&deny).unwrap() < profile.find(&allow).unwrap());
+        }
     }
 
     /// Manual/local acceptance check (macOS-only, `#[ignore]`d so it stays off
@@ -3128,7 +3336,7 @@ mod tests {
         let data_dir = shared_host_data_dir();
         let (_td, _unused, _unused_rpc, home) = sandbox_dirs();
         let (root, rpc) = host_state_roots(data_dir);
-        let profile = build_profile(&root, &rpc, &home, None, None, None, None).unwrap();
+        let profile = build_profile(&root, &rpc, &home, PROJECT, None, None, None, None).unwrap();
 
         // `sh -c <script>` under the profile: exit 0 means the kernel allowed it.
         let allowed = |script: String| {
@@ -3210,7 +3418,7 @@ mod tests {
         // profile may name under `dev` is the read-only portable-git exception,
         // so the check is on the write grant, not the bare path.
         let (_td, root, rpc, home) = sandbox_dirs();
-        let profile = build_profile(&root, &rpc, &home, None, None, None, None).unwrap();
+        let profile = build_profile(&root, &rpc, &home, PROJECT, None, None, None, None).unwrap();
         let canonical_home = std::fs::canonicalize(&home).unwrap();
         let dev = format!(
             "(allow file-read* file-write* (subpath \"{}/Library/Application Support/{}/dev\"))",
@@ -3230,7 +3438,7 @@ mod tests {
     #[test]
     fn agent_profile_denies_appsupport_auto_exec_but_keeps_the_grant() {
         let (_td, root, rpc, home) = sandbox_dirs();
-        let profile = build_profile(&root, &rpc, &home, None, None, None, None).unwrap();
+        let profile = build_profile(&root, &rpc, &home, PROJECT, None, None, None, None).unwrap();
         let canonical_home = std::fs::canonicalize(&home).unwrap();
         let app_support = format!("{}/Library/Application Support", canonical_home.display());
 
@@ -3297,7 +3505,7 @@ mod tests {
         std::fs::create_dir_all(&checkout).unwrap();
         std::fs::create_dir_all(&home).unwrap();
 
-        let profile = build_run_profile(&checkout, &home, &[]).unwrap();
+        let profile = build_run_profile(&checkout, &home, PROJECT, &[]).unwrap();
         let canonical_home = std::fs::canonicalize(&home).unwrap();
         let app_support = format!("{}/Library/Application Support", canonical_home.display());
 
@@ -3342,7 +3550,7 @@ mod tests {
         for d in [&root, &rpc, &home] {
             std::fs::create_dir_all(d).unwrap();
         }
-        let profile = build_profile(&root, &rpc, &home, None, None, None, None).unwrap();
+        let profile = build_profile(&root, &rpc, &home, PROJECT, None, None, None, None).unwrap();
         let canonical_home = std::fs::canonicalize(&home).unwrap();
         let app_support = canonical_home.join("Library/Application Support");
 
@@ -3395,7 +3603,7 @@ mod tests {
         std::fs::create_dir_all(&checkout).unwrap();
         std::fs::create_dir_all(&home).unwrap();
 
-        let profile = build_run_profile(&checkout, &home, &[]).unwrap();
+        let profile = build_run_profile(&checkout, &home, PROJECT, &[]).unwrap();
         let canonical_home = std::fs::canonicalize(&home).unwrap();
 
         let deny = format!(
@@ -3432,7 +3640,7 @@ mod tests {
         std::fs::create_dir_all(&checkout).unwrap();
         std::fs::create_dir_all(&home).unwrap();
 
-        let profile = build_run_profile(&checkout, &home, &[]).unwrap();
+        let profile = build_run_profile(&checkout, &home, PROJECT, &[]).unwrap();
         let canonical_checkout = std::fs::canonicalize(&checkout).unwrap();
         let canonical_home = std::fs::canonicalize(&home).unwrap();
 
@@ -3472,7 +3680,7 @@ mod tests {
         std::fs::create_dir_all(&checkout).unwrap();
         std::fs::create_dir_all(&home).unwrap();
 
-        let profile = build_run_profile(&checkout, &home, &[]).unwrap();
+        let profile = build_run_profile(&checkout, &home, PROJECT, &[]).unwrap();
         let canonical_home = std::fs::canonicalize(&home).unwrap();
         for dir in [".claude", ".codex", ".cursor", ".gemini", ".pi"] {
             let unexpected = format!("(subpath \"{}/{dir}\")", canonical_home.display());
@@ -3547,8 +3755,13 @@ mod tests {
         }
         let canonical_common = std::fs::canonicalize(&common).unwrap();
 
-        let profile =
-            build_run_profile(&checkout, &home, std::slice::from_ref(&canonical_common)).unwrap();
+        let profile = build_run_profile(
+            &checkout,
+            &home,
+            PROJECT,
+            std::slice::from_ref(&canonical_common),
+        )
+        .unwrap();
         assert!(
             profile.contains(&format!("(subpath \"{}\")", canonical_common.display())),
             "run profile should grant the target's git common dir"
@@ -3581,6 +3794,7 @@ mod tests {
         let (_td, root, rpc, home) = sandbox_dirs();
         let ctx = AgentLaunchCtx {
             agent_id: "a1",
+            project_id: PROJECT,
             provider: "claude",
             writable_root: &root,
             // Seatbelt ignores source_repos (host-shared filesystem, no mounts).

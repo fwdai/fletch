@@ -312,7 +312,7 @@ fn reap_superseded_base(before: Option<&str>) {
 
 /// `docker build` argv for `tag` from context `ctx`. `--pull` on every build,
 /// first build and refresh rebuild alike: the images exist to capture "latest
-/// at build time", and a months-old locally cached `node:22-slim` would
+/// at build time", and a months-old locally cached `node:22-bookworm-slim` would
 /// silently defeat that (docker's layer cache keys on the base image it has,
 /// not on what the registry currently serves). It adds no new failure mode —
 /// every agent build already needs the network for its install step (npm

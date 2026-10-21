@@ -222,6 +222,7 @@ impl Supervisor {
         // `run_verification` command and the workflow tests gate.
         let setting = |key: &str| self.workspace.project_setting(&project_id, key);
         let verifier = match crate::verify::Verifier::new(
+            project_id.clone(),
             setting("run.test"),
             setting("run.install"),
             setting("run.lint"),

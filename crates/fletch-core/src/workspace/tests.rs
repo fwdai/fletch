@@ -3731,6 +3731,23 @@ fn delete_project_deletes_its_agents_transcript_rows() {
     assert_eq!(transcript_rows(&db), 0);
 }
 
+/// What the toolchain cache reclaim keeps: a project is listed until its
+/// deletion commits, then not.
+#[test]
+fn project_ids_lists_projects_until_deleted() {
+    let db = test_db();
+    let td = tempfile::tempdir().unwrap();
+    let repo = init_repo(td.path());
+    let wm = WorkspaceManager::new(db);
+    wm.add_workspace_repo(repo).unwrap();
+    let pid = wm.current().unwrap().projects[0].project_id.clone();
+    assert_eq!(wm.project_ids().unwrap(), HashSet::from([pid.clone()]));
+
+    wm.delete_project(&pid, &[]).unwrap();
+
+    assert!(wm.project_ids().unwrap().is_empty());
+}
+
 /// The one rule every relaunch (spawn, resume, restore) applies: a provider
 /// that mints its id up front must have it; a per-turn provider gets its id
 /// from its first turn and launches fresh without one.

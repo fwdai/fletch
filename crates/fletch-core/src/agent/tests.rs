@@ -21,6 +21,7 @@ use super::*;
 fn claude_spec(start: SessionStart) -> SpawnSpec<'static> {
     SpawnSpec {
         agent_id: "a1",
+        project_id: "p1",
         cwd: PathBuf::new(),
         sandbox_root: PathBuf::new(),
         source_repos: &[],

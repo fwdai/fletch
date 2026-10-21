@@ -703,6 +703,18 @@ impl Supervisor {
         }
         workflows.finish_project_runs(run_cleanup);
         self.teardown_project_checkouts(&agents).await;
+        // The project's toolchain cache: its row is gone, so its root is no
+        // longer live, and nothing can race the removal (a re-created project
+        // gets a fresh id). Off the runtime and detached, so a registry or a
+        // browser worth of `remove_dir_all` neither blocks a worker nor holds
+        // the lifecycle locks above, which other projects' spawns wait on.
+        // Best-effort like the checkouts; boot's sweep catches what fails.
+        if let Some(home) = dirs::home_dir() {
+            let project_id = project_id.to_string();
+            tokio::task::spawn_blocking(move || {
+                crate::sandbox::remove_project_cache(&home, &project_id)
+            });
+        }
 
         Ok(ProjectDeleteResult {
             workspace: self.current_workspace().expect("workspace initialized"),

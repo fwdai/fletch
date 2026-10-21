@@ -104,6 +104,8 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::error::{Error, Result};
+
 /// Every provider whose host-persistence dirs seatbelt's provider-agnostic
 /// profile grants — the enumeration [`all_provider_state_dirs`] folds over.
 /// A superset of Docker's supported providers (Docker has no `gemini` image
@@ -443,8 +445,9 @@ pub fn agent_scratch_dirs(home: &Path) -> Vec<PathBuf> {
     .collect()
 }
 
-/// Shared scratch root every sandboxed toolchain is *redirected into*, rather
-/// than granted at its own default location: `~/.fletch/toolchain-cache/`.
+/// Scratch root every sandboxed toolchain of one project is *redirected into*,
+/// rather than granted at its own default location:
+/// `~/.fletch/toolchain-cache/<project id>/`.
 ///
 /// This is the answer to a class of bug, not a single one. A seatbelt agent runs
 /// the **host's** toolchains (unlike Docker, which owns its filesystem), and
@@ -468,15 +471,120 @@ pub fn agent_scratch_dirs(home: &Path) -> Vec<PathBuf> {
 /// the user's PATH, so a relocated `CARGO_HOME` or `GEM_HOME` carrying a `bin/`
 /// cannot hijack a later host shell.
 ///
-/// Shared across agents on purpose — a per-workspace cache would defeat pnpm's
-/// hardlink store, re-download a toolchain per agent, and duplicate hundreds of
-/// MB per workspace.
+/// One root per project, because the project is the trust domain. Everything
+/// under the root is *executed by sandboxed processes* — cargo compiles
+/// `registry/src`, go builds its module cache, pnpm hardlinks its store into
+/// every checkout, `npx` runs what `_npx/` holds, Playwright launches the
+/// browser it downloaded — and every writer of the root can plant what those
+/// run. A root shared across projects let an agent of project A plant code that
+/// project B's Run command later executed under the looser Run profile
+/// ([`crate::sandbox::build_run_profile`]) with B's shared `.env`. Keyed by
+/// project, no other project can write what this one executes; the host never
+/// runs anything from here either way.
 ///
-/// Not per-build-split (unlike [`crate::workspace::checkouts_root`]): that split
-/// exists to keep name allocation DB-authoritative, which a content cache has no
-/// stake in — dev and release sharing warm caches is a feature.
-pub fn toolchain_cache_root(home: &Path) -> PathBuf {
+/// Within a project the agents and the Run panel share the root on purpose:
+/// one warm cache, and pnpm's hardlink store still dedupes across the many
+/// workspaces of a project, which is where the duplication was — a
+/// per-workspace root would re-download a toolchain per agent. That leaves an
+/// agent able to plant what its own project's Run executes, which is the
+/// documented agent-to-Run trade-off (an agent already edits the
+/// `package.json` scripts Run runs; see the Run profile's toolchain dirs), not
+/// a new delta. What Run still holds that an agent does not is the Keychain
+/// (denied to agents, open to Run pending a separate decision) and its own
+/// toolchain-dir grants; the host login files are denied to both.
+///
+/// Every profile grants exactly the project's subtree, never the parent: a
+/// grant on [`toolchain_cache_parent`] would hand back every other project's
+/// cache.
+///
+/// `project_id` is a project's UUID (`workspace::query`), so it is path-safe by
+/// construction; anything that is not a single plain path component is refused
+/// here, where it enters a path, so a bad id fails the launch instead of
+/// widening the grant (`""` or `"."` would name the parent, `"../x"` a sibling).
+///
+/// Per-build-split ([`toolchain_cache_build_dir`]), like every root holding
+/// state keyed by a DB's ids ([`crate::build_state_subpath`]): a debug instance
+/// and a release install mint project ids from separate DBs, so they never
+/// shared a warm cache anyway, and from one shared directory each build's
+/// reclaim ([`super::reclaim_toolchain_caches`]) would see the other's live
+/// projects as deleted ones.
+pub fn toolchain_cache_root(home: &Path, project_id: &str) -> Result<PathBuf> {
+    toolchain_cache_root_in(&toolchain_cache_build_dir(home), project_id)
+}
+
+/// [`toolchain_cache_root`] under an explicit build dir, so the override path
+/// is testable without touching the process environment.
+fn toolchain_cache_root_in(build_dir: &Path, project_id: &str) -> Result<PathBuf> {
+    let mut parts = Path::new(project_id).components();
+    match (parts.next(), parts.next()) {
+        (Some(std::path::Component::Normal(_)), None) if !project_id.contains('/') => {
+            Ok(build_dir.join(project_id))
+        }
+        _ => Err(Error::InvalidPath(format!(
+            "project id {project_id:?} cannot key a toolchain cache root"
+        ))),
+    }
+}
+
+/// The directory holding this build's project roots: the parent itself for
+/// release, `dev/` under it for debug. The segment is appended to an overridden
+/// parent too, the way [`crate::workspace::checkouts_root`] appends it to an
+/// overridden base, so neither path can bypass the split.
+pub fn toolchain_cache_build_dir(home: &Path) -> PathBuf {
+    toolchain_cache_build_dir_in(&toolchain_cache_parent(home))
+}
+
+/// [`toolchain_cache_build_dir`] under an explicit parent. `components` drops
+/// the trailing separator a release build's empty segment would leave.
+pub(super) fn toolchain_cache_build_dir_in(parent: &Path) -> PathBuf {
+    parent
+        .join(crate::build_state_subpath(""))
+        .components()
+        .collect()
+}
+
+/// The directory holding every project's [`toolchain_cache_root`]. Never
+/// granted to a sandbox; only for recognising a path as Fletch-owned cache.
+///
+/// [`TOOLCHAIN_CACHE_PARENT_ENV`] overrides the default, the way
+/// `FLETCH_RPC_ROOT` and `FLETCH_WORKSPACES_ROOT` do for the other state
+/// roots: a *nested* Fletch launched from the Run panel mints its own project
+/// ids, and its Run profile grants only the outer project's root, so it could
+/// not create a sibling for one of its projects. The Run panel points it at
+/// [`nested_toolchain_cache_parent`] instead, inside the outer project's own
+/// root — writable under that profile, and exactly the outer project's trust
+/// domain, since the nested instance *is* that project's Run process. A
+/// `fletch-host` sets it too, under its own data dir, for the reason it claims
+/// its other state roots there: its database is not the desktop's, so sharing
+/// one directory would make each one's reclaim delete the other's caches.
+pub fn toolchain_cache_parent(home: &Path) -> PathBuf {
+    toolchain_cache_parent_from(home, std::env::var_os(TOOLCHAIN_CACHE_PARENT_ENV))
+}
+
+/// [`toolchain_cache_parent`] with the override passed in, so the choice is
+/// testable without touching the process environment.
+fn toolchain_cache_parent_from(home: &Path, overridden: Option<std::ffi::OsString>) -> PathBuf {
+    match overridden {
+        Some(dir) if !dir.is_empty() => PathBuf::from(dir),
+        _ => default_toolchain_cache_parent(home),
+    }
+}
+
+/// [`toolchain_cache_parent`] with no override: `~/.fletch/toolchain-cache`.
+/// What an outer instance's cache lives under, whatever this one was told.
+pub fn default_toolchain_cache_parent(home: &Path) -> PathBuf {
     home.join(".fletch").join("toolchain-cache")
+}
+
+/// Env var naming the directory [`toolchain_cache_parent`] returns. Set by the
+/// Run panel for a nested Fletch and by `fletch-host` for itself.
+pub const TOOLCHAIN_CACHE_PARENT_ENV: &str = "FLETCH_TOOLCHAIN_CACHE_ROOT";
+
+/// Where a nested Fletch launched from `project_root` (the outer project's
+/// [`toolchain_cache_root`]) keeps its projects' caches: one `nested/` level
+/// down, so its ids can never collide with the outer instance's.
+pub fn nested_toolchain_cache_parent(project_root: &Path) -> PathBuf {
+    project_root.join("nested")
 }
 
 /// `(env var, subdir under the cache root)` for every toolchain we redirect.
@@ -515,17 +623,37 @@ pub fn toolchain_cache_root(home: &Path) -> PathBuf {
 ///
 /// Verified empirically on macOS against the installed toolchain at the time of
 /// writing: bun 1.3, npm 10.9, pnpm 10.33, yarn 1.22, deno 2.6, pip 25.3,
-/// uv 0.11, gem 3.5. The rest are documentation-derived — safe per the
-/// fail-closed note above, but unproven.
+/// uv 0.11, gem 3.5, playwright 1.58. The rest are documentation-derived —
+/// safe per the fail-closed note above, but unproven.
 ///
 /// `pnpm` is the cautionary row: it does **not** read `PNPM_STORE_DIR` (silently
 /// ignored, store stays at the default). It takes config through npm's env
 /// convention, hence `npm_config_store_dir`.
-const TOOLCHAIN_CACHE_VARS: &[(&str, &str)] = &[
+///
+/// Headless browsers are downloaded tools like any package cache, so they ride
+/// the same rows. They only ever run inside sandboxes: the host's own Playwright
+/// keeps its default store, so a Chromium an agent downloads (or tampers with)
+/// under this root never runs on the host — the same reasoning as the cargo
+/// overlay. Chromium's own process sandbox cannot start inside seatbelt or a
+/// default container; Playwright handles that by passing `--no-sandbox` by
+/// default.
+///
+/// A [`PLATFORM_PLACEHOLDER`] in a subdir keys it by the child's
+/// [`BoxPlatform`], because a macOS agent and a Linux container share this
+/// root. Three rows need it. Playwright names its folders without an OS
+/// (`chromium-1208/` plus an `INSTALLATION_COMPLETE` marker), so a Linux box
+/// would see the Mac install, skip its download, and fail to launch. Poetry's
+/// cache holds `virtualenvs/`, which are per-platform builds. npm's cache
+/// holds `_npx/`, the packages `npx` installed — with only the one platform's
+/// optional dependency (`@esbuild/darwin-arm64`), which `npx` on the other
+/// platform would reuse rather than install its own. The other rows are safe
+/// to share: pnpm/bun/yarn store tarballs, go's `GOCACHE`, uv and Puppeteer
+/// key by platform internally, and pip checks wheel tags.
+pub(super) const TOOLCHAIN_CACHE_VARS: &[(&str, &str)] = &[
     // JavaScript / TypeScript
     ("BUN_INSTALL_CACHE_DIR", "bun"),
-    ("npm_config_cache", "npm"),
-    ("npm_config_store_dir", "pnpm"), // NOT PNPM_STORE_DIR — see above
+    ("npm_config_cache", "npm/{platform}"), // _npx/ holds installed packages
+    ("npm_config_store_dir", "pnpm"),       // NOT PNPM_STORE_DIR — see above
     ("YARN_CACHE_FOLDER", "yarn"),
     ("DENO_DIR", "deno"),
     // Go (Rust is served by the `cargo_home` overlay, not this table: a bare
@@ -536,13 +664,16 @@ const TOOLCHAIN_CACHE_VARS: &[(&str, &str)] = &[
     // Python
     ("PIP_CACHE_DIR", "pip"),
     ("UV_CACHE_DIR", "uv"),
-    ("POETRY_CACHE_DIR", "poetry"),
+    ("POETRY_CACHE_DIR", "poetry/{platform}"), // virtualenvs/ are per-platform
     // Ruby — the spec cache only; GEM_HOME is where gems are *installed*.
     ("GEM_SPEC_CACHE", "gem/spec-cache"),
     // PHP — the cache only; COMPOSER_HOME holds auth.json.
     ("COMPOSER_CACHE_DIR", "composer/cache"),
     // .NET — the global packages folder is a restore target, not a config home.
     ("NUGET_PACKAGES", "nuget"),
+    // Browsers — downloaded binaries, executed only inside sandboxes.
+    ("PLAYWRIGHT_BROWSERS_PATH", "playwright/{platform}"), // folders carry no OS
+    ("PUPPETEER_CACHE_DIR", "puppeteer"),
     // Elixir is absent for the same reason as Rust/Ruby/PHP homes: MIX_HOME and
     // HEX_HOME hold archives and `hex.config` (which can carry an API key), not
     // just cache.
@@ -561,16 +692,52 @@ const TOOLCHAIN_CACHE_VARS: &[(&str, &str)] = &[
 /// safe but pointless: [`agent_scratch_dirs`] already grants `~/.cache` and
 /// `~/Library/Caches` whole, so XDG-conformant tools never fail in the first
 /// place. This table is for the toolchains that *don't* follow XDG.
-pub fn toolchain_cache_env(root: &Path) -> Vec<(String, String)> {
+pub fn toolchain_cache_env(root: &Path, platform: BoxPlatform) -> Vec<(String, String)> {
+    let key = platform.key();
     TOOLCHAIN_CACHE_VARS
         .iter()
         .map(|(var, subdir)| {
+            let subdir = subdir.replace(PLATFORM_PLACEHOLDER, &key);
             (
                 (*var).to_string(),
                 root.join(subdir).to_string_lossy().into_owned(),
             )
         })
         .collect()
+}
+
+/// Substituted with [`BoxPlatform::key`] in a [`TOOLCHAIN_CACHE_VARS`] subdir.
+const PLATFORM_PLACEHOLDER: &str = "{platform}";
+
+/// The OS and CPU a confined child runs on, keying the cache rows whose
+/// contents differ per platform (see [`TOOLCHAIN_CACHE_VARS`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BoxPlatform {
+    os: &'static str,
+    arch: &'static str,
+}
+
+impl BoxPlatform {
+    /// The host itself — seatbelt agents and Run commands.
+    pub fn host() -> Self {
+        Self {
+            os: std::env::consts::OS,
+            arch: std::env::consts::ARCH,
+        }
+    }
+
+    /// A Linux container, which runs on the host's CPU.
+    pub fn linux() -> Self {
+        Self {
+            os: "linux",
+            arch: std::env::consts::ARCH,
+        }
+    }
+
+    /// The subdir key, e.g. `macos-aarch64` or `linux-x86_64`.
+    pub fn key(&self) -> String {
+        format!("{}-{}", self.os, self.arch)
+    }
 }
 
 /// OpenCode's data dir: `$XDG_DATA_HOME/opencode` if set, else
@@ -890,23 +1057,30 @@ mod tests {
     #[test]
     fn toolchain_cache_env_stays_inside_the_granted_root() {
         let home = Path::new("/Users/u");
-        let root = toolchain_cache_root(home);
+        let root = toolchain_cache_root(home, "p1").unwrap();
 
         // Fletch-owned, and never on the user's PATH — which is *why* rows like
         // `CARGO_HOME`/`GEM_HOME` (whose trees contain `bin/`) are safe here
         // when granting their real `~/.cargo`/`~/.gem` would not be.
-        assert_eq!(root, home.join(".fletch/toolchain-cache"));
+        assert_eq!(
+            root,
+            home.join(".fletch/toolchain-cache")
+                .join(crate::build_state_subpath("p1"))
+        );
 
-        let env = toolchain_cache_env(&root);
-        assert_eq!(env.len(), TOOLCHAIN_CACHE_VARS.len());
-        for (var, value) in &env {
-            let p = PathBuf::from(value);
-            assert!(
-                p.starts_with(&root) && p != root,
-                "{var} points outside the granted root: {value}"
-            );
+        for platform in [BoxPlatform::host(), BoxPlatform::linux()] {
+            for (var, value) in toolchain_cache_env(&root, platform) {
+                let p = PathBuf::from(&value);
+                assert!(
+                    p.starts_with(&root) && p != root,
+                    "{var} points outside the granted root: {value}"
+                );
+                assert!(!value.contains('{'), "{var} kept a placeholder: {value}");
+            }
         }
 
+        let env = toolchain_cache_env(&root, BoxPlatform::host());
+        assert_eq!(env.len(), TOOLCHAIN_CACHE_VARS.len());
         let mut names: Vec<&str> = env.iter().map(|(v, _)| v.as_str()).collect();
         names.sort_unstable();
         let before = names.len();
@@ -916,6 +1090,108 @@ mod tests {
             names.len(),
             "duplicate env var in the redirect table"
         );
+    }
+
+    /// The project id becomes one path component under this build's directory.
+    /// An id that named the directory itself (`""`, `"."`) or escaped it would
+    /// hand a profile every other project's cache, so those fail rather than
+    /// resolve.
+    #[test]
+    fn toolchain_cache_root_is_one_component_under_the_build_dir() {
+        let home = Path::new("/Users/u");
+        let id = "0b9f3c1e-6a4d-4e8b-9c2f-1d7e5a3b8c90";
+        let root = toolchain_cache_root(home, id).unwrap();
+        let build_dir = toolchain_cache_build_dir(home);
+        assert_eq!(root.parent(), Some(build_dir.as_path()));
+        assert!(root.ends_with(id));
+        // Debug and release DBs mint their ids separately, so their roots are
+        // siblings rather than one namespace.
+        let expected = if cfg!(debug_assertions) {
+            toolchain_cache_parent(home).join("dev")
+        } else {
+            toolchain_cache_parent(home)
+        };
+        assert_eq!(build_dir.as_os_str(), expected.as_os_str());
+
+        for bad in ["", ".", "..", "../other", "a/b", "a/", "/abs", "a/../b"] {
+            assert!(
+                toolchain_cache_root(home, bad).is_err(),
+                "{bad:?} must not key a cache root"
+            );
+        }
+    }
+
+    /// A nested Fletch is told its cache parent through the env, and it must be
+    /// one level inside the outer project's root — the only place the outer Run
+    /// profile lets it write — so its own project roots land under `nested/`.
+    #[test]
+    fn a_nested_instance_caches_under_the_outer_projects_root() {
+        let home = Path::new("/Users/u");
+        let outer = toolchain_cache_root(home, "outer").unwrap();
+        let nested_parent = nested_toolchain_cache_parent(&outer);
+        assert_eq!(nested_parent, outer.join("nested"));
+
+        // The build segment is appended under the override as well.
+        let nested_build_dir = toolchain_cache_build_dir_in(&toolchain_cache_parent_from(
+            home,
+            Some(nested_parent.into()),
+        ));
+        let inner = toolchain_cache_root_in(&nested_build_dir, "inner").unwrap();
+        assert_eq!(
+            inner,
+            outer
+                .join("nested")
+                .join(crate::build_state_subpath("inner"))
+        );
+        assert!(
+            inner.starts_with(&outer),
+            "inside the outer project's grant"
+        );
+
+        // Unset or empty, the default stands — and the default is what an outer
+        // instance's overlay sits under whatever this instance was told, which
+        // is why `cargo_home` keys its inherited check on it.
+        let default = home.join(".fletch/toolchain-cache");
+        assert_eq!(default_toolchain_cache_parent(home), default);
+        assert_eq!(toolchain_cache_parent_from(home, None), default);
+        assert_eq!(toolchain_cache_parent_from(home, Some("".into())), default);
+    }
+
+    /// A macOS agent and a Linux container share one root, so a platform-keyed
+    /// row (Playwright) must diverge between them while every unkeyed row stays
+    /// shared — otherwise the Linux box trusts the Mac's install marker.
+    #[test]
+    fn platform_keyed_rows_split_host_and_linux_and_nothing_else() {
+        let root = toolchain_cache_root(Path::new("/Users/u"), "p1").unwrap();
+        let host = toolchain_cache_env(&root, BoxPlatform::host());
+        let linux = toolchain_cache_env(&root, BoxPlatform::linux());
+        let arch = std::env::consts::ARCH;
+
+        let get = |env: &[(String, String)], var: &str| {
+            env.iter().find(|(v, _)| v == var).unwrap().1.clone()
+        };
+        let pw = "PLAYWRIGHT_BROWSERS_PATH";
+        assert_eq!(
+            get(&linux, pw),
+            root.join(format!("playwright/linux-{arch}"))
+                .to_string_lossy()
+        );
+        assert_eq!(
+            get(&host, pw),
+            root.join(format!("playwright/{}-{arch}", std::env::consts::OS))
+                .to_string_lossy()
+        );
+
+        for ((var, h), (_, l)) in host.iter().zip(&linux) {
+            let keyed = TOOLCHAIN_CACHE_VARS
+                .iter()
+                .any(|(v, sub)| v == var && sub.contains(PLATFORM_PLACEHOLDER));
+            if !keyed {
+                assert_eq!(h, l, "{var} is unkeyed but differs across platforms");
+            } else if cfg!(not(target_os = "linux")) {
+                assert_ne!(h, l, "{var} is keyed but shared across platforms");
+            }
+        }
     }
 
     /// The redirect must never claim a variable naming a toolchain *home*.

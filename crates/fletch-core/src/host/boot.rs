@@ -122,8 +122,10 @@ pub type BootProgress = Box<dyn Fn(BootStep) + Send + Sync>;
 pub type ExitHook = Box<dyn FnOnce() + Send>;
 
 /// Whether this engine owns the state roots it is about to use — the agent
-/// checkouts root (`$FLETCH_WORKSPACES_ROOT`, default `~/.fletch/workspaces`)
-/// and the RPC mailbox root (`$FLETCH_RPC_ROOT`, default `~/.fletch/rpc`).
+/// checkouts root (`$FLETCH_WORKSPACES_ROOT`, default `~/.fletch/workspaces`),
+/// the RPC mailbox root (`$FLETCH_RPC_ROOT`, default `~/.fletch/rpc`) and the
+/// toolchain cache (`$FLETCH_TOOLCHAIN_CACHE_ROOT`, default
+/// `~/.fletch/toolchain-cache`).
 ///
 /// "Owns" means: this engine's database is the only authority over what lives
 /// under those roots, so [`boot`]'s startup housekeeping may treat anything the
@@ -586,6 +588,16 @@ pub fn boot(cfg: BootConfig) -> Result<Engine, BootError> {
         match workspace::checkouts_root() {
             Ok(root) => workspace::sweep_discarded_checkouts(&root),
             Err(e) => tracing::warn!(error = %e, "skipping discarded-checkout sweep"),
+        }
+        // Toolchain caches of projects deleted while no engine ran (or that a
+        // deletion's own reclaim failed to remove), and the pre-project
+        // layout. Owned for the same reason; published so project deletion
+        // reclaims too.
+        sandbox::own_toolchain_caches();
+        match (workspace.project_ids(), dirs::home_dir()) {
+            (Ok(live), Some(home)) => sandbox::reclaim_toolchain_caches(&home, &live),
+            (Err(e), _) => tracing::warn!(error = %e, "skipping toolchain cache reclaim"),
+            (_, None) => tracing::warn!("skipping toolchain cache reclaim: no home directory"),
         }
     }
 
