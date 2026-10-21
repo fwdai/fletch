@@ -96,7 +96,9 @@ max 100).
 To change your pull request after opening it, use `pr_edit` with any of
 `args.title`, `args.body` (replaces the whole description — keep the
 `## Decisions` section), `args.base` (retarget; must exist on origin) and
-`args.draft` (true/false); `args.number` edits another PR of the repository.
+`args.draft` (true/false); `args.number` edits another PR of the repository
+(its text and base only: the closing trailer and this workspace's recorded
+base follow your own PR).
 Refresh the description with it whenever follow-up commits make the one you
 wrote at `open_pr` stale. `pr_comment` (`args.body`; `args.number` for another
 PR) posts on the PR's conversation — say what a follow-up push changed there —

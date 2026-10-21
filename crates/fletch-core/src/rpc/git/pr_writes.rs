@@ -53,40 +53,73 @@ impl GitDispatcher {
                 );
             }
         }
-        let number = match number {
-            Some(n) => n,
+        // Which PR, and whether it is this workspace's own — the one bound to
+        // the checkout's branch. Only that PR carries the workspace's state:
+        // the closing trailer for its issue, and the recorded base that
+        // ahead/behind and `update-branch` follow. Editing another PR by
+        // number must leave both alone, or it would close the wrong issue and
+        // steer this checkout at that PR's base.
+        let (number, own) = match number {
             None => match branch_pr(id, "pr_edit", &t).await {
-                Ok(pr) => pr.number,
+                Ok(pr) => (pr.number, true),
                 Err(resp) => return (resp, Vec::new()),
             },
+            Some(n) => {
+                let own = match branch_pr(id, "pr_edit", &t).await {
+                    Ok(pr) => pr.number == n,
+                    Err(_) => false,
+                };
+                (n, own)
+            }
         };
-        // A replaced body keeps the closing trailer `open_pr` added, as that
-        // op would: the issue is still the one this work closes.
-        if let Some(body) = edit.body.take() {
-            edit.body = Some(crate::github::with_closes_trailer(
-                &body,
-                self.live_closes(&t).as_deref(),
-            ));
+        if own {
+            // A replaced body keeps the closing trailer `open_pr` added, as
+            // that op would: the issue is still the one this work closes.
+            if let Some(body) = edit.body.take() {
+                edit.body = Some(crate::github::with_closes_trailer(
+                    &body,
+                    self.live_closes(&t).as_deref(),
+                ));
+            }
         }
         let edited = edited_fields(&edit);
-        // In the user's repository, whose origin no agent can repoint.
-        match crate::github::pr_edit(&t.source_repo, number, &edit).await {
-            Ok(url) => {
-                let mut effects = Vec::new();
-                if let Some(base) = &edit.base {
-                    effects.push(RpcEvent::named(
-                        EVENT_PR_EDITED,
-                        with_repo(json!({ "number": number, "base": base }), &t.subdir),
-                    ));
-                }
-                let mut summary = json!({ "number": number, "edited": edited });
-                if let Some(url) = url {
-                    summary["url"] = json!(url);
-                }
-                (json_ok(id, "pr_edit", &summary), effects)
-            }
-            Err(e) => (Response::err(id, format!("pr_edit: {e}")), Vec::new()),
+        let patched: Vec<&str> = edited.iter().copied().filter(|f| *f != "draft").collect();
+        let mut effects = Vec::new();
+        // In the user's repository, whose origin no agent can repoint. The
+        // PATCH (title, body, base) lands first; what it changed is recorded
+        // before the draft mutation runs, so a failure there cannot hide a
+        // base GitHub already accepted.
+        let url = match crate::github::pr_edit(&t.source_repo, number, &edit).await {
+            Ok(url) => url,
+            Err(e) => return (Response::err(id, format!("pr_edit: {e}")), effects),
+        };
+        if let (Some(base), true) = (&edit.base, own) {
+            effects.push(RpcEvent::named(
+                EVENT_PR_EDITED,
+                with_repo(json!({ "number": number, "base": base }), &t.subdir),
+            ));
         }
+        if let Some(draft) = edit.draft {
+            if let Err(e) = crate::github::pr_set_draft(&t.source_repo, number, draft).await {
+                let applied = if patched.is_empty() {
+                    String::new()
+                } else {
+                    format!(" ({} applied;", patched.join(", "))
+                };
+                return (
+                    Response::err(
+                        id,
+                        format!("pr_edit:{applied} the draft change failed: {e})"),
+                    ),
+                    effects,
+                );
+            }
+        }
+        let mut summary = json!({ "number": number, "edited": edited, "workspace_pr": own });
+        if let Some(url) = url {
+            summary["url"] = json!(url);
+        }
+        (json_ok(id, "pr_edit", &summary), effects)
     }
 
     /// A comment on the PR's conversation (`args.body`; `args.number` for

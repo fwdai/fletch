@@ -309,53 +309,57 @@ impl PrEdit {
     }
 }
 
-/// Edit a PR's title, body, base or draft state by number. Title, body and
-/// base go in one REST PATCH; the draft flag is GitHub's
-/// `convertPullRequestToDraft` / `markReadyForReview` mutation on the PR's
-/// node id. Returns the PR's URL when the PATCH answered with it.
+/// Edit a PR's title, body and base by number, in one REST PATCH. The draft
+/// flag is a separate GitHub mutation ([`pr_set_draft`]) and deliberately a
+/// separate call: a caller that changes the base and the draft flag together
+/// must know which of the two landed when the other fails. Returns the PR's
+/// URL, or `Ok(None)` when `edit` had nothing for the PATCH.
 pub async fn pr_edit(checkout: &Path, number: u32, edit: &PrEdit) -> Result<Option<String>> {
-    if edit.is_empty() {
-        return Err(Error::Gh("nothing to edit".into()));
-    }
+    let Some(payload) = edit.patch_payload() else {
+        return Ok(None);
+    };
     let (owner, repo) = require_repo_ref(checkout).await?;
     let client = client::Client::new()?;
-    let mut url = None;
-    if let Some(payload) = edit.patch_payload() {
-        let (status, resp) = client
-            .rest(
-                reqwest::Method::PATCH,
-                &format!("/repos/{owner}/{repo}/pulls/{number}"),
-                Some(&payload),
-            )
-            .await?;
-        if !status.is_success() {
-            return Err(Error::Gh(format!(
-                "pr edit failed: {}",
-                detailed_rest_error(&resp)
-            )));
-        }
-        url = resp["html_url"].as_str().map(str::to_string);
+    let (status, resp) = client
+        .rest(
+            reqwest::Method::PATCH,
+            &format!("/repos/{owner}/{repo}/pulls/{number}"),
+            Some(&payload),
+        )
+        .await?;
+    if !status.is_success() {
+        return Err(Error::Gh(format!(
+            "pr edit failed: {}",
+            detailed_rest_error(&resp)
+        )));
     }
-    if let Some(draft) = edit.draft {
-        let node = pr_node_and_viewer(checkout, None, number, "id isDraft")
-            .await?
-            .map(|(node, _viewer)| node)
-            .ok_or_else(|| Error::Gh(format!("PR #{number} was not found")))?;
-        let id = node["id"]
-            .as_str()
-            .ok_or_else(|| Error::Gh(format!("PR #{number} did not resolve to a node")))?;
-        // Already in the asked-for state: GitHub refuses the mutation, which
-        // would read as a failure of an edit that is in effect.
-        if node["isDraft"].as_bool() != Some(draft) {
-            let mutation = if draft {
-                r#"mutation($id:ID!){ convertPullRequestToDraft(input:{pullRequestId:$id}){ clientMutationId } }"#
-            } else {
-                r#"mutation($id:ID!){ markReadyForReview(input:{pullRequestId:$id}){ clientMutationId } }"#
-            };
-            client.graphql(mutation, json!({ "id": id })).await?;
-        }
+    Ok(resp["html_url"].as_str().map(str::to_string))
+}
+
+/// Convert PR `number` to a draft, or mark it ready for review: GitHub's
+/// `convertPullRequestToDraft` / `markReadyForReview` mutation on the PR's
+/// node id. A PR already in the asked-for state is left alone, as GitHub
+/// refuses the mutation and that would read as a failure of an edit that is
+/// in effect.
+pub async fn pr_set_draft(checkout: &Path, number: u32, draft: bool) -> Result<()> {
+    let client = client::Client::new()?;
+    let node = pr_node_and_viewer(checkout, None, number, "id isDraft")
+        .await?
+        .map(|(node, _viewer)| node)
+        .ok_or_else(|| Error::Gh(format!("PR #{number} was not found")))?;
+    let id = node["id"]
+        .as_str()
+        .ok_or_else(|| Error::Gh(format!("PR #{number} did not resolve to a node")))?;
+    if node["isDraft"].as_bool() == Some(draft) {
+        return Ok(());
     }
-    Ok(url)
+    let mutation = if draft {
+        r#"mutation($id:ID!){ convertPullRequestToDraft(input:{pullRequestId:$id}){ clientMutationId } }"#
+    } else {
+        r#"mutation($id:ID!){ markReadyForReview(input:{pullRequestId:$id}){ clientMutationId } }"#
+    };
+    client.graphql(mutation, json!({ "id": id })).await?;
+    Ok(())
 }
 
 /// List open PRs for the repo at `checkout` (newest first), for the
