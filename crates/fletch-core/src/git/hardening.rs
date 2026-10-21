@@ -49,7 +49,7 @@
 //! user-owned *source* repo, not an agent checkout — is a no-op and needs no
 //! call: that repo is not agent-writable.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::error::{Error, Result};
 
@@ -95,6 +95,12 @@ const NEUTRALISED: &[(&str, &str)] = &[
     ("core.pager", "cat"),           // Fletch captures output; a pager only adds a program
     ("core.editor", "false"),        // an interactive editor would hang an automated op
     ("sequence.editor", "false"),    // `rebase -i`'s todo-list editor, same hazard
+    // Recursing into submodules runs git again inside `.git/modules/*`, whose
+    // config is as agent-writable as the checkout's and is not what the
+    // refusal below reads. Fletch's automated git never needs to recurse.
+    ("submodule.recurse", "false"),
+    ("fetch.recurseSubmodules", "no"),
+    ("push.recurseSubmodules", "no"),
 ];
 
 /// Implicit signing, switched off — for host-side git inside an
@@ -325,14 +331,28 @@ async fn refuse_steerable_config_under(dir: &Path, checkouts_root: &Path) -> Res
 /// Pure-seam core of [`remove_steerable_config`] (see
 /// [`refuse_steerable_config_under`]).
 async fn remove_steerable_config_under(dir: &Path, checkouts_root: &Path) -> Result<()> {
-    for key in steerable_config_under(dir, checkouts_root).await? {
-        // Both agent-writable scopes, since the listing does not say which one a
-        // key came from. `--unset-all` covers a multi-valued key. The exit status
-        // is ignored on purpose: 5 just means "not set in this scope", and the
-        // re-read below is the real verdict.
+    let submodules = submodule_configs(dir).await;
+    for entry in steerable_config_under(dir, checkouts_root).await? {
+        // `--unset-all` covers a multi-valued key. The exit status is ignored
+        // on purpose: 5 just means "not set in this scope", and the re-read
+        // below is the real verdict.
+        if let Some((file, key)) = entry.split_once(": ") {
+            // A submodule's key, named with its config file.
+            if let Some(sub) = submodules.iter().find(|s| s.name == file) {
+                crate::git_dist::command(dir)
+                    .args(["config", "--file"])
+                    .arg(&sub.path)
+                    .args(["--unset-all", key])
+                    .output()
+                    .await?;
+            }
+            continue;
+        }
+        // Both agent-writable scopes, since the listing does not say which one
+        // a key came from.
         for scope in ["--local", "--worktree"] {
             crate::git_dist::command(dir)
-                .args(["config", scope, "--unset-all", key.as_str()])
+                .args(["config", scope, "--unset-all", entry.as_str()])
                 .output()
                 .await?;
         }
@@ -376,7 +396,75 @@ async fn steerable_config_under(dir: &Path, checkouts_root: &Path) -> Result<Vec
     if !out.status.success() {
         return Ok(Vec::new());
     }
-    Ok(steerable_keys(&String::from_utf8_lossy(&out.stdout)))
+    let mut keys = steerable_keys(&String::from_utf8_lossy(&out.stdout));
+    // A submodule's config, under `.git/modules/<name>/config`, is as
+    // agent-writable as the checkout's and is read whenever git works inside
+    // the submodule — `git status` and `diff` do, to report it — yet no scope
+    // of the checkout's own listing shows it. Each is listed on its own, its
+    // keys reported as `<modules/…/config>: <key>`.
+    for file in submodule_configs(dir).await {
+        let out = crate::git_dist::command(dir)
+            .args(["config", "--file"])
+            .arg(&file.path)
+            .args(["--list", "--includes"])
+            .output()
+            .await?;
+        if !out.status.success() {
+            continue;
+        }
+        let listing: String = String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .map(|line| format!("local\t{line}\n"))
+            .collect();
+        keys.extend(
+            steerable_keys(&listing)
+                .into_iter()
+                .map(|key| format!("{}: {key}", file.name)),
+        );
+    }
+    Ok(keys)
+}
+
+/// One submodule config file: its path, and how the refusal names it.
+struct SubmoduleConfig {
+    path: PathBuf,
+    name: String,
+}
+
+/// Every `config` under `<common dir>/modules`, nested submodules included.
+async fn submodule_configs(dir: &Path) -> Vec<SubmoduleConfig> {
+    let out = crate::git_dist::command(dir)
+        .args(["rev-parse", "--path-format=absolute", "--git-common-dir"])
+        .output()
+        .await;
+    let Ok(out) = out.ok().filter(|out| out.status.success()).ok_or(()) else {
+        return Vec::new();
+    };
+    let common = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim());
+    let mut found = Vec::new();
+    let mut pending = vec![common.join("modules")];
+    while let Some(root) = pending.pop() {
+        let Ok(entries) = std::fs::read_dir(&root) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                pending.push(path);
+            } else if path.file_name().is_some_and(|n| n == "config")
+                && path.with_file_name("HEAD").exists()
+            {
+                let name = path
+                    .strip_prefix(&common)
+                    .unwrap_or(&path)
+                    .to_string_lossy()
+                    .into_owned();
+                found.push(SubmoduleConfig { path, name });
+            }
+        }
+    }
+    found.sort_by(|a, b| a.name.cmp(&b.name));
+    found
 }
 
 /// The config scopes an agent can write, and thus the only ones whose keys can
@@ -755,6 +843,56 @@ mod tests {
             assert!(err.contains(&leaf), "expected {leaf} in: {err}");
             git(&["config", "--unset", key]);
         }
+    }
+
+    /// A submodule's own config is read whenever git works inside it, and an
+    /// agent writes it as freely as the checkout's: a key planted there is
+    /// refused like one planted at the top, named with its file, and removed
+    /// from there on request.
+    #[tokio::test]
+    async fn a_key_planted_in_a_submodules_config_is_refused_and_removable() {
+        let (_td, root, repo, git) = scoped_repo();
+        git(&["config", "user.email", "t@example.com"]);
+        git(&["config", "user.name", "T"]);
+        // A submodule needs a repository to add; the checkout itself will do.
+        git(&["commit", "-q", "--allow-empty", "-m", "base"]);
+        let out = git(&[
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "add",
+            "-q",
+            repo.to_str().unwrap(),
+            "sub",
+        ]);
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        refuse_steerable_config_under(&repo, &root)
+            .await
+            .expect("a plain submodule is fine");
+
+        let sub_config = repo.join(".git/modules/sub/config");
+        assert!(sub_config.exists());
+        let planted = std::fs::read_to_string(&sub_config).unwrap()
+            + "[filter \"x\"]\n\tclean = /tmp/pwn.sh\n";
+        std::fs::write(&sub_config, planted).unwrap();
+
+        let err = refuse_steerable_config_under(&repo, &root)
+            .await
+            .expect_err("a planted submodule key must be refused")
+            .to_string();
+        assert!(err.contains("modules/sub/config: filter.x.clean"), "{err}");
+
+        remove_steerable_config_under(&repo, &root).await.unwrap();
+        refuse_steerable_config_under(&repo, &root)
+            .await
+            .expect("clean after removal");
+        assert!(!std::fs::read_to_string(&sub_config)
+            .unwrap()
+            .contains("pwn"));
     }
 
     /// A fresh repo at `<tmp>/workspaces/agent-1/repo`, with `workspaces` as its

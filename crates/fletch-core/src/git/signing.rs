@@ -36,7 +36,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use super::cmd::{git_output, git_output_stdin, output_timed};
+use super::cmd::{git_output, git_output_stdin};
 use crate::error::{Error, Result};
 
 /// Whether commits in `source_repo` — the user's own repository — are signed:
@@ -72,49 +72,27 @@ pub(crate) fn signing_requested(show_scope: &str) -> bool {
         .is_some_and(|(_, value)| value.trim() == "true")
 }
 
-/// `git fetch --prune` of every branch: the checkout's `origin/*` refs as the
-/// remote has them right now, so "what origin lacks" is answered by the remote
-/// rather than by whatever the last fetch left — the source repo's own local
-/// heads, when the spawn-time fetch failed (`provision`), or a branch since
-/// deleted. The remote is the user's repository's (`git::remote`), never the
-/// checkout's `origin`; runs with the host's token, like the push that
-/// follows it.
+/// Every branch of the fetch remote and of each push remote, as they stand
+/// right now, mirrored into the checkout and pruned (`Transport`): "what the
+/// remote lacks" is then answered by the remotes rather than by whatever the
+/// last fetch left — the source repo's own local heads, when the spawn-time
+/// fetch failed (`provision`), or a branch since deleted. The push remotes
+/// matter as much as the fetch remote: with a `pushurl`, a branch published
+/// to the fork alone is published all the same, and signing it again would
+/// change its commits (an OpenPGP signature carries its creation time).
 pub(crate) async fn refresh_remote_refs(checkout: &Path, source_repo: &Path) -> Result<()> {
-    // A fetch runs the transport-executing keys (`core.sshCommand`,
-    // `remote.<name>.uploadpack`) the `-c` overrides cannot neutralise.
-    super::hardening::refuse_steerable_config(checkout).await?;
-    let url = super::remote::trusted_remote(checkout, source_repo).await?;
-    let mut cmd = crate::git_dist::command(checkout);
-    cmd.args([
-        "fetch",
-        "--quiet",
-        "--prune",
-        &url.fetch,
-        super::remote::ALL_TRACKING_REFSPEC,
-    ]);
-    for (k, v) in crate::github::git_auth_env() {
-        cmd.env(k, v);
-    }
-    let out = output_timed(&mut cmd, "git fetch").await?;
-    if !out.status.success() {
-        return Err(Error::Git(format!(
-            "refreshing origin before signing failed: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        )));
-    }
-    Ok(())
+    super::remote::Transport::open(checkout, source_repo)
+        .await?
+        .fetch_branches(super::remote::Branches::All)
+        .await
+        .map_err(|e| Error::Git(format!("refreshing the remotes before signing failed: {e}")))
 }
 
-/// Replace the commits `tip` reaches that origin lacks with signed copies and
-/// return the new tip — `tip` itself when origin already has everything. No
-/// ref is moved: the caller owns the branch. "What origin lacks" is read from
-/// the checkout's `origin/*` refs as they stand, so refresh them first. Every
-/// commit in the range is signed afresh, including one that already carries a
-/// `gpgsig` header: the checkout is agent-writable, so an existing header
-/// proves nothing. The signatures are made in `source_repo` (see the module
-/// doc), which is also where a signing failure comes from: a key the host
-/// cannot use is an error, never an unsigned result.
-pub async fn sign_unpublished(checkout: &Path, source_repo: &Path, tip: &str) -> Result<String> {
+/// The commits `tip` reaches that no remote has — neither the fetch remote
+/// (`refs/remotes/origin/*`) nor any push remote (`Transport`'s saved tips) —
+/// oldest first, parents before children. Read from the checkout's refs as
+/// they stand, so refresh them first ([`refresh_remote_refs`]).
+pub(crate) async fn unpublished_commits(checkout: &Path, tip: &str) -> Result<Vec<String>> {
     let out = git_output(
         checkout,
         &[
@@ -124,6 +102,7 @@ pub async fn sign_unpublished(checkout: &Path, source_repo: &Path, tip: &str) ->
             tip,
             "--not",
             "--remotes=origin",
+            "--glob=refs/worktree/fletch/push/",
             "--",
         ],
     )
@@ -134,12 +113,25 @@ pub async fn sign_unpublished(checkout: &Path, source_repo: &Path, tip: &str) ->
             String::from_utf8_lossy(&out.stderr).trim()
         )));
     }
-    let unpublished: Vec<String> = String::from_utf8_lossy(&out.stdout)
+    Ok(String::from_utf8_lossy(&out.stdout)
         .lines()
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(str::to_string)
-        .collect();
+        .collect())
+}
+
+/// Replace the commits `tip` reaches that no remote has with signed copies
+/// and return the new tip — `tip` itself when the remotes already have
+/// everything. No ref is moved: the caller owns the branch. The range is
+/// [`unpublished_commits`], so refresh the remote refs first. Every commit in
+/// the range is signed afresh, including one that already carries a `gpgsig`
+/// header: the checkout is agent-writable, so an existing header proves
+/// nothing. The signatures are made in `source_repo` (see the module doc),
+/// which is also where a signing failure comes from: a key the host cannot
+/// use is an error, never an unsigned result.
+pub async fn sign_unpublished(checkout: &Path, source_repo: &Path, tip: &str) -> Result<String> {
+    let unpublished = unpublished_commits(checkout, tip).await?;
     if unpublished.is_empty() {
         return Ok(tip.to_string());
     }
@@ -624,6 +616,62 @@ mod tests {
         }
         assert_eq!(git(repo, &["rev-parse", &format!("{signed}^1~1")]), fx.base);
         assert_eq!(git(repo, &["rev-parse", &format!("{signed}^2~1")]), fx.base);
+    }
+
+    /// With a `pushurl`, a branch published to the fork alone exists on no
+    /// fetch remote. It is published all the same: after the refresh, nothing
+    /// on it is unpublished, so nothing is signed again — an OpenPGP signature
+    /// carries its creation time, and signing again would change the commits
+    /// the fork already has.
+    #[tokio::test]
+    async fn commits_published_to_a_push_remote_are_not_unpublished() {
+        use super::super::publish::{publish, Publication, Tip};
+        let td = tempfile::tempdir().unwrap();
+        let fx = signing_repos(td.path());
+        let fork = td.path().join("fork.git");
+        git(td.path(), &["init", "-q", "--bare", fork.to_str().unwrap()]);
+        git(
+            &fx.source,
+            &[
+                "remote",
+                "set-url",
+                "--push",
+                "origin",
+                fork.to_str().unwrap(),
+            ],
+        );
+        git(&fx.checkout, &["checkout", "-q", "-b", "feat"]);
+        commit_file(&fx.checkout, "one.txt");
+        let published = publish(
+            &Publication {
+                checkout: &fx.checkout,
+                source_repo: &fx.source,
+                branch: "feat",
+                force: false,
+            },
+            Tip::Branch,
+        )
+        .await
+        .unwrap()
+        .tip;
+
+        refresh_remote_refs(&fx.checkout, &fx.source).await.unwrap();
+
+        assert!(
+            !git(&fx.checkout, &["for-each-ref", "refs/remotes/origin/"]).contains("feat"),
+            "the fetch remote never had the branch"
+        );
+        assert_eq!(
+            unpublished_commits(&fx.checkout, &published).await.unwrap(),
+            Vec::<String>::new(),
+            "what the fork has is published"
+        );
+        assert_eq!(
+            sign_unpublished(&fx.checkout, &fx.source, &published)
+                .await
+                .unwrap(),
+            published
+        );
     }
 
     #[tokio::test]

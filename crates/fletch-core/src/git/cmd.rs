@@ -15,7 +15,7 @@ use crate::error::{Error, Result};
 /// not on slow-but-progressing work. NOT used for `clone` (a large repo can
 /// legitimately take minutes); clone's retry wedge is handled by self-heal in
 /// `new_project::clone` instead.
-const NET_TIMEOUT: Duration = Duration::from_secs(60);
+pub(crate) const NET_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Run a network-bound command under `NET_TIMEOUT`, killing the process (and
 /// its SSH/HTTP child) on expiry via `kill_on_drop` rather than orphaning it.

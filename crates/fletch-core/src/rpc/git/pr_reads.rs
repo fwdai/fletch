@@ -85,7 +85,7 @@ impl GitDispatcher {
                 format!("{op}: origin is not a GitHub repository (or there is no origin)"),
             ));
         }
-        if let Err(e) = crate::git::trusted_remote(&t.cwd, &t.source_repo).await {
+        if let Err(e) = crate::git::require_origin_unchanged(&t.cwd, &t.source_repo).await {
             return Err(Response::err(id, format!("{op}: {e}")));
         }
         if crate::github::client::token().is_none() {

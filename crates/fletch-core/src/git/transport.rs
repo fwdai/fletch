@@ -5,7 +5,8 @@ use std::path::Path;
 
 use crate::error::{Error, Result};
 
-use super::cmd::{git_output, git_output_env, identity_env, merge_git_env, output_timed, run_git};
+use super::cmd::{git_output, git_output_env, identity_env, output_timed, run_git};
+use super::remote::{resolve, Branches, Transport};
 
 /// Push the current branch to `origin`. Uses `-u` to set the upstream
 /// tracking ref on the first push.
@@ -72,27 +73,23 @@ pub(super) async fn push_commit(
     Ok(summary)
 }
 
-/// The push names the remote as a **URL** (`git::remote`), never as `origin`,
-/// so the checkout's config cannot redirect it. Git then keeps no
-/// remote-tracking ref for it, so what `push origin` would have done through
-/// `remote.origin.*` is done here explicitly, with the same safety:
+/// The push runs through [`Transport`]: the user's repository's remote and
+/// configuration, the checkout's objects. It names the push URL rather than
+/// `origin`, so git keeps no remote-tracking ref for it, and what `push -u
+/// origin` would have done through `remote.origin.*` is done here explicitly,
+/// with the same safety:
 ///
-/// - the lease carries the push destination's last known tip
-///   (`--force-with-lease=<branch>:<expected>`, "absent" when there is none),
-///   which is what a bare `--force-with-lease` reads for a named remote — and
-///   `--force-if-includes`, a no-op once the expected value is explicit, is
-///   [`require_integrated`];
-/// - `refs/remotes/origin/<branch>` is moved to the pushed commit afterwards,
-///   as a named-remote push would move it.
-///
-/// That last known tip is `refs/remotes/origin/<branch>` when pushes go where
-/// fetches come from. With a `pushurl` (a fork) it is not: `origin/*` is the
-/// fetch remote's view, refreshed and pruned from there before a signed
-/// publish, and never holds a branch that exists on the fork alone. The fork's
-/// tip is kept apart, under [`pushed_tip_ref`], and before a force
-/// it is refreshed from the fork itself — the lease then holds exactly what
-/// the fork has, and [`require_integrated`] is what refuses a tip nobody here
-/// has looked at.
+/// - the lease carries the push remote's tip as refreshed from that remote
+///   right now (`--force-with-lease=<branch>:<expected>`, "absent" when it
+///   has no such branch) — which is what a bare `--force-with-lease` reads for
+///   a named remote, minus the staleness — and `--force-if-includes`, a no-op
+///   once the expected value is explicit, is [`require_integrated`], the
+///   check that actually refuses a tip nobody here has looked at;
+/// - a force needs exactly one push URL, since one lease cannot describe
+///   two remotes; a plain push goes to every push URL, as git's would;
+/// - `refs/remotes/origin/<branch>` and the push remotes' saved tips are
+///   moved to the pushed commit afterwards, as a named-remote push would move
+///   its tracking ref.
 async fn push_source(
     checkout: &Path,
     source_repo: &Path,
@@ -100,26 +97,19 @@ async fn push_source(
     branch: &str,
     force: bool,
 ) -> Result<String> {
-    // See `push_head_to_branch`: push executes `remote.<origin>.receivepack` /
-    // `core.sshCommand` / `core.gitProxy` over ssh/local transport, transport keys
-    // that neither hardening layer neutralises, so the refusal runs before we spawn.
-    super::hardening::refuse_steerable_config(checkout).await?;
-    let url = super::remote::trusted_remote(checkout, source_repo).await?;
-    let tracking = format!("refs/remotes/origin/{branch}");
-    let triangular = url.push != url.fetch;
-    let lease_ref = if triangular {
-        pushed_tip_ref(branch)
-    } else {
-        tracking.clone()
-    };
-    if force && triangular {
-        refresh_push_tip(checkout, &url.push, branch, &lease_ref).await?;
+    let t = Transport::open(checkout, source_repo).await?;
+    let remotes = t.push_remotes().await?;
+    if force && remotes.len() > 1 {
+        return Err(Error::Git(format!(
+            "refusing to force-push '{branch}': origin has {} push URLs and a lease can hold \
+             only one remote's tip; push without force, or configure a single push URL",
+            remotes.len()
+        )));
     }
-    let expected = resolve(checkout, &lease_ref).await?;
     let pushed = resolve(checkout, source).await?;
-    let mut cmd = crate::git_dist::command(checkout);
-    cmd.args(["push"]);
+    let mut lease = Vec::new();
     if force {
+        let expected = t.push_tip(0, branch).await?;
         // As git does, a push that changes nothing is up to date, not forced.
         if let Some(expected) = expected
             .as_deref()
@@ -127,100 +117,33 @@ async fn push_source(
         {
             require_integrated(checkout, branch, expected).await?;
         }
-        cmd.arg(format!(
+        lease.push(format!(
             "--force-with-lease=refs/heads/{branch}:{}",
             expected.as_deref().unwrap_or_default()
         ));
     }
     let refspec = format!("{source}:refs/heads/{branch}");
-    cmd.args([url.push.as_str(), refspec.as_str()]);
-    // Auth for the https transport. `pre-push` would fire on the host, but
-    // hooks are already neutralised at the spawn seam (`git::hardening`).
-    for (k, v) in crate::github::git_auth_env() {
-        cmd.env(k, v);
-    }
-    let out = output_timed(&mut cmd, "git push").await?;
-    if !out.status.success() {
-        return Err(Error::Git(format!(
-            "push failed: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        )));
+    let mut up_to_date = true;
+    for index in 0..remotes.len() {
+        let out = t.push(index, &lease, &refspec).await?;
+        if !out.status.success() {
+            return Err(Error::Git(format!(
+                "push failed: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            )));
+        }
+        // git reports "Everything up-to-date" on stderr when there was nothing new.
+        let combined = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr),
+        );
+        up_to_date &= combined.contains("Everything up-to-date");
     }
     if let Some(pushed) = pushed {
-        for refname in std::iter::once(&tracking).chain(triangular.then_some(&lease_ref)) {
-            run_git(
-                checkout,
-                &["update-ref", refname, &pushed],
-                "update remote-tracking ref",
-            )
-            .await?;
-        }
+        t.record_pushed(branch, &pushed).await?;
     }
-    // git reports "Everything up-to-date" on stderr when there was nothing new.
-    let combined = format!(
-        "{}{}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr),
-    );
-    if combined.contains("Everything up-to-date") {
-        Ok("up-to-date".to_string())
-    } else {
-        Ok("pushed".to_string())
-    }
-}
-
-/// Where the push remote's last known tip of `branch` is kept:
-/// `refs/fletch/pushed/<sha256 of the branch name>`. Flat on purpose — a ref
-/// named after the branch would nest like the branch does, and a tip saved
-/// for `feat` (never pruned once the branch is gone, since nothing fetches
-/// into this namespace) would then sit where `feat/sub`'s ref must go, and
-/// git refuses to create one under the other.
-fn pushed_tip_ref(branch: &str) -> String {
-    use sha2::{Digest, Sha256};
-    format!("refs/fletch/pushed/{:x}", Sha256::digest(branch.as_bytes()))
-}
-
-/// `lease_ref` set to `branch` as the push remote at `push_url` has it right
-/// now, or deleted when the remote has no such branch — so a lease built on
-/// it expects exactly the remote's current state. The config refusal has
-/// already run for this checkout.
-async fn refresh_push_tip(
-    checkout: &Path,
-    push_url: &str,
-    branch: &str,
-    lease_ref: &str,
-) -> Result<()> {
-    let mut cmd = crate::git_dist::command(checkout);
-    cmd.args([
-        "fetch",
-        "--quiet",
-        push_url,
-        &format!("+refs/heads/{branch}:{lease_ref}"),
-    ]);
-    super::cmd::apply_github_auth(&mut cmd);
-    let out = output_timed(&mut cmd, "git fetch push tip").await?;
-    if out.status.success() {
-        return Ok(());
-    }
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    if stderr.contains("couldn't find remote ref") {
-        let _ = git_output(checkout, &["update-ref", "-d", lease_ref]).await;
-        return Ok(());
-    }
-    Err(Error::Git(format!(
-        "could not read '{branch}' from the push remote before forcing: {}",
-        stderr.trim()
-    )))
-}
-
-/// `rev` as a commit, or `None` when it names nothing.
-async fn resolve(checkout: &Path, rev: &str) -> Result<Option<String>> {
-    let spec = format!("{rev}^{{commit}}");
-    let out = git_output(checkout, &["rev-parse", "--verify", "--quiet", &spec]).await?;
-    Ok(out
-        .status
-        .success()
-        .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string()))
+    Ok(if up_to_date { "up-to-date" } else { "pushed" }.to_string())
 }
 
 /// What `--force-if-includes` checks, for a lease with an explicit value
@@ -256,37 +179,34 @@ async fn require_integrated(checkout: &Path, branch: &str, expected: &str) -> Re
     )))
 }
 
-/// Pull the current branch's remote counterpart into it, from the user's
-/// repository's remote (`git::remote`). A detached HEAD has no branch to pull.
+/// Pull the current branch's remote counterpart into it: a fetch through
+/// [`Transport`], then a merge in the checkout. A detached HEAD has no branch
+/// to pull.
 pub async fn pull(checkout: &Path, source_repo: &Path) -> Result<()> {
-    // A pull merges, so it runs `merge.<name>.driver` — a wildcard key the `-c`
-    // overrides cannot neutralise by name. This builds its command directly, so it
-    // needs the config guard explicitly, the same as `push` above (which runs the
-    // transport-executing keys) and every other direct-build path on an agent
-    // checkout.
-    super::hardening::refuse_steerable_config(checkout).await?;
     let Some(branch) = super::branch::current_branch(checkout).await? else {
         return Err(Error::Git(
             "pull failed: HEAD is detached — no branch to pull into".into(),
         ));
     };
-    let url = super::remote::trusted_remote(checkout, source_repo).await?;
-    let mut cmd = crate::git_dist::command(checkout);
-    cmd.args([
-        "pull",
-        &url.fetch,
-        &super::remote::tracking_refspec(&branch),
-    ]);
-    // Auth for the https transport; identity because a pull may create a merge
-    // commit. Merge so the auth `GIT_CONFIG_*` set and the identity vars don't
-    // clobber each other. Merge hooks are neutralised at the spawn seam.
-    for (k, v) in merge_git_env(&[
-        &crate::github::git_auth_env(),
+    Transport::open(checkout, source_repo)
+        .await?
+        .fetch_branches(Branches::One(&branch))
+        .await
+        .map_err(|e| Error::Git(format!("pull failed: {e}")))?;
+    // The merge runs in the checkout, so it runs `merge.<name>.driver` — a
+    // wildcard key the `-c` overrides cannot neutralise by name; `git_output_env`
+    // applies the config refusal. Identity because a pull may create a merge
+    // commit; merge hooks are neutralised at the spawn seam.
+    let out = git_output_env(
+        checkout,
+        &[
+            "merge",
+            "--no-edit",
+            &format!("refs/remotes/origin/{branch}"),
+        ],
         &identity_env(checkout).await,
-    ]) {
-        cmd.env(k, v);
-    }
-    let out = output_timed(&mut cmd, "git pull").await?;
+    )
+    .await?;
     if !out.status.success() {
         return Err(Error::Git(format!(
             "pull failed: {}",
@@ -359,28 +279,16 @@ pub async fn remote_branch_exists(
     source_repo: &Path,
     branch: &str,
 ) -> Option<bool> {
-    // Same reasoning as `push_head_to_branch`: this runs the transport, so a
-    // steerable config in an agent-writable checkout is refused before git does.
-    super::hardening::refuse_steerable_config(checkout)
+    // Through `Transport`: the user's remote and config, refused config and a
+    // repointed origin surfacing as "couldn't ask". The pattern is always
+    // prefixed `refs/heads/`, so `branch` can never reach git in an option
+    // position however the request spelled it.
+    let out = Transport::open(checkout, source_repo)
+        .await
+        .ok()?
+        .ls_remote_head(branch)
         .await
         .ok()?;
-    let url = super::remote::trusted_remote(checkout, source_repo)
-        .await
-        .ok()?;
-    let mut cmd = crate::git_dist::command(checkout);
-    // The pattern is always prefixed `refs/heads/`, so `branch` can never reach
-    // git in an option position however the request spelled it.
-    cmd.args([
-        "ls-remote",
-        "--exit-code",
-        "--heads",
-        &url.fetch,
-        &format!("refs/heads/{branch}"),
-    ]);
-    for (k, v) in crate::github::git_auth_env() {
-        cmd.env(k, v);
-    }
-    let out = output_timed(&mut cmd, "git ls-remote").await.ok()?;
     match (out.status.success(), out.status.code()) {
         // Exit status alone is not the answer: `ls-remote`'s ref argument is a
         // *pattern*, so `refs/heads/feat/*` matches `refs/heads/feat/x` and exits
@@ -566,17 +474,6 @@ mod tests {
             String::from_utf8_lossy(&out.stderr)
         );
         String::from_utf8_lossy(&out.stdout).trim().to_string()
-    }
-
-    /// A saved tip for `feat` must not stand in the way of one for `feat/sub`.
-    #[test]
-    fn saved_push_tips_never_nest() {
-        let feat = pushed_tip_ref("feat");
-        let sub = pushed_tip_ref("feat/sub");
-        assert_ne!(feat, sub);
-        assert!(!sub.starts_with(&format!("{feat}/")));
-        assert!(!feat.contains("feat"), "no branch segment to nest on");
-        assert_eq!(feat, pushed_tip_ref("feat"), "stable");
     }
 
     /// The agent owns its `.git/HEAD`/`refs`, so the `branch` string reaching

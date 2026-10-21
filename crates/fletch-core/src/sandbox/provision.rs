@@ -32,8 +32,13 @@ use crate::git;
 /// What to check out where. `base_ref` is any commit-ish; pass `"HEAD"` for
 /// "the source repo's current HEAD" (the no-base behavior).
 /// A ladder rung's remote standing for the user's repository's remote, which
-/// [`fetch`] resolves through `git::remote` rather than the clone's config.
+/// [`fetch`] reaches through `git::Transport` rather than the clone's config.
 const ORIGIN: &str = "origin";
+
+/// Whether a rung's refspec is a full commit id rather than a branch name.
+fn is_commit_sha(refspec: &str) -> bool {
+    refspec.len() == 40 && refspec.bytes().all(|b| b.is_ascii_hexdigit())
+}
 
 pub struct CheckoutSpec<'a> {
     /// The user's real repo root.
@@ -305,8 +310,7 @@ async fn recover_and_checkout(
     // the same commit any other way says it does not. Folding them into one
     // ladder would need the caller to ask which rung fired, which is a worse
     // way to say the same thing.
-    let tracking = git::tracking_refspec(origin_branch);
-    if ensure_present(dest, source_repo, tip, &[(ORIGIN, &tracking)]).await {
+    if ensure_present(dest, source_repo, tip, &[(ORIGIN, origin_branch)]).await {
         git::run_git(
             dest,
             &["checkout", "-b", branch, tip],
@@ -825,23 +829,23 @@ async fn commit_present(repo: &Path, commit: &str) -> bool {
 /// local path (the run repo): the auth env is scoped to github.com https, so
 /// it is a no-op there, and a local fetch never approaches the timeout.
 async fn fetch(repo: &Path, source_repo: &Path, remote: &str, refspec: &str) -> Result<()> {
-    // A fetch over ssh or a local path runs the transport-executing keys
-    // `core.sshCommand`, `core.gitProxy` and `remote.<name>.uploadpack` — which
-    // `git::config_overrides` omits, so this direct-build path needs the refusal
-    // explicitly. `repo` is always the clone `dest`, an agent checkout under
-    // `checkouts_root`; a refusal returns here as an `Err`, which `ensure_present`
-    // logs and steps over exactly like any other failed rung.
+    // [`ORIGIN`] is the user's repository's remote, reached through
+    // `git::Transport` — the user's config, the clone's objects — never through
+    // the clone's own `origin`: `refspec` is then a branch, mirrored into
+    // `origin/<branch>`, or a commit, landed in `FETCH_HEAD`.
+    if remote == ORIGIN {
+        let t = git::Transport::open(repo, source_repo).await?;
+        return if is_commit_sha(refspec) {
+            t.fetch_commit(refspec).await
+        } else {
+            t.fetch_branches(git::Branches::One(refspec)).await
+        };
+    }
+    // A run repo is a local path Fletch owns; the fetch runs in the clone with
+    // no credentials, under the config refusal like every host-side git there.
     crate::git::hardening::refuse_steerable_config(repo).await?;
-    // [`ORIGIN`] is the user's repository's remote (`git::remote`), never the
-    // clone's own `origin`, and is named as a URL; a run repo is a local path.
-    let remote = if remote == ORIGIN {
-        crate::git::trusted_remote(repo, source_repo).await?.fetch
-    } else {
-        remote.to_string()
-    };
     let mut cmd = crate::git_dist::command(repo);
-    cmd.args(["fetch", &remote, refspec]);
-    git::apply_github_auth(&mut cmd);
+    cmd.args(["fetch", "--no-recurse-submodules", remote, refspec]);
     let out = git::output_timed(&mut cmd, "git fetch").await?;
     if !out.status.success() {
         return Err(Error::Git(format!(

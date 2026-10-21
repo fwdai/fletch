@@ -214,19 +214,29 @@ all.
   holds. Host-side transport in a checkout is https to GitHub with the app's
   own token, so nothing legitimate needs ssh there. This narrows what a
   checkout can reach; the boundary itself is the next point.
-- **Host-side transport never trusts the checkout's `origin`.** A checkout's
-  config is the agent's to write, and `remote.origin.url` is one line in it.
-  Every fetch, push and ls-remote the host runs in a checkout — the agent's
-  `git_fetch`, which needs no approval, the publish, the restore-time
-  recovery fetches — names the remote **your repository** records, as an
-  explicit URL (`git::remote`), and first checks that the checkout's `origin`
-  still says the same; when it does not, the operation is refused and the
-  reply names both URLs. The config that could redirect even an explicit URL
-  or its credentials (`url.*.insteadOf`, a proxy, `http.sslVerify=false`,
-  `http.extraHeader`) is refused in a checkout like the program-executing
-  keys. So an agent that repoints its origin at another repository your token
-  can read gets nothing fetched from it, and the pull-request reads refuse
-  the same way.
+- **Host-side transport reads none of the checkout's configuration.** A
+  checkout's `.git` is the agent's to write: its config (`remote.*`,
+  `url.*.insteadOf`, `http.*`, `fetch.recurseSubmodules`, …), its submodule
+  configs under `.git/modules`, its refs. Every fetch, push and ls-remote the
+  host runs for a checkout — the agent's `git_fetch`, which needs no
+  approval, the publish, the Git panel's pull, the restore-time recovery
+  fetches — therefore runs the way the signer does: in **your repository**,
+  with your configuration (your remote, its push URLs, your `insteadOf`
+  rewrites, proxies and credential helpers, exactly as your terminal reads
+  them), over the checkout's objects, with per-worktree refs in the checkout
+  (`git::remote::Transport`, built on git's own worktree split). Fetches and
+  pushes name explicit URLs taken from your config, so git maintains no
+  tracking refs in your repository; the checkout's `origin/*` is reconciled
+  afterwards by plain `update-ref`. Recursion into submodules is off on
+  every invocation, and a submodule's config is refused for planted keys like
+  the checkout's own. The checkout's `origin` is still checked against the
+  remote your repository names, and a checkout an agent repointed is refused
+  outright — the pull-request reads, which resolve the repository from the
+  checkout's origin, refuse the same way. Pushes go to every push URL you
+  configured; a force needs exactly one, since its lease can hold one
+  remote's tip, refreshed from that remote just before. What any of your
+  push remotes already has counts as published, so a signed publish never
+  re-signs it.
 
 ### Why signing works this way
 
