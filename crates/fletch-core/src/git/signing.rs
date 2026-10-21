@@ -9,8 +9,10 @@
 //!
 //! Each unpublished commit is replaced by a signed copy with the same tree,
 //! parents, author, committer and message, parents mapped to their own signed
-//! copies. Only the commits origin lacks are rewritten, so published history
-//! keeps its hashes and the push stays a fast-forward.
+//! copies. "Published" is what the remotes advertise over the wire right now
+//! — every branch tip of the fetch remote and of each push remote
+//! ([`refresh_remote_refs`]) — so published history keeps its hashes and the
+//! push stays a fast-forward.
 //!
 //! **Where the signer runs is the security boundary.** `commit-tree -S` reads
 //! `user.signingKey`, `gpg.format`, `gpg.<format>.program` and
@@ -18,25 +20,25 @@
 //! runs in. Run in the agent's checkout, an agent-written `.git/config` would
 //! choose the host's signing key or run a command on the host. So the signer
 //! runs in the **user's own repository** (the clone's source), which no agent
-//! can write, with `GIT_OBJECT_DIRECTORY` pointed at the checkout's object
-//! store: the config is the user's, the objects are the checkout's. Nothing
-//! from the checkout but trees, commits and messages reaches it.
+//! can write, over the checkout's object store alone
+//! (`git::remote::Transport::object_command`): the config is the user's, the
+//! objects are the checkout's. Nothing from the checkout but trees, commits
+//! and messages reaches it.
 //!
-//! Two more things are deliberately not trusted. The clone's `origin/*` refs:
-//! they are what the last fetch left, and a clone whose spawn-time fetch
-//! failed carries the source repo's local heads under that name, so they are
-//! refreshed from origin first ([`refresh_remote_refs`]). And a signature
-//! already on an unpublished commit: the clone's `.git` is agent-writable, so
-//! a `gpgsig` header there is just bytes — every unpublished commit is
-//! re-signed, whatever it claims.
+//! Nothing else in the checkout is trusted either. Its refs are the agent's
+//! to write, so none of them says what is published: the remotes do. And a
+//! signature already on an unpublished commit is just bytes in an
+//! agent-writable `.git` — every unpublished commit is re-signed, whatever
+//! it claims.
 //!
 //! Residual: a commit's `encoding` and `mergetag` headers are not carried over
 //! (neither has a `commit-tree` spelling). Fletch never produces either.
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-use super::cmd::{git_output, git_output_stdin};
+use super::cmd::{git_output, git_output_stdin, output_with_stdin, LOCAL_TIMEOUT};
+use super::remote::{Branches, Transport};
 use crate::error::{Error, Result};
 
 /// Whether commits in `source_repo` — the user's own repository — are signed:
@@ -72,38 +74,29 @@ pub(crate) fn signing_requested(show_scope: &str) -> bool {
         .is_some_and(|(_, value)| value.trim() == "true")
 }
 
-/// Every branch of the fetch remote and of each push remote, as they stand
-/// right now, mirrored into the checkout and pruned (`Transport`): "what the
-/// remote lacks" is then answered by the remotes rather than by whatever the
-/// last fetch left — the source repo's own local heads, when the spawn-time
-/// fetch failed (`provision`), or a branch since deleted. The push remotes
-/// matter as much as the fetch remote: with a `pushurl`, a branch published
-/// to the fork alone is published all the same, and signing it again would
-/// change its commits (an OpenPGP signature carries its creation time).
+/// The **published tips**: every branch tip the fetch remote and each push
+/// remote advertise, asked of the remotes themselves, with every one of them
+/// fetched into the checkout (`Transport`). That, and not any ref in the
+/// checkout, is where a signed publish stops — the checkout's refs are the
+/// agent's to write, and a planted one would pass an unsigned commit off as
+/// published. The push remotes count as much as the fetch remote: a branch
+/// published to a fork alone is published, and signing it again would change
+/// its commits (an OpenPGP signature carries its creation time).
 ///
-/// Returns the **published tips**: every branch tip the remotes advertise,
-/// asked of the remotes themselves. That, and not any ref in the checkout,
-/// is where a signed publish stops — the checkout's refs are the agent's to
-/// write, and a planted one would pass an unsigned commit off as published.
-///
-/// The set is complete by construction: every tip it holds is in the
-/// checkout's store, because the walk that stops at it needs it there. A
-/// remote that moves between the fetch and the asking leaves a tip the fetch
-/// did not bring; the refresh then runs again, and gives up — never a
-/// shorter set, which would read published ancestors as unpublished and
-/// rewrite them — when the remotes keep moving.
+/// The set is complete — every tip in the checkout's store, which the walk
+/// that stops at it needs — or this fails: a shorter set would read published
+/// ancestors as unpublished and rewrite them. A remote that moves between the
+/// fetch and the asking gets one more try.
 pub(crate) async fn refresh_remote_refs(
     checkout: &Path,
     source_repo: &Path,
 ) -> Result<Vec<String>> {
-    const ATTEMPTS: usize = 3;
-    let t = super::remote::Transport::open(checkout, source_repo).await?;
+    const ATTEMPTS: usize = 2;
+    let t = Transport::open(checkout, source_repo).await?;
     for _ in 0..ATTEMPTS {
-        t.fetch_branches(super::remote::Branches::All)
-            .await
-            .map_err(|e| {
-                Error::Git(format!("refreshing the remotes before signing failed: {e}"))
-            })?;
+        t.fetch_branches(Branches::All).await.map_err(|e| {
+            Error::Git(format!("refreshing the remotes before signing failed: {e}"))
+        })?;
         let tips = t.published_tips().await.map_err(|e| {
             Error::Git(format!(
                 "reading the remotes' tips before signing failed: {e}"
@@ -212,7 +205,7 @@ pub async fn sign_unpublished(
     if unpublished.is_empty() {
         return Ok(tip.to_string());
     }
-    let objects = object_directory(checkout).await?;
+    let transport = Transport::open(checkout, source_repo).await?;
 
     // Parents come before children (`--reverse` of topo order), so a parent's
     // signed copy exists by the time its child is rewritten.
@@ -232,51 +225,30 @@ pub async fn sign_unpublished(
             .iter()
             .map(|p| signed.get(p).cloned().unwrap_or_else(|| p.clone()))
             .collect();
-        let copy = commit_signed(source_repo, &objects, &commit, &parents).await?;
+        let copy = commit_signed(&transport, &commit, &parents).await?;
         signed.insert(sha.clone(), copy);
     }
     Ok(signed.get(tip).cloned().unwrap_or_else(|| tip.to_string()))
 }
 
-/// The checkout's object store — the common dir's, so a linked worktree
-/// resolves to the store it shares.
-async fn object_directory(checkout: &Path) -> Result<PathBuf> {
-    let out = git_output(
-        checkout,
-        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
-    )
-    .await?;
-    if !out.status.success() {
-        return Err(Error::Git(format!(
-            "rev-parse --git-common-dir failed: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        )));
-    }
-    Ok(PathBuf::from(String::from_utf8_lossy(&out.stdout).trim()).join("objects"))
-}
-
-/// A signed copy of `commit` over `parents`, written into `objects`:
-/// `commit-tree -S` run in `source_repo` so the signing config is the user's,
-/// with the original identities and dates in the env and the message on
-/// stdin, the one form that keeps it byte for byte. `-S` is explicit, so the
-/// `commit.gpgsign=false` every host-side invocation carries does not apply.
+/// A signed copy of `commit` over `parents`, written into the checkout's
+/// store: `commit-tree -S` run by [`Transport::object_command`], in the
+/// user's repository so the signing config is theirs, with the original
+/// identities and dates in the env and the message on stdin, the one form
+/// that keeps it byte for byte. `-S` is explicit, so the
+/// `commit.gpgsign=false` host-side git carries in a checkout does not apply.
 async fn commit_signed(
-    source_repo: &Path,
-    objects: &Path,
+    transport: &Transport,
     commit: &RawCommit,
     parents: &[String],
 ) -> Result<String> {
-    let mut args = vec!["commit-tree", "-S", commit.tree.as_str()];
+    let mut cmd = transport.object_command();
+    cmd.args(["commit-tree", "-S", commit.tree.as_str()]);
     for parent in parents {
-        args.push("-p");
-        args.push(parent);
+        cmd.args(["-p", parent]);
     }
-    let mut env = commit.identity_env();
-    env.push((
-        "GIT_OBJECT_DIRECTORY".to_string(),
-        objects.to_string_lossy().into_owned(),
-    ));
-    let out = git_output_stdin(source_repo, &args, &env, &commit.message).await?;
+    cmd.envs(commit.identity_env());
+    let out = output_with_stdin(cmd, &commit.message, LOCAL_TIMEOUT, "git commit-tree").await?;
     if !out.status.success() {
         return Err(Error::Git(format!(
             "signing failed: {}",
@@ -364,96 +336,17 @@ impl RawCommit {
 }
 
 #[cfg(test)]
-pub(crate) mod fixtures {
-    //! A user's repo with signing set up and a `--shared` agent clone of it,
-    //! for this module's and `publish`'s tests.
-
-    use std::path::{Path, PathBuf};
-
-    use super::super::testing::{commit_file, git, init_repo, ssh_signing};
-
-    /// `source` (the user's repo, origin = `origin.git`, one commit pushed,
-    /// signing with a throwaway ssh key and verification wired to it),
-    /// `checkout` (a `--shared` clone of it with the same origin) and the
-    /// pushed base commit.
-    pub(crate) struct Signing {
-        pub source: PathBuf,
-        pub checkout: PathBuf,
-        pub base: String,
-    }
-
-    pub(crate) fn signing_repos(dir: &Path) -> Signing {
-        let origin = dir.join("origin.git");
-        git(dir, &["init", "-q", "--bare", origin.to_str().unwrap()]);
-        let source = dir.join("source");
-        init_repo(&source);
-        git(
-            &source,
-            &["remote", "add", "origin", origin.to_str().unwrap()],
-        );
-        let base = commit_file(&source, "base.txt");
-        git(&source, &["push", "-q", "-u", "origin", "main"]);
-
-        ssh_signing(dir, &source);
-
-        let checkout = dir.join("checkout");
-        git(
-            dir,
-            &[
-                "clone",
-                "-q",
-                "--shared",
-                source.to_str().unwrap(),
-                checkout.to_str().unwrap(),
-            ],
-        );
-        git(
-            &checkout,
-            &["remote", "set-url", "origin", origin.to_str().unwrap()],
-        );
-        git(&checkout, &["fetch", "-q", "--prune", "origin"]);
-        git(&checkout, &["config", "user.email", "me@example.com"]);
-        git(&checkout, &["config", "user.name", "Me"]);
-        // As provisioning leaves a clone.
-        git(&checkout, &["config", "commit.gpgsign", "false"]);
-        Signing {
-            source,
-            checkout,
-            base,
-        }
-    }
-
-    /// `git verify-commit` in `source`, where the allowed signers live, of a
-    /// commit in `checkout`'s store.
-    pub(crate) fn verified(fx: &Signing, rev: &str) -> bool {
-        std::process::Command::new("git")
-            .current_dir(&fx.source)
-            .env("GIT_CONFIG_GLOBAL", "/dev/null")
-            .env("GIT_CONFIG_NOSYSTEM", "1")
-            .env(
-                "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-                fx.checkout.join(".git").join("objects"),
-            )
-            .args(["verify-commit", rev])
-            .output()
-            .unwrap()
-            .status
-            .success()
-    }
-}
-
-#[cfg(test)]
 mod tests {
     use std::io::Write;
+    use std::path::PathBuf;
     use std::process::Command;
 
-    use super::super::testing::{commit_file, git};
-    use super::fixtures::{signing_repos, verified, Signing};
+    use super::super::testing::{clone_elsewhere, commit_file, git, signing_repos, Repos};
     use super::*;
 
     /// The remotes' tips, asked of them, as a publish learns them.
-    async fn published(fx: &Signing) -> Vec<String> {
-        super::super::remote::Transport::open(&fx.checkout, &fx.source)
+    async fn published(fx: &Repos) -> Vec<String> {
+        Transport::open(&fx.checkout, &fx.source)
             .await
             .unwrap()
             .published_tips()
@@ -462,7 +355,7 @@ mod tests {
     }
 
     /// `sign_unpublished` against what the remotes advertise right now.
-    async fn sign(fx: &Signing, tip: &str) -> Result<String> {
+    async fn sign(fx: &Repos, tip: &str) -> Result<String> {
         let published = published(fx).await;
         sign_unpublished(&fx.checkout, &fx.source, tip, &published).await
     }
@@ -530,7 +423,7 @@ mod tests {
         );
         let one = git(repo, &["rev-parse", "HEAD"]);
         let tip = commit_file(repo, "two.txt");
-        assert!(!verified(&fx, &tip), "fixture commits are unsigned");
+        assert!(!fx.verified(&tip), "fixture commits are unsigned");
         let before = shape(repo, "origin/main..main");
 
         let signed = sign(&fx, &tip).await.unwrap();
@@ -543,12 +436,9 @@ mod tests {
             ),
             "2"
         );
+        assert!(fx.verified(&signed), "the tip must carry a valid signature");
         assert!(
-            verified(&fx, &signed),
-            "the tip must carry a valid signature"
-        );
-        assert!(
-            verified(&fx, &format!("{signed}~1")),
+            fx.verified(&format!("{signed}~1")),
             "so must the commit under it"
         );
         assert_eq!(
@@ -626,7 +516,7 @@ mod tests {
         let signed = sign(&fx, &tip).await.unwrap();
         // Only the user's key is in the allowed signers, so this is the proof.
         assert!(
-            verified(&fx, &signed),
+            fx.verified(&signed),
             "the signature must be the user's key, not the planted one"
         );
 
@@ -646,7 +536,7 @@ mod tests {
             !marker.exists(),
             "the checkout's key command ran on the host"
         );
-        assert!(verified(&fx, &signed));
+        assert!(fx.verified(&signed));
     }
 
     /// The checkout's `.git` is agent-writable, so a `gpgsig` header on an
@@ -676,12 +566,12 @@ mod tests {
             .unwrap();
         let fake = String::from_utf8_lossy(&out.stdout).trim().to_string();
         git(repo, &["update-ref", "refs/heads/main", &fake]);
-        assert!(!verified(&fx, &fake), "the forgery must not verify");
+        assert!(!fx.verified(&fake), "the forgery must not verify");
 
         let signed = sign(&fx, &fake).await.unwrap();
 
         assert_ne!(signed, fake);
-        assert!(verified(&fx, &signed));
+        assert!(fx.verified(&signed));
     }
 
     #[tokio::test]
@@ -701,11 +591,11 @@ mod tests {
 
         let signed = sign(&fx, &tip).await.unwrap();
 
-        assert!(verified(&fx, &signed));
+        assert!(fx.verified(&signed));
         let parents = git(repo, &["log", "-1", "--format=%P", &signed]);
         assert_eq!(parents.split_whitespace().count(), 2, "{parents}");
         for parent in parents.split_whitespace() {
-            assert!(verified(&fx, parent), "each side was signed too");
+            assert!(fx.verified(parent), "each side was signed too");
         }
         assert_eq!(git(repo, &["rev-parse", &format!("{signed}^1~1")]), fx.base);
         assert_eq!(git(repo, &["rev-parse", &format!("{signed}^2~1")]), fx.base);
@@ -812,8 +702,7 @@ mod tests {
             git(&fx.checkout, &["rev-parse", "refs/remotes/origin/main"]),
             fx.base
         );
-        assert!(verified(
-            &fx,
+        assert!(fx.verified(
             &sign_unpublished(&fx.checkout, &fx.source, &tip, &remotes)
                 .await
                 .unwrap()
@@ -830,19 +719,7 @@ mod tests {
         let tip = commit_file(&fx.checkout, "one.txt");
         // A commit the remote could have advanced to, which the checkout has
         // never fetched: made elsewhere, on top of what is published.
-        let elsewhere = td.path().join("elsewhere");
-        git(
-            td.path(),
-            &[
-                "clone",
-                "-q",
-                fx.source.to_str().unwrap(),
-                elsewhere.to_str().unwrap(),
-            ],
-        );
-        git(&elsewhere, &["config", "user.email", "e@example.com"]);
-        git(&elsewhere, &["config", "user.name", "E"]);
-        git(&elsewhere, &["config", "commit.gpgsign", "false"]);
+        let elsewhere = clone_elsewhere(td.path(), &fx.source, "elsewhere");
         let unseen = commit_file(&elsewhere, "unseen.txt");
         let claimed = vec![fx.base.clone(), unseen.clone()];
 
@@ -958,7 +835,7 @@ mod tests {
 
     /// `sign_unpublished` on this thread with `shell` as the login shell's
     /// exported environment.
-    fn sign_with_shell_env(fx: &Signing, tip: &str, shell: &[(&str, &str)]) -> Result<String> {
+    fn sign_with_shell_env(fx: &Repos, tip: &str, shell: &[(&str, &str)]) -> Result<String> {
         crate::bin_resolve::with_login_shell_env(shell, || {
             tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -1011,7 +888,7 @@ mod tests {
             sign_with_shell_env(&fx, &tip, &[("PATH", shell_path.to_str().unwrap())]).unwrap();
         // Verification runs outside the stub, so it names the program by path.
         git(&fx.source, &["config", "--unset", "gpg.ssh.program"]);
-        assert!(verified(&fx, &signed));
+        assert!(fx.verified(&signed));
     }
 
     /// An ssh-agent for one test, holding `key`, on a socket beside it (the
@@ -1094,7 +971,7 @@ mod tests {
         signing_failed(sign_with_shell_env(&fx, &tip, &[]).unwrap_err());
 
         let signed = sign_with_shell_env(&fx, &tip, &[("SSH_AUTH_SOCK", &agent.sock)]).unwrap();
-        assert!(verified(&fx, &signed));
+        assert!(fx.verified(&signed));
     }
 
     /// A gpg keyring for one test under its own `GNUPGHOME`, with one
@@ -1161,7 +1038,7 @@ mod tests {
 
         /// `git verify-commit` against this keyring, of a commit in the
         /// checkout's store.
-        fn verified(&self, fx: &Signing, rev: &str) -> bool {
+        fn verified(&self, fx: &Repos, rev: &str) -> bool {
             Command::new("git")
                 .current_dir(&fx.source)
                 .env("GIT_CONFIG_GLOBAL", "/dev/null")

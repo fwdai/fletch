@@ -5,23 +5,16 @@ use std::path::Path;
 
 use crate::error::{Error, Result};
 
-use super::cmd::{git_output, git_output_env, identity_env, output_timed, run_git};
+use super::cmd::{
+    git_output, git_output_env, git_output_stdin, identity_env, output_timed, run_git,
+};
 use super::remote::{resolve, Branches, Transport};
 
-/// Push the current branch to `origin`. Uses `-u` to set the upstream
-/// tracking ref on the first push.
-/// When `force` is set, pushes with `--force-with-lease --force-if-includes`:
-/// the safe force that rewrites the remote branch (e.g. after a local rebase)
-/// but refuses if the remote moved in a way we haven't seen, so we never
-/// silently clobber someone else's work. `--force-if-includes` is essential
-/// here, not redundant: bare `--force-with-lease` only compares the *local*
-/// `refs/remotes/origin/<branch>` tracking ref, which git also opportunistically
-/// refreshes from the push's own ref advertisement — so a stale or never-fetched
-/// tracking ref (the clone-workspace case, where only the base branch is
-/// refreshed) would pass the lease and overwrite unseen commits. `--force-if-
-/// includes` additionally requires the remote tip to be reachable from the local
-/// branch's reflog — proof we actually integrated it — and fails safe otherwise.
-/// A plain `--force` is intentionally not offered.
+/// Push `branch` to `origin`'s push URLs (see [`push_source`]). When `force`
+/// is set, the push is a lease-guarded force: it rewrites the remote branch
+/// (e.g. after a local rebase) only when the remote is where this checkout
+/// last integrated it, so someone else's work is never silently clobbered. A
+/// plain `--force` is intentionally not offered.
 /// Returns `"up-to-date"` when the remote already had everything (a no-op
 /// push), otherwise `"pushed"`. Lets the UI confirm the outcome instead of
 /// silently doing nothing when there was nothing to send.
@@ -74,22 +67,18 @@ pub(super) async fn push_commit(
 }
 
 /// The push runs through [`Transport`]: the user's repository's remote and
-/// configuration, the checkout's objects. It names the push URL rather than
-/// `origin`, so git keeps no remote-tracking ref for it, and what `push -u
-/// origin` would have done through `remote.origin.*` is done here explicitly,
-/// with the same safety:
+/// configuration, the checkout's objects. It names each push URL rather than
+/// `origin`, so git keeps no remote-tracking ref for it:
 ///
-/// - the lease carries the push remote's tip as refreshed from that remote
-///   right now (`--force-with-lease=<branch>:<expected>`, "absent" when it
-///   has no such branch) — which is what a bare `--force-with-lease` reads for
-///   a named remote, minus the staleness — and `--force-if-includes`, a no-op
-///   once the expected value is explicit, is [`require_integrated`], the
-///   check that actually refuses a tip nobody here has looked at;
-/// - a force needs exactly one push URL, since one lease cannot describe
-///   two remotes; a plain push goes to every push URL, as git's would;
-/// - `refs/remotes/origin/<branch>` and the push remotes' saved tips are
-///   moved to the pushed commit afterwards, as a named-remote push would move
-///   its tracking ref.
+/// - a plain push goes to every push URL, as git's would; a force needs
+///   exactly one, since one lease cannot describe two remotes;
+/// - the lease expects the tip the push remote advertises right now
+///   (`--force-with-lease=<branch>:<expected>`, empty for "absent"), and the
+///   check `--force-if-includes` would make — skipped by git once the
+///   expected value is explicit — is [`require_integrated`];
+/// - a push that changes nothing is up to date, not forced;
+/// - `refs/remotes/origin/<branch>` is moved to the pushed commit afterwards,
+///   as a named-remote push would move it.
 async fn push_source(
     checkout: &Path,
     source_repo: &Path,
@@ -98,7 +87,7 @@ async fn push_source(
     force: bool,
 ) -> Result<String> {
     let t = Transport::open(checkout, source_repo).await?;
-    let remotes = t.push_remotes().await?;
+    let remotes = t.push_remotes();
     if force && remotes.len() > 1 {
         return Err(Error::Git(format!(
             "refusing to force-push '{branch}': origin has {} push URLs and a lease can hold \
@@ -109,7 +98,7 @@ async fn push_source(
     let pushed = resolve(checkout, source).await?;
     let mut lease = Vec::new();
     if force {
-        let expected = t.push_tip(0, branch).await?;
+        let expected = t.tip(&remotes[0], branch).await?;
         // As git does, a push that changes nothing is up to date, not forced.
         if let Some(expected) = expected
             .as_deref()
@@ -124,8 +113,8 @@ async fn push_source(
     }
     let refspec = format!("{source}:refs/heads/{branch}");
     let mut up_to_date = true;
-    for index in 0..remotes.len() {
-        let out = t.push(index, &lease, &refspec).await?;
+    for url in remotes {
+        let out = t.push(url, &lease, &refspec).await?;
         if !out.status.success() {
             return Err(Error::Git(format!(
                 "push failed: {}",
@@ -156,18 +145,23 @@ async fn push_source(
 async fn require_integrated(checkout: &Path, branch: &str, expected: &str) -> Result<()> {
     let refname = format!("refs/heads/{branch}");
     let out = git_output(checkout, &["log", "-g", "--format=%H", &refname]).await?;
-    let entries: Vec<String> = String::from_utf8_lossy(&out.stdout)
+    // The reflog entries go in on stdin, `^` before each: a long-lived
+    // branch's reflog can outgrow an argument list.
+    let entries: String = String::from_utf8_lossy(&out.stdout)
         .lines()
         .map(str::trim)
         .filter(|l| !l.is_empty())
-        .map(str::to_string)
+        .map(|sha| format!("^{sha}\n"))
         .collect();
-    let integrated = if entries.is_empty() {
-        false
-    } else {
-        let mut args = vec!["rev-list", "-n", "1", expected, "--not"];
-        args.extend(entries.iter().map(String::as_str));
-        let out = git_output(checkout, &args).await?;
+    let integrated = !entries.is_empty() && {
+        let revs = format!("{expected}\n{entries}");
+        let out = git_output_stdin(
+            checkout,
+            &["rev-list", "-n", "1", "--stdin"],
+            &[],
+            revs.as_bytes(),
+        )
+        .await?;
         out.status.success() && out.stdout.iter().all(u8::is_ascii_whitespace)
     };
     if integrated {
@@ -205,7 +199,6 @@ pub async fn pull(checkout: &Path, source_repo: &Path) -> Result<()> {
         checkout,
         &[
             "pull",
-            "--no-recurse-submodules",
             "--no-edit",
             ".",
             &format!("refs/remotes/origin/{branch}"),
@@ -285,36 +278,14 @@ pub async fn remote_branch_exists(
     source_repo: &Path,
     branch: &str,
 ) -> Option<bool> {
-    // Through `Transport`: the user's remote and config, refused config and a
-    // repointed origin surfacing as "couldn't ask". The pattern is always
-    // prefixed `refs/heads/`, so `branch` can never reach git in an option
-    // position however the request spelled it.
-    let out = Transport::open(checkout, source_repo)
-        .await
-        .ok()?
-        .ls_remote_head(branch)
-        .await
-        .ok()?;
-    match (out.status.success(), out.status.code()) {
-        // Exit status alone is not the answer: `ls-remote`'s ref argument is a
-        // *pattern*, so `refs/heads/feat/*` matches `refs/heads/feat/x` and exits
-        // 0 while naming something GitHub will reject as a literal base. Require
-        // the ref back verbatim, so only an exact branch counts as present and a
-        // glob resolves to "absent" like any other name that isn't a branch.
-        (true, _) => {
-            let want = format!("refs/heads/{branch}");
-            Some(
-                String::from_utf8_lossy(&out.stdout)
-                    .lines()
-                    .any(|line| line.split('\t').nth(1).map(str::trim) == Some(want.as_str())),
-            )
-        }
-        // `--exit-code` reserves 2 for "matched nothing". Every other non-zero
-        // code is a failure to ask (128 for a missing remote or a rejected
-        // credential), which must not read as absence.
-        (false, Some(2)) => Some(false),
-        _ => None,
-    }
+    // Through `Transport`: the user's remote and config. A refused config, a
+    // repointed origin or a failed `ls-remote` (a missing remote, a rejected
+    // credential, a timeout) is "couldn't ask", never absence. `tip` matches
+    // the name verbatim, so a glob GitHub would reject as a literal base is
+    // absent like any other name that isn't a branch.
+    let t = Transport::open(checkout, source_repo).await.ok()?;
+    let tip = t.tip(t.fetch_remote(), branch).await.ok()?;
+    Some(tip.is_some())
 }
 
 /// Rebase the current branch onto `base` (e.g. "main"). Used by the clean-state
@@ -482,61 +453,15 @@ mod tests {
         String::from_utf8_lossy(&out.stdout).trim().to_string()
     }
 
-    /// A source repo with `origin`, a `--shared` checkout of it on `main`, and
-    /// a second clone (`other`) that can move `origin` from outside.
-    fn pull_repos(dir: &Path) -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
-        use super::super::testing::{commit_file, git, init_repo};
-        let origin = dir.join("origin.git");
-        git(dir, &["init", "-q", "--bare", origin.to_str().unwrap()]);
-        git(&origin, &["symbolic-ref", "HEAD", "refs/heads/main"]);
-        let source = dir.join("source");
-        init_repo(&source);
-        git(
-            &source,
-            &["remote", "add", "origin", origin.to_str().unwrap()],
-        );
-        commit_file(&source, "base.txt");
-        git(&source, &["push", "-q", "origin", "main"]);
-        let checkout = dir.join("checkout");
-        git(
-            dir,
-            &[
-                "clone",
-                "-q",
-                "--shared",
-                source.to_str().unwrap(),
-                checkout.to_str().unwrap(),
-            ],
-        );
-        git(
-            &checkout,
-            &["remote", "set-url", "origin", origin.to_str().unwrap()],
-        );
-        git(&checkout, &["config", "user.email", "me@example.com"]);
-        git(&checkout, &["config", "user.name", "Me"]);
-        git(&checkout, &["config", "commit.gpgsign", "false"]);
-        let other = dir.join("other");
-        git(
-            dir,
-            &[
-                "clone",
-                "-q",
-                origin.to_str().unwrap(),
-                other.to_str().unwrap(),
-            ],
-        );
-        git(&other, &["config", "user.email", "o@example.com"]);
-        git(&other, &["config", "user.name", "O"]);
-        (source, checkout, other)
-    }
-
     /// The fetch is the protected one, but how the histories meet is still
     /// the user's `pull.rebase` / `pull.ff` call, as with `git pull`.
     #[tokio::test]
     async fn pull_honours_the_rebase_and_fast_forward_settings() {
-        use super::super::testing::{commit_file, git};
+        use super::super::testing::{clone_elsewhere, commit_file, git, repos};
         let td = tempfile::tempdir().unwrap();
-        let (source, checkout, other) = pull_repos(td.path());
+        let fx = repos(td.path());
+        let (source, checkout) = (fx.source, fx.checkout);
+        let other = clone_elsewhere(td.path(), &fx.origin, "other");
         // Divergence: theirs on origin, ours local.
         let theirs = commit_file(&other, "theirs.txt");
         git(&other, &["push", "-q", "origin", "main"]);

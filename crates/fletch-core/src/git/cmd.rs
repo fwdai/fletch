@@ -44,7 +44,7 @@ pub(crate) async fn output_timed(cmd: &mut Command, what: &str) -> Result<std::p
 /// actions, outside the spawn watchdog, so without a bound here a hung commit
 /// or rebase has nothing to stop it. Network ops use `NET_TIMEOUT` via
 /// `output_timed` instead, which carries a network-specific hint.
-const LOCAL_TIMEOUT: Duration = Duration::from_secs(120);
+pub(crate) const LOCAL_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Spawn `git <args>` in `dir` under `LOCAL_TIMEOUT`, killing a hung process
 /// (via `kill_on_drop`) on expiry rather than orphaning it. Returns the raw
@@ -89,55 +89,54 @@ pub(crate) async fn git_output_env(
 /// the only form that preserves it byte for byte; `cat-file --batch-check`
 /// and `update-ref --stdin` take a line per object). Same hardening and
 /// timeout.
-///
-/// Input is written while output is drained, never one after the other: a
-/// batch command answers each line as it arrives, and once its stdout pipe
-/// is full it blocks on us reading it while we would block on it reading
-/// the rest of the input — a deadlock a long branch list reaches easily.
 pub(crate) async fn git_output_stdin(
     dir: &Path,
     args: &[&str],
     env: &[(String, String)],
     stdin: &[u8],
 ) -> Result<std::process::Output> {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
     super::hardening::refuse_steerable_config(dir).await?;
     let mut cmd = crate::git_dist::command(dir);
-    cmd.args(args)
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .kill_on_drop(true);
+    cmd.args(args);
     for (k, v) in env {
         cmd.env(k, v);
     }
+    let what = format!("git {}", args.first().copied().unwrap_or(""));
+    output_with_stdin(cmd, stdin, LOCAL_TIMEOUT, &what).await
+}
+
+/// Run `cmd` with `stdin` fed to it, under `timeout`, killing it on expiry.
+/// `what` names the op for the timeout message.
+///
+/// Input is written while output is drained, never one after the other: a
+/// batch command answers each line as it arrives, and once its stdout pipe
+/// is full it blocks on us reading it while we would block on it reading
+/// the rest of the input — a deadlock a long branch list reaches easily.
+pub(crate) async fn output_with_stdin(
+    mut cmd: Command,
+    stdin: &[u8],
+    timeout: Duration,
+    what: &str,
+) -> Result<std::process::Output> {
+    use tokio::io::AsyncWriteExt;
+    cmd.stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
     let run = async {
         let mut child = cmd.spawn()?;
-        let mut input = child.stdin.take();
-        let mut out_pipe = child.stdout.take();
-        let mut err_pipe = child.stderr.take();
-        let write = async {
-            if let Some(pipe) = input.as_mut() {
+        let input = child.stdin.take();
+        let write = async move {
+            if let Some(mut pipe) = input {
                 pipe.write_all(stdin).await?;
             }
-            drop(input);
             Ok::<_, std::io::Error>(())
         };
-        let read = |pipe: Option<tokio::process::ChildStdout>| async move {
-            let mut buf = Vec::new();
-            if let Some(mut pipe) = pipe {
-                pipe.read_to_end(&mut buf).await?;
-            }
-            Ok::<_, std::io::Error>(buf)
-        };
-        let read_err = async {
-            let mut buf = Vec::new();
-            if let Some(pipe) = err_pipe.as_mut() {
-                pipe.read_to_end(&mut buf).await?;
-            }
-            Ok::<_, std::io::Error>(buf)
-        };
-        let (written, stdout, stderr) = tokio::join!(write, read(out_pipe.take()), read_err);
+        let (written, stdout, stderr) = tokio::join!(
+            write,
+            read_all(child.stdout.take()),
+            read_all(child.stderr.take())
+        );
         let status = child.wait().await?;
         // A child that quit early closes its stdin on us; what it said is the
         // answer, not the broken pipe.
@@ -152,16 +151,20 @@ pub(crate) async fn git_output_stdin(
             stderr: stderr?,
         })
     };
-    tokio::time::timeout(LOCAL_TIMEOUT, run)
+    tokio::time::timeout(timeout, run)
         .await
-        .map_err(|_| {
-            Error::Git(format!(
-                "git {} timed out after {}s",
-                args.first().copied().unwrap_or(""),
-                LOCAL_TIMEOUT.as_secs()
-            ))
-        })?
+        .map_err(|_| Error::Git(format!("{what} timed out after {}s", timeout.as_secs())))?
         .map_err(Error::from)
+}
+
+/// Everything `pipe` yields until it closes; nothing for no pipe.
+async fn read_all(pipe: Option<impl tokio::io::AsyncRead + Unpin>) -> std::io::Result<Vec<u8>> {
+    use tokio::io::AsyncReadExt;
+    let mut buf = Vec::new();
+    if let Some(mut pipe) = pipe {
+        pipe.read_to_end(&mut buf).await?;
+    }
+    Ok(buf)
 }
 
 /// Run `git <args>` in `dir` and require a zero exit, returning the `Output` so

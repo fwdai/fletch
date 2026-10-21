@@ -136,17 +136,6 @@ pub(crate) fn agent_writable(dir: &Path) -> bool {
     agent_writable_root(dir).is_some()
 }
 
-/// [`agent_writable`] for a path that may not exist yet — the target of a
-/// `git clone` or `git init` — judged by its nearest existing ancestor, since
-/// [`is_inside`] canonicalises and a missing path would read as outside every
-/// tree. A target that will be created under an agent-writable root is as
-/// untrusted as the root.
-pub(crate) fn agent_writable_target(path: &Path) -> bool {
-    path.ancestors()
-        .find(|p| p.exists())
-        .is_some_and(agent_writable)
-}
-
 /// Pure seam of [`config_overrides_for`]: the flags for a directory that is
 /// (`agent_writable`) or is not inside an agent-writable tree.
 fn config_overrides_scoped(agent_writable: bool) -> Vec<String> {
@@ -199,33 +188,17 @@ const EXEC_CONFIG: &[(&str, &str)] = &[
     ("remote", "receivepack"),
 ];
 
-/// `(section, leaf)` of every config key that would **redirect a transport or
-/// its credentials**, matched like [`EXEC_CONFIG`]. Host-side transport in a
-/// checkout names the user's repository's remote as an explicit URL
-/// (`git::remote`), so the checkout's `remote.origin.url` is only ever
-/// checked, never used — but git rewrites even an explicit URL through
-/// `url.<base>.insteadOf`, routes it through `http.proxy` / `remote.<name>.proxy`,
-/// and with `http.sslVerify=false` would hand the token's header to whoever
-/// answers. None of these has a place in an agent checkout; a user's own
-/// repository may carry them (a corporate proxy), and that repository is not
-/// agent-writable, so the refusal does not reach it.
-const TRANSPORT_STEERING_CONFIG: &[(&str, &str)] = &[
-    ("url", "insteadof"),
-    ("url", "pushinsteadof"),
-    ("remote", "pushurl"),
-    ("remote", "proxy"),
-    ("remote", "proxyauthmethod"),
-    ("http", "proxy"),
-    ("http", "proxyauthmethod"),
-    ("http", "sslverify"),
-    ("http", "sslcainfo"),
-    ("http", "sslcapath"),
-    ("http", "sslcert"),
-    ("http", "sslkey"),
-    ("http", "extraheader"),
-    ("http", "cookiefile"),
-    ("http", "savecookies"),
-];
+/// `(section, leaf)` of the config keys that would **redirect a local-path
+/// fetch run inside a checkout**, matched like [`EXEC_CONFIG`]. Transport to a
+/// remote reads none of the checkout's config (`git::remote`), but a few
+/// fetches still run in the checkout itself over a local path — `pull` from
+/// `.`, the setting of `origin/*` from what transport fetched (also from
+/// `.`), the run-repo provisioning rung — and git rewrites even a path
+/// through `url.<base>.insteadOf` (`pushInsteadOf` for a push). A user's own
+/// repository may carry these, and it is not agent-writable, so the refusal
+/// does not reach it.
+const TRANSPORT_STEERING_CONFIG: &[(&str, &str)] =
+    &[("url", "insteadof"), ("url", "pushinsteadof")];
 
 /// Refuse to run host-side git in `dir` when the checkout's own config would make
 /// git execute a program.
@@ -836,8 +809,8 @@ mod tests {
 
         // Each key git would execute during ssh/local push or fetch must trip the
         // refusal on its own, so the guard covers the whole transport family —
-        // and so must each key that would redirect an explicit URL or its
-        // credentials (`TRANSPORT_STEERING_CONFIG`).
+        // and so must each key that would redirect a local-path fetch in the
+        // checkout (`TRANSPORT_STEERING_CONFIG`).
         for (key, value) in [
             ("remote.origin.receivepack", "/tmp/pwn.sh"),
             ("remote.origin.uploadpack", "/tmp/pwn.sh"),
@@ -848,12 +821,6 @@ mod tests {
                 "url.https://evil.example/.pushInsteadOf",
                 "https://github.com/",
             ),
-            ("remote.origin.pushurl", "https://evil.example/x.git"),
-            ("remote.origin.proxy", "http://evil.example:8080"),
-            ("http.proxy", "http://evil.example:8080"),
-            ("http.https://github.com/.proxy", "http://evil.example:8080"),
-            ("http.sslVerify", "false"),
-            ("http.extraHeader", "Authorization: basic x"),
         ] {
             refuse_steerable_config_under(&repo, &root)
                 .await

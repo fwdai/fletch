@@ -262,25 +262,20 @@ pub fn std_command(dir: &Path) -> StdCommand {
     resolved(Some(dir), !crate::git::hardening::agent_writable(dir))
 }
 
-/// [`command`] without a cwd — for the rare op whose `target` doesn't exist
+/// [`command`] without a cwd — for the rare op whose target doesn't exist
 /// yet (`git init <path>`, `git clone <url> <path>`), and so without the
 /// directory-scoped overrides: an op with no directory creates no commit.
-/// Trust follows the target's nearest existing ancestor
-/// ([`crate::git::hardening::agent_writable_target`]): a user's clone into a
-/// place of their choosing carries their agent socket, which an ssh URL's
-/// key may live in; one that would land under an agent-writable root does
-/// not.
+/// Always trusted: its callers are the user's own clone and `git init` into
+/// a place of their choosing, which carry their agent socket — an ssh clone
+/// URL's key may live there.
 ///
 /// This, [`command`] and [`std_command`] are the seams where every git
 /// invocation picks up [`crate::git::hardening`]'s overrides, so a
 /// repository's own config can never steer host-side git — including from
 /// call sites written later — and [`helper_env`], so the programs git runs
 /// are found the way the user's terminal finds them.
-pub fn bare_command(target: &Path) -> tokio::process::Command {
-    tokio::process::Command::from(resolved(
-        None,
-        !crate::git::hardening::agent_writable_target(target),
-    ))
+pub fn bare_command() -> tokio::process::Command {
+    tokio::process::Command::from(resolved(None, true))
 }
 
 /// Extra env for spawned agent/terminal children so *their* `git status` /
@@ -720,16 +715,12 @@ mod tests {
         assert_eq!(env_of(&cmd, "GNUPGHOME"), Some(None), "removed");
     }
 
-    /// A clone or init into a place of the user's choosing — a target that
-    /// does not exist yet — is the user's own repository in the making, so it
-    /// carries their agent socket: an ssh clone URL's key may live there.
+    /// A clone or init into a place of the user's choosing is the user's own
+    /// repository in the making, so it carries their agent socket: an ssh
+    /// clone URL's key may live there.
     #[test]
     fn a_users_clone_target_is_trusted_with_the_agent_socket() {
-        let td = tempfile::tempdir().unwrap();
-        let target = td.path().join("new-project");
-        assert!(!target.exists());
-        let cmd =
-            crate::bin_resolve::with_login_shell_env(SHELL, || bare_command(&target).into_std());
+        let cmd = crate::bin_resolve::with_login_shell_env(SHELL, || bare_command().into_std());
         assert_eq!(
             env_of(&cmd, "SSH_AUTH_SOCK"),
             Some(Some("/tmp/agent.sock".into()))

@@ -4,7 +4,7 @@
 //! what a publish involves is decided once, here, and no path can skip it:
 //!
 //! - **Signing.** When the user's own repository signs its commits, the
-//!   commits origin lacks are replaced by signed copies before the push
+//!   commits no remote has yet are replaced by signed copies before the push
 //!   (`git::signing`). The decision and the key come from the user's repo, the
 //!   `source_repo`; the agent's checkout contributes objects only.
 //! - **Identity, when signing.** A signature is the user vouching, so a commit
@@ -46,7 +46,9 @@ pub struct Publication<'a> {
     /// The remote branch, `refs/heads/<branch>` on `origin`. Also the local
     /// branch moved onto the signed tip, when there is one.
     pub branch: &'a str,
-    /// A lease-guarded force push (`--force-with-lease --force-if-includes`).
+    /// A lease-guarded force push: it expects the tip the push remote
+    /// advertises right now, and refuses one this checkout never integrated
+    /// (`git::transport::push_source`). Needs exactly one push URL.
     pub force: bool,
 }
 
@@ -81,8 +83,8 @@ pub async fn publish(p: &Publication<'_>, tip: Tip<'_>) -> Result<Published> {
 }
 
 /// `tip` with its unpublished commits signed, and the local branch moved onto
-/// the result. The order is the point: the refresh can widen "what origin
-/// lacks" past what an earlier identity check saw (a stale `origin/main`
+/// the result. The order is the point: the refresh can widen "what is
+/// unpublished" past what an earlier identity check saw (a stale `origin/main`
 /// covering an unpushed commit), and signing must never reach a commit the
 /// check did not — so the check runs after the refresh, on the same refs the
 /// signing range is cut from.
@@ -147,11 +149,10 @@ async fn move_branch(checkout: &Path, branch: &str, from: &str, to: &str) -> Res
 
 #[cfg(test)]
 mod tests {
-    use super::super::signing::fixtures::{signing_repos, verified, Signing};
-    use super::super::testing::{commit_file, git};
+    use super::super::testing::{clone_elsewhere, commit_file, git, signing_repos, Repos};
     use super::*;
 
-    fn origin_tip(fx: &Signing, branch: &str) -> String {
+    fn origin_tip(fx: &Repos, branch: &str) -> String {
         git(
             &fx.source,
             &["ls-remote", "origin", &format!("refs/heads/{branch}")],
@@ -162,7 +163,7 @@ mod tests {
         .to_string()
     }
 
-    fn publication<'a>(fx: &'a Signing, branch: &'a str) -> Publication<'a> {
+    fn publication<'a>(fx: &'a Repos, branch: &'a str) -> Publication<'a> {
         Publication {
             checkout: &fx.checkout,
             source_repo: &fx.source,
@@ -189,8 +190,8 @@ mod tests {
             git(&fx.checkout, &["rev-parse", "refs/heads/main"]),
             out.tip
         );
-        assert!(verified(&fx, &out.tip));
-        assert!(verified(&fx, &format!("{}~1", out.tip)));
+        assert!(fx.verified(&out.tip));
+        assert!(fx.verified(&format!("{}~1", out.tip)));
         assert_eq!(
             git(&fx.checkout, &["rev-parse", &format!("{}~2", out.tip)]),
             fx.base
@@ -216,7 +217,7 @@ mod tests {
 
         assert_eq!(out.tip, tip);
         assert_eq!(origin_tip(&fx, "main"), tip);
-        assert!(!verified(&fx, &tip));
+        assert!(!fx.verified(&tip));
     }
 
     /// `origin/*` in the checkout is whatever the last fetch left — the
@@ -238,9 +239,9 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(verified(&fx, &out.tip));
+        assert!(fx.verified(&out.tip));
         assert!(
-            verified(&fx, &format!("{}~1", out.tip)),
+            fx.verified(&format!("{}~1", out.tip)),
             "the hidden ancestor is signed too"
         );
         assert_eq!(
@@ -281,7 +282,7 @@ mod tests {
         assert!(err.to_string().contains("bot@example.com"), "{err}");
         assert_eq!(origin_tip(&fx, "main"), fx.base, "nothing was pushed");
         assert_eq!(git(repo, &["rev-parse", "refs/heads/main"]), tip);
-        assert!(!verified(&fx, &tip));
+        assert!(!fx.verified(&tip));
     }
 
     /// The checkout's `origin` is the agent's to rewrite; a publish talks only
@@ -412,19 +413,7 @@ mod tests {
 
         // Someone else moves the fork's branch; a force that never integrated
         // their commit is refused, and the fork keeps it.
-        let other = td.path().join("other");
-        git(
-            td.path(),
-            &[
-                "clone",
-                "-q",
-                fork.to_str().unwrap(),
-                other.to_str().unwrap(),
-            ],
-        );
-        git(&other, &["config", "user.email", "o@example.com"]);
-        git(&other, &["config", "user.name", "O"]);
-        git(&other, &["config", "commit.gpgsign", "false"]);
+        let other = clone_elsewhere(td.path(), &fork, "other");
         git(&other, &["checkout", "-q", "feat"]);
         let theirs = commit_file(&other, "theirs.txt");
         git(&other, &["push", "-q", "origin", "feat"]);
@@ -536,7 +525,7 @@ mod tests {
             .unwrap();
 
         assert_ne!(out.tip, pinned);
-        assert!(verified(&fx, &out.tip));
+        assert!(fx.verified(&out.tip));
         assert_eq!(origin_tip(&fx, "wf/run-1"), out.tip);
         assert!(
             !git(&fx.checkout, &["branch", "--list", "wf/run-1"]).contains("wf/run-1"),
@@ -595,7 +584,7 @@ mod tests {
         assert_eq!(origin_tip(&fx, "main"), tip);
         assert_eq!(git(&fx.source, &["rev-parse", "refs/heads/main"]), tip);
         assert!(
-            !verified(&fx, &format!("{tip}~1")),
+            !fx.verified(&format!("{tip}~1")),
             "the teammate's commit went out as it was"
         );
     }

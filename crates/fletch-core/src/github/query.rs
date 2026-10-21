@@ -32,7 +32,10 @@ pub(crate) async fn repo_ref(checkout: &Path) -> Option<(String, String)> {
 /// `ssh://git@github.com[:22]/o/r` forms too). Anything else — HTTPS already,
 /// another host — comes back unchanged. Sandbox clones get this as their
 /// `origin` so git there talks HTTPS, where it has no credential, rather than
-/// SSH with the user's key.
+/// SSH with the user's key, and the agreement check on a checkout's origin
+/// compares by it (`git::remote`). The one rule both follow: host-side
+/// transport applies the same rewrite to the user's URLs as `insteadOf`
+/// config (`git::remote`'s `TRANSPORT_CONFIG`).
 pub fn github_https_remote(remote: &str) -> String {
     let r = remote.trim();
     let path = r

@@ -58,38 +58,12 @@ async fn git_fetch_without_remote_reports_error() {
 #[tokio::test]
 async fn git_fetch_refuses_a_checkout_whose_origin_was_repointed() {
     let td = tempfile::tempdir().unwrap();
-    let origin = td.path().join("origin.git");
-    run_git(
-        td.path(),
-        &["init", "-q", "--bare", origin.to_str().unwrap()],
-    );
-    let source = td.path().join("source");
-    std::fs::create_dir_all(&source).unwrap();
-    run_git(&source, &["init", "-q", "-b", "main"]);
-    run_git(&source, &["config", "user.email", "t@example.com"]);
-    run_git(&source, &["config", "user.name", "Tester"]);
-    run_git(
-        &source,
-        &["remote", "add", "origin", origin.to_str().unwrap()],
-    );
-    std::fs::write(source.join("a.txt"), b"x").unwrap();
-    run_git(&source, &["add", "-A"]);
-    run_git(&source, &["commit", "-q", "-m", "init"]);
-    run_git(&source, &["push", "-q", "origin", "main"]);
-    let checkout = td.path().join("checkout");
-    run_git(
-        td.path(),
-        &[
-            "clone",
-            "-q",
-            source.to_str().unwrap(),
-            checkout.to_str().unwrap(),
-        ],
-    );
-    run_git(
-        &checkout,
-        &["remote", "set-url", "origin", origin.to_str().unwrap()],
-    );
+    let crate::git::testing::Repos {
+        origin,
+        source,
+        checkout,
+        ..
+    } = crate::git::testing::repos(td.path());
 
     // A repository the user can read and the agent must not: one secret commit.
     let private = td.path().join("private");

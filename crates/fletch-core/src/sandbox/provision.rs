@@ -31,15 +31,6 @@ use crate::git;
 
 /// What to check out where. `base_ref` is any commit-ish; pass `"HEAD"` for
 /// "the source repo's current HEAD" (the no-base behavior).
-/// A ladder rung's remote standing for the user's repository's remote, which
-/// [`fetch`] reaches through `git::Transport` rather than the clone's config.
-const ORIGIN: &str = "origin";
-
-/// Whether a rung's refspec is a full commit id rather than a branch name.
-fn is_commit_sha(refspec: &str) -> bool {
-    refspec.len() == 40 && refspec.bytes().all(|b| b.is_ascii_hexdigit())
-}
-
 pub struct CheckoutSpec<'a> {
     /// The user's real repo root.
     pub source_repo: &'a Path,
@@ -209,7 +200,10 @@ pub async fn provision_forking_run_repo(spec: &CheckoutSpec<'_>, run_repo: &Path
             &dest,
             spec.source_repo,
             spec.base_ref,
-            &[(&remote, &refspec)],
+            &[Rung::Repo {
+                path: &remote,
+                refspec: &refspec,
+            }],
         )
         .await
         {
@@ -310,7 +304,7 @@ async fn recover_and_checkout(
     // the same commit any other way says it does not. Folding them into one
     // ladder would need the caller to ask which rung fired, which is a worse
     // way to say the same thing.
-    if ensure_present(dest, source_repo, tip, &[(ORIGIN, origin_branch)]).await {
+    if ensure_present(dest, source_repo, tip, &[Rung::Branch(origin_branch)]).await {
         git::run_git(
             dest,
             &["checkout", "-b", branch, tip],
@@ -326,7 +320,7 @@ async fn recover_and_checkout(
     // (The ladder re-checks presence first; rung 1 just proved the tip absent,
     // so that costs one extra `rev-parse` in exchange for every rung reading
     // the same way.)
-    if ensure_present(dest, source_repo, tip, &[(ORIGIN, tip)]).await {
+    if ensure_present(dest, source_repo, tip, &[Rung::Commit(tip)]).await {
         checkout_detached(dest, tip).await?;
         return Ok(false);
     }
@@ -336,7 +330,7 @@ async fn recover_and_checkout(
     // this is the one rung a caller can genuinely lack, and lacking it is not
     // an error condition to design around, just a shorter ladder.
     if let Some(base) = fallback_ref {
-        if ensure_present(dest, source_repo, base, &[(ORIGIN, base)]).await {
+        if ensure_present(dest, source_repo, base, &[Rung::Commit(base)]).await {
             tracing::warn!(
                 tip,
                 fallback = base,
@@ -814,42 +808,54 @@ async fn commit_present(repo: &Path, commit: &str) -> bool {
     )
 }
 
-/// `git fetch <remote> <refspec>` — the single network primitive every
-/// provisioning ladder is built from.
+/// One fetch a provisioning ladder can try.
+#[derive(Clone, Copy, Debug)]
+enum Rung<'a> {
+    /// A branch of the user's repository's remote, mirrored into the clone's
+    /// `origin/<branch>`.
+    Branch(&'a str),
+    /// A commit fetched by id from that remote into `FETCH_HEAD`: recovering
+    /// a tip whose branch is gone — GitHub serves any commit still reachable
+    /// from an advertised ref, so a merged-then-deleted tip stays fetchable.
+    Commit(&'a str),
+    /// An explicit `src:dst` refspec from a local repository Fletch owns (the
+    /// workflow run repo), which must land the commit under a local ref
+    /// rather than only in `FETCH_HEAD`.
+    Repo { path: &'a str, refspec: &'a str },
+}
+
+/// The fetch `rung` names into the clone at `repo` — the single primitive
+/// every provisioning ladder is built from, bounded so a dead connection
+/// surfaces finitely.
 ///
-/// `refspec` is whatever the rung needs: a branch name (the agent's branch),
-/// a bare SHA (recovering a commit whose branch is gone — GitHub serves any
-/// commit still reachable from an advertised ref, so a merged-then-deleted tip
-/// stays fetchable), or an explicit `src:dst` pair (the workflow-step fetch,
-/// which must land the commit under a local ref rather than only in
-/// `FETCH_HEAD`).
-///
-/// Carries the GitHub token auth every other network op gets and is bounded
-/// like push/pull so a dead connection surfaces finitely. `remote` may be a
-/// local path (the run repo): the auth env is scoped to github.com https, so
-/// it is a no-op there, and a local fetch never approaches the timeout.
-async fn fetch(repo: &Path, source_repo: &Path, remote: &str, refspec: &str) -> Result<()> {
-    // [`ORIGIN`] is the user's repository's remote, reached through
-    // `git::Transport` — the user's config, the clone's objects — never through
-    // the clone's own `origin`: `refspec` is then a branch, mirrored into
-    // `origin/<branch>`, or a commit, landed in `FETCH_HEAD`.
-    if remote == ORIGIN {
-        let t = git::Transport::open(repo, source_repo).await?;
-        return if is_commit_sha(refspec) {
-            t.fetch_commit(refspec).await
-        } else {
-            t.fetch_branches(git::Branches::One(refspec)).await
-        };
-    }
-    // A run repo is a local path Fletch owns; the fetch runs in the clone with
-    // no credentials, under the config refusal like every host-side git there.
+/// The user's repository's remote is reached through `git::Transport` — the
+/// user's config and the app's GitHub token over the clone's objects — never
+/// through the clone's own `origin`. A run repo is a local path: the fetch
+/// runs in the clone with no credentials, under the config refusal like every
+/// host-side git there.
+async fn fetch(repo: &Path, source_repo: &Path, rung: Rung<'_>) -> Result<()> {
+    let (path, refspec) = match rung {
+        Rung::Branch(branch) => {
+            return git::Transport::open(repo, source_repo)
+                .await?
+                .fetch_branches(git::Branches::One(branch))
+                .await
+        }
+        Rung::Commit(sha) => {
+            return git::Transport::open(repo, source_repo)
+                .await?
+                .fetch_commit(sha)
+                .await
+        }
+        Rung::Repo { path, refspec } => (path, refspec),
+    };
     crate::git::hardening::refuse_steerable_config(repo).await?;
     let mut cmd = crate::git_dist::command(repo);
-    cmd.args(["fetch", "--no-recurse-submodules", remote, refspec]);
+    cmd.args(["fetch", path, refspec]);
     let out = git::output_timed(&mut cmd, "git fetch").await?;
     if !out.status.success() {
         return Err(Error::Git(format!(
-            "fetch {remote} {refspec} failed: {}",
+            "fetch {path} {refspec} failed: {}",
             String::from_utf8_lossy(&out.stderr).trim()
         )));
     }
@@ -857,7 +863,7 @@ async fn fetch(repo: &Path, source_repo: &Path, remote: &str, refspec: &str) -> 
 }
 
 /// Make `commit` resolvable inside the clone at `dest`, trying each
-/// `(remote, refspec)` fetch in `ladder` order until one lands it. Returns
+/// [`Rung`] in `ladder` order until one lands it. Returns
 /// whether the commit is present once the ladder runs out.
 ///
 /// This is the shape every provisioning entry point needs; the rungs are what
@@ -884,21 +890,20 @@ async fn ensure_present(
     dest: &Path,
     source_repo: &Path,
     commit: &str,
-    ladder: &[(&str, &str)],
+    ladder: &[Rung<'_>],
 ) -> bool {
     if commit_present(dest, commit).await {
         return true;
     }
-    for (remote, refspec) in ladder {
-        match fetch(dest, source_repo, remote, refspec).await {
+    for rung in ladder {
+        match fetch(dest, source_repo, *rung).await {
             Ok(()) if commit_present(dest, commit).await => return true,
             Ok(()) => tracing::debug!(
                 commit,
-                remote,
-                refspec,
+                ?rung,
                 "fetch succeeded but did not bring the commit; trying the next rung"
             ),
-            Err(e) => tracing::debug!(commit, remote, refspec, error = %e, "recovery fetch failed"),
+            Err(e) => tracing::debug!(commit, ?rung, error = %e, "recovery fetch failed"),
         }
     }
     false
