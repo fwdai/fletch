@@ -75,14 +75,16 @@ impl Supervisor {
 
         // A clone workspace's commits exist only inside the clone until they
         // are pushed — teardown deletes unpushed ones for good (restore can
-        // refetch a pushed branch from origin, nothing else). Warn loudly so
+        // refetch a pushed tip from origin, nothing else). Warn loudly so
         // that data-loss case is diagnosable; archive itself stays
-        // best-effort by design.
+        // best-effort by design. Probed as `<sha>^{commit}`: a bare
+        // `rev-parse` accepts any full hex as a name without looking in the
+        // object store, so it never fired.
         for snap in &snapshots {
             let Some(tip) = snap.branch_tip_sha.as_deref() else {
                 continue;
             };
-            if git::rev_parse(&snap.repo_path, tip).await.is_err() {
+            if !commit_in_source(&snap.repo_path, tip).await {
                 tracing::warn!(
                     agent_id,
                     subdir = %snap.subdir,
@@ -192,11 +194,14 @@ impl Supervisor {
         // be recoverable. We do this before any mutation so we don't leave a
         // half-restored agent on failure. A clone's commits live only in the
         // (torn-down) clone and on the real remote once pushed, so a tip that
-        // isn't in the source repo is still fine when a branch name exists:
-        // provisioning recovers it from origin — by branch, or (branch
-        // auto-deleted after merge) by the commit SHA, or failing that by
-        // opening detached at the parent base. Any deep failure there tears the
-        // half-built clone down and aborts before we mutate state.
+        // isn't in the source repo is still fine when the source has an
+        // `origin`: provisioning recovers it from there — by branch when one
+        // is recorded, by the commit SHA (branch auto-deleted after merge, or
+        // never recorded by an older host), or failing that by opening
+        // detached at the parent base. Any deep failure there tears the
+        // half-built clone down and aborts before we mutate state. Without an
+        // origin there is nothing to recover from, so reject here rather than
+        // deep in a fetch with a rawer error.
         for snap in &archive.repos {
             let sha = snap.branch_tip_sha.as_deref().ok_or_else(|| {
                 Error::Other(format!(
@@ -204,21 +209,14 @@ impl Supervisor {
                     snap.subdir
                 ))
             })?;
-            if let Err(e) = git::rev_parse(&snap.repo_path, sha).await {
-                // A tip that's gone from the source store is still recoverable
-                // by refetching the pushed branch — but only when the source
-                // actually has an `origin` to fetch from. Without one (a repo
-                // with no remote), provisioning would fail deep in
-                // `fetch_branch` with a rawer error, so reject it here instead.
-                let refetchable =
-                    snap.branch_name.is_some() && source_has_origin(&snap.repo_path).await;
-                if !refetchable {
-                    return Err(Error::Other(format!(
-                        "branch tip {} no longer reachable in {}: {e}",
-                        sha,
-                        snap.repo_path.display()
-                    )));
-                }
+            if !commit_in_source(&snap.repo_path, sha).await
+                && !source_has_origin(&snap.repo_path).await
+            {
+                return Err(Error::Other(format!(
+                    "branch tip {} is no longer in {} and it has no origin to recover it from",
+                    sha,
+                    snap.repo_path.display()
+                )));
             }
         }
 
@@ -265,10 +263,14 @@ impl Supervisor {
                     .await?;
                     landed_on_branch.then_some(chosen)
                 }
-                // Branchless agent (never pushed) → restore detached at the
-                // tip, ready to name its branch at the next push.
+                // No branch of record → restore detached at the tip, ready to
+                // name its branch at the next push. The tip may still be on
+                // origin (pushed under a branch an older host never recorded,
+                // then merged), so this recovers by SHA with the parent base
+                // as the last resort, like the branch path's lower rungs.
                 None => {
-                    provision::provision(&spec).await?;
+                    provision::provision_recovering(&spec, snap.parent_branch_sha.as_deref())
+                        .await?;
                     None
                 }
             };
@@ -476,6 +478,14 @@ async fn capture_repo_snapshots(
     }
 
     snapshots
+}
+
+/// Whether `sha` is a commit in `repo`'s object store. `<sha>^{commit}` is the
+/// point: `rev-parse --verify` of a bare full hex succeeds for any 40 hex
+/// digits, object or no object, which is how an absent archived tip used to
+/// pass restore's pre-flight and die in `checkout` instead.
+async fn commit_in_source(repo: &Path, sha: &str) -> bool {
+    matches!(git::resolve(repo, sha).await, Ok(Some(_)))
 }
 
 /// Whether `repo` has an `origin` remote — the only source a clone-mode restore

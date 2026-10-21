@@ -43,9 +43,11 @@ pub struct CheckoutSpec<'a> {
 }
 
 /// Create the workspace at `spec.dest`, detached at `spec.base_ref`, taking the
-/// ref exactly as given — no fetch. For callers whose base is already an exact
-/// commit that must not move (restore's archived tip). A fresh spawn wants
-/// [`provision_at_remote_base`] instead, so its base branch is the remote's.
+/// ref exactly as given — no fetch, so the ref must already be in the source's
+/// store. The plain primitive every other entry point builds on. A fresh spawn
+/// wants [`provision_at_remote_base`], so its base branch is the remote's; a
+/// restore wants [`provision_recovering`] or [`provision_on_branch`], whose
+/// archived tip is usually *not* in the source.
 ///
 /// `--shared`: objects borrowed from the source. For Docker the borrowed store
 /// is mounted RO at launch — safe for the primary workspace and any repo
@@ -154,13 +156,8 @@ pub async fn provision_at_remote_base(
 }
 
 /// Body of [`provision`]: `--shared` clone, the post-clone fixups, then check
-/// out `spec.base_ref` detached.
-///
-/// No recovery ladder here, unlike the other two entry points: restore hands us
-/// an exact archived tip that the source clone already has, so there is nothing
-/// to fetch and no rung to degrade to. Should that stop holding,
-/// [`ensure_present`] is the hook — a rung in front of the checkout, exactly as
-/// [`provision_forking_run_repo`] and [`recover_and_checkout`] use it.
+/// out `spec.base_ref` detached. No recovery ladder: the ref is taken as
+/// something the source already has.
 async fn clone_detached(spec: &CheckoutSpec<'_>) -> Result<()> {
     clone_base(spec, true).await?;
     finish_clone(spec, |dest| async move {
@@ -265,6 +262,29 @@ pub async fn provision_on_branch(
     .await
 }
 
+/// Create the workspace for a restored agent with no branch of record,
+/// detached at `spec.base_ref` (its archived tip), recovering the tip from
+/// `origin` when the source repo lacks it.
+///
+/// No branch of record does not mean the work was never pushed: a branch the
+/// agent named with plain `git checkout -b` went unrecorded by hosts before the
+/// first-push ownership fix, and a clone's commits reach the user's repository
+/// only once they are merged into a base the freshness poller fetches. So this
+/// is [`provision`] with the two detached rungs of [`recover_and_checkout`] in
+/// front of the checkout: the tip by SHA from origin, then `fallback_ref` (the
+/// archived parent-branch tip) when the tip is gone for good.
+pub async fn provision_recovering(
+    spec: &CheckoutSpec<'_>,
+    fallback_ref: Option<&str>,
+) -> Result<()> {
+    clone_base(spec, true).await?;
+    let fallback = fallback_ref.map(str::to_string);
+    finish_clone(spec, |dest| async move {
+        recover_detached(&dest, spec.source_repo, spec.base_ref, fallback.as_deref()).await
+    })
+    .await
+}
+
 /// Recover a restored agent's branch tip inside the fresh clone `dest` and check
 /// the workspace out on it, degrading gracefully as availability shrinks so a
 /// merged-and-deleted branch — or even a lost tip — never blocks a restore:
@@ -280,6 +300,8 @@ pub async fn provision_on_branch(
 ///
 /// Every rung is an [`ensure_present`] ladder, so they differ only in what
 /// they fetch and where they land — never in how they probe for the commit.
+/// Rungs 3 and 4 are [`recover_detached`], which a branchless restore starts
+/// at.
 ///
 /// Returns `true` when it landed on `branch`, `false` when it detached.
 async fn recover_and_checkout(
@@ -313,16 +335,34 @@ async fn recover_and_checkout(
         .await?;
         return Ok(true);
     }
-    // 3: the branch is gone, or no longer points at the tip, but the commit may
-    // still linger on origin (merged into the base branch, or reachable from
-    // another ref) — fetch it by SHA. The branch name no longer reflects this
-    // work, so open detached rather than fabricating a local branch for it.
-    // (The ladder re-checks presence first; rung 1 just proved the tip absent,
-    // so that costs one extra `rev-parse` in exchange for every rung reading
-    // the same way.)
+    recover_detached(dest, source_repo, tip, fallback_ref)
+        .await
+        .map(|()| false)
+        .map_err(|e| {
+            Error::Git(format!(
+                "{e} — origin has no branch {origin_branch} carrying it either"
+            ))
+        })
+}
+
+/// Rungs 3 and 4 of [`recover_and_checkout`]: open `dest` detached at `tip`,
+/// fetching it by SHA from origin when the source lacks it, else detached at
+/// `fallback_ref`. Errors when neither is reachable.
+async fn recover_detached(
+    dest: &Path,
+    source_repo: &Path,
+    tip: &str,
+    fallback_ref: Option<&str>,
+) -> Result<()> {
+    // 3: the commit may linger on origin with no branch naming it (merged into
+    // the base branch, or reachable from another ref) — fetch it by SHA. No
+    // branch name reflects this work, so open detached rather than fabricating
+    // a local branch for it. (The ladder checks presence first; after rung 1
+    // that costs one extra `rev-parse` in exchange for every rung reading the
+    // same way.)
     if ensure_present(dest, source_repo, tip, &[Rung::Commit(tip)]).await {
         checkout_detached(dest, tip).await?;
-        return Ok(false);
+        return Ok(());
     }
     // 4: the tip is gone for good. Open at the parent base (if we can reach it)
     // so the workspace, its session history, and its PR link still come back —
@@ -338,12 +378,12 @@ async fn recover_and_checkout(
                  at parent base (agent commits not restored)"
             );
             checkout_detached(dest, base).await?;
-            return Ok(false);
+            return Ok(());
         }
     }
     Err(Error::Git(format!(
-        "restore: branch tip {tip} is unreachable — origin has neither branch \
-         {origin_branch} nor the commit, and no fallback base was recoverable"
+        "restore: branch tip {tip} is unreachable: origin does not serve the \
+         commit, and no fallback base was recoverable"
     )))
 }
 
@@ -2260,6 +2300,141 @@ mod tests {
             !dest.exists(),
             "a failed provision must leave nothing behind"
         );
+    }
+
+    /// The user's repo (`source`) with a bare `origin` serving any reachable
+    /// commit, plus a worker clone that commits `tip` on `feat`, pushes it,
+    /// merges it into `main` on origin and deletes the branch — so the tip is
+    /// on origin, reachable only from `main`, and nowhere in `source`.
+    /// Returns (source, source's head, tip).
+    fn fixture_merged_tip_only_on_origin(dir: &Path) -> (PathBuf, String, String) {
+        let (repo, _first, head) = fixture_repo(dir);
+        let origin = dir.join("origin.git");
+        run(
+            dir,
+            &[
+                "init",
+                "-q",
+                "--bare",
+                "-b",
+                "main",
+                origin.to_str().unwrap(),
+            ],
+        );
+        run(
+            &origin,
+            &["config", "uploadpack.allowReachableSHA1InWant", "true"],
+        );
+        run(
+            &repo,
+            &["remote", "add", "origin", origin.to_str().unwrap()],
+        );
+        run(&repo, &["push", "-q", "origin", "main"]);
+
+        let worker = dir.join("worker");
+        run(
+            dir,
+            &[
+                "clone",
+                "-q",
+                origin.to_str().unwrap(),
+                worker.to_str().unwrap(),
+            ],
+        );
+        run(&worker, &["config", "user.email", "w@example.com"]);
+        run(&worker, &["config", "user.name", "Worker"]);
+        run(&worker, &["checkout", "-q", "-b", "feat"]);
+        std::fs::write(worker.join("feat.txt"), b"feature").unwrap();
+        run(&worker, &["add", "-A"]);
+        run(&worker, &["commit", "-q", "-m", "feat work"]);
+        let tip = run(&worker, &["rev-parse", "HEAD"]);
+        run(&worker, &["push", "-q", "origin", "feat"]);
+        run(&worker, &["checkout", "-q", "main"]);
+        run(
+            &worker,
+            &["merge", "-q", "--no-ff", "-m", "merge feat", "feat"],
+        );
+        run(&worker, &["push", "-q", "origin", "main"]);
+        run(&worker, &["push", "-q", "origin", "--delete", "feat"]);
+        assert!(
+            !crate::git::testing::git_output(&repo, &["cat-file", "-e", &tip])
+                .status
+                .success(),
+            "the tip must be absent from the source for the test to mean anything"
+        );
+        (repo, head, tip)
+    }
+
+    #[tokio::test]
+    async fn clone_provision_recovering_fetches_a_tip_the_source_lacks_by_sha() {
+        // The reported case: an archived workspace with no branch of record
+        // (its branch went unrecorded by an older host) whose commits were
+        // pushed and merged. The tip is on origin but not in the user's repo,
+        // so a plain `checkout --detach <tip>` in a fresh clone died with
+        // "unable to read tree". With no branch to try, recovery starts at the
+        // by-SHA rung and opens detached at the tip.
+        let td = tempfile::tempdir().unwrap();
+        let (repo, _head, tip) = fixture_merged_tip_only_on_origin(td.path());
+
+        let dest = td.path().join("clone");
+        let spec = CheckoutSpec {
+            source_repo: &repo,
+            base_ref: &tip,
+            dest: &dest,
+        };
+        provision_recovering(&spec, None).await.unwrap();
+        assert_eq!(run(&dest, &["rev-parse", "--abbrev-ref", "HEAD"]), "HEAD");
+        assert_eq!(run(&dest, &["rev-parse", "HEAD"]), tip);
+        assert!(dest.join("feat.txt").exists());
+    }
+
+    #[tokio::test]
+    async fn clone_provision_recovering_falls_back_to_parent_base_when_tip_lost() {
+        // Never pushed and the clone is gone: the tip exists nowhere. The
+        // workspace still opens, detached at the archived parent base, so its
+        // session history comes back even though the commits cannot.
+        let td = tempfile::tempdir().unwrap();
+        let (repo, _first, head) = fixture_repo(td.path());
+        let origin = td.path().join("origin.git");
+        run(
+            td.path(),
+            &[
+                "init",
+                "-q",
+                "--bare",
+                "-b",
+                "main",
+                origin.to_str().unwrap(),
+            ],
+        );
+        run(
+            &repo,
+            &["remote", "add", "origin", origin.to_str().unwrap()],
+        );
+        run(&repo, &["push", "-q", "origin", "main"]);
+        let lost = "1111111111111111111111111111111111111111";
+
+        let dest = td.path().join("clone");
+        let spec = CheckoutSpec {
+            source_repo: &repo,
+            base_ref: lost,
+            dest: &dest,
+        };
+        provision_recovering(&spec, Some(&head)).await.unwrap();
+        assert_eq!(run(&dest, &["rev-parse", "--abbrev-ref", "HEAD"]), "HEAD");
+        assert_eq!(run(&dest, &["rev-parse", "HEAD"]), head);
+
+        // And with nothing to fall back to, a clear refusal naming the tip —
+        // not git's "unable to read tree" — and no half-built clone behind.
+        let dest2 = td.path().join("clone2");
+        let spec = CheckoutSpec {
+            source_repo: &repo,
+            base_ref: lost,
+            dest: &dest2,
+        };
+        let err = provision_recovering(&spec, None).await.unwrap_err();
+        assert!(err.to_string().contains(lost), "got: {err}");
+        assert!(!dest2.exists());
     }
 
     /// Init a run repo (a `--shared` clone of `source`) carrying one extra
