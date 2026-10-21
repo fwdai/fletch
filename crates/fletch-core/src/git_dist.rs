@@ -625,10 +625,14 @@ mod tests {
     /// the way the user's terminal finds them.
     #[test]
     fn host_git_carries_the_login_shells_helper_env() {
+        // Every named variable is stubbed, so nothing the test process itself
+        // exports (a developer's GNUPGHOME, say) can fall through into the
+        // result.
         let env = crate::bin_resolve::with_login_shell_env(
             &[
                 ("PATH", "/opt/homebrew/bin:/usr/bin"),
                 ("SSH_AUTH_SOCK", "/tmp/agent.sock"),
+                ("GNUPGHOME", "/Users/someone/.gnupg-elsewhere"),
                 ("HOME", "/Users/someone"),
             ],
             helper_env,
@@ -638,6 +642,7 @@ mod tests {
             vec![
                 ("PATH", "/opt/homebrew/bin:/usr/bin".into()),
                 ("SSH_AUTH_SOCK", "/tmp/agent.sock".into()),
+                ("GNUPGHOME", "/Users/someone/.gnupg-elsewhere".into()),
             ],
             "only the named variables, and nothing else the shell exports"
         );
