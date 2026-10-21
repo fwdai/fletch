@@ -118,8 +118,8 @@ pub struct Verifier {
     setup_override: Option<String>,
     /// Project override for the lint command (`run.lint`); wins over detection.
     lint_override: Option<String>,
-    /// The project whose checks these are, which keys the toolchain cache the
-    /// Run profile grants them ([`crate::sandbox::toolchain_cache_root`]).
+    /// The project whose checks these are, which keys the toolchain cache they
+    /// run with, shared with the project's agents and Run panel.
     project_id: String,
     home: PathBuf,
     timeout: Duration,
@@ -314,43 +314,39 @@ impl Verifier {
         )
     }
 
-    /// Build the `sandbox-exec -p <profile> <shell> -lic <cmd>` invocation under
-    /// the Run-panel profile (writable root = the checkout). The profile travels
-    /// in argv rather than a tempfile — see [`crate::sandbox::profile_args`] —
-    /// so there is nothing for the caller to keep alive.
-    fn sandbox_command(&self, worktree: &Path, cmd: &str) -> Result<(PathBuf, Vec<String>)> {
-        // Grant the target's git *common dir* (as the Run panel does) so commands
-        // that touch git — e.g. `git worktree add` — work in a linked worktree
-        // checkout, whose common dir lives outside `worktree`. For a plain
-        // `--shared` clone this is `<worktree>/.git`, already writable, so the
-        // grant is harmless.
-        let extra_writable: Vec<PathBuf> =
-            crate::supervisor::run::run_target_git_common_dir(worktree)
-                .into_iter()
-                .collect();
-        let profile_text = crate::sandbox::build_run_profile(
-            worktree,
-            &self.home,
-            &self.project_id,
-            &extra_writable,
-        )?;
-        let shell = crate::run_session::user_shell();
-        let shell_str = shell
-            .to_str()
-            .ok_or_else(|| Error::Other("shell path not utf-8".into()))?
-            .to_string();
-        let mut args = crate::sandbox::profile_args(&profile_text).to_vec();
-        args.push(shell_str);
-        args.extend(crate::run_session::shell_args(cmd));
-        Ok((PathBuf::from(crate::sandbox::SANDBOX_EXEC), args))
-    }
-
+    /// Run `cmd` in `worktree` exactly as the Run panel would
+    /// ([`crate::supervisor::run::sandboxed_run_command`]): the Run profile,
+    /// with the project's toolchain cache, and the shared run `env` over it.
     async fn run_sandboxed(&self, worktree: &Path, cmd: &str, env: &[(String, String)]) -> Bounded {
-        let (program, args) = match self.sandbox_command(worktree, cmd) {
-            Ok(t) => t,
+        let (run, run_env) = match self.sandboxed_invocation(worktree, cmd, env) {
+            Ok(invocation) => invocation,
             Err(e) => return Bounded::Unrunnable(format!("could not build sandbox profile: {e}")),
         };
-        run_bounded(&program, &args, worktree, self.timeout, env).await
+        run_bounded(&run.program, &run.args, worktree, self.timeout, &run_env).await
+    }
+
+    /// What [`run_sandboxed`](Self::run_sandboxed) runs: the Run-profile
+    /// command and its env — the cache redirect first, the project's shared
+    /// `env` after it so a project value wins. Separate from the run so the
+    /// pairing of grant and env can be checked without `sandbox-exec`.
+    fn sandboxed_invocation(
+        &self,
+        worktree: &Path,
+        cmd: &str,
+        env: &[(String, String)],
+    ) -> Result<(
+        crate::supervisor::run::SandboxedRunCommand,
+        Vec<(String, String)>,
+    )> {
+        let run = crate::supervisor::run::sandboxed_run_command(
+            worktree,
+            cmd,
+            &self.home,
+            &self.project_id,
+        )?;
+        let mut run_env = run.env.clone();
+        run_env.extend_from_slice(env);
+        Ok((run, run_env))
     }
 }
 
@@ -527,6 +523,55 @@ mod tests {
 
     fn write(dir: &Path, name: &str, contents: &str) {
         std::fs::write(dir.join(name), contents).unwrap();
+    }
+
+    // ── sandboxed invocation ──────────────────────────────────────────────
+
+    /// A check runs with the toolchain cache its profile grants: the redirect
+    /// env names the same root the profile text allows, and the project's
+    /// shared env rides on top of it rather than replacing it. Dropping the
+    /// cache env from the invocation again would fail here, not in a project's
+    /// `npm install` writing to a denied default dir.
+    #[test]
+    fn a_check_gets_the_cache_env_for_the_root_its_profile_grants() {
+        let td = tempfile::tempdir().unwrap();
+        let home = td.path().join("home");
+        let worktree = td.path().join("worktree");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(&worktree).unwrap();
+        let verifier = Verifier {
+            test_override: None,
+            setup_override: None,
+            lint_override: None,
+            project_id: "0b9f3c1e-6a4d-4e8b-9c2f-1d7e5a3b8c90".into(),
+            home: home.clone(),
+            timeout: Duration::from_secs(1),
+            setup_done: Mutex::new(HashSet::new()),
+        };
+        let shared = [("API_URL".to_string(), "http://localhost:3000".to_string())];
+
+        let (run, env) = verifier
+            .sandboxed_invocation(&worktree, "npm test", &shared)
+            .unwrap();
+
+        let value = |var: &str| {
+            env.iter()
+                .rev()
+                .find(|(k, _)| k == var)
+                .map(|(_, v)| v.clone())
+        };
+        let cache = value("npm_config_cache").expect("the cache redirect is set");
+        assert!(
+            Path::new(&cache).starts_with(&run.toolchain_cache),
+            "{cache} is outside the granted root {}",
+            run.toolchain_cache.display()
+        );
+        let profile = &run.args[1];
+        assert!(
+            profile.contains(&format!("(subpath \"{}\")", run.toolchain_cache.display())),
+            "the profile does not grant the root the env points at"
+        );
+        assert_eq!(value("API_URL").as_deref(), Some("http://localhost:3000"));
     }
 
     // ── resolution ────────────────────────────────────────────────────────

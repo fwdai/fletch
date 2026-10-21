@@ -56,33 +56,16 @@ own application-data directory (`fletch.db` — transcripts and settings) is
 explicitly denied **both read and write**, so a confined agent can neither
 exfiltrate nor forge app state (`sandbox/seatbelt.rs`).
 
-The toolchain cache (`~/.fletch/toolchain-cache/<project id>`) is where every
-package manager, the cargo overlay and the headless browsers are redirected, and
-what is in it gets executed by later sandboxed processes. So it is keyed by
-project, the trust domain: a project's agents and its Run panel share one warm
-cache, and every profile and container mount names that project's subtree,
-never the parent, so no project can write what another one executes. Within a
-project an agent can still plant what that project's Run executes — the same
-accepted trade-off as an agent editing the `package.json` scripts Run runs
-(`sandbox/policy.rs`, `toolchain_cache_root`). The Run profile denies the host's
-claude and codex login files as the agent profile does; it leaves the Keychain
-open, a separate decision. A nested Fletch launched from the Run panel mints
-its own project ids, which that grant would not let it create as siblings, so
-the Run panel points it (`FLETCH_TOOLCHAIN_CACHE_ROOT`, like the RPC and
-checkout roots) at a `nested/` level inside the outer project's own root:
-writable under that profile, and still the outer project's trust domain, since
-the nested instance is that project's Run process.
-
-Project roots are split per build like the checkout and mailbox roots: a
-release install keeps them at `~/.fletch/toolchain-cache/<project id>`, a debug
-build under `~/.fletch/toolchain-cache/dev/`, since the two mint project ids
-from separate databases (a `fletch-host` keeps its own under its data dir for
-the same reason). That makes the database the authority over its build's
-directory, so a root whose project it no longer holds is reclaimed at startup
-and when a project is deleted, along with the flat layout from before the
-per-project key (`npm/`, `bun/`, `playwright/` … directly under the parent).
-Only UUID-named roots and that fixed set of legacy names are ever removed, and
-removal does not follow symlinks an agent planted (`sandbox/cache_gc.rs`).
+The toolchain cache (`~/.fletch/toolchain-cache/<project id>`, or
+`~/.fletch/dev/toolchain-cache/<project id>` for a debug build) is where every
+package manager, the cargo overlay and the headless browsers are redirected. What is in it gets executed by later
+sandboxed processes, so it is keyed by project: every profile and container
+mount names that project's root and never the directory above it, so no project
+can write what another one executes. Why it is shaped that way (per project, per
+build, platform-keyed rows, the reclaim, the nested instance and `fletch-host`)
+is told once, in the module doc of `sandbox/toolchain_cache/mod.rs`. The Run
+profile denies the host's claude and codex login files as the agent profile
+does; it leaves the Keychain open, a separate decision.
 
 One carve-out runs the other way, inside the writable checkout: each
 repository's **git-executable configuration** — `.git/config`,
@@ -143,7 +126,7 @@ already the weaker boundary by design.
 
 Only the agent's writable root, its RPC mailbox and its project's toolchain
 cache (`~/.fletch/toolchain-cache/<project id>`, the same root seatbelt grants
-that project — never the parent) are mounted read-write, at their identical host
+that project) are mounted read-write, at their identical host
 paths. The provider's config/data dirs are mounted per
 provider (Claude's `~/.claude` is read-only except its `.credentials.json` and a
 per-agent transcripts dir; the others are read-write). Crucially, the source

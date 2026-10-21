@@ -381,7 +381,40 @@ fn spawn_run_phase(
     // The agent's project keys the toolchain cache the command may write, so
     // without the record there is no cache to grant and the run fails.
     let record = sup.workspace.agent(&agent_id)?;
-    let (program, args, mut env) = sandboxed_run_command(&cwd, &cmd, &record.project_id)?;
+    let home =
+        dirs::home_dir().ok_or_else(|| Error::Other("HOME directory not available".into()))?;
+    let SandboxedRunCommand {
+        program,
+        args,
+        mut env,
+        toolchain_cache,
+    } = sandboxed_run_command(&cwd, &cmd, &home, &record.project_id)?;
+    // A nested Fletch (dogfooding) can't reach the host's `~/.fletch` under
+    // this profile; steer its mailboxes, checkouts and toolchain caches to roots
+    // it may write, the caches inside this project's root (see
+    // `sandbox::toolchain_cache`). Harmless for any other Run target: nothing
+    // but Fletch reads these.
+    env.extend([
+        (
+            crate::rpc::RPC_ROOT_ENV.to_string(),
+            crate::sandbox::nested_rpc_root(&cwd)
+                .to_string_lossy()
+                .into_owned(),
+        ),
+        (
+            crate::workspace::WORKSPACES_ROOT_ENV.to_string(),
+            crate::sandbox::nested_checkouts_root(&cwd)
+                .to_string_lossy()
+                .into_owned(),
+        ),
+        (
+            crate::sandbox::TOOLCHAIN_CACHE_ROOT_ENV.to_string(),
+            toolchain_cache
+                .join("nested")
+                .to_string_lossy()
+                .into_owned(),
+        ),
+    ]);
     // Layer the project's opt-in Run environment: the `.env` variables the user
     // chose to share into the sandbox (mirrored live from the source repo's
     // `.env` or overridden per project, with `{{agent_id}}`/`{{worktree}}`
@@ -436,74 +469,57 @@ fn spawn_run_phase(
     Ok(())
 }
 
-/// Program, argv, extra env, and the profile tempfile returned by
-/// [`sandboxed_run_command`].
-type SandboxedRunCommand = (PathBuf, Vec<String>, Vec<(String, String)>);
+/// A command wrapped in the Run profile, as [`sandboxed_run_command`] builds
+/// it.
+pub(crate) struct SandboxedRunCommand {
+    pub program: PathBuf,
+    pub args: Vec<String>,
+    /// The toolchain cache redirect; the caller layers its own env on top.
+    pub env: Vec<(String, String)>,
+    /// The project's toolchain cache root the profile grants.
+    pub toolchain_cache: PathBuf,
+}
 
-/// Build the `sandbox-exec`-wrapped invocation for a Run-panel command:
-/// `sandbox-exec -p <profile> <shell> -lic <cmd>`. Returns the program, argv,
-/// and env. The profile travels in argv rather than a tempfile — see
-/// [`crate::sandbox::profile_args`] for why a file would be racy — so there is
-/// nothing for the caller to keep alive. `project_id` is the agent's project,
-/// whose toolchain cache the command shares with that project's agents.
-fn sandboxed_run_command(cwd: &Path, cmd: &str, project_id: &str) -> Result<SandboxedRunCommand> {
-    let home =
-        dirs::home_dir().ok_or_else(|| Error::Other("HOME directory not available".into()))?;
+/// Build the `sandbox-exec`-wrapped invocation for a project command run
+/// under the Run profile: `sandbox-exec -p <profile> <shell> -lic <cmd>`. The
+/// Run panel and the verifier both run through here, so a project's checks
+/// get exactly the profile and the toolchain cache its Run commands do, shared
+/// with that project's agents. The profile travels in argv rather than a
+/// tempfile — see [`crate::sandbox::profile_args`] for why a file would be
+/// racy — so there is nothing for the caller to keep alive.
+pub(crate) fn sandboxed_run_command(
+    cwd: &Path,
+    cmd: &str,
+    home: &Path,
+    project_id: &str,
+) -> Result<SandboxedRunCommand> {
+    let cache = crate::sandbox::prepare_toolchain_cache(
+        home,
+        project_id,
+        cwd,
+        crate::sandbox::BoxPlatform::host(),
+    )?;
     // Grant the target's git *common dir* so `git worktree add` (and later
     // commits) can write worktree admin data / objects / refs. For a normal
     // repo this is `<cwd>/.git`, already inside `writable_root`; for a linked
     // worktree (the dogfooding case) it's the source repo's real `.git`,
     // outside `writable_root`, which would otherwise fail closed.
     let extra_writable: Vec<PathBuf> = run_target_git_common_dir(cwd).into_iter().collect();
-    let profile_text = crate::sandbox::build_run_profile(cwd, &home, project_id, &extra_writable)?;
+    let profile_text = crate::sandbox::build_run_profile(cwd, home, &cache.root, &extra_writable)?;
     let shell = user_shell();
     let shell_str = shell
         .to_str()
         .ok_or_else(|| Error::Other("shell path not utf-8".into()))?
         .to_string();
-    // sandbox-exec -p <profile> <shell> -lic <cmd>
     let mut args = crate::sandbox::profile_args(&profile_text).to_vec();
     args.push(shell_str);
     args.extend(shell_args(cmd));
-    // Same package-manager cache redirection the agent gets, so a `bun install`
-    // or `cargo build` run from the Run panel and one run by the project's
-    // agents share a warm cache instead of maintaining two. The profile grants
-    // this root above.
-    let mut env = crate::sandbox::prepare_toolchain_cache(
-        &home,
-        project_id,
-        cwd,
-        crate::sandbox::BoxPlatform::host(),
-    )?;
-    // A nested Fletch (dogfooding) can't reach the host's `~/.fletch/{rpc,
-    // worktrees}` under this profile; steer both to sandbox-writable roots.
-    // Its toolchain cache goes the same way: it mints its own project ids, and
-    // this profile grants only *this* project's root, so its projects cache
-    // under a `nested/` level of that root rather than failing to create a
-    // sibling (`policy::nested_toolchain_cache_parent`). Harmless for any other
-    // Run target — nothing but Fletch reads these.
-    let project_root = crate::sandbox::toolchain_cache_root(&home, project_id)?;
-    env.extend([
-        (
-            crate::rpc::RPC_ROOT_ENV.to_string(),
-            crate::sandbox::nested_rpc_root(cwd)
-                .to_string_lossy()
-                .into_owned(),
-        ),
-        (
-            crate::workspace::WORKSPACES_ROOT_ENV.to_string(),
-            crate::sandbox::nested_checkouts_root(cwd)
-                .to_string_lossy()
-                .into_owned(),
-        ),
-        (
-            crate::sandbox::TOOLCHAIN_CACHE_PARENT_ENV.to_string(),
-            crate::sandbox::nested_toolchain_cache_parent(&project_root)
-                .to_string_lossy()
-                .into_owned(),
-        ),
-    ]);
-    Ok((PathBuf::from(crate::sandbox::SANDBOX_EXEC), args, env))
+    Ok(SandboxedRunCommand {
+        program: PathBuf::from(crate::sandbox::SANDBOX_EXEC),
+        args,
+        env: cache.env,
+        toolchain_cache: cache.root,
+    })
 }
 
 /// Resolve the git *common dir* of the Run target `cwd`, canonicalized, so the
@@ -514,9 +530,7 @@ fn sandboxed_run_command(cwd: &Path, cmd: &str, project_id: &str) -> Result<Sand
 /// runtime — via the app's resolved git binary (portable-git fallback),
 /// matching every other git call.
 ///
-/// Shared with the workflows tests gate (`workflow::tests_gate`), which runs the
-/// project's tests under this same Run profile and needs the identical grant.
-pub(crate) fn run_target_git_common_dir(cwd: &Path) -> Option<PathBuf> {
+fn run_target_git_common_dir(cwd: &Path) -> Option<PathBuf> {
     let out = crate::git_dist::std_command(cwd)
         // Resolve strictly from `cwd`. `std_command` inherits the outer app's
         // environment, and an ambient GIT_DIR / GIT_WORK_TREE / GIT_COMMON_DIR
