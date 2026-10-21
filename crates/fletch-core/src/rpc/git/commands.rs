@@ -42,7 +42,7 @@ impl GitDispatcher {
             return resp;
         }
         let url = match crate::git::trusted_remote(&cwd, &t.source_repo).await {
-            Ok(url) => url,
+            Ok(remote) => remote.fetch,
             Err(e) => return Response::err(id, format!("git_fetch: {e}")),
         };
         let auth = crate::github::git_auth_env();

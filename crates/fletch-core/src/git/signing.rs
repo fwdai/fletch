@@ -89,7 +89,7 @@ pub(crate) async fn refresh_remote_refs(checkout: &Path, source_repo: &Path) -> 
         "fetch",
         "--quiet",
         "--prune",
-        &url,
+        &url.fetch,
         super::remote::ALL_TRACKING_REFSPEC,
     ]);
     for (k, v) in crate::github::git_auth_env() {

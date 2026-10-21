@@ -319,6 +319,47 @@ mod tests {
         assert_eq!(origin_tip(&fx, "main"), fx.base, "nor the real one");
     }
 
+    /// The user's repository pushes to its `pushurl` when it has one; so does
+    /// a checkout of it.
+    #[tokio::test]
+    async fn a_publish_goes_to_the_source_repos_pushurl() {
+        let td = tempfile::tempdir().unwrap();
+        let fx = signing_repos(td.path());
+        let fork = td.path().join("fork.git");
+        git(td.path(), &["init", "-q", "--bare", fork.to_str().unwrap()]);
+        git(
+            &fx.source,
+            &[
+                "remote",
+                "set-url",
+                "--push",
+                "origin",
+                fork.to_str().unwrap(),
+            ],
+        );
+        commit_file(&fx.checkout, "one.txt");
+
+        let out = publish(&publication(&fx, "main"), Tip::Branch)
+            .await
+            .unwrap();
+
+        assert_eq!(out.summary, "pushed");
+        assert_eq!(
+            git(
+                td.path(),
+                &[
+                    "--git-dir",
+                    fork.to_str().unwrap(),
+                    "rev-parse",
+                    "refs/heads/main"
+                ]
+            ),
+            out.tip,
+            "the fork received the publish"
+        );
+        assert_eq!(origin_tip(&fx, "main"), fx.base, "the fetch remote did not");
+    }
+
     #[tokio::test]
     async fn a_branch_that_moved_since_its_tip_was_read_is_not_published() {
         let td = tempfile::tempdir().unwrap();

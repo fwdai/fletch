@@ -835,7 +835,7 @@ async fn fetch(repo: &Path, source_repo: &Path, remote: &str, refspec: &str) -> 
     // [`ORIGIN`] is the user's repository's remote (`git::remote`), never the
     // clone's own `origin`, and is named as a URL; a run repo is a local path.
     let remote = if remote == ORIGIN {
-        crate::git::trusted_remote(repo, source_repo).await?
+        crate::git::trusted_remote(repo, source_repo).await?.fetch
     } else {
         remote.to_string()
     };

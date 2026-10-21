@@ -23,36 +23,64 @@ use std::path::Path;
 use super::cmd::git_output;
 use crate::error::{Error, Result};
 
-/// The URL every host-side fetch, push and ls-remote in `checkout` talks to.
+/// Where host-side transport in a checkout reads from and writes to: the
+/// user's repository's `origin`, as its fetch URL and its push URL (the
+/// `pushurl` of a triangular setup, else the same as fetch).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrustedRemote {
+    /// Named by every fetch and ls-remote.
+    pub fetch: String,
+    /// Named by every push.
+    pub push: String,
+}
+
+/// The remote every host-side fetch, push and ls-remote in `checkout` talks
+/// to.
 ///
 /// When `checkout` is `source_repo` — the user's own repository being pushed
-/// (a new project's first publish) — its own `origin` is the answer. Otherwise
-/// the answer comes from `source_repo`'s `origin` and the checkout's must
-/// agree with it.
-pub async fn trusted_remote(checkout: &Path, source_repo: &Path) -> Result<String> {
-    let Some(source) = origin_url(source_repo).await? else {
+/// (a new project's first publish) — its own `origin` is the answer, as it
+/// stands. Otherwise the answer comes from `source_repo`'s `origin`, in the
+/// https form provisioning wrote into the checkout, and the checkout's must
+/// agree with it. Both are compared in that same form: `git remote get-url`
+/// reports a URL after the user's own `url.*.insteadOf` rewrites, so a global
+/// ssh rewrite shows on both sides alike and must not read as a change.
+pub async fn trusted_remote(checkout: &Path, source_repo: &Path) -> Result<TrustedRemote> {
+    let Some(fetch) = origin_url(source_repo, Direction::Fetch).await? else {
         return Err(Error::Git(format!(
             "no origin remote: '{}' has none to publish to or fetch from",
             source_repo.display()
         )));
     };
+    let push = origin_url(source_repo, Direction::Push)
+        .await?
+        .unwrap_or_else(|| fetch.clone());
     if checkout == source_repo {
-        return Ok(source);
+        return Ok(TrustedRemote { fetch, push });
     }
-    let trusted = crate::github::github_https_remote(&source);
-    match origin_url(checkout).await? {
-        Some(url) if url == trusted => Ok(trusted),
+    let trusted = TrustedRemote {
+        fetch: crate::github::github_https_remote(&fetch),
+        push: crate::github::github_https_remote(&push),
+    };
+    match origin_url(checkout, Direction::Fetch).await? {
+        Some(url) if crate::github::github_https_remote(&url) == trusted.fetch => Ok(trusted),
         Some(url) => Err(Error::Git(format!(
             "refusing to reach '{url}': the checkout's origin was changed from the remote it \
-             was cloned for ({trusted}). Fletch's host-side git talks only to that remote; \
-             restore it with `git remote set-url origin {trusted}`"
+             was cloned for ({}). Fletch's host-side git talks only to that remote; restore it \
+             with `git remote set-url origin {}`",
+            trusted.fetch, trusted.fetch
         ))),
         None => Err(Error::Git(format!(
             "refusing to fetch or push: the checkout has no origin, while the repository it was \
-             cloned from publishes to {trusted}. Restore it with `git remote set-url origin \
-             {trusted}`"
+             cloned from publishes to {}. Restore it with `git remote set-url origin {}`",
+            trusted.fetch, trusted.fetch
         ))),
     }
+}
+
+#[derive(Clone, Copy)]
+enum Direction {
+    Fetch,
+    Push,
 }
 
 /// `+refs/heads/<branch>:refs/remotes/origin/<branch>` — what `git fetch
@@ -66,12 +94,24 @@ pub fn tracking_refspec(branch: &str) -> String {
 /// Every branch, for the refresh before a publish.
 pub const ALL_TRACKING_REFSPEC: &str = "+refs/heads/*:refs/remotes/origin/*";
 
-async fn origin_url(repo: &Path) -> Result<Option<String>> {
-    let out = git_output(repo, &["remote", "get-url", "origin"]).await?;
+/// `origin`'s URL in `repo` for `direction`, as git would use it (`get-url`
+/// applies the user's `insteadOf` rewrites); `None` without an origin.
+async fn origin_url(repo: &Path, direction: Direction) -> Result<Option<String>> {
+    let args: &[&str] = match direction {
+        Direction::Fetch => &["remote", "get-url", "origin"],
+        Direction::Push => &["remote", "get-url", "--push", "origin"],
+    };
+    let out = git_output(repo, args).await?;
     if !out.status.success() {
         return Ok(None);
     }
-    let url = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    // `--push` lists every push URL; the first is the one git pushes to first.
+    let url = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_string();
     Ok((!url.is_empty()).then_some(url))
 }
 
@@ -113,7 +153,13 @@ mod tests {
     async fn the_source_repos_origin_is_the_remote_when_the_checkout_agrees() {
         let td = tempfile::tempdir().unwrap();
         let (source, checkout, origin) = repos(td.path());
-        assert_eq!(trusted_remote(&checkout, &source).await.unwrap(), origin);
+        assert_eq!(
+            trusted_remote(&checkout, &source).await.unwrap(),
+            TrustedRemote {
+                fetch: origin.clone(),
+                push: origin
+            }
+        );
     }
 
     #[tokio::test]
@@ -169,9 +215,71 @@ mod tests {
             ],
         );
         assert_eq!(
-            trusted_remote(&checkout, &source).await.unwrap(),
+            trusted_remote(&checkout, &source).await.unwrap().fetch,
             "https://github.com/me/repo.git"
         );
+    }
+
+    /// `git remote get-url` reports a URL after the user's own `insteadOf`
+    /// rewrites, on both sides alike; the agreement check must see through
+    /// them rather than report an unchanged checkout as repointed.
+    #[tokio::test]
+    async fn the_users_insteadof_rewrite_does_not_read_as_a_change() {
+        let td = tempfile::tempdir().unwrap();
+        let (source, checkout, _) = repos(td.path());
+        for repo in [&source, &checkout] {
+            git(
+                repo,
+                &[
+                    "remote",
+                    "set-url",
+                    "origin",
+                    "https://github.com/me/repo.git",
+                ],
+            );
+            // Stands in for the user's global rewrite; `get-url` applies it
+            // from any scope.
+            git(
+                repo,
+                &[
+                    "config",
+                    "url.git@github.com:.insteadOf",
+                    "https://github.com/",
+                ],
+            );
+            assert_eq!(
+                git(repo, &["remote", "get-url", "origin"]),
+                "git@github.com:me/repo.git",
+                "the rewrite is in effect"
+            );
+        }
+        assert_eq!(
+            trusted_remote(&checkout, &source).await.unwrap().fetch,
+            "https://github.com/me/repo.git"
+        );
+    }
+
+    /// A triangular setup fetches from one URL and pushes to another; the
+    /// source repo's `pushurl` is where the checkout's pushes go.
+    #[tokio::test]
+    async fn the_source_repos_pushurl_is_where_pushes_go() {
+        let td = tempfile::tempdir().unwrap();
+        let (source, checkout, origin) = repos(td.path());
+        git(
+            &source,
+            &[
+                "remote",
+                "set-url",
+                "--push",
+                "origin",
+                "git@github.com:me/fork.git",
+            ],
+        );
+        let remote = trusted_remote(&checkout, &source).await.unwrap();
+        assert_eq!(remote.fetch, origin);
+        assert_eq!(remote.push, "https://github.com/me/fork.git");
+        let own = trusted_remote(&source, &source).await.unwrap();
+        assert_eq!(own.push, "git@github.com:me/fork.git");
     }
 
     #[tokio::test]
@@ -183,7 +291,7 @@ mod tests {
             &["remote", "set-url", "origin", "git@github.com:me/repo.git"],
         );
         assert_eq!(
-            trusted_remote(&source, &source).await.unwrap(),
+            trusted_remote(&source, &source).await.unwrap().fetch,
             "git@github.com:me/repo.git",
             "an ssh origin stays ssh: the user's key is reachable there"
         );

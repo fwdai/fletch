@@ -114,7 +114,7 @@ async fn push_source(
         ));
     }
     let refspec = format!("{source}:refs/heads/{branch}");
-    cmd.args([url.as_str(), refspec.as_str()]);
+    cmd.args([url.push.as_str(), refspec.as_str()]);
     // Auth for the https transport. `pre-push` would fire on the host, but
     // hooks are already neutralised at the spawn seam (`git::hardening`).
     for (k, v) in crate::github::git_auth_env() {
@@ -207,7 +207,11 @@ pub async fn pull(checkout: &Path, source_repo: &Path) -> Result<()> {
     };
     let url = super::remote::trusted_remote(checkout, source_repo).await?;
     let mut cmd = crate::git_dist::command(checkout);
-    cmd.args(["pull", &url, &super::remote::tracking_refspec(&branch)]);
+    cmd.args([
+        "pull",
+        &url.fetch,
+        &super::remote::tracking_refspec(&branch),
+    ]);
     // Auth for the https transport; identity because a pull may create a merge
     // commit. Merge so the auth `GIT_CONFIG_*` set and the identity vars don't
     // clobber each other. Merge hooks are neutralised at the spawn seam.
@@ -305,7 +309,7 @@ pub async fn remote_branch_exists(
         "ls-remote",
         "--exit-code",
         "--heads",
-        &url,
+        &url.fetch,
         &format!("refs/heads/{branch}"),
     ]);
     for (k, v) in crate::github::git_auth_env() {

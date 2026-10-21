@@ -60,7 +60,11 @@ pub async fn fetch_fork_point(repo: &Path, source_repo: &Path, branch: &str) -> 
     // dead connection.
     let mut fetch_cmd = crate::git_dist::command(repo);
     fetch_cmd
-        .args(["fetch", &url, &super::remote::tracking_refspec(branch)])
+        .args([
+            "fetch",
+            &url.fetch,
+            &super::remote::tracking_refspec(branch),
+        ])
         .kill_on_drop(true);
     apply_github_auth(&mut fetch_cmd);
     let fetched = tokio::time::timeout(FETCH_TIMEOUT, fetch_cmd.output()).await;
