@@ -477,7 +477,12 @@ fn sandboxed_run_command(cwd: &Path, cmd: &str, project_id: &str) -> Result<Sand
     )?;
     // A nested Fletch (dogfooding) can't reach the host's `~/.fletch/{rpc,
     // worktrees}` under this profile; steer both to sandbox-writable roots.
-    // Harmless for any other Run target — nothing but Fletch reads these.
+    // Its toolchain cache goes the same way: it mints its own project ids, and
+    // this profile grants only *this* project's root, so its projects cache
+    // under a `nested/` level of that root rather than failing to create a
+    // sibling (`policy::nested_toolchain_cache_parent`). Harmless for any other
+    // Run target — nothing but Fletch reads these.
+    let project_root = crate::sandbox::toolchain_cache_root(&home, project_id)?;
     env.extend([
         (
             crate::rpc::RPC_ROOT_ENV.to_string(),
@@ -488,6 +493,12 @@ fn sandboxed_run_command(cwd: &Path, cmd: &str, project_id: &str) -> Result<Sand
         (
             crate::workspace::WORKSPACES_ROOT_ENV.to_string(),
             crate::sandbox::nested_checkouts_root(cwd)
+                .to_string_lossy()
+                .into_owned(),
+        ),
+        (
+            crate::sandbox::TOOLCHAIN_CACHE_PARENT_ENV.to_string(),
+            crate::sandbox::nested_toolchain_cache_parent(&project_root)
                 .to_string_lossy()
                 .into_owned(),
         ),

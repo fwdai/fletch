@@ -66,9 +66,15 @@ project an agent can still plant what that project's Run executes — the same
 accepted trade-off as an agent editing the `package.json` scripts Run runs
 (`sandbox/policy.rs`, `toolchain_cache_root`). The Run profile denies the host's
 claude and codex login files as the agent profile does; it leaves the Keychain
-open, a separate decision. The flat layout from before the per-project key
-(`npm/`, `bun/`, `playwright/` … directly under `~/.fletch/toolchain-cache`) is
-stale and can be deleted by hand; nothing sweeps it.
+open, a separate decision. A nested Fletch launched from the Run panel mints
+its own project ids, which that grant would not let it create as siblings, so
+the Run panel points it (`FLETCH_TOOLCHAIN_CACHE_ROOT`, like the RPC and
+checkout roots) at a `nested/` level inside the outer project's own root:
+writable under that profile, and still the outer project's trust domain, since
+the nested instance is that project's Run process. The flat layout from before
+the per-project key (`npm/`, `bun/`, `playwright/` … directly under
+`~/.fletch/toolchain-cache`) is stale and can be deleted by hand; nothing
+sweeps it.
 
 One carve-out runs the other way, inside the writable checkout: each
 repository's **git-executable configuration** — `.git/config`,

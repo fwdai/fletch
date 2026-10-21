@@ -22,7 +22,10 @@ pub use podman::{
     availability as podman_availability, launch_blocker as podman_launch_blocker,
     PodmanAvailability,
 };
-pub use policy::{toolchain_cache_env, toolchain_cache_parent, toolchain_cache_root, BoxPlatform};
+pub use policy::{
+    nested_toolchain_cache_parent, toolchain_cache_env, toolchain_cache_parent,
+    toolchain_cache_root, BoxPlatform, TOOLCHAIN_CACHE_PARENT_ENV,
+};
 pub use seatbelt::{
     build_run_profile, cleanup_nested_checkouts_roots, cleanup_nested_rpc_roots,
     nested_checkouts_root, nested_rpc_root, profile_args, SANDBOX_EXEC,

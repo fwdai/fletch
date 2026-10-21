@@ -520,8 +520,43 @@ pub fn toolchain_cache_root(home: &Path, project_id: &str) -> Result<PathBuf> {
 
 /// The directory holding every project's [`toolchain_cache_root`]. Never
 /// granted to a sandbox; only for recognising a path as Fletch-owned cache.
+///
+/// [`TOOLCHAIN_CACHE_PARENT_ENV`] overrides the default, the way
+/// `FLETCH_RPC_ROOT` and `FLETCH_WORKSPACES_ROOT` do for the other state
+/// roots: a *nested* Fletch launched from the Run panel mints its own project
+/// ids, and its Run profile grants only the outer project's root, so it could
+/// not create a sibling for one of its projects. The Run panel points it at
+/// [`nested_toolchain_cache_parent`] instead, inside the outer project's own
+/// root — writable under that profile, and exactly the outer project's trust
+/// domain, since the nested instance *is* that project's Run process.
 pub fn toolchain_cache_parent(home: &Path) -> PathBuf {
+    toolchain_cache_parent_from(home, std::env::var_os(TOOLCHAIN_CACHE_PARENT_ENV))
+}
+
+/// [`toolchain_cache_parent`] with the override passed in, so the choice is
+/// testable without touching the process environment.
+fn toolchain_cache_parent_from(home: &Path, overridden: Option<std::ffi::OsString>) -> PathBuf {
+    match overridden {
+        Some(dir) if !dir.is_empty() => PathBuf::from(dir),
+        _ => default_toolchain_cache_parent(home),
+    }
+}
+
+/// [`toolchain_cache_parent`] with no override: `~/.fletch/toolchain-cache`.
+/// What an outer instance's cache lives under, whatever this one was told.
+pub fn default_toolchain_cache_parent(home: &Path) -> PathBuf {
     home.join(".fletch").join("toolchain-cache")
+}
+
+/// Env var naming the directory [`toolchain_cache_parent`] returns. Set by the
+/// Run panel for a nested Fletch; nothing else reads it.
+pub const TOOLCHAIN_CACHE_PARENT_ENV: &str = "FLETCH_TOOLCHAIN_CACHE_ROOT";
+
+/// Where a nested Fletch launched from `project_root` (the outer project's
+/// [`toolchain_cache_root`]) keeps its projects' caches: one `nested/` level
+/// down, so its ids can never collide with the outer instance's.
+pub fn nested_toolchain_cache_parent(project_root: &Path) -> PathBuf {
+    project_root.join("nested")
 }
 
 /// `(env var, subdir under the cache root)` for every toolchain we redirect.
@@ -1042,6 +1077,32 @@ mod tests {
                 "{bad:?} must not key a cache root"
             );
         }
+    }
+
+    /// A nested Fletch is told its cache parent through the env, and it must be
+    /// one level inside the outer project's root — the only place the outer Run
+    /// profile lets it write — so its own project roots land under `nested/`.
+    #[test]
+    fn a_nested_instance_caches_under_the_outer_projects_root() {
+        let home = Path::new("/Users/u");
+        let outer = toolchain_cache_root(home, "outer").unwrap();
+        let nested_parent = nested_toolchain_cache_parent(&outer);
+        assert_eq!(nested_parent, outer.join("nested"));
+
+        let inner = toolchain_cache_parent_from(home, Some(nested_parent.into())).join("inner");
+        assert_eq!(inner, outer.join("nested").join("inner"));
+        assert!(
+            inner.starts_with(&outer),
+            "inside the outer project's grant"
+        );
+
+        // Unset or empty, the default stands — and the default is what an outer
+        // instance's overlay sits under whatever this instance was told, which
+        // is why `cargo_home` keys its inherited check on it.
+        let default = home.join(".fletch/toolchain-cache");
+        assert_eq!(default_toolchain_cache_parent(home), default);
+        assert_eq!(toolchain_cache_parent_from(home, None), default);
+        assert_eq!(toolchain_cache_parent_from(home, Some("".into())), default);
     }
 
     /// A macOS agent and a Linux container share one root, so a platform-keyed

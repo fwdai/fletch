@@ -140,8 +140,11 @@ fn user_home_from(
         return default;
     };
     // Any project's overlay counts: the one a nested Fletch inherits is keyed by
-    // its parent's project, which this instance knows nothing about.
-    let cache_root = super::policy::toolchain_cache_parent(home);
+    // its parent's project, which this instance knows nothing about. Checked
+    // against the *default* parent, not this instance's possibly overridden one
+    // (`TOOLCHAIN_CACHE_PARENT_ENV`): the outer instance's overlay sits under
+    // the default, while a nested instance's own parent is a subdir of it.
+    let cache_root = super::policy::default_toolchain_cache_parent(home);
     let inherited = dir.starts_with(&cache_root)
         || super::policy::resolve_existing_prefix(&dir)
             .starts_with(super::policy::resolve_existing_prefix(&cache_root));
