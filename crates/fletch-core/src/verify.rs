@@ -318,18 +318,35 @@ impl Verifier {
     /// ([`crate::supervisor::run::sandboxed_run_command`]): the Run profile,
     /// with the project's toolchain cache, and the shared run `env` over it.
     async fn run_sandboxed(&self, worktree: &Path, cmd: &str, env: &[(String, String)]) -> Bounded {
-        let run = match crate::supervisor::run::sandboxed_run_command(
+        let (run, run_env) = match self.sandboxed_invocation(worktree, cmd, env) {
+            Ok(invocation) => invocation,
+            Err(e) => return Bounded::Unrunnable(format!("could not build sandbox profile: {e}")),
+        };
+        run_bounded(&run.program, &run.args, worktree, self.timeout, &run_env).await
+    }
+
+    /// What [`run_sandboxed`](Self::run_sandboxed) runs: the Run-profile
+    /// command and its env — the cache redirect first, the project's shared
+    /// `env` after it so a project value wins. Separate from the run so the
+    /// pairing of grant and env can be checked without `sandbox-exec`.
+    fn sandboxed_invocation(
+        &self,
+        worktree: &Path,
+        cmd: &str,
+        env: &[(String, String)],
+    ) -> Result<(
+        crate::supervisor::run::SandboxedRunCommand,
+        Vec<(String, String)>,
+    )> {
+        let run = crate::supervisor::run::sandboxed_run_command(
             worktree,
             cmd,
             &self.home,
             &self.project_id,
-        ) {
-            Ok(run) => run,
-            Err(e) => return Bounded::Unrunnable(format!("could not build sandbox profile: {e}")),
-        };
-        let mut run_env = run.env;
+        )?;
+        let mut run_env = run.env.clone();
         run_env.extend_from_slice(env);
-        run_bounded(&run.program, &run.args, worktree, self.timeout, &run_env).await
+        Ok((run, run_env))
     }
 }
 
@@ -506,6 +523,55 @@ mod tests {
 
     fn write(dir: &Path, name: &str, contents: &str) {
         std::fs::write(dir.join(name), contents).unwrap();
+    }
+
+    // ── sandboxed invocation ──────────────────────────────────────────────
+
+    /// A check runs with the toolchain cache its profile grants: the redirect
+    /// env names the same root the profile text allows, and the project's
+    /// shared env rides on top of it rather than replacing it. Dropping the
+    /// cache env from the invocation again would fail here, not in a project's
+    /// `npm install` writing to a denied default dir.
+    #[test]
+    fn a_check_gets_the_cache_env_for_the_root_its_profile_grants() {
+        let td = tempfile::tempdir().unwrap();
+        let home = td.path().join("home");
+        let worktree = td.path().join("worktree");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(&worktree).unwrap();
+        let verifier = Verifier {
+            test_override: None,
+            setup_override: None,
+            lint_override: None,
+            project_id: "0b9f3c1e-6a4d-4e8b-9c2f-1d7e5a3b8c90".into(),
+            home: home.clone(),
+            timeout: Duration::from_secs(1),
+            setup_done: Mutex::new(HashSet::new()),
+        };
+        let shared = [("API_URL".to_string(), "http://localhost:3000".to_string())];
+
+        let (run, env) = verifier
+            .sandboxed_invocation(&worktree, "npm test", &shared)
+            .unwrap();
+
+        let value = |var: &str| {
+            env.iter()
+                .rev()
+                .find(|(k, _)| k == var)
+                .map(|(_, v)| v.clone())
+        };
+        let cache = value("npm_config_cache").expect("the cache redirect is set");
+        assert!(
+            Path::new(&cache).starts_with(&run.toolchain_cache),
+            "{cache} is outside the granted root {}",
+            run.toolchain_cache.display()
+        );
+        let profile = &run.args[1];
+        assert!(
+            profile.contains(&format!("(subpath \"{}\")", run.toolchain_cache.display())),
+            "the profile does not grant the root the env points at"
+        );
+        assert_eq!(value("API_URL").as_deref(), Some("http://localhost:3000"));
     }
 
     // ── resolution ────────────────────────────────────────────────────────
