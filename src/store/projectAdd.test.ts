@@ -30,6 +30,7 @@ import type { Workspace } from "@/api";
 import { FIRST_TASK_PROMPT } from "@/data/firstTask";
 import { createComposerSlice } from "./composer";
 import { createDraftsSlice } from "./drafts";
+import { type EnvironmentEntry, LOCAL_ENVIRONMENT_ID, setEnvironmentsSource } from "./environments";
 import { createReposSlice } from "./repos";
 import type { AppState } from "./types";
 
@@ -66,8 +67,24 @@ const draftOf = (store: ReturnType<typeof makeStore>["store"]) => {
   return draft ? { ...draft, text: s.composerDrafts[draft.id] } : null;
 };
 
+/** Make `entry` (or the local environment) the active one, as a switch does. */
+const activeIs = (entry?: EnvironmentEntry) =>
+  setEnvironmentsSource(() => ({
+    activeEnvironmentId: entry?.id ?? LOCAL_ENVIRONMENT_ID,
+    environments: entry ? { [entry.id]: entry } : {},
+  }));
+
+const remote: EnvironmentEntry = {
+  id: "host-1",
+  name: "Cloud box",
+  kind: "remote",
+  connection: "connected",
+  protocol: { version: 2, ops: [], events: [], features: [] },
+};
+
 beforeEach(() => {
   vi.clearAllMocks();
+  activeIs();
   api.allocateDraftName.mockResolvedValue("everest");
   api.repoDefaultBranch.mockResolvedValue("main");
   api.listRepoBranches.mockResolvedValue(["main"]);
@@ -147,6 +164,26 @@ describe("the draft after a project is added", () => {
 
     expect(store.getState().drafts).toEqual([]);
     expect(store.getState().lastError).toBe("Error: not a git repository");
+  });
+
+  it("is dropped when the user switches environments while it opens", async () => {
+    // Drafts are stashed per environment. The add has returned, but the draft's
+    // own reads are still in flight when the switch lands — the draft must not
+    // be written into, or selected in, the environment the user moved to.
+    const { store, closeProjectScreen } = makeStore(workspaceOf([]));
+    api.addWorkspaceRepo.mockResolvedValue(workspaceOf(["/repos/app"]));
+    api.allocateDraftName.mockImplementation(async () => {
+      activeIs(remote);
+      return "everest";
+    });
+
+    await store.getState().addWorkspaceRepo("/repos/app");
+    await settled();
+
+    expect(store.getState().drafts).toEqual([]);
+    expect(store.getState().activeDraftId).toBeNull();
+    expect(closeProjectScreen).not.toHaveBeenCalled();
+    expect(track).not.toHaveBeenCalledWith("project_add_draft_opened", expect.anything());
   });
 
   it("reports a draft that could not open without undoing the add", async () => {

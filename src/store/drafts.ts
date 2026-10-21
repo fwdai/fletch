@@ -15,6 +15,7 @@ import {
 import { setSetting } from "@/storage/settings";
 import { track } from "@/util/track";
 import { adoptSpawnedAgent } from "./adoptSpawnedAgent";
+import { activeEnvironmentId } from "./environments";
 import { refreshWorkspace } from "./refreshWorkspace";
 import type { AppState, SliceCreator } from "./types";
 
@@ -179,6 +180,11 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get) => ({
   // ── drafts ─────────────────────────────────────────────────────────────────
   createDraft: async (repoPath, seedPrompt, roadmapItemId) => {
     const { drafts, newDraftProvider, newDraftModel, newDraftCustomAgentId, modelsByAgent } = get();
+    // Drafts belong to the environment they were started in (they are stashed
+    // and swapped on a switch), and the reads below go over the wire. A switch
+    // that lands while they are in flight must not have this draft written —
+    // and selected — into the environment the user moved to.
+    const environment = activeEnvironmentId();
     // Name allocation is a backend call; if it fails there's no draft to
     // create. Surface it in the global error banner and bail rather than
     // leaving an unhandled rejection for the fire-and-forget callers (⌘N,
@@ -206,6 +212,7 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get) => ({
       base: await get().resolveDraftBase(repoPath),
       roadmapItemId,
     };
+    if (activeEnvironmentId() !== environment) return null;
     // Seed before the draft is visible, so the composer reads it on mount
     // (same ordering as startWorkFromIssue).
     if (seedPrompt) get().setComposerDraft(draft.id, seedPrompt);
@@ -235,6 +242,8 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get) => ({
 
   startWorkFromIssue: async (repoPath, issue) => {
     const { drafts, newDraftProvider, newDraftModel, newDraftCustomAgentId, modelsByAgent } = get();
+    // Same guard as createDraft: the draft is the starting environment's.
+    const environment = activeEnvironmentId();
     const name = await api.allocateDraftName(draftNames(drafts));
     const selection = normalizeDraftSelection(newDraftProvider, newDraftModel, modelsByAgent);
     const customAgentId = get().customAgents.some((a) => a.id === newDraftCustomAgentId)
@@ -257,6 +266,7 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get) => ({
     // section) so the seed is one complete block, not text that shifts under
     // the user after mount.
     const comments = await api.issueComments(repoPath, issue.source, issue.key).catch(() => []);
+    if (activeEnvironmentId() !== environment) return;
     get().setComposerDraft(draft.id, composeIssueBrief(issue, comments));
     set((s) => ({
       drafts: [draft, ...s.drafts],
