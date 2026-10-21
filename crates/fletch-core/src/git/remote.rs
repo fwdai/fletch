@@ -31,6 +31,11 @@
 //!   the user's config) rather than `origin`, so git maintains no
 //!   remote-tracking ref in the common dir.
 //!
+//! One file in `GIT_DIR` is configuration: `config.worktree`, read when the
+//! user's repository enables `extensions.worktreeConfig`, and then ranking
+//! above the user's own config. A checkout that has one is refused at
+//! [`Transport::open`]; Fletch never writes one there.
+//!
 //! The signer (`git::signing`) takes the object store alone
 //! ([`Transport::object_command`]): it runs in the user's repository as
 //! plainly as their own `git commit` there would.
@@ -119,8 +124,24 @@ impl Transport {
         let split = if checkout == source_repo {
             None
         } else {
+            let git_dir = git_path(checkout, "--absolute-git-dir").await?;
+            // The one file git reads from `GIT_DIR` as configuration: when
+            // the user's repository enables `extensions.worktreeConfig`,
+            // `config.worktree` there outranks the user's config — every
+            // key, the remote URL included — and it is the agent's to
+            // write. No checkout Fletch makes has one, so one is refused
+            // rather than read.
+            let worktree_config = git_dir.join("config.worktree");
+            if worktree_config.metadata().is_ok_and(|meta| meta.len() > 0) {
+                return Err(Error::Git(format!(
+                    "refusing to fetch or push: '{}' exists, and git would read it as the \
+                     repository's configuration. Fletch's host-side git takes its configuration \
+                     from your repository only; remove the file",
+                    worktree_config.display()
+                )));
+            }
             Some(Split {
-                git_dir: git_path(checkout, "--absolute-git-dir").await?,
+                git_dir,
                 common_dir: git_path(source_repo, "--git-common-dir").await?,
                 objects: git_path(checkout, "--git-common-dir")
                     .await?
@@ -256,19 +277,21 @@ impl Transport {
                 if self.split.is_some() {
                     self.mirror_fetched().await?;
                 }
-                // Each push remote's tips too, by id and into `FETCH_HEAD`
-                // only, so that what a fork alone has is in the checkout's
-                // store: the published tips a signed publish stops at must
-                // be present locally.
+                // Each push remote's branches too, by name and into
+                // `FETCH_HEAD` only (a name, not an id: every server serves
+                // an advertised ref, not every one an unadvertised want), so
+                // that what a fork alone has is in the checkout's store: the
+                // published tips a signed publish stops at must be present
+                // locally.
                 for url in self.remotes().into_iter().skip(1) {
-                    let tips: Vec<String> = self
+                    let branches: Vec<String> = self
                         .heads(url, None)
                         .await?
                         .into_iter()
-                        .map(|(_, sha)| sha)
+                        .map(|(name, _)| format!("refs/heads/{name}"))
                         .collect();
-                    if !tips.is_empty() {
-                        self.fetch(url, &tips, false, timeout).await?;
+                    if !branches.is_empty() {
+                        self.fetch(url, &branches, false, timeout).await?;
                     }
                 }
                 Ok(())
@@ -546,6 +569,31 @@ async fn origin_url(repo: &Path) -> Result<Option<String>> {
 mod tests {
     use super::super::testing::{bare, clone_elsewhere, commit_file, git, init_repo, repos};
     use super::*;
+
+    /// With `extensions.worktreeConfig` in the user's repository, git reads
+    /// the checkout's `config.worktree` above the user's config — the remote
+    /// URL included. A checkout that has one is refused, not read.
+    #[tokio::test]
+    async fn a_checkout_with_a_worktree_config_is_refused() {
+        let td = tempfile::tempdir().unwrap();
+        let fx = repos(td.path());
+        git(&fx.source, &["config", "extensions.worktreeConfig", "true"]);
+        std::fs::write(
+            fx.checkout.join(".git/config.worktree"),
+            "[remote \"origin\"]\n\turl = https://github.com/victim/private.git\n",
+        )
+        .unwrap();
+        let err = Transport::open(&fx.checkout, &fx.source).await.unwrap_err();
+        assert!(err.to_string().contains("config.worktree"), "{err}");
+
+        std::fs::write(fx.checkout.join(".git/config.worktree"), "").unwrap();
+        let t = Transport::open(&fx.checkout, &fx.source).await.unwrap();
+        assert_eq!(
+            t.fetch_remote(),
+            fx.origin.to_str().unwrap(),
+            "an empty one is nothing"
+        );
+    }
 
     fn branch_tip(bare: &Path, branch: &str) -> Option<String> {
         let out = super::super::testing::git_output(
