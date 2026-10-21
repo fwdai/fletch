@@ -81,7 +81,9 @@ impl GitDispatcher {
         // Nothing is materialized for it: a head that isn't there fails the
         // identity read below, which names it.
         let head = arg_branch_named(args, "head");
-        let publishes_other_head = head.is_some();
+        // An explicit head that names the checked-out branch is the agent's
+        // own branch, spelled out; only a head that differs is another one.
+        let publishes_other_head = head.is_some() && head != current;
         let branch = match (head, current, requested) {
             (Some(head), _, _) => head,
             (None, Some(cur), None) => cur,
@@ -129,7 +131,8 @@ impl GitDispatcher {
         };
         // Ownership follows the checked-out branch only. A stack's other head
         // published through `args.head` is not where the agent works, and
-        // recording it would replace the branch the force anchor names.
+        // recording it would replace the branch the force anchor names; the
+        // checked-out branch named explicitly is still the agent's own.
         let born_on_origin =
             !publishes_other_head && born_on_origin_by_this_push(&t, &branch, &effects).await;
         if let Err(e) = t.publish(&branch, &tip, false).await {

@@ -114,6 +114,52 @@ async fn open_pr_head_publishes_a_branch_that_is_not_checked_out() {
     );
 }
 
+/// `args.head` naming the branch that is checked out is the agent's own
+/// branch spelled out, not another head: its first publish records it.
+#[tokio::test]
+async fn open_pr_head_naming_the_current_branch_still_records_ownership() {
+    let td = tempfile::tempdir().unwrap();
+    let origin = td.path().join("origin.git");
+    std::fs::create_dir_all(&origin).unwrap();
+    run_git(&origin, &["init", "-q", "--bare", "-b", "main"]);
+
+    let repo = td.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    run_git(&repo, &["init", "-q", "-b", "main"]);
+    run_git(&repo, &["config", "user.email", "t@example.com"]);
+    run_git(&repo, &["config", "user.name", "Tester"]);
+    run_git(
+        &repo,
+        &["remote", "add", "origin", origin.to_str().unwrap()],
+    );
+    std::fs::write(repo.join("a.txt"), b"x").unwrap();
+    run_git(&repo, &["add", "-A"]);
+    run_git(&repo, &["commit", "-q", "-m", "init"]);
+    run_git(&repo, &["push", "-q", "origin", "main"]);
+    run_git(&repo, &["checkout", "-q", "-b", "feat/x"]);
+    std::fs::write(repo.join("b.txt"), b"y").unwrap();
+    run_git(&repo, &["add", "-A"]);
+    run_git(&repo, &["commit", "-q", "-m", "x"]);
+
+    let disp = dispatcher(&repo);
+    let (resp, fx) = disp
+        .dispatch_inner(
+            "h4",
+            "open_pr",
+            &json!({"title": "x", "head": "feat/x", "base": "main"}),
+        )
+        .await;
+    assert!(!resp.ok, "a bare-path origin is not GitHub: {resp:?}");
+    assert!(
+        fx.iter().any(|e| matches!(
+            e,
+            crate::rpc::RpcEvent::Named { name, payload }
+                if name == crate::rpc::git::EVENT_BRANCH_CREATED && payload["branch"] == "feat/x"
+        )),
+        "the checked-out branch, named as head, is recorded as own: {fx:?}"
+    );
+}
+
 #[tokio::test]
 async fn open_pr_head_must_be_a_local_branch() {
     let td = tempfile::tempdir().unwrap();
