@@ -189,6 +189,64 @@ async fn fetch_all_checks(
     Ok(Some(items))
 }
 
+/// The REST pull-request object, whole, for an agent that asked to see its
+/// PR. State and mergeability come from the same rules as
+/// [`parse_pr_state_rest`], so the two never disagree.
+pub(crate) fn parse_pr_detail(pr: &Value) -> PrDetail {
+    let state = parse_pr_state_rest(pr);
+    let text = |key: &str| pr[key].as_str().unwrap_or_default().to_string();
+    let count = |key: &str| pr[key].as_u64().unwrap_or_default() as u32;
+    let when = |key: &str| {
+        pr[key]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    };
+    PrDetail {
+        number: state.number,
+        url: state.url,
+        state: state.state,
+        draft: pr["draft"].as_bool().unwrap_or(false),
+        title: state.title,
+        body: text("body"),
+        branch: pr["head"]["ref"].as_str().unwrap_or_default().to_string(),
+        head_sha: pr["head"]["sha"].as_str().unwrap_or_default().to_string(),
+        base: pr["base"]["ref"].as_str().unwrap_or_default().to_string(),
+        mergeable: state.mergeable,
+        merge_state: parse_merge_state(pr["mergeable_state"].as_str().unwrap_or("unknown")),
+        author: pr["user"]["login"].as_str().unwrap_or_default().to_string(),
+        commits: count("commits"),
+        changed_files: count("changed_files"),
+        additions: count("additions"),
+        deletions: count("deletions"),
+        created_at: text("created_at"),
+        updated_at: text("updated_at"),
+        merged_at: when("merged_at"),
+        closed_at: when("closed_at"),
+    }
+}
+
+/// One PR by number, whole, over conditional REST. `Ok(None)` when GitHub
+/// answers anything but success for it — not found, or not visible to the
+/// token — or while a rate-limit backoff is active; the agent op tells those
+/// apart before calling.
+pub async fn pr_detail(checkout: &Path, number: u32) -> Result<Option<PrDetail>> {
+    if client::is_backing_off() {
+        return Ok(None);
+    }
+    let Some((owner, repo)) = resolve_slug(checkout, None).await else {
+        return Ok(None);
+    };
+    let client = client::Client::new()?;
+    let (status, pr) = client
+        .rest_get_conditional(&format!("/repos/{owner}/{repo}/pulls/{number}"))
+        .await?;
+    if !status.is_success() {
+        return Ok(None);
+    }
+    Ok(Some(parse_pr_detail(&pr)))
+}
+
 /// Fetch one PR's state by number over conditional REST, resolving the repo
 /// from any checkout of it.
 ///
@@ -412,6 +470,46 @@ mod tests {
             "number": 11, "state": "open", "merged": false, "mergeable": false
         }));
         assert_eq!(conflicting.mergeable, MergeableState::Conflicting);
+    }
+
+    /// The whole PR object, flat, with state and mergeability read by the
+    /// same rules as the state parser.
+    #[test]
+    fn rest_detail_reads_the_fields_agents_ask_for() {
+        let pr = parse_pr_detail(&json!({
+            "number": 42, "html_url": "https://github.com/o/r/pull/42",
+            "title": "feat: x", "body": "## Summary\n\nthings\n\n## Decisions\n- none",
+            "state": "open", "merged": false, "mergeable": false, "mergeable_state": "dirty",
+            "draft": true,
+            "head": { "ref": "feat/x", "sha": "abc123" }, "base": { "ref": "develop" },
+            "user": { "login": "octocat" },
+            "commits": 3, "changed_files": 4, "additions": 100, "deletions": 7,
+            "created_at": "2026-10-20T10:00:00Z", "updated_at": "2026-10-21T09:00:00Z",
+            "merged_at": null, "closed_at": null
+        }));
+        assert_eq!(pr.number, 42);
+        assert_eq!(pr.state, PrStatus::Open);
+        assert!(pr.draft);
+        assert_eq!(pr.branch, "feat/x");
+        assert_eq!(pr.head_sha, "abc123");
+        assert_eq!(pr.base, "develop");
+        assert_eq!(pr.mergeable, MergeableState::Conflicting);
+        assert_eq!(pr.merge_state, MergeState::Dirty);
+        assert_eq!(pr.author, "octocat");
+        assert_eq!(
+            (pr.commits, pr.changed_files, pr.additions, pr.deletions),
+            (3, 4, 100, 7)
+        );
+        assert!(pr.body.contains("## Decisions"));
+        assert_eq!(pr.merged_at, None);
+
+        let merged = parse_pr_detail(&json!({
+            "number": 7, "state": "closed", "merged": true, "mergeable": null,
+            "merged_at": "2026-10-21T12:00:00Z", "closed_at": "2026-10-21T12:00:00Z"
+        }));
+        assert_eq!(merged.state, PrStatus::Merged);
+        assert_eq!(merged.merge_state, MergeState::Unknown);
+        assert_eq!(merged.merged_at.as_deref(), Some("2026-10-21T12:00:00Z"));
     }
 
     /// The branch pair is all-or-nothing: a fix agent forked from an empty

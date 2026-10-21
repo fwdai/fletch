@@ -142,27 +142,29 @@ async fn an_unknown_op_is_still_refused_by_name() {
 }
 
 #[tokio::test]
-async fn pr_checks_rejects_a_number_that_is_not_a_positive_integer() {
+async fn pr_reads_reject_a_number_that_is_not_a_positive_integer() {
     let td = tempfile::tempdir().unwrap();
     let disp = dispatcher(td.path());
-    for bad in [
-        json!(0),
-        json!(-3),
-        json!(1.5),
-        json!("12"),
-        json!(true),
-        json!(u64::from(u32::MAX) + 1),
-    ] {
-        let (resp, effects) = disp
-            .dispatch_inner("c", "pr_checks", &json!({ "number": bad }))
-            .await;
-        assert!(!resp.ok, "{bad} must be refused");
-        let err = resp.error.unwrap();
-        assert!(
-            err.starts_with("pr_checks: `number` must be a positive integer"),
-            "{bad}: {err}"
-        );
-        assert!(effects.is_empty());
+    for op in ["pr_checks", "pr_view"] {
+        for bad in [
+            json!(0),
+            json!(-3),
+            json!(1.5),
+            json!("12"),
+            json!(true),
+            json!(u64::from(u32::MAX) + 1),
+        ] {
+            let (resp, effects) = disp
+                .dispatch_inner("c", op, &json!({ "number": bad }))
+                .await;
+            assert!(!resp.ok, "{op} {bad} must be refused");
+            let err = resp.error.unwrap();
+            assert!(
+                err.starts_with(&format!("{op}: `number` must be a positive integer")),
+                "{op} {bad}: {err}"
+            );
+            assert!(effects.is_empty());
+        }
     }
 }
 

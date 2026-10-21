@@ -64,8 +64,10 @@ actions that need host-held GitHub credentials — `git_push`, `open_pr`, and
 dispatcher also exposes `echo` as a simple round-trip check. Future app features
 can define their own ops on top of the same mailbox.
 
-To read your branch's pull request, use `pr_view` (state, URL, mergeability),
-`pr_checks` (CI results: each run's `id`, name, status, conclusion and URL;
+To read your branch's pull request, use `pr_view` (number, URL, state, draft
+flag, title, body, head `branch` and `head_sha`, `base`, `mergeable`,
+`merge_state`, author, commit and file counts; optional `args.number` for
+another PR), `pr_checks` (CI results: each run's `id`, name, status, conclusion and URL;
 optional `args.number` for another PR), `pr_check_log` (one failing check's
 job log tail and annotations: `args.check` is a run's `id` or `name` from
 `pr_checks`, `args.lines` how many trailing lines, default 200, max 2000), `pr_comments`

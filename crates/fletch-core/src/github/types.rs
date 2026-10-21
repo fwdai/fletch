@@ -66,6 +66,40 @@ pub struct PrState {
     pub branch: Option<String>,
 }
 
+/// Everything an agent asks about a pull request, flat, from one REST read of
+/// the PR object. The fields are the ones agents pulled through `gh pr view
+/// --json` before the op existed: base, state, mergeability, head and its sha,
+/// title, body, merge gate, draft flag, sizes. `pr_view`'s answer.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct PrDetail {
+    pub number: u32,
+    pub url: String,
+    pub state: PrStatus,
+    pub draft: bool,
+    pub title: String,
+    pub body: String,
+    /// Head branch name.
+    pub branch: String,
+    pub head_sha: String,
+    pub base: String,
+    pub mergeable: MergeableState,
+    /// GitHub's combined merge gate: what actually decides whether the PR can
+    /// land (`clean`, `blocked`, `behind`, `dirty`, …).
+    pub merge_state: MergeState,
+    pub author: String,
+    pub commits: u32,
+    pub changed_files: u32,
+    pub additions: u32,
+    pub deletions: u32,
+    /// ISO-8601 as GitHub gives them.
+    pub created_at: String,
+    pub updated_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub merged_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub closed_at: Option<String>,
+}
+
 /// Lightweight PR summary for the composer's "#" mention autocomplete —
 /// just enough to list and reference a PR by number.
 #[derive(Debug, Clone, serde::Serialize)]

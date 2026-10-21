@@ -117,14 +117,28 @@ impl GitDispatcher {
         Ok(t)
     }
 
+    /// The branch's PR, whole (`PrDetail`); `args.number` views another PR of
+    /// the repository instead.
     pub(super) async fn pr_view(&self, id: &str, args: &Value) -> Response {
+        let number = match positive_u32_arg(args, "number") {
+            Ok(n) => n,
+            Err(e) => return Response::err(id, format!("pr_view: {e}")),
+        };
         let t = match self.pr_read_target(id, "pr_view", args).await {
             Ok(t) => t,
             Err(resp) => return resp,
         };
-        match branch_pr(id, "pr_view", &t).await {
-            Ok(pr) => json_ok(id, "pr_view", &pr),
-            Err(resp) => resp,
+        let number = match number {
+            Some(n) => n,
+            None => match branch_pr(id, "pr_view", &t).await {
+                Ok(pr) => pr.number,
+                Err(resp) => return resp,
+            },
+        };
+        match crate::github::pr_detail(&t.source_repo, number).await {
+            Ok(Some(pr)) => json_ok(id, "pr_view", &pr),
+            Ok(None) => Response::err(id, format!("pr_view: {}", not_found_or_hidden(number))),
+            Err(e) => Response::err(id, format!("pr_view: {e}")),
         }
     }
 
