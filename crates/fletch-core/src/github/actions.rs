@@ -180,6 +180,12 @@ pub(crate) fn parse_run_list(body: &Value) -> Vec<WorkflowRun> {
 /// `.github/workflows/ci.yml` → `ci.yml`: the spelling the workflow
 /// endpoints take, so a row's `workflow` can be passed straight back.
 pub(crate) fn workflow_file(path: &str) -> String {
+    // GitHub may report the path with the ref it ran at appended
+    // (`.github/workflows/build.yml@main`, as its own response example
+    // shows; a reusable workflow from another repository too). The
+    // workflow endpoints take the bare file name, so the suffix goes —
+    // first, since a ref such as `refs/heads/main` has slashes of its own.
+    let path = path.split_once('@').map_or(path, |(file, _ref)| file);
     path.rsplit('/').next().unwrap_or(path).to_string()
 }
 
@@ -397,6 +403,27 @@ mod tests {
         assert_eq!(runs[1].conclusion, None);
         assert_eq!(runs[1].run_attempt, 1, "an absent attempt is the first");
         assert!(parse_run_list(&json!({ "message": "Not Found" })).is_empty());
+    }
+
+    /// The `path` GitHub reports can carry the ref the run was at, and a
+    /// reusable workflow its repository; the workflow endpoints take the
+    /// bare file name, which is what a row must hand back.
+    #[test]
+    fn a_workflow_path_is_reduced_to_the_file_the_endpoints_take() {
+        assert_eq!(
+            workflow_file(".github/workflows/build.yml@main"),
+            "build.yml"
+        );
+        assert_eq!(workflow_file(".github/workflows/ci.yml"), "ci.yml");
+        assert_eq!(
+            workflow_file("octo-org/shared/.github/workflows/deploy.yml@refs/heads/main"),
+            "deploy.yml"
+        );
+        assert_eq!(workflow_file("ci.yml"), "ci.yml");
+        assert_eq!(
+            workflow_file("dynamic/pages/pages-build-deployment"),
+            "pages-build-deployment"
+        );
     }
 
     #[test]
