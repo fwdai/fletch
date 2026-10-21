@@ -36,8 +36,8 @@ async fn open_pr_refuses_option_like_base() {
 /// `args.head` publishes a local branch other than the checked-out one and
 /// opens the PR from it. The fixture's origin is a bare path, so the PR
 /// creation itself is refused as "not a GitHub repository" after the push —
-/// which is where the test reads the outcome: the head is on origin, it was
-/// recorded as born there, and HEAD never moved.
+/// which is where the test reads the outcome: the head is on origin, HEAD
+/// never moved, and ownership stayed with the checked-out branch.
 #[tokio::test]
 async fn open_pr_head_publishes_a_branch_that_is_not_checked_out() {
     let td = tempfile::tempdir().unwrap();
@@ -105,12 +105,12 @@ async fn open_pr_head_publishes_a_branch_that_is_not_checked_out() {
         "the checkout stays where it was"
     );
     assert!(
-        fx.iter().any(|e| matches!(
+        !fx.iter().any(|e| matches!(
             e,
-            crate::rpc::RpcEvent::Named { name, payload }
-                if name == crate::rpc::git::EVENT_BRANCH_CREATED && payload["branch"] == "feat/second"
+            crate::rpc::RpcEvent::Named { name, .. }
+                if name == crate::rpc::git::EVENT_BRANCH_CREATED
         )),
-        "the head was born on origin by this push: {fx:?}"
+        "publishing another head must not move branch ownership off feat/third: {fx:?}"
     );
 }
 

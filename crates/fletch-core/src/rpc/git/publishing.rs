@@ -81,6 +81,7 @@ impl GitDispatcher {
         // Nothing is materialized for it: a head that isn't there fails the
         // identity read below, which names it.
         let head = arg_branch_named(args, "head");
+        let publishes_other_head = head.is_some();
         let branch = match (head, current, requested) {
             (Some(head), _, _) => head,
             (None, Some(cur), None) => cur,
@@ -126,7 +127,11 @@ impl GitDispatcher {
             Ok(tip) => tip,
             Err(resp) => return (resp, effects),
         };
-        let born_on_origin = born_on_origin_by_this_push(&t, &branch, &effects).await;
+        // Ownership follows the checked-out branch only. A stack's other head
+        // published through `args.head` is not where the agent works, and
+        // recording it would replace the branch the force anchor names.
+        let born_on_origin =
+            !publishes_other_head && born_on_origin_by_this_push(&t, &branch, &effects).await;
         if let Err(e) = t.publish(&branch, &tip, false).await {
             return (
                 Response::err(id, format!("open_pr push failed: {e}")),
