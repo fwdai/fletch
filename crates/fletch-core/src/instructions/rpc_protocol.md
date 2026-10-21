@@ -59,10 +59,12 @@ mv "$FLETCH_RPC_DIR/requests/$ID.json.tmp" "$FLETCH_RPC_DIR/requests/$ID.json"
 ```
 
 The exact op names are feature-specific. Fletch uses this transport for the git
-actions that need host-held GitHub credentials — `git_push`, `open_pr`, and
-`git_fetch` (local git you run directly; see the git-actions playbooks). The
-dispatcher also exposes `echo` as a simple round-trip check. Future app features
-can define their own ops on top of the same mailbox.
+actions that need host-held GitHub credentials — `git_push`, `open_pr`,
+`git_fetch` (`args.ref` or `args.refs`, `pull/<n>/head` for a PR's head)
+and `git_ls_remote` (origin's branches, `args.prefix`); local git
+you run directly (see the git-actions playbooks). The dispatcher also exposes
+`echo` as a simple round-trip check. Future app features can define their own
+ops on top of the same mailbox.
 
 To read your branch's pull request, use `pr_view` (number, URL, state, draft
 flag, title, body, head `branch` and `head_sha`, `base`, `mergeable`,

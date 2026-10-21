@@ -20,7 +20,8 @@ A trigger about a pull request may carry `branch="<name>"` — that PR's head br
 
 - **`git_push`** — push the current branch to `origin`. Pass `args.force=true` to push a rewritten history (e.g. after a rebase); it uses `--force-with-lease`, which rewrites the remote branch but refuses if the remote has moved in a way you haven't seen.
 - **`open_pr`** — push and open a pull request. It targets the base branch this workspace was created against; pass `args.base="<branch>"` to target a different one (see below).
-- **`git_fetch`** — refresh a base branch from `origin` (for `update-branch`).
+- **`git_fetch`** — refresh branches from `origin`: `args.ref` for one, `args.refs` for several, `pull/<n>/head` for another PR's head (lands as `origin/pr/<n>`); with no ref, the base branch (for `update-branch`).
+- **`git_ls_remote`** — the branches on `origin` right now (`branch`, `sha`), optionally under `args.prefix`.
 - **`pr_edit`** — change the open pull request's `title`, `body`, `base` or `draft` flag. When a PR already exists for your branch and your follow-up commits changed what it does, refresh its title and body with this instead of opening another PR.
 
 Your workspace starts with no branch (detached HEAD) — that's expected. The branch is created the first time you push, and **you choose its name**: pass `args.branch` to `git_push` (or `open_pr`) with a short, conventional, descriptive name for the work — `fix/…`, `feat/…`, or `chore/…` (no `fletch/` prefix), e.g. `fix/login-crash`. Run `git status` if unsure whether you're already on a branch; once you are, omit `args.branch` and later pushes update that same branch.

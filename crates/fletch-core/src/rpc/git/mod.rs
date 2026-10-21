@@ -142,6 +142,7 @@ impl GitDispatcher {
             "open_pr" => self.open_pr(id, args).await,
             "git_push" => self.git_push(id, args).await,
             "git_fetch" => (self.git_fetch(id, args).await, Vec::new()),
+            "git_ls_remote" => (self.git_ls_remote(id, args).await, Vec::new()),
             "signal_git_action" => self.signal_git_action(id, args),
             "pr_view" => (self.pr_view(id, args).await, Vec::new()),
             "pr_checks" => (self.pr_checks(id, args).await, Vec::new()),

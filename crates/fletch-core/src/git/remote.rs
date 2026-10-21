@@ -108,13 +108,29 @@ struct Split {
 }
 
 /// Which branches a fetch mirrors into the checkout.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Branches<'a> {
     /// Every branch of the fetch remote, pruning what is gone, and the tips
     /// of each push remote. The view a publish needs.
     All,
     /// One branch of the fetch remote.
     One(&'a str),
+    /// A pull request's head on the fetch remote (`refs/pull/<n>/head`, which
+    /// GitHub advertises but no clone tracks), landing as `origin/pr/<n>` so
+    /// the agent can check it out or diff against it.
+    PullRequest(u32),
+}
+
+impl Branches<'_> {
+    /// The ref fetched and the name it lands under in `refs/remotes/origin/`,
+    /// for the single-ref variants.
+    fn single(self) -> Option<(String, String)> {
+        match self {
+            Branches::All => None,
+            Branches::One(branch) => Some((format!("refs/heads/{branch}"), branch.to_string())),
+            Branches::PullRequest(n) => Some((format!("refs/pull/{n}/head"), format!("pr/{n}"))),
+        }
+    }
 }
 
 impl Transport {
@@ -244,12 +260,20 @@ impl Transport {
         timeout: Duration,
     ) -> Result<()> {
         match which {
-            Branches::One(branch) => {
-                let refspec = format!("refs/heads/{branch}");
+            Branches::One(_) | Branches::PullRequest(_) => {
+                let Some((refspec, tracking)) = which.single() else {
+                    unreachable!("the single-ref arms are matched above");
+                };
+                let branch = tracking.as_str();
                 if self.split.is_none() {
                     // Fetched from `origin` by name, git moves the tracking
-                    // ref itself once nothing blocks it.
+                    // ref itself once nothing blocks it. A pull request's
+                    // head has no default mapping, so it is given one.
                     self.clear_conflicting(branch).await?;
+                    let refspec = match which {
+                        Branches::PullRequest(_) => format!("+{refspec}:{TRACKING}/{branch}"),
+                        _ => refspec,
+                    };
                     return self
                         .fetch(&self.fetch_remote, &[refspec], false, timeout)
                         .await;
@@ -363,6 +387,13 @@ impl Transport {
             );
         }
         Ok(tips.into_iter().collect())
+    }
+
+    /// `(branch, commit)` for every branch the fetch remote advertises right
+    /// now — the agent's `git_ls_remote`, so a branch created since the last
+    /// fetch is seen.
+    pub async fn branches(&self) -> Result<Vec<(String, String)>> {
+        self.heads(&self.fetch_remote, None).await
     }
 
     /// The commit `remote` (the fetch remote or one of the push remotes)
