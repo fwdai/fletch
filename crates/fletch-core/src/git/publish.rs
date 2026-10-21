@@ -439,6 +439,72 @@ mod tests {
         assert_eq!(fork_tip("feat"), theirs, "the fork kept their commit");
     }
 
+    /// A saved fork tip outlives its branch (nothing prunes it); a later
+    /// branch nested under the old name must still publish, forced or not.
+    #[tokio::test]
+    async fn a_stale_fork_tip_does_not_block_a_nested_branch_name() {
+        let td = tempfile::tempdir().unwrap();
+        let fx = signing_repos(td.path());
+        let fork = td.path().join("fork.git");
+        git(td.path(), &["init", "-q", "--bare", fork.to_str().unwrap()]);
+        git(
+            &fx.source,
+            &[
+                "remote",
+                "set-url",
+                "--push",
+                "origin",
+                fork.to_str().unwrap(),
+            ],
+        );
+        git(&fx.checkout, &["checkout", "-q", "-b", "feat"]);
+        commit_file(&fx.checkout, "one.txt");
+        publish(&publication(&fx, "feat"), Tip::Branch)
+            .await
+            .unwrap();
+        // The branch goes away everywhere; the saved tip stays behind.
+        git(&fx.checkout, &["checkout", "-q", "main"]);
+        git(&fx.checkout, &["branch", "-q", "-D", "feat"]);
+        git(
+            td.path(),
+            &[
+                "--git-dir",
+                fork.to_str().unwrap(),
+                "update-ref",
+                "-d",
+                "refs/heads/feat",
+            ],
+        );
+
+        git(&fx.checkout, &["checkout", "-q", "-b", "feat/sub"]);
+        commit_file(&fx.checkout, "two.txt");
+        let out = publish(&publication(&fx, "feat/sub"), Tip::Branch)
+            .await
+            .unwrap();
+        assert_eq!(out.summary, "pushed");
+        git(
+            &fx.checkout,
+            &["commit", "-q", "--amend", "-m", "two, amended"],
+        );
+        let forced = Publication {
+            force: true,
+            ..publication(&fx, "feat/sub")
+        };
+        let out = publish(&forced, Tip::Branch).await.unwrap();
+        assert_eq!(
+            git(
+                td.path(),
+                &[
+                    "--git-dir",
+                    fork.to_str().unwrap(),
+                    "rev-parse",
+                    "refs/heads/feat/sub"
+                ]
+            ),
+            out.tip
+        );
+    }
+
     #[tokio::test]
     async fn a_branch_that_moved_since_its_tip_was_read_is_not_published() {
         let td = tempfile::tempdir().unwrap();

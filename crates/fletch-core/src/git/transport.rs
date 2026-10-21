@@ -89,7 +89,7 @@ pub(super) async fn push_commit(
 /// fetches come from. With a `pushurl` (a fork) it is not: `origin/*` is the
 /// fetch remote's view, refreshed and pruned from there before a signed
 /// publish, and never holds a branch that exists on the fork alone. The fork's
-/// tip is kept apart, under `refs/fletch/pushed/<branch>`, and before a force
+/// tip is kept apart, under [`pushed_tip_ref`], and before a force
 /// it is refreshed from the fork itself — the lease then holds exactly what
 /// the fork has, and [`require_integrated`] is what refuses a tip nobody here
 /// has looked at.
@@ -108,7 +108,7 @@ async fn push_source(
     let tracking = format!("refs/remotes/origin/{branch}");
     let triangular = url.push != url.fetch;
     let lease_ref = if triangular {
-        format!("refs/fletch/pushed/{branch}")
+        pushed_tip_ref(branch)
     } else {
         tracking.clone()
     };
@@ -167,6 +167,17 @@ async fn push_source(
     } else {
         Ok("pushed".to_string())
     }
+}
+
+/// Where the push remote's last known tip of `branch` is kept:
+/// `refs/fletch/pushed/<sha256 of the branch name>`. Flat on purpose — a ref
+/// named after the branch would nest like the branch does, and a tip saved
+/// for `feat` (never pruned once the branch is gone, since nothing fetches
+/// into this namespace) would then sit where `feat/sub`'s ref must go, and
+/// git refuses to create one under the other.
+fn pushed_tip_ref(branch: &str) -> String {
+    use sha2::{Digest, Sha256};
+    format!("refs/fletch/pushed/{:x}", Sha256::digest(branch.as_bytes()))
 }
 
 /// `lease_ref` set to `branch` as the push remote at `push_url` has it right
@@ -555,6 +566,17 @@ mod tests {
             String::from_utf8_lossy(&out.stderr)
         );
         String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    /// A saved tip for `feat` must not stand in the way of one for `feat/sub`.
+    #[test]
+    fn saved_push_tips_never_nest() {
+        let feat = pushed_tip_ref("feat");
+        let sub = pushed_tip_ref("feat/sub");
+        assert_ne!(feat, sub);
+        assert!(!sub.starts_with(&format!("{feat}/")));
+        assert!(!feat.contains("feat"), "no branch segment to nest on");
+        assert_eq!(feat, pushed_tip_ref("feat"), "stable");
     }
 
     /// The agent owns its `.git/HEAD`/`refs`, so the `branch` string reaching
