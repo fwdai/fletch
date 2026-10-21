@@ -95,10 +95,12 @@ fn clone_url(spec: &str) -> String {
 /// No timeout — a large repo can legitimately take minutes; the caller
 /// (`new_project::clone`) self-heals a wedged partial clone by removing it.
 pub async fn repo_clone(spec: &str, target: &Path) -> Result<()> {
+    // The user's own clone into a place of their choosing: trusted with their
+    // agent socket, which an ssh URL's key may live in.
+    let mut cmd = crate::git_dist::bare_command(target);
     let target = target
         .to_str()
         .ok_or_else(|| Error::InvalidPath(target.display().to_string()))?;
-    let mut cmd = crate::git_dist::bare_command();
     cmd.args(["clone", &clone_url(spec), target]);
     for (k, v) in client::git_auth_env() {
         cmd.env(k, v);

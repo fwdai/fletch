@@ -130,6 +130,17 @@ pub(crate) fn agent_writable(dir: &Path) -> bool {
     agent_writable_root(dir).is_some()
 }
 
+/// [`agent_writable`] for a path that may not exist yet — the target of a
+/// `git clone` or `git init` — judged by its nearest existing ancestor, since
+/// [`is_inside`] canonicalises and a missing path would read as outside every
+/// tree. A target that will be created under an agent-writable root is as
+/// untrusted as the root.
+pub(crate) fn agent_writable_target(path: &Path) -> bool {
+    path.ancestors()
+        .find(|p| p.exists())
+        .is_some_and(agent_writable)
+}
+
 /// Pure seam of [`config_overrides_for`]: the flags for a directory that is
 /// (`agent_writable`) or is not inside an agent-writable tree.
 fn config_overrides_scoped(agent_writable: bool) -> Vec<String> {

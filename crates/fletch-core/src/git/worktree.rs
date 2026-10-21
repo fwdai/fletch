@@ -14,7 +14,7 @@ use super::cmd::{git_output_env, identity_env, merge_git_env, run_git, run_git_e
 pub async fn init_repo(path: &Path) -> Result<()> {
     // No `current_dir` — the target may not exist yet (`git init` creates it),
     // and spawning with a missing cwd fails before git ever runs.
-    let out = crate::git_dist::bare_command()
+    let out = crate::git_dist::bare_command(path)
         .args([
             "init",
             path.to_str()
