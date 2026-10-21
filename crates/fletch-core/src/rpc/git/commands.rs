@@ -31,7 +31,7 @@ impl GitDispatcher {
     /// fetch any repository the token can read into the agent's reach.
     ///
     /// `args.ref` names one branch, `args.refs` several, and either may be a
-    /// pull request's head (`pull/12/head`), which lands as `origin/pr/12`.
+    /// pull request's head (`pull/12/head`), which lands as `refs/pull/12/head`.
     /// Without a ref the base branch is fetched. Agents needed several
     /// branches of a stack and other PRs' heads, and ran `git fetch origin …`
     /// themselves to get them.
@@ -129,8 +129,8 @@ pub(super) fn requested_refs(args: &Value) -> std::result::Result<Vec<String>, S
 }
 
 /// What one requested ref names: a branch, or a pull request's head spelled
-/// `pull/<n>/head` or `refs/pull/<n>/head`, which the transport lands as
-/// `origin/pr/<n>` (GitHub advertises it, no clone tracks it by default).
+/// `pull/<n>/head` or `refs/pull/<n>/head`, which the transport lands under
+/// the same name in the checkout (GitHub advertises it, no clone tracks it).
 pub(super) fn requested_branch(r: &str) -> Branches<'_> {
     let rest = r.strip_prefix("refs/").unwrap_or(r);
     rest.strip_prefix("pull/")

@@ -190,9 +190,9 @@ async fn git_fetch_takes_several_refs_and_a_pull_request_head() {
     assert!(rev_parse(&repo, "origin/main").is_some());
     let one = rev_parse(&repo, "origin/feat/one").expect("feat/one fetched");
     assert_eq!(
-        rev_parse(&repo, "origin/pr/7").as_deref(),
+        rev_parse(&repo, "refs/pull/7/head").as_deref(),
         Some(one.as_str()),
-        "the PR head lands under origin/pr/<n>"
+        "the PR head lands under refs/pull/<n>/head"
     );
 }
 
@@ -367,9 +367,9 @@ async fn fetch_and_ls_remote_work_across_a_real_checkout_split() {
     let at = |rev: &str| crate::git::testing::git(&checkout, &["rev-parse", "--verify", rev]);
     assert_eq!(at("refs/remotes/origin/feat/one"), tip);
     assert_eq!(
-        at("refs/remotes/origin/pr/7"),
+        at("refs/pull/7/head"),
         tip,
-        "the PR head lands as origin/pr/7"
+        "the PR head lands as refs/pull/7/head"
     );
     assert_eq!(
         at("refs/remotes/origin/main"),

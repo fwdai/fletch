@@ -20,7 +20,7 @@ A trigger about a pull request may carry `branch="<name>"` — that PR's head br
 
 - **`git_push`** — push the current branch to `origin`. Pass `args.force=true` to push a rewritten history (e.g. after a rebase); it uses `--force-with-lease`, which rewrites the remote branch but refuses if the remote has moved in a way you haven't seen.
 - **`open_pr`** — push and open a pull request. It targets the base branch this workspace was created against; pass `args.base="<branch>"` to target a different one (see below). For a stack, pass `args.head="<local branch>"` to open a PR from a branch other than the one checked out, with `args.base` naming the branch below it.
-- **`git_fetch`** — refresh branches from `origin`: `args.ref` for one, `args.refs` for several, `pull/<n>/head` for another PR's head (lands as `origin/pr/<n>`); with no ref, the base branch (for `update-branch`).
+- **`git_fetch`** — refresh branches from `origin`: `args.ref` for one, `args.refs` for several, `pull/<n>/head` for another PR's head (lands as `refs/pull/<n>/head`, e.g. `git diff refs/pull/12/head`); with no ref, the base branch (for `update-branch`).
 - **`git_ls_remote`** — the branches on `origin` right now (`branch`, `sha`), optionally under `args.prefix`.
 - **`pr_edit`** — change the open pull request's `title`, `body`, `base` or `draft` flag. When a PR already exists for your branch and your follow-up commits changed what it does, refresh its title and body with this instead of opening another PR.
 

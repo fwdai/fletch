@@ -116,19 +116,27 @@ pub enum Branches<'a> {
     /// One branch of the fetch remote.
     One(&'a str),
     /// A pull request's head on the fetch remote (`refs/pull/<n>/head`, which
-    /// GitHub advertises but no clone tracks), landing as `origin/pr/<n>` so
-    /// the agent can check it out or diff against it.
+    /// GitHub advertises but no clone tracks), landing in the checkout under
+    /// the same name — outside `refs/remotes/origin/`, which [`Self::All`]
+    /// prunes against the remote's branches, so a full refresh never deletes
+    /// a fetched PR head.
     PullRequest(u32),
 }
 
 impl Branches<'_> {
-    /// The ref fetched and the name it lands under in `refs/remotes/origin/`,
-    /// for the single-ref variants.
+    /// The ref fetched and the full name it lands under in the checkout, for
+    /// the single-ref variants.
     fn single(self) -> Option<(String, String)> {
         match self {
             Branches::All => None,
-            Branches::One(branch) => Some((format!("refs/heads/{branch}"), branch.to_string())),
-            Branches::PullRequest(n) => Some((format!("refs/pull/{n}/head"), format!("pr/{n}"))),
+            Branches::One(branch) => Some((
+                format!("refs/heads/{branch}"),
+                format!("{TRACKING}/{branch}"),
+            )),
+            Branches::PullRequest(n) => {
+                let name = format!("refs/pull/{n}/head");
+                Some((name.clone(), name))
+            }
         }
     }
 }
@@ -261,18 +269,20 @@ impl Transport {
     ) -> Result<()> {
         match which {
             Branches::One(_) | Branches::PullRequest(_) => {
-                let Some((refspec, tracking)) = which.single() else {
+                let Some((refspec, destination)) = which.single() else {
                     unreachable!("the single-ref arms are matched above");
                 };
-                let branch = tracking.as_str();
                 if self.split.is_none() {
-                    // Fetched from `origin` by name, git moves the tracking
-                    // ref itself once nothing blocks it. A pull request's
-                    // head has no default mapping, so it is given one.
-                    self.clear_conflicting(branch).await?;
+                    // A branch is fetched from `origin` by name, and git moves
+                    // the tracking ref itself once nothing blocks it. A pull
+                    // request's head has no default mapping, so it is given
+                    // its destination explicitly.
                     let refspec = match which {
-                        Branches::PullRequest(_) => format!("+{refspec}:{TRACKING}/{branch}"),
-                        _ => refspec,
+                        Branches::One(branch) => {
+                            self.clear_conflicting(branch).await?;
+                            refspec
+                        }
+                        _ => format!("+{refspec}:{destination}"),
                     };
                     return self
                         .fetch(&self.fetch_remote, &[refspec], false, timeout)
@@ -303,8 +313,16 @@ impl Transport {
                 self.update_refs(&format!("option no-deref\ndelete {scratch}\n"))
                     .await?;
                 let fetched =
-                    fetched.ok_or_else(|| Error::Git(format!("fetched nothing for {branch}")))?;
-                self.set_tracking(branch, &fetched).await
+                    fetched.ok_or_else(|| Error::Git(format!("fetched nothing for {refspec}")))?;
+                match which {
+                    Branches::One(branch) => self.set_tracking(branch, &fetched).await,
+                    // A fixed name outside the tracking space: nothing to
+                    // clear, and nothing a full refresh will prune.
+                    _ => {
+                        self.update_refs(&format!("update {destination} {fetched}\n"))
+                            .await
+                    }
+                }
             }
             Branches::All => {
                 let into = if self.split.is_some() {
