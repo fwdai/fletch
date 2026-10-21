@@ -1510,7 +1510,7 @@ fn docker_run_as_unknown_uid_resolves_in_node() {
     }
     let (out, td) = run_mapped(
         "12345:12345",
-        "node:22-slim",
+        "node:22-bookworm-slim",
         "node",
         &[
             "-e",

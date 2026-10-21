@@ -532,17 +532,20 @@ pub fn toolchain_cache_root(home: &Path) -> PathBuf {
 ///
 /// A [`PLATFORM_PLACEHOLDER`] in a subdir keys it by the child's
 /// [`BoxPlatform`], because a macOS agent and a Linux container share this
-/// root. Only two rows need it. Playwright names its folders without an OS
+/// root. Three rows need it. Playwright names its folders without an OS
 /// (`chromium-1208/` plus an `INSTALLATION_COMPLETE` marker), so a Linux box
 /// would see the Mac install, skip its download, and fail to launch. Poetry's
-/// cache holds `virtualenvs/`, which are per-platform builds. The other rows
-/// are safe to share: npm/pnpm/bun/yarn store tarballs, go's `GOCACHE`, uv
-/// and Puppeteer key by platform internally, and pip checks wheel tags.
+/// cache holds `virtualenvs/`, which are per-platform builds. npm's cache
+/// holds `_npx/`, the packages `npx` installed — with only the one platform's
+/// optional dependency (`@esbuild/darwin-arm64`), which `npx` on the other
+/// platform would reuse rather than install its own. The other rows are safe
+/// to share: pnpm/bun/yarn store tarballs, go's `GOCACHE`, uv and Puppeteer
+/// key by platform internally, and pip checks wheel tags.
 const TOOLCHAIN_CACHE_VARS: &[(&str, &str)] = &[
     // JavaScript / TypeScript
     ("BUN_INSTALL_CACHE_DIR", "bun"),
-    ("npm_config_cache", "npm"),
-    ("npm_config_store_dir", "pnpm"), // NOT PNPM_STORE_DIR — see above
+    ("npm_config_cache", "npm/{platform}"), // _npx/ holds installed packages
+    ("npm_config_store_dir", "pnpm"),       // NOT PNPM_STORE_DIR — see above
     ("YARN_CACHE_FOLDER", "yarn"),
     ("DENO_DIR", "deno"),
     // Go (Rust is served by the `cargo_home` overlay, not this table: a bare
