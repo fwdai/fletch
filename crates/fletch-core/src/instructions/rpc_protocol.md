@@ -73,6 +73,13 @@ PR yet or none visible to the host's account, not a GitHub origin, host not
 signed in, or a rate-limit pause to retry after). Do not call `gh` or the
 GitHub API directly: your sandbox has no GitHub credentials.
 
+To change your pull request after opening it, use `pr_edit` with any of
+`args.title`, `args.body` (replaces the whole description — keep the
+`## Decisions` section), `args.base` (retarget; must exist on origin) and
+`args.draft` (true/false); `args.number` edits another PR of the repository.
+Refresh the description with it whenever follow-up commits make the one you
+wrote at `open_pr` stale.
+
 ### Workspace title
 
 `set_title` names the work for the sidebar: 3–6 words, max 80 chars, no

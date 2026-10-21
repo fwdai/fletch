@@ -22,7 +22,7 @@ use crate::rpc::Response;
 
 const DEFAULT_COMMENT_LIMIT: u32 = 50;
 
-fn json_ok(id: &str, op: &str, value: &impl Serialize) -> Response {
+pub(super) fn json_ok(id: &str, op: &str, value: &impl Serialize) -> Response {
     match serde_json::to_string_pretty(value) {
         Ok(json) => Response::ok(id, 0, json, String::new()),
         Err(e) => Response::err(id, format!("{op}: {e}")),
@@ -31,7 +31,7 @@ fn json_ok(id: &str, op: &str, value: &impl Serialize) -> Response {
 
 /// `Ok(None)` when `key` is absent or null; an error for anything but a
 /// positive integer that fits the u32 the fetchers take.
-fn positive_u32_arg(args: &Value, key: &str) -> Result<Option<u32>, String> {
+pub(super) fn positive_u32_arg(args: &Value, key: &str) -> Result<Option<u32>, String> {
     match args.get(key) {
         None | Some(Value::Null) => Ok(None),
         Some(v) => v
@@ -65,7 +65,11 @@ fn not_found_or_hidden(number: u32) -> String {
 /// repository. Reaches the fetcher only after `pr_read_target`, so `None`
 /// here is a branch with no PR (or a detached HEAD) — or a repository the
 /// token cannot read, which GitHub reports the same way.
-async fn branch_pr(id: &str, op: &str, t: &Target) -> Result<crate::github::PrState, Response> {
+pub(super) async fn branch_pr(
+    id: &str,
+    op: &str,
+    t: &Target,
+) -> Result<crate::github::PrState, Response> {
     let fail = |e: crate::error::Error| Response::err(id, format!("{op}: {e}"));
     let Some(branch) = crate::git::current_branch(&t.cwd).await.map_err(fail)? else {
         return Err(Response::err(id, format!("{op}: {NO_BRANCH_PR}")));
@@ -83,7 +87,12 @@ impl GitDispatcher {
     /// isn't GitHub, no host token, a rate-limit pause (retryable). Checked in
     /// that order so a repository with no remote answers the same with or
     /// without a token.
-    async fn pr_read_target(&self, id: &str, op: &str, args: &Value) -> Result<Target, Response> {
+    pub(super) async fn pr_read_target(
+        &self,
+        id: &str,
+        op: &str,
+        args: &Value,
+    ) -> Result<Target, Response> {
         let t = self.target(id, args)?;
         if crate::github::repo_ref(&t.source_repo).await.is_none() {
             return Err(Response::err(

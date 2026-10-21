@@ -1,6 +1,7 @@
 mod args;
 mod commands;
 mod pr_reads;
+mod pr_writes;
 mod publishing;
 mod review_threads;
 mod targets;
@@ -20,6 +21,12 @@ pub const EVENT_BRANCH_CREATED: &str = "git.branch_created";
 
 pub const EVENT_PR_OPENED: &str = "git.pr_opened";
 
+/// Emitted by `pr_edit` when it retargets a PR: payload `{ "number", "base" }`
+/// (plus `repo` for a sibling checkout). The watcher moves the checkout's
+/// recorded base so every base-keyed reader follows the PR, as it does for
+/// `EVENT_PR_OPENED`.
+pub const EVENT_PR_EDITED: &str = "git.pr_edited";
+
 /// Emitted when a mutating op succeeds, so the UI attributes the git/PR state
 /// change to the agent's turn instead of inferring it from a polled snapshot.
 pub const EVENT_ACTION_DONE: &str = "git.action_done";
@@ -36,7 +43,7 @@ const MAX_TITLE_CHARS: usize = 80;
 fn is_mutating_op(op: &str) -> bool {
     matches!(
         op,
-        "git_push" | "open_pr" | "reply_thread" | "resolve_thread"
+        "git_push" | "open_pr" | "pr_edit" | "reply_thread" | "resolve_thread"
     )
 }
 
@@ -139,6 +146,7 @@ impl GitDispatcher {
             "pr_view" => (self.pr_view(id, args).await, Vec::new()),
             "pr_checks" => (self.pr_checks(id, args).await, Vec::new()),
             "pr_comments" => (self.pr_comments(id, args).await, Vec::new()),
+            "pr_edit" => self.pr_edit(id, args).await,
             "pr_threads" => (self.pr_threads(id, args).await, Vec::new()),
             "reply_thread" => (self.reply_thread(id, args).await, Vec::new()),
             "resolve_thread" => (self.resolve_thread(id, args).await, Vec::new()),

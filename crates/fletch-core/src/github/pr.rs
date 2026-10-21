@@ -269,6 +269,95 @@ pub(crate) async fn pr_update_body(
     Ok(())
 }
 
+/// What [`pr_edit`] may change. Every field optional; `None` leaves it alone.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct PrEdit {
+    pub title: Option<String>,
+    /// Replaces the whole body. Callers that want to keep the rest of a
+    /// description read it first (`pr_body`) and edit the text.
+    pub body: Option<String>,
+    /// Retargets the PR at another branch of the same repository.
+    pub base: Option<String>,
+    /// `Some(true)` converts to a draft, `Some(false)` marks ready for review.
+    pub draft: Option<bool>,
+}
+
+impl PrEdit {
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// The REST `PATCH /pulls/{n}` payload, or `None` when only the draft flag
+    /// changes (that is a GraphQL mutation, not a PATCH field).
+    fn patch_payload(&self) -> Option<Value> {
+        let mut payload = serde_json::Map::new();
+        if let Some(title) = &self.title {
+            payload.insert("title".into(), json!(title));
+        }
+        if let Some(body) = &self.body {
+            // Same scrub every created PR gets, so an edit cannot reintroduce
+            // the attribution footer the user switched off.
+            payload.insert(
+                "body".into(),
+                json!(crate::attribution::scrub_pr_body(body)),
+            );
+        }
+        if let Some(base) = &self.base {
+            payload.insert("base".into(), json!(base));
+        }
+        (!payload.is_empty()).then_some(Value::Object(payload))
+    }
+}
+
+/// Edit a PR's title, body, base or draft state by number. Title, body and
+/// base go in one REST PATCH; the draft flag is GitHub's
+/// `convertPullRequestToDraft` / `markReadyForReview` mutation on the PR's
+/// node id. Returns the PR's URL when the PATCH answered with it.
+pub async fn pr_edit(checkout: &Path, number: u32, edit: &PrEdit) -> Result<Option<String>> {
+    if edit.is_empty() {
+        return Err(Error::Gh("nothing to edit".into()));
+    }
+    let (owner, repo) = require_repo_ref(checkout).await?;
+    let client = client::Client::new()?;
+    let mut url = None;
+    if let Some(payload) = edit.patch_payload() {
+        let (status, resp) = client
+            .rest(
+                reqwest::Method::PATCH,
+                &format!("/repos/{owner}/{repo}/pulls/{number}"),
+                Some(&payload),
+            )
+            .await?;
+        if !status.is_success() {
+            return Err(Error::Gh(format!(
+                "pr edit failed: {}",
+                detailed_rest_error(&resp)
+            )));
+        }
+        url = resp["html_url"].as_str().map(str::to_string);
+    }
+    if let Some(draft) = edit.draft {
+        let node = pr_node_and_viewer(checkout, None, number, "id isDraft")
+            .await?
+            .map(|(node, _viewer)| node)
+            .ok_or_else(|| Error::Gh(format!("PR #{number} was not found")))?;
+        let id = node["id"]
+            .as_str()
+            .ok_or_else(|| Error::Gh(format!("PR #{number} did not resolve to a node")))?;
+        // Already in the asked-for state: GitHub refuses the mutation, which
+        // would read as a failure of an edit that is in effect.
+        if node["isDraft"].as_bool() != Some(draft) {
+            let mutation = if draft {
+                r#"mutation($id:ID!){ convertPullRequestToDraft(input:{pullRequestId:$id}){ clientMutationId } }"#
+            } else {
+                r#"mutation($id:ID!){ markReadyForReview(input:{pullRequestId:$id}){ clientMutationId } }"#
+            };
+            client.graphql(mutation, json!({ "id": id })).await?;
+        }
+    }
+    Ok(url)
+}
+
 /// List open PRs for the repo at `checkout` (newest first), for the
 /// composer's "#" mention autocomplete. Empty when not connected.
 pub async fn pr_list(checkout: &Path, limit: u32) -> Result<Vec<PrSummary>> {
@@ -648,6 +737,28 @@ mod tests {
         assert!(matches!(pr.state, PrStatus::Open));
         assert_eq!(pr.mergeable, MergeableState::Unknown);
         assert_eq!(pr.branch.as_deref(), Some("feat/thing"));
+    }
+
+    /// Only the fields given reach the PATCH; a draft-only edit sends none,
+    /// since the draft flag is a mutation.
+    #[test]
+    fn pr_edit_patches_only_what_was_given() {
+        let edit = PrEdit {
+            title: Some("new title".into()),
+            base: Some("develop".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            edit.patch_payload(),
+            Some(json!({ "title": "new title", "base": "develop" }))
+        );
+        let draft_only = PrEdit {
+            draft: Some(true),
+            ..Default::default()
+        };
+        assert_eq!(draft_only.patch_payload(), None);
+        assert!(!draft_only.is_empty());
+        assert!(PrEdit::default().is_empty());
     }
 
     #[test]

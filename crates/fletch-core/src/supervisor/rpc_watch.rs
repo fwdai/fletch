@@ -190,6 +190,27 @@ fn handle_rpc_event(sup: &Supervisor, ctx: &Arc<EngineCtx>, agent_id: &str, even
                 super::sync_pr_set_links(&workspace, &id).await;
             });
         }
+        rpc::RpcEvent::Named { name, payload } if name == rpc::git::EVENT_PR_EDITED => {
+            // Only a retarget is relayed: the base the PR now sits on has to
+            // reach the record for the same reasons as on `EVENT_PR_OPENED`
+            // (ahead/behind, "rebase onto", the `update-branch` fetch).
+            if let (Ok(record), Some(base)) = (
+                sup.workspace.agent(agent_id),
+                payload.get("base").and_then(|v| v.as_str()),
+            ) {
+                if let Some(subdir) = event_subdir(&record, &payload) {
+                    if let Err(e) = sup.workspace.set_repo_parent_branch(agent_id, subdir, base) {
+                        tracing::warn!(
+                            error = %e,
+                            agent_id = %agent_id,
+                            base = %base,
+                            "pr_edit: failed to persist PR base"
+                        );
+                    }
+                }
+            }
+            sup.fetch_and_emit_pr_state(ctx.clone(), agent_id.to_string());
+        }
         rpc::RpcEvent::Named { name, payload } if name == rpc::git::EVENT_ACTION_DONE => {
             // Authoritative "the agent performed a git mutation this
             // turn" signal. Forward it so the panel can attribute a

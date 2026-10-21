@@ -39,14 +39,8 @@ impl GitDispatcher {
         let body_arg = args.get("body").and_then(|v| v.as_str()).unwrap_or("");
         // Live issue lookup, not a spawn-time snapshot: a later composer pick must
         // reach the trailer. Idempotent.
-        let live_ref = self
-            .issue_agent
-            .as_deref()
-            .and_then(crate::issues::live_issue_ref);
-        let closes = (t.subdir == self.default_subdir)
-            .then_some(live_ref.as_deref())
-            .flatten();
-        let body_owned = crate::github::with_closes_trailer(body_arg, closes);
+        let closes = self.live_closes(&t);
+        let body_owned = crate::github::with_closes_trailer(body_arg, closes.as_deref());
         let body = body_owned.as_str();
         let requested = arg_branch(args);
         // Resolved before the head branch is materialized so a malformed base fails
