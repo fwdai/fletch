@@ -509,22 +509,25 @@ impl Transport {
     /// written in the checkout: a ref named like an ancestor of it (`feat`
     /// for `feat/sub`) or a descendant (`feat/sub` for `feat`). A fetch of
     /// one branch does not prune, so a rename leaves one behind.
+    ///
+    /// Only refs that exist are deleted. `update-ref` refuses to delete a
+    /// missing `origin/feat` while `origin/feat/sub` exists — it cannot lock
+    /// a name that is a directory — so an unconditional delete of every
+    /// ancestor failed the second fetch or push of any slashed branch.
     async fn clear_conflicting(&self, branch: &str) -> Result<()> {
-        let descendants = format!("{TRACKING}/{branch}/");
         let out = git_output(
             &self.checkout,
-            &["for-each-ref", "--format=%(refname)", &descendants],
+            &["for-each-ref", "--format=%(refname)", TRACKING],
         )
         .await?;
-        let ancestors = branch
+        let descendants = format!("{TRACKING}/{branch}/");
+        let ancestors: Vec<String> = branch
             .match_indices('/')
-            .map(|(at, _)| format!("{TRACKING}/{}", &branch[..at]));
-        let script: String = ancestors
-            .chain(
-                String::from_utf8_lossy(&out.stdout)
-                    .lines()
-                    .map(str::to_string),
-            )
+            .map(|(at, _)| format!("{TRACKING}/{}", &branch[..at]))
+            .collect();
+        let script: String = String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter(|name| name.starts_with(&descendants) || ancestors.iter().any(|a| a == name))
             .map(|name| format!("option no-deref\ndelete {name}\n"))
             .collect();
         self.update_refs(&script).await

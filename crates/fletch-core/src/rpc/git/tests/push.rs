@@ -663,3 +663,53 @@ async fn git_push_force_refuses_when_remote_advanced_unseen() {
         "remote main must be untouched after the refused force push"
     );
 }
+
+/// Across a real checkout split, the push that puts an agent-made branch on
+/// the user's remote records it as the agent's own, and a force after a
+/// rewrite is then allowed once the dispatcher carries that record.
+#[tokio::test]
+async fn an_agent_made_branch_becomes_its_own_across_a_real_checkout_split() {
+    let td = tempfile::tempdir().unwrap();
+    let crate::git::testing::Repos {
+        origin,
+        source,
+        checkout,
+        ..
+    } = crate::git::testing::repos(td.path());
+    run_git(&checkout, &["checkout", "-q", "-b", "fix/mine"]);
+    crate::git::testing::commit_file(&checkout, "mine.txt");
+
+    let disp = crate::rpc::git::GitDispatcher::new(
+        checkout.clone(),
+        source.clone(),
+        "main".to_string(),
+        crate::rpc::caps::AgentCaps::interactive(),
+    );
+    let (resp, fx) = disp.dispatch_inner("p1", "git_push", &Value::Null).await;
+    assert!(resp.ok, "{resp:?}");
+    assert!(
+        fx.iter().any(|e| matches!(
+            e,
+            RpcEvent::Named { name, payload }
+                if name == EVENT_BRANCH_CREATED && payload["branch"] == "fix/mine"
+        )),
+        "{fx:?}"
+    );
+    assert_eq!(
+        crate::git::testing::git(&origin, &["rev-parse", "refs/heads/fix/mine"]),
+        crate::git::testing::git(&checkout, &["rev-parse", "HEAD"])
+    );
+
+    // The host recorded the branch; the next dispatcher carries it, and a
+    // rewritten branch can be forced.
+    run_git(&checkout, &["commit", "-q", "--amend", "-m", "rewritten"]);
+    let disp = disp.with_own_branch(Some("fix/mine".to_string()));
+    let (resp, _fx) = disp
+        .dispatch_inner("p2", "git_push", &json!({ "force": true }))
+        .await;
+    assert!(resp.ok, "{resp:?}");
+    assert_eq!(
+        crate::git::testing::git(&origin, &["rev-parse", "refs/heads/fix/mine"]),
+        crate::git::testing::git(&checkout, &["rev-parse", "HEAD"])
+    );
+}

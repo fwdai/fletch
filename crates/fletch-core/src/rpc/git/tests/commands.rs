@@ -324,3 +324,94 @@ async fn git_fetch_refuses_option_like_ref() {
         .unwrap_or_default()
         .contains("option-like"));
 }
+
+/// The mode #934 is about: the checkout and the user's repository are two
+/// repositories, and the transport runs in the user's over the checkout's
+/// objects. A multi-ref fetch with a pull request's head lands each under
+/// its tracking name in the checkout, and the listing reads the user's
+/// remote — never the checkout's origin.
+#[tokio::test]
+async fn fetch_and_ls_remote_work_across_a_real_checkout_split() {
+    let td = tempfile::tempdir().unwrap();
+    let crate::git::testing::Repos {
+        origin,
+        source,
+        checkout,
+        ..
+    } = crate::git::testing::repos(td.path());
+    // A second branch and a PR head, published from the user's repository.
+    run_git(&source, &["checkout", "-q", "-b", "feat/one"]);
+    let tip = crate::git::testing::commit_file(&source, "one.txt");
+    run_git(&source, &["push", "-q", "origin", "feat/one"]);
+    run_git(
+        &source,
+        &["push", "-q", "origin", "feat/one:refs/pull/7/head"],
+    );
+    run_git(&source, &["checkout", "-q", "main"]);
+
+    let disp = crate::rpc::git::GitDispatcher::new(
+        checkout.clone(),
+        source.clone(),
+        "main".to_string(),
+        crate::rpc::caps::AgentCaps::interactive(),
+    );
+    let (resp, fx) = disp
+        .dispatch_inner(
+            "f",
+            "git_fetch",
+            &json!({ "refs": ["main", "feat/one", "pull/7/head"] }),
+        )
+        .await;
+    assert!(resp.ok, "{resp:?}");
+    assert!(fx.is_empty());
+    let at = |rev: &str| crate::git::testing::git(&checkout, &["rev-parse", "--verify", rev]);
+    assert_eq!(at("refs/remotes/origin/feat/one"), tip);
+    assert_eq!(
+        at("refs/remotes/origin/pr/7"),
+        tip,
+        "the PR head lands as origin/pr/7"
+    );
+    assert_eq!(
+        at("refs/remotes/origin/main"),
+        crate::git::testing::git(&source, &["rev-parse", "main"])
+    );
+    // Fetched again, once the tracking refs exist: a slashed branch's
+    // ancestor name must not be deleted blindly.
+    let (resp, _fx) = disp
+        .dispatch_inner(
+            "f2",
+            "git_fetch",
+            &json!({ "refs": ["feat/one", "pull/7/head"] }),
+        )
+        .await;
+    assert!(resp.ok, "second fetch: {resp:?}");
+
+    let (resp, _fx) = disp
+        .dispatch_inner("l", "git_ls_remote", &json!({ "prefix": "feat/" }))
+        .await;
+    assert!(resp.ok, "{resp:?}");
+    let heads: Vec<Value> = serde_json::from_str(resp.stdout.as_deref().unwrap()).unwrap();
+    assert_eq!(heads.len(), 1);
+    assert_eq!(heads[0]["branch"], "feat/one");
+    assert_eq!(heads[0]["sha"], tip);
+
+    // A repointed checkout origin is refused by both, as by the single fetch.
+    run_git(
+        &checkout,
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            td.path().join("elsewhere").to_str().unwrap(),
+        ],
+    );
+    for (op, args) in [
+        ("git_fetch", json!({ "refs": ["main"] })),
+        ("git_ls_remote", Value::Null),
+    ] {
+        let (resp, _fx) = disp.dispatch_inner("r", op, &args).await;
+        assert!(!resp.ok, "{op}");
+        assert!(resp.error.unwrap().contains("refusing"), "{op}");
+    }
+    let _ = origin;
+}
