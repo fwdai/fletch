@@ -121,7 +121,13 @@ pub(crate) fn config_overrides() -> Vec<String> {
 /// [`config_overrides`] row, plus [`NO_IMPLICIT_SIGNING`] when `dir` is inside
 /// an agent-writable tree ([`agent_writable_root`]).
 pub(crate) fn config_overrides_for(dir: &Path) -> Vec<String> {
-    config_overrides_scoped(agent_writable_root(dir).is_some())
+    config_overrides_scoped(agent_writable(dir))
+}
+
+/// Whether `dir` is inside an agent-writable tree ([`agent_writable_root`]) —
+/// the one question every directory-scoped host-side git decision turns on.
+pub(crate) fn agent_writable(dir: &Path) -> bool {
+    agent_writable_root(dir).is_some()
 }
 
 /// Pure seam of [`config_overrides_for`]: the flags for a directory that is

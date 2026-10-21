@@ -201,12 +201,22 @@ all.
   push, so it vouches for exactly what you let out. A key the host cannot use
   fails the push with the reason rather than publishing unsigned.
 - **The signer finds your tools the way your terminal does.** An app launched
-  from the Dock inherits launchd's sparse environment, not your shell's. Every
-  host-side git carries `PATH`, `SSH_AUTH_SOCK` and `GNUPGHOME` from your
-  login shell (`git_dist::helper_env`), so a Homebrew `gpg`, a key held by an
-  agent your shell rc starts (1Password's, say) and a relocated keyring all
-  work from Fletch exactly as they do from a terminal. The same is true of the
-  first commit Fletch makes in your own repository.
+  from the Dock inherits launchd's sparse environment, not your shell's.
+  Host-side git carries `PATH` from your login shell everywhere, and
+  `SSH_AUTH_SOCK` and `GNUPGHOME` when it runs in **your own repository**
+  (`git_dist::helper_env`), so a Homebrew `gpg`, a key held by an agent your
+  shell rc starts (1Password's, say) and a relocated keyring all work from
+  Fletch exactly as they do from a terminal. The same is true of the first
+  commit Fletch makes in your own repository. A value your shell exports
+  blank is treated as unset, not inherited from the app.
+- **Inside a checkout, host-side git has no agent socket and no keyring.**
+  The two credential variables are removed there whatever the app process
+  holds. A checkout's config is the agent's to write and the hardening refusal
+  covers programs, not URLs, so an agent could point `origin` at an ssh
+  remote of its choosing and ask for a fetch — which needs no approval. With
+  no socket, that fetch cannot authenticate as you. Host-side transport in a
+  checkout is https to GitHub with the app's own token, so nothing legitimate
+  needs ssh there.
 
 ### Why signing works this way
 
