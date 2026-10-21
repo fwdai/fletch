@@ -29,6 +29,37 @@ const GRAPHQL_URL: &str = "https://api.github.com/graphql";
 /// stalled connection (mirrors `git.rs`'s NET_TIMEOUT rationale).
 const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// `path` with `params` as its percent-encoded query. A branch named
+/// `feat/#12` or a label holding `&` is valid to git and GitHub but cuts a
+/// hand-built query short, so every list endpoint builds its query here and
+/// never by string concatenation.
+pub(crate) fn with_query(path: &str, params: &[(&str, &str)]) -> String {
+    let url = reqwest::Url::parse_with_params(&format!("{API_BASE}{path}"), params)
+        .expect("the API base and a repository path form a URL");
+    match url.query().filter(|q| !q.is_empty()) {
+        Some(query) => format!("{}?{query}", url.path()),
+        None => url.path().to_string(),
+    }
+}
+
+#[cfg(test)]
+mod query_tests {
+    use super::with_query;
+
+    #[test]
+    fn query_values_are_percent_encoded() {
+        let path = with_query(
+            "/repos/o/r/pulls",
+            &[("state", "open"), ("head", "o:feat/#12 x"), ("base", "a&b")],
+        );
+        assert_eq!(
+            path,
+            "/repos/o/r/pulls?state=open&head=o%3Afeat%2F%2312+x&base=a%26b"
+        );
+        assert_eq!(with_query("/repos/o/r", &[]), "/repos/o/r");
+    }
+}
+
 /// The token, cached in-process, with where it came from. Seeded from the DB
 /// at startup and updated on login, so API calls (deep in poll paths, with no
 /// DB handle) never touch the DB — the same pattern as `bin_resolve`'s override
@@ -337,6 +368,23 @@ impl Client {
         // Some successes (e.g. 204 from PUT) have no body; treat as null.
         let body = resp.json::<Value>().await.unwrap_or(Value::Null);
         Ok((status, body))
+    }
+
+    /// REST GET whose answer is text, not JSON: a job log. GitHub answers the
+    /// log endpoints with a redirect to a signed blob URL; reqwest follows it
+    /// and, the host differing, drops the bearer header on the way — the
+    /// signed URL needs none. The gate is fed like every other read.
+    pub async fn rest_text(&self, path: &str) -> Result<(reqwest::StatusCode, String)> {
+        let resp = self
+            .request(reqwest::Method::GET, format!("{API_BASE}{path}"))
+            .send()
+            .await
+            .map_err(request_error)?;
+        let status = resp.status();
+        let headers = resp.headers().clone();
+        let text = resp.text().await.unwrap_or_default();
+        observe_rate_limit(status, &headers, &Value::Null);
+        Ok((status, text))
     }
 
     /// REST GET for a *polled* path, issued conditionally against the ETag of

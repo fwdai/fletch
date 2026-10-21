@@ -33,6 +33,177 @@ async fn open_pr_refuses_option_like_base() {
     assert!(fx.is_empty(), "a refused PR must emit nothing: {fx:?}");
 }
 
+/// `args.head` publishes a local branch other than the checked-out one and
+/// opens the PR from it. The fixture's origin is a bare path, so the PR
+/// creation itself is refused as "not a GitHub repository" after the push —
+/// which is where the test reads the outcome: the head is on origin, HEAD
+/// never moved, and ownership stayed with the checked-out branch.
+#[tokio::test]
+async fn open_pr_head_publishes_a_branch_that_is_not_checked_out() {
+    let td = tempfile::tempdir().unwrap();
+    let origin = td.path().join("origin.git");
+    std::fs::create_dir_all(&origin).unwrap();
+    run_git(&origin, &["init", "-q", "--bare", "-b", "main"]);
+
+    let repo = td.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    run_git(&repo, &["init", "-q", "-b", "main"]);
+    run_git(&repo, &["config", "user.email", "t@example.com"]);
+    run_git(&repo, &["config", "user.name", "Tester"]);
+    run_git(
+        &repo,
+        &["remote", "add", "origin", origin.to_str().unwrap()],
+    );
+    std::fs::write(repo.join("a.txt"), b"x").unwrap();
+    run_git(&repo, &["add", "-A"]);
+    run_git(&repo, &["commit", "-q", "-m", "init"]);
+    run_git(&repo, &["push", "-q", "origin", "main"]);
+    run_git(&repo, &["checkout", "-q", "-b", "feat/second"]);
+    std::fs::write(repo.join("b.txt"), b"y").unwrap();
+    run_git(&repo, &["add", "-A"]);
+    run_git(&repo, &["commit", "-q", "-m", "second"]);
+    run_git(&repo, &["checkout", "-q", "-b", "feat/third"]);
+    std::fs::write(repo.join("c.txt"), b"z").unwrap();
+    run_git(&repo, &["add", "-A"]);
+    run_git(&repo, &["commit", "-q", "-m", "third"]);
+
+    let disp = dispatcher(&repo);
+    let (resp, fx) = disp
+        .dispatch_inner(
+            "h1",
+            "open_pr",
+            &json!({"title": "second", "head": "feat/second", "base": "main"}),
+        )
+        .await;
+    assert!(!resp.ok, "a bare-path origin is not GitHub: {resp:?}");
+    assert!(
+        !resp
+            .error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("push failed"),
+        "the push itself must have succeeded, got: {:?}",
+        resp.error
+    );
+    let remote_head = std::process::Command::new("git")
+        .current_dir(&origin)
+        .args(["rev-parse", "--verify", "--quiet", "refs/heads/feat/second"])
+        .output()
+        .unwrap();
+    assert!(
+        remote_head.status.success(),
+        "feat/second must be on origin after open_pr"
+    );
+    let local = std::process::Command::new("git")
+        .current_dir(&repo)
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&local.stdout).trim(),
+        "feat/third",
+        "the checkout stays where it was"
+    );
+    assert!(
+        !fx.iter().any(|e| matches!(
+            e,
+            crate::rpc::RpcEvent::Named { name, .. }
+                if name == crate::rpc::git::EVENT_BRANCH_CREATED
+        )),
+        "publishing another head must not move branch ownership off feat/third: {fx:?}"
+    );
+}
+
+/// `args.head` naming the branch that is checked out is the agent's own
+/// branch spelled out, not another head: its first publish records it.
+#[tokio::test]
+async fn open_pr_head_naming_the_current_branch_still_records_ownership() {
+    let td = tempfile::tempdir().unwrap();
+    let origin = td.path().join("origin.git");
+    std::fs::create_dir_all(&origin).unwrap();
+    run_git(&origin, &["init", "-q", "--bare", "-b", "main"]);
+
+    let repo = td.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    run_git(&repo, &["init", "-q", "-b", "main"]);
+    run_git(&repo, &["config", "user.email", "t@example.com"]);
+    run_git(&repo, &["config", "user.name", "Tester"]);
+    run_git(
+        &repo,
+        &["remote", "add", "origin", origin.to_str().unwrap()],
+    );
+    std::fs::write(repo.join("a.txt"), b"x").unwrap();
+    run_git(&repo, &["add", "-A"]);
+    run_git(&repo, &["commit", "-q", "-m", "init"]);
+    run_git(&repo, &["push", "-q", "origin", "main"]);
+    run_git(&repo, &["checkout", "-q", "-b", "feat/x"]);
+    std::fs::write(repo.join("b.txt"), b"y").unwrap();
+    run_git(&repo, &["add", "-A"]);
+    run_git(&repo, &["commit", "-q", "-m", "x"]);
+
+    let disp = dispatcher(&repo);
+    let (resp, fx) = disp
+        .dispatch_inner(
+            "h4",
+            "open_pr",
+            &json!({"title": "x", "head": "feat/x", "base": "main"}),
+        )
+        .await;
+    assert!(!resp.ok, "a bare-path origin is not GitHub: {resp:?}");
+    assert!(
+        fx.iter().any(|e| matches!(
+            e,
+            crate::rpc::RpcEvent::Named { name, payload }
+                if name == crate::rpc::git::EVENT_BRANCH_CREATED && payload["branch"] == "feat/x"
+        )),
+        "the checked-out branch, named as head, is recorded as own: {fx:?}"
+    );
+}
+
+#[tokio::test]
+async fn open_pr_head_must_be_a_local_branch() {
+    let td = tempfile::tempdir().unwrap();
+    let repo = td.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    run_git(&repo, &["init", "-q", "-b", "main"]);
+    run_git(&repo, &["config", "user.email", "t@example.com"]);
+    run_git(&repo, &["config", "user.name", "Tester"]);
+    std::fs::write(repo.join("a.txt"), b"x").unwrap();
+    run_git(&repo, &["add", "-A"]);
+    run_git(&repo, &["commit", "-q", "-m", "init"]);
+
+    let disp = dispatcher(&repo);
+    let (resp, fx) = disp
+        .dispatch_inner(
+            "h2",
+            "open_pr",
+            &json!({"title": "t", "head": "feat/nowhere"}),
+        )
+        .await;
+    assert!(!resp.ok);
+    assert!(
+        resp.error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("could not read the commits 'feat/nowhere'"),
+        "{:?}",
+        resp.error
+    );
+    assert!(fx.is_empty(), "{fx:?}");
+
+    let (resp, _fx) = disp
+        .dispatch_inner("h3", "open_pr", &json!({"title": "t", "head": "main"}))
+        .await;
+    assert!(
+        resp.error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("refusing to publish to 'main'"),
+        "the review base is refused as a head too: {:?}",
+        resp.error
+    );
+}
+
 #[tokio::test]
 async fn open_pr_refuses_a_base_missing_from_origin() {
     let td = tempfile::tempdir().unwrap();

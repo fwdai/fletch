@@ -16,13 +16,14 @@
 use serde::Serialize;
 use serde_json::Value;
 
+use super::args::{arg_branch_named, refuse_option_like};
 use super::targets::Target;
 use super::GitDispatcher;
 use crate::rpc::Response;
 
 const DEFAULT_COMMENT_LIMIT: u32 = 50;
 
-fn json_ok(id: &str, op: &str, value: &impl Serialize) -> Response {
+pub(super) fn json_ok(id: &str, op: &str, value: &impl Serialize) -> Response {
     match serde_json::to_string_pretty(value) {
         Ok(json) => Response::ok(id, 0, json, String::new()),
         Err(e) => Response::err(id, format!("{op}: {e}")),
@@ -31,7 +32,7 @@ fn json_ok(id: &str, op: &str, value: &impl Serialize) -> Response {
 
 /// `Ok(None)` when `key` is absent or null; an error for anything but a
 /// positive integer that fits the u32 the fetchers take.
-fn positive_u32_arg(args: &Value, key: &str) -> Result<Option<u32>, String> {
+pub(super) fn positive_u32_arg(args: &Value, key: &str) -> Result<Option<u32>, String> {
     match args.get(key) {
         None | Some(Value::Null) => Ok(None),
         Some(v) => v
@@ -65,7 +66,11 @@ fn not_found_or_hidden(number: u32) -> String {
 /// repository. Reaches the fetcher only after `pr_read_target`, so `None`
 /// here is a branch with no PR (or a detached HEAD) — or a repository the
 /// token cannot read, which GitHub reports the same way.
-async fn branch_pr(id: &str, op: &str, t: &Target) -> Result<crate::github::PrState, Response> {
+pub(super) async fn branch_pr(
+    id: &str,
+    op: &str,
+    t: &Target,
+) -> Result<crate::github::PrState, Response> {
     let fail = |e: crate::error::Error| Response::err(id, format!("{op}: {e}"));
     let Some(branch) = crate::git::current_branch(&t.cwd).await.map_err(fail)? else {
         return Err(Response::err(id, format!("{op}: {NO_BRANCH_PR}")));
@@ -83,7 +88,12 @@ impl GitDispatcher {
     /// isn't GitHub, no host token, a rate-limit pause (retryable). Checked in
     /// that order so a repository with no remote answers the same with or
     /// without a token.
-    async fn pr_read_target(&self, id: &str, op: &str, args: &Value) -> Result<Target, Response> {
+    pub(super) async fn pr_read_target(
+        &self,
+        id: &str,
+        op: &str,
+        args: &Value,
+    ) -> Result<Target, Response> {
         let t = self.target(id, args)?;
         if crate::github::repo_ref(&t.source_repo).await.is_none() {
             return Err(Response::err(
@@ -108,14 +118,28 @@ impl GitDispatcher {
         Ok(t)
     }
 
+    /// The branch's PR, whole (`PrDetail`); `args.number` views another PR of
+    /// the repository instead.
     pub(super) async fn pr_view(&self, id: &str, args: &Value) -> Response {
+        let number = match positive_u32_arg(args, "number") {
+            Ok(n) => n,
+            Err(e) => return Response::err(id, format!("pr_view: {e}")),
+        };
         let t = match self.pr_read_target(id, "pr_view", args).await {
             Ok(t) => t,
             Err(resp) => return resp,
         };
-        match branch_pr(id, "pr_view", &t).await {
-            Ok(pr) => json_ok(id, "pr_view", &pr),
-            Err(resp) => resp,
+        let number = match number {
+            Some(n) => n,
+            None => match branch_pr(id, "pr_view", &t).await {
+                Ok(pr) => pr.number,
+                Err(resp) => return resp,
+            },
+        };
+        match crate::github::pr_detail(&t.source_repo, number).await {
+            Ok(Some(pr)) => json_ok(id, "pr_view", &pr),
+            Ok(None) => Response::err(id, format!("pr_view: {}", not_found_or_hidden(number))),
+            Err(e) => Response::err(id, format!("pr_view: {e}")),
         }
     }
 
@@ -170,6 +194,232 @@ impl GitDispatcher {
             Ok(Some(comments)) => json_ok(id, "pr_comments", &comments),
             Ok(None) => Response::err(id, format!("pr_comments: {}", not_found_or_hidden(number))),
             Err(e) => Response::err(id, format!("pr_comments: {e}")),
+        }
+    }
+
+    /// The repository behind origin: visibility, default branch, merge
+    /// methods, branch deletion on merge. Agents read `GET /repos/{o}/{r}`
+    /// for these in 10 sessions before deciding how a stack would land.
+    pub(super) async fn repo_view(&self, id: &str, args: &Value) -> Response {
+        let t = match self.pr_read_target(id, "repo_view", args).await {
+            Ok(t) => t,
+            Err(resp) => return resp,
+        };
+        match crate::github::repo_view(&t.source_repo).await {
+            Ok(Some(info)) => json_ok(id, "repo_view", &info),
+            Ok(None) => Response::err(
+                id,
+                "repo_view: the repository was not found, or is not visible to the host's \
+                 GitHub account",
+            ),
+            Err(e) => Response::err(id, format!("repo_view: {e}")),
+        }
+    }
+
+    /// The repository's pull requests: `args.state` open (default), closed or
+    /// all; `args.head` / `args.base` narrow to a branch; `args.limit` default
+    /// 20, max 100. Agents listed PRs to find their branch's number, to walk a
+    /// stack and to see what merged lately, through `gh pr list` in 24
+    /// sessions.
+    pub(super) async fn pr_list(&self, id: &str, args: &Value) -> Response {
+        let filter = match pr_list_filter(args) {
+            Ok(f) => f,
+            Err(e) => return Response::err(id, format!("pr_list: {e}")),
+        };
+        for (kind, value) in [("head", &filter.head), ("base", &filter.base)] {
+            if let Some(resp) = value
+                .as_deref()
+                .and_then(|v| refuse_option_like(id, "pr_list", kind, v))
+            {
+                return resp;
+            }
+        }
+        let t = match self.pr_read_target(id, "pr_list", args).await {
+            Ok(t) => t,
+            Err(resp) => return resp,
+        };
+        match crate::github::pr_list_filtered(&t.source_repo, &filter).await {
+            Ok(Some(rows)) => json_ok(id, "pr_list", &rows),
+            Ok(None) => Response::err(
+                id,
+                "pr_list: GitHub did not list this repository's pull requests — it may not be \
+                 visible to the host's GitHub account; try again shortly",
+            ),
+            Err(e) => Response::err(id, format!("pr_list: {e}")),
+        }
+    }
+
+    /// The tail of one check's job log plus its annotations. `args.check` is
+    /// the run's `id` or `name` as `pr_checks` lists them; `args.lines` (default
+    /// 200, max 2000) is how much of the log's end to return; `args.number`
+    /// targets another PR. Without this, agents reading CI failures reached
+    /// for `gh run view --log-failed`.
+    pub(super) async fn pr_check_log(&self, id: &str, args: &Value) -> Response {
+        let Some(wanted) = CheckRef::from_args(args) else {
+            return Response::err(
+                id,
+                "pr_check_log requires `check`: a run's `id` or `name` as pr_checks lists them",
+            );
+        };
+        let lines = match positive_u32_arg(args, "lines") {
+            Ok(n) => (n.map(|n| n as usize))
+                .unwrap_or(crate::github::CHECK_LOG_DEFAULT_LINES)
+                .min(crate::github::CHECK_LOG_MAX_LINES),
+            Err(e) => return Response::err(id, format!("pr_check_log: {e}")),
+        };
+        let number = match positive_u32_arg(args, "number") {
+            Ok(n) => n,
+            Err(e) => return Response::err(id, format!("pr_check_log: {e}")),
+        };
+        let t = match self.pr_read_target(id, "pr_check_log", args).await {
+            Ok(t) => t,
+            Err(resp) => return resp,
+        };
+        let number = match number {
+            Some(n) => n,
+            None => match branch_pr(id, "pr_check_log", &t).await {
+                Ok(pr) => pr.number,
+                Err(resp) => return resp,
+            },
+        };
+        let checks = match crate::github::pr_checks_read(&t.source_repo, None, number).await {
+            Ok(crate::github::ChecksRead::Checks(checks)) => checks,
+            Ok(crate::github::ChecksRead::NotFound) => {
+                return Response::err(id, format!("pr_check_log: {}", not_found_or_hidden(number)))
+            }
+            Ok(crate::github::ChecksRead::Unavailable(why)) => {
+                return Response::err(
+                    id,
+                    format!("pr_check_log: GitHub did not answer ({why}); try again shortly"),
+                )
+            }
+            Err(e) => return Response::err(id, format!("pr_check_log: {e}")),
+        };
+        let run = match find_run(&checks.runs, &wanted) {
+            Ok(run) => run,
+            Err(why) => return Response::err(id, format!("pr_check_log: {why}")),
+        };
+        let Some(run_id) = run.id else {
+            return Response::err(
+                id,
+                format!(
+                    "pr_check_log: {:?} is a commit status, not a check run, so it has no job \
+                     log; its url is {}",
+                    run.name,
+                    run.url.as_deref().unwrap_or("not given")
+                ),
+            );
+        };
+        match crate::github::check_log(&t.source_repo, run_id, lines).await {
+            Ok(log) => {
+                let mut out = serde_json::to_value(&log).unwrap_or_default();
+                out["name"] = serde_json::json!(run.name);
+                out["status"] = serde_json::json!(run.status);
+                out["conclusion"] = serde_json::json!(run.conclusion);
+                out["url"] = serde_json::json!(run.url);
+                json_ok(id, "pr_check_log", &out)
+            }
+            Err(e) => Response::err(id, format!("pr_check_log: {e}")),
+        }
+    }
+}
+
+const PR_LIST_DEFAULT_LIMIT: u32 = 20;
+
+pub(super) fn pr_list_filter(args: &Value) -> Result<crate::github::PrListFilter, String> {
+    let state = match args.get("state") {
+        None | Some(Value::Null) => "open".to_string(),
+        Some(Value::String(s)) if matches!(s.trim(), "open" | "closed" | "all") => {
+            s.trim().to_string()
+        }
+        Some(other) => {
+            return Err(format!(
+                "`state` must be \"open\", \"closed\" or \"all\", got {other}"
+            ))
+        }
+    };
+    Ok(crate::github::PrListFilter {
+        state,
+        head: arg_branch_named(args, "head"),
+        base: arg_branch_named(args, "base"),
+        limit: positive_u32_arg(args, "limit")?
+            .unwrap_or(PR_LIST_DEFAULT_LIMIT)
+            .min(crate::github::PR_LIST_MAX),
+    })
+}
+
+/// How a request names a check: by the id `pr_checks` reported, or by name.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum CheckRef {
+    Id(u64),
+    Name(String),
+}
+
+impl CheckRef {
+    pub(super) fn from_args(args: &Value) -> Option<Self> {
+        match args.get("check")? {
+            Value::Number(n) => n.as_u64().filter(|n| *n > 0).map(Self::Id),
+            Value::String(s) => {
+                let s = s.trim();
+                if s.is_empty() {
+                    return None;
+                }
+                // "4242" as a string is still an id.
+                Some(
+                    s.parse()
+                        .map(Self::Id)
+                        .unwrap_or_else(|_| Self::Name(s.to_string())),
+                )
+            }
+            _ => None,
+        }
+    }
+}
+
+/// The one run `wanted` names: an exact id, an exact name, or a unique
+/// case-insensitive substring of a name. Anything else is an error that
+/// lists the runs there are, so the agent can pick.
+pub(super) fn find_run<'a>(
+    runs: &'a [crate::github::CheckRun],
+    wanted: &CheckRef,
+) -> std::result::Result<&'a crate::github::CheckRun, String> {
+    let names = || {
+        runs.iter()
+            .map(|r| match r.id {
+                Some(id) => format!("{} (id {id})", r.name),
+                None => r.name.clone(),
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    match wanted {
+        CheckRef::Id(id) => runs
+            .iter()
+            .find(|r| r.id == Some(*id))
+            .ok_or_else(|| format!("no check with id {id}; the PR's checks are: {}", names())),
+        CheckRef::Name(name) => {
+            if let Some(run) = runs.iter().find(|r| r.name == *name) {
+                return Ok(run);
+            }
+            let needle = name.to_lowercase();
+            let loose: Vec<&crate::github::CheckRun> = runs
+                .iter()
+                .filter(|r| r.name.to_lowercase().contains(&needle))
+                .collect();
+            match loose.as_slice() {
+                [one] => Ok(one),
+                [] => Err(format!(
+                    "no check named {name:?}; the PR's checks are: {}",
+                    names()
+                )),
+                many => Err(format!(
+                    "{name:?} matches several checks ({}); name one exactly or pass its id",
+                    many.iter()
+                        .map(|r| r.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )),
+            }
         }
     }
 }

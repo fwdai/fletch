@@ -1,6 +1,8 @@
 mod args;
 mod commands;
+mod issue_reads;
 mod pr_reads;
+mod pr_writes;
 mod publishing;
 mod review_threads;
 mod targets;
@@ -20,6 +22,12 @@ pub const EVENT_BRANCH_CREATED: &str = "git.branch_created";
 
 pub const EVENT_PR_OPENED: &str = "git.pr_opened";
 
+/// Emitted by `pr_edit` when it retargets a PR: payload `{ "number", "base" }`
+/// (plus `repo` for a sibling checkout). The watcher moves the checkout's
+/// recorded base so every base-keyed reader follows the PR, as it does for
+/// `EVENT_PR_OPENED`.
+pub const EVENT_PR_EDITED: &str = "git.pr_edited";
+
 /// Emitted when a mutating op succeeds, so the UI attributes the git/PR state
 /// change to the agent's turn instead of inferring it from a polled snapshot.
 pub const EVENT_ACTION_DONE: &str = "git.action_done";
@@ -36,7 +44,15 @@ const MAX_TITLE_CHARS: usize = 80;
 fn is_mutating_op(op: &str) -> bool {
     matches!(
         op,
-        "git_push" | "open_pr" | "reply_thread" | "resolve_thread"
+        "git_push"
+            | "open_pr"
+            | "pr_edit"
+            | "pr_comment"
+            | "pr_close"
+            | "pr_merge"
+            | "issue_comment"
+            | "reply_thread"
+            | "resolve_thread"
     )
 }
 
@@ -135,10 +151,21 @@ impl GitDispatcher {
             "open_pr" => self.open_pr(id, args).await,
             "git_push" => self.git_push(id, args).await,
             "git_fetch" => (self.git_fetch(id, args).await, Vec::new()),
+            "git_ls_remote" => (self.git_ls_remote(id, args).await, Vec::new()),
             "signal_git_action" => self.signal_git_action(id, args),
             "pr_view" => (self.pr_view(id, args).await, Vec::new()),
+            "pr_list" => (self.pr_list(id, args).await, Vec::new()),
+            "repo_view" => (self.repo_view(id, args).await, Vec::new()),
+            "issue_view" => (self.issue_view(id, args).await, Vec::new()),
+            "issue_list" => (self.issue_list(id, args).await, Vec::new()),
             "pr_checks" => (self.pr_checks(id, args).await, Vec::new()),
+            "pr_check_log" => (self.pr_check_log(id, args).await, Vec::new()),
             "pr_comments" => (self.pr_comments(id, args).await, Vec::new()),
+            "pr_edit" => self.pr_edit(id, args).await,
+            "pr_comment" => (self.pr_comment(id, args).await, Vec::new()),
+            "pr_close" => (self.pr_close(id, args).await, Vec::new()),
+            "pr_merge" => (self.pr_merge(id, args).await, Vec::new()),
+            "issue_comment" => (self.issue_comment(id, args).await, Vec::new()),
             "pr_threads" => (self.pr_threads(id, args).await, Vec::new()),
             "reply_thread" => (self.reply_thread(id, args).await, Vec::new()),
             "resolve_thread" => (self.resolve_thread(id, args).await, Vec::new()),

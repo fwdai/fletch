@@ -6,8 +6,10 @@
 //! not the request), [`AgentCaps::refuses_force`] for the destructive case.
 
 /// `git_fetch` is credentialed but read-only, so deliberately not gated.
+/// `pr_merge` is: merging lands the work on the base, which is what a denied
+/// grant must never do.
 fn is_publish_op(op: &str) -> bool {
-    matches!(op, "git_push" | "open_pr")
+    matches!(op, "git_push" | "open_pr" | "pr_merge")
 }
 
 /// Protected whatever the repo's base is; compared case-insensitively.
@@ -114,14 +116,25 @@ mod tests {
     fn only_the_publishing_ops_are_gated() {
         assert!(is_publish_op("git_push"));
         assert!(is_publish_op("open_pr"));
+        assert!(is_publish_op("pr_merge"));
         for open in [
             "git_fetch",
+            "git_ls_remote",
             "git_status",
             "pr_view",
+            "pr_list",
+            "repo_view",
             "pr_checks",
+            "pr_check_log",
             "pr_comments",
             "pr_threads",
             "reply_thread",
+            "pr_edit",
+            "pr_comment",
+            "pr_close",
+            "issue_view",
+            "issue_list",
+            "issue_comment",
             "echo",
         ] {
             assert!(

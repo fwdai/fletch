@@ -6,6 +6,7 @@ use serde_json::Value;
 
 use super::args::{arg_branch_named, refuse_option_like};
 use super::GitDispatcher;
+use crate::git::{Branches, Transport};
 use crate::rpc::Response;
 
 /// A hung command surfaces as an error instead of blocking the watcher; the
@@ -28,33 +29,132 @@ impl GitDispatcher {
     /// checkout's `origin` (`git::remote`): this op needs no approval, so a
     /// checkout whose origin the agent repointed would otherwise make the host
     /// fetch any repository the token can read into the agent's reach.
+    ///
+    /// `args.ref` names one branch, `args.refs` several, and either may be a
+    /// pull request's head (`pull/12/head`), which lands as `refs/pull/12/head`.
+    /// Without a ref the base branch is fetched. Agents needed several
+    /// branches of a stack and other PRs' heads, and ran `git fetch origin …`
+    /// themselves to get them.
     pub(super) async fn git_fetch(&self, id: &str, args: &Value) -> Response {
         let t = match self.target(id, args) {
             Ok(t) => t,
             Err(resp) => return resp,
         };
-        let cwd = t.cwd;
-        let branch = match arg_branch_named(args, "ref") {
-            Some(r) => r,
-            None => t.base_branch,
+        let refs = match requested_refs(args) {
+            Ok(refs) if refs.is_empty() => vec![t.base_branch.clone()],
+            Ok(refs) => refs,
+            Err(e) => return Response::err(id, format!("git_fetch: {e}")),
         };
-        if let Some(resp) = refuse_option_like(id, "git_fetch", "ref", &branch) {
-            return resp;
+        for r in &refs {
+            if let Some(resp) = refuse_option_like(id, "git_fetch", "ref", r) {
+                return resp;
+            }
         }
-        let transport = match crate::git::Transport::open(&cwd, &t.source_repo).await {
+        let transport = match Transport::open(&t.cwd, &t.source_repo).await {
             Ok(transport) => transport,
             Err(e) => return Response::err(id, format!("git_fetch: {e}")),
         };
         // A failed fetch is a hard error, or the agent merges a stale
-        // `origin/<branch>`.
-        match transport
-            .fetch_branches(crate::git::Branches::One(&branch))
-            .await
-        {
-            Ok(()) => Response::ok(id, 0, String::new(), String::new()),
-            Err(e) => Response::err(id, format!("git_fetch: fetch origin {branch} failed: {e}")),
+        // `origin/<branch>`. One round trip per ref: the transport lands each
+        // under its own tracking name.
+        for r in &refs {
+            if let Err(e) = transport.fetch_branches(requested_branch(r)).await {
+                return Response::err(
+                    id,
+                    format!("git_fetch: fetch origin {} failed: {e}", refs.join(" ")),
+                );
+            }
+        }
+        Response::ok(id, 0, String::new(), String::new())
+    }
+
+    /// The branches on `origin` right now, as `{ "branch", "sha" }` rows,
+    /// optionally narrowed to those starting with `args.prefix`. Asked over
+    /// the wire through the same transport as a fetch — the user's remote,
+    /// never the checkout's — so a branch created since the last fetch is
+    /// seen; agents ran `git ls-remote --heads origin` for this when checking
+    /// whether a stack's branches existed.
+    pub(super) async fn git_ls_remote(&self, id: &str, args: &Value) -> Response {
+        let t = match self.target(id, args) {
+            Ok(t) => t,
+            Err(resp) => return resp,
+        };
+        let prefix = arg_branch_named(args, "prefix");
+        let transport = match Transport::open(&t.cwd, &t.source_repo).await {
+            Ok(transport) => transport,
+            Err(e) => return Response::err(id, format!("git_ls_remote: {e}")),
+        };
+        let heads = match transport.branches().await {
+            Ok(heads) => heads,
+            Err(e) => return Response::err(id, format!("git_ls_remote: {e}")),
+        };
+        // The filter is applied here, not passed to git: a pattern argument is
+        // a glob to ls-remote, and the agent asked for a prefix.
+        match serde_json::to_string_pretty(&remote_heads(heads, prefix.as_deref())) {
+            Ok(json) => Response::ok(id, 0, json, String::new()),
+            Err(e) => Response::err(id, format!("git_ls_remote: {e}")),
         }
     }
+}
+
+/// `args.ref` (one) and `args.refs` (several), trimmed, blanks dropped.
+pub(super) fn requested_refs(args: &Value) -> std::result::Result<Vec<String>, String> {
+    let mut refs = Vec::new();
+    if let Some(one) = arg_branch_named(args, "ref") {
+        refs.push(one);
+    }
+    match args.get("refs") {
+        None | Some(Value::Null) => {}
+        Some(Value::Array(items)) => {
+            for item in items {
+                match item.as_str().map(str::trim) {
+                    Some(s) if !s.is_empty() => refs.push(s.to_string()),
+                    Some(_) => {}
+                    None => {
+                        return Err(format!(
+                            "`refs` must be an array of branch names, got {item}"
+                        ))
+                    }
+                }
+            }
+        }
+        Some(other) => {
+            return Err(format!(
+                "`refs` must be an array of branch names, got {other}"
+            ))
+        }
+    }
+    refs.dedup();
+    Ok(refs)
+}
+
+/// What one requested ref names: a branch, or a pull request's head spelled
+/// `pull/<n>/head` or `refs/pull/<n>/head`, which the transport lands under
+/// the same name in the checkout (GitHub advertises it, no clone tracks it).
+pub(super) fn requested_branch(r: &str) -> Branches<'_> {
+    let rest = r.strip_prefix("refs/").unwrap_or(r);
+    rest.strip_prefix("pull/")
+        .and_then(|s| s.strip_suffix("/head"))
+        .and_then(|n| n.parse::<u32>().ok())
+        .filter(|n| *n > 0)
+        .map(Branches::PullRequest)
+        .unwrap_or(Branches::One(r))
+}
+
+#[derive(Debug, PartialEq, Eq, serde::Serialize)]
+pub(super) struct RemoteHead {
+    pub branch: String,
+    pub sha: String,
+}
+
+/// The transport's `(branch, commit)` pairs as rows, keeping those under
+/// `prefix` when given.
+pub(super) fn remote_heads(heads: Vec<(String, String)>, prefix: Option<&str>) -> Vec<RemoteHead> {
+    heads
+        .into_iter()
+        .filter(|(branch, _)| prefix.map_or(true, |p| branch.starts_with(p)))
+        .map(|(branch, sha)| RemoteHead { branch, sha })
+        .collect()
 }
 
 pub(super) async fn run_git_command(

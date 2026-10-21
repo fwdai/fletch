@@ -108,13 +108,37 @@ struct Split {
 }
 
 /// Which branches a fetch mirrors into the checkout.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Branches<'a> {
     /// Every branch of the fetch remote, pruning what is gone, and the tips
     /// of each push remote. The view a publish needs.
     All,
     /// One branch of the fetch remote.
     One(&'a str),
+    /// A pull request's head on the fetch remote (`refs/pull/<n>/head`, which
+    /// GitHub advertises but no clone tracks), landing in the checkout under
+    /// the same name — outside `refs/remotes/origin/`, which [`Self::All`]
+    /// prunes against the remote's branches, so a full refresh never deletes
+    /// a fetched PR head.
+    PullRequest(u32),
+}
+
+impl Branches<'_> {
+    /// The ref fetched and the full name it lands under in the checkout, for
+    /// the single-ref variants.
+    fn single(self) -> Option<(String, String)> {
+        match self {
+            Branches::All => None,
+            Branches::One(branch) => Some((
+                format!("refs/heads/{branch}"),
+                format!("{TRACKING}/{branch}"),
+            )),
+            Branches::PullRequest(n) => {
+                let name = format!("refs/pull/{n}/head");
+                Some((name.clone(), name))
+            }
+        }
+    }
 }
 
 impl Transport {
@@ -244,12 +268,22 @@ impl Transport {
         timeout: Duration,
     ) -> Result<()> {
         match which {
-            Branches::One(branch) => {
-                let refspec = format!("refs/heads/{branch}");
+            Branches::One(_) | Branches::PullRequest(_) => {
+                let Some((refspec, destination)) = which.single() else {
+                    unreachable!("the single-ref arms are matched above");
+                };
                 if self.split.is_none() {
-                    // Fetched from `origin` by name, git moves the tracking
-                    // ref itself once nothing blocks it.
-                    self.clear_conflicting(branch).await?;
+                    // A branch is fetched from `origin` by name, and git moves
+                    // the tracking ref itself once nothing blocks it. A pull
+                    // request's head has no default mapping, so it is given
+                    // its destination explicitly.
+                    let refspec = match which {
+                        Branches::One(branch) => {
+                            self.clear_conflicting(branch).await?;
+                            refspec
+                        }
+                        _ => format!("+{refspec}:{destination}"),
+                    };
                     return self
                         .fetch(&self.fetch_remote, &[refspec], false, timeout)
                         .await;
@@ -279,8 +313,16 @@ impl Transport {
                 self.update_refs(&format!("option no-deref\ndelete {scratch}\n"))
                     .await?;
                 let fetched =
-                    fetched.ok_or_else(|| Error::Git(format!("fetched nothing for {branch}")))?;
-                self.set_tracking(branch, &fetched).await
+                    fetched.ok_or_else(|| Error::Git(format!("fetched nothing for {refspec}")))?;
+                match which {
+                    Branches::One(branch) => self.set_tracking(branch, &fetched).await,
+                    // A fixed name outside the tracking space: nothing to
+                    // clear, and nothing a full refresh will prune.
+                    _ => {
+                        self.update_refs(&format!("update {destination} {fetched}\n"))
+                            .await
+                    }
+                }
             }
             Branches::All => {
                 let into = if self.split.is_some() {
@@ -363,6 +405,13 @@ impl Transport {
             );
         }
         Ok(tips.into_iter().collect())
+    }
+
+    /// `(branch, commit)` for every branch the fetch remote advertises right
+    /// now — the agent's `git_ls_remote`, so a branch created since the last
+    /// fetch is seen.
+    pub async fn branches(&self) -> Result<Vec<(String, String)>> {
+        self.heads(&self.fetch_remote, None).await
     }
 
     /// The commit `remote` (the fetch remote or one of the push remotes)
@@ -478,22 +527,25 @@ impl Transport {
     /// written in the checkout: a ref named like an ancestor of it (`feat`
     /// for `feat/sub`) or a descendant (`feat/sub` for `feat`). A fetch of
     /// one branch does not prune, so a rename leaves one behind.
+    ///
+    /// Only refs that exist are deleted. `update-ref` refuses to delete a
+    /// missing `origin/feat` while `origin/feat/sub` exists — it cannot lock
+    /// a name that is a directory — so an unconditional delete of every
+    /// ancestor failed the second fetch or push of any slashed branch.
     async fn clear_conflicting(&self, branch: &str) -> Result<()> {
-        let descendants = format!("{TRACKING}/{branch}/");
         let out = git_output(
             &self.checkout,
-            &["for-each-ref", "--format=%(refname)", &descendants],
+            &["for-each-ref", "--format=%(refname)", TRACKING],
         )
         .await?;
-        let ancestors = branch
+        let descendants = format!("{TRACKING}/{branch}/");
+        let ancestors: Vec<String> = branch
             .match_indices('/')
-            .map(|(at, _)| format!("{TRACKING}/{}", &branch[..at]));
-        let script: String = ancestors
-            .chain(
-                String::from_utf8_lossy(&out.stdout)
-                    .lines()
-                    .map(str::to_string),
-            )
+            .map(|(at, _)| format!("{TRACKING}/{}", &branch[..at]))
+            .collect();
+        let script: String = String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter(|name| name.starts_with(&descendants) || ancestors.iter().any(|a| a == name))
             .map(|name| format!("option no-deref\ndelete {name}\n"))
             .collect();
         self.update_refs(&script).await

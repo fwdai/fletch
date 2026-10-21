@@ -129,22 +129,272 @@ pub async fn issue_list(checkout: &Path, limit: u32) -> Result<Option<Vec<IssueS
         Ok(c) => c,
         Err(_) => return Ok(None),
     };
-    // Fetch a full page (not just `limit`): the assignee filter below runs
-    // client-side, so a window of someone-else's issues must not starve the
-    // relevant ones out of the requested count.
-    let path =
-        format!("/repos/{owner}/{repo}/issues?state=open&sort=updated&direction=desc&per_page=100");
-    let (status, body) = match client.rest_get_observed(&path).await {
-        Ok(pair) => pair,
-        Err(_) => return Ok(None),
+    // Paged: the assignee filter runs client-side, and the endpoint mixes in
+    // pull requests, so one page of someone-else's rows must not starve the
+    // relevant issues out of the requested count.
+    let viewer = viewer_login(&client).await;
+    match collect_pages(
+        &client,
+        &format!("/repos/{owner}/{repo}/issues"),
+        &[
+            ("state", "open"),
+            ("sort", "updated"),
+            ("direction", "desc"),
+        ],
+        limit as usize,
+        |page| parse_issue_list(page, viewer.as_deref()),
+    )
+    .await
+    {
+        Ok(issues) => Ok(issues),
+        Err(_) => Ok(None),
+    }
+}
+
+/// GitHub's page cap for the issues list and an issue's comments.
+pub const ISSUE_LIST_MAX: u32 = 100;
+
+/// Pages a list reads before giving up. Pull requests and other people's
+/// issues are dropped client-side, so one page can underfill; a repository
+/// where five hundred rows hold no match is not worth more requests on a
+/// path that polls.
+const LIST_MAX_PAGES: u32 = 5;
+
+/// Pages a comment tail walks when the total is unknown.
+const COMMENT_MAX_PAGES: u32 = 10;
+
+/// `base` paged at GitHub's cap, each page's array handed to `keep` for the
+/// rows worth keeping, until `want` rows are kept or a short page ends the
+/// list. `Ok(None)` when GitHub answers anything but success for a page.
+async fn collect_pages<T>(
+    client: &client::Client,
+    base: &str,
+    params: &[(&str, &str)],
+    want: usize,
+    mut keep: impl FnMut(&Value) -> Vec<T>,
+) -> Result<Option<Vec<T>>> {
+    let per_page = ISSUE_LIST_MAX.to_string();
+    let mut out = Vec::new();
+    for page in 1..=LIST_MAX_PAGES {
+        let page = page.to_string();
+        let mut query = params.to_vec();
+        query.push(("per_page", per_page.as_str()));
+        query.push(("page", page.as_str()));
+        let (status, body) = client
+            .rest_get_observed(&client::with_query(base, &query))
+            .await?;
+        if !status.is_success() {
+            return Ok(None);
+        }
+        let rows = body.as_array().map(Vec::len).unwrap_or(0);
+        out.extend(keep(&body));
+        if out.len() >= want || rows < ISSUE_LIST_MAX as usize {
+            break;
+        }
+    }
+    out.truncate(want);
+    Ok(Some(out))
+}
+
+/// The page the newest of `total` comments is on, at GitHub's page cap.
+fn last_page(total: u32) -> u32 {
+    total.div_ceil(ISSUE_LIST_MAX).max(1)
+}
+
+/// The newest `limit` comments of issue `number`, oldest first, as REST
+/// nodes. The endpoint lists oldest-first by page, so the newest are on the
+/// last pages: with `total` known (the issue's `comments` count) the last
+/// page is read directly, and the one before it when that page is short of
+/// `limit`; without it, pages are walked forward keeping the tail. `Ok(None)`
+/// when GitHub answers anything but success.
+async fn newest_comments(
+    client: &client::Client,
+    owner: &str,
+    repo: &str,
+    number: u64,
+    total: Option<u32>,
+    limit: usize,
+) -> Result<Option<Vec<Value>>> {
+    let base = format!("/repos/{owner}/{repo}/issues/{number}/comments");
+    let per_page = ISSUE_LIST_MAX.to_string();
+    let fetch_page = |page: u32| {
+        let base = base.clone();
+        let per_page = per_page.clone();
+        async move {
+            let page = page.to_string();
+            let path = client::with_query(&base, &[("per_page", &per_page), ("page", &page)]);
+            let (status, body) = client.rest(reqwest::Method::GET, &path, None).await?;
+            Ok::<Option<Vec<Value>>, crate::error::Error>(
+                status
+                    .is_success()
+                    .then(|| body.as_array().cloned().unwrap_or_default()),
+            )
+        }
     };
+    let mut rows = Vec::new();
+    match total {
+        Some(total) => {
+            let last = last_page(total);
+            let Some(tail) = fetch_page(last).await? else {
+                return Ok(None);
+            };
+            rows = tail;
+            if rows.len() < limit && last > 1 {
+                let Some(mut before) = fetch_page(last - 1).await? else {
+                    return Ok(None);
+                };
+                before.append(&mut rows);
+                rows = before;
+            }
+        }
+        None => {
+            for page in 1..=COMMENT_MAX_PAGES {
+                let Some(batch) = fetch_page(page).await? else {
+                    return Ok(None);
+                };
+                let short = batch.len() < ISSUE_LIST_MAX as usize;
+                rows.extend(batch);
+                if rows.len() > limit {
+                    rows.drain(..rows.len() - limit);
+                }
+                if short {
+                    break;
+                }
+            }
+        }
+    }
+    if rows.len() > limit {
+        rows.drain(..rows.len() - limit);
+    }
+    Ok(Some(rows))
+}
+
+/// A REST issue node, whole. `None` for a pull request (the issues endpoints
+/// serve both, and only a PR node carries `pull_request`).
+pub(crate) fn parse_issue_detail(node: &Value) -> Option<IssueDetail> {
+    if node.get("pull_request").is_some() {
+        return None;
+    }
+    let text = |key: &str| node[key].as_str().unwrap_or_default().to_string();
+    Some(IssueDetail {
+        number: node["number"].as_u64().unwrap_or_default() as u32,
+        title: text("title"),
+        state: text("state"),
+        url: text("html_url"),
+        author: node["user"]["login"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string(),
+        labels: node["labels"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|l| l["name"].as_str())
+                    .filter(|n| !n.is_empty())
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default(),
+        assignees: node_assignees(node),
+        body: text("body"),
+        created_at: text("created_at"),
+        updated_at: text("updated_at"),
+        comments_count: node["comments"].as_u64().unwrap_or_default() as u32,
+        comments: Vec::new(),
+    })
+}
+
+/// The REST comments array as rows, oldest first, keeping the newest `limit`.
+pub(crate) fn parse_issue_comment_rows(body: &Value, limit: usize) -> Vec<IssueCommentRow> {
+    let rows: Vec<IssueCommentRow> = body
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .map(|c| IssueCommentRow {
+                    author: c["user"]["login"].as_str().unwrap_or_default().to_string(),
+                    body: c["body"].as_str().unwrap_or_default().to_string(),
+                    created_at: c["created_at"].as_str().unwrap_or_default().to_string(),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let skip = rows.len().saturating_sub(limit);
+    rows.into_iter().skip(skip).collect()
+}
+
+/// One issue by number with its newest `comment_limit` comments, for the
+/// agent's `issue_view`. `Ok(None)` when GitHub answers anything but success
+/// for it (not found, or not visible to the token); an error names a number
+/// that is a pull request. Not a poll path: plain reads, errors surface.
+pub async fn issue_view(
+    checkout: &Path,
+    number: u32,
+    comment_limit: u32,
+) -> Result<Option<IssueDetail>> {
+    let (owner, repo) = super::query::require_repo_ref(checkout).await?;
+    let client = client::Client::new()?;
+    let (status, node) = client
+        .rest(
+            reqwest::Method::GET,
+            &format!("/repos/{owner}/{repo}/issues/{number}"),
+            None,
+        )
+        .await?;
     if !status.is_success() {
         return Ok(None);
     }
-    let viewer = viewer_login(&client).await;
-    let mut issues = parse_issue_list(&body, viewer.as_deref());
-    issues.truncate(limit as usize);
-    Ok(Some(issues))
+    let Some(mut issue) = parse_issue_detail(&node) else {
+        return Err(crate::error::Error::Gh(format!(
+            "#{number} is a pull request, not an issue; read it with pr_view"
+        )));
+    };
+    if comment_limit > 0 && issue.comments_count > 0 {
+        if let Some(rows) = newest_comments(
+            &client,
+            &owner,
+            &repo,
+            u64::from(number),
+            Some(issue.comments_count),
+            comment_limit as usize,
+        )
+        .await?
+        {
+            issue.comments = parse_issue_comment_rows(&Value::Array(rows), comment_limit as usize);
+        }
+    }
+    Ok(Some(issue))
+}
+
+/// The repository's issues (pull requests dropped), newest-updated first,
+/// for the agent's `issue_list`: `state` is GitHub's open / closed / all,
+/// `labels` a comma-separated list every returned issue must carry.
+/// `Ok(None)` when GitHub answers anything but success.
+pub async fn issue_list_all(
+    checkout: &Path,
+    state: &str,
+    labels: Option<&str>,
+    limit: u32,
+) -> Result<Option<Vec<IssueDetail>>> {
+    let (owner, repo) = super::query::require_repo_ref(checkout).await?;
+    let client = client::Client::new()?;
+    // Paged: pull requests are dropped client-side, so one page of them must
+    // not starve the issues out of the requested count.
+    let mut params = vec![("state", state), ("sort", "updated"), ("direction", "desc")];
+    if let Some(labels) = labels.map(str::trim).filter(|l| !l.is_empty()) {
+        params.push(("labels", labels));
+    }
+    collect_pages(
+        &client,
+        &format!("/repos/{owner}/{repo}/issues"),
+        &params,
+        limit as usize,
+        |page| {
+            page.as_array()
+                .map(|arr| arr.iter().filter_map(parse_issue_detail).collect())
+                .unwrap_or_default()
+        },
+    )
+    .await
 }
 
 /// One node from the REST comments payload → the normalized
@@ -197,15 +447,15 @@ pub async fn issue_comments(
         Ok(c) => c,
         Err(_) => return Ok(None),
     };
-    let path = format!("/repos/{owner}/{repo}/issues/{number}/comments?per_page=100");
-    let (status, body) = match client.rest(reqwest::Method::GET, &path, None).await {
-        Ok(pair) => pair,
-        Err(_) => return Ok(None),
-    };
-    if !status.is_success() {
-        return Ok(None);
+    // The newest comments live on the last page; no total is known here, so
+    // the pages are walked.
+    match newest_comments(&client, &owner, &repo, number, None, limit as usize).await {
+        Ok(Some(rows)) => Ok(Some(parse_comment_list(
+            &Value::Array(rows),
+            limit as usize,
+        ))),
+        Ok(None) | Err(_) => Ok(None),
     }
-    Ok(Some(parse_comment_list(&body, limit as usize)))
 }
 
 #[cfg(test)]
@@ -342,6 +592,65 @@ mod tests {
             capped[0].body, "no author",
             "capping must keep the trailing (newest) comments"
         );
+    }
+
+    /// The whole issue, with labels and every assignee, and a PR node refused.
+    #[test]
+    fn issue_detail_parses_fields_and_refuses_a_pull_request() {
+        let issue = parse_issue_detail(&json!({
+            "number": 914, "title": "Crash on empty vault", "state": "open",
+            "html_url": "https://github.com/o/r/issues/914",
+            "user": { "login": "reporter" },
+            "labels": [ { "name": "bug" }, { "name": "" }, { "color": "fff" } ],
+            "assignee": { "login": "alice" },
+            "assignees": [ { "login": "alice" }, { "login": "bob" } ],
+            "body": "Steps…", "comments": 3,
+            "created_at": "2026-10-01T00:00:00Z", "updated_at": "2026-10-21T00:00:00Z"
+        }))
+        .expect("an issue");
+        assert_eq!(issue.number, 914);
+        assert_eq!(issue.state, "open");
+        assert_eq!(issue.author, "reporter");
+        assert_eq!(issue.labels, vec!["bug".to_string()]);
+        assert_eq!(
+            issue.assignees,
+            vec!["alice".to_string(), "bob".to_string()]
+        );
+        assert_eq!(issue.comments_count, 3);
+        assert!(issue.comments.is_empty());
+
+        assert!(parse_issue_detail(&json!({
+            "number": 13, "title": "a PR", "pull_request": { "url": "…" }
+        }))
+        .is_none());
+    }
+
+    /// Comment rows arrive oldest-first; the cap keeps the newest.
+    #[test]
+    fn issue_comment_rows_keep_the_newest() {
+        let body = json!([
+            { "user": { "login": "a" }, "body": "first", "created_at": "2026-10-01T00:00:00Z" },
+            { "user": null, "body": "ghost", "created_at": "2026-10-02T00:00:00Z" },
+            { "user": { "login": "c" }, "body": "latest", "created_at": "2026-10-03T00:00:00Z" }
+        ]);
+        let all = parse_issue_comment_rows(&body, 10);
+        assert_eq!(all.len(), 3);
+        assert_eq!(all[1].author, "");
+        let two = parse_issue_comment_rows(&body, 2);
+        assert_eq!(two[0].body, "ghost");
+        assert_eq!(two[1].body, "latest");
+        assert!(parse_issue_comment_rows(&json!({}), 5).is_empty());
+    }
+
+    /// The newest comments sit on the last page of an oldest-first list.
+    #[test]
+    fn the_last_page_holds_the_newest_comments() {
+        assert_eq!(last_page(0), 1);
+        assert_eq!(last_page(1), 1);
+        assert_eq!(last_page(100), 1);
+        assert_eq!(last_page(101), 2);
+        assert_eq!(last_page(150), 2);
+        assert_eq!(last_page(250), 3);
     }
 
     /// A non-array comments payload (an error object) parses to empty.

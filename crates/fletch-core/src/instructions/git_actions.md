@@ -19,8 +19,10 @@ A trigger about a pull request may carry `branch="<name>"` — that PR's head br
 **Commit as the checkout's configured identity.** Plain `git commit` — never `-c user.email`/`user.name`, `GIT_AUTHOR_*`/`GIT_COMMITTER_*`, or an account email you were shown elsewhere. The host refuses to push commits whose committer email differs from the checkout's `user.email`.
 
 - **`git_push`** — push the current branch to `origin`. Pass `args.force=true` to push a rewritten history (e.g. after a rebase); it uses `--force-with-lease`, which rewrites the remote branch but refuses if the remote has moved in a way you haven't seen.
-- **`open_pr`** — push and open a pull request. It targets the base branch this workspace was created against; pass `args.base="<branch>"` to target a different one (see below).
-- **`git_fetch`** — refresh a base branch from `origin` (for `update-branch`).
+- **`open_pr`** — push and open a pull request. It targets the base branch this workspace was created against; pass `args.base="<branch>"` to target a different one (see below). For a stack, pass `args.head="<local branch>"` to open a PR from a branch other than the one checked out, with `args.base` naming the branch below it.
+- **`git_fetch`** — refresh branches from `origin`: `args.ref` for one, `args.refs` for several, `pull/<n>/head` for another PR's head (lands as `refs/pull/<n>/head`, e.g. `git diff refs/pull/12/head`); with no ref, the base branch (for `update-branch`).
+- **`git_ls_remote`** — the branches on `origin` right now (`branch`, `sha`), optionally under `args.prefix`.
+- **`pr_edit`** — change the open pull request's `title`, `body`, `base` or `draft` flag. When a PR already exists for your branch and your follow-up commits changed what it does, refresh its title and body with this instead of opening another PR.
 
 Your workspace starts with no branch (detached HEAD) — that's expected. The branch is created the first time you push, and **you choose its name**: pass `args.branch` to `git_push` (or `open_pr`) with a short, conventional, descriptive name for the work — `fix/…`, `feat/…`, or `chore/…` (no `fletch/` prefix), e.g. `fix/login-crash`. Run `git status` if unsure whether you're already on a branch; once you are, omit `args.branch` and later pushes update that same branch.
 
@@ -63,11 +65,13 @@ The pull request can't merge cleanly because `base` has advanced. First refresh 
 
 ### fix-checks — params: `failing` (check names)
 
-CI checks are failing on this branch's pull request. Investigate the failures (the `pr_checks` op lists each run's conclusion and URL), fix them, commit the fix with plain git (`git add -A` && `git commit`), and push by calling the `git_push` op so the checks re-run.
+CI checks are failing on this branch's pull request. Investigate the failures: the `pr_checks` op lists each run's `id`, conclusion and URL, and `pr_check_log` (`{"op":"pr_check_log","args":{"check":"<id or name>"}}`) returns that run's log tail and annotations. Fix them, commit the fix with plain git (`git add -A` && `git commit`), and push by calling the `git_push` op so the checks re-run.
 
 ### resolve-comments — params: `count`
 
 Unresolved review threads on this branch's pull request need addressing. Read them with the `pr_threads` op (`{"op":"pr_threads"}`), which returns each open thread's `id`, author, `is_bot`, body, and file anchor.
+
+Address a thread by that `id`: `{"op":"reply_thread","args":{"thread":"<id>","body":"…"}}` and `{"op":"resolve_thread","args":{"thread":"<id>"}}` (build the body with `jq -n --arg`).
 
 Judge each thread on its merits and take exactly one of three outcomes:
 

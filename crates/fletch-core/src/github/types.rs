@@ -66,6 +66,69 @@ pub struct PrState {
     pub branch: Option<String>,
 }
 
+/// Everything an agent asks about a pull request, flat, from one REST read of
+/// the PR object. The fields are the ones agents pulled through `gh pr view
+/// --json` before the op existed: base, state, mergeability, head and its sha,
+/// title, body, merge gate, draft flag, sizes. `pr_view`'s answer.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct PrDetail {
+    pub number: u32,
+    pub url: String,
+    pub state: PrStatus,
+    pub draft: bool,
+    pub title: String,
+    pub body: String,
+    /// Head branch name.
+    pub branch: String,
+    pub head_sha: String,
+    pub base: String,
+    pub mergeable: MergeableState,
+    /// GitHub's combined merge gate: what actually decides whether the PR can
+    /// land (`clean`, `blocked`, `behind`, `dirty`, …).
+    pub merge_state: MergeState,
+    pub author: String,
+    pub commits: u32,
+    pub changed_files: u32,
+    pub additions: u32,
+    pub deletions: u32,
+    /// ISO-8601 as GitHub gives them.
+    pub created_at: String,
+    pub updated_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub merged_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub closed_at: Option<String>,
+}
+
+/// One row of `pr_list`: enough to find the PR for a branch, walk a stack
+/// (`branch` → `base`) or see what merged lately, without a second read.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct PrListEntry {
+    pub number: u32,
+    pub title: String,
+    pub state: PrStatus,
+    pub draft: bool,
+    /// Head branch name.
+    pub branch: String,
+    pub base: String,
+    pub url: String,
+    pub author: String,
+    /// ISO-8601 as GitHub gives it.
+    pub updated_at: String,
+}
+
+/// What `pr_list` asks for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrListFilter {
+    /// "open" | "closed" | "all" — GitHub's own vocabulary; a merged PR is
+    /// a closed one whose row says `merged`.
+    pub state: String,
+    /// Head branch, in this repository.
+    pub head: Option<String>,
+    pub base: Option<String>,
+    pub limit: u32,
+}
+
 /// Lightweight PR summary for the composer's "#" mention autocomplete —
 /// just enough to list and reference a PR by number.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -104,6 +167,36 @@ pub struct IssueSummary {
     pub body: Option<String>,
 }
 
+/// One comment on an issue, as the agent's `issue_view` returns it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct IssueCommentRow {
+    /// Author's login; empty for a deleted account.
+    pub author: String,
+    pub body: String,
+    /// ISO-8601 as GitHub gives it.
+    pub created_at: String,
+}
+
+/// An issue, whole, for an agent asked to work on or triage it. Also the row
+/// shape of `issue_list`, where `comments` is left empty.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct IssueDetail {
+    pub number: u32,
+    pub title: String,
+    /// "open" | "closed"
+    pub state: String,
+    pub url: String,
+    pub author: String,
+    pub labels: Vec<String>,
+    pub assignees: Vec<String>,
+    pub body: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub comments_count: u32,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub comments: Vec<IssueCommentRow>,
+}
+
 /// GitHub's combined merge gate (`mergeStateStatus`), normalized. This — not
 /// `mergeable` — is what actually decides whether a PR can land (spec §6).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -123,6 +216,11 @@ pub enum MergeState {
 /// `CheckRun` and legacy `StatusContext` shapes).
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct CheckRun {
+    /// GitHub's check-run id — for a GitHub Actions check, the job id its
+    /// log and annotations are read by (`pr_check_log`). `None` for a legacy
+    /// commit status, which has no run behind it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<u64>,
     pub name: String,
     /// "queued" | "in_progress" | "completed"
     pub status: String,
@@ -153,6 +251,38 @@ pub struct PrChecks {
     /// lists ALL failing checks, not just protected ones.
     pub required_failing: Vec<String>,
     pub runs: Vec<CheckRun>,
+}
+
+/// One annotation a check left on the code (a compiler error, a failed
+/// assertion with its file and line), as `GET /check-runs/{id}/annotations`
+/// reports it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct CheckAnnotation {
+    pub path: String,
+    pub start_line: u32,
+    pub end_line: u32,
+    /// "failure" | "warning" | "notice"
+    pub level: String,
+    pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+}
+
+/// What a failing check left behind, for an agent fixing it: the tail of the
+/// job's log with GitHub's per-line timestamps stripped, and its annotations.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct CheckLog {
+    pub id: u64,
+    /// The last `lines` lines of the job log. `None` when the check has no
+    /// job log to read (not a GitHub Actions job, or the log has expired);
+    /// `note` then says so.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub log_tail: Option<String>,
+    /// True when the log had more lines than were returned.
+    pub truncated: bool,
+    pub annotations: Vec<CheckAnnotation>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 /// One unresolved PR review thread, flattened to its root comment. Surfaced
@@ -227,6 +357,26 @@ pub struct PrRefs {
 pub struct PrLive {
     pub state: PrState,
     pub checks: Option<PrChecks>,
+}
+
+/// The repository behind a checkout's origin, as the agent's `repo_view`
+/// answers: what agents asked `GET /repos/{o}/{r}` for before deciding how
+/// to land work — visibility, the default branch, the merge methods allowed,
+/// whether merged branches are deleted.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct RepoInfo {
+    pub full_name: String,
+    pub url: String,
+    pub private: bool,
+    pub archived: bool,
+    pub default_branch: String,
+    pub allow_squash_merge: bool,
+    pub allow_merge_commit: bool,
+    pub allow_rebase_merge: bool,
+    pub delete_branch_on_merge: bool,
+    pub has_issues: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
 }
 
 /// GitHub connection state. Drives the New Project UI and readiness rows.

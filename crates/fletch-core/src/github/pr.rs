@@ -269,6 +269,99 @@ pub(crate) async fn pr_update_body(
     Ok(())
 }
 
+/// What [`pr_edit`] may change. Every field optional; `None` leaves it alone.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct PrEdit {
+    pub title: Option<String>,
+    /// Replaces the whole body. Callers that want to keep the rest of a
+    /// description read it first (`pr_body`) and edit the text.
+    pub body: Option<String>,
+    /// Retargets the PR at another branch of the same repository.
+    pub base: Option<String>,
+    /// `Some(true)` converts to a draft, `Some(false)` marks ready for review.
+    pub draft: Option<bool>,
+}
+
+impl PrEdit {
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// The REST `PATCH /pulls/{n}` payload, or `None` when only the draft flag
+    /// changes (that is a GraphQL mutation, not a PATCH field).
+    fn patch_payload(&self) -> Option<Value> {
+        let mut payload = serde_json::Map::new();
+        if let Some(title) = &self.title {
+            payload.insert("title".into(), json!(title));
+        }
+        if let Some(body) = &self.body {
+            // Same scrub every created PR gets, so an edit cannot reintroduce
+            // the attribution footer the user switched off.
+            payload.insert(
+                "body".into(),
+                json!(crate::attribution::scrub_pr_body(body)),
+            );
+        }
+        if let Some(base) = &self.base {
+            payload.insert("base".into(), json!(base));
+        }
+        (!payload.is_empty()).then_some(Value::Object(payload))
+    }
+}
+
+/// Edit a PR's title, body and base by number, in one REST PATCH. The draft
+/// flag is a separate GitHub mutation ([`pr_set_draft`]) and deliberately a
+/// separate call: a caller that changes the base and the draft flag together
+/// must know which of the two landed when the other fails. Returns the PR's
+/// URL, or `Ok(None)` when `edit` had nothing for the PATCH.
+pub async fn pr_edit(checkout: &Path, number: u32, edit: &PrEdit) -> Result<Option<String>> {
+    let Some(payload) = edit.patch_payload() else {
+        return Ok(None);
+    };
+    let (owner, repo) = require_repo_ref(checkout).await?;
+    let client = client::Client::new()?;
+    let (status, resp) = client
+        .rest(
+            reqwest::Method::PATCH,
+            &format!("/repos/{owner}/{repo}/pulls/{number}"),
+            Some(&payload),
+        )
+        .await?;
+    if !status.is_success() {
+        return Err(Error::Gh(format!(
+            "pr edit failed: {}",
+            detailed_rest_error(&resp)
+        )));
+    }
+    Ok(resp["html_url"].as_str().map(str::to_string))
+}
+
+/// Convert PR `number` to a draft, or mark it ready for review: GitHub's
+/// `convertPullRequestToDraft` / `markReadyForReview` mutation on the PR's
+/// node id. A PR already in the asked-for state is left alone, as GitHub
+/// refuses the mutation and that would read as a failure of an edit that is
+/// in effect.
+pub async fn pr_set_draft(checkout: &Path, number: u32, draft: bool) -> Result<()> {
+    let client = client::Client::new()?;
+    let node = pr_node_and_viewer(checkout, None, number, "id isDraft")
+        .await?
+        .map(|(node, _viewer)| node)
+        .ok_or_else(|| Error::Gh(format!("PR #{number} was not found")))?;
+    let id = node["id"]
+        .as_str()
+        .ok_or_else(|| Error::Gh(format!("PR #{number} did not resolve to a node")))?;
+    if node["isDraft"].as_bool() == Some(draft) {
+        return Ok(());
+    }
+    let mutation = if draft {
+        r#"mutation($id:ID!){ convertPullRequestToDraft(input:{pullRequestId:$id}){ clientMutationId } }"#
+    } else {
+        r#"mutation($id:ID!){ markReadyForReview(input:{pullRequestId:$id}){ clientMutationId } }"#
+    };
+    client.graphql(mutation, json!({ "id": id })).await?;
+    Ok(())
+}
+
 /// List open PRs for the repo at `checkout` (newest first), for the
 /// composer's "#" mention autocomplete. Empty when not connected.
 pub async fn pr_list(checkout: &Path, limit: u32) -> Result<Vec<PrSummary>> {
@@ -302,6 +395,113 @@ pub async fn pr_list(checkout: &Path, limit: u32) -> Result<Vec<PrSummary>> {
             },
         })
         .collect())
+}
+
+/// Post a comment on the conversation of pull request or issue `number` (one
+/// endpoint serves both) and return the comment's URL. The body gets the
+/// attribution scrub every PR body gets.
+pub async fn post_comment(checkout: &Path, number: u32, body: &str) -> Result<String> {
+    if body.trim().is_empty() {
+        return Err(Error::Gh("comment body is empty".into()));
+    }
+    let (owner, repo) = require_repo_ref(checkout).await?;
+    let client = client::Client::new()?;
+    let (status, resp) = client
+        .rest(
+            reqwest::Method::POST,
+            &format!("/repos/{owner}/{repo}/issues/{number}/comments"),
+            Some(&json!({ "body": crate::attribution::scrub_pr_body(body) })),
+        )
+        .await?;
+    if !status.is_success() {
+        return Err(Error::Gh(format!(
+            "comment failed: {}",
+            detailed_rest_error(&resp)
+        )));
+    }
+    Ok(resp["html_url"].as_str().unwrap_or_default().to_string())
+}
+
+/// Close pull request `number` without merging (REST PATCH `state: closed`).
+pub async fn pr_close(checkout: &Path, number: u32) -> Result<()> {
+    let (owner, repo) = require_repo_ref(checkout).await?;
+    let client = client::Client::new()?;
+    let (status, resp) = client
+        .rest(
+            reqwest::Method::PATCH,
+            &format!("/repos/{owner}/{repo}/pulls/{number}"),
+            Some(&json!({ "state": "closed" })),
+        )
+        .await?;
+    if !status.is_success() {
+        return Err(Error::Gh(format!(
+            "pr close failed: {}",
+            detailed_rest_error(&resp)
+        )));
+    }
+    Ok(())
+}
+
+/// GitHub's page cap for the pulls list.
+pub const PR_LIST_MAX: u32 = 100;
+
+/// The repository's pull requests matching `filter`, newest-updated first,
+/// over REST. `Ok(None)` when GitHub answers anything but success (a
+/// repository the token cannot see) or while a rate-limit backoff is active.
+pub async fn pr_list_filtered(
+    checkout: &Path,
+    filter: &PrListFilter,
+) -> Result<Option<Vec<PrListEntry>>> {
+    if client::is_backing_off() {
+        return Ok(None);
+    }
+    let (owner, repo) = require_repo_ref(checkout).await?;
+    let client = client::Client::new()?;
+    let per_page = filter.limit.clamp(1, PR_LIST_MAX).to_string();
+    // `head` is `owner:branch` to GitHub; the branch is of this repository.
+    let head = filter.head.as_ref().map(|h| format!("{owner}:{h}"));
+    let mut params = vec![
+        ("state", filter.state.as_str()),
+        ("sort", "updated"),
+        ("direction", "desc"),
+        ("per_page", per_page.as_str()),
+    ];
+    if let Some(head) = &head {
+        params.push(("head", head));
+    }
+    if let Some(base) = &filter.base {
+        params.push(("base", base));
+    }
+    let path = client::with_query(&format!("/repos/{owner}/{repo}/pulls"), &params);
+    let (status, body) = client.rest_get_observed(&path).await?;
+    if !status.is_success() {
+        return Ok(None);
+    }
+    Ok(Some(parse_pr_list(&body)))
+}
+
+/// The REST pulls array as rows. Pure; a non-array body is an empty list.
+pub(crate) fn parse_pr_list(body: &Value) -> Vec<PrListEntry> {
+    body.as_array()
+        .map(|arr| {
+            arr.iter()
+                .map(|pr| {
+                    let state = super::live::parse_pr_state_rest(pr);
+                    PrListEntry {
+                        number: state.number,
+                        title: state.title,
+                        state: state.state,
+                        draft: pr["draft"].as_bool().unwrap_or(false),
+                        branch: pr["head"]["ref"].as_str().unwrap_or_default().to_string(),
+                        base: pr["base"]["ref"].as_str().unwrap_or_default().to_string(),
+                        url: state.url,
+                        author: pr["user"]["login"].as_str().unwrap_or_default().to_string(),
+                        updated_at: pr["updated_at"].as_str().unwrap_or_default().to_string(),
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Whether a create failure means a PR for this branch already exists (the
@@ -380,12 +580,26 @@ pub async fn pr_create_head(
     }
 
     // The create response carries no `mergeable` verdict yet (GitHub computes
-    // it async) — fetch the same shape every other path returns.
+    // it async) — fetch the same shape every other path returns. The PR exists
+    // either way, so a re-read that answers nothing (a rate-limit pause, a
+    // replica that has not caught up, a transport hiccup) falls back to the
+    // create response itself rather than reporting the PR as lost: that error
+    // left agents without the URL of a PR GitHub had just opened.
     let number = resp["number"].as_u64().unwrap_or_default() as u32;
-    match pr_view_number(checkout, None, number).await? {
-        Some(pr) => Ok(pr),
-        None => Err(Error::Gh("PR was created but could not be fetched".into())),
+    match pr_view_number(checkout, None, number).await {
+        Ok(Some(pr)) => Ok(pr),
+        Ok(None) => Ok(created_pr_state(&resp)),
+        Err(e) => {
+            tracing::debug!(number, error = %e, "pr create: re-read failed, using the create response");
+            Ok(created_pr_state(&resp))
+        }
     }
+}
+
+/// The state of a PR as the create response describes it: open, with
+/// `mergeable` still unknown. Same REST shape `GET /pulls/{n}` returns.
+fn created_pr_state(resp: &Value) -> PrState {
+    super::live::parse_pr_state_rest(resp)
 }
 
 /// GitHub's 422 for a draft PR on a repo whose plan doesn't include them:
@@ -612,6 +826,78 @@ mod tests {
         assert!(queue);
 
         assert!(merge_target(&json!({"isMergeQueueEnabled": false})).is_none());
+    }
+
+    /// What `POST /pulls` answers: an open PR whose `mergeable` is still
+    /// `null`. Read as the create result when the re-read answers nothing,
+    /// so the caller still gets the number and URL of the PR it just opened.
+    #[test]
+    fn a_create_response_reads_as_an_open_pr_with_unknown_mergeability() {
+        let pr = created_pr_state(&json!({
+            "number": 93,
+            "html_url": "https://github.com/o/r/pull/93",
+            "title": "feat: thing",
+            "state": "open",
+            "mergeable": null,
+            "merged": false,
+            "created_at": "2026-10-21T10:00:00Z",
+            "head": { "ref": "feat/thing" }
+        }));
+        assert_eq!(pr.number, 93);
+        assert_eq!(pr.url, "https://github.com/o/r/pull/93");
+        assert!(matches!(pr.state, PrStatus::Open));
+        assert_eq!(pr.mergeable, MergeableState::Unknown);
+        assert_eq!(pr.branch.as_deref(), Some("feat/thing"));
+    }
+
+    /// Only the fields given reach the PATCH; a draft-only edit sends none,
+    /// since the draft flag is a mutation.
+    #[test]
+    fn pr_edit_patches_only_what_was_given() {
+        let edit = PrEdit {
+            title: Some("new title".into()),
+            base: Some("develop".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            edit.patch_payload(),
+            Some(json!({ "title": "new title", "base": "develop" }))
+        );
+        let draft_only = PrEdit {
+            draft: Some(true),
+            ..Default::default()
+        };
+        assert_eq!(draft_only.patch_payload(), None);
+        assert!(!draft_only.is_empty());
+        assert!(PrEdit::default().is_empty());
+    }
+
+    #[test]
+    fn pr_list_rows_carry_branch_base_and_merged_state() {
+        let rows = parse_pr_list(&json!([
+            { "number": 5, "title": "open one", "state": "open", "merged": false, "draft": true,
+              "html_url": "https://github.com/o/r/pull/5",
+              "head": { "ref": "feat/a" }, "base": { "ref": "main" },
+              "user": { "login": "octocat" }, "updated_at": "2026-10-21T09:00:00Z" },
+            { "number": 4, "title": "merged one", "state": "closed", "merged_at": "2026-10-20T09:00:00Z",
+              "head": { "ref": "feat/b" }, "base": { "ref": "feat/a" }, "user": { "login": "alice" } }
+        ]));
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].number, 5);
+        assert!(rows[0].draft);
+        assert_eq!(rows[0].state, PrStatus::Open);
+        assert_eq!(
+            (rows[0].branch.as_str(), rows[0].base.as_str()),
+            ("feat/a", "main")
+        );
+        assert_eq!(rows[0].author, "octocat");
+        assert_eq!(
+            rows[1].state,
+            PrStatus::Merged,
+            "merged_at makes a closed PR merged"
+        );
+        assert_eq!(rows[1].base, "feat/a", "a stacked PR names its parent");
+        assert!(parse_pr_list(&json!({ "message": "Not Found" })).is_empty());
     }
 
     #[test]

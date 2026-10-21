@@ -134,36 +134,162 @@ async fn signal_git_action_rejects_unknown_action() {
 async fn an_unknown_op_is_still_refused_by_name() {
     let td = tempfile::tempdir().unwrap();
     let (resp, effects) = dispatcher(td.path())
-        .dispatch_inner("u", "pr_merge", &Value::Null)
+        .dispatch_inner("u", "pr_rocket", &Value::Null)
         .await;
     assert!(!resp.ok);
-    assert_eq!(resp.error.as_deref(), Some("unknown op: pr_merge"));
+    assert_eq!(resp.error.as_deref(), Some("unknown op: pr_rocket"));
     assert!(effects.is_empty());
 }
 
 #[tokio::test]
-async fn pr_checks_rejects_a_number_that_is_not_a_positive_integer() {
+async fn pr_reads_reject_a_number_that_is_not_a_positive_integer() {
     let td = tempfile::tempdir().unwrap();
     let disp = dispatcher(td.path());
-    for bad in [
-        json!(0),
-        json!(-3),
-        json!(1.5),
-        json!("12"),
-        json!(true),
-        json!(u64::from(u32::MAX) + 1),
-    ] {
-        let (resp, effects) = disp
-            .dispatch_inner("c", "pr_checks", &json!({ "number": bad }))
-            .await;
-        assert!(!resp.ok, "{bad} must be refused");
-        let err = resp.error.unwrap();
-        assert!(
-            err.starts_with("pr_checks: `number` must be a positive integer"),
-            "{bad}: {err}"
-        );
-        assert!(effects.is_empty());
+    for op in ["pr_checks", "pr_view"] {
+        for bad in [
+            json!(0),
+            json!(-3),
+            json!(1.5),
+            json!("12"),
+            json!(true),
+            json!(u64::from(u32::MAX) + 1),
+        ] {
+            let (resp, effects) = disp
+                .dispatch_inner("c", op, &json!({ "number": bad }))
+                .await;
+            assert!(!resp.ok, "{op} {bad} must be refused");
+            let err = resp.error.unwrap();
+            assert!(
+                err.starts_with(&format!("{op}: `number` must be a positive integer")),
+                "{op} {bad}: {err}"
+            );
+            assert!(effects.is_empty());
+        }
     }
+}
+
+#[tokio::test]
+async fn pr_check_log_needs_a_check_and_sane_numbers() {
+    let td = tempfile::tempdir().unwrap();
+    let disp = dispatcher(td.path());
+    for (args, needle) in [
+        (json!({}), "requires `check`"),
+        (json!({ "check": "" }), "requires `check`"),
+        (json!({ "check": 0 }), "requires `check`"),
+        (json!({ "check": true }), "requires `check`"),
+        (
+            json!({ "check": "test", "lines": 0 }),
+            "`lines` must be a positive integer",
+        ),
+        (
+            json!({ "check": "test", "number": -1 }),
+            "`number` must be a positive integer",
+        ),
+    ] {
+        let (resp, fx) = disp.dispatch_inner("l", "pr_check_log", &args).await;
+        assert!(!resp.ok, "{args}");
+        let err = resp.error.unwrap();
+        assert!(err.contains(needle), "{args}: {err}");
+        assert!(fx.is_empty());
+    }
+}
+
+#[tokio::test]
+async fn pr_list_validates_its_filter_before_any_lookup() {
+    let td = tempfile::tempdir().unwrap();
+    let disp = dispatcher(td.path());
+    for (args, needle) in [
+        (json!({ "state": "merged" }), "`state` must be"),
+        (json!({ "state": 1 }), "`state` must be"),
+        (json!({ "limit": 0 }), "`limit` must be a positive integer"),
+        (json!({ "head": "--all" }), "option-like head"),
+        (json!({ "base": "-x" }), "option-like base"),
+    ] {
+        let (resp, fx) = disp.dispatch_inner("l", "pr_list", &args).await;
+        assert!(!resp.ok, "{args}");
+        let err = resp.error.unwrap();
+        assert!(err.contains(needle), "{args}: {err}");
+        assert!(fx.is_empty());
+    }
+}
+
+#[test]
+fn pr_list_filter_defaults_and_clamps() {
+    use crate::rpc::git::pr_reads::pr_list_filter;
+    let f = pr_list_filter(&json!({})).unwrap();
+    assert_eq!(
+        (f.state.as_str(), f.limit, f.head, f.base),
+        ("open", 20, None, None)
+    );
+    let f = pr_list_filter(
+        &json!({ "state": "all", "limit": 500, "head": " feat/x ", "base": "main" }),
+    )
+    .unwrap();
+    assert_eq!(f.state, "all");
+    assert_eq!(f.limit, 100);
+    assert_eq!(f.head.as_deref(), Some("feat/x"));
+    assert_eq!(f.base.as_deref(), Some("main"));
+}
+
+#[test]
+fn a_check_is_named_by_id_or_name() {
+    use crate::rpc::git::pr_reads::CheckRef;
+    assert_eq!(
+        CheckRef::from_args(&json!({ "check": 42 })),
+        Some(CheckRef::Id(42))
+    );
+    assert_eq!(
+        CheckRef::from_args(&json!({ "check": "42" })),
+        Some(CheckRef::Id(42))
+    );
+    assert_eq!(
+        CheckRef::from_args(&json!({ "check": " test (ubuntu) " })),
+        Some(CheckRef::Name("test (ubuntu)".into()))
+    );
+    assert_eq!(CheckRef::from_args(&json!({ "check": null })), None);
+}
+
+#[test]
+fn find_run_matches_exactly_then_loosely_and_names_the_rest() {
+    use crate::github::CheckRun;
+    use crate::rpc::git::pr_reads::{find_run, CheckRef};
+    let run = |id: Option<u64>, name: &str| CheckRun {
+        id,
+        name: name.into(),
+        status: "completed".into(),
+        conclusion: Some("failure".into()),
+        required: false,
+        url: None,
+        started_at: None,
+        completed_at: None,
+    };
+    let runs = vec![
+        run(Some(1), "test"),
+        run(Some(2), "test (ubuntu)"),
+        run(None, "ci/legacy"),
+    ];
+    assert_eq!(
+        find_run(&runs, &CheckRef::Id(2)).unwrap().name,
+        "test (ubuntu)"
+    );
+    assert_eq!(
+        find_run(&runs, &CheckRef::Name("test".into())).unwrap().id,
+        Some(1),
+        "an exact name wins over a substring match"
+    );
+    assert_eq!(
+        find_run(&runs, &CheckRef::Name("UBUNTU".into()))
+            .unwrap()
+            .id,
+        Some(2)
+    );
+    let err = find_run(&runs, &CheckRef::Name("tes".into())).unwrap_err();
+    assert!(err.contains("matches several"), "{err}");
+    let err = find_run(&runs, &CheckRef::Id(9)).unwrap_err();
+    assert!(
+        err.contains("test (id 1)") && err.contains("ci/legacy"),
+        "{err}"
+    );
 }
 
 #[test]
@@ -221,8 +347,20 @@ async fn pr_reads_name_a_non_github_origin_and_emit_nothing() {
     let td = tempfile::tempdir().unwrap();
     let repo = repo_without_origin(td.path());
     let disp = dispatcher(&repo);
-    for op in ["pr_view", "pr_checks", "pr_comments"] {
-        let (resp, effects) = disp.dispatch_inner("r", op, &Value::Null).await;
+    for op in [
+        "pr_view",
+        "pr_checks",
+        "pr_comments",
+        "pr_check_log",
+        "pr_list",
+        "repo_view",
+    ] {
+        let args = if op == "pr_check_log" {
+            json!({ "check": "test" })
+        } else {
+            Value::Null
+        };
+        let (resp, effects) = disp.dispatch_inner("r", op, &args).await;
         assert!(!resp.ok, "{op}");
         assert_eq!(
             resp.error.as_deref(),
@@ -260,7 +398,13 @@ async fn pr_reads_are_not_refused_by_denied_caps() {
     let repo = repo_without_origin(td.path());
     for caps in [AgentCaps::run_owned(), AgentCaps::advisory()] {
         let disp = GitDispatcher::new(repo.clone(), repo.clone(), "main".to_string(), caps);
-        for op in ["pr_view", "pr_checks", "pr_comments"] {
+        for op in [
+            "pr_view",
+            "pr_checks",
+            "pr_comments",
+            "pr_list",
+            "repo_view",
+        ] {
             let (resp, _fx) = disp.dispatch_inner("r", op, &Value::Null).await;
             let err = resp.error.unwrap_or_default();
             assert!(

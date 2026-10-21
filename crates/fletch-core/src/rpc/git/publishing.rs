@@ -9,7 +9,7 @@ use crate::rpc::{approval, Response, RpcEvent};
 
 impl GitDispatcher {
     /// Fails closed when the gate is on but there is no window to ask through.
-    async fn refuse_unless_publish_approved(
+    pub(super) async fn refuse_unless_publish_approved(
         &self,
         op: &str,
         repo: Option<&str>,
@@ -39,14 +39,8 @@ impl GitDispatcher {
         let body_arg = args.get("body").and_then(|v| v.as_str()).unwrap_or("");
         // Live issue lookup, not a spawn-time snapshot: a later composer pick must
         // reach the trailer. Idempotent.
-        let live_ref = self
-            .issue_agent
-            .as_deref()
-            .and_then(crate::issues::live_issue_ref);
-        let closes = (t.subdir == self.default_subdir)
-            .then_some(live_ref.as_deref())
-            .flatten();
-        let body_owned = crate::github::with_closes_trailer(body_arg, closes);
+        let closes = self.live_closes(&t);
+        let body_owned = crate::github::with_closes_trailer(body_arg, closes.as_deref());
         let body = body_owned.as_str();
         let requested = arg_branch(args);
         // Resolved before the head branch is materialized so a malformed base fails
@@ -82,14 +76,23 @@ impl GitDispatcher {
         };
 
         let mut effects = Vec::new();
-        let branch = match (current, requested) {
-            (Some(cur), None) => cur,
-            (Some(cur), Some(req)) if req == cur => cur,
-            (Some(_), Some(req)) => match create_branch(&t, &req, &mut effects).await {
+        // `args.head` names an existing local branch other than the checked-out
+        // one — a stack's next PR is opened without checking each branch out.
+        // Nothing is materialized for it: a head that isn't there fails the
+        // identity read below, which names it.
+        let head = arg_branch_named(args, "head");
+        // An explicit head that names the checked-out branch is the agent's
+        // own branch, spelled out; only a head that differs is another one.
+        let publishes_other_head = head.is_some() && head != current;
+        let branch = match (head, current, requested) {
+            (Some(head), _, _) => head,
+            (None, Some(cur), None) => cur,
+            (None, Some(cur), Some(req)) if req == cur => cur,
+            (None, Some(_), Some(req)) => match create_branch(&t, &req, &mut effects).await {
                 Ok(name) => name,
                 Err(e) => return (Response::err(id, format!("open_pr: {e}")), effects),
             },
-            (None, req) => {
+            (None, None, req) => {
                 let desired = req.unwrap_or_else(|| fallback_branch(title));
                 match create_branch(&t, &desired, &mut effects).await {
                     Ok(name) => name,
@@ -126,13 +129,24 @@ impl GitDispatcher {
             Ok(tip) => tip,
             Err(resp) => return (resp, effects),
         };
+        // Ownership follows the checked-out branch only. A stack's other head
+        // published through `args.head` is not where the agent works, and
+        // recording it would replace the branch the force anchor names; the
+        // checked-out branch named explicitly is still the agent's own.
+        let born_on_origin =
+            !publishes_other_head && born_on_origin_by_this_push(&t, &branch, &effects).await;
         if let Err(e) = t.publish(&branch, &tip, false).await {
             return (
                 Response::err(id, format!("open_pr push failed: {e}")),
                 effects,
             );
         }
-        match crate::github::pr_create(&t.cwd, title, body, &base).await {
+        if born_on_origin {
+            note_branch_born(&t, &branch, &mut effects);
+        }
+        // By the branch just published, not the checkout's HEAD: with
+        // `args.head` the two differ.
+        match crate::github::pr_create_head(&t.cwd, &branch, title, body, &base).await {
             Ok(pr) => {
                 crate::telemetry::track("pr_opened", json!({ "source": "agent_rpc" }));
                 // Enough to log the PR into its checkout's set the moment it
@@ -227,11 +241,44 @@ impl GitDispatcher {
             Ok(tip) => tip,
             Err(resp) => return (resp, effects),
         };
+        let born_on_origin = born_on_origin_by_this_push(&t, &branch, &effects).await;
         match t.publish(&branch, &tip, force).await {
-            Ok(summary) => (Response::ok(id, 0, summary, String::new()), effects),
+            Ok(summary) => {
+                if born_on_origin {
+                    note_branch_born(&t, &branch, &mut effects);
+                }
+                (Response::ok(id, 0, summary, String::new()), effects)
+            }
             Err(e) => (Response::err(id, e.to_string()), effects),
         }
     }
+}
+
+/// Whether the push about to happen is what puts `branch` on origin — the
+/// moment it becomes this agent's own branch (the force-push anchor,
+/// `caps::refuses_force`). The host already knows when it materialized the
+/// branch itself (`EVENT_BRANCH_CREATED` is in `effects`); a branch the agent
+/// made with plain `git checkout -b` is only known by asking origin. Without
+/// that, an agent that named its own branch could never force-push it:
+/// "no recorded work branch" was refused in 23 sessions. Skipped when the
+/// branch is already recorded, and a probe that can't answer records
+/// nothing, so a flaky network never widens force.
+async fn born_on_origin_by_this_push(t: &Target, branch: &str, effects: &[RpcEvent]) -> bool {
+    let already_noted = effects.iter().any(|e| {
+        let RpcEvent::Named { name, .. } = e;
+        name == EVENT_BRANCH_CREATED
+    });
+    if already_noted || t.own_branch.as_deref() == Some(branch) {
+        return false;
+    }
+    crate::git::remote_branch_exists(&t.cwd, &t.source_repo, branch).await == Some(false)
+}
+
+fn note_branch_born(t: &Target, branch: &str, effects: &mut Vec<RpcEvent>) {
+    effects.push(RpcEvent::named(
+        EVENT_BRANCH_CREATED,
+        with_repo(json!({ "branch": branch }), &t.subdir),
+    ));
 }
 
 impl Target {

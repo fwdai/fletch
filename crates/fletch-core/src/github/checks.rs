@@ -17,7 +17,7 @@ use super::types::*;
 pub(crate) const PR_CHECKS_FIELDS: &str = r#"mergeStateStatus
            commits(last:1){nodes{commit{statusCheckRollup{contexts(first:100){nodes{
              __typename
-             ... on CheckRun { name status conclusion detailsUrl startedAt completedAt }
+             ... on CheckRun { databaseId name status conclusion detailsUrl startedAt completedAt }
              ... on StatusContext { context state targetUrl startedAt: createdAt }
            }}}}}}"#;
 
@@ -155,6 +155,7 @@ fn parse_pr_checks(merge_state_status: &str, rollup: &[Value]) -> PrChecks {
                     _ => ("in_progress", None), // PENDING
                 };
                 CheckRun {
+                    id: None,
                     name: str_of(item, "context").unwrap_or_else(|| "status".into()),
                     status: status.to_string(),
                     conclusion: conclusion.map(|s| s.to_string()),
@@ -165,6 +166,7 @@ fn parse_pr_checks(merge_state_status: &str, rollup: &[Value]) -> PrChecks {
                 }
             } else {
                 CheckRun {
+                    id: item["databaseId"].as_u64(),
                     name: str_of(item, "name").unwrap_or_else(|| "check".into()),
                     status: item["status"].as_str().unwrap_or("QUEUED").to_lowercase(),
                     conclusion: str_of(item, "conclusion").map(|c| c.to_lowercase()),
@@ -189,7 +191,7 @@ mod tests {
             r#"[
               {"__typename":"CheckRun","name":"build","status":"COMPLETED","conclusion":"SUCCESS",
                "detailsUrl":"https://ci/build","startedAt":"2026-06-10T00:00:00Z","completedAt":"2026-06-10T00:05:00Z"},
-              {"__typename":"CheckRun","name":"test","status":"COMPLETED","conclusion":"FAILURE",
+              {"__typename":"CheckRun","databaseId":4242,"name":"test","status":"COMPLETED","conclusion":"FAILURE",
                "detailsUrl":"https://ci/test","startedAt":"2026-06-10T00:00:00Z","completedAt":"2026-06-10T00:07:00Z"},
               {"__typename":"CheckRun","name":"lint","status":"IN_PROGRESS","conclusion":null,
                "detailsUrl":null,"startedAt":"2026-06-10T00:00:00Z","completedAt":null},
@@ -209,7 +211,10 @@ mod tests {
         assert_eq!(checks.pending, 1); // lint
         assert_eq!(checks.rollup, "failing");
         assert_eq!(checks.required_failing, vec!["test".to_string()]);
+        let test = checks.runs.iter().find(|r| r.name == "test").unwrap();
+        assert_eq!(test.id, Some(4242), "the job id travels with the run");
         let lint = checks.runs.iter().find(|r| r.name == "lint").unwrap();
+        assert_eq!(lint.id, None);
         assert_eq!(lint.status, "in_progress");
         assert_eq!(lint.conclusion, None);
         let legacy = checks.runs.iter().find(|r| r.name == "ci/legacy").unwrap();
