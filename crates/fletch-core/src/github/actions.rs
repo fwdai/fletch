@@ -60,17 +60,42 @@ pub async fn run_list(checkout: &Path, filter: &RunListFilter) -> Result<Option<
 pub async fn run_jobs(checkout: &Path, id: u64) -> Result<Option<Vec<CheckRun>>> {
     let (owner, repo) = require_repo_ref(checkout).await?;
     let client = client::Client::new()?;
+    let base = format!("/repos/{owner}/{repo}/actions/runs/{id}/jobs");
     let per_page = RUN_LIST_MAX.to_string();
-    let path = client::with_query(
-        &format!("/repos/{owner}/{repo}/actions/runs/{id}/jobs"),
-        &[("filter", "latest"), ("per_page", &per_page)],
-    );
-    let (status, body) = client.rest_get_observed(&path).await?;
-    if !status.is_success() {
-        return Ok(None);
+    // Paged to the end: a large matrix puts its failed job past the first
+    // hundred, and a job pick over a partial list would report no failure.
+    // `total_count` says when the list is complete; a short page does too.
+    let mut jobs = Vec::new();
+    for page in 1..=JOBS_MAX_PAGES {
+        let page = page.to_string();
+        let path = client::with_query(
+            &base,
+            &[
+                ("filter", "latest"),
+                ("per_page", &per_page),
+                ("page", &page),
+            ],
+        );
+        let (status, body) = client.rest_get_observed(&path).await?;
+        if !status.is_success() {
+            return Ok(None);
+        }
+        let batch = parse_run_jobs(&body);
+        let short = batch.len() < RUN_LIST_MAX as usize;
+        jobs.extend(batch);
+        let complete = body["total_count"]
+            .as_u64()
+            .is_some_and(|total| jobs.len() as u64 >= total);
+        if short || complete {
+            break;
+        }
     }
-    Ok(Some(parse_run_jobs(&body)))
+    Ok(Some(jobs))
 }
+
+/// Pages of jobs a run is read to; a thousand jobs is beyond any matrix
+/// GitHub runs, so this only bounds a list that never reports its total.
+const JOBS_MAX_PAGES: u32 = 10;
 
 /// Trigger `workflow` (a file name or id) on `git_ref` with `inputs`, as
 /// `gh workflow run` does. GitHub answers 204 with no run id; the returned

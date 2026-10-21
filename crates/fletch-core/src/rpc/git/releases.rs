@@ -76,18 +76,41 @@ pub(super) fn tag_arg(args: &Value) -> Result<Option<String>, String> {
         Some(Value::String(s)) => s.trim(),
         Some(other) => return Err(format!("`tag` must be a string, got {other}")),
     };
-    let well_formed = !tag.is_empty()
-        && !tag.starts_with('-')
-        && !tag.contains("..")
-        && tag
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '/' | '+'));
-    if !well_formed {
+    if !is_well_formed_tag(tag) {
         return Err(format!(
             "`tag` must be a tag name like \"v1.2.0\", got {tag:?}"
         ));
     }
     Ok(Some(tag.to_string()))
+}
+
+/// Git's own rules for a tag name (`git check-ref-format`), so every tag a
+/// release can carry — `v1.0.0@rc1`, `releases/2026.10` — is accepted and
+/// what git itself refuses is refused here: control characters, space and
+/// `~ ^ : ? * [ \`, a `..` or `@{` sequence, a lone `@`, a component that
+/// starts with `.` or ends in `.lock`, a trailing `.` or `/`. A leading `-`
+/// is refused as well, as every branch argument is. The tag is sent as one
+/// encoded path segment, so what passes here cannot change the request.
+pub(super) fn is_well_formed_tag(tag: &str) -> bool {
+    if tag.is_empty()
+        || tag == "@"
+        || tag.starts_with('-')
+        || tag.starts_with('/')
+        || tag.ends_with('/')
+        || tag.ends_with('.')
+        || tag.contains("..")
+        || tag.contains("@{")
+        || tag.contains("//")
+    {
+        return false;
+    }
+    if tag.chars().any(|c| {
+        c.is_ascii_control() || matches!(c, ' ' | '~' | '^' | ':' | '?' | '*' | '[' | '\\')
+    }) {
+        return false;
+    }
+    tag.split('/')
+        .all(|component| !component.starts_with('.') && !component.ends_with(".lock"))
 }
 
 #[cfg(test)]

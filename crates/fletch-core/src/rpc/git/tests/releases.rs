@@ -66,6 +66,35 @@ fn a_tag_is_trimmed_and_may_carry_git_tag_characters() {
         tag_arg(&json!({ "tag": "image-v2026.10.21" })),
         Ok(Some("image-v2026.10.21".into()))
     );
+    assert_eq!(
+        tag_arg(&json!({ "tag": "v1.0.0@rc1" })),
+        Ok(Some("v1.0.0@rc1".into())),
+        "`@` is legal in a tag name"
+    );
+}
+
+/// The tag rules are git's own: what `git check-ref-format --allow-onelevel`
+/// accepts passes, what it refuses is refused.
+#[test]
+fn tag_validation_follows_git_check_ref_format() {
+    use crate::rpc::git::releases::is_well_formed_tag;
+    for ok in [
+        "v1",
+        "v1.0.0@rc1",
+        "releases/2026.10",
+        "a+b",
+        "ünïcode-tag",
+        "with{brace}",
+        "v1.0.0-rc.1+build.7",
+    ] {
+        assert!(is_well_formed_tag(ok), "{ok:?} is a valid tag");
+    }
+    for bad in [
+        "", "@", "-v1", "/v1", "v1/", "v1.", "a..b", "a@{b", "a//b", "v 1", "v~1", "v^1", "v:1",
+        "v?1", "v*1", "v[1", "v\\1", "v\t1", ".hidden", "a/.b", "v1.lock", "a/b.lock",
+    ] {
+        assert!(!is_well_formed_tag(bad), "{bad:?} is not a valid tag");
+    }
 }
 
 /// Both reads go through the PR reads' preflight: a checkout with no GitHub

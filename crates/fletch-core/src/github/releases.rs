@@ -40,8 +40,9 @@ pub async fn release_list(checkout: &Path, limit: u32) -> Result<Option<Vec<Rele
 pub async fn release_view(checkout: &Path, tag: Option<&str>) -> Result<Option<Release>> {
     let (owner, repo) = require_repo_ref(checkout).await?;
     let client = client::Client::new()?;
+    // The tag is one encoded segment: `/` and `@` are legal in a tag name.
     let path = match tag {
-        Some(tag) => format!("/repos/{owner}/{repo}/releases/tags/{tag}"),
+        Some(tag) => client::with_segment(&format!("/repos/{owner}/{repo}/releases/tags"), tag),
         None => format!("/repos/{owner}/{repo}/releases/latest"),
     };
     let (status, body) = client.rest_get_observed(&path).await?;
