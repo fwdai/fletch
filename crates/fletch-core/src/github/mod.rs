@@ -17,6 +17,7 @@
 pub mod client;
 pub mod closes;
 
+mod actions;
 mod checks;
 mod comments;
 mod issues;
@@ -29,6 +30,7 @@ mod types;
 pub use client::{git_auth_env, seed_token, set_token, TOKEN_SETTING};
 pub(crate) use closes::with_closes_trailer;
 
+pub use actions::{check_log, CHECK_LOG_DEFAULT_LINES, CHECK_LOG_MAX_LINES};
 pub use checks::*;
 pub use comments::{
     pr_conversation_comments, pr_reply_thread, pr_resolve_thread, pr_threads_number,

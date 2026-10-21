@@ -145,6 +145,7 @@ impl GitDispatcher {
             "signal_git_action" => self.signal_git_action(id, args),
             "pr_view" => (self.pr_view(id, args).await, Vec::new()),
             "pr_checks" => (self.pr_checks(id, args).await, Vec::new()),
+            "pr_check_log" => (self.pr_check_log(id, args).await, Vec::new()),
             "pr_comments" => (self.pr_comments(id, args).await, Vec::new()),
             "pr_edit" => self.pr_edit(id, args).await,
             "pr_threads" => (self.pr_threads(id, args).await, Vec::new()),

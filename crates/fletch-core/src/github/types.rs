@@ -123,6 +123,11 @@ pub enum MergeState {
 /// `CheckRun` and legacy `StatusContext` shapes).
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct CheckRun {
+    /// GitHub's check-run id — for a GitHub Actions check, the job id its
+    /// log and annotations are read by (`pr_check_log`). `None` for a legacy
+    /// commit status, which has no run behind it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<u64>,
     pub name: String,
     /// "queued" | "in_progress" | "completed"
     pub status: String,
@@ -153,6 +158,38 @@ pub struct PrChecks {
     /// lists ALL failing checks, not just protected ones.
     pub required_failing: Vec<String>,
     pub runs: Vec<CheckRun>,
+}
+
+/// One annotation a check left on the code (a compiler error, a failed
+/// assertion with its file and line), as `GET /check-runs/{id}/annotations`
+/// reports it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct CheckAnnotation {
+    pub path: String,
+    pub start_line: u32,
+    pub end_line: u32,
+    /// "failure" | "warning" | "notice"
+    pub level: String,
+    pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+}
+
+/// What a failing check left behind, for an agent fixing it: the tail of the
+/// job's log with GitHub's per-line timestamps stripped, and its annotations.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct CheckLog {
+    pub id: u64,
+    /// The last `lines` lines of the job log. `None` when the check has no
+    /// job log to read (not a GitHub Actions job, or the log has expired);
+    /// `note` then says so.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub log_tail: Option<String>,
+    /// True when the log had more lines than were returned.
+    pub truncated: bool,
+    pub annotations: Vec<CheckAnnotation>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 /// One unresolved PR review thread, flattened to its root comment. Surfaced

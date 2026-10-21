@@ -339,6 +339,23 @@ impl Client {
         Ok((status, body))
     }
 
+    /// REST GET whose answer is text, not JSON: a job log. GitHub answers the
+    /// log endpoints with a redirect to a signed blob URL; reqwest follows it
+    /// and, the host differing, drops the bearer header on the way — the
+    /// signed URL needs none. The gate is fed like every other read.
+    pub async fn rest_text(&self, path: &str) -> Result<(reqwest::StatusCode, String)> {
+        let resp = self
+            .request(reqwest::Method::GET, format!("{API_BASE}{path}"))
+            .send()
+            .await
+            .map_err(request_error)?;
+        let status = resp.status();
+        let headers = resp.headers().clone();
+        let text = resp.text().await.unwrap_or_default();
+        observe_rate_limit(status, &headers, &Value::Null);
+        Ok((status, text))
+    }
+
     /// REST GET for a *polled* path, issued conditionally against the ETag of
     /// the last response for the same path.
     ///

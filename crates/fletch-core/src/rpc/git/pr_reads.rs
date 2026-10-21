@@ -181,4 +181,154 @@ impl GitDispatcher {
             Err(e) => Response::err(id, format!("pr_comments: {e}")),
         }
     }
+
+    /// The tail of one check's job log plus its annotations. `args.check` is
+    /// the run's `id` or `name` as `pr_checks` lists them; `args.lines` (default
+    /// 200, max 2000) is how much of the log's end to return; `args.number`
+    /// targets another PR. Without this, agents reading CI failures reached
+    /// for `gh run view --log-failed`.
+    pub(super) async fn pr_check_log(&self, id: &str, args: &Value) -> Response {
+        let Some(wanted) = CheckRef::from_args(args) else {
+            return Response::err(
+                id,
+                "pr_check_log requires `check`: a run's `id` or `name` as pr_checks lists them",
+            );
+        };
+        let lines = match positive_u32_arg(args, "lines") {
+            Ok(n) => (n.map(|n| n as usize))
+                .unwrap_or(crate::github::CHECK_LOG_DEFAULT_LINES)
+                .min(crate::github::CHECK_LOG_MAX_LINES),
+            Err(e) => return Response::err(id, format!("pr_check_log: {e}")),
+        };
+        let number = match positive_u32_arg(args, "number") {
+            Ok(n) => n,
+            Err(e) => return Response::err(id, format!("pr_check_log: {e}")),
+        };
+        let t = match self.pr_read_target(id, "pr_check_log", args).await {
+            Ok(t) => t,
+            Err(resp) => return resp,
+        };
+        let number = match number {
+            Some(n) => n,
+            None => match branch_pr(id, "pr_check_log", &t).await {
+                Ok(pr) => pr.number,
+                Err(resp) => return resp,
+            },
+        };
+        let checks = match crate::github::pr_checks_read(&t.source_repo, None, number).await {
+            Ok(crate::github::ChecksRead::Checks(checks)) => checks,
+            Ok(crate::github::ChecksRead::NotFound) => {
+                return Response::err(id, format!("pr_check_log: {}", not_found_or_hidden(number)))
+            }
+            Ok(crate::github::ChecksRead::Unavailable(why)) => {
+                return Response::err(
+                    id,
+                    format!("pr_check_log: GitHub did not answer ({why}); try again shortly"),
+                )
+            }
+            Err(e) => return Response::err(id, format!("pr_check_log: {e}")),
+        };
+        let run = match find_run(&checks.runs, &wanted) {
+            Ok(run) => run,
+            Err(why) => return Response::err(id, format!("pr_check_log: {why}")),
+        };
+        let Some(run_id) = run.id else {
+            return Response::err(
+                id,
+                format!(
+                    "pr_check_log: {:?} is a commit status, not a check run, so it has no job \
+                     log; its url is {}",
+                    run.name,
+                    run.url.as_deref().unwrap_or("not given")
+                ),
+            );
+        };
+        match crate::github::check_log(&t.source_repo, run_id, lines).await {
+            Ok(log) => {
+                let mut out = serde_json::to_value(&log).unwrap_or_default();
+                out["name"] = serde_json::json!(run.name);
+                out["status"] = serde_json::json!(run.status);
+                out["conclusion"] = serde_json::json!(run.conclusion);
+                out["url"] = serde_json::json!(run.url);
+                json_ok(id, "pr_check_log", &out)
+            }
+            Err(e) => Response::err(id, format!("pr_check_log: {e}")),
+        }
+    }
+}
+
+/// How a request names a check: by the id `pr_checks` reported, or by name.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum CheckRef {
+    Id(u64),
+    Name(String),
+}
+
+impl CheckRef {
+    pub(super) fn from_args(args: &Value) -> Option<Self> {
+        match args.get("check")? {
+            Value::Number(n) => n.as_u64().filter(|n| *n > 0).map(Self::Id),
+            Value::String(s) => {
+                let s = s.trim();
+                if s.is_empty() {
+                    return None;
+                }
+                // "4242" as a string is still an id.
+                Some(
+                    s.parse()
+                        .map(Self::Id)
+                        .unwrap_or_else(|_| Self::Name(s.to_string())),
+                )
+            }
+            _ => None,
+        }
+    }
+}
+
+/// The one run `wanted` names: an exact id, an exact name, or a unique
+/// case-insensitive substring of a name. Anything else is an error that
+/// lists the runs there are, so the agent can pick.
+pub(super) fn find_run<'a>(
+    runs: &'a [crate::github::CheckRun],
+    wanted: &CheckRef,
+) -> std::result::Result<&'a crate::github::CheckRun, String> {
+    let names = || {
+        runs.iter()
+            .map(|r| match r.id {
+                Some(id) => format!("{} (id {id})", r.name),
+                None => r.name.clone(),
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    match wanted {
+        CheckRef::Id(id) => runs
+            .iter()
+            .find(|r| r.id == Some(*id))
+            .ok_or_else(|| format!("no check with id {id}; the PR's checks are: {}", names())),
+        CheckRef::Name(name) => {
+            if let Some(run) = runs.iter().find(|r| r.name == *name) {
+                return Ok(run);
+            }
+            let needle = name.to_lowercase();
+            let loose: Vec<&crate::github::CheckRun> = runs
+                .iter()
+                .filter(|r| r.name.to_lowercase().contains(&needle))
+                .collect();
+            match loose.as_slice() {
+                [one] => Ok(one),
+                [] => Err(format!(
+                    "no check named {name:?}; the PR's checks are: {}",
+                    names()
+                )),
+                many => Err(format!(
+                    "{name:?} matches several checks ({}); name one exactly or pass its id",
+                    many.iter()
+                        .map(|r| r.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )),
+            }
+        }
+    }
 }

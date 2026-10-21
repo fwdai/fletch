@@ -166,6 +166,93 @@ async fn pr_checks_rejects_a_number_that_is_not_a_positive_integer() {
     }
 }
 
+#[tokio::test]
+async fn pr_check_log_needs_a_check_and_sane_numbers() {
+    let td = tempfile::tempdir().unwrap();
+    let disp = dispatcher(td.path());
+    for (args, needle) in [
+        (json!({}), "requires `check`"),
+        (json!({ "check": "" }), "requires `check`"),
+        (json!({ "check": 0 }), "requires `check`"),
+        (json!({ "check": true }), "requires `check`"),
+        (
+            json!({ "check": "test", "lines": 0 }),
+            "`lines` must be a positive integer",
+        ),
+        (
+            json!({ "check": "test", "number": -1 }),
+            "`number` must be a positive integer",
+        ),
+    ] {
+        let (resp, fx) = disp.dispatch_inner("l", "pr_check_log", &args).await;
+        assert!(!resp.ok, "{args}");
+        let err = resp.error.unwrap();
+        assert!(err.contains(needle), "{args}: {err}");
+        assert!(fx.is_empty());
+    }
+}
+
+#[test]
+fn a_check_is_named_by_id_or_name() {
+    use crate::rpc::git::pr_reads::CheckRef;
+    assert_eq!(
+        CheckRef::from_args(&json!({ "check": 42 })),
+        Some(CheckRef::Id(42))
+    );
+    assert_eq!(
+        CheckRef::from_args(&json!({ "check": "42" })),
+        Some(CheckRef::Id(42))
+    );
+    assert_eq!(
+        CheckRef::from_args(&json!({ "check": " test (ubuntu) " })),
+        Some(CheckRef::Name("test (ubuntu)".into()))
+    );
+    assert_eq!(CheckRef::from_args(&json!({ "check": null })), None);
+}
+
+#[test]
+fn find_run_matches_exactly_then_loosely_and_names_the_rest() {
+    use crate::github::CheckRun;
+    use crate::rpc::git::pr_reads::{find_run, CheckRef};
+    let run = |id: Option<u64>, name: &str| CheckRun {
+        id,
+        name: name.into(),
+        status: "completed".into(),
+        conclusion: Some("failure".into()),
+        required: false,
+        url: None,
+        started_at: None,
+        completed_at: None,
+    };
+    let runs = vec![
+        run(Some(1), "test"),
+        run(Some(2), "test (ubuntu)"),
+        run(None, "ci/legacy"),
+    ];
+    assert_eq!(
+        find_run(&runs, &CheckRef::Id(2)).unwrap().name,
+        "test (ubuntu)"
+    );
+    assert_eq!(
+        find_run(&runs, &CheckRef::Name("test".into())).unwrap().id,
+        Some(1),
+        "an exact name wins over a substring match"
+    );
+    assert_eq!(
+        find_run(&runs, &CheckRef::Name("UBUNTU".into()))
+            .unwrap()
+            .id,
+        Some(2)
+    );
+    let err = find_run(&runs, &CheckRef::Name("tes".into())).unwrap_err();
+    assert!(err.contains("matches several"), "{err}");
+    let err = find_run(&runs, &CheckRef::Id(9)).unwrap_err();
+    assert!(
+        err.contains("test (id 1)") && err.contains("ci/legacy"),
+        "{err}"
+    );
+}
+
 #[test]
 fn pr_comments_limit_defaults_and_clamps() {
     use crate::rpc::git::pr_reads::comment_limit;
@@ -221,8 +308,13 @@ async fn pr_reads_name_a_non_github_origin_and_emit_nothing() {
     let td = tempfile::tempdir().unwrap();
     let repo = repo_without_origin(td.path());
     let disp = dispatcher(&repo);
-    for op in ["pr_view", "pr_checks", "pr_comments"] {
-        let (resp, effects) = disp.dispatch_inner("r", op, &Value::Null).await;
+    for op in ["pr_view", "pr_checks", "pr_comments", "pr_check_log"] {
+        let args = if op == "pr_check_log" {
+            json!({ "check": "test" })
+        } else {
+            Value::Null
+        };
+        let (resp, effects) = disp.dispatch_inner("r", op, &args).await;
         assert!(!resp.ok, "{op}");
         assert_eq!(
             resp.error.as_deref(),

@@ -81,6 +81,7 @@ fn parse_check_run(node: &Value) -> CheckRun {
             .map(str::to_string)
     };
     CheckRun {
+        id: node["id"].as_u64(),
         name: str_of("name").unwrap_or_else(|| "check".into()),
         status: str_of("status").unwrap_or_else(|| "queued".into()),
         conclusion: str_of("conclusion"),
@@ -107,6 +108,7 @@ fn parse_status_context(node: &Value) -> CheckRun {
         _ => ("in_progress", None), // pending
     };
     CheckRun {
+        id: None,
         name: str_of("context").unwrap_or_else(|| "status".into()),
         status: status.to_string(),
         conclusion: conclusion.map(str::to_string),

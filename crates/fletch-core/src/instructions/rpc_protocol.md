@@ -65,7 +65,10 @@ dispatcher also exposes `echo` as a simple round-trip check. Future app features
 can define their own ops on top of the same mailbox.
 
 To read your branch's pull request, use `pr_view` (state, URL, mergeability),
-`pr_checks` (CI results; optional `args.number` for another PR), `pr_comments`
+`pr_checks` (CI results: each run's `id`, name, status, conclusion and URL;
+optional `args.number` for another PR), `pr_check_log` (one failing check's
+job log tail and annotations: `args.check` is a run's `id` or `name` from
+`pr_checks`, `args.lines` how many trailing lines, default 200, max 2000), `pr_comments`
 (the newest conversation comments, oldest first, with author, body, time and
 URL; optional `args.limit`, default 50, max 100) and `pr_threads` (unresolved
 review threads). Each returns JSON in `stdout`; an error names the reason (no
