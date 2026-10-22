@@ -517,6 +517,35 @@ describe("git and PR state", () => {
     expect(state().gitStates.arabia?.files).toHaveLength(3);
   });
 
+  it("loadGitState reads the working tree alone and keeps it when a read fails", async () => {
+    const prStates = state().prStates;
+    const prChecks = state().prChecks;
+    const pr = vi.spyOn(api, "getPrState");
+    const checks = vi.spyOn(api, "getPrChecks");
+    const git = vi.spyOn(api, "getGitState");
+    try {
+      useStore.setState((s) => {
+        const { kamakura: _, ...gitStates } = s.gitStates;
+        return { gitStates };
+      });
+      await state().loadGitState("kamakura");
+      const read = state().gitStates.kamakura;
+      expect(read?.branch).toBe("fix/dictation-followups");
+      expect(pr).not.toHaveBeenCalled();
+      expect(checks).not.toHaveBeenCalled();
+      expect(state().prStates).toBe(prStates);
+      expect(state().prChecks).toBe(prChecks);
+
+      git.mockRejectedValueOnce(new Error("host went away"));
+      await state().loadGitState("kamakura");
+      expect(state().gitStates.kamakura).toBe(read);
+    } finally {
+      pr.mockRestore();
+      checks.mockRestore();
+      git.mockRestore();
+    }
+  });
+
   it("loadPrLive keeps the last checks when the live read has none, replaces them when it does", async () => {
     await state().loadGit("kamakura");
     const before = state().prChecks.kamakura;

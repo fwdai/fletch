@@ -268,6 +268,11 @@ export interface MobileState extends ChatsSlice, ProposalsSlice, ProviderAccount
    *  is not put in `lastError`: the control that asked shows it. */
   loadOlderLog(agentId: string): Promise<void>;
   loadGit(agentId: string): Promise<void>;
+  /** Read the agent's working-tree state alone — the local git half of
+   *  `loadGit`, cheap enough to poll while the Agent screen shows it (see
+   *  useGitFollow). The PR half is left to the `pr:*` events. A failed read
+   *  keeps the last-known state. */
+  loadGitState(agentId: string): Promise<void>;
   /** The Ship tab's one read when it opens with no checks cached: PR state and
    *  CI from one `get_pr_live` pass, so both are from the same moment. The
    *  host's `pr:*` events keep them current after that. A null `checks` means
@@ -1195,12 +1200,10 @@ export const useStore = create<MobileState>()((set, get) => ({
     // read here (see `loadPrLive`); the git state has no event to race.
     const ticket = issuePrWrite();
     try {
-      const [git, pr] = await Promise.all([api.getGitState(agentId), api.getPrState(agentId)]);
-      const takeState = acceptPrWrite("prStates", agentId, ticket);
-      set((s) => ({
-        gitStates: { ...s.gitStates, [agentId]: git },
-        ...(takeState ? { prStates: { ...s.prStates, [agentId]: pr } } : {}),
-      }));
+      const [, pr] = await Promise.all([get().loadGitState(agentId), api.getPrState(agentId)]);
+      if (acceptPrWrite("prStates", agentId, ticket)) {
+        set((s) => ({ prStates: { ...s.prStates, [agentId]: pr } }));
+      }
       if (pr) {
         const checks = await api.getPrChecks(agentId);
         if (!acceptPrWrite("prChecks", agentId, ticket)) return;
@@ -1208,6 +1211,15 @@ export const useStore = create<MobileState>()((set, get) => ({
       }
     } catch {
       // Git/PR reads are advisory; leave the last-known values alone.
+    }
+  },
+
+  async loadGitState(agentId) {
+    try {
+      const git = await api.getGitState(agentId);
+      set((s) => ({ gitStates: { ...s.gitStates, [agentId]: git } }));
+    } catch {
+      // Advisory, like loadGit: keep the last-known state.
     }
   },
 
