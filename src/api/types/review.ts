@@ -6,12 +6,22 @@
 // this state is only about the review turn itself.
 
 /** Where the review stands. `idle`: never reviewed, or nothing reviewed
- *  since the checkout was reset. `reviewing`: a reviewer turn is in flight.
- *  `findings`: the last review raised threads, some still open. `clean`: the
- *  last review approved (or every finding is resolved) and the code is as it
- *  was then. `stale`: the code changed since the last review. `failed`: the
+ *  since the checkout was reset. `queued`: a start is held until the coder's
+ *  turn (or a live delegation on the checkout) ends — the PR-open trigger
+ *  usually lands mid-turn — and `review_stop` cancels it. `reviewing`: a
+ *  reviewer turn is in flight. `findings`: the last review raised threads,
+ *  some still open. `clean`: the last review approved (or every finding is
+ *  resolved) and the code is as it was then. `stale`: the code changed since
+ *  the last review — or during it, which `error` then says. `failed`: the
  *  turn ended without a verdict, or could not start — `error` says why. */
-export type ReviewPhase = "idle" | "reviewing" | "findings" | "clean" | "stale" | "failed";
+export type ReviewPhase =
+  | "idle"
+  | "queued"
+  | "reviewing"
+  | "findings"
+  | "clean"
+  | "stale"
+  | "failed";
 
 export type ReviewTrigger = "manual" | "pr-open" | "re-review";
 

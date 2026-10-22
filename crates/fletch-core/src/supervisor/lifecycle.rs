@@ -296,6 +296,9 @@ struct ProcessLaunch {
     /// The run blackboard dir to grant a workflow step agent (§8), derived from
     /// the record's `owner_run_id`. `None` for a normal, non-run-owned agent.
     blackboard: Option<PathBuf>,
+    /// The adopted checkout is the agent's to read, not write: the local
+    /// reviewer (`workspace::PURPOSE_REVIEWER`) reading a coder's tree.
+    adopted_read_only: bool,
 }
 
 /// Pick the turn-end detector for an agent by provider class and view, and
@@ -1236,6 +1239,11 @@ impl Supervisor {
                     start,
                     my_gen,
                     blackboard,
+                    // Derived from the purpose, like the caps above: a reviewer
+                    // reads the coder's checkout it adopts and must not be able
+                    // to change it, whatever its brief or a persuaded model says.
+                    adopted_read_only: record.purpose.as_deref()
+                        == Some(crate::workspace::PURPOSE_REVIEWER),
                 },
             )
             .await?;
@@ -1337,6 +1345,7 @@ impl Supervisor {
             start,
             my_gen,
             blackboard,
+            adopted_read_only,
         } = launch;
         let agent_id_str = agent_id.to_string();
 
@@ -1357,10 +1366,21 @@ impl Supervisor {
         // and resumes and the toggle's *current* state always wins. A
         // user-defined "codegraph" server suppresses injection (see
         // `codegraph`).
+        // Not into a read-only adoption (the local reviewer): the in-tree
+        // index is SQLite in WAL mode, which needs writes beside the db even to
+        // read, so the server would fail in a tree the reviewer may not write —
+        // and the instructions would advertise a tool that doesn't work.
         let crate::codegraph::McpInjection {
             servers: mcp_servers,
             codegraph_available,
-        } = crate::codegraph::inject_mcp_server(&record.mcp_servers, engine, &record.provider);
+        } = if adopted_read_only {
+            crate::codegraph::McpInjection {
+                servers: record.mcp_servers.clone(),
+                codegraph_available: false,
+            }
+        } else {
+            crate::codegraph::inject_mcp_server(&record.mcp_servers, engine, &record.provider)
+        };
 
         // Materialize the session's skill snapshot under the writable root and
         // fold its index into the injected instructions. Recomputed on every
@@ -1494,6 +1514,7 @@ impl Supervisor {
                         account: record.account.as_deref(),
                         oauth_token: None,
                         blackboard: blackboard.as_deref(),
+                        adopted_read_only,
                     };
                     spawn_pty_per_turn_agent(
                         spec,
@@ -1525,6 +1546,7 @@ impl Supervisor {
                         engine,
                         account: record.account.clone(),
                         blackboard: blackboard.clone(),
+                        adopted_read_only,
                     },
                     ctx.clone(),
                     agent_id_str.clone(),
@@ -1565,6 +1587,7 @@ impl Supervisor {
                 account: record.account.as_deref(),
                 oauth_token: oauth_token.as_ref(),
                 blackboard: blackboard.as_deref(),
+                adopted_read_only,
             };
             let spawned = match record.view {
                 AgentView::Native => spawn_pty_agent(

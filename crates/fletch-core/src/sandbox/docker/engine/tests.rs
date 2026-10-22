@@ -107,6 +107,7 @@ fn test_spec<'a>(interactive: bool) -> RunSpec<'a> {
         cwd: Path::new("/Users/u/.fletch/worktrees/orkney/repo"),
         blackboard: None,
         adopted_workspace: None,
+        adopted_read_only: false,
         mounts: claude_mounts(None, false, false),
         borrowed_object_stores: &[],
         memory: "4g",
@@ -146,6 +147,7 @@ fn rw_config_spec<'a>(
         cwd: Path::new("/Users/u/.fletch/worktrees/orkney/repo"),
         blackboard: None,
         adopted_workspace: None,
+        adopted_read_only: false,
         mounts,
         borrowed_object_stores: &[],
         memory: "4g",
@@ -1346,6 +1348,7 @@ fn docker_run_echo_round_trip() {
         cwd: &root,
         blackboard: None,
         adopted_workspace: None,
+        adopted_read_only: false,
         mounts: ProviderMounts::Claude {
             config_dir: None,
             credentials_rw: false,

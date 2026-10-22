@@ -56,6 +56,8 @@ const TICK: Duration = Duration::from_secs(10);
 pub enum Phase {
     #[default]
     Idle,
+    /// A start waits for the coder's turn (or a delegation) to end.
+    Queued,
     Reviewing,
     Findings,
     Clean,
@@ -70,6 +72,9 @@ pub enum Trigger {
     PrOpen,
     ReReview,
 }
+
+/// The note a review carries when the code changed while it was read.
+pub const CODE_MOVED: &str = "the code changed during the review";
 
 /// The reviewer a checkout has: the custom agent it was built from and the
 /// hidden workspace that runs it (`agent_id`, once spawned).
@@ -110,6 +115,14 @@ pub struct Flight {
     pub saw_running: bool,
 }
 
+/// A queued start: why, and with which custom agent (`None` = the configured
+/// reviewer).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Pending {
+    pub trigger: Trigger,
+    pub custom_agent_id: Option<String>,
+}
+
 /// One checkout's durable review memory (`review_state`), plus its flight.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct Tracked {
@@ -129,6 +142,10 @@ pub struct Tracked {
     pub since_ms: i64,
     /// The phase last derived, so a restart can tell `reviewing` was cut off.
     pub phase: Phase,
+    /// A start asked for while the coder was mid-turn, run once it settles.
+    /// Persisted: the coder is idle after a restart, so the tick runs it.
+    #[serde(default)]
+    pub pending: Option<Pending>,
     #[serde(skip)]
     pub flight: Option<Flight>,
     /// A start has claimed this checkout and is spawning its reviewer: as
@@ -150,6 +167,9 @@ impl Tracked {
     pub fn derive(&self, current_signature: Option<&str>, open: u32) -> Phase {
         if self.flight.is_some() {
             return Phase::Reviewing;
+        }
+        if self.pending.is_some() {
+            return Phase::Queued;
         }
         if self.failed.is_some() {
             return Phase::Failed;
@@ -182,6 +202,40 @@ impl Tracked {
     /// A claimed start that never began.
     pub fn release(&mut self) {
         self.starting = false;
+    }
+
+    /// The queued start, taken for running — only when the coder is `free`
+    /// (idle, no delegation live) and nothing else holds the checkout.
+    pub fn take_pending(&mut self, free: bool) -> Option<Pending> {
+        if !free || self.flight.is_some() || self.starting {
+            return None;
+        }
+        self.pending.take()
+    }
+
+    /// The report landed; `current` is the code now. Code that moved while
+    /// the reviewer read it keeps the findings but says so — the derived
+    /// phase reads stale, and an open PR's re-review picks it up.
+    pub fn check_code_after_report(&mut self, current: Option<&str>) {
+        let moved = match (current, self.reviewed_signature.as_deref()) {
+            (Some(now), Some(reviewed)) => now != reviewed,
+            _ => false,
+        };
+        if moved {
+            self.error = Some(CODE_MOVED.into());
+        }
+    }
+
+    /// Queue a start behind the coder's turn. One per checkout: a second
+    /// request while one waits keeps the first.
+    pub fn queue(&mut self, trigger: Trigger, custom_agent_id: Option<String>) {
+        if self.pending.is_none() {
+            self.pending = Some(Pending {
+                trigger,
+                custom_agent_id,
+            });
+            self.error = None;
+        }
     }
 
     /// Open a round. Refused while one is in flight.
@@ -254,9 +308,11 @@ impl Tracked {
         self.round > 0 && self.pr_number == Some(pr_number)
     }
 
-    /// The user stopped it: not a failure, just no review from this round.
+    /// The user stopped it: not a failure, just no review from this round —
+    /// or none at all, for a start still queued.
     pub fn stop(&mut self) {
         self.flight = None;
+        self.pending = None;
         self.error = Some("review stopped".into());
     }
 
@@ -342,15 +398,16 @@ pub fn global() -> &'static Table {
     TABLE.get_or_init(Table::default)
 }
 
-/// The code under review, as staleness measures it: HEAD plus every dirty
-/// path with its kind and line counts, so an edit to a file that was already
-/// dirty moves it too. Not autopilot's `state_signature`, which folds the
+/// The cheap half of the code's signature, from the status already read:
+/// HEAD plus every dirty path and its kind. Different from the reviewed one
+/// means the code moved; equal means only the content can say
+/// ([`full_signature`]). Not autopilot's `state_signature`, which folds the
 /// threads in — a finding resolved must not read as the code having moved.
-pub fn signature(git: &crate::git_state::GitState) -> String {
+pub fn cheap_signature(git: &crate::git_state::GitState) -> String {
     let mut files: Vec<String> = git
         .files
         .iter()
-        .map(|f| format!("{}:{:?}:+{}-{}", f.path, f.kind, f.additions, f.deletions))
+        .map(|f| format!("{}:{:?}", f.path, f.kind))
         .collect();
     files.sort_unstable();
     format!(
@@ -358,6 +415,30 @@ pub fn signature(git: &crate::git_state::GitState) -> String {
         git.head_sha.as_deref().unwrap_or(""),
         files.join(",")
     )
+}
+
+/// The full signature: the cheap half and a digest of the uncommitted content
+/// (`git_state::content_digest`), so replacing one dirty line with another
+/// moves it. What a review records, and what staleness compares against.
+pub fn full_signature(cheap: &str, digest: &str) -> String {
+    format!("{cheap}#{digest}")
+}
+
+/// The cheap half of a full signature (everything before its digest).
+fn cheap_part(full: &str) -> &str {
+    full.rsplit_once('#').map_or(full, |(cheap, _)| cheap)
+}
+
+/// How much of the code a look reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Scan {
+    /// No git at all: the last scan's signature.
+    Cached,
+    /// The status, and the content digest only when the status alone can't
+    /// tell the code from the reviewed code.
+    Git,
+    /// The status and the content digest: a signature to record.
+    Full,
 }
 
 /// How long after the coder's last turn a checkout with no open PR keeps
@@ -463,19 +544,13 @@ fn repo_for<'a>(record: &'a AgentRecord, key: &Key) -> Option<&'a TrackedRepo> {
 /// The checkout's facts. `with_git` runs the git scan (several processes);
 /// without it the signature is the last scan's, and the rest is read from
 /// the database alone.
-async fn observe(sup: &Supervisor, key: &Key, with_git: bool) -> Observed {
-    let signature = if with_git {
-        crate::commands::get_git_state_impl(sup, &key.0, key.1.as_deref())
-            .await
-            .ok()
-            .flatten()
-            .filter(|g| g.blocked_config.is_empty())
-            .map(|g| signature(&g))
-    } else {
-        global()
+async fn observe(sup: &Supervisor, key: &Key, scan: Scan) -> Observed {
+    let signature = match scan {
+        Scan::Cached => global()
             .get(key)
             .and_then(|t| t.last_obs)
-            .and_then(|o| o.signature)
+            .and_then(|o| o.signature),
+        Scan::Git | Scan::Full => code_signature(sup, key, scan == Scan::Full).await,
     };
     let (open, resolved) = {
         let conn = sup.workspace.db().lock();
@@ -500,6 +575,29 @@ async fn observe(sup: &Supervisor, key: &Key, with_git: bool) -> Observed {
         pr_number,
         pr_open,
     }
+}
+
+/// The code's signature now, or `None` when the checkout can't be read. The
+/// content digest is read when `full` asks for a signature to record, or when
+/// the status alone matches the reviewed code — a status that differs is
+/// already stale, and its cheap half says so without the digest.
+async fn code_signature(sup: &Supervisor, key: &Key, full: bool) -> Option<String> {
+    let git = crate::commands::get_git_state_impl(sup, &key.0, key.1.as_deref())
+        .await
+        .ok()
+        .flatten()
+        .filter(|g| g.blocked_config.is_empty())?;
+    let cheap = cheap_signature(&git);
+    let reviewed = global().get(key).and_then(|t| t.reviewed_signature);
+    let needs_digest = full || reviewed.as_deref().map(cheap_part) == Some(cheap.as_str());
+    if !needs_digest {
+        return Some(cheap);
+    }
+    let (_, checkout) = crate::commands::agent_repo_checkout_opt(sup, &key.0, key.1.as_deref())
+        .ok()
+        .flatten()?;
+    let digest = crate::git_state::content_digest(&checkout).await.ok()?;
+    Some(full_signature(&cheap, &digest))
 }
 
 fn view(key: &Key, tracked: &Tracked, phase: Phase, open: u32, resolved: u32) -> ReviewState {
@@ -558,7 +656,7 @@ fn settle(ctx: &Arc<EngineCtx>, key: &Key, obs: Observed) -> Option<ReviewState>
 /// [`settle`] from a fresh git scan of the checkout.
 async fn scan(ctx: &Arc<EngineCtx>, sup: &Supervisor, key: &Key) -> Option<ReviewState> {
     global().get(key)?;
-    let obs = observe(sup, key, true).await;
+    let obs = observe(sup, key, Scan::Git).await;
     settle(ctx, key, obs)
 }
 
@@ -566,7 +664,7 @@ async fn scan(ctx: &Arc<EngineCtx>, sup: &Supervisor, key: &Key) -> Option<Revie
 /// counts and PR. For looks that must be cheap.
 async fn refresh(ctx: &Arc<EngineCtx>, sup: &Supervisor, key: &Key) -> Option<ReviewState> {
     global().get(key)?;
-    let obs = observe(sup, key, false).await;
+    let obs = observe(sup, key, Scan::Cached).await;
     settle(ctx, key, obs)
 }
 
@@ -750,8 +848,98 @@ async fn round_prompt(
 
 // ── the ops ──────────────────────────────────────────────────────────────────
 
-/// Start a review of `agent_id`'s checkout `subdir`.
+/// Whether the coder is free for a review to read its checkout: not mid-turn
+/// (or coming up) and no delegation live on the checkout.
+fn coder_free(sup: &Supervisor, key: &Key) -> bool {
+    !matches!(
+        sup.status_of(&key.0),
+        Some(AgentStatus::Running | AgentStatus::Spawning)
+    ) && !crate::supervisor::delegation::is_live(key)
+}
+
+/// Ask for a review of `agent_id`'s checkout `subdir`. Runs now when the
+/// coder is free; while it is mid-turn (a PR usually opens inside the
+/// opener's turn) or a delegation is live on the checkout, the start is
+/// queued and the state answers `queued` — the driver runs it once the coder
+/// settles. One queued start per checkout: asking again keeps the first.
 pub async fn start(
+    ctx: &Arc<EngineCtx>,
+    sup: &Arc<Supervisor>,
+    agent_id: &str,
+    subdir: Option<&str>,
+    custom_agent_id: Option<&str>,
+    trigger: Trigger,
+) -> Result<ReviewState> {
+    let coder = sup.workspace.agent(agent_id)?;
+    if coder.archive.is_some() {
+        return Err(Error::Other("agent is archived".into()));
+    }
+    let key = super::checkout_key(&coder, subdir)?;
+    let table = global();
+    if let Some(t) = table.get(&key) {
+        if t.pending.is_some() {
+            return refresh(ctx, sup, &key)
+                .await
+                .ok_or_else(|| Error::Other("review state vanished".into()));
+        }
+        if t.flight.is_some() || t.starting {
+            return Err(Error::Other(
+                "A review is already running on this checkout".into(),
+            ));
+        }
+    }
+    let resolves = {
+        let conn = ctx.db.lock();
+        resolve_reviewer(&conn, custom_agent_id).is_some()
+    };
+    if !resolves {
+        return Err(Error::Other(
+            "No reviewer is set up — pick one in Settings › Review".into(),
+        ));
+    }
+    if !coder_free(sup, &key) {
+        table.update(&key, |t| {
+            t.queue(trigger, custom_agent_id.map(str::to_string))
+        });
+        return refresh(ctx, sup, &key)
+            .await
+            .ok_or_else(|| Error::Other("review state vanished".into()));
+    }
+    run_round(ctx, sup, agent_id, subdir, custom_agent_id, trigger).await
+}
+
+/// Run a queued start once the coder is free, in the background: spawning a
+/// reviewer takes a while and the caller (a status event, a tick) can't wait.
+fn drain(ctx: &Arc<EngineCtx>, sup: &Arc<Supervisor>, key: &Key) {
+    let free = coder_free(sup, key);
+    let Some(pending) = global()
+        .update_existing(key, |t| t.take_pending(free))
+        .flatten()
+    else {
+        return;
+    };
+    let (ctx, sup, key) = (ctx.clone(), sup.clone(), key.clone());
+    crate::host::spawn(async move {
+        let result = run_round(
+            &ctx,
+            &sup,
+            &key.0,
+            key.1.as_deref(),
+            pending.custom_agent_id.as_deref(),
+            pending.trigger,
+        )
+        .await;
+        if let Err(e) = result {
+            let why = format!("queued review not started: {e}");
+            global().update_existing(&key, |t| t.error = Some(why));
+            refresh(&ctx, &sup, &key).await;
+        }
+    });
+}
+
+/// Run one round now: claim the checkout, spawn or resume its reviewer, and
+/// send it the round's prompt.
+async fn run_round(
     ctx: &Arc<EngineCtx>,
     sup: &Arc<Supervisor>,
     agent_id: &str,
@@ -787,7 +975,7 @@ pub async fn start(
             "No reviewer is set up — pick one in Settings › Review".into(),
         ))
     })?;
-    let obs = observe(sup, &key, true).await;
+    let obs = observe(sup, &key, Scan::Full).await;
     let Some(signature) = obs.signature.clone() else {
         return Err(released(Error::Other(
             "the checkout can't be read yet; try again shortly".into(),
@@ -864,15 +1052,19 @@ pub async fn stop(
     let coder = sup.workspace.agent(agent_id)?;
     let key = super::checkout_key(&coder, subdir)?;
     let table = global();
-    let reviewer = table
-        .get(&key)
-        .and_then(|t| t.flight.map(|f| f.reviewer_agent_id));
-    if let Some(id) = reviewer {
+    let tracked = table.get(&key);
+    let reviewer = tracked
+        .as_ref()
+        .and_then(|t| t.flight.as_ref().map(|f| f.reviewer_agent_id.clone()));
+    let queued = tracked.as_ref().is_some_and(|t| t.pending.is_some());
+    if let Some(id) = &reviewer {
         if !id.is_empty() {
-            if let Err(e) = sup.clone().stop_agent(ctx.clone(), &id).await {
+            if let Err(e) = sup.clone().stop_agent(ctx.clone(), id).await {
                 tracing::warn!(error = %e, reviewer = %id, "reviewer not interrupted");
             }
         }
+    }
+    if reviewer.is_some() || queued {
         table.update(&key, Tracked::stop);
     }
     refresh(ctx, sup, &key)
@@ -986,7 +1178,11 @@ pub async fn submit(
         };
         super::emit_threads_changed(ctx, &key.0, key.1.as_deref(), ids).await;
     }
-    refresh(ctx, sup, &key).await;
+    // The code the reviewer read was recorded when the round began; if the
+    // coder (or anyone) changed it since, the report is about older code.
+    let now = code_signature(sup, &key, true).await;
+    table.update_existing(&key, |t| t.check_code_after_report(now.as_deref()));
+    scan(ctx, sup, &key).await;
     Ok(())
 }
 
@@ -1039,7 +1235,7 @@ pub async fn on_pr_opened(
     // Reviewed clean or with findings at exactly this code (a review asked
     // for before the PR): nothing new to read.
     if let Some(reviewed) = tracked.as_ref().and_then(|t| t.reviewed_signature.clone()) {
-        let obs = observe(sup, &key, true).await;
+        let obs = observe(sup, &key, Scan::Git).await;
         if obs.signature.as_deref() == Some(reviewed.as_str()) {
             return;
         }
@@ -1169,6 +1365,7 @@ async fn on_status(ctx: &Arc<EngineCtx>, sup: &Arc<Supervisor>, event: StatusEve
         for key in table.keys_of(&event.agent_id) {
             table.update_existing(&key, |t| t.active_until_ms = until);
             scan(ctx, sup, &key).await;
+            drain(ctx, sup, &key);
         }
     }
 }
@@ -1246,15 +1443,18 @@ async fn tick(ctx: &Arc<EngineCtx>, sup: &Arc<Supervisor>) {
                 let _ = sup.clone().stop_agent(ctx.clone(), &id).await;
             }
         }
+        // A queued start whose coder settled without a status event reaching
+        // here (a delegation that ended after the turn did): run it now.
+        drain(ctx, sup, &key);
         let Some(tracked) = table.get(&key) else {
             continue;
         };
-        let cheap = observe(sup, &key, false).await;
+        let cheap = observe(sup, &key, Scan::Cached).await;
         let scan_now = tracked.flight.is_none()
             && !tracked.starting
             && (cheap.pr_open || now < tracked.active_until_ms);
         let obs = if scan_now {
-            observe(sup, &key, true).await
+            observe(sup, &key, Scan::Git).await
         } else {
             cheap
         };

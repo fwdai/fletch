@@ -306,6 +306,15 @@ describe("buildFooter · the local reviewer", () => {
       reviewMenu: menu({ state: { ...state, phase: "reviewing" } }),
     });
     expect(group(running, "Review")?.items[0]).toMatchObject({ key: "review-stop" });
+    // A start the host holds for the coder's turn is cancelled the same way.
+    const queued = footer({
+      git: git({ ahead: 1 }),
+      reviewMenu: menu({ state: { ...state, phase: "queued" } }),
+    });
+    expect(group(queued, "Review")?.items[0]).toMatchObject({
+      key: "review-stop",
+      label: "Cancel queued review",
+    });
   });
 
   it("is offered disabled, with the reason, when no reviewer can run", () => {

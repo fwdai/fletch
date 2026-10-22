@@ -106,6 +106,13 @@ pub struct AgentLaunchCtx<'a> {
     /// sessions, and a launch credential with no refresh token. The one codex
     /// home a sandbox may write or mount. `None` for every other provider.
     pub codex_home: Option<&'a Path>,
+    /// The [`adopted_workspace`](Self::adopted_workspace) is to be read, never
+    /// written: the local reviewer reads the coder's checkout it adopts. Seatbelt
+    /// grants it no write and denies writes under it after every grant;
+    /// containers bind it `:ro`. `false` for every other launch, including a
+    /// workflow step, which adopts its run's tree to change it. Meaningless
+    /// without an adopted workspace.
+    pub adopted_read_only: bool,
 }
 
 impl<'a> AgentLaunchCtx<'a> {
@@ -242,6 +249,7 @@ mod tests {
             account_dir: None,
             oauth_token: None,
             codex_home: None,
+            adopted_read_only: false,
         }
     }
 

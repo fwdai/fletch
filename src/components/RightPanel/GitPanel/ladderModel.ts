@@ -68,6 +68,9 @@ export interface LadderInput {
   /** The clock, for the running timer and the age of a verdict. Passed in so
    *  the model stays pure; absent, those read without a time. */
   nowMs?: number;
+  /** Who a queued review waits for: the coding agent, as the user knows it
+   *  (its custom agent's name, else its provider). Absent: "the agent". */
+  coderName?: string;
 }
 
 const TITLE: Record<RungKey, string> = {
@@ -366,9 +369,10 @@ function elapsed(since: number, now: number): string {
 }
 
 /** The review row: GitHub's review threads and the local reviewer's findings
- *  on one line, the reviewer's own phase (reading, failed, stale, clean) in
- *  between. Most pressing first — a turn in flight, then threads waiting on
- *  us, then what stops a re-review from being trusted, then the quiet states. */
+ *  on one line, the reviewer's own phase (queued, reading, failed, stale,
+ *  clean) in between. Most pressing first — a turn waiting or in flight, then
+ *  threads waiting on us, then what stops a re-review from being trusted, then
+ *  the quiet states. */
 function reviewRow(input: LadderInput, gate: MergeGate | null, current: boolean): LadderRow {
   const { comments } = input;
   const review = input.review ?? null;
@@ -380,6 +384,17 @@ function reviewRow(input: LadderInput, gate: MergeGate | null, current: boolean)
   const att = (summary: string, tone: RungTone = "att"): LadderRow =>
     row("review", { summary, mark: "attention", tone, current });
 
+  if (review?.phase === "queued") {
+    // Held by the host until the coder's turn ends: in motion, but nothing is
+    // running yet, so muted and without a timer.
+    const coder = input.coderName ?? "the agent";
+    return row("review", {
+      summary: `Queued · waiting for ${coder} to finish`,
+      mark: "running",
+      tone: "neutral",
+      current,
+    });
+  }
   if (review?.phase === "reviewing") {
     const timer = input.nowMs != null ? ` · ${elapsed(review.since_ms, input.nowMs)}` : "";
     return row("review", { summary: `Reviewing · ${name}${timer}`, mark: "running", current });
@@ -394,7 +409,10 @@ function reviewRow(input: LadderInput, gate: MergeGate | null, current: boolean)
   if (review?.phase === "failed") {
     return att(`Review failed${review.error ? ` · ${review.error}` : ""}`, "danger");
   }
-  if (review?.phase === "stale") return att("Stale · code changed since review", "info");
+  if (review?.phase === "stale") {
+    // The host says why when the code moved during the review itself.
+    return att(`Stale · ${review.error || "code changed since review"}`, "info");
+  }
   if (ours > 0) return att(`${plural(ours, "thread")} awaiting their reply`, "info");
   if (gate?.situation === "review-required") return att("approval required");
   if (review?.phase === "clean" || (review?.phase === "findings" && review.open === 0)) {

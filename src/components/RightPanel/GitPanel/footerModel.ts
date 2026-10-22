@@ -113,13 +113,16 @@ export interface FooterInput extends LadderInput {
   reviewMenu?: ReviewFooterInput;
 }
 
-/** The Review group: start, re-run or stop the local reviewer, and reach its
- *  transcript. A review that can't start is offered disabled with the reason,
- *  so the way to enable it (Settings › Review) is one hover away. */
+/** The Review group: start, re-run, stop or cancel the local reviewer, and
+ *  reach its transcript. Starting while the coder is mid-turn is fine — the
+ *  host queues it. A review that can't start is offered disabled with the
+ *  reason, so the way to enable it (Settings › Review) is one hover away. */
 export function reviewActions(input: ReviewFooterInput): FooterAction[] {
   const { state, reviewerName, refusal } = input;
   const items: FooterAction[] = [];
-  if (state?.phase === "reviewing") {
+  if (state?.phase === "queued") {
+    items.push({ key: "review-stop", label: "Cancel queued review", icon: "close" });
+  } else if (state?.phase === "reviewing") {
     items.push({ key: "review-stop", label: "Stop review", icon: "stop" });
   } else {
     const again = state != null && state.phase !== "idle" && state.phase !== "failed";

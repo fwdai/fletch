@@ -119,13 +119,13 @@ fn automatic_rounds_are_counted_per_pr_and_reset_when_the_pr_changes() {
 // ── the signature ──────────────────────────────────────────────────────────
 
 #[test]
-fn the_signature_is_head_plus_the_dirty_paths_in_order() {
+fn the_cheap_signature_is_head_plus_the_dirty_paths_and_kinds_in_order() {
     use crate::git_state::{FileStatus, GitState, StatusKind};
-    let file = |p: &str| FileStatus {
+    let file = |p: &str, additions| FileStatus {
         path: p.into(),
         kind: StatusKind::Modified,
         staged: false,
-        additions: 0,
+        additions,
         deletions: 0,
     };
     let git = GitState {
@@ -134,7 +134,7 @@ fn the_signature_is_head_plus_the_dirty_paths_in_order() {
         ahead: 1,
         behind: 0,
         unpushed: 0,
-        files: vec![file("b.rs"), file("a.rs")],
+        files: vec![file("b.rs", 1), file("a.rs", 0)],
         additions: 0,
         deletions: 0,
         remote_url: None,
@@ -143,11 +143,131 @@ fn the_signature_is_head_plus_the_dirty_paths_in_order() {
         blocked_config: Vec::new(),
         worktrees: Vec::new(),
     };
-    assert_eq!(signature(&git), "abc|a.rs:Modified:+0-0,b.rs:Modified:+0-0");
-    // More lines in an already-dirty file is a change too.
-    let mut edited = git.clone();
-    edited.files[1].additions = 3;
-    assert_ne!(signature(&edited), signature(&git));
+    let cheap = cheap_signature(&git);
+    assert_eq!(cheap, "abc|a.rs:Modified,b.rs:Modified");
+    // Line counts are the content digest's to judge, not the status's.
+    let mut more = git.clone();
+    more.files[0].additions = 9;
+    assert_eq!(cheap_signature(&more), cheap);
+    let full = full_signature(&cheap, "d1");
+    assert_eq!(cheap_part(&full), cheap);
+    assert_ne!(full, full_signature(&cheap, "d2"));
+}
+
+/// The content digest moves with what a status read can't see: one dirty
+/// line replaced by another, an untracked file's content. Identical trees
+/// digest identically.
+#[tokio::test]
+async fn the_content_digest_follows_the_uncommitted_content() {
+    use crate::git::testing::{commit_file, init_repo};
+    use crate::git_state::content_digest;
+    let td = tempfile::tempdir().unwrap();
+    let repo = td.path().join("repo");
+    init_repo(&repo);
+    commit_file(&repo, "a.txt");
+
+    let clean = content_digest(&repo).await.unwrap();
+    assert_eq!(content_digest(&repo).await.unwrap(), clean, "stable");
+
+    std::fs::write(repo.join("a.txt"), "one\n").unwrap();
+    let one = content_digest(&repo).await.unwrap();
+    assert_ne!(one, clean);
+    // Same file, same kind, same +1-1: only the content differs.
+    std::fs::write(repo.join("a.txt"), "two\n").unwrap();
+    let two = content_digest(&repo).await.unwrap();
+    assert_ne!(
+        two, one,
+        "replacing one dirty line with another must move it"
+    );
+    std::fs::write(repo.join("a.txt"), "one\n").unwrap();
+    assert_eq!(
+        content_digest(&repo).await.unwrap(),
+        one,
+        "same tree, same digest"
+    );
+
+    std::fs::write(repo.join("new.txt"), "first").unwrap();
+    let untracked = content_digest(&repo).await.unwrap();
+    assert_ne!(untracked, one);
+    std::fs::write(repo.join("new.txt"), "second").unwrap();
+    assert_ne!(
+        content_digest(&repo).await.unwrap(),
+        untracked,
+        "an untracked file's content edit must move it"
+    );
+}
+
+// ── the queue ──────────────────────────────────────────────────────────────
+
+#[test]
+fn a_start_queued_behind_a_busy_coder_runs_once_it_is_free() {
+    let mut t = Tracked::default();
+    t.queue(Trigger::PrOpen, None);
+    assert_eq!(t.derive(Some("s"), 0), Phase::Queued);
+    // A second request while queued keeps the first.
+    t.queue(Trigger::Manual, Some("ca-2".into()));
+    assert_eq!(t.pending.as_ref().unwrap().trigger, Trigger::PrOpen);
+    assert_eq!(t.pending.as_ref().unwrap().custom_agent_id, None);
+
+    assert_eq!(t.take_pending(false), None, "the coder is still busy");
+    assert_eq!(t.derive(Some("s"), 0), Phase::Queued);
+    let pending = t.take_pending(true).expect("free: the start runs");
+    assert_eq!(pending.trigger, Trigger::PrOpen);
+    assert_ne!(t.derive(Some("s"), 0), Phase::Queued);
+    t.begin(reviewer(), pending.trigger, "s".into(), Some(7), 0)
+        .unwrap();
+    assert_eq!(t.derive(Some("s"), 0), Phase::Reviewing);
+
+    // Queued above everything but a review in flight.
+    let mut t = begun(Trigger::Manual, None);
+    t.queue(Trigger::ReReview, None);
+    assert_eq!(t.derive(Some("sha1|"), 0), Phase::Reviewing);
+    assert_eq!(
+        t.take_pending(true),
+        None,
+        "never while a round is in flight"
+    );
+    let mut failed = Tracked {
+        failed: Some("boom".into()),
+        ..Tracked::default()
+    };
+    failed.queue(Trigger::Manual, None);
+    assert_eq!(failed.derive(None, 0), Phase::Queued);
+}
+
+#[test]
+fn stopping_a_queued_start_cancels_it() {
+    let mut t = Tracked::default();
+    t.queue(Trigger::PrOpen, None);
+    t.stop();
+    assert_eq!(t.pending, None);
+    assert_eq!(t.derive(Some("s"), 0), Phase::Idle);
+    assert_eq!(t.take_pending(true), None);
+}
+
+#[test]
+fn code_that_moved_during_the_review_keeps_the_findings_and_reads_stale() {
+    let mut t = begun(Trigger::Manual, None);
+    t.submitted().unwrap();
+    t.check_code_after_report(Some("sha1|"));
+    assert_eq!(t.error, None, "unchanged code is no news");
+
+    let mut t = begun(Trigger::Manual, None);
+    t.submitted().unwrap();
+    t.check_code_after_report(Some("sha2|a.rs:Modified#d"));
+    t.turn_ended();
+    assert_eq!(t.error.as_deref(), Some(CODE_MOVED));
+    assert_eq!(
+        t.reviewed_signature.as_deref(),
+        Some("sha1|"),
+        "the code it read"
+    );
+    assert_eq!(t.derive(Some("sha2|a.rs:Modified#d"), 3), Phase::Stale);
+    // An unreadable checkout says nothing either way.
+    let mut t = begun(Trigger::Manual, None);
+    t.submitted().unwrap();
+    t.check_code_after_report(None);
+    assert_eq!(t.error, None);
 }
 
 #[test]

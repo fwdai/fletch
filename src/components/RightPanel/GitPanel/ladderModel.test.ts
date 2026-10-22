@@ -398,6 +398,13 @@ describe("buildLadder · the local reviewer", () => {
       tone: "info",
       summary: "Stale · code changed since review",
     });
+    // The code moved during the review itself: the host's note replaces the
+    // generic one.
+    const during = ladder({
+      git: git({ ahead: 2 }),
+      review: review({ phase: "stale", error: "the code changed during the review" }),
+    });
+    expect(row(during, "review")?.summary).toBe("Stale · the code changed during the review");
     const failed = ladder({
       git: git({ ahead: 2 }),
       review: review({ phase: "failed", error: "no verdict" }),
@@ -406,6 +413,23 @@ describe("buildLadder · the local reviewer", () => {
       tone: "danger",
       summary: "Review failed · no verdict",
     });
+  });
+
+  it("shows a queued review as waiting for the coder, muted and without a timer", () => {
+    const rows = ladder({
+      git: git({ ahead: 1 }),
+      review: review({ phase: "queued", since_ms: NOW - 83_000 }),
+      nowMs: NOW,
+      coderName: "Claude",
+    });
+    expect(row(rows, "review")).toMatchObject({
+      mark: "running",
+      tone: "neutral",
+      summary: "Queued · waiting for Claude to finish",
+    });
+    // Without a name for the coder it still reads.
+    const unnamed = ladder({ git: git({ ahead: 1 }), review: review({ phase: "queued" }) });
+    expect(row(unnamed, "review")?.summary).toBe("Queued · waiting for the agent to finish");
   });
 
   it("keeps GitHub's threads on the same row once a PR is open", () => {

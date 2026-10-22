@@ -519,6 +519,87 @@ fn read_command(checkout_path: &Path) -> tokio::process::Command {
     cmd
 }
 
+/// A digest of the checkout's uncommitted *content*: sha256 over the binary
+/// diff of the tree against HEAD, then each untracked file's path and blob id.
+/// Two trees with the same HEAD and the same status but a different line in
+/// one dirty file digest differently — what a status read (paths, kinds,
+/// line counts) cannot tell apart.
+///
+/// Every command is read-only and hardened like [`query`]: the checkout's
+/// steerable config is refused first, and `--no-ext-diff`, `--no-textconv`
+/// and `--no-filters` keep a planted diff driver, textconv or clean filter
+/// from running on the host. A command that fails contributes nothing rather
+/// than failing the digest: the caller compares digests, and an unreadable
+/// part reads the same on both sides only when nothing changed.
+pub async fn content_digest(checkout_path: &Path) -> Result<String> {
+    use sha2::{Digest, Sha256};
+    use tokio::io::AsyncWriteExt;
+
+    crate::git::hardening::refuse_steerable_config(checkout_path).await?;
+    let mut hasher = Sha256::new();
+
+    let diff = read_command(checkout_path)
+        .args([
+            "diff",
+            "HEAD",
+            "--binary",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-color",
+        ])
+        .output()
+        .await?;
+    if diff.status.success() {
+        hasher.update(&diff.stdout);
+    }
+    hasher.update(b"\0untracked\0");
+
+    let listed = read_command(checkout_path)
+        .args(["ls-files", "--others", "--exclude-standard", "-z"])
+        .output()
+        .await?;
+    // `hash-object --stdin-paths` reads one path per line, so a name with a
+    // newline in it is hashed by name alone.
+    let mut paths: Vec<String> = Vec::new();
+    if listed.status.success() {
+        for raw in listed.stdout.split(|b| *b == 0).filter(|p| !p.is_empty()) {
+            let path = String::from_utf8_lossy(raw).into_owned();
+            if path.contains('\n') {
+                hasher.update(path.as_bytes());
+                hasher.update(b"\0-\n");
+            } else {
+                paths.push(path);
+            }
+        }
+    }
+    paths.sort_unstable();
+    if !paths.is_empty() {
+        let mut child = read_command(checkout_path)
+            .args(["hash-object", "--no-filters", "--stdin-paths"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()?;
+        let input = paths.join("\n") + "\n";
+        if let Some(mut stdin) = child.stdin.take() {
+            // Written while the output is read, so neither pipe can fill up.
+            let feed = async move {
+                let _ = stdin.write_all(input.as_bytes()).await;
+            };
+            let (_, out) = tokio::join!(feed, child.wait_with_output());
+            let out = out?;
+            let ids = String::from_utf8_lossy(&out.stdout).into_owned();
+            for (path, id) in paths.iter().zip(ids.lines()) {
+                hasher.update(path.as_bytes());
+                hasher.update(b"\0");
+                hasher.update(id.trim().as_bytes());
+                hasher.update(b"\n");
+            }
+        }
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
 /// HEAD commit SHA, or `None` when it can't be read.
 async fn query_head_sha(checkout_path: &Path) -> Option<String> {
     let out = read_command(checkout_path)

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { AgentRecord, PrComments, ReviewPhase, TrackedRepo } from "@/api";
 import { isCommitAction } from "@/components/RightPanel/primaryActions";
+import { providerLabel } from "@/data/providers";
 import { delegationLabel } from "@/delegation";
 import { useAppStore } from "@/store";
 import { useGate } from "@/store/capabilities";
@@ -115,6 +116,10 @@ export function GitRepoSection({
   const reviewGate = useGate("review");
   const reviewRefusal = reviewGate ?? (reviewer ? null : NO_REVIEWER);
   const nowMs = useReviewClock(review?.phase);
+  // Who a queued review waits for, as the composer names the agent: its
+  // custom agent, else its provider.
+  const coderName =
+    customAgents.find((a) => a.id === agent.custom_agent_id)?.name ?? providerLabel(agent.provider);
 
   const branch = gitState?.branch || repo?.branch || "";
   const base = gitState?.parent_branch || repo?.parent_branch || "main";
@@ -222,8 +227,10 @@ export function GitRepoSection({
       review,
       canReview: reviewGate == null,
       nowMs,
+      coderName,
     });
   }, [
+    coderName,
     viewed,
     acting,
     gitState,
@@ -239,7 +246,8 @@ export function GitRepoSection({
 
   // The Review row's controls: one button (start / re-run / stop), and the
   // per-thread fix and dismiss. On a lane the footer doesn't act on, none.
-  const reviewing = review?.phase === "reviewing";
+  // Stop also cancels a start the host is holding for the coder's turn.
+  const reviewing = review?.phase === "reviewing" || review?.phase === "queued";
   const reviewAgain = review != null && review.phase !== "idle" && review.phase !== "failed";
   const reviewBodies: ReviewBodies | null =
     acting && !reviewGate

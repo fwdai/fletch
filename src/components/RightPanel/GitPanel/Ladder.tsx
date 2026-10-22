@@ -144,10 +144,12 @@ function rowTrailing(row: LadderRow, b: LadderBodies): ReactNode {
     );
   }
   if (row.key === "review" && b.review?.action) {
-    // The reviewer's one control, on the row itself: start, re-run, or stop.
-    // Disabled with its reason on hover when the host or the settings refuse.
+    // The reviewer's one control, on the row itself: start, re-run, or stop
+    // (which also cancels a queued start). Disabled with its reason on hover
+    // when the host or the settings refuse.
     const { label, reason, onRun } = b.review.action;
-    const stopping = b.review.state?.phase === "reviewing";
+    const phase = b.review.state?.phase;
+    const stopping = phase === "reviewing" || phase === "queued";
     return (
       <span className={reason ? "tip" : undefined} data-tip={reason ?? undefined}>
         <Button
