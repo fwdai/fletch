@@ -1,4 +1,4 @@
-import { api } from "@/api";
+import { api, type Workspace } from "@/api";
 import { dropAgentEntries } from "@/helpers";
 import { clearOutputBuffer } from "@/pty/buffers";
 import { remapProjectOrder } from "@/storage/projectOrder";
@@ -16,8 +16,19 @@ function refuseWhenGated(gate: GateName = "projectAdmin"): void {
   if (reason) throw new Error(reason);
 }
 
+/** The primary repo path of the project `after` has and `before` did not —
+ *  what an add just pinned, or `null` when it pinned nothing. A new project
+ *  has one repo, so the first unseen ref is it. */
+function addedProjectPath(before: Workspace | null | undefined, after: Workspace): string | null {
+  const known = new Set(before?.projects.map((p) => p.path) ?? []);
+  return after.projects.find((p) => !known.has(p.path))?.path ?? null;
+}
+
 export interface ReposSlice {
-  addWorkspaceRepo: (path: string) => Promise<void>;
+  /** Pin an existing local repo. Every successful add hands off to a draft on
+   *  the new project (`draftAfterProjectAdd`); `draft: false` skips that, for
+   *  a caller whose screen the user should stay on. */
+  addWorkspaceRepo: (path: string, opts?: { draft?: boolean }) => Promise<void>;
   removeWorkspaceRepo: (path: string) => Promise<void>;
   // Attach/detach resolve on success and throw on failure, so the Project
   // Settings Repositories section can show the error inline.
@@ -53,16 +64,22 @@ export interface ReposSlice {
 }
 
 export const createReposSlice: SliceCreator<ReposSlice> = (set, get) => ({
-  addWorkspaceRepo: async (path) => {
+  addWorkspaceRepo: async (path, opts) => {
     set({ busy: true, lastError: null });
     try {
-      const first = (get().workspace?.projects.length ?? 0) === 0;
+      const before = get().workspace;
+      const first = (before?.projects.length ?? 0) === 0;
       const ws = await api.addWorkspaceRepo(path);
       set({ workspace: ws });
+      // A path that is already pinned is a successful no-op on the backend:
+      // nothing was added, so nothing is counted and nothing opens.
+      const added = addedProjectPath(before, ws);
+      if (!added) return;
       // Activation: onboarding hands off to an empty sidebar, so the first
       // project is the moment a new user actually starts. Method + first only —
       // never the path.
       track("project_added", { method: "existing", first });
+      if (opts?.draft !== false) void get().draftAfterProjectAdd(added, first);
     } catch (e) {
       set({ lastError: String(e) });
     } finally {
@@ -162,10 +179,13 @@ export const createReposSlice: SliceCreator<ReposSlice> = (set, get) => ({
     // The new project appears in the sidebar via the refreshed workspace.
     // Errors propagate to the caller (the modal) for inline display — and skip
     // the event, so `project_added` only ever means a project that landed.
-    const first = (get().workspace?.projects.length ?? 0) === 0;
+    const before = get().workspace;
+    const first = (before?.projects.length ?? 0) === 0;
     const ws = await api.cloneRepo(spec, destParent);
     set({ workspace: ws });
     track("project_added", { method: "clone", first });
+    const added = addedProjectPath(before, ws);
+    if (added) void get().draftAfterProjectAdd(added, first);
   },
 
   createRepo: async (name, destParent, isPrivate, description, publish) => {
@@ -173,9 +193,12 @@ export const createReposSlice: SliceCreator<ReposSlice> = (set, get) => ({
     // this is the same backstop the settings writes have, for a modal left open
     // across an environment switch.
     refuseWhenGated("createProject");
-    const first = (get().workspace?.projects.length ?? 0) === 0;
+    const before = get().workspace;
+    const first = (before?.projects.length ?? 0) === 0;
     const ws = await api.createRepo(name, destParent, isPrivate, description, publish);
     set({ workspace: ws });
     track("project_added", { method: "create", first });
+    const added = addedProjectPath(before, ws);
+    if (added) void get().draftAfterProjectAdd(added, first);
   },
 });

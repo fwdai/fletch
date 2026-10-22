@@ -639,8 +639,10 @@ export function useRoadmap(repoPath: string) {
    *  looking at this repo's read-only roadmap is asking for. Failures land on the
    *  store's `lastError` banner, as they do from the sidebar. */
   const addWorkspaceRepo = useAppStore((s) => s.addWorkspaceRepo);
+  // No hand-off draft: the user is looking at this repo's roadmap and asked
+  // for a project, not for a new agent — the board is what they came for.
   const makeProject = useCallback(
-    () => void addWorkspaceRepo(repoPath),
+    () => void addWorkspaceRepo(repoPath, { draft: false }),
     [addWorkspaceRepo, repoPath],
   );
 
