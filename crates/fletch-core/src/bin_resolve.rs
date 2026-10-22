@@ -139,17 +139,66 @@ pub fn resolve_bin_candidates(name: &str, home: &Path) -> Vec<String> {
     out
 }
 
-/// Exported environment as seen by the user's login shell, cached once per app
-/// process. Finder/Dock-launched GUI apps inherit launchd's sparse environment;
-/// agent CLIs usually expect the richer shell environment where version
-/// managers, API keys, and Homebrew paths are configured.
-pub fn login_shell_env() -> Option<&'static HashMap<String, String>> {
+/// The login shell's environment once loaded (`None` when the shell could not
+/// be asked), leaked so callers can hold a `'static` borrow across reloads.
+type ShellEnv = Option<&'static HashMap<String, String>>;
+
+/// The cached login-shell environment: `None` until first asked for, then the
+/// loaded result. A `RwLock` rather than a `OnceLock` so an agent installer
+/// that just appended a PATH line to the shell rc can have it re-read
+/// ([`reload_login_shell_env`]) without an app restart.
+fn login_shell_slot() -> &'static RwLock<Option<ShellEnv>> {
+    static SLOT: OnceLock<RwLock<Option<ShellEnv>>> = OnceLock::new();
+    SLOT.get_or_init(|| RwLock::new(None))
+}
+
+/// Exported environment as seen by the user's login shell, loaded on first use
+/// and cached for the app process (re-read only by [`reload_login_shell_env`]).
+/// Finder/Dock-launched GUI apps inherit launchd's sparse environment; agent
+/// CLIs usually expect the richer shell environment where version managers,
+/// API keys, and Homebrew paths are configured.
+pub fn login_shell_env() -> ShellEnv {
     #[cfg(test)]
     if let Some(env) = TEST_LOGIN_SHELL_ENV.with(std::cell::Cell::get) {
         return Some(env);
     }
-    static ENV: OnceLock<Option<HashMap<String, String>>> = OnceLock::new();
-    ENV.get_or_init(load_login_shell_env).as_ref()
+    if let Some(loaded) = *login_shell_slot().read().unwrap() {
+        return loaded;
+    }
+    // Loaded under the write lock, as the `OnceLock` this replaces did: a
+    // second caller racing the first waits for the one shell run rather than
+    // spawning its own.
+    let mut slot = login_shell_slot().write().unwrap();
+    if let Some(loaded) = *slot {
+        return loaded;
+    }
+    let env = leak_env(load_login_shell_env());
+    *slot = Some(env);
+    env
+}
+
+/// Re-read the login shell's environment and replace the cached copy. For the
+/// moment after an agent installer finishes: the installers append their bin
+/// dir to the shell rc (`export PATH=~/.opencode/bin:$PATH`), and the re-probe
+/// that follows has to see that PATH or it reports the fresh install as
+/// missing. A shell that can't be asked now keeps the copy already cached —
+/// a failed reload must not erase a working PATH.
+pub fn reload_login_shell_env() {
+    let Some(env) = load_login_shell_env() else {
+        return;
+    };
+    store_login_shell_env(Some(env));
+}
+
+/// Make `env` the cached login-shell environment (`None` = the shell could not
+/// be asked). The one leak per call is bounded by how often installs finish.
+fn store_login_shell_env(env: Option<HashMap<String, String>>) {
+    let env = leak_env(env);
+    *login_shell_slot().write().unwrap() = Some(env);
+}
+
+fn leak_env(env: Option<HashMap<String, String>>) -> ShellEnv {
+    env.map(|e| &*Box::leak(Box::new(e)))
 }
 
 #[cfg(test)]
@@ -202,9 +251,18 @@ pub fn apply_login_shell_env(cmd: &mut Command) {
     }
 }
 
+/// The usual install dirs, searched after both PATHs. Each pinned agent
+/// installer (`agent_install::install_command`) lands somewhere in this list:
+/// claude, codex (`$CODEX_INSTALL_DIR`, default `~/.local/bin`, per
+/// releases.openai.com/codex/install.sh) and cursor (symlinks under
+/// `~/.local/bin`, per cursor.com/install) in `~/.local/bin`; opencode in its
+/// own `~/.opencode/bin` (per the v1 installer behind opencode.ai/install).
+/// A dir missing here makes a successful install read as "binary not found on
+/// PATH" until the user's shell rc is re-read.
 fn common_bin_paths(name: &str, home: &Path) -> Vec<PathBuf> {
     vec![
         home.join(format!(".local/bin/{name}")),
+        home.join(format!(".opencode/bin/{name}")),
         home.join(format!(".npm-global/bin/{name}")),
         home.join(format!(".bun/bin/{name}")),
         PathBuf::from(format!("/opt/homebrew/bin/{name}")),
@@ -422,6 +480,55 @@ mod tests {
         );
     }
 
+    /// The opencode installer puts its binary in `~/.opencode/bin`, a dir on
+    /// neither the GUI PATH nor (until the shell rc is re-read) the login-shell
+    /// PATH, so the fallback dirs must cover it or a fresh install reads as
+    /// "not found on PATH".
+    #[test]
+    fn resolves_the_opencode_installer_dir_outside_both_paths() {
+        let home = tempfile::tempdir().unwrap();
+        let bin_dir = home.path().join(".opencode/bin");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        let name = "fletch-fake-opencode-xyz";
+        write_executable(&bin_dir.join(name));
+
+        with_login_shell_env(&[("PATH", "/usr/bin:/bin")], || {
+            assert_eq!(
+                resolve_bin(name, home.path()).as_deref(),
+                Some(bin_dir.join(name).to_string_lossy().as_ref()),
+            );
+        });
+    }
+
+    /// After an installer appends a PATH line to the shell rc, re-reading the
+    /// login shell's environment is what lets the re-probe find the binary:
+    /// the dir is on no fallback list, only on the reloaded PATH.
+    #[test]
+    fn a_reloaded_login_shell_path_is_searched() {
+        let home = tempfile::tempdir().unwrap();
+        let bin_dir = home.path().join("fresh-install/bin");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        let name = "fletch-fake-reloaded-cli-xyz";
+        write_executable(&bin_dir.join(name));
+        assert_eq!(resolve_bin(name, home.path()), None);
+
+        // The slot swap `reload_login_shell_env` performs, with the shell's
+        // answer stood in for: the env already cached, its PATH now led by the
+        // installer's dir (as the rc line the installer appends would do).
+        // Keeping the rest intact leaves concurrent tests' view of the login
+        // env unchanged beyond that one dir.
+        let mut env = login_shell_env().cloned().unwrap_or_default();
+        let path = env.get("PATH").cloned().unwrap_or_default();
+        env.insert("PATH".to_string(), format!("{}:{path}", bin_dir.display()));
+        store_login_shell_env(Some(env));
+
+        assert_eq!(
+            resolve_bin(name, home.path()).as_deref(),
+            Some(bin_dir.join(name).to_string_lossy().as_ref()),
+            "the re-read login-shell PATH must be searched",
+        );
+    }
+
     /// Linuxbrew is where a Linux host's `brew install` lands, so it has to be
     /// searched the way `/opt/homebrew` is on macOS.
     #[test]
@@ -432,6 +539,7 @@ mod tests {
             "/usr/local/bin/gh",
             "/home/linuxbrew/.linuxbrew/bin/gh",
             "/home/fletch/.local/bin/gh",
+            "/home/fletch/.opencode/bin/gh",
         ] {
             assert!(
                 paths.contains(&PathBuf::from(expected)),

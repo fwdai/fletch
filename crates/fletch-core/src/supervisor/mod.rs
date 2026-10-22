@@ -21,6 +21,7 @@ pub(crate) mod run;
 mod session_switch;
 mod session_sync;
 mod shell;
+mod turn_error;
 
 pub use checkpoints::{PinnedCheckout, PinnedCode, RepoCheckpoint, RepoRestore, RestoreReport};
 pub use disposition::ArchiveTrigger;
@@ -490,7 +491,13 @@ impl Supervisor {
             let stop_pending = self.interrupted.lock().contains(agent_id);
             let outcome = TurnOutcome::closing(&status, stop_pending);
             match self.workspace.mark_user_turn_ended(agent_id, outcome) {
-                Ok(Some(turn)) => self.track_turn_completed(agent_id, &status, turn),
+                Ok(Some(turn)) => self.track_turn_completed(
+                    agent_id,
+                    &status,
+                    outcome,
+                    &turn,
+                    last_error.as_deref(),
+                ),
                 Ok(None) => {}
                 Err(e) => tracing::warn!(error = %e, agent_id, "stamp user turn end failed"),
             }
@@ -507,23 +514,38 @@ impl Supervisor {
 
     /// Report a completed turn to product telemetry: usage-weighted provider
     /// mix (unlike `agent_spawned`, which only counts starts) plus turn shape
-    /// (duration, size, whether it errored). All properties are categorical or
-    /// numeric aggregates — no prompt content. No-op unless consent is on.
-    fn track_turn_completed(&self, agent_id: &str, status: &AgentStatus, turn: ClosedTurn) {
+    /// (duration, size, how it ended) and, for a failure, what kind it was
+    /// (`turn_error`). All properties are categorical or numeric aggregates —
+    /// no prompt content, never the error text. No-op unless consent is on.
+    ///
+    /// Reached with no supervisor lock held (`set_status` drops the status map
+    /// before persisting): the version probe is memoized per process and, cold,
+    /// is one bounded `--version` subprocess — the same one ingest already pays.
+    fn track_turn_completed(
+        &self,
+        agent_id: &str,
+        status: &AgentStatus,
+        outcome: TurnOutcome,
+        turn: &ClosedTurn,
+        last_error: Option<&str>,
+    ) {
         let (provider, model) = self
             .workspace
             .agent(agent_id)
             .map(|r| (r.provider, r.model))
             .unwrap_or_else(|_| ("unknown".into(), None));
+        let version = crate::agent::cached_provider_version(&provider);
         crate::telemetry::track(
             "turn_completed",
-            serde_json::json!({
-                "provider": provider,
-                "model": model,
-                "duration_ms": turn.duration_ms,
-                "record_count": turn.record_count,
-                "errored": matches!(status, AgentStatus::Error),
-            }),
+            turn_error::turn_completed_props(
+                &provider,
+                version.as_deref(),
+                model.as_deref(),
+                status,
+                outcome,
+                turn,
+                last_error,
+            ),
         );
     }
 
