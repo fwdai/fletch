@@ -425,6 +425,21 @@ const claimLogRead = (agentId: string) => {
   return order.claim();
 };
 
+/** Per agent, the order of its git reads and the one out now. Two readers
+ *  share a checkout, the opener (`loadGit`) and the follow poll, and over the
+ *  relay a read can outlast a tick: a call while one is out joins it rather
+ *  than stacking another, and only the newest read writes. */
+const gitReads = new Map<string, ReturnType<typeof newestWins>>();
+const gitReadsInFlight = new Map<string, Promise<void>>();
+const claimGitRead = (agentId: string) => {
+  let order = gitReads.get(agentId);
+  if (!order) {
+    order = newestWins();
+    gitReads.set(agentId, order);
+  }
+  return order.claim();
+};
+
 /** Approval events seen while an `approvals_list` is in flight, replayed over
  *  its answer so the snapshot cannot undo them (see util/publishApprovals).
  *  Belongs to the newest claim — an older load's snapshot is superseded
@@ -1214,13 +1229,22 @@ export const useStore = create<MobileState>()((set, get) => ({
     }
   },
 
-  async loadGitState(agentId) {
-    try {
-      const git = await api.getGitState(agentId);
-      set((s) => ({ gitStates: { ...s.gitStates, [agentId]: git } }));
-    } catch {
-      // Advisory, like loadGit: keep the last-known state.
-    }
+  loadGitState(agentId) {
+    const out = gitReadsInFlight.get(agentId);
+    if (out) return out;
+    const claim = claimGitRead(agentId);
+    const read = (async () => {
+      try {
+        const git = await api.getGitState(agentId);
+        if (claim.current()) set((s) => ({ gitStates: { ...s.gitStates, [agentId]: git } }));
+      } catch {
+        // Advisory, like loadGit: keep the last-known state.
+      } finally {
+        gitReadsInFlight.delete(agentId);
+      }
+    })();
+    gitReadsInFlight.set(agentId, read);
+    return read;
   },
 
   async loadPrLive(agentId) {
