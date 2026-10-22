@@ -1150,6 +1150,15 @@ impl Supervisor {
             )),
             (None, false) => Arc::new(git_dispatcher),
         };
+        // Every agent can drive its own Run-panel process and raise a
+        // notification (`rpc::run`): the ops publish nothing, so there is no
+        // grant to check, and a step agent verifying its change by running
+        // the app is as legitimate as an interactive one.
+        let rpc_dispatcher: Arc<dyn rpc::RpcDispatcher> = Arc::new(rpc::run::RunDispatcher::new(
+            Arc::new(super::run::RunControlHandle::new(self.clone(), ctx.clone())),
+            agent_id,
+            rpc_dispatcher,
+        ));
         // Every agent of a project with the context layer on also gets the
         // `context_*` ops, whichever dispatcher it was given above.
         let rpc_dispatcher = rpc::context::wrap(

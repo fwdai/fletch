@@ -4,6 +4,7 @@ import type {
   AgentEffortEvent,
   AgentManagedEvent,
   AgentModelEvent,
+  AgentNotifyEvent,
   AgentOutputEvent,
   AgentRepoAddedEvent,
   AgentSpawnProgressEvent,
@@ -284,6 +285,11 @@ export function onAgentTask(cb: (e: AgentTaskEvent) => void): Promise<UnlistenFn
 /** The agent titled its work via `set_title`; the sidebar subtitle prefers it. */
 export function onAgentTitle(cb: (e: AgentTitleEvent) => void): Promise<UnlistenFn> {
   return on<AgentTitleEvent>("agent:title", cb);
+}
+
+/** The agent asked for the user's attention via its `notify` mailbox op. */
+export function onAgentNotify(cb: (e: AgentNotifyEvent) => void): Promise<UnlistenFn> {
+  return on<AgentNotifyEvent>("agent:notify", cb);
 }
 
 export function onAgentBranch(cb: (e: AgentBranchEvent) => void): Promise<UnlistenFn> {

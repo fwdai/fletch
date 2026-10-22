@@ -3,6 +3,10 @@ export type RunPhase = "idle" | "setup" | "running" | "stopped";
 export interface RunStateSnapshot {
   phase: RunPhase;
   last_error: string | null;
+  /** The port the dev server launched on (port-safe, may differ from the
+   *  configured one); null before the run phase, after a stop, and for a
+   *  command with no port. The same value `run:port` carried. */
+  port: number | null;
   /** Raw PTY bytes accumulated since the panel was last cleared.
    *  Sent as a JSON array of u8 values; decode with TextDecoder. */
   log: number[];

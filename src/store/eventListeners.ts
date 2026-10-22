@@ -13,6 +13,7 @@ import {
   onAgentEvent,
   onAgentInstallState,
   onAgentModel,
+  onAgentNotify,
   onAgentOutput,
   onAgentRepoAdded,
   onAgentStatus,
@@ -457,6 +458,16 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
   await bind(
     onAgentTitle((e) => {
       patchAgent(get, set, e.agent_id, { title: e.title });
+    }),
+  );
+
+  // The agent asked for attention on purpose (its `notify` op), so it shows
+  // whether or not the chat is on screen — the mute still applies. The body
+  // falls back to the agent's name so the notification says who sent it.
+  await bind(
+    onAgentNotify((e) => {
+      if (!get().notifyEnabled) return;
+      notify(e.title, e.body || agentName(get, e.agent_id));
     }),
   );
 

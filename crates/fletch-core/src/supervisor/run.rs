@@ -77,6 +77,7 @@ impl Supervisor {
         // Emit the resolved port *before* the state flips to running, so the
         // store already holds the correct port when the UI reacts to
         // `run:state` — otherwise the link/label briefly shows the old port.
+        session.set_port(prepared.port);
         if let Some(port) = prepared.port {
             emit_run_port(ctx.sink.as_ref(), agent_id, port);
         }
@@ -139,6 +140,7 @@ impl Supervisor {
             None => RunStateSnapshot {
                 phase: RunPhase::Idle,
                 last_error: None,
+                port: None,
                 log: Vec::new(),
                 log_seq: 0,
             },
@@ -225,6 +227,34 @@ impl Supervisor {
             project_id,
             configs,
         })
+    }
+}
+
+/// The Run panel's process as the agent's `run_*` mailbox ops drive it
+/// (`rpc::run`): the same start, stop and snapshot the ▶ and ■ buttons use,
+/// bound to one supervisor and event sink so the dispatcher needs neither.
+pub(super) struct RunControlHandle {
+    sup: Arc<Supervisor>,
+    ctx: Arc<EngineCtx>,
+}
+
+impl RunControlHandle {
+    pub(super) fn new(sup: Arc<Supervisor>, ctx: Arc<EngineCtx>) -> Self {
+        Self { sup, ctx }
+    }
+}
+
+impl crate::rpc::run::RunControl for RunControlHandle {
+    fn start(&self, agent_id: &str) -> Result<()> {
+        Supervisor::run_start(self.sup.clone(), self.ctx.clone(), agent_id)
+    }
+
+    fn stop(&self, agent_id: &str) -> Result<()> {
+        self.sup.run_stop(self.ctx.clone(), agent_id)
+    }
+
+    fn state(&self, agent_id: &str) -> RunStateSnapshot {
+        self.sup.run_state(agent_id)
     }
 }
 
@@ -612,6 +642,7 @@ fn handle_run_phase_exit(
             session.transition_phase(RunPhase::Running);
             // Emit the resolved port before the running state so the store holds
             // it before the UI reacts (see run_start for the same ordering).
+            session.set_port(prepared.port);
             if let Some(port) = prepared.port {
                 emit_run_port(ctx.sink.as_ref(), &agent_id, port);
             }
