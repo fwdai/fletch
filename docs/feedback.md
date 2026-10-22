@@ -27,8 +27,8 @@ The flow, end to end:
 ## The event
 
 `feedback_submitted`, with these properties on top of the usual super-props
-(`app_version`, `app_channel`, `os`, `arch`) and the anonymous
-`distinct_id`:
+(`app_version`, `app_channel`, `os`, `arch`, `days_since_install`) and the
+anonymous `distinct_id`:
 
 | Property | Notes |
 | --- | --- |

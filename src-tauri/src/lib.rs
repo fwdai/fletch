@@ -982,22 +982,15 @@ fn finish_boot(app: &tauri::AppHandle, engine: host::Engine, data_dir: &std::pat
         ..
     } = engine;
 
-    // Anonymous product telemetry. Mint (or read) the install's random
-    // distinct id, read the opt-out consent flag, and detect a version
-    // change since the last launch — all from `settings`, before any
-    // event fires. No-op in unconfigured builds (no PostHog key baked
-    // in), so dev sends nothing.
+    // Anonymous product telemetry. Read (or mint) the install's identity —
+    // its distinct id and install date — read the opt-out consent flag, and
+    // detect a version change since the last launch — all from `settings`,
+    // before any event fires. No-op in unconfigured builds (no PostHog key
+    // baked in), so dev sends nothing.
     let version = app.package_info().version.to_string();
-    let (distinct_id, telemetry_enabled, onboarding_complete, prev_version) = {
+    let (identity, telemetry_enabled, onboarding_complete, prev_version) = {
         let conn = db.lock();
-        let distinct_id = match database::get_setting(&conn, "telemetry_distinct_id") {
-            Some(id) if !id.trim().is_empty() => id,
-            _ => {
-                let id = uuid::Uuid::new_v4().to_string();
-                let _ = database::set_setting(&conn, "telemetry_distinct_id", &id);
-                id
-            }
-        };
+        let identity = telemetry::Identity::load(&conn, &data_dir.join(database::DB_FILENAME));
         // Opt-out: anything but an explicit "false" means enabled.
         let enabled = database::get_setting(&conn, "telemetry_enabled").as_deref() != Some("false");
         // Frontend-owned flag (camelCase), written when the user finishes
@@ -1007,9 +1000,9 @@ fn finish_boot(app: &tauri::AppHandle, engine: host::Engine, data_dir: &std::pat
             database::get_setting(&conn, "onboardingComplete").as_deref() == Some("true");
         let prev = database::get_setting(&conn, "last_seen_version");
         let _ = database::set_setting(&conn, "last_seen_version", &version);
-        (distinct_id, enabled, onboarded, prev)
+        (identity, enabled, onboarded, prev)
     };
-    telemetry::init(distinct_id, telemetry_enabled, version.clone());
+    telemetry::init(identity, telemetry_enabled, version.clone());
     // On a fresh install the first `app_opened` is deferred until the
     // onboarding overlay is on screen (see the `track_app_opened`
     // command) — its welcome step carries the data-sharing disclosure,

@@ -458,6 +458,7 @@ mod tests {
                 ("linear_token", "lin_secret"),
                 ("claude_container_token", "sk-ant-oat-secret"),
                 ("telemetry_distinct_id", "abc"),
+                ("telemetry_installed_at", "2024-03-01T12:00:00+00:00"),
                 ("telemetry_enabled", "true"),
                 ("remote.enabled", "true"),
                 ("remote.port", "7878"),
