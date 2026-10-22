@@ -17,6 +17,7 @@ import { track } from "@/util/track";
 import { adoptSpawnedAgent } from "./adoptSpawnedAgent";
 import { activeEnvironmentId } from "./environments";
 import { refreshWorkspace } from "./refreshWorkspace";
+import { activeSurface } from "./surface";
 import type { AppState, SliceCreator } from "./types";
 
 // ---- Drafts ----------------------------------------------------------------
@@ -216,16 +217,24 @@ function openDraft(set: Set, get: Get, draft: DraftAgent, seedPrompt?: string): 
   get().setLastRepoPath(draft.repoPath);
 }
 
-/** Where the user is, as one value: what the center pane shows and which
- *  full-screen page is over it. Compared before an automatic hand-off takes
- *  the screen, so a selection or page the user chose meanwhile is kept. */
-function navigationKey(s: AppState): string {
-  return JSON.stringify([
-    s.selectedAgentId,
-    s.activeDraftId,
-    s.selectedRunId,
-    s.projectScreenRepoPath,
-  ]);
+/** Where the user is, as one value: the surface in front of them
+ *  (`activeSurface`, so every overlay and takeover counts) and which one.
+ *  Compared before an automatic hand-off takes the screen, so a selection or
+ *  page the user chose meanwhile is kept. */
+function surfaceKey(s: AppState): string {
+  const surface = activeSurface(s);
+  switch (surface.kind) {
+    case "project":
+      return `project:${surface.repoPath}`;
+    case "draft":
+      return `draft:${surface.draft.id}`;
+    case "run":
+      return `run:${surface.runId}`;
+    case "agent":
+      return `agent:${surface.agent.id}`;
+    default:
+      return surface.kind;
+  }
 }
 
 export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get) => ({
@@ -264,10 +273,10 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get) => ({
   draftAfterProjectAdd: async (repoPath, first) => {
     // Automatic, unlike every other way a draft opens: it may only take the
     // screen if the user has not gone somewhere else while its reads were out.
-    const before = navigationKey(get());
+    const before = surfaceKey(get());
     try {
       const draft = await prepareDraft(get, repoPath);
-      if (!draft || navigationKey(get()) !== before) return;
+      if (!draft || surfaceKey(get()) !== before) return;
       openDraft(
         set,
         get,

@@ -204,6 +204,45 @@ describe("the draft after a project is added", () => {
     expect(track).not.toHaveBeenCalledWith("project_add_draft_opened", expect.anything());
   });
 
+  it("does not send the base fallback read to a host the user switched to", async () => {
+    // A remembered base branch costs two reads. The switch lands during the
+    // first, and the branch turns out to be gone — the fallback read is about
+    // the old environment's repo and must not go to the new host.
+    const { store } = makeStore(workspaceOf([]));
+    store.getState().rememberDraftBase("/repos/app", "develop");
+    api.addWorkspaceRepo.mockResolvedValue(workspaceOf(["/repos/app"]));
+    api.listRepoBranches.mockImplementation(async () => {
+      activeIs(remote);
+      return ["main"];
+    });
+
+    await store.getState().addWorkspaceRepo("/repos/app");
+    await settled();
+
+    expect(api.repoDefaultBranch).not.toHaveBeenCalled();
+    expect(store.getState().drafts).toEqual([]);
+  });
+
+  it("yields to a full-screen page the user opened while it was opening", async () => {
+    // Settings sits over the center pane; a draft opened beneath it would be
+    // waiting there when the page closes. Every overlay and takeover counts,
+    // not just the center pane's own selection.
+    const { store } = makeStore(workspaceOf([]));
+    api.addWorkspaceRepo.mockResolvedValue(workspaceOf(["/repos/app"]));
+    api.allocateDraftName.mockImplementation(async () => {
+      // biome-ignore lint/suspicious/noExplicitAny: partial store seed
+      store.setState({ settingsScreenOpen: true } as any);
+      return "everest";
+    });
+
+    await store.getState().addWorkspaceRepo("/repos/app");
+    await settled();
+
+    expect(store.getState().drafts).toEqual([]);
+    expect(store.getState().activeDraftId).toBeNull();
+    expect(track).not.toHaveBeenCalledWith("project_add_draft_opened", expect.anything());
+  });
+
   it("yields to wherever the user went while it was opening", async () => {
     // The hand-off is automatic, so a selection the user made meanwhile wins:
     // the draft is not opened over it, and a page they opened is not closed.

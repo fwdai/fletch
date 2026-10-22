@@ -9,6 +9,10 @@ import type { CustomAgent } from "../storage/customAgents";
 import { type McpServerSnapshot, snapshotMcpServer } from "../storage/mcpServers";
 import type { SkillSnapshot } from "../storage/skills";
 import type { AppState } from "../store";
+import { activeEnvironmentId } from "../store/environments";
+
+/** What the backend itself degrades to when a repo's default cannot be read. */
+const FALLBACK_BASE = "main";
 
 /** The base branch a new agent forks from when the user hasn't picked one: the
  *  repo's real default, resolved from its remote by the backend. This used to be
@@ -26,8 +30,16 @@ import type { AppState } from "../store";
  *
  *  The backend already degrades to "main" internally, so the catch here only
  *  covers the IPC call itself failing; a base must always come back, because
- *  spawning without one is the bug we're closing. */
+ *  spawning without one is the bug we're closing.
+ *
+ *  Both reads go to the active environment's host, about a repo of the
+ *  environment this was asked in. An environment switch that lands between
+ *  them means the second read is not sent: the repo is not the new host's,
+ *  and a caller that writes the answer guards it with the environment (the
+ *  drafts slice's `prepareDraft`) and discards it. The static fallback stands
+ *  in for a superseded resolve, so the signature stays a base, always. */
 export async function resolveBaseBranch(repoPath: string, preferred?: string): Promise<string> {
+  const environment = activeEnvironmentId();
   if (preferred) {
     try {
       const branches = await api.listRepoBranches(repoPath);
@@ -35,11 +47,12 @@ export async function resolveBaseBranch(repoPath: string, preferred?: string): P
     } catch {
       // fall through to the repo default
     }
+    if (activeEnvironmentId() !== environment) return FALLBACK_BASE;
   }
   try {
     return await api.repoDefaultBranch(repoPath);
   } catch {
-    return "main";
+    return FALLBACK_BASE;
   }
 }
 
