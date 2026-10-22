@@ -2,6 +2,7 @@ import { useState } from "react";
 import type { PairingPreset } from "@/api";
 import { Segmented } from "@/components/Settings/Segmented";
 import { Button } from "@/components/ui/Button";
+import { useAppStore } from "@/store";
 import { SetGroup, SetHead, SetRow, SetToggle } from "../primitives";
 import { ConnectionAdvanced } from "./ConnectionAdvanced";
 import { DeviceRow } from "./DeviceRow";
@@ -38,6 +39,8 @@ export function RemoteControlPane() {
   // pairing granted before presets existed; it is not remembered between
   // codes, so nothing narrows a pairing by accident.
   const [preset, setPreset] = useState<PairingPreset>("full");
+  const keepAwakeOnPower = useAppStore((s) => s.keepAwakeOnPower);
+  const setKeepAwakeOnPower = useAppStore((s) => s.setKeepAwakeOnPower);
 
   const enabled = !!status?.enabled;
   const listening = !!status?.listening;
@@ -71,6 +74,13 @@ export function RemoteControlPane() {
             disabled={busy || !status}
             onClick={() => void setEnabled(!enabled)}
           />
+        </SetRow>
+
+        <SetRow
+          title="Keep this Mac awake on power"
+          sub="While remote control is on and the Mac is plugged in, it won't idle-sleep, so your phone can reach it between tasks. Closing the lid still puts it to sleep. On battery, it stays awake only while agents are working."
+        >
+          <SetToggle on={keepAwakeOnPower} onClick={() => setKeepAwakeOnPower(!keepAwakeOnPower)} />
         </SetRow>
 
         {status && (

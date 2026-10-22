@@ -441,6 +441,28 @@ async fn set_telemetry_enabled(
     Ok(())
 }
 
+/// Keep this Mac awake while it is on external power, so a paired phone can
+/// reach it between turns. Persists `keep_awake_on_power` and updates the live
+/// activity monitor. Local like `set_telemetry_enabled`: it is about the machine
+/// this window runs on.
+#[tauri::command]
+async fn set_keep_awake_on_power(
+    enabled: bool,
+    state: tauri::State<'_, DbState>,
+) -> Result<(), String> {
+    {
+        let conn = state.lock();
+        database::set_setting(
+            &conn,
+            power::KEEP_AWAKE_ON_POWER_SETTING,
+            if enabled { "true" } else { "false" },
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    power::ActivityMonitor::global().set_keep_awake_on_power(enabled);
+    Ok(())
+}
+
 /// Send `app_opened` at most once per process.
 ///
 /// Two callers race for it: `setup` at launch (for an already-onboarded
@@ -1007,6 +1029,11 @@ fn finish_boot(app: &tauri::AppHandle, engine: host::Engine, data_dir: &std::pat
             database::get_setting(&conn, "onboardingComplete").as_deref() == Some("true");
         let prev = database::get_setting(&conn, "last_seen_version");
         let _ = database::set_setting(&conn, "last_seen_version", &version);
+        // Recorded before the host boots and arms the monitor. Opt-out.
+        power::ActivityMonitor::global().set_keep_awake_on_power(
+            database::get_setting(&conn, power::KEEP_AWAKE_ON_POWER_SETTING).as_deref()
+                != Some("false"),
+        );
         (identity, enabled, onboarded, prev)
     };
     telemetry::init(identity.clone(), telemetry_enabled, version.clone());
@@ -1324,6 +1351,7 @@ pub fn run() {
             db_count,
             db_query,
             set_telemetry_enabled,
+            set_keep_awake_on_power,
             track_app_opened,
             track_event,
             get_sandbox_engine,

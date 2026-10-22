@@ -339,6 +339,7 @@ impl RemoteState {
         if let Some(port) = inner.server.as_ref().map(|h| h.port) {
             inner.enabled = true;
             self.spawn_relay(&mut inner);
+            crate::power::ActivityMonitor::global().set_remote_enabled(true);
             return Ok(port);
         }
 
@@ -362,6 +363,7 @@ impl RemoteState {
         self.advertise(&mut inner, bound);
         self.spawn_relay(&mut inner);
         tracing::info!(port = bound, "remote: listening");
+        crate::power::ActivityMonitor::global().set_remote_enabled(true);
         Ok(bound)
     }
 
@@ -436,6 +438,7 @@ impl RemoteState {
         drop(advertiser);
         self.sessions.close_all(CLOSE_DISABLED);
         drop(link);
+        crate::power::ActivityMonitor::global().set_remote_enabled(false);
     }
 
     /// Withdraw the LAN announcement and nothing else: the process is going

@@ -169,6 +169,8 @@ export const hydrateSettings = async (set: AppSet) => {
       // switch a caller to `setSetting("telemetryEnabled", …)`: that's a
       // different key and the toggle would silently stop working.
       telemetryEnabled: s.telemetry_enabled !== "false",
+      // Opt-out, backend-owned (`set_keep_awake_on_power`): only "false" disables.
+      keepAwakeOnPower: s.keep_awake_on_power !== "false",
       // The local dictation engine is opt-in and backend-owned (written by
       // `set_dictation_engine`): only an explicit "whisper" selects it, which
       // matches Rust's `whisper::parse_enabled`.
