@@ -1,15 +1,21 @@
 // The phone's half of the Git panel's dispatch: what each footer key does from
 // here, mirroring the desktop's `useGitActions.runAction`. The footer itself is
-// the desktop's (`footerModel.ts`); a key this table has no entry for is one
+// the desktop's (`footerModel.ts`), and so is the playbook a delegated key hands
+// the agent (`actionPlan.ts`); a key this table has no entry for is one
 // the phone cannot run, so `shipView` leaves it out of the footer and the gate
 // refuses it. One table for both, so no button is drawn that a tap can't run.
 
-import type { PrChecks, PrComments, PrState } from "@desktop/api/types/pr";
+import type { PrState } from "@desktop/api/types/pr";
+import {
+  type PlanFacts,
+  type Playbook,
+  playbookFor,
+} from "@desktop/components/RightPanel/GitPanel/actionPlan";
 import { GATES } from "@desktop/store/gates";
 
 export type ShipOp =
   /** Hand a playbook to the coding agent (`delegateGit`). */
-  | { kind: "delegate"; action: string; params?: Record<string, string> }
+  | { kind: "delegate"; playbook: Playbook }
   /** The host's `merge_pr`, behind the two-tap arm. */
   | { kind: "merge" }
   | { kind: "archive" }
@@ -17,12 +23,9 @@ export type ShipOp =
   /** The manual commit / push / PR sheet (`openSheet("pr")`). */
   | { kind: "manual" };
 
-/** What a playbook's params are read from. */
-export interface ShipFacts {
-  base: string;
+/** What a playbook's params are read from, and the PR `view-pr` opens. */
+export interface ShipFacts extends PlanFacts {
   pr: PrState | null;
-  checks: PrChecks | null;
-  comments: PrComments | null;
 }
 
 /** The phone-only row that opens the PR sheet: the user's own message in place
@@ -44,36 +47,14 @@ export const COMMIT_KEYS: ReadonlySet<string> = new Set([
 
 /** What `key` does on the phone, or null when the phone has no way to run it
  *  (pull, rebase, stash, discard, abort, publish, connect-github, focus-pr,
- *  delete-branch, clear-config, and the `loading` placeholder). The playbooks
- *  carry the same params the desktop's do. */
+ *  delete-branch, clear-config, and the `loading` placeholder). */
 export function shipOp(key: string, f: ShipFacts): ShipOp | null {
-  const delegate = (action: string, params?: Record<string, string>): ShipOp =>
-    params ? { kind: "delegate", action, params } : { kind: "delegate", action };
+  // Every key the plan covers goes to the agent, `push` included: the store's
+  // direct push (`pushToPr`) also commits a dirty tree under the PR's title,
+  // which a "Push N commits" row must not.
+  const playbook = playbookFor(key, f);
+  if (playbook) return { kind: "delegate", playbook };
   switch (key) {
-    case "agent-commit":
-      return delegate("commit");
-    case "agent-commit-push":
-      return delegate("commit-push");
-    case "agent-commit-pr":
-      return delegate("commit-pr", { base: f.base });
-    case "agent-open-pr":
-      return delegate("open-pr", { base: f.base });
-    case "agent-resolve":
-      return delegate("resolve-conflicts");
-    case "agent-update-branch":
-      return delegate("update-branch", { base: f.base });
-    case "agent-fix":
-      return delegate("fix-checks", { failing: (f.checks?.required_failing ?? []).join(", ") });
-    case "agent-resolve-comments": {
-      // The threads waiting on us — not the ones we pushed back on, which a
-      // person has to settle (the same split `readiness.ts` makes).
-      const waiting = (f.comments?.unresolved ?? []).filter((t) => !t.we_replied_last).length;
-      return delegate("resolve-comments", { count: String(waiting) });
-    }
-    case "push":
-      // The agent pushes. The store's direct push (`pushToPr`) also commits a
-      // dirty tree under the PR's title, which a "Push N commits" row must not.
-      return delegate("push");
     case "merge":
       return { kind: "merge" };
     case "archive":

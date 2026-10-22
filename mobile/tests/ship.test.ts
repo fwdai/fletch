@@ -5,6 +5,7 @@
 
 import type { AutopilotCheckout, AutopilotCycle, GitState } from "@desktop/api/types/git";
 import type { CheckRun, PrChecks, PrComment, PrComments, PrState } from "@desktop/api/types/pr";
+import { playbookFor } from "@desktop/components/RightPanel/GitPanel/actionPlan";
 import { buildFooter, type FooterInput } from "@desktop/components/RightPanel/GitPanel/footerModel";
 import { buildLadder } from "@desktop/components/RightPanel/GitPanel/ladderModel";
 import { delegationLabel } from "@desktop/delegation";
@@ -307,23 +308,22 @@ describe("shipOp", () => {
     comments: threads(thread(), thread({ id: "t2" }), thread({ id: "t3", we_replied_last: true })),
   };
 
-  it("hands the agent the desktop's playbooks with the desktop's params", () => {
-    const delegate = (action: string, params?: Record<string, string>) =>
-      params ? { kind: "delegate", action, params } : { kind: "delegate", action };
-    expect(shipOp("agent-commit", facts)).toEqual(delegate("commit"));
-    expect(shipOp("agent-commit-push", facts)).toEqual(delegate("commit-push"));
-    expect(shipOp("agent-commit-pr", facts)).toEqual(delegate("commit-pr", { base: "main" }));
-    expect(shipOp("agent-open-pr", facts)).toEqual(delegate("open-pr", { base: "main" }));
-    expect(shipOp("agent-resolve", facts)).toEqual(delegate("resolve-conflicts"));
-    expect(shipOp("agent-update-branch", facts)).toEqual(
-      delegate("update-branch", { base: "main" }),
-    );
-    expect(shipOp("agent-fix", facts)).toEqual(delegate("fix-checks", { failing: "lint, test" }));
-    // The threads waiting on us, not the one we pushed back on.
-    expect(shipOp("agent-resolve-comments", facts)).toEqual(
-      delegate("resolve-comments", { count: "2" }),
-    );
-    expect(shipOp("push", facts)).toEqual(delegate("push"));
+  it("hands the agent the desktop's plan for every delegated key, push included", () => {
+    for (const key of [
+      "agent-commit",
+      "agent-commit-push",
+      "agent-commit-pr",
+      "agent-open-pr",
+      "agent-resolve",
+      "agent-update-branch",
+      "agent-fix",
+      "agent-resolve-comments",
+      "push",
+    ]) {
+      const playbook = playbookFor(key, facts);
+      expect(playbook).not.toBeNull();
+      expect(shipOp(key, facts)).toEqual({ kind: "delegate", playbook });
+    }
   });
 
   it("maps the rest to the host, GitHub or the PR sheet", () => {

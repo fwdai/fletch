@@ -43,7 +43,7 @@ export function useShipActions(agent: AgentRecord, onDelegated?: () => void) {
     const op = opOf(key);
     switch (op?.kind) {
       case "delegate":
-        await delegateGit(agent.id, op.action, op.params).catch(ignore);
+        await delegateGit(agent.id, op.playbook.action, op.playbook.params).catch(ignore);
         onDelegated?.();
         return true;
       case "merge":

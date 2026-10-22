@@ -4,6 +4,7 @@ import type { PrChecks, PrComment, PrComments } from "@/api";
 import { formatCommentForChat } from "@/components/RightPanel/prComments";
 import { useAppStore } from "@/store";
 import type { Gate } from "../actionGate";
+import { playbookFor } from "../actionPlan";
 
 // Actions that push to / read from GitHub. In local/offline mode these are
 // intercepted in `runAction` and replaced with connect-or-publish, so none of
@@ -133,6 +134,15 @@ export function useGitActions(ctx: GitActionsCtx) {
       return;
     }
 
+    // Each click sends a short `[app-action]` trigger; the full playbook lives
+    // in the agent's injected instructions (git_actions.md), keeping the chat
+    // free of boilerplate. Which playbook, with which params, is the plan both
+    // clients share (`actionPlan.ts`).
+    const toAgent = (planKey: string) => {
+      const plan = playbookFor(planKey, { base, checks, comments });
+      if (plan) delegate(plan.action, plan.params);
+    };
+
     switch (key) {
       case "focus-pr":
         // The one place the panel moves the host's focus: to the PR of the
@@ -151,40 +161,6 @@ export function useGitActions(ctx: GitActionsCtx) {
           const url = await publishAgent(agentId, isPrivate);
           if (url) showNotice(`Published ${isPrivate ? "private" : "public"} repo to GitHub`);
         });
-        break;
-      }
-      // ── delegated to the coding agent (agent mode) ──
-      // Each click sends a short `[app-action]` trigger; the full playbook
-      // lives in the agent's injected instructions (git_actions.md), keeping
-      // the chat free of boilerplate. Params carry only dynamic context.
-      case "agent-commit-pr":
-        delegate("commit-pr", { base });
-        break;
-      case "agent-commit":
-        delegate("commit");
-        break;
-      case "agent-commit-push":
-        delegate("commit-push");
-        break;
-      case "agent-open-pr":
-        delegate("open-pr", { base });
-        break;
-      case "agent-resolve":
-        delegate("resolve-conflicts");
-        break;
-      case "agent-update-branch":
-        // PR can't merge cleanly with the base (the base advanced). This is NOT
-        // a local in-progress merge — the agent must sync the base in first.
-        delegate("update-branch", { base });
-        break;
-      case "agent-fix":
-        delegate("fix-checks", { failing: (checks?.required_failing ?? []).join(", ") });
-        break;
-      case "agent-resolve-comments": {
-        // The threads waiting on us — not the ones we pushed back on, which a
-        // person has to settle (the same split `readiness.ts` makes).
-        const waiting = (comments?.unresolved ?? []).filter((t) => !t.we_replied_last).length;
-        delegate("resolve-comments", { count: String(waiting) });
         break;
       }
       // ── direct, agent bypassed (user typed their own message) ──
@@ -210,7 +186,7 @@ export function useGitActions(ctx: GitActionsCtx) {
             const ok = await commitChanges(agentId, msg.trim(), subdir);
             if (ok) {
               revertOverride();
-              delegate("open-pr", { base });
+              toAgent("agent-open-pr");
             }
           });
           break;
@@ -224,7 +200,7 @@ export function useGitActions(ctx: GitActionsCtx) {
         // Needs a branch — hand to the agent to name + create one if there
         // isn't one yet; otherwise the direct gh --fill PR.
         if (!hasBranch) {
-          delegate("open-pr", { base });
+          toAgent("agent-open-pr");
           break;
         }
         void runBusy("Opening PR…", async () => {
@@ -247,7 +223,7 @@ export function useGitActions(ctx: GitActionsCtx) {
         // Direct git push needs a branch; with none yet, the agent names and
         // creates one, then pushes.
         if (!hasBranch) {
-          delegate("push");
+          toAgent("push");
           break;
         }
         void runBusy("Pushing…", async () => {
@@ -283,8 +259,10 @@ export function useGitActions(ctx: GitActionsCtx) {
       case "delete-branch":
         void runBusy("Deleting branch…", () => deleteBranch(agentId, subdir));
         break;
-      // "loading" is a non-actionable placeholder.
+      // ── delegated to the coding agent (agent mode): the `agent-*` keys ──
+      // "loading" is a non-actionable placeholder, and has no plan.
       default:
+        toAgent(key);
         break;
     }
   }
