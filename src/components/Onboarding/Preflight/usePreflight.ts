@@ -53,11 +53,16 @@ export interface Preflight {
   skip: (id: CheckId) => void;
 }
 
-/** Both automatic checks have an answer, whatever it is. What the machine
- *  looks like, independent of where the animation is. */
+/** Every probe has settled, whatever it found. What the machine looks like,
+ *  independent of where the animation is — and the gate on reporting it,
+ *  since a probe still in flight would report its last answer as the truth. */
 export function preflightSettled(setup: OnboardingSetup): boolean {
   return (
-    setup.providersProbed && setup.git !== null && !setup.gitDownloading && !setup.installingGit
+    setup.providersProbed &&
+    setup.gitProbed &&
+    setup.ghProbed &&
+    !setup.gitDownloading &&
+    !setup.installingGit
   );
 }
 
@@ -79,11 +84,14 @@ export function usePreflight(setup: OnboardingSetup, githubBusy: boolean): Prefl
     return () => window.clearTimeout(t);
   }, [active, dwell]);
 
-  // Per row: do we have an answer, and is it a pass?
+  // Per row: do we have an answer, and is it a pass? "An answer" means the
+  // probe has settled, not that it succeeded — a failed probe resolves the row
+  // as not passed, so the user is offered the fix (or the skip) rather than a
+  // spinner that never ends.
   const resolved = [
     setup.providersProbed,
-    setup.git !== null && !setup.gitDownloading && !setup.installingGit,
-    !githubBusy,
+    setup.gitProbed && !setup.gitDownloading && !setup.installingGit,
+    setup.ghProbed && !githubBusy,
   ];
   const passed = [setup.hasAgent, setup.gitReady, setup.ghConnected];
 

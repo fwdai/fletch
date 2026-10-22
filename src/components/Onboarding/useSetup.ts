@@ -12,8 +12,13 @@ import { useGitInstall } from "@/util/useGitInstall";
 import { useProviderPoll } from "@/util/useProviderPoll";
 
 export interface OnboardingSetup {
-  /** Result of the git probe; null until the first check resolves. */
+  /** Result of the git probe; null until the first check resolves (or when
+   *  it failed and nothing earlier answered). */
   git: ToolStatus | null;
+  /** The git probe has settled — answered or failed — since the last
+   *  `recheck`. A row waits on this, not on `git` being non-null: a probe
+   *  that fails must still let the sequence move. */
+  gitProbed: boolean;
   /** Live portable-git bootstrap state (download progress / failure). */
   gitDist: GitDistState;
   gitReady: boolean;
@@ -25,6 +30,9 @@ export interface OnboardingSetup {
   installGit: () => void;
 
   gh: GhStatus | null;
+  /** The GitHub status probe has settled since the last `recheck`. Until it
+   *  has, `ghConnected` is only the last answer, so nothing may act on it. */
+  ghProbed: boolean;
   ghConnected: boolean;
 
   /** Providers the user hasn't toggled off — the onboarding agent set. */
@@ -52,14 +60,27 @@ export function useOnboardingSetup(pollAgents: boolean): OnboardingSetup {
   const providerFlags = useAppStore((s) => s.providerFlags);
 
   const [git, setGit] = useState<ToolStatus | null>(null);
+  const [gitProbed, setGitProbed] = useState(false);
   const [gh, setGh] = useState<GhStatus | null>(null);
+  const [ghProbed, setGhProbed] = useState(false);
 
-  // Each probe lands on its own; a failed one leaves its row unanswered (git
-  // stays null, the GitHub status stays null) rather than failing the rest.
+  // Each probe lands on its own and marks itself settled whether it answered
+  // or failed; a failure keeps the last answer (none, on the first run) rather
+  // than failing the rest. The flags drop while a re-check is in flight so a
+  // row re-read after a change (a sign-in, an install) reads "checking" until
+  // the new answer is in, instead of acting on the old one.
   const recheck = useCallback(() => {
     void refreshProviders();
-    void api.checkCli("git").then(setGit, () => {});
-    void api.ghStatus().then(setGh, () => {});
+    setGitProbed(false);
+    void api
+      .checkCli("git")
+      .then(setGit, () => {})
+      .finally(() => setGitProbed(true));
+    setGhProbed(false);
+    void api
+      .ghStatus()
+      .then(setGh, () => {})
+      .finally(() => setGhProbed(true));
   }, [refreshProviders]);
 
   useEffect(() => {
@@ -78,6 +99,7 @@ export function useOnboardingSetup(pollAgents: boolean): OnboardingSetup {
 
   return {
     git,
+    gitProbed,
     gitDist,
     gitReady: !!git?.installed,
     gitDownloading,
@@ -85,6 +107,7 @@ export function useOnboardingSetup(pollAgents: boolean): OnboardingSetup {
     installingGit,
     installGit,
     gh,
+    ghProbed,
     ghConnected: !!gh?.authenticated,
     agents,
     detected,
