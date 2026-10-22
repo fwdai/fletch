@@ -546,6 +546,55 @@ describe("git and PR state", () => {
     }
   });
 
+  it("loadGitState joins a read already out rather than stacking another", async () => {
+    const real = api.getGitState;
+    let release!: () => void;
+    const git = vi.spyOn(api, "getGitState").mockImplementationOnce(async (...args) => {
+      await new Promise<void>((r) => {
+        release = r;
+      });
+      return real.apply(api, args);
+    });
+    try {
+      // The opener's read and the follow poll's first tick, both on open.
+      const opener = state().loadGitState("kamakura");
+      const tick = state().loadGitState("kamakura");
+      expect(tick).toBe(opener);
+      release();
+      await Promise.all([opener, tick]);
+      expect(git).toHaveBeenCalledTimes(1);
+      expect(state().gitStates.kamakura?.branch).toBe("fix/dictation-followups");
+    } finally {
+      git.mockRestore();
+    }
+  });
+
+  it("loadGitState lets a slow read finish before the next starts, even when it fails", async () => {
+    const before = state().gitStates.kamakura;
+    let fail!: (e: Error) => void;
+    const git = vi
+      .spyOn(api, "getGitState")
+      .mockImplementationOnce(() => new Promise((_, reject) => (fail = reject)));
+    try {
+      // A tick while the older read is out gets no request of its own, so
+      // there is no newer answer for the older one to land over.
+      const older = state().loadGitState("kamakura");
+      const tick = state().loadGitState("kamakura");
+      expect(git).toHaveBeenCalledTimes(1);
+      fail(new Error("relay timed out"));
+      await Promise.all([older, tick]);
+      expect(state().gitStates.kamakura).toBe(before);
+
+      // Settled, even by failing, the read is no longer out: the next is sent.
+      git.mockResolvedValueOnce({ ...before, branch: "fix/newer" } as never);
+      await state().loadGitState("kamakura");
+      expect(git).toHaveBeenCalledTimes(2);
+      expect(state().gitStates.kamakura?.branch).toBe("fix/newer");
+    } finally {
+      git.mockRestore();
+    }
+  });
+
   it("loadPrLive keeps the last checks when the live read has none, replaces them when it does", async () => {
     await state().loadGit("kamakura");
     const before = state().prChecks.kamakura;
