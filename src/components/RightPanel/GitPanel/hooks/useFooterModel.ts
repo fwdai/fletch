@@ -6,6 +6,7 @@ import { hasWorkSinceMerge } from "@/readiness";
 import { useAppStore } from "@/store";
 import { activeEntry } from "@/store/capabilities";
 import { type Gate, gateAction } from "../actionGate";
+import { actionGateReason } from "../actionGates";
 import {
   applyGate,
   buildFooter,
@@ -59,7 +60,7 @@ export function useFooterModel(input: {
   const gate = useCallback(
     (key: string) =>
       gateAction(key, {
-        env,
+        hostRefusal: (k) => actionGateReason(env, k),
         laneBranch,
         checkoutBranch,
         mergeAllowed,

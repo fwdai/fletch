@@ -76,18 +76,24 @@ export function ChangesTab({
                 );
               })}
             </div>
-          ) : (
+          ) : git ? (
             <div className="empty">
               <b>Working tree is clean</b>
               {pr ? (
                 <>
                   Everything is on PR <PrPill pr={pr} />.
                 </>
-              ) : git?.unpushed ? (
+              ) : git.unpushed ? (
                 `${git.unpushed} commit(s) on ${refLabel(git)}, nothing pending.`
               ) : (
                 "No changes yet."
               )}
+            </div>
+          ) : (
+            // Not read yet, or the host had no checkout to read: unknown, which
+            // is not the same as clean.
+            <div className="empty">
+              <b>Loading…</b>
             </div>
           )}
           <div className="card">

@@ -1,15 +1,19 @@
-// The Ship tab's derivation (src/screens/Agent/ShipTab/derive.ts) over the
-// desktop's ladder, and its autopilot line (ShipTab/autopilot.ts). The
-// in-flight playbook is the host's (`delegation:changed`), covered with the
-// store in store.test.ts.
+// The Ship tab's view (src/screens/Agent/ShipTab/derive.ts) over the desktop
+// Git panel's ladder and footer, its dispatch table (ShipTab/actions.ts), and
+// its autopilot line (ShipTab/autopilot.ts). The in-flight playbook is the
+// host's (`delegation:changed`), covered with the store in store.test.ts.
 
 import type { AutopilotCheckout, AutopilotCycle, GitState } from "@desktop/api/types/git";
 import type { CheckRun, PrChecks, PrComment, PrComments, PrState } from "@desktop/api/types/pr";
+import { playbookFor } from "@desktop/components/RightPanel/GitPanel/actionPlan";
+import { buildFooter, type FooterInput } from "@desktop/components/RightPanel/GitPanel/footerModel";
+import { buildLadder } from "@desktop/components/RightPanel/GitPanel/ladderModel";
 import { delegationLabel } from "@desktop/delegation";
-import type { ReadinessInput } from "@desktop/readiness";
+import { GATES } from "@desktop/store/gates";
 import { describe, expect, it } from "vitest";
+import { type ShipFacts, shipOp, shipRefusal } from "../src/screens/Agent/ShipTab/actions";
 import { describeAutopilot } from "../src/screens/Agent/ShipTab/autopilot";
-import { describeShip, type ShipExtra } from "../src/screens/Agent/ShipTab/derive";
+import { type ShipInput, shipView, stripKind } from "../src/screens/Agent/ShipTab/derive";
 import { agentCheckouts, autopilotFromSnapshot } from "../src/store/autopilot";
 
 const git = (over: Partial<GitState> = {}): GitState => ({
@@ -65,6 +69,14 @@ const checks = (over: Partial<PrChecks> = {}): PrChecks => ({
   ...over,
 });
 
+/** A required check failing, GitHub still willing to merge. */
+const failing = checks({
+  merge_state: "unstable",
+  rollup: "failing",
+  failed: 1,
+  required_failing: ["test"],
+});
+
 const thread = (over: Partial<PrComment> = {}): PrComment => ({
   id: "t1",
   author: "reviewer",
@@ -80,253 +92,270 @@ const thread = (over: Partial<PrComment> = {}): PrComment => ({
 
 const threads = (...items: PrComment[]): PrComments => ({ unresolved: items });
 
-const ship = (input: Partial<ReadinessInput> = {}, extra: Partial<ShipExtra> = {}) =>
-  describeShip(
-    { git: git(), pr: null, checks: null, comments: null, ...input },
-    { base: "main", commitMode: "commit-pr" },
-    { delegation: null, canMerge: true, ...extra },
-  );
+const input = (over: Partial<ShipInput> = {}): ShipInput => ({
+  git: git(),
+  pr: null,
+  checks: null,
+  comments: null,
+  base: "main",
+  delegation: null,
+  canMerge: true,
+  ...over,
+});
+const ship = (over: Partial<ShipInput> = {}) => shipView(input(over));
+const keys = (over: Partial<ShipInput> = {}) =>
+  ship(over).footer.groups.flatMap((g) => g.items.map((i) => i.key));
+const item = (over: Partial<ShipInput>, key: string) =>
+  ship(over)
+    .footer.groups.flatMap((g) => g.items)
+    .find((i) => i.key === key);
 
-const keys = (...args: Parameters<typeof ship>) => ship(...args).more.map((a) => a.key);
+/** What the desktop panel shows for the same facts: its primary's label and
+ *  its current row's summary. */
+function desktop(over: Partial<ShipInput>) {
+  const i = input(over);
+  const checks = i.checks ?? null;
+  const mergeState = checks?.merge_state ?? null;
+  const facts: FooterInput = {
+    git: i.git,
+    pr: i.pr,
+    checks,
+    mergeState,
+    comments: i.comments,
+    base: i.base,
+    commitMode: "agent-commit-pr",
+    customActive: false,
+    githubConnected: true,
+    hasOrigin: true,
+  };
+  return {
+    primary: buildFooter(facts).primary.label,
+    current: buildLadder(facts).find((r) => r.current)?.summary,
+  };
+}
 
-describe("describeShip", () => {
-  it("is neutral with nothing to press while the first read is in flight", () => {
-    const v = ship({ git: null });
-    expect(v.rung).toEqual({ do: "wait", why: "unknown-state" });
-    expect(v.strip).toEqual({ kind: "neutral", text: "Loading…" });
-    expect(v.primary).toBeNull();
-    expect(v.more).toEqual([]);
+describe("shipView · the desktop's models", () => {
+  it("says what the desktop panel says, state for state", () => {
+    const states: Partial<ShipInput>[] = [
+      { git: git({ files: [file()] }) },
+      { git: git({ files: [file(), file()] }), pr: pr(), checks: checks() },
+      { git: git({ ahead: 2 }) },
+      { git: git({ ahead: 3, unpushed: 1 }), pr: pr(), checks: checks() },
+      { git: git({ files: [file("conflicted")] }), pr: pr(), checks: checks() },
+      { git: git({ ahead: 1 }), pr: pr(), checks: checks({ merge_state: "behind" }) },
+      { git: git({ ahead: 1 }), pr: pr(), checks: failing },
+      { git: git({ ahead: 1 }), pr: pr(), checks: checks(), comments: threads(thread()) },
+      { git: git({ ahead: 1 }), pr: pr(), checks: checks(), comments: threads() },
+      { git: git({ ahead: 4, unpushed: 1 }), pr: pr({ state: "merged" }) },
+    ];
+    for (const over of states) {
+      const v = ship(over);
+      const d = desktop(over);
+      expect(v.footer.primary?.label).toBe(d.primary);
+      expect(v.strip.text).toBe(d.current);
+    }
   });
 
-  it("says there is nothing to ship for a clean checkout with no PR", () => {
-    const v = ship();
-    expect(v.strip).toEqual({ kind: "clean", text: "Nothing to ship yet", sub: "← main" });
-    expect(v.primary).toBeNull();
-    expect(v.more).toEqual([]);
-  });
-
-  it("leads with Commit & open PR for uncommitted work, the manual sheet behind it", () => {
-    const v = ship({ git: git({ files: [file()], additions: 3 }) });
-    expect(v.strip).toEqual({
+  it("tints the strip off the current row and shows the diff only for changes", () => {
+    expect(ship({ git: git({ files: [file()] }) }).strip).toEqual({
       kind: "changes",
-      text: "1 uncommitted file",
+      text: "1 file",
       diff: true,
       prLink: false,
     });
-    expect(v.primary).toEqual({
-      key: "commit-pr",
-      label: "Commit & open PR",
-      kind: "delegate",
-      action: "commit-pr",
-      params: { base: "main" },
-      delegation: "commit-pr",
-    });
-    expect(v.more).toEqual([
-      { key: "manual", label: "Write the message yourself", kind: "manual" },
-    ]);
-  });
-
-  it("degrades to Commit & push once a PR is open, and keeps GitHub in reach", () => {
-    const v = ship({ git: git({ files: [file(), file()] }), pr: pr() });
-    expect(v.strip.text).toBe("2 uncommitted files");
-    expect(v.strip.prLink).toBe(true);
-    expect(v.primary).toMatchObject({ key: "commit-push", label: "Commit & push to #7" });
-    expect(v.more.map((a) => a.key)).toEqual(["manual", "github"]);
-  });
-
-  it("opens a PR for commits ahead of base, pushes to an existing one", () => {
-    const open = ship({ git: git({ ahead: 2 }) });
-    expect(open.strip).toEqual({ kind: "info", text: "Pushed, no PR yet", prLink: false });
-    expect(open.primary).toMatchObject({
-      key: "open-pr",
-      label: "Open PR",
-      params: { base: "main" },
-    });
-    expect(open.more.map((a) => a.key)).toEqual(["manual"]);
-
-    const push = ship({ git: git({ unpushed: 1 }), pr: pr() });
-    expect(push.strip).toEqual({ kind: "info", text: "1 commit not pushed", prLink: true });
-    expect(push.primary).toMatchObject({ key: "push", label: "Push to #7", action: "push" });
-    expect(push.primary).not.toHaveProperty("params");
-  });
-
-  it("resolves conflicts before anything else, and never offers Merge meanwhile", () => {
-    const input = {
-      git: git({ files: [file("conflicted"), file()], unpushed: 2 }),
-      pr: pr(),
-      checks: checks(),
-      comments: threads(thread()),
-    };
-    const v = ship(input);
-    expect(v.strip).toEqual({ kind: "att", text: "Conflicts in 1 file", prLink: true });
-    expect(v.primary).toEqual({
-      key: "resolve",
-      label: "Resolve conflicts",
-      kind: "delegate",
-      action: "resolve-conflicts",
-      delegation: "resolve",
-    });
-    // GitHub's gate is green, but the local tree cannot be reconciled yet:
-    // no Merge in the overflow and no PR sheet — only the informational link.
-    // The same holds while the agent is mid-way through resolving it.
-    expect(v.more.map((a) => a.key)).toEqual(["github"]);
-    expect(keys(input, { delegation: "resolve" })).toEqual(["github"]);
-    // Once the conflict is gone, Merge is back where the gate allows it.
-    expect(keys({ ...input, git: git({ files: [file()] }) })).toEqual([
-      "merge",
-      "manual",
-      "github",
-    ]);
-  });
-
-  it("updates the branch when behind or conflicting with the base, naming which", () => {
-    const behind = ship({ pr: pr(), checks: checks({ merge_state: "behind" }) });
-    expect(behind.strip).toEqual({ kind: "att", text: "Behind main", prLink: true });
-    expect(behind.primary).toMatchObject({
-      key: "update-branch",
-      label: "Update branch",
-      params: { base: "main" },
-    });
-    expect(behind.more.map((a) => a.key)).toEqual(["github"]);
-
-    const dirty = ship({ pr: pr(), checks: checks({ merge_state: "dirty" }) });
-    expect(dirty.strip.text).toBe("Conflicts with main");
-    expect(ship({ pr: pr({ mergeable: "conflicting" }) }).strip.text).toBe("Conflicts with main");
-  });
-
-  it("fixes failing checks, naming them, while Merge stays in More when GitHub would take it", () => {
-    const v = ship({
-      pr: pr(),
-      checks: checks({ merge_state: "unstable", failed: 2, required_failing: ["lint", "test"] }),
-    });
-    expect(v.strip).toEqual({ kind: "att", text: "2 checks failing", prLink: true });
-    expect(v.primary).toMatchObject({
-      key: "fix-checks",
-      label: "Fix failing checks",
-      params: { failing: "lint, test" },
-    });
-    expect(v.more.map((a) => a.key)).toEqual(["merge", "github"]);
-    // A shut gate takes Merge out of the sheet.
-    expect(
-      keys({ pr: pr(), checks: checks({ merge_state: "blocked", required_failing: ["test"] }) }),
-    ).toEqual(["github"]);
-  });
-
-  it("resolves the review threads awaiting us, not the ones we pushed back on", () => {
-    const v = ship({
-      pr: pr(),
-      checks: checks(),
-      comments: threads(
-        thread(),
-        thread({ id: "t2" }),
-        thread({ id: "t3", we_replied_last: true }),
-      ),
-    });
-    expect(v.strip).toEqual({ kind: "att", text: "2 review comments waiting", prLink: true });
-    expect(v.primary).toMatchObject({
-      key: "resolve-comments",
-      label: "Resolve 2 review comments",
-      params: { count: "2" },
-    });
-    expect(v.more.map((a) => a.key)).toEqual(["merge", "github"]);
-    expect(ship({ pr: pr(), checks: checks(), comments: threads(thread()) }).primary?.label).toBe(
-      "Resolve 1 review comment",
-    );
-  });
-
-  it("escalates a disputed thread: nothing for the agent, GitHub for the human", () => {
-    const v = ship({
-      pr: pr(),
-      checks: checks(),
-      comments: threads(thread({ we_replied_last: true })),
-    });
-    expect(v.rung).toMatchObject({ do: "escalate", blocker: { kind: "review-disputed" } });
-    expect(v.strip).toEqual({ kind: "info", text: "1 thread waiting on a reply", prLink: true });
-    expect(v.primary).toMatchObject({ key: "github", url: "https://github.com/o/r/pull/7" });
-    // The gate is open, so Merge is still offered — a person may overrule.
-    expect(v.more.map((a) => a.key)).toEqual(["merge"]);
-  });
-
-  it("offers Merge as the primary when the gate is open and the host can", () => {
-    const v = ship({ pr: pr(), checks: checks() });
-    expect(v.rung).toEqual({ do: "merge" });
-    expect(v.strip).toEqual({ kind: "ready", text: "Ready to merge", prLink: true });
-    expect(v.primary).toEqual({ key: "merge", label: "Merge PR #7", kind: "merge" });
-    expect(v.more.map((a) => a.key)).toEqual(["github"]);
-  });
-
-  it("falls back to GitHub when the host cannot merge, without listing it twice", () => {
-    const v = ship({ pr: pr(), checks: checks() }, { canMerge: false });
-    expect(v.strip.text).toBe("Ready to merge");
-    expect(v.primary).toMatchObject({ key: "github", label: "Open on GitHub" });
-    expect(v.more).toEqual([]);
-  });
-
-  it("escalates the human-owned gates to GitHub", () => {
-    const review = ship({ pr: pr(), checks: checks({ merge_state: "blocked" }) });
-    expect(review.strip).toEqual({ kind: "info", text: "Waiting on a review", prLink: true });
-    expect(review.primary?.kind).toBe("github");
-    expect(review.more).toEqual([]);
-
-    const draft = ship({ pr: pr(), checks: checks({ merge_state: "draft" }) });
-    expect(draft.strip.text).toBe("Draft on GitHub");
-
-    const closed = ship({ pr: pr({ state: "closed" }) });
-    expect(closed.strip).toEqual({ kind: "neutral", text: "PR #7 was closed", prLink: false });
-    expect(closed.primary?.kind).toBe("github");
-  });
-
-  it("waits while GitHub is still computing the gate", () => {
-    const v = ship({ pr: pr({ mergeable: "unknown" }) });
-    expect(v.rung).toEqual({ do: "wait", why: "gate-computing" });
-    expect(v.strip).toEqual({
-      kind: "info",
-      text: "GitHub is computing merge status",
+    const merge = ship({ git: git({ ahead: 1 }), pr: pr(), checks: checks(), comments: threads() });
+    expect(merge.strip).toEqual({
+      kind: "ready",
+      text: "#7 · ready to merge",
+      diff: false,
       prLink: true,
     });
-    expect(v.primary?.kind).toBe("github");
-    expect(v.more).toEqual([]);
+    expect(merge.footer.primary).toMatchObject({ key: "merge", tone: "success" });
   });
 
-  it("reads the gate's own words when nothing blocks but the gate is not open", () => {
-    // No checks data, no conflicts: not a blocker, not merge-ready either.
-    const v = ship({ pr: pr() });
-    expect(v.rung).toEqual({ do: "ready" });
-    expect(v.strip).toEqual({ kind: "info", text: "No conflicts", prLink: true });
-    expect(v.primary?.kind).toBe("github");
-  });
-
-  it("offers to archive once the PR merged with nothing since", () => {
-    const v = ship({ git: git({ ahead: 3 }), pr: pr({ state: "merged" }) });
-    expect(v.rung).toEqual({ do: "landed" });
-    expect(v.strip).toEqual({ kind: "merged", text: "Merged into main", prLink: true });
-    expect(v.primary).toEqual({ key: "archive", label: "Archive workspace", kind: "archive" });
-    expect(v.more.map((a) => a.key)).toEqual(["github"]);
-  });
-
-  it("climbs the ladder again for follow-up work after a merge — a new PR, not a push", () => {
-    const v = ship({ git: git({ files: [file()] }), pr: pr({ state: "merged" }) });
-    expect(v.strip).toMatchObject({ kind: "changes", text: "1 uncommitted file" });
-    expect(v.primary).toMatchObject({ key: "commit-pr", params: { base: "main" } });
-    expect(v.more.map((a) => a.key)).toEqual(["manual", "github"]);
-  });
-
-  it("shows the playbook in flight and holds the primary, keeping More", () => {
-    const v = ship({ git: git({ files: [file()] }), pr: pr() }, { delegation: "commit-push" });
-    expect(v.strip).toEqual({
-      kind: "working",
-      text: delegationLabel("commit-push"),
-      prLink: true,
+  it("reads an open PR whose checks were never read as still checking", () => {
+    // `prChecks` has no entry yet: the gate is "unknown", as `useGitPanelData` has it.
+    const reading = ship({ git: git({ ahead: 1 }), pr: pr(), checks: undefined });
+    expect(reading.ladder.find((r) => r.key === "checks")).toMatchObject({
+      mark: "running",
+      summary: "checking…",
     });
-    expect(v.primary).toBeNull();
-    expect(v.more.map((a) => a.key)).toEqual(["manual", "github"]);
+    // A confirmed null is no data, not a read in flight.
+    const none = ship({ git: git({ ahead: 1 }), pr: pr(), checks: null });
+    expect(none.ladder.find((r) => r.key === "checks")).toMatchObject({
+      mark: "idle",
+      summary: "unavailable",
+    });
+  });
+
+  it("says there is nothing to ship for a clean checkout with no PR, with nothing to press", () => {
+    const v = ship();
+    expect(v.strip).toEqual({ kind: "clean", text: "Nothing to ship yet", sub: "← main" });
+    // The desktop's quiet Pull: the phone has no pull to run.
+    expect(v.footer).toEqual({ primary: null, groups: [], mainReason: null });
+  });
+});
+
+describe("shipView · the phone's own strips", () => {
+  it("is neutral with nothing to press while the first read is in flight", () => {
+    const v = ship({ git: null });
+    expect(v.strip).toEqual({ kind: "neutral", text: "Loading…" });
+    expect(v.ladder).toEqual([]);
+    expect(v.footer).toEqual({ primary: null, groups: [], mainReason: null });
   });
 
   it("says Git paused when the checkout's config blocks git, whatever else it reads", () => {
     const v = ship({ git: git({ files: [file()], blocked_config: ["core.hooksPath"] }), pr: pr() });
     expect(v.strip).toEqual({ kind: "att", text: "Git paused", sub: "blocking settings" });
-    expect(v.primary).toBeNull();
-    expect(v.more).toEqual([]);
+    expect(v.ladder).toEqual([]);
+    expect(v.footer.primary).toBeNull();
+  });
+
+  it("shows the playbook in flight and holds every action quietly", () => {
+    const v = ship({ git: git({ files: [file()] }), pr: pr(), delegation: "commit-push" });
+    expect(v.strip).toEqual({
+      kind: "working",
+      text: delegationLabel("commit-push"),
+      prLink: true,
+    });
+    expect(v.footer.primary).toMatchObject({ key: "agent-commit-push", disabled: true });
+    expect(v.footer.mainReason).toBeNull();
+  });
+});
+
+describe("shipView · what the phone can run", () => {
+  it("drops the keys the phone has no dispatch for", () => {
+    // Conflicts: the desktop also offers pull, rebase and abort/discard.
+    expect(keys({ git: git({ files: [file("conflicted")] }) })).toEqual([]);
+    // No origin: the desktop's primary is Publish, with both visibilities.
+    const local = ship({ git: git({ ahead: 1, has_origin: false }) });
+    expect(local.footer.primary).toBeNull();
+    expect(keys({ git: git({ ahead: 1, has_origin: false }) })).toEqual([]);
+  });
+
+  it("puts the manual sheet behind a commit-family primary, once", () => {
+    expect(keys({ git: git({ files: [file()] }) })).toEqual(["manual"]);
+    // Pushed with no PR: the desktop's auto-fill PR is the PR sheet here, so it
+    // folds into the one manual row.
+    const pushed = ship({ git: git({ ahead: 2 }) });
+    expect(pushed.footer.primary?.key).toBe("agent-open-pr");
+    expect(keys({ git: git({ ahead: 2 }) })).toEqual(["manual"]);
+    // A PR remedy is not a commit: no manual row.
+    expect(keys({ git: git({ ahead: 1 }), pr: pr(), checks: failing })).toEqual(["merge"]);
+  });
+
+  it("offers Archive for a merged PR, gated on work only this checkout holds", () => {
+    const landed = { git: git({ ahead: 3 }), pr: pr({ state: "merged" }) };
+    expect(ship(landed).footer.primary).toBeNull();
+    expect(ship(landed).footer.groups).toEqual([
+      {
+        title: "Workspace",
+        items: [{ key: "archive", label: "Archive workspace", icon: "archive" }],
+      },
+    ]);
+    const since = { git: git({ ahead: 3, files: [file()] }), pr: pr({ state: "merged" }) };
+    expect(item(since, "archive")).toMatchObject({
+      disabled: true,
+      reason: "Work since the merge is only here",
+    });
+  });
+
+  it("disables Merge with the reason when the host or GitHub's gate won't take it", () => {
+    const open = { git: git({ ahead: 1 }), pr: pr(), checks: failing };
+    expect(item(open, "merge")).not.toHaveProperty("disabled", true);
+    expect(item({ ...open, canMerge: false }, "merge")).toMatchObject({
+      disabled: true,
+      reason: GATES.mergePr.reason,
+    });
+    const shut = checks({
+      merge_state: "blocked",
+      rollup: "failing",
+      failed: 1,
+      required_failing: ["test"],
+    });
+    expect(item({ ...open, checks: shut }, "merge")).toMatchObject({
+      disabled: true,
+      reason: expect.stringMatching(/merge gate/),
+    });
+    // The primary carries the reason too.
+    const green = { git: git({ ahead: 1 }), pr: pr(), checks: checks(), comments: threads() };
+    expect(ship({ ...green, canMerge: false }).footer).toMatchObject({
+      primary: { key: "merge", disabled: true },
+      mainReason: GATES.mergePr.reason,
+    });
+  });
+});
+
+describe("stripKind", () => {
+  it("tints by the row's attention colour, else by its mark", () => {
+    expect(stripKind({ mark: "attention", tone: "warn" })).toBe("changes");
+    expect(stripKind({ mark: "attention", tone: "att" })).toBe("att");
+    expect(stripKind({ mark: "attention", tone: "danger" })).toBe("att");
+    expect(stripKind({ mark: "attention", tone: "info" })).toBe("info");
+    expect(stripKind({ mark: "attention", tone: "neutral" })).toBe("neutral");
+    expect(stripKind({ mark: "done", tone: "merged" })).toBe("merged");
+    expect(stripKind({ mark: "done" })).toBe("ready");
+    expect(stripKind({ mark: "running" })).toBe("info");
+    expect(stripKind({ mark: "idle" })).toBe("neutral");
+  });
+});
+
+describe("shipOp", () => {
+  const facts: ShipFacts = {
+    base: "main",
+    pr: pr(),
+    checks: checks({ required_failing: ["lint", "test"] }),
+    comments: threads(thread(), thread({ id: "t2" }), thread({ id: "t3", we_replied_last: true })),
+  };
+
+  it("hands the agent the desktop's plan for every delegated key, push included", () => {
+    for (const key of [
+      "agent-commit",
+      "agent-commit-push",
+      "agent-commit-pr",
+      "agent-open-pr",
+      "agent-resolve",
+      "agent-update-branch",
+      "agent-fix",
+      "agent-resolve-comments",
+      "push",
+    ]) {
+      const playbook = playbookFor(key, facts);
+      expect(playbook).not.toBeNull();
+      expect(shipOp(key, facts)).toEqual({ kind: "delegate", playbook });
+    }
+  });
+
+  it("maps the rest to the host, GitHub or the PR sheet", () => {
+    expect(shipOp("merge", facts)).toEqual({ kind: "merge" });
+    expect(shipOp("archive", facts)).toEqual({ kind: "archive" });
+    expect(shipOp("view-pr", facts)).toEqual({ kind: "github", url: pr().url });
+    for (const key of ["open-pr", "commit-direct", "commit-pr-direct", "manual"]) {
+      expect(shipOp(key, facts)).toEqual({ kind: "manual" });
+    }
+  });
+
+  it("has nothing for what the phone can't run, and the gate says so", () => {
+    for (const key of [
+      "connect-github",
+      "publish",
+      "publish-public",
+      "pull",
+      "rebase",
+      "stash",
+      "discard",
+      "abort",
+      "delete-branch",
+      "focus-pr",
+      "clear-config",
+      "loading",
+    ]) {
+      expect(shipOp(key, facts)).toBeNull();
+      expect(shipRefusal(key, facts, true)).not.toBeNull();
+    }
+    expect(shipRefusal("merge", facts, false)).toBe(GATES.mergePr.reason);
+    expect(shipRefusal("merge", facts, true)).toBeNull();
+    expect(shipRefusal("agent-commit-pr", facts, false)).toBeNull();
   });
 });
 

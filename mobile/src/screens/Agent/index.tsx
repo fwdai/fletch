@@ -10,6 +10,7 @@ import { ChangesTab } from "./ChangesTab";
 import { ChatTab } from "./ChatTab";
 import { Composer } from "./Composer";
 import { ShipTab } from "./ShipTab";
+import { useGitFollow } from "./useGitFollow";
 
 const TABS = ["chat", "changes", "ship"] as const;
 type Tab = (typeof TABS)[number];
@@ -95,7 +96,8 @@ function Subtitle({ agentId }: { agentId: string }) {
           <span>·</span>
         </>
       )}
-      {git?.unpushed ? `${git.unpushed} unpushed` : "clean"}
+      {/* Unread is not clean: nothing is claimed until a read lands. */}
+      {!git ? "…" : git.unpushed ? `${git.unpushed} unpushed` : "clean"}
       {pr ? ` · PR #${pr.number}` : ""}
     </>
   );
@@ -125,13 +127,14 @@ export function AgentScreen({ agentId, tab: initialTab }: { agentId: string; tab
     if (missing && connected) void ensureAgent(agentId);
   }, [missing, connected, agentId, ensureAgent]);
 
-  if (!agent) return null;
-
   // A purpose-tagged workspace is a conversation, not a piece of work: the PM
   // never edits a file and the host denies it the publish ops, so Changes and
   // Ship have nothing to show and the tab bar has nothing to choose between.
-  const planning = !!agent.purpose;
+  const planning = !!agent?.purpose;
   const pane = planning ? "chat" : tab;
+  useGitFollow(agentId, pane);
+
+  if (!agent) return null;
 
   const go = (next: string) => {
     setDir(TABS.indexOf(next as Tab) > TABS.indexOf(tab) ? 1 : -1);

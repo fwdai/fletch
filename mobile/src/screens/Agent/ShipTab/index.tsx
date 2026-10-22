@@ -10,9 +10,9 @@ import { StatusHeader } from "./StatusHeader";
 import { useShipView } from "./useShipView";
 
 /** Where the work stands on its way to landing, and the one thing to do about
- *  it: a tinted strip off the desktop's remediation ladder, the host's autopilot
- *  under it, the evidence behind it (diff, tests, PR, checks, review), what
- *  happened lately, and the footer. */
+ *  it: a tinted strip off the desktop Git panel's ladder, the host's autopilot
+ *  under it, the evidence behind it (the ladder's rows and the tests), what
+ *  happened lately, and the desktop's footer. */
 export function ShipTab({
   agent,
   onDelegated,
@@ -58,6 +58,7 @@ export function ShipTab({
         <div className="ship-body">
           <Evidence
             agent={agent}
+            ladder={view.ladder}
             git={git}
             pr={pr}
             checks={checks}
