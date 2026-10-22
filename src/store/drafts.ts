@@ -152,6 +152,82 @@ function normalizeDraftSelection(
   return { provider: selectedProvider, model };
 }
 
+type Set = Parameters<SliceCreator<DraftsSlice>>[0];
+type Get = Parameters<SliceCreator<DraftsSlice>>[1];
+
+/** A new draft on `repoPath`, with the reads it needs — a landmark name, its
+ *  base branch — done. `null` means don't open one; the reason is on screen.
+ *
+ *  Drafts belong to the environment they were started in (they are stashed
+ *  and swapped on a switch), and both reads go to the active environment's
+ *  host. So the environment is checked after each one: a switch that lands
+ *  mid-way must not send the next read — about this repo — to the other host,
+ *  nor have the draft written and selected there. The `forActiveEnvironment`
+ *  rule, applied per read. */
+async function prepareDraft(
+  get: Get,
+  repoPath: string,
+  roadmapItemId?: string,
+): Promise<DraftAgent | null> {
+  const { drafts, newDraftProvider, newDraftModel, newDraftCustomAgentId, modelsByAgent } = get();
+  const environment = activeEnvironmentId();
+  // Name allocation is a backend call; if it fails there's no draft to
+  // create. Surface it in the global error banner and bail rather than
+  // leaving an unhandled rejection for the fire-and-forget callers (⌘N,
+  // the sidebar +, the Home screen) and a silently dead click.
+  let name: string;
+  try {
+    name = await api.allocateDraftName(draftNames(drafts));
+  } catch (e) {
+    get().setLastError(`Couldn't start a new agent: ${String(e)}`);
+    return null;
+  }
+  if (activeEnvironmentId() !== environment) return null;
+  const base = await get().resolveDraftBase(repoPath);
+  if (activeEnvironmentId() !== environment) return null;
+  const selection = normalizeDraftSelection(newDraftProvider, newDraftModel, modelsByAgent);
+  // Carry the sticky custom-agent pick onto the new draft, but only if it
+  // still exists (it may have been deleted since it was last persisted).
+  const customAgentId = get().customAgents.some((a) => a.id === newDraftCustomAgentId)
+    ? newDraftCustomAgentId
+    : undefined;
+  return {
+    id: `draft-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    repoPath,
+    name,
+    provider: selection.provider,
+    model: selection.model,
+    customAgentId,
+    base,
+    roadmapItemId,
+  };
+}
+
+/** Put a prepared draft on screen: seeded, listed first, selected. The seed
+ *  lands before the draft is visible, so the composer reads it on mount. */
+function openDraft(set: Set, get: Get, draft: DraftAgent, seedPrompt?: string): void {
+  if (seedPrompt) get().setComposerDraft(draft.id, seedPrompt);
+  set((s) => ({
+    drafts: [draft, ...s.drafts],
+    activeDraftId: draft.id,
+    selectedAgentId: null,
+    selectedRunId: null,
+  }));
+  get().setLastRepoPath(draft.repoPath);
+}
+
+/** Where the user is, as one value: what the center pane shows and which
+ *  full-screen page is over it. Compared before an automatic hand-off takes
+ *  the screen, so a selection or page the user chose meanwhile is kept. */
+function navigationKey(s: AppState): string {
+  return JSON.stringify([
+    s.selectedAgentId,
+    s.activeDraftId,
+    s.selectedRunId,
+    s.projectScreenRepoPath,
+  ]);
+}
+
 export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get) => ({
   drafts: [],
   activeDraftId: null,
@@ -179,60 +255,29 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get) => ({
 
   // ── drafts ─────────────────────────────────────────────────────────────────
   createDraft: async (repoPath, seedPrompt, roadmapItemId) => {
-    const { drafts, newDraftProvider, newDraftModel, newDraftCustomAgentId, modelsByAgent } = get();
-    // Drafts belong to the environment they were started in (they are stashed
-    // and swapped on a switch), and the reads below go over the wire. A switch
-    // that lands while they are in flight must not have this draft written —
-    // and selected — into the environment the user moved to.
-    const environment = activeEnvironmentId();
-    // Name allocation is a backend call; if it fails there's no draft to
-    // create. Surface it in the global error banner and bail rather than
-    // leaving an unhandled rejection for the fire-and-forget callers (⌘N,
-    // the sidebar +, the Home screen) and a silently dead click.
-    let name: string;
-    try {
-      name = await api.allocateDraftName(draftNames(drafts));
-    } catch (e) {
-      get().setLastError(`Couldn't start a new agent: ${String(e)}`);
-      return null;
-    }
-    const selection = normalizeDraftSelection(newDraftProvider, newDraftModel, modelsByAgent);
-    // Carry the sticky custom-agent pick onto the new draft, but only if it
-    // still exists (it may have been deleted since it was last persisted).
-    const customAgentId = get().customAgents.some((a) => a.id === newDraftCustomAgentId)
-      ? newDraftCustomAgentId
-      : undefined;
-    const draft: DraftAgent = {
-      id: `draft-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-      repoPath,
-      name,
-      provider: selection.provider,
-      model: selection.model,
-      customAgentId,
-      base: await get().resolveDraftBase(repoPath),
-      roadmapItemId,
-    };
-    if (activeEnvironmentId() !== environment) return null;
-    // Seed before the draft is visible, so the composer reads it on mount
-    // (same ordering as startWorkFromIssue).
-    if (seedPrompt) get().setComposerDraft(draft.id, seedPrompt);
-    set((s) => ({
-      drafts: [draft, ...s.drafts],
-      activeDraftId: draft.id,
-      selectedAgentId: null,
-    }));
-    get().setLastRepoPath(repoPath);
+    const draft = await prepareDraft(get, repoPath, roadmapItemId);
+    if (!draft) return null;
+    openDraft(set, get, draft, seedPrompt);
     return draft.id;
   },
 
   draftAfterProjectAdd: async (repoPath, first) => {
+    // Automatic, unlike every other way a draft opens: it may only take the
+    // screen if the user has not gone somewhere else while its reads were out.
+    const before = navigationKey(get());
     try {
-      const id = await get().createDraft(repoPath, first ? FIRST_TASK_PROMPT : undefined);
-      if (!id) return;
-      get().updateDraft(id, { afterProjectAdd: { seeded: first } });
+      const draft = await prepareDraft(get, repoPath);
+      if (!draft || navigationKey(get()) !== before) return;
+      openDraft(
+        set,
+        get,
+        { ...draft, afterProjectAdd: { seeded: first } },
+        first ? FIRST_TASK_PROMPT : undefined,
+      );
       // The project page takes the center pane over a draft (App.tsx), so a
       // project added from the sidebar while one is open would leave the
-      // draft invisible behind it.
+      // draft invisible behind it. Still the page that was open when the add
+      // began — a newer one changed the key above.
       get().closeProjectScreen();
       track("project_add_draft_opened", { seeded: first });
     } catch (e) {
@@ -241,24 +286,9 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get) => ({
   },
 
   startWorkFromIssue: async (repoPath, issue) => {
-    const { drafts, newDraftProvider, newDraftModel, newDraftCustomAgentId, modelsByAgent } = get();
-    // Same guard as createDraft: the draft is the starting environment's.
     const environment = activeEnvironmentId();
-    const name = await api.allocateDraftName(draftNames(drafts));
-    const selection = normalizeDraftSelection(newDraftProvider, newDraftModel, modelsByAgent);
-    const customAgentId = get().customAgents.some((a) => a.id === newDraftCustomAgentId)
-      ? newDraftCustomAgentId
-      : undefined;
-    const draft: DraftAgent = {
-      id: `draft-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-      repoPath,
-      name,
-      provider: selection.provider,
-      model: selection.model,
-      customAgentId,
-      base: await get().resolveDraftBase(repoPath),
-      issueRef: issue.key,
-    };
+    const draft = await prepareDraft(get, repoPath);
+    if (!draft) return;
     // Seed the composer for this draft (read as its initial text on mount) with
     // the issue brief, so "Start work" lands fully prefilled — the user reviews
     // and hits ↵ to launch (two clicks from issue to working agent). The
@@ -267,14 +297,7 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get) => ({
     // the user after mount.
     const comments = await api.issueComments(repoPath, issue.source, issue.key).catch(() => []);
     if (activeEnvironmentId() !== environment) return;
-    get().setComposerDraft(draft.id, composeIssueBrief(issue, comments));
-    set((s) => ({
-      drafts: [draft, ...s.drafts],
-      activeDraftId: draft.id,
-      selectedAgentId: null,
-      selectedRunId: null,
-    }));
-    get().setLastRepoPath(repoPath);
+    openDraft(set, get, { ...draft, issueRef: issue.key }, composeIssueBrief(issue, comments));
   },
 
   updateDraft: (id, patch) =>

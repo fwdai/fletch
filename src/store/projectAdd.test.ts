@@ -169,7 +169,8 @@ describe("the draft after a project is added", () => {
   it("is dropped when the user switches environments while it opens", async () => {
     // Drafts are stashed per environment. The add has returned, but the draft's
     // own reads are still in flight when the switch lands — the draft must not
-    // be written into, or selected in, the environment the user moved to.
+    // be written into, or selected in, the environment the user moved to, and
+    // the next read (about this repo) must not go to the other host either.
     const { store, closeProjectScreen } = makeStore(workspaceOf([]));
     api.addWorkspaceRepo.mockResolvedValue(workspaceOf(["/repos/app"]));
     api.allocateDraftName.mockImplementation(async () => {
@@ -180,10 +181,60 @@ describe("the draft after a project is added", () => {
     await store.getState().addWorkspaceRepo("/repos/app");
     await settled();
 
+    expect(api.repoDefaultBranch).not.toHaveBeenCalled();
+    expect(api.listRepoBranches).not.toHaveBeenCalled();
     expect(store.getState().drafts).toEqual([]);
     expect(store.getState().activeDraftId).toBeNull();
     expect(closeProjectScreen).not.toHaveBeenCalled();
     expect(track).not.toHaveBeenCalledWith("project_add_draft_opened", expect.anything());
+  });
+
+  it("is dropped when the switch lands during the last read too", async () => {
+    const { store } = makeStore(workspaceOf([]));
+    api.addWorkspaceRepo.mockResolvedValue(workspaceOf(["/repos/app"]));
+    api.repoDefaultBranch.mockImplementation(async () => {
+      activeIs(remote);
+      return "main";
+    });
+
+    await store.getState().addWorkspaceRepo("/repos/app");
+    await settled();
+
+    expect(store.getState().drafts).toEqual([]);
+    expect(track).not.toHaveBeenCalledWith("project_add_draft_opened", expect.anything());
+  });
+
+  it("yields to wherever the user went while it was opening", async () => {
+    // The hand-off is automatic, so a selection the user made meanwhile wins:
+    // the draft is not opened over it, and a page they opened is not closed.
+    const { store, closeProjectScreen } = makeStore(workspaceOf([]));
+    api.addWorkspaceRepo.mockResolvedValue(workspaceOf(["/repos/app"]));
+    api.allocateDraftName.mockImplementation(async () => {
+      // biome-ignore lint/suspicious/noExplicitAny: partial store seed
+      store.setState({ selectedAgentId: "fuji", projectScreenRepoPath: "/repos/app" } as any);
+      return "everest";
+    });
+
+    await store.getState().addWorkspaceRepo("/repos/app");
+    await settled();
+
+    expect(store.getState().drafts).toEqual([]);
+    expect(store.getState().selectedAgentId).toBe("fuji");
+    expect(closeProjectScreen).not.toHaveBeenCalled();
+    expect(track).not.toHaveBeenCalledWith("project_add_draft_opened", expect.anything());
+  });
+
+  it("does nothing when the folder was already pinned", async () => {
+    // The backend answers an already-pinned path with the unchanged workspace:
+    // nothing was added, so no activation event and no unasked-for draft.
+    const { store } = makeStore(workspaceOf(["/repos/app"]));
+    api.addWorkspaceRepo.mockResolvedValue(workspaceOf(["/repos/app"]));
+
+    await store.getState().addWorkspaceRepo("/repos/app");
+    await settled();
+
+    expect(store.getState().drafts).toEqual([]);
+    expect(track).not.toHaveBeenCalled();
   });
 
   it("reports a draft that could not open without undoing the add", async () => {

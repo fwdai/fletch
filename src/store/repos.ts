@@ -17,8 +17,8 @@ function refuseWhenGated(gate: GateName = "projectAdmin"): void {
 }
 
 /** The primary repo path of the project `after` has and `before` did not —
- *  what a clone or create just added. A new project has one repo, so the
- *  first unseen ref is it. */
+ *  what an add just pinned, or `null` when it pinned nothing. A new project
+ *  has one repo, so the first unseen ref is it. */
 function addedProjectPath(before: Workspace | null | undefined, after: Workspace): string | null {
   const known = new Set(before?.projects.map((p) => p.path) ?? []);
   return after.projects.find((p) => !known.has(p.path))?.path ?? null;
@@ -67,14 +67,19 @@ export const createReposSlice: SliceCreator<ReposSlice> = (set, get) => ({
   addWorkspaceRepo: async (path, opts) => {
     set({ busy: true, lastError: null });
     try {
-      const first = (get().workspace?.projects.length ?? 0) === 0;
+      const before = get().workspace;
+      const first = (before?.projects.length ?? 0) === 0;
       const ws = await api.addWorkspaceRepo(path);
       set({ workspace: ws });
+      // A path that is already pinned is a successful no-op on the backend:
+      // nothing was added, so nothing is counted and nothing opens.
+      const added = addedProjectPath(before, ws);
+      if (!added) return;
       // Activation: onboarding hands off to an empty sidebar, so the first
       // project is the moment a new user actually starts. Method + first only —
       // never the path.
       track("project_added", { method: "existing", first });
-      if (opts?.draft !== false) void get().draftAfterProjectAdd(path, first);
+      if (opts?.draft !== false) void get().draftAfterProjectAdd(added, first);
     } catch (e) {
       set({ lastError: String(e) });
     } finally {
