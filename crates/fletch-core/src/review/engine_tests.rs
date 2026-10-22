@@ -197,6 +197,106 @@ async fn the_content_digest_follows_the_uncommitted_content() {
     );
 }
 
+/// An incomplete scan is an error, never a digest: a modified file git can't
+/// read would otherwise drop out of the digest and compare equal to the
+/// reviewed tree.
+#[tokio::test]
+async fn an_unreadable_modified_file_makes_the_digest_an_error() {
+    use crate::git::testing::{commit_file, init_repo};
+    use crate::git_state::content_digest;
+    use std::os::unix::fs::PermissionsExt;
+    let td = tempfile::tempdir().unwrap();
+    let repo = td.path().join("repo");
+    init_repo(&repo);
+    commit_file(&repo, "a.txt");
+    std::fs::write(repo.join("a.txt"), "changed\n").unwrap();
+    let file = repo.join("a.txt");
+    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o000)).unwrap();
+    // Root reads anything; the check only means something for a real user.
+    let readable_anyway = std::fs::read(&file).is_ok();
+    let digest = content_digest(&repo).await;
+    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+    if readable_anyway {
+        return;
+    }
+    let err = digest.expect_err("an unreadable file must fail the digest");
+    assert!(err.to_string().starts_with("git diff:"), "{err}");
+}
+
+/// A name with a newline can't go through `--stdin-paths`; it is hashed on
+/// its own, so its content still counts.
+#[tokio::test]
+async fn a_newline_named_untracked_file_is_hashed_by_content() {
+    use crate::git::testing::{commit_file, init_repo};
+    use crate::git_state::content_digest;
+    let td = tempfile::tempdir().unwrap();
+    let repo = td.path().join("repo");
+    init_repo(&repo);
+    commit_file(&repo, "a.txt");
+    let odd = repo.join("odd\nname.txt");
+    std::fs::write(&odd, "first").unwrap();
+    let first = content_digest(&repo).await.unwrap();
+    std::fs::write(&odd, "second").unwrap();
+    let second = content_digest(&repo).await.unwrap();
+    assert_ne!(first, second, "the content edit must move the digest");
+    std::fs::write(&odd, "first").unwrap();
+    assert_eq!(content_digest(&repo).await.unwrap(), first);
+}
+
+/// A digest that failed while comparing must not keep `clean`/`findings`:
+/// the unverified signature never matches the recorded one, so it reads
+/// stale — and that staleness is not re-reviewed on its own.
+#[test]
+fn a_compare_time_digest_error_reads_stale_and_is_not_auto_re_reviewed() {
+    let mut t = begun(Trigger::Manual, Some(7));
+    t.submitted().unwrap();
+    t.turn_ended();
+    let recorded = full_signature("sha1|", "d1");
+    t.reviewed_signature = Some(recorded.clone());
+    assert_eq!(t.derive(Some(&recorded), 0), Phase::Clean);
+    assert!(t.auto_rereview_allowed());
+
+    let unverified = full_signature("sha1|", UNVERIFIED);
+    assert!(is_unverified(&unverified));
+    assert_eq!(t.derive(Some(&unverified), 0), Phase::Stale);
+    assert_eq!(t.derive(Some(&unverified), 2), Phase::Stale);
+    t.scan_error = Some("couldn't verify the review is current: git diff: denied".into());
+    assert!(
+        !t.auto_rereview_allowed(),
+        "a round would fail the same way"
+    );
+    assert!(t.auto_budget_left(7), "and none of the budget was spent");
+    // Nor is it "the code moved" when the verdict lands.
+    t.check_code_after_report(Some(&unverified));
+    assert_ne!(t.error.as_deref(), Some(CODE_MOVED));
+}
+
+/// A queued start that can't begin reads failed, with why; one beaten by a
+/// round already on the checkout waits its turn again.
+#[test]
+fn a_queued_start_that_cannot_begin_reads_failed() {
+    let mut t = Tracked::default();
+    t.queue(Trigger::PrOpen, None);
+    let pending = t.take_pending(true).unwrap();
+    t.queued_start_failed(
+        pending,
+        "No reviewer is set up — pick one in Settings › Review",
+    );
+    assert_eq!(t.derive(Some("s"), 0), Phase::Failed);
+    assert_eq!(
+        t.failed.as_deref(),
+        Some("queued review not started: No reviewer is set up — pick one in Settings › Review")
+    );
+
+    let mut t = Tracked::default();
+    t.queue(Trigger::Manual, Some("ca-1".into()));
+    let pending = t.take_pending(true).unwrap();
+    t.queued_start_failed(pending.clone(), ALREADY_RUNNING);
+    assert_eq!(t.pending, Some(pending), "put back, not failed");
+    assert_eq!(t.failed, None);
+    assert_eq!(t.derive(Some("s"), 0), Phase::Queued);
+}
+
 // ── the queue ──────────────────────────────────────────────────────────────
 
 #[test]

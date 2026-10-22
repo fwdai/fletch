@@ -76,6 +76,14 @@ pub enum Trigger {
 /// The note a review carries when the code changed while it was read.
 pub const CODE_MOVED: &str = "the code changed during the review";
 
+/// What a start refused by a round already on the checkout says. Matched by
+/// a queued start's runner, which puts the start back rather than failing it.
+pub const ALREADY_RUNNING: &str = "A review is already running on this checkout";
+
+/// The digest half of a signature that couldn't be computed: never equal to
+/// a recorded one, so a review it can't verify reads stale.
+const UNVERIFIED: &str = "unverified";
+
 /// The reviewer a checkout has: the custom agent it was built from and the
 /// hidden workspace that runs it (`agent_id`, once spawned).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -156,6 +164,11 @@ pub struct Tracked {
     /// a tick on a quiet checkout) still answers from facts.
     #[serde(skip)]
     pub last_obs: Option<Observed>,
+    /// Why the last scan couldn't verify the review is current. Shown as the
+    /// error while it holds, and it holds off the automatic re-review: a round
+    /// would fail on the same unreadable content and spend the PR's budget.
+    #[serde(skip)]
+    pub scan_error: Option<String>,
     /// Until when the checkout counts as active (the coder's last turn) and
     /// is scanned every tick even without an open PR.
     #[serde(skip)]
@@ -218,12 +231,33 @@ impl Tracked {
     /// phase reads stale, and an open PR's re-review picks it up.
     pub fn check_code_after_report(&mut self, current: Option<&str>) {
         let moved = match (current, self.reviewed_signature.as_deref()) {
-            (Some(now), Some(reviewed)) => now != reviewed,
+            // An unverified signature is a digest that failed, not code that
+            // moved: its own note says so.
+            (Some(now), Some(reviewed)) => now != reviewed && !is_unverified(now),
             _ => false,
         };
         if moved {
             self.error = Some(CODE_MOVED.into());
         }
+    }
+
+    /// Whether a stale checkout may be re-reviewed on its own: not when the
+    /// staleness is a scan that couldn't read the content.
+    pub fn auto_rereview_allowed(&self) -> bool {
+        self.scan_error.is_none()
+    }
+
+    /// A queued start's round could not begin: the checkout reads failed with
+    /// why — unless another round got there first, in which case the start
+    /// waits its turn again.
+    pub fn queued_start_failed(&mut self, pending: Pending, why: &str) {
+        if why == ALREADY_RUNNING {
+            if self.pending.is_none() {
+                self.pending = Some(pending);
+            }
+            return;
+        }
+        self.fail(format!("queued review not started: {why}"));
     }
 
     /// Queue a start behind the coder's turn. One per checkout: a second
@@ -424,6 +458,11 @@ pub fn full_signature(cheap: &str, digest: &str) -> String {
     format!("{cheap}#{digest}")
 }
 
+/// Whether a signature's digest is the one a failed digest leaves.
+fn is_unverified(signature: &str) -> bool {
+    signature.rsplit_once('#').map(|(_, digest)| digest) == Some(UNVERIFIED)
+}
+
 /// The cheap half of a full signature (everything before its digest).
 fn cheap_part(full: &str) -> &str {
     full.rsplit_once('#').map_or(full, |(cheap, _)| cheap)
@@ -528,6 +567,9 @@ pub fn on_pr_open(conn: &rusqlite::Connection) -> bool {
 pub struct Observed {
     /// `None` when the checkout was not scanned or can't be read.
     signature: Option<String>,
+    /// The content digest the comparison needed could not be computed; the
+    /// signature is then an unverified one, so the phase reads stale.
+    scan_error: Option<String>,
     open: u32,
     resolved: u32,
     pr_number: Option<u32>,
@@ -545,11 +587,11 @@ fn repo_for<'a>(record: &'a AgentRecord, key: &Key) -> Option<&'a TrackedRepo> {
 /// without it the signature is the last scan's, and the rest is read from
 /// the database alone.
 async fn observe(sup: &Supervisor, key: &Key, scan: Scan) -> Observed {
-    let signature = match scan {
+    let (signature, scan_error) = match scan {
         Scan::Cached => global()
             .get(key)
             .and_then(|t| t.last_obs)
-            .and_then(|o| o.signature),
+            .map_or((None, None), |o| (o.signature, o.scan_error)),
         Scan::Git | Scan::Full => code_signature(sup, key, scan == Scan::Full).await,
     };
     let (open, resolved) = {
@@ -570,6 +612,7 @@ async fn observe(sup: &Supervisor, key: &Key, scan: Scan) -> Observed {
         .unwrap_or((None, false));
     Observed {
         signature,
+        scan_error,
         open,
         resolved,
         pr_number,
@@ -577,27 +620,48 @@ async fn observe(sup: &Supervisor, key: &Key, scan: Scan) -> Observed {
     }
 }
 
-/// The code's signature now, or `None` when the checkout can't be read. The
-/// content digest is read when `full` asks for a signature to record, or when
-/// the status alone matches the reviewed code — a status that differs is
-/// already stale, and its cheap half says so without the digest.
-async fn code_signature(sup: &Supervisor, key: &Key, full: bool) -> Option<String> {
-    let git = crate::commands::get_git_state_impl(sup, &key.0, key.1.as_deref())
+/// The code's signature now, and why its content couldn't be verified.
+/// `(None, None)` when the checkout itself can't be read — "not a changed
+/// one", as before. The content digest is read when `full` asks for a
+/// signature to record, or when the status alone matches the reviewed code;
+/// a status that differs is already stale, and its cheap half says so.
+///
+/// A digest that fails yields an *unverified* signature (never equal to a
+/// recorded one) and the reason, so the caller can't mistake an unreadable
+/// tree for the reviewed one.
+async fn code_signature(
+    sup: &Supervisor,
+    key: &Key,
+    full: bool,
+) -> (Option<String>, Option<String>) {
+    let Some(git) = crate::commands::get_git_state_impl(sup, &key.0, key.1.as_deref())
         .await
         .ok()
         .flatten()
-        .filter(|g| g.blocked_config.is_empty())?;
+        .filter(|g| g.blocked_config.is_empty())
+    else {
+        return (None, None);
+    };
     let cheap = cheap_signature(&git);
     let reviewed = global().get(key).and_then(|t| t.reviewed_signature);
     let needs_digest = full || reviewed.as_deref().map(cheap_part) == Some(cheap.as_str());
     if !needs_digest {
-        return Some(cheap);
+        return (Some(cheap), None);
     }
-    let (_, checkout) = crate::commands::agent_repo_checkout_opt(sup, &key.0, key.1.as_deref())
+    let checkout = crate::commands::agent_repo_checkout_opt(sup, &key.0, key.1.as_deref())
         .ok()
-        .flatten()?;
-    let digest = crate::git_state::content_digest(&checkout).await.ok()?;
-    Some(full_signature(&cheap, &digest))
+        .flatten()
+        .map(|(_, checkout)| checkout);
+    let digest = match checkout {
+        Some(checkout) => crate::git_state::content_digest(&checkout)
+            .await
+            .map_err(|e| e.to_string()),
+        None => Err("the checkout is gone".to_string()),
+    };
+    match digest {
+        Ok(digest) => (Some(full_signature(&cheap, &digest)), None),
+        Err(why) => (Some(full_signature(&cheap, UNVERIFIED)), Some(why)),
+    }
 }
 
 fn view(key: &Key, tracked: &Tracked, phase: Phase, open: u32, resolved: u32) -> ReviewState {
@@ -612,7 +676,11 @@ fn view(key: &Key, tracked: &Tracked, phase: Phase, open: u32, resolved: u32) ->
         resolved,
         since_ms: tracked.since_ms,
         reviewed_signature: tracked.reviewed_signature.clone(),
-        error: tracked.failed.clone().or_else(|| tracked.error.clone()),
+        error: tracked
+            .failed
+            .clone()
+            .or_else(|| tracked.scan_error.clone())
+            .or_else(|| tracked.error.clone()),
     }
 }
 
@@ -628,6 +696,10 @@ fn settle(ctx: &Arc<EngineCtx>, key: &Key, obs: Observed) -> Option<ReviewState>
             t.phase = phase;
             t.since_ms = now;
         }
+        t.scan_error = obs
+            .scan_error
+            .as_ref()
+            .map(|why| format!("couldn't verify the review is current: {why}"));
         let state = view(key, t, phase, obs.open, obs.resolved);
         t.last_obs = Some(obs);
         state
@@ -883,9 +955,7 @@ pub async fn start(
                 .ok_or_else(|| Error::Other("review state vanished".into()));
         }
         if t.flight.is_some() || t.starting {
-            return Err(Error::Other(
-                "A review is already running on this checkout".into(),
-            ));
+            return Err(Error::Other(ALREADY_RUNNING.into()));
         }
     }
     let resolves = {
@@ -930,8 +1000,8 @@ fn drain(ctx: &Arc<EngineCtx>, sup: &Arc<Supervisor>, key: &Key) {
         )
         .await;
         if let Err(e) = result {
-            let why = format!("queued review not started: {e}");
-            global().update_existing(&key, |t| t.error = Some(why));
+            let why = e.to_string();
+            global().update_existing(&key, |t| t.queued_start_failed(pending, &why));
             refresh(&ctx, &sup, &key).await;
         }
     });
@@ -961,7 +1031,7 @@ async fn run_round(
     // click — is refused here rather than racing to the spawn.
     table
         .update(&key, Tracked::claim)
-        .map_err(|_| Error::Other("A review is already running on this checkout".into()))?;
+        .map_err(|_| Error::Other(ALREADY_RUNNING.into()))?;
     let released = |why: Error| {
         table.update(&key, Tracked::release);
         why
@@ -976,6 +1046,11 @@ async fn run_round(
         ))
     })?;
     let obs = observe(sup, &key, Scan::Full).await;
+    if let Some(why) = &obs.scan_error {
+        return Err(released(Error::Other(format!(
+            "couldn't read the change: {why}"
+        ))));
+    }
     let Some(signature) = obs.signature.clone() else {
         return Err(released(Error::Other(
             "the checkout can't be read yet; try again shortly".into(),
@@ -1180,9 +1255,15 @@ pub async fn submit(
     }
     // The code the reviewer read was recorded when the round began; if the
     // coder (or anyone) changed it since, the report is about older code.
-    let now = code_signature(sup, &key, true).await;
+    // A digest that fails reads as an unverified signature, which never
+    // equals the recorded one: the findings stay, the phase reads stale and
+    // the note says why.
+    let (now, scan_error) = code_signature(sup, &key, true).await;
     table.update_existing(&key, |t| t.check_code_after_report(now.as_deref()));
-    scan(ctx, sup, &key).await;
+    let mut obs = observe(sup, &key, Scan::Cached).await;
+    obs.signature = now;
+    obs.scan_error = scan_error;
+    settle(ctx, &key, obs);
     Ok(())
 }
 
@@ -1462,6 +1543,9 @@ async fn tick(ctx: &Arc<EngineCtx>, sup: &Arc<Supervisor>) {
             continue;
         };
         if state.phase != Phase::Stale || !on {
+            continue;
+        }
+        if !table.get(&key).is_some_and(|t| t.auto_rereview_allowed()) {
             continue;
         }
         let Some(pr_number) = obs.pr_number.filter(|_| obs.pr_open) else {

@@ -810,8 +810,8 @@ allowlist; any op not listed returns `{ ok: false, error: "unknown op" }`.
 | `autopilot_state` | `{ agentId? }` — autopilot as the host runs it (see "Autopilot"): one row per checkout of `agentId`, or of every live agent when it is absent, plus the two opt-out lists | `AutopilotSnapshot` |
 | `autopilot_set` | `{ projectId, enabled }` or `{ agentId, enabled }` — exactly one of the two ids. On a project it is the project's switch (default on); on an agent `enabled: false` pauses that agent's checkouts and `true` resumes them. Persists the host setting, takes effect before the call returns, and emits `autopilot:switches` (always, first) then `autopilot:state` for every checkout it changed | `AutopilotSnapshot` (the whole host's, as `autopilot_state {}` would answer) |
 | `autopilot_log` | `{ agentId?, subdir? }` — what autopilot did, newest first: one agent's checkouts (only the one named when `subdir` is given; the primary's own subdir names the primary), or every agent's when `agentId` is absent. At most the newest 50 rows per checkout are kept | `AutopilotLogEntry[]` |
-| `review_start` | `{ agentId, subdir?, customAgentId? }` — review the checkout's change with the local reviewer (see "Local review"): the custom agent named, else the configured one. Refused while a review is running on the checkout, or when no reviewer is set up | `ReviewState` |
-| `review_stop` | `{ agentId, subdir? }` — interrupt the reviewer turn running on the checkout, if any | `ReviewState` |
+| `review_start` | `{ agentId, subdir?, customAgentId? }` — review the checkout's change with the local reviewer (see "Local review"): the custom agent named, else the configured one. While the coder is running or spawning, or a delegation is live on the checkout, the start is queued instead and the answer has phase `queued`; asking again while one is queued keeps the first and answers with it. Refused while a review is running on the checkout, when no reviewer is set up, or when the change can't be read ("couldn't read the change: …") | `ReviewState` |
+| `review_stop` | `{ agentId, subdir? }` — interrupt the reviewer turn running on the checkout, or cancel a start queued for it, if any | `ReviewState` |
 | `get_review` | `{ agentId, subdir? }` — the checkout's review state, looked at now | `ReviewState \| null` |
 | `get_reviews` | `{}` — every checkout with a review state, for a client that connected mid-flight | `ReviewState[]` |
 | `review_dismiss_thread` | `{ agentId, subdir?, threadId, reason? }` — resolve one of the checkout's local review threads as the user, keeping `reason` as its last reply; emits `pr:threads_changed` | `null` |
@@ -1648,12 +1648,21 @@ runs on the host and needs no PR, no origin and no GitHub login.
   with that purpose lists it) and cannot publish; archived or discarded with
   its coder.
 - **Phases** (`ReviewState.phase`), derived on every look: `idle` (never
-  reviewed), `reviewing` (a reviewer turn is running), `findings` (the last
-  review left local threads open), `clean` (approved, or every finding
-  resolved, and the code unchanged since), `stale` (the code moved since the
-  last review: HEAD or the dirty paths changed), `failed` (the reviewer ended
-  its turn without reporting, could not start, or took longer than 20 minutes;
-  `error` says which). `trigger` is why the last round ran: `manual`,
+  reviewed), `queued` (a start waits for the coder: asked for while the coder
+  was running or spawning, or a delegation was live on the checkout; one per
+  checkout, persisted across a restart, and begun once the coder is idle with
+  no delegation live), `reviewing` (a reviewer turn is running), `findings`
+  (the last review left local threads open), `clean` (approved, or every
+  finding resolved, and the code unchanged since), `stale` (the code differs
+  from what the last review read: HEAD, the dirty paths and their kinds, or a
+  digest of the uncommitted content — a dirty line replaced by another counts;
+  a review whose report landed after the code moved carries `error` "the code
+  changed during the review"; a content digest that can't be computed reads
+  `stale` too, with `error` "couldn't verify the review is current: …", and is
+  never re-reviewed automatically, since a round would fail the same way),
+  `failed` (the reviewer ended its turn without reporting, could not start,
+  or took longer than 20 minutes; a queued start that couldn't begin reads
+  "queued review not started: …"; `error` says which). `trigger` is why the last round ran: `manual`,
   `pr-open` or `re-review`. `round` counts reviews ever; `open`/`resolved`
   count the checkout's local threads; `since_ms` is when the phase began;
   `reviewed_signature` is the code the last review covered.
@@ -1662,12 +1671,15 @@ runs on the host and needs no PR, no origin and no GitHub login.
   `open_pr`, or a focused PR the watcher sees newly open. And again while a
   PR is open, whenever the checkout goes `stale` with the coder idle and no
   delegation live on it, up to 3 automatic rounds per PR — a spent budget is
-  reported on `error` without changing the phase. A restart turns a review in
+  reported on `error` without changing the phase. A start triggered while the
+  coder is mid-turn (a PR usually opens inside the opener's turn) is queued as
+  above rather than refused. A restart turns a review in
   flight into `failed` ("interrupted by restart").
 
 ```
 ReviewState = { agent_id, subdir: string | null,
-  phase: "idle" | "reviewing" | "findings" | "clean" | "stale" | "failed",
+  phase: "idle" | "queued" | "reviewing" | "findings" | "clean" | "stale"
+       | "failed",
   trigger: "manual" | "pr-open" | "re-review" | null,
   reviewer: { custom_agent_id, name, provider, model: string | null,
               agent_id: string | null } | null,
