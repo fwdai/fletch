@@ -138,6 +138,18 @@ fn has_code(m: &str, code: &str) -> bool {
     })
 }
 
+/// A per-turn process's exit message with the failure the provider reported in
+/// band before exiting, when it reported one the exit message doesn't already
+/// carry. The exit status alone ("exit status: 1") says nothing about why;
+/// the report ("UnknownError: …", "Rate limit exceeded") is what the user
+/// reads and what [`classify`] keys on.
+pub(super) fn exit_message_with_report(exit: &str, reported: Option<&str>) -> String {
+    match reported.map(str::trim).filter(|r| !r.is_empty()) {
+        Some(report) if !exit.contains(report) => format!("{exit}: {report}"),
+        _ => exit.to_string(),
+    }
+}
+
 /// The `turn_completed` event's properties. All categorical or numeric: the
 /// provider, its probed version, the model, how long the turn ran and how much
 /// it produced, how it ended, and — for a failed turn — the error's kind and
@@ -224,6 +236,35 @@ mod tests {
         );
         assert_eq!(exit_code("Agent process exited: signal: 9 (SIGKILL)"), None);
         assert_eq!(exit_code("login expired"), None);
+    }
+
+    /// opencode's exit-1-with-empty-stderr: the `error` event it emitted first
+    /// is what turns a bare exit status into a classifiable failure.
+    #[test]
+    fn a_reported_failure_joins_the_exit_message_once() {
+        let joined = exit_message_with_report(
+            "exit status: 1",
+            Some("UnknownError: Rate limit exceeded. Please try again later."),
+        );
+        assert_eq!(
+            joined,
+            "exit status: 1: UnknownError: Rate limit exceeded. Please try again later."
+        );
+        assert_eq!(classify(&joined), "rate_limit");
+        assert_eq!(exit_code(&joined), Some(1));
+        // Already in the stderr the exit carried: not repeated.
+        assert_eq!(
+            exit_message_with_report("exit status: 1: boom", Some("boom")),
+            "exit status: 1: boom"
+        );
+        assert_eq!(
+            exit_message_with_report("exit status: 1", None),
+            "exit status: 1"
+        );
+        assert_eq!(
+            exit_message_with_report("exit status: 1", Some("  ")),
+            "exit status: 1"
+        );
     }
 
     #[test]
