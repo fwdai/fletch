@@ -77,6 +77,13 @@ const ROADMAP: &str = include_str!("instructions/roadmap.md");
 /// test there against the ops that dispatcher implements.
 const CONTEXT: &str = include_str!("instructions/context.md");
 
+/// Fletch-managed local-reviewer playbook: the `review_submit` RPC op and the
+/// read-only contract. Conditional like [`ROADMAP`]: only a reviewer session
+/// (`workspace::PURPOSE_REVIEWER`) is given the
+/// [`crate::rpc::review::ReviewDispatcher`]. The custom agent's own brief
+/// (what to pay attention to) rides beside it, unchanged.
+const REVIEW: &str = include_str!("instructions/review.md");
+
 /// The canned task of a project-mapping session: an ordinary workspace whose
 /// first message this is, writing meaning onto the modules the bootstrap
 /// recorded with the `context_*` ops. Not part of any instruction block.
@@ -164,6 +171,13 @@ fn not_doing_section(digest: &str) -> String {
          whether the user wants to challenge it — only they can reopen it.\n\n\
          <not-doing>\n{digest}\n</not-doing>"
     )
+}
+
+/// The local-reviewer guidance block, for reviewer sessions only. `None` when
+/// the file is blank, like [`codegraph_block`].
+pub fn review_block() -> Option<String> {
+    let block = REVIEW.trim();
+    (!block.is_empty()).then(|| block.to_string())
 }
 
 /// The project-context guidance block. `None` when the layer is off for the

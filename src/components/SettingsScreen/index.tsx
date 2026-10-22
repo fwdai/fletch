@@ -16,6 +16,7 @@ import { LayoutPane } from "./LayoutPane";
 import { McpServersPane } from "./McpServers";
 import { ProvidersPane } from "./ProvidersPane";
 import { RemoteControlPane } from "./RemoteControl";
+import { ReviewPane } from "./ReviewPane";
 import { SandboxPane } from "./Sandbox";
 import { ShortcutsPane } from "./ShortcutsPane";
 import { SkillsPane } from "./Skills";
@@ -94,6 +95,8 @@ const NAV: NavItem[] = [
   // toggle), so the nav entry matches it.
   { id: "sandbox", label: "Sandbox", icon: "cube", order: 50, group: GUARDRAILS_GROUP },
   { id: "git", label: "Git", icon: "branch", order: 53, group: GUARDRAILS_GROUP },
+  // Beside Git: what leaves a workspace is reviewed before it does.
+  { id: "review", label: "Review", icon: "search", order: 56, group: GUARDRAILS_GROUP },
   { id: "remote", label: "Remote control", icon: "phone", order: 60, group: DEVICES_GROUP },
   { id: "experimental", label: "Experimental", icon: "flask", order: 70, group: ADVANCED_GROUP },
 ];
@@ -210,6 +213,7 @@ export function SettingsScreen() {
           {visible && section === "shortcuts" && <ShortcutsPane />}
           {visible && section === "dictation" && <DictationPane />}
           {visible && section === "git" && <GitPane />}
+          {visible && section === "review" && <ReviewPane />}
           {visible && section === "sandbox" && <SandboxPane />}
           {visible && section === "remote" && <RemoteControlPane />}
           {visible && section === "providers" && <ProvidersPane />}

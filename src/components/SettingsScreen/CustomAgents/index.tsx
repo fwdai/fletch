@@ -50,6 +50,12 @@ export function CustomAgentsPane() {
     if (settingsIntent === "new-custom-agent") {
       startNew();
       clearSettingsIntent();
+    } else if (settingsIntent?.startsWith("edit-custom-agent:")) {
+      // Settings › Review's "Edit" on the reviewer lands straight in its editor.
+      const id = settingsIntent.slice("edit-custom-agent:".length);
+      const target = agents.find((a) => a.id === id);
+      if (target) setEditing({ mode: "edit", id: target.id, initial: target });
+      clearSettingsIntent();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [settingsIntent]);

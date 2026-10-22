@@ -71,20 +71,36 @@ export interface PrChecks {
   runs: CheckRun[];
 }
 
-/** One unresolved PR review thread, flattened to its root comment. */
+/** Where a review thread comes from: a GitHub review (a human, Greptile, …)
+ *  or Fletch's own local reviewer, which reviews the checkout without a PR.
+ *  Absent means `github` — a host from before local review wrote none. */
+export type ReviewSource = "github" | "local";
+
+/** How much a local finding matters, as the reviewer rated it. */
+export type ReviewSeverity = "high" | "medium" | "low";
+
+/** One unresolved review thread, flattened to its root comment. Both sources
+ *  share the shape so every surface (the Review row, the ladder, autopilot's
+ *  rung, the agent's `resolve-comments` playbook) treats them alike. */
 export interface PrComment {
   /** The review thread's node id — what the agent's `reply_thread` /
-   *  `resolve_thread` ops address. */
+   *  `resolve_thread` ops address. Local threads are `local:<uuid>`. */
   id: string;
+  /** The GitHub login, or the local reviewer's custom-agent name. */
   author: string;
-  /** Author is a GitHub App / bot (Greptile, CodeRabbit, …). Bots phrase
-   *  their comments for an AI already, so the panel inserts them as-is;
-   *  human comments get a file/line context wrapper. */
+  /** Author is a GitHub App / bot (Greptile, CodeRabbit, …) or the local
+   *  reviewer. Bots phrase their comments for an AI already, so the panel
+   *  inserts them as-is; human comments get a file/line context wrapper. */
   is_bot: boolean;
   body: string;
   path: string | null;
   line: number | null;
-  url: string;
+  /** The thread on GitHub; null for a local thread, which lives nowhere else. */
+  url: string | null;
+  source?: ReviewSource;
+  severity?: ReviewSeverity | null;
+  /** The local review round that raised it. */
+  round?: number | null;
   /** Replies after the root comment. */
   replies: number;
   /** We posted the last comment on this still-open thread: we've had our say and

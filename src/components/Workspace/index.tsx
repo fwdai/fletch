@@ -25,6 +25,10 @@ export function Workspace() {
   const environment = useAppStore(activeEntry);
   const agents = useAppStore((s) => s.workspace?.agents ?? EMPTY_AGENTS);
   const selectedId = useAppStore((s) => s.selectedAgentId);
+  // A hidden, surface-owned chat opened on purpose (the local reviewer's
+  // transcript, from the Git panel's Review row) has no sidebar row but is
+  // registered off-sidebar, so it renders here like any other agent.
+  const offSidebar = useAppStore((s) => (selectedId ? s.offSidebarAgents[selectedId] : undefined));
   const selectedRunId = useAppStore((s) => s.selectedRunId);
   const drafts = useAppStore((s) => s.drafts);
   const activeDraftId = useAppStore((s) => s.activeDraftId);
@@ -48,7 +52,7 @@ export function Workspace() {
   // No agent selected → Home. Mission Control (the fleet review queue) is gated
   // behind the Developer setting; when off, Home is a blank pane. The bare
   // "Loading…" placeholder stands only until the workspace connects.
-  const agent = agents.find((a) => a.id === selectedId);
+  const agent = agents.find((a) => a.id === selectedId) ?? offSidebar;
   if (!workspace) {
     // A paired host that is not reachable has nothing to show and no reason to
     // pretend it is still loading — the switcher says which host this is, so

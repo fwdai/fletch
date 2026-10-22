@@ -212,21 +212,28 @@ pub fn detect_blockers(input: &ReadinessInput) -> Vec<Blocker> {
             // ready / mergeable-soft / no-conflicts / computing add none.
             _ => {}
         }
-        // Split by who holds the conversation: a thread we replied to last is
-        // a push-back awaiting a human, not work for the agent.
-        let threads = input
+    }
+
+    // Review threads count with no proposal (the local reviewer's exist
+    // before one) or an open one; a merged or closed proposal's threads are
+    // history, not blockers. Split by who holds the conversation: a thread we
+    // replied to last is a push-back awaiting a human, not work for the agent.
+    let threads = if pr.map_or(true, |p| p.state == PrStatus::Open) {
+        input
             .comments
             .as_ref()
             .map(|c| c.unresolved.as_slice())
-            .unwrap_or_default();
-        let ours = threads.iter().filter(|t| t.we_replied_last).count();
-        let theirs = threads.len() - ours;
-        if theirs > 0 {
-            blockers.push(Blocker::ReviewUnaddressed { count: theirs });
-        }
-        if ours > 0 {
-            blockers.push(Blocker::ReviewDisputed { count: ours });
-        }
+            .unwrap_or_default()
+    } else {
+        &[]
+    };
+    let ours = threads.iter().filter(|t| t.we_replied_last).count();
+    let theirs = threads.len() - ours;
+    if theirs > 0 {
+        blockers.push(Blocker::ReviewUnaddressed { count: theirs });
+    }
+    if ours > 0 {
+        blockers.push(Blocker::ReviewDisputed { count: ours });
     }
 
     blockers
@@ -344,6 +351,19 @@ pub fn next_rung(input: &ReadinessInput, ctx: &LadderContext) -> Rung {
             &[]
         };
         return delegate(mode.kind(), pairs, b);
+    }
+
+    // Findings before a proposal: with no open PR the only threads are the
+    // local reviewer's, and work it is still waiting on isn't ready to
+    // propose. With a PR open the GitHub order below stands (checks first).
+    if !pr.is_some_and(|p| p.state == PrStatus::Open) {
+        if let Some(b) = find("review-unaddressed") {
+            let Blocker::ReviewUnaddressed { count } = &b else {
+                unreachable!("found by kind");
+            };
+            let count = count.to_string();
+            return delegate(DelegationKind::ResolveComments, &[("count", count)], b);
+        }
     }
 
     if let Some(b) = find("unsubmitted") {

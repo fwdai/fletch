@@ -165,9 +165,15 @@ export function detectBlockers({ git, pr, checks, comments }: ReadinessInput): B
         // not "would GitHub take it as it stands".
         break;
     }
-    // Split by who holds the conversation. A thread we replied to last is a
-    // deliberate push-back awaiting a human; treating it as "unaddressed" would
-    // make the agent re-argue the same point every cycle.
+  }
+
+  // Review threads on an open proposal, or with none at all: GitHub's exist
+  // only with a PR, the local reviewer's with none (a review run before the
+  // PR). Threads on a merged or closed one are history, not a blocker.
+  // Split by who holds the conversation. A thread we replied to last is a
+  // deliberate push-back awaiting a human; treating it as "unaddressed" would
+  // make the agent re-argue the same point every cycle.
+  if (pr == null || prOpen) {
     const threads = comments?.unresolved ?? [];
     const ours = threads.filter((t) => t.we_replied_last).length;
     const theirs = threads.length - ours;
@@ -257,6 +263,22 @@ export function nextRung(input: ReadinessInput, ctx: LadderContext): Rung {
     };
   }
 
+  // Findings the local reviewer raised before any proposal exists: address
+  // them before proposing the work, so the PR opens on the fixed code. With a
+  // PR open, threads keep their place after checks (below) — a thread written
+  // against a red run is read after the run is fixed.
+  const resolveComments = (b: Extract<Blocker, { kind: "review-unaddressed" }>): Rung => ({
+    do: "delegate",
+    kind: "resolve-comments",
+    action: "resolve-comments",
+    params: { count: String(b.count) },
+    blocker: b,
+  });
+  if (pr?.state !== "open") {
+    const early = find("review-unaddressed");
+    if (early) return resolveComments(early);
+  }
+
   const unsubmitted = find("unsubmitted");
   if (unsubmitted) {
     return {
@@ -300,15 +322,7 @@ export function nextRung(input: ReadinessInput, ctx: LadderContext): Rung {
   if (human) return { do: "escalate", blocker: human };
 
   const unaddressed = find("review-unaddressed");
-  if (unaddressed) {
-    return {
-      do: "delegate",
-      kind: "resolve-comments",
-      action: "resolve-comments",
-      params: { count: String(unaddressed.count) },
-      blocker: unaddressed,
-    };
-  }
+  if (unaddressed) return resolveComments(unaddressed);
 
   // Only threads we already pushed back on remain. There is no remediation for a
   // disagreement — the whole point of leaving them open is that a person decides.

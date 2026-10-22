@@ -67,9 +67,11 @@ The pull request can't merge cleanly because `base` has advanced. First refresh 
 
 CI checks are failing on this branch's pull request. Investigate the failures: the `pr_checks` op lists each run's `id`, conclusion and URL, and `pr_check_log` (`{"op":"pr_check_log","args":{"check":"<id or name>"}}`) returns that run's log tail and annotations. Fix them, commit the fix with plain git (`git add -A` && `git commit`), and push by calling the `git_push` op so the checks re-run.
 
-### resolve-comments — params: `count`
+### resolve-comments — params: `count`, optional `thread`
 
-Unresolved review threads on this branch's pull request need addressing. Read them with the `pr_threads` op (`{"op":"pr_threads"}`), which returns each open thread's `id`, author, `is_bot`, body, and file anchor.
+Unresolved review threads on this work need addressing. When the trigger carries `thread="<id>"`, address only that thread and leave the others. Read them with the `pr_threads` op (`{"op":"pr_threads"}`), which returns each open thread's `id`, `source`, author, `is_bot`, body, and file anchor.
+
+Threads come from two sources and are handled the same way: GitHub reviewers on the pull request (`source: "github"`), and Fletch's local reviewer, an agent that read this checkout (`source: "local"`, ids `local:…`, no URL, a `severity`). Local threads can exist before any pull request. The same three outcomes and the same ops apply to both. When a fix to a local thread leaves changes, commit them with plain git; push only if the branch is already published (an upstream or a pull request exists) — never create a branch or a pull request for it.
 
 Address a thread by that `id`: `{"op":"reply_thread","args":{"thread":"<id>","body":"…"}}` and `{"op":"resolve_thread","args":{"thread":"<id>"}}` (build the body with `jq -n --arg`).
 

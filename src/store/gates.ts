@@ -151,6 +151,14 @@ export const GATES = {
     label: "Autopilot",
     reason: "This host is too old to run autopilot — update it.",
   },
+  /** The local reviewer: a hidden agent the host runs over a checkout. The
+   *  turn, its verdict and the threads it raises all live on the host, so a
+   *  host from before `review_start` has no reviewer to run. */
+  review: {
+    op: "review_start",
+    label: "Local review",
+    reason: "This host is too old to run a local reviewer — update it.",
+  },
   nativeView: {
     op: "switch_view",
     label: "The native terminal view",

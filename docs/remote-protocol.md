@@ -810,6 +810,11 @@ allowlist; any op not listed returns `{ ok: false, error: "unknown op" }`.
 | `autopilot_state` | `{ agentId? }` — autopilot as the host runs it (see "Autopilot"): one row per checkout of `agentId`, or of every live agent when it is absent, plus the two opt-out lists | `AutopilotSnapshot` |
 | `autopilot_set` | `{ projectId, enabled }` or `{ agentId, enabled }` — exactly one of the two ids. On a project it is the project's switch (default on); on an agent `enabled: false` pauses that agent's checkouts and `true` resumes them. Persists the host setting, takes effect before the call returns, and emits `autopilot:switches` (always, first) then `autopilot:state` for every checkout it changed | `AutopilotSnapshot` (the whole host's, as `autopilot_state {}` would answer) |
 | `autopilot_log` | `{ agentId?, subdir? }` — what autopilot did, newest first: one agent's checkouts (only the one named when `subdir` is given; the primary's own subdir names the primary), or every agent's when `agentId` is absent. At most the newest 50 rows per checkout are kept | `AutopilotLogEntry[]` |
+| `review_start` | `{ agentId, subdir?, customAgentId? }` — review the checkout's change with the local reviewer (see "Local review"): the custom agent named, else the configured one. Refused while a review is running on the checkout, or when no reviewer is set up | `ReviewState` |
+| `review_stop` | `{ agentId, subdir? }` — interrupt the reviewer turn running on the checkout, if any | `ReviewState` |
+| `get_review` | `{ agentId, subdir? }` — the checkout's review state, looked at now | `ReviewState \| null` |
+| `get_reviews` | `{}` — every checkout with a review state, for a client that connected mid-flight | `ReviewState[]` |
+| `review_dismiss_thread` | `{ agentId, subdir?, threadId, reason? }` — resolve one of the checkout's local review threads as the user, keeping `reason` as its last reply; emits `pr:threads_changed` | `null` |
 | `list_repo_branches` | `{ repoPath }` | `string[]` |
 | `repo_default_branch` | `{ repoPath }` | `string` |
 | `discover_supported_models` | as command | `AgentModels[]` |
@@ -1326,6 +1331,7 @@ verify:report          publish:approval-requested
 publish:approval-resolved
 delegation:changed
 autopilot:state        autopilot:event        autopilot:switches
+review:changed
 wf:event               wf:run                 wf:run-deleted
 roadmap:item           roadmap:item-deleted   roadmap:item-event
 roadmap:proposal       roadmap:proposal-deleted
@@ -1478,6 +1484,13 @@ prepends it to that checkout's history. All three are host facts: a client seeds
 them with `autopilot_state {}` and `autopilot_log {}` after every handshake and
 treats the events as the deltas.
 
+`review:changed` is one `ReviewState` (see "Local review") whenever a
+checkout's review phase, reviewer, round, thread counts or error changes; a
+client replaces its row for `(agent_id, subdir)` with it and seeds the set with
+`get_reviews {}` after every handshake. The findings themselves are review
+threads, carried by `pr:threads_changed` beside GitHub's (each thread has a
+`source`).
+
 The whole `wf:*` and `roadmap:*` stream is forwarded, so a remote run monitor
 and a remote board stay live instead of rendering once and going stale. Four
 of them carry an id rather than a row and are named for what they address:
@@ -1612,6 +1625,55 @@ where `subdir` is `null` for the agent's primary repo, `enrolled` is
 `no-progress` or `no-evidence` and present only on a `give-up`. Cycles are in
 memory, so a host restart drops them (the next tick starts over from the live
 PR); the log is durable.
+
+## Local review
+
+A second agent reviews the coder's change before anyone else does: a hidden
+**reviewer** workspace that adopts the coder's checkout, reads the change
+against its base, and reports findings as **local review threads** — the same
+shape as a GitHub review thread (`PrComment`, `source: "local"`, ids
+`local:…`, no URL, with a `severity`), listed by `get_pr_threads` and
+`pr_threads` beside Greptile's, worked by the coder through the same
+`resolve-comments` playbook and the same `reply_thread` / `resolve_thread`
+ops, and picked up by autopilot's `resolve-comments` rung like any other. It
+runs on the host and needs no PR, no origin and no GitHub login.
+
+- **The reviewer** is a custom agent: the `settings` key `review.agent` names
+  it, else the custom agent named "Reviewer" (the starter pack's preset), else
+  there is none and `review_start` refuses. Its brief is the custom agent's
+  own; the host appends the review contract (read-only, report once through
+  `review_submit`). One reviewer workspace per checkout, built from that
+  custom agent's base, model, effort, skills and MCP servers, tagged
+  `purpose: "reviewer"` so it is absent from the sidebar (`list_project_chats`
+  with that purpose lists it) and cannot publish; archived or discarded with
+  its coder.
+- **Phases** (`ReviewState.phase`), derived on every look: `idle` (never
+  reviewed), `reviewing` (a reviewer turn is running), `findings` (the last
+  review left local threads open), `clean` (approved, or every finding
+  resolved, and the code unchanged since), `stale` (the code moved since the
+  last review: HEAD or the dirty paths changed), `failed` (the reviewer ended
+  its turn without reporting, could not start, or took longer than 20 minutes;
+  `error` says which). `trigger` is why the last round ran: `manual`,
+  `pr-open` or `re-review`. `round` counts reviews ever; `open`/`resolved`
+  count the checkout's local threads; `since_ms` is when the phase began;
+  `reviewed_signature` is the code the last review covered.
+- **When it runs.** On `review_start`. On PR open, when the `settings` key
+  `review.on_pr_open` is not `"false"` (the default): the agent's own
+  `open_pr`, or a focused PR the watcher sees newly open. And again while a
+  PR is open, whenever the checkout goes `stale` with the coder idle and no
+  delegation live on it, up to 3 automatic rounds per PR — a spent budget is
+  reported on `error` without changing the phase. A restart turns a review in
+  flight into `failed` ("interrupted by restart").
+
+```
+ReviewState = { agent_id, subdir: string | null,
+  phase: "idle" | "reviewing" | "findings" | "clean" | "stale" | "failed",
+  trigger: "manual" | "pr-open" | "re-review" | null,
+  reviewer: { custom_agent_id, name, provider, model: string | null,
+              agent_id: string | null } | null,
+  round, open, resolved, since_ms, reviewed_signature: string | null,
+  error: string | null }
+```
 
 ## Errors
 

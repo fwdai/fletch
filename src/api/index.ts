@@ -9,6 +9,7 @@ import { issuesApi } from "./domains/issues";
 import { miscApi } from "./domains/misc";
 import { providersApi } from "./domains/providers";
 import { remoteApi } from "./domains/remote";
+import { reviewApi } from "./domains/review";
 import { roadmapApi } from "./domains/roadmap";
 import { runApi } from "./domains/run";
 import { sandboxApi } from "./domains/sandbox";
@@ -32,6 +33,7 @@ export * from "./types/issues";
 export * from "./types/pr";
 export * from "./types/providers";
 export * from "./types/remote";
+export * from "./types/review";
 export * from "./types/roadmap";
 export * from "./types/run";
 export * from "./types/sandbox";
@@ -65,4 +67,5 @@ export const api = {
   ...roadmapApi,
   ...usageApi,
   ...contextApi,
+  ...reviewApi,
 };

@@ -168,6 +168,11 @@ pub const OPS: &[&str] = &[
     "autopilot_state",
     "autopilot_set",
     "autopilot_log",
+    "review_start",
+    "review_stop",
+    "get_review",
+    "get_reviews",
+    "review_dismiss_thread",
     "list_repo_branches",
     "repo_default_branch",
     "discover_supported_models",
@@ -466,6 +471,14 @@ const OP_SCOPES: &[(&str, Scope)] = &[
     // standing publish grant.
     ("autopilot_set", Scope::Publish),
     ("autopilot_log", Scope::Observe),
+    // The local review loop (`review::engine`): starting a review spawns a
+    // hidden reviewer and sends it a turn, dismissing a thread answers it —
+    // the same grant steering an agent is; reading its state is observing.
+    ("review_start", Scope::Agents),
+    ("review_stop", Scope::Agents),
+    ("get_review", Scope::Observe),
+    ("get_reviews", Scope::Observe),
+    ("review_dismiss_thread", Scope::Agents),
     ("list_repo_branches", Scope::Observe),
     ("repo_default_branch", Scope::Observe),
     ("discover_supported_models", Scope::Observe),
@@ -1093,6 +1106,57 @@ impl Dispatch for SupervisorDispatch {
                         a.agent_id.as_deref(),
                         a.subdir.as_deref(),
                     ))
+                }
+
+                // The local review loop runs on the host (`review::engine`);
+                // clients start, stop and read it.
+                "review_start" => {
+                    let a: ReviewStartArgs = parse(args)?;
+                    res(crate::commands::review_start_impl(
+                        ctx,
+                        sup,
+                        &a.agent_id,
+                        a.subdir.as_deref(),
+                        a.custom_agent_id.as_deref(),
+                    )
+                    .await)
+                }
+
+                "review_stop" => {
+                    let a: AgentSubdirArgs = parse(args)?;
+                    res(crate::commands::review_stop_impl(
+                        ctx,
+                        sup,
+                        &a.agent_id,
+                        a.subdir.as_deref(),
+                    )
+                    .await)
+                }
+
+                "get_review" => {
+                    let a: AgentSubdirArgs = parse(args)?;
+                    res(crate::commands::get_review_impl(
+                        ctx,
+                        sup,
+                        &a.agent_id,
+                        a.subdir.as_deref(),
+                    )
+                    .await)
+                }
+
+                "get_reviews" => res(crate::commands::get_reviews_impl(ctx, sup).await),
+
+                "review_dismiss_thread" => {
+                    let a: ReviewDismissArgs = parse(args)?;
+                    res(crate::commands::review_dismiss_thread_impl(
+                        ctx,
+                        sup,
+                        &a.agent_id,
+                        a.subdir.as_deref(),
+                        &a.thread_id,
+                        a.reason.as_deref(),
+                    )
+                    .await)
                 }
 
                 "get_pr_live" => {
@@ -2053,7 +2117,9 @@ fn context_op(ctx: &EngineCtx, op: &str, args: Value) -> DispatchResult {
 /// and narrows its capability grant, so an unknown one from a future client
 /// would strand an agent in a surface this host does not have.
 fn remote_purpose(purpose: Option<String>) -> Option<String> {
-    purpose.filter(|p| p == crate::workspace::PURPOSE_ROADMAP_PM)
+    purpose.filter(|p| {
+        p == crate::workspace::PURPOSE_ROADMAP_PM || p == crate::workspace::PURPOSE_REVIEWER
+    })
 }
 
 /// The scheduler the `wf_*` run-control arms need, or [`WORKFLOWS_UNAVAILABLE`].
@@ -2566,6 +2632,30 @@ struct DelegateGitArgs {
 struct AutopilotStateArgs {
     #[serde(default)]
     agent_id: Option<String>,
+}
+
+/// `review_start`: a checkout, and the custom agent to review with (the
+/// configured reviewer when absent).
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReviewStartArgs {
+    agent_id: String,
+    #[serde(default)]
+    subdir: Option<String>,
+    #[serde(default)]
+    custom_agent_id: Option<String>,
+}
+
+/// `review_dismiss_thread`: a local thread of a checkout, and why.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReviewDismissArgs {
+    agent_id: String,
+    #[serde(default)]
+    subdir: Option<String>,
+    thread_id: String,
+    #[serde(default)]
+    reason: Option<String>,
 }
 
 /// `autopilot_set`: exactly one of the two ids (checked by the impl).

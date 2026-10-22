@@ -96,6 +96,9 @@ const STASH_KEYS = [
   "autopilotLog",
   "autopilotDisabledProjects",
   "autopilotPausedAgents",
+  // The local reviews each host runs, per checkout — a mirror like
+  // `autopilot`, re-read by `loadReviews` on entry.
+  "reviews",
   // Publishes waiting on an answer. They belong to the engine that is blocked
   // on one, and `loadPendingPublishApprovals` re-reads the entered
   // environment's queue rather than trusting what was parked.
@@ -166,6 +169,7 @@ const BLANK: Pick<AppState, StashKey> = {
   autopilotLog: {},
   autopilotDisabledProjects: null,
   autopilotPausedAgents: [],
+  reviews: {},
   pendingPublishApprovals: [],
   github: null,
   composerSeeds: {},
@@ -237,6 +241,10 @@ export const createEnvironmentSwitchSlice: SliceCreator<EnvironmentSwitchSlice> 
     // Its autopilot likewise: switches, open cycles and history are all its own.
     await get()
       .loadAutopilot()
+      .catch(() => {});
+    // …and the local reviews it is running, which it owns the same way.
+    await get()
+      .loadReviews()
       .catch(() => {});
     // …and whose GitHub login gates its push / PR / clone affordances:
     // `store.github` is the ACTIVE environment's answer, so it is this Mac's

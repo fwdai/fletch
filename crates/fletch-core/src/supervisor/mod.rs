@@ -25,8 +25,8 @@ mod turn_error;
 
 pub use checkpoints::{PinnedCheckout, PinnedCode, RepoCheckpoint, RepoRestore, RestoreReport};
 pub use disposition::ArchiveTrigger;
-pub(crate) use events::emit_verification;
 pub use events::emit_workspace_changed;
+pub(crate) use events::{emit_pr_threads, emit_verification};
 pub use fork::{ForkCode, ForkContext};
 pub use lifecycle::{SpawnHandoff, SpawnRequest};
 pub use live_turn::LiveTurnSnapshot;

@@ -530,7 +530,7 @@ fn begin_pairing_names_the_preset_and_refuses_an_unknown_one() {
 
 #[test]
 fn allowlist_matches_the_protocol_table() {
-    // The 148 rows of docs/remote-protocol.md's op table, spelled out here so a
+    // The 153 rows of docs/remote-protocol.md's op table, spelled out here so a
     // silent widening of the wire surface fails this test. `register_push` is
     // the one the session layer answers itself (it needs the connection's
     // device identity), so it lives in `SESSION_OPS`; the two together are what
@@ -583,6 +583,11 @@ fn allowlist_matches_the_protocol_table() {
         "autopilot_state",
         "autopilot_set",
         "autopilot_log",
+        "review_start",
+        "review_stop",
+        "get_review",
+        "get_reviews",
+        "review_dismiss_thread",
         "list_repo_branches",
         "repo_default_branch",
         "discover_supported_models",
@@ -975,6 +980,23 @@ fn autopilot_is_on_the_wire() {
     assert!(!dispatch::allows(&control, "autopilot_set"));
     assert!(dispatch::allows(&control, "autopilot_state"));
     assert!(dispatch::allows(&control, "autopilot_log"));
+}
+
+/// The local review loop is on the wire like autopilot: its event forwarded
+/// and advertised, its reads observable, its starts and dismissals the grant
+/// that steers an agent.
+#[test]
+fn the_review_loop_is_on_the_wire() {
+    assert!(super::events::FORWARDED_EVENTS.contains(&"review:changed"));
+    assert!(super::protocol_descriptor()
+        .events
+        .contains(&"review:changed"));
+    for op in ["get_review", "get_reviews"] {
+        assert_eq!(dispatch::scope_of(op), Some(Scope::Observe), "{op}");
+    }
+    for op in ["review_start", "review_stop", "review_dismiss_thread"] {
+        assert_eq!(dispatch::scope_of(op), Some(Scope::Agents), "{op}");
+    }
 }
 
 /// Per-stage spawn progress rides the wire too: a remote client watches the

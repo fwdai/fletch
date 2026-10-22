@@ -614,7 +614,10 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
   },
 
   fetchPrThreads: async (agentId, subdir) => {
-    if (!githubReady(get)) return;
+    // Not GitHub-gated like `fetchPrLive`: the host's read merges the local
+    // reviewer's threads with the PR's, and the local ones exist with no PR,
+    // no origin and no GitHub login. The host itself skips GitHub when it
+    // can't reach it, so an offline user still generates no API chatter.
     await fetchPrAux(set, agentId, "prComments", api.getPrThreads, subdir);
   },
 

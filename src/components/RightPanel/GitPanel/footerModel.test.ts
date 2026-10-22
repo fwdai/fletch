@@ -256,3 +256,77 @@ describe("buildFooter · menu", () => {
     expect(keys(f)).not.toContain("open-pr");
   });
 });
+
+describe("buildFooter · the local reviewer", () => {
+  const menu = (
+    over: Partial<NonNullable<FooterInput["reviewMenu"]>> = {},
+  ): NonNullable<FooterInput["reviewMenu"]> => ({
+    state: null,
+    reviewerName: "Reviewer",
+    refusal: null,
+    ...over,
+  });
+
+  it("offers a review on any checkout with work, and only when a client passes the menu", () => {
+    expect(group(footer({ git: git({ ahead: 1 }) }), "Review")).toBeUndefined();
+    expect(group(footer({ git: git(), reviewMenu: menu() }), "Review")).toBeUndefined();
+    const f = footer({ git: git({ ahead: 1 }), reviewMenu: menu() });
+    expect(group(f, "Review")?.items).toEqual([
+      { key: "review-start", label: "Review now with Reviewer", icon: "search" },
+    ]);
+  });
+
+  it("re-reviews once a verdict exists, stops a running one, and links the transcript", () => {
+    const state = {
+      agent_id: "fuji",
+      subdir: null,
+      phase: "clean" as const,
+      trigger: "manual" as const,
+      reviewer: {
+        custom_agent_id: "ca-1",
+        name: "Reviewer",
+        provider: "codex",
+        model: null,
+        agent_id: "fuji-reviewer",
+      },
+      round: 1,
+      open: 0,
+      resolved: 0,
+      since_ms: 0,
+      reviewed_signature: "sha",
+      error: null,
+    };
+    const clean = footer({ git: git({ ahead: 1 }), reviewMenu: menu({ state }) });
+    expect(group(clean, "Review")?.items.map((i) => [i.key, i.label])).toEqual([
+      ["review-start", "Re-review with Reviewer"],
+      ["review-open", "Open reviewer transcript"],
+    ]);
+    const running = footer({
+      git: git({ ahead: 1 }),
+      reviewMenu: menu({ state: { ...state, phase: "reviewing" } }),
+    });
+    expect(group(running, "Review")?.items[0]).toMatchObject({ key: "review-stop" });
+  });
+
+  it("is offered disabled, with the reason, when no reviewer can run", () => {
+    const f = footer({
+      git: git({ files: [file()] }),
+      reviewMenu: menu({ reviewerName: null, refusal: "Pick a reviewer in Settings › Review" }),
+    });
+    expect(group(f, "Review")?.items[0]).toMatchObject({
+      key: "review-start",
+      label: "Review now",
+      disabled: true,
+      reason: "Pick a reviewer in Settings › Review",
+    });
+  });
+
+  it("hands the reviewer's pre-PR findings to the agent as the primary", () => {
+    const f = footer({
+      git: git({ ahead: 1 }),
+      comments: { unresolved: [{ ...thread(false), source: "local" }] },
+      reviewMenu: menu(),
+    });
+    expect(f.primary.key).toBe("agent-resolve-comments");
+  });
+});

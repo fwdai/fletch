@@ -21,6 +21,7 @@ mod roadmap;
 // gated the same way.
 #[cfg(desktop)]
 mod remote;
+mod review;
 mod run;
 mod session;
 mod settings;
@@ -43,6 +44,7 @@ pub use limits::*;
 pub use provider_login::*;
 #[cfg(desktop)]
 pub use remote::*;
+pub use review::*;
 pub use roadmap::*;
 pub use run::*;
 pub use session::*;

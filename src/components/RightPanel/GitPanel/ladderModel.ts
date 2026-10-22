@@ -11,10 +11,10 @@
 //
 // Pure and store-free, like `readiness.ts`, so every state has a test.
 
-import type { GitState, MergeState, PrChecks, PrComments, PrState } from "@/api";
+import type { GitState, MergeState, PrChecks, PrComments, PrState, ReviewState } from "@/api";
 import { describeMergeGate, type MergeGate } from "@/mergeGate";
 import { type Blocker, detectBlockers, nextRung, type Rung } from "@/readiness";
-import { plural } from "@/util/format";
+import { formatAge, plural } from "@/util/format";
 
 export type RungKey = "changes" | "commits" | "pr" | "checks" | "review";
 
@@ -57,6 +57,17 @@ export interface LadderInput {
    *  reads its threads and the ladder has a next step; a lane only looked at
    *  has neither. Both default to true. */
   lane?: { tree: boolean; focused: boolean };
+  /** The local reviewer's state for the checkout, when the host reported one.
+   *  Absent or null: never reviewed (the row then reads from the threads and
+   *  the merge gate alone, as before the local reviewer existed). */
+  review?: ReviewState | null;
+  /** The host can run a local review. With no PR open the Review row is
+   *  shown only then — it is the way to ask for one — and only once the tree
+   *  has produced work to review. */
+  canReview?: boolean;
+  /** The clock, for the running timer and the age of a verdict. Passed in so
+   *  the model stays pure; absent, those read without a time. */
+  nowMs?: number;
 }
 
 const TITLE: Record<RungKey, string> = {
@@ -328,10 +339,15 @@ export function buildLadder(input: LadderInput): LadderRow[] {
     rows.push(closedPrRow(pr, base, is("pr"), lane.tree && has("unsubmitted")));
   }
 
-  // Checks and review only exist for an open proposal.
-  if (!gate) return rows;
+  // Checks exist for an open proposal only. Review does too — unless the local
+  // reviewer can run (or has run) on the tree before any proposal exists.
+  const review = input.review ?? null;
+  const localThreads = (comments?.unresolved ?? []).some((t) => t.source === "local");
+  const anyWork = git.files.length > 0 || git.ahead > 0 || git.unpushed > 0;
+  const preReview = lane.tree && (review != null || localThreads || (input.canReview && anyWork));
+  if (!gate && !preReview) return rows;
 
-  rows.push(checksRow(checks, mergeState === "unknown", is("checks")));
+  if (gate) rows.push(checksRow(checks, mergeState === "unknown", is("checks")));
 
   // ── Review ─────────────────────────────────────────────────────────────────
   if (!lane.focused) {
@@ -339,48 +355,68 @@ export function buildLadder(input: LadderInput): LadderRow[] {
     rows.push(idle("review", "read for the focused PR"));
     return rows;
   }
+  rows.push(reviewRow(input, gate, is("review")));
+  return rows;
+}
+
+/** `m:ss` for a timer anchored at `since`. */
+function elapsed(since: number, now: number): string {
+  const s = Math.max(0, Math.floor((now - since) / 1000));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+}
+
+/** The review row: GitHub's review threads and the local reviewer's findings
+ *  on one line, the reviewer's own phase (reading, failed, stale, clean) in
+ *  between. Most pressing first — a turn in flight, then threads waiting on
+ *  us, then what stops a re-review from being trusted, then the quiet states. */
+function reviewRow(input: LadderInput, gate: MergeGate | null, current: boolean): LadderRow {
+  const { comments } = input;
+  const review = input.review ?? null;
+  const name = review?.reviewer?.name ?? "reviewer";
   const threads = comments?.unresolved ?? [];
   const ours = threads.filter((t) => t.we_replied_last).length;
   const theirs = threads.length - ours;
-  if (theirs > 0) {
-    rows.push(
-      row("review", {
-        summary: `${plural(theirs, "thread")} waiting on you`,
-        mark: "attention",
-        tone: "att",
-        current: is("review"),
-      }),
-    );
-  } else if (ours > 0) {
-    rows.push(
-      row("review", {
-        summary: `${plural(ours, "thread")} awaiting their reply`,
-        mark: "attention",
-        tone: "info",
-        current: is("review"),
-      }),
-    );
-  } else if (gate.situation === "review-required") {
-    rows.push(
-      row("review", {
-        summary: "approval required",
-        mark: "attention",
-        tone: "att",
-        current: is("review"),
-      }),
-    );
-  } else if (comments == null) {
-    rows.push(idle("review", "unavailable"));
-  } else {
-    // Nothing waiting on anyone. It reads as done only once the gate is
-    // positively open; before that it is simply not in the way.
-    const settled = gate.situation === "ready" || gate.situation === "mergeable-soft";
-    rows.push(
-      settled
-        ? row("review", { summary: "no open threads", mark: "done", current: false })
-        : idle("review", "no open threads"),
-    );
-  }
+  const local = threads.some((t) => t.source === "local");
+  const att = (summary: string, tone: RungTone = "att"): LadderRow =>
+    row("review", { summary, mark: "attention", tone, current });
 
-  return rows;
+  if (review?.phase === "reviewing") {
+    const timer = input.nowMs != null ? ` · ${elapsed(review.since_ms, input.nowMs)}` : "";
+    return row("review", { summary: `Reviewing · ${name}${timer}`, mark: "running", current });
+  }
+  if (theirs > 0) {
+    // The local reviewer's findings count by round; GitHub's threads are
+    // simply waiting. One line either way, the round said when it applies.
+    const noun = local ? "finding" : "thread";
+    const round = local && review && review.round > 0 ? ` · round ${review.round}` : "";
+    return att(`${plural(theirs, noun)} waiting on you${round}`);
+  }
+  if (review?.phase === "failed") {
+    return att(`Review failed${review.error ? ` · ${review.error}` : ""}`, "danger");
+  }
+  if (review?.phase === "stale") return att("Stale · code changed since review", "info");
+  if (ours > 0) return att(`${plural(ours, "thread")} awaiting their reply`, "info");
+  if (gate?.situation === "review-required") return att("approval required");
+  if (review?.phase === "clean" || (review?.phase === "findings" && review.open === 0)) {
+    const age =
+      input.nowMs != null
+        ? formatAge(review.since_ms, input.nowMs) === "now"
+          ? "just now"
+          : `${formatAge(review.since_ms, input.nowMs)} ago`
+        : null;
+    const fixed = review.resolved > 0 ? ` · ${review.resolved} fixed` : "";
+    return row("review", {
+      summary: `Clean · ${name}${age ? `, ${age}` : ""}${fixed}`,
+      mark: "done",
+      current: false,
+    });
+  }
+  if (!gate) return idle("review", "not reviewed");
+  if (comments == null) return idle("review", "unavailable");
+  // Nothing waiting on anyone. It reads as done only once the gate is
+  // positively open; before that it is simply not in the way.
+  const settled = gate.situation === "ready" || gate.situation === "mergeable-soft";
+  return settled
+    ? row("review", { summary: "no open threads", mark: "done", current: false })
+    : idle("review", "no open threads");
 }

@@ -872,6 +872,9 @@ impl WorkspaceManager {
             sessions: sessions::session_ids_for_workspaces(&tx, &doomed)?,
         };
         tx.execute("DELETE FROM workspaces WHERE id = ?1", [id])?;
+        // The local reviewer's threads about this workspace's checkouts have
+        // no foreign key (an archived agent keeps them); a deleted one doesn't.
+        crate::review::store::delete_for_agent(&tx, id)?;
         tx.commit()?;
         cleanup.apply(&conn);
         Ok(())

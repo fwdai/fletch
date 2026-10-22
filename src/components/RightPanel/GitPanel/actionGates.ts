@@ -35,6 +35,8 @@ export const ACTION_GATES: Partial<Record<string, GateName>> = {
   "clear-config": "clearCheckoutConfig",
   "delete-branch": "deleteBranch",
   "focus-pr": "focusPr",
+  "review-start": "review",
+  "review-stop": "review",
 };
 
 /** Why `env` cannot run the panel action `key`, or null when it can — which is

@@ -1119,8 +1119,11 @@ impl Supervisor {
         // An advisory chat (the Roadmap PM) must never publish either: its
         // whole mandate is to read the codebase and propose tickets, so the
         // grant matches the mandate rather than relying on the brief to hold.
+        // The local reviewer (`workspace::PURPOSE_REVIEWER`) likewise: it
+        // reads a coder's checkout and reports findings, nothing more.
         let caps = match (record.purpose.as_deref(), record.owner_run_id.as_deref()) {
             (Some(crate::workspace::PURPOSE_ROADMAP_PM), _) => rpc::caps::AgentCaps::advisory(),
+            (Some(crate::workspace::PURPOSE_REVIEWER), _) => rpc::caps::AgentCaps::reviewer(),
             (_, Some(_)) => rpc::caps::AgentCaps::run_owned(),
             _ => rpc::caps::AgentCaps::interactive(),
         };
@@ -1128,28 +1131,40 @@ impl Supervisor {
             rpc::git::GitDispatcher::new(cwd.clone(), primary.repo_path.clone(), base_branch, caps)
                 .with_repos(repo_targets)
                 .with_close_issue(agent_id, close_issue)
-                .with_approval(ctx.sink.clone(), agent_id);
+                .with_approval(ctx.sink.clone(), agent_id)
+                .with_review(ctx.clone(), agent_id);
         // A run-owned step agent also gets the workflow comms ops (wf_report /
         // wf_ask / wf_notify, §10); a roadmap PM chat gets the roadmap ops
         // (roadmap_list / roadmap_propose), scoped to its own project. Both
         // wrap the git dispatcher, and everything else still falls through to
         // it. Plain agents keep the git dispatcher unchanged.
+        // A local reviewer gets `review_submit` (`rpc::review`), the one op
+        // its mandate needs.
         let roadmap_pm = record.purpose.as_deref() == Some(crate::workspace::PURPOSE_ROADMAP_PM);
-        let rpc_dispatcher: Arc<dyn rpc::RpcDispatcher> = match (&record.owner_run_id, roadmap_pm) {
-            (Some(run_id), _) => Arc::new(crate::workflow::comms::WorkflowCommsDispatcher::new(
-                ctx.clone(),
-                run_id.clone(),
-                agent_id.to_string(),
-                git_dispatcher,
-            )),
-            (None, true) => Arc::new(rpc::roadmap::RoadmapDispatcher::new(
-                ctx.clone(),
-                ctx.db.clone(),
-                record.project_id.clone(),
-                git_dispatcher,
-            )),
-            (None, false) => Arc::new(git_dispatcher),
-        };
+        let reviewer = record.purpose.as_deref() == Some(crate::workspace::PURPOSE_REVIEWER);
+        let rpc_dispatcher: Arc<dyn rpc::RpcDispatcher> =
+            match (&record.owner_run_id, roadmap_pm, reviewer) {
+                (Some(run_id), _, _) => {
+                    Arc::new(crate::workflow::comms::WorkflowCommsDispatcher::new(
+                        ctx.clone(),
+                        run_id.clone(),
+                        agent_id.to_string(),
+                        git_dispatcher,
+                    ))
+                }
+                (None, true, _) => Arc::new(rpc::roadmap::RoadmapDispatcher::new(
+                    ctx.clone(),
+                    ctx.db.clone(),
+                    record.project_id.clone(),
+                    git_dispatcher,
+                )),
+                (None, false, true) => Arc::new(rpc::review::ReviewDispatcher::new(
+                    ctx.clone(),
+                    agent_id,
+                    git_dispatcher,
+                )),
+                (None, false, false) => Arc::new(git_dispatcher),
+            };
         // Every agent can drive its own Run-panel process and raise a
         // notification (`rpc::run`): the ops publish nothing, so there is no
         // grant to check, and a step agent verifying its change by running
@@ -1421,6 +1436,7 @@ impl Supervisor {
         let blocks = crate::agent_profile::Blocks {
             codegraph: codegraph_available,
             roadmap_pm,
+            reviewer: record.purpose.as_deref() == Some(crate::workspace::PURPOSE_REVIEWER),
             not_doing: not_doing.as_deref(),
             context: context_overview.as_deref(),
         };

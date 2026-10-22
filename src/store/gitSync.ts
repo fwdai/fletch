@@ -107,9 +107,6 @@ function useFocusedPrReads(githubConnected: boolean) {
   // other is in flight, and that must not issue the other a second time.
   const inFlight = useRef({ live: new Set<string>(), threads: new Set<string>() });
   useEffect(() => {
-    // The reads gate on GitHub themselves; waiting here as well keeps a cold
-    // checkout cold until they can run, so connecting later still reads it.
-    if (!githubConnected) return;
     const owed = focusedPrReads(signatures.map(parsePrSignature), seen.current);
     const issue = (
       kind: "live" | "threads",
@@ -123,7 +120,10 @@ function useFocusedPrReads(githubConnected: boolean) {
         void read(agentId, subdir).finally(() => pending.delete(key));
       }
     };
-    issue("live", fetchPrLive);
+    // The live read gates on GitHub itself; waiting here as well keeps a cold
+    // checkout cold until it can run, so connecting later still reads it.
+    if (githubConnected) issue("live", fetchPrLive);
+    // Threads are read regardless: the local reviewer's exist without GitHub.
     issue("threads", fetchPrThreads);
   }, [signatures, githubConnected, fetchPrLive, fetchPrThreads]);
 }
