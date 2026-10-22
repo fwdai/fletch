@@ -161,8 +161,9 @@ impl Guarantee {
             (Self::ConfinedReads, SandboxExec) => Coverage::Unenforced(
                 "the profile starts from (allow default) and confines writes only — the agent \
                  runs as you and can read anything you can, except the carve-outs it denies by \
-                 name: Fletch's app data, the host's provider logins, ~/.ssh, ~/.config/gh and \
-                 the Keychain",
+                 name: Fletch's app data, the host's provider logins, ~/.ssh, ~/.config/gh, the \
+                 Keychain, and the folders macOS guards with a privacy prompt (Downloads, \
+                 Desktop, Documents, iCloud Drive, other apps' containers)",
             ),
             // Both container runtimes mount only the paths `container::run_args`
             // lists, so nothing else on the disk is reachable to read.

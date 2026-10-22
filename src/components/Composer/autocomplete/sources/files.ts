@@ -15,7 +15,11 @@ interface Args {
   mentionSource?: () => Promise<string[]>;
   /** Lists an arbitrary directory so "@~/…" completes real filesystem paths. */
   listDir?: (path: string) => Promise<DirListing>;
+  /** Attach checkout-relative paths: the agent reads those in place. */
   addPaths: (paths: string[]) => void;
+  /** Attach absolute paths picked off the filesystem listing, which may need
+   *  staging first (see `stageEnvironmentPath`). Falls back to `addPaths`. */
+  attachFsPaths?: (paths: string[]) => void;
 }
 
 type Action = { kind: "attach"; path: string } | { kind: "navigate"; query: string };
@@ -23,7 +27,13 @@ type Action = { kind: "attach"; path: string } | { kind: "navigate"; query: stri
 /** The "@" source: searches the agent's checkout files, or — when the query
  *  looks like a path (`~/…`, `/…`) — navigates the real filesystem. Picking a
  *  file attaches it; picking a directory rewrites the token to drill in. */
-export function useFileSource({ query, mentionSource, listDir, addPaths }: Args): AcSource {
+export function useFileSource({
+  query,
+  mentionSource,
+  listDir,
+  addPaths,
+  attachFsPaths,
+}: Args): AcSource {
   const [files, setFiles] = useState<string[]>([]);
   // Cached listing for the directory being typed; `reqDir` guards against a
   // stale in-flight result for a different directory.
@@ -117,7 +127,7 @@ export function useFileSource({ query, mentionSource, listDir, addPaths }: Args)
     const a = actions[i];
     if (!a) return null;
     if (a.kind === "attach") {
-      addPaths([a.path]);
+      (fs ? (attachFsPaths ?? addPaths) : addPaths)([a.path]);
       return { replace: "" };
     }
     // Drill into the directory: keep the "@" and the new path; caret lands at

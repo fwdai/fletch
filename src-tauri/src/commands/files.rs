@@ -213,8 +213,20 @@ pub fn save_pasted_attachment(request: tauri::ipc::Request<'_>) -> Result<String
         .unwrap_or_else(|| "pasted".to_string());
     // Stage under the app-data dir; the file is moved into the target agent's
     // workspace at send time (`attachments::adopt`), since a confined agent
-    // can't read the app-data dir. Dragged/browsed files skip this path
-    // entirely — they keep their original, already-readable location.
+    // can't read the app-data dir.
     let path = crate::attachments::save_pasted(&name, bytes)?;
+    Ok(path.to_string_lossy().into_owned())
+}
+
+/// Copy a file the user dropped or browsed to into the attachments staging
+/// area and return the staged path, so it reaches the agent's workspace at
+/// send time like a pasted one. The agent sandbox denies the folders macOS
+/// guards with a privacy prompt (Downloads, Desktop, Documents, iCloud Drive),
+/// so a file attached from one has to be copied somewhere the agent can read.
+/// The app reads it here, at drop time: if macOS asks about the folder, it asks
+/// while the user is attaching a file from it.
+#[tauri::command]
+pub fn stage_attachment_path(path: String) -> Result<String> {
+    let path = crate::attachments::stage_copy(&expand_tilde(&path))?;
     Ok(path.to_string_lossy().into_owned())
 }

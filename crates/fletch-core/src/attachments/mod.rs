@@ -1,10 +1,12 @@
-//! Pasted-attachment storage: a staging area under the app-data dir the
-//! composer writes to, and adoption into an agent's workspace at send time.
+//! Attachment storage: a staging area under the app-data dir the composer
+//! writes to, and adoption into an agent's workspace at send time.
 //!
-//! Dragged or browsed attachments already have an on-disk path and stay put —
-//! reads under `$HOME` are open to confined agents. Pasted/clipboard files have
-//! no path of their own, so [`save_pasted`] writes their bytes out and hands
-//! the composer a path to stage. That path lands under the app-data dir
+//! Pasted/clipboard files have no path of their own, so [`save_pasted`] writes
+//! their bytes out and hands the composer a path to stage. Dragged or browsed
+//! files have one, but it may be inside a folder the sandbox now denies agents
+//! (Downloads, Desktop, Documents, iCloud Drive — the ones macOS guards with a
+//! privacy prompt), so [`stage_copy`] copies them into the same staging area
+//! at drop time. Either way the path lands under the app-data dir
 //! (`~/Library/Application Support/<BUNDLE_ID>`) — which the sandbox policy
 //! denies confined agents from reading, the same guard that keeps `fletch.db`
 //! opaque (see `sandbox::seatbelt::deny_app_data_dir`). So an agent handed a
@@ -75,6 +77,41 @@ pub fn save_pasted(name: &str, bytes: &[u8]) -> Result<PathBuf> {
     let path = dir.join(name);
     std::fs::write(&path, bytes)?;
     Ok(path)
+}
+
+/// Copy a file the user dropped or browsed to into a fresh staging dir and
+/// return the staged path — the same shape [`save_pasted`] writes, so
+/// [`adopt`] carries it into the workspace at send time.
+///
+/// A dropped file used to stay at its own path, readable because the sandbox
+/// left every read open. It no longer does for the folders macOS guards with a
+/// privacy prompt — Downloads above all, where screenshots land — so the copy
+/// is what puts the file somewhere the agent can read. Taken by the app at drop
+/// time, which is also the one moment a privacy prompt for that folder makes
+/// sense to the user. Desktop command only: a paired device stages over the
+/// chunked upload and never names a path on this Mac.
+pub fn stage_copy(path: &Path) -> Result<PathBuf> {
+    stage_copy_into(&staging_root(), path)
+}
+
+/// Core of [`stage_copy`], with the staging root passed explicitly so it's
+/// testable without the process-global app-data root.
+fn stage_copy_into(staging: &Path, path: &Path) -> Result<PathBuf> {
+    if !path.is_file() {
+        return Err(Error::Other(format!(
+            "{} is not a file that can be attached",
+            path.display()
+        )));
+    }
+    let name = sanitize_name(
+        &path.file_name().unwrap_or_default().to_string_lossy(),
+        "file",
+    );
+    let dir = staging.join(uuid::Uuid::new_v4().to_string());
+    std::fs::create_dir_all(&dir)?;
+    let dest = dir.join(name);
+    std::fs::copy(path, &dest)?;
+    Ok(dest)
 }
 
 /// Move any staged attachments in `paths` into `agent_id`'s workspace, returning
@@ -197,6 +234,45 @@ mod tests {
         assert_eq!(moved.file_name().unwrap(), "shot.png");
         assert_eq!(std::fs::read(moved).unwrap(), b"pixels");
         assert!(!staged.exists(), "the staged copy is gone");
+    }
+
+    /// A dropped file is copied into staging at the shape `adopt` carries into
+    /// the workspace, under its own name; the original stays where it was.
+    #[test]
+    fn stages_a_copy_of_a_dropped_file() {
+        let staging = tempfile::tempdir().unwrap();
+        let downloads = tempfile::tempdir().unwrap();
+        let dropped = downloads.path().join("shot.png");
+        std::fs::write(&dropped, b"pixels").unwrap();
+
+        let staged = stage_copy_into(staging.path(), &dropped).unwrap();
+
+        assert_eq!(staged.parent().and_then(Path::parent), Some(staging.path()));
+        assert_eq!(staged.file_name().unwrap(), "shot.png");
+        assert_eq!(std::fs::read(&staged).unwrap(), b"pixels");
+        assert!(dropped.exists(), "the original is left in place");
+
+        let workspace = tempfile::tempdir().unwrap();
+        let out = adopt_into(
+            staging.path(),
+            workspace.path(),
+            &[staged.to_string_lossy().into_owned()],
+        );
+        assert!(Path::new(&out[0]).starts_with(workspace.path()));
+    }
+
+    /// A directory, or a path that is not there, is refused rather than staged
+    /// as an empty file.
+    #[test]
+    fn refuses_to_stage_what_is_not_a_file() {
+        let staging = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        assert!(stage_copy_into(staging.path(), dir.path()).is_err());
+        assert!(stage_copy_into(staging.path(), &dir.path().join("missing")).is_err());
+        assert!(
+            std::fs::read_dir(staging.path()).unwrap().next().is_none(),
+            "nothing is left in staging"
+        );
     }
 
     /// A dragged/browsed path (not under the staging root) is left exactly as-is.

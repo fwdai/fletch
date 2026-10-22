@@ -1560,6 +1560,7 @@ pub fn run() {
             commands::create_checkout_dir,
             commands::copy_checkout_file,
             commands::save_pasted_attachment,
+            commands::stage_attachment_path,
             commands::probe_provider_versions,
             commands::check_cli,
             commands::git_dist_install,
