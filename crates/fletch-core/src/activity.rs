@@ -39,10 +39,33 @@ pub trait Activity: Send {
     /// the output went quiet (native), and nothing has opened a turn since.
     fn turn_ended(&self) -> bool;
 
+    /// The provider's own report that the current turn failed, when it made
+    /// one: codex's `turn.failed`, claude's `is_error` result, opencode's
+    /// `error` event, pi's error stop. These turns end in band and the process
+    /// may even exit cleanly, so without this the turn would read as a
+    /// success. The text is the provider's message, kept on the host — the
+    /// supervisor classifies it, never forwards it. Default: no such report
+    /// (native PTY output has no structured failure).
+    fn turn_failure(&self) -> Option<&str> {
+        None
+    }
+
     /// Called when a new user turn is submitted. Resets the detector
     /// so any prior explicit-end flag or stale silence doesn't
     /// immediately mark the new turn as ended.
     fn reset_for_new_turn(&mut self);
+}
+
+/// The message of an event that reports a failed turn, or `None` for any
+/// other event. One per provider, like `is_turn_end`.
+type FailureOf = fn(&Value) -> Option<String>;
+
+fn str_at<'a>(event: &'a Value, pointer: &str) -> Option<&'a str> {
+    event.pointer(pointer).and_then(Value::as_str)
+}
+
+fn event_type(event: &Value) -> Option<&str> {
+    event.get("type").and_then(Value::as_str)
 }
 
 /// Custom view: agents that stream structured events and signal end-of-turn
@@ -55,6 +78,10 @@ pub struct ManagedActivity {
     ended: bool,
     /// Returns true for the event that marks the end of a turn.
     is_turn_end: fn(&Value) -> bool,
+    /// Returns the failure message of an event that reports one.
+    failure_of: FailureOf,
+    /// The failure the provider reported for the current turn, if any.
+    failure: Option<String>,
 }
 
 /// Sub-agent (sidechain) events carry the spawning Task/Agent tool's id in a
@@ -80,18 +107,37 @@ fn is_control_plane(event: &Value) -> bool {
 }
 
 impl ManagedActivity {
-    fn new(is_turn_end: fn(&Value) -> bool) -> Self {
+    fn new(is_turn_end: fn(&Value) -> bool, failure_of: FailureOf) -> Self {
         Self {
             ended: false,
             is_turn_end,
+            failure_of,
+            failure: None,
         }
     }
 
     /// Claude (`--print --output-format stream-json`) ends a turn with a
-    /// `result` event. Cursor emits Claude-shaped stream-json, so it shares
-    /// this detector.
+    /// `result` event; one with `is_error: true` (subtype
+    /// `error_during_execution`, `error_max_turns`, …) is a failed turn whose
+    /// `result` text says why. Cursor emits Claude-shaped stream-json, so it
+    /// shares this detector.
     pub fn claude() -> Self {
-        Self::new(|event| event.get("type").and_then(|v| v.as_str()) == Some("result"))
+        Self::new(
+            |event| event_type(event) == Some("result"),
+            |event| {
+                if event_type(event) != Some("result")
+                    || event.get("is_error").and_then(Value::as_bool) != Some(true)
+                {
+                    return None;
+                }
+                Some(
+                    str_at(event, "/result")
+                        .or_else(|| str_at(event, "/subtype"))
+                        .unwrap_or("result reported an error")
+                        .to_string(),
+                )
+            },
+        )
     }
 
     /// Codex (`codex exec --json`) ends a turn with `turn.completed`, or with
@@ -99,36 +145,81 @@ impl ManagedActivity {
     /// after which the process exits non-zero. Both are the turn's explicit
     /// end; the supervisor uses that to tell a failed turn from a crash. (The
     /// per-turn process exit is handled separately and does not feed this
-    /// detector.)
+    /// detector.) The failure's message rides `turn.failed` (and the `error`
+    /// event that precedes it): `error.message`, or a bare `message`.
     pub fn codex() -> Self {
-        Self::new(|event| {
-            matches!(
-                event.get("type").and_then(|v| v.as_str()),
-                Some("turn.completed") | Some("turn.failed")
-            )
-        })
+        Self::new(
+            |event| {
+                matches!(
+                    event_type(event),
+                    Some("turn.completed") | Some("turn.failed")
+                )
+            },
+            |event| {
+                if !matches!(event_type(event), Some("turn.failed") | Some("error")) {
+                    return None;
+                }
+                Some(
+                    str_at(event, "/error/message")
+                        .or_else(|| str_at(event, "/message"))
+                        .unwrap_or("turn failed")
+                        .to_string(),
+                )
+            },
+        )
     }
 
     /// OpenCode (`opencode run --format json`) emits one or more `step_finish`
     /// events per turn (one per reasoning/tool step); only the final one
     /// carries `part.reason == "stop"`. Intermediate steps use `tool-calls`
-    /// and must not be treated as turn-end.
+    /// and must not be treated as turn-end. A top-level `error` event
+    /// (`error.name` + `error.data.message`, e.g. `UnknownError`) is the turn
+    /// failing; the process then exits 1 with nothing on stderr.
     pub fn opencode() -> Self {
-        Self::new(|event| {
-            event.get("type").and_then(|v| v.as_str()) == Some("step_finish")
-                && event
-                    .get("part")
-                    .and_then(|p| p.get("reason"))
-                    .and_then(|r| r.as_str())
-                    == Some("stop")
-        })
+        Self::new(
+            |event| {
+                event_type(event) == Some("step_finish")
+                    && str_at(event, "/part/reason") == Some("stop")
+            },
+            |event| {
+                if event_type(event) != Some("error") {
+                    return None;
+                }
+                let name = str_at(event, "/error/name");
+                let message =
+                    str_at(event, "/error/data/message").or_else(|| str_at(event, "/message"));
+                Some(match (name, message) {
+                    (Some(n), Some(m)) => format!("{n}: {m}"),
+                    (Some(n), None) => n.to_string(),
+                    (None, Some(m)) => m.to_string(),
+                    (None, None) => "OpenCode reported an error".to_string(),
+                })
+            },
+        )
     }
 
     /// Pi (`pi -p --mode json`) emits a `turn_end` per assistant step (so it
     /// fires mid-turn after a tool call); the whole turn ends with a single
-    /// `agent_end`, which is the signal we key on.
+    /// `agent_end`, which is the signal we key on. A failed model call is a
+    /// `message_end` whose assistant message stopped with reason `error`
+    /// (`errorMessage` says why); pi then still emits `agent_end` and exits 0.
     pub fn pi() -> Self {
-        Self::new(|event| event.get("type").and_then(|v| v.as_str()) == Some("agent_end"))
+        Self::new(
+            |event| event_type(event) == Some("agent_end"),
+            |event| {
+                if event_type(event) != Some("message_end")
+                    || str_at(event, "/message/role") != Some("assistant")
+                    || str_at(event, "/message/stopReason") != Some("error")
+                {
+                    return None;
+                }
+                Some(
+                    str_at(event, "/message/errorMessage")
+                        .unwrap_or("assistant message stopped with an error")
+                        .to_string(),
+                )
+            },
+        )
     }
 }
 
@@ -137,16 +228,27 @@ impl Activity for ManagedActivity {
         if is_sidechain(event) {
             return false;
         }
+        let failure = (self.failure_of)(event);
         if (self.is_turn_end)(event) {
             self.ended = true;
+            if failure.is_some() {
+                self.failure = failure;
+            }
             return false;
         }
         if is_control_plane(event) {
             return false;
         }
         // Main-line output. A turn is open — the one Fletch started, or one the
-        // provider began on its own after the last terminal event.
+        // provider began on its own after the last terminal event; a turn the
+        // provider opened is a new one, so the last turn's failure is not its.
+        if self.ended {
+            self.failure = None;
+        }
         self.ended = false;
+        if failure.is_some() {
+            self.failure = failure;
+        }
         true
     }
 
@@ -157,8 +259,13 @@ impl Activity for ManagedActivity {
         self.ended
     }
 
+    fn turn_failure(&self) -> Option<&str> {
+        self.failure.as_deref()
+    }
+
     fn reset_for_new_turn(&mut self) {
         self.ended = false;
+        self.failure = None;
     }
 }
 
@@ -212,10 +319,79 @@ mod tests {
     #[test]
     fn managed_resets_after_new_turn() {
         let mut a = ManagedActivity::claude();
-        a.observe_event(&serde_json::json!({"type": "result"}));
+        a.observe_event(&serde_json::json!({"type": "result", "is_error": true, "result": "boom"}));
         assert!(a.turn_ended());
+        assert_eq!(a.turn_failure(), Some("boom"));
         a.reset_for_new_turn();
         assert!(!a.turn_ended());
+        assert_eq!(a.turn_failure(), None);
+    }
+
+    /// Each provider's in-band failure is read off its own event, with its
+    /// message; a clean turn end reports none.
+    #[test]
+    fn each_provider_reports_its_in_band_failure() {
+        use serde_json::json;
+
+        let mut claude = ManagedActivity::claude();
+        claude.observe_event(&json!({"type": "assistant"}));
+        claude.observe_event(&json!({"type": "result", "subtype": "success", "is_error": false}));
+        assert!(claude.turn_ended());
+        assert_eq!(claude.turn_failure(), None);
+        claude.reset_for_new_turn();
+        claude.observe_event(&json!({"type": "result", "subtype": "error_max_turns",
+                                     "is_error": true, "result": "Reached max turns (3)"}));
+        assert_eq!(claude.turn_failure(), Some("Reached max turns (3)"));
+
+        // codex: `error` then `turn.failed` with the same message, then exit 1.
+        let mut codex = ManagedActivity::codex();
+        codex.observe_event(&json!({"type": "thread.started"}));
+        codex.observe_event(&json!({"type": "error", "message": "usage limit reached"}));
+        assert!(!codex.turn_ended());
+        codex.observe_event(&json!({"type": "turn.failed",
+                                    "error": {"message": "usage limit reached"}}));
+        assert!(codex.turn_ended());
+        assert_eq!(codex.turn_failure(), Some("usage limit reached"));
+
+        // opencode 1.18: an `error` event, no step_finish, then exit 1.
+        let mut opencode = ManagedActivity::opencode();
+        opencode.observe_event(&json!({"type": "error", "sessionID": "ses_1",
+            "error": {"name": "UnknownError",
+                      "data": {"message": "Unexpected server error. Check server logs for details."}}}));
+        assert!(!opencode.turn_ended());
+        assert_eq!(
+            opencode.turn_failure(),
+            Some("UnknownError: Unexpected server error. Check server logs for details.")
+        );
+
+        // pi: the assistant message stops with `error`, then `agent_end`, exit 0.
+        let mut pi = ManagedActivity::pi();
+        pi.observe_event(
+            &json!({"type": "message_end", "message": {"role": "assistant",
+            "content": [], "stopReason": "error", "errorMessage": "429 Rate limit exceeded"}}),
+        );
+        pi.observe_event(&json!({"type": "agent_end"}));
+        assert!(pi.turn_ended());
+        assert_eq!(pi.turn_failure(), Some("429 Rate limit exceeded"));
+        // A tool result that errored is the model's business, not a failed turn.
+        pi.reset_for_new_turn();
+        pi.observe_event(
+            &json!({"type": "message_end", "message": {"role": "toolResult",
+            "isError": true, "content": [{"type": "text", "text": "exit 1"}]}}),
+        );
+        pi.observe_event(&json!({"type": "agent_end"}));
+        assert_eq!(pi.turn_failure(), None);
+    }
+
+    /// A turn the provider opens on its own after a failed one starts clean.
+    #[test]
+    fn a_provider_started_turn_does_not_inherit_the_last_failure() {
+        let mut a = ManagedActivity::claude();
+        a.observe_event(&serde_json::json!({"type": "result", "is_error": true, "result": "boom"}));
+        assert_eq!(a.turn_failure(), Some("boom"));
+        a.observe_event(&serde_json::json!({"type": "assistant"}));
+        assert!(!a.turn_ended());
+        assert_eq!(a.turn_failure(), None);
     }
 
     #[test]

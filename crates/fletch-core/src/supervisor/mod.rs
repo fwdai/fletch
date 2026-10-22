@@ -21,6 +21,7 @@ pub(crate) mod run;
 mod session_switch;
 mod session_sync;
 mod shell;
+mod turn_error;
 
 pub use checkpoints::{PinnedCheckout, PinnedCode, RepoCheckpoint, RepoRestore, RestoreReport};
 pub use disposition::ArchiveTrigger;
@@ -488,9 +489,24 @@ impl Supervisor {
         // a managed process exit — reaches this point first.
         if matches!(status, AgentStatus::Idle | AgentStatus::Error) {
             let stop_pending = self.interrupted.lock().contains(agent_id);
-            let outcome = TurnOutcome::closing(&status, stop_pending);
+            // A turn the provider itself reported as failed (codex
+            // `turn.failed`, claude's error `result`, …) lands on Idle — the
+            // CLI said why and is resumable — but it did not complete; its
+            // message is what the error kind is read from when there is no
+            // crash message.
+            let in_band = self
+                .activities
+                .lock()
+                .get(agent_id)
+                .and_then(|a| a.turn_failure().map(str::to_string));
+            let outcome = TurnOutcome::closing(&status, stop_pending, in_band.is_some());
             match self.workspace.mark_user_turn_ended(agent_id, outcome) {
-                Ok(Some(turn)) => self.track_turn_completed(agent_id, &status, turn),
+                Ok(Some(turn)) => self.track_turn_completed(
+                    agent_id,
+                    outcome,
+                    turn,
+                    last_error.clone().or(in_band),
+                ),
                 Ok(None) => {}
                 Err(e) => tracing::warn!(error = %e, agent_id, "stamp user turn end failed"),
             }
@@ -507,24 +523,49 @@ impl Supervisor {
 
     /// Report a completed turn to product telemetry: usage-weighted provider
     /// mix (unlike `agent_spawned`, which only counts starts) plus turn shape
-    /// (duration, size, whether it errored). All properties are categorical or
-    /// numeric aggregates — no prompt content. No-op unless consent is on.
-    fn track_turn_completed(&self, agent_id: &str, status: &AgentStatus, turn: ClosedTurn) {
+    /// (duration, size, how it ended) and, for a failure, what kind it was
+    /// (`turn_error`). All properties are categorical or numeric aggregates —
+    /// no prompt content, never the error text. No-op unless consent is on.
+    ///
+    /// Off the terminal transition's path: the status broadcast and the queue
+    /// drain that follow must not wait on the provider version, whose probe is
+    /// memoized but, cold, runs one bounded `--version` subprocess. That work
+    /// moves to a blocking task, and is skipped outright when the event would
+    /// only be dropped.
+    fn track_turn_completed(
+        &self,
+        agent_id: &str,
+        outcome: TurnOutcome,
+        turn: ClosedTurn,
+        error: Option<String>,
+    ) {
+        if !crate::telemetry::is_enabled() {
+            return;
+        }
         let (provider, model) = self
             .workspace
             .agent(agent_id)
             .map(|r| (r.provider, r.model))
             .unwrap_or_else(|_| ("unknown".into(), None));
-        crate::telemetry::track(
-            "turn_completed",
-            serde_json::json!({
-                "provider": provider,
-                "model": model,
-                "duration_ms": turn.duration_ms,
-                "record_count": turn.record_count,
-                "errored": matches!(status, AgentStatus::Error),
-            }),
-        );
+        crate::host::spawn(async move {
+            let probed = provider.clone();
+            let version =
+                tokio::task::spawn_blocking(move || crate::agent::cached_provider_version(&probed))
+                    .await
+                    .ok()
+                    .flatten();
+            crate::telemetry::track(
+                "turn_completed",
+                turn_error::turn_completed_props(
+                    &provider,
+                    version.as_deref(),
+                    model.as_deref(),
+                    outcome,
+                    &turn,
+                    error.as_deref(),
+                ),
+            );
+        });
     }
 
     /// The live (in-memory) runtime status, if the supervisor is tracking

@@ -2713,14 +2713,36 @@ fn each_way_a_turn_ends_is_recorded_on_its_row() {
 #[test]
 fn the_closing_status_decides_the_outcome_unless_the_user_stopped() {
     use TurnOutcome::*;
-    assert_eq!(TurnOutcome::closing(&AgentStatus::Idle, false), Completed);
-    assert_eq!(TurnOutcome::closing(&AgentStatus::Error, false), Failed);
     assert_eq!(
-        TurnOutcome::closing(&AgentStatus::Stopped, false),
+        TurnOutcome::closing(&AgentStatus::Idle, false, false),
+        Completed
+    );
+    assert_eq!(
+        TurnOutcome::closing(&AgentStatus::Error, false, false),
+        Failed
+    );
+    assert_eq!(
+        TurnOutcome::closing(&AgentStatus::Stopped, false, false),
         Interrupted
     );
-    assert_eq!(TurnOutcome::closing(&AgentStatus::Idle, true), Interrupted);
-    assert_eq!(TurnOutcome::closing(&AgentStatus::Error, true), Interrupted);
+    assert_eq!(
+        TurnOutcome::closing(&AgentStatus::Idle, true, false),
+        Interrupted
+    );
+    assert_eq!(
+        TurnOutcome::closing(&AgentStatus::Error, true, false),
+        Interrupted
+    );
+    // The provider's own failure report fails a turn that lands on Idle (codex
+    // `turn.failed`, claude's error `result`) — unless the user stopped it.
+    assert_eq!(
+        TurnOutcome::closing(&AgentStatus::Idle, false, true),
+        Failed
+    );
+    assert_eq!(
+        TurnOutcome::closing(&AgentStatus::Idle, true, true),
+        Interrupted
+    );
 }
 
 /// Only a message that never ran is marked abandoned: a turn that started

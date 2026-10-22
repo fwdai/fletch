@@ -2132,13 +2132,16 @@ fn spawn_per_turn_agent(
         // usage limit / auth / API error, then exits 1): the error is in the
         // transcript, and the agent is resumable like claude after a failed
         // `result`. Only a non-interrupted failure with no turn-end event —
-        // the CLI died before saying anything — is a real crash.
-        let turn_ended_in_band = sup_for_exit
+        // the CLI died before saying anything — is a real crash. What it did
+        // say is read here, before the crash path drops the activity: opencode
+        // reports its failure as a non-terminal `error` event and then exits 1
+        // with an empty stderr, so the exit status alone would lose the reason.
+        let (turn_ended_in_band, reported) = sup_for_exit
             .activities
             .lock()
             .get(&id_for_exit)
-            .map(|a| a.turn_ended())
-            .unwrap_or(false);
+            .map(|a| (a.turn_ended(), a.turn_failure().map(str::to_string)))
+            .unwrap_or((false, None));
         if exit.success || exit.interrupted || turn_ended_in_band {
             transition_active(
                 &sup_for_exit,
@@ -2159,7 +2162,10 @@ fn spawn_per_turn_agent(
                 &ctx_for_exit,
                 &id_for_exit,
                 AgentStatus::Error,
-                Some(format!("Agent process exited: {}", exit.message)),
+                Some(format!(
+                    "Agent process exited: {}",
+                    super::turn_error::exit_message_with_report(&exit.message, reported.as_deref())
+                )),
             );
         }
     };

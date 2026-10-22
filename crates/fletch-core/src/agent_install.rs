@@ -7,8 +7,9 @@
 //! (`src/data/providerDetail.ts`) — keep the two in sync.
 //!
 //! Installers drop binaries into the usual per-user dirs (`~/.local/bin`,
-//! `~/.codex/bin`, …), all of which `bin_resolve` already scans, so a
-//! post-install re-probe picks the new agent up with no extra wiring.
+//! `~/.opencode/bin`, …), all of which `bin_resolve` scans, and append that
+//! dir to the shell rc, which a finished install has `bin_resolve` re-read —
+//! so the post-install re-probe picks the new agent up with no extra wiring.
 //!
 //! Cancel and timeout both have to reach more than the process we spawned. On
 //! Unix `curl … | bash` runs the download and the shell that executes it as
@@ -188,6 +189,11 @@ async fn install_with_command(
     // truth, and dropping `_guard` right after it is safe to act on.
     match run_installer(&id, cmd, emit.clone(), &entry.cancel).await {
         Outcome::Finished(Ok(())) => {
+            // The installer appended its bin dir to the shell rc; re-read the
+            // login shell's PATH so the re-probe the UI runs the moment this
+            // returns can find the binary (`bin_resolve` caches that PATH for
+            // the app's life otherwise). Off the runtime: it runs a shell.
+            let _ = tokio::task::spawn_blocking(crate::bin_resolve::reload_login_shell_env).await;
             emit(json!({ "id": id, "phase": "done" }));
             tracing::info!(agent = %id, "agent installer finished");
             Ok(())
