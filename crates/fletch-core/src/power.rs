@@ -469,7 +469,10 @@ mod macos {
             )
         };
         if rc != NOTIFY_STATUS_OK {
-            tracing::warn!(rc, "failed to watch the power source; keep-awake follows the launch state");
+            tracing::warn!(
+                rc,
+                "failed to watch the power source; keep-awake follows the launch state"
+            );
             return;
         }
         let mut file = unsafe { File::from_raw_fd(fd) };
@@ -568,13 +571,19 @@ mod tests {
         assert!(!m.inner.lock().wants_assertion(), "on power, remote off");
 
         m.set_remote_enabled(true);
-        assert!(m.inner.lock().wants_assertion(), "on power, remote on, idle");
+        assert!(
+            m.inner.lock().wants_assertion(),
+            "on power, remote on, idle"
+        );
 
         m.set_keep_awake_on_power(false);
         assert!(!m.inner.lock().wants_assertion(), "setting off");
 
         m.set_agent_running("a1", true);
-        assert!(m.inner.lock().wants_assertion(), "live work holds it regardless");
+        assert!(
+            m.inner.lock().wants_assertion(),
+            "live work holds it regardless"
+        );
     }
 
     // Decoupling guard: the tray and the sleep assertion are independent. When
