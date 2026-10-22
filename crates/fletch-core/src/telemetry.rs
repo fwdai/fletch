@@ -29,8 +29,11 @@
 //! free text the user typed — including a contact email they chose to leave in
 //! the field. That's an explicit Send press with a stated destination, not
 //! passive analytics, so the consent flag (which governs *usage* tracking) must
-//! not silence it. Identity is still the anonymous UUID: nothing here calls
-//! `$identify`, so the email is one event property and never a person profile.
+//! not silence it. Because it is sent regardless of the opt-out, it carries
+//! none of the install's identity: a throwaway random id per submission, no
+//! `days_since_install`, and `$process_person_profile: false` so PostHog keeps
+//! it a personless event. Nothing here calls `$identify`, so the email is one
+//! event property and never a person profile.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -306,30 +309,56 @@ pub fn init(identity: Identity, enabled: bool, version: String) {
     });
 }
 
-/// The capture body for one event: the super-props plus the anonymous identity
-/// and the install's age, overlaid with the caller's props (so a caller can
-/// override a super-prop).
+/// The capture body for one usage event: the super-props plus the install's
+/// identity and age, overlaid with the caller's props (so a caller can override
+/// a super-prop).
 ///
 /// `days_since_install` is computed per event rather than once at `init`: a
 /// desktop app stays open for days, and an event on day 3 of a launch that
 /// happened on day 0 should say 3.
 fn build_body(tel: &Telemetry, event: &str, props: Value) -> Value {
-    let mut properties = tel.super_props.clone();
-    properties.insert("distinct_id".into(), json!(tel.distinct_id));
+    let mut properties = Map::new();
     properties.insert(
         "days_since_install".into(),
         json!(days_since(tel.installed_at, Utc::now())),
     );
     if let Some(obj) = props.as_object() {
-        for (k, v) in obj {
-            properties.insert(k.clone(), v.clone());
-        }
+        properties.extend(obj.clone());
     }
+    body_as(tel, &tel.distinct_id, event, properties)
+}
 
+/// The capture body for a feedback submission: the super-props and the
+/// caller's props under a **throwaway** identity. A fresh random id per
+/// submission, never the install's machine id, and no `days_since_install`;
+/// `$process_person_profile: false` tells PostHog to keep it a personless event
+/// rather than mint a person for the id. Feedback is sent regardless of the
+/// analytics opt-out, so it must carry nothing that could identify the install
+/// or tie the message to its usage history — the modal promises the app version
+/// and platform, nothing else.
+fn feedback_body(tel: &Telemetry, event: &str, props: Value) -> Value {
+    let mut properties = Map::new();
+    properties.insert("$process_person_profile".into(), json!(false));
+    if let Some(obj) = props.as_object() {
+        properties.extend(obj.clone());
+    }
+    body_as(tel, &uuid::Uuid::new_v4().to_string(), event, properties)
+}
+
+/// One capture body: the super-props, `distinct_id`, then `properties` on top.
+fn body_as(
+    tel: &Telemetry,
+    distinct_id: &str,
+    event: &str,
+    properties: Map<String, Value>,
+) -> Value {
+    let mut all = tel.super_props.clone();
+    all.insert("distinct_id".into(), json!(distinct_id));
+    all.extend(properties);
     json!({
         "api_key": tel.api_key,
         "event": event,
-        "properties": Value::Object(properties),
+        "properties": Value::Object(all),
     })
 }
 
@@ -409,7 +438,7 @@ pub async fn send_now(event: &str, props: Value) -> Result<(), String> {
         return Err("this build has no feedback endpoint configured".into());
     };
     let _guard = InflightGuard::register(tel);
-    post(tel, build_body(tel, event, props)).await
+    post(tel, feedback_body(tel, event, props)).await
 }
 
 /// Wait up to `timeout` for in-flight sends to drain. Called on app exit so the
@@ -590,6 +619,28 @@ mod tests {
         assert_eq!(body["event"], "$create_alias");
         assert_eq!(body["properties"]["distinct_id"], "person");
         assert_eq!(body["properties"]["alias"], "machine");
+    }
+
+    /// Feedback goes out regardless of the opt-out, so it must carry nothing
+    /// that identifies the install: a throwaway id that differs per
+    /// submission, no install age, and no person profile — on top of the same
+    /// super-props and the caller's props as any event.
+    #[test]
+    fn feedback_carries_a_throwaway_identity_and_no_install_age() {
+        let mut tel = telemetry(Utc::now() - TimeDelta::days(7));
+        tel.super_props.insert("app_version".into(), json!("1.2.3"));
+        let first = feedback_body(&tel, "feedback_submitted", json!({ "message": "hi" }));
+        let second = feedback_body(&tel, "feedback_submitted", json!({ "message": "hi" }));
+        let props = &first["properties"];
+        assert_eq!(first["event"], "feedback_submitted");
+        assert_eq!(props["app_version"], "1.2.3");
+        assert_eq!(props["message"], "hi");
+        assert_eq!(props["$process_person_profile"], false);
+        assert!(props.get("days_since_install").is_none());
+        let id = props["distinct_id"].as_str().unwrap();
+        assert_ne!(id, tel.distinct_id);
+        uuid::Uuid::parse_str(id).expect("a random UUID");
+        assert_ne!(id, second["properties"]["distinct_id"].as_str().unwrap());
     }
 
     #[test]

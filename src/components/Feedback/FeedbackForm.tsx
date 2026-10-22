@@ -80,7 +80,8 @@ export function FeedbackForm({ state, onClose }: { state: FeedbackState; onClose
       )}
 
       <div className="fb-note text-sm">
-        Goes straight to the Fletch team, along with your app version and OS — nothing else.
+        Goes straight to the Fletch team, along with your app version and platform — nothing
+        else, and nothing that ties it to your usage telemetry.
       </div>
 
       <div className="modal-actions">
