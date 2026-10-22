@@ -60,6 +60,11 @@ const ASSERTION_NAME: &str = "Fletch: agents working or staying reachable";
 /// anything but an explicit "false" means on.
 pub const KEEP_AWAKE_ON_POWER_SETTING: &str = "keep_awake_on_power";
 
+/// Read the stored `keep_awake_on_power` choice.
+pub fn load_keep_awake_on_power(conn: &rusqlite::Connection) -> bool {
+    crate::database::get_setting(conn, KEEP_AWAKE_ON_POWER_SETTING).as_deref() != Some("false")
+}
+
 type ChangeCb = Arc<dyn Fn(usize, usize) + Send + Sync>;
 
 /// Process-wide activity monitor. Mirrors the in-process singleton idiom used
@@ -146,19 +151,19 @@ impl ActivityMonitor {
     /// once from `setup` in the real app — unconditionally, so it never depends
     /// on optional UI (e.g. the tray) being available.
     pub fn arm(&self, on_change: ChangeCb) {
-        {
-            let mut inner = self.inner.lock();
-            inner.on_change = Some(on_change);
-            inner.on_external_power = on_external_power();
-        }
+        self.inner.lock().on_change = Some(on_change);
         self.armed.store(true, Ordering::SeqCst);
+        // Register before sampling: a plug/unplug between the two is then
+        // either seen by the sample or queued for the watcher, never lost. Both
+        // read the live source, so whichever writes last is current.
         watch_power_source();
+        self.inner.lock().on_external_power = on_external_power();
         // Render the initial (idle) status line immediately.
         self.apply();
     }
 
     /// The `keep_awake_on_power` setting. Recorded even before arming, since
-    /// startup reads the setting first; takes effect once armed.
+    /// `host::boot` seeds it from `settings` first; takes effect once armed.
     pub fn set_keep_awake_on_power(&self, enabled: bool) {
         self.set_flag(|inner| &mut inner.keep_awake_on_power, enabled);
     }

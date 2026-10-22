@@ -1029,11 +1029,6 @@ fn finish_boot(app: &tauri::AppHandle, engine: host::Engine, data_dir: &std::pat
             database::get_setting(&conn, "onboardingComplete").as_deref() == Some("true");
         let prev = database::get_setting(&conn, "last_seen_version");
         let _ = database::set_setting(&conn, "last_seen_version", &version);
-        // Recorded before the host boots and arms the monitor. Opt-out.
-        power::ActivityMonitor::global().set_keep_awake_on_power(
-            database::get_setting(&conn, power::KEEP_AWAKE_ON_POWER_SETTING).as_deref()
-                != Some("false"),
-        );
         (identity, enabled, onboarded, prev)
     };
     telemetry::init(identity.clone(), telemetry_enabled, version.clone());

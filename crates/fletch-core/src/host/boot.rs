@@ -607,6 +607,12 @@ pub fn boot(cfg: BootConfig) -> Result<Engine, BootError> {
     let supervisor = Arc::new(Supervisor::new(workspace.clone()));
     ctx.set_supervisor(supervisor.clone());
 
+    // Seeded before the hook can arm the monitor, so a stored opt-out never
+    // takes the assertion (and holds it through the release debounce) when
+    // remote control autostarts below.
+    crate::power::ActivityMonitor::global()
+        .set_keep_awake_on_power(crate::power::load_keep_awake_on_power(&db.lock()));
+
     // The host's own pre-resume work (the desktop's activity monitor). Before
     // the workflow service, for the reason `on_supervisor` documents.
     if let Some(hook) = on_supervisor {
