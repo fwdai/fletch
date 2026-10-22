@@ -12,6 +12,9 @@ export interface AccountSlice {
   gitIdentity: GitIdentity | null;
   /** Anonymous usage telemetry consent. Opt-out: defaults on. */
   telemetryEnabled: boolean;
+  /** Keep this Mac awake while on external power, so the phone can reach it.
+   *  Opt-out: defaults on. Mirrors the backend-owned `keep_awake_on_power`. */
+  keepAwakeOnPower: boolean;
   /** Code-indexing (codegraph) consent. Opt-out: defaults on. */
   codeIndexingEnabled: boolean;
   /** The project context layer's developer gate (host-owned, opt-in). */
@@ -47,6 +50,7 @@ export interface AccountSlice {
    *  and once on init). */
   refreshLinear: () => Promise<void>;
   setTelemetryEnabled: (enabled: boolean) => void;
+  setKeepAwakeOnPower: (enabled: boolean) => void;
   setCodeIndexingEnabled: (enabled: boolean) => void;
   setContextLayerEnabled: (enabled: boolean) => void;
   /** Resolves `true` once the choice is persisted; `false` (with the store
@@ -59,6 +63,7 @@ export const createAccountSlice: SliceCreator<AccountSlice> = (set, get) => ({
   account: null,
   gitIdentity: null,
   telemetryEnabled: true,
+  keepAwakeOnPower: true,
   codeIndexingEnabled: true,
   contextLayerEnabled: false,
   dictationEngineEnabled: false,
@@ -124,6 +129,12 @@ export const createAccountSlice: SliceCreator<AccountSlice> = (set, get) => ({
     // The backend command persists the `telemetry_enabled` setting AND toggles
     // the live pipeline, so we don't also call setSetting here.
     void api.setTelemetryEnabled(enabled);
+  },
+  setKeepAwakeOnPower: (enabled) => {
+    set({ keepAwakeOnPower: enabled });
+    // The backend command persists `keep_awake_on_power` and updates the live
+    // sleep assertion, so no setSetting here.
+    void api.setKeepAwakeOnPower(enabled);
   },
   setCodeIndexingEnabled: (enabled) => {
     set({ codeIndexingEnabled: enabled });

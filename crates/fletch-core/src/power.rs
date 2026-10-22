@@ -7,6 +7,12 @@
 //! *any* workflow run is active (pending/running), and release it once
 //! everything goes idle.
 //!
+//! A sleeping Mac also drops the relay link, so a paired phone can't reach it
+//! between turns. With "keep awake on power" (the `keep_awake_on_power`
+//! setting, on by default) the assertion is also held whenever remote control
+//! is on and the Mac runs on external power, idle or not. On battery only live
+//! work holds it.
+//!
 //! # Mechanism (option (a): IOKit)
 //! We take an `IOPMAssertionCreateWithName` assertion of type
 //! `PreventUserIdleSystemSleep` and drop it with `IOPMAssertionRelease`. This is
@@ -24,7 +30,9 @@
 //! supervisor's existing `status_tx` broadcast (subscribed once at setup); run
 //! activity is toggled where a run's drive task is registered/removed in the
 //! scheduler (`spawn_drive_task`). A 30s debounce on release avoids flapping the
-//! assertion between back-to-back turns.
+//! assertion between back-to-back turns. The power source is read once at arm
+//! time and then followed through the `com.apple.system.powersources.source`
+//! notify(3) key, which IOKit posts on plug/unplug.
 //!
 //! # Non-macOS
 //! The assertion calls compile to no-ops; the activity bookkeeping and the
@@ -46,7 +54,16 @@ const RELEASE_DEBOUNCE: Duration = Duration::from_secs(30);
 /// IOKit path (`not(test)`) references it; gated to match so a macOS test build
 /// doesn't flag it unused.
 #[cfg(all(target_os = "macos", not(test)))]
-const ASSERTION_NAME: &str = "Fletch: agents working";
+const ASSERTION_NAME: &str = "Fletch: agents working or staying reachable";
+
+/// `settings` key for "keep this Mac awake while on external power". Opt-out:
+/// anything but an explicit "false" means on.
+pub const KEEP_AWAKE_ON_POWER_SETTING: &str = "keep_awake_on_power";
+
+/// Read the stored `keep_awake_on_power` choice.
+pub fn load_keep_awake_on_power(conn: &rusqlite::Connection) -> bool {
+    crate::database::get_setting(conn, KEEP_AWAKE_ON_POWER_SETTING).as_deref() != Some("false")
+}
 
 type ChangeCb = Arc<dyn Fn(usize, usize) + Send + Sync>;
 
@@ -67,6 +84,12 @@ struct Inner {
     agents: HashSet<String>,
     /// Ids of workflow runs currently being driven (pending/running).
     runs: HashSet<String>,
+    /// The `keep_awake_on_power` setting.
+    keep_awake_on_power: bool,
+    /// Whether remote control (the paired-device listener) is on.
+    remote_enabled: bool,
+    /// Whether the Mac is on AC/UPS power right now. Never true off macOS.
+    on_external_power: bool,
     /// Bumped on every recompute; a scheduled debounced release only fires if
     /// its captured generation still matches (i.e. no activity since).
     release_gen: u64,
@@ -78,6 +101,14 @@ struct Inner {
     on_change: Option<ChangeCb>,
 }
 
+impl Inner {
+    fn wants_assertion(&self) -> bool {
+        !self.agents.is_empty()
+            || !self.runs.is_empty()
+            || (self.keep_awake_on_power && self.remote_enabled && self.on_external_power)
+    }
+}
+
 impl ActivityMonitor {
     /// A fresh, unarmed monitor. Used for the process-wide `global()` singleton;
     /// also lets tests build a standalone instance so they never arm or mutate
@@ -87,6 +118,9 @@ impl ActivityMonitor {
             inner: Mutex::new(Inner {
                 agents: HashSet::new(),
                 runs: HashSet::new(),
+                keep_awake_on_power: true,
+                remote_enabled: false,
+                on_external_power: false,
                 release_gen: 0,
                 #[cfg(target_os = "macos")]
                 assertion: None,
@@ -117,13 +151,49 @@ impl ActivityMonitor {
     /// once from `setup` in the real app — unconditionally, so it never depends
     /// on optional UI (e.g. the tray) being available.
     pub fn arm(&self, on_change: ChangeCb) {
-        {
-            let mut inner = self.inner.lock();
-            inner.on_change = Some(on_change);
-        }
+        self.inner.lock().on_change = Some(on_change);
         self.armed.store(true, Ordering::SeqCst);
+        // Register before sampling: a plug/unplug between the two is then
+        // either seen by the sample or queued for the watcher, never lost. Both
+        // read the live source, so whichever writes last is current.
+        watch_power_source();
+        self.inner.lock().on_external_power = on_external_power();
         // Render the initial (idle) status line immediately.
         self.apply();
+    }
+
+    /// The `keep_awake_on_power` setting. Recorded even before arming, since
+    /// `host::boot` seeds it from `settings` first; takes effect once armed.
+    pub fn set_keep_awake_on_power(&self, enabled: bool) {
+        self.set_flag(|inner| &mut inner.keep_awake_on_power, enabled);
+    }
+
+    /// Whether remote control is on (fed by `RemoteState::start`/`stop`, which
+    /// may run before the monitor is armed). Staying awake on power is only for
+    /// a phone to reach this Mac, so it waits on this.
+    pub fn set_remote_enabled(&self, enabled: bool) {
+        self.set_flag(|inner| &mut inner.remote_enabled, enabled);
+    }
+
+    /// The power source changed (fed by the watcher started in `arm`).
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    fn set_on_external_power(&self, on: bool) {
+        self.set_flag(|inner| &mut inner.on_external_power, on);
+    }
+
+    /// Record one of the keep-awake inputs, then recompute if armed.
+    fn set_flag(&self, field: impl FnOnce(&mut Inner) -> &mut bool, value: bool) {
+        {
+            let mut inner = self.inner.lock();
+            let slot = field(&mut inner);
+            if *slot == value {
+                return;
+            }
+            *slot = value;
+        }
+        if self.armed.load(Ordering::SeqCst) {
+            self.apply();
+        }
     }
 
     /// Re-fire the status-line callback with the current counts, without
@@ -203,10 +273,9 @@ impl ActivityMonitor {
     fn apply(&self) {
         let (agents_n, runs_n, cb) = {
             let mut inner = self.inner.lock();
-            let active = !inner.agents.is_empty() || !inner.runs.is_empty();
             // Any recompute cancels a pending debounced release.
             inner.release_gen = inner.release_gen.wrapping_add(1);
-            if active {
+            if inner.wants_assertion() {
                 ensure_assertion(&mut inner);
             } else {
                 schedule_release(inner.release_gen);
@@ -230,13 +299,33 @@ fn schedule_release(generation: u64) {
         tokio::time::sleep(RELEASE_DEBOUNCE).await;
         let m = ActivityMonitor::global();
         let mut inner = m.inner.lock();
-        if inner.release_gen == generation && inner.agents.is_empty() && inner.runs.is_empty() {
+        if inner.release_gen == generation && !inner.wants_assertion() {
             release_assertion(&mut inner);
         }
     });
 }
 
 // ───────────────────────────── platform impl ────────────────────────────────
+
+#[cfg(all(target_os = "macos", not(test)))]
+fn on_external_power() -> bool {
+    macos::on_external_power()
+}
+
+#[cfg(any(not(target_os = "macos"), test))]
+fn on_external_power() -> bool {
+    false
+}
+
+/// Follow plug/unplug into the global monitor (the only one ever armed for
+/// real; tests arm standalone monitors and never reach the watcher).
+#[cfg(all(target_os = "macos", not(test)))]
+fn watch_power_source() {
+    macos::watch_power_source(|on| ActivityMonitor::global().set_on_external_power(on));
+}
+
+#[cfg(any(not(target_os = "macos"), test))]
+fn watch_power_source() {}
 
 #[cfg(target_os = "macos")]
 fn ensure_assertion(inner: &mut Inner) {
@@ -274,7 +363,10 @@ fn release_assertion(_inner: &mut Inner) {}
 #[cfg(all(target_os = "macos", not(test)))]
 mod macos {
     use std::ffi::{c_void, CString};
-    use std::os::raw::c_char;
+    use std::fs::File;
+    use std::io::Read;
+    use std::os::fd::FromRawFd;
+    use std::os::raw::{c_char, c_int};
 
     type CFStringRef = *const c_void;
 
@@ -295,7 +387,22 @@ mod macos {
             assertion_id: *mut u32,
         ) -> i32;
         fn IOPMAssertionRelease(assertion_id: u32) -> i32;
+        fn IOPSGetTimeRemainingEstimate() -> f64;
     }
+
+    // libSystem, always linked.
+    extern "C" {
+        fn notify_register_file_descriptor(
+            name: *const c_char,
+            notify_fd: *mut c_int,
+            flags: c_int,
+            out_token: *mut c_int,
+        ) -> u32;
+    }
+
+    // kIOPSTimeRemainingUnlimited: the Mac draws from AC (or a UPS on AC).
+    const TIME_REMAINING_UNLIMITED: f64 = -2.0;
+    const NOTIFY_STATUS_OK: u32 = 0;
 
     #[link(name = "CoreFoundation", kind = "framework")]
     extern "C" {
@@ -346,6 +453,45 @@ mod macos {
             IOPMAssertionRelease(id);
         }
         tracing::debug!(assertion_id = id, "released sleep assertion");
+    }
+
+    pub(super) fn on_external_power() -> bool {
+        unsafe { IOPSGetTimeRemainingEstimate() == TIME_REMAINING_UNLIMITED }
+    }
+
+    /// Call `on_change` with the current power source every time it changes.
+    /// notify(3) writes a token to the fd on each post, so one thread blocked
+    /// in `read` follows it for the life of the process.
+    pub(super) fn watch_power_source(on_change: impl Fn(bool) + Send + 'static) {
+        let mut fd: c_int = -1;
+        let mut token: c_int = 0;
+        let rc = unsafe {
+            notify_register_file_descriptor(
+                c"com.apple.system.powersources.source".as_ptr(),
+                &mut fd,
+                0,
+                &mut token,
+            )
+        };
+        if rc != NOTIFY_STATUS_OK {
+            tracing::warn!(
+                rc,
+                "failed to watch the power source; keep-awake follows the launch state"
+            );
+            return;
+        }
+        let mut file = unsafe { File::from_raw_fd(fd) };
+        let spawned = std::thread::Builder::new()
+            .name("fletch-power-source".into())
+            .spawn(move || {
+                let mut buf = [0u8; 4];
+                while file.read_exact(&mut buf).is_ok() {
+                    on_change(on_external_power());
+                }
+            });
+        if let Err(e) = spawned {
+            tracing::warn!(error = %e, "failed to start the power-source watcher");
+        }
     }
 }
 
@@ -415,6 +561,34 @@ mod tests {
         // Only when the last driver (the parent) is gone does activity reach 0.
         m.set_run_active("parent", false);
         assert_eq!(m.active_run_count(), 0);
+    }
+
+    // Keep-awake on power holds the assertion with no work live, only while
+    // remote control is on and the Mac is on external power; the setting turns
+    // it off.
+    #[tokio::test]
+    async fn keep_awake_on_power_follows_power_source_remote_and_setting() {
+        let m = ActivityMonitor::fresh();
+        m.arm(std::sync::Arc::new(|_, _| {}));
+        assert!(!m.inner.lock().wants_assertion(), "battery, idle");
+
+        m.set_on_external_power(true);
+        assert!(!m.inner.lock().wants_assertion(), "on power, remote off");
+
+        m.set_remote_enabled(true);
+        assert!(
+            m.inner.lock().wants_assertion(),
+            "on power, remote on, idle"
+        );
+
+        m.set_keep_awake_on_power(false);
+        assert!(!m.inner.lock().wants_assertion(), "setting off");
+
+        m.set_agent_running("a1", true);
+        assert!(
+            m.inner.lock().wants_assertion(),
+            "live work holds it regardless"
+        );
     }
 
     // Decoupling guard: the tray and the sleep assertion are independent. When

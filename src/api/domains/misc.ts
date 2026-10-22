@@ -14,6 +14,10 @@ export const miscApi = {
   // pipeline (events themselves are emitted from the backend).
   setTelemetryEnabled: (enabled: boolean) =>
     invokeLocal<void>("set_telemetry_enabled", { enabled }),
+  // Keep this Mac awake while on external power. Persists the opt-out flag and
+  // updates the live sleep assertion.
+  setKeepAwakeOnPower: (enabled: boolean) =>
+    invokeLocal<void>("set_keep_awake_on_power", { enabled }),
   // Emit the deferred first `app_opened` once the onboarding overlay (which
   // carries the data-sharing disclosure) is on screen. Idempotent per process.
   // See `track_app_opened` (Rust).
