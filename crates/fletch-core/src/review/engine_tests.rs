@@ -10,10 +10,52 @@ fn reviewer() -> ReviewerView {
     }
 }
 
+/// The code read at cheap signature `cheap` with `digest`.
+fn read(cheap: &str, digest: &str) -> Sighting {
+    Sighting::Read {
+        cheap: cheap.into(),
+        digest: ContentDigest::Verified {
+            digest: digest.into(),
+        },
+    }
+}
+
+fn skipped(cheap: &str) -> Sighting {
+    Sighting::Read {
+        cheap: cheap.into(),
+        digest: ContentDigest::Skipped,
+    }
+}
+
+fn unverified(cheap: &str) -> Sighting {
+    Sighting::Read {
+        cheap: cheap.into(),
+        digest: ContentDigest::Unverified {
+            reason: "git diff: Permission denied".into(),
+        },
+    }
+}
+
+fn unreadable() -> Sighting {
+    Sighting::Unreadable {
+        reason: "the checkout is not ready".into(),
+    }
+}
+
+/// A round begun on the code `cheap#d1`, as a start reads it first.
 fn begun(trigger: Trigger, pr: Option<u32>) -> Tracked {
     let mut t = Tracked::default();
-    t.begin(reviewer(), trigger, "sha1|".into(), pr, 1_000)
+    t.record_sighting(&read("c1", "d1"));
+    t.begin(reviewer(), trigger, full_signature("c1", "d1"), pr, 1_000)
         .unwrap();
+    t
+}
+
+/// A review that landed on `c1#d1` and whose turn ended.
+fn reviewed() -> Tracked {
+    let mut t = begun(Trigger::Manual, Some(7));
+    t.submitted().unwrap();
+    t.turn_ended();
     t
 }
 
@@ -21,43 +63,278 @@ fn begun(trigger: Trigger, pr: Option<u32>) -> Tracked {
 
 #[test]
 fn an_untouched_checkout_is_idle_and_a_flight_is_reviewing() {
-    let t = Tracked::default();
-    assert_eq!(t.derive(Some("sha1|"), 0), Phase::Idle);
+    assert_eq!(Tracked::default().derive(0), Phase::Idle);
     let t = begun(Trigger::Manual, None);
-    assert_eq!(t.derive(Some("sha1|"), 0), Phase::Reviewing);
+    assert_eq!(t.derive(0), Phase::Reviewing);
     assert_eq!(t.round, 1);
     assert_eq!(t.trigger, Some(Trigger::Manual));
 }
 
 #[test]
-fn a_report_makes_the_code_reviewed_then_the_threads_and_the_code_decide() {
-    let mut t = begun(Trigger::Manual, None);
-    t.submitted().unwrap();
-    t.turn_ended();
-    assert_eq!(t.reviewed_signature.as_deref(), Some("sha1|"));
-    assert_eq!(t.derive(Some("sha1|"), 0), Phase::Clean);
-    assert_eq!(t.derive(Some("sha1|"), 2), Phase::Findings);
-    // The code moved: stale whatever the threads say. An unreadable checkout
-    // is not a moved one.
-    assert_eq!(t.derive(Some("sha2|a.rs"), 2), Phase::Stale);
-    assert_eq!(t.derive(Some("sha2|"), 0), Phase::Stale);
-    assert_eq!(t.derive(None, 0), Phase::Clean);
+fn a_report_makes_the_code_reviewed_then_the_threads_and_a_fresh_read_decide() {
+    let mut t = reviewed();
+    assert_eq!(t.reviewed_signature.as_deref(), Some("c1#d1"));
+    assert_eq!(t.derive(0), Phase::Clean);
+    assert_eq!(t.derive(2), Phase::Findings);
+    // A read of other code: the status moved, or only its content.
+    t.record_sighting(&skipped("c2"));
+    assert_eq!(t.derive(2), Phase::Stale);
+    t.record_sighting(&read("c1", "d2"));
+    assert_eq!(t.derive(0), Phase::Stale);
+    // Back to the reviewed code.
+    t.record_sighting(&read("c1", "d1"));
+    assert_eq!(t.derive(0), Phase::Clean);
+}
+
+/// The evidence rule: only a `Read` sighting moves the code half of the
+/// phase. For every phase a checkout can be in, a look that read nothing or
+/// couldn't read the checkout derives the same phase as before it.
+#[test]
+fn a_look_without_a_read_never_changes_the_phase() {
+    let mut cases: Vec<(&str, Tracked, u32)> = Vec::new();
+    cases.push(("idle", Tracked::default(), 0));
+    cases.push(("clean", reviewed(), 0));
+    cases.push(("findings", reviewed(), 3));
+    let mut stale = reviewed();
+    stale.record_sighting(&skipped("c2"));
+    cases.push(("stale", stale, 1));
+    let mut moved = reviewed();
+    moved.record_sighting(&read("c1", "d9"));
+    cases.push(("stale by content", moved, 0));
+    let mut unverifiable = reviewed();
+    unverifiable.record_sighting(&unverified("c1"));
+    cases.push(("stale, unverified", unverifiable, 0));
+    let mut failed = reviewed();
+    failed.record_failure(FailureOrigin::Round, "boom", None);
+    cases.push(("failed", failed, 0));
+    let mut queued = reviewed();
+    queued.queue(Trigger::Manual, None);
+    cases.push(("queued", queued, 0));
+    cases.push(("reviewing", begun(Trigger::Manual, None), 0));
+
+    for (name, before, open) in cases {
+        let phase = before.derive(open);
+        for sighting in [Sighting::NotScanned, unreadable()] {
+            let mut after = before.clone();
+            after.record_sighting(&sighting);
+            assert_eq!(after.derive(open), phase, "{name} after {sighting:?}");
+            assert_eq!(after.last_read, before.last_read, "{name}: the facts stay");
+            assert_eq!(after.failure, before.failure, "{name}: so does the failure");
+        }
+    }
 }
 
 #[test]
-fn a_turn_that_ends_without_a_report_fails_loudly_until_the_next_start() {
+fn a_turn_that_ends_without_a_report_is_a_round_failure_until_the_next_start() {
     let mut t = begun(Trigger::PrOpen, Some(7));
     t.turn_ended();
-    assert_eq!(t.derive(Some("sha1|"), 0), Phase::Failed);
-    assert!(t.failed.as_deref().unwrap().contains("without submitting"));
+    assert_eq!(t.derive(0), Phase::Failed);
+    let failure = t.failure.clone().unwrap();
+    assert_eq!(failure.origin, FailureOrigin::Round);
+    assert!(failure.reason.contains("without submitting"));
+    assert_eq!(
+        failure.cheap_signature.as_deref(),
+        Some("c1"),
+        "the code it failed on"
+    );
     assert_eq!(t.reviewed_signature, None, "nothing was reviewed");
-    // The next start clears the failure and the note.
-    t.error = Some("note".into());
-    t.begin(reviewer(), Trigger::Manual, "sha1|".into(), Some(7), 2_000)
+    // A round that begins clears it, and the note.
+    t.note = Some("note".into());
+    t.begin(reviewer(), Trigger::Manual, "c1#d1".into(), Some(7), 2_000)
         .unwrap();
-    assert_eq!(t.failed, None);
-    assert_eq!(t.error, None);
+    assert_eq!(t.failure, None);
+    assert_eq!(t.note, None);
     assert_eq!(t.round, 2);
+}
+
+// ── one failure record ─────────────────────────────────────────────────────
+
+/// Every origin persists and comes back deriving its documented phase: a scan
+/// that couldn't verify reads stale, every other origin failed. The wire's
+/// error is the failure's reason, ahead of any note.
+#[test]
+fn every_failure_origin_round_trips_and_derives_its_phase() {
+    let c = conn();
+    let key = ("arabia".to_string(), None);
+    for (origin, phase) in [
+        (FailureOrigin::Scan, Phase::Stale),
+        (FailureOrigin::Start, Phase::Failed),
+        (FailureOrigin::Round, Phase::Failed),
+        (FailureOrigin::Queued, Phase::Failed),
+        (FailureOrigin::Restart, Phase::Failed),
+    ] {
+        let mut t = reviewed();
+        t.note = Some("a note".into());
+        t.record_failure(origin, format!("{origin:?} went wrong"), Some("c2".into()));
+        assert_eq!(t.derive(0), phase, "{origin:?}");
+        persist::save(&c, &key, &t).unwrap();
+        let (_, back) = persist::load_all(&c).unwrap().pop().unwrap();
+        let back = back.loaded();
+        assert_eq!(back.failure, t.failure, "{origin:?} persisted");
+        assert_eq!(back.derive(0), phase, "{origin:?} after a restart");
+        assert_eq!(
+            back.error().as_deref(),
+            Some(format!("{origin:?} went wrong").as_str())
+        );
+    }
+}
+
+/// A restart turns a round that was in flight into a restart failure.
+#[test]
+fn a_round_in_flight_at_shutdown_loads_as_a_restart_failure() {
+    let c = conn();
+    let key = ("arabia".to_string(), None);
+    let mut flying = begun(Trigger::PrOpen, Some(7));
+    flying.phase = flying.derive(0);
+    assert_eq!(flying.phase, Phase::Reviewing);
+    persist::save(&c, &key, &flying).unwrap();
+    let (_, back) = persist::load_all(&c).unwrap().pop().unwrap();
+    assert_eq!(back.flight, None, "a flight never persists");
+    let back = back.loaded();
+    let failure = back.failure.clone().unwrap();
+    assert_eq!(failure.origin, FailureOrigin::Restart);
+    assert_eq!(failure.reason, "interrupted by restart");
+    assert_eq!(back.derive(0), Phase::Failed);
+}
+
+// ── restarts ───────────────────────────────────────────────────────────────
+
+/// A stale verdict persisted with its facts still reads stale after a restart
+/// when the first answer reads no git (a client connecting, a quiet tick) —
+/// and so does one a scan couldn't verify, with its note.
+#[test]
+fn a_persisted_stale_checkout_reads_stale_before_any_scan() {
+    let c = conn();
+    let mut stale = reviewed();
+    stale.record_sighting(&skipped("c2"));
+    stale.phase = stale.derive(0);
+    let mut unverifiable = reviewed();
+    unverifiable.record_sighting(&unverified("c1"));
+    unverifiable.phase = unverifiable.derive(0);
+    persist::save(&c, &("stale".into(), None), &stale).unwrap();
+    persist::save(&c, &("unverified".into(), None), &unverifiable).unwrap();
+
+    for (key, back) in persist::load_all(&c).unwrap() {
+        let mut back = back.loaded();
+        back.record_sighting(&Sighting::NotScanned);
+        assert_eq!(back.derive(0), Phase::Stale, "{key:?}");
+        if key.0 == "unverified" {
+            assert!(
+                back.error()
+                    .unwrap()
+                    .starts_with("couldn't verify the review is current"),
+                "the note survives too"
+            );
+        }
+    }
+}
+
+/// Old facts are not trusted forever: every loaded checkout is read on the
+/// first tick, whatever its PR or activity, and only a look that read (or
+/// tried to read) git settles that.
+#[test]
+fn the_first_tick_after_a_restart_reads_every_loaded_checkout() {
+    let c = conn();
+    let quiet = reviewed();
+    for agent in ["a", "b", "c"] {
+        persist::save(&c, &(agent.into(), None), &quiet).unwrap();
+    }
+    let now = 10_000_000;
+    let loaded: Vec<Tracked> = persist::load_all(&c)
+        .unwrap()
+        .into_iter()
+        .map(|(_, t)| t.loaded())
+        .collect();
+    assert_eq!(loaded.len(), 3);
+    for mut t in loaded {
+        assert!(t.wants_scan(false, now), "no PR, not active: read anyway");
+        t.record_sighting(&Sighting::NotScanned);
+        assert!(t.wants_scan(false, now), "a cheap look settles nothing");
+        t.record_sighting(&read("c1", "d1"));
+        assert!(!t.wants_scan(false, now), "read once; quiet again");
+        let mut u = reviewed().loaded();
+        u.record_sighting(&unreadable());
+        assert!(!u.wants_scan(false, now), "a read attempt settles it too");
+    }
+}
+
+// ── one automatic attempt per code state ───────────────────────────────────
+
+/// An automatic round whose full scan fails is recorded on the code it
+/// failed on: every tick after that sees the same code and starts nothing;
+/// a change of code allows exactly one new attempt.
+#[test]
+fn a_failed_automatic_round_blocks_its_code_state_until_the_code_moves() {
+    let mut t = reviewed();
+    t.record_sighting(&skipped("c2"));
+    assert_eq!(t.derive(0), Phase::Stale);
+    assert!(t.wants_automatic_review(), "moved code gets one attempt");
+
+    // The attempt's full scan can't digest the content.
+    t.claim().unwrap();
+    t.record_sighting(&unverified("c2"));
+    t.record_failure(
+        FailureOrigin::Start,
+        "couldn't read the change: git diff: Permission denied",
+        None,
+    );
+    assert_eq!(
+        t.failure.as_ref().unwrap().cheap_signature.as_deref(),
+        Some("c2")
+    );
+    assert!(!t.starting, "the claim ends with the failure");
+    for _ in 0..10 {
+        // A tick reads the same code again.
+        t.record_sighting(&skipped("c2"));
+        assert!(
+            !t.wants_automatic_review(),
+            "the same code is never retried"
+        );
+    }
+    // The code moves: one attempt, and only one.
+    t.record_sighting(&skipped("c3"));
+    assert!(t.wants_automatic_review());
+    t.record_failure(FailureOrigin::Round, "boom", None);
+    t.record_sighting(&skipped("c3"));
+    assert!(!t.wants_automatic_review());
+}
+
+/// A scan that couldn't verify blocks its code state the same way; a fresh
+/// read that verifies clears it.
+#[test]
+fn an_unverifiable_scan_reads_stale_and_is_not_retried_on_the_same_code() {
+    let mut t = reviewed();
+    t.record_sighting(&unverified("c1"));
+    assert_eq!(t.derive(0), Phase::Stale);
+    assert_eq!(t.failure.as_ref().unwrap().origin, FailureOrigin::Scan);
+    assert!(
+        !t.wants_automatic_review(),
+        "a round would fail the same way"
+    );
+    assert!(t.auto_budget_left(7), "and none of the budget was spent");
+    t.record_sighting(&read("c1", "d1"));
+    assert_eq!(t.failure, None, "a read that verifies clears it");
+    assert_eq!(t.derive(0), Phase::Clean);
+    assert!(
+        !t.wants_automatic_review(),
+        "the reviewed code needs no review"
+    );
+}
+
+#[test]
+fn reviewed_code_and_never_attempted_checkouts_want_no_automatic_review() {
+    assert!(!Tracked::default().wants_automatic_review(), "nothing read");
+    let mut never = Tracked::default();
+    never.record_sighting(&skipped("c1"));
+    assert!(
+        !never.wants_automatic_review(),
+        "never reviewed, never attempted"
+    );
+    // A first review that failed to start, then the code moved: one attempt.
+    never.record_failure(FailureOrigin::Start, "no reviewer", None);
+    assert!(!never.wants_automatic_review());
+    never.record_sighting(&skipped("c2"));
+    assert!(never.wants_automatic_review());
 }
 
 // ── one at a time, one report per turn ─────────────────────────────────────
@@ -66,7 +343,7 @@ fn a_turn_that_ends_without_a_report_fails_loudly_until_the_next_start() {
 fn a_second_start_is_refused_while_one_is_in_flight() {
     let mut t = begun(Trigger::Manual, None);
     assert_eq!(
-        t.begin(reviewer(), Trigger::Manual, "sha1|".into(), None, 1_001),
+        t.begin(reviewer(), Trigger::Manual, "c1#d1".into(), None, 1_001),
         Err("a review is already running on this checkout")
     );
     assert_eq!(t.round, 1);
@@ -85,11 +362,45 @@ fn a_second_report_in_one_turn_is_refused_and_none_without_a_flight() {
 }
 
 #[test]
-fn a_stop_is_not_a_failure() {
+fn a_stop_is_a_note_not_a_failure() {
     let mut t = begun(Trigger::Manual, None);
     t.stop();
-    assert_eq!(t.derive(Some("sha1|"), 0), Phase::Idle);
-    assert_eq!(t.error.as_deref(), Some("review stopped"));
+    assert_eq!(t.derive(0), Phase::Idle);
+    assert_eq!(t.failure, None);
+    assert_eq!(t.error().as_deref(), Some("review stopped"));
+}
+
+#[test]
+fn a_start_claims_the_checkout_until_it_begins_or_lets_go() {
+    let mut t = Tracked::default();
+    t.claim().unwrap();
+    assert_eq!(
+        t.claim(),
+        Err("a review is already running on this checkout")
+    );
+    t.release();
+    t.claim().unwrap();
+    t.begin(reviewer(), Trigger::Manual, "s".into(), None, 0)
+        .unwrap();
+    assert!(!t.starting, "begun: the claim became the flight");
+    assert_eq!(
+        t.claim(),
+        Err("a review is already running on this checkout")
+    );
+    t.record_failure(FailureOrigin::Round, "boom", None);
+    assert!(!t.starting);
+    t.claim().unwrap();
+}
+
+#[test]
+fn a_pr_that_had_a_round_is_not_reviewed_on_sight_again() {
+    let mut t = Tracked::default();
+    assert!(!t.reviewed_pr(7));
+    t.begin(reviewer(), Trigger::PrOpen, "s".into(), Some(7), 0)
+        .unwrap();
+    t.turn_ended();
+    assert!(t.reviewed_pr(7));
+    assert!(!t.reviewed_pr(8));
 }
 
 // ── the automatic budget ───────────────────────────────────────────────────
@@ -106,14 +417,121 @@ fn automatic_rounds_are_counted_per_pr_and_reset_when_the_pr_changes() {
     }
     assert!(!t.auto_budget_left(7), "three automatic rounds on #7");
     assert!(t.auto_budget_left(8), "another PR starts over");
-    // A manual round never spends the budget.
     t.begin(reviewer(), Trigger::Manual, "s".into(), Some(7), 0)
         .unwrap();
     t.turn_ended();
-    assert_eq!(t.pr_rounds, MAX_ROUNDS_PER_PR);
+    assert_eq!(t.pr_rounds, MAX_ROUNDS_PER_PR, "a manual round is free");
     t.begin(reviewer(), Trigger::ReReview, "s".into(), Some(8), 0)
         .unwrap();
     assert_eq!(t.pr_rounds, 1, "the count started over with #8");
+}
+
+// ── the queue ──────────────────────────────────────────────────────────────
+
+#[test]
+fn a_start_queued_behind_a_busy_coder_runs_once_it_is_free() {
+    let mut t = Tracked::default();
+    t.queue(Trigger::PrOpen, None);
+    assert_eq!(t.derive(0), Phase::Queued);
+    t.queue(Trigger::Manual, Some("ca-2".into()));
+    assert_eq!(
+        t.pending.as_ref().unwrap().trigger,
+        Trigger::PrOpen,
+        "the first stays"
+    );
+    assert_eq!(t.take_pending(false), None, "the coder is still busy");
+    let pending = t.take_pending(true).expect("free: the start runs");
+    assert_eq!(pending.trigger, Trigger::PrOpen);
+    assert_ne!(t.derive(0), Phase::Queued);
+
+    let mut t = begun(Trigger::Manual, None);
+    t.queue(Trigger::ReReview, None);
+    assert_eq!(t.derive(0), Phase::Reviewing, "a flight outranks the queue");
+    assert_eq!(
+        t.take_pending(true),
+        None,
+        "never while a round is in flight"
+    );
+    let mut failed = reviewed();
+    failed.record_failure(FailureOrigin::Round, "boom", None);
+    failed.queue(Trigger::Manual, None);
+    assert_eq!(
+        failed.derive(0),
+        Phase::Queued,
+        "the queue outranks a failure"
+    );
+}
+
+#[test]
+fn stopping_a_queued_start_cancels_it() {
+    let mut t = Tracked::default();
+    t.queue(Trigger::PrOpen, None);
+    t.stop();
+    assert_eq!(t.pending, None);
+    assert_eq!(t.derive(0), Phase::Idle);
+    assert_eq!(t.take_pending(true), None);
+}
+
+/// A queued start that can't begin is recorded as a queued failure; one
+/// beaten by a round already on the checkout waits its turn again.
+#[test]
+fn a_queued_start_that_cannot_begin_reads_failed_or_waits_again() {
+    let mut t = Tracked::default();
+    t.queue(Trigger::PrOpen, None);
+    let _ = t.take_pending(true).unwrap();
+    t.claim().unwrap();
+    t.record_failure(
+        FailureOrigin::Queued,
+        "queued review not started: No reviewer is set up — pick one in Settings › Review",
+        None,
+    );
+    assert_eq!(t.derive(0), Phase::Failed);
+    assert_eq!(
+        t.error().as_deref(),
+        Some("queued review not started: No reviewer is set up — pick one in Settings › Review")
+    );
+
+    let mut t = Tracked::default();
+    t.queue(Trigger::Manual, Some("ca-1".into()));
+    let pending = t.take_pending(true).unwrap();
+    t.requeue(pending.clone());
+    assert_eq!(t.pending, Some(pending), "put back, not failed");
+    assert_eq!(t.failure, None);
+    assert_eq!(t.derive(0), Phase::Queued);
+}
+
+#[test]
+fn code_that_moved_during_the_review_keeps_the_findings_and_reads_stale() {
+    let mut t = begun(Trigger::Manual, None);
+    t.submitted().unwrap();
+    t.record_sighting(&read("c1", "d1"));
+    t.check_code_after_report();
+    assert_eq!(t.note, None, "unchanged code is no news");
+
+    for after in [read("c1", "d2"), skipped("c2")] {
+        let mut t = begun(Trigger::Manual, None);
+        t.submitted().unwrap();
+        t.record_sighting(&after);
+        t.check_code_after_report();
+        t.turn_ended();
+        assert_eq!(t.note.as_deref(), Some(CODE_MOVED), "{after:?}");
+        assert_eq!(
+            t.reviewed_signature.as_deref(),
+            Some("c1#d1"),
+            "the code it read"
+        );
+        assert_eq!(t.derive(3), Phase::Stale);
+    }
+
+    // A read that couldn't verify is a scan failure, not "moved".
+    let mut t = begun(Trigger::Manual, None);
+    t.submitted().unwrap();
+    t.record_sighting(&unverified("c1"));
+    t.check_code_after_report();
+    t.turn_ended();
+    assert_eq!(t.note, None);
+    assert_eq!(t.failure.as_ref().unwrap().origin, FailureOrigin::Scan);
+    assert_eq!(t.derive(0), Phase::Stale);
 }
 
 // ── the signature ──────────────────────────────────────────────────────────
@@ -243,166 +661,6 @@ async fn a_newline_named_untracked_file_is_hashed_by_content() {
     assert_eq!(content_digest(&repo).await.unwrap(), first);
 }
 
-/// A digest that failed while comparing must not keep `clean`/`findings`:
-/// the unverified signature never matches the recorded one, so it reads
-/// stale — and that staleness is not re-reviewed on its own.
-#[test]
-fn a_compare_time_digest_error_reads_stale_and_is_not_auto_re_reviewed() {
-    let mut t = begun(Trigger::Manual, Some(7));
-    t.submitted().unwrap();
-    t.turn_ended();
-    let recorded = full_signature("sha1|", "d1");
-    t.reviewed_signature = Some(recorded.clone());
-    assert_eq!(t.derive(Some(&recorded), 0), Phase::Clean);
-    assert!(t.auto_rereview_allowed());
-
-    let unverified = full_signature("sha1|", UNVERIFIED);
-    assert!(is_unverified(&unverified));
-    assert_eq!(t.derive(Some(&unverified), 0), Phase::Stale);
-    assert_eq!(t.derive(Some(&unverified), 2), Phase::Stale);
-    t.scan_error = Some("couldn't verify the review is current: git diff: denied".into());
-    assert!(
-        !t.auto_rereview_allowed(),
-        "a round would fail the same way"
-    );
-    assert!(t.auto_budget_left(7), "and none of the budget was spent");
-    // Nor is it "the code moved" when the verdict lands.
-    t.check_code_after_report(Some(&unverified));
-    assert_ne!(t.error.as_deref(), Some(CODE_MOVED));
-}
-
-/// A queued start that can't begin reads failed, with why; one beaten by a
-/// round already on the checkout waits its turn again.
-#[test]
-fn a_queued_start_that_cannot_begin_reads_failed() {
-    let mut t = Tracked::default();
-    t.queue(Trigger::PrOpen, None);
-    let pending = t.take_pending(true).unwrap();
-    t.queued_start_failed(
-        pending,
-        "No reviewer is set up — pick one in Settings › Review",
-    );
-    assert_eq!(t.derive(Some("s"), 0), Phase::Failed);
-    assert_eq!(
-        t.failed.as_deref(),
-        Some("queued review not started: No reviewer is set up — pick one in Settings › Review")
-    );
-
-    let mut t = Tracked::default();
-    t.queue(Trigger::Manual, Some("ca-1".into()));
-    let pending = t.take_pending(true).unwrap();
-    t.queued_start_failed(pending.clone(), ALREADY_RUNNING);
-    assert_eq!(t.pending, Some(pending), "put back, not failed");
-    assert_eq!(t.failed, None);
-    assert_eq!(t.derive(Some("s"), 0), Phase::Queued);
-}
-
-// ── the queue ──────────────────────────────────────────────────────────────
-
-#[test]
-fn a_start_queued_behind_a_busy_coder_runs_once_it_is_free() {
-    let mut t = Tracked::default();
-    t.queue(Trigger::PrOpen, None);
-    assert_eq!(t.derive(Some("s"), 0), Phase::Queued);
-    // A second request while queued keeps the first.
-    t.queue(Trigger::Manual, Some("ca-2".into()));
-    assert_eq!(t.pending.as_ref().unwrap().trigger, Trigger::PrOpen);
-    assert_eq!(t.pending.as_ref().unwrap().custom_agent_id, None);
-
-    assert_eq!(t.take_pending(false), None, "the coder is still busy");
-    assert_eq!(t.derive(Some("s"), 0), Phase::Queued);
-    let pending = t.take_pending(true).expect("free: the start runs");
-    assert_eq!(pending.trigger, Trigger::PrOpen);
-    assert_ne!(t.derive(Some("s"), 0), Phase::Queued);
-    t.begin(reviewer(), pending.trigger, "s".into(), Some(7), 0)
-        .unwrap();
-    assert_eq!(t.derive(Some("s"), 0), Phase::Reviewing);
-
-    // Queued above everything but a review in flight.
-    let mut t = begun(Trigger::Manual, None);
-    t.queue(Trigger::ReReview, None);
-    assert_eq!(t.derive(Some("sha1|"), 0), Phase::Reviewing);
-    assert_eq!(
-        t.take_pending(true),
-        None,
-        "never while a round is in flight"
-    );
-    let mut failed = Tracked {
-        failed: Some("boom".into()),
-        ..Tracked::default()
-    };
-    failed.queue(Trigger::Manual, None);
-    assert_eq!(failed.derive(None, 0), Phase::Queued);
-}
-
-#[test]
-fn stopping_a_queued_start_cancels_it() {
-    let mut t = Tracked::default();
-    t.queue(Trigger::PrOpen, None);
-    t.stop();
-    assert_eq!(t.pending, None);
-    assert_eq!(t.derive(Some("s"), 0), Phase::Idle);
-    assert_eq!(t.take_pending(true), None);
-}
-
-#[test]
-fn code_that_moved_during_the_review_keeps_the_findings_and_reads_stale() {
-    let mut t = begun(Trigger::Manual, None);
-    t.submitted().unwrap();
-    t.check_code_after_report(Some("sha1|"));
-    assert_eq!(t.error, None, "unchanged code is no news");
-
-    let mut t = begun(Trigger::Manual, None);
-    t.submitted().unwrap();
-    t.check_code_after_report(Some("sha2|a.rs:Modified#d"));
-    t.turn_ended();
-    assert_eq!(t.error.as_deref(), Some(CODE_MOVED));
-    assert_eq!(
-        t.reviewed_signature.as_deref(),
-        Some("sha1|"),
-        "the code it read"
-    );
-    assert_eq!(t.derive(Some("sha2|a.rs:Modified#d"), 3), Phase::Stale);
-    // An unreadable checkout says nothing either way.
-    let mut t = begun(Trigger::Manual, None);
-    t.submitted().unwrap();
-    t.check_code_after_report(None);
-    assert_eq!(t.error, None);
-}
-
-#[test]
-fn a_start_claims_the_checkout_until_it_begins_or_lets_go() {
-    let mut t = Tracked::default();
-    t.claim().unwrap();
-    assert_eq!(
-        t.claim(),
-        Err("a review is already running on this checkout")
-    );
-    t.release();
-    t.claim().unwrap();
-    t.begin(reviewer(), Trigger::Manual, "s".into(), None, 0)
-        .unwrap();
-    assert!(!t.starting, "begun: the claim became the flight");
-    assert_eq!(
-        t.claim(),
-        Err("a review is already running on this checkout")
-    );
-    t.fail("boom");
-    assert!(!t.starting);
-    t.claim().unwrap();
-}
-
-#[test]
-fn a_pr_that_had_a_round_is_not_reviewed_on_sight_again() {
-    let mut t = Tracked::default();
-    assert!(!t.reviewed_pr(7));
-    t.begin(reviewer(), Trigger::PrOpen, "s".into(), Some(7), 0)
-        .unwrap();
-    t.turn_ended();
-    assert!(t.reviewed_pr(7));
-    assert!(!t.reviewed_pr(8));
-}
-
 // ── the reviewer resolution ────────────────────────────────────────────────
 
 fn conn() -> rusqlite::Connection {
@@ -476,36 +734,4 @@ fn review_on_pr_open_is_on_unless_switched_off() {
     assert!(!on_pr_open(&c));
     crate::database::set_setting(&c, SETTING_ON_PR_OPEN, "true").unwrap();
     assert!(on_pr_open(&c));
-}
-
-// ── persistence ────────────────────────────────────────────────────────────
-
-#[test]
-fn a_review_in_flight_at_shutdown_loads_as_failed_and_the_rest_as_it_was() {
-    let c = conn();
-    let key = |a: &str, s: Option<&str>| (a.to_string(), s.map(str::to_string));
-    let mut flying = begun(Trigger::PrOpen, Some(7));
-    flying.phase = Phase::Reviewing;
-    persist::save(&c, &key("arabia", None), &flying).unwrap();
-    let mut clean = begun(Trigger::Manual, None);
-    clean.submitted().unwrap();
-    clean.turn_ended();
-    clean.phase = Phase::Clean;
-    persist::save(&c, &key("arabia", Some("api")), &clean).unwrap();
-
-    let rows = persist::load_all(&c).unwrap();
-    assert_eq!(rows.len(), 2);
-    let (k, t) = rows.iter().find(|(k, _)| k.1.is_none()).unwrap();
-    assert_eq!(k, &key("arabia", None));
-    assert_eq!(
-        t.phase,
-        Phase::Reviewing,
-        "stored as it was; `load` judges it"
-    );
-    assert_eq!(t.flight, None, "a flight never persists");
-    let (_, t) = rows.iter().find(|(k, _)| k.1.is_some()).unwrap();
-    assert_eq!(t.reviewed_signature.as_deref(), Some("sha1|"));
-
-    persist::delete_for_agent(&c, "arabia").unwrap();
-    assert!(persist::load_all(&c).unwrap().is_empty());
 }

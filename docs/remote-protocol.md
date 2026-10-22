@@ -1658,23 +1658,34 @@ runs on the host and needs no PR, no origin and no GitHub login.
   digest of the uncommitted content — a dirty line replaced by another counts;
   a review whose report landed after the code moved carries `error` "the code
   changed during the review"; a content digest that can't be computed reads
-  `stale` too, with `error` "couldn't verify the review is current: …", and is
-  never re-reviewed automatically, since a round would fail the same way),
-  `failed` (the reviewer ended its turn without reporting, could not start,
-  or took longer than 20 minutes; a queued start that couldn't begin reads
-  "queued review not started: …"; `error` says which). `trigger` is why the last round ran: `manual`,
-  `pr-open` or `re-review`. `round` counts reviews ever; `open`/`resolved`
-  count the checkout's local threads; `since_ms` is when the phase began;
-  `reviewed_signature` is the code the last review covered.
-- **When it runs.** On `review_start`. On PR open, when the `settings` key
+  `stale` too, with `error` "couldn't verify the review is current: …"),
+  `failed` (a round couldn't begin, the reviewer ended its turn without
+  reporting or took longer than 20 minutes, a queued start couldn't begin —
+  "queued review not started: …" — or a restart cut a round off —
+  "interrupted by restart"; `error` says which). `trigger` is why the last
+  round ran: `manual`, `pr-open` or `re-review`. `round` counts reviews ever;
+  `open`/`resolved` count the checkout's local threads; `since_ms` is when the
+  phase began; `reviewed_signature` is the code the last review covered.
+- **Evidence.** Whether the code is stale changes only on a fresh read of the
+  code. A look that reads no git (`get_reviews`, a quiet checkout's tick) or
+  can't read the checkout leaves it where the last read put it; the facts it
+  rests on are persisted, and a restart re-scans every checkout before
+  concluding anything new, so a stale verdict never turns clean by itself.
+  Findings and clean are told apart by the open thread count, read fresh on
+  every look. A checkout carries at most one failure at a time, persisted
+  with the code it failed on, and shown as `error` ahead of any note.
+- **When it runs.** On `review_start`, which always runs (or queues) and
+  clears a failure when its round begins. On PR open, when the `settings` key
   `review.on_pr_open` is not `"false"` (the default): the agent's own
   `open_pr`, or a focused PR the watcher sees newly open. And again while a
-  PR is open, whenever the checkout goes `stale` with the coder idle and no
-  delegation live on it, up to 3 automatic rounds per PR — a spent budget is
-  reported on `error` without changing the phase. A start triggered while the
-  coder is mid-turn (a PR usually opens inside the opener's turn) is queued as
-  above rather than refused. A restart turns a review in
-  flight into `failed` ("interrupted by restart").
+  PR is open, whenever the code differs from what was last reviewed and the
+  coder is idle with no delegation live on it — **at most one automatic
+  attempt per code state**: a failure recorded on the code as it is now (of
+  any kind, an unverifiable digest included) blocks the automatic round until
+  the code changes, which allows one new attempt. Up to 3 automatic rounds per
+  PR; a spent budget is reported on `error` without changing the phase. A
+  start triggered while the coder is mid-turn (a PR usually opens inside the
+  opener's turn) is queued as above rather than refused.
 
 ```
 ReviewState = { agent_id, subdir: string | null,

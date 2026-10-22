@@ -5,12 +5,21 @@
 //! with every window shut and every client sees the same state.
 //!
 //! The state a client renders (`ReviewState.phase`) is *derived* on every look
-//! from four facts — a reviewer turn in flight, a recorded failure, the
-//! signature of the code last reviewed against the code now, and the open
-//! local threads — rather than kept as a state machine of its own. That keeps
-//! the UI honest by construction: a push makes a clean review stale the
-//! moment the host next looks, and the last thread resolved makes findings
-//! clean, with no transition anyone could forget to write.
+//! from persisted facts — a reviewer turn in flight, a queued start, the one
+//! recorded [`Failure`], the code the last review read, the last [`Sighting`]
+//! of the code, and the open local threads — rather than kept as a state
+//! machine of its own. Two rules hold it honest:
+//!
+//! - **Evidence.** Whether the code is stale changes only on a fresh read of
+//!   it (a [`Sighting::Read`]). A look that read nothing, or could not read
+//!   the checkout, leaves that judgement where the last read put it; the
+//!   facts it rests on are persisted, and a restart re-reads every checkout
+//!   before concluding anything new.
+//! - **One failure record.** Every failure — a scan that couldn't verify the
+//!   review, a start, a round, a queued start, a restart — is one persisted
+//!   [`Failure`], written by [`Tracked::record_failure`] alone and tied to
+//!   the code it failed on. The automatic re-review allows one attempt per
+//!   code state: the same failure on the same code never retries by itself.
 
 use std::collections::BTreeMap;
 use std::future::Future;
@@ -50,6 +59,17 @@ pub const WALL_TIMEOUT_MS: i64 = 20 * 60 * 1000;
 const PR_OPENED_RECENTLY_MS: i64 = 15 * 60 * 1000;
 /// The driver's look at every tracked checkout.
 const TICK: Duration = Duration::from_secs(10);
+/// How long after the coder's last turn a checkout with no open PR keeps
+/// being scanned for staleness; past it, only a look at it (`get_review`), a
+/// PR opening or a restart scans it again.
+const ACTIVE_WINDOW_MS: i64 = 2 * 60 * 1000;
+
+/// The note a review carries when the code changed while it was read.
+pub const CODE_MOVED: &str = "the code changed during the review";
+
+/// What a start refused by a round already on the checkout says. Matched by
+/// a queued start's runner, which puts the start back rather than failing it.
+pub const ALREADY_RUNNING: &str = "A review is already running on this checkout";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "kebab-case")]
@@ -73,16 +93,90 @@ pub enum Trigger {
     ReReview,
 }
 
-/// The note a review carries when the code changed while it was read.
-pub const CODE_MOVED: &str = "the code changed during the review";
+// ── evidence ─────────────────────────────────────────────────────────────────
 
-/// What a start refused by a round already on the checkout says. Matched by
-/// a queued start's runner, which puts the start back rather than failing it.
-pub const ALREADY_RUNNING: &str = "A review is already running on this checkout";
+/// What one look saw of the code.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum Sighting {
+    /// The look read no git (a cheap look: a client connecting, a quiet tick).
+    #[default]
+    NotScanned,
+    /// The checkout's git state couldn't be read at all.
+    Unreadable { reason: String },
+    /// The code was read: its cheap signature (HEAD, dirty paths and kinds)
+    /// and what became of its content digest.
+    Read {
+        cheap: String,
+        digest: ContentDigest,
+    },
+}
 
-/// The digest half of a signature that couldn't be computed: never equal to
-/// a recorded one, so a review it can't verify reads stale.
-const UNVERIFIED: &str = "unverified";
+/// The content half of a [`Sighting::Read`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum ContentDigest {
+    /// Computed (`git_state::content_digest`).
+    Verified { digest: String },
+    /// Needed, but couldn't be computed: the code can't be told from the
+    /// reviewed code, so it reads stale.
+    Unverified { reason: String },
+    /// Not needed: the cheap signature already differed from the reviewed
+    /// one, so the code moved whatever its content.
+    Skipped,
+}
+
+/// The last [`Sighting::Read`]: the facts staleness is judged on, persisted so
+/// a restart judges on them too.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CodeRead {
+    pub cheap: String,
+    pub digest: ContentDigest,
+}
+
+impl CodeRead {
+    /// Whether this read is the code `reviewed` names — only a verified
+    /// digest of the same cheap signature says so.
+    pub fn matches(&self, reviewed: &str) -> bool {
+        match &self.digest {
+            ContentDigest::Verified { digest } => full_signature(&self.cheap, digest) == reviewed,
+            ContentDigest::Unverified { .. } | ContentDigest::Skipped => false,
+        }
+    }
+}
+
+// ── failure ──────────────────────────────────────────────────────────────────
+
+/// Where a failure happened, which decides the phase it derives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum FailureOrigin {
+    /// A look couldn't verify the review is current (its content digest
+    /// failed): `stale`.
+    Scan,
+    /// A round couldn't begin (no reviewer, unreadable change, …): `failed`.
+    Start,
+    /// A round began and didn't report (spawn, send, timeout, no report):
+    /// `failed`.
+    Round,
+    /// A queued start couldn't begin once the coder settled: `failed`.
+    Queued,
+    /// A round was cut off by a restart: `failed`.
+    Restart,
+}
+
+/// The one failure a checkout carries, tied to the code it failed on.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Failure {
+    pub reason: String,
+    pub origin: FailureOrigin,
+    /// The cheap signature of the code when it failed, when known. The
+    /// automatic re-review never tries the same code state twice.
+    pub cheap_signature: Option<String>,
+    pub at_ms: i64,
+}
+
+// ── the view and the state ───────────────────────────────────────────────────
 
 /// The reviewer a checkout has: the custom agent it was built from and the
 /// hidden workspace that runs it (`agent_id`, once spawned).
@@ -108,17 +202,18 @@ pub struct ReviewState {
     pub resolved: u32,
     pub since_ms: i64,
     pub reviewed_signature: Option<String>,
+    /// The failure's reason, else the note.
     pub error: Option<String>,
 }
 
 /// A reviewer turn in progress. In memory only: a turn does not survive a
-/// restart, and a restart turns the persisted `reviewing` into `failed`.
+/// restart, and a restart records the persisted `reviewing` as a failure.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Flight {
     pub reviewer_agent_id: String,
     pub started_ms: i64,
     pub submitted: bool,
-    /// The code under review, as [`signature`] spells it.
+    /// The code under review, as [`full_signature`] spells it.
     pub signature: String,
     pub saw_running: bool,
 }
@@ -131,8 +226,11 @@ pub struct Pending {
     pub custom_agent_id: Option<String>,
 }
 
-/// One checkout's durable review memory (`review_state`), plus its flight.
+/// One checkout's durable review memory (`review_state`): the conclusions and
+/// the facts they rest on. `#[serde(skip)]` only for what dies with the
+/// process (a turn, a claim, the active window, the restart re-scan flag).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
 pub struct Tracked {
     pub reviewer: Option<ReviewerView>,
     /// Reviews run on this checkout, ever.
@@ -140,19 +238,21 @@ pub struct Tracked {
     /// The PR the automatic rounds are counted against, and that count.
     pub pr_number: Option<u32>,
     pub pr_rounds: u32,
+    /// The code the last review read (a full signature).
     pub reviewed_signature: Option<String>,
     pub trigger: Option<Trigger>,
-    /// Why the last review failed; cleared by the next start.
-    pub failed: Option<String>,
-    /// A note that changes no phase (a refused automatic start); cleared by
-    /// the next start.
-    pub error: Option<String>,
+    /// The one failure this checkout carries ([`Self::record_failure`]).
+    pub failure: Option<Failure>,
+    /// A note that is not a failure: the code moved during the review, the
+    /// review was stopped, an automatic round was refused by its budget.
+    pub note: Option<String>,
+    /// The last time the code was read, whatever has looked since.
+    pub last_read: Option<CodeRead>,
     pub since_ms: i64,
-    /// The phase last derived, so a restart can tell `reviewing` was cut off.
+    /// The phase last derived: what a restart reads a cut-off round from,
+    /// and the fallback for a checkout never read since it was persisted.
     pub phase: Phase,
     /// A start asked for while the coder was mid-turn, run once it settles.
-    /// Persisted: the coder is idle after a restart, so the tick runs it.
-    #[serde(default)]
     pub pending: Option<Pending>,
     #[serde(skip)]
     pub flight: Option<Flight>,
@@ -160,50 +260,161 @@ pub struct Tracked {
     /// exclusive as a flight, before the flight exists.
     #[serde(skip)]
     pub starting: bool,
-    /// What the last scan saw, so a look that scans nothing (`get_reviews`,
-    /// a tick on a quiet checkout) still answers from facts.
-    #[serde(skip)]
-    pub last_obs: Option<Observed>,
-    /// Why the last scan couldn't verify the review is current. Shown as the
-    /// error while it holds, and it holds off the automatic re-review: a round
-    /// would fail on the same unreadable content and spend the PR's budget.
-    #[serde(skip)]
-    pub scan_error: Option<String>,
     /// Until when the checkout counts as active (the coder's last turn) and
     /// is scanned every tick even without an open PR.
     #[serde(skip)]
     pub active_until_ms: i64,
+    /// Loaded from disk and not read since: the next tick reads it, so a
+    /// restart re-verifies instead of trusting old facts forever.
+    #[serde(skip)]
+    pub needs_rescan: bool,
 }
 
 impl Tracked {
     /// The phase the facts add up to.
-    pub fn derive(&self, current_signature: Option<&str>, open: u32) -> Phase {
+    ///
+    /// **Invariant: whether the code is stale changes only on a
+    /// [`Sighting::Read`].** It is judged on [`Self::last_read`] — the last
+    /// read's facts, persisted — and nothing else; a look that read nothing
+    /// ([`Sighting::NotScanned`]) or couldn't read the checkout
+    /// ([`Sighting::Unreadable`]) never writes it, so it leaves the judgement
+    /// where the last read put it. A checkout never read since it was loaded
+    /// keeps the stale its persisted phase concluded. Findings and clean are
+    /// told apart by the open thread count, read fresh on every look.
+    ///
+    /// Ahead of the code: a turn in flight (`reviewing`), a queued start
+    /// (`queued`), then the recorded failure — a scan that couldn't verify
+    /// the review reads `stale`, every other origin `failed`.
+    pub fn derive(&self, open: u32) -> Phase {
         if self.flight.is_some() {
             return Phase::Reviewing;
         }
         if self.pending.is_some() {
             return Phase::Queued;
         }
-        if self.failed.is_some() {
-            return Phase::Failed;
+        match self.failure.as_ref().map(|f| f.origin) {
+            Some(FailureOrigin::Scan) => return Phase::Stale,
+            Some(_) => return Phase::Failed,
+            None => {}
         }
         let Some(reviewed) = self.reviewed_signature.as_deref() else {
             return Phase::Idle;
         };
-        // An unreadable checkout is not a changed one.
-        if current_signature.is_some_and(|now| now != reviewed) {
-            return Phase::Stale;
-        }
-        if open > 0 {
+        let stale = match &self.last_read {
+            Some(read) => !read.matches(reviewed),
+            None => self.phase == Phase::Stale,
+        };
+        if stale {
+            Phase::Stale
+        } else if open > 0 {
             Phase::Findings
         } else {
             Phase::Clean
         }
     }
 
+    /// Take in what a look saw. Only a [`Sighting::Read`] changes the facts:
+    /// it becomes [`Self::last_read`], an unverified digest records a scan
+    /// failure on that code, and a digest that did its job clears one.
+    /// Every scan (whatever it saw) settles the restart re-scan.
+    pub fn record_sighting(&mut self, sighting: &Sighting) {
+        match sighting {
+            Sighting::NotScanned => {}
+            Sighting::Unreadable { .. } => self.needs_rescan = false,
+            Sighting::Read { cheap, digest } => {
+                self.needs_rescan = false;
+                match digest {
+                    ContentDigest::Unverified { reason } => self.record_failure(
+                        FailureOrigin::Scan,
+                        format!("couldn't verify the review is current: {reason}"),
+                        Some(cheap.clone()),
+                    ),
+                    ContentDigest::Verified { .. } | ContentDigest::Skipped => {
+                        if self
+                            .failure
+                            .as_ref()
+                            .is_some_and(|f| f.origin == FailureOrigin::Scan)
+                        {
+                            self.failure = None;
+                        }
+                    }
+                }
+                self.last_read = Some(CodeRead {
+                    cheap: cheap.clone(),
+                    digest: digest.clone(),
+                });
+            }
+        }
+    }
+
+    /// Record a failure: the only writer of [`Self::failure`]. `cheap` is the
+    /// code it failed on; `None` takes the last read's. Every origin but a
+    /// scan also ends the round in flight and the claim, if any.
+    pub fn record_failure(
+        &mut self,
+        origin: FailureOrigin,
+        reason: impl Into<String>,
+        cheap: Option<String>,
+    ) {
+        if origin != FailureOrigin::Scan {
+            self.flight = None;
+            self.starting = false;
+        }
+        self.failure = Some(Failure {
+            reason: reason.into(),
+            origin,
+            cheap_signature: cheap.or_else(|| self.last_read.as_ref().map(|r| r.cheap.clone())),
+            at_ms: now_ms(),
+        });
+    }
+
+    /// Whether the code, as last read, may be reviewed again on its own: it
+    /// differs from what was reviewed (or a review was attempted and failed
+    /// before any landed), and no failure is recorded on this very code
+    /// state. **One automatic attempt per code state**: a failure blocks the
+    /// code it failed on, of whatever origin, and a change of code clears
+    /// the block by itself. The budget per PR is checked separately.
+    pub fn wants_automatic_review(&self) -> bool {
+        let Some(read) = &self.last_read else {
+            return false;
+        };
+        let differs = match &self.reviewed_signature {
+            Some(reviewed) => !read.matches(reviewed),
+            None => self.failure.is_some(),
+        };
+        let blocked = self
+            .failure
+            .as_ref()
+            .is_some_and(|f| f.cheap_signature.as_deref() == Some(read.cheap.as_str()));
+        differs && !blocked
+    }
+
+    /// Whether a tick should read this checkout's code: never under a turn or
+    /// a claim; always right after a restart, while a PR is open, or while
+    /// the coder was active lately.
+    pub fn wants_scan(&self, pr_open: bool, now: i64) -> bool {
+        self.flight.is_none()
+            && !self.starting
+            && (self.needs_rescan || pr_open || now < self.active_until_ms)
+    }
+
+    /// The persisted memory as a restart finds it: no turn survived, so a
+    /// round that was in flight is a failure, and every checkout is read
+    /// again before anything new is concluded.
+    pub fn loaded(mut self) -> Self {
+        self.flight = None;
+        self.starting = false;
+        self.active_until_ms = 0;
+        self.needs_rescan = true;
+        if self.phase == Phase::Reviewing {
+            self.record_failure(FailureOrigin::Restart, "interrupted by restart", None);
+        }
+        self
+    }
+
     /// Claim the checkout for a start about to run. Refused while a round is
-    /// in flight or another start holds the claim; [`Self::begin`] or
-    /// [`Self::release`] ends it.
+    /// in flight or another start holds the claim; [`Self::begin`],
+    /// [`Self::release`] or a failure ends it.
     pub fn claim(&mut self) -> std::result::Result<(), &'static str> {
         if self.flight.is_some() || self.starting {
             return Err("a review is already running on this checkout");
@@ -212,7 +423,7 @@ impl Tracked {
         Ok(())
     }
 
-    /// A claimed start that never began.
+    /// A claimed start that never began and is no failure (a race lost).
     pub fn release(&mut self) {
         self.starting = false;
     }
@@ -226,38 +437,31 @@ impl Tracked {
         self.pending.take()
     }
 
-    /// The report landed; `current` is the code now. Code that moved while
-    /// the reviewer read it keeps the findings but says so — the derived
-    /// phase reads stale, and an open PR's re-review picks it up.
-    pub fn check_code_after_report(&mut self, current: Option<&str>) {
-        let moved = match (current, self.reviewed_signature.as_deref()) {
-            // An unverified signature is a digest that failed, not code that
-            // moved: its own note says so.
-            (Some(now), Some(reviewed)) => now != reviewed && !is_unverified(now),
-            _ => false,
+    /// A queued start beaten by a round already on the checkout waits its
+    /// turn again (one per checkout: a newer one queued meanwhile wins).
+    pub fn requeue(&mut self, pending: Pending) {
+        if self.pending.is_none() {
+            self.pending = Some(pending);
+        }
+    }
+
+    /// The report landed and the code was read again: if it is not the code
+    /// the round read, the findings stand but the note says so — the phase
+    /// reads stale, and an open PR's re-review picks it up. A read that
+    /// couldn't verify is not "moved": its failure says what it is.
+    pub fn check_code_after_report(&mut self) {
+        let (Some(read), Some(reviewed)) = (&self.last_read, self.reviewed_signature.as_deref())
+        else {
+            return;
+        };
+        let moved = match &read.digest {
+            ContentDigest::Unverified { .. } => false,
+            ContentDigest::Skipped => true,
+            ContentDigest::Verified { .. } => !read.matches(reviewed),
         };
         if moved {
-            self.error = Some(CODE_MOVED.into());
+            self.note = Some(CODE_MOVED.into());
         }
-    }
-
-    /// Whether a stale checkout may be re-reviewed on its own: not when the
-    /// staleness is a scan that couldn't read the content.
-    pub fn auto_rereview_allowed(&self) -> bool {
-        self.scan_error.is_none()
-    }
-
-    /// A queued start's round could not begin: the checkout reads failed with
-    /// why — unless another round got there first, in which case the start
-    /// waits its turn again.
-    pub fn queued_start_failed(&mut self, pending: Pending, why: &str) {
-        if why == ALREADY_RUNNING {
-            if self.pending.is_none() {
-                self.pending = Some(pending);
-            }
-            return;
-        }
-        self.fail(format!("queued review not started: {why}"));
     }
 
     /// Queue a start behind the coder's turn. One per checkout: a second
@@ -268,11 +472,13 @@ impl Tracked {
                 trigger,
                 custom_agent_id,
             });
-            self.error = None;
+            self.note = None;
         }
     }
 
-    /// Open a round. Refused while one is in flight.
+    /// Open a round on `signature`, the code just read. Refused while one is
+    /// in flight. A round that begins clears the failure: whatever failed
+    /// before, this one is the checkout's news now.
     pub fn begin(
         &mut self,
         reviewer: ReviewerView,
@@ -293,8 +499,8 @@ impl Tracked {
             self.pr_rounds += 1;
         }
         self.round += 1;
-        self.failed = None;
-        self.error = None;
+        self.failure = None;
+        self.note = None;
         self.trigger = Some(trigger);
         self.flight = Some(Flight {
             reviewer_agent_id: reviewer.agent_id.clone().unwrap_or_default(),
@@ -320,20 +526,18 @@ impl Tracked {
         Ok(())
     }
 
-    /// The reviewer's turn ended. Without a report that is a failure.
+    /// The reviewer's turn ended. Without a report that is a round failure.
     pub fn turn_ended(&mut self) {
         let Some(flight) = self.flight.take() else {
             return;
         };
         if !flight.submitted {
-            self.failed = Some("the reviewer ended its turn without submitting a review".into());
+            self.record_failure(
+                FailureOrigin::Round,
+                "the reviewer ended its turn without submitting a review",
+                None,
+            );
         }
-    }
-
-    pub fn fail(&mut self, why: impl Into<String>) {
-        self.flight = None;
-        self.starting = false;
-        self.failed = Some(why.into());
     }
 
     /// Whether `pr_number` has had a round already — a PR seen open again
@@ -347,20 +551,30 @@ impl Tracked {
     pub fn stop(&mut self) {
         self.flight = None;
         self.pending = None;
-        self.error = Some("review stopped".into());
+        self.note = Some("review stopped".into());
     }
 
     /// Whether an automatic round is still within this PR's budget.
     pub fn auto_budget_left(&self, pr_number: u32) -> bool {
         self.pr_number != Some(pr_number) || self.pr_rounds < MAX_ROUNDS_PER_PR
     }
+
+    /// What the wire's `error` shows: the failure's reason, else the note.
+    fn error(&self) -> Option<String> {
+        self.failure
+            .as_ref()
+            .map(|f| f.reason.clone())
+            .or_else(|| self.note.clone())
+    }
 }
 
-/// The host's tracked checkouts and what each was last announced as.
+/// The host's tracked checkouts, what each was last announced as, and what
+/// each was last persisted as.
 #[derive(Default)]
 pub struct Table {
     inner: Mutex<BTreeMap<Key, Tracked>>,
     emitted: Mutex<BTreeMap<Key, ReviewState>>,
+    saved: Mutex<BTreeMap<Key, String>>,
 }
 
 impl Table {
@@ -384,6 +598,7 @@ impl Table {
 
     pub fn remove(&self, key: &Key) -> Option<Tracked> {
         self.emitted.lock().remove(key);
+        self.saved.lock().remove(key);
         self.inner.lock().remove(key)
     }
 
@@ -434,9 +649,9 @@ pub fn global() -> &'static Table {
 
 /// The cheap half of the code's signature, from the status already read:
 /// HEAD plus every dirty path and its kind. Different from the reviewed one
-/// means the code moved; equal means only the content can say
-/// ([`full_signature`]). Not autopilot's `state_signature`, which folds the
-/// threads in — a finding resolved must not read as the code having moved.
+/// means the code moved; equal means only the content can say. Not
+/// autopilot's `state_signature`, which folds the threads in — a finding
+/// resolved must not read as the code having moved.
 pub fn cheap_signature(git: &crate::git_state::GitState) -> String {
     let mut files: Vec<String> = git
         .files
@@ -458,32 +673,10 @@ pub fn full_signature(cheap: &str, digest: &str) -> String {
     format!("{cheap}#{digest}")
 }
 
-/// Whether a signature's digest is the one a failed digest leaves.
-fn is_unverified(signature: &str) -> bool {
-    signature.rsplit_once('#').map(|(_, digest)| digest) == Some(UNVERIFIED)
-}
-
 /// The cheap half of a full signature (everything before its digest).
 fn cheap_part(full: &str) -> &str {
     full.rsplit_once('#').map_or(full, |(cheap, _)| cheap)
 }
-
-/// How much of the code a look reads.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Scan {
-    /// No git at all: the last scan's signature.
-    Cached,
-    /// The status, and the content digest only when the status alone can't
-    /// tell the code from the reviewed code.
-    Git,
-    /// The status and the content digest: a signature to record.
-    Full,
-}
-
-/// How long after the coder's last turn a checkout with no open PR keeps
-/// being scanned for staleness; past it, only a look at it (`get_review`)
-/// or a PR opening scans it again.
-const ACTIVE_WINDOW_MS: i64 = 2 * 60 * 1000;
 
 // ── reviewer resolution ──────────────────────────────────────────────────────
 
@@ -562,14 +755,22 @@ pub fn on_pr_open(conn: &rusqlite::Connection) -> bool {
 
 // ── observation ──────────────────────────────────────────────────────────────
 
-/// The facts one checkout's phase is derived from.
+/// How much of the code a look reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Scan {
+    /// No git at all: a [`Sighting::NotScanned`].
+    Cached,
+    /// The status, and the content digest only when the status alone can't
+    /// tell the code from the reviewed code.
+    Git,
+    /// The status and the content digest: a signature to record.
+    Full,
+}
+
+/// The facts a look read beside the code: thread counts and the PR, from the
+/// database alone.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Observed {
-    /// `None` when the checkout was not scanned or can't be read.
-    signature: Option<String>,
-    /// The content digest the comparison needed could not be computed; the
-    /// signature is then an unverified one, so the phase reads stale.
-    scan_error: Option<String>,
+struct Counts {
     open: u32,
     resolved: u32,
     pr_number: Option<u32>,
@@ -583,17 +784,7 @@ fn repo_for<'a>(record: &'a AgentRecord, key: &Key) -> Option<&'a TrackedRepo> {
     }
 }
 
-/// The checkout's facts. `with_git` runs the git scan (several processes);
-/// without it the signature is the last scan's, and the rest is read from
-/// the database alone.
-async fn observe(sup: &Supervisor, key: &Key, scan: Scan) -> Observed {
-    let (signature, scan_error) = match scan {
-        Scan::Cached => global()
-            .get(key)
-            .and_then(|t| t.last_obs)
-            .map_or((None, None), |o| (o.signature, o.scan_error)),
-        Scan::Git | Scan::Full => code_signature(sup, key, scan == Scan::Full).await,
-    };
+fn counts(sup: &Supervisor, key: &Key) -> Counts {
     let (open, resolved) = {
         let conn = sup.workspace.db().lock();
         store::counts(&conn, key).unwrap_or((0, 0))
@@ -610,9 +801,7 @@ async fn observe(sup: &Supervisor, key: &Key, scan: Scan) -> Observed {
             )
         })
         .unwrap_or((None, false));
-    Observed {
-        signature,
-        scan_error,
+    Counts {
         open,
         resolved,
         pr_number,
@@ -620,51 +809,57 @@ async fn observe(sup: &Supervisor, key: &Key, scan: Scan) -> Observed {
     }
 }
 
-/// The code's signature now, and why its content couldn't be verified.
-/// `(None, None)` when the checkout itself can't be read — "not a changed
-/// one", as before. The content digest is read when `full` asks for a
-/// signature to record, or when the status alone matches the reviewed code;
-/// a status that differs is already stale, and its cheap half says so.
-///
-/// A digest that fails yields an *unverified* signature (never equal to a
-/// recorded one) and the reason, so the caller can't mistake an unreadable
-/// tree for the reviewed one.
-async fn code_signature(
-    sup: &Supervisor,
-    key: &Key,
-    full: bool,
-) -> (Option<String>, Option<String>) {
-    let Some(git) = crate::commands::get_git_state_impl(sup, &key.0, key.1.as_deref())
-        .await
-        .ok()
-        .flatten()
-        .filter(|g| g.blocked_config.is_empty())
-    else {
-        return (None, None);
+/// What reading the code shows now. The content digest is read when `full`
+/// asks for a signature to record, or when the status alone matches the
+/// reviewed code; a status that differs is already stale, and the digest is
+/// skipped.
+async fn sight(sup: &Supervisor, key: &Key, full: bool) -> Sighting {
+    let git = match crate::commands::get_git_state_impl(sup, &key.0, key.1.as_deref()).await {
+        Ok(Some(git)) if git.blocked_config.is_empty() => git,
+        Ok(Some(git)) => {
+            return Sighting::Unreadable {
+                reason: format!("refused config: {}", git.blocked_config.join(", ")),
+            }
+        }
+        Ok(None) => {
+            return Sighting::Unreadable {
+                reason: "the checkout is not ready".into(),
+            }
+        }
+        Err(e) => {
+            return Sighting::Unreadable {
+                reason: e.to_string(),
+            }
+        }
     };
     let cheap = cheap_signature(&git);
     let reviewed = global().get(key).and_then(|t| t.reviewed_signature);
     let needs_digest = full || reviewed.as_deref().map(cheap_part) == Some(cheap.as_str());
     if !needs_digest {
-        return (Some(cheap), None);
+        return Sighting::Read {
+            cheap,
+            digest: ContentDigest::Skipped,
+        };
     }
     let checkout = crate::commands::agent_repo_checkout_opt(sup, &key.0, key.1.as_deref())
         .ok()
         .flatten()
         .map(|(_, checkout)| checkout);
     let digest = match checkout {
-        Some(checkout) => crate::git_state::content_digest(&checkout)
-            .await
-            .map_err(|e| e.to_string()),
-        None => Err("the checkout is gone".to_string()),
+        Some(checkout) => match crate::git_state::content_digest(&checkout).await {
+            Ok(digest) => ContentDigest::Verified { digest },
+            Err(e) => ContentDigest::Unverified {
+                reason: e.to_string(),
+            },
+        },
+        None => ContentDigest::Unverified {
+            reason: "the checkout is gone".into(),
+        },
     };
-    match digest {
-        Ok(digest) => (Some(full_signature(&cheap, &digest)), None),
-        Err(why) => (Some(full_signature(&cheap, UNVERIFIED)), Some(why)),
-    }
+    Sighting::Read { cheap, digest }
 }
 
-fn view(key: &Key, tracked: &Tracked, phase: Phase, open: u32, resolved: u32) -> ReviewState {
+fn view(key: &Key, tracked: &Tracked, phase: Phase, counts: &Counts) -> ReviewState {
     ReviewState {
         agent_id: key.0.clone(),
         subdir: key.1.clone(),
@@ -672,39 +867,58 @@ fn view(key: &Key, tracked: &Tracked, phase: Phase, open: u32, resolved: u32) ->
         trigger: tracked.trigger,
         reviewer: tracked.reviewer.clone(),
         round: tracked.round,
-        open,
-        resolved,
+        open: counts.open,
+        resolved: counts.resolved,
         since_ms: tracked.since_ms,
         reviewed_signature: tracked.reviewed_signature.clone(),
-        error: tracked
-            .failed
-            .clone()
-            .or_else(|| tracked.scan_error.clone())
-            .or_else(|| tracked.error.clone()),
+        error: tracked.error(),
     }
 }
 
-/// Settle a tracked checkout's phase from `obs`, and announce and persist it
-/// when anything a client renders changed. The view, or `None` when the
-/// checkout is not tracked.
-fn settle(ctx: &Arc<EngineCtx>, key: &Key, obs: Observed) -> Option<ReviewState> {
+/// The one way the engine looks at a checkout: read as much as `scan` asks,
+/// record what it saw into the table, derive the phase, persist the memory
+/// when it changed and announce the view when it changed. Every path that
+/// reads the code goes through here, so none can return with what it saw
+/// unrecorded. Answers with what it saw, for the one caller that records a
+/// signature from it. `None` when the checkout is not tracked.
+async fn look(ctx: &Arc<EngineCtx>, sup: &Supervisor, key: &Key, scan: Scan) -> Option<Look> {
     let table = global();
+    table.get(key)?;
+    let sighting = match scan {
+        Scan::Cached => Sighting::NotScanned,
+        Scan::Git | Scan::Full => sight(sup, key, scan == Scan::Full).await,
+    };
+    let counts = counts(sup, key);
     let now = now_ms();
-    let state = table.update_existing(key, |t| {
-        let phase = t.derive(obs.signature.as_deref(), obs.open);
+    let (state, saved) = table.update_existing(key, |t| {
+        t.record_sighting(&sighting);
+        let phase = t.derive(counts.open);
         if phase != t.phase {
             t.phase = phase;
             t.since_ms = now;
         }
-        t.scan_error = obs
-            .scan_error
-            .as_ref()
-            .map(|why| format!("couldn't verify the review is current: {why}"));
-        let state = view(key, t, phase, obs.open, obs.resolved);
-        t.last_obs = Some(obs);
-        state
+        (
+            view(key, t, phase, &counts),
+            serde_json::to_string(&*t).ok(),
+        )
     })?;
-    let changed = {
+    if let Some(json) = saved {
+        let changed = table.saved.lock().get(key) != Some(&json);
+        if changed {
+            if let Some(t) = table.get(key) {
+                let conn = ctx.db.lock();
+                match persist::save(&conn, key, &t) {
+                    Ok(()) => {
+                        table.saved.lock().insert(key.clone(), json);
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, agent_id = %key.0, "review state not persisted")
+                    }
+                }
+            }
+        }
+    }
+    let announce = {
         let mut emitted = table.emitted.lock();
         if emitted.get(key) == Some(&state) {
             false
@@ -713,31 +927,44 @@ fn settle(ctx: &Arc<EngineCtx>, key: &Key, obs: Observed) -> Option<ReviewState>
             true
         }
     };
-    if changed {
-        if let Some(t) = table.get(key) {
-            let conn = ctx.db.lock();
-            if let Err(e) = persist::save(&conn, key, &t) {
-                tracing::warn!(error = %e, agent_id = %key.0, "review state not persisted");
-            }
-        }
+    if announce {
         crate::host::emit(ctx.sink.as_ref(), EVENT_CHANGED, &state);
     }
-    Some(state)
+    Some(Look {
+        state,
+        counts,
+        sighting,
+    })
 }
 
-/// [`settle`] from a fresh git scan of the checkout.
+/// What one [`look`] settled.
+struct Look {
+    state: ReviewState,
+    counts: Counts,
+    sighting: Sighting,
+}
+
+/// [`look`] reading the code.
 async fn scan(ctx: &Arc<EngineCtx>, sup: &Supervisor, key: &Key) -> Option<ReviewState> {
-    global().get(key)?;
-    let obs = observe(sup, key, Scan::Git).await;
-    settle(ctx, key, obs)
+    look(ctx, sup, key, Scan::Git).await.map(|l| l.state)
 }
 
-/// [`settle`] without a git scan: the last scan's signature, the database's
-/// counts and PR. For looks that must be cheap.
+/// [`look`] reading no git: the last read's facts, fresh counts.
 async fn refresh(ctx: &Arc<EngineCtx>, sup: &Supervisor, key: &Key) -> Option<ReviewState> {
-    global().get(key)?;
-    let obs = observe(sup, key, Scan::Cached).await;
-    settle(ctx, key, obs)
+    look(ctx, sup, key, Scan::Cached).await.map(|l| l.state)
+}
+
+/// Record a failure on a checkout ([`Tracked::record_failure`], on the code
+/// last read) and settle what it derives.
+async fn fail(
+    ctx: &Arc<EngineCtx>,
+    sup: &Supervisor,
+    key: &Key,
+    origin: FailureOrigin,
+    reason: String,
+) {
+    global().update_existing(key, |t| t.record_failure(origin, reason, None));
+    refresh(ctx, sup, key).await;
 }
 
 // ── the reviewer workspace ───────────────────────────────────────────────────
@@ -975,11 +1202,21 @@ pub async fn start(
             .await
             .ok_or_else(|| Error::Other("review state vanished".into()));
     }
-    run_round(ctx, sup, agent_id, subdir, custom_agent_id, trigger).await
+    run_round(
+        ctx,
+        sup,
+        &key,
+        custom_agent_id,
+        trigger,
+        FailureOrigin::Start,
+    )
+    .await
 }
 
 /// Run a queued start once the coder is free, in the background: spawning a
 /// reviewer takes a while and the caller (a status event, a tick) can't wait.
+/// A failure is recorded by the round as a queued start's; one beaten by a
+/// round already on the checkout waits again.
 fn drain(ctx: &Arc<EngineCtx>, sup: &Arc<Supervisor>, key: &Key) {
     let free = coder_free(sup, key);
     let Some(pending) = global()
@@ -993,71 +1230,111 @@ fn drain(ctx: &Arc<EngineCtx>, sup: &Arc<Supervisor>, key: &Key) {
         let result = run_round(
             &ctx,
             &sup,
-            &key.0,
-            key.1.as_deref(),
+            &key,
             pending.custom_agent_id.as_deref(),
             pending.trigger,
+            FailureOrigin::Queued,
         )
         .await;
-        if let Err(e) = result {
-            let why = e.to_string();
-            global().update_existing(&key, |t| t.queued_start_failed(pending, &why));
+        if matches!(&result, Err(e) if e.to_string() == ALREADY_RUNNING) {
+            global().update_existing(&key, |t| t.requeue(pending));
             refresh(&ctx, &sup, &key).await;
         }
     });
 }
 
-/// Run one round now: claim the checkout, spawn or resume its reviewer, and
-/// send it the round's prompt.
+/// Run one round now: claim the checkout, read the change, spawn or resume
+/// its reviewer, and send it the round's prompt. Every failure is recorded
+/// here, before returning — `before` (a start's or a queued start's origin)
+/// for one that stops the round from beginning, [`FailureOrigin::Round`]
+/// after it began. Only a claim lost to a round already running records
+/// nothing: that round is the checkout's news.
 async fn run_round(
     ctx: &Arc<EngineCtx>,
     sup: &Arc<Supervisor>,
-    agent_id: &str,
-    subdir: Option<&str>,
+    key: &Key,
     custom_agent_id: Option<&str>,
     trigger: Trigger,
+    before: FailureOrigin,
 ) -> Result<ReviewState> {
-    let coder = sup.workspace.agent(agent_id)?;
-    if coder.archive.is_some() {
-        return Err(Error::Other("agent is archived".into()));
-    }
-    let key = super::checkout_key(&coder, subdir)?;
-    let repo = repo_for(&coder, &key)
-        .cloned()
-        .ok_or_else(|| Error::Other("agent has no tracked repos".into()))?;
     let table = global();
     // Claimed first, before anything awaits: a second start meanwhile — the
     // watcher and the agent's own op both announcing one PR, a tick and a
     // click — is refused here rather than racing to the spawn.
     table
-        .update(&key, Tracked::claim)
+        .update(key, Tracked::claim)
         .map_err(|_| Error::Other(ALREADY_RUNNING.into()))?;
-    let released = |why: Error| {
-        table.update(&key, Tracked::release);
-        why
+    let prefix = if before == FailureOrigin::Queued {
+        "queued review not started: "
+    } else {
+        ""
     };
+    match begin_round(ctx, sup, key, custom_agent_id, trigger).await {
+        Ok(()) => {}
+        Err(e) => {
+            let why = format!("{prefix}{e}");
+            fail(ctx, sup, key, before, why).await;
+            return Err(e);
+        }
+    }
+    if let Err(e) = deliver_round(ctx, sup, key, trigger).await {
+        fail(ctx, sup, key, FailureOrigin::Round, e.to_string()).await;
+        return Err(e);
+    }
+    refresh(ctx, sup, key)
+        .await
+        .ok_or_else(|| Error::Other("review state vanished".into()))
+}
+
+/// The part of a round before it begins: the reviewer resolves, the change
+/// reads (its signature is what the round records), the flight opens.
+async fn begin_round(
+    ctx: &Arc<EngineCtx>,
+    sup: &Arc<Supervisor>,
+    key: &Key,
+    custom_agent_id: Option<&str>,
+    trigger: Trigger,
+) -> Result<()> {
+    let coder = sup.workspace.agent(&key.0)?;
+    if coder.archive.is_some() {
+        return Err(Error::Other("agent is archived".into()));
+    }
     let spec = {
         let conn = ctx.db.lock();
         resolve_reviewer(&conn, custom_agent_id)
     }
-    .ok_or_else(|| {
-        released(Error::Other(
-            "No reviewer is set up — pick one in Settings › Review".into(),
-        ))
-    })?;
-    let obs = observe(sup, &key, Scan::Full).await;
-    if let Some(why) = &obs.scan_error {
-        return Err(released(Error::Other(format!(
-            "couldn't read the change: {why}"
-        ))));
-    }
-    let Some(signature) = obs.signature.clone() else {
-        return Err(released(Error::Other(
-            "the checkout can't be read yet; try again shortly".into(),
-        )));
+    .ok_or_else(|| Error::Other("No reviewer is set up — pick one in Settings › Review".into()))?;
+    let Some(Look {
+        counts, sighting, ..
+    }) = look(ctx, sup, key, Scan::Full).await
+    else {
+        return Err(Error::Other("review state vanished".into()));
     };
-
-    let existing = table.get(&key).and_then(|t| t.reviewer);
+    // The signature the round records is this look's own, never an older
+    // read's: a checkout that can't be read now has no change to review.
+    let signature = match sighting {
+        Sighting::Read {
+            cheap,
+            digest: ContentDigest::Verified { digest },
+        } => full_signature(&cheap, &digest),
+        Sighting::Read {
+            digest: ContentDigest::Unverified { reason },
+            ..
+        }
+        | Sighting::Unreadable { reason } => {
+            return Err(Error::Other(format!("couldn't read the change: {reason}")))
+        }
+        Sighting::Read {
+            digest: ContentDigest::Skipped,
+            ..
+        }
+        | Sighting::NotScanned => {
+            return Err(Error::Other(
+                "couldn't read the change: its content was not read".into(),
+            ))
+        }
+    };
+    let existing = global().get(key).and_then(|t| t.reviewer);
     let placeholder = ReviewerView {
         custom_agent_id: spec.custom_agent_id.clone(),
         name: spec.name.clone(),
@@ -1066,58 +1343,62 @@ async fn run_round(
         agent_id: existing.as_ref().and_then(|r| r.agent_id.clone()),
     };
     let now = now_ms();
-    table
-        .update(&key, |t| {
+    global()
+        .update(key, |t| {
             t.active_until_ms = now + ACTIVE_WINDOW_MS;
-            t.begin(placeholder, trigger, signature, obs.pr_number, now)
+            t.begin(placeholder, trigger, signature, counts.pr_number, now)
         })
-        .map_err(|e| released(Error::Other(e.into())))?;
-    settle(ctx, &key, obs);
+        .map_err(|e| Error::Other(e.into()))?;
+    refresh(ctx, sup, key).await;
+    Ok(())
+}
 
-    let reviewer = match ensure_reviewer(ctx, sup, &coder, &repo, &spec, existing.as_ref()).await {
-        Ok(reviewer) => reviewer,
-        Err(e) => {
-            table.update(&key, |t| {
-                t.fail(format!("the reviewer could not start: {e}"))
-            });
-            refresh(ctx, sup, &key).await;
-            return Err(e);
-        }
-    };
+/// The part of a round after it begins: the reviewer workspace, the prompt.
+async fn deliver_round(
+    ctx: &Arc<EngineCtx>,
+    sup: &Arc<Supervisor>,
+    key: &Key,
+    trigger: Trigger,
+) -> Result<()> {
+    let coder = sup.workspace.agent(&key.0)?;
+    let repo = repo_for(&coder, key)
+        .cloned()
+        .ok_or_else(|| Error::Other("agent has no tracked repos".into()))?;
+    let table = global();
+    let tracked = table
+        .get(key)
+        .ok_or_else(|| Error::Other("review state vanished".into()))?;
+    let spec_id = tracked
+        .reviewer
+        .as_ref()
+        .map(|r| r.custom_agent_id.clone())
+        .unwrap_or_default();
+    let spec = {
+        let conn = ctx.db.lock();
+        resolve_reviewer(&conn, Some(&spec_id))
+    }
+    .ok_or_else(|| Error::Other("the reviewer is no longer set up".into()))?;
+    let reviewer = ensure_reviewer(ctx, sup, &coder, &repo, &spec, tracked.reviewer.as_ref())
+        .await
+        .map_err(|e| Error::Other(format!("the reviewer could not start: {e}")))?;
     let reviewer_id = reviewer.agent_id.clone().unwrap_or_default();
-    table.update(&key, |t| {
+    table.update(key, |t| {
         if let Some(f) = t.flight.as_mut() {
             f.reviewer_agent_id = reviewer_id.clone();
         }
         t.reviewer = Some(reviewer.clone());
     });
-    let prompt = round_prompt(
-        sup,
-        &coder,
-        &repo,
-        &key,
-        table.get(&key).map_or(1, |t| t.round),
-        trigger,
-    )
-    .await;
+    let prompt = round_prompt(sup, &coder, &repo, key, tracked.round, trigger).await;
     let turn_id = uuid::Uuid::new_v4().to_string();
-    if let Err(e) = sup
-        .clone()
+    sup.clone()
         .send_user_message(ctx, &reviewer_id, &turn_id, &prompt, &[])
         .await
-    {
-        table.update(&key, |t| {
-            t.fail(format!("the review could not be sent: {e}"))
-        });
-        refresh(ctx, sup, &key).await;
-        return Err(e);
-    }
-    refresh(ctx, sup, &key)
-        .await
-        .ok_or_else(|| Error::Other("review state vanished".into()))
+        .map(|_| ())
+        .map_err(|e| Error::Other(format!("the review could not be sent: {e}")))
 }
 
-/// Stop the reviewer turn running on `agent_id`'s checkout, if any.
+/// Stop the reviewer turn running on `agent_id`'s checkout, or cancel a
+/// start queued for it, if any.
 pub async fn stop(
     ctx: &Arc<EngineCtx>,
     sup: &Arc<Supervisor>,
@@ -1158,9 +1439,8 @@ pub async fn get(
     Ok(scan(ctx, sup, &key).await)
 }
 
-/// Every tracked checkout, from the last scan: the next tick corrects a
-/// few seconds' drift, and a client connecting must not cost a git scan per
-/// checkout.
+/// Every tracked checkout, from the facts on record: no git per checkout for
+/// a client connecting; the next tick reads what needs reading.
 pub async fn all(ctx: &Arc<EngineCtx>, sup: &Arc<Supervisor>) -> Vec<ReviewState> {
     let mut out = Vec::new();
     for key in global().keys() {
@@ -1253,17 +1533,13 @@ pub async fn submit(
         };
         super::emit_threads_changed(ctx, &key.0, key.1.as_deref(), ids).await;
     }
-    // The code the reviewer read was recorded when the round began; if the
-    // coder (or anyone) changed it since, the report is about older code.
-    // A digest that fails reads as an unverified signature, which never
-    // equals the recorded one: the findings stay, the phase reads stale and
-    // the note says why.
-    let (now, scan_error) = code_signature(sup, &key, true).await;
-    table.update_existing(&key, |t| t.check_code_after_report(now.as_deref()));
-    let mut obs = observe(sup, &key, Scan::Cached).await;
-    obs.signature = now;
-    obs.scan_error = scan_error;
-    settle(ctx, &key, obs);
+    // The code the reviewer read was recorded when the round began. Read it
+    // again now (recorded like every look): code that moved since keeps the
+    // findings and carries the note; a digest that fails records a scan
+    // failure, so the checkout reads stale with why.
+    look(ctx, sup, &key, Scan::Full).await;
+    table.update_existing(&key, Tracked::check_code_after_report);
+    refresh(ctx, sup, &key).await;
     Ok(())
 }
 
@@ -1315,9 +1591,18 @@ pub async fn on_pr_opened(
     }
     // Reviewed clean or with findings at exactly this code (a review asked
     // for before the PR): nothing new to read.
-    if let Some(reviewed) = tracked.as_ref().and_then(|t| t.reviewed_signature.clone()) {
-        let obs = observe(sup, &key, Scan::Git).await;
-        if obs.signature.as_deref() == Some(reviewed.as_str()) {
+    if tracked
+        .as_ref()
+        .is_some_and(|t| t.reviewed_signature.is_some())
+    {
+        look(ctx, sup, &key, Scan::Git).await;
+        let current = global().get(&key).is_some_and(|t| {
+            match (&t.last_read, t.reviewed_signature.as_deref()) {
+                (Some(read), Some(reviewed)) => read.matches(reviewed),
+                _ => false,
+            }
+        });
+        if current {
             return;
         }
     }
@@ -1379,8 +1664,9 @@ fn clean_up_reviewer(
 
 // ── the driver ───────────────────────────────────────────────────────────────
 
-/// Load the persisted memory. A review in flight at the last shutdown is a
-/// failed one: its turn went with the process.
+/// Load the persisted memory as a restart finds it ([`Tracked::loaded`]): a
+/// round in flight at the last shutdown is a restart failure, and every
+/// checkout is read again on the first tick.
 pub fn load(ctx: &EngineCtx) {
     let rows = {
         let conn = ctx.db.lock();
@@ -1394,12 +1680,8 @@ pub fn load(ctx: &EngineCtx) {
         }
     };
     let table = global();
-    for (key, mut tracked) in rows {
-        tracked.flight = None;
-        if tracked.phase == Phase::Reviewing {
-            tracked.failed = Some("interrupted by restart".into());
-            tracked.phase = Phase::Failed;
-        }
+    for (key, tracked) in rows {
+        let tracked = tracked.loaded();
         table.update(&key, |t| *t = tracked);
     }
 }
@@ -1424,11 +1706,15 @@ async fn on_status(ctx: &Arc<EngineCtx>, sup: &Arc<Supervisor>, event: StatusEve
                         true
                     }
                     AgentStatus::Stopped => {
-                        t.fail("the reviewer was stopped before it reported");
+                        t.record_failure(
+                            FailureOrigin::Round,
+                            "the reviewer was stopped before it reported",
+                            None,
+                        );
                         true
                     }
                     AgentStatus::Error => {
-                        t.fail("the reviewer's turn failed");
+                        t.record_failure(FailureOrigin::Round, "the reviewer's turn failed", None);
                         true
                     }
                 }
@@ -1473,11 +1759,15 @@ async fn resync(ctx: &Arc<EngineCtx>, sup: &Arc<Supervisor>) {
                     true
                 }
                 Some(AgentStatus::Error) => {
-                    t.fail("the reviewer's turn failed");
+                    t.record_failure(FailureOrigin::Round, "the reviewer's turn failed", None);
                     true
                 }
                 Some(AgentStatus::Stopped) | None => {
-                    t.fail("the reviewer went away before it reported");
+                    t.record_failure(
+                        FailureOrigin::Round,
+                        "the reviewer went away before it reported",
+                        None,
+                    );
                     true
                 }
                 _ => false,
@@ -1490,10 +1780,11 @@ async fn resync(ctx: &Arc<EngineCtx>, sup: &Arc<Supervisor>) {
 }
 
 /// One look at every tracked checkout: timeouts, staleness, and the
-/// automatic re-review an open PR gets while its budget lasts. A checkout is
-/// git-scanned only while it has an open PR or the coder was active lately;
-/// the rest settle from their last scan. A start runs in the background —
-/// spawning a reviewer takes a while, and the other checkouts can't wait.
+/// automatic re-review an open PR gets — one attempt per code state, within
+/// its budget ([`Tracked::wants_automatic_review`]). A checkout's code is
+/// read only when [`Tracked::wants_scan`] says so; the rest settle from the
+/// facts on record. A start runs in the background — spawning a reviewer
+/// takes a while, and the other checkouts can't wait.
 async fn tick(ctx: &Arc<EngineCtx>, sup: &Arc<Supervisor>) {
     let table = global();
     let now = now_ms();
@@ -1512,7 +1803,11 @@ async fn tick(ctx: &Arc<EngineCtx>, sup: &Arc<Supervisor>) {
                         t.turn_ended();
                         None
                     } else {
-                        t.fail("the reviewer did not report within 20 minutes");
+                        t.record_failure(
+                            FailureOrigin::Round,
+                            "the reviewer did not report within 20 minutes",
+                            None,
+                        );
                         Some(id)
                     }
                 }
@@ -1530,44 +1825,45 @@ async fn tick(ctx: &Arc<EngineCtx>, sup: &Arc<Supervisor>) {
         let Some(tracked) = table.get(&key) else {
             continue;
         };
-        let cheap = observe(sup, &key, Scan::Cached).await;
-        let scan_now = tracked.flight.is_none()
-            && !tracked.starting
-            && (cheap.pr_open || now < tracked.active_until_ms);
-        let obs = if scan_now {
-            observe(sup, &key, Scan::Git).await
+        let pr_open = counts(sup, &key).pr_open;
+        let scan = if tracked.wants_scan(pr_open, now) {
+            Scan::Git
         } else {
-            cheap
+            Scan::Cached
         };
-        let Some(state) = settle(ctx, &key, obs.clone()) else {
+        let Some(Look { counts, .. }) = look(ctx, sup, &key, scan).await else {
             continue;
         };
-        if state.phase != Phase::Stale || !on {
+        if !on {
             continue;
         }
-        if !table.get(&key).is_some_and(|t| t.auto_rereview_allowed()) {
-            continue;
-        }
-        let Some(pr_number) = obs.pr_number.filter(|_| obs.pr_open) else {
+        let Some(pr_number) = counts.pr_number.filter(|_| counts.pr_open) else {
             continue;
         };
-        let coder_busy = matches!(
-            sup.status_of(&key.0),
-            Some(AgentStatus::Running | AgentStatus::Spawning)
-        );
-        if coder_busy || crate::supervisor::delegation::is_live(&key) {
+        let Some(tracked) = table.get(&key) else {
+            continue;
+        };
+        if tracked.flight.is_some()
+            || tracked.starting
+            || tracked.pending.is_some()
+            || !tracked.wants_automatic_review()
+            || !coder_free(sup, &key)
+        {
             continue;
         }
         if !tracked.auto_budget_left(pr_number) {
             let why =
                 format!("re-review budget spent for PR #{pr_number} ({MAX_ROUNDS_PER_PR} rounds)");
-            table.update_existing(&key, |t| t.error = Some(why));
+            table.update_existing(&key, |t| t.note = Some(why));
             refresh(ctx, sup, &key).await;
             continue;
         }
         let (ctx, sup, key) = (ctx.clone(), sup.clone(), key.clone());
         crate::host::spawn(async move {
-            if let Err(e) = start(
+            // A round records its own failures. A refusal before it — no
+            // reviewer set up — is recorded here, on this code, so the same
+            // state is not retried every tick.
+            let result = start(
                 &ctx,
                 &sup,
                 &key.0,
@@ -1575,11 +1871,22 @@ async fn tick(ctx: &Arc<EngineCtx>, sup: &Arc<Supervisor>) {
                 None,
                 Trigger::ReReview,
             )
-            .await
-            {
-                let why = format!("re-review not started: {e}");
-                global().update_existing(&key, |t| t.error = Some(why));
-                refresh(&ctx, &sup, &key).await;
+            .await;
+            if let Err(e) = result {
+                let recorded = global()
+                    .get(&key)
+                    .and_then(|t| t.failure)
+                    .is_some_and(|f| f.at_ms >= now);
+                if !recorded && e.to_string() != ALREADY_RUNNING {
+                    fail(
+                        &ctx,
+                        &sup,
+                        &key,
+                        FailureOrigin::Start,
+                        format!("re-review not started: {e}"),
+                    )
+                    .await;
+                }
             }
         });
     }
