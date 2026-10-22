@@ -156,6 +156,15 @@ async fn post(tel: &Telemetry, body: Value) -> Result<(), String> {
     }
 }
 
+/// Whether [`track`] would send anything right now: a key is baked in and
+/// consent is on. For callers whose event costs something to assemble (a
+/// subprocess, a DB read) — skip the work when it would only be dropped.
+pub fn is_enabled() -> bool {
+    TELEMETRY
+        .get()
+        .is_some_and(|tel| tel.enabled.load(Ordering::Relaxed))
+}
+
 /// Record an event. No-op when telemetry is uninitialized or consent is off.
 /// Sends fire-and-forget so the caller never blocks on the network.
 pub fn track(event: &str, props: Value) {

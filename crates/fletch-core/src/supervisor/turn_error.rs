@@ -14,7 +14,7 @@
 
 use serde_json::{json, Value};
 
-use crate::workspace::{AgentStatus, ClosedTurn, TurnOutcome};
+use crate::workspace::{ClosedTurn, TurnOutcome};
 
 /// The categorical kind of a turn's error. Every value is a fixed label; the
 /// message itself is never part of the answer.
@@ -141,18 +141,20 @@ fn has_code(m: &str, code: &str) -> bool {
 /// The `turn_completed` event's properties. All categorical or numeric: the
 /// provider, its probed version, the model, how long the turn ran and how much
 /// it produced, how it ended, and — for a failed turn — the error's kind and
-/// exit code. `errored` stays alongside `outcome` for existing dashboards.
+/// exit code. A turn failed whether the process crashed or the provider
+/// reported the failure in band and exited cleanly; `error` is whichever
+/// message there is. `errored` stays alongside `outcome` for existing
+/// dashboards and means exactly `outcome == "failed"`.
 pub(super) fn turn_completed_props(
     provider: &str,
     provider_version: Option<&str>,
     model: Option<&str>,
-    status: &AgentStatus,
     outcome: TurnOutcome,
     turn: &ClosedTurn,
-    last_error: Option<&str>,
+    error: Option<&str>,
 ) -> Value {
-    let errored = matches!(status, AgentStatus::Error);
-    let error = last_error.filter(|_| errored);
+    let errored = matches!(outcome, TurnOutcome::Failed);
+    let error = error.filter(|_| errored);
     json!({
         "provider": provider,
         "provider_version": provider_version,
@@ -234,7 +236,6 @@ mod tests {
             "opencode",
             Some("1.18.31"),
             None,
-            &AgentStatus::Error,
             TurnOutcome::Failed,
             &turn,
             Some("Agent process exited: exit status: 1: Error: Rate limit exceeded"),
@@ -247,12 +248,25 @@ mod tests {
         // The raw message is never a property.
         assert!(!failed.to_string().contains("Rate limit exceeded"));
 
+        // codex's `turn.failed` on a spent quota: the turn lands on Idle and
+        // the process exit is expected, so the only error is the in-band one.
+        let in_band = turn_completed_props(
+            "codex",
+            None,
+            Some("gpt-5"),
+            TurnOutcome::Failed,
+            &turn,
+            Some("You've hit your usage limit. Try again at 3pm."),
+        );
+        assert_eq!(in_band["errored"], true);
+        assert_eq!(in_band["error_kind"], "rate_limit");
+        assert_eq!(in_band["exit_code"], Value::Null);
+
         // A user Stop on a hung turn: not an error, but visibly interrupted.
         let stopped = turn_completed_props(
             "antigravity",
             None,
             None,
-            &AgentStatus::Idle,
             TurnOutcome::Interrupted,
             &turn,
             Some("stale error from an earlier turn"),

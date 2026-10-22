@@ -561,12 +561,16 @@ pub enum TurnOutcome {
 impl TurnOutcome {
     /// The outcome of the turn a status transition closes. A pending user stop
     /// wins over the status it lands on: the stop is why the turn ended, even
-    /// when the process it killed went down with an error.
-    pub fn closing(status: &AgentStatus, stop_pending: bool) -> Self {
+    /// when the process it killed went down with an error. `failed_in_band` is
+    /// the provider's own report that the turn failed (`Activity::turn_failure`):
+    /// such a turn lands on Idle — the CLI said its piece and is resumable —
+    /// but it did not complete.
+    pub fn closing(status: &AgentStatus, stop_pending: bool, failed_in_band: bool) -> Self {
         match status {
             _ if stop_pending => Self::Interrupted,
             AgentStatus::Stopped => Self::Interrupted,
             AgentStatus::Error => Self::Failed,
+            _ if failed_in_band => Self::Failed,
             _ => Self::Completed,
         }
     }
