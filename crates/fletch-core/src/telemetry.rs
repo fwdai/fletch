@@ -12,8 +12,16 @@
 //! send nothing. Identity (see [`Identity`]) is a salted hash of the OS machine
 //! id, so a reinstall that wipes the app data stays the same PostHog person —
 //! never the account email, and a random UUID where the OS has no machine id.
-//! Event properties carry only categorical values, never paths, repo names,
-//! branches, or prompts.
+//! An install from before the machine id is merged onto it once with
+//! [`adopt_machine_id`]. The install date lives in a file under `~/.fletch`
+//! ([`installed_at_path`]) rather than in the app-data DB, so it too survives a
+//! reinstall. Event properties carry only categorical values, never paths, repo
+//! names, branches, or prompts.
+//!
+//! Besides the events callers raise, [`start_heartbeat`] sends `app_heartbeat`
+//! once per UTC day the app stays running after the day it was opened, so a
+//! machine that keeps Fletch open for a week still shows up on each of those
+//! days.
 //!
 //! **One documented carve-out**, [`send_now`]: user-submitted feedback (see
 //! `commands::submit_feedback`). It rides this pipeline because it's the same
@@ -24,25 +32,39 @@
 //! not silence it. Identity is still the anonymous UUID: nothing here calls
 //! `$identify`, so the email is one event property and never a person profile.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::OnceLock;
 use std::time::Duration;
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
 use rusqlite::Connection;
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use tokio::sync::Notify;
+use tokio::time::MissedTickBehavior;
 
 use crate::database;
+use crate::DbState;
 
 static TELEMETRY: OnceLock<Telemetry> = OnceLock::new();
 
 /// `settings` key holding the PostHog `distinct_id`.
 pub const DISTINCT_ID_KEY: &str = "telemetry_distinct_id";
-/// `settings` key holding when this install was first seen, RFC 3339.
-pub const INSTALLED_AT_KEY: &str = "telemetry_installed_at";
+
+/// Where the install date lives: `~/.fletch/installed_at` (release) or
+/// `~/.fletch/dev/installed_at` (debug), one RFC 3339 timestamp. Under the
+/// Fletch-owned root rather than the app-data dir on purpose: an uninstaller
+/// that sweeps `~/Library/Application Support/<bundle>` leaves `~/.fletch`
+/// alone, so the day count survives the same reinstall the machine id does.
+/// `None` only when there is no home directory to put it in.
+pub fn installed_at_path() -> Option<PathBuf> {
+    Some(
+        dirs::home_dir()?
+            .join(".fletch")
+            .join(crate::build_state_subpath("installed_at")),
+    )
+}
 
 /// Who this install is to PostHog: the `distinct_id` every event carries, and
 /// when the install was first seen, from which every event's
@@ -51,35 +73,48 @@ pub const INSTALLED_AT_KEY: &str = "telemetry_installed_at";
 pub struct Identity {
     pub distinct_id: String,
     pub installed_at: DateTime<Utc>,
+    /// Set while this install still sends as a pre-machine-id UUID on a
+    /// machine that has an id: the id its person should be merged onto. See
+    /// [`adopt_machine_id`].
+    pub machine_id_to_adopt: Option<String>,
 }
 
 impl Identity {
-    /// Read the identity from `settings`, minting and persisting whatever is
-    /// missing.
+    /// Read the identity, minting and persisting whatever is missing: the
+    /// `distinct_id` from `settings`, the install date from
+    /// `installed_at_file`.
     ///
     /// A new install takes the hashed machine id ([`machine_id`]) as its
     /// `distinct_id`, so a reinstall that wipes the app data lands on the same
     /// PostHog person instead of counting as a new user. An install that
-    /// already minted a random UUID keeps it: switching the whole existing base
-    /// to a new id at once would count every current user as new on the day
-    /// this ships, which is the very distortion the machine id is here to
-    /// remove. Where the OS exposes no machine id, a UUID is minted as before.
+    /// already minted a random UUID keeps sending as it — switching the whole
+    /// existing base to a new id at once would count every current user as new
+    /// on the day this ships — and is handed the machine id to adopt instead,
+    /// which [`adopt_machine_id`] merges it onto. Where the OS exposes no
+    /// machine id, a UUID is minted as before.
     ///
     /// `installed_at` falls back to the birth time of `db_path` for installs
-    /// that predate the key — the DB is created on first launch, so on a
+    /// that predate the file — the DB is created on first launch, so on a
     /// filesystem that records one, that is the install date — and to now
-    /// elsewhere.
-    pub fn load(conn: &Connection, db_path: &Path) -> Self {
-        let distinct_id = match database::get_setting(conn, DISTINCT_ID_KEY) {
-            Some(id) if !id.trim().is_empty() => id,
+    /// elsewhere. A file that cannot be written is not an error: the next
+    /// launch derives the same value again.
+    pub fn load(conn: &Connection, db_path: &Path, installed_at_file: &Path) -> Self {
+        let machine = machine_id();
+        let (distinct_id, machine_id_to_adopt) = match database::get_setting(conn, DISTINCT_ID_KEY)
+        {
+            Some(id) if !id.trim().is_empty() => {
+                let adopt = machine.filter(|m| *m != id);
+                (id, adopt)
+            }
             _ => {
-                let id = machine_id().unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+                let id = machine.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
                 let _ = database::set_setting(conn, DISTINCT_ID_KEY, &id);
-                id
+                (id, None)
             }
         };
-        let installed_at = match database::get_setting(conn, INSTALLED_AT_KEY)
-            .and_then(|s| DateTime::parse_from_rfc3339(&s).ok())
+        let installed_at = match std::fs::read_to_string(installed_at_file)
+            .ok()
+            .and_then(|s| DateTime::parse_from_rfc3339(s.trim()).ok())
         {
             Some(t) => t.with_timezone(&Utc),
             None => {
@@ -87,15 +122,98 @@ impl Identity {
                     .and_then(|m| m.created())
                     .map(DateTime::<Utc>::from)
                     .unwrap_or_else(|_| Utc::now());
-                let _ = database::set_setting(conn, INSTALLED_AT_KEY, &born.to_rfc3339());
+                if let Some(parent) = installed_at_file.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                let _ = std::fs::write(installed_at_file, format!("{}\n", born.to_rfc3339()));
                 born
             }
         };
         Self {
             distinct_id,
             installed_at,
+            machine_id_to_adopt,
         }
     }
+}
+
+/// Merge this install's pre-machine-id person onto its machine id on PostHog,
+/// then record the machine id as the `distinct_id` every later launch sends as.
+/// No-op unless `identity` carries a machine id to adopt.
+///
+/// This process keeps sending as the UUID: PostHog attributes both ids to one
+/// person once the `$create_alias` lands, so nothing is split, and the live
+/// identity never has to change under running senders. The stored id flips only
+/// after the endpoint accepted the alias, so a dropped request leaves the
+/// install exactly where it was, to try again next launch. Consent is honoured:
+/// an opted-out install sends no alias and keeps its UUID.
+pub fn adopt_machine_id(db: DbState, identity: &Identity) {
+    let Some(machine_id) = identity.machine_id_to_adopt.clone() else {
+        return;
+    };
+    let Some(tel) = TELEMETRY.get() else { return };
+    if !tel.enabled.load(Ordering::Relaxed) {
+        return;
+    }
+    let body = alias_body(tel, &machine_id);
+    let guard = InflightGuard::register(tel);
+    crate::host::spawn(async move {
+        let _guard = guard;
+        match post(tel, body).await {
+            Ok(()) => {
+                let _ = database::set_setting(&db.lock(), DISTINCT_ID_KEY, &machine_id);
+                tracing::info!("telemetry: install merged onto its machine id");
+            }
+            Err(e) => tracing::debug!(error = %e, "telemetry: alias not sent"),
+        }
+    });
+}
+
+/// PostHog's `$create_alias`: `distinct_id` is the person with the history
+/// (our UUID), `alias` the id to fold into it (the machine id). The super-props
+/// ride along like on any event; PostHog ignores what it does not read.
+fn alias_body(tel: &Telemetry, alias: &str) -> Value {
+    build_body(tel, "$create_alias", json!({ "alias": alias }))
+}
+
+/// How often the heartbeat loop looks at the calendar. Coarse on purpose: the
+/// event is per day, and a laptop that slept through the boundary sends on the
+/// first tick after it wakes.
+const HEARTBEAT_POLL: Duration = Duration::from_secs(15 * 60);
+
+/// Start sending `app_heartbeat` once per UTC day the app stays running, from
+/// the day after the one it was started on (that day already has its
+/// `app_opened`). Idempotent; a no-op in an unconfigured build.
+///
+/// Call it from where `app_opened` is sent, so the heartbeat sits behind the
+/// same gate: on a fresh install `app_opened` waits for the data-sharing
+/// disclosure, and the heartbeat must not run ahead of it.
+pub fn start_heartbeat() {
+    static STARTED: AtomicBool = AtomicBool::new(false);
+    if STARTED.swap(true, Ordering::SeqCst) || TELEMETRY.get().is_none() {
+        return;
+    }
+    crate::host::spawn(async move {
+        let mut last_sent = Utc::now().date_naive();
+        let mut ticks = tokio::time::interval(HEARTBEAT_POLL);
+        ticks.set_missed_tick_behavior(MissedTickBehavior::Delay);
+        // An `interval`'s first tick completes at once.
+        ticks.tick().await;
+        loop {
+            ticks.tick().await;
+            let today = Utc::now().date_naive();
+            if heartbeat_due(last_sent, today) {
+                last_sent = today;
+                track("app_heartbeat", json!({}));
+            }
+        }
+    });
+}
+
+/// A heartbeat goes out the first time the loop sees a day other than the one
+/// it last sent (or started) on.
+fn heartbeat_due(last_sent: NaiveDate, today: NaiveDate) -> bool {
+    today != last_sent
 }
 
 /// A stable, pseudonymous id for this machine: SHA-256 of the OS machine id
@@ -159,6 +277,7 @@ pub fn init(identity: Identity, enabled: bool, version: String) {
     let Identity {
         distinct_id,
         installed_at,
+        ..
     } = identity;
 
     let mut super_props = Map::new();
@@ -349,13 +468,20 @@ mod tests {
         }
     }
 
+    /// The install-date file as the app lays it out: a sibling tree of the DB,
+    /// nested the way `~/.fletch/dev/installed_at` is so the parent has to be
+    /// created.
+    fn stamp(dir: &Path) -> PathBuf {
+        dir.join("fletch").join("dev").join("installed_at")
+    }
+
     /// A fresh install is identified by the machine, so a reinstall that wipes
     /// the DB mints the very same id; only a machine without one gets a UUID.
     #[test]
     fn a_fresh_install_takes_the_machine_id() {
         let (dir, db) = test_db();
         let db_path = dir.path().join(database::DB_FILENAME);
-        let first = Identity::load(&db.lock(), &db_path);
+        let first = Identity::load(&db.lock(), &db_path, &stamp(dir.path()));
         match machine_id() {
             Some(expected) => assert_eq!(first.distinct_id, expected),
             None => {
@@ -363,6 +489,7 @@ mod tests {
                     .expect("a UUID when there is no machine id");
             }
         }
+        assert_eq!(first.machine_id_to_adopt, None);
         assert_eq!(
             database::get_setting(&db.lock(), DISTINCT_ID_KEY).as_deref(),
             Some(first.distinct_id.as_str())
@@ -370,56 +497,106 @@ mod tests {
 
         // Wiping the DB — the reinstall — lands on the same person.
         let (dir2, db2) = test_db();
-        let again = Identity::load(&db2.lock(), &dir2.path().join(database::DB_FILENAME));
+        let again = Identity::load(
+            &db2.lock(),
+            &dir2.path().join(database::DB_FILENAME),
+            &stamp(dir2.path()),
+        );
         if machine_id().is_some() {
             assert_eq!(again.distinct_id, first.distinct_id);
         }
     }
 
-    /// An install that already has an id keeps it: nobody in the existing base
-    /// becomes a new user on the day the machine id ships.
+    /// An install that already has an id keeps sending as it — nobody in the
+    /// existing base becomes a new user on the day the machine id ships — and
+    /// is handed the machine id to merge onto.
     #[test]
-    fn an_existing_install_keeps_its_uuid() {
+    fn an_existing_install_keeps_its_uuid_and_adopts_the_machine_id() {
         let (dir, db) = test_db();
         database::set_setting(&db.lock(), DISTINCT_ID_KEY, "legacy-uuid").unwrap();
-        let id = Identity::load(&db.lock(), &dir.path().join(database::DB_FILENAME));
+        let db_path = dir.path().join(database::DB_FILENAME);
+        let id = Identity::load(&db.lock(), &db_path, &stamp(dir.path()));
         assert_eq!(id.distinct_id, "legacy-uuid");
+        assert_eq!(id.machine_id_to_adopt, machine_id());
+
+        // Once the alias landed and the machine id is the stored id, there is
+        // nothing left to adopt.
+        if let Some(m) = machine_id() {
+            database::set_setting(&db.lock(), DISTINCT_ID_KEY, &m).unwrap();
+            let id = Identity::load(&db.lock(), &db_path, &stamp(dir.path()));
+            assert_eq!(id.distinct_id, m);
+            assert_eq!(id.machine_id_to_adopt, None);
+        }
     }
 
-    /// The install date is minted once and read back verbatim after that.
+    /// The install date is minted once, written to the file, and read back
+    /// verbatim after that — including by a reinstall with a brand-new DB.
     #[test]
-    fn installed_at_is_minted_once_and_persisted() {
+    fn installed_at_is_minted_once_and_survives_a_new_db() {
         let (dir, db) = test_db();
         let db_path = dir.path().join(database::DB_FILENAME);
+        let file = stamp(dir.path());
         let before = Utc::now();
-        let first = Identity::load(&db.lock(), &db_path);
+        let first = Identity::load(&db.lock(), &db_path, &file);
         let after = Utc::now();
         // The DB was just created, so its birth time and "now" agree to within
         // the test's own runtime (a filesystem may round to the second).
         assert!(first.installed_at >= before - TimeDelta::seconds(2));
         assert!(first.installed_at <= after);
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap().trim(),
+            first.installed_at.to_rfc3339()
+        );
 
-        let second = Identity::load(&db.lock(), &db_path);
-        assert_eq!(second, first);
+        let second = Identity::load(&db.lock(), &db_path, &file);
+        assert_eq!(second.installed_at, first.installed_at);
+
+        // A reinstall: new DB, same file.
+        let (dir2, db2) = test_db();
+        let third = Identity::load(&db2.lock(), &dir2.path().join(database::DB_FILENAME), &file);
+        assert_eq!(third.installed_at, first.installed_at);
     }
 
     /// A recorded install date wins over the DB file's age.
     #[test]
     fn a_recorded_install_date_is_honoured() {
         let (dir, db) = test_db();
-        database::set_setting(&db.lock(), INSTALLED_AT_KEY, "2024-03-01T12:00:00+00:00").unwrap();
-        let id = Identity::load(&db.lock(), &dir.path().join(database::DB_FILENAME));
+        let file = stamp(dir.path());
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, "2024-03-01T12:00:00+00:00\n").unwrap();
+        let id = Identity::load(&db.lock(), &dir.path().join(database::DB_FILENAME), &file);
         assert_eq!(id.installed_at.to_rfc3339(), "2024-03-01T12:00:00+00:00");
     }
 
-    /// A missing DB file (nothing to read a birth time from) still yields an
-    /// install date — now — rather than failing identity.
+    /// A missing DB file (nothing to read a birth time from) and an unwritable
+    /// install-date file still yield an install date — now — rather than
+    /// failing identity.
     #[test]
-    fn a_missing_db_file_falls_back_to_now() {
+    fn missing_db_and_unwritable_file_fall_back_to_now() {
         let (dir, db) = test_db();
         let before = Utc::now();
-        let id = Identity::load(&db.lock(), &dir.path().join("nope.db"));
+        // A path under a *file* cannot be created.
+        let unwritable = dir.path().join(database::DB_FILENAME).join("installed_at");
+        let id = Identity::load(&db.lock(), &dir.path().join("nope.db"), &unwritable);
         assert!(id.installed_at >= before && id.installed_at <= Utc::now());
+    }
+
+    /// The alias names the UUID as the person and the machine id as the alias
+    /// to fold into it — the direction PostHog merges in.
+    #[test]
+    fn the_alias_folds_the_machine_id_into_the_uuid_person() {
+        let tel = telemetry(Utc::now());
+        let body = alias_body(&tel, "machine");
+        assert_eq!(body["event"], "$create_alias");
+        assert_eq!(body["properties"]["distinct_id"], "person");
+        assert_eq!(body["properties"]["alias"], "machine");
+    }
+
+    #[test]
+    fn a_heartbeat_is_due_once_the_day_changes() {
+        let day = NaiveDate::from_ymd_opt(2026, 10, 22).unwrap();
+        assert!(!heartbeat_due(day, day));
+        assert!(heartbeat_due(day, day.succ_opt().unwrap()));
     }
 
     #[test]

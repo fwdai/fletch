@@ -455,6 +455,9 @@ fn send_app_opened() {
         return;
     }
     telemetry::track("app_opened", json!({}));
+    // The daily heartbeat starts behind the same gate as the first
+    // `app_opened`, so it can never run ahead of the disclosure.
+    telemetry::start_heartbeat();
 }
 
 /// Emit the deferred first `app_opened`. The frontend calls this when the
@@ -990,7 +993,11 @@ fn finish_boot(app: &tauri::AppHandle, engine: host::Engine, data_dir: &std::pat
     let version = app.package_info().version.to_string();
     let (identity, telemetry_enabled, onboarding_complete, prev_version) = {
         let conn = db.lock();
-        let identity = telemetry::Identity::load(&conn, &data_dir.join(database::DB_FILENAME));
+        let identity = telemetry::Identity::load(
+            &conn,
+            &data_dir.join(database::DB_FILENAME),
+            &telemetry::installed_at_path().unwrap_or_else(|| data_dir.join("installed_at")),
+        );
         // Opt-out: anything but an explicit "false" means enabled.
         let enabled = database::get_setting(&conn, "telemetry_enabled").as_deref() != Some("false");
         // Frontend-owned flag (camelCase), written when the user finishes
@@ -1002,7 +1009,10 @@ fn finish_boot(app: &tauri::AppHandle, engine: host::Engine, data_dir: &std::pat
         let _ = database::set_setting(&conn, "last_seen_version", &version);
         (identity, enabled, onboarded, prev)
     };
-    telemetry::init(identity, telemetry_enabled, version.clone());
+    telemetry::init(identity.clone(), telemetry_enabled, version.clone());
+    // An install from before the machine id is merged onto it once; see
+    // `telemetry::adopt_machine_id`. A no-op for everyone else.
+    telemetry::adopt_machine_id(db.clone(), &identity);
     // On a fresh install the first `app_opened` is deferred until the
     // onboarding overlay is on screen (see the `track_app_opened`
     // command) — its welcome step carries the data-sharing disclosure,

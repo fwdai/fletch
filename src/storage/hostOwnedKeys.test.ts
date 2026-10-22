@@ -129,7 +129,6 @@ describe("host-owned settings", () => {
       "claude_container_token",
       "telemetry_enabled",
       "telemetry_distinct_id",
-      "telemetry_installed_at",
       "remote.enabled",
       "theme",
     ]) {
