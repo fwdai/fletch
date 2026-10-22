@@ -450,6 +450,36 @@ pub fn agent_scratch_dirs(home: &Path) -> Vec<PathBuf> {
     .collect()
 }
 
+/// The home subdirs macOS guards with a per-app privacy prompt ("Fletch would
+/// like to access files in your Downloads folder", iCloud Drive, "data from
+/// other apps"). Each is prompted on the first *read* by the app or any process
+/// it is responsible for — and a sandboxed agent is one, so its first `find ~`
+/// on turn one used to raise all three at once. The seatbelt profile denies
+/// them by name instead (`seatbelt::deny_macos_privacy_dirs`): a sandbox deny
+/// answers `EPERM` without consulting the privacy prompt, so the agent skips
+/// the folder the way it skips any unreadable one. Nothing an agent is spawned
+/// for lives here — its checkout is under `~/.fletch` — and the few things
+/// that legitimately do (a source repo the user keeps in Documents, a dropped
+/// attachment) are handled as exceptions by the callers.
+///
+/// Home-relative, so the host-side `list_dir` can use the same names to avoid
+/// stat-ing inside one from the app itself. The `Library` entries are what the
+/// "iCloud Drive" (`Mobile Documents`) and "data from other apps" (sandboxed
+/// apps' `Containers` / `Group Containers`) prompts guard.
+pub const MACOS_PRIVACY_DIRS: &[&str] = &[
+    "Desktop",
+    "Documents",
+    "Downloads",
+    "Library/Mobile Documents",
+    "Library/Containers",
+    "Library/Group Containers",
+];
+
+/// [`MACOS_PRIVACY_DIRS`] under `home`.
+pub fn macos_privacy_dirs(home: &Path) -> Vec<PathBuf> {
+    MACOS_PRIVACY_DIRS.iter().map(|d| home.join(d)).collect()
+}
+
 /// OpenCode's data dir: `$XDG_DATA_HOME/opencode` if set, else
 /// `~/.local/share/opencode`. This is both the dir Docker bind-mounts read-write
 /// and where `agent::opencode_locate` reads its session storage on the host, so

@@ -582,9 +582,16 @@ pub async fn list_dir_impl(path: String) -> Result<DirListing> {
     let truncated = dropped || unreadable;
 
     // After the selection, so a huge directory costs at most `MAX_ENTRIES` of
-    // these stats however many names it holds.
+    // these stats however many names it holds. The folders macOS guards with a
+    // privacy prompt are skipped: a stat *inside* `~/Downloads` is what raises
+    // "Fletch would like to access your Downloads folder", and nobody keeps a
+    // `.git` directly in one — the listing of home itself is not guarded.
+    let guarded = dirs::home_dir()
+        .map(|home| crate::sandbox::policy::macos_privacy_dirs(&home))
+        .unwrap_or_default();
     for entry in &mut entries {
-        entry.is_repo = entry.is_dir && dir.join(&entry.name).join(".git").exists();
+        let path = dir.join(&entry.name);
+        entry.is_repo = entry.is_dir && !guarded.contains(&path) && path.join(".git").exists();
     }
 
     Ok(DirListing {

@@ -8,7 +8,7 @@ import { useFileSource } from "./autocomplete/sources/files";
 import { usePrSource } from "./autocomplete/sources/prs";
 import { triggerQueryAt } from "./autocomplete/triggers";
 import { useAutocomplete } from "./autocomplete/useAutocomplete";
-import { stageAttachmentPath } from "./stageAttachment";
+import { stageAttachmentPath, stageEnvironmentPath } from "./stageAttachment";
 import { useFileDrop } from "./useFileDrop";
 
 /** Max grown height of the input, in px, before it scrolls internally. Exported
@@ -157,6 +157,10 @@ export function useComposerInput(cfg: ComposerInputConfig) {
     mentionSource: cfg.mentionSource,
     listDir: cfg.listDir,
     addPaths,
+    // An `@~/…` pick names a file outside the checkout, staged like a drop so
+    // the agent can read it from wherever on this Mac it came from.
+    attachFsPaths: (paths) =>
+      void stageAll("file", paths.map(stageEnvironmentPath)).catch(() => {}),
   });
   const prSource = usePrSource({
     query: triggerQueryAt(text, caret, "#")?.query ?? null,

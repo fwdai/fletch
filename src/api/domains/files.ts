@@ -4,7 +4,7 @@ import {
   assertWithinUploadCap,
   uploadAttachment,
 } from "@/util/attachmentUpload";
-import { invoke } from "../invoke";
+import { invoke, invokeLocal } from "../invoke";
 import { activeTransport, invokeLocalRaw, type Transport } from "../transport";
 import type {
   CheckoutFile,
@@ -73,4 +73,9 @@ export const filesApi = {
     // one on screen never shows it.
     return uploadAttachment(attachmentApiOver(activeTransport()), name, bytes);
   },
+  /** Copy a file on this Mac into the app's attachments staging area and
+   *  resolve with the staged path. Local only: the app reads the file itself,
+   *  so there is no byte round trip and no size cap, and a path on this Mac
+   *  means nothing to a host anyway (see `stageAttachmentPath`). */
+  stageAttachmentPath: (path: string) => invokeLocal<string>("stage_attachment_path", { path }),
 };

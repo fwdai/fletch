@@ -56,6 +56,22 @@ own application-data directory (`fletch.db` — transcripts and settings) is
 explicitly denied **both read and write**, so a confined agent can neither
 exfiltrate nor forge app state (`sandbox/seatbelt.rs`).
 
+One read deny is there for the user's sake rather than the boundary's. macOS
+asks before an app — or any process it spawned, which an agent is — first reads
+`~/Downloads`, `~/Desktop`, `~/Documents`, iCloud Drive (`~/Library/Mobile
+Documents`) or another app's container (`~/Library/Containers`, `~/Library/Group
+Containers`), and an agent's first `find ~` used to raise every one of those
+prompts on turn one, with nothing in Fletch wanting any of them. The agent
+profile denies those folders by name (`policy::MACOS_PRIVACY_DIRS`): a sandbox
+deny is a plain `EPERM`, no prompt, and the agent skips the folder as it skips
+any unreadable one. What legitimately lives inside is given back: the launch's
+own roots read-write when a host keeps its data dir there, and the user's source
+repositories read-only, since a checkout's `--shared` clone borrows their
+objects. A file attached from such a folder is copied into the agent's workspace
+at drop time instead of being read in place, so macOS asks — if it asks — while
+the user is attaching a file from that folder. The Run profile does not carry
+the deny: a dev server does not walk the home directory.
+
 The toolchain cache (`~/.fletch/toolchain-cache/<project id>`, or
 `~/.fletch/dev/toolchain-cache/<project id>` for a debug build) is where every
 package manager, the cargo overlay and the headless browsers are redirected. What is in it gets executed by later
@@ -292,8 +308,9 @@ cannot go quietly unstated the way a doc caveat can. The
 - **Read your disk — under seatbelt.** The seatbelt profile confines writes, not
   reads; the agent runs as your user and can read anything you can, except the
   carve-outs the profile denies by name: Fletch's app data, the host's provider
-  logins, `~/.ssh`, the `gh` login, git's stored credentials and the Keychain.
-  Under Docker it can read only what is mounted into the container.
+  logins, `~/.ssh`, the `gh` login, git's stored credentials, the Keychain, and
+  the folders macOS guards with a privacy prompt (see below). Under Docker it
+  can read only what is mounted into the container.
 - **Open network connections — under both engines.** Neither engine restricts
   the network. Seatbelt's `(allow default)` leaves it open; the Docker launch
   sets no `--network` flag, so the container gets the default bridge. Treat every
