@@ -11,8 +11,8 @@ const RANGE_PX = 19;
 
 /** What a composer's tool row becomes while the mic is open: ✕ cancel on the
  *  far left, a full-width waveform of recent microphone levels with the elapsed
- *  clock, and — once the mic has closed — the "Transcribing" label in their
- *  place. Every exit has a button; there is no esc key here. The host row sizes
+ *  clock, and — once the mic has closed — the "Transcribing" label alone,
+ *  flush left. Every exit has a button; there is no esc key here. The host row sizes
  *  it through `className` (the chat footer and the new-agent prompt give it
  *  different room). */
 export function VoiceRow({
@@ -36,21 +36,22 @@ export function VoiceRow({
 
   return (
     <div className={className}>
-      {/* Too late to cancel once the mic has closed: the button hides but keeps
-       *  its space, so the label doesn't jump left. */}
-      <button
-        type="button"
-        className="m-cancel"
-        aria-label="Cancel dictation"
-        tabIndex={listening ? 0 : -1}
-        disabled={!listening}
-        style={{ visibility: transcribing ? "hidden" : "visible" }}
-        onClick={onCancel}
-      >
-        <span className="circ">
-          <Icon name="close" size={15} />
-        </span>
-      </button>
+      {/* Too late to cancel once the mic has closed: the button goes, so the
+       *  label sits flush left, in line with the field's text. */}
+      {!transcribing && (
+        <button
+          type="button"
+          className="m-cancel"
+          aria-label="Cancel dictation"
+          tabIndex={listening ? 0 : -1}
+          disabled={!listening}
+          onClick={onCancel}
+        >
+          <span className="circ">
+            <Icon name="close" size={15} />
+          </span>
+        </button>
+      )}
       {transcribing ? (
         <div className="m-wave tx">
           Transcribing
