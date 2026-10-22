@@ -25,9 +25,6 @@ pub const FORWARDED_EVENTS: &[&str] = &[
     "agent:spawn-progress",
     "agent:task",
     "agent:title",
-    // The agent's `notify` op (`rpc::run`): a title and body for a native
-    // notification, so the phone hears it too.
-    "agent:notify",
     "agent:branch",
     "agent:model",
     "agent:effort",

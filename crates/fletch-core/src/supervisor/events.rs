@@ -351,9 +351,11 @@ struct AgentNotifyPayload {
     body: String,
 }
 
-/// The agent asked for the user's attention via the `notify` mailbox op. A
-/// client shows it as a native notification under its own mute; nothing is
-/// stored, and the turn's reply still carries the substance.
+/// The agent asked for the user's attention via the `notify` mailbox op. The
+/// desktop shows it as a native notification under its own mute; nothing is
+/// stored, and the turn's reply still carries the substance. Not forwarded to
+/// remote clients: the phone has no handler for it and the push path
+/// synthesizes no alert, so forwarding it would only be discarded there.
 pub(super) fn emit_notify(sink: &dyn EventSink, agent_id: &str, title: String, body: String) {
     emit(
         sink,

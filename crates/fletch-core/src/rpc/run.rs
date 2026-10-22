@@ -1,5 +1,5 @@
 //! The agent's view of the Run panel, plus a way to get the user's
-//! attention: `run_start`, `run_stop`, `run_status`, `run_log` and `notify`.
+//! attention: `app_start`, `app_stop`, `app_status`, `app_log` and `notify`.
 //!
 //! Sixteen sessions in the transcripts said the agent could not launch the
 //! app to see its change, and six reached for `say` or `afplay` to signal
@@ -20,7 +20,7 @@ use crate::error::Result;
 use crate::run_session::{RunPhase, RunStateSnapshot};
 
 /// Emitted by `notify`: payload `{ "title", "body" }`. The watcher relays it
-/// to the clients as `agent:notify`.
+/// to the desktop as `agent:notify`.
 pub const EVENT_NOTIFY: &str = "agent.notify";
 
 const LOG_DEFAULT_LINES: usize = 200;
@@ -44,7 +44,7 @@ pub trait RunControl: Send + Sync {
 fn is_run_op(op: &str) -> bool {
     matches!(
         op,
-        "run_start" | "run_stop" | "run_status" | "run_log" | "notify"
+        "app_start" | "app_stop" | "app_status" | "app_log" | "notify"
     )
 }
 
@@ -67,11 +67,11 @@ impl RunDispatcher {
         }
     }
 
-    fn run_start(&self, id: &str) -> Response {
+    fn app_start(&self, id: &str) -> Response {
         let before = self.control.state(&self.agent_id);
         let already_running = matches!(before.phase, RunPhase::Setup | RunPhase::Running);
         if let Err(e) = self.control.start(&self.agent_id) {
-            return Response::err(id, format!("run_start: {e}"));
+            return Response::err(id, format!("app_start: {e}"));
         }
         let after = self.control.state(&self.agent_id);
         // `start` answers Ok and touches nothing when the project has no run
@@ -85,14 +85,14 @@ impl RunDispatcher {
         if !started {
             return Response::err(
                 id,
-                "run_start: nothing to run — the project has no run command; the user sets one \
+                "app_start: nothing to run — the project has no run command; the user sets one \
                  in Project Settings › Run",
             );
         }
         let exited = matches!(after.phase, RunPhase::Stopped);
         json_ok(
             id,
-            "run_start",
+            "app_start",
             &json!({
                 "phase": after.phase,
                 "port": after.port,
@@ -100,28 +100,28 @@ impl RunDispatcher {
                 "exited": exited,
                 "last_error": after.last_error,
                 "note": if exited {
-                    "the command already finished; run_log has its output"
+                    "the command already finished; app_log has its output"
                 } else {
-                    "run_status reports the phase and port; the run phase follows setup \
+                    "app_status reports the phase and port; the run phase follows setup \
                      when setup had never completed"
                 },
             }),
         )
     }
 
-    fn run_stop(&self, id: &str) -> Response {
+    fn app_stop(&self, id: &str) -> Response {
         if let Err(e) = self.control.stop(&self.agent_id) {
-            return Response::err(id, format!("run_stop: {e}"));
+            return Response::err(id, format!("app_stop: {e}"));
         }
         let after = self.control.state(&self.agent_id);
-        json_ok(id, "run_stop", &json!({ "phase": after.phase }))
+        json_ok(id, "app_stop", &json!({ "phase": after.phase }))
     }
 
-    fn run_status(&self, id: &str) -> Response {
+    fn app_status(&self, id: &str) -> Response {
         let state = self.control.state(&self.agent_id);
         json_ok(
             id,
-            "run_status",
+            "app_status",
             &json!({
                 "phase": state.phase,
                 "port": state.port,
@@ -131,10 +131,10 @@ impl RunDispatcher {
         )
     }
 
-    fn run_log(&self, id: &str, args: &Value) -> Response {
+    fn app_log(&self, id: &str, args: &Value) -> Response {
         let lines = match positive_usize_arg(args, "lines") {
             Ok(n) => n.unwrap_or(LOG_DEFAULT_LINES).min(LOG_MAX_LINES),
-            Err(e) => return Response::err(id, format!("run_log: {e}")),
+            Err(e) => return Response::err(id, format!("app_log: {e}")),
         };
         let raw = args.get("raw").and_then(Value::as_bool).unwrap_or(false);
         let state = self.control.state(&self.agent_id);
@@ -142,7 +142,7 @@ impl RunDispatcher {
         let (tail, truncated) = tail_lines(&text, lines, raw);
         json_ok(
             id,
-            "run_log",
+            "app_log",
             &json!({
                 "phase": state.phase,
                 "port": state.port,
@@ -208,10 +208,10 @@ impl RpcDispatcher for RunDispatcher {
         }
         Box::pin(async move {
             match op {
-                "run_start" => (self.run_start(id), Vec::new()),
-                "run_stop" => (self.run_stop(id), Vec::new()),
-                "run_status" => (self.run_status(id), Vec::new()),
-                "run_log" => (self.run_log(id, args), Vec::new()),
+                "app_start" => (self.app_start(id), Vec::new()),
+                "app_stop" => (self.app_stop(id), Vec::new()),
+                "app_status" => (self.app_status(id), Vec::new()),
+                "app_log" => (self.app_log(id, args), Vec::new()),
                 "notify" => self.notify(id, args),
                 _ => unreachable!("is_run_op admitted {op}"),
             }
@@ -380,17 +380,17 @@ mod tests {
         let (resp, fx) = disp.dispatch("i", "git_status", &Value::Null).await;
         assert_eq!(resp.stdout.as_deref(), Some("inner saw git_status"));
         assert!(fx.is_empty());
-        for op in ["run_start", "run_stop", "run_status", "run_log", "notify"] {
+        for op in ["app_start", "app_stop", "app_status", "app_log", "notify"] {
             assert!(is_run_op(op), "{op}");
         }
         assert!(!is_run_op("git_push") && !is_run_op("set_title"));
     }
 
     #[tokio::test]
-    async fn run_start_reports_the_phase_and_port_and_a_repeat_is_idempotent() {
+    async fn app_start_reports_the_phase_and_port_and_a_repeat_is_idempotent() {
         let run = FakeRun::new(RunPhase::Running, Some(3001));
         let disp = dispatcher(run.clone());
-        let (resp, fx) = disp.dispatch("s", "run_start", &Value::Null).await;
+        let (resp, fx) = disp.dispatch("s", "app_start", &Value::Null).await;
         assert!(resp.ok, "{:?}", resp.error);
         let out = stdout(&resp);
         assert_eq!(out["phase"], "running");
@@ -398,14 +398,14 @@ mod tests {
         assert_eq!(out["already_running"], false);
         assert!(fx.is_empty());
 
-        let (resp, _) = disp.dispatch("s", "run_start", &Value::Null).await;
+        let (resp, _) = disp.dispatch("s", "app_start", &Value::Null).await;
         assert_eq!(stdout(&resp)["already_running"], true);
         assert_eq!(*run.starts.lock(), 2);
 
-        let (resp, _) = disp.dispatch("t", "run_stop", &Value::Null).await;
+        let (resp, _) = disp.dispatch("t", "app_stop", &Value::Null).await;
         assert_eq!(stdout(&resp)["phase"], "stopped");
         assert_eq!(*run.stops.lock(), 1);
-        let (resp, _) = disp.dispatch("u", "run_status", &Value::Null).await;
+        let (resp, _) = disp.dispatch("u", "app_status", &Value::Null).await;
         let out = stdout(&resp);
         assert_eq!(out["phase"], "stopped");
         assert_eq!(out["port"], Value::Null);
@@ -414,9 +414,9 @@ mod tests {
     /// `start` is a no-op for a project with no run command; the agent is
     /// told that, not "started".
     #[tokio::test]
-    async fn run_start_with_nothing_to_run_says_so() {
+    async fn app_start_with_nothing_to_run_says_so() {
         let disp = dispatcher(FakeRun::new(RunPhase::Idle, None));
-        let (resp, _) = disp.dispatch("s", "run_start", &Value::Null).await;
+        let (resp, _) = disp.dispatch("s", "app_start", &Value::Null).await;
         assert!(!resp.ok);
         assert!(
             resp.error.as_deref().unwrap().contains("nothing to run"),
@@ -432,19 +432,19 @@ mod tests {
     async fn a_command_that_finished_at_once_is_reported_as_exited_not_missing() {
         let run = FakeRun::new(RunPhase::Stopped, None);
         let disp = dispatcher(run.clone());
-        let (resp, _) = disp.dispatch("s", "run_start", &Value::Null).await;
+        let (resp, _) = disp.dispatch("s", "app_start", &Value::Null).await;
         assert!(resp.ok, "{:?}", resp.error);
         let out = stdout(&resp);
         assert_eq!(out["phase"], "stopped");
         assert_eq!(out["exited"], true);
         assert_eq!(out["already_running"], false);
-        assert!(out["note"].as_str().unwrap().contains("run_log"));
+        assert!(out["note"].as_str().unwrap().contains("app_log"));
 
         // Stopped before and stopped after, with no output: nothing ran.
         let idle = FakeRun::new(RunPhase::Idle, None);
         idle.state.lock().phase = RunPhase::Stopped;
         let (resp, _) = dispatcher(idle)
-            .dispatch("s", "run_start", &Value::Null)
+            .dispatch("s", "app_start", &Value::Null)
             .await;
         assert!(resp.error.as_deref().unwrap().contains("nothing to run"));
     }
@@ -462,7 +462,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_log_tails_plain_text_and_validates_lines() {
+    async fn app_log_tails_plain_text_and_validates_lines() {
         let run = FakeRun::new(RunPhase::Running, Some(5173));
         run.state.lock().port = Some(5173);
         run.state.lock().log = b"\x1b[2m$ pnpm dev\x1b[0m\r\n\
@@ -471,7 +471,7 @@ mod tests {
             \x1b[31merror\x1b[0m: boom\r\n"
             .to_vec();
         let disp = dispatcher(run);
-        let (resp, _) = disp.dispatch("l", "run_log", &json!({ "lines": 3 })).await;
+        let (resp, _) = disp.dispatch("l", "app_log", &json!({ "lines": 3 })).await;
         let out = stdout(&resp);
         assert_eq!(
             out["log"],
@@ -481,7 +481,7 @@ mod tests {
         assert_eq!(out["port"], 5173);
 
         let (resp, _) = disp
-            .dispatch("l", "run_log", &json!({ "lines": 1, "raw": true }))
+            .dispatch("l", "app_log", &json!({ "lines": 1, "raw": true }))
             .await;
         assert_eq!(
             stdout(&resp)["log"],
@@ -489,12 +489,54 @@ mod tests {
             "raw keeps the escapes"
         );
 
-        let (resp, _) = disp.dispatch("l", "run_log", &json!({ "lines": 0 })).await;
+        let (resp, _) = disp.dispatch("l", "app_log", &json!({ "lines": 0 })).await;
         assert!(resp
             .error
             .as_deref()
             .unwrap()
             .contains("`lines` must be a positive integer"));
+    }
+
+    /// Composed the way the supervisor composes it, over a real git
+    /// dispatcher: the GitHub Actions ops `run_list` and `run_log` still
+    /// reach it, and the Run-panel ops are the `app_*` names, so neither
+    /// shadows the other.
+    #[tokio::test]
+    async fn run_panel_ops_do_not_shadow_the_github_actions_run_ops() {
+        use crate::rpc::caps::AgentCaps;
+        use crate::rpc::git::GitDispatcher;
+        let td = tempfile::tempdir().unwrap();
+        let git = GitDispatcher::new(
+            td.path().to_path_buf(),
+            td.path().to_path_buf(),
+            "main".to_string(),
+            AgentCaps::interactive(),
+        );
+        let disp = RunDispatcher::new(
+            FakeRun::new(RunPhase::Running, Some(3001)),
+            "agent-1",
+            Arc::new(git),
+        );
+        // `run_log` is the GitHub Actions op: its own validation answers.
+        let (resp, _) = disp.dispatch("g", "run_log", &Value::Null).await;
+        assert!(
+            resp.error
+                .as_deref()
+                .unwrap()
+                .starts_with("run_log requires `run`"),
+            "{:?}",
+            resp.error
+        );
+        let (resp, _) = disp.dispatch("g", "run_list", &Value::Null).await;
+        assert!(
+            resp.error.as_deref().unwrap().starts_with("run_list:"),
+            "{:?}",
+            resp.error
+        );
+        // `app_log` is the Run panel's, answered here.
+        let (resp, _) = disp.dispatch("a", "app_log", &Value::Null).await;
+        assert!(resp.ok, "{:?}", resp.error);
+        assert_eq!(stdout(&resp)["phase"], "idle");
     }
 
     #[tokio::test]
