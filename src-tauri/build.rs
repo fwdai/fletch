@@ -1,14 +1,12 @@
-// OAuth client keys are baked into the binary at compile time via `option_env!`
-// (see src-tauri/src/oauth.rs). CI supplies them as process env from repository
-// secrets (see .github/workflows/release.yml). For local dev they'd otherwise
-// be empty — making "Connect GitHub"/Google sign-in report "not configured" —
-// so we also load a repo-root `.env` here and forward these keys into the
-// compile. A value already present in the environment always wins, so CI is
-// unaffected and a developer can still override `.env` with a shell export.
-const CONFIG_KEYS: [&str; 4] = [
+// The OAuth client key is baked into the binary at compile time via `option_env!`
+// (see src-tauri/src/oauth.rs). CI supplies it as process env from repository
+// secrets (see .github/workflows/release.yml). For local dev it'd otherwise
+// be empty — making "Connect GitHub" report "not configured" — so we also load
+// a repo-root `.env` here and forward these keys into the compile. A value
+// already present in the environment always wins, so CI is unaffected and a
+// developer can still override `.env` with a shell export.
+const CONFIG_KEYS: [&str; 2] = [
     "QUORUM_GITHUB_CLIENT_ID",
-    "QUORUM_GOOGLE_CLIENT_ID",
-    "QUORUM_GOOGLE_CLIENT_SECRET",
     // Gates the whole PostHog pipeline — usage telemetry AND in-app feedback
     // (see `telemetry.rs`). Without it a local build can only ever exercise the
     // "no endpoint configured" path. `QUORUM_POSTHOG_HOST` is deliberately not

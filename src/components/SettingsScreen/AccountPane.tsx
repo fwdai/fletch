@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/Button";
 import { TextInput } from "@/components/ui/TextInput";
 import { useAppStore } from "@/store";
 import { accountInitials } from "@/util/format";
+import { displayIdentity } from "@/util/identity";
 import { DevToolsStatus } from "./DevToolsStatus";
 import { GithubConnection } from "./GithubConnection";
 import { LinearConnection } from "./LinearConnection";
@@ -13,6 +14,7 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 export function AccountPane() {
   const account = useAppStore((s) => s.account);
+  const gitIdentity = useAppStore((s) => s.gitIdentity);
   const saveAccount = useAppStore((s) => s.saveAccount);
 
   const [firstName, setFirstName] = useState("");
@@ -48,6 +50,13 @@ export function AccountPane() {
   };
 
   const fullName = `${firstName} ${lastName}`.trim();
+  // The header follows what is typed; with the fields empty it shows the git
+  // identity the sidebar is showing, so the user sees where that came from.
+  const fallback = displayIdentity(null, gitIdentity);
+  const fromGit = !fullName && !email && fallback.source === "git";
+  const headName = fullName || (fromGit ? fallback.name : "");
+  const headEmail = email || (fromGit ? fallback.email : "");
+  const [gitFirst = "", ...gitRest] = (gitIdentity?.name ?? "").trim().split(/\s+/);
 
   return (
     <div className="set-pane">
@@ -57,14 +66,22 @@ export function AccountPane() {
         <Avatar
           className="set-avatar flex-center text-lg"
           avatarUrl={account?.avatarUrl ?? null}
-          initials={accountInitials(firstName, lastName, email)}
-          alt={fullName}
+          initials={
+            fullName || email ? accountInitials(firstName, lastName, email) : fallback.initials
+          }
+          glyphSize={24}
+          alt={headName}
         />
         <div className="set-profile-body">
           <div className="set-profile-name text-lg">
-            {fullName || <span className="set-profile-empty">Your name</span>}
+            {headName || <span className="set-profile-empty">Your name</span>}
           </div>
-          <div className="set-profile-mail mono text-base">{email || "no email set"}</div>
+          <div className="set-profile-mail mono text-base">{headEmail || "no email set"}</div>
+          {fromGit && (
+            <div className="set-profile-hint text-sm">
+              From your git config. Fill in the profile below to override it.
+            </div>
+          )}
         </div>
       </div>
 
@@ -75,7 +92,7 @@ export function AccountPane() {
               <span className="set-field-label text-sm">First name</span>
               <TextInput
                 value={firstName}
-                placeholder="Ada"
+                placeholder={gitFirst || "Ada"}
                 spellCheck={false}
                 onChange={(e) => {
                   setFirstName(e.target.value);
@@ -87,7 +104,7 @@ export function AccountPane() {
               <span className="set-field-label text-sm">Last name</span>
               <TextInput
                 value={lastName}
-                placeholder="Lovelace"
+                placeholder={gitRest.join(" ") || "Lovelace"}
                 spellCheck={false}
                 onChange={(e) => {
                   setLastName(e.target.value);
@@ -102,7 +119,7 @@ export function AccountPane() {
               invalid={!emailValid}
               type="email"
               value={email}
-              placeholder="ada@example.com"
+              placeholder={gitIdentity?.email || "ada@example.com"}
               spellCheck={false}
               autoComplete="email"
               onChange={(e) => {

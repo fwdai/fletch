@@ -1,32 +1,24 @@
-// Onboarding — a cinematic, native-feeling entry into Fletch. Full-screen
-// overlay shown to new users on first launch and re-openable from Settings ›
-// General. The sequence is functional, not a tour: sign in, then each step
-// verifies (and can fix) one requirement — Git installed, GitHub connected,
-// an agent CLI present — before the handoff. Ambient stage, cinematic
-// transitions, progress rail, and keyboard nav carry over from the original
-// tour; the exhibits now sit beside real controls.
+// Onboarding — two screens and out. A welcome, then a pre-flight check that
+// plays through on its own, then straight into the app: no sign-in, no tour,
+// no summary. Full-screen overlay shown on first launch and re-openable from
+// Settings › Developer. The requirement checks start the moment this mounts,
+// so they are usually answered before the welcome is even dismissed.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "@/api";
+import { FletchLockup } from "@/components/FletchLockup";
 import { Icon } from "@/components/Icon";
 import { useAppStore } from "@/store";
 import { track } from "@/util/track";
-import { useGithubConnect } from "@/util/useGithubConnect";
-import { AgentsStep } from "./AgentsStep";
 import { Ambient } from "./Ambient";
-import { DeviceCode } from "./DeviceCode";
-import { GithubStep } from "./GithubStep";
-import { GitStep } from "./GitStep";
-import { ReadyStep } from "./ReadyStep";
-import { WelcomeStep } from "./steps";
+import { Preflight } from "./Preflight";
+import { preflightSettled } from "./Preflight/usePreflight";
 import { useOnboardingSetup } from "./useSetup";
+import { Welcome } from "./Welcome";
 import "./onboarding.css";
 
-// flat step model: sign-in, three requirement steps, handoff
-type StepKind = "welcome" | "git" | "github" | "agents" | "ready";
-
-const STEPS: StepKind[] = ["welcome", "git", "github", "agents", "ready"];
-const RAIL_LEN = 4; // welcome..agents (the ready handoff is excluded)
+type Screen = "welcome" | "preflight";
+const SCREENS: Screen[] = ["welcome", "preflight"];
 
 export function Onboarding() {
   const closeOnboarding = useAppStore((s) => s.closeOnboarding);
@@ -41,9 +33,9 @@ export function Onboarding() {
   // terminal event must not report itself as a replay on the way out.
   const firstRun = useRef(!onboardingComplete).current;
 
-  const step = STEPS[idx];
+  const screen = SCREENS[idx];
 
-  // Trigger the staggered reveal after the step mounts / changes. setTimeout
+  // Trigger the staggered reveal after the screen mounts / changes. setTimeout
   // (not rAF) so it still fires when the window is backgrounded.
   useEffect(() => {
     setReady(false);
@@ -52,27 +44,22 @@ export function Onboarding() {
   }, [idx]);
 
   // On a fresh install the backend defers the first `app_opened` to here: the
-  // welcome step carries the data-sharing disclosure, so this is the earliest
-  // point at which telemetry has been disclosed. Firing it on mount (rather
-  // than at completion, as before) is what makes the drop-off events below
-  // meaningful — a user who quits at step 02 is exactly who we want to see.
-  //
-  // Only on a real first run: an already-onboarded user got their `app_opened`
-  // at launch, so a replay must not send a second one. (`send_app_opened` in
-  // Rust also collapses repeats, which covers StrictMode's double-mount.)
+  // welcome carries the data-sharing disclosure, so this is the earliest point
+  // at which telemetry has been disclosed. Only on a real first run: an
+  // already-onboarded user got their `app_opened` at launch. (`send_app_opened`
+  // in Rust also collapses repeats, which covers StrictMode's double-mount.)
   useEffect(() => {
     if (firstRun) void api.trackAppOpened();
   }, [firstRun]);
 
-  // The funnel. One event per step reveal gives the whole drop-off curve;
-  // the abandon/complete events below say *how* each user left.
+  // The funnel: one event per screen, plus the terminal event below.
   useEffect(() => {
-    track("onboarding_step_viewed", { step: STEPS[idx], index: idx, first_run: firstRun });
+    track("onboarding_step_viewed", { step: SCREENS[idx], index: idx, first_run: firstRun });
   }, [idx, firstRun]);
 
   const go = useCallback(
     (next: number) => {
-      if (next < 0 || next >= STEPS.length || next === idx) return;
+      if (next < 0 || next >= SCREENS.length || next === idx) return;
       setPhase("out");
       window.setTimeout(() => {
         setIdx(next);
@@ -83,33 +70,37 @@ export function Onboarding() {
     },
     [idx],
   );
+  const start = useCallback(() => go(1), [go]);
 
-  const next = useCallback(() => go(idx + 1), [go, idx]);
-  const back = useCallback(() => go(idx - 1), [go, idx]);
+  // The checks run from mount; agent probing polls while the pre-flight is up
+  // so an install finishing lights its row up without a manual re-check.
+  const setup = useOnboardingSetup(screen === "preflight");
+  const settled = preflightSettled(setup);
 
-  // Shared requirement checks: the steps render/fix them, the footer gates
-  // Continue on them. Agent probing polls while the agents step is up so a
-  // finished install lights up without a manual re-check.
-  const setup = useOnboardingSetup(step === "agents");
-
-  // Per-step gate for the footer's Continue. The welcome and ready steps have
-  // their own primary actions (sign-in / Enter Fletch) instead.
-  const canContinue =
-    step === "git"
-      ? setup.gitReady
-      : step === "github"
-        ? setup.ghConnected
-        : step === "agents"
-          ? setup.hasAgent
-          : false;
-  const showNext = step === "git" || step === "github" || step === "agents";
+  // What this machine has, reported once the checks have an answer — on
+  // whichever screen that happens. A ref guards it: `settled` can flip back
+  // while a git download runs, and a replay must not report twice either.
+  const reportedRef = useRef(false);
+  useEffect(() => {
+    if (!settled || reportedRef.current) return;
+    reportedRef.current = true;
+    const agents = setup.agents.filter((p) => !!setup.providerPaths[p.id]).map((p) => p.id);
+    const version = setup.git?.version?.match(/^\d+\.\d+/)?.[0] ?? null;
+    track("environment_detected", {
+      agents,
+      agents_detected: agents.length,
+      git: setup.git?.installed ? (setup.git.source ?? "system") : "none",
+      git_version: setup.git?.installed ? version : null,
+      gh_connected: setup.ghConnected,
+      first_run: firstRun,
+    });
+  }, [settled, setup, firstRun]);
 
   // Exactly one terminal event per onboarding session, whichever exit the user
-  // takes: the ✕ and "Enter Fletch" both funnel through `leave`. A ref (not
+  // takes: the ✕ and "Open Fletch" both funnel through `leave`. A ref (not
   // state) guards it, so a second call during the closing render can't
   // double-count. `completed` carries what the user actually finished with —
-  // the handoff is reachable with gaps via the per-step skips, so the flags
-  // are the point.
+  // the pre-flight never blocks, so the flags are the point.
   const leftRef = useRef(false);
   const leave = useCallback(
     (reason: "completed" | "abandoned") => {
@@ -123,103 +114,41 @@ export function Onboarding() {
             first_run: firstRun,
           });
         } else {
-          track("onboarding_abandoned", { step, first_run: firstRun });
+          track("onboarding_abandoned", { step: screen, first_run: firstRun });
         }
       }
       closeOnboarding();
     },
-    [closeOnboarding, step, firstRun, setup.gitReady, setup.ghConnected, setup.detected],
+    [closeOnboarding, screen, firstRun, setup.gitReady, setup.ghConnected, setup.detected],
   );
+  const finish = useCallback(() => leave("completed"), [leave]);
 
-  // Shared device-flow sign-in. On success advance off the welcome step; the
-  // hook persists the profile and refreshes the account + GitHub connection.
-  // The requirement checks re-run so a GitHub sign-in pre-passes step 02.
-  const onSignedIn = useCallback(() => {
-    setup.recheck();
-    go(1);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [go, setup.recheck]);
-  const {
-    connect,
-    cancel: cancelAuth,
-    device,
-    error: authError,
-    busy,
-  } = useGithubConnect(onSignedIn, "onboarding_welcome");
-  const onAuth = useCallback((provider: string) => void connect(provider), [connect]);
-
-  // Handoff: just drop into the real app. Its empty state prompts the user to
-  // add their first repo from the sidebar — no auto-picker.
-  const onEnter = useCallback(() => leave("completed"), [leave]);
-
-  // A step's own opt-out ("I use GitLab…", "Set up later"). The only way to
-  // decline a requirement: it skips one step, not the whole flow, so the user
-  // still reaches the handoff and sees what's left unmet.
-  const skipStep = useCallback(() => {
-    track("onboarding_step_skipped", { step, first_run: firstRun });
-    next();
-  }, [next, step, firstRun]);
-
-  // keyboard navigation
+  // Enter starts from the welcome (the pre-flight binds its own, once it has
+  // something to open). Deliberately no Escape binding: closing is a one-way
+  // door (it persists `onboardingComplete`, and only Settings › Developer can
+  // reopen it), so a stray Esc must not end first-run setup. The ✕ is always
+  // visible.
   useEffect(() => {
+    if (screen !== "welcome") return;
     const onKey = (e: KeyboardEvent) => {
-      const tag = (e.target as HTMLElement | null)?.tagName;
-      const inField = tag === "TEXTAREA" || tag === "INPUT";
-      // Deliberately no Escape binding: closing is a one-way door (it persists
-      // `onboardingComplete`, and only Settings › Developer can reopen it), so
-      // a stray Esc must not end first-run setup. The ✕ is always visible.
-      if (e.key === "Enter" && step === "welcome" && !busy) {
-        onAuth("github");
-      } else if ((e.key === "ArrowRight" || e.key === "Enter") && showNext && !inField) {
-        if (!canContinue) return;
-        e.preventDefault();
-        next();
-      } else if (e.key === "ArrowLeft" && idx > 0 && !inField) {
-        back();
-      }
+      if (e.key === "Enter") start();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [idx, busy, step, showNext, canContinue, next, back]);
-
-  let content = null;
-  if (step === "welcome")
-    // The only way off welcome is a successful sign-in (go(1)), so during its
-    // fade-out (`phase === "out"`) keep the device panel up rather than
-    // flashing the sign-in buttons as the hook clears its state.
-    content =
-      busy || device || authError || phase === "out" ? (
-        <DeviceCode info={device} error={authError} onCancel={cancelAuth} />
-      ) : (
-        <WelcomeStep onAuth={onAuth} busy={busy} />
-      );
-  else if (step === "git") content = <GitStep setup={setup} onSkip={skipStep} />;
-  else if (step === "github") content = <GithubStep setup={setup} onSkip={skipStep} />;
-  else if (step === "agents") content = <AgentsStep setup={setup} onSkip={skipStep} />;
-  else if (step === "ready") content = <ReadyStep setup={setup} onEnter={onEnter} />;
-
-  const showBack = idx > 0;
+  }, [screen, start]);
 
   return (
     <div className="ob">
       <div className="ob-tb" data-tauri-drag-region>
         <div className="ob-tb-gutter" data-tauri-drag-region />
-        <div className="ob-tb-mark text-xs">
-          <span className="d" />
-          <span>FLETCH</span>
-        </div>
+        <FletchLockup className="ob-tb-brand" />
         <div className="ob-tb-right">
-          {step !== "ready" && (
-            <span className="ob-step-count text-xs">
-              <b>{Math.min(idx + 1, RAIL_LEN)}</b> / {RAIL_LEN}
-            </span>
-          )}
           <button
+            type="button"
             className="ob-close"
             title="Close onboarding"
             aria-label="Close onboarding"
-            onClick={() => leave(step === "ready" ? "completed" : "abandoned")}
+            onClick={() => leave("abandoned")}
           >
             <Icon name="close" size={15} />
           </button>
@@ -228,45 +157,15 @@ export function Onboarding() {
 
       <div className="ob-stage">
         <Ambient phase={idx} />
-
         <div
           className={`ob-view ${ready ? "ready" : ""} ${phase === "out" ? "out" : ""}`}
           key={idx}
         >
-          {content}
-        </div>
-
-        <div className="ob-foot">
-          <div className="ob-foot-l">
-            {showBack && (
-              <button className="ob-back text-base" onClick={back}>
-                <Icon name="chevL" /> Back
-              </button>
-            )}
-          </div>
-          <div className="ob-rail">
-            {Array.from({ length: RAIL_LEN }).map((_, i) => (
-              <span
-                key={i}
-                className={`seg ${i < idx ? "done" : ""} ${i === idx ? "cur" : ""}`}
-                onClick={() => {
-                  if (i <= idx) go(i);
-                }}
-              />
-            ))}
-          </div>
-          <div className="ob-foot-r">
-            {showNext && (
-              <button
-                className="ob-next text-base"
-                onClick={next}
-                disabled={!canContinue}
-                title={canContinue ? undefined : "Complete this step to continue"}
-              >
-                Continue <Icon name="arrowR" />
-              </button>
-            )}
-          </div>
+          {screen === "welcome" ? (
+            <Welcome onStart={start} />
+          ) : (
+            <Preflight setup={setup} firstRun={firstRun} onFinish={finish} />
+          )}
         </div>
       </div>
     </div>

@@ -1,4 +1,4 @@
-import { FletchMark } from "@/components/FletchMark";
+import { FletchLockup } from "@/components/FletchLockup";
 import { Icon } from "@/components/Icon";
 import { IconButton } from "@/components/ui/IconButton";
 import { useAppStore } from "@/store";
@@ -23,12 +23,10 @@ export function TitleBar() {
   return (
     <div className="tb flex-center" data-tauri-drag-region>
       <div className="tb-lights-gutter" data-tauri-drag-region />
-      <div className="tb-logo iflex-center" data-tauri-drag-region aria-label="Fletch">
-        <FletchMark className="tb-mark" />
-        <span className="tb-wordmark" aria-hidden="true">
-          fletch
-        </span>
-        <span className="tb-badge iflex-center">beta</span>
+      <div className="tb-logo iflex-center" data-tauri-drag-region>
+        <FletchLockup>
+          <span className="tb-badge iflex-center">beta</span>
+        </FletchLockup>
       </div>
       <div className="tb-center">
         <WorkspaceStatus />

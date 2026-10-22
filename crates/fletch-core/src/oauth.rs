@@ -1,12 +1,12 @@
-//! OAuth via the Device Authorization Grant (RFC 8628). GitHub and Google
-//! are both supported.
+//! OAuth via the Device Authorization Grant (RFC 8628), for GitHub.
 //!
-//! Google is identity-only: its token reads the profile once, then drops.
 //! GitHub requests the `repo` and `workflow` scopes and its token is persisted
 //! (the app's secret store + the in-process registry) — it powers the GitHub
 //! API client and git's https auth, replacing the `gh` CLI dependency. A token
 //! granted before `workflow` was requested keeps its old scopes: the user has
-//! to disconnect and sign in again to pick it up.
+//! to disconnect and sign in again to pick it up. The profile read at the end
+//! (name, primary email, avatar) is a side benefit the local account row
+//! picks up; no sign-in exists for identity alone.
 //!
 //! A device flow has no loopback listener and no browser dependency: the user
 //! is shown a code and a URL and types it in on whatever device they like.
@@ -56,9 +56,6 @@ pub enum PollOutcome {
 /// and a headless host has no business carrying the desktop's id by default.
 pub struct Credentials {
     pub client_id: String,
-    /// Google only — required by its device endpoint but, per Google's docs,
-    /// not treated as confidential for "limited-input device" clients.
-    pub client_secret: Option<String>,
 }
 
 struct ProviderCfg {
@@ -78,12 +75,6 @@ fn provider_cfg(provider: &str, creds: Credentials) -> Result<ProviderCfg, Strin
             // which GitHub refuses from an OAuth App token without it; the
             // read scopes cover the profile (name, primary email).
             scope: "repo workflow read:user user:email",
-            creds,
-        }),
-        "google" => Ok(ProviderCfg {
-            device_code_url: "https://oauth2.googleapis.com/device/code",
-            token_url: "https://oauth2.googleapis.com/token",
-            scope: "openid email profile",
             creds,
         }),
         other => Err(format!("unknown provider: {other}")),
@@ -120,16 +111,6 @@ pub fn github_profile(user: &serde_json::Value, emails: &serde_json::Value) -> O
     }
 }
 
-pub fn google_profile(info: &serde_json::Value) -> OAuthProfile {
-    OAuthProfile {
-        provider: "google".into(),
-        provider_user_id: str_field(info, "sub").unwrap_or_default(),
-        name: str_field(info, "name"),
-        email: str_field(info, "email"),
-        avatar_url: str_field(info, "picture"),
-    }
-}
-
 /// Pixel size we request when caching an avatar. Large enough to stay crisp on
 /// retina displays, small enough to keep the base64 blob tiny.
 const AVATAR_SIZE: u32 = 256;
@@ -150,11 +131,6 @@ fn sized_avatar_url(provider: &str, url: &str) -> String {
             let sep = if url.contains('?') { '&' } else { '?' };
             format!("{url}{sep}s={AVATAR_SIZE}")
         }
-        // Google photo URLs carry a trailing size directive like `=s96-c`.
-        "google" => match url.rfind("=s") {
-            Some(i) => format!("{}=s{AVATAR_SIZE}-c", &url[..i]),
-            None => format!("{url}=s{AVATAR_SIZE}-c"),
-        },
         _ => url.to_string(),
     }
 }
@@ -228,9 +204,8 @@ pub fn classify_token_response(v: &serde_json::Value) -> PollOutcome {
     }
 }
 
-/// Drive the full device flow and return a normalized profile. A GitHub
-/// token is persisted for the API client (see module docs); Google's is read
-/// once and dropped.
+/// Drive the full device flow and return a normalized profile. The token is
+/// persisted for the API client (see module docs).
 ///
 /// `on_code` is called once, as soon as the provider has issued a code and
 /// before the first poll. It is the host's only job in this flow: show the code
@@ -275,12 +250,10 @@ pub async fn device_login(
         }
     };
     let user_code = str_field(&dc, "user_code").ok_or("no user_code in response")?;
-    // GitHub uses `verification_uri`; Google uses `verification_url`.
-    let verification = str_field(&dc, "verification_uri")
-        .or_else(|| str_field(&dc, "verification_url"))
-        .ok_or("no verification uri in response")?;
+    let verification =
+        str_field(&dc, "verification_uri").ok_or("no verification uri in response")?;
     let mut interval = dc.get("interval").and_then(|v| v.as_u64()).unwrap_or(5);
-    // Don't poll past the device code's lifetime (GitHub ~900s, Google ~1800s).
+    // Don't poll past the device code's lifetime (GitHub ~900s).
     let expires_in = dc.get("expires_in").and_then(|v| v.as_u64()).unwrap_or(900);
     let deadline = Instant::now() + Duration::from_secs(expires_in);
 
@@ -298,14 +271,11 @@ pub async fn device_login(
             return Err("device code expired before authorization".into());
         }
         tokio::time::sleep(Duration::from_secs(interval)).await;
-        let mut poll: Vec<(&str, &str)> = vec![
+        let poll = [
             ("client_id", cfg.creds.client_id.as_str()),
             ("device_code", device_code.as_str()),
             ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
         ];
-        if let Some(secret) = &cfg.creds.client_secret {
-            poll.push(("client_secret", secret.as_str()));
-        }
         let resp: serde_json::Value = http
             .post(cfg.token_url)
             .header("Accept", "application/json")
@@ -336,7 +306,7 @@ pub async fn device_login(
         crate::github::set_token(Some(access_token.clone()));
     }
 
-    // 4. Read the profile (Google's token drops out of scope after this).
+    // 4. Read the profile.
     let profile = match provider {
         "github" => {
             let user: serde_json::Value = http
@@ -360,18 +330,6 @@ pub async fn device_login(
                 .await
                 .unwrap_or_else(|_| serde_json::json!([]));
             github_profile(&user, &emails)
-        }
-        "google" => {
-            let info: serde_json::Value = http
-                .get("https://openidconnect.googleapis.com/v1/userinfo")
-                .bearer_auth(&access_token)
-                .send()
-                .await
-                .map_err(|e| e.to_string())?
-                .json()
-                .await
-                .map_err(|e| e.to_string())?;
-            google_profile(&info)
         }
         _ => return Err("unknown provider".into()),
     };
@@ -416,18 +374,6 @@ mod tests {
     }
 
     #[test]
-    fn parses_google_userinfo_into_profile() {
-        let body = serde_json::json!({
-            "sub": "11822", "name": "Jane Doe",
-            "email": "jane@gmail.com", "picture": "https://g/p.png"
-        });
-        let p = google_profile(&body);
-        assert_eq!(p.provider, "google");
-        assert_eq!(p.provider_user_id, "11822");
-        assert_eq!(p.email.as_deref(), Some("jane@gmail.com"));
-    }
-
-    #[test]
     fn sizes_github_avatar_url() {
         // No existing query → add one.
         assert_eq!(
@@ -438,20 +384,6 @@ mod tests {
         assert_eq!(
             sized_avatar_url("github", "https://avatars.githubusercontent.com/u/42?v=4"),
             "https://avatars.githubusercontent.com/u/42?v=4&s=256"
-        );
-    }
-
-    #[test]
-    fn sizes_google_avatar_url() {
-        // Replace an existing size directive.
-        assert_eq!(
-            sized_avatar_url("google", "https://lh3.googleusercontent.com/a/ABC=s96-c"),
-            "https://lh3.googleusercontent.com/a/ABC=s256-c"
-        );
-        // Append when there is none.
-        assert_eq!(
-            sized_avatar_url("google", "https://lh3.googleusercontent.com/a/ABC"),
-            "https://lh3.googleusercontent.com/a/ABC=s256-c"
         );
     }
 

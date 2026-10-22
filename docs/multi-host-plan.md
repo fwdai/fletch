@@ -68,8 +68,8 @@ sound in shape. What follows is only what was wrong, understated, or missing.
 - **Provider login headless:** `commands/provider_login.rs` is a Tauri command
   that streams a PTY to the webview; the CLI opens the browser itself via the
   login-shell `BROWSER`. On a headless box the answer is `ssh -t host claude
-  login`, as the doc assumed. Both GitHub and Google OAuth in `oauth.rs` are
-  device flows with no loopback listener, so `fletch-host github login` is
+  login`, as the doc assumed. GitHub OAuth in `oauth.rs` is a device flow
+  with no loopback listener, so `fletch-host github login` is
   straightforward.
 
 ### 1.3 Facts the original missed that change the plan

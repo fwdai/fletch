@@ -16,32 +16,12 @@
 }
 .tb-logo {
   margin-left: 12px;
-  /* the lockup scales from one font-size: mark sizes in em, wordmark inherits.
-   * Spacing is deliberately uneven — the mark + wordmark are one tight unit,
-   * the beta tag is a separate meta element with more air (set per element,
-   * not a uniform gap). */
+  /* the lockup (components/FletchLockup) scales from this one font-size. The
+   * beta tag is a separate meta element with more air than the mark/wordmark
+   * pair (set per element, not a uniform gap). */
   font-size: var(--fs-lg);
   color: var(--fg-0);
-  user-select: none;
   pointer-events: none;
-}
-.tb-mark {
-  /* the bolt is a tall ~2:3 shape; it sits just above the wordmark's
-   * ascender height so it reads as a mark on the same line, not a glyph */
-  width: 0.57em;
-  height: 0.85em;
-  flex-shrink: 0;
-  margin-right: 7px;
-  /* the bolt's visual weight is in its upper blade, so centering the box
-   * leaves it looking high; nudge it down onto the wordmark's optical center */
-  position: relative;
-  top: 0.5px;
-}
-.tb-wordmark {
-  font-family: var(--font-geist);
-  font-weight: 600;
-  /* tight tracking so the mark + wordmark read as one crafted lockup */
-  letter-spacing: -0.015em;
 }
 .tb-badge {
   height: 13px;

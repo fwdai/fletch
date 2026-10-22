@@ -6,8 +6,41 @@
 
 use std::path::Path;
 
+use serde::Serialize;
+
 use super::cmd::git_output;
 use crate::error::{Error, Result};
+
+/// The identity the user's global git config carries — what their commits
+/// are signed as everywhere, and so the best guess at who they are when the
+/// app has no profile of its own. Either half may be unset.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitIdentity {
+    pub name: Option<String>,
+    pub email: Option<String>,
+}
+
+/// `user.name` / `user.email` from the global scope only (`~/.gitconfig` and
+/// the XDG file), never a repository's: this is asked with no checkout in
+/// mind, and the process cwd must not leak one in. A missing key is `None`,
+/// as is a git that cannot run at all — a profile fallback is not worth an
+/// error.
+pub async fn global_identity() -> GitIdentity {
+    async fn read(key: &str) -> Option<String> {
+        let out = crate::git_dist::bare_command()
+            .args(["config", "--global", "--get", key])
+            .output()
+            .await
+            .ok()?;
+        let value = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        (out.status.success() && !value.is_empty()).then_some(value)
+    }
+    GitIdentity {
+        name: read("user.name").await,
+        email: read("user.email").await,
+    }
+}
 
 /// The checkout's `user.email`, or `None` when unset.
 pub async fn configured_email(repo: &Path) -> Result<Option<String>> {

@@ -272,6 +272,22 @@ fn host() -> &'static str {
     }
 }
 
+/// The OS release, e.g. "15.1" on macOS — `os` alone says only "macos", and
+/// which releases people install onto is what decides what the app may
+/// depend on. Best-effort and categorical: a version string, never a host
+/// name or anything else `sw_vers` could say.
+fn os_version() -> Option<String> {
+    if cfg!(target_os = "macos") {
+        let out = std::process::Command::new("sw_vers")
+            .arg("-productVersion")
+            .output()
+            .ok()?;
+        let v = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        return (out.status.success() && !v.is_empty()).then_some(v);
+    }
+    None
+}
+
 /// Initialize the global pipeline. No-op when no PostHog key is baked in, or if
 /// already initialized. `identity` is the install's persisted [`Identity`];
 /// `enabled` is the persisted opt-out consent flag.
@@ -295,6 +311,9 @@ pub fn init(identity: Identity, enabled: bool, version: String) {
     );
     super_props.insert("os".into(), json!(std::env::consts::OS));
     super_props.insert("arch".into(), json!(std::env::consts::ARCH));
+    if let Some(v) = os_version() {
+        super_props.insert("os_version".into(), json!(v));
+    }
 
     let _ = TELEMETRY.set(Telemetry {
         api_key,

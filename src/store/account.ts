@@ -1,4 +1,4 @@
-import { api, type GhStatus, type LinearStatus } from "@/api";
+import { api, type GhStatus, type GitIdentity, type LinearStatus } from "@/api";
 import { type AccountProfile, getAccount, saveAccountProfile, toProfile } from "@/storage/accounts";
 import { forActiveEnvironment } from "./environments";
 import type { SliceCreator } from "./types";
@@ -6,6 +6,10 @@ import type { SliceCreator } from "./types";
 export interface AccountSlice {
   /** Local account profile, loaded on init. `null` until the row is read. */
   account: AccountProfile | null;
+  /** This Mac's global git identity, read once on init: what the account
+   *  surfaces show when the profile is empty (see `util/identity.ts`).
+   *  `null` until read, or when git could not answer. */
+  gitIdentity: GitIdentity | null;
   /** Anonymous usage telemetry consent. Opt-out: defaults on. */
   telemetryEnabled: boolean;
   /** Code-indexing (codegraph) consent. Opt-out: defaults on. */
@@ -53,6 +57,7 @@ export interface AccountSlice {
 
 export const createAccountSlice: SliceCreator<AccountSlice> = (set, get) => ({
   account: null,
+  gitIdentity: null,
   telemetryEnabled: true,
   codeIndexingEnabled: true,
   contextLayerEnabled: false,
