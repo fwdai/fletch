@@ -12,6 +12,14 @@ use crate::supervisor::Supervisor;
 
 use super::files::{agent_repo_checkout, repo_branch};
 
+/// The user's global git identity, for the account surfaces to fall back on
+/// when no profile has been entered or signed in. Local by construction: it
+/// is this Mac's `~/.gitconfig`, the one the user types into.
+#[tauri::command]
+pub async fn git_identity() -> fletch_core::git::GitIdentity {
+    fletch_core::git::global_identity().await
+}
+
 /// Push the targeted repo's current branch to origin (primary by default).
 #[tauri::command]
 pub async fn push_agent(

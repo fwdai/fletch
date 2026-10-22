@@ -212,6 +212,13 @@ export const hydrateAccount = async (set: AppSet) => {
   } catch {
     // Non-fatal — Account screen shows empty fields until a save succeeds.
   }
+  // The profile's fallback. Not awaited by the caller's critical path either:
+  // a git that cannot answer leaves the surfaces on their empty state.
+  try {
+    set({ gitIdentity: await api.gitIdentity() });
+  } catch {
+    // Non-fatal — see above.
+  }
 };
 
 // Every engine-event subscription this module holds, in the order it was made.

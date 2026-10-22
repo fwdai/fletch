@@ -1,18 +1,15 @@
-// Onboarding exhibits — small, real-feeling fragments of the Fletch UI,
-// framed beside each requirement step's controls. Built from the same visual
-// language as the app so onboarding previews the actual product. Ported from
-// the design prototype (onboarding/exhibits.jsx).
+// Onboarding exhibits — small, real-feeling fragments of the Fletch UI, shown
+// on the pre-flight screen beside the row they illustrate. Built from the same
+// visual language as the app so onboarding previews the actual product.
 
-import { useEffect, useState } from "react";
-import { Icon, LandmarkGlyph } from "@/components/Icon";
+import { Icon } from "@/components/Icon";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { Badge } from "@/components/ui/Badge";
-import { PROVIDER_DETAIL } from "@/data/providerDetail";
 import type { ProviderId } from "@/data/providers";
-import { PROVIDERS, providerChip } from "@/data/providers";
+import { providerChip } from "@/data/providers";
 
 // ── tiny faux window chrome for an exhibit ──────────────────────────
-// Exported: the agents step frames its live install grid with the same chrome.
+// Exported: the agents panel frames its live install grid with the same chrome.
 export function ExBar({ title }: { title: string }) {
   return (
     <div className="ex-bar">
@@ -83,12 +80,16 @@ const PARALLEL_AGENTS: ParallelAgent[] = [
   },
 ];
 
-// Mirrors AgentRow's RealRow markup (static, no store/interactivity).
-function ExhibitAgentRow({ a }: { a: ParallelAgent }) {
+// Mirrors AgentRow's RealRow markup (static, no store/interactivity). `i`
+// staggers the row's entrance so the checkouts appear one after another.
+function ExhibitAgentRow({ a, i }: { a: ParallelAgent; i: number }) {
   const working = a.status === "running";
   const rail = working ? "run" : a.status === "error" ? "err" : "idle";
   return (
-    <div className={`agent ${a.active ? "active" : ""}`}>
+    <div
+      className={`agent ex-stagger ${a.active ? "active" : ""}`}
+      style={{ "--i": i } as React.CSSProperties}
+    >
       <span className={`ag-rail ${rail}`} />
       <div className="agent-row flex-center">
         <span className={`ag-name ag-title ${working ? "shimmer" : ""}`}>{a.task}</span>
@@ -134,8 +135,8 @@ export function ExhibitParallel() {
               <span className="pcount">4</span>
             </div>
             <div className="agents">
-              {PARALLEL_AGENTS.map((a) => (
-                <ExhibitAgentRow key={a.name} a={a} />
+              {PARALLEL_AGENTS.map((a, i) => (
+                <ExhibitAgentRow key={a.name} a={a} i={i} />
               ))}
             </div>
           </div>
@@ -148,154 +149,8 @@ export function ExhibitParallel() {
   );
 }
 
-// ── Exhibit 2 · any agent, one roof (parked) ────────────────────────
-// Superseded by the agents step's functional install grid; kept for reuse.
-export function ExhibitProviders() {
-  const list = PROVIDERS.slice(0, 6);
-  const [lit, setLit] = useState(0);
-  useEffect(() => {
-    setLit(0);
-    const timers = list.map((_, i) =>
-      setTimeout(() => setLit((n) => Math.max(n, i + 1)), 380 + i * 230),
-    );
-    return () => timers.forEach(clearTimeout);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-  return (
-    <div className="ob-exhibit-wrap ob-reveal" style={{ "--d": ".25s" } as React.CSSProperties}>
-      <div className="ob-exhibit">
-        <ExBar title="fletch — providers" />
-        <div className="ex-providers">
-          {list.map((p, i) => (
-            <div key={p.id} className={`ex-prov ${i < lit ? "on" : ""}`}>
-              <ProviderIcon slug={p.id} short={p.short} hue={p.hue} size={30} />
-              <span className="meta">
-                <span className="pl">{p.label}</span>
-                <span className="ps">{PROVIDER_DETAIL[p.id].models}</span>
-              </span>
-              <span className="chk">
-                <Icon name="check" size={11} strokeWidth={2} />
-              </span>
-            </div>
-          ))}
-        </div>
-        <div className="ob-exhibit-cap">
-          <span className="lvdot" />
-          connected · switch per task, no lock-in
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ── Exhibit 3 · the control room (home) ─────────────────────────────
-// Every checkout at a glance — the editorial home screen, in miniature.
-interface RoomRow {
-  name: string;
-  landmark: string;
-  task: string;
-  status: "running" | "waiting" | "error";
-  add: number;
-  rem: number;
-  meta: string;
-}
-
-const ROOM_ROWS: RoomRow[] = [
-  {
-    name: "patagonia",
-    landmark: "patagonia",
-    task: "Stripe portal sync",
-    status: "running",
-    add: 187,
-    rem: 64,
-    meta: "writing",
-  },
-  {
-    name: "andes",
-    landmark: "andes",
-    task: "Zero-copy decoder",
-    status: "running",
-    add: 624,
-    rem: 312,
-    meta: "writing",
-  },
-  {
-    name: "caspian",
-    landmark: "caspian",
-    task: "Diff repaint jitter",
-    status: "waiting",
-    add: 14,
-    rem: 22,
-    meta: "needs you",
-  },
-  {
-    name: "sierra",
-    landmark: "sierra",
-    task: "v3 migration guide",
-    status: "waiting",
-    add: 240,
-    rem: 12,
-    meta: "needs you",
-  },
-  {
-    name: "hokkaido",
-    landmark: "hokkaido",
-    task: "List virtualization",
-    status: "error",
-    add: 96,
-    rem: 41,
-    meta: "error",
-  },
-];
-
-export function ExhibitRoom() {
-  return (
-    <div className="ob-exhibit-wrap ob-reveal" style={{ "--d": ".25s" } as React.CSSProperties}>
-      <div className="ob-exhibit">
-        <ExBar title="fletch — home" />
-        <div className="ex-room">
-          <div className="ex-room-head">
-            <div className="ex-room-mark">
-              <span className="d" />
-              FLETCH
-            </div>
-            <div className="ex-room-when">
-              Thu, Jun 4<span className="sep">·</span>9:24 AM
-            </div>
-          </div>
-          <div className="ex-room-title">
-            <em>four</em> checkouts still in flight.
-          </div>
-          <div className="ex-room-rows">
-            {ROOM_ROWS.map((r) => (
-              <div key={r.name} className={`ex-rr ${r.status}`}>
-                <span className="gly">
-                  <LandmarkGlyph name={r.landmark} size={13} strokeWidth={1.2} />
-                </span>
-                <span className="rn">{r.name}</span>
-                <span className="rt">{r.task}</span>
-                <span className="rr-r">
-                  <span className="diff">
-                    <span className="ad">+{r.add}</span>
-                    <span className="rm">−{r.rem}</span>
-                  </span>
-                  <span className={`st ${r.status}`}>{r.meta}</span>
-                </span>
-              </div>
-            ))}
-          </div>
-        </div>
-        <div className="ob-exhibit-cap">
-          <span className="lvdot" />
-          one room · every project, every agent
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ── Exhibit 4 · live code, straight to a PR ─────────────────────────
-// Shown beside the GitHub step — the change-to-pull-request loop it unlocks.
+// ── Exhibit 2 · live code, straight to a PR ─────────────────────────
+// Shown beside the GitHub row — the change-to-pull-request loop it unlocks.
 function escHtml(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }

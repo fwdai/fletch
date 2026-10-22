@@ -1,7 +1,7 @@
-// Shared readiness state for the functional onboarding steps. One instance
-// lives in the Onboarding shell so the git / GitHub / agents steps and the
-// footer's gated Continue all read the same truth — a step flipping ready
-// enables Continue without re-probing.
+// The machine's readiness, as the pre-flight reads it: git, the GitHub
+// connection, and the agent CLIs. One instance lives in the Onboarding shell
+// so the probes start the moment onboarding mounts (usually while the welcome
+// is still up) and every row, panel and event reads the same truth.
 
 import { useCallback, useEffect, useState } from "react";
 import { api, type GhStatus, type ToolStatus } from "@/api";
@@ -36,13 +36,13 @@ export interface OnboardingSetup {
   providerPaths: Record<string, string>;
   refreshProviders: () => Promise<void>;
 
-  checking: boolean;
+  /** Re-run every probe — after a sign-in, an install, a download settling. */
   recheck: () => void;
 }
 
 /** `pollAgents` re-probes provider binaries every few seconds — enabled while
- *  the agents step is on screen, so an install finishing (one-click or in the
- *  user's own terminal) lights its tile up without hunting for a re-check
+ *  the pre-flight is on screen, so an install finishing (one-click or in the
+ *  user's own terminal) lights its row up without hunting for a re-check
  *  button. */
 export function useOnboardingSetup(pollAgents: boolean): OnboardingSetup {
   const providerVersions = useAppStore((s) => s.providerVersions);
@@ -53,15 +53,13 @@ export function useOnboardingSetup(pollAgents: boolean): OnboardingSetup {
 
   const [git, setGit] = useState<ToolStatus | null>(null);
   const [gh, setGh] = useState<GhStatus | null>(null);
-  const [checking, setChecking] = useState(true);
 
+  // Each probe lands on its own; a failed one leaves its row unanswered (git
+  // stays null, the GitHub status stays null) rather than failing the rest.
   const recheck = useCallback(() => {
-    setChecking(true);
-    void Promise.allSettled([
-      refreshProviders(),
-      api.checkCli("git").then(setGit),
-      api.ghStatus().then(setGh),
-    ]).finally(() => setChecking(false));
+    void refreshProviders();
+    void api.checkCli("git").then(setGit, () => {});
+    void api.ghStatus().then(setGh, () => {});
   }, [refreshProviders]);
 
   useEffect(() => {
@@ -95,7 +93,6 @@ export function useOnboardingSetup(pollAgents: boolean): OnboardingSetup {
     providerVersions,
     providerPaths,
     refreshProviders,
-    checking,
     recheck,
   };
 }

@@ -1,0 +1,27 @@
+/* The brand lockup scales from one font-size: the mark is sized in em and the
+ * wordmark inherits. Spacing is deliberately tight — mark and wordmark read
+ * as one crafted unit, not an icon beside a word. */
+.lockup {
+  display: inline-flex;
+  align-items: center;
+  user-select: none;
+}
+.lockup-mark {
+  /* the bolt is a tall ~2:3 shape; it sits just above the wordmark's
+   * ascender height so it reads as a mark on the same line, not a glyph */
+  width: 0.57em;
+  height: 0.85em;
+  flex-shrink: 0;
+  margin-right: 0.44em;
+  /* the bolt's visual weight is in its upper blade, so centering the box
+   * leaves it looking high; nudge it down onto the wordmark's optical center */
+  position: relative;
+  top: 0.03em;
+}
+.lockup-word {
+  font-family: var(--font-geist);
+  font-weight: 600;
+  /* tight tracking so the mark + wordmark read as one crafted lockup */
+  letter-spacing: -0.015em;
+  line-height: var(--lh-none);
+}

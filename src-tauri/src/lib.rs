@@ -1425,6 +1425,7 @@ pub fn run() {
             commands::project_has_running_agents,
             commands::relocate_repo,
             commands::gh_status,
+            commands::git_identity,
             commands::gh_repo_list,
             commands::clone_repo,
             commands::create_repo,

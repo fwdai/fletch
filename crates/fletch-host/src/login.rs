@@ -52,7 +52,6 @@ impl Login {
         }
         let creds = Credentials {
             client_id: github_client_id()?,
-            client_secret: None,
         };
 
         // The code arrives inside the flow, before the first poll, so the task

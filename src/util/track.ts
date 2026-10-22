@@ -13,19 +13,19 @@
 // booleans; never paths, repo/branch names, prompts, or raw error strings.
 
 import { api } from "@/api";
+import type { ConnectFailureReason } from "./connectFailure";
 
-/** The onboarding overlay's flat step model (mirrors `Onboarding/index.tsx`). */
-export type OnboardingStep = "welcome" | "git" | "github" | "agents" | "ready";
+/** The onboarding overlay's two screens (mirrors `Onboarding/index.tsx`). */
+export type OnboardingStep = "welcome" | "preflight";
+
+/** The pre-flight check's rows, each of which the user can decline (mirrors
+ *  `Onboarding/Preflight/usePreflight.ts`). */
+export type OnboardingCheck = "agents" | "git" | "github";
 
 /** Where a GitHub device-flow sign-in was launched from. Lets us tell an
  *  onboarding sign-in (funnel drop-off) from a later one (a connect gate the
  *  user hit mid-task). */
-export type ConnectSource =
-  | "onboarding_welcome"
-  | "onboarding_github"
-  | "new_project"
-  | "settings"
-  | "connect_gate";
+export type ConnectSource = "onboarding_github" | "new_project" | "settings" | "connect_gate";
 
 /** How a project entered the sidebar. */
 export type ProjectAddMethod = "existing" | "clone" | "create";
@@ -52,16 +52,33 @@ type OnboardingCommon = {
  *  covers. */
 interface EventMap {
   // ── onboarding funnel ────────────────────────────────────────────────────
-  /** A step came on screen. The whole drop-off curve is derivable from this. */
+  /** A screen came on screen. The whole drop-off curve is derivable from this. */
   onboarding_step_viewed: OnboardingCommon & { step: OnboardingStep; index: number };
-  /** A per-step opt-out ("I use GitLab…", "Set up later") — the only way to
-   *  decline a requirement, and the sole skip signal now that the title-bar
-   *  Skip is gone. */
-  onboarding_step_skipped: OnboardingCommon & { step: OnboardingStep };
-  /** The ✕ before reaching the handoff — the "gave up here" signal. */
+  /** A pre-flight row the user declined ("I'll install one later", "Not now")
+   *  — the only way to pass a row that needs them. */
+  onboarding_step_skipped: OnboardingCommon & { step: OnboardingCheck };
+  /** The ✕ before "Open Fletch" — the "gave up here" signal. */
   onboarding_abandoned: OnboardingCommon & { step: OnboardingStep };
-  /** "Enter Fletch", with what the user actually finished with. Reachable with
-   *  gaps via the per-step skips, so the flags matter. */
+  /** What the pre-flight found on this machine, once per onboarding session,
+   *  the moment the automatic checks have an answer — on whichever screen the
+   *  user is, so a machine whose owner quits at the welcome is still counted.
+   *  The one event that says what people install Fletch onto: which agent
+   *  CLIs they already have (by provider id), whether git was theirs, ours,
+   *  or missing, and whether GitHub was already connected. `os`, `arch` and
+   *  `app_version` ride along on every event from the backend. */
+  environment_detected: OnboardingCommon & {
+    /** Provider ids of the agent CLIs found on PATH, e.g. ["claude", "codex"]. */
+    agents: string[];
+    agents_detected: number;
+    /** `system`: the user's own git; `portable`: the copy Fletch downloaded;
+     *  `none`: neither usable at the time of the check. */
+    git: "system" | "portable" | "none";
+    /** Major.minor only, e.g. "2.47" — enough to spot an old git, bounded. */
+    git_version: string | null;
+    gh_connected: boolean;
+  };
+  /** "Open Fletch", with what the user actually finished with. The pre-flight
+   *  never blocks, so the flags are the point. */
   onboarding_completed: OnboardingCommon & {
     git_ready: boolean;
     gh_connected: boolean;
@@ -70,10 +87,11 @@ interface EventMap {
 
   // ── GitHub device flow ───────────────────────────────────────────────────
   // started + one terminal event, so the browser round-trip (the step most
-  // likely to strand someone) has a measurable completion rate.
+  // likely to strand someone) has a measurable completion rate. `reason` on a
+  // failure is a category (`connectFailure.ts`), never the error text.
   github_connect_started: { source: ConnectSource; provider: string };
   github_connect_succeeded: { source: ConnectSource; provider: string };
-  github_connect_failed: { source: ConnectSource; provider: string };
+  github_connect_failed: { source: ConnectSource; provider: string; reason: ConnectFailureReason };
   github_connect_cancelled: { source: ConnectSource; provider: string };
 
   // ── portable git bootstrap ───────────────────────────────────────────────

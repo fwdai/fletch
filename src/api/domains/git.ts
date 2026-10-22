@@ -1,14 +1,19 @@
-import { invoke } from "../invoke";
+import { invoke, invokeLocal } from "../invoke";
 import type {
   AutopilotLogEntry,
   AutopilotSnapshot,
   DelegationEvent,
+  GitIdentity,
   GitMeta,
   GitState,
   ShortStats,
 } from "../types/git";
 
 export const gitApi = {
+  /** This Mac's global git identity — the account surfaces' fallback when no
+   *  profile is set. Local whatever environment is active: it is who the
+   *  user is, not who a host is. */
+  gitIdentity: () => invokeLocal<GitIdentity>("git_identity"),
   /** The current HEAD commit SHA of an agent's checkout (primary repo). The
    *  fork point for "promote to workflow". */
   agentHeadSha: (agentId: string) => invoke<string>("agent_head_sha", { agentId }),

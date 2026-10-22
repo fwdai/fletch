@@ -61,8 +61,8 @@ export function DeveloperPane() {
 
       <SetGroup label="Onboarding">
         <SetRow
-          title="Welcome tour"
-          sub="Replay the cinematic onboarding — the feature tour and first-project walkthrough."
+          title="Onboarding"
+          sub="Replay the first-run onboarding — the welcome and the pre-flight check."
         >
           <Button
             variant="outline"

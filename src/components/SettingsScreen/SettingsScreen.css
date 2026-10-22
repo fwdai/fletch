@@ -474,6 +474,10 @@
   color: var(--fg-2);
   margin-top: 2px;
 }
+.set-profile-hint {
+  color: var(--fg-3);
+  margin-top: 6px;
+}
 
 /* editable profile form */
 .set-form {

@@ -1,6 +1,13 @@
 import type { CyclePhase, GiveUpReason } from "@/autopilot";
 import type { DelegationKind, DelegationPhase } from "@/delegation";
 
+/** `user.name` / `user.email` from this Mac's global git config. Either may
+ *  be unset. */
+export interface GitIdentity {
+  name: string | null;
+  email: string | null;
+}
+
 export interface DiffStats {
   additions: number;
   deletions: number;
