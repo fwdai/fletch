@@ -1537,6 +1537,13 @@
   color: var(--fg-2);
   text-align: center;
 }
+/* Why the primary is disabled, when the gate has something to say. */
+.ch-foot .why {
+  margin-top: 8px;
+  font-size: 12.5px;
+  color: var(--fg-2);
+  text-align: center;
+}
 /* Ship tab. The strip's tint carries the state before any word is read:
    clean/ready=green · changes=amber · info=accent · att=orange · merged=purple
    · neutral=grey · working=accent with the chat's spinner. One `--tone` per

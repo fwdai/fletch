@@ -1,13 +1,30 @@
-// The Ship tab, as data: one strip of text, ONE primary button and the overflow
-// under it, all read off the desktop's remediation ladder (`nextRung` in
-// src/readiness.ts). The phone holds no second copy of that ladder — what to do
-// next is the ladder's call; this module only decides how to say it and which
-// host op or playbook a tap maps to.
+// The Ship tab, as data: the desktop Git panel's own models, read for the
+// phone. The ladder rows (`buildLadder`), the footer (`buildFooter`) and the
+// one action gate (`gateAction`) are the desktop's, so the two clients never
+// say different things about the same checkout. What is the phone's: the strip
+// it shows on top, which footer keys it can run (`actions.ts`), and the PR
+// sheet as the manual alternative to a commit playbook.
 
-import type { DelegationKind } from "@desktop/delegation";
-import { delegationLabel } from "@desktop/delegation";
-import { describeMergeGate, mergeGateLabel } from "@desktop/mergeGate";
-import { type LadderContext, nextRung, type ReadinessInput, type Rung } from "@desktop/readiness";
+import type { GitState } from "@desktop/api/types/git";
+import type { MergeState, PrChecks, PrComments, PrState } from "@desktop/api/types/pr";
+import { gateAction } from "@desktop/components/RightPanel/GitPanel/actionGate";
+import {
+  applyGate,
+  buildFooter,
+  endingActions,
+  type FooterAction,
+  type FooterGroup,
+} from "@desktop/components/RightPanel/GitPanel/footerModel";
+import {
+  buildLadder,
+  type LadderRow,
+  type RungMark,
+  type RungTone,
+} from "@desktop/components/RightPanel/GitPanel/ladderModel";
+import { type DelegationKind, delegationLabel } from "@desktop/delegation";
+import { describeMergeGate } from "@desktop/mergeGate";
+import { hasWorkSinceMerge } from "@desktop/readiness";
+import { COMMIT_KEYS, MANUAL_KEY, type ShipFacts, shipOp, shipRefusal } from "./actions";
 
 /** Tint of the strip: clean/ready=green · changes=amber · info=accent ·
  *  att=orange · merged=purple · neutral=grey · working=accent with a spinner. */
@@ -32,238 +49,146 @@ export interface ShipStrip {
   prLink?: boolean;
 }
 
-export type ShipAction =
-  /** Hand a playbook to the coding agent (`delegateGit`). */
-  | {
-      key: string;
-      label: string;
-      kind: "delegate";
-      action: string;
-      params?: Record<string, string>;
-      delegation: DelegationKind;
-    }
-  /** The host's `merge_pr`. */
-  | { key: "merge"; label: string; kind: "merge" }
-  | { key: "archive"; label: string; kind: "archive" }
-  | { key: "github"; label: string; kind: "github"; url: string }
-  /** The manual commit / push / PR sheet (`openSheet("pr")`). */
-  | { key: "manual"; label: string; kind: "manual" };
-
-export interface ShipView {
-  rung: Rung;
-  strip: ShipStrip;
-  /** The one button in the footer; null when there is nothing to press. */
-  primary: ShipAction | null;
-  /** Everything else reachable from the "More" sheet. Never holds `primary`. */
-  more: ShipAction[];
+export interface ShipFooterView {
+  /** The one button, or null when the ladder's next step is one the phone
+   *  can't run (pull, publish, …) or nothing is known yet. */
+  primary: FooterAction | null;
+  /** Everything else the "More" sheet offers, gated, with the desktop's group
+   *  titles. Never holds `primary`. */
+  groups: FooterGroup[];
+  /** Why the primary is disabled, when that is worth a line (`applyGate`). */
+  mainReason: string | null;
 }
 
-export interface ShipExtra {
-  /** A playbook the host has in flight for this agent, held or running
-   *  (`delegation:changed` / `get_delegations`). */
+export interface ShipView {
+  ladder: LadderRow[];
+  strip: ShipStrip;
+  footer: ShipFooterView;
+}
+
+export interface ShipInput {
+  git: GitState | null;
+  pr: PrState | null;
+  /** `undefined` until the first checks read lands — an open PR's merge gate
+   *  reads as "unknown" meanwhile, as on the desktop (`useGitPanelData`). */
+  checks: PrChecks | null | undefined;
+  comments: PrComments | null;
+  base: string;
+  /** A playbook the host has in flight for this agent (`delegation:changed`). */
   delegation: DelegationKind | null;
   /** The host answers `merge_pr` (`hostSupports`). */
   canMerge: boolean;
 }
 
-/** The playbooks that start with a commit or a push: the ones the Changes tab
- *  shows, and the ones with a manual alternative (the PR sheet). */
-export const COMMIT_FAMILY: ReadonlySet<DelegationKind> = new Set<DelegationKind>([
-  "commit",
-  "commit-push",
-  "commit-pr",
-  "open-pr",
-  "push",
-]);
+/** The strip's tint for a ladder row: its attention colour when it has one,
+ *  else its mark. */
+const STRIP_OF_TONE: Record<RungTone, StripKind> = {
+  warn: "changes",
+  att: "att",
+  danger: "att",
+  info: "info",
+  merged: "merged",
+  neutral: "neutral",
+};
+const STRIP_OF_MARK: Record<RungMark, StripKind> = {
+  done: "ready",
+  running: "info",
+  attention: "att",
+  idle: "neutral",
+};
 
-export const isCommitAction = (a: ShipAction | null): boolean =>
-  a?.kind === "delegate" && COMMIT_FAMILY.has(a.delegation);
-
-const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
-const capitalize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
+export const stripKind = (row: Pick<LadderRow, "mark" | "tone">): StripKind =>
+  row.tone ? STRIP_OF_TONE[row.tone] : STRIP_OF_MARK[row.mark];
 
 /** A checkout Fletch will not run git in (`GitState.blocked_config`). Its git
  *  state is the last one read before the block, so nothing from it is shown. */
 const BLOCKED: ShipStrip = { kind: "att", text: "Git paused", sub: "blocking settings" };
+const NO_FOOTER: ShipFooterView = { primary: null, groups: [], mainReason: null };
 
-export function describeShip(
-  input: ReadinessInput,
-  ctx: LadderContext,
-  extra: ShipExtra,
-): ShipView {
-  const rung = nextRung(input, ctx);
-  if (input.git?.blocked_config?.length) return { rung, strip: BLOCKED, primary: null, more: [] };
+const MANUAL: FooterAction = { key: MANUAL_KEY, label: "Write the message yourself", icon: "edit" };
 
-  const { pr, checks } = input;
-  const open = pr?.state === "open" ? pr : null;
-  const prLink = pr?.state === "open" || pr?.state === "merged";
-  const gate = open
-    ? describeMergeGate(checks?.merge_state ?? null, {
-        checksFailed: checks?.required_failing.length ?? 0,
-        mergeable: open.mergeable,
-      })
-    : null;
-  const github: ShipAction | null = pr
-    ? { key: "github", label: "Open on GitHub", kind: "github", url: pr.url }
-    : null;
+export function shipView(input: ShipInput): ShipView {
+  const { git, pr, comments, base, delegation, canMerge } = input;
+  const checks = input.checks ?? null;
+  const prOpen = pr?.state === "open";
+  const mergeState: MergeState | null =
+    checks?.merge_state ?? (prOpen && input.checks === undefined ? "unknown" : null);
+  const prLink = prOpen || pr?.state === "merged";
 
+  if (git?.blocked_config?.length) return { ladder: [], strip: BLOCKED, footer: NO_FOOTER };
+
+  const facts: ShipFacts = { base, pr, checks, comments };
+  const runnable = (a: FooterAction) => shipOp(a.key, facts) != null;
+  const opensSheet = (a: FooterAction) => shipOp(a.key, facts)?.kind === "manual";
+
+  // The gate `useFooterModel` builds, over the phone's own host table. The
+  // phone's in-flight merge is held by `useShipActions`, not here.
+  const { mergeAllowed } = describeMergeGate(checks ? mergeState : null, {
+    checksFailed: checks?.required_failing.length ?? 0,
+    mergeable: pr?.mergeable ?? "unknown",
+  });
+  const gate = (key: string) =>
+    gateAction(key, {
+      hostRefusal: (k) => shipRefusal(k, facts, canMerge),
+      laneBranch: pr?.branch ?? null,
+      checkoutBranch: git?.branch || null,
+      mergeAllowed,
+      delegationActive: delegation != null,
+      busy: false,
+      primaryCheckout: true,
+      workSinceMerge: git != null && hasWorkSinceMerge(git),
+    });
+
+  const ladder = buildLadder({ git, pr, checks, mergeState, comments, base });
+  const model = buildFooter({
+    git,
+    pr,
+    checks,
+    mergeState,
+    comments,
+    base,
+    // The phone always commits straight to a PR; it has no mode to pick, so
+    // the radio group below is dropped.
+    commitMode: "agent-commit-pr",
+    customActive: false,
+    // The phone has no read of the host's GitHub connection. It assumes one,
+    // and a host without it refuses the push or PR with a reason.
+    githubConnected: true,
+    hasOrigin: git?.has_origin ?? true,
+  });
+  const committing = COMMIT_KEYS.has(model.primary.key);
+  const groups: FooterGroup[] = [
+    // Every row the phone runs as the PR sheet folds into the one manual row.
+    ...model.groups
+      .filter((g) => !g.radio)
+      .map((g) => ({ ...g, items: g.items.filter((i) => !opensSheet(i)) })),
+    // The merged PR's ending actions sit on its row on the desktop; the phone
+    // has no row to put them on, so they are a group of their own.
+    ...(pr?.state === "merged" ? [{ title: "Workspace", items: endingActions() }] : []),
+    ...(committing ? [{ items: [MANUAL] }] : []),
+  ];
+  const gated = applyGate({ primary: model.primary, groups }, gate);
+  const primary = runnable(gated.primary) ? gated.primary : null;
+  const footer: ShipFooterView = {
+    primary,
+    groups: gated.groups
+      .map((g) => ({ ...g, items: g.items.filter(runnable) }))
+      .filter((g) => g.items.length > 0),
+    mainReason: primary ? gated.mainReason : null,
+  };
+
+  // The strip: the playbook in flight, else the row the ladder's next step is
+  // about — or, with nothing to do, the PR's row when there is one.
   let strip: ShipStrip;
-  let primary: ShipAction | null;
-  switch (rung.do) {
-    case "wait":
-      if (rung.why === "unknown-state") {
-        strip = { kind: "neutral", text: "Loading…" };
-        primary = null;
-      } else {
-        strip = { kind: "info", text: "GitHub is computing merge status", prLink };
-        primary = github;
-      }
-      break;
-    case "delegate": {
-      const b = rung.blocker;
-      const n = open?.number;
-      switch (b.kind) {
-        case "conflicted":
-          strip = { kind: "att", text: `Conflicts in ${plural(b.paths.length, "file")}`, prLink };
-          break;
-        case "uncommitted":
-          strip = {
-            kind: "changes",
-            text: `${plural(b.files, "uncommitted file")}`,
-            diff: true,
-            prLink,
-          };
-          break;
-        case "unpushed":
-          strip = { kind: "info", text: `${plural(b.commits, "commit")} not pushed`, prLink };
-          break;
-        case "unsubmitted":
-          strip = { kind: "info", text: "Pushed, no PR yet", prLink };
-          break;
-        case "diverged":
-          strip = {
-            kind: "att",
-            text: capitalize(mergeGateLabel(gate?.situation ?? "behind", ctx.base)),
-            prLink,
-          };
-          break;
-        case "checks-failing":
-          strip = {
-            kind: "att",
-            text: `${plural(b.checks.length || checks?.failed || 0, "check")} failing`,
-            prLink,
-          };
-          break;
-        case "review-unaddressed":
-          strip = { kind: "att", text: `${plural(b.count, "review comment")} waiting`, prLink };
-          break;
-        default:
-          // The ladder never delegates the human-owned blockers; a new one
-          // reads as its kind until this table learns it.
-          strip = { kind: "att", text: b.kind, prLink };
-      }
-      const label = (() => {
-        switch (rung.kind) {
-          case "resolve":
-            return "Resolve conflicts";
-          case "commit-pr":
-            return "Commit & open PR";
-          case "commit-push":
-            return n != null ? `Commit & push to #${n}` : "Commit & push";
-          case "commit":
-            return "Commit";
-          case "push":
-            return n != null ? `Push to #${n}` : "Push";
-          case "open-pr":
-            return "Open PR";
-          case "update-branch":
-            return "Update branch";
-          case "fix-checks":
-            return "Fix failing checks";
-          case "resolve-comments":
-            return `Resolve ${plural(b.kind === "review-unaddressed" ? b.count : 0, "review comment")}`;
-        }
-      })();
-      primary = {
-        key: rung.kind,
-        label,
-        kind: "delegate",
-        action: rung.action,
-        ...(rung.params ? { params: rung.params } : {}),
-        delegation: rung.kind,
-      };
-      break;
-    }
-    case "merge":
-      strip = { kind: "ready", text: "Ready to merge", prLink };
-      primary = extra.canMerge
-        ? { key: "merge", label: `Merge PR #${open?.number ?? pr?.number}`, kind: "merge" }
-        : github;
-      break;
-    case "escalate": {
-      const b = rung.blocker;
-      switch (b.kind) {
-        case "review-required":
-          strip = { kind: "info", text: "Waiting on a review", prLink };
-          break;
-        case "draft":
-          strip = { kind: "info", text: "Draft on GitHub", prLink };
-          break;
-        case "review-disputed":
-          strip = { kind: "info", text: `${plural(b.count, "thread")} waiting on a reply`, prLink };
-          break;
-        case "proposal-closed":
-          strip = { kind: "neutral", text: `PR #${pr?.number} was closed`, prLink };
-          break;
-        default:
-          strip = { kind: "info", text: b.kind, prLink };
-      }
-      primary = github;
-      break;
-    }
-    case "ready":
-      if (open && gate) {
-        strip = {
-          kind: "info",
-          text: capitalize(mergeGateLabel(gate.situation, ctx.base)),
-          prLink,
-        };
-        primary = github;
-      } else {
-        strip = { kind: "clean", text: "Nothing to ship yet", sub: `← ${ctx.base}` };
-        primary = null;
-      }
-      break;
-    case "landed":
-      strip = { kind: "merged", text: `Merged into ${ctx.base}`, prLink };
-      primary = { key: "archive", label: "Archive workspace", kind: "archive" };
-      break;
+  if (delegation) {
+    strip = { kind: "working", text: delegationLabel(delegation), prLink };
+  } else if (!git) {
+    strip = { kind: "neutral", text: "Loading…" };
+  } else {
+    const at = ladder.find((r) => r.current) ?? (pr ? ladder.find((r) => r.key === "pr") : null);
+    strip = at
+      ? { kind: stripKind(at), text: at.summary, diff: at.key === "changes", prLink }
+      : { kind: "clean", text: "Nothing to ship yet", sub: `← ${base}` };
   }
-
-  // The overflow: Merge stays reachable from any open state the gate allows
-  // (as on the desktop), the manual sheet backs every commit-family playbook,
-  // and GitHub is always one tap away once a PR exists. Never Merge while the
-  // local tree is conflicted, however green GitHub's gate is: the checkout
-  // cannot even be reconciled yet, and that holds while the agent is mid-way
-  // through resolving it (the desktop's conflict state offers no merge either).
-  const conflicted = (input.git?.files ?? []).some((f) => f.kind === "conflicted");
-  const more: ShipAction[] = [];
-  if (gate?.mergeAllowed && extra.canMerge && primary?.kind !== "merge" && open && !conflicted) {
-    more.push({ key: "merge", label: `Merge PR #${open.number}`, kind: "merge" });
-  }
-  if (isCommitAction(primary)) {
-    more.push({ key: "manual", label: "Write the message yourself", kind: "manual" });
-  }
-  if (github && primary?.kind !== "github") more.push(github);
-
-  // A playbook in flight: the strip says so, and the footer waits it out.
-  if (extra.delegation) {
-    return {
-      rung,
-      strip: { kind: "working", text: delegationLabel(extra.delegation), prLink },
-      primary: null,
-      more,
-    };
-  }
-  return { rung, strip, primary, more };
+  return { ladder, strip, footer };
 }

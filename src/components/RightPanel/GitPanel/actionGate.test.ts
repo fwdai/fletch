@@ -24,8 +24,11 @@ const oldHost: EnvironmentEntry = {
   protocol: { version: 2, ops: [...V2_DEFAULT_OPS], events: [], features: [] },
 };
 
+/** The desktop's host refusal for `env`, as `useFooterModel` passes it. */
+const refusalOf = (env: EnvironmentEntry) => (key: string) => actionGateReason(env, key);
+
 const open: GateContext = {
-  env: local,
+  hostRefusal: refusalOf(local),
   laneBranch: "feat/first",
   checkoutBranch: "feat/first",
   mergeAllowed: true,
@@ -46,10 +49,10 @@ describe("gateAction", () => {
 
   it("explains a host that cannot run the op, for any key", () => {
     for (const key of ["merge", "pull", "agent-commit-push", "focus-pr"]) {
-      expect(reason(key, { env: oldHost })).toBe(actionGateReason(oldHost, key));
+      expect(reason(key, { hostRefusal: refusalOf(oldHost) })).toBe(actionGateReason(oldHost, key));
     }
     // `push` has been on the wire since v1 — not the environment's business.
-    expect(reason("push", { env: oldHost })).toBeNull();
+    expect(reason("push", { hostRefusal: refusalOf(oldHost) })).toBeNull();
   });
 
   it("keeps a PR-bound action off a tree on another branch, wherever it is offered", () => {
@@ -118,7 +121,7 @@ describe("gateAction", () => {
       expect(gateAction(key, { ...open, busy: true })).toBeNull();
     }
     // …but the host gate still applies to them.
-    expect(reason("focus-pr", { env: oldHost, delegationActive: true })).toBe(
+    expect(reason("focus-pr", { hostRefusal: refusalOf(oldHost), delegationActive: true })).toBe(
       actionGateReason(oldHost, "focus-pr"),
     );
   });

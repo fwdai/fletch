@@ -5,9 +5,10 @@
 // button wouldn't: not a stale menu, not the composer's shortcut, not a row
 // picked on a lane the action isn't about. Five rules, in the order a user
 // would want to hear them.
-
-import type { EnvironmentEntry } from "@/store/environments";
-import { actionGateReason } from "./actionGates";
+//
+// Store-free, so the phone runs the same gate over the same footer: the one
+// thing that differs per client — which host it drives and what that host
+// answers — comes in as `hostRefusal`.
 
 export interface Gate {
   reason: string;
@@ -17,8 +18,10 @@ export interface Gate {
 }
 
 export interface GateContext {
-  /** The environment the user is driving: an older host may lack the op. */
-  env: EnvironmentEntry;
+  /** Why the host the client drives can't run `key`, or null: an older host
+   *  may lack the op. The desktop asks `actionGateReason` for the active
+   *  environment; the phone asks its own dispatch table. */
+  hostRefusal: (key: string) => string | null;
   /** The head branch of the PR the lane is about; null when unknown. */
   laneBranch: string | null;
   /** The branch the checkout is on; null while unknown or detached. */
@@ -74,8 +77,8 @@ export function gateAction(key: string, ctx: GateContext): Gate | null {
   if (ctx.busy && !HARMLESS.has(key)) {
     return { reason: "An action is already running on this checkout", quiet: true };
   }
-  const env = actionGateReason(ctx.env, key);
-  if (env) return { reason: env };
+  const host = ctx.hostRefusal(key);
+  if (host) return { reason: host };
   const scope = AGENT_SCOPED[key];
   if (scope && !ctx.primaryCheckout) return { reason: scope };
   if (BRANCH_BOUND.has(key) && ctx.laneBranch && ctx.checkoutBranch) {

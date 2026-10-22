@@ -1,21 +1,24 @@
 import type { AgentRecord } from "@desktop/api/types/agent";
-import { Icon, type IconName } from "@desktop/components/Icon";
+import { Icon } from "@desktop/components/Icon";
+import type { ActionTone } from "@desktop/components/RightPanel/primaryActions";
 import { useStore } from "../../../store";
-import { COMMIT_FAMILY, isCommitAction, type ShipAction, type ShipView } from "./derive";
+import { COMMIT_KEYS, MANUAL_KEY } from "./actions";
+import type { ShipView } from "./derive";
 import { useShipActions } from "./useShipActions";
 
-export const ACTION_ICON: Record<ShipAction["kind"], IconName> = {
-  delegate: "pr",
-  merge: "merge",
-  archive: "archive",
-  github: "github",
-  manual: "edit",
+/** The phone's button for each of the desktop footer's tones. */
+const TONE_CLASS: Record<ActionTone, string> = {
+  accent: "primary",
+  ghost: "ghost",
+  success: "success",
+  merged: "primary",
+  danger: "danger",
 };
 
 /** The action footer: the ladder's one primary button, and a quiet "More"
  *  under it when the overflow sheet has anything to offer. `commitOnly` is the
- *  Changes tab's view of the same footer — only the commit / push / open-PR
- *  playbook and its manual alternative, since the PR's own remedies belong on
+ *  Changes tab's view of the same footer — only a commit / push / open-PR
+ *  primary and its manual alternative, since the PR's own remedies belong on
  *  the Ship tab. Renders nothing when there is nothing to press. */
 export function ShipFooter({
   agent,
@@ -31,25 +34,22 @@ export function ShipFooter({
   commitOnly?: boolean;
 }) {
   const openSheet = useStore((s) => s.openSheet);
-  const { run, label, disabled, busy } = useShipActions(agent, onDelegated);
-  const working = view.strip.kind === "working";
-  // A restricted footer waits only for its own family: the Changes tab has no
-  // button to hold while the agent fixes CI.
-  const workingOnCommit =
-    working && view.rung.do === "delegate" && COMMIT_FAMILY.has(view.rung.kind);
+  const { run, label, disabled, isDelegate, busy } = useShipActions(agent, onDelegated);
+  const { footer } = view;
 
-  let primary = view.primary;
-  let more = view.more;
-  if (commitOnly) {
-    primary = isCommitAction(primary) ? primary : null;
-    more = primary ? more.filter((a) => a.kind === "manual") : [];
-  }
-  const showWorking = commitOnly ? workingOnCommit : working;
-  if (!primary && !showWorking && more.length === 0) return null;
+  const primary =
+    commitOnly && !(footer.primary && COMMIT_KEYS.has(footer.primary.key)) ? null : footer.primary;
+  const items = footer.groups.flatMap((g) => g.items);
+  const alts = !commitOnly ? items : primary ? items.filter((a) => a.key === MANUAL_KEY) : [];
+  // A playbook in flight holds the button. A restricted footer waits only for
+  // its own family: the Changes tab has no button to hold while the agent
+  // fixes CI.
+  const working = view.strip.kind === "working" && (!commitOnly || primary != null);
+  if (!primary && !working && alts.length === 0) return null;
 
   return (
     <div className="ch-foot">
-      {showWorking ? (
+      {working ? (
         <button type="button" className="btn primary" disabled>
           <span className="working-dots">
             <i />
@@ -59,27 +59,26 @@ export function ShipFooter({
           Agent working…
         </button>
       ) : primary ? (
-        <button
-          type="button"
-          className="btn primary"
-          onClick={() => void run(primary)}
-          disabled={disabled(primary)}
-        >
-          <Icon name={ACTION_ICON[primary.kind]} size={17} />
-          {primary.kind === "delegate"
-            ? busy
-              ? "Agent is busy…"
-              : `${label(primary)} with agent`
-            : label(primary)}
-        </button>
+        <>
+          <button
+            type="button"
+            className={`btn ${TONE_CLASS[primary.tone ?? "accent"]}`}
+            onClick={() => void run(primary.key)}
+            disabled={disabled(primary)}
+          >
+            <Icon name={primary.icon} size={17} />
+            {isDelegate(primary) && busy ? "Agent is busy…" : label(primary)}
+          </button>
+          {footer.mainReason && <div className="why">{footer.mainReason}</div>}
+        </>
       ) : null}
       {commitOnly ? (
-        more.map((a) => (
-          <button key={a.key} type="button" className="alt" onClick={() => void run(a)}>
+        alts.map((a) => (
+          <button key={a.key} type="button" className="alt" onClick={() => void run(a.key)}>
             {a.label}
           </button>
         ))
-      ) : more.length > 0 ? (
+      ) : alts.length > 0 ? (
         <button
           type="button"
           className="alt"
