@@ -26,9 +26,11 @@ The flow, end to end:
 
 ## The event
 
-`feedback_submitted`, with these properties on top of the usual super-props
-(`app_version`, `app_channel`, `os`, `arch`) and the anonymous
-`distinct_id`:
+`feedback_submitted`, with these properties on top of the super-props
+(`app_version`, `app_channel`, `os`, `arch`) and a **throwaway** `distinct_id`:
+a fresh random UUID per submission, never the install's telemetry identity, and
+no `days_since_install`. `$process_person_profile: false` keeps it a personless
+event in PostHog, so no person is minted for the id either.
 
 | Property | Notes |
 | --- | --- |
@@ -68,8 +70,11 @@ routinely 3–5 MB, so an attachment can't be sent as-is:
 (Settings › General). Feedback uses `telemetry::send_now`, which **ignores that
 gate**: turning off usage analytics should not silence a message the user
 deliberately typed and pressed Send on. The modal states its destination in
-plain text, and identity is still the anonymous per-install UUID — nothing calls
-`$identify`, so a `contact_email` is one event property, never a person profile.
+plain text — "your app version and platform, nothing else" — and the event is
+built to keep that promise even for an opted-out user: a throwaway id per
+submission rather than the install's machine-derived telemetry identity, no
+install age, and no person profile. Nothing calls `$identify`, so a
+`contact_email` is one event property, never a person profile.
 
 Feedback is still hard-gated on `QUORUM_POSTHOG_KEY` being baked in: an
 unconfigured build (every dev build by default) has nowhere to send. It says so

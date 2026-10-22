@@ -41,6 +41,10 @@ base64 = "0.22"
 # Portable git distribution (git_dist.rs): checksum-verify and unpack the
 # pinned dugite-native tarball downloaded when no usable system git exists.
 sha2 = "0.10"
+# The OS machine id behind the telemetry identity (`telemetry::machine_id`):
+# `gethostuuid` on macOS, `/etc/machine-id` on Linux, `MachineGuid` on Windows.
+# No dependencies of its own beyond libc / windows-registry.
+machine-uid = "0.6"
 flate2 = "1"
 tar = "0.4"
 # Paired-device remote access (`remote/`). `handshake` for the LAN listener,

@@ -4,9 +4,9 @@
 // `track("thing", { repoPath })` from leaking a path into PostHog.
 //
 // Scope: the onboarding funnel and the activation-path moments only the
-// frontend can see. Backend-observable events (`app_opened`, `agent_spawned`,
-// `pr_opened`, `turn_completed`) are emitted from Rust and are not repeated
-// here — one event, one emitter.
+// frontend can see. Backend-observable events (`app_opened`, `app_heartbeat`,
+// `agent_spawned`, `pr_opened`, `turn_completed`) are emitted from Rust and are
+// not repeated here — one event, one emitter.
 //
 // Consent is enforced downstream in `telemetry::track` (Rust), so nothing here
 // needs to check the opt-out flag. Properties stay categorical — enums, counts,
