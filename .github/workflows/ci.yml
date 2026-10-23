@@ -57,15 +57,21 @@ jobs:
       # `update` immediately before `install` keeps the index and the pool in
       # step, and the retry rides out the mirror lag that caused the 404s. There
       # is no cache to poison, and a failed install fails the step.
+      #
+      # Each attempt is bounded: a mirror that stalls instead of 404ing would
+      # otherwise hold the job for the runner's six-hour limit (one such run
+      # sat 39 minutes in this step before being cancelled by hand). Ten
+      # minutes is several times a healthy install; past that, retry.
       - name: Install system dependencies
         run: |
           set -euo pipefail
           for attempt in 1 2 3; do
-            if sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends \
+            if timeout -k 10 600 sudo apt-get update -qq \
+               && timeout -k 10 600 sudo apt-get install -y --no-install-recommends \
                  libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev; then
               exit 0
             fi
-            echo "::warning::apt attempt $attempt failed (likely mirror lag); retrying in 15s"
+            echo "::warning::apt attempt $attempt failed or stalled (likely mirror lag); retrying in 15s"
             sleep 15
           done
           echo "::error::apt failed three times; the GTK build dependencies are not installed"
