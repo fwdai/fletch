@@ -11,7 +11,7 @@ import { Modal, ModalBody } from "@/components/ui/Modal";
 import { getSetting, setSetting } from "@/storage/settings";
 import { useAppStore } from "@/store";
 import { track } from "@/util/track";
-import { FEEDBACK_NUDGE_KEY, localDay, parseNudge, visit } from "./nudge";
+import { createScheduler, FEEDBACK_NUDGE_KEY, localDay } from "./nudge";
 import "./FeedbackNudge.css";
 
 /** Where "Book a call" lands: a 15-minute slot with Alex. */
@@ -31,27 +31,27 @@ export function FeedbackNudge() {
   return <FeedbackNudgeModal onClose={close} />;
 }
 
-/** Count today's visit and raise the prompt when it is due. Runs once per app
- *  session, and only once onboarding is out of the way: a first-run user is
- *  still on the welcome screen, and a day spent there should count as a day
- *  of use without stacking a second dialog on top of the tour. */
+/** Feed the schedule (`createScheduler`) the two store flags it keys on. It
+ *  waits for settings hydration before counting today — the slice default says
+ *  onboarding is closed until hydration says otherwise — and for onboarding to
+ *  close before raising the prompt, so a first-run user's day on the welcome
+ *  screen counts as a day of use without a second dialog landing on the tour. */
 function useNudgeSchedule() {
+  const hydrated = useAppStore((s) => s.settingsHydrated);
   const onboardingOpen = useAppStore((s) => s.onboardingOpen);
-  const openNudge = useAppStore((s) => s.openFeedbackNudge);
-  const ran = useRef(false);
+  // One scheduler for the life of the mount; its collaborators are module
+  // functions, so nothing here goes stale.
+  const tick = useRef(
+    createScheduler({
+      load: () => getSetting(FEEDBACK_NUDGE_KEY),
+      save: (n) => setSetting(FEEDBACK_NUDGE_KEY, n),
+      open: () => useAppStore.getState().openFeedbackNudge(),
+      today: localDay,
+    }),
+  ).current;
   useEffect(() => {
-    if (onboardingOpen || ran.current) return;
-    ran.current = true;
-    void (async () => {
-      try {
-        const { next, show } = visit(parseNudge(await getSetting(FEEDBACK_NUDGE_KEY)), localDay());
-        if (next.days.length > 0) await setSetting(FEEDBACK_NUDGE_KEY, next);
-        if (show) openNudge();
-      } catch {
-        // A nudge is a nicety; a DB hiccup must not surface anywhere.
-      }
-    })();
-  }, [onboardingOpen, openNudge]);
+    void tick({ hydrated, onboardingOpen });
+  }, [tick, hydrated, onboardingOpen]);
 }
 
 function FeedbackNudgeModal({ onClose }: { onClose: () => void }) {

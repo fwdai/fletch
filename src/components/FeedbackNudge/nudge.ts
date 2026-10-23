@@ -1,11 +1,17 @@
 // When to show the one-time feedback prompt. Pure, so the schedule is testable
-// without a store or a DB.
+// without a store, a DB or a DOM.
 //
 // The rule: count the distinct calendar days the app was opened on, and show
 // the prompt on the third one. Days need not be consecutive — someone who
 // opens Fletch on Monday, then two weeks later, then a month after that gets
 // the prompt on that third visit. Once it has been shown it is never shown
 // again, whatever they clicked (or didn't).
+//
+// Two steps, because they wait on different things. Recording today's visit
+// waits only for the settings to be hydrated. Showing waits for onboarding to
+// be closed as well: the store's defaults say onboarding is closed until
+// hydration says otherwise, and a user who left the tour unfinished must not
+// get the prompt raised under it — nor silently spent, since it shows once.
 
 /** Settings row holding the schedule, as JSON (`Nudge`). */
 export const FEEDBACK_NUDGE_KEY = "feedbackNudge";
@@ -43,13 +49,65 @@ export function parseNudge(raw: string | null): Nudge {
   }
 }
 
-/** Record today's visit and decide. `show` is true on exactly one call ever:
- *  the first one on the `SHOW_ON_DAY`th distinct day. The returned `next` is
- *  what to persist; it is the input, untouched, when nothing changed. */
-export function visit(prev: Nudge, today: string): { next: Nudge; show: boolean } {
-  if (prev.shown) return { next: prev, show: false };
-  const days = prev.days.includes(today) ? prev.days : [...prev.days, today];
-  const show = days.length >= SHOW_ON_DAY;
-  if (days === prev.days && !show) return { next: prev, show: false };
-  return { next: { days, shown: show }, show };
+/** Today's visit, recorded. The input itself when today is already there. */
+export function recordDay(prev: Nudge, today: string): Nudge {
+  if (prev.days.includes(today)) return prev;
+  return { ...prev, days: [...prev.days, today] };
+}
+
+/** Is the prompt owed right now: enough days, and not yet shown. */
+export function isDue(n: Nudge): boolean {
+  return !n.shown && n.days.length >= SHOW_ON_DAY;
+}
+
+/** What the app looks like to the scheduler. */
+export interface SchedulerState {
+  /** `hydrateSettings` has run (see `AppSlice.settingsHydrated`). */
+  hydrated: boolean;
+  onboardingOpen: boolean;
+}
+
+export interface SchedulerDeps {
+  load: () => Promise<string | null>;
+  save: (n: Nudge) => Promise<void>;
+  /** Raise the prompt. */
+  open: () => void;
+  today: () => string;
+}
+
+/** The schedule as a function of app state. Call `tick` whenever `hydrated` or
+ *  `onboardingOpen` changes; it records the day on the first hydrated tick and
+ *  opens the prompt — marking it shown first, so a quit mid-prompt still counts
+ *  — on the first tick that is both hydrated and clear of onboarding while the
+ *  prompt is due. Ticks are serialized, so a fast flip of `onboardingOpen` while
+ *  the DB is still answering cannot act twice on stale state. */
+export function createScheduler(deps: SchedulerDeps): (state: SchedulerState) => Promise<void> {
+  let nudge: Nudge | null = null;
+  let finished = false;
+  let chain = Promise.resolve();
+
+  const step = async (state: SchedulerState) => {
+    if (finished || !state.hydrated) return;
+    if (nudge === null) {
+      const recorded = recordDay(parseNudge(await deps.load()), deps.today());
+      if (recorded.days.length > 0) await deps.save(recorded);
+      nudge = recorded;
+    }
+    if (!isDue(nudge)) {
+      // Not this session: either too early (then the day is on record and the
+      // next session re-counts) or already shown (then never again).
+      finished = true;
+      return;
+    }
+    if (state.onboardingOpen) return;
+    finished = true;
+    nudge = { ...nudge, shown: true };
+    await deps.save(nudge);
+    deps.open();
+  };
+
+  return (state) => {
+    chain = chain.then(() => step(state)).catch(() => {});
+    return chain;
+  };
 }
