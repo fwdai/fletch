@@ -97,11 +97,26 @@ pub fn related_heads<'a>(graph: &'a Graph, candidate: &AssertionInput) -> Vec<&'
 /// Word-set overlap at or above which two statements read as one decision in
 /// two wordings: Jaccard over the lowercase alphanumeric words of four
 /// letters or more, so typing, punctuation and the small words do not count.
-pub const TWIN_SIMILARITY: f64 = 0.5;
+/// High on purpose: the callers skip or retract on a match, so a missed
+/// rewording (one more duplicate) costs less than a false one (a distinct
+/// decision lost).
+pub const TWIN_SIMILARITY: f64 = 0.6;
+
+/// Words that turn a statement into its opposite. Short, so the word filter
+/// would drop them; checked first instead, as a gate: a statement that
+/// negates and one that does not are never the same claim, whatever else
+/// they share. Antonyms, and the order of words, are not seen here, which
+/// is why the threshold is high and the user confirms a retraction.
+const NEGATIONS: [&str; 8] = [
+    "not", "no", "never", "none", "nor", "without", "cannot", "n't",
+];
 
 /// Whether `a` and `b` say the same thing in different words, by
 /// [`TWIN_SIMILARITY`]. Text alone: the caller decides what else must match.
 pub fn similar(a: &str, b: &str) -> bool {
+    if negated(a) != negated(b) {
+        return false;
+    }
     let words = |s: &str| -> HashSet<String> {
         s.to_lowercase()
             .split(|c: char| !c.is_alphanumeric())
@@ -112,6 +127,14 @@ pub fn similar(a: &str, b: &str) -> bool {
     let (a, b) = (words(a), words(b));
     let union = a.union(&b).count();
     union > 0 && a.intersection(&b).count() as f64 / union as f64 >= TWIN_SIMILARITY
+}
+
+fn negated(statement: &str) -> bool {
+    let lower = statement.to_lowercase();
+    lower.contains("n't")
+        || lower
+            .split(|c: char| !c.is_alphanumeric())
+            .any(|w| NEGATIONS.contains(&w))
 }
 
 /// Whether `a` is the same claim as `candidate` in shape: same kind, domain
