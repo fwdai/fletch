@@ -3,6 +3,7 @@ import { BootScreen } from "./components/BootScreen";
 import { DockerBuildToast } from "./components/DockerBuildToast";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { Feedback } from "./components/Feedback";
+import { FeedbackNudge } from "./components/FeedbackNudge";
 import { FolderPickerHost } from "./components/FolderPicker";
 import { GithubConnectModal } from "./components/GithubConnect";
 import { History } from "./components/History";
@@ -177,6 +178,8 @@ function AppShell() {
           called — the sidebar, Home, or the New Project modal. */}
       <FolderPickerHost />
       <Feedback />
+      {/* The one-time "we'd love your feedback" prompt, on its own schedule. */}
+      <FeedbackNudge />
 
       {lastError && (
         <div className="error-banner" role="alert">

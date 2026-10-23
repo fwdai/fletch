@@ -8,6 +8,7 @@ import { SetGroup, SetHead, SetRow, SetToggle } from "./primitives";
  *  `import.meta.env.DEV`, so this pane only ships under `bun tauri dev`. */
 export function DeveloperPane() {
   const openOnboarding = useAppStore((s) => s.openOnboarding);
+  const openFeedbackNudge = useAppStore((s) => s.openFeedbackNudge);
   const closeSettingsScreen = useAppStore((s) => s.closeSettingsScreen);
   const refreshModelCatalog = useAppStore((s) => s.refreshModelCatalog);
   const setUpdateReady = useAppStore((s) => s.setUpdateReady);
@@ -93,7 +94,22 @@ export function DeveloperPane() {
         </SetRow>
       </SetGroup>
 
-      <SetGroup label="Updates" last>
+      <SetGroup label="Notifications" last>
+        <SetRow
+          title="Feedback prompt"
+          sub="Show the one-time “How's Fletch working for you?” prompt that normally comes up on the third day of use. Triggering it here leaves its schedule untouched."
+        >
+          <Button
+            variant="outline"
+            onClick={() => {
+              closeSettingsScreen();
+              openFeedbackNudge();
+            }}
+          >
+            <Icon name="megaphone" size={12} />
+            Trigger prompt
+          </Button>
+        </SetRow>
         <SetRow
           title="Update-ready toast"
           sub="Show the “Update ready” restart toast with a fake version, without releasing a build. Restart now will actually relaunch."

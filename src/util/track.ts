@@ -115,6 +115,13 @@ interface EventMap {
    *  suggested task verbatim (always false when the draft was not seeded).
    *  Opened-without-spawned is the drop this pair exists to measure. */
   project_add_draft_spawned: { seeded: boolean; kept_seed: boolean };
+
+  // ── feedback prompt ──────────────────────────────────────────────────────
+  /** The one-time "we'd love your feedback" prompt came up (third distinct
+   *  day the app was opened — see `FeedbackNudge`). */
+  feedback_nudge_shown: Record<string, never>;
+  /** How it was answered. `dismiss` covers the button, Escape and the scrim. */
+  feedback_nudge_answered: { action: "call" | "email" | "dismiss" };
 }
 
 export type TrackedEvent = keyof EventMap;

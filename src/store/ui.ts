@@ -45,6 +45,10 @@ export interface UiSlice {
    *  (not local state) because the trigger is in `SidebarFooter` while the
    *  modal mounts at app root, like every other centered modal. */
   feedbackOpen: boolean;
+  /** The one-time "we'd love your feedback" prompt (see `FeedbackNudge`).
+   *  Raised by its own scheduler on the third distinct day the app is opened,
+   *  or on demand from Settings › Developer to preview it. */
+  feedbackNudgeOpen: boolean;
   /** The sidebar's add-project popover (open a folder / clone / create). In
    *  the store rather than the sidebar's own state so ⌘O can open it from
    *  anywhere; the sidebar renders it and clears the flag when it unmounts. */
@@ -137,6 +141,9 @@ export interface UiSlice {
   /** Open / close the send-feedback modal. */
   openFeedback: () => void;
   closeFeedback: () => void;
+  /** Open / close the one-time feedback prompt. */
+  openFeedbackNudge: () => void;
+  closeFeedbackNudge: () => void;
   /** Raise the add-project popover. Refused when the active environment can
    *  run none of its flows — the gate lives here, not in each caller, so the
    *  sidebar button, ⌘O and anything later all get the same answer. */
@@ -200,6 +207,7 @@ export const createUiSlice: SliceCreator<UiSlice> = (set, get) => ({
   usageScreenOpen: false,
   githubConnectOpen: false,
   feedbackOpen: false,
+  feedbackNudgeOpen: false,
   addProjectOpen: false,
   onboardingOpen: false,
   onboardingComplete: false,
@@ -253,6 +261,8 @@ export const createUiSlice: SliceCreator<UiSlice> = (set, get) => ({
   closeGithubConnect: () => set({ githubConnectOpen: false }),
   openFeedback: () => set({ feedbackOpen: true }),
   closeFeedback: () => set({ feedbackOpen: false }),
+  openFeedbackNudge: () => set({ feedbackNudgeOpen: true }),
+  closeFeedbackNudge: () => set({ feedbackNudgeOpen: false }),
   openAddProject: () => {
     if (anyGateReason(activeEnvironment(), ADD_PROJECT_GATES)) return;
     set({ addProjectOpen: true });
