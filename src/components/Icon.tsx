@@ -8,6 +8,7 @@ import {
   Blocks,
   Bot,
   Box,
+  CalendarDays,
   Check,
   ChevronDown,
   ChevronLeft,
@@ -44,6 +45,7 @@ import {
   Layers,
   LayoutGrid,
   ListChecks,
+  Mail,
   Map as MapIcon,
   Megaphone,
   MessageSquare,
@@ -208,6 +210,9 @@ const ICON_COMPONENTS = {
   // which reads as a chat in an app whose main surface is one.
   megaphone: Megaphone,
   chatPlus: MessageSquarePlus,
+  // The feedback prompt's two ways to get in touch.
+  calendar: CalendarDays,
+  mail: Mail,
   image: Image,
   activity: Activity,
 } satisfies Record<string, ComponentType<IconComponentProps>>;

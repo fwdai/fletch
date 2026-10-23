@@ -17,6 +17,10 @@ export interface AppSlice {
   /** Where the engine is in starting. `App` renders the boot screen until it
    *  is `ready`; nothing may call an engine command before then. */
   bootStatus: BootStatus;
+  /** `hydrateSettings` has run, so the persisted UI flags (`onboardingOpen`,
+   *  `onboardingComplete`, …) hold their real values rather than the slice
+   *  defaults. Anything that must not act on a default waits for this. */
+  settingsHydrated: boolean;
   /** Version string of an update that's been downloaded + staged and is
    *  waiting for a restart to take effect. `null` = none pending. */
   updateReadyVersion: string | null;
@@ -54,6 +58,7 @@ export const createAppSlice: SliceCreator<AppSlice> = (set, get) => ({
   updateCheckStatus: null,
   updateDownload: null,
   initialized: false,
+  settingsHydrated: false,
   bootStatus: INITIAL_BOOT_STATUS,
 
   setBootStatus: (bootStatus) => set({ bootStatus }),
@@ -63,6 +68,7 @@ export const createAppSlice: SliceCreator<AppSlice> = (set, get) => ({
     set({ initialized: true });
 
     await hydrateSettings(set);
+    set({ settingsHydrated: true });
     await hydrateAccount(set);
 
     // Probe installed provider CLIs for real versions + paths (async,

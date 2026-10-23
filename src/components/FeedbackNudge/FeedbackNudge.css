@@ -1,0 +1,72 @@
+/* ── Feedback prompt ────────────────────────────────────────────────
+   The one-time "we'd love your feedback" dialog (components/FeedbackNudge).
+   Shell and header come from the `Modal` primitive; this is the centered
+   body's own content: an accent mark, a title, a short lede, two actions and
+   a quiet way out. */
+
+/* Both classes, to outrank `.modal-body.center`'s own padding and gap. */
+.modal-body.fn-body {
+  position: relative;
+  padding: 32px 36px 24px;
+  gap: 10px;
+  overflow: hidden;
+}
+/* A soft accent wash behind the mark, so the card reads as a note rather than
+   a form. Sits under the content and never catches a click. */
+.fn-body::before {
+  content: "";
+  position: absolute;
+  top: -80px;
+  left: 50%;
+  width: 260px;
+  height: 200px;
+  transform: translateX(-50%);
+  background: radial-gradient(closest-side, var(--accent-soft), transparent);
+  pointer-events: none;
+}
+.fn-body > * {
+  position: relative;
+}
+
+.fn-mark {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  margin-bottom: 4px;
+  border-radius: 50%;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-line);
+}
+
+.fn-title {
+  margin: 0;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: var(--lh-tight);
+  color: var(--fg-0);
+}
+.fn-lede {
+  margin: 0;
+  max-width: 400px;
+  color: var(--fg-2);
+  line-height: var(--lh-normal);
+}
+
+/* The two real choices side by side, same width, with the call first. */
+.fn-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  width: 100%;
+  max-width: 400px;
+  margin-top: 12px;
+}
+.fn-actions .btn-t {
+  justify-content: center;
+}
+.fn-skip {
+  margin-top: 2px;
+}
