@@ -1384,6 +1384,7 @@ pub fn run() {
             commands::context_dismiss_proposals,
             commands::context_resolve_contradiction,
             commands::context_bootstrap,
+            commands::context_tidy,
             probe_docker_engine,
             probe_podman_engine,
             get_container_auth_status,

@@ -213,6 +213,27 @@ pub fn context_retract_impl(
     Ok(())
 }
 
+/// The tidy pass (`context::tidy`): what the log holds that the ingester
+/// would not land today — a merged PR's line twinning the workspace's own
+/// record, or a head restating a replaced statement. With `apply`, each
+/// candidate is retracted by the user with the pass's reason; without, the
+/// list is what the user is shown first. Either way the answer is the list.
+pub fn context_tidy_impl(
+    ctx: &EngineCtx,
+    project_id: &str,
+    apply: bool,
+) -> Result<Vec<context::tidy::TidyCandidate>> {
+    let project = open(ctx, project_id)?;
+    let service = ctx.context()?;
+    let found = context::tidy::candidates(&service.graph(&project)?);
+    if apply {
+        for c in &found {
+            service.retract(&project, &c.retract, &c.reasoning(), ui_stamp())?;
+        }
+    }
+    Ok(found)
+}
+
 pub fn context_archive_entity_impl(
     ctx: &EngineCtx,
     project_id: &str,
@@ -406,6 +427,86 @@ mod tests {
             without.mapping_task,
             crate::instructions::context_mapping_task(None)
         );
+    }
+
+    /// The pass lists before it writes; applied, it retracts exactly what it
+    /// listed, and the next look finds nothing.
+    #[test]
+    fn tidy_lists_then_retracts_what_it_listed() {
+        let (ctx, _sink, _dir) = crate::host::ctx::test_ctx();
+        {
+            let conn = ctx.db.lock();
+            crate::database::set_setting(&conn, context::DEV_SETTING, "true").unwrap();
+            conn.execute(
+                "INSERT INTO projects (id, name, created_at) VALUES ('p1', 'p', 0)",
+                [],
+            )
+            .unwrap();
+        }
+        let entity = context_record_entity_impl(
+            &ctx,
+            "p1",
+            EntityInput {
+                slug: "git".into(),
+                name: "Git".into(),
+                summary: "pushes".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let assertion = |statement: &str, supersedes: Option<Id>| AssertionInput {
+            kind: context::AssertionKind::Decision,
+            domain: context::Domain::Implementation,
+            stance: context::Stance::Adopted,
+            statement: statement.into(),
+            rationale: "because".into(),
+            valid_from: None,
+            paths: vec![],
+            about: vec![entity.clone()],
+            supersedes: supersedes.map(|id| context::Supersede {
+                id,
+                reasoning: "scoped".into(),
+            }),
+            contradicts: vec![],
+            status: AssertionStatus::Confirmed,
+        };
+        let old = context_record_assertion_impl(
+            &ctx,
+            "p1",
+            assertion("Every spawn carries the socket.", None),
+        )
+        .unwrap();
+        let new = context_record_assertion_impl(
+            &ctx,
+            "p1",
+            assertion("The socket only outside agent trees.", Some(old.clone())),
+        )
+        .unwrap();
+        let back = context_record_assertion_impl(
+            &ctx,
+            "p1",
+            assertion("Every spawn carries the socket.", None),
+        )
+        .unwrap();
+
+        let listed = context_tidy_impl(&ctx, "p1", false).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].retract, back);
+        assert_eq!(listed[0].of, old);
+        assert_eq!(listed[0].reason, context::tidy::TidyReason::RestatesRetired);
+        let project = open(&ctx, "p1").unwrap();
+        let graph = ctx.context().unwrap().store().load(&project.id).unwrap();
+        assert!(graph.current.contains(&back), "listing writes nothing");
+
+        let applied = context_tidy_impl(&ctx, "p1", true).unwrap();
+        assert_eq!(applied, listed);
+        let graph = ctx.context().unwrap().store().load(&project.id).unwrap();
+        assert_eq!(graph.current, vec![new]);
+        assert_eq!(
+            graph.assertion(&back).unwrap().status,
+            AssertionStatus::Retracted
+        );
+        assert!(context_tidy_impl(&ctx, "p1", false).unwrap().is_empty());
     }
 
     /// A ruling on a tension between two recorded heads is one event and one

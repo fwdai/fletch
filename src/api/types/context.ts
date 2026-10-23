@@ -255,6 +255,17 @@ export interface ContextBootstrap {
 
 export type ProposalVerdict = "accept" | "dismiss";
 
+/** One assertion the tidy pass (`context_tidy`) would retract, and the one it
+ *  is judged against: a merged PR's line twinning the workspace's own record,
+ *  or a head restating a statement a later record replaced. */
+export interface TidyCandidate {
+  retract: string;
+  statement: string;
+  reason: "twin_of" | "restates_retired";
+  of: string;
+  of_statement: string;
+}
+
 /** `context:changed`: a write landed on the project's context; reload. */
 export interface ContextChangedEvent {
   project_id: string;

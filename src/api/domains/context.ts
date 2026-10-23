@@ -8,6 +8,7 @@ import type {
   EntityInput,
   LinkChange,
   ProposalVerdict,
+  TidyCandidate,
 } from "../types/context";
 
 /** The project context layer's human side (`context_*`,
@@ -46,6 +47,10 @@ export const contextApi = {
    *  the project has never had), and get the mapping session's task. */
   contextBootstrap: (projectId: string) =>
     invoke<ContextBootstrap>("context_bootstrap", { projectId }),
+  /** The tidy pass: what the log holds that the ingester would not land
+   *  today. `apply: false` lists; `apply: true` retracts each one listed. */
+  contextTidy: (projectId: string, apply: boolean) =>
+    invoke<TidyCandidate[]>("context_tidy", { projectId, apply }),
   /** Accept (resolves to the recorded id) or dismiss (needs a reason) a
    *  pending proposal. */
   contextRuleProposal: (

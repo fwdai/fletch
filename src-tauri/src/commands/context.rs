@@ -64,6 +64,16 @@ pub fn context_retract(
     engine::context_retract_impl(&ctx, &project_id, &assertion_id, &reason)
 }
 
+/// List (`apply: false`) or retract (`apply: true`) what the tidy pass finds.
+#[tauri::command]
+pub fn context_tidy(
+    ctx: State<'_, Arc<EngineCtx>>,
+    project_id: String,
+    apply: bool,
+) -> Result<Vec<fletch_core::context::tidy::TidyCandidate>> {
+    engine::context_tidy_impl(&ctx, &project_id, apply)
+}
+
 #[tauri::command]
 pub fn context_archive_entity(
     ctx: State<'_, Arc<EngineCtx>>,

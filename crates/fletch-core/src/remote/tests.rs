@@ -698,6 +698,7 @@ fn allowlist_matches_the_protocol_table() {
         "context_dismiss_proposals",
         "context_resolve_contradiction",
         "context_bootstrap",
+        "context_tidy",
         "register_push",
     ];
     assert_eq!(
