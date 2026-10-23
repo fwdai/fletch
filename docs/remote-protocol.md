@@ -1680,9 +1680,16 @@ runs on the host and needs no PR, no origin and no GitHub login.
   `open_pr`, or a focused PR the watcher sees newly open. And again while a
   PR is open, whenever the code differs from what was last reviewed and the
   coder is idle with no delegation live on it — **at most one automatic
-  attempt per code state**: a failure recorded on the code as it is now (of
-  any kind, an unverifiable digest included) blocks the automatic round until
-  the code changes, which allows one new attempt. Up to 3 automatic rounds per
+  attempt per code state**. A code state is HEAD, the dirty paths and their
+  kinds, and the content digest; a state whose content can't be read counts
+  as a state of its own (it becoming readable again is a new state). A
+  failure of any kind is recorded on the state it failed on and blocks the
+  automatic round on that state only: an edit that changes the content of the
+  same dirty files is a new state and gets one attempt, and editing back to
+  the failed bytes is blocked again. Identity is never decided without the
+  digest — when a read skipped it and the status matches the failed state,
+  the host reads the content before deciding. A failure recorded with no
+  complete state blocks nothing. Up to 3 automatic rounds per
   PR; a spent budget is reported on `error` without changing the phase. A
   start triggered while the coder is mid-turn (a PR usually opens inside the
   opener's turn) is queued as above rather than refused.

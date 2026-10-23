@@ -42,11 +42,42 @@ fn unreadable() -> Sighting {
     }
 }
 
-/// A round begun on the code `cheap#d1`, as a start reads it first.
+/// A verified code state.
+fn state(cheap: &str, digest: &str) -> CodeState {
+    CodeState {
+        cheap: cheap.into(),
+        content: Content::Verified {
+            digest: digest.into(),
+        },
+    }
+}
+
+/// An unreadable code state.
+fn unreadable_state(cheap: &str) -> CodeState {
+    CodeState {
+        cheap: cheap.into(),
+        content: Content::Unverified {
+            reason: "git diff: Permission denied".into(),
+        },
+    }
+}
+
+/// The read a sighting records.
+fn read_of(sighting: &Sighting) -> CodeRead {
+    match sighting {
+        Sighting::Read { cheap, digest } => CodeRead {
+            cheap: cheap.clone(),
+            digest: digest.clone(),
+        },
+        other => panic!("not a read: {other:?}"),
+    }
+}
+
+/// A round begun on the code `c1` / `d1`, as a start reads it first.
 fn begun(trigger: Trigger, pr: Option<u32>) -> Tracked {
     let mut t = Tracked::default();
     t.record_sighting(&read("c1", "d1"));
-    t.begin(reviewer(), trigger, full_signature("c1", "d1"), pr, 1_000)
+    t.begin(reviewer(), trigger, state("c1", "d1"), pr, 1_000)
         .unwrap();
     t
 }
@@ -73,7 +104,7 @@ fn an_untouched_checkout_is_idle_and_a_flight_is_reviewing() {
 #[test]
 fn a_report_makes_the_code_reviewed_then_the_threads_and_a_fresh_read_decide() {
     let mut t = reviewed();
-    assert_eq!(t.reviewed_signature.as_deref(), Some("c1#d1"));
+    assert_eq!(t.reviewed, Some(state("c1", "d1")));
     assert_eq!(t.derive(0), Phase::Clean);
     assert_eq!(t.derive(2), Phase::Findings);
     // A read of other code: the status moved, or only its content.
@@ -133,15 +164,21 @@ fn a_turn_that_ends_without_a_report_is_a_round_failure_until_the_next_start() {
     assert_eq!(failure.origin, FailureOrigin::Round);
     assert!(failure.reason.contains("without submitting"));
     assert_eq!(
-        failure.cheap_signature.as_deref(),
-        Some("c1"),
-        "the code it failed on"
+        failure.code,
+        Some(state("c1", "d1")),
+        "the code the round read"
     );
-    assert_eq!(t.reviewed_signature, None, "nothing was reviewed");
+    assert_eq!(t.reviewed, None, "nothing was reviewed");
     // A round that begins clears it, and the note.
     t.note = Some("note".into());
-    t.begin(reviewer(), Trigger::Manual, "c1#d1".into(), Some(7), 2_000)
-        .unwrap();
+    t.begin(
+        reviewer(),
+        Trigger::Manual,
+        state("c1", "d1"),
+        Some(7),
+        2_000,
+    )
+    .unwrap();
     assert_eq!(t.failure, None);
     assert_eq!(t.note, None);
     assert_eq!(t.round, 2);
@@ -165,7 +202,11 @@ fn every_failure_origin_round_trips_and_derives_its_phase() {
     ] {
         let mut t = reviewed();
         t.note = Some("a note".into());
-        t.record_failure(origin, format!("{origin:?} went wrong"), Some("c2".into()));
+        t.record_failure(
+            origin,
+            format!("{origin:?} went wrong"),
+            Some(state("c2", "d2")),
+        );
         assert_eq!(t.derive(0), phase, "{origin:?}");
         persist::save(&c, &key, &t).unwrap();
         let (_, back) = persist::load_all(&c).unwrap().pop().unwrap();
@@ -260,81 +301,260 @@ fn the_first_tick_after_a_restart_reads_every_loaded_checkout() {
 
 // ── one automatic attempt per code state ───────────────────────────────────
 
-/// An automatic round whose full scan fails is recorded on the code it
-/// failed on: every tick after that sees the same code and starts nothing;
-/// a change of code allows exactly one new attempt.
+/// The one comparison, every case of it.
 #[test]
-fn a_failed_automatic_round_blocks_its_code_state_until_the_code_moves() {
-    let mut t = reviewed();
-    t.record_sighting(&skipped("c2"));
-    assert_eq!(t.derive(0), Phase::Stale);
-    assert!(t.wants_automatic_review(), "moved code gets one attempt");
-
-    // The attempt's full scan can't digest the content.
-    t.claim().unwrap();
-    t.record_sighting(&unverified("c2"));
-    t.record_failure(
-        FailureOrigin::Start,
-        "couldn't read the change: git diff: Permission denied",
-        None,
-    );
-    assert_eq!(
-        t.failure.as_ref().unwrap().cheap_signature.as_deref(),
-        Some("c2")
-    );
-    assert!(!t.starting, "the claim ends with the failure");
-    for _ in 0..10 {
-        // A tick reads the same code again.
-        t.record_sighting(&skipped("c2"));
-        assert!(
-            !t.wants_automatic_review(),
-            "the same code is never retried"
+fn identity_is_decided_by_the_cheap_half_and_the_content() {
+    use Identity::*;
+    let cases = [
+        // the cheap halves differ, whatever the content
+        (read("c2", "d1"), state("c1", "d1"), Different),
+        (skipped("c2"), state("c1", "d1"), Different),
+        (unverified("c2"), unreadable_state("c1"), Different),
+        // both verified: the digest decides
+        (read("c1", "d1"), state("c1", "d1"), Same),
+        (read("c1", "d2"), state("c1", "d1"), Different),
+        // the same unreadable state: nothing new to read
+        (unverified("c1"), unreadable_state("c1"), Same),
+        // readability changed: a new state either way
+        (read("c1", "d1"), unreadable_state("c1"), Different),
+        (unverified("c1"), state("c1", "d1"), Different),
+        // a skipped digest on the same cheap half can't say
+        (skipped("c1"), state("c1", "d1"), Unknown),
+        (skipped("c1"), unreadable_state("c1"), Unknown),
+    ];
+    for (sighting, stored, expected) in cases {
+        assert_eq!(
+            identity(&read_of(&sighting), &stored),
+            expected,
+            "{sighting:?} vs {stored:?}"
         );
     }
-    // The code moves: one attempt, and only one.
-    t.record_sighting(&skipped("c3"));
-    assert!(t.wants_automatic_review());
-    t.record_failure(FailureOrigin::Round, "boom", None);
-    t.record_sighting(&skipped("c3"));
-    assert!(!t.wants_automatic_review());
+    // A skipped read is never a stored state.
+    assert_eq!(read_of(&skipped("c1")).state(), None);
+    assert_eq!(read_of(&read("c1", "d1")).state(), Some(state("c1", "d1")));
 }
 
-/// A scan that couldn't verify blocks its code state the same way; a fresh
-/// read that verifies clears it.
+/// A digest is skipped only when the cheap half differs from the reviewed
+/// one, so a skipped read is `Different` from the reviewed state — staleness
+/// never meets `Unknown`.
 #[test]
-fn an_unverifiable_scan_reads_stale_and_is_not_retried_on_the_same_code() {
+fn a_skipped_read_is_always_different_from_the_reviewed_state() {
+    let reviewed = state("c1", "d1");
+    for cheap in ["c1", "c2", ""] {
+        if !digest_needed(cheap, false, Some(&reviewed)) {
+            assert_eq!(
+                identity(&read_of(&skipped(cheap)), &reviewed),
+                Identity::Different,
+                "{cheap}"
+            );
+        }
+    }
+    assert!(
+        digest_needed("c1", false, Some(&reviewed)),
+        "same cheap half"
+    );
+    assert!(
+        digest_needed("c2", true, Some(&reviewed)),
+        "a state to record"
+    );
+    assert!(!digest_needed("c2", false, None), "nothing to compare to");
+}
+
+/// The finding: an automatic round fails on code A; the author edits the
+/// same dirty file — same paths and kinds, other bytes. The next tick's read
+/// skips the digest (the cheap half differs from the reviewed one), so the
+/// gate asks for a full read, and on it allows exactly one attempt. Editing
+/// back to the bytes the round failed on stays blocked.
+#[test]
+fn a_content_edit_after_a_failed_automatic_round_allows_one_attempt() {
+    let mut t = reviewed();
+    t.record_sighting(&skipped("c2"));
+    assert_eq!(
+        t.automatic_review(),
+        AutoReview::Allow,
+        "moved code: one attempt"
+    );
+
+    // The attempt reads A in full and its round fails on it.
+    t.record_sighting(&read("c2", "a"));
+    t.begin(reviewer(), Trigger::ReReview, state("c2", "a"), Some(7), 0)
+        .unwrap();
+    t.round_failed("the reviewer's turn failed");
+    assert_eq!(t.failure.as_ref().unwrap().code, Some(state("c2", "a")));
+
+    for _ in 0..10 {
+        // A tick: the status is unchanged, so the digest is skipped…
+        t.record_sighting(&skipped("c2"));
+        // …and the gate won't decide on the cheap half.
+        assert_eq!(t.automatic_review(), AutoReview::NeedsFullRead);
+        // The full read finds A again: blocked.
+        t.record_sighting(&read("c2", "a"));
+        assert_eq!(t.automatic_review(), AutoReview::Block);
+    }
+
+    // The author edits the same dirty file: B, same paths and kinds.
+    t.record_sighting(&skipped("c2"));
+    assert_eq!(t.automatic_review(), AutoReview::NeedsFullRead);
+    t.record_sighting(&read("c2", "b"));
+    assert_eq!(
+        t.automatic_review(),
+        AutoReview::Allow,
+        "a new state: one attempt"
+    );
+
+    // …and back to A's exact bytes before any attempt: the failed state.
+    t.record_sighting(&read("c2", "a"));
+    assert_eq!(t.automatic_review(), AutoReview::Block, "A stays blocked");
+
+    // B again; its one attempt runs and fails: B is blocked too.
+    t.record_sighting(&read("c2", "b"));
+    assert_eq!(t.automatic_review(), AutoReview::Allow);
+    t.begin(reviewer(), Trigger::ReReview, state("c2", "b"), Some(7), 0)
+        .unwrap();
+    t.round_failed("boom");
+    t.record_sighting(&read("c2", "b"));
+    assert_eq!(t.automatic_review(), AutoReview::Block, "and only one");
+}
+
+/// Every gate decision is made on a read that has its digest: a read that
+/// skipped it, against a failure on the same cheap half, only ever asks.
+#[test]
+fn the_gate_never_decides_on_a_skipped_read() {
+    for failed_on in [state("c2", "a"), unreadable_state("c2")] {
+        let mut t = reviewed();
+        t.record_failure(FailureOrigin::Start, "boom", Some(failed_on.clone()));
+        t.record_sighting(&skipped("c2"));
+        assert_eq!(
+            t.automatic_review(),
+            AutoReview::NeedsFullRead,
+            "{failed_on:?}"
+        );
+    }
+    // A skipped read on another cheap half is Different from the failure:
+    // decided without a digest because the cheap halves alone settle it.
+    let mut t = reviewed();
+    t.record_failure(FailureOrigin::Start, "boom", Some(state("c2", "a")));
+    t.record_sighting(&skipped("c3"));
+    assert_eq!(t.automatic_review(), AutoReview::Allow);
+}
+
+/// An unreadable state is a state of its own: retried on the same unreadable
+/// state never, and once it becomes readable, once.
+#[test]
+fn an_unreadable_state_is_blocked_until_it_becomes_readable_again() {
     let mut t = reviewed();
     t.record_sighting(&unverified("c1"));
     assert_eq!(t.derive(0), Phase::Stale);
-    assert_eq!(t.failure.as_ref().unwrap().origin, FailureOrigin::Scan);
-    assert!(
-        !t.wants_automatic_review(),
+    let failure = t.failure.clone().unwrap();
+    assert_eq!(failure.origin, FailureOrigin::Scan);
+    assert_eq!(failure.code, Some(unreadable_state("c1")));
+    assert_eq!(
+        t.automatic_review(),
+        AutoReview::Block,
         "a round would fail the same way"
     );
     assert!(t.auto_budget_left(7), "and none of the budget was spent");
-    t.record_sighting(&read("c1", "d1"));
-    assert_eq!(t.failure, None, "a read that verifies clears it");
-    assert_eq!(t.derive(0), Phase::Clean);
-    assert!(
-        !t.wants_automatic_review(),
-        "the reviewed code needs no review"
+
+    // The file becomes readable again, with new content: a new state.
+    t.record_sighting(&read("c1", "d2"));
+    assert_eq!(
+        t.failure, None,
+        "a read of another state clears the scan failure"
     );
+    assert_eq!(t.derive(0), Phase::Stale);
+    assert_eq!(t.automatic_review(), AutoReview::Allow);
+
+    // Readable again with the reviewed bytes: current, nothing to review.
+    let mut t = reviewed();
+    t.record_sighting(&unverified("c1"));
+    t.record_sighting(&read("c1", "d1"));
+    assert_eq!(t.derive(0), Phase::Clean);
+    assert_eq!(t.automatic_review(), AutoReview::Block);
 }
 
 #[test]
 fn reviewed_code_and_never_attempted_checkouts_want_no_automatic_review() {
-    assert!(!Tracked::default().wants_automatic_review(), "nothing read");
+    assert_eq!(
+        Tracked::default().automatic_review(),
+        AutoReview::Block,
+        "nothing read"
+    );
     let mut never = Tracked::default();
     never.record_sighting(&skipped("c1"));
-    assert!(
-        !never.wants_automatic_review(),
+    assert_eq!(
+        never.automatic_review(),
+        AutoReview::Block,
         "never reviewed, never attempted"
     );
-    // A first review that failed to start, then the code moved: one attempt.
-    never.record_failure(FailureOrigin::Start, "no reviewer", None);
-    assert!(!never.wants_automatic_review());
+    // A first review that failed on a read state: blocked on that state, one
+    // attempt once the code moves.
+    never.record_failure(FailureOrigin::Start, "boom", Some(state("c1", "a")));
+    never.record_sighting(&read("c1", "a"));
+    assert_eq!(never.automatic_review(), AutoReview::Block);
     never.record_sighting(&skipped("c2"));
-    assert!(never.wants_automatic_review());
+    assert_eq!(never.automatic_review(), AutoReview::Allow);
+    // A failure with no complete state blocks nothing.
+    let mut none = Tracked::default();
+    none.record_failure(FailureOrigin::Start, "no reviewer", None);
+    none.record_sighting(&skipped("c1"));
+    assert_eq!(none.automatic_review(), AutoReview::Allow);
+}
+
+/// Stored states persist whole, and records from earlier builds migrate: a
+/// review's `cheap#digest` string becomes that verified state, a failure's
+/// cheap-only signature becomes no state (which blocks nothing).
+#[test]
+fn code_states_persist_whole_and_old_string_forms_migrate() {
+    let c = conn();
+    let key = ("arabia".to_string(), None);
+    let mut t = reviewed();
+    t.record_failure(FailureOrigin::Scan, "x", Some(unreadable_state("c1")));
+    persist::save(&c, &key, &t).unwrap();
+    let (_, back) = persist::load_all(&c).unwrap().pop().unwrap();
+    assert_eq!(back.reviewed, t.reviewed);
+    assert_eq!(back.round_code, t.round_code);
+    assert_eq!(back.failure, t.failure);
+
+    let old = serde_json::json!({
+        "round": 2,
+        "reviewed_signature": "c1#d1",
+        "failure": {
+            "reason": "boom",
+            "origin": "round",
+            "cheap_signature": "c1",
+            "at_ms": 5
+        },
+        "phase": "failed"
+    });
+    let migrated: Tracked = serde_json::from_value(old).unwrap();
+    assert_eq!(migrated.reviewed, Some(state("c1", "d1")));
+    let failure = migrated.failure.clone().unwrap();
+    assert_eq!(failure.code, None, "a cheap-only signature names no state");
+    assert_eq!(failure.origin, FailureOrigin::Round);
+    let mut migrated = migrated.loaded();
+    migrated.record_sighting(&read("c1", "d9"));
+    assert_eq!(
+        migrated.automatic_review(),
+        AutoReview::Allow,
+        "one retry allowed"
+    );
+
+    let unverified_old: Tracked =
+        serde_json::from_value(serde_json::json!({ "reviewed_signature": "c1#unverified" }))
+            .unwrap();
+    assert!(matches!(
+        unverified_old.reviewed.unwrap().content,
+        Content::Unverified { .. }
+    ));
+    let no_digest: Tracked =
+        serde_json::from_value(serde_json::json!({ "reviewed_signature": "c1" })).unwrap();
+    let mut no_digest = no_digest.loaded();
+    no_digest.record_sighting(&read("c1", "d1"));
+    assert_eq!(
+        no_digest.derive(0),
+        Phase::Stale,
+        "never shown the same: stale"
+    );
 }
 
 // ── one at a time, one report per turn ─────────────────────────────────────
@@ -343,7 +563,7 @@ fn reviewed_code_and_never_attempted_checkouts_want_no_automatic_review() {
 fn a_second_start_is_refused_while_one_is_in_flight() {
     let mut t = begun(Trigger::Manual, None);
     assert_eq!(
-        t.begin(reviewer(), Trigger::Manual, "c1#d1".into(), None, 1_001),
+        t.begin(reviewer(), Trigger::Manual, state("c1", "d1"), None, 1_001),
         Err("a review is already running on this checkout")
     );
     assert_eq!(t.round, 1);
@@ -380,7 +600,7 @@ fn a_start_claims_the_checkout_until_it_begins_or_lets_go() {
     );
     t.release();
     t.claim().unwrap();
-    t.begin(reviewer(), Trigger::Manual, "s".into(), None, 0)
+    t.begin(reviewer(), Trigger::Manual, state("s", "d"), None, 0)
         .unwrap();
     assert!(!t.starting, "begun: the claim became the flight");
     assert_eq!(
@@ -396,7 +616,7 @@ fn a_start_claims_the_checkout_until_it_begins_or_lets_go() {
 fn a_pr_that_had_a_round_is_not_reviewed_on_sight_again() {
     let mut t = Tracked::default();
     assert!(!t.reviewed_pr(7));
-    t.begin(reviewer(), Trigger::PrOpen, "s".into(), Some(7), 0)
+    t.begin(reviewer(), Trigger::PrOpen, state("s", "d"), Some(7), 0)
         .unwrap();
     t.turn_ended();
     assert!(t.reviewed_pr(7));
@@ -410,18 +630,18 @@ fn automatic_rounds_are_counted_per_pr_and_reset_when_the_pr_changes() {
     let mut t = Tracked::default();
     for _ in 0..MAX_ROUNDS_PER_PR {
         assert!(t.auto_budget_left(7));
-        t.begin(reviewer(), Trigger::ReReview, "s".into(), Some(7), 0)
+        t.begin(reviewer(), Trigger::ReReview, state("s", "d"), Some(7), 0)
             .unwrap();
         t.submitted().unwrap();
         t.turn_ended();
     }
     assert!(!t.auto_budget_left(7), "three automatic rounds on #7");
     assert!(t.auto_budget_left(8), "another PR starts over");
-    t.begin(reviewer(), Trigger::Manual, "s".into(), Some(7), 0)
+    t.begin(reviewer(), Trigger::Manual, state("s", "d"), Some(7), 0)
         .unwrap();
     t.turn_ended();
     assert_eq!(t.pr_rounds, MAX_ROUNDS_PER_PR, "a manual round is free");
-    t.begin(reviewer(), Trigger::ReReview, "s".into(), Some(8), 0)
+    t.begin(reviewer(), Trigger::ReReview, state("s", "d"), Some(8), 0)
         .unwrap();
     assert_eq!(t.pr_rounds, 1, "the count started over with #8");
 }
@@ -515,11 +735,7 @@ fn code_that_moved_during_the_review_keeps_the_findings_and_reads_stale() {
         t.check_code_after_report();
         t.turn_ended();
         assert_eq!(t.note.as_deref(), Some(CODE_MOVED), "{after:?}");
-        assert_eq!(
-            t.reviewed_signature.as_deref(),
-            Some("c1#d1"),
-            "the code it read"
-        );
+        assert_eq!(t.reviewed, Some(state("c1", "d1")), "the code it read");
         assert_eq!(t.derive(3), Phase::Stale);
     }
 
@@ -567,9 +783,10 @@ fn the_cheap_signature_is_head_plus_the_dirty_paths_and_kinds_in_order() {
     let mut more = git.clone();
     more.files[0].additions = 9;
     assert_eq!(cheap_signature(&more), cheap);
-    let full = full_signature(&cheap, "d1");
-    assert_eq!(cheap_part(&full), cheap);
-    assert_ne!(full, full_signature(&cheap, "d2"));
+    // The persisted string form, and back.
+    let stored = state(&cheap, "d1");
+    assert_eq!(stored.signature(), format!("{cheap}#d1"));
+    assert_eq!(CodeState::from_signature(&stored.signature()), stored);
 }
 
 /// The content digest moves with what a status read can't see: one dirty

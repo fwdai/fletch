@@ -126,8 +126,10 @@ pub enum ContentDigest {
     Skipped,
 }
 
-/// The last [`Sighting::Read`]: the facts staleness is judged on, persisted so
-/// a restart judges on them too.
+/// The last [`Sighting::Read`], persisted so a restart judges on it too. A
+/// *read*, not a stored code state: its digest may be [`ContentDigest::Skipped`]
+/// (the cheap half alone already said the code moved). It is only ever the
+/// left side of [`identity`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CodeRead {
     pub cheap: String,
@@ -135,14 +137,155 @@ pub struct CodeRead {
 }
 
 impl CodeRead {
-    /// Whether this read is the code `reviewed` names — only a verified
-    /// digest of the same cheap signature says so.
-    pub fn matches(&self, reviewed: &str) -> bool {
-        match &self.digest {
-            ContentDigest::Verified { digest } => full_signature(&self.cheap, digest) == reviewed,
-            ContentDigest::Unverified { .. } | ContentDigest::Skipped => false,
+    /// The complete code state this read names, or `None` for a read that
+    /// skipped its digest — a skipped read is never stored as a state.
+    pub fn state(&self) -> Option<CodeState> {
+        let content = match &self.digest {
+            ContentDigest::Verified { digest } => Content::Verified {
+                digest: digest.clone(),
+            },
+            ContentDigest::Unverified { reason } => Content::Unverified {
+                reason: reason.clone(),
+            },
+            ContentDigest::Skipped => return None,
+        };
+        Some(CodeState {
+            cheap: self.cheap.clone(),
+            content,
+        })
+    }
+}
+
+/// A code state, complete by construction: the cheap signature (HEAD, dirty
+/// paths and kinds) and what its content is. The one shape every stored "this
+/// code" takes — the code a review read, the code a round read, the code a
+/// failure failed on.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CodeState {
+    pub cheap: String,
+    pub content: Content,
+}
+
+/// The content of a [`CodeState`]: its digest, or why it couldn't be read —
+/// an unreadable state is a state of its own.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum Content {
+    Verified { digest: String },
+    Unverified { reason: String },
+}
+
+impl CodeState {
+    /// The persisted string form, as the wire's `reviewed_signature` carries
+    /// it (and as earlier builds stored it): `cheap#digest`.
+    pub fn signature(&self) -> String {
+        match &self.content {
+            Content::Verified { digest } => format!("{}#{digest}", self.cheap),
+            Content::Unverified { .. } => format!("{}#unverified", self.cheap),
         }
     }
+
+    /// A state from its persisted string form (`cheap#digest`), for records
+    /// written before states were stored whole. A string with no digest names
+    /// a state whose content was never read, which no read is ever the same as.
+    fn from_signature(signature: &str) -> Self {
+        let (cheap, digest) = signature.rsplit_once('#').unwrap_or((signature, ""));
+        let content = if digest == "unverified" {
+            Content::Unverified {
+                reason: "recorded by an earlier build".into(),
+            }
+        } else {
+            Content::Verified {
+                digest: digest.to_string(),
+            }
+        };
+        CodeState {
+            cheap: cheap.to_string(),
+            content,
+        }
+    }
+}
+
+/// Whether a read is a stored code state. See [`identity`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Identity {
+    Same,
+    Different,
+    /// The read skipped its digest and its cheap half equals the state's: only
+    /// a full read can say. Never decided on.
+    Unknown,
+}
+
+/// **The one answer to "is this the same code?"** — for staleness against the
+/// reviewed state, the code-moved check after a report, the failure gate of
+/// the automatic review, and the PR-open "already reviewed this" check.
+///
+/// - the cheap halves differ → `Different`;
+/// - both verified → `Same` exactly when the digests are equal;
+/// - both unverified, same cheap half → `Same`: the same unreadable state,
+///   nothing new to read;
+/// - one verified, one unverified → `Different`: readability changed, so it
+///   is a new state (an unreadable file that became readable again);
+/// - the read skipped its digest, same cheap half → `Unknown`.
+pub fn identity(read: &CodeRead, stored: &CodeState) -> Identity {
+    if read.cheap != stored.cheap {
+        return Identity::Different;
+    }
+    match (&read.digest, &stored.content) {
+        (ContentDigest::Verified { digest }, Content::Verified { digest: theirs }) => {
+            if digest == theirs {
+                Identity::Same
+            } else {
+                Identity::Different
+            }
+        }
+        (ContentDigest::Unverified { .. }, Content::Unverified { .. }) => Identity::Same,
+        (ContentDigest::Verified { .. }, Content::Unverified { .. })
+        | (ContentDigest::Unverified { .. }, Content::Verified { .. }) => Identity::Different,
+        (ContentDigest::Skipped, _) => Identity::Unknown,
+    }
+}
+
+/// Reading records written by earlier builds: a code state stored as its
+/// string form becomes the state it names (a review's), or no state at all (a
+/// failure's cheap-only signature, which named no complete state and so
+/// blocks nothing).
+mod compat {
+    use super::CodeState;
+    use serde::{Deserialize, Deserializer};
+
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Stored {
+        State(CodeState),
+        Signature(String),
+    }
+
+    pub fn reviewed<'de, D: Deserializer<'de>>(d: D) -> Result<Option<CodeState>, D::Error> {
+        Ok(match Option::<Stored>::deserialize(d)? {
+            None => None,
+            Some(Stored::State(state)) => Some(state),
+            Some(Stored::Signature(signature)) => Some(CodeState::from_signature(&signature)),
+        })
+    }
+
+    pub fn failure_code<'de, D: Deserializer<'de>>(d: D) -> Result<Option<CodeState>, D::Error> {
+        Ok(match Option::<Stored>::deserialize(d)? {
+            Some(Stored::State(state)) => Some(state),
+            Some(Stored::Signature(_)) | None => None,
+        })
+    }
+}
+
+/// What the gate of the automatic review answers. See
+/// [`Tracked::automatic_review`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AutoReview {
+    Allow,
+    Block,
+    /// The last read can't settle it: read this checkout's content, then ask
+    /// again.
+    NeedsFullRead,
 }
 
 // ── failure ──────────────────────────────────────────────────────────────────
@@ -170,9 +313,14 @@ pub enum FailureOrigin {
 pub struct Failure {
     pub reason: String,
     pub origin: FailureOrigin,
-    /// The cheap signature of the code when it failed, when known. The
-    /// automatic re-review never tries the same code state twice.
-    pub cheap_signature: Option<String>,
+    /// The code state it failed on, when a complete one was read. The
+    /// automatic review never tries that state twice; no state blocks nothing.
+    #[serde(
+        default,
+        alias = "cheap_signature",
+        deserialize_with = "compat::failure_code"
+    )]
+    pub code: Option<CodeState>,
     pub at_ms: i64,
 }
 
@@ -213,8 +361,6 @@ pub struct Flight {
     pub reviewer_agent_id: String,
     pub started_ms: i64,
     pub submitted: bool,
-    /// The code under review, as [`full_signature`] spells it.
-    pub signature: String,
     pub saw_running: bool,
 }
 
@@ -238,8 +384,12 @@ pub struct Tracked {
     /// The PR the automatic rounds are counted against, and that count.
     pub pr_number: Option<u32>,
     pub pr_rounds: u32,
-    /// The code the last review read (a full signature).
-    pub reviewed_signature: Option<String>,
+    /// The code the last review read.
+    #[serde(alias = "reviewed_signature", deserialize_with = "compat::reviewed")]
+    pub reviewed: Option<CodeState>,
+    /// The code the latest round read when it began — what it reviews, and
+    /// what its failure (a restart's included) failed on.
+    pub round_code: Option<CodeState>,
     pub trigger: Option<Trigger>,
     /// The one failure this checkout carries ([`Self::record_failure`]).
     pub failure: Option<Failure>,
@@ -297,11 +447,14 @@ impl Tracked {
             Some(_) => return Phase::Failed,
             None => {}
         }
-        let Some(reviewed) = self.reviewed_signature.as_deref() else {
+        let Some(reviewed) = &self.reviewed else {
             return Phase::Idle;
         };
+        // A read skips its digest only when its cheap half differs from the
+        // reviewed one, so against the reviewed state `Unknown` cannot arise
+        // (pinned by a test); were it to, "not shown the same" reads stale.
         let stale = match &self.last_read {
-            Some(read) => !read.matches(reviewed),
+            Some(read) => identity(read, reviewed) != Identity::Same,
             None => self.phase == Phase::Stale,
         };
         if stale {
@@ -323,38 +476,45 @@ impl Tracked {
             Sighting::Unreadable { .. } => self.needs_rescan = false,
             Sighting::Read { cheap, digest } => {
                 self.needs_rescan = false;
+                let read = CodeRead {
+                    cheap: cheap.clone(),
+                    digest: digest.clone(),
+                };
                 match digest {
                     ContentDigest::Unverified { reason } => self.record_failure(
                         FailureOrigin::Scan,
                         format!("couldn't verify the review is current: {reason}"),
-                        Some(cheap.clone()),
+                        read.state(),
                     ),
+                    // A scan failure lasts until the code is shown to be
+                    // another state than the one that couldn't be read.
                     ContentDigest::Verified { .. } | ContentDigest::Skipped => {
-                        if self
-                            .failure
-                            .as_ref()
-                            .is_some_and(|f| f.origin == FailureOrigin::Scan)
-                        {
+                        let cleared = self.failure.as_ref().is_some_and(|f| {
+                            f.origin == FailureOrigin::Scan
+                                && f.code.as_ref().map_or(true, |code| {
+                                    identity(&read, code) == Identity::Different
+                                })
+                        });
+                        if cleared {
                             self.failure = None;
                         }
                     }
                 }
-                self.last_read = Some(CodeRead {
-                    cheap: cheap.clone(),
-                    digest: digest.clone(),
-                });
+                self.last_read = Some(read);
             }
         }
     }
 
-    /// Record a failure: the only writer of [`Self::failure`]. `cheap` is the
-    /// code it failed on; `None` takes the last read's. Every origin but a
-    /// scan also ends the round in flight and the claim, if any.
+    /// Record a failure: the only writer of [`Self::failure`]. `code` is the
+    /// complete state it failed on — a round's own read for a start, a round,
+    /// a queued start or a restart, the unreadable read for a scan — or `None`
+    /// when no complete state was read, which blocks nothing. Every origin but
+    /// a scan also ends the round in flight and the claim, if any.
     pub fn record_failure(
         &mut self,
         origin: FailureOrigin,
         reason: impl Into<String>,
-        cheap: Option<String>,
+        code: Option<CodeState>,
     ) {
         if origin != FailureOrigin::Scan {
             self.flight = None;
@@ -363,30 +523,45 @@ impl Tracked {
         self.failure = Some(Failure {
             reason: reason.into(),
             origin,
-            cheap_signature: cheap.or_else(|| self.last_read.as_ref().map(|r| r.cheap.clone())),
+            code,
             at_ms: now_ms(),
         });
     }
 
-    /// Whether the code, as last read, may be reviewed again on its own: it
-    /// differs from what was reviewed (or a review was attempted and failed
-    /// before any landed), and no failure is recorded on this very code
-    /// state. **One automatic attempt per code state**: a failure blocks the
-    /// code it failed on, of whatever origin, and a change of code clears
-    /// the block by itself. The budget per PR is checked separately.
-    pub fn wants_automatic_review(&self) -> bool {
+    /// A failure of the round that began, on the code it read.
+    pub fn round_failed(&mut self, reason: impl Into<String>) {
+        let code = self.round_code.clone();
+        self.record_failure(FailureOrigin::Round, reason, code);
+    }
+
+    /// Whether the code, as last read, may be reviewed again on its own.
+    /// **One automatic attempt per code state**: the code must differ from
+    /// what was reviewed (or a review was attempted and failed before any
+    /// landed), and must not be the state a recorded failure failed on, of
+    /// whatever origin — a change of state lifts the block by itself.
+    /// Identity is never decided on the cheap half alone: when the read
+    /// skipped its digest and its cheap half equals the failure's, the answer
+    /// is [`AutoReview::NeedsFullRead`]. The budget per PR is checked
+    /// separately.
+    pub fn automatic_review(&self) -> AutoReview {
         let Some(read) = &self.last_read else {
-            return false;
+            return AutoReview::Block;
         };
-        let differs = match &self.reviewed_signature {
-            Some(reviewed) => !read.matches(reviewed),
+        let differs = match &self.reviewed {
+            Some(reviewed) => identity(read, reviewed) != Identity::Same,
             None => self.failure.is_some(),
         };
-        let blocked = self
-            .failure
-            .as_ref()
-            .is_some_and(|f| f.cheap_signature.as_deref() == Some(read.cheap.as_str()));
-        differs && !blocked
+        if !differs {
+            return AutoReview::Block;
+        }
+        match self.failure.as_ref().and_then(|f| f.code.as_ref()) {
+            None => AutoReview::Allow,
+            Some(code) => match identity(read, code) {
+                Identity::Same => AutoReview::Block,
+                Identity::Different => AutoReview::Allow,
+                Identity::Unknown => AutoReview::NeedsFullRead,
+            },
+        }
     }
 
     /// Whether a tick should read this checkout's code: never under a turn or
@@ -407,7 +582,8 @@ impl Tracked {
         self.active_until_ms = 0;
         self.needs_rescan = true;
         if self.phase == Phase::Reviewing {
-            self.record_failure(FailureOrigin::Restart, "interrupted by restart", None);
+            let code = self.round_code.clone();
+            self.record_failure(FailureOrigin::Restart, "interrupted by restart", code);
         }
         self
     }
@@ -450,16 +626,13 @@ impl Tracked {
     /// reads stale, and an open PR's re-review picks it up. A read that
     /// couldn't verify is not "moved": its failure says what it is.
     pub fn check_code_after_report(&mut self) {
-        let (Some(read), Some(reviewed)) = (&self.last_read, self.reviewed_signature.as_deref())
-        else {
+        let (Some(read), Some(reviewed)) = (&self.last_read, &self.reviewed) else {
             return;
         };
-        let moved = match &read.digest {
-            ContentDigest::Unverified { .. } => false,
-            ContentDigest::Skipped => true,
-            ContentDigest::Verified { .. } => !read.matches(reviewed),
-        };
-        if moved {
+        if matches!(read.digest, ContentDigest::Unverified { .. }) {
+            return;
+        }
+        if identity(read, reviewed) == Identity::Different {
             self.note = Some(CODE_MOVED.into());
         }
     }
@@ -476,14 +649,14 @@ impl Tracked {
         }
     }
 
-    /// Open a round on `signature`, the code just read. Refused while one is
-    /// in flight. A round that begins clears the failure: whatever failed
+    /// Open a round on `code`, the state just read. Refused while one is in
+    /// flight. A round that begins clears the failure: whatever failed
     /// before, this one is the checkout's news now.
     pub fn begin(
         &mut self,
         reviewer: ReviewerView,
         trigger: Trigger,
-        signature: String,
+        code: CodeState,
         pr_number: Option<u32>,
         now: i64,
     ) -> std::result::Result<(), &'static str> {
@@ -502,11 +675,11 @@ impl Tracked {
         self.failure = None;
         self.note = None;
         self.trigger = Some(trigger);
+        self.round_code = Some(code);
         self.flight = Some(Flight {
             reviewer_agent_id: reviewer.agent_id.clone().unwrap_or_default(),
             started_ms: now,
             submitted: false,
-            signature,
             saw_running: false,
         });
         self.reviewer = Some(reviewer);
@@ -522,7 +695,7 @@ impl Tracked {
             return Err("already submitted this turn");
         }
         flight.submitted = true;
-        self.reviewed_signature = Some(flight.signature.clone());
+        self.reviewed = self.round_code.clone();
         Ok(())
     }
 
@@ -532,11 +705,7 @@ impl Tracked {
             return;
         };
         if !flight.submitted {
-            self.record_failure(
-                FailureOrigin::Round,
-                "the reviewer ended its turn without submitting a review",
-                None,
-            );
+            self.round_failed("the reviewer ended its turn without submitting a review");
         }
     }
 
@@ -664,18 +833,6 @@ pub fn cheap_signature(git: &crate::git_state::GitState) -> String {
         git.head_sha.as_deref().unwrap_or(""),
         files.join(",")
     )
-}
-
-/// The full signature: the cheap half and a digest of the uncommitted content
-/// (`git_state::content_digest`), so replacing one dirty line with another
-/// moves it. What a review records, and what staleness compares against.
-pub fn full_signature(cheap: &str, digest: &str) -> String {
-    format!("{cheap}#{digest}")
-}
-
-/// The cheap half of a full signature (everything before its digest).
-fn cheap_part(full: &str) -> &str {
-    full.rsplit_once('#').map_or(full, |(cheap, _)| cheap)
 }
 
 // ── reviewer resolution ──────────────────────────────────────────────────────
@@ -809,6 +966,14 @@ fn counts(sup: &Supervisor, key: &Key) -> Counts {
     }
 }
 
+/// Whether a read needs the content digest: to record a state (`full`), or
+/// when the cheap half alone can't tell the code from the reviewed state.
+/// Skipping it is therefore only ever done when the cheap halves differ, so a
+/// skipped read is `Different` from the reviewed state, never `Unknown`.
+fn digest_needed(cheap: &str, full: bool, reviewed: Option<&CodeState>) -> bool {
+    full || reviewed.is_some_and(|r| r.cheap == cheap)
+}
+
 /// What reading the code shows now. The content digest is read when `full`
 /// asks for a signature to record, or when the status alone matches the
 /// reviewed code; a status that differs is already stale, and the digest is
@@ -833,9 +998,8 @@ async fn sight(sup: &Supervisor, key: &Key, full: bool) -> Sighting {
         }
     };
     let cheap = cheap_signature(&git);
-    let reviewed = global().get(key).and_then(|t| t.reviewed_signature);
-    let needs_digest = full || reviewed.as_deref().map(cheap_part) == Some(cheap.as_str());
-    if !needs_digest {
+    let reviewed = global().get(key).and_then(|t| t.reviewed);
+    if !digest_needed(&cheap, full, reviewed.as_ref()) {
         return Sighting::Read {
             cheap,
             digest: ContentDigest::Skipped,
@@ -870,7 +1034,7 @@ fn view(key: &Key, tracked: &Tracked, phase: Phase, counts: &Counts) -> ReviewSt
         open: counts.open,
         resolved: counts.resolved,
         since_ms: tracked.since_ms,
-        reviewed_signature: tracked.reviewed_signature.clone(),
+        reviewed_signature: tracked.reviewed.as_ref().map(CodeState::signature),
         error: tracked.error(),
     }
 }
@@ -954,16 +1118,17 @@ async fn refresh(ctx: &Arc<EngineCtx>, sup: &Supervisor, key: &Key) -> Option<Re
     look(ctx, sup, key, Scan::Cached).await.map(|l| l.state)
 }
 
-/// Record a failure on a checkout ([`Tracked::record_failure`], on the code
-/// last read) and settle what it derives.
+/// Record a failure on a checkout ([`Tracked::record_failure`], on `code`)
+/// and settle what it derives.
 async fn fail(
     ctx: &Arc<EngineCtx>,
     sup: &Supervisor,
     key: &Key,
     origin: FailureOrigin,
     reason: String,
+    code: Option<CodeState>,
 ) {
-    global().update_existing(key, |t| t.record_failure(origin, reason, None));
+    global().update_existing(key, |t| t.record_failure(origin, reason, code));
     refresh(ctx, sup, key).await;
 }
 
@@ -1269,16 +1434,13 @@ async fn run_round(
     } else {
         ""
     };
-    match begin_round(ctx, sup, key, custom_agent_id, trigger).await {
-        Ok(()) => {}
-        Err(e) => {
-            let why = format!("{prefix}{e}");
-            fail(ctx, sup, key, before, why).await;
-            return Err(e);
-        }
+    if let Err((e, code)) = begin_round(ctx, sup, key, custom_agent_id, trigger).await {
+        fail(ctx, sup, key, before, format!("{prefix}{e}"), code).await;
+        return Err(e);
     }
     if let Err(e) = deliver_round(ctx, sup, key, trigger).await {
-        fail(ctx, sup, key, FailureOrigin::Round, e.to_string()).await;
+        global().update_existing(key, |t| t.round_failed(e.to_string()));
+        refresh(ctx, sup, key).await;
         return Err(e);
     }
     refresh(ctx, sup, key)
@@ -1287,51 +1449,66 @@ async fn run_round(
 }
 
 /// The part of a round before it begins: the reviewer resolves, the change
-/// reads (its signature is what the round records), the flight opens.
+/// reads (its state is what the round records), the flight opens. An error
+/// carries the complete state the start read, when it got that far — what
+/// the failure is recorded on.
 async fn begin_round(
     ctx: &Arc<EngineCtx>,
     sup: &Arc<Supervisor>,
     key: &Key,
     custom_agent_id: Option<&str>,
     trigger: Trigger,
-) -> Result<()> {
-    let coder = sup.workspace.agent(&key.0)?;
+) -> std::result::Result<(), (Error, Option<CodeState>)> {
+    let unread = |e: Error| (e, None);
+    let coder = sup.workspace.agent(&key.0).map_err(unread)?;
     if coder.archive.is_some() {
-        return Err(Error::Other("agent is archived".into()));
+        return Err(unread(Error::Other("agent is archived".into())));
     }
     let spec = {
         let conn = ctx.db.lock();
         resolve_reviewer(&conn, custom_agent_id)
     }
-    .ok_or_else(|| Error::Other("No reviewer is set up — pick one in Settings › Review".into()))?;
+    .ok_or_else(|| {
+        unread(Error::Other(
+            "No reviewer is set up — pick one in Settings › Review".into(),
+        ))
+    })?;
     let Some(Look {
         counts, sighting, ..
     }) = look(ctx, sup, key, Scan::Full).await
     else {
-        return Err(Error::Other("review state vanished".into()));
+        return Err(unread(Error::Other("review state vanished".into())));
     };
-    // The signature the round records is this look's own, never an older
-    // read's: a checkout that can't be read now has no change to review.
-    let signature = match sighting {
-        Sighting::Read {
-            cheap,
-            digest: ContentDigest::Verified { digest },
-        } => full_signature(&cheap, &digest),
-        Sighting::Read {
-            digest: ContentDigest::Unverified { reason },
-            ..
+    // The state the round records is this look's own, never an older read's:
+    // a checkout that can't be read now has no change to review, and the
+    // failure is recorded on the unreadable state it read.
+    let code = match sighting {
+        Sighting::Read { cheap, digest } => {
+            let read = CodeRead { cheap, digest };
+            match (&read.digest, read.state()) {
+                (ContentDigest::Verified { .. }, Some(code)) => code,
+                (ContentDigest::Unverified { reason }, code) => {
+                    return Err((
+                        Error::Other(format!("couldn't read the change: {reason}")),
+                        code,
+                    ))
+                }
+                _ => {
+                    return Err(unread(Error::Other(
+                        "couldn't read the change: its content was not read".into(),
+                    )))
+                }
+            }
         }
-        | Sighting::Unreadable { reason } => {
-            return Err(Error::Other(format!("couldn't read the change: {reason}")))
+        Sighting::Unreadable { reason } => {
+            return Err(unread(Error::Other(format!(
+                "couldn't read the change: {reason}"
+            ))))
         }
-        Sighting::Read {
-            digest: ContentDigest::Skipped,
-            ..
-        }
-        | Sighting::NotScanned => {
-            return Err(Error::Other(
+        Sighting::NotScanned => {
+            return Err(unread(Error::Other(
                 "couldn't read the change: its content was not read".into(),
-            ))
+            )))
         }
     };
     let existing = global().get(key).and_then(|t| t.reviewer);
@@ -1346,9 +1523,9 @@ async fn begin_round(
     global()
         .update(key, |t| {
             t.active_until_ms = now + ACTIVE_WINDOW_MS;
-            t.begin(placeholder, trigger, signature, counts.pr_number, now)
+            t.begin(placeholder, trigger, code.clone(), counts.pr_number, now)
         })
-        .map_err(|e| Error::Other(e.into()))?;
+        .map_err(|e| (Error::Other(e.into()), Some(code.clone())))?;
     refresh(ctx, sup, key).await;
     Ok(())
 }
@@ -1591,17 +1768,14 @@ pub async fn on_pr_opened(
     }
     // Reviewed clean or with findings at exactly this code (a review asked
     // for before the PR): nothing new to read.
-    if tracked
-        .as_ref()
-        .is_some_and(|t| t.reviewed_signature.is_some())
-    {
+    if tracked.as_ref().is_some_and(|t| t.reviewed.is_some()) {
         look(ctx, sup, &key, Scan::Git).await;
-        let current = global().get(&key).is_some_and(|t| {
-            match (&t.last_read, t.reviewed_signature.as_deref()) {
-                (Some(read), Some(reviewed)) => read.matches(reviewed),
+        let current = global()
+            .get(&key)
+            .is_some_and(|t| match (&t.last_read, &t.reviewed) {
+                (Some(read), Some(reviewed)) => identity(read, reviewed) == Identity::Same,
                 _ => false,
-            }
-        });
+            });
         if current {
             return;
         }
@@ -1706,15 +1880,11 @@ async fn on_status(ctx: &Arc<EngineCtx>, sup: &Arc<Supervisor>, event: StatusEve
                         true
                     }
                     AgentStatus::Stopped => {
-                        t.record_failure(
-                            FailureOrigin::Round,
-                            "the reviewer was stopped before it reported",
-                            None,
-                        );
+                        t.round_failed("the reviewer was stopped before it reported");
                         true
                     }
                     AgentStatus::Error => {
-                        t.record_failure(FailureOrigin::Round, "the reviewer's turn failed", None);
+                        t.round_failed("the reviewer's turn failed");
                         true
                     }
                 }
@@ -1759,15 +1929,11 @@ async fn resync(ctx: &Arc<EngineCtx>, sup: &Arc<Supervisor>) {
                     true
                 }
                 Some(AgentStatus::Error) => {
-                    t.record_failure(FailureOrigin::Round, "the reviewer's turn failed", None);
+                    t.round_failed("the reviewer's turn failed");
                     true
                 }
                 Some(AgentStatus::Stopped) | None => {
-                    t.record_failure(
-                        FailureOrigin::Round,
-                        "the reviewer went away before it reported",
-                        None,
-                    );
+                    t.round_failed("the reviewer went away before it reported");
                     true
                 }
                 _ => false,
@@ -1803,11 +1969,7 @@ async fn tick(ctx: &Arc<EngineCtx>, sup: &Arc<Supervisor>) {
                         t.turn_ended();
                         None
                     } else {
-                        t.record_failure(
-                            FailureOrigin::Round,
-                            "the reviewer did not report within 20 minutes",
-                            None,
-                        );
+                        t.round_failed("the reviewer did not report within 20 minutes");
                         Some(id)
                     }
                 }
@@ -1840,15 +2002,40 @@ async fn tick(ctx: &Arc<EngineCtx>, sup: &Arc<Supervisor>) {
         let Some(pr_number) = counts.pr_number.filter(|_| counts.pr_open) else {
             continue;
         };
-        let Some(tracked) = table.get(&key) else {
+        let Some(mut tracked) = table.get(&key) else {
             continue;
         };
         if tracked.flight.is_some()
             || tracked.starting
             || tracked.pending.is_some()
-            || !tracked.wants_automatic_review()
             || !coder_free(sup, &key)
         {
+            continue;
+        }
+        // Never decided on a skipped digest: read the content of this one
+        // key (it otherwise wants a review, so the scan budget holds), then
+        // ask again on that read.
+        let mut gate = tracked.automatic_review();
+        if gate == AutoReview::NeedsFullRead {
+            look(ctx, sup, &key, Scan::Full).await;
+            let Some(read_again) = table.get(&key) else {
+                continue;
+            };
+            tracked = read_again;
+            gate = tracked.automatic_review();
+        }
+        if gate != AutoReview::Allow {
+            continue;
+        }
+        let resolves = {
+            let conn = ctx.db.lock();
+            resolve_reviewer(&conn, None).is_some()
+        };
+        if !resolves {
+            table.update_existing(&key, |t| {
+                t.note = Some("no reviewer is set up for the automatic re-review".into())
+            });
+            refresh(ctx, sup, &key).await;
             continue;
         }
         if !tracked.auto_budget_left(pr_number) {
@@ -1878,12 +2065,17 @@ async fn tick(ctx: &Arc<EngineCtx>, sup: &Arc<Supervisor>) {
                     .and_then(|t| t.failure)
                     .is_some_and(|f| f.at_ms >= now);
                 if !recorded && e.to_string() != ALREADY_RUNNING {
+                    let code = global()
+                        .get(&key)
+                        .and_then(|t| t.last_read)
+                        .and_then(|r| r.state());
                     fail(
                         &ctx,
                         &sup,
                         &key,
                         FailureOrigin::Start,
                         format!("re-review not started: {e}"),
+                        code,
                     )
                     .await;
                 }
