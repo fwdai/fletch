@@ -529,7 +529,8 @@ fn assemble(
     missing: Option<&HashSet<String>>,
 ) -> Bundle {
     let mut heads: Vec<&Assertion> = Vec::new();
-    let mut detail_left_out = 0;
+    // By id: a record about several entities is met once per entity.
+    let mut detail_left_out: HashSet<&str> = HashSet::new();
     for (e, reason) in ranked {
         let targeted = !map && *reason != EntryReason::Neighbour;
         for a in heads_about(graph, &e.id) {
@@ -539,16 +540,17 @@ fn assemble(
             if targeted || a.domain != Domain::Implementation {
                 heads.push(a);
             } else if map {
-                detail_left_out += 1;
+                detail_left_out.insert(a.id.as_str());
             }
         }
     }
     let (assertions, contradictions) = bundle_assertions(graph, &heads, query.include_history);
     let mut warnings = warnings(graph, &assertions, &contradictions, misses, truncated);
-    if detail_left_out > 0 {
+    if !detail_left_out.is_empty() {
         warnings.push(format!(
-            "{detail_left_out} implementation-level record(s) not in the map; \
-             name entities or paths to read them"
+            "{} implementation-level record(s) not in the map; \
+             name entities or paths to read them",
+            detail_left_out.len()
         ));
     }
     if let Some(missing) = missing {

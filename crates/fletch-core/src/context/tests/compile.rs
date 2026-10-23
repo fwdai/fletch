@@ -78,7 +78,8 @@ fn town() -> Graph {
             assertion("d1", &["f1"], "Use sessions"),
             assertion("d2", &["m1"], "Use Postgres"),
             assertion("d3", &["f2"], "Stripe"),
-            detail("d4", &["m1"], "Pool size is 8"),
+            // About two entities, so the map meets it twice and must count it once.
+            detail("d4", &["m1", "f2"], "Pool size is 8"),
         ],
         vec![
             link("f1", "m1", Rel::DependsOn),
