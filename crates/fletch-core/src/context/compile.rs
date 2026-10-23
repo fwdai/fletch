@@ -189,7 +189,9 @@ fn charter_rank(a: &Assertion) -> (bool, bool, std::cmp::Reverse<i64>) {
 }
 
 /// The first `cap` of `ranked` about each entity, order kept. An assertion
-/// about several entities counts for each and stays while any has room.
+/// about several entities counts for each and stays only while every one of
+/// them has room: the cap is a hard cap, so a central entity cannot collect
+/// extra lines through what it shares.
 fn per_entity(ranked: Vec<&Assertion>, cap: usize) -> Vec<&Assertion> {
     let mut taken: HashMap<&str, usize> = HashMap::new();
     ranked
@@ -198,7 +200,7 @@ fn per_entity(ranked: Vec<&Assertion>, cap: usize) -> Vec<&Assertion> {
             let room = a
                 .about
                 .iter()
-                .any(|id| taken.get(id.as_str()).map_or(true, |n| *n < cap));
+                .all(|id| taken.get(id.as_str()).map_or(true, |n| *n < cap));
             if room {
                 for id in &a.about {
                     *taken.entry(id.as_str()).or_insert(0) += 1;

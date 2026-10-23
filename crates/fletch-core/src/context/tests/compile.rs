@@ -366,9 +366,12 @@ fn the_charter_keeps_two_lines_per_entity() {
     rejected.domain = Domain::Business;
     let mut detail = assertion("i1", &["m1"], "A detail");
     detail.domain = Domain::Implementation;
-    // `f1` is full by now, `m1` has room: a shared line stays.
-    let shared = assertion("s1", &["f1", "m1"], "About both");
-    assertions.extend([rejected, detail, shared]);
+    // A shared line ranked first counts for both entities; one ranked after
+    // `f1` is full is out, however much room `m1` has: the cap is hard.
+    let mut early_shared = assertion("es", &["f1", "m1"], "About both, first");
+    early_shared.recorded_at = 10;
+    let late_shared = assertion("s1", &["f1", "m1"], "About both, last");
+    assertions.extend([rejected, detail, early_shared, late_shared]);
     let g = graph(
         vec![
             vision("v"),
@@ -381,7 +384,7 @@ fn the_charter_keeps_two_lines_per_entity() {
     let b = overview(&g, 0);
     assert_eq!(
         ids(b.assertions.iter().map(|a| &a.assertion)),
-        ["d3", "d2", "r1", "s1"]
+        ["es", "d3", "r1"]
     );
     assert!(b.truncated.is_empty(), "the cap is not a truncation");
 }
