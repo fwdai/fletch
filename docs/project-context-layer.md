@@ -235,14 +235,21 @@ opened.
   `rpc::context::spawn_overview`) rides in the instruction block of every
   session on a project with the layer on, whatever its purpose — a coding
   agent and the PM chat get the identical section. In order: the vision (or
-  nothing), the adopted current `constraint` assertions in the business and
-  architectural domains (statement only), a one-line legend per `module`
-  (slug, clipped summary, first path), then every other active entity by kind
-  as `slug ("name")`. It goes through `compile`'s ranking and budget loop and
-  `render_markdown`; the vision and the constraints are never dropped, and a
-  truncation warning tells the agent `context_get` has more. The Context
-  tab's preview shows it verbatim (`CompileQuery.overview`). The extractor
-  still reads the plain index (`render_index`).
+  nothing), the *charter* — every current business or architectural
+  assertion whatever its kind and stance (a rejected alternative is as much
+  a rule as a constraint), statement only, user-stated first, then confirmed
+  before provisional, then newest, and at most two per entity
+  (`CHARTER_PER_ENTITY`: breadth over depth) — a one-line legend per
+  `module` that has a summary (slug, clipped summary, first path) with the
+  bootstrap-only ones folded into one count, then every other active entity
+  by kind as `slug ("name")`. Implementation-domain records never ride at
+  spawn: across the dogfood projects they were two thirds of the store and
+  the part that goes stale, and a targeted `context_get` serves them. It
+  goes through `compile`'s ranking and budget loop and `render_markdown`;
+  the vision is never dropped and the charter only after every other entity,
+  and a truncation warning tells the agent `context_get` has more. The
+  Context tab's preview shows it verbatim (`CompileQuery.overview`). The
+  extractor still reads the plain index (`render_index`).
 - Every read is logged (`reads`: query, what was served, what was asked for
   and not found). Misses are the coverage signal.
 

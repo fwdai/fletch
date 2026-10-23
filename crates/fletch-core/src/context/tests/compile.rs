@@ -299,27 +299,33 @@ fn project(modules: usize) -> Graph {
             constraint("c3", &["f1"], "Use tabs", Domain::Implementation),
             rejected,
             replaced,
-            assertion("d1", &["f1"], "A decision, not a constraint"),
+            assertion("d1", &["m0"], "A decision is charter too"),
         ],
         Vec::new(),
     )
 }
 
 #[test]
-fn the_overview_is_vision_constraints_modules_then_the_index() {
+fn the_overview_is_vision_charter_modules_then_the_index() {
     let b = overview(&project(2), 0);
     assert!(b.overview);
     assert_eq!(b.vision.as_ref().map(|v| v.id.as_str()), Some("v"));
     let mut served = ids(b.assertions.iter().map(|a| &a.assertion));
     served.sort();
-    assert_eq!(served, ["c1", "c2"], "adopted current constraints only");
+    assert_eq!(
+        served,
+        ["c1", "c2", "c4", "d1"],
+        "every current business or architectural assertion, rejected included; not the implementation one, not the replaced one"
+    );
     assert!(b.entities.iter().all(|e| e.entity.id != "f9"));
 
     let md = render_markdown(&b);
     let order = [
         "## Vision\nShip the thing\n",
+        "## Decisions",
+        "### Architectural\n- [adopted] A decision is charter too (about: `module-00`) (id: d1)\n",
         "## Constraints",
-        "### Business\n- [adopted] Prices are in cents (about: `billing`) (id: c2)\n",
+        "### Business\n- [adopted] Prices are in cents (about: `billing`) (id: c2)\n- [rejected] Rejected constraint (about: `billing`) (id: c4)\n",
         "### Architectural\n- [adopted] Payments never touch the main DB (about: `module-00`) (id: c1)\n",
         "## Modules\n- `module-",
         "## Index\n**Features:** billing (\"billing\")\n",
@@ -340,11 +346,51 @@ fn the_overview_is_vision_constraints_modules_then_the_index() {
         "{md}"
     );
     assert!(!md.contains("minted") && !md.contains("Warnings"), "{md}");
-    assert!(!md.contains(&"r".repeat(10)), "constraints stay thin: {md}");
+    assert!(
+        !md.contains(&"r".repeat(10)),
+        "the charter stays thin: {md}"
+    );
 }
 
 #[test]
-fn the_overview_drops_entities_before_constraints_and_never_the_vision() {
+fn the_charter_keeps_two_lines_per_entity() {
+    let mut assertions: Vec<Assertion> = (1..=3)
+        .map(|i| {
+            let mut a = assertion(&format!("d{i}"), &["f1"], &format!("Decision {i}"));
+            a.recorded_at = i;
+            a
+        })
+        .collect();
+    let mut rejected = assertion("r1", &["m1"], "Not this way");
+    rejected.stance = Stance::Rejected;
+    rejected.domain = Domain::Business;
+    let mut detail = assertion("i1", &["m1"], "A detail");
+    detail.domain = Domain::Implementation;
+    // A shared line ranked first counts for both entities; one ranked after
+    // `f1` is full is out, however much room `m1` has: the cap is hard.
+    let mut early_shared = assertion("es", &["f1", "m1"], "About both, first");
+    early_shared.recorded_at = 10;
+    let late_shared = assertion("s1", &["f1", "m1"], "About both, last");
+    assertions.extend([rejected, detail, early_shared, late_shared]);
+    let g = graph(
+        vec![
+            vision("v"),
+            feature("f1", "billing"),
+            entity("m1", "db", EntityKind::Module),
+        ],
+        assertions,
+        Vec::new(),
+    );
+    let b = overview(&g, 0);
+    assert_eq!(
+        ids(b.assertions.iter().map(|a| &a.assertion)),
+        ["es", "d3", "r1"]
+    );
+    assert!(b.truncated.is_empty(), "the cap is not a truncation");
+}
+
+#[test]
+fn the_overview_drops_entities_before_the_charter_and_never_the_vision() {
     let g = project(40);
     let b = overview(&g, 0);
     let md = render_markdown(&b);
@@ -358,7 +404,7 @@ fn the_overview_drops_entities_before_constraints_and_never_the_vision() {
     assert!(md.contains("Payments never touch the main DB"), "{md}");
     assert!(md.contains("Prices are in cents"), "{md}");
     assert!(md.contains("Truncated to fit the budget"), "{md}");
-    assert!(!md.contains("constraints not shown"), "{md}");
+    assert!(!md.contains("decisions not shown"), "{md}");
 
     // A budget nothing fits keeps only the vision.
     let b = overview(&g, 1);
@@ -373,23 +419,21 @@ fn the_overview_drops_entities_before_constraints_and_never_the_vision() {
 }
 
 #[test]
-fn the_overview_sheds_low_ranked_constraints_to_meet_its_budget() {
+fn the_overview_sheds_low_ranked_charter_lines_to_meet_its_budget() {
+    let mut entities = vec![vision("v")];
     let mut assertions = Vec::new();
     for i in 0..300 {
+        entities.push(feature(&format!("f{i:03}"), &format!("feature-{i:03}")));
         let mut c = constraint(
             &format!("c{i:03}"),
-            &["f1"],
+            &[&format!("f{i:03}")],
             &format!("Constraint number {i} holds"),
             Domain::Architectural,
         );
         c.recorded_at = i;
         assertions.push(c);
     }
-    let g = graph(
-        vec![vision("v"), feature("f1", "billing")],
-        assertions,
-        Vec::new(),
-    );
+    let g = graph(entities, assertions, Vec::new());
     let b = overview(&g, 0);
     let md = render_markdown(&b);
     assert!(
@@ -401,11 +445,14 @@ fn the_overview_sheds_low_ranked_constraints_to_meet_its_budget() {
     let shown = b.assertions.len();
     assert!(shown > 0 && shown < 300, "{shown} shown");
     assert_eq!(b.assertions[0].assertion.id, "c299", "newest first");
-    assert_eq!(b.truncated.first().map(String::as_str), Some("f1"));
+    assert!(
+        b.truncated[..300].iter().all(|id| id.starts_with('f')),
+        "every entity goes before a charter line"
+    );
     let dropped: Vec<String> = (0..300 - shown).map(|i| format!("c{i:03}")).collect();
-    assert_eq!(b.truncated[1..], dropped, "oldest dropped, lowest first");
+    assert_eq!(b.truncated[300..], dropped, "oldest dropped, lowest first");
     let line = format!(
-        "Truncated to fit the budget: {} constraints not shown; call context_get for the full set",
+        "Truncated to fit the budget: {} decisions not shown; call context_get for the full set",
         300 - shown
     );
     assert!(b.warnings.contains(&line), "{:?}", b.warnings);
@@ -413,22 +460,23 @@ fn the_overview_sheds_low_ranked_constraints_to_meet_its_budget() {
 }
 
 #[test]
-fn overview_constraints_rank_user_then_confirmed_then_newest() {
-    // The fixture's default source is a user quote; the extractor's own
-    // reading of the conversation is not.
-    let mut extracted = constraint("ext", &["f1"], "Extracted", Domain::Business);
+fn the_charter_ranks_user_then_confirmed_then_newest() {
+    // Each about its own entity, so the per-entity cap stays out of it. The
+    // fixture's default source is a user quote; the extractor's own reading
+    // of the conversation is not.
+    let mut extracted = constraint("ext", &["e1"], "Extracted", Domain::Business);
     extracted.author = Author::extractor("ws", "claude");
     extracted.source = Source::new(SourceKind::AgentTurn, None);
     extracted.recorded_at = 50;
-    let mut user_provisional = constraint("user-prov", &["f1"], "Stated", Domain::Business);
+    let mut user_provisional = constraint("user-prov", &["e2"], "Stated", Domain::Business);
     user_provisional.status = AssertionStatus::Provisional;
-    let mut old = constraint("old", &["f1"], "Old", Domain::Business);
+    let mut old = constraint("old", &["e3"], "Old", Domain::Business);
     old.recorded_at = 1;
-    let mut new = constraint("new", &["f1"], "New", Domain::Business);
+    let mut new = constraint("new", &["e4"], "New", Domain::Business);
     new.recorded_at = 2;
     // An agent recorded it, but from the user's own words: ranks as the
     // user's, and older than `old`.
-    let mut quoted = constraint("quoted", &["f1"], "Quoted", Domain::Business);
+    let mut quoted = constraint("quoted", &["e5"], "Quoted", Domain::Business);
     quoted.author = Author::agent("ws", "claude");
     quoted.source = Source::new(SourceKind::UserTurn, Some("t1".into()));
     quoted.recorded_at = 0;
