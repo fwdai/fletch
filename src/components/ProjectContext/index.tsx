@@ -117,7 +117,9 @@ export function ContextTab({
       </div>
       <p className="pc-meta text-xs">
         {stats.entities} entities · {stats.heads} current assertions · {stats.provisional}{" "}
-        provisional · {stats.contradictions} contradictions · {stats.reads} reads
+        provisional · {stats.contradictions} contradictions · {stats.reads} reads by{" "}
+        {stats.sessions_reading} of {stats.sessions} sessions · {stats.empty_text_reads} searches
+        found nothing
       </p>
 
       <nav className="pc-nav">

@@ -256,7 +256,12 @@ opened.
   Context tab's preview shows it verbatim (`CompileQuery.overview`). The
   extractor still reads the plain index (`render_index`).
 - Every read is logged (`reads`: query, what was served, what was asked for
-  and not found). Misses are the coverage signal.
+  and not found). Misses were meant to be the coverage signal and never
+  fired across 200 reads on seven projects: agents pass slugs copied from
+  the overview, so they never ask for what does not exist. `Stats` reports
+  what does move: how many of the project's sessions read at all
+  (`sessions_reading` of `sessions`) and how many free-text reads found no
+  assertion (`empty_text_reads`).
 
 ## Human side
 
@@ -323,7 +328,10 @@ empty on the next start.
 Dogfood on this repo with the layer on. What to look at, all from SQL over
 `context.*`:
 
-- **Coverage**: `reads.misses` — what agents asked for that did not exist.
+- **Use**: `Stats.sessions_reading` over `Stats.sessions` — a project where
+  it stays near zero after the mapping session is one where the overview is
+  not earning its place. **Coverage**: `Stats.empty_text_reads` — what
+  agents searched for and did not find.
 - **Exploration before first edit** per session, from the transcripts: does
   it fall for sessions that called `context_get`?
 - **Pipeline health**: proposals by source and status, dismissal reasons

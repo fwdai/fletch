@@ -1125,17 +1125,13 @@ impl ContextStore {
             let n: i64 = conn.query_row(sql, [project_id], |r| r.get(0))?;
             Ok(n as usize)
         };
-        let mut stmt = conn.prepare(
-            "SELECT m.value, COUNT(*) AS n
-             FROM context.reads r, json_each(r.misses) m
-             WHERE r.project_id = ?1
-             GROUP BY m.value ORDER BY n DESC, m.value LIMIT 10",
-        )?;
-        let top_misses = stmt
-            .query_map([project_id], |r| {
-                Ok((r.get(0)?, r.get::<_, i64>(1)? as usize))
-            })?
-            .collect::<rusqlite::Result<_>>()?;
+        // The project's sessions live in the main schema under the Fletch
+        // project id; the mapping to the context id is `project_settings`.
+        let sessions = format!(
+            "SELECT COUNT(*) FROM sessions s JOIN workspaces w ON w.id = s.workspace_id
+             WHERE w.project_id IN (SELECT project_id FROM project_settings
+                                    WHERE key = '{PROJECT_ID_KEY}' AND value = ?1)"
+        );
         Ok(Stats {
             entities: count(
                 "SELECT COUNT(*) FROM context.entities WHERE project_id = ?1 AND status = 'active'",
@@ -1152,7 +1148,21 @@ impl ContextStore {
                  WHERE project_id = ?1 AND status = 'pending'",
             )?,
             reads: count("SELECT COUNT(*) FROM context.reads WHERE project_id = ?1")?,
-            top_misses,
+            sessions: count(&sessions)?,
+            // Joined to `sessions`, so numerator and denominator are the
+            // same population: a read by a session whose workspace was
+            // deleted since is not a session the project still has.
+            sessions_reading: count(
+                "SELECT COUNT(DISTINCT r.session_id) FROM context.reads r
+                 JOIN sessions s ON s.id = r.session_id
+                 WHERE r.project_id = ?1",
+            )?,
+            empty_text_reads: count(
+                "SELECT COUNT(*) FROM context.reads
+                 WHERE project_id = ?1
+                   AND json_extract(query, '$.query') IS NOT NULL
+                   AND json_array_length(served, '$.assertions') = 0",
+            )?,
         })
     }
 }
