@@ -234,19 +234,20 @@ impl ContextService {
         Ok(())
     }
 
-    /// Several retractions in one transaction and one change pulse.
-    pub fn retract_many(
+    /// The tidy pass applied to the `confirmed` candidate ids, revalidated
+    /// and retracted in one transaction (`ContextStore::tidy`); one change
+    /// pulse when anything was.
+    pub fn tidy(
         &self,
         project: &Project,
-        retractions: &[(Id, String)],
+        confirmed: &[Id],
         stamp: Stamp,
-    ) -> Result<()> {
-        if retractions.is_empty() {
-            return Ok(());
+    ) -> Result<Vec<super::tidy::TidyCandidate>> {
+        let retracted = self.store.tidy(&project.id, confirmed, stamp)?;
+        if !retracted.is_empty() {
+            self.changed(project);
         }
-        self.store.retract_many(&project.id, retractions, stamp)?;
-        self.changed(project);
-        Ok(())
+        Ok(retracted)
     }
 
     pub fn archive_entity(&self, project: &Project, entity_id: &str, stamp: Stamp) -> Result<()> {
