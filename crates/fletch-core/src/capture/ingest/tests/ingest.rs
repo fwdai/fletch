@@ -388,7 +388,8 @@ fn a_line_restating_the_workspaces_own_provisional_is_left_to_the_merge() {
         &service,
         &merged(
             "## Decisions\n\
-             - adopted · implementation · [auth-session] — Refresh happens on the server, never in the client. — Restates the branch's record.\n\
+             - adopted · implementation · [auth-session] — Sessions refresh on the server side, never in the client. — Restates the branch's record.\n\
+             - adopted · implementation · [auth-session] — Session cookies are HttpOnly. — Same shape, another decision: new.\n\
              - constraint · implementation · [auth-session] — Sessions never refresh twice in a minute. — Another kind: new.\n\
              - fact · implementation · [auth-session] — Sessions live a day or until sign-out. — Another workspace's provisional: new.\n",
         ),
@@ -402,12 +403,60 @@ fn a_line_restating_the_workspaces_own_provisional_is_left_to_the_merge() {
     assert_eq!(
         statements,
         [
+            "Session cookies are HttpOnly.",
             "Sessions live a day or until sign-out.",
             "Sessions live a day.",
             "Sessions never refresh twice in a minute.",
             "Sessions refresh server-side.",
         ]
     );
+}
+
+/// The retired rule is about one claim, not one sentence: the same words
+/// about another entity, or in another kind, are a different decision.
+#[test]
+fn a_retired_statement_about_another_entity_does_not_block_the_line() {
+    let (service, _dir) = service();
+    let auth = seed_entity(&service, "auth-session");
+    let billing = seed_entity(&service, "billing");
+    let old = seed_assertion(
+        &service,
+        assertion(
+            std::slice::from_ref(&auth),
+            AssertionKind::Decision,
+            "Use SQLite for storage.",
+            AssertionStatus::Confirmed,
+        ),
+        user_stamp(),
+    );
+    seed_assertion(
+        &service,
+        AssertionInput {
+            supersedes: Some(Supersede {
+                id: old,
+                reasoning: "outgrew it".into(),
+            }),
+            ..assertion(
+                &[auth],
+                AssertionKind::Decision,
+                "Use Postgres for storage.",
+                AssertionStatus::Confirmed,
+            )
+        },
+        user_stamp(),
+    );
+
+    merge_primary(
+        &service,
+        &merged("## Decisions\n- adopted · implementation · [billing] — Use SQLite for storage.\n"),
+    )
+    .unwrap();
+
+    let landed = current(&service)
+        .into_iter()
+        .find(|a| a.about == vec![billing.clone()])
+        .expect("billing's own decision lands");
+    assert_eq!(landed.statement, "Use SQLite for storage.");
 }
 
 /// A merge settles the checkout it merged, not the workspace: the primary

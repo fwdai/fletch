@@ -345,12 +345,14 @@ pub fn ingest_merged(
 /// judgment, and two decisions about one entity are usually both true. The
 /// store lands it, holds it or finds it a duplicate.
 ///
-/// Two lines never reach the policy. One that restates an assertion no
-/// longer standing would bring back what a later record replaced. One of the
-/// same kind, domain and stance as a provisional the merging workspace
-/// itself recorded about the same entities is that record written a second
-/// time, in the PR's words: the merge confirms the provisional, and the line
-/// is left.
+/// Two lines never reach the policy. One that restates, in similar words, a
+/// replaced assertion of the same shape (`resolve::retired_restatement`)
+/// would bring back what a later record replaced. One that says, in similar
+/// words, what a provisional of the same shape from the merging workspace
+/// already says is that record written a second time: the merge confirms
+/// the provisional, and the line is left. Shape is kind, domain, stance and
+/// a shared entity; words are `resolve::similar`. A different decision about
+/// the same entity lands as it always did.
 fn land(
     service: &ContextService,
     project: &Project,
@@ -381,15 +383,15 @@ fn land(
         contradicts: Vec::new(),
         status: AssertionStatus::Confirmed,
     };
-    if let Some(old) = resolve::retired_restatement(graph, &input.statement) {
+    if let Some(old) = resolve::retired_restatement(graph, &input) {
         tracing::info!(project = %project.id, line = %decision.line, retired = %old.id, "context ingest: line restates a retired assertion; skipped");
         return Ok(());
     }
     let own = resolve::related_heads(graph, &input).into_iter().find(|a| {
         a.status == AssertionStatus::Provisional
-            && a.kind == input.kind
-            && a.stance == input.stance
             && a.provenance.workspace_id == stamp.provenance.workspace_id
+            && resolve::same_claim(a, &input)
+            && resolve::similar(&a.statement, &input.statement)
     });
     if let Some(own) = own {
         tracing::info!(project = %project.id, line = %decision.line, provisional = %own.id, "context ingest: line restates the workspace's own provisional; the merge confirms it");
