@@ -12,13 +12,15 @@ export function Tidy({ projectId, disabled }: { projectId: string; disabled: boo
   const [retracted, setRetracted] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const run = (apply: boolean) => {
+  // `retract` is exactly the ids on screen: the host retracts those it still
+  // finds, never one that arrived since the list was shown.
+  const run = (retract?: string[]) => {
     setBusy(true);
     setError(null);
     api
-      .contextTidy(projectId, apply)
+      .contextTidy(projectId, retract)
       .then((list) => {
-        if (apply) {
+        if (retract) {
           setRetracted(list.length);
           setFound(null);
         } else {
@@ -33,7 +35,7 @@ export function Tidy({ projectId, disabled }: { projectId: string; disabled: boo
   return (
     <div className="pc-tidy">
       <div className="pc-actions">
-        <Button variant="outline" size="sm" disabled={disabled || busy} onClick={() => run(false)}>
+        <Button variant="outline" size="sm" disabled={disabled || busy} onClick={() => run()}>
           {busy ? "Checking…" : "Tidy"}
         </Button>
         {found?.length === 0 && <span className="pc-meta text-xs">Nothing to tidy.</span>}
@@ -57,7 +59,13 @@ export function Tidy({ projectId, disabled }: { projectId: string; disabled: boo
             ))}
           </ul>
           <div className="pc-actions">
-            <Button variant="outline" size="sm" danger disabled={busy} onClick={() => run(true)}>
+            <Button
+              variant="outline"
+              size="sm"
+              danger
+              disabled={busy}
+              onClick={() => run(found.map((c) => c.retract))}
+            >
               Retract {found.length}
             </Button>
             <Button variant="ghost" size="sm" disabled={busy} onClick={() => setFound(null)}>

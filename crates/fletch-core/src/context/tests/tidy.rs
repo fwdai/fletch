@@ -29,41 +29,57 @@ fn a_pr_line_restating_the_workspaces_own_record_is_its_twin() {
         1,
     );
     let line = from(
-        assertion("line", &["f1"], "Refresh happens on the server."),
+        assertion("line", &["f1"], "Sessions refresh on the server side."),
         SourceKind::Pr,
         "ws1",
         2,
     );
-    // Not twins: another workspace, another kind, another entity, or the
-    // other way round in time.
+    // Not twins, in the same words: another workspace, another kind, another
+    // entity, or the other way round in time. Nor, in the same shape, another
+    // decision.
+    let same_words = "Sessions refresh on the server side.";
     let elsewhere = from(
-        assertion("else", &["f1"], "Elsewhere."),
+        assertion("else", &["f1"], same_words),
         SourceKind::Pr,
         "ws2",
         3,
     );
     let mut other_kind = from(
-        assertion("kind", &["f1"], "A rule."),
+        assertion("kind", &["f1"], same_words),
         SourceKind::Pr,
         "ws1",
         3,
     );
     other_kind.kind = AssertionKind::Constraint;
     let other_entity = from(
-        assertion("ent", &["f2"], "About f2."),
+        assertion("ent", &["f2"], same_words),
         SourceKind::Pr,
         "ws1",
         3,
     );
     let earlier = from(
-        assertion("early", &["f1"], "First."),
+        assertion("early", &["f1"], same_words),
         SourceKind::Pr,
         "ws1",
         0,
     );
+    let other_decision = from(
+        assertion("other", &["f1"], "Session cookies are HttpOnly."),
+        SourceKind::Pr,
+        "ws1",
+        3,
+    );
     let g = graph(
         vec![feature("f1", "auth"), feature("f2", "billing")],
-        vec![own, line, elsewhere, other_kind, other_entity, earlier],
+        vec![
+            own,
+            line,
+            elsewhere,
+            other_kind,
+            other_entity,
+            earlier,
+            other_decision,
+        ],
         Vec::new(),
     );
     assert_eq!(ids(&candidates(&g)), [("line", TidyReason::TwinOf, "own")]);

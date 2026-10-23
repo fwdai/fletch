@@ -215,21 +215,27 @@ pub fn context_retract_impl(
 
 /// The tidy pass (`context::tidy`): what the log holds that the ingester
 /// would not land today — a merged PR's line twinning the workspace's own
-/// record, or a head restating a replaced statement. With `apply`, each
-/// candidate is retracted by the user with the pass's reason; without, the
-/// list is what the user is shown first. Either way the answer is the list.
+/// record, or a head restating a replaced statement. Without `retract`, the
+/// answer is the list the user is shown. With it, the ids the user confirmed
+/// from that list: the pass runs again and retracts, in one transaction,
+/// those of them it still finds — never one that arrived after the list was
+/// shown, never one that stopped being a candidate since — and answers what
+/// it retracted.
 pub fn context_tidy_impl(
     ctx: &EngineCtx,
     project_id: &str,
-    apply: bool,
+    retract: Option<&[Id]>,
 ) -> Result<Vec<context::tidy::TidyCandidate>> {
     let project = open(ctx, project_id)?;
     let service = ctx.context()?;
-    let found = context::tidy::candidates(&service.graph(&project)?);
-    if apply {
-        for c in &found {
-            service.retract(&project, &c.retract, &c.reasoning(), ui_stamp())?;
-        }
+    let mut found = context::tidy::candidates(&service.graph(&project)?);
+    if let Some(confirmed) = retract {
+        found.retain(|c| confirmed.contains(&c.retract));
+        let retractions: Vec<(Id, String)> = found
+            .iter()
+            .map(|c| (c.retract.clone(), c.reasoning()))
+            .collect();
+        service.retract_many(&project, &retractions, ui_stamp())?;
     }
     Ok(found)
 }
@@ -489,7 +495,7 @@ mod tests {
         )
         .unwrap();
 
-        let listed = context_tidy_impl(&ctx, "p1", false).unwrap();
+        let listed = context_tidy_impl(&ctx, "p1", None).unwrap();
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].retract, back);
         assert_eq!(listed[0].of, old);
@@ -498,15 +504,32 @@ mod tests {
         let graph = ctx.context().unwrap().store().load(&project.id).unwrap();
         assert!(graph.current.contains(&back), "listing writes nothing");
 
-        let applied = context_tidy_impl(&ctx, "p1", true).unwrap();
+        // A candidate that arrived after the list was shown (similar words,
+        // not the duplicate the policy would fold into `back`) is not in the
+        // confirmation and is not touched; neither is an id that is not a
+        // candidate.
+        let late = context_record_assertion_impl(
+            &ctx,
+            "p1",
+            assertion("Every spawn carries the socket from the shell.", None),
+        )
+        .unwrap();
+        let confirmed = vec![back.clone(), new.clone()];
+        let applied = context_tidy_impl(&ctx, "p1", Some(&confirmed)).unwrap();
         assert_eq!(applied, listed);
         let graph = ctx.context().unwrap().store().load(&project.id).unwrap();
-        assert_eq!(graph.current, vec![new]);
         assert_eq!(
             graph.assertion(&back).unwrap().status,
             AssertionStatus::Retracted
         );
-        assert!(context_tidy_impl(&ctx, "p1", false).unwrap().is_empty());
+        assert!(graph.current.contains(&new));
+        assert!(
+            graph.current.contains(&late),
+            "not confirmed, not retracted"
+        );
+        let again = context_tidy_impl(&ctx, "p1", None).unwrap();
+        assert_eq!(again.len(), 1);
+        assert_eq!(again[0].retract, late);
     }
 
     /// A ruling on a tension between two recorded heads is one event and one

@@ -2102,7 +2102,11 @@ fn context_op(ctx: &EngineCtx, op: &str, args: Value) -> DispatchResult {
         }
         "context_tidy" => {
             let a: ContextTidyArgs = parse(args)?;
-            res(c::context_tidy_impl(ctx, &a.project_id, a.apply))
+            res(c::context_tidy_impl(
+                ctx,
+                &a.project_id,
+                a.retract.as_deref(),
+            ))
         }
         "context_resolve_contradiction" => {
             let a: ContextResolveArgs = parse(args)?;
@@ -2771,8 +2775,9 @@ struct ContextRetractArgs {
 #[serde(rename_all = "camelCase")]
 struct ContextTidyArgs {
     project_id: String,
+    /// The candidate ids the user confirmed; absent to list only.
     #[serde(default)]
-    apply: bool,
+    retract: Option<Vec<String>>,
 }
 
 #[derive(Deserialize)]

@@ -305,9 +305,12 @@ of exactly what an agent would be served for a query; and **Tidy**
 (`context::tidy`, op `context_tidy`), the pass over what the log already
 holds that the ingester would not land today — a merged PR's line twinning
 the workspace's own record, or a head restating a statement a later record
-replaced. It lists first and retracts only what the user confirms, one
-`retracted` event each with the pass's reason, since the log has no delete
-and no un-retract. Two project toggles: `context.enabled` (everything) and
+replaced (the ingester's two rules: same kind, domain, stance and a shared
+entity, in similar words). It lists first; the confirmation sends back the
+ids on screen, the pass runs again and retracts, in one transaction, those
+of them it still finds — never one that arrived after the list was shown —
+one `retracted` event each with the pass's reason, since the log has no
+delete and no un-retract. Two project toggles: `context.enabled` (everything) and
 `context.extract` (the background run). All of it goes through host ops
 (`context_*` in `remote::dispatch`), so a remote-controlled host behaves the
 same.

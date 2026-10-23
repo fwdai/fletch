@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 
 use super::compile::{history, is_current};
 use super::model::*;
-use super::resolve::{is_live, normalise};
+use super::resolve::{is_live, similar};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -71,13 +71,13 @@ pub fn candidates(graph: &Graph) -> Vec<TidyCandidate> {
         .collect()
 }
 
-/// A live assertion a later record replaced, whose statement `a` restates.
-/// Retracted and abandoned ones do not count: their statement was withdrawn,
-/// not replaced, and a retracted twin's wording must not make its original
-/// the next candidate. Nor does anything in `a`'s own chain: a head that
-/// restates what it itself replaced is a rewording with a new rationale.
+/// A live assertion a later record replaced, that `a` restates: the same
+/// claim ([`same_shape`]) in [`similar`] words. Retracted and abandoned
+/// ones do not count: their statement was withdrawn, not replaced, and a
+/// retracted twin's wording must not make its original the next candidate.
+/// Nor does anything in `a`'s own chain: a head that restates what it
+/// itself replaced is a rewording with a new rationale.
 fn retired_by_a_successor<'a>(graph: &'a Graph, a: &Assertion) -> Option<&'a Assertion> {
-    let wanted = normalise(&a.statement);
     let own: Vec<&str> = history(graph, &a.id)
         .iter()
         .map(|h| h.id.as_str())
@@ -87,23 +87,33 @@ fn retired_by_a_successor<'a>(graph: &'a Graph, a: &Assertion) -> Option<&'a Ass
             && is_live(old.status)
             && !is_current(graph, old)
             && !own.contains(&old.id.as_str())
-            && normalise(&old.statement) == wanted
+            && same_shape(a, old)
+            && similar(&a.statement, &old.statement)
     })
 }
 
 /// `b` is the record `a`, a merged PR's line, restated: not from a PR
-/// itself, from the same workspace, earlier, of the same kind, domain and
-/// stance, about at least one of the same entities.
+/// itself, from the same workspace, earlier, the same claim in similar
+/// words. The ingester's rule (`capture::ingest`), applied to what landed
+/// before it existed.
 fn twin_of(a: &Assertion, b: &Assertion) -> bool {
     b.id != a.id
         && b.source.kind != SourceKind::Pr
         && b.provenance.workspace_id.is_some()
         && b.provenance.workspace_id == a.provenance.workspace_id
         && b.recorded_at <= a.recorded_at
-        && b.kind == a.kind
-        && b.domain == a.domain
-        && b.stance == a.stance
-        && b.about.iter().any(|id| a.about.contains(id))
+        && same_shape(a, b)
+        && similar(&a.statement, &b.statement)
+}
+
+/// One claim in shape: the same kind, domain and stance, about at least one
+/// of the same entities (`resolve::same_claim`, for two recorded
+/// assertions). The same words about another component are another decision.
+fn same_shape(a: &Assertion, b: &Assertion) -> bool {
+    a.kind == b.kind
+        && a.domain == b.domain
+        && a.stance == b.stance
+        && a.about.iter().any(|id| b.about.contains(id))
 }
 
 fn candidate(a: &Assertion, reason: TidyReason, of: &Assertion) -> TidyCandidate {

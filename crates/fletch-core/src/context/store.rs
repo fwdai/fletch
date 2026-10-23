@@ -451,6 +451,40 @@ impl ContextStore {
         )
     }
 
+    /// [`Self::retract`] for several at once, in one transaction: all land or
+    /// none do, so a pass the user confirmed as a list cannot half-apply.
+    pub(super) fn retract_many(
+        &self,
+        project_id: &str,
+        retractions: &[(Id, String)],
+        stamp: Stamp,
+    ) -> Result<()> {
+        if retractions
+            .iter()
+            .any(|(_, reason)| reason.trim().is_empty())
+        {
+            return Err(ContextError::Invalid(
+                "retracting an assertion needs a reason".into(),
+            ));
+        }
+        self.write(project_id, |conn| {
+            for (assertion_id, reason) in retractions {
+                require_assertion(conn, project_id, assertion_id)?;
+                self.append(
+                    conn,
+                    project_id,
+                    stamp.clone(),
+                    now_millis(),
+                    EventPayload::Retracted {
+                        assertion_id: assertion_id.clone(),
+                        reason: reason.clone(),
+                    },
+                )?;
+            }
+            Ok(())
+        })
+    }
+
     /// The one write policy: classify the candidate against what stands now,
     /// apply the rule for the stamp's author kind, and record, park or refuse
     /// — all under one transaction, so no writer can race the check. See

@@ -234,6 +234,21 @@ impl ContextService {
         Ok(())
     }
 
+    /// Several retractions in one transaction and one change pulse.
+    pub fn retract_many(
+        &self,
+        project: &Project,
+        retractions: &[(Id, String)],
+        stamp: Stamp,
+    ) -> Result<()> {
+        if retractions.is_empty() {
+            return Ok(());
+        }
+        self.store.retract_many(&project.id, retractions, stamp)?;
+        self.changed(project);
+        Ok(())
+    }
+
     pub fn archive_entity(&self, project: &Project, entity_id: &str, stamp: Stamp) -> Result<()> {
         self.store.archive_entity(&project.id, entity_id, stamp)?;
         self.changed(project);
