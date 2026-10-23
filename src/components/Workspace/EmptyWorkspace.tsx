@@ -143,13 +143,13 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
                 className={mode === "agent" ? "active" : ""}
                 onClick={() => pickMode("agent")}
               >
-                <Icon name="bot" size={13} /> Quick agent
+                <Icon name="bot" size={13} /> Agent
               </button>
               <button
                 className={mode === "workflow" ? "active" : ""}
                 onClick={() => pickMode("workflow")}
               >
-                <Icon name="combine" size={13} /> Pipeline
+                <Icon name="combine" size={13} /> Workflow
               </button>
             </div>
           </div>
