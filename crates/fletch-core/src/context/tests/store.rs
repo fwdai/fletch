@@ -1155,20 +1155,39 @@ fn reads_feed_stats() {
     let a = store
         .record_assertion(P, assertion(&[&e]), stamp())
         .unwrap();
-    let read = |misses: &[&str]| ReadRecord {
+    // Three sessions of the project (one per workspace, as the schema has
+    // it); two of them read.
+    store
+        .db()
+        .lock()
+        .execute_batch(&format!(
+            "INSERT INTO workspaces (id, project_id, name, created_at)
+               SELECT w, project_id, w, 0 FROM project_settings, (SELECT 'w1' AS w
+                 UNION ALL SELECT 'w2' UNION ALL SELECT 'w3')
+               WHERE key = '{PROJECT_ID_KEY}' AND value = '{P}';
+             INSERT INTO sessions (id, workspace_id, created_at)
+               VALUES ('s1', 'w1', 0), ('s2', 'w2', 0), ('s3', 'w3', 0);"
+        ))
+        .unwrap();
+    let read = |session: &str, text: Option<&str>, found: bool| ReadRecord {
         project_id: P.into(),
         agent_id: Some("claude".into()),
-        workspace_id: None,
-        session_id: None,
-        query: CompileQuery::default(),
+        workspace_id: Some("w1".into()),
+        session_id: Some(session.into()),
+        query: CompileQuery {
+            query: text.map(str::to_string),
+            ..Default::default()
+        },
         served_entities: vec![e.clone()],
-        served_assertions: vec![a.clone()],
-        misses: misses.iter().map(|s| s.to_string()).collect(),
+        served_assertions: if found { vec![a.clone()] } else { Vec::new() },
+        misses: Vec::new(),
         chars: 42,
     };
-    store.log_read(&read(&["billing", "auth"])).unwrap();
-    store.log_read(&read(&["auth"])).unwrap();
-    store.log_read(&read(&[])).unwrap();
+    store.log_read(&read("s1", None, true)).unwrap();
+    store
+        .log_read(&read("s1", Some("pool size"), false))
+        .unwrap();
+    store.log_read(&read("s2", Some("sessions"), true)).unwrap();
 
     let stats = store.stats(P).unwrap();
     assert_eq!(stats.reads, 3);
@@ -1176,10 +1195,9 @@ fn reads_feed_stats() {
     assert_eq!(stats.assertions, 1);
     assert_eq!(stats.heads, 1);
     assert_eq!(stats.provisional, 1);
-    assert_eq!(
-        stats.top_misses,
-        vec![("auth".to_string(), 2), ("billing".to_string(), 1)]
-    );
+    assert_eq!(stats.sessions, 3);
+    assert_eq!(stats.sessions_reading, 2);
+    assert_eq!(stats.empty_text_reads, 1);
 }
 
 #[test]

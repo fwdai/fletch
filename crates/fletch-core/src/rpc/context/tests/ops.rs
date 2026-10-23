@@ -291,7 +291,8 @@ async fn context_get_serves_markdown_and_logs_the_misses() {
 
     let stats = d.service.store().stats(PROJECT).unwrap();
     assert_eq!(stats.reads, 1);
-    assert_eq!(stats.top_misses, vec![("shipping".to_string(), 1)]);
+    assert_eq!(stats.sessions_reading, 1, "the session is on the read");
+    assert_eq!(stats.empty_text_reads, 0);
 
     // No args is the map, not an error.
     assert!(call(&d, "context_get", serde_json::Value::Null).await.ok);

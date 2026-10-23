@@ -130,7 +130,9 @@ const overview: ContextOverview = {
     contradictions: 0,
     pending_proposals: 1,
     reads: 3,
-    top_misses: [],
+    sessions: 5,
+    sessions_reading: 2,
+    empty_text_reads: 1,
   },
 };
 

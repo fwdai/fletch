@@ -799,6 +799,12 @@ pub struct Stats {
     pub contradictions: usize,
     pub pending_proposals: usize,
     pub reads: usize,
-    /// Distinct miss strings over the retrieval log, most frequent first.
-    pub top_misses: Vec<(String, usize)>,
+    /// Sessions of the project, whatever they did.
+    pub sessions: usize,
+    /// Sessions that read the context at least once: the number that says
+    /// whether agents use what is served.
+    pub sessions_reading: usize,
+    /// Reads with a free-text `query` that found no assertion: what agents
+    /// looked for and the layer could not answer.
+    pub empty_text_reads: usize,
 }

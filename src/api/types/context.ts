@@ -228,7 +228,11 @@ export interface ContextStats {
   contradictions: number;
   pending_proposals: number;
   reads: number;
-  top_misses: [string, number][];
+  /** Sessions of the project, and how many of them read the context. */
+  sessions: number;
+  sessions_reading: number;
+  /** Free-text reads that found no assertion. */
+  empty_text_reads: number;
 }
 
 /** `context_overview`: everything the Context tab shows in one read. */
