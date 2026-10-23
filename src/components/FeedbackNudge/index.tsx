@@ -15,7 +15,7 @@ import { FEEDBACK_NUDGE_KEY, localDay, parseNudge, visit } from "./nudge";
 import "./FeedbackNudge.css";
 
 /** Where "Book a call" lands: a 15-minute slot with Alex. */
-const CALL_URL = "https://calendly.com/alex-fletch/15min";
+const CALL_URL = "https://calendly.com/alchaplinsky/call";
 
 /** Where "Write an email" lands: Alex directly, not the shared feedback inbox
  *  the Send-feedback modal falls back to — this is a personal invitation. */
@@ -70,7 +70,7 @@ function FeedbackNudgeModal({ onClose }: { onClose: () => void }) {
       icon="megaphone"
       title="A note from the Fletch team"
       onClose={() => answer("dismiss")}
-      size="sm"
+      size="lg"
     >
       <ModalBody center className="fn-body">
         <div className="fn-mark" aria-hidden="true">

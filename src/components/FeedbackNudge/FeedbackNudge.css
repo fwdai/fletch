@@ -7,7 +7,7 @@
 /* Both classes, to outrank `.modal-body.center`'s own padding and gap. */
 .modal-body.fn-body {
   position: relative;
-  padding: 28px 24px 20px;
+  padding: 32px 36px 24px;
   gap: 10px;
   overflow: hidden;
 }
@@ -50,7 +50,7 @@
 }
 .fn-lede {
   margin: 0;
-  max-width: 320px;
+  max-width: 400px;
   color: var(--fg-2);
   line-height: var(--lh-normal);
 }
@@ -59,9 +59,10 @@
 .fn-actions {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 8px;
-  align-self: stretch;
-  margin-top: 10px;
+  gap: 10px;
+  width: 100%;
+  max-width: 400px;
+  margin-top: 12px;
 }
 .fn-actions .btn-t {
   justify-content: center;
