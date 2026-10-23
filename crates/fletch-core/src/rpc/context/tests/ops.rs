@@ -291,7 +291,9 @@ async fn context_get_serves_markdown_and_logs_the_misses() {
 
     let stats = d.service.store().stats(PROJECT).unwrap();
     assert_eq!(stats.reads, 1);
-    assert_eq!(stats.sessions_reading, 1, "the session is on the read");
+    // The read carries the dispatcher's session id, but this harness has no
+    // `sessions` row for it, and only the project's own sessions count.
+    assert_eq!(stats.sessions_reading, 0);
     assert_eq!(stats.empty_text_reads, 0);
 
     // No args is the map, not an error.

@@ -801,8 +801,10 @@ pub struct Stats {
     pub reads: usize,
     /// Sessions of the project, whatever they did.
     pub sessions: usize,
-    /// Sessions that read the context at least once: the number that says
-    /// whether agents use what is served.
+    /// Of those, the sessions that read the context at least once: the
+    /// number that says whether agents use what is served. Both counts are
+    /// over the sessions the project has now, so one is never larger than
+    /// the other.
     pub sessions_reading: usize,
     /// Reads with a free-text `query` that found no assertion: what agents
     /// looked for and the layer could not answer.

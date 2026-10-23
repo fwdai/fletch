@@ -1188,9 +1188,12 @@ fn reads_feed_stats() {
         .log_read(&read("s1", Some("pool size"), false))
         .unwrap();
     store.log_read(&read("s2", Some("sessions"), true)).unwrap();
+    // A read by a session the project no longer has (its workspace was
+    // deleted) stays in the log but is not one of the project's sessions.
+    store.log_read(&read("gone", None, true)).unwrap();
 
     let stats = store.stats(P).unwrap();
-    assert_eq!(stats.reads, 3);
+    assert_eq!(stats.reads, 4);
     assert_eq!(stats.entities, 1);
     assert_eq!(stats.assertions, 1);
     assert_eq!(stats.heads, 1);

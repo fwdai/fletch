@@ -1149,9 +1149,13 @@ impl ContextStore {
             )?,
             reads: count("SELECT COUNT(*) FROM context.reads WHERE project_id = ?1")?,
             sessions: count(&sessions)?,
+            // Joined to `sessions`, so numerator and denominator are the
+            // same population: a read by a session whose workspace was
+            // deleted since is not a session the project still has.
             sessions_reading: count(
-                "SELECT COUNT(DISTINCT session_id) FROM context.reads
-                 WHERE project_id = ?1 AND session_id IS NOT NULL",
+                "SELECT COUNT(DISTINCT r.session_id) FROM context.reads r
+                 JOIN sessions s ON s.id = r.session_id
+                 WHERE r.project_id = ?1",
             )?,
             empty_text_reads: count(
                 "SELECT COUNT(*) FROM context.reads
