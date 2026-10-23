@@ -1,6 +1,6 @@
 import { open } from "@tauri-apps/plugin-shell";
 import { type ReactNode, useState } from "react";
-import type { FileStatus, PrChecks, PrComment, PrComments, PrState } from "@/api";
+import type { FileStatus, PrChecks, PrComment, PrComments, PrState, ReviewState } from "@/api";
 import { Icon } from "@/components/Icon";
 import { Button } from "@/components/ui/Button";
 import { IconButton } from "@/components/ui/IconButton";
@@ -10,6 +10,22 @@ import type { FooterAction } from "./footerModel";
 import type { PrOrigin } from "./hooks/usePrOrigin";
 import type { LadderRow, RungKey } from "./ladderModel";
 import { GitLink } from "./shared";
+
+/** What the Review row can do about the local reviewer, beyond showing its
+ *  threads: start or stop a review from the row, fix or dismiss one finding,
+ *  and reach the reviewer's own transcript. */
+export interface ReviewBodies {
+  state: ReviewState | null;
+  /** The row's one button — Review / Re-review / Stop — or null when the
+   *  host has no reviewer to offer. `reason` says why it can't run now. */
+  action: { label: string; reason: string | null; onRun: () => void } | null;
+  /** Hand one thread to the coding agent (`resolve-comments`, scoped to it). */
+  onFix: (c: PrComment) => void;
+  /** Resolve a local finding by hand. */
+  onDismiss: (c: PrComment) => void;
+  /** Open the hidden reviewer's transcript, once there is one. */
+  onOpenReviewer: (() => void) | null;
+}
 
 // ── The ladder: the panel's body ─────────────────────────────────────────────
 // The rows `ladderModel.ts` derives, drawn as a rail: a mark per stage on one
@@ -38,6 +54,9 @@ export interface LadderBodies {
    *  the branch — each gated on its own (`useFooterModel`). Null for a lane the
    *  footer doesn't act on. */
   ending: { actions: FooterAction[]; onRun: (key: string) => void } | null;
+  /** The local reviewer on this lane; null on a lane the footer doesn't act
+   *  on, or on a host without one. */
+  review: ReviewBodies | null;
 }
 
 /** Mount one per lane (`key={lane.id}`): the open/closed choices are the
@@ -124,6 +143,28 @@ function rowTrailing(row: LadderRow, b: LadderBodies): ReactNode {
       </IconButton>
     );
   }
+  if (row.key === "review" && b.review?.action) {
+    // The reviewer's one control, on the row itself: start, re-run, or stop
+    // (which also cancels a queued start). Disabled with its reason on hover
+    // when the host or the settings refuse.
+    const { label, reason, onRun } = b.review.action;
+    const phase = b.review.state?.phase;
+    const stopping = phase === "reviewing" || phase === "queued";
+    return (
+      <span className={reason ? "tip" : undefined} data-tip={reason ?? undefined}>
+        <Button
+          variant={stopping ? "ghost" : "outline"}
+          size="sm"
+          className="rg-review-act"
+          disabled={reason != null}
+          onClick={onRun}
+        >
+          <Icon name={stopping ? "stop" : "search"} size={11} />
+          {label}
+        </Button>
+      </span>
+    );
+  }
   return null;
 }
 
@@ -153,10 +194,35 @@ function rowBody(row: LadderRow, b: LadderBodies): ReactNode {
       return b.checks && b.checks.total > 0 && b.pr ? (
         <ChecksSection checks={b.checks} prUrl={b.pr.url} />
       ) : null;
-    case "review":
-      return b.comments && b.comments.unresolved.length > 0 ? (
-        <CommentsSection comments={b.comments} onAddToChat={b.onAddToChat} />
-      ) : null;
+    case "review": {
+      const threads = b.comments?.unresolved.length ?? 0;
+      const reviewer = b.review?.state?.reviewer ?? null;
+      const transcript = b.review?.onOpenReviewer ?? null;
+      if (threads === 0 && !transcript) return null;
+      return (
+        <>
+          {b.comments && threads > 0 && (
+            <CommentsSection
+              comments={b.comments}
+              onAddToChat={b.onAddToChat}
+              onFix={b.review?.onFix}
+              onDismiss={b.review?.onDismiss}
+              onOpenFile={b.onOpenFile}
+              openable={new Set(b.files.map((f) => f.path))}
+              localProvider={reviewer?.provider ?? null}
+            />
+          )}
+          {transcript && (
+            <div className="rg-line text-sm">
+              <button type="button" className="rg-link iflex-center text-xs" onClick={transcript}>
+                <Icon name="notebookPen" size={11} />
+                Open {reviewer?.name ?? "reviewer"}'s transcript
+              </button>
+            </div>
+          )}
+        </>
+      );
+    }
   }
 }
 

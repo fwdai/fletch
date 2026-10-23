@@ -688,7 +688,10 @@ pub(crate) fn note_git_action(agent_id: &str, op: &str) {
 /// The checkout a request names, as a table key's subdir: `None` for the
 /// primary (whether named or not), the subdir for a tracked secondary, and an
 /// error for a repo the agent does not track.
-fn checkout_subdir(record: &AgentRecord, subdir: Option<&str>) -> Result<Option<String>> {
+pub(crate) fn checkout_subdir(
+    record: &AgentRecord,
+    subdir: Option<&str>,
+) -> Result<Option<String>> {
     let Some(requested) = subdir.map(str::trim).filter(|s| !s.is_empty()) else {
         return Ok(None);
     };

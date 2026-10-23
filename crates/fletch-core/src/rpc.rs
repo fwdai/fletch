@@ -25,6 +25,8 @@ pub mod caps;
 pub mod context;
 #[path = "rpc/git/mod.rs"]
 pub mod git;
+#[path = "rpc/review.rs"]
+pub mod review;
 #[path = "rpc/roadmap/mod.rs"]
 pub mod roadmap;
 

@@ -1,9 +1,12 @@
-import { useMemo } from "react";
-import type { AgentRecord, TrackedRepo } from "@/api";
+import { useEffect, useMemo, useState } from "react";
+import type { AgentRecord, PrComments, ReviewPhase, TrackedRepo } from "@/api";
 import { isCommitAction } from "@/components/RightPanel/primaryActions";
+import { providerLabel } from "@/data/providers";
 import { delegationLabel } from "@/delegation";
 import { useAppStore } from "@/store";
+import { useGate } from "@/store/capabilities";
 import { checkoutKey } from "@/store/git";
+import { resolveReviewer } from "@/store/review";
 import { ActionBar } from "./ActionBar";
 import { AutopilotHistory } from "./Autopilot";
 import { CommitComposer, CommitStatus } from "./CommitComposer";
@@ -14,11 +17,33 @@ import { useGitActions } from "./hooks/useGitActions";
 import { useGitPanelData } from "./hooks/useGitPanelData";
 import { usePrOrigin } from "./hooks/usePrOrigin";
 import { useTransientFeedback } from "./hooks/useTransientFeedback";
-import type { LadderBodies } from "./Ladder";
+import type { LadderBodies, ReviewBodies } from "./Ladder";
 import { LaneBody } from "./LaneBody";
 import { buildLadder } from "./ladderModel";
 import type { Lane } from "./laneModel";
 import { WorktreesNote } from "./WorktreesNote";
+
+/** The clock the Review row reads: a second while a review runs (its timer),
+ *  a minute otherwise (the age of a verdict). */
+function useReviewClock(phase: ReviewPhase | undefined): number {
+  const [now, setNow] = useState(() => Date.now());
+  const fast = phase === "reviewing";
+  useEffect(() => {
+    setNow(Date.now());
+    const id = setInterval(() => setNow(Date.now()), fast ? 1000 : 60_000);
+    return () => clearInterval(id);
+  }, [fast]);
+  return now;
+}
+
+/** The local reviewer's threads alone — what a lane with no PR shows, since
+ *  GitHub's threads belong to the focused PR's lane. Null when there are none. */
+function localThreads(comments: PrComments | null): PrComments | null {
+  const local = comments?.unresolved.filter((t) => t.source === "local") ?? [];
+  return local.length > 0 ? { unresolved: local } : null;
+}
+
+const NO_REVIEWER = "Pick a reviewer in Settings › Review";
 
 /** The git panel: lanes (header) · ladder (body) · action bar (footer). The
  *  lanes span the workspace (`GitPanel` builds them); the ladder and the footer
@@ -78,6 +103,24 @@ export function GitRepoSection({
   const githubConnected = useAppStore((s) => s.github?.authenticated ?? false);
   const hasOrigin = gitState?.has_origin ?? true;
 
+  // The local reviewer on this checkout: the host's state (a mirror, like
+  // `delegations`), the custom agent that would review, and why a review
+  // can't start — an older host, or no reviewer picked.
+  const review = useAppStore((s) => s.reviews[key] ?? null);
+  const customAgents = useAppStore((s) => s.customAgents);
+  const reviewAgentId = useAppStore((s) => s.reviewAgentId);
+  const reviewer = useMemo(
+    () => resolveReviewer(customAgents, reviewAgentId),
+    [customAgents, reviewAgentId],
+  );
+  const reviewGate = useGate("review");
+  const reviewRefusal = reviewGate ?? (reviewer ? null : NO_REVIEWER);
+  const nowMs = useReviewClock(review?.phase);
+  // Who a queued review waits for, as the composer names the agent: its
+  // custom agent, else its provider.
+  const coderName =
+    customAgents.find((a) => a.id === agent.custom_agent_id)?.name ?? providerLabel(agent.provider);
+
   const branch = gitState?.branch || repo?.branch || "";
   const base = gitState?.parent_branch || repo?.parent_branch || "main";
   // The checkout is detached until its first push; a branch is only born from
@@ -99,7 +142,9 @@ export function GitRepoSection({
   const lanePr = laneHasPr ? prState : null;
   const laneChecks = laneHasPr ? checks : null;
   const laneMergeState = laneHasPr ? mergeState : null;
-  const laneComments = laneHasPr ? comments : null;
+  // The tree's own lane still shows the local reviewer's findings: they are
+  // about the checkout, not about any PR.
+  const laneComments = laneHasPr ? comments : localThreads(comments);
   // The PR in view with everything the store knows about it: the focused PR's
   // live state when it is the one in view, else the set entry's snapshot.
   const viewedPr = viewed?.pr ? (acting ? prState : viewed.pr.state) : null;
@@ -121,9 +166,12 @@ export function GitRepoSection({
     busy: busy != null,
     githubConnected,
     primaryCheckout: subdir === undefined,
+    reviewMenu: acting
+      ? { state: review, reviewerName: reviewer?.name ?? null, refusal: reviewRefusal }
+      : undefined,
   });
 
-  const { runAction, addCommentToChat } = useGitActions({
+  const { runAction, addCommentToChat, fixThread, dismissThread } = useGitActions({
     agentId: agent.id,
     subdir,
     base,
@@ -142,6 +190,8 @@ export function GitRepoSection({
     openOverride,
     revertOverride,
     fetchPrState,
+    review,
+    projectId: agent.project_id,
   });
   const setCommitMode = useAppStore((s) => s.setGitCommitAction);
   // A menu row: a commit mode becomes the sticky default (and so, while there
@@ -174,8 +224,45 @@ export function GitRepoSection({
       mergeState: laneMergeState,
       comments: laneComments,
       base,
+      review,
+      canReview: reviewGate == null,
+      nowMs,
+      coderName,
     });
-  }, [viewed, acting, gitState, lanePr, laneChecks, laneMergeState, laneComments, base]);
+  }, [
+    coderName,
+    viewed,
+    acting,
+    gitState,
+    lanePr,
+    laneChecks,
+    laneMergeState,
+    laneComments,
+    base,
+    review,
+    reviewGate,
+    nowMs,
+  ]);
+
+  // The Review row's controls: one button (start / re-run / stop), and the
+  // per-thread fix and dismiss. On a lane the footer doesn't act on, none.
+  // Stop also cancels a start the host is holding for the coder's turn.
+  const reviewing = review?.phase === "reviewing" || review?.phase === "queued";
+  const reviewAgain = review != null && review.phase !== "idle" && review.phase !== "failed";
+  const reviewBodies: ReviewBodies | null =
+    acting && !reviewGate
+      ? {
+          state: review,
+          action: {
+            label: reviewing ? "Stop" : reviewAgain ? "Re-review" : "Review",
+            reason: reviewing ? null : reviewRefusal,
+            onRun: () => runAction(reviewing ? "review-stop" : "review-start"),
+          },
+          onFix: fixThread,
+          onDismiss: dismissThread,
+          onOpenReviewer: review?.reviewer?.agent_id ? () => runAction("review-open") : null,
+        }
+      : null;
 
   // ── Ladder bodies ──────────────────────────────────────────────────────────
   // Pushed commits link out to GitHub — a single commit when only one is ahead,
@@ -245,9 +332,10 @@ export function GitRepoSection({
                   prBranch,
                   origin: prOrigin,
                   checks: viewedChecks,
-                  comments: acting ? comments : null,
+                  comments: acting ? laneComments : null,
                   onAddToChat: addCommentToChat,
                   ending: laneEnding,
+                  review: reviewBodies,
                 }}
               />
             )}

@@ -221,13 +221,11 @@ pub async fn get_pr_live_impl(
     Ok(Some(gh::PrLive { state, checks }))
 }
 
-/// The Git panel's slow tick: unresolved review threads (Greptile / other bots
-/// / humans), flattened to each thread's root comment.
-///
-/// Stays on GraphQL because thread resolution (`isResolved`/`isOutdated`) has
-/// no REST equivalent — so unlike `get_pr_live_impl` this one does spend
-/// points, 1 per call by PR number. Polled well below the state/CI cadence to
-/// match.
+/// The Git panel's slow tick: every unresolved review thread of the checkout —
+/// the local reviewer's findings, then the focused open PR's GitHub threads
+/// (Greptile / other bots / humans) flattened to each thread's root comment.
+/// One merged set, so the panel, the ladder, autopilot and the agent's
+/// `pr_threads` op all read the same threads (`review::threads_for`).
 ///
 /// Shared with the remote dispatcher.
 pub async fn get_pr_threads_impl(
@@ -235,30 +233,5 @@ pub async fn get_pr_threads_impl(
     agent_id: &str,
     subdir: Option<&str>,
 ) -> Result<Option<gh::PrComments>> {
-    // Same resolver as `get_pr_live_impl`, so this shares its adoption and
-    // throttling rather than running a second branch scan of its own. Its live
-    // lookup is a conditional REST read the fast tick has already warmed, so
-    // reaching for the PR number here is free.
-    let Some((state, _bound)) = crate::supervisor::resolve_pr_state(
-        &supervisor.workspace,
-        agent_id,
-        subdir,
-        crate::supervisor::Discovery::Throttled,
-    )
-    .await
-    else {
-        return Ok(None);
-    };
-    // Only an open PR has threads worth polling.
-    if !matches!(state.state, gh::PrStatus::Open) {
-        return Ok(None);
-    }
-    let Some((repo, checkout)) = agent_repo_checkout_opt(supervisor, agent_id, subdir)? else {
-        return Ok(None);
-    };
-    Ok(
-        gh::pr_threads_number(&checkout, Some(&repo.repo_path), state.number)
-            .await
-            .unwrap_or(None),
-    )
+    crate::review::threads_for(supervisor, agent_id, subdir).await
 }

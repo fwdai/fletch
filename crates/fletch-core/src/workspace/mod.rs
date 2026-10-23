@@ -222,6 +222,13 @@ fn default_provider() -> String {
 /// `ROADMAP_PM_PURPOSE` (src/api/types/agent.ts).
 pub const PURPOSE_ROADMAP_PM: &str = "roadmap-pm";
 
+/// `workspaces.purpose` for the local reviewer: a hidden agent that adopts a
+/// coder's checkout to read the change and report findings as local review
+/// threads (`review`). Like the PM chat it is absent from the sidebar and gets
+/// a publish-denied grant (`rpc::caps::AgentCaps::reviewer`); unlike it, the
+/// grant also says it edits nothing — its only deliverable is `review_submit`.
+pub const PURPOSE_REVIEWER: &str = "reviewer";
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentRecord {
     pub id: String,
@@ -653,6 +660,12 @@ impl WorkspaceManager {
         // while user-stopped workspaces keep their `stopped_at` and derive to
         // `Stopped` until the manual Resume button clears it.
         Self { db }
+    }
+
+    /// The database this manager's rows live in, for the host-side tables
+    /// keyed by workspace that are read beside them (`review::store`).
+    pub(crate) fn db(&self) -> &Arc<Mutex<Connection>> {
+        &self.db
     }
 
     pub fn current(&self) -> Option<Workspace> {

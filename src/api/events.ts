@@ -40,6 +40,7 @@ import type {
   ProviderLoginOutputEvent,
 } from "./types/providers";
 import type { PairRequest } from "./types/remote";
+import type { ReviewState } from "./types/review";
 import type {
   RoadmapItem,
   RoadmapItemEvent,
@@ -346,6 +347,12 @@ export function onPrChecksChanged(cb: (e: PrChecksChangedEvent) => void): Promis
 /** The host-side PR watcher found new unresolved review threads. */
 export function onPrThreadsChanged(cb: (e: PrThreadsChangedEvent) => void): Promise<UnlistenFn> {
   return on<PrThreadsChangedEvent>("pr:threads_changed", cb);
+}
+
+/** A checkout's local review moved on the host: a turn started or ended, a
+ *  verdict landed, the code went stale. Replaces the state it names. */
+export function onReviewChanged(cb: (e: ReviewState) => void): Promise<UnlistenFn> {
+  return on<ReviewState>("review:changed", cb);
 }
 
 /** The host-side PR watcher saw a non-focused PR of a checkout's set change. */

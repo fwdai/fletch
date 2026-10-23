@@ -9,6 +9,7 @@
 //
 // Pure, like `ladderModel.ts`: every state has a test, and no store or React.
 
+import type { ReviewState } from "@/api";
 import type { IconName } from "@/components/Icon";
 import type { ActionTone, GitCommitAction } from "@/components/RightPanel/primaryActions";
 import { describeMergeGate } from "@/mergeGate";
@@ -90,6 +91,17 @@ export function applyGate(
   };
 }
 
+/** The local reviewer as the footer offers it. Absent on a client with no
+ *  reviewer to offer (the phone), so its menu is unchanged. */
+export interface ReviewFooterInput {
+  state: ReviewState | null;
+  /** The custom agent that would review, for the label; null when none is
+   *  configured. */
+  reviewerName: string | null;
+  /** Why a review can't start now (an old host, no reviewer picked), or null. */
+  refusal: string | null;
+}
+
 export interface FooterInput extends LadderInput {
   /** The user's sticky commit mode. */
   commitMode: GitCommitAction;
@@ -98,6 +110,34 @@ export interface FooterInput extends LadderInput {
   customActive: boolean;
   githubConnected: boolean;
   hasOrigin: boolean;
+  reviewMenu?: ReviewFooterInput;
+}
+
+/** The Review group: start, re-run, stop or cancel the local reviewer, and
+ *  reach its transcript. Starting while the coder is mid-turn is fine — the
+ *  host queues it. A review that can't start is offered disabled with the
+ *  reason, so the way to enable it (Settings › Review) is one hover away. */
+export function reviewActions(input: ReviewFooterInput): FooterAction[] {
+  const { state, reviewerName, refusal } = input;
+  const items: FooterAction[] = [];
+  if (state?.phase === "queued") {
+    items.push({ key: "review-stop", label: "Cancel queued review", icon: "close" });
+  } else if (state?.phase === "reviewing") {
+    items.push({ key: "review-stop", label: "Stop review", icon: "stop" });
+  } else {
+    const again = state != null && state.phase !== "idle" && state.phase !== "failed";
+    const who = reviewerName ?? state?.reviewer?.name ?? null;
+    const label = `${again ? "Re-review" : "Review now"}${who ? ` with ${who}` : ""}`;
+    items.push(
+      refusal
+        ? { key: "review-start", label, icon: "search", disabled: true, reason: refusal }
+        : { key: "review-start", label, icon: "search" },
+    );
+  }
+  if (state?.reviewer?.agent_id) {
+    items.push({ key: "review-open", label: "Open reviewer transcript", icon: "notebookPen" });
+  }
+  return items;
 }
 
 /** The commit modes as the footer offers them, in the order of how much they
@@ -302,6 +342,13 @@ export function buildFooter(input: FooterInput): Footer {
       items.push({ key: "open-pr", label: "Open PR (auto-fill)", icon: "pr" });
     }
     if (items.length > 0) groups.push({ title: "Pull request", items });
+  }
+
+  // ── Review: the local reviewer, on any checkout with work ─────────────────
+  // Offered whether or not a PR exists: the loop runs on PR open by itself,
+  // and this is the way to ask for one earlier, or again.
+  if (input.reviewMenu && (files > 0 || ahead > 0 || unpushed > 0 || prOpen)) {
+    groups.push({ title: "Review", items: reviewActions(input.reviewMenu) });
   }
 
   // ── GitHub, when the repo can't reach it yet ───────────────────────────────

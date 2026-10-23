@@ -293,6 +293,47 @@ async fn tick(
                 threads: pr.threads,
             };
             let changes = diff(&mut last.lock(), &(key.clone(), number), &read);
+            // The watcher observes GitHub's threads and diffs on those alone;
+            // what it reports is the merged set the clients render, with the
+            // local reviewer's threads in front (`review::merge_local`). Those
+            // announce themselves when they change, so they are never in the
+            // seen set and never counted as new here.
+            let changes: Vec<Change> = changes
+                .into_iter()
+                .map(|change| match change {
+                    Change::Threads { comments, new_ids } => Change::Threads {
+                        comments: crate::review::merge_local(
+                            &ctx.db.lock(),
+                            &(agent_id.to_string(), subdir.map(str::to_string)),
+                            comments,
+                        ),
+                        new_ids,
+                    },
+                    other => other,
+                })
+                .collect();
+            // A focused PR seen open: the local reviewer's cue. `opened_at`
+            // lets the first look after a restart pass over an old PR.
+            if number == focused
+                && changes
+                    .iter()
+                    .any(|c| matches!(c, Change::State(s) if s.state == PrStatus::Open))
+            {
+                let (ctx, sup, id) = (ctx.clone(), supervisor.clone(), agent_id.to_string());
+                let subdir = subdir.map(str::to_string);
+                let (number, opened_at) = (read.state.number, read.state.opened_at);
+                crate::host::spawn(async move {
+                    crate::review::engine::on_pr_opened(
+                        &ctx,
+                        &sup,
+                        &id,
+                        subdir.as_deref(),
+                        Some(number),
+                        opened_at,
+                    )
+                    .await;
+                });
+            }
             if changes
                 .iter()
                 .any(|c| matches!(c, Change::State(s) if s.state == PrStatus::Merged))
@@ -364,12 +405,15 @@ mod tests {
                 .iter()
                 .map(|id| PrComment {
                     id: id.to_string(),
+                    source: crate::github::ThreadSource::Github,
+                    severity: None,
+                    round: None,
                     author: "greptile".to_string(),
                     is_bot: true,
                     body: String::new(),
                     path: None,
                     line: None,
-                    url: String::new(),
+                    url: Some(String::new()),
                     replies: 0,
                     we_replied_last: false,
                 })

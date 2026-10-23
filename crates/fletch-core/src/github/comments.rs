@@ -111,6 +111,9 @@ fn parse_review_threads(nodes: &[Value], viewer_login: Option<&str>) -> Vec<PrCo
                 });
             Some(PrComment {
                 id: t["id"].as_str().unwrap_or_default().to_string(),
+                source: ThreadSource::Github,
+                severity: None,
+                round: None,
                 author: root["author"]["login"]
                     .as_str()
                     .unwrap_or("unknown")
@@ -122,7 +125,7 @@ fn parse_review_threads(nodes: &[Value], viewer_login: Option<&str>) -> Vec<PrCo
                     .filter(|s| !s.is_empty())
                     .map(|s| s.to_string()),
                 line: root["line"].as_u64().map(|n| n as u32),
-                url: root["url"].as_str().unwrap_or_default().to_string(),
+                url: Some(root["url"].as_str().unwrap_or_default().to_string()),
                 replies: total.saturating_sub(1) as u32,
                 we_replied_last,
             })
@@ -301,7 +304,10 @@ mod tests {
     #[test]
     fn review_threads_tolerate_null_anchor() {
         let comments = parse_review_threads(&review_threads_fixture(), Some("me"));
-        let unanchored = comments.iter().find(|c| c.url == "u5").unwrap();
+        let unanchored = comments
+            .iter()
+            .find(|c| c.url.as_deref() == Some("u5"))
+            .unwrap();
         assert_eq!(unanchored.path, None);
         assert_eq!(unanchored.line, None);
     }
@@ -323,7 +329,10 @@ mod tests {
     #[test]
     fn a_thread_we_opened_and_nobody_answered_is_not_awaiting_us() {
         let comments = parse_review_threads(&review_threads_fixture(), Some("me"));
-        let ours = comments.iter().find(|c| c.url == "u5").unwrap();
+        let ours = comments
+            .iter()
+            .find(|c| c.url.as_deref() == Some("u5"))
+            .unwrap();
         assert_eq!(ours.author, "me");
         assert!(!ours.we_replied_last, "totalCount 1 means no reply exists");
     }

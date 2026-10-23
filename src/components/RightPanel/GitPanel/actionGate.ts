@@ -65,9 +65,18 @@ const AGENT_SCOPED: Record<string, string> = {
 };
 
 /** Actions that touch neither the checkout nor its branch — a page on GitHub,
- *  the host's focus, the connect flow — so a working agent is no reason to
- *  hold them. */
-const HARMLESS = new Set(["view-pr", "focus-pr", "connect-github"]);
+ *  the host's focus, the connect flow, the local reviewer — so a working
+ *  agent is no reason to hold them. The reviewer only reads the tree, and a
+ *  start while the coder is mid-turn (or a delegation is live) is queued by
+ *  the host and runs when the coder goes idle, so clicking it then is right. */
+const HARMLESS = new Set([
+  "view-pr",
+  "focus-pr",
+  "connect-github",
+  "review-start",
+  "review-stop",
+  "review-open",
+]);
 
 export function gateAction(key: string, ctx: GateContext): Gate | null {
   if (key === "loading") return { reason: "Loading git state", quiet: true };

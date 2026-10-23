@@ -296,6 +296,9 @@ struct ProcessLaunch {
     /// The run blackboard dir to grant a workflow step agent (§8), derived from
     /// the record's `owner_run_id`. `None` for a normal, non-run-owned agent.
     blackboard: Option<PathBuf>,
+    /// The adopted checkout is the agent's to read, not write: the local
+    /// reviewer (`workspace::PURPOSE_REVIEWER`) reading a coder's tree.
+    adopted_read_only: bool,
 }
 
 /// Pick the turn-end detector for an agent by provider class and view, and
@@ -1119,8 +1122,11 @@ impl Supervisor {
         // An advisory chat (the Roadmap PM) must never publish either: its
         // whole mandate is to read the codebase and propose tickets, so the
         // grant matches the mandate rather than relying on the brief to hold.
+        // The local reviewer (`workspace::PURPOSE_REVIEWER`) likewise: it
+        // reads a coder's checkout and reports findings, nothing more.
         let caps = match (record.purpose.as_deref(), record.owner_run_id.as_deref()) {
             (Some(crate::workspace::PURPOSE_ROADMAP_PM), _) => rpc::caps::AgentCaps::advisory(),
+            (Some(crate::workspace::PURPOSE_REVIEWER), _) => rpc::caps::AgentCaps::reviewer(),
             (_, Some(_)) => rpc::caps::AgentCaps::run_owned(),
             _ => rpc::caps::AgentCaps::interactive(),
         };
@@ -1128,28 +1134,40 @@ impl Supervisor {
             rpc::git::GitDispatcher::new(cwd.clone(), primary.repo_path.clone(), base_branch, caps)
                 .with_repos(repo_targets)
                 .with_close_issue(agent_id, close_issue)
-                .with_approval(ctx.sink.clone(), agent_id);
+                .with_approval(ctx.sink.clone(), agent_id)
+                .with_review(ctx.clone(), agent_id);
         // A run-owned step agent also gets the workflow comms ops (wf_report /
         // wf_ask / wf_notify, §10); a roadmap PM chat gets the roadmap ops
         // (roadmap_list / roadmap_propose), scoped to its own project. Both
         // wrap the git dispatcher, and everything else still falls through to
         // it. Plain agents keep the git dispatcher unchanged.
+        // A local reviewer gets `review_submit` (`rpc::review`), the one op
+        // its mandate needs.
         let roadmap_pm = record.purpose.as_deref() == Some(crate::workspace::PURPOSE_ROADMAP_PM);
-        let rpc_dispatcher: Arc<dyn rpc::RpcDispatcher> = match (&record.owner_run_id, roadmap_pm) {
-            (Some(run_id), _) => Arc::new(crate::workflow::comms::WorkflowCommsDispatcher::new(
-                ctx.clone(),
-                run_id.clone(),
-                agent_id.to_string(),
-                git_dispatcher,
-            )),
-            (None, true) => Arc::new(rpc::roadmap::RoadmapDispatcher::new(
-                ctx.clone(),
-                ctx.db.clone(),
-                record.project_id.clone(),
-                git_dispatcher,
-            )),
-            (None, false) => Arc::new(git_dispatcher),
-        };
+        let reviewer = record.purpose.as_deref() == Some(crate::workspace::PURPOSE_REVIEWER);
+        let rpc_dispatcher: Arc<dyn rpc::RpcDispatcher> =
+            match (&record.owner_run_id, roadmap_pm, reviewer) {
+                (Some(run_id), _, _) => {
+                    Arc::new(crate::workflow::comms::WorkflowCommsDispatcher::new(
+                        ctx.clone(),
+                        run_id.clone(),
+                        agent_id.to_string(),
+                        git_dispatcher,
+                    ))
+                }
+                (None, true, _) => Arc::new(rpc::roadmap::RoadmapDispatcher::new(
+                    ctx.clone(),
+                    ctx.db.clone(),
+                    record.project_id.clone(),
+                    git_dispatcher,
+                )),
+                (None, false, true) => Arc::new(rpc::review::ReviewDispatcher::new(
+                    ctx.clone(),
+                    agent_id,
+                    git_dispatcher,
+                )),
+                (None, false, false) => Arc::new(git_dispatcher),
+            };
         // Every agent can drive its own Run-panel process and raise a
         // notification (`rpc::run`): the ops publish nothing, so there is no
         // grant to check, and a step agent verifying its change by running
@@ -1221,6 +1239,11 @@ impl Supervisor {
                     start,
                     my_gen,
                     blackboard,
+                    // Derived from the purpose, like the caps above: a reviewer
+                    // reads the coder's checkout it adopts and must not be able
+                    // to change it, whatever its brief or a persuaded model says.
+                    adopted_read_only: record.purpose.as_deref()
+                        == Some(crate::workspace::PURPOSE_REVIEWER),
                 },
             )
             .await?;
@@ -1322,6 +1345,7 @@ impl Supervisor {
             start,
             my_gen,
             blackboard,
+            adopted_read_only,
         } = launch;
         let agent_id_str = agent_id.to_string();
 
@@ -1342,10 +1366,21 @@ impl Supervisor {
         // and resumes and the toggle's *current* state always wins. A
         // user-defined "codegraph" server suppresses injection (see
         // `codegraph`).
+        // Not into a read-only adoption (the local reviewer): the in-tree
+        // index is SQLite in WAL mode, which needs writes beside the db even to
+        // read, so the server would fail in a tree the reviewer may not write —
+        // and the instructions would advertise a tool that doesn't work.
         let crate::codegraph::McpInjection {
             servers: mcp_servers,
             codegraph_available,
-        } = crate::codegraph::inject_mcp_server(&record.mcp_servers, engine, &record.provider);
+        } = if adopted_read_only {
+            crate::codegraph::McpInjection {
+                servers: record.mcp_servers.clone(),
+                codegraph_available: false,
+            }
+        } else {
+            crate::codegraph::inject_mcp_server(&record.mcp_servers, engine, &record.provider)
+        };
 
         // Materialize the session's skill snapshot under the writable root and
         // fold its index into the injected instructions. Recomputed on every
@@ -1421,6 +1456,7 @@ impl Supervisor {
         let blocks = crate::agent_profile::Blocks {
             codegraph: codegraph_available,
             roadmap_pm,
+            reviewer: record.purpose.as_deref() == Some(crate::workspace::PURPOSE_REVIEWER),
             not_doing: not_doing.as_deref(),
             context: context_overview.as_deref(),
         };
@@ -1478,6 +1514,7 @@ impl Supervisor {
                         account: record.account.as_deref(),
                         oauth_token: None,
                         blackboard: blackboard.as_deref(),
+                        adopted_read_only,
                     };
                     spawn_pty_per_turn_agent(
                         spec,
@@ -1509,6 +1546,7 @@ impl Supervisor {
                         engine,
                         account: record.account.clone(),
                         blackboard: blackboard.clone(),
+                        adopted_read_only,
                     },
                     ctx.clone(),
                     agent_id_str.clone(),
@@ -1549,6 +1587,7 @@ impl Supervisor {
                 account: record.account.as_deref(),
                 oauth_token: oauth_token.as_ref(),
                 blackboard: blackboard.as_deref(),
+                adopted_read_only,
             };
             let spawned = match record.view {
                 AgentView::Native => spawn_pty_agent(

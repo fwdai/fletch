@@ -291,3 +291,157 @@ describe("buildLadder", () => {
     expect(ladder({ git: null })).toEqual([]);
   });
 });
+
+// ── The local reviewer ──────────────────────────────────────────────────────
+// The Review row carries both sources — GitHub's threads and the reviewer's
+// findings — and, between them, where the reviewer itself stands.
+
+import type { ReviewState } from "@/api";
+
+const NOW = 1_700_000_000_000;
+
+function review(over: Partial<ReviewState> = {}): ReviewState {
+  return {
+    agent_id: "fuji",
+    subdir: null,
+    phase: "clean",
+    trigger: "manual",
+    reviewer: {
+      custom_agent_id: "ca-1",
+      name: "Reviewer",
+      provider: "codex",
+      model: null,
+      agent_id: "fuji-reviewer",
+    },
+    round: 1,
+    open: 0,
+    resolved: 0,
+    since_ms: NOW - 5 * 60_000,
+    reviewed_signature: "sha",
+    error: null,
+    ...over,
+  };
+}
+const finding = (we_replied_last = false): PrComment =>
+  ({
+    id: "local:1",
+    url: null,
+    author: "Reviewer",
+    is_bot: true,
+    body: "b",
+    replies: 0,
+    we_replied_last,
+    source: "local",
+    severity: "high",
+  }) as PrComment;
+
+describe("buildLadder · the local reviewer", () => {
+  it("adds a Review row before any PR once the host can review and there is work", () => {
+    expect(ladder({ git: git({ ahead: 1 }) }).map((r) => r.key)).toEqual([
+      "changes",
+      "commits",
+      "pr",
+    ]);
+    const rows = ladder({ git: git({ ahead: 1 }), canReview: true });
+    expect(rows.map((r) => r.key)).toEqual(["changes", "commits", "pr", "review"]);
+    expect(row(rows, "review")).toMatchObject({ mark: "idle", summary: "not reviewed" });
+    // A fresh checkout with nothing to review keeps its three rows.
+    expect(ladder({ canReview: true }).map((r) => r.key)).toEqual(["changes", "commits", "pr"]);
+  });
+
+  it("shows a running review with its timer", () => {
+    const rows = ladder({
+      git: git({ ahead: 1 }),
+      review: review({ phase: "reviewing", since_ms: NOW - 83_000 }),
+      nowMs: NOW,
+    });
+    expect(row(rows, "review")).toMatchObject({
+      mark: "running",
+      summary: "Reviewing · Reviewer · 1:23",
+    });
+  });
+
+  it("counts the reviewer's findings as waiting on you, with the round, and makes them current", () => {
+    const rows = ladder({
+      git: git({ ahead: 1 }),
+      review: review({ phase: "findings", round: 2, open: 2 }),
+      comments: { unresolved: [finding(), finding()] },
+    });
+    expect(row(rows, "review")).toMatchObject({
+      mark: "attention",
+      tone: "att",
+      summary: "2 findings waiting on you · round 2",
+      current: true,
+    });
+    // Pre-PR, the findings come before the proposal: the PR row isn't current.
+    expect(row(rows, "pr")?.current).toBe(false);
+  });
+
+  it("reads clean with the reviewer's name and the verdict's age", () => {
+    const rows = ladder({ git: git({ ahead: 1 }), review: review(), nowMs: NOW });
+    expect(row(rows, "review")).toMatchObject({
+      mark: "done",
+      summary: "Clean · Reviewer, 5m ago",
+    });
+    const fixed = ladder({
+      git: git({ ahead: 1 }),
+      review: review({ resolved: 3, since_ms: NOW }),
+      nowMs: NOW,
+    });
+    expect(row(fixed, "review")?.summary).toBe("Clean · Reviewer, just now · 3 fixed");
+  });
+
+  it("says when the code moved on since the review, and when the review failed", () => {
+    const stale = ladder({ git: git({ ahead: 2 }), review: review({ phase: "stale" }) });
+    expect(row(stale, "review")).toMatchObject({
+      mark: "attention",
+      tone: "info",
+      summary: "Stale · code changed since review",
+    });
+    // The code moved during the review itself: the host's note replaces the
+    // generic one.
+    const during = ladder({
+      git: git({ ahead: 2 }),
+      review: review({ phase: "stale", error: "the code changed during the review" }),
+    });
+    expect(row(during, "review")?.summary).toBe("Stale · the code changed during the review");
+    const failed = ladder({
+      git: git({ ahead: 2 }),
+      review: review({ phase: "failed", error: "no verdict" }),
+    });
+    expect(row(failed, "review")).toMatchObject({
+      tone: "danger",
+      summary: "Review failed · no verdict",
+    });
+  });
+
+  it("shows a queued review as waiting for the coder, muted and without a timer", () => {
+    const rows = ladder({
+      git: git({ ahead: 1 }),
+      review: review({ phase: "queued", since_ms: NOW - 83_000 }),
+      nowMs: NOW,
+      coderName: "Claude",
+    });
+    expect(row(rows, "review")).toMatchObject({
+      mark: "running",
+      tone: "neutral",
+      summary: "Queued · waiting for Claude to finish",
+    });
+    // Without a name for the coder it still reads.
+    const unnamed = ladder({ git: git({ ahead: 1 }), review: review({ phase: "queued" }) });
+    expect(row(unnamed, "review")?.summary).toBe("Queued · waiting for the agent to finish");
+  });
+
+  it("keeps GitHub's threads on the same row once a PR is open", () => {
+    const rows = ladder({
+      git: git({ ahead: 1 }),
+      pr: pr(),
+      checks: checks(),
+      mergeState: "clean",
+      review: review(),
+      comments: { unresolved: [thread(false), finding()] },
+    });
+    expect(row(rows, "review")?.summary).toBe("2 findings waiting on you · round 1");
+    expect(row(rows, "checks")?.mark).toBe("done");
+  });
+});

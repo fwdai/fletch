@@ -554,7 +554,7 @@ struct PrThreadsChangedPayload {
 /// The host-side PR watcher saw the unresolved review threads of the focused
 /// open PR change (the only PR whose threads it reads). Carries the whole unresolved set so a client replaces its copy, plus
 /// the ids that are new so it can announce exactly those.
-pub(super) fn emit_pr_threads(
+pub(crate) fn emit_pr_threads(
     sink: &dyn EventSink,
     agent_id: &str,
     subdir: Option<&str>,

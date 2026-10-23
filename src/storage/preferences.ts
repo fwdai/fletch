@@ -16,6 +16,7 @@ export type SettingsSection =
   | "shortcuts"
   | "dictation"
   | "git"
+  | "review"
   | "sandbox"
   | "remote"
   | "providers"
@@ -26,8 +27,9 @@ export type SettingsSection =
   | "experimental"
   | "developer";
 
-/** One-shot deep-link intent handed to a settings pane when it opens. */
-export type SettingsIntent = "new-custom-agent";
+/** One-shot deep-link intent handed to a settings pane when it opens: open
+ *  the new-agent editor, or the editor of one custom agent by id. */
+export type SettingsIntent = "new-custom-agent" | `edit-custom-agent:${string}`;
 
 export interface FeatureFlags {
   git: boolean;

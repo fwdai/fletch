@@ -32,6 +32,7 @@ import {
   onPrThreadsChanged,
   onPublishApprovalRequested,
   onPublishApprovalResolved,
+  onReviewChanged,
   onRunPort,
   onRunState,
   onSessionRecordsAppended,
@@ -81,6 +82,7 @@ import {
   type ThemeMode,
 } from "@/storage/preferences";
 import { getAllSettings } from "@/storage/settings";
+import { REVIEW_AGENT_KEY, REVIEW_ON_PR_OPEN_KEY } from "@/store/review";
 import { notify } from "@/util/notify";
 import { playSound, type SoundKind } from "@/util/sound";
 import { reduceInstallEvent } from "./agentInstall";
@@ -195,6 +197,11 @@ export const hydrateSettings = async (set: AppSet) => {
       // Admin unlocks the Developer settings section in production. Opt-in:
       // only an explicit "true" in the `admin` settings row grants it.
       admin: s.admin === "true",
+      // The local reviewer: opt-out on PR open (only "false" turns it off),
+      // and the custom agent picked for it ("" = the host's "Reviewer" default).
+      // Snake_case keys because the host reads the same rows (`review::*`).
+      reviewOnPrOpen: s[REVIEW_ON_PR_OPEN_KEY] !== "false",
+      reviewAgentId: s[REVIEW_AGENT_KEY] || "",
     });
   } catch {
     // First launch or DB not ready — defaults are fine.
@@ -455,6 +462,13 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
   await bind(
     onAutopilotEvent((e) => {
       get().applyAutopilotEvent(e);
+    }),
+  );
+  // The local review loop runs on the host as well; its per-checkout state is
+  // mirrored the same way (its findings arrive as `pr:threads_changed`).
+  await bind(
+    onReviewChanged((e) => {
+      get().applyReviewChanged(e);
     }),
   );
 

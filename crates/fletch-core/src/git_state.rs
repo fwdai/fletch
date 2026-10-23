@@ -519,6 +519,146 @@ fn read_command(checkout_path: &Path) -> tokio::process::Command {
     cmd
 }
 
+/// A digest of the checkout's uncommitted *content*: sha256 over the binary
+/// diff of the tree against HEAD, then each untracked file's path and blob id.
+/// Two trees with the same HEAD and the same status but a different line in
+/// one dirty file digest differently — what a status read (paths, kinds,
+/// line counts) cannot tell apart.
+///
+/// Every command is read-only and hardened like [`query`]: the checkout's
+/// steerable config is refused first, and `--no-ext-diff`, `--no-textconv`
+/// and `--no-filters` keep a planted diff driver, textconv or clean filter
+/// from running on the host (`--no-filters` also hashes a symlink as its
+/// target *path*, never the file it points to).
+///
+/// All or nothing: a digest that left any content out would compare equal to
+/// one that saw it, so every failure — a command's exit status, the paths
+/// written to `hash-object`, an id missing from its answer — is an error
+/// naming the last line git wrote to stderr. The caller decides what an
+/// unverifiable tree means.
+pub async fn content_digest(checkout_path: &Path) -> Result<String> {
+    use sha2::{Digest, Sha256};
+    use std::os::unix::ffi::OsStrExt;
+    use tokio::io::AsyncWriteExt;
+
+    crate::git::hardening::refuse_steerable_config(checkout_path).await?;
+    let mut hasher = Sha256::new();
+
+    let diff = read_command(checkout_path)
+        .args([
+            "diff",
+            "HEAD",
+            "--binary",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-color",
+        ])
+        .output()
+        .await?;
+    require_success("git diff", &diff)?;
+    hasher.update(&diff.stdout);
+    hasher.update(b"\0untracked\0");
+
+    let listed = read_command(checkout_path)
+        .args(["ls-files", "--others", "--exclude-standard", "-z"])
+        .output()
+        .await?;
+    require_success("git ls-files", &listed)?;
+    // `hash-object --stdin-paths` reads one path per line, so a name with a
+    // newline in it goes on its own argv instead (they are rare).
+    let mut paths: Vec<&[u8]> = Vec::new();
+    let mut newline_named: Vec<&[u8]> = Vec::new();
+    for raw in listed.stdout.split(|b| *b == 0).filter(|p| !p.is_empty()) {
+        if raw.contains(&b'\n') {
+            newline_named.push(raw);
+        } else {
+            paths.push(raw);
+        }
+    }
+    paths.sort_unstable();
+    newline_named.sort_unstable();
+
+    let mut ids: Vec<String> = Vec::with_capacity(paths.len());
+    if !paths.is_empty() {
+        let mut child = read_command(checkout_path)
+            .args(["hash-object", "--no-filters", "--stdin-paths"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()?;
+        let mut input: Vec<u8> = Vec::new();
+        for path in &paths {
+            input.extend_from_slice(path);
+            input.push(b'\n');
+        }
+        let mut stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| Error::Other("git hash-object: stdin was not piped".into()))?;
+        // Written while the output is read, so neither pipe can fill up; the
+        // handle drops at the end of the write, which closes git's input.
+        let feed = async move { stdin.write_all(&input).await };
+        let (written, out) = tokio::join!(feed, child.wait_with_output());
+        let out = out?;
+        require_success("git hash-object", &out)?;
+        written.map_err(|e| Error::Other(format!("git hash-object: writing its paths: {e}")))?;
+        ids = String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty())
+            .collect();
+        if ids.len() != paths.len() {
+            return Err(Error::Other(format!(
+                "git hash-object: {} ids for {} untracked files",
+                ids.len(),
+                paths.len()
+            )));
+        }
+    }
+    for (path, id) in paths.iter().zip(&ids) {
+        hasher.update(path);
+        hasher.update(b"\0");
+        hasher.update(id.as_bytes());
+        hasher.update(b"\n");
+    }
+    for path in newline_named {
+        let out = read_command(checkout_path)
+            .args(["hash-object", "--no-filters", "--"])
+            .arg(std::ffi::OsStr::from_bytes(path))
+            .output()
+            .await?;
+        require_success("git hash-object", &out)?;
+        let id = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if id.is_empty() {
+            return Err(Error::Other(
+                "git hash-object: no id for an untracked file".into(),
+            ));
+        }
+        hasher.update(path);
+        hasher.update(b"\0");
+        hasher.update(id.as_bytes());
+        hasher.update(b"\n");
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+/// `Ok` for a command that exited zero, else an error naming it and the last
+/// line it wrote to stderr (or its exit status, when it wrote none).
+fn require_success(what: &str, out: &std::process::Output) -> Result<()> {
+    if out.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let reason = stderr
+        .lines()
+        .rev()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("exited with {}", out.status));
+    Err(Error::Other(format!("{what}: {reason}")))
+}
+
 /// HEAD commit SHA, or `None` when it can't be read.
 async fn query_head_sha(checkout_path: &Path) -> Option<String> {
     let out = read_command(checkout_path)

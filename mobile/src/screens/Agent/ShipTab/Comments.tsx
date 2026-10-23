@@ -42,7 +42,12 @@ export function Comments({
           <div key={c.id} className="ship-comment">
             <div className="who">
               <b>{c.author}</b>
-              {c.is_bot && <span className="pill">bot</span>}
+              {c.source === "local" ? (
+                <span className="pill">local review</span>
+              ) : (
+                c.is_bot && <span className="pill">bot</span>
+              )}
+              {c.severity && <span className="pill">{c.severity}</span>}
               {loc && <span className="mono loc">{loc}</span>}
             </div>
             <div className="body">{excerpt(c.body)}</div>
@@ -59,9 +64,11 @@ export function Comments({
               >
                 {busy ? "Agent is busy…" : "Send to agent"}
               </button>
-              <a href={c.url} target="_blank" rel="noreferrer" aria-label="Open on GitHub">
-                <Icon name="external" size={13} />
-              </a>
+              {c.url && (
+                <a href={c.url} target="_blank" rel="noreferrer" aria-label="Open on GitHub">
+                  <Icon name="external" size={13} />
+                </a>
+              )}
             </div>
           </div>
         );

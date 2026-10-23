@@ -52,6 +52,7 @@ pub mod power;
 pub mod pty_session;
 pub mod publish_prefs;
 pub mod remote;
+pub mod review;
 pub mod roadmap;
 pub mod rpc;
 pub mod run_detect;

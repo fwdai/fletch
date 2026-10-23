@@ -97,6 +97,8 @@ export const createAppSlice: SliceCreator<AppSlice> = (set, get) => ({
     void get().loadDelegations();
     // …and the autopilot it runs: its switches, its open cycles, its history.
     void get().loadAutopilot();
+    // …and the local reviews in flight or settled on its checkouts.
+    void get().loadReviews();
   },
 
   clearError: () => set({ lastError: null }),

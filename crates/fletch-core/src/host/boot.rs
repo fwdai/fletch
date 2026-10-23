@@ -654,6 +654,11 @@ pub fn boot(cfg: BootConfig) -> Result<Engine, BootError> {
     // trigger is delivered when the agent settles, and the outcome is decided
     // here once rather than by whichever windows happen to be open.
     crate::supervisor::delegation::spawn(ctx.clone(), supervisor.clone());
+    // The local review loop: a hidden reviewer reads a coder's checkout on PR
+    // open (or on request) and reports findings as review threads; the host
+    // judges staleness and re-reviews, so it keeps going with every window
+    // shut.
+    crate::review::engine::spawn(ctx.clone(), supervisor.clone());
     // Autopilot nurses every enrolled open PR to mergeable — fix the checks,
     // update the branch, answer the review — through the delegations above.
     // On the host because it has to keep going with every window shut, and

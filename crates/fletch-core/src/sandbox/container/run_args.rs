@@ -135,6 +135,10 @@ pub(crate) struct RunSpec<'a> {
     /// directory the runtime had to invent. `None` for ordinary agents, whose
     /// `cwd` is a checkout inside `writable_root`.
     pub adopted_workspace: Option<&'a Path>,
+    /// Bind the adopted tree `:ro` instead: the local reviewer reads the
+    /// coder's checkout and must not change it
+    /// (`AgentLaunchCtx::adopted_read_only`).
+    pub adopted_read_only: bool,
     /// The launching provider's config/data mounts + config-dir env forwards.
     pub mounts: ProviderMounts<'a>,
     /// Object stores borrowed via git alternates, bound read-only at their
@@ -230,7 +234,16 @@ pub(crate) fn run_args(spec: &RunSpec<'_>) -> Vec<String> {
     // Same identical-path rule (invariant 1): the agent's own checkout, which
     // for an adopting launch lives outside the writable root.
     if let Some(tree) = spec.adopted_workspace {
-        push_rw_bind(&mut args, tree);
+        if spec.adopted_read_only {
+            let path = tree.to_string_lossy();
+            args.push("-v".into());
+            args.push(format!("{path}:{path}:ro"));
+            // Nowhere for git's opportunistic index refresh to write.
+            args.push("-e".into());
+            args.push("GIT_OPTIONAL_LOCKS=0".into());
+        } else {
+            push_rw_bind(&mut args, tree);
+        }
     }
     // Identical host path so the alternates file resolves in-container with no
     // rewriting; read-only so borrowed history is readable but the source store
@@ -527,6 +540,7 @@ mod tests {
                 cwd: tree,
                 blackboard: Some(board),
                 adopted_workspace: Some(tree),
+                adopted_read_only: false,
                 mounts,
                 borrowed_object_stores: &stores,
                 memory: DEFAULT_MEMORY,
@@ -589,6 +603,7 @@ mod tests {
             cwd: tree,
             blackboard: None,
             adopted_workspace: Some(tree),
+            adopted_read_only: false,
             mounts: ProviderMounts::Claude {
                 config_dir: None,
                 credentials_rw: false,
@@ -611,5 +626,25 @@ mod tests {
         let w = args.iter().position(|a| a == "-w").expect("-w");
         assert_eq!(args[w + 1], tree.to_string_lossy());
         assert!(mount_sources(&spec).contains(&tree.to_path_buf()));
+        assert!(
+            !args.iter().any(|a| a == &format!("{bind}:ro")),
+            "a workflow step's tree stays read-write"
+        );
+
+        // The local reviewer's adoption: the same tree, bound read-only, and
+        // git told not to take its optional index lock there.
+        let reviewer = RunSpec {
+            adopted_read_only: true,
+            ..spec
+        };
+        let args = run_args(&reviewer);
+        let ro = format!("{bind}:ro");
+        assert!(args.contains(&ro), "expected {ro} in {args:?}");
+        assert!(!args.contains(&bind), "never also read-write: {args:?}");
+        assert!(args
+            .windows(2)
+            .any(|w| w[0] == "-e" && w[1] == "GIT_OPTIONAL_LOCKS=0"));
+        let w = args.iter().position(|a| a == "-w").expect("-w");
+        assert_eq!(args[w + 1], tree.to_string_lossy());
     }
 }

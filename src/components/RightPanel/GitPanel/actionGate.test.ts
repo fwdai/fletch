@@ -47,6 +47,16 @@ describe("gateAction", () => {
     }
   });
 
+  it("lets the local reviewer start, stop and open while the agent works — the host queues it", () => {
+    for (const key of ["review-start", "review-stop", "review-open"]) {
+      expect(gateAction(key, { ...open, delegationActive: true, busy: true })).toBeNull();
+    }
+    // …but not on a host that has no reviewer to run.
+    expect(reason("review-start", { hostRefusal: refusalOf(oldHost) })).toBe(
+      actionGateReason(oldHost, "review-start"),
+    );
+  });
+
   it("explains a host that cannot run the op, for any key", () => {
     for (const key of ["merge", "pull", "agent-commit-push", "focus-pr"]) {
       expect(reason(key, { hostRefusal: refusalOf(oldHost) })).toBe(actionGateReason(oldHost, key));

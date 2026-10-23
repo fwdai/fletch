@@ -160,6 +160,7 @@ impl SandboxEngine for PodmanEngine {
                 cwd: ctx.cwd,
                 blackboard: ctx.blackboard,
                 adopted_workspace: ctx.adopted_workspace(),
+                adopted_read_only: ctx.adopted_read_only,
                 mounts: prep.mounts(),
                 borrowed_object_stores: &prep.borrowed_object_stores,
                 memory: non_blank(settings.memory.as_deref()).unwrap_or(DEFAULT_MEMORY),
@@ -351,6 +352,7 @@ mod tests {
             cwd: &root,
             blackboard: None,
             adopted_workspace: None,
+            adopted_read_only: false,
             mounts: crate::sandbox::container::run_args::ProviderMounts::Claude {
                 config_dir: None,
                 credentials_rw: false,

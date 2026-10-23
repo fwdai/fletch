@@ -14,6 +14,7 @@ import {
   type Footer,
   type FooterAction,
   focusFooter,
+  type ReviewFooterInput,
 } from "../footerModel";
 
 /** The footer as the panel renders it: `buildFooter` (or `focusFooter` for a
@@ -35,6 +36,9 @@ export function useFooterModel(input: {
   busy: boolean;
   githubConnected: boolean;
   primaryCheckout: boolean;
+  /** The local reviewer's menu entries; absent on a lane the footer doesn't
+   *  act on. */
+  reviewMenu?: ReviewFooterInput;
 }): Footer & {
   tone: ActionTone;
   mainDisabled: boolean;
@@ -98,6 +102,7 @@ export function useFooterModel(input: {
           // is null while loading — assume an origin then so the primary doesn't
           // flicker to "Publish" before the first read lands.
           hasOrigin: gitState?.has_origin ?? true,
+          reviewMenu: input.reviewMenu,
         });
   const { primary, groups, mainDisabled, mainReason } = applyGate(footer, gate);
   const ending =

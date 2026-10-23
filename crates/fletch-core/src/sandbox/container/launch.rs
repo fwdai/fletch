@@ -481,6 +481,7 @@ mod tests {
             account_dir: Some(&account),
             oauth_token: None,
             codex_home: Some(&overlay),
+            adopted_read_only: false,
         };
 
         let err = prepare(&ctx, ContainerProvider::Codex, None)
@@ -536,6 +537,7 @@ mod tests {
             account_dir: None,
             codex_home: Some(&overlay),
             oauth_token: None,
+            adopted_read_only: false,
         };
 
         let launch = prepare(&ctx, ContainerProvider::Codex, None).unwrap();
@@ -581,6 +583,7 @@ mod tests {
             account_dir: None,
             oauth_token: Some(&token),
             codex_home: None,
+            adopted_read_only: false,
         };
 
         let launch = prepare(&ctx, ContainerProvider::Claude, None).unwrap();
@@ -628,6 +631,7 @@ mod tests {
             account_dir: None,
             oauth_token: Some(&token),
             codex_home: None,
+            adopted_read_only: false,
         };
 
         let launch = prepare(&ctx, ContainerProvider::Claude, None).unwrap();
@@ -685,6 +689,7 @@ mod tests {
             account_dir: None,
             oauth_token: Some(&token),
             codex_home: None,
+            adopted_read_only: false,
         };
 
         let launch = crate::bin_resolve::with_login_shell_env(

@@ -1,6 +1,6 @@
 import { open } from "@tauri-apps/plugin-shell";
 import { useCallback } from "react";
-import type { PrChecks, PrComment, PrComments } from "@/api";
+import type { PrChecks, PrComment, PrComments, ReviewState } from "@/api";
 import { formatCommentForChat } from "@/components/RightPanel/prComments";
 import { useAppStore } from "@/store";
 import type { Gate } from "../actionGate";
@@ -46,6 +46,10 @@ interface GitActionsCtx {
   openOverride: () => void;
   revertOverride: () => void;
   fetchPrState: (agentId: string) => unknown;
+  /** The local reviewer on this checkout, for the `review-*` keys and the
+   *  per-thread actions. */
+  review: ReviewState | null;
+  projectId: string;
 }
 
 /** The panel's action layer: the single dispatch table every state's actions
@@ -72,6 +76,8 @@ export function useGitActions(ctx: GitActionsCtx) {
     openOverride,
     revertOverride,
     fetchPrState,
+    review,
+    projectId,
   } = ctx;
 
   const pushAgent = useAppStore((s) => s.pushAgent);
@@ -92,6 +98,10 @@ export function useGitActions(ctx: GitActionsCtx) {
   const focusPr = useAppStore((s) => s.focusPr);
   const seedComposer = useAppStore((s) => s.seedComposer);
   const openGithubConnect = useAppStore((s) => s.openGithubConnect);
+  const startReview = useAppStore((s) => s.startReview);
+  const stopReview = useAppStore((s) => s.stopReview);
+  const dismissReviewThread = useAppStore((s) => s.dismissReviewThread);
+  const openReviewer = useAppStore((s) => s.openReviewer);
 
   // Hand control to the coding agent: it writes the judgment part (message /
   // description / conflict edits) and executes the mutation through the app's
@@ -114,6 +124,32 @@ export function useGitActions(ctx: GitActionsCtx) {
       showNotice("Added to chat — edit & send to the agent");
     },
     [agentId, seedComposer, showNotice],
+  );
+
+  // "Fix with agent" on one thread: the same `resolve-comments` playbook the
+  // footer hands over for all of them, scoped to this thread's id so the
+  // agent reads, judges and answers just that one.
+  const fixThread = useCallback(
+    (c: PrComment) => {
+      const closed = gate("agent-resolve-comments");
+      if (closed) {
+        if (!closed.quiet) showNotice(closed.reason);
+        return;
+      }
+      delegate("resolve-comments", { count: "1", thread: c.id });
+    },
+    [delegate, gate, showNotice],
+  );
+
+  // "Dismiss" on a local finding: resolved by hand on the host, which answers
+  // with the thread set minus this one.
+  const dismissThread = useCallback(
+    (c: PrComment) => {
+      void dismissReviewThread(agentId, c.id, subdir).then((ok) => {
+        if (ok) showNotice("Finding dismissed");
+      });
+    },
+    [agentId, subdir, dismissReviewThread, showNotice],
   );
 
   // Single dispatch table for every action a state can offer — the split
@@ -259,6 +295,16 @@ export function useGitActions(ctx: GitActionsCtx) {
       case "delete-branch":
         void runBusy("Deleting branch…", () => deleteBranch(agentId, subdir));
         break;
+      // ── the local reviewer: a host-run turn, not a delegation ──
+      case "review-start":
+        void startReview(agentId, subdir);
+        break;
+      case "review-stop":
+        void stopReview(agentId, subdir);
+        break;
+      case "review-open":
+        if (review?.reviewer?.agent_id) void openReviewer(review.reviewer.agent_id, projectId);
+        break;
       // ── delegated to the coding agent (agent mode): the `agent-*` keys ──
       // "loading" is a non-actionable placeholder, and has no plan.
       default:
@@ -267,5 +313,5 @@ export function useGitActions(ctx: GitActionsCtx) {
     }
   }
 
-  return { runAction, addCommentToChat };
+  return { runAction, addCommentToChat, fixThread, dismissThread };
 }

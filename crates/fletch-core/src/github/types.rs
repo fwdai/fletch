@@ -366,16 +366,60 @@ pub struct Release {
     pub assets: Vec<ReleaseAsset>,
 }
 
+/// Where a review thread came from: GitHub (a human or a bot like Greptile on
+/// the PR) or Fletch's own local reviewer, whose threads live in the host
+/// database (`review::store`) and exist with or without a PR.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ThreadSource {
+    Github,
+    Local,
+}
+
+/// How much a local reviewer's finding matters. GitHub threads carry none.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewSeverity {
+    High,
+    Medium,
+    Low,
+}
+
+impl ReviewSeverity {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ReviewSeverity::High => "high",
+            ReviewSeverity::Medium => "medium",
+            ReviewSeverity::Low => "low",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "high" => Some(ReviewSeverity::High),
+            "medium" => Some(ReviewSeverity::Medium),
+            "low" => Some(ReviewSeverity::Low),
+            _ => None,
+        }
+    }
+}
+
 /// One unresolved PR review thread, flattened to its root comment. Surfaced
-/// in the Git panel so review feedback (Greptile, other bots, humans) is
-/// visible without leaving the app, with a quick action to hand it to the
-/// coding agent.
+/// in the Git panel so review feedback (Greptile, other bots, humans, and the
+/// local reviewer) is visible without leaving the app, with a quick action to
+/// hand it to the coding agent.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct PrComment {
     /// The review thread's node id — what `resolveReviewThread` /
     /// `addPullRequestReviewThreadReply` address, so an agent can act on the
-    /// thread and not merely read it.
+    /// thread and not merely read it. A local thread's is `local:<uuid>`.
     pub id: String,
+    /// GitHub, or the local reviewer (`review::store`).
+    pub source: ThreadSource,
+    /// The local reviewer's severity; `None` for a GitHub thread.
+    pub severity: Option<ReviewSeverity>,
+    /// Which local review round raised it; `None` for a GitHub thread.
+    pub round: Option<u32>,
     /// Comment author's login.
     pub author: String,
     /// True when the author is a GitHub App / bot (`__typename == "Bot"`).
@@ -387,8 +431,8 @@ pub struct PrComment {
     /// the line was deleted).
     pub path: Option<String>,
     pub line: Option<u32>,
-    /// Permalink to the thread on GitHub.
-    pub url: String,
+    /// Permalink to the thread on GitHub; `None` for a local thread.
+    pub url: Option<String>,
     /// Replies after the root comment (thread length − 1, clamped at 0).
     pub replies: u32,
     /// The connected account posted the last comment on this still-open thread —

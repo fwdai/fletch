@@ -86,6 +86,7 @@ impl SandboxEngine for SandboxExecEngine {
             claude_config_dir.as_deref(),
             ctx.blackboard,
             ctx.adopted_workspace(),
+            ctx.adopted_read_only,
             ctx.codex_home.filter(|_| ctx.provider == "codex"),
             ctx.source_repos,
         )?;
@@ -104,6 +105,11 @@ impl SandboxEngine for SandboxExecEngine {
                 user_sets_a_ca_bundle(),
                 Path::new(SYSTEM_CA_BUNDLE),
             ));
+        }
+        // A read-only tree has nowhere for git's opportunistic index refresh to
+        // write; tell git not to try (`git status`/`diff` then take no lock).
+        if ctx.adopted_read_only && ctx.adopted_workspace().is_some() {
+            env.push(("GIT_OPTIONAL_LOCKS".to_string(), "0".to_string()));
         }
         // A workflow step agent's blackboard is granted writable in the profile
         // above; also point the agent at it via `WF_BLACKBOARD` (the same host
@@ -831,6 +837,9 @@ pub(crate) fn pid_alive(_pid: i32) -> bool {
 /// `writable_root` (the workflow kernel's shared run workspace) — its own
 /// writable subpath, and its own invariant-3 deny, since the agent's checkout
 /// isn't under the root this profile is otherwise built around.
+/// `adopted_read_only` makes it the agent's to read only (the local reviewer
+/// reading a coder's checkout): no grant, and a write deny over it after every
+/// grant, so nothing else in the profile can reopen it.
 /// `codex_home` is the per-agent `CODEX_HOME` overlay a codex launch runs in
 /// (`agent::codex_home`), granted whole bar its `config.toml` (`None` for
 /// every other provider).
@@ -849,6 +858,7 @@ pub fn build_profile(
     claude_config_dir: Option<&Path>,
     blackboard: Option<&Path>,
     adopted_workspace: Option<&Path>,
+    adopted_read_only: bool,
     codex_home: Option<&Path>,
     source_repos: &[PathBuf],
 ) -> Result<String> {
@@ -880,8 +890,25 @@ pub fn build_profile(
         None => None,
     };
     let adopted_grant = match &adopted {
-        Some(dir) => format!("\n  (subpath {})", sbpl_string(&dir.to_string_lossy())),
-        None => String::new(),
+        Some(dir) if !adopted_read_only => {
+            format!("\n  (subpath {})", sbpl_string(&dir.to_string_lossy()))
+        }
+        _ => String::new(),
+    };
+    // A read-only adoption is denied outright after the allow block, in its
+    // literal and resolved forms like the login denies: later rules win, so no
+    // grant above (a tmp dir, a broad state dir) can reopen the tree.
+    let deny_adopted_writes = match (&adopted, adopted_workspace) {
+        (Some(resolved), Some(given)) if adopted_read_only => {
+            let mut deny = LoginDeny::default();
+            deny.subpath(given);
+            deny.subpath(resolved);
+            format!(
+                ";; The adopted checkout is this agent's to read, never to write.\n{}",
+                deny.write_block()
+            )
+        }
+        _ => String::new(),
     };
 
     let claude_json = sbpl_string(&format!("{home_s}/.claude.json"));
@@ -985,17 +1012,23 @@ pub fn build_profile(
     // user's source repos given back when one happens to live inside. Agent
     // profile only, like the invariant denies below.
     let blackboard_root = blackboard.map(canonical).transpose()?;
+    let adopted_writable = adopted.as_deref().filter(|_| !adopted_read_only);
+    let adopted_readable = adopted.as_deref().filter(|_| adopted_read_only);
     let writable_roots: Vec<&Path> = [
         Some(writable_root.as_path()),
         Some(rpc_root.as_path()),
         Some(toolchain_cache),
-        adopted.as_deref(),
+        adopted_writable,
         blackboard_root.as_deref(),
     ]
     .into_iter()
     .flatten()
     .collect();
-    let readable_roots: Vec<&Path> = source_repos.iter().map(PathBuf::as_path).collect();
+    let readable_roots: Vec<&Path> = source_repos
+        .iter()
+        .map(PathBuf::as_path)
+        .chain(adopted_readable)
+        .collect();
     let deny_privacy_dirs = deny_macos_privacy_dirs(&home, &writable_roots, &readable_roots);
 
     // Invariant 3, agent profile only. The Run profile deliberately does NOT
@@ -1057,6 +1090,8 @@ pub fn build_profile(
 {deny_privacy_dirs}
 
 {deny_git_config}
+
+{deny_adopted_writes}
 
 {deny_provider_config}
 
@@ -1294,6 +1329,11 @@ impl LoginDeny {
     fn block(self) -> String {
         format!("(deny file-read* file-write*\n{})", self.clauses.join("\n"))
     }
+
+    /// The same clauses as a write-only deny: readable, never writable.
+    fn write_block(self) -> String {
+        format!("(deny file-write*\n{})", self.clauses.join("\n"))
+    }
 }
 
 /// SBPL `(subpath …)` grant lines for the policy dirs, each emitted in its
@@ -1483,8 +1523,19 @@ mod tests {
         std::fs::create_dir_all(&rpc).unwrap();
         std::fs::create_dir_all(&home).unwrap();
 
-        let profile =
-            build_profile(&root, &rpc, &home, &CACHE, None, None, None, None, &[]).unwrap();
+        let profile = build_profile(
+            &root,
+            &rpc,
+            &home,
+            &CACHE,
+            None,
+            None,
+            None,
+            false,
+            None,
+            &[],
+        )
+        .unwrap();
         let canonical_root = std::fs::canonicalize(&root).unwrap();
         let canonical_rpc = std::fs::canonicalize(&rpc).unwrap();
 
@@ -1513,8 +1564,19 @@ mod tests {
         for d in [&root, &rpc, &home] {
             std::fs::create_dir_all(d).unwrap();
         }
-        let profile =
-            build_profile(&root, &rpc, &home, &CACHE, None, None, None, None, &[]).unwrap();
+        let profile = build_profile(
+            &root,
+            &rpc,
+            &home,
+            &CACHE,
+            None,
+            None,
+            None,
+            false,
+            None,
+            &[],
+        )
+        .unwrap();
         let canonical_root = std::fs::canonicalize(&root).unwrap();
         let escaped = sbpl_regex_escape(&canonical_root.to_string_lossy());
 
@@ -1567,8 +1629,19 @@ mod tests {
         for d in [&rpc, &home, &repo.join(".git/hooks")] {
             std::fs::create_dir_all(d).unwrap();
         }
-        let profile =
-            build_profile(&root, &rpc, &home, &CACHE, None, None, None, None, &[]).unwrap();
+        let profile = build_profile(
+            &root,
+            &rpc,
+            &home,
+            &CACHE,
+            None,
+            None,
+            None,
+            false,
+            None,
+            &[],
+        )
+        .unwrap();
 
         // `sh -c 'printf x > <path>'` under the profile: exit 0 means the write
         // landed, non-zero means the sandbox refused it. The path is single-quoted
@@ -1646,6 +1719,7 @@ mod tests {
             None,
             None,
             None,
+            false,
             Some(codex.as_path()),
             &[],
         )
@@ -1667,6 +1741,7 @@ mod tests {
             Some(claude.as_path()),
             None,
             None,
+            false,
             None,
             &[],
         )
@@ -1718,6 +1793,7 @@ mod tests {
                 None,
                 None,
                 None,
+                false,
                 Some(overlay.as_path()),
                 &[],
             )
@@ -1755,8 +1831,19 @@ mod tests {
             std::fs::create_dir_all(d).unwrap();
         }
         let home = std::fs::canonicalize(&home).unwrap();
-        let profile =
-            build_profile(&root, &rpc, &home, &CACHE, None, None, None, None, &[]).unwrap();
+        let profile = build_profile(
+            &root,
+            &rpc,
+            &home,
+            &CACHE,
+            None,
+            None,
+            None,
+            false,
+            None,
+            &[],
+        )
+        .unwrap();
 
         let denied = policy::provider_exec_config_denials(&home);
         assert!(!denied.files.is_empty() && !denied.dirs.is_empty());
@@ -1806,7 +1893,19 @@ mod tests {
         assert_ne!(cache, resolved);
         let subpath = |p: &Path| format!("(subpath \"{}\")", p.display());
 
-        let agent = build_profile(&root, &rpc, &home, &cache, None, None, None, None, &[]).unwrap();
+        let agent = build_profile(
+            &root,
+            &rpc,
+            &home,
+            &cache,
+            None,
+            None,
+            None,
+            false,
+            None,
+            &[],
+        )
+        .unwrap();
         let run = build_run_profile(&root, &home, &cache, &[]).unwrap();
         for (name, profile) in [("agent", &agent), ("run", &run)] {
             for form in [&cache, &resolved] {
@@ -1877,8 +1976,19 @@ mod tests {
         // It grants the narrow replacements instead, and every provider dot-dir
         // and cache dir stays exactly as before.
         let (_td, root, rpc, home) = sandbox_dirs();
-        let profile =
-            build_profile(&root, &rpc, &home, &CACHE, None, None, None, None, &[]).unwrap();
+        let profile = build_profile(
+            &root,
+            &rpc,
+            &home,
+            &CACHE,
+            None,
+            None,
+            None,
+            false,
+            None,
+            &[],
+        )
+        .unwrap();
         let canonical_home = std::fs::canonicalize(&home).unwrap();
         let h = canonical_home.display();
 
@@ -2000,8 +2110,19 @@ mod tests {
         std::fs::create_dir_all(&target).unwrap();
         std::os::unix::fs::symlink(&target, home.join(".claude")).unwrap();
 
-        let profile =
-            build_profile(&root, &rpc, &home, &CACHE, None, None, None, None, &[]).unwrap();
+        let profile = build_profile(
+            &root,
+            &rpc,
+            &home,
+            &CACHE,
+            None,
+            None,
+            None,
+            false,
+            None,
+            &[],
+        )
+        .unwrap();
         let canonical_home = std::fs::canonicalize(&home).unwrap();
         // The login read-deny names the credentials file through the link
         // too (the sandbox checks resolved paths); only the grants matter.
@@ -2037,6 +2158,7 @@ mod tests {
             Some(cfg.as_path()),
             None,
             None,
+            false,
             None,
             &[],
         )
@@ -2056,7 +2178,19 @@ mod tests {
         let canonical_board = std::fs::canonicalize(&board).unwrap();
 
         // Absent by default: an ordinary (non-workflow) agent gets no grant.
-        let plain = build_profile(&root, &rpc, &home, &CACHE, None, None, None, None, &[]).unwrap();
+        let plain = build_profile(
+            &root,
+            &rpc,
+            &home,
+            &CACHE,
+            None,
+            None,
+            None,
+            false,
+            None,
+            &[],
+        )
+        .unwrap();
         assert!(
             !plain.contains(&canonical_board.to_string_lossy().to_string()),
             "no blackboard grant without a blackboard"
@@ -2071,6 +2205,7 @@ mod tests {
             None,
             Some(board.as_path()),
             None,
+            false,
             None,
             &[],
         )
@@ -2104,7 +2239,19 @@ mod tests {
             std::fs::create_dir_all(d).unwrap();
         }
 
-        let plain = build_profile(&root, &rpc, &home, &CACHE, None, None, None, None, &[]).unwrap();
+        let plain = build_profile(
+            &root,
+            &rpc,
+            &home,
+            &CACHE,
+            None,
+            None,
+            None,
+            false,
+            None,
+            &[],
+        )
+        .unwrap();
         let deny_at = plain
             .find("(deny file-read* file-write*\n  (subpath \"")
             .expect("the guarded folders are denied in one block");
@@ -2126,6 +2273,7 @@ mod tests {
             None,
             None,
             None,
+            false,
             None,
             &[in_documents.clone(), elsewhere.clone()],
         )
@@ -2163,7 +2311,19 @@ mod tests {
         std::fs::create_dir_all(&tree).unwrap();
         let canonical_tree = std::fs::canonicalize(&tree).unwrap();
 
-        let plain = build_profile(&root, &rpc, &home, &CACHE, None, None, None, None, &[]).unwrap();
+        let plain = build_profile(
+            &root,
+            &rpc,
+            &home,
+            &CACHE,
+            None,
+            None,
+            None,
+            false,
+            None,
+            &[],
+        )
+        .unwrap();
         assert!(
             !plain.contains(&canonical_tree.to_string_lossy().to_string()),
             "no adoption grant for an agent that owns its checkout"
@@ -2177,6 +2337,7 @@ mod tests {
             None,
             None,
             Some(tree.as_path()),
+            false,
             None,
             &[],
         )
@@ -2198,6 +2359,66 @@ mod tests {
         assert!(
             granted.contains(&format!("^{escaped}(/.*)?/\\.git/")),
             "invariant 3 must cover the adopted tree: {granted}"
+        );
+    }
+
+    /// The local reviewer adopts a coder's checkout to read it: the tree gets
+    /// no grant, and a write deny over it — literal and resolved — comes after
+    /// the allow block, so no other grant reopens it. A read-write adoption
+    /// (a workflow step) is unchanged.
+    #[test]
+    fn a_read_only_adoption_is_denied_writes_and_granted_none() {
+        let (td, root, rpc, home) = sandbox_dirs();
+        let tree = td.path().join("agents/coder/repo");
+        std::fs::create_dir_all(&tree).unwrap();
+        let canonical_tree = std::fs::canonicalize(&tree).unwrap();
+        let profile = |read_only| {
+            build_profile(
+                &root,
+                &rpc,
+                &home,
+                &CACHE,
+                None,
+                None,
+                Some(tree.as_path()),
+                read_only,
+                None,
+                &[],
+            )
+            .unwrap()
+        };
+        let allow_block = |p: &str| {
+            let start = p.find("(allow file-write*").unwrap();
+            p[start..start + p[start..].find("\n\n").unwrap()].to_string()
+        };
+        let clause = |path: &Path| format!("(subpath \"{}\")", path.display());
+
+        let read_only = profile(true);
+        assert!(
+            !allow_block(&read_only).contains(&clause(&canonical_tree)),
+            "a read-only tree must not be granted: {read_only}"
+        );
+        let deny_at = read_only
+            .find(&format!("(deny file-write*\n  {}", clause(&tree)))
+            .unwrap_or_else(|| panic!("the literal form must be denied: {read_only}"));
+        assert!(
+            read_only[deny_at..].contains(&clause(&canonical_tree)),
+            "the resolved form must be denied too"
+        );
+        assert!(
+            deny_at > read_only.find("(allow file-write*").unwrap(),
+            "the deny must follow the allow block, which it overrides"
+        );
+        // The rest of the agent's own surface stays writable.
+        let rpc_root = std::fs::canonicalize(&rpc).unwrap();
+        assert!(allow_block(&read_only).contains(&clause(&rpc_root)));
+        assert!(allow_block(&read_only).contains("(subpath \"/private/tmp\")"));
+
+        let read_write = profile(false);
+        assert!(allow_block(&read_write).contains(&clause(&canonical_tree)));
+        assert!(
+            !read_write.contains("never to write"),
+            "a read-write adoption carries no write deny"
         );
     }
 
@@ -2230,6 +2451,7 @@ mod tests {
             Some(cfg.as_path()),
             None,
             None,
+            false,
             None,
             &[],
         )
@@ -2281,6 +2503,7 @@ mod tests {
             Some(cfg.as_path()),
             None,
             None,
+            false,
             None,
             &[],
         )
@@ -2309,7 +2532,19 @@ mod tests {
             canonical_cfg.join("settings.json").display()
         );
 
-        let plain = build_profile(&root, &rpc, &home, &CACHE, None, None, None, None, &[]).unwrap();
+        let plain = build_profile(
+            &root,
+            &rpc,
+            &home,
+            &CACHE,
+            None,
+            None,
+            None,
+            false,
+            None,
+            &[],
+        )
+        .unwrap();
         assert!(!plain.contains(&deny));
 
         let profile = build_profile(
@@ -2320,6 +2555,7 @@ mod tests {
             Some(cfg.as_path()),
             None,
             None,
+            false,
             None,
             &[],
         )
@@ -2348,7 +2584,19 @@ mod tests {
         std::fs::create_dir_all(&account).unwrap();
         let canonical_account = std::fs::canonicalize(&account).unwrap();
 
-        let plain = build_profile(&root, &rpc, &home, &CACHE, None, None, None, None, &[]).unwrap();
+        let plain = build_profile(
+            &root,
+            &rpc,
+            &home,
+            &CACHE,
+            None,
+            None,
+            None,
+            false,
+            None,
+            &[],
+        )
+        .unwrap();
         assert!(!plain.contains(&canonical_account.to_string_lossy().to_string()));
 
         let profile = build_profile(
@@ -2359,6 +2607,7 @@ mod tests {
             None,
             None,
             None,
+            false,
             Some(account.as_path()),
             &[],
         )
@@ -2385,8 +2634,19 @@ mod tests {
         crate::agent::accounts::with_test_root(|accounts| {
             let (_td, root, rpc, home) = sandbox_dirs();
             let home = std::fs::canonicalize(&home).unwrap();
-            let profile =
-                build_profile(&root, &rpc, &home, &CACHE, None, None, None, None, &[]).unwrap();
+            let profile = build_profile(
+                &root,
+                &rpc,
+                &home,
+                &CACHE,
+                None,
+                None,
+                None,
+                false,
+                None,
+                &[],
+            )
+            .unwrap();
             let deny_at = profile
                 .find("(deny file-read* file-write*\n")
                 .expect("a read deny block");
@@ -2418,8 +2678,19 @@ mod tests {
     fn profile_denies_the_limits_reads_temporary_home() {
         crate::agent::accounts::with_test_root(|_| {
             let (_td, root, rpc, home) = sandbox_dirs();
-            let profile =
-                build_profile(&root, &rpc, &home, &CACHE, None, None, None, None, &[]).unwrap();
+            let profile = build_profile(
+                &root,
+                &rpc,
+                &home,
+                &CACHE,
+                None,
+                None,
+                None,
+                false,
+                None,
+                &[],
+            )
+            .unwrap();
             let parent = crate::agent::limits::app_server::limits_parent().unwrap();
             let deny_at = profile
                 .find("(deny file-read* file-write*\n")
@@ -2456,6 +2727,7 @@ mod tests {
                 account_dir: Some(&account),
                 oauth_token: None,
                 codex_home: None,
+                adopted_read_only: false,
             };
             SandboxExecEngine
                 .launch_agent(&ctx, "/usr/local/bin/agent")
@@ -2497,6 +2769,7 @@ mod tests {
                 Some(&relocated),
                 None,
                 None,
+                false,
                 None,
                 &[],
             )
@@ -2544,8 +2817,19 @@ mod tests {
                 std::fs::create_dir_all(file.parent().unwrap()).unwrap();
                 std::fs::write(file, "{}").unwrap();
             }
-            let profile =
-                build_profile(&root, &rpc, &home, &CACHE, None, None, None, None, &[]).unwrap();
+            let profile = build_profile(
+                &root,
+                &rpc,
+                &home,
+                &CACHE,
+                None,
+                None,
+                None,
+                false,
+                None,
+                &[],
+            )
+            .unwrap();
             let reads = |file: &Path| {
                 std::process::Command::new(SANDBOX_EXEC)
                     .args(profile_args(&profile))
@@ -2607,8 +2891,19 @@ mod tests {
     #[cfg(target_os = "macos")]
     fn seatbelt_keeps_https_working_under_the_keychain_deny() {
         let (_td, root, rpc, home) = sandbox_dirs();
-        let profile =
-            build_profile(&root, &rpc, &home, &CACHE, None, None, None, None, &[]).unwrap();
+        let profile = build_profile(
+            &root,
+            &rpc,
+            &home,
+            &CACHE,
+            None,
+            None,
+            None,
+            false,
+            None,
+            &[],
+        )
+        .unwrap();
         let out = std::process::Command::new(SANDBOX_EXEC)
             .args(profile_args(&profile))
             .args([
@@ -2664,6 +2959,7 @@ mod tests {
             account_dir: Some(&codex_home),
             oauth_token: None,
             codex_home: Some(&codex_home),
+            adopted_read_only: false,
         };
         let mut plan = SandboxExecEngine.launch_agent(&ctx, &codex).unwrap();
         if std::env::var_os("FLETCH_LIVE_WITHOUT_KEYCHAIN_DENY").is_some() {
@@ -2760,8 +3056,19 @@ mod tests {
     #[test]
     fn agent_profile_denies_the_keychain_services() {
         let (_td, root, rpc, home) = sandbox_dirs();
-        let profile =
-            build_profile(&root, &rpc, &home, &CACHE, None, None, None, None, &[]).unwrap();
+        let profile = build_profile(
+            &root,
+            &rpc,
+            &home,
+            &CACHE,
+            None,
+            None,
+            None,
+            false,
+            None,
+            &[],
+        )
+        .unwrap();
         assert!(profile.contains(KEYCHAIN_MACH_DENY));
         assert!(
             !profile.contains("com.apple.trustd"),
@@ -2786,7 +3093,19 @@ mod tests {
             ],
             || {
                 (
-                    build_profile(&root, &rpc, &home, &CACHE, None, None, None, None, &[]).unwrap(),
+                    build_profile(
+                        &root,
+                        &rpc,
+                        &home,
+                        &CACHE,
+                        None,
+                        None,
+                        None,
+                        false,
+                        None,
+                        &[],
+                    )
+                    .unwrap(),
                     deny_host_git_credentials(&home),
                 )
             },
@@ -2846,8 +3165,19 @@ mod tests {
                 ("XDG_CACHE_HOME", &cache_s),
             ],
             || {
-                let _ =
-                    build_profile(&root, &rpc, &home, &CACHE, None, None, None, None, &[]).unwrap();
+                let _ = build_profile(
+                    &root,
+                    &rpc,
+                    &home,
+                    &CACHE,
+                    None,
+                    None,
+                    None,
+                    false,
+                    None,
+                    &[],
+                )
+                .unwrap();
                 deny_host_git_credentials(&home)
             },
         );
@@ -2910,6 +3240,7 @@ mod tests {
                 account_dir: None,
                 oauth_token: None,
                 codex_home: None,
+                adopted_read_only: false,
             };
             let plan = SandboxExecEngine
                 .launch_agent(&ctx, "/usr/local/bin/agent")
@@ -2943,8 +3274,19 @@ mod tests {
             std::fs::create_dir_all(file.parent().unwrap()).unwrap();
             std::fs::write(file, "secret").unwrap();
         }
-        let profile =
-            build_profile(&root, &rpc, &home, &CACHE, None, None, None, None, &[]).unwrap();
+        let profile = build_profile(
+            &root,
+            &rpc,
+            &home,
+            &CACHE,
+            None,
+            None,
+            None,
+            false,
+            None,
+            &[],
+        )
+        .unwrap();
         let run = |profile: &str, args: &[&str]| {
             std::process::Command::new(SANDBOX_EXEC)
                 .args(profile_args(profile))
@@ -3051,6 +3393,7 @@ mod tests {
             account_dir: None,
             oauth_token: Some(&token),
             codex_home: None,
+            adopted_read_only: false,
         };
         let plan = SandboxExecEngine
             .launch_agent(&ctx, "/usr/local/bin/claude")
@@ -3118,6 +3461,7 @@ mod tests {
             Some(default_claude.as_path()),
             None,
             None,
+            false,
             None,
             &[],
         )
@@ -3148,8 +3492,19 @@ mod tests {
         // credential file. `settings.json` (host hooks), `plugins/`, `CLAUDE.md`,
         // etc. must be covered by no grant.
         let (_td, root, rpc, home) = sandbox_dirs();
-        let profile =
-            build_profile(&root, &rpc, &home, &CACHE, None, None, None, None, &[]).unwrap();
+        let profile = build_profile(
+            &root,
+            &rpc,
+            &home,
+            &CACHE,
+            None,
+            None,
+            None,
+            false,
+            None,
+            &[],
+        )
+        .unwrap();
         let canonical_home = std::fs::canonicalize(&home).unwrap();
         let claude = canonical_home.join(".claude");
         let h = canonical_home.display();
@@ -3215,8 +3570,19 @@ mod tests {
         // reads (exfiltration) and writes (forging state). The deny only bites if
         // it comes AFTER the write allow-list, since SBPL is last-match-wins.
         let (_td, root, rpc, home) = sandbox_dirs();
-        let profile =
-            build_profile(&root, &rpc, &home, &CACHE, None, None, None, None, &[]).unwrap();
+        let profile = build_profile(
+            &root,
+            &rpc,
+            &home,
+            &CACHE,
+            None,
+            None,
+            None,
+            false,
+            None,
+            &[],
+        )
+        .unwrap();
         let canonical_home = std::fs::canonicalize(&home).unwrap();
 
         let deny = format!(
@@ -3317,8 +3683,19 @@ mod tests {
         let (_td, _unused, _unused_rpc, home) = sandbox_dirs();
         let (root, rpc, cache) = host_state_roots(data_dir);
 
-        let profile =
-            build_profile(&root, &rpc, &home, &cache, None, None, None, None, &[]).unwrap();
+        let profile = build_profile(
+            &root,
+            &rpc,
+            &home,
+            &cache,
+            None,
+            None,
+            None,
+            false,
+            None,
+            &[],
+        )
+        .unwrap();
         let canonical_home = std::fs::canonicalize(&home).unwrap();
 
         let deny = format!(
@@ -3511,8 +3888,19 @@ mod tests {
         let data_dir = shared_host_data_dir();
         let (_td, _unused, _unused_rpc, home) = sandbox_dirs();
         let (root, rpc, cache) = host_state_roots(data_dir);
-        let profile =
-            build_profile(&root, &rpc, &home, &cache, None, None, None, None, &[]).unwrap();
+        let profile = build_profile(
+            &root,
+            &rpc,
+            &home,
+            &cache,
+            None,
+            None,
+            None,
+            false,
+            None,
+            &[],
+        )
+        .unwrap();
 
         // `sh -c <script>` under the profile: exit 0 means the kernel allowed it.
         let allowed = |script: String| {
@@ -3594,8 +3982,19 @@ mod tests {
         // profile may name under `dev` is the read-only portable-git exception,
         // so the check is on the write grant, not the bare path.
         let (_td, root, rpc, home) = sandbox_dirs();
-        let profile =
-            build_profile(&root, &rpc, &home, &CACHE, None, None, None, None, &[]).unwrap();
+        let profile = build_profile(
+            &root,
+            &rpc,
+            &home,
+            &CACHE,
+            None,
+            None,
+            None,
+            false,
+            None,
+            &[],
+        )
+        .unwrap();
         let canonical_home = std::fs::canonicalize(&home).unwrap();
         let dev = format!(
             "(allow file-read* file-write* (subpath \"{}/Library/Application Support/{}/dev\"))",
@@ -3615,8 +4014,19 @@ mod tests {
     #[test]
     fn agent_profile_denies_appsupport_auto_exec_but_keeps_the_grant() {
         let (_td, root, rpc, home) = sandbox_dirs();
-        let profile =
-            build_profile(&root, &rpc, &home, &CACHE, None, None, None, None, &[]).unwrap();
+        let profile = build_profile(
+            &root,
+            &rpc,
+            &home,
+            &CACHE,
+            None,
+            None,
+            None,
+            false,
+            None,
+            &[],
+        )
+        .unwrap();
         let canonical_home = std::fs::canonicalize(&home).unwrap();
         let app_support = format!("{}/Library/Application Support", canonical_home.display());
 
@@ -3728,8 +4138,19 @@ mod tests {
         for d in [&root, &rpc, &home] {
             std::fs::create_dir_all(d).unwrap();
         }
-        let profile =
-            build_profile(&root, &rpc, &home, &CACHE, None, None, None, None, &[]).unwrap();
+        let profile = build_profile(
+            &root,
+            &rpc,
+            &home,
+            &CACHE,
+            None,
+            None,
+            None,
+            false,
+            None,
+            &[],
+        )
+        .unwrap();
         let canonical_home = std::fs::canonicalize(&home).unwrap();
         let app_support = canonical_home.join("Library/Application Support");
 
@@ -3986,6 +4407,7 @@ mod tests {
             account_dir: None,
             oauth_token: None,
             codex_home: None,
+            adopted_read_only: false,
         };
         let plan = SandboxExecEngine
             .launch_agent(&ctx, "/usr/local/bin/claude")

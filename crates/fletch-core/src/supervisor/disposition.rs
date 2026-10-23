@@ -60,6 +60,10 @@ impl Supervisor {
 
         self.workspace.begin_archive(agent_id)?;
         emit_workspace_changed(ctx.sink.as_ref());
+        // Its local reviewers (hidden workspaces adopting its checkouts) go
+        // with it; their teardown spares the adopted trees, which are this
+        // archive's to remove below.
+        crate::review::engine::on_coder_gone(&self, Some(&ctx), agent_id).await;
         // The context layer's last look at the transcript; each checkout's
         // fate is applied below, once the record is final.
         crate::capture::extract::on_archive(ctx.clone(), agent_id.to_string());
@@ -333,6 +337,8 @@ impl Supervisor {
 
     pub async fn discard_agent(self: Arc<Self>, agent_id: &str) -> Result<()> {
         let record = self.workspace.agent(agent_id).ok();
+        // Its local reviewers go with it (`review::engine`).
+        crate::review::engine::on_coder_gone(&self, None, agent_id).await;
         let repos = record.as_ref().map(|r| r.repos.clone()).unwrap_or_default();
 
         self.detach_runtime(agent_id);

@@ -86,6 +86,8 @@ const newStore = () => {
         loadPendingPublishApprovals: vi.fn().mockResolvedValue(undefined),
         loadDelegations: vi.fn().mockResolvedValue(undefined),
         loadAutopilot: vi.fn().mockResolvedValue(undefined),
+        reviews: {},
+        loadReviews: vi.fn().mockResolvedValue(undefined),
         github: null,
         refreshGithub: vi.fn().mockResolvedValue(undefined),
         loadAllPrStatus: vi.fn().mockResolvedValue(undefined),
@@ -321,6 +323,8 @@ describe("environmentReconnected", () => {
     // …and so are the delegations it runs: events missed while away are gone.
     expect(store.getState().loadDelegations).toHaveBeenCalledTimes(2);
     expect(store.getState().loadAutopilot).toHaveBeenCalledTimes(2);
+    // …and the local reviews it runs, mirrored the same way.
+    expect(store.getState().loadReviews).toHaveBeenCalledTimes(2);
     // …and the PR badges, which only the watcher's events keep current.
     expect(store.getState().loadAllPrStatus).toHaveBeenCalledTimes(2);
   });

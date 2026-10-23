@@ -68,12 +68,15 @@ pub(crate) fn checks(merge_state: MergeState, failing: &[&str]) -> PrChecks {
 pub(crate) fn thread(id: &str, we_replied_last: bool) -> PrComment {
     PrComment {
         id: id.to_string(),
+        source: crate::github::ThreadSource::Github,
+        severity: None,
+        round: None,
         author: "bot".to_string(),
         is_bot: true,
         body: format!("c {id}"),
         path: None,
         line: None,
-        url: "https://x".to_string(),
+        url: Some("https://x".to_string()),
         replies: 0,
         we_replied_last,
     }
@@ -299,8 +302,10 @@ fn reads_the_failing_names_never_the_raw_failed_count() {
     assert!(kinds(&i).is_empty());
 }
 
+/// Threads count with an open proposal or none at all (the local reviewer's
+/// exist before one); a merged or closed proposal's threads are history.
 #[test]
-fn reports_unresolved_review_threads_only_on_an_open_proposal() {
+fn reports_unresolved_review_threads_with_no_proposal_or_an_open_one() {
     let i = ReadinessInput {
         pr: Some(pr()),
         checks: Some(checks(MergeState::Clean, &[])),
@@ -309,11 +314,63 @@ fn reports_unresolved_review_threads_only_on_an_open_proposal() {
     };
     assert_eq!(kinds(&i), ["review-unaddressed"]);
     let i = ReadinessInput {
-        pr: Some(pr_in(PrStatus::Merged)),
-        comments: Some(comments(3, false)),
+        comments: Some(comments(2, true)),
+        ..with_git(|g| g.ahead = 0)
+    };
+    assert_eq!(kinds(&i), ["review-disputed"]);
+    for state in [PrStatus::Merged, PrStatus::Closed] {
+        let i = ReadinessInput {
+            pr: Some(pr_in(state)),
+            comments: Some(comments(3, false)),
+            ..with_git(|g| g.ahead = 0)
+        };
+        assert!(
+            !kinds(&i).iter().any(|k| k.starts_with("review-")),
+            "{state:?}: {:?}",
+            kinds(&i)
+        );
+    }
+}
+
+/// Before a proposal the local reviewer's findings come right after the
+/// working copy: fix them before proposing, but commit first — the fix
+/// playbook commits its own work.
+#[test]
+fn works_local_findings_before_proposing_but_after_committing() {
+    let i = ReadinessInput {
+        comments: Some(comments(2, false)),
         ..input()
     };
-    assert!(kinds(&i).is_empty());
+    let (kind, action, params) = delegated(&rung(&i));
+    assert_eq!(kind, DelegationKind::ResolveComments);
+    assert_eq!(action, "resolve-comments");
+    assert_eq!(params, map(&[("count", "2")]));
+
+    let i = ReadinessInput {
+        comments: Some(comments(2, false)),
+        ..with_git(|g| g.files = vec![file(StatusKind::Modified, "a.ts")])
+    };
+    assert_eq!(delegated(&rung(&i)).0, DelegationKind::CommitPr);
+
+    // A push-back we made awaits a person: the ladder climbs past it.
+    let i = ReadinessInput {
+        comments: Some(comments(1, true)),
+        ..input()
+    };
+    assert_eq!(delegated(&rung(&i)).0, DelegationKind::OpenPr);
+}
+
+/// With a PR open the GitHub order holds: a failing check is fixed before the
+/// threads written against it, local ones included.
+#[test]
+fn keeps_checks_ahead_of_threads_once_a_proposal_is_open() {
+    let i = ReadinessInput {
+        pr: Some(pr()),
+        checks: Some(checks(MergeState::Blocked, &["unit"])),
+        comments: Some(comments(2, false)),
+        ..with_git(|g| g.ahead = 0)
+    };
+    assert_eq!(delegated(&rung(&i)).0, DelegationKind::FixChecks);
 }
 
 // ── nextRung ordering ──────────────────────────────────────────────────────

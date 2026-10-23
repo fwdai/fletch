@@ -99,6 +99,10 @@ pub struct GitDispatcher {
     caps: AgentCaps,
     /// `None` (tests) makes an enabled gate refuse rather than pass.
     approval: Option<(crate::host::Sink, String)>,
+    /// The engine and this agent's id, for the local review threads
+    /// (`review::store`) the thread ops read and answer beside GitHub's.
+    /// `None` (tests without an engine) makes a local thread id an error.
+    review: Option<(std::sync::Arc<crate::host::EngineCtx>, String)>,
 }
 
 impl GitDispatcher {
@@ -115,7 +119,18 @@ impl GitDispatcher {
             issue_agent: None,
             caps,
             approval: None,
+            review: None,
         }
+    }
+
+    /// Reach the local review threads of this agent's checkouts.
+    pub fn with_review(
+        mut self,
+        ctx: std::sync::Arc<crate::host::EngineCtx>,
+        agent_id: &str,
+    ) -> Self {
+        self.review = Some((ctx, agent_id.to_string()));
+        self
     }
 
     #[cfg(test)]

@@ -64,6 +64,9 @@ pub struct PerTurnSpec {
     /// The run blackboard dir to grant this per-turn step agent write access to
     /// (§8). `None` for a normal spawn.
     pub blackboard: Option<PathBuf>,
+    /// The adopted checkout is read-only to this agent (the local reviewer):
+    /// `AgentLaunchCtx::adopted_read_only`.
+    pub adopted_read_only: bool,
 }
 
 /// How a claude launch attaches to its conversation (see `args::session_args`).
@@ -148,6 +151,9 @@ pub struct SpawnSpec<'a> {
     /// workflow step agent (§8). `None` for a normal spawn. The sandbox engine
     /// turns it into the seatbelt subpath / Docker mount + `WF_BLACKBOARD`.
     pub blackboard: Option<&'a Path>,
+    /// The adopted checkout is read-only to this agent (the local reviewer):
+    /// `AgentLaunchCtx::adopted_read_only`.
+    pub adopted_read_only: bool,
 }
 
 /// The environment Fletch injects into every agent child: the absolute path to
@@ -340,6 +346,7 @@ impl Agent {
             account_dir: account.dir.as_deref(),
             oauth_token: spec.oauth_token,
             codex_home: None,
+            adopted_read_only: spec.adopted_read_only,
         };
         let LaunchPlan {
             program,
@@ -447,6 +454,7 @@ impl Agent {
             account_dir: account.dir.as_deref(),
             oauth_token: None,
             codex_home: codex.as_ref().map(|c| c.overlay.as_path()),
+            adopted_read_only: spec.adopted_read_only,
         };
         let LaunchPlan {
             program,
@@ -522,6 +530,7 @@ impl Agent {
             account_dir: account.dir.as_deref(),
             oauth_token: spec.oauth_token,
             codex_home: None,
+            adopted_read_only: spec.adopted_read_only,
         };
         let LaunchPlan {
             program,
@@ -691,6 +700,7 @@ impl Agent {
             account_dir: account.dir.as_deref(),
             oauth_token: None,
             codex_home: codex.as_ref().map(|c| c.overlay.as_path()),
+            adopted_read_only: spec.adopted_read_only,
         };
         let LaunchPlan {
             program: launch_program,
@@ -1127,6 +1137,7 @@ mod tests {
             account_dir: Some(&source),
             oauth_token: None,
             codex_home: Some(&codex.overlay),
+            adopted_read_only: false,
         };
         let bin = resolve_agent_bin("codex", "codex", "Codex", &home).unwrap();
         let plan = sandbox::engine_for(EngineKind::SandboxExec)

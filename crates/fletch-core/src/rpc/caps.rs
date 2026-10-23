@@ -59,6 +59,18 @@ impl AgentCaps {
         }
     }
 
+    /// The local reviewer: it reads the change and reports findings
+    /// (`review_submit`); it never edits, commits or publishes. Denied at the
+    /// grant like the PM chat, so a persuaded model still can't push.
+    pub fn reviewer() -> Self {
+        Self {
+            publish: Publish::Denied(
+                "the reviewer reads and reports; it never edits, commits or publishes — \
+                 report your findings through review_submit instead",
+            ),
+        }
+    }
+
     pub fn refuses(self, op: &str) -> Option<&'static str> {
         match self.publish {
             Publish::Denied(why) if is_publish_op(op) => Some(why),

@@ -191,10 +191,17 @@ describe("detectBlockers", () => {
     ).toEqual([]);
   });
 
-  it("reports unresolved review threads only on an open proposal", () => {
+  it("reports unresolved review threads on an open proposal, or with none at all", () => {
     expect(kinds(input({ pr: pr(), checks: checks(), comments: comments(3) }))).toEqual([
       "review-unaddressed",
     ]);
+    // The local reviewer's findings exist before any PR does.
+    expect(
+      kinds(input({ git: git({ ahead: 0 }), comments: comments(2, { source: "local" }) })),
+    ).toEqual(["review-unaddressed"]);
+    expect(
+      kinds(input({ git: git({ ahead: 0 }), comments: comments(1, { we_replied_last: true }) })),
+    ).toEqual(["review-disputed"]);
     // Threads on a merged PR are history, not a blocker.
     expect(kinds(input({ pr: pr({ state: "merged" }), comments: comments(3) }))).toEqual([]);
   });
@@ -242,6 +249,29 @@ describe("nextRung ordering", () => {
     expect(rung({ git: git({ unpushed: 2 }), pr: pr(), checks: checks() })).toMatchObject({
       kind: "push",
     });
+  });
+
+  it("addresses the local reviewer's findings before proposing the work", () => {
+    // A review run before any PR: its open threads come right after the
+    // commit, so the proposal opens on the fixed code — but never ahead of a
+    // commit, which the fix itself would dirty again.
+    const findings = comments(2, { source: "local" });
+    expect(rung({ git: git({ unpushed: 2 }), comments: findings })).toMatchObject({
+      kind: "resolve-comments",
+      params: { count: "2" },
+    });
+    expect(rung({ git: git({ files: [file("modified")] }), comments: findings })).toMatchObject({
+      kind: "commit-pr",
+    });
+    // With a PR open the threads keep their place after the checks.
+    expect(
+      rung({
+        git: git(),
+        pr: pr(),
+        checks: checks({ merge_state: "blocked", required_failing: ["test"] }),
+        comments: findings,
+      }),
+    ).toMatchObject({ kind: "fix-checks" });
   });
 
   it("syncs with mainline before trusting a check result", () => {
@@ -401,6 +431,11 @@ describe("the trigger each rung produces", () => {
       '[app-action] fix-checks failing="build, test"',
     ],
     [open(checks({ merge_state: "clean" }), 2), '[app-action] resolve-comments count="2"'],
+    // The local reviewer's findings, before any PR exists.
+    [
+      input({ git: git({ unpushed: 1 }), comments: comments(1, { source: "local" }) }),
+      '[app-action] resolve-comments count="1"',
+    ],
   ];
 
   it("composes the same trigger the host's ladder does", () => {

@@ -1443,3 +1443,57 @@ button.rg-head {
 .ap-log-row.o-give-up .ap-log-what {
   color: var(--warn);
 }
+
+/* ── review row: the local reviewer ───────────────────────────────────────── */
+/* the row's one control (Review / Re-review / Stop), quiet until hovered */
+.rg-review-act {
+  flex: none;
+  margin-left: 6px;
+}
+/* the local reviewer's provider mark, sized like the bot / user glyphs */
+.pr-comment > .chip-mono {
+  flex: none;
+  margin-top: 1px;
+}
+/* a finding's severity, as a small tinted chip beside the author */
+.pr-comment .pc-sev {
+  flex: none;
+  padding: 0 5px;
+  border-radius: 999px;
+  font-size: 10px;
+  line-height: 15px;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--fg-2);
+  background: var(--bg-3);
+}
+.pr-comment .pc-sev.s-high {
+  color: var(--danger);
+  background: color-mix(in oklab, var(--danger) 14%, transparent);
+}
+.pr-comment .pc-sev.s-medium {
+  color: var(--warn);
+  background: color-mix(in oklab, var(--warn) 14%, transparent);
+}
+/* a file anchor that opens the file's diff in place of the ladder */
+.pr-comment .pc-loc-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: pointer;
+  font: inherit;
+  font-family: var(--mono, monospace);
+  color: var(--fg-3);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pr-comment .pc-loc-link:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}
+/* the armed dismiss: one more click closes the finding for good */
+.pr-comment .pc-act--danger {
+  color: var(--danger);
+}

@@ -305,11 +305,23 @@ pub fn effective_instructions(
         .roadmap_pm
         .then(|| crate::instructions::roadmap_block(blocks.not_doing))
         .flatten();
+    let review = blocks
+        .reviewer
+        .then(crate::instructions::review_block)
+        .flatten();
     let context = crate::instructions::context_block(blocks.context);
-    let parts: Vec<String> = [codegraph, roadmap, context, clean(brief), handoff, index]
-        .into_iter()
-        .flatten()
-        .collect();
+    let parts: Vec<String> = [
+        codegraph,
+        roadmap,
+        review,
+        context,
+        clean(brief),
+        handoff,
+        index,
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
     Ok((!parts.is_empty()).then(|| parts.join("\n\n")))
 }
 
@@ -325,6 +337,10 @@ pub struct Blocks<'a> {
     /// This is a roadmap project-manager chat, so it has the `roadmap_*` RPC
     /// ops (`rpc::roadmap::RoadmapDispatcher`) and may be told about them.
     pub roadmap_pm: bool,
+    /// This is a local reviewer session (`workspace::PURPOSE_REVIEWER`), so it
+    /// has the `review_submit` op (`rpc::review::ReviewDispatcher`) and the
+    /// read-only review contract.
+    pub reviewer: bool,
     /// The board's not-doing digest (`roadmap::not_doing::digest`), when the
     /// user has ruled anything off it — injected inside the roadmap block.
     /// Carried here rather than fetched inside [`effective_instructions`]
@@ -563,6 +579,7 @@ mod tests {
     const CG: Blocks<'static> = Blocks {
         codegraph: true,
         roadmap_pm: false,
+        reviewer: false,
         not_doing: None,
         context: None,
     };
@@ -572,6 +589,7 @@ mod tests {
     const PM: Blocks<'static> = Blocks {
         codegraph: false,
         roadmap_pm: true,
+        reviewer: false,
         not_doing: None,
         context: None,
     };
@@ -705,6 +723,7 @@ mod tests {
             Blocks {
                 codegraph: true,
                 roadmap_pm: true,
+                reviewer: false,
                 not_doing: None,
                 context: None,
             },

@@ -182,6 +182,27 @@ fn handle_rpc_event(sup: &Supervisor, ctx: &Arc<EngineCtx>, agent_id: &str, even
                 }
             }
             sup.fetch_and_emit_pr_state(ctx.clone(), agent_id.to_string());
+            // A PR just opened: the local reviewer's cue (`review::engine`),
+            // in the background — the spawn it may start is not the op's.
+            if let Some(sup) = ctx.supervisor() {
+                let (ctx, id) = (ctx.clone(), agent_id.to_string());
+                let subdir = payload
+                    .get("repo")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string);
+                let number = u32::try_from(number).ok();
+                crate::host::spawn(async move {
+                    crate::review::engine::on_pr_opened(
+                        &ctx,
+                        &sup,
+                        &id,
+                        subdir.as_deref(),
+                        number,
+                        None,
+                    )
+                    .await;
+                });
+            }
             // The agent may now hold PRs in two or more repos — cross-link the
             // set in each PR's body (best-effort, in the background).
             let workspace = sup.workspace.clone();
