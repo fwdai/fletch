@@ -213,6 +213,28 @@ pub fn context_retract_impl(
     Ok(())
 }
 
+/// The tidy pass (`context::tidy`): what the log holds that the ingester
+/// would not land today — a merged PR's line twinning the workspace's own
+/// record, or a head restating a replaced statement. Without `retract`, the
+/// answer is the list the user is shown. With it, the ids the user confirmed
+/// from that list: the pass runs again, inside the transaction that
+/// retracts, and retracts those of them it still finds — never one that
+/// arrived after the list was shown, never one that stopped being a
+/// candidate since, not even by a write in the same instant — and answers
+/// what it retracted.
+pub fn context_tidy_impl(
+    ctx: &EngineCtx,
+    project_id: &str,
+    retract: Option<&[Id]>,
+) -> Result<Vec<context::tidy::TidyCandidate>> {
+    let project = open(ctx, project_id)?;
+    let service = ctx.context()?;
+    match retract {
+        None => Ok(context::tidy::candidates(&service.graph(&project)?)),
+        Some(confirmed) => Ok(service.tidy(&project, confirmed, ui_stamp())?),
+    }
+}
+
 pub fn context_archive_entity_impl(
     ctx: &EngineCtx,
     project_id: &str,
@@ -406,6 +428,177 @@ mod tests {
             without.mapping_task,
             crate::instructions::context_mapping_task(None)
         );
+    }
+
+    /// The pass lists before it writes; applied, it retracts exactly what it
+    /// listed, and the next look finds nothing.
+    #[test]
+    fn tidy_lists_then_retracts_what_it_listed() {
+        let (ctx, _sink, _dir) = crate::host::ctx::test_ctx();
+        {
+            let conn = ctx.db.lock();
+            crate::database::set_setting(&conn, context::DEV_SETTING, "true").unwrap();
+            conn.execute(
+                "INSERT INTO projects (id, name, created_at) VALUES ('p1', 'p', 0)",
+                [],
+            )
+            .unwrap();
+        }
+        let entity = context_record_entity_impl(
+            &ctx,
+            "p1",
+            EntityInput {
+                slug: "git".into(),
+                name: "Git".into(),
+                summary: "pushes".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let assertion = |statement: &str, supersedes: Option<Id>| AssertionInput {
+            kind: context::AssertionKind::Decision,
+            domain: context::Domain::Implementation,
+            stance: context::Stance::Adopted,
+            statement: statement.into(),
+            rationale: "because".into(),
+            valid_from: None,
+            paths: vec![],
+            about: vec![entity.clone()],
+            supersedes: supersedes.map(|id| context::Supersede {
+                id,
+                reasoning: "scoped".into(),
+            }),
+            contradicts: vec![],
+            status: AssertionStatus::Confirmed,
+        };
+        let old = context_record_assertion_impl(
+            &ctx,
+            "p1",
+            assertion("Every spawn carries the socket.", None),
+        )
+        .unwrap();
+        let new = context_record_assertion_impl(
+            &ctx,
+            "p1",
+            assertion("The socket only outside agent trees.", Some(old.clone())),
+        )
+        .unwrap();
+        let back = context_record_assertion_impl(
+            &ctx,
+            "p1",
+            assertion("Every spawn carries the socket.", None),
+        )
+        .unwrap();
+
+        let listed = context_tidy_impl(&ctx, "p1", None).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].retract, back);
+        assert_eq!(listed[0].of, old);
+        assert_eq!(listed[0].reason, context::tidy::TidyReason::RestatesRetired);
+        let project = open(&ctx, "p1").unwrap();
+        let graph = ctx.context().unwrap().store().load(&project.id).unwrap();
+        assert!(graph.current.contains(&back), "listing writes nothing");
+
+        // A candidate that arrived after the list was shown (similar words,
+        // not the duplicate the policy would fold into `back`) is not in the
+        // confirmation and is not touched; neither is an id that is not a
+        // candidate.
+        let late = context_record_assertion_impl(
+            &ctx,
+            "p1",
+            assertion("Every spawn carries the socket from the shell.", None),
+        )
+        .unwrap();
+        let confirmed = vec![back.clone(), new.clone()];
+        let applied = context_tidy_impl(&ctx, "p1", Some(&confirmed)).unwrap();
+        assert_eq!(applied, listed);
+        let graph = ctx.context().unwrap().store().load(&project.id).unwrap();
+        assert_eq!(
+            graph.assertion(&back).unwrap().status,
+            AssertionStatus::Retracted
+        );
+        assert!(graph.current.contains(&new));
+        assert!(
+            graph.current.contains(&late),
+            "not confirmed, not retracted"
+        );
+        let again = context_tidy_impl(&ctx, "p1", None).unwrap();
+        assert_eq!(again.len(), 1);
+        assert_eq!(again[0].retract, late);
+    }
+
+    /// A confirmed id whose reason to be a candidate went away between the
+    /// look and the click (here, the replaced statement it restated was
+    /// retracted, so it restates nothing) is not retracted.
+    #[test]
+    fn tidy_revalidates_what_was_confirmed_before_it_retracts() {
+        let (ctx, _sink, _dir) = crate::host::ctx::test_ctx();
+        {
+            let conn = ctx.db.lock();
+            crate::database::set_setting(&conn, context::DEV_SETTING, "true").unwrap();
+            conn.execute(
+                "INSERT INTO projects (id, name, created_at) VALUES ('p1', 'p', 0)",
+                [],
+            )
+            .unwrap();
+        }
+        let entity = context_record_entity_impl(
+            &ctx,
+            "p1",
+            EntityInput {
+                slug: "git".into(),
+                name: "Git".into(),
+                summary: "pushes".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let assertion = |statement: &str, supersedes: Option<Id>| AssertionInput {
+            kind: context::AssertionKind::Decision,
+            domain: context::Domain::Implementation,
+            stance: context::Stance::Adopted,
+            statement: statement.into(),
+            rationale: "because".into(),
+            valid_from: None,
+            paths: vec![],
+            about: vec![entity.clone()],
+            supersedes: supersedes.map(|id| context::Supersede {
+                id,
+                reasoning: "scoped".into(),
+            }),
+            contradicts: vec![],
+            status: AssertionStatus::Confirmed,
+        };
+        let old = context_record_assertion_impl(
+            &ctx,
+            "p1",
+            assertion("Every spawn carries the socket.", None),
+        )
+        .unwrap();
+        context_record_assertion_impl(
+            &ctx,
+            "p1",
+            assertion("The socket only outside agent trees.", Some(old.clone())),
+        )
+        .unwrap();
+        let back = context_record_assertion_impl(
+            &ctx,
+            "p1",
+            assertion("Every spawn carries the socket.", None),
+        )
+        .unwrap();
+        let listed = context_tidy_impl(&ctx, "p1", None).unwrap();
+        assert_eq!(listed[0].retract, back);
+
+        context_retract_impl(&ctx, "p1", &old, "never right").unwrap();
+
+        let confirmed = vec![back.clone()];
+        assert!(context_tidy_impl(&ctx, "p1", Some(&confirmed))
+            .unwrap()
+            .is_empty());
+        let project = open(&ctx, "p1").unwrap();
+        let graph = ctx.context().unwrap().store().load(&project.id).unwrap();
+        assert!(graph.current.contains(&back));
     }
 
     /// A ruling on a tension between two recorded heads is one event and one

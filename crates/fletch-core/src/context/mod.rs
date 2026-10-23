@@ -26,6 +26,7 @@ pub mod render;
 pub mod resolve;
 pub mod service;
 pub mod store;
+pub mod tidy;
 pub mod trust;
 
 /// Hand-built graphs shared by the pure-logic tests (compile, render).

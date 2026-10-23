@@ -64,6 +64,17 @@ pub fn context_retract(
     engine::context_retract_impl(&ctx, &project_id, &assertion_id, &reason)
 }
 
+/// List what the tidy pass finds, or (with `retract`, the ids the user
+/// confirmed from that list) retract those of them it still finds.
+#[tauri::command]
+pub fn context_tidy(
+    ctx: State<'_, Arc<EngineCtx>>,
+    project_id: String,
+    retract: Option<Vec<String>>,
+) -> Result<Vec<fletch_core::context::tidy::TidyCandidate>> {
+    engine::context_tidy_impl(&ctx, &project_id, retract.as_deref())
+}
+
 #[tauri::command]
 pub fn context_archive_entity(
     ctx: State<'_, Arc<EngineCtx>>,

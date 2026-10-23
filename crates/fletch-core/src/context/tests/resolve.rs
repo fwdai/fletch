@@ -172,7 +172,23 @@ fn classify_sees_only_what_stands_now() {
 fn similar_reads_a_rewording_as_the_same_words_and_a_swap_as_different() {
     assert!(similar(
         "Sessions refresh server-side.",
-        "Sessions refresh on the server side, never in the client."
+        "Sessions refresh on the server side only."
+    ));
+    // A negation is a different claim however many words it shares; the
+    // short words that carry it are checked before the word filter drops
+    // them. An antonym swap falls under the threshold.
+    assert!(!similar("Cache is enabled.", "Cache is not enabled."));
+    assert!(!similar(
+        "Agents can push to main.",
+        "Agents can't push to main."
+    ));
+    assert!(!similar(
+        "Sessions refresh on the server side.",
+        "Sessions never refresh on the server side."
+    ));
+    assert!(!similar(
+        "Cache enabled by default.",
+        "Cache disabled by default."
     ));
     assert!(similar(
         "Every host-side git spawn carries PATH from the login shell.",

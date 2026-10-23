@@ -198,6 +198,26 @@
   color: var(--danger, #d33);
 }
 
+.pc-tidy {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.pc-tidy .pc-actions {
+  margin-left: 0;
+  align-items: center;
+}
+
+.pc-tidy-list {
+  margin: 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
 .pc-proposal {
   display: flex;
   flex-direction: column;

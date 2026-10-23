@@ -305,6 +305,7 @@ pub const OPS: &[&str] = &[
     "context_dismiss_proposals",
     "context_resolve_contradiction",
     "context_bootstrap",
+    "context_tidy",
 ];
 
 pub const REGISTER_PUSH: &str = "register_push";
@@ -607,6 +608,7 @@ const OP_SCOPES: &[(&str, Scope)] = &[
     ("context_dismiss_proposals", Scope::Projects),
     ("context_resolve_contradiction", Scope::Projects),
     ("context_bootstrap", Scope::Projects),
+    ("context_tidy", Scope::Projects),
 ];
 
 /// The one scope that reaches `op`. `None` for a name outside [`OPS`] —
@@ -1812,7 +1814,8 @@ impl Dispatch for SupervisorDispatch {
                 | "context_link"
                 | "context_rule_proposal"
                 | "context_dismiss_proposals"
-                | "context_resolve_contradiction" => context_op(ctx, op, args),
+                | "context_resolve_contradiction"
+                | "context_tidy" => context_op(ctx, op, args),
 
                 // Reads the project's repo through git, so not one of the
                 // synchronous `context_op`s.
@@ -2095,6 +2098,14 @@ fn context_op(ctx: &EngineCtx, op: &str, args: Value) -> DispatchResult {
                 ctx,
                 &a.project_id,
                 &a.proposal_ids,
+            ))
+        }
+        "context_tidy" => {
+            let a: ContextTidyArgs = parse(args)?;
+            res(c::context_tidy_impl(
+                ctx,
+                &a.project_id,
+                a.retract.as_deref(),
             ))
         }
         "context_resolve_contradiction" => {
@@ -2758,6 +2769,15 @@ struct ContextRetractArgs {
     project_id: String,
     assertion_id: String,
     reason: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ContextTidyArgs {
+    project_id: String,
+    /// The candidate ids the user confirmed; absent to list only.
+    #[serde(default)]
+    retract: Option<Vec<String>>,
 }
 
 #[derive(Deserialize)]

@@ -141,11 +141,16 @@ Three paths, one pipeline, rising cost:
    record written a second time in the PR's words; the merge confirms the
    record and the line is left). "Restates" is one claim in two wordings:
    the same kind, domain and stance, about at least one of the same entities
-   (`resolve::same_claim`), and statements whose word sets overlap by half
-   or more (`resolve::similar`, `TWIN_SIMILARITY`) — so the same sentence
-   about another component, or a different decision about the same one,
-   lands as it always did. The merge also confirms the workspace's
-   provisionals; archive-without-merge abandons them.
+   (`resolve::same_claim`), and statements whose word sets overlap by
+   `TWIN_SIMILARITY` or more with no negation on one side only
+   (`resolve::similar`; "not", "never", "n't" and the like are checked
+   before the word filter drops them) — so the same sentence about another
+   component, a different decision about the same one, or the opposite of
+   a recorded one lands as it always did. The threshold is high on purpose:
+   the check sees neither antonyms nor word order, and a missed rewording
+   costs one duplicate where a false match loses a decision. The merge also
+   confirms the workspace's provisionals; archive-without-merge abandons
+   them.
 
    The same merge appends its **structural delta** (`capture/ingest/structure.rs`),
    before the lines so one can name a module the PR added. The GitHub fetch
@@ -313,10 +318,21 @@ entity its relations and assertions with status, author/source and
 contradiction badges and the actions *change* (supersede with reasoning),
 *retract*, *history*, *edit* (revision), *archive*, *merge into*; a **review
 queue** of pending proposals with their evidence and relation; a **preview**
-of exactly what an agent would be served for a query. Two project toggles:
-`context.enabled` (everything) and `context.extract` (the background run).
-All of it goes through host ops (`context_*` in `remote::dispatch`), so a
-remote-controlled host behaves the same.
+of exactly what an agent would be served for a query; and **Tidy**
+(`context::tidy`, op `context_tidy`), the pass over what the log already
+holds that the ingester would not land today — a merged PR's line twinning
+the workspace's own record, or a head restating a statement a later record
+replaced (the ingester's two rules: same kind, domain, stance and a shared
+entity, in similar words). It lists first; the confirmation sends back the
+ids on screen, the pass runs again inside the transaction that retracts
+(`ContextStore::tidy`) and retracts those of them it still finds — never one
+that arrived after the list was shown, never one a write in the same
+instant made a candidate no longer —
+one `retracted` event each with the pass's reason, since the log has no
+delete and no un-retract. Two project toggles: `context.enabled` (everything) and
+`context.extract` (the background run). All of it goes through host ops
+(`context_*` in `remote::dispatch`), so a remote-controlled host behaves the
+same.
 
 A note for anyone who ran the gated feature before this branch merges:
 `migrations_context/0001_context.sql` was edited in place (it had never

@@ -388,7 +388,8 @@ fn a_line_restating_the_workspaces_own_provisional_is_left_to_the_merge() {
         &service,
         &merged(
             "## Decisions\n\
-             - adopted · implementation · [auth-session] — Sessions refresh on the server side, never in the client. — Restates the branch's record.\n\
+             - adopted · implementation · [auth-session] — Sessions refresh on the server side only. — Restates the branch's record.\n\
+             - adopted · implementation · [auth-session] — Sessions never refresh on the server side. — Negates it: a different claim, lands.\n\
              - adopted · implementation · [auth-session] — Session cookies are HttpOnly. — Same shape, another decision: new.\n\
              - constraint · implementation · [auth-session] — Sessions never refresh twice in a minute. — Another kind: new.\n\
              - fact · implementation · [auth-session] — Sessions live a day or until sign-out. — Another workspace's provisional: new.\n",
@@ -406,6 +407,7 @@ fn a_line_restating_the_workspaces_own_provisional_is_left_to_the_merge() {
             "Session cookies are HttpOnly.",
             "Sessions live a day or until sign-out.",
             "Sessions live a day.",
+            "Sessions never refresh on the server side.",
             "Sessions never refresh twice in a minute.",
             "Sessions refresh server-side.",
         ]

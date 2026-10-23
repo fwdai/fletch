@@ -13,6 +13,7 @@ import { ENABLED_KEY, EXTRACT_KEY, flagOn } from "./format";
 import { MapProject } from "./MapProject";
 import { Preview } from "./Preview";
 import { ReviewQueue } from "./ReviewQueue";
+import { Tidy } from "./Tidy";
 import { useContextOverview } from "./useContextOverview";
 
 type Area = "entities" | "review" | "preview";
@@ -160,6 +161,7 @@ export function ContextTab({
             </Button>
             <MapProject projectId={projectId} disabled={locked || !enabled} />
           </div>
+          <Tidy projectId={projectId} disabled={locked || !enabled} />
           <div className="pc-split">
             <EntityList entities={active} selectedId={selectedId} onSelect={select} />
             <div className="pc-detail">

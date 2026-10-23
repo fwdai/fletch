@@ -451,6 +451,38 @@ impl ContextStore {
         )
     }
 
+    /// The tidy pass applied: `confirmed` is the candidate ids the user saw.
+    /// The candidates are computed again from the graph as it stands inside
+    /// the transaction that retracts them, so nothing written since the list
+    /// was shown — the twin's original retracted, a successor withdrawn —
+    /// can make a record a candidate it no longer is; all land or none do.
+    /// Answers what was retracted.
+    pub(super) fn tidy(
+        &self,
+        project_id: &str,
+        confirmed: &[Id],
+        stamp: Stamp,
+    ) -> Result<Vec<super::tidy::TidyCandidate>> {
+        self.write(project_id, |conn| {
+            let graph = load_graph(conn, project_id)?;
+            let mut found = super::tidy::candidates(&graph);
+            found.retain(|c| confirmed.contains(&c.retract));
+            for c in &found {
+                self.append(
+                    conn,
+                    project_id,
+                    stamp.clone(),
+                    now_millis(),
+                    EventPayload::Retracted {
+                        assertion_id: c.retract.clone(),
+                        reason: c.reasoning(),
+                    },
+                )?;
+            }
+            Ok(found)
+        })
+    }
+
     /// The one write policy: classify the candidate against what stands now,
     /// apply the rule for the stamp's author kind, and record, park or refuse
     /// — all under one transaction, so no writer can race the check. See

@@ -234,6 +234,22 @@ impl ContextService {
         Ok(())
     }
 
+    /// The tidy pass applied to the `confirmed` candidate ids, revalidated
+    /// and retracted in one transaction (`ContextStore::tidy`); one change
+    /// pulse when anything was.
+    pub fn tidy(
+        &self,
+        project: &Project,
+        confirmed: &[Id],
+        stamp: Stamp,
+    ) -> Result<Vec<super::tidy::TidyCandidate>> {
+        let retracted = self.store.tidy(&project.id, confirmed, stamp)?;
+        if !retracted.is_empty() {
+            self.changed(project);
+        }
+        Ok(retracted)
+    }
+
     pub fn archive_entity(&self, project: &Project, entity_id: &str, stamp: Stamp) -> Result<()> {
         self.store.archive_entity(&project.id, entity_id, stamp)?;
         self.changed(project);
