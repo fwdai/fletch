@@ -134,8 +134,14 @@ Three paths, one pipeline, rising cost:
    the PR merge (`supervisor::pr_watch`) or at archive for a PR that merged
    while the host was down. Lines land confirmed with source `pr`, next to
    whatever is already said about those entities (a restatement is skipped
-   as a duplicate). The merge also confirms the workspace's provisionals;
-   archive-without-merge abandons them.
+   as a duplicate). Two kinds of line never reach the policy: one that
+   restates an assertion no longer standing (`resolve::retired_restatement`;
+   landing it would bring back what a later record replaced), and one of
+   the same kind, domain and stance as a provisional the merging workspace
+   itself recorded about the same entities (the agent's mid-branch record
+   written a second time in the PR's words; the merge confirms the record
+   and the line is left). The merge also confirms the workspace's
+   provisionals; archive-without-merge abandons them.
 
    The same merge appends its **structural delta** (`capture/ingest/structure.rs`),
    before the lines so one can name a module the PR added. The GitHub fetch

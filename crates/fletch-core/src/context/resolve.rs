@@ -92,6 +92,17 @@ pub fn related_heads<'a>(graph: &'a Graph, candidate: &AssertionInput) -> Vec<&'
         .collect()
 }
 
+/// An assertion that no longer stands (superseded, retracted, abandoned)
+/// whose statement `statement` restates. A writer that lands it would bring
+/// back what was deliberately replaced.
+pub fn retired_restatement<'a>(graph: &'a Graph, statement: &str) -> Option<&'a Assertion> {
+    let wanted = normalise(statement);
+    graph
+        .assertions
+        .iter()
+        .find(|a| !super::compile::is_current(graph, a) && normalise(&a.statement) == wanted)
+}
+
 /// How `candidate` relates to the existing heads about its entities, as far
 /// as text alone can tell: `Duplicate` when a live head of the same kind,
 /// domain and stance has the same statement (normalised: case, whitespace,
