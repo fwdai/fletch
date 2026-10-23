@@ -78,12 +78,20 @@ fn town() -> Graph {
             assertion("d1", &["f1"], "Use sessions"),
             assertion("d2", &["m1"], "Use Postgres"),
             assertion("d3", &["f2"], "Stripe"),
+            // About two entities, so the map meets it twice and must count it once.
+            detail("d4", &["m1", "f2"], "Pool size is 8"),
         ],
         vec![
             link("f1", "m1", Rel::DependsOn),
             link("f2", "v", Rel::Serves),
         ],
     )
+}
+
+fn detail(id: &str, about: &[&str], statement: &str) -> Assertion {
+    let mut a = assertion(id, about, statement);
+    a.domain = Domain::Implementation;
+    a
 }
 
 #[test]
@@ -107,8 +115,57 @@ fn empty_query_is_the_map() {
         .map(|a| a.assertion.id.as_str())
         .collect();
     served.sort();
-    assert_eq!(served, ["d1", "d2", "d3"]);
-    assert!(b.misses.is_empty() && b.warnings.is_empty());
+    assert_eq!(served, ["d1", "d2", "d3"], "the map carries no detail");
+    assert!(b.misses.is_empty());
+    assert_eq!(
+        b.warnings,
+        ["1 implementation-level record(s) not in the map; name entities or paths to read them"]
+    );
+}
+
+#[test]
+fn implementation_detail_rides_only_with_a_targeted_entity() {
+    let mut g = town();
+    g.entities[3].paths = vec!["src/db".into()];
+    let served = |q: CompileQuery| -> Vec<String> {
+        compile(&g, &q, None)
+            .assertions
+            .iter()
+            .map(|a| a.assertion.id.clone())
+            .collect()
+    };
+    // Named.
+    assert_eq!(
+        served(CompileQuery {
+            entities: vec!["db".into()],
+            ..Default::default()
+        }),
+        ["d2", "d4", "d1"]
+    );
+    // Under a path.
+    assert_eq!(
+        served(CompileQuery {
+            paths: vec!["src/db/pool.rs".into()],
+            ..Default::default()
+        }),
+        ["d2", "d4", "d1"]
+    );
+    // Matched by text.
+    assert_eq!(
+        served(CompileQuery {
+            query: Some("postgres".into()),
+            ..Default::default()
+        }),
+        ["d2", "d4", "d1"]
+    );
+    // A neighbour pulled in by the hop carries no detail.
+    assert_eq!(
+        served(CompileQuery {
+            entities: vec!["auth".into()],
+            ..Default::default()
+        }),
+        ["d1", "d2"]
+    );
 }
 
 #[test]
