@@ -134,8 +134,18 @@ Three paths, one pipeline, rising cost:
    the PR merge (`supervisor::pr_watch`) or at archive for a PR that merged
    while the host was down. Lines land confirmed with source `pr`, next to
    whatever is already said about those entities (a restatement is skipped
-   as a duplicate). The merge also confirms the workspace's provisionals;
-   archive-without-merge abandons them.
+   as a duplicate). Two kinds of line never reach the policy: one that
+   restates a replaced assertion (`resolve::retired_restatement`; landing it
+   would bring back what a later record replaced), and one that restates a
+   provisional the merging workspace itself recorded (the agent's mid-branch
+   record written a second time in the PR's words; the merge confirms the
+   record and the line is left). "Restates" is one claim in two wordings:
+   the same kind, domain and stance, about at least one of the same entities
+   (`resolve::same_claim`), and statements whose word sets overlap by half
+   or more (`resolve::similar`, `TWIN_SIMILARITY`) — so the same sentence
+   about another component, or a different decision about the same one,
+   lands as it always did. The merge also confirms the workspace's
+   provisionals; archive-without-merge abandons them.
 
    The same merge appends its **structural delta** (`capture/ingest/structure.rs`),
    before the lines so one can name a module the PR added. The GitHub fetch

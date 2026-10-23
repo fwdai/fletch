@@ -313,6 +313,152 @@ fn a_different_statement_lands_or_is_held_by_the_rule() {
     }
 }
 
+#[test]
+fn a_line_restating_a_superseded_assertion_is_dropped() {
+    let (service, _dir) = service();
+    let auth = seed_entity(&service, "auth-session");
+    let old = seed_assertion(
+        &service,
+        assertion(
+            std::slice::from_ref(&auth),
+            AssertionKind::Decision,
+            "Every git spawn carries SSH_AUTH_SOCK.",
+            AssertionStatus::Confirmed,
+        ),
+        user_stamp(),
+    );
+    let new = seed_assertion(
+        &service,
+        AssertionInput {
+            supersedes: Some(Supersede {
+                id: old.clone(),
+                reasoning: "scoped to trusted trees".into(),
+            }),
+            ..assertion(
+                &[auth],
+                AssertionKind::Decision,
+                "SSH_AUTH_SOCK only outside agent-writable trees.",
+                AssertionStatus::Confirmed,
+            )
+        },
+        user_stamp(),
+    );
+
+    merge_primary(
+        &service,
+        &merged("## Decisions\n- adopted · implementation · [auth-session] — Every git spawn carries SSH_AUTH_SOCK\n"),
+    )
+    .unwrap();
+
+    let graph = graph(&service);
+    assert_eq!(graph.assertions.len(), 2);
+    assert_eq!(graph.current, vec![new]);
+    assert!(pending(&service).is_empty());
+}
+
+/// The agent recorded the decision mid-branch and then wrote it into the
+/// PR's Decisions section in other words: one record, confirmed by the
+/// merge, not two.
+#[test]
+fn a_line_restating_the_workspaces_own_provisional_is_left_to_the_merge() {
+    let (service, _dir) = service();
+    let auth = seed_entity(&service, "auth-session");
+    let own = seed_assertion(
+        &service,
+        assertion(
+            std::slice::from_ref(&auth),
+            AssertionKind::Decision,
+            "Sessions refresh server-side.",
+            AssertionStatus::Provisional,
+        ),
+        agent_stamp(WORKSPACE, Some(REPO_A)),
+    );
+    let theirs = seed_assertion(
+        &service,
+        assertion(
+            &[auth],
+            AssertionKind::Fact,
+            "Sessions live a day.",
+            AssertionStatus::Provisional,
+        ),
+        agent_stamp("ws-other", Some(REPO_A)),
+    );
+
+    merge_primary(
+        &service,
+        &merged(
+            "## Decisions\n\
+             - adopted · implementation · [auth-session] — Sessions refresh on the server side, never in the client. — Restates the branch's record.\n\
+             - adopted · implementation · [auth-session] — Session cookies are HttpOnly. — Same shape, another decision: new.\n\
+             - constraint · implementation · [auth-session] — Sessions never refresh twice in a minute. — Another kind: new.\n\
+             - fact · implementation · [auth-session] — Sessions live a day or until sign-out. — Another workspace's provisional: new.\n",
+        ),
+    )
+    .unwrap();
+
+    assert_eq!(status(&service, &own), AssertionStatus::Confirmed);
+    assert_eq!(status(&service, &theirs), AssertionStatus::Provisional);
+    let mut statements: Vec<_> = current(&service).into_iter().map(|a| a.statement).collect();
+    statements.sort();
+    assert_eq!(
+        statements,
+        [
+            "Session cookies are HttpOnly.",
+            "Sessions live a day or until sign-out.",
+            "Sessions live a day.",
+            "Sessions never refresh twice in a minute.",
+            "Sessions refresh server-side.",
+        ]
+    );
+}
+
+/// The retired rule is about one claim, not one sentence: the same words
+/// about another entity, or in another kind, are a different decision.
+#[test]
+fn a_retired_statement_about_another_entity_does_not_block_the_line() {
+    let (service, _dir) = service();
+    let auth = seed_entity(&service, "auth-session");
+    let billing = seed_entity(&service, "billing");
+    let old = seed_assertion(
+        &service,
+        assertion(
+            std::slice::from_ref(&auth),
+            AssertionKind::Decision,
+            "Use SQLite for storage.",
+            AssertionStatus::Confirmed,
+        ),
+        user_stamp(),
+    );
+    seed_assertion(
+        &service,
+        AssertionInput {
+            supersedes: Some(Supersede {
+                id: old,
+                reasoning: "outgrew it".into(),
+            }),
+            ..assertion(
+                &[auth],
+                AssertionKind::Decision,
+                "Use Postgres for storage.",
+                AssertionStatus::Confirmed,
+            )
+        },
+        user_stamp(),
+    );
+
+    merge_primary(
+        &service,
+        &merged("## Decisions\n- adopted · implementation · [billing] — Use SQLite for storage.\n"),
+    )
+    .unwrap();
+
+    let landed = current(&service)
+        .into_iter()
+        .find(|a| a.about == vec![billing.clone()])
+        .expect("billing's own decision lands");
+    assert_eq!(landed.statement, "Use SQLite for storage.");
+}
+
 /// A merge settles the checkout it merged, not the workspace: the primary
 /// repo's merge takes its own records and the unstamped ones with it,
 /// another repo's stay provisional until that repo's PR merges.

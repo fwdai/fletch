@@ -344,6 +344,15 @@ pub fn ingest_merged(
 /// no relation of its own: whether it replaces or contradicts a head is a
 /// judgment, and two decisions about one entity are usually both true. The
 /// store lands it, holds it or finds it a duplicate.
+///
+/// Two lines never reach the policy. One that restates, in similar words, a
+/// replaced assertion of the same shape (`resolve::retired_restatement`)
+/// would bring back what a later record replaced. One that says, in similar
+/// words, what a provisional of the same shape from the merging workspace
+/// already says is that record written a second time: the merge confirms
+/// the provisional, and the line is left. Shape is kind, domain, stance and
+/// a shared entity; words are `resolve::similar`. A different decision about
+/// the same entity lands as it always did.
 fn land(
     service: &ContextService,
     project: &Project,
@@ -361,20 +370,35 @@ fn land(
         );
         return Ok(());
     }
+    let input = AssertionInput {
+        kind: decision.kind,
+        domain: decision.domain,
+        stance: decision.stance,
+        statement: decision.statement,
+        rationale: decision.rationale,
+        valid_from: None,
+        paths: Vec::new(),
+        about: found.iter().map(|e| e.id.clone()).collect(),
+        supersedes: None,
+        contradicts: Vec::new(),
+        status: AssertionStatus::Confirmed,
+    };
+    if let Some(old) = resolve::retired_restatement(graph, &input) {
+        tracing::info!(project = %project.id, line = %decision.line, retired = %old.id, "context ingest: line restates a retired assertion; skipped");
+        return Ok(());
+    }
+    let own = resolve::related_heads(graph, &input).into_iter().find(|a| {
+        a.status == AssertionStatus::Provisional
+            && a.provenance.workspace_id == stamp.provenance.workspace_id
+            && resolve::same_claim(a, &input)
+            && resolve::similar(&a.statement, &input.statement)
+    });
+    if let Some(own) = own {
+        tracing::info!(project = %project.id, line = %decision.line, provisional = %own.id, "context ingest: line restates the workspace's own provisional; the merge confirms it");
+        return Ok(());
+    }
     let candidate = Candidate {
-        input: AssertionInput {
-            kind: decision.kind,
-            domain: decision.domain,
-            stance: decision.stance,
-            statement: decision.statement,
-            rationale: decision.rationale,
-            valid_from: None,
-            paths: Vec::new(),
-            about: found.iter().map(|e| e.id.clone()).collect(),
-            supersedes: None,
-            contradicts: Vec::new(),
-            status: AssertionStatus::Confirmed,
-        },
+        input,
         user: None,
         relation: None,
         evidence: vec![Evidence {

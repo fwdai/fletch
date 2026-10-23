@@ -167,3 +167,20 @@ fn classify_sees_only_what_stands_now() {
     assert_eq!(r.kind, RelationKind::Duplicate);
     assert_eq!(r.target.as_deref(), Some("d1"));
 }
+
+#[test]
+fn similar_reads_a_rewording_as_the_same_words_and_a_swap_as_different() {
+    assert!(similar(
+        "Sessions refresh server-side.",
+        "Sessions refresh on the server side, never in the client."
+    ));
+    assert!(similar(
+        "Every host-side git spawn carries PATH from the login shell.",
+        "Every host-side git spawn carries PATH from the login shell (helper_env)."
+    ));
+    assert!(!similar(
+        "Use SQLite for storage.",
+        "Use Postgres for storage."
+    ));
+    assert!(!similar("", "Anything at all."));
+}

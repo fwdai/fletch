@@ -5,6 +5,8 @@
 //! candidate assertion restates a head already recorded about the same
 //! entities; `related_heads` lists what a writer must look at first.
 
+use std::collections::HashSet;
+
 use super::model::*;
 use super::{ContextError, Result};
 
@@ -90,6 +92,52 @@ pub fn related_heads<'a>(graph: &'a Graph, candidate: &AssertionInput) -> Vec<&'
         .filter(|a| super::compile::is_current(graph, a) && a.domain == candidate.domain)
         .filter(|a| a.about.iter().any(|id| candidate.about.contains(id)))
         .collect()
+}
+
+/// Word-set overlap at or above which two statements read as one decision in
+/// two wordings: Jaccard over the lowercase alphanumeric words of four
+/// letters or more, so typing, punctuation and the small words do not count.
+pub const TWIN_SIMILARITY: f64 = 0.5;
+
+/// Whether `a` and `b` say the same thing in different words, by
+/// [`TWIN_SIMILARITY`]. Text alone: the caller decides what else must match.
+pub fn similar(a: &str, b: &str) -> bool {
+    let words = |s: &str| -> HashSet<String> {
+        s.to_lowercase()
+            .split(|c: char| !c.is_alphanumeric())
+            .filter(|w| w.len() >= 4)
+            .map(str::to_string)
+            .collect()
+    };
+    let (a, b) = (words(a), words(b));
+    let union = a.union(&b).count();
+    union > 0 && a.intersection(&b).count() as f64 / union as f64 >= TWIN_SIMILARITY
+}
+
+/// Whether `a` is the same claim as `candidate` in shape: same kind, domain
+/// and stance, about at least one of the same entities. What a twin or a
+/// restatement must share before its words are compared, so a decision
+/// about one component never stands in for the same words about another.
+pub fn same_claim(a: &Assertion, candidate: &AssertionInput) -> bool {
+    a.kind == candidate.kind
+        && a.domain == candidate.domain
+        && a.stance == candidate.stance
+        && a.about.iter().any(|id| candidate.about.contains(id))
+}
+
+/// A live assertion a later record replaced, that `candidate` would bring
+/// back: the [`same_claim`], in [`similar`] words. Retracted and abandoned
+/// ones were withdrawn, not replaced, and do not count.
+pub fn retired_restatement<'a>(
+    graph: &'a Graph,
+    candidate: &AssertionInput,
+) -> Option<&'a Assertion> {
+    graph.assertions.iter().find(|a| {
+        is_live(a.status)
+            && !super::compile::is_current(graph, a)
+            && same_claim(a, candidate)
+            && similar(&a.statement, &candidate.statement)
+    })
 }
 
 /// How `candidate` relates to the existing heads about its entities, as far
