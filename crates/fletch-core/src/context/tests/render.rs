@@ -152,6 +152,34 @@ fn an_overview_bundle_renders_as_the_overview() {
 }
 
 #[test]
+fn modules_without_a_summary_fold_into_one_legend_line() {
+    let bare = |id: &str, slug: &str| {
+        let mut m = entity(id, slug, EntityKind::Module);
+        m.summary = String::new();
+        m.paths = vec![format!("src/{slug}")];
+        bundle_entity(m, EntryReason::Named, Vec::new())
+    };
+    let b = Bundle {
+        overview: true,
+        entities: vec![
+            bundle_entity(
+                entity("m1", "db", EntityKind::Module),
+                EntryReason::Named,
+                Vec::new(),
+            ),
+            bare("m2", "api"),
+            bare("m3", "cli"),
+        ],
+        ..Default::default()
+    };
+    let md = render_markdown(&b);
+    assert_eq!(
+        md,
+        "## Modules\n- `db` — db summary\n- 2 more module(s) mapped by path only, no summary yet (Map project on the Context tab writes one)\n"
+    );
+}
+
+#[test]
 fn index_lists_active_entities_by_kind() {
     let mut archived = feature("f9", "old");
     archived.status = EntityStatus::Archived;

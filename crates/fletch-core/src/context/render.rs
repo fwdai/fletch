@@ -4,9 +4,10 @@
 //! Provisional and contradicted assertions are marked inline, never dropped.
 //!
 //! An overview bundle (`compile::overview`) renders as the section every
-//! agent's instructions carry at spawn: Vision · Constraints · Modules (one
-//! line each) · Index (every other entity as `slug ("name")`, by kind) ·
-//! Warnings. Names travel as quoted data.
+//! agent's instructions carry at spawn: Vision · the charter (decisions,
+//! constraints and facts by domain, statement only) · Modules (one line
+//! each; those with no summary yet as one count) · Index (every other entity
+//! as `slug ("name")`, by kind) · Warnings. Names travel as quoted data.
 //!
 //! Also the compact *index* the extractor reads: every active entity as
 //! `slug ("name")`, grouped by kind, capped. An entity the extractor minted
@@ -102,11 +103,19 @@ fn render_overview(bundle: &Bundle) -> String {
         .filter(|b| b.reason != EntryReason::Vision)
         .map(|b| &b.entity)
         .collect();
-    let modules: Vec<String> = listed
+    let (described, bare): (Vec<&Entity>, Vec<&Entity>) = listed
         .iter()
         .filter(|e| e.kind == EntityKind::Module)
-        .map(|e| legend_line(e))
-        .collect();
+        .partition(|e| !e.summary.trim().is_empty());
+    let mut modules: Vec<String> = described.iter().map(|e| legend_line(e)).collect();
+    // A bootstrap-only module is a directory with a slug: a line per one
+    // tells an agent nothing a count does not, and costs the budget.
+    if !bare.is_empty() {
+        modules.push(format!(
+            "- {} more module(s) mapped by path only, no summary yet (Map project on the Context tab writes one)\n",
+            bare.len()
+        ));
+    }
     if !modules.is_empty() {
         out.push_str(&format!("\n## Modules\n{}", modules.concat()));
     }

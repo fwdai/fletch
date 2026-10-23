@@ -30,7 +30,7 @@
 //! [`overview`] is the other mode (`query.overview`): the fixed picture every
 //! agent on the project gets at spawn, fitted by the same loop.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use super::model::*;
@@ -91,15 +91,23 @@ pub fn compile(graph: &Graph, query: &CompileQuery, checkout: Option<&Path>) -> 
     })
 }
 
+/// How many charter lines one entity gets in the overview: breadth over
+/// depth, `context_get` has the rest.
+const CHARTER_PER_ENTITY: usize = 2;
+
 /// The spawn-time overview, the same for every agent on the project: the
-/// vision, the adopted current constraints in the business and architectural
-/// domains, and every other active entity (rendered as a module legend and a
-/// slug index). Entities the extractor minted are left out until something
-/// else revised them: model output never writes itself into the next model's
-/// instructions. Fitted to `budget_chars` (0 means [`OVERVIEW_BUDGET_CHARS`])
-/// by the loop [`compile`] uses. The vision is never dropped; the constraints
-/// go only once every other entity has, lowest-ranked first
-/// ([`constraint_rank`]), so the overview meets its budget however many
+/// vision, the charter — every current business or architectural assertion,
+/// whatever its kind and stance (a rejected alternative is as much a rule as
+/// a constraint), ranked by [`charter_rank`] and capped at
+/// [`CHARTER_PER_ENTITY`] lines per entity — and every other active entity
+/// (rendered as a module legend and a slug index). Implementation-domain
+/// records never ride at spawn: they are the detail `context_get` serves on
+/// a targeted read. Entities the extractor minted are left out until
+/// something else revised them: model output never writes itself into the
+/// next model's instructions. Fitted to `budget_chars` (0 means
+/// [`OVERVIEW_BUDGET_CHARS`]) by the loop [`compile`] uses. The vision is
+/// never dropped; the charter goes only once every other entity has,
+/// lowest-ranked first, so the overview meets its budget however many lines
 /// there are.
 pub fn overview(graph: &Graph, budget_chars: usize) -> Bundle {
     let mut entries = Entries::default();
@@ -112,18 +120,14 @@ pub fn overview(graph: &Graph, budget_chars: usize) -> Bundle {
             _ => entries.add(e, EntryReason::Named),
         }
     }
-    let mut constraints: Vec<&Assertion> = graph
+    let mut charter: Vec<&Assertion> = graph
         .assertions
         .iter()
-        .filter(|a| {
-            a.kind == AssertionKind::Constraint
-                && a.stance == Stance::Adopted
-                && a.domain != Domain::Implementation
-                && is_current(graph, a)
-        })
+        .filter(|a| a.domain != Domain::Implementation && is_current(graph, a))
         .collect();
-    constraints.sort_by_key(|a| constraint_rank(a));
-    let (assertions, contradictions) = bundle_assertions(graph, &constraints, false);
+    charter.sort_by_key(|a| charter_rank(a));
+    let charter = per_entity(charter, CHARTER_PER_ENTITY);
+    let (assertions, contradictions) = bundle_assertions(graph, &charter, false);
     let budget = match budget_chars {
         0 => OVERVIEW_BUDGET_CHARS,
         n => n,
@@ -144,7 +148,7 @@ pub fn overview(graph: &Graph, budget_chars: usize) -> Bundle {
             let mut warnings = warnings(graph, shown, &contradictions, &[], truncated);
             if !shed.is_empty() {
                 warnings.push(format!(
-                    "Truncated to fit the budget: {} constraints not shown; \
+                    "Truncated to fit the budget: {} decisions not shown; \
                      call context_get for the full set",
                     shed.len()
                 ));
@@ -171,17 +175,38 @@ pub fn overview(graph: &Graph, budget_chars: usize) -> Bundle {
     )
 }
 
-/// Overview order: what the user stated before what anyone else did, merged
+/// Charter order: what the user stated before what anyone else did, merged
 /// before provisional, then newest first. "The user stated" is the user
 /// writing it or a verified quote of theirs (`user_turn` source), whoever
 /// recorded it.
-fn constraint_rank(a: &Assertion) -> (bool, bool, std::cmp::Reverse<i64>) {
+fn charter_rank(a: &Assertion) -> (bool, bool, std::cmp::Reverse<i64>) {
     let user_stated = a.author.kind == AuthorKind::User || a.source.kind == SourceKind::UserTurn;
     (
         !user_stated,
         a.status == AssertionStatus::Provisional,
         std::cmp::Reverse(a.recorded_at),
     )
+}
+
+/// The first `cap` of `ranked` about each entity, order kept. An assertion
+/// about several entities counts for each and stays while any has room.
+fn per_entity(ranked: Vec<&Assertion>, cap: usize) -> Vec<&Assertion> {
+    let mut taken: HashMap<&str, usize> = HashMap::new();
+    ranked
+        .into_iter()
+        .filter(|a| {
+            let room = a
+                .about
+                .iter()
+                .any(|id| taken.get(id.as_str()).map_or(true, |n| *n < cap));
+            if room {
+                for id in &a.about {
+                    *taken.entry(id.as_str()).or_insert(0) += 1;
+                }
+            }
+            room
+        })
+        .collect()
 }
 
 /// Drops the lowest-ranked entity until the rendered bundle fits `budget`;

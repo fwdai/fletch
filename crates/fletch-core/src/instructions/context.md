@@ -8,10 +8,13 @@ and with the same request/response shape as every other op (see the RPC
 protocol above). Refer to entities by **slug**.
 
 When anything has been recorded, this block ends with the project's
-**overview**: the vision, the architectural and business constraints adopted
-for it, a one-line legend per module (slug, summary, where it lives), and every
-other entity by kind. It is the same for every agent on the project and is cut
-to fit; a "Truncated" warning at its end means `context_get` has more.
+**overview**: the vision, the business and architectural decisions, constraints
+and facts that stand (rejected alternatives included, at most two per entity),
+a one-line legend per module (slug, summary, where it lives), and every other
+entity by kind. Implementation detail is not in it: `context_get` serves that
+for the entities and paths you name. It is the same for every agent on the
+project and is cut to fit; a "Truncated" warning at its end means `context_get`
+has more.
 
 ### `context_get` — read before you act
 
