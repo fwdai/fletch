@@ -214,8 +214,13 @@ opened.
   their one-hop neighbours (each with its path anchors), the current
   assertions grouped by kind and domain (adopted before rejected), and
   warnings for anything provisional, contradicted or missing.
-  `include_history` adds the supersession chain. Budgeted at 12k chars; the
-  vision and warnings are never dropped.
+  `include_history` adds the supersession chain. An implementation-domain
+  head rides only with an entity the read targeted (named, under a path,
+  matched by text): the map and a neighbour carry business and
+  architectural heads alone, and the map says how many records it left out.
+  Before this rule the map of a project a month old overflowed its budget
+  on one entity's detail and showed no map at all. Budgeted at 12k chars;
+  the vision and warnings are never dropped.
 - **Staleness** is computed at read time, never stored: `compile` takes the
   reader's checkout (the workspace's primary checkout for `context_get`, the
   project's primary repo for the Preview tab) and warns once per served path

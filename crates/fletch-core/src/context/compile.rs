@@ -12,7 +12,11 @@
 //! 2. Expand one hop over `relates` (both directions).
 //! 3. Assertions: the current heads `about` the assembled entities
 //!    (`is_current`: live, and nothing live further down the supersession
-//!    chain), excluding those about archived entities only. Flag `provisional`, contradictions
+//!    chain), excluding those about archived entities only. An
+//!    implementation-domain head rides only with an entity the read targeted
+//!    (named, under a path, or matched by text): the map and a one-hop
+//!    neighbour carry the business and architectural heads alone, and the
+//!    map says how many it left out. Flag `provisional`, contradictions
 //!    among heads, and `has_history`. With `include_history`, attach
 //!    predecessors newest first.
 //! 4. Rank entities (named/path > query > neighbour; then edge count, then
@@ -87,7 +91,15 @@ pub fn compile(graph: &Graph, query: &CompileQuery, checkout: Option<&Path>) -> 
         n => n,
     };
     fit(ranked, 0, budget, |ranked, truncated, _| {
-        assemble(graph, query, ranked, &misses, truncated, missing.as_ref())
+        assemble(
+            graph,
+            query,
+            is_map,
+            ranked,
+            &misses,
+            truncated,
+            missing.as_ref(),
+        )
     })
 }
 
@@ -504,24 +516,39 @@ fn path_overlaps(a: &str, b: &str) -> bool {
 // ---------------------------------------------------------------------------
 // Assembly
 
+#[allow(clippy::too_many_arguments)]
 fn assemble(
     graph: &Graph,
     query: &CompileQuery,
+    map: bool,
     ranked: &[(&Entity, EntryReason)],
     misses: &[String],
     truncated: &[Id],
     missing: Option<&HashSet<String>>,
 ) -> Bundle {
     let mut heads: Vec<&Assertion> = Vec::new();
-    for (e, _) in ranked {
+    let mut detail_left_out = 0;
+    for (e, reason) in ranked {
+        let targeted = !map && *reason != EntryReason::Neighbour;
         for a in heads_about(graph, &e.id) {
-            if !heads.iter().any(|h| h.id == a.id) {
+            if heads.iter().any(|h| h.id == a.id) {
+                continue;
+            }
+            if targeted || a.domain != Domain::Implementation {
                 heads.push(a);
+            } else if map {
+                detail_left_out += 1;
             }
         }
     }
     let (assertions, contradictions) = bundle_assertions(graph, &heads, query.include_history);
     let mut warnings = warnings(graph, &assertions, &contradictions, misses, truncated);
+    if detail_left_out > 0 {
+        warnings.push(format!(
+            "{detail_left_out} implementation-level record(s) not in the map; \
+             name entities or paths to read them"
+        ));
+    }
     if let Some(missing) = missing {
         warnings.extend(stale_anchors(ranked, &assertions, missing));
     }

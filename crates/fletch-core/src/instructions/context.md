@@ -21,10 +21,12 @@ has more.
 Call it at the start of a task and before changing a feature, with `entities`
 (slugs from the overview) and/or `paths` (repo-relative paths you are working in);
 add a free-text `query`, or `include_history: true` to see what each decision
-replaced. No args returns the map of the project. `stdout` is markdown: the
-vision, the entities in play, the current decisions about them, and warnings for
-anything provisional or contradicted. Prefer it over reading docs to learn what
-the product is and why it is built this way.
+replaced. No args returns the map of the project: every entity with its
+business and architectural decisions. Implementation-level records come only
+with the entities you name, the paths you give or the text you match. `stdout`
+is markdown: the vision, the entities in play, the current decisions about
+them, and warnings for anything provisional or contradicted. Prefer it over
+reading docs to learn what the product is and why it is built this way.
 
 ### `context_record_decision` — write what was decided
 
