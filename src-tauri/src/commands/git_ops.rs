@@ -68,8 +68,13 @@ pub fn get_delegations() -> Vec<fletch_core::supervisor::delegation::DelegationV
 
 /// Autopilot as the host runs it: one agent's checkouts (or every live
 /// agent's) plus both opt-out lists. Same body as the remote op.
+///
+/// The three autopilot commands are `async` like the rest of this file even
+/// though their bodies are synchronous: Tauri runs a sync command on the main
+/// thread, where waiting on the database mutex (a long driver pass, or a bug
+/// that re-locks it) freezes the window instead of one request.
 #[tauri::command]
-pub fn autopilot_state(
+pub async fn autopilot_state(
     supervisor: State<'_, Arc<Supervisor>>,
     ctx: State<'_, Arc<EngineCtx>>,
     agent_id: Option<String>,
@@ -84,7 +89,7 @@ pub fn autopilot_state(
 /// Flip a project's autopilot switch, or pause/resume one agent — exactly one
 /// of the two ids. The host owns both settings; same body as the remote op.
 #[tauri::command]
-pub fn autopilot_set(
+pub async fn autopilot_set(
     supervisor: State<'_, Arc<Supervisor>>,
     ctx: State<'_, Arc<EngineCtx>>,
     project_id: Option<String>,
@@ -102,7 +107,7 @@ pub fn autopilot_set(
 
 /// What autopilot did, newest first. Same body as the remote op.
 #[tauri::command]
-pub fn autopilot_log(
+pub async fn autopilot_log(
     supervisor: State<'_, Arc<Supervisor>>,
     ctx: State<'_, Arc<EngineCtx>>,
     agent_id: Option<String>,

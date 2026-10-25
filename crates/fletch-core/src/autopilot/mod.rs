@@ -346,9 +346,7 @@ fn set(
         }
         (None, Some(agent_id)) => {
             sup.workspace.agent(agent_id)?;
-            store::set_agent_paused(&ctx.db.lock(), agent_id, !enabled, |id| {
-                sup.workspace.agent(id).is_ok()
-            })?;
+            store::set_agent_paused(&ctx.db.lock(), agent_id, !enabled)?;
             agents.iter().filter(|a| a.id == agent_id).collect()
         }
         _ => {
