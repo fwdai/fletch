@@ -177,20 +177,24 @@ fn turning_a_project_off_writes_the_one_row_and_on_deletes_it() {
 
 #[test]
 fn pauses_persist_as_one_json_list_pruned_of_agents_that_are_gone() {
-    let (ctx, _sink, _sup, _dir) = host();
+    let (ctx, _sink, sup, dir) = host();
+    add_agent(&sup, dir.path(), "proj", "aare", &["repo"]);
+    add_agent(&sup, dir.path(), "proj", "rhine", &["repo"]);
+    // Archived is not gone: a restore brings the agent back, paused as it was.
+    add_agent(&sup, dir.path(), "proj", "shelved", &["repo"]);
+    sup.workspace.begin_archive("shelved").unwrap();
     let conn = ctx.db.lock();
-    crate::database::set_setting(&conn, PAUSED_AGENTS_KEY, r#"["gone","aare"]"#).unwrap();
-    let live = |id: &str| id != "gone";
-    store::set_agent_paused(&conn, "rhine", true, live).unwrap();
+    crate::database::set_setting(&conn, PAUSED_AGENTS_KEY, r#"["gone","shelved","aare"]"#).unwrap();
+    store::set_agent_paused(&conn, "rhine", true).unwrap();
     assert_eq!(
         crate::database::get_setting(&conn, PAUSED_AGENTS_KEY).as_deref(),
-        Some(r#"["aare","rhine"]"#)
+        Some(r#"["shelved","aare","rhine"]"#)
     );
     // Un-pausing touches only the agent asked for.
-    store::set_agent_paused(&conn, "aare", false, live).unwrap();
+    store::set_agent_paused(&conn, "aare", false).unwrap();
     assert_eq!(
         store::read_switches(&conn).unwrap().paused_agents,
-        ["rhine"]
+        ["shelved", "rhine"]
     );
     // A list that is not one reads as nothing paused, as the desktop parsed it.
     crate::database::set_setting(&conn, PAUSED_AGENTS_KEY, "{oops").unwrap();
@@ -374,6 +378,28 @@ fn pausing_an_agent_stops_it_now_and_says_so_for_every_checkout() {
     let resumed = states(&sink);
     assert_eq!(resumed.len(), 4);
     assert!(resumed[2..].iter().all(|r| r["enrolled"] == true));
+}
+
+/// Regression: with one agent already paused, pausing another prunes the
+/// stored list — which used to re-enter the database lock the write was
+/// holding and deadlock the host (on the desktop, the main thread). Runs on a
+/// helper thread so a regression fails the test instead of hanging it.
+#[test]
+fn pausing_a_second_agent_returns_and_keeps_the_first() {
+    let (ctx, _sink, sup, dir) = host();
+    add_agent(&sup, dir.path(), "proj", "aare", &["repo"]);
+    add_agent(&sup, dir.path(), "proj", "rhine", &["repo"]);
+    set(&table(), &ctx, &sup, None, Some("aare"), false).unwrap();
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(set(&table(), &ctx, &sup, None, Some("rhine"), false));
+    });
+    let snap = rx
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("pausing a second agent must return, not deadlock")
+        .unwrap();
+    assert_eq!(snap.paused_agents, ["aare", "rhine"]);
 }
 
 #[test]

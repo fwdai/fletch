@@ -5,6 +5,12 @@
 //! `autopilot.enabled` (`"0"`/`"false"` = off, anything else or no row = on)
 //! and `settings` `autopilotPausedAgents` (a JSON array of agent ids). Only the
 //! host writes them now (`autopilot_set`).
+//!
+//! Every function here works on the `&Connection` it is handed and nothing
+//! else: the caller holds the one database mutex for the duration of the call,
+//! so reaching back into any component that locks it (`WorkspaceManager`, the
+//! context service) deadlocks the thread on itself. What a function needs from
+//! another table it reads on the same connection.
 
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -106,15 +112,12 @@ pub fn set_project(conn: &Connection, project_id: &str, enabled: bool) -> Result
     Ok(())
 }
 
-/// Pause (or resume) one agent. Written whole; ids for which `exists` says no
-/// are pruned on the way out, so the list can't grow with every discarded agent
-/// that was ever paused.
-pub fn set_agent_paused(
-    conn: &Connection,
-    agent_id: &str,
-    paused: bool,
-    exists: impl Fn(&str) -> bool,
-) -> Result<()> {
+/// Pause (or resume) one agent. Written whole; ids with no `workspaces` row
+/// (discarded agents — archived ones keep theirs, they can be restored) are
+/// pruned on the way out, so the list can't grow with every discarded agent
+/// that was ever paused. The existence check is a query on `conn`, like
+/// [`prune_orphans`]: see the module doc for why it must not be a callback.
+pub fn set_agent_paused(conn: &Connection, agent_id: &str, paused: bool) -> Result<()> {
     let current: Option<String> = conn
         .query_row(
             "SELECT value FROM settings WHERE key = ?1",
@@ -122,15 +125,27 @@ pub fn set_agent_paused(
             |r| r.get(0),
         )
         .optional()?;
-    let mut list: Vec<String> = parse_paused(current.as_deref())
-        .into_iter()
-        .filter(|id| id != agent_id && exists(id))
-        .collect();
+    let mut list = Vec::new();
+    for id in parse_paused(current.as_deref()) {
+        if id != agent_id && agent_exists(conn, &id)? {
+            list.push(id);
+        }
+    }
     if paused {
         list.push(agent_id.to_string());
     }
     let encoded = serde_json::to_string(&list).map_err(|e| Error::Other(e.to_string()))?;
     crate::database::set_setting(conn, PAUSED_AGENTS_KEY, &encoded)
+}
+
+/// Whether `workspaces` still has a row for `id` — any row: archived and
+/// hidden agents included, exactly what `WorkspaceManager::agent` answers.
+fn agent_exists(conn: &Connection, id: &str) -> rusqlite::Result<bool> {
+    let count: i64 =
+        conn.query_row("SELECT COUNT(*) FROM workspaces WHERE id = ?1", [id], |r| {
+            r.get(0)
+        })?;
+    Ok(count > 0)
 }
 
 /// What a log row records.

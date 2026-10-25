@@ -273,7 +273,7 @@ async fn does_nothing_for_a_paused_agent_the_kill_switch() {
     let k = key("aare", None);
     failing(&h.world, &k, "sha1");
     h.table.enroll(&k);
-    store::set_agent_paused(&h.ctx.db.lock(), "aare", true, |_| true).unwrap();
+    store::set_agent_paused(&h.ctx.db.lock(), "aare", true).unwrap();
 
     h.pass(NOW).await;
 
@@ -282,7 +282,7 @@ async fn does_nothing_for_a_paused_agent_the_kill_switch() {
     assert_eq!(h.events(super::super::EVENT_STATE)[0]["paused"], true);
 
     // Un-paused: picked back up fresh on the next pass.
-    store::set_agent_paused(&h.ctx.db.lock(), "aare", false, |_| true).unwrap();
+    store::set_agent_paused(&h.ctx.db.lock(), "aare", false).unwrap();
     h.pass(NOW + 10_000).await;
     assert_eq!(h.dispatched().len(), 1);
 }
