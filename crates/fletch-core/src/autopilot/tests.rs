@@ -184,8 +184,7 @@ fn pauses_persist_as_one_json_list_pruned_of_agents_that_are_gone() {
     add_agent(&sup, dir.path(), "proj", "shelved", &["repo"]);
     sup.workspace.begin_archive("shelved").unwrap();
     let conn = ctx.db.lock();
-    crate::database::set_setting(&conn, PAUSED_AGENTS_KEY, r#"["gone","shelved","aare"]"#)
-        .unwrap();
+    crate::database::set_setting(&conn, PAUSED_AGENTS_KEY, r#"["gone","shelved","aare"]"#).unwrap();
     store::set_agent_paused(&conn, "rhine", true).unwrap();
     assert_eq!(
         crate::database::get_setting(&conn, PAUSED_AGENTS_KEY).as_deref(),

@@ -141,11 +141,10 @@ pub fn set_agent_paused(conn: &Connection, agent_id: &str, paused: bool) -> Resu
 /// Whether `workspaces` still has a row for `id` — any row: archived and
 /// hidden agents included, exactly what `WorkspaceManager::agent` answers.
 fn agent_exists(conn: &Connection, id: &str) -> rusqlite::Result<bool> {
-    let count: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM workspaces WHERE id = ?1",
-        [id],
-        |r| r.get(0),
-    )?;
+    let count: i64 =
+        conn.query_row("SELECT COUNT(*) FROM workspaces WHERE id = ?1", [id], |r| {
+            r.get(0)
+        })?;
     Ok(count > 0)
 }
 
