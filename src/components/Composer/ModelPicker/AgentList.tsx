@@ -1,16 +1,18 @@
 import { Icon } from "@/components/Icon";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { Mono } from "@/components/SettingsScreen/CustomAgents/Mono";
-import { type PROVIDERS, providerLabel } from "@/data/providers";
+import type { PROVIDERS } from "@/data/providers";
 import { useAppStore } from "@/store";
 import { activeEntry } from "@/store/capabilities";
 import type { useAgentAvailability } from "../availability";
+import { CUSTOM_FLY, useSelectableCustomAgents } from "./CustomAgentOptions";
 
 type Provider = (typeof PROVIDERS)[number];
 export type OpenSettings = ReturnType<typeof useAppStore.getState>["openSettingsScreen"];
 
 /** The full picker's main list: the coding agents (hovering one opens its
- *  model flyout), then the custom agents. */
+ *  model flyout), then one row for the custom agents (hovering it opens their
+ *  list the same way). */
 export function AgentList({
   provider,
   customAgentId,
@@ -20,7 +22,6 @@ export function AgentList({
   hovered,
   setHovered,
   onPickModel,
-  onPickCustom,
   onOpenSettings,
 }: {
   provider: string;
@@ -32,14 +33,13 @@ export function AgentList({
   hovered: string | null;
   setHovered: (id: string | null) => void;
   onPickModel: (providerId: string, model: string | undefined) => void;
-  onPickCustom: (agentId: string, base: string, model: string | null) => void;
   onOpenSettings: OpenSettings;
 }) {
-  const providerFlags = useAppStore((s) => s.providerFlags);
-  const customAgents = useAppStore((s) => s.customAgents);
   const env = useAppStore(activeEntry);
-  // Only custom agents whose base provider is enabled are offered.
-  const selectableCustom = customAgents.filter((a) => providerFlags[a.base] !== false);
+  const selectableCustom = useSelectableCustomAgents();
+  // Looked up in the offered list: one whose base is switched off is still the
+  // chip's identity, but the row has nothing to open for it.
+  const activeCustom = selectableCustom.find((a) => a.id === customAgentId);
 
   // Settings › Providers installs on this Mac only, so a paired host gets a note, not a button.
   const emptyState =
@@ -115,54 +115,31 @@ export function AgentList({
         );
       })}
 
-      <div className="model-sect flex-center text-xs">
-        <span>Custom agents</span>
-        <span className="model-sect-line" />
-      </div>
-      {selectableCustom.length > 0 ? (
-        selectableCustom.map((a) => {
-          const active = a.id === customAgentId;
-          // A custom agent inherits its base provider's availability exactly.
-          const { reason } = availability(a.base);
-          const blocked = reason !== null;
-          return (
-            <button
-              key={a.id}
-              type="button"
-              // Same reasoning as the provider rows: aria-disabled (not the
-              // native attr) keeps the row hover-capable so the CSS
-              // .tip/data-tip refusal is reachable in the WebView.
-              aria-disabled={blocked}
-              data-tip={reason ?? undefined}
-              className={`model-custom-row flex-center ${blocked ? "is-disabled tip" : ""} ${active ? "active" : ""}`}
-              onMouseEnter={() => setHovered(null)}
-              onClick={() => !blocked && onPickCustom(a.id, a.base, a.model)}
-            >
-              <Mono name={a.name} hue={a.color} size={26} />
-              <span className="model-custom-text">
-                <span>{a.name}</span>
-                <span>{a.description || providerLabel(a.base)}</span>
-              </span>
-              {active && <Icon name="check" size={12} />}
-            </button>
-          );
-        })
-      ) : (
-        <button
-          type="button"
-          className="model-custom-cta flex-center"
-          onMouseEnter={() => setHovered(null)}
-          onClick={() => onOpenSettings("agents", "new-custom-agent")}
-        >
-          <span className="model-custom-cta-icon">
-            <Icon name="plus" size={14} />
+      {/* One row for the custom agents, opening their list beside the card
+       *  the way an agent row opens its models. Its note names the one in
+       *  use, else how many there are to pick from. */}
+      <button
+        type="button"
+        className={`model-agent-row model-custom-sum flex-center ${activeCustom ? "active" : ""} ${hovered === CUSTOM_FLY ? "hot" : ""}`}
+        aria-haspopup="menu"
+        aria-expanded={hovered === CUSTOM_FLY}
+        title="Hover to choose a custom agent"
+        onMouseEnter={() => setHovered(CUSTOM_FLY)}
+        onClick={() => setHovered(CUSTOM_FLY)}
+      >
+        {activeCustom ? (
+          <Mono name={activeCustom.name} hue={activeCustom.color} size={26} />
+        ) : (
+          <span className="model-custom-sum-icon">
+            <Icon name="shapes" size={15} />
           </span>
-          <span className="model-custom-text">
-            <span>Set up a custom agent</span>
-            <span>Pair an agent with a model and a standing brief</span>
-          </span>
-        </button>
-      )}
+        )}
+        <span className="model-agent-name truncate text-base">Custom agents</span>
+        <span className="model-agent-ver text-xs truncate">
+          {activeCustom?.name ?? (selectableCustom.length > 0 ? selectableCustom.length : "none")}
+        </span>
+        <Icon name="chevR" size={12} />
+      </button>
     </>
   );
 }

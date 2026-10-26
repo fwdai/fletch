@@ -279,17 +279,48 @@
 .model-option.is-disabled:hover {
   background: none;
 }
-.model-acct-manage {
+/* A flyout's closing row to its settings pane (accounts, custom agents). */
+.model-fly-manage {
   margin-top: 4px;
   border-top: 1px solid var(--bd-soft);
   border-radius: 0 0 8px 8px;
 }
-.model-acct-manage .model-option-name {
+.model-fly-manage .model-option-name {
   font-weight: 400;
   color: var(--fg-2);
 }
-.model-option.model-acct-manage > svg {
+.model-option.model-fly-manage > svg {
   color: var(--fg-3);
+}
+
+/* Custom agents row: an agent row whose flyout lists the custom agents.
+   Set a little apart from the coding agents above it. Its glyph is a boxed
+   shapes icon (the Customize pane's), swapped for the active agent's mono. */
+.model-custom-sum {
+  margin-top: 4px;
+}
+.model-custom-sum-icon {
+  width: 26px;
+  height: 26px;
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--bd);
+  border-radius: 7px;
+  color: var(--fg-2);
+  transition:
+    border-color 0.12s var(--ease),
+    color 0.12s var(--ease);
+}
+.model-custom-sum:hover .model-custom-sum-icon,
+.model-custom-sum.hot .model-custom-sum-icon {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.model-custom-sum-icon.is-head {
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
 }
 
 /* branch picker scroll buttons */
