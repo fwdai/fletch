@@ -218,33 +218,7 @@
   flex: 1;
 }
 
-/* Custom agents section of the model picker dropdown — mirrors .model-agent-row. */
-.model-custom-row {
-  width: 100%;
-  gap: 10px;
-  padding: 7px 9px;
-  border-radius: 9px;
-  color: var(--fg-1);
-  text-align: left;
-  transition: background 0.12s var(--ease);
-}
-.model-custom-row:not(.is-disabled):hover {
-  background: var(--hover);
-}
-.model-custom-row.active {
-  background: var(--selected);
-}
-/* .is-disabled, not :disabled — the row uses aria-disabled so it stays
- * hover-capable and can surface its tooltip (see ModelPicker.tsx). */
-.model-custom-row.is-disabled {
-  opacity: 0.42;
-  cursor: default;
-}
-.model-custom-row > svg {
-  margin-left: auto;
-  color: var(--accent);
-  flex-shrink: 0;
-}
+/* Two-line label of the model picker's call-to-action rows. */
 .model-custom-text {
   flex: 1;
   min-width: 0;

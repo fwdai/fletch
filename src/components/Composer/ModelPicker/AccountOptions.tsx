@@ -60,7 +60,7 @@ export function AccountOptions({
       })}
       <button
         type="button"
-        className="model-option model-acct-manage flex-center"
+        className="model-option model-fly-manage flex-center"
         onClick={onManage}
       >
         <span className="model-option-main">

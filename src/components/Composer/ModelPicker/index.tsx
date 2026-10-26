@@ -13,6 +13,7 @@ import { ModelOptions } from "../ModelOptions";
 import { AccountOptions } from "./AccountOptions";
 import { AccountRow } from "./AccountRow";
 import { AgentList, type OpenSettings } from "./AgentList";
+import { CUSTOM_FLY, CustomAgentOptions } from "./CustomAgentOptions";
 import { SideFlyout } from "./SideFlyout";
 import { type AccountControl, useAccountView } from "./useAccountView";
 
@@ -39,14 +40,15 @@ interface Props {
   account?: AccountControl;
 }
 
-/** Agent + model + account picker for the composer. A flat list groups coding
- *  agents and custom agents; hovering a coding agent opens a flyout on the
- *  right for model selection. Clicking an agent row commits its default model;
- *  leaving model unset preserves the provider CLI's default. Selections stay
- *  sticky via `onChange`. When the provider has several accounts, the chip's
- *  icon becomes a split token (the agent's icon, then the account's badge) and
- *  the menu opens on an account row, whose flyout lists them the way an agent
- *  row lists models.
+/** Agent + model + account picker for the composer. The main list is the
+ *  coding agents and one "Custom agents" row; hovering a coding agent opens a
+ *  flyout on the right for model selection, hovering the custom-agents row
+ *  opens the custom agents configured in Settings the same way. Clicking an
+ *  agent row commits its default model; leaving model unset preserves the
+ *  provider CLI's default. Selections stay sticky via `onChange`. When the
+ *  provider has several accounts, the chip's icon becomes a split token (the
+ *  agent's icon, then the account's badge) and the menu opens on an account
+ *  row, whose flyout lists them the way an agent row lists models.
  *
  *  The menu always opens upward — the composer sits on the bottom edge of the
  *  window. A surface near the top of a panel wants a screen, not a menu that has
@@ -61,8 +63,8 @@ export function ModelPicker({
   account,
 }: Props) {
   const [open, setOpen] = useState(false);
-  // Coding agent whose model flyout is currently expanded, or ACCOUNT_FLY for
-  // the account flyout (null = none).
+  // Coding agent whose model flyout is currently expanded, ACCOUNT_FLY for
+  // the account flyout, or CUSTOM_FLY for the custom agents (null = none).
   const [hovered, setHovered] = useState<string | null>(null);
   const providerFlags = useAppStore((s) => s.providerFlags);
   const modelsByAgent = useAppStore((s) => s.modelsByAgent);
@@ -261,11 +263,29 @@ export function ModelPicker({
                 hovered={hovered}
                 setHovered={setHovered}
                 onPickModel={pickModel}
-                onPickCustom={pickCustom}
                 onOpenSettings={openSettings}
               />
             </div>
 
+            {hovered === CUSTOM_FLY && (
+              <SideFlyout
+                flyKey={CUSTOM_FLY}
+                icon={
+                  <span className="model-custom-sum-icon is-head">
+                    <Icon name="shapes" size={13} />
+                  </span>
+                }
+                title="Custom agents"
+                tag="agent"
+              >
+                <CustomAgentOptions
+                  customAgentId={customAgentId}
+                  availability={availability}
+                  onPick={pickCustom}
+                  onOpenSettings={openSettings}
+                />
+              </SideFlyout>
+            )}
             {hoveredAgent && (
               <SideFlyout
                 flyKey={hoveredAgent.id}
