@@ -50,7 +50,14 @@ import type {
   RoadmapQueueNote,
 } from "./types/roadmap";
 import type { RunOutputEvent, RunPortEvent, RunStateEvent } from "./types/run";
-import type { DockerBuildEvent, PublishApproval, PublishApprovalResolved } from "./types/sandbox";
+import type {
+  BoxEgressEvent,
+  BoxImageStatus,
+  BoxStateEvent,
+  DockerBuildEvent,
+  PublishApproval,
+  PublishApprovalResolved,
+} from "./types/sandbox";
 import type {
   SessionRecordsAppendedEvent,
   SessionSyncHealthEvent,
@@ -420,6 +427,23 @@ export function onPairingClosed(cb: (e: { reason: string }) => void): Promise<Un
  *  image builds on a cold first spawn — feeds the build progress toast. */
 export function onDockerBuildProgress(cb: (e: DockerBuildEvent) => void): Promise<UnlistenFn> {
   return on<DockerBuildEvent>("docker:build-progress", cb);
+}
+
+/** The box image install moved: progress while downloading, then the outcome
+ *  (docs/boxes-spec.md §9). Feeds the Sandbox page's image panel. */
+export function onBoxImage(cb: (e: BoxImageStatus) => void): Promise<UnlistenFn> {
+  return on<BoxImageStatus>("box:image", cb);
+}
+
+/** One agent's box changed phase (stopped / starting / running / failed). */
+export function onBoxState(cb: (e: BoxStateEvent) => void): Promise<UnlistenFn> {
+  return on<BoxStateEvent>("box:state", cb);
+}
+
+/** The egress proxy answered a connection from a box; the workspace surfaces
+ *  the denied ones. */
+export function onBoxEgress(cb: (e: BoxEgressEvent) => void): Promise<UnlistenFn> {
+  return on<BoxEgressEvent>("box:egress", cb);
 }
 
 /** A host-owned global setting was written — by this window, another desktop

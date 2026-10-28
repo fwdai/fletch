@@ -76,3 +76,54 @@ export interface PublishApprovalResolved {
   id: string;
   outcome: PublishApprovalOutcome;
 }
+
+/** `box_image_status` and the `box:image` event: the pinned guest image's
+ *  install state (docs/boxes-spec.md §9). `progress` rides `downloading`,
+ *  `error` the two failure phases. */
+export interface BoxImageStatus {
+  phase: "not_installed" | "downloading" | "verifying" | "installed" | "damaged" | "unavailable";
+  progress?: number;
+  version?: string;
+  pinned_version: string;
+  url: string;
+  error?: string;
+}
+
+/** `box_runtime_probe`: can this host boot a box, item by item. `ok` means
+ *  every item passed and the image is installed; `problems` is one sentence
+ *  per failing item (the flag and the image included). */
+export interface BoxRuntimeProbe {
+  enabled: boolean;
+  ok: boolean;
+  problems: string[];
+  helper?: string;
+  lib_dir?: string;
+  arch_ok: boolean;
+  hypervisor: boolean;
+  image: BoxImageStatus;
+}
+
+/** `box_state(agent_id)` and the `box:state` event: one agent's box.
+ *  `since` is set while running, `reason` when failed. */
+export interface BoxStateEvent {
+  agent_id: string;
+  phase: "stopped" | "starting" | "running" | "stopping" | "failed";
+  since?: number | null;
+  reason?: string | null;
+}
+
+/** `box:egress`: the proxy answered one connection request from a box. */
+export interface BoxEgressEvent {
+  agent_id: string;
+  host: string;
+  port: number;
+  allowed: boolean;
+}
+
+/** The host-owned box settings `set_box_setting` accepts (docs/boxes-spec.md §4). */
+export type BoxSettingKey =
+  | "boxes_enabled"
+  | "box_memory_mib"
+  | "box_cpus"
+  | "box_image_url"
+  | "box_idle_stop_minutes";

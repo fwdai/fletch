@@ -606,6 +606,33 @@
   line-height: var(--lh-snug);
 }
 
+/* The box image download bar sits under its row, full width. */
+.set-box-progress {
+  margin-top: 6px;
+}
+
+/* Settings › Developer: the box runtime probe as a label/value list. */
+.set-box-probe {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 2px 12px;
+  margin: 6px 0;
+}
+.set-box-probe div {
+  display: contents;
+}
+.set-box-probe dt {
+  color: var(--fg-3);
+}
+.set-box-probe dd {
+  margin: 0;
+  word-break: break-all;
+}
+.set-box-problems {
+  margin: 0;
+  padding-left: 16px;
+}
+
 /* ── PROVIDERS ───────────────────────────────────────────────────────── */
 .set-checked {
   color: var(--fg-3);

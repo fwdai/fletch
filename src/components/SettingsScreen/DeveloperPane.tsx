@@ -3,6 +3,7 @@ import { Icon } from "@/components/Icon";
 import { Button } from "@/components/ui/Button";
 import { useAppStore } from "@/store";
 import { SetGroup, SetHead, SetRow, SetToggle } from "./primitives";
+import { BoxRuntimeStatus } from "./Sandbox/BoxRuntimeStatus";
 
 /** Dev-only settings surface. The nav entry that routes here is gated on
  *  `import.meta.env.DEV`, so this pane only ships under `bun tauri dev`. */
@@ -16,6 +17,8 @@ export function DeveloperPane() {
   const setFeature = useAppStore((s) => s.setFeature);
   const contextLayerEnabled = useAppStore((s) => s.contextLayerEnabled);
   const setContextLayerEnabled = useAppStore((s) => s.setContextLayerEnabled);
+  const boxesEnabled = useAppStore((s) => s.boxesEnabled);
+  const setBoxesEnabled = useAppStore((s) => s.setBoxesEnabled);
   const [refreshingModels, setRefreshingModels] = useState(false);
 
   const handleRefreshModels = async () => {
@@ -58,6 +61,13 @@ export function DeveloperPane() {
             onClick={() => setContextLayerEnabled(!contextLayerEnabled)}
           />
         </SetRow>
+        <SetRow
+          title="Box sandbox (micro-VM)"
+          sub="Run agents in libkrun micro-VMs reachable only over SSH; needs the helper, the image and Apple silicon."
+        >
+          <SetToggle on={boxesEnabled} onClick={() => void setBoxesEnabled(!boxesEnabled)} />
+        </SetRow>
+        {boxesEnabled && <BoxRuntimeStatus />}
       </SetGroup>
 
       <SetGroup label="Onboarding">

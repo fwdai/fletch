@@ -1,0 +1,68 @@
+//! The box sandbox (docs/boxes-spec.md §9): thin wrappers over
+//! `fletch_core::commands::box_*_impl`, which the remote dispatcher calls too.
+//! Reads answer the probe, the image and one agent's box; writes install or
+//! cancel the image, stop a box, extend a project's egress allow-list, and
+//! write the five box settings — through `set_box_setting`, never the generic
+//! `set_setting`, because the engine reads these.
+
+use std::sync::Arc;
+use tauri::State;
+
+use crate::error::Result;
+use crate::host::EngineCtx;
+use fletch_core::commands as engine;
+
+/// Can this host boot a box: helper, dylibs, hypervisor, arch, image, flag.
+#[tauri::command]
+pub fn box_runtime_probe() -> engine::BoxRuntimeProbe {
+    engine::box_runtime_probe_impl()
+}
+
+/// The pinned image's install state; `box:image` carries the changes.
+#[tauri::command]
+pub fn box_image_status() -> engine::BoxImageStatus {
+    engine::box_image_status_impl()
+}
+
+/// Start installing the pinned image in the background.
+#[tauri::command]
+pub fn box_image_install(ctx: State<'_, Arc<EngineCtx>>) -> Result<()> {
+    engine::box_image_install_impl(&ctx)
+}
+
+#[tauri::command]
+pub fn box_image_cancel() -> Result<()> {
+    engine::box_image_cancel_impl()
+}
+
+/// The registry's phase for one agent's box.
+#[tauri::command]
+pub fn box_state(agent_id: String) -> fletch_core::sandbox::boxes::registry::BoxStateReport {
+    engine::box_state_impl(&agent_id)
+}
+
+/// Stop the agent's box now; answers which rung of the ladder worked.
+#[tauri::command]
+pub async fn box_stop(agent_id: String) -> Result<String> {
+    engine::box_stop_impl(&agent_id).await
+}
+
+/// Add one host pattern to a project's egress allow-list; answers the list.
+#[tauri::command]
+pub fn box_egress_allow(
+    ctx: State<'_, Arc<EngineCtx>>,
+    project_id: String,
+    pattern: String,
+) -> Result<Vec<String>> {
+    engine::box_egress_allow_impl(&ctx, &project_id, &pattern)
+}
+
+/// Write one validated box setting; `null` restores its default.
+#[tauri::command]
+pub fn set_box_setting(
+    ctx: State<'_, Arc<EngineCtx>>,
+    key: String,
+    value: Option<String>,
+) -> Result<()> {
+    engine::set_box_setting_impl(&ctx, &key, value.as_deref())
+}

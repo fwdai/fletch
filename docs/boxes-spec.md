@@ -692,6 +692,14 @@ why. The spec stays the design; this is the record.
 - **Launch credential**: the container auth chain (`container::auth::resolve`)
   supplies the env — the host-resolved token, else the stored setup-token or
   the shell's own key — so a box signs in exactly like a container.
+- **Phase 4b surface** (§4, §9): the Sandbox page shows the image panel and
+  the box knobs whenever the flag is on (not only with `box` selected), since
+  the option stays disabled until the image is installed; the `box` option
+  appears once the probe reports Apple silicon. No "Box smoke test" button:
+  `commands/boxes.rs` exposes no smoke-test command yet. Denied egress is a
+  dismissable toast, with no allow action until 5c. The remote dispatcher
+  answers the eight `box_*` ops and forwards the four `box:*` events;
+  `docs/remote-protocol.md` has no rows for them yet.
 
 ## 14. Open decisions deferred to implementation
 

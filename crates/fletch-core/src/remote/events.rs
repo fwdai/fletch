@@ -85,6 +85,13 @@ pub const FORWARDED_EVENTS: &[&str] = &[
     // A write to a project's context (protocol doc, "Project context"), from
     // any writer, so a remote Context tab reloads like the local one.
     crate::context::CHANGED_EVENT,
+    // The box sandbox (docs/boxes-spec.md §9): a box's phase, a denied
+    // connection, the image install and the tools-disk build all happen on the
+    // host, so a remote Settings page and workspace follow them live.
+    crate::sandbox::boxes::EVENT_STATE,
+    crate::sandbox::boxes::EVENT_EGRESS,
+    crate::sandbox::boxes::EVENT_IMAGE,
+    crate::sandbox::boxes::EVENT_TOOLS,
 ];
 
 /// Install the taps and hand back the push-alert one.

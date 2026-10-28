@@ -7,6 +7,7 @@
 mod accounts;
 mod agent;
 mod app;
+mod boxes;
 mod context;
 mod feedback;
 mod files;
@@ -33,6 +34,7 @@ mod workspace;
 pub use accounts::*;
 pub use agent::*;
 pub use app::*;
+pub use boxes::*;
 pub use context::*;
 pub use feedback::*;
 pub use files::*;
