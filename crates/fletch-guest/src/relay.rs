@@ -10,10 +10,14 @@
 //!
 //! Responses come back as JSON lines and land in `<dir>/responses/<name>`
 //! through a temp file and rename, so the agent's own watcher never sees a
-//! half-written response; the guest then acks, and the host deletes its copy.
-//! A response the host re-sends (its ack was lost) is acked again but not
-//! rewritten. Polling at 100 ms matches the host's mailbox watcher; stdin EOF
-//! means the host is gone and the relay exits.
+//! half-written response. Before acking, the guest drops a receipt marker
+//! `/data/run/relay/delivered/<name>` (an empty file on the data disk, which
+//! outlives relay processes and reboots alike); a response the host re-sends
+//! because its ack was lost finds the marker and is acked without being
+//! rewritten, so an answer the agent already consumed cannot come back. Names
+//! are UUIDs the agent chose, so the markers are never pruned; they go with the
+//! box. Polling at 100 ms matches the host's mailbox watcher; stdin EOF means
+//! the host is gone and the relay exits.
 
 use std::collections::HashSet;
 use std::fs;
@@ -28,9 +32,13 @@ use crate::Result;
 
 const POLL: Duration = Duration::from_millis(100);
 
+/// Receipt markers for responses already written, one empty file per name.
+/// Under `/data/run` (agent-owned, 0700) so it survives with the data disk.
+pub const DELIVERED_DIR: &str = "/data/run/relay/delivered";
+
 pub fn run(args: &[String]) -> Result<()> {
     let dir = PathBuf::from(args.first().ok_or("relay: missing <mailbox dir>")?);
-    let mailbox = Arc::new(Mutex::new(Mailbox::new(&dir)));
+    let mailbox = Arc::new(Mutex::new(Mailbox::new(&dir, Path::new(DELIVERED_DIR))));
     let reader = mailbox.clone();
     thread::spawn(move || {
         for line in io::stdin().lock().lines() {
@@ -60,19 +68,20 @@ fn lock(mailbox: &Mutex<Mailbox>) -> std::sync::MutexGuard<'_, Mailbox> {
 pub struct Mailbox {
     requests: PathBuf,
     responses: PathBuf,
+    /// Receipt markers for responses written, see [`DELIVERED_DIR`].
+    delivered: PathBuf,
     /// Request names emitted on this session and not yet acked by the host.
+    /// Per process on purpose: a new session must re-emit what is still here.
     emitted: HashSet<String>,
-    /// Response names already written, so a re-sent one is acked, not rewritten.
-    written: HashSet<String>,
 }
 
 impl Mailbox {
-    pub fn new(dir: &Path) -> Self {
+    pub fn new(dir: &Path, delivered: &Path) -> Self {
         Self {
             requests: dir.join("requests"),
             responses: dir.join("responses"),
+            delivered: delivered.to_path_buf(),
             emitted: HashSet::new(),
-            written: HashSet::new(),
         }
     }
 
@@ -113,17 +122,20 @@ impl Mailbox {
     }
 
     /// One line from the host: a `response` is written atomically into
-    /// `responses` (once) and acked; an `ack` deletes the request it names.
+    /// `responses` unless its receipt marker exists, the marker is created,
+    /// and it is acked; an `ack` deletes the request it names.
     pub fn handle_host_line(&mut self, line: &str, out: &mut impl Write) -> Result<()> {
         match serde_json::from_str(line)? {
             Event::Response { name, body } => {
                 check_name(&name)?;
-                if !self.written.contains(&name) {
+                let marker = self.delivered.join(&name);
+                if !marker.exists() {
                     fs::create_dir_all(&self.responses)?;
                     let tmp = self.responses.join(format!(".{name}.tmp"));
                     fs::write(&tmp, body)?;
                     fs::rename(&tmp, self.responses.join(&name))?;
-                    self.written.insert(name.clone());
+                    fs::create_dir_all(&self.delivered)?;
+                    fs::File::create(&marker)?;
                 }
                 write_line(out, &Event::Ack { name })?;
                 Ok(())
@@ -167,17 +179,30 @@ mod tests {
         serde_json::to_string(&Event::Ack { name: name.into() }).unwrap()
     }
 
+    fn response(name: &str, body: &str) -> String {
+        serde_json::to_string(&Event::Response {
+            name: name.into(),
+            body: body.into(),
+        })
+        .unwrap()
+    }
+
+    /// A mailbox over `<tmp>/rpc` with markers in `<tmp>/delivered`.
+    fn mailbox(dir: &Path) -> Mailbox {
+        Mailbox::new(&dir.join("rpc"), &dir.join("delivered"))
+    }
+
     /// A request goes out as a line and stays on disk until the host acks it.
     #[test]
     fn requests_go_out_once_and_survive_until_acked() {
         let dir = tempfile::tempdir().unwrap();
-        let requests = dir.path().join("requests");
-        fs::create_dir(&requests).unwrap();
+        let requests = dir.path().join("rpc/requests");
+        fs::create_dir_all(&requests).unwrap();
         fs::write(requests.join("b.json"), r#"{"n":2}"#).unwrap();
         fs::write(requests.join("a.json"), r#"{"n":1}"#).unwrap();
         fs::write(requests.join("notes.txt"), "ignored").unwrap();
 
-        let mut mailbox = Mailbox::new(dir.path());
+        let mut mailbox = mailbox(dir.path());
         let mut out = Vec::new();
         assert_eq!(mailbox.emit_requests(&mut out).unwrap(), 2);
         assert_eq!(
@@ -221,18 +246,18 @@ mod tests {
     #[test]
     fn a_restart_re_emits_unacked_requests_once() {
         let dir = tempfile::tempdir().unwrap();
-        let requests = dir.path().join("requests");
-        fs::create_dir(&requests).unwrap();
+        let requests = dir.path().join("rpc/requests");
+        fs::create_dir_all(&requests).unwrap();
         fs::write(requests.join("a.json"), "1").unwrap();
         fs::write(requests.join("b.json"), "2").unwrap();
 
-        let mut first = Mailbox::new(dir.path());
+        let mut first = mailbox(dir.path());
         let mut out = Vec::new();
         assert_eq!(first.emit_requests(&mut out).unwrap(), 2);
         first.handle_host_line(&ack("a.json"), &mut out).unwrap();
         drop(first);
 
-        let mut second = Mailbox::new(dir.path());
+        let mut second = mailbox(dir.path());
         let mut replay = Vec::new();
         assert_eq!(second.emit_requests(&mut replay).unwrap(), 1);
         assert_eq!(
@@ -249,40 +274,54 @@ mod tests {
     fn missing_requests_dir_is_not_an_error() {
         let dir = tempfile::tempdir().unwrap();
         let mut out = Vec::new();
-        assert_eq!(Mailbox::new(dir.path()).emit_requests(&mut out).unwrap(), 0);
+        assert_eq!(mailbox(dir.path()).emit_requests(&mut out).unwrap(), 0);
     }
 
-    /// A response lands atomically and is acked; the same response again is
-    /// acked but not rewritten.
+    /// A response lands atomically, leaves a receipt marker, and is acked.
     #[test]
-    fn responses_are_written_atomically_once_and_acked() {
+    fn responses_are_written_atomically_with_a_marker_and_acked() {
         let dir = tempfile::tempdir().unwrap();
-        let responses = dir.path().join("responses");
-        let line = serde_json::to_string(&Event::Response {
-            name: "a.json".into(),
-            body: r#"{"ok":true}"#.into(),
-        })
-        .unwrap();
-        let mut mailbox = Mailbox::new(dir.path());
+        let responses = dir.path().join("rpc/responses");
+        let mut mailbox = mailbox(dir.path());
         let mut out = Vec::new();
-        mailbox.handle_host_line(&line, &mut out).unwrap();
+        mailbox
+            .handle_host_line(&response("a.json", r#"{"ok":true}"#), &mut out)
+            .unwrap();
         assert_eq!(
             fs::read_to_string(responses.join("a.json")).unwrap(),
             r#"{"ok":true}"#
         );
         assert!(!responses.join(".a.json.tmp").exists());
+        assert!(dir.path().join("delivered/a.json").exists());
         assert_eq!(
             events(&out),
             vec![Event::Ack {
                 name: "a.json".into()
             }]
         );
+    }
 
-        // The agent may have consumed it by the time the host re-sends.
-        fs::remove_file(responses.join("a.json")).unwrap();
+    /// The host re-sends a response after its ack was lost and the relay
+    /// process (or the whole VM) has restarted in between: the marker, not
+    /// any in-memory state, says it was delivered, so an answer the agent
+    /// already consumed is acked again and not resurrected.
+    #[test]
+    fn a_fresh_mailbox_acks_a_replayed_response_without_rewriting() {
+        let dir = tempfile::tempdir().unwrap();
+        let answer = dir.path().join("rpc/responses/a.json");
+        let line = response("a.json", r#"{"ok":true}"#);
+
+        let mut first = mailbox(dir.path());
+        first.handle_host_line(&line, &mut Vec::new()).unwrap();
+        assert!(answer.exists());
+        drop(first);
+        // The agent consumed its answer.
+        fs::remove_file(&answer).unwrap();
+
+        let mut second = mailbox(dir.path());
         let mut again = Vec::new();
-        mailbox.handle_host_line(&line, &mut again).unwrap();
-        assert!(!responses.join("a.json").exists());
+        second.handle_host_line(&line, &mut again).unwrap();
+        assert!(!answer.exists(), "a consumed response must not reappear");
         assert_eq!(
             events(&again),
             vec![Event::Ack {
@@ -294,7 +333,7 @@ mod tests {
     #[test]
     fn rejects_other_ops_and_path_names() {
         let dir = tempfile::tempdir().unwrap();
-        let mut mailbox = Mailbox::new(dir.path());
+        let mut mailbox = mailbox(dir.path());
         let mut out = Vec::new();
         let request = r#"{"op":"request","name":"a.json","body":""}"#;
         assert!(mailbox.handle_host_line(request, &mut out).is_err());
@@ -304,6 +343,7 @@ mod tests {
         assert!(mailbox.handle_host_line(escape_ack, &mut out).is_err());
         assert!(mailbox.handle_host_line("not json", &mut out).is_err());
         assert!(!dir.path().join("x").exists());
+        assert!(!dir.path().join("rpc/x").exists());
         assert!(out.is_empty());
     }
 }

@@ -212,7 +212,7 @@ Everything init needs is env or on disk.
 | `vsock-listen <port> -- <cmd...>` | Accept on `AF_VSOCK` port, spawn `cmd` per connection with the socket as stdin/stdout (inetd style). |
 | `egress-loopback <tcp port> <vsock port>` | Relay guest loopback TCP to the host vsock port. |
 | `exec --env-file <path> [--cwd <dir>] -- <cmd...>` | Clear the environment, load `KEY=VALUE` lines from the file, `chdir`, exec. Used as the remote command for every launch and host exec (§7.2). |
-| `relay <mailbox dir>` | Watch `<dir>/requests/*.json` (100 ms poll); emit each as one JSON line on stdout `{"op":"request","name":...,"body":...}` and keep the file until the host answers `{"op":"ack","name":...}` on stdin, then delete it. Read `{"op":"response","name":...,"body":...}` lines on stdin, write each atomically to `<dir>/responses/` and answer `{"op":"ack","name":...}` on stdout. On start (so on every reconnect) re-emit every request file still present; within one process emit each name once, and ack a re-sent response without rewriting it. |
+| `relay <mailbox dir>` | Watch `<dir>/requests/*.json` (100 ms poll); emit each as one JSON line on stdout `{"op":"request","name":...,"body":...}` and keep the file until the host answers `{"op":"ack","name":...}` on stdin, then delete it. Read `{"op":"response","name":...,"body":...}` lines on stdin, write each atomically to `<dir>/responses/`, create the receipt marker `/data/run/relay/delivered/<name>`, then answer `{"op":"ack","name":...}` on stdout. On start (so on every reconnect) re-emit every request file still present; within one process emit each name once. A response whose marker already exists is acked without being rewritten, whatever process or boot wrote it. |
 | `tail <dir>` | Watch a directory tree for JSONL files; emit `{"op":"append","path":...,"data":base64}` for new bytes, `{"op":"create"...}` for new files. Used for transcript mirroring. |
 | `wait-stop <vsock port>` | Block until the host connects and sends `stop`; used by init. |
 
@@ -335,11 +335,17 @@ Started by `BoxRegistry::ensure_running`, stopped with the VM:
   | `{"op":"response","name","body"}` | host → guest | `responses/<name>` until acked | tmp + rename into guest `responses/`, then `ack` |
   | `{"op":"ack","name"}` | either | — | delete the named file it sent |
 
-  Replays are deduped by name (UUIDs the agent chose): the guest remembers the
-  responses it has written for its process life; the host remembers the request
-  names it has delivered for the box's life, because `rpc_watch` consumes the
-  request file and a re-created one would run the op twice. A replay is acked
-  again without being rewritten.
+  Replays are deduped by name (UUIDs the agent chose) with receipt markers on
+  disk, not in memory, so they survive relay reconnects, idle stops, reboots
+  and app restarts alike. Each receiver creates an empty file named after the
+  message right after its atomic write and before it sends the `ack`: the host
+  in `<box dir>/relay/delivered/<name>` (the box dir outlives the VM and is
+  deleted by discard), the guest in `/data/run/relay/delivered/<name>` (the
+  agent-owned data disk). A replay whose marker exists is acked again without
+  being rewritten; this matters because `rpc_watch` consumes the request file
+  and a re-created one would run the op twice, and because the agent may have
+  consumed a response that a rewrite would resurrect. Markers are never pruned;
+  they go with the box.
 - **Transcript mirror**: `ssh -F cfg box fletch-guest tail <home>/.claude/projects`
   (and the provider's equivalent root), appending into
   `<box>/claude-projects/<slug>/…`. The transcript readers already know how to
@@ -667,14 +673,16 @@ why. The spec stays the design; this is the record.
   `fletch-host` behave the same) is refused with the probe's sentence unless
   the machine and runtime can boot a box; then it stores the flag, starts the
   image install (`boxes::setup::start_install`, one at a time, `box:image`),
-  and makes `box` the engine for new agents. While boxes run Claude Code
-  alone, a new agent of another provider is stamped with `sandbox-exec`
-  instead (`boxes::engine_for_new_agent`) rather than refused, and its badge
-  shows the engine it got. Once the image is in, `setup::prebuild_tools`
-  builds the tools disk of every supported provider whose CLI the host has
-  (`box:tools`). Off: `box` goes back to `sandbox-exec` (an engine the user
-  picked meanwhile stays: without the flag `box` is unavailable and must never
-  stay selected); every running box is stopped cleanly
+  and makes `box` the engine for new agents, remembering the engine it
+  replaced under `box_previous_engine` (host-internal). While boxes run
+  Claude Code alone, a new agent of another provider is stamped with that
+  previous engine instead (`boxes::engine_for_new_agent`, so Docker stays
+  Docker; a hand-picked `box` falls back to `sandbox-exec`) rather than
+  refused, and its badge shows the engine it got. Once the image is in,
+  `setup::prebuild_tools` builds the tools disk of every supported provider
+  whose CLI the host has (`box:tools`). Off: `box` goes back to the previous
+  engine (an engine the user picked meanwhile stays: without the flag `box` is
+  unavailable and must never stay selected); every running box is stopped cleanly
   (`BoxRegistry::shutdown_all`), nothing deleted. `boxes::availability`
   checks the flag and the runtime, not the image, so `engine_for(Box)` and
   `set_sandbox_engine("box")` work while the download is still on its way.

@@ -170,10 +170,11 @@ pub fn set_box_setting_impl(ctx: &EngineCtx, key: &str, value: Option<&str>) -> 
 
 /// Flip the flag. On: refused, and nothing stored, unless `probe` says this
 /// machine and runtime can boot a box (Intel, a missing helper); then `box`
-/// becomes the engine for new agents. Off: `box` goes back to `sandbox-exec`
-/// (another engine the user picked meanwhile stays), and every running box is
-/// stopped cleanly — nothing is deleted. The install itself is the caller's,
-/// so this stays testable without a download.
+/// becomes the engine for new agents and the engine it replaced is remembered.
+/// Off: `box` goes back to that engine (another engine the user picked
+/// meanwhile stays), and every running box is stopped cleanly — nothing is
+/// deleted. The install itself is the caller's, so this stays testable without
+/// a download.
 pub(crate) fn set_enabled(ctx: &EngineCtx, on: bool, probe: Option<&Probe>) -> Result<()> {
     if on {
         let problem = match probe {
@@ -199,15 +200,34 @@ pub(crate) fn set_enabled(ctx: &EngineCtx, on: bool, probe: Option<&Probe>) -> R
     let selected = sandbox::selected_engine_kind();
     if on {
         if selected != sandbox::EngineKind::Box {
+            // Remembered so providers boxes cannot run keep this engine, and
+            // so off restores it (`settings::fallback_engine`).
+            let conn = ctx.db.lock();
+            database::set_setting(
+                &conn,
+                settings::PREVIOUS_ENGINE_SETTING,
+                selected.as_setting(),
+            )?;
+            settings::set(settings::load(&conn));
+            drop(conn);
             select_engine(ctx, sandbox::EngineKind::Box)?;
         }
         return Ok(());
     }
     // Off must never leave `box` selected: with the flag down the engine is
-    // unavailable and every spawn would fail. Another engine the user picked
-    // meanwhile is theirs and stays.
+    // unavailable and every spawn would fail. The engine the flag replaced
+    // comes back; another engine the user picked meanwhile is theirs and stays.
+    let restore = settings::fallback_engine();
+    {
+        let conn = ctx.db.lock();
+        conn.execute(
+            "DELETE FROM settings WHERE key = ?1",
+            [settings::PREVIOUS_ENGINE_SETTING],
+        )?;
+        settings::set(settings::load(&conn));
+    }
     if selected == sandbox::EngineKind::Box {
-        select_engine(ctx, sandbox::EngineKind::SandboxExec)?;
+        select_engine(ctx, restore)?;
     }
     // Only when something runs: the stop is async, and a bare unit test has
     // no runtime to spawn it on.
@@ -360,6 +380,38 @@ mod tests {
             sandbox::EngineKind::SandboxExec
         );
         assert_eq!(engine_row(&ctx).as_deref(), Some("sandbox-exec"));
+    }
+
+    /// Docker selected, flag on: a Codex agent (which boxes cannot run yet) is
+    /// stamped Docker, not seatbelt, and off brings Docker back.
+    #[test]
+    fn the_engine_the_flag_replaced_serves_unsupported_providers_and_comes_back() {
+        let _serial = ENGINE_LOCK.blocking_lock();
+        let (ctx, _sink, _dir) = test_ctx();
+        settings::set(settings::BoxSettings::default());
+        database::set_setting(&ctx.db.lock(), sandbox::ENGINE_SETTING, "docker").unwrap();
+        sandbox::set_selected_engine_kind(sandbox::EngineKind::Docker);
+
+        set_enabled(&ctx, true, Some(&probe(true))).unwrap();
+        assert_eq!(sandbox::selected_engine_kind(), sandbox::EngineKind::Box);
+        assert_eq!(settings::fallback_engine(), sandbox::EngineKind::Docker);
+        assert_eq!(
+            boxes::engine_for_new_agent(sandbox::EngineKind::Box, "codex"),
+            sandbox::EngineKind::Docker
+        );
+        assert_eq!(
+            boxes::engine_for_new_agent(sandbox::EngineKind::Box, "claude"),
+            sandbox::EngineKind::Box
+        );
+
+        set_enabled(&ctx, false, None).unwrap();
+        assert_eq!(sandbox::selected_engine_kind(), sandbox::EngineKind::Docker);
+        assert_eq!(engine_row(&ctx).as_deref(), Some("docker"));
+        assert_eq!(
+            database::get_setting(&ctx.db.lock(), settings::PREVIOUS_ENGINE_SETTING),
+            None
+        );
+        sandbox::set_selected_engine_kind(sandbox::EngineKind::SandboxExec);
     }
 
     #[test]

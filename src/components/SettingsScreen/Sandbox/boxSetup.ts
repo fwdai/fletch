@@ -52,6 +52,6 @@ export function boxSetup(
   }
   return {
     state: "ready",
-    text: `Ready · image v${image.version ?? image.pinned_version} · ${PROVIDER_LABEL} ${disk.version} · other providers use seatbelt`,
+    text: `Ready · image v${image.version ?? image.pinned_version} · ${PROVIDER_LABEL} ${disk.version} · other providers keep the previous sandbox`,
   };
 }

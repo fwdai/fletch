@@ -70,7 +70,7 @@ impl PinnedImage {
     pub const VERSION: &'static str = "0.1.0";
     pub const SIZE: u64 = 848_310_272;
     pub const SHA256: &'static str =
-        "b12c3c698552d9b992f4032bea0f2ff08bd563e62fc8812cbbfba30d456b3318";
+        "0537e1814736e6788de0de79ee4f0a02ce280a4158a91cba156c95dacb185140";
 
     /// The image this build pins, from `base_url` (the `box_image_url`
     /// setting) or the GitHub release.

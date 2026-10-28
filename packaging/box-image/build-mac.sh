@@ -25,8 +25,11 @@ OUT=$(cd "$OUT" && pwd)
 echo "== building the image in a debian:trixie container"
 # Only the pipeline directory and the one binary go in; build.sh stages the
 # root tree inside the container, where the filesystem is case-sensitive.
+# The binary's directory is mounted, not the file: Docker Desktop binds a single
+# file by inode and kept serving the previous build after cargo replaced it,
+# so an image built that way carried a stale fletch-guest.
 docker run --rm --platform linux/arm64 \
-  -v "$HERE:/src:ro" -v "$GUEST:/fletch-guest:ro" -v "$OUT:/out" \
-  -e FLETCH_GUEST=/fletch-guest \
+  -v "$HERE:/src:ro" -v "$(dirname "$GUEST"):/guest:ro" -v "$OUT:/out" \
+  -e FLETCH_GUEST=/guest/fletch-guest \
   -e "DEBIAN_SNAPSHOT=${DEBIAN_SNAPSHOT:-}" -e "SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH:-}" \
   debian:trixie /src/build.sh /out "$VERSION"

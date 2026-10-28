@@ -857,6 +857,7 @@ async fn boot(
 
     let relays = relay::Relays::start(
         channel.clone(),
+        &dir,
         &identity.rpc_dir,
         &identity.home.join(".claude").join("projects"),
         &dir.join(CLAUDE_PROJECTS_DIR),

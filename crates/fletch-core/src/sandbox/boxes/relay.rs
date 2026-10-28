@@ -8,10 +8,13 @@
 //!   copy. The host watches `rpc_dir/responses/` and sends each response back
 //!   as a line, deleting the host copy only on the guest's ack. Either side
 //!   re-sends what is still on its disk when a session reconnects, so the
-//!   receiver dedupes by name: the guest keeps the responses it has written,
-//!   the host keeps the request names it has delivered for the box's life
-//!   (`rpc_watch` consumes the file, so a replayed request would otherwise run
-//!   its op twice). Names are UUIDs chosen by the agent.
+//!   receiver dedupes by name with a receipt marker on disk, created after the
+//!   atomic write and before the ack: the host's live in
+//!   `<box dir>/relay/delivered/<name>`, which outlives idle stops and app
+//!   restarts and goes with the box on discard (`rpc_watch` consumes the
+//!   request file, so a replayed request would otherwise run its op twice);
+//!   the guest's in `/data/run/relay/delivered/<name>` on the data disk. Names
+//!   are UUIDs chosen by the agent, so the markers are never pruned.
 //! - **Transcript tail**: `fletch-guest tail <home>/.claude/projects` emits
 //!   `create`/`append` lines for every `*.jsonl` under claude's projects dir;
 //!   the host appends them under `<box>/claude-projects/`, and on reconnect
@@ -71,9 +74,15 @@ pub struct Relays {
     tasks: parking_lot::Mutex<Vec<tokio::task::JoinHandle<()>>>,
 }
 
+/// Where, under the box dir, the host keeps its receipt markers.
+pub const DELIVERED_DIR: &str = "relay/delivered";
+
 impl Relays {
+    /// `box_dir` is the box's own directory, which outlives the VM: the
+    /// request receipt markers live under it.
     pub fn start(
         channel: Arc<Channel>,
+        box_dir: &Path,
         rpc_dir: &Path,
         guest_projects: &Path,
         mirror: &Path,
@@ -81,9 +90,7 @@ impl Relays {
         let (stop, rx) = watch::channel(false);
         let mailbox = {
             let (channel, rpc_dir, rx) = (channel.clone(), rpc_dir.to_path_buf(), rx.clone());
-            // Outlives every session: a request the guest replays after a
-            // reconnect must be recognised, or its op runs twice.
-            let delivered = Delivered::default();
+            let delivered = box_dir.join(DELIVERED_DIR);
             crate::host::spawn(async move {
                 let rpc = rpc_dir.to_string_lossy().into_owned();
                 run_with_reconnect(
@@ -172,21 +179,18 @@ where
     }
 }
 
-/// The request names one box's host side has written into its mailbox, kept
-/// for the box's life and shared by every mailbox session of that box.
-pub type Delivered = Arc<parking_lot::Mutex<HashSet<String>>>;
-
 /// Mirror requests out of `child` into the host mailbox and responses back,
 /// until the child ends or `stop` says so.
 ///
-/// Each request line is written, then acked; a name already in `delivered` is
-/// acked without being written again. Each response file is sent once per
-/// session and deleted when the guest acks it, so a session that drops before
-/// the ack leaves the file for the next session to re-send.
+/// Each request line is written, marked in `delivered`, then acked; a name
+/// with a marker already is acked without being written again. Each response
+/// file is sent once per session and deleted when the guest acks it, so a
+/// session that drops before the ack leaves the file for the next session to
+/// re-send.
 pub async fn pump_mailbox(
     mut child: Child,
     rpc_dir: PathBuf,
-    delivered: Delivered,
+    delivered: PathBuf,
     mut stop: watch::Receiver<bool>,
 ) -> io::Result<()> {
     let stdout = child
@@ -250,16 +254,18 @@ pub enum Reply {
 }
 
 /// One line from the guest. A `request` goes to `rpc_dir/requests/<name>`
-/// through a temp file and a rename so the watcher never reads half of it —
-/// unless `delivered` already has the name (a replay), in which case it is
-/// only acked. An `ack` names a response the guest has written.
-pub fn handle_guest_line(rpc_dir: &Path, delivered: &Delivered, line: &str) -> io::Result<Reply> {
+/// through a temp file and a rename so the watcher never reads half of it,
+/// and leaves an empty receipt marker `delivered/<name>` — unless the marker
+/// is already there (a replay), in which case it is only acked. An `ack`
+/// names a response the guest has written.
+pub fn handle_guest_line(rpc_dir: &Path, delivered: &Path, line: &str) -> io::Result<Reply> {
     match serde_json::from_str(line)? {
         Event::Request { name, body } => {
             if !safe_name(&name) {
                 return Err(io::Error::other(format!("bad request name {name:?}")));
             }
-            if delivered.lock().contains(&name) {
+            let marker = delivered.join(&name);
+            if marker.exists() {
                 return Ok(Reply::Ack(name));
             }
             let requests = rpc_dir.join("requests");
@@ -267,7 +273,8 @@ pub fn handle_guest_line(rpc_dir: &Path, delivered: &Delivered, line: &str) -> i
             let tmp = requests.join(format!(".{name}.tmp"));
             std::fs::write(&tmp, body)?;
             std::fs::rename(&tmp, requests.join(&name))?;
-            delivered.lock().insert(name.clone());
+            std::fs::create_dir_all(delivered)?;
+            std::fs::File::create(&marker)?;
             Ok(Reply::Ack(name))
         }
         Event::Ack { name } => {
@@ -473,9 +480,14 @@ mod tests {
             .unwrap();
     }
 
-    /// A request line lands in the host mailbox atomically and is acked; a
-    /// response the host writes goes back as a line and the host copy goes
-    /// once the guest acks it.
+    /// The marker dir of a box whose dir is `<tmp>/box`.
+    fn delivered(dir: &Path) -> PathBuf {
+        dir.join("box").join(DELIVERED_DIR)
+    }
+
+    /// A request line lands in the host mailbox atomically, leaves its
+    /// receipt marker and is acked; a response the host writes goes back as
+    /// a line and the host copy goes once the guest acks it.
     #[tokio::test]
     async fn mailbox_acks_a_request_and_deletes_an_acked_response() {
         let dir = tempfile::tempdir().unwrap();
@@ -494,7 +506,7 @@ mod tests {
         let pump = tokio::spawn(pump_mailbox(
             scripted(&script),
             rpc.clone(),
-            Delivered::default(),
+            delivered(dir.path()),
             rx,
         ));
 
@@ -506,6 +518,7 @@ mod tests {
         );
         assert!(!rpc.join("requests/.r1.json.tmp").exists());
         wait_for(&got_ack).await;
+        assert!(delivered(dir.path()).join("r1.json").exists());
         assert_eq!(
             std::fs::read_to_string(&got_ack).unwrap().trim(),
             ack_line("r1.json").trim()
@@ -521,32 +534,37 @@ mod tests {
         assert!(!rpc.join("responses/r1.json").exists());
     }
 
-    /// The guest replays a request after a reconnect (its ack was lost): the
-    /// host acks again but does not write the file a second time, since
+    /// The guest's session drops before it sees the host's ack, and by the
+    /// time it replays the request the host has restarted (an idle stop, a
+    /// reboot, the app): a fresh pump with no in-memory state over the same
+    /// box dir acks again but does not write the file a second time, since
     /// `rpc_watch` already consumed and ran the first one.
     #[tokio::test]
-    async fn a_replayed_request_is_acked_but_not_rewritten() {
+    async fn a_replayed_request_is_acked_but_not_rewritten_after_a_restart() {
         let dir = tempfile::tempdir().unwrap();
         let rpc = dir.path().join("rpc");
-        let delivered = Delivered::default();
         let request = request_line("r1.json", r#"{"id":"r1","op":"noop"}"#);
         let (_stop, rx) = watch::channel(false);
 
-        // Session one: delivered and acked, then the session ends.
-        let script = format!("printf '%s\\n' '{request}'; IFS= read -r line");
-        finished(tokio::spawn(pump_mailbox(
+        // Session one: the guest emits and is gone before the ack reaches it.
+        let script = format!("printf '%s\\n' '{request}'");
+        let pump = tokio::spawn(pump_mailbox(
             scripted(&script),
             rpc.clone(),
-            delivered.clone(),
+            delivered(dir.path()),
             rx.clone(),
-        )))
-        .await;
+        ));
+        // The ack may hit a closed pipe; either way the session is over.
+        let _ = tokio::time::timeout(Duration::from_secs(5), pump)
+            .await
+            .expect("the pump ends with the child");
         let request_file = rpc.join("requests/r1.json");
         assert!(request_file.exists());
+        assert!(delivered(dir.path()).join("r1.json").exists());
         // `rpc_watch` takes it.
         std::fs::remove_file(&request_file).unwrap();
 
-        // Session two: the same request again.
+        // Session two, a new `Relays` life: the same request again.
         let got = dir.path().join("got");
         let script = format!(
             "printf '%s\\n' '{request}'; IFS= read -r line; printf '%s' \"$line\" > '{}'",
@@ -555,7 +573,7 @@ mod tests {
         finished(tokio::spawn(pump_mailbox(
             scripted(&script),
             rpc.clone(),
-            delivered,
+            delivered(dir.path()),
             rx,
         )))
         .await;
@@ -563,7 +581,10 @@ mod tests {
             std::fs::read_to_string(&got).unwrap().trim(),
             ack_line("r1.json").trim()
         );
-        assert!(!request_file.exists());
+        assert!(
+            !request_file.exists(),
+            "a consumed request must not reappear"
+        );
     }
 
     /// The session drops after the response went out but before the guest
@@ -586,7 +607,7 @@ mod tests {
         let pump = tokio::spawn(pump_mailbox(
             scripted(&script),
             rpc.clone(),
-            Delivered::default(),
+            delivered(dir.path()),
             rx,
         ));
         wait_for(&got).await;
@@ -611,7 +632,7 @@ mod tests {
         finished(tokio::spawn(pump_mailbox(
             scripted(&script),
             rpc.clone(),
-            Delivered::default(),
+            delivered(dir.path()),
             rx,
         )))
         .await;
@@ -625,20 +646,22 @@ mod tests {
     #[test]
     fn guest_lines_are_validated() {
         let dir = tempfile::tempdir().unwrap();
-        let delivered = Delivered::default();
+        let rpc = dir.path().join("rpc");
+        let delivered = delivered(dir.path());
         let escape = r#"{"op":"request","name":"../x","body":""}"#;
-        assert!(handle_guest_line(dir.path(), &delivered, escape).is_err());
+        assert!(handle_guest_line(&rpc, &delivered, escape).is_err());
         let escape_ack = r#"{"op":"ack","name":"../x"}"#;
-        assert!(handle_guest_line(dir.path(), &delivered, escape_ack).is_err());
+        assert!(handle_guest_line(&rpc, &delivered, escape_ack).is_err());
         let wrong_op = r#"{"op":"response","name":"a.json","body":""}"#;
-        assert!(handle_guest_line(dir.path(), &delivered, wrong_op).is_err());
-        assert!(handle_guest_line(dir.path(), &delivered, "nonsense").is_err());
-        assert!(!dir.path().join("requests").join("x").exists());
-        assert!(delivered.lock().is_empty());
+        assert!(handle_guest_line(&rpc, &delivered, wrong_op).is_err());
+        assert!(handle_guest_line(&rpc, &delivered, "nonsense").is_err());
+        assert!(!rpc.join("requests").join("x").exists());
+        assert!(!dir.path().join("x").exists());
+        assert!(!delivered.exists());
 
         let ack = r#"{"op":"ack","name":"a.json"}"#;
         assert_eq!(
-            handle_guest_line(dir.path(), &delivered, ack).unwrap(),
+            handle_guest_line(&rpc, &delivered, ack).unwrap(),
             Reply::Acked("a.json".into())
         );
     }

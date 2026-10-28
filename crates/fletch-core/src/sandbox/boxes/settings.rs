@@ -11,6 +11,7 @@ use rusqlite::Connection;
 
 use crate::database;
 use crate::error::{Error, Result};
+use crate::sandbox::EngineKind;
 
 /// The developer flag. Absent is off: with it off no box code path is reachable.
 pub const ENABLED_SETTING: &str = "boxes_enabled";
@@ -25,6 +26,10 @@ pub const IDLE_STOP_SETTING: &str = "box_idle_stop_minutes";
 /// Project setting: a JSON array of host patterns added to the default egress
 /// allow-list.
 pub const EGRESS_ALLOW_KEY: &str = "box.egress_allow";
+/// The engine that was selected when the flag switched new agents to `box`:
+/// what a provider boxes cannot run yet is stamped with, and what the flag
+/// going off restores. Host-internal, not a client key and not in [`KEYS`].
+pub const PREVIOUS_ENGINE_SETTING: &str = "box_previous_engine";
 
 /// Every global key, for the host-owned allowlist.
 pub const KEYS: &[&str] = &[
@@ -49,6 +54,9 @@ pub struct BoxSettings {
     pub image_url: Option<String>,
     /// `None` is never.
     pub idle_stop: Option<Duration>,
+    /// The engine selected before the flag made `box` the engine
+    /// ([`PREVIOUS_ENGINE_SETTING`]); `None` when the flag never switched it.
+    pub previous_engine: Option<EngineKind>,
 }
 
 impl Default for BoxSettings {
@@ -59,6 +67,7 @@ impl Default for BoxSettings {
             cpus: DEFAULT_CPUS,
             image_url: None,
             idle_stop: Some(Duration::from_secs(DEFAULT_IDLE_STOP_MINUTES * 60)),
+            previous_engine: None,
         }
     }
 }
@@ -69,6 +78,7 @@ static SETTINGS: RwLock<BoxSettings> = RwLock::new(BoxSettings {
     cpus: DEFAULT_CPUS,
     image_url: None,
     idle_stop: Some(Duration::from_secs(DEFAULT_IDLE_STOP_MINUTES * 60)),
+    previous_engine: None,
 });
 
 /// `project_id → patterns`, the per-project egress additions.
@@ -88,6 +98,16 @@ pub fn enabled() -> bool {
     SETTINGS.read().enabled
 }
 
+/// The engine new agents get when `box` is selected but cannot serve them,
+/// and the one the flag going off restores: the engine the flag replaced, or
+/// the default when the user selected `box` themselves. Never `Box`.
+pub fn fallback_engine() -> EngineKind {
+    match SETTINGS.read().previous_engine {
+        Some(EngineKind::Box) | None => EngineKind::SandboxExec,
+        Some(kind) => kind,
+    }
+}
+
 pub fn set(settings: BoxSettings) {
     *SETTINGS.write() = settings;
 }
@@ -104,6 +124,9 @@ pub fn load(conn: &Connection) -> BoxSettings {
         image_url: parse_image_url(raw(IMAGE_URL_SETTING).as_deref()).unwrap_or(None),
         idle_stop: parse_idle_stop(raw(IDLE_STOP_SETTING).as_deref())
             .unwrap_or(Some(Duration::from_secs(DEFAULT_IDLE_STOP_MINUTES * 60))),
+        previous_engine: raw(PREVIOUS_ENGINE_SETTING)
+            .as_deref()
+            .and_then(EngineKind::from_setting),
     }
 }
 

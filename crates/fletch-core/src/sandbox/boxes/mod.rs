@@ -282,18 +282,22 @@ pub fn provider_refusal(provider: &str) -> Option<String> {
 }
 
 /// The engine a new agent of `provider` is stamped with when `selected` is the
-/// host's choice: `Box` only for a provider boxes can launch, the default
-/// seatbelt engine otherwise. While the pilot runs Claude Code alone, enabling
-/// it must not make every other provider unsendable; those agents keep the
-/// sandbox they had, and their capsule badge says so.
+/// host's choice: `Box` only for a provider boxes can launch, otherwise the
+/// engine the flag replaced ([`settings::fallback_engine`]: Docker stays
+/// Docker, a hand-picked `box` falls back to the default). While the pilot runs
+/// Claude Code alone, enabling it must not make every other provider
+/// unsendable or quietly weaken the isolation they had; their capsule badge
+/// shows the engine they got.
 pub fn engine_for_new_agent(selected: EngineKind, provider: &str) -> EngineKind {
     match selected {
         EngineKind::Box if !supports_provider(provider) => {
+            let fallback = settings::fallback_engine();
             tracing::info!(
                 provider,
-                "box engine does not run this provider yet; using seatbelt"
+                engine = fallback.as_setting(),
+                "box engine does not run this provider yet; using the previous engine"
             );
-            EngineKind::SandboxExec
+            fallback
         }
         kind => kind,
     }
