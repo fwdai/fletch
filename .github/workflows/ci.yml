@@ -101,6 +101,7 @@ jobs:
             crates/fletch-core
             crates/fletch-proto
             crates/fletch-host
+            crates/fletch-box
 
       - name: Rustfmt
         run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
@@ -164,3 +165,18 @@ jobs:
 
       - name: Test (fletch-host)
         run: cargo test --manifest-path crates/fletch-host/Cargo.toml
+
+      # `fletch-box` is the micro-VM sandbox runtime (libkrun guests reached
+      # over SSH on vsock). Its VM tests are `#[ignore]`d — hosted runners have no nested
+      # virtualisation — so this gate is the unit tests plus the proof that the
+      # crate's macOS-only calls are properly cfg-gated for the Linux host.
+      - name: Rustfmt (fletch-box)
+        run: cargo fmt --manifest-path crates/fletch-box/Cargo.toml --check
+
+      - name: Clippy (fletch-box)
+        run: >
+          cargo clippy --manifest-path crates/fletch-box/Cargo.toml --all-targets --
+          -D warnings -A clippy::significant_drop_tightening
+
+      - name: Test (fletch-box)
+        run: cargo test --manifest-path crates/fletch-box/Cargo.toml
