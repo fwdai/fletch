@@ -197,6 +197,10 @@ jobs:
         run: cargo test --manifest-path crates/fletch-guest/Cargo.toml
 
       - name: Cross-build (fletch-guest, aarch64 musl)
+        # From inside the crate: its linker settings live in
+        # crates/fletch-guest/.cargo/config.toml, which cargo reads from the
+        # working directory, not from --manifest-path.
+        working-directory: crates/fletch-guest
         run: |
           rustup target add aarch64-unknown-linux-musl
-          cargo build --release --manifest-path crates/fletch-guest/Cargo.toml --target aarch64-unknown-linux-musl
+          cargo build --release --target aarch64-unknown-linux-musl

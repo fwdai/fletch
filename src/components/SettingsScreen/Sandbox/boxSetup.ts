@@ -52,6 +52,6 @@ export function boxSetup(
   }
   return {
     state: "ready",
-    text: `Ready · image v${image.version ?? image.pinned_version} · ${PROVIDER_LABEL} ${disk.version}`,
+    text: `Ready · image v${image.version ?? image.pinned_version} · ${PROVIDER_LABEL} ${disk.version} · other providers use seatbelt`,
   };
 }

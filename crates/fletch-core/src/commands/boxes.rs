@@ -170,11 +170,10 @@ pub fn set_box_setting_impl(ctx: &EngineCtx, key: &str, value: Option<&str>) -> 
 
 /// Flip the flag. On: refused, and nothing stored, unless `probe` says this
 /// machine and runtime can boot a box (Intel, a missing helper); then `box`
-/// becomes the engine for new agents, remembered as the flag's doing
-/// (`box_engine_auto`). Off: the engine goes back to `sandbox-exec` only if
-/// the flag set it and the user did not choose otherwise since, and every
-/// running box is stopped cleanly — nothing is deleted. The install itself is
-/// the caller's, so this stays testable without a download.
+/// becomes the engine for new agents. Off: `box` goes back to `sandbox-exec`
+/// (another engine the user picked meanwhile stays), and every running box is
+/// stopped cleanly — nothing is deleted. The install itself is the caller's,
+/// so this stays testable without a download.
 pub(crate) fn set_enabled(ctx: &EngineCtx, on: bool, probe: Option<&Probe>) -> Result<()> {
     if on {
         let problem = match probe {
@@ -200,22 +199,14 @@ pub(crate) fn set_enabled(ctx: &EngineCtx, on: bool, probe: Option<&Probe>) -> R
     let selected = sandbox::selected_engine_kind();
     if on {
         if selected != sandbox::EngineKind::Box {
-            database::set_setting(&ctx.db.lock(), settings::ENGINE_AUTO_SETTING, "true")?;
             select_engine(ctx, sandbox::EngineKind::Box)?;
         }
         return Ok(());
     }
-    let auto = {
-        let conn = ctx.db.lock();
-        let auto =
-            database::get_setting(&conn, settings::ENGINE_AUTO_SETTING).as_deref() == Some("true");
-        conn.execute(
-            "DELETE FROM settings WHERE key = ?1",
-            [settings::ENGINE_AUTO_SETTING],
-        )?;
-        auto
-    };
-    if auto && selected == sandbox::EngineKind::Box {
+    // Off must never leave `box` selected: with the flag down the engine is
+    // unavailable and every spawn would fail. Another engine the user picked
+    // meanwhile is theirs and stays.
+    if selected == sandbox::EngineKind::Box {
         select_engine(ctx, sandbox::EngineKind::SandboxExec)?;
     }
     // Only when something runs: the stop is async, and a bare unit test has
@@ -305,8 +296,8 @@ mod tests {
         );
     }
 
-    /// On makes `box` the engine and remembers that it did; off undoes exactly
-    /// that, and both ends are announced.
+    /// On makes `box` the engine; off takes it back to the default, and both
+    /// ends are announced.
     #[test]
     fn the_flag_switches_the_engine_to_box_and_back() {
         let _serial = ENGINE_LOCK.blocking_lock();
@@ -318,10 +309,6 @@ mod tests {
         assert!(settings::enabled());
         assert_eq!(sandbox::selected_engine_kind(), sandbox::EngineKind::Box);
         assert_eq!(engine_row(&ctx).as_deref(), Some("box"));
-        assert_eq!(
-            database::get_setting(&ctx.db.lock(), settings::ENGINE_AUTO_SETTING).as_deref(),
-            Some("true")
-        );
         assert_eq!(
             sink.events(),
             vec![
@@ -343,18 +330,14 @@ mod tests {
             sandbox::EngineKind::SandboxExec
         );
         assert_eq!(engine_row(&ctx).as_deref(), Some("sandbox-exec"));
-        assert_eq!(
-            database::get_setting(&ctx.db.lock(), settings::ENGINE_AUTO_SETTING),
-            None,
-            "the marker is cleared"
-        );
         assert_eq!(sink.events().len(), 4, "the flag and the engine, twice");
     }
 
-    /// A user who picked another engine in between keeps it: the flag only
-    /// undoes its own switch.
+    /// A user who picked another engine in between keeps it; `box` chosen by
+    /// hand still cannot survive the flag going off, since the engine is
+    /// unavailable without it.
     #[test]
-    fn the_flag_leaves_an_engine_the_user_chose_meanwhile() {
+    fn the_flag_leaves_another_engine_but_never_leaves_box_selected() {
         let _serial = ENGINE_LOCK.blocking_lock();
         let (ctx, _sink, _dir) = test_ctx();
         settings::set(settings::BoxSettings::default());
@@ -364,29 +347,19 @@ mod tests {
         // The user's own choice, as `set_sandbox_engine_impl` records it.
         database::set_setting(&ctx.db.lock(), sandbox::ENGINE_SETTING, "docker").unwrap();
         sandbox::set_selected_engine_kind(sandbox::EngineKind::Docker);
-        ctx.db
-            .lock()
-            .execute(
-                "DELETE FROM settings WHERE key = ?1",
-                [settings::ENGINE_AUTO_SETTING],
-            )
-            .unwrap();
 
         set_enabled(&ctx, false, None).unwrap();
         assert_eq!(sandbox::selected_engine_kind(), sandbox::EngineKind::Docker);
         assert_eq!(engine_row(&ctx).as_deref(), Some("docker"));
 
-        // Flag on with `box` chosen by hand: nothing to switch, nothing to
-        // remember, so off leaves `box` as the user set it.
         sandbox::set_selected_engine_kind(sandbox::EngineKind::Box);
         set_enabled(&ctx, true, Some(&probe(true))).unwrap();
-        assert_eq!(
-            database::get_setting(&ctx.db.lock(), settings::ENGINE_AUTO_SETTING),
-            None
-        );
         set_enabled(&ctx, false, None).unwrap();
-        assert_eq!(sandbox::selected_engine_kind(), sandbox::EngineKind::Box);
-        sandbox::set_selected_engine_kind(sandbox::EngineKind::SandboxExec);
+        assert_eq!(
+            sandbox::selected_engine_kind(),
+            sandbox::EngineKind::SandboxExec
+        );
+        assert_eq!(engine_row(&ctx).as_deref(), Some("sandbox-exec"));
     }
 
     #[test]

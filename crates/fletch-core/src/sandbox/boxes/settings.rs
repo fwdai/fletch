@@ -25,12 +25,6 @@ pub const IDLE_STOP_SETTING: &str = "box_idle_stop_minutes";
 /// Project setting: a JSON array of host patterns added to the default egress
 /// allow-list.
 pub const EGRESS_ALLOW_KEY: &str = "box.egress_allow";
-/// `true` while the flag, not the user, made `box` the selected engine: set
-/// when turning the flag on switches `sandbox_engine`, cleared by any engine
-/// choice of the user's. Turning the flag off restores `sandbox-exec` only
-/// while this is set. Host-internal: not a client-writable key and not read
-/// by one.
-pub const ENGINE_AUTO_SETTING: &str = "box_engine_auto";
 
 /// Every global key, for the host-owned allowlist.
 pub const KEYS: &[&str] = &[

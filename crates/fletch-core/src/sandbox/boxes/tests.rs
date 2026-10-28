@@ -277,3 +277,22 @@ async fn wait_for(mut done: impl FnMut() -> bool, timeout: Duration) {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 }
+
+/// Enabling the pilot must not make providers boxes cannot run unsendable:
+/// they are stamped with the default engine, and nothing else is touched.
+#[test]
+fn new_agents_of_unsupported_providers_fall_back_to_seatbelt() {
+    use crate::sandbox::EngineKind;
+    assert_eq!(
+        super::engine_for_new_agent(EngineKind::Box, "claude"),
+        EngineKind::Box
+    );
+    assert_eq!(
+        super::engine_for_new_agent(EngineKind::Box, "codex"),
+        EngineKind::SandboxExec
+    );
+    assert_eq!(
+        super::engine_for_new_agent(EngineKind::Docker, "codex"),
+        EngineKind::Docker
+    );
+}

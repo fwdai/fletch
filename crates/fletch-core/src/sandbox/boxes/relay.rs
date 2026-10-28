@@ -4,8 +4,14 @@
 //! - **Mailbox**: `fletch-guest relay <rpc dir>` emits every request file the
 //!   agent writes in the guest as one JSON line; the host writes it into its
 //!   own `rpc_dir/requests/` (atomically, so `supervisor::rpc_watch` picks it
-//!   up unchanged), watches `rpc_dir/responses/` and sends each response back
-//!   as a line, deleting the host copy.
+//!   up unchanged) and then acks it, which is what lets the guest delete its
+//!   copy. The host watches `rpc_dir/responses/` and sends each response back
+//!   as a line, deleting the host copy only on the guest's ack. Either side
+//!   re-sends what is still on its disk when a session reconnects, so the
+//!   receiver dedupes by name: the guest keeps the responses it has written,
+//!   the host keeps the request names it has delivered for the box's life
+//!   (`rpc_watch` consumes the file, so a replayed request would otherwise run
+//!   its op twice). Names are UUIDs chosen by the agent.
 //! - **Transcript tail**: `fletch-guest tail <home>/.claude/projects` emits
 //!   `create`/`append` lines for every `*.jsonl` under claude's projects dir;
 //!   the host appends them under `<box>/claude-projects/`, and on reconnect
@@ -15,7 +21,7 @@
 //! The line handling is pure functions over a child's stdio so a scripted
 //! child stands in for the guest in tests.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -38,10 +44,25 @@ const BACKOFF_MAX: Duration = Duration::from_secs(5);
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "lowercase")]
 pub enum Event {
-    Request { name: String, body: String },
-    Response { name: String, body: String },
-    Create { path: String },
-    Append { path: String, data: String },
+    Request {
+        name: String,
+        body: String,
+    },
+    Response {
+        name: String,
+        body: String,
+    },
+    /// The receiver has durably written `name`; the sender may delete its copy.
+    Ack {
+        name: String,
+    },
+    Create {
+        path: String,
+    },
+    Append {
+        path: String,
+        data: String,
+    },
 }
 
 /// The relays of one running box.
@@ -60,12 +81,15 @@ impl Relays {
         let (stop, rx) = watch::channel(false);
         let mailbox = {
             let (channel, rpc_dir, rx) = (channel.clone(), rpc_dir.to_path_buf(), rx.clone());
+            // Outlives every session: a request the guest replays after a
+            // reconnect must be recognised, or its op runs twice.
+            let delivered = Delivered::default();
             crate::host::spawn(async move {
                 let rpc = rpc_dir.to_string_lossy().into_owned();
                 run_with_reconnect(
                     rx,
                     || channel.spawn_relay(&[guest::RELAY, &rpc]),
-                    |child, stop| pump_mailbox(child, rpc_dir.clone(), stop),
+                    |child, stop| pump_mailbox(child, rpc_dir.clone(), delivered.clone(), stop),
                 )
                 .await;
             })
@@ -148,11 +172,21 @@ where
     }
 }
 
+/// The request names one box's host side has written into its mailbox, kept
+/// for the box's life and shared by every mailbox session of that box.
+pub type Delivered = Arc<parking_lot::Mutex<HashSet<String>>>;
+
 /// Mirror requests out of `child` into the host mailbox and responses back,
 /// until the child ends or `stop` says so.
+///
+/// Each request line is written, then acked; a name already in `delivered` is
+/// acked without being written again. Each response file is sent once per
+/// session and deleted when the guest acks it, so a session that drops before
+/// the ack leaves the file for the next session to re-send.
 pub async fn pump_mailbox(
     mut child: Child,
     rpc_dir: PathBuf,
+    delivered: Delivered,
     mut stop: watch::Receiver<bool>,
 ) -> io::Result<()> {
     let stdout = child
@@ -167,24 +201,35 @@ pub async fn pump_mailbox(
     let mut tick = tokio::time::interval(POLL);
     let responses = rpc_dir.join("responses");
     std::fs::create_dir_all(&responses)?;
+    // Responses sent on this session and awaiting the guest's ack.
+    let mut in_flight: HashSet<String> = HashSet::new();
     loop {
         tokio::select! {
             line = lines.next_line() => match line? {
-                Some(line) => {
-                    if let Err(e) = handle_request_line(&rpc_dir, &line) {
-                        tracing::warn!(error = %e, "box relay: bad request line");
+                Some(line) => match handle_guest_line(&rpc_dir, &delivered, &line) {
+                    Ok(Reply::Ack(name)) => {
+                        stdin.write_all(ack_line(&name).as_bytes()).await?;
+                        stdin.flush().await?;
                     }
-                }
+                    Ok(Reply::Acked(name)) => {
+                        // The guest has it: the host copy was only insurance.
+                        let _ = std::fs::remove_file(responses.join(&name));
+                        in_flight.remove(&name);
+                    }
+                    Err(e) => tracing::warn!(error = %e, "box relay: bad guest line"),
+                },
                 // The guest closed the stream: the session is over.
                 None => return Ok(()),
             },
             _ = tick.tick() => {
                 for (name, body) in pending_responses(&responses)? {
+                    if in_flight.contains(&name) {
+                        continue;
+                    }
                     let line = response_line(&name, &body);
                     stdin.write_all(line.as_bytes()).await?;
                     stdin.flush().await?;
-                    // Delivered: the guest's copy is the one the agent reads.
-                    let _ = std::fs::remove_file(responses.join(&name));
+                    in_flight.insert(name);
                 }
             }
             _ = stop.changed() => {
@@ -195,20 +240,53 @@ pub async fn pump_mailbox(
     }
 }
 
-/// One `request` line from the guest → `rpc_dir/requests/<name>`, written
-/// through a temp file and a rename so the watcher never reads half of it.
-pub fn handle_request_line(rpc_dir: &Path, line: &str) -> io::Result<()> {
-    let Event::Request { name, body } = serde_json::from_str(line)? else {
-        return Err(io::Error::other("expected a request line"));
-    };
-    if !safe_name(&name) {
-        return Err(io::Error::other(format!("bad request name {name:?}")));
+/// What a guest line calls for on the wire.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Reply {
+    /// Send `{"op":"ack","name"}`: the request is on the host's disk.
+    Ack(String),
+    /// The guest acked this response; nothing to send, delete the host copy.
+    Acked(String),
+}
+
+/// One line from the guest. A `request` goes to `rpc_dir/requests/<name>`
+/// through a temp file and a rename so the watcher never reads half of it —
+/// unless `delivered` already has the name (a replay), in which case it is
+/// only acked. An `ack` names a response the guest has written.
+pub fn handle_guest_line(rpc_dir: &Path, delivered: &Delivered, line: &str) -> io::Result<Reply> {
+    match serde_json::from_str(line)? {
+        Event::Request { name, body } => {
+            if !safe_name(&name) {
+                return Err(io::Error::other(format!("bad request name {name:?}")));
+            }
+            if delivered.lock().contains(&name) {
+                return Ok(Reply::Ack(name));
+            }
+            let requests = rpc_dir.join("requests");
+            std::fs::create_dir_all(&requests)?;
+            let tmp = requests.join(format!(".{name}.tmp"));
+            std::fs::write(&tmp, body)?;
+            std::fs::rename(&tmp, requests.join(&name))?;
+            delivered.lock().insert(name.clone());
+            Ok(Reply::Ack(name))
+        }
+        Event::Ack { name } => {
+            if !safe_name(&name) {
+                return Err(io::Error::other(format!("bad ack name {name:?}")));
+            }
+            Ok(Reply::Acked(name))
+        }
+        _ => Err(io::Error::other("expected a request or ack line")),
     }
-    let requests = rpc_dir.join("requests");
-    std::fs::create_dir_all(&requests)?;
-    let tmp = requests.join(format!(".{name}.tmp"));
-    std::fs::write(&tmp, body)?;
-    std::fs::rename(&tmp, requests.join(&name))
+}
+
+pub fn ack_line(name: &str) -> String {
+    let mut line = serde_json::to_string(&Event::Ack {
+        name: name.to_string(),
+    })
+    .expect("an ack serializes");
+    line.push('\n');
+    line
 }
 
 /// Every answered request in `responses`, by file name, oldest name first.
@@ -369,61 +447,200 @@ mod tests {
             .unwrap()
     }
 
-    /// A request line lands in the host mailbox atomically; a response the
-    /// host writes goes back to the guest as a line and the host copy goes.
-    #[tokio::test]
-    async fn mailbox_round_trips_a_request_and_its_response() {
-        let dir = tempfile::tempdir().unwrap();
-        let rpc = dir.path().join("rpc");
-        let got = dir.path().join("got");
-        let request = serde_json::to_string(&Event::Request {
-            name: "r1.json".into(),
-            body: r#"{"id":"r1","op":"noop"}"#.into(),
+    fn request_line(name: &str, body: &str) -> String {
+        serde_json::to_string(&Event::Request {
+            name: name.into(),
+            body: body.into(),
         })
-        .unwrap();
-        let script = format!(
-            "printf '%s\\n' '{request}'; IFS= read -r line; printf '%s' \"$line\" > '{}'",
-            got.display()
-        );
-        let (_stop, rx) = watch::channel(false);
-        let pump = tokio::spawn(pump_mailbox(scripted(&script), rpc.clone(), rx));
+        .unwrap()
+    }
 
-        let request_file = rpc.join("requests/r1.json");
-        for _ in 0..100 {
-            if request_file.exists() {
-                break;
+    async fn wait_for(path: &Path) {
+        for _ in 0..250 {
+            if path.exists() {
+                return;
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
+        panic!("{} never appeared", path.display());
+    }
+
+    async fn finished(pump: tokio::task::JoinHandle<io::Result<()>>) {
+        tokio::time::timeout(Duration::from_secs(5), pump)
+            .await
+            .expect("the pump ends with the child")
+            .unwrap()
+            .unwrap();
+    }
+
+    /// A request line lands in the host mailbox atomically and is acked; a
+    /// response the host writes goes back as a line and the host copy goes
+    /// once the guest acks it.
+    #[tokio::test]
+    async fn mailbox_acks_a_request_and_deletes_an_acked_response() {
+        let dir = tempfile::tempdir().unwrap();
+        let rpc = dir.path().join("rpc");
+        let got_ack = dir.path().join("got_ack");
+        let got_response = dir.path().join("got_response");
+        let script = format!(
+            "printf '%s\\n' '{}'; IFS= read -r line; printf '%s' \"$line\" > '{}'; \
+             IFS= read -r line; printf '%s' \"$line\" > '{}'; printf '%s\\n' '{}'",
+            request_line("r1.json", r#"{"id":"r1","op":"noop"}"#),
+            got_ack.display(),
+            got_response.display(),
+            ack_line("r1.json").trim(),
+        );
+        let (_stop, rx) = watch::channel(false);
+        let pump = tokio::spawn(pump_mailbox(
+            scripted(&script),
+            rpc.clone(),
+            Delivered::default(),
+            rx,
+        ));
+
+        let request_file = rpc.join("requests/r1.json");
+        wait_for(&request_file).await;
         assert_eq!(
             std::fs::read_to_string(&request_file).unwrap(),
             r#"{"id":"r1","op":"noop"}"#
         );
         assert!(!rpc.join("requests/.r1.json.tmp").exists());
+        wait_for(&got_ack).await;
+        assert_eq!(
+            std::fs::read_to_string(&got_ack).unwrap().trim(),
+            ack_line("r1.json").trim()
+        );
 
         // What `rpc_watch` does once it answered.
         std::fs::write(rpc.join("responses/r1.json"), r#"{"id":"r1","ok":true}"#).unwrap();
-        tokio::time::timeout(Duration::from_secs(5), pump)
-            .await
-            .expect("the child exits once it has its response")
-            .unwrap()
-            .unwrap();
+        finished(pump).await;
         assert_eq!(
-            std::fs::read_to_string(&got).unwrap().trim(),
+            std::fs::read_to_string(&got_response).unwrap().trim(),
             response_line("r1.json", r#"{"id":"r1","ok":true}"#).trim()
         );
         assert!(!rpc.join("responses/r1.json").exists());
     }
 
-    #[test]
-    fn request_lines_are_validated() {
+    /// The guest replays a request after a reconnect (its ack was lost): the
+    /// host acks again but does not write the file a second time, since
+    /// `rpc_watch` already consumed and ran the first one.
+    #[tokio::test]
+    async fn a_replayed_request_is_acked_but_not_rewritten() {
         let dir = tempfile::tempdir().unwrap();
+        let rpc = dir.path().join("rpc");
+        let delivered = Delivered::default();
+        let request = request_line("r1.json", r#"{"id":"r1","op":"noop"}"#);
+        let (_stop, rx) = watch::channel(false);
+
+        // Session one: delivered and acked, then the session ends.
+        let script = format!("printf '%s\\n' '{request}'; IFS= read -r line");
+        finished(tokio::spawn(pump_mailbox(
+            scripted(&script),
+            rpc.clone(),
+            delivered.clone(),
+            rx.clone(),
+        )))
+        .await;
+        let request_file = rpc.join("requests/r1.json");
+        assert!(request_file.exists());
+        // `rpc_watch` takes it.
+        std::fs::remove_file(&request_file).unwrap();
+
+        // Session two: the same request again.
+        let got = dir.path().join("got");
+        let script = format!(
+            "printf '%s\\n' '{request}'; IFS= read -r line; printf '%s' \"$line\" > '{}'",
+            got.display()
+        );
+        finished(tokio::spawn(pump_mailbox(
+            scripted(&script),
+            rpc.clone(),
+            delivered,
+            rx,
+        )))
+        .await;
+        assert_eq!(
+            std::fs::read_to_string(&got).unwrap().trim(),
+            ack_line("r1.json").trim()
+        );
+        assert!(!request_file.exists());
+    }
+
+    /// The session drops after the response went out but before the guest
+    /// acked it: the host copy stays, and the next session re-sends it.
+    #[tokio::test]
+    async fn a_response_unacked_at_disconnect_stays_for_the_next_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let rpc = dir.path().join("rpc");
+        let response_file = rpc.join("responses/r1.json");
+        std::fs::create_dir_all(rpc.join("responses")).unwrap();
+        std::fs::write(&response_file, r#"{"id":"r1","ok":true}"#).unwrap();
+
+        // Session one reads the response and hangs without acking.
+        let got = dir.path().join("got");
+        let script = format!(
+            "IFS= read -r line; printf '%s' \"$line\" > '{}'; exec sleep 30",
+            got.display()
+        );
+        let (stop, rx) = watch::channel(false);
+        let pump = tokio::spawn(pump_mailbox(
+            scripted(&script),
+            rpc.clone(),
+            Delivered::default(),
+            rx,
+        ));
+        wait_for(&got).await;
+        assert_eq!(
+            std::fs::read_to_string(&got).unwrap().trim(),
+            response_line("r1.json", r#"{"id":"r1","ok":true}"#).trim()
+        );
+        stop.send(true).unwrap();
+        finished(pump).await;
+        assert!(response_file.exists(), "unacked response must survive");
+
+        // Session two gets it again and acks; now it goes.
+        let got_again = dir.path().join("got_again");
+        let script = format!(
+            "IFS= read -r line; printf '%s' \"$line\" > '{}'; printf '%s\\n' '{}'; \
+             while [ -e '{}' ]; do sleep 0.02; done",
+            got_again.display(),
+            ack_line("r1.json").trim(),
+            response_file.display(),
+        );
+        let (_stop, rx) = watch::channel(false);
+        finished(tokio::spawn(pump_mailbox(
+            scripted(&script),
+            rpc.clone(),
+            Delivered::default(),
+            rx,
+        )))
+        .await;
+        assert_eq!(
+            std::fs::read_to_string(&got_again).unwrap().trim(),
+            response_line("r1.json", r#"{"id":"r1","ok":true}"#).trim()
+        );
+        assert!(!response_file.exists());
+    }
+
+    #[test]
+    fn guest_lines_are_validated() {
+        let dir = tempfile::tempdir().unwrap();
+        let delivered = Delivered::default();
         let escape = r#"{"op":"request","name":"../x","body":""}"#;
-        assert!(handle_request_line(dir.path(), escape).is_err());
+        assert!(handle_guest_line(dir.path(), &delivered, escape).is_err());
+        let escape_ack = r#"{"op":"ack","name":"../x"}"#;
+        assert!(handle_guest_line(dir.path(), &delivered, escape_ack).is_err());
         let wrong_op = r#"{"op":"response","name":"a.json","body":""}"#;
-        assert!(handle_request_line(dir.path(), wrong_op).is_err());
-        assert!(handle_request_line(dir.path(), "nonsense").is_err());
+        assert!(handle_guest_line(dir.path(), &delivered, wrong_op).is_err());
+        assert!(handle_guest_line(dir.path(), &delivered, "nonsense").is_err());
         assert!(!dir.path().join("requests").join("x").exists());
+        assert!(delivered.lock().is_empty());
+
+        let ack = r#"{"op":"ack","name":"a.json"}"#;
+        assert_eq!(
+            handle_guest_line(dir.path(), &delivered, ack).unwrap(),
+            Reply::Acked("a.json".into())
+        );
     }
 
     /// `create` starts a mirror file, `append` grows it, and the offsets the

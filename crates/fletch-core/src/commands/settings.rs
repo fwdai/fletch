@@ -318,12 +318,6 @@ pub async fn set_sandbox_engine_impl(ctx: &EngineCtx, engine: &str) -> Result<()
     }
     store(ctx, sandbox::ENGINE_SETTING, kind.as_setting())?;
     sandbox::set_selected_engine_kind(kind);
-    // The user's own choice: the box flag no longer owns the selection, so
-    // turning it off later leaves this alone (`commands::boxes::set_enabled`).
-    ctx.db.lock().execute(
-        "DELETE FROM settings WHERE key = ?1",
-        [sandbox::boxes::settings::ENGINE_AUTO_SETTING],
-    )?;
     Ok(())
 }
 

@@ -212,7 +212,7 @@ Everything init needs is env or on disk.
 | `vsock-listen <port> -- <cmd...>` | Accept on `AF_VSOCK` port, spawn `cmd` per connection with the socket as stdin/stdout (inetd style). |
 | `egress-loopback <tcp port> <vsock port>` | Relay guest loopback TCP to the host vsock port. |
 | `exec --env-file <path> [--cwd <dir>] -- <cmd...>` | Clear the environment, load `KEY=VALUE` lines from the file, `chdir`, exec. Used as the remote command for every launch and host exec (§7.2). |
-| `relay <mailbox dir>` | Watch `<dir>/requests/*.json` (inotify, 100 ms fallback poll); emit each as one JSON line on stdout `{"op":"request","name":...,"body":...}`; read JSON lines on stdin `{"op":"response","name":...,"body":...}` and write them atomically to `<dir>/responses/`. Delete a request file after emitting it. |
+| `relay <mailbox dir>` | Watch `<dir>/requests/*.json` (100 ms poll); emit each as one JSON line on stdout `{"op":"request","name":...,"body":...}` and keep the file until the host answers `{"op":"ack","name":...}` on stdin, then delete it. Read `{"op":"response","name":...,"body":...}` lines on stdin, write each atomically to `<dir>/responses/` and answer `{"op":"ack","name":...}` on stdout. On start (so on every reconnect) re-emit every request file still present; within one process emit each name once, and ack a re-sent response without rewriting it. |
 | `tail <dir>` | Watch a directory tree for JSONL files; emit `{"op":"append","path":...,"data":base64}` for new bytes, `{"op":"create"...}` for new files. Used for transcript mirroring. |
 | `wait-stop <vsock port>` | Block until the host connects and sends `stop`; used by init. |
 
@@ -323,6 +323,23 @@ Started by `BoxRegistry::ensure_running`, stopped with the VM:
   `supervisor::rpc_watch` tick picks it up unchanged, and watches the host
   `responses/` dir to send responses back. `rpc_dir` on the host is created as
   today; only its contents are mirrored.
+
+  Delivery is acknowledged, not assumed: a flushed ssh pipe only proves the
+  local kernel took the bytes. Each side keeps its file until the peer says it
+  has written its own copy, and re-sends what is still on disk when a session
+  reconnects. One JSON object per line, three shapes:
+
+  | Line | Direction | Sender keeps | Receiver does |
+  | --- | --- | --- | --- |
+  | `{"op":"request","name","body"}` | guest → host | `requests/<name>` until acked | tmp + rename into host `requests/`, then `ack` |
+  | `{"op":"response","name","body"}` | host → guest | `responses/<name>` until acked | tmp + rename into guest `responses/`, then `ack` |
+  | `{"op":"ack","name"}` | either | — | delete the named file it sent |
+
+  Replays are deduped by name (UUIDs the agent chose): the guest remembers the
+  responses it has written for its process life; the host remembers the request
+  names it has delivered for the box's life, because `rpc_watch` consumes the
+  request file and a re-created one would run the op twice. A replay is acked
+  again without being rewritten.
 - **Transcript mirror**: `ssh -F cfg box fletch-guest tail <home>/.claude/projects`
   (and the provider's equivalent root), appending into
   `<box>/claude-projects/<slug>/…`. The transcript readers already know how to
@@ -650,12 +667,14 @@ why. The spec stays the design; this is the record.
   `fletch-host` behave the same) is refused with the probe's sentence unless
   the machine and runtime can boot a box; then it stores the flag, starts the
   image install (`boxes::setup::start_install`, one at a time, `box:image`),
-  and makes `box` the engine for new agents, remembering that it did under
-  `box_engine_auto` (host-internal, not a client key). Once the image is in,
-  `setup::prebuild_tools` builds the tools disk of every supported provider
-  whose CLI the host has (`box:tools`). Off: `box_engine_auto` is cleared and,
-  only when it was set — a user's own `set_sandbox_engine` clears it — the
-  engine goes back to `sandbox-exec`; every running box is stopped cleanly
+  and makes `box` the engine for new agents. While boxes run Claude Code
+  alone, a new agent of another provider is stamped with `sandbox-exec`
+  instead (`boxes::engine_for_new_agent`) rather than refused, and its badge
+  shows the engine it got. Once the image is in, `setup::prebuild_tools`
+  builds the tools disk of every supported provider whose CLI the host has
+  (`box:tools`). Off: `box` goes back to `sandbox-exec` (an engine the user
+  picked meanwhile stays: without the flag `box` is unavailable and must never
+  stay selected); every running box is stopped cleanly
   (`BoxRegistry::shutdown_all`), nothing deleted. `boxes::availability`
   checks the flag and the runtime, not the image, so `engine_for(Box)` and
   `set_sandbox_engine("box")` work while the download is still on its way.

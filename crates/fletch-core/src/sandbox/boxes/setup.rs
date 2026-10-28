@@ -74,16 +74,11 @@ pub fn image_status() -> BoxImageStatus {
         url: pinned.url,
         error: None,
     };
-    match super::image_store().current() {
-        Ok(Some(image)) => {
-            status.phase = "installed";
-            status.version = Some(image.version);
-        }
-        Ok(None) => {}
-        Err(e) => {
-            status.phase = "unavailable";
-            status.error = Some(e.to_string());
-        }
+    // Installed means this build's pinned version is present (`installed_image`);
+    // another version on disk is neither bootable by this build nor an error.
+    if let Some(image) = super::image_store().find(&pinned.version) {
+        status.phase = "installed";
+        status.version = Some(image.version);
     }
     status
 }

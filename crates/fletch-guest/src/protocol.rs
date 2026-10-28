@@ -1,4 +1,10 @@
 //! The JSON lines `relay` and `tail` exchange with the host over an ssh session.
+//!
+//! The mailbox half is acknowledged in both directions: a `request` or
+//! `response` stays on disk at its sender until the peer answers it with an
+//! `ack` for the same name, so a session that drops mid-flight loses nothing —
+//! the next session re-emits whatever is still there, and the receiver dedupes
+//! by name (the names are UUIDs the agent chose).
 
 use std::io::{self, Write};
 
@@ -11,6 +17,9 @@ pub enum Event {
     Request { name: String, body: String },
     /// A mailbox response, host → guest, written to `responses/<name>`.
     Response { name: String, body: String },
+    /// The peer has durably written `name` (a request on the host, a response
+    /// in the guest); the sender may now delete its copy.
+    Ack { name: String },
     /// `tail` saw a file for the first time (or saw it shrink and start over).
     Create { path: String },
     /// `tail` read new bytes; `data` is base64.

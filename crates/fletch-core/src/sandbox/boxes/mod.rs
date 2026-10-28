@@ -152,9 +152,11 @@ pub fn availability() -> Result<RuntimePaths> {
 
 /// This build's pinned image, when installed.
 pub fn installed_image() -> Result<Option<InstalledImage>> {
-    image_store()
-        .current()
-        .map_err(|e| Error::SandboxUnavailable(format!("reading the box image store failed: {e}")))
+    // This build's pinned version, never the newest on disk: a newer image left
+    // by a later build would boot a guest whose init contract this build does
+    // not know, and the per-boot hash check would compare against that image's
+    // own hash rather than the pin.
+    Ok(image_store().find(&pinned_image().version))
 }
 
 /// The runtime probe alone, for the Settings page: `None` when no runtime
@@ -277,6 +279,24 @@ pub fn provider_refusal(provider: &str) -> Option<String> {
         let label = crate::agent::provider_bin_label(provider).map_or(provider, |(_, l)| l);
         format!("{label} isn't available in box sandboxes yet")
     })
+}
+
+/// The engine a new agent of `provider` is stamped with when `selected` is the
+/// host's choice: `Box` only for a provider boxes can launch, the default
+/// seatbelt engine otherwise. While the pilot runs Claude Code alone, enabling
+/// it must not make every other provider unsendable; those agents keep the
+/// sandbox they had, and their capsule badge says so.
+pub fn engine_for_new_agent(selected: EngineKind, provider: &str) -> EngineKind {
+    match selected {
+        EngineKind::Box if !supports_provider(provider) => {
+            tracing::info!(
+                provider,
+                "box engine does not run this provider yet; using seatbelt"
+            );
+            EngineKind::SandboxExec
+        }
+        kind => kind,
+    }
 }
 
 /// The identity a launch context names.

@@ -68,9 +68,9 @@ impl PinnedImage {
     // Constants rather than an `include_str!` of the manifest because `out/`
     // is a build artifact.
     pub const VERSION: &'static str = "0.1.0";
-    pub const SIZE: u64 = 848_302_080;
+    pub const SIZE: u64 = 848_310_272;
     pub const SHA256: &'static str =
-        "7094fcbbceef8c087d5a206467133e121902884419918a3e45e5bd249f342660";
+        "b12c3c698552d9b992f4032bea0f2ff08bd563e62fc8812cbbfba30d456b3318";
 
     /// The image this build pins, from `base_url` (the `box_image_url`
     /// setting) or the GitHub release.

@@ -504,7 +504,8 @@ impl Supervisor {
 
         // The engine this agent will be stamped with, resolved once so the
         // provider gate, the stamp, and the provisioning mode below all agree.
-        let engine_kind = sandbox::selected_engine_kind();
+        let engine_kind =
+            sandbox::boxes::engine_for_new_agent(sandbox::selected_engine_kind(), &provider);
         ensure_engine_supports_provider(engine_kind, &provider)?;
 
         // Only agents with a wired native (PTY/TUI) view can honor a Native
