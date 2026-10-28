@@ -1,0 +1,28 @@
+# sshd for a box (docs/boxes-spec.md §6.1). Started as `sshd -i` once per vsock
+# connection by `fletch-guest vsock-listen 22`; there is no TCP listener. Key-only
+# authentication for the `agent` user, with the key the host wrote at boot.
+#
+# No AcceptEnv line: by default sshd accepts nothing from the client's
+# environment, which is what the design wants. Every session's environment
+# comes from `fletch-guest exec --env-file`.
+
+HostKey /data/ssh/host_key
+AuthorizedKeysFile /data/ssh/authorized_keys
+
+AllowUsers agent
+PermitRootLogin no
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+UsePAM no
+PermitUserEnvironment no
+
+AllowTcpForwarding yes
+GatewayPorts no
+X11Forwarding no
+
+Subsystem sftp /usr/lib/openssh/sftp-server
+
+PrintMotd no
+PrintLastLog no
+UseDNS no
+LogLevel INFO

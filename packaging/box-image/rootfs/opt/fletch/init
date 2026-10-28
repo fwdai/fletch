@@ -1,0 +1,163 @@
+#!/bin/sh
+# Box guest entrypoint (docs/boxes-spec.md §6.3), run as the workload under
+# libkrun's init after it mounts the base image read-only on /.
+#
+# Everything comes from the environment (krun_set_env) or from disk; argv is
+# never used because libkrun's init re-splits it. Required:
+#   FLETCH_BOX_WRITABLE_ROOT   host path of the agent's writable root  -> /data/ws
+#   FLETCH_BOX_RPC_DIR         host path of the RPC mailbox           -> /data/rpc
+#   FLETCH_BOX_HOME            host path of $HOME                     -> /data/home
+#   FLETCH_BOX_AUTHORIZED_KEY  one OpenSSH public key line, the host's key for this box
+# Optional: FLETCH_BOX_ID, shown in log lines.
+#
+# Console markers the host reads, in order:
+#   FLETCH_HOSTKEY <type> <base64>   the guest's ssh host key (persisted on /data)
+#   FLETCH_READY                     ssh (vsock 22), egress (6000) and control (5000) are live
+#   FLETCH_INIT_ERROR <text>         then a non-zero exit: a box that cannot be reached must
+#                                    never look ready
+set -eu
+
+SSH_VSOCK=22 EGRESS_VSOCK=6000 CONTROL_VSOCK=5000 EGRESS_PORT=8899
+GUEST=/opt/fletch/bin/fletch-guest
+DATA_DEV=/dev/vdb TOOLS_DEV=/dev/vdc
+
+step="starting"
+failed=
+# Markers go to stdout: that is the console the host parses.
+fail() { failed=1; echo "FLETCH_INIT_ERROR $*"; exit 1; }
+trap '[ $? -eq 0 ] || [ -n "$failed" ] || echo "FLETCH_INIT_ERROR init failed while $step"' EXIT
+
+step="checking the environment"
+for var in FLETCH_BOX_WRITABLE_ROOT FLETCH_BOX_RPC_DIR FLETCH_BOX_HOME FLETCH_BOX_AUTHORIZED_KEY; do
+  eval "value=\${$var:-}"
+  [ -n "$value" ] || fail "$var is not set in the kernel environment"
+done
+# Binds must happen parent first (a later mount on an ancestor would hide an
+# earlier one), and HOME is the only plausible ancestor; refuse the other order.
+case "$FLETCH_BOX_HOME" in
+  "$FLETCH_BOX_WRITABLE_ROOT"/*|"$FLETCH_BOX_RPC_DIR"/*) fail "FLETCH_BOX_HOME may not lie inside the writable root or the rpc dir";;
+esac
+echo "fletch-init: box ${FLETCH_BOX_ID:-?}"
+
+step="mounting tmpfs"
+for dir in /tmp /run /var/tmp; do
+  mount -t tmpfs -o mode=1777,nosuid,nodev tmpfs "$dir"
+done
+mkdir -m 755 /run/sshd   # sshd's privilege separation directory, needed even with -i
+echo fletch-box > /proc/sys/kernel/hostname
+
+step="mounting /data"
+[ -b "$DATA_DEV" ] || fail "no data disk at $DATA_DEV"
+# The filesystem stops 4 MiB short of the device so mkfs's wipe of the tail cannot
+# reach the end of the host file, which stock libkrun would truncate (Calina's
+# init; its libkrun patch 3 covers the rest). Lazy init keeps the sparse host
+# file sparse.
+format_data() {
+  size_kib=$(( $(blockdev --getsize64 "$DATA_DEV") / 1024 - 4096 ))
+  mkfs.ext4 -q -F -L fletch-data -E nodiscard,lazy_itable_init=1,lazy_journal_init=1 \
+    "$DATA_DEV" "${size_kib}k"
+}
+# discard: deleted files give their space back to the host file. noinit_itable:
+# no background zeroing of inode tables, which would fill the sparse file.
+mount_data() {
+  mount -t ext4 -o nosuid,nodev,discard,noinit_itable "$DATA_DEV" /data
+}
+# A blank disk (the host hands over an empty sparse file) is formatted. One with
+# a filesystem that does not mount gets fsck; only a disk fsck cannot repair is
+# formatted again, since nothing else could ever read it. A disk fsck calls sound
+# that still does not mount is not the disk's fault and is never wiped.
+if [ -z "$(blkid "$DATA_DEV")" ]; then
+  echo "fletch-init: formatting the data disk"
+  format_data
+  mount_data
+elif ! mount_data; then
+  echo "fletch-init: the data disk does not mount; checking it" >&2
+  # 0 clean, 1 and 2 repaired, 4 and up errors left or nothing to check.
+  fsck_status=0
+  e2fsck -y "$DATA_DEV" || fsck_status=$?
+  if [ "$fsck_status" -ge 4 ]; then
+    echo "fletch-init: the data disk cannot be repaired (fsck exit $fsck_status); formatting it, its files are lost" >&2
+    format_data
+  fi
+  mount_data || fail "the data disk still does not mount (fsck exit $fsck_status)"
+fi
+mkdir -p /data/ws /data/rpc /data/home /data/ssh /data/run
+chown agent:agent /data/ws /data/rpc /data/home /data/run
+chmod 700 /data/run   # env files, 0600 and owned by agent, land here
+
+step="binding the host paths"
+# Path identity (§6.2): the host's absolute paths exist in the guest, bound from
+# the data disk. The root is read-only erofs, so the first component of each
+# path is shadowed with a tmpfs first. Shadowing a directory the guest itself
+# lives in would break it, so those are refused.
+bind_identity() { # <guest path> <data dir>
+  case "$1" in /?*/?*) ;; *) fail "$1 is not an absolute path with two components or more";; esac
+  top=${1#/}; top=/${top%%/*}
+  case "$top" in
+    /bin|/boot|/data|/dev|/etc|/lib|/lib64|/opt|/proc|/run|/sbin|/sys|/tmp|/usr|/var)
+      fail "cannot place $1 under $top: it would shadow the guest's own files";;
+  esac
+  [ -d "$top" ] || fail "no $top directory in the image to mount $1 under"
+  mountpoint -q "$top" || mount -t tmpfs -o mode=755,nosuid,nodev tmpfs "$top"
+  mkdir -p "$1"
+  mount --bind "$2" "$1"
+}
+bind_identity "$FLETCH_BOX_HOME" /data/home
+bind_identity "$FLETCH_BOX_RPC_DIR" /data/rpc
+bind_identity "$FLETCH_BOX_WRITABLE_ROOT" /data/ws
+
+step="mounting the tools disk"
+if [ -b "$TOOLS_DEV" ]; then
+  # The disk was built by booting a box with it as /data, so the CLIs sit under
+  # its tools/ directory (packaging/box-image/tools); only that part is exposed.
+  mkdir -p /run/tools
+  mount -t ext4 -o ro,nosuid,nodev "$TOOLS_DEV" /run/tools
+  [ -d /run/tools/tools ] || fail "the tools disk has no tools/ directory"
+  mount --bind /run/tools/tools /opt/fletch/tools
+fi
+
+step="preparing ssh"
+# The host key persists with the workspace, so the host learns it once.
+[ -f /data/ssh/host_key ] || ssh-keygen -q -t ed25519 -N '' -C fletch-box -f /data/ssh/host_key
+chmod 600 /data/ssh/host_key
+read -r keytype key _ < /data/ssh/host_key.pub
+echo "FLETCH_HOSTKEY $keytype $key"
+# Root-owned and 0644 satisfies sshd's StrictModes (owner must be root or the user).
+printf '%s\n' "$FLETCH_BOX_AUTHORIZED_KEY" > /data/ssh/authorized_keys
+chmod 644 /data/ssh/authorized_keys
+
+# A fletch-guest service prints one line once it listens, then moves its stdout
+# to the console. Reading that line through a FIFO is what makes FLETCH_READY
+# below mean "the host can connect now", not "the processes were forked".
+start() {
+  mkfifo /run/fletch-start
+  "$@" >/run/fletch-start &
+  read -r line </run/fletch-start || fail "$2 did not start"
+  echo "$line"
+  rm /run/fletch-start
+}
+step="starting sshd on vsock $SSH_VSOCK"
+start "$GUEST" vsock-listen "$SSH_VSOCK" -- /usr/sbin/sshd -i -e -f /etc/ssh/sshd_config.fletch
+step="starting the egress loopback"
+start "$GUEST" egress-loopback "$EGRESS_PORT" "$EGRESS_VSOCK"
+step="starting the control listener"
+start "$GUEST" wait-stop "$CONTROL_VSOCK"
+control=$!
+
+echo FLETCH_READY
+wait "$control"   # returns once the host sent `stop`
+
+step="stopping"
+echo "fletch-init: stop requested"
+# Everything but PID 1 and this shell: sessions, sshd, the relays, the services.
+kill -TERM -1 2>/dev/null || true
+sleep 0.2
+kill -KILL -1 2>/dev/null || true
+sync
+# The binds hold the data filesystem open; drop them (children before HOME) so
+# /data really unmounts and the journal is clean for the next boot.
+umount "$FLETCH_BOX_WRITABLE_ROOT" "$FLETCH_BOX_RPC_DIR" "$FLETCH_BOX_HOME"
+umount /data
+echo "fletch-init: /data unmounted, powering off"
+# libkrun's init powers the VM off when its workload exits.
+exit 0

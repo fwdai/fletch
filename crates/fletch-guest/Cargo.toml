@@ -1,0 +1,27 @@
+[package]
+name = "fletch-guest"
+version = "0.1.0"
+description = "The box guest agent: vsock inetd for sshd, egress loopback, env-file exec, mailbox relay and transcript tail (docs/boxes-spec.md §6.4)"
+authors = ["Alex Chaplinsky", "fwdai.org"]
+license = "AGPL-3.0-only"
+edition = "2021"
+rust-version = "1.77"
+publish = false
+
+# Pure-Rust dependencies only: the binary is a static aarch64-unknown-linux-musl
+# build cross-compiled from macOS with rustc's self-contained linker, so nothing
+# here may need a C toolchain or a sysroot.
+[dependencies]
+libc = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1
+panic = "abort"

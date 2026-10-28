@@ -1,0 +1,44 @@
+# Debian trixie (arm64) packages in the box base image, one per line.
+# Node is not here: it comes from a pinned nodejs.org tarball (build.sh).
+# Chromium and fonts are in the base for now; the split into an optional
+# disk is phase 6 (docs/boxes-spec.md §11).
+
+# Shell and base tools. bash is a contract: Claude Code's Bash tool needs it.
+bash
+coreutils
+procps
+less
+netbase
+tzdata
+ca-certificates
+curl
+jq
+ripgrep
+unzip
+
+# SSH on vsock: sshd -i per connection, sftp for the host's file reads and writes
+openssh-server
+openssh-sftp-server
+openssh-client
+
+# Version control
+git
+
+# Toolchains the agents and their native npm modules need
+python3
+python3-venv
+python3-pip
+build-essential
+pkg-config
+
+# Formats the data disk on first boot (mkfs.ext4), repairs it when it does not mount (e2fsck)
+e2fsprogs
+
+# Debugging only (vsock <-> tcp by hand); nothing in the contract depends on it
+socat
+
+# Browser for Playwright and friends
+chromium
+fonts-liberation
+fonts-noto-core
+fonts-noto-color-emoji
