@@ -413,10 +413,55 @@ the SSH server itself connects to the guest's TCP port. Dropbear is a candidate
 for the product image (small, inetd or daemon mode, pubkey auth, forwards);
 `sshd -i` is the alternative if sftp or `ssh -R` semantics need OpenSSH.
 
-Remaining after phase 2a: a real agent turn with a credential (the sandbox this
-spike ran in holds none by design; the host resolves the token outside it),
-the base image decision for Cursor, and the KVM and container-fallback check on
-a Linux host.
+### Phase 2b: a real Claude Code turn over ssh (2026-10-28)
+
+The user extracted a Claude access token from the Keychain on the host and
+dropped it into the workspace; it went into the guest over ssh stdin onto the
+data disk, never through argv. `claude -p … --dangerously-skip-permissions
+--output-format json` then ran in the box over ssh. Three attempts, each a
+finding:
+
+| Attempt | What happened | What it teaches |
+| --- | --- | --- |
+| as root | Claude Code refuses `--dangerously-skip-permissions` for uid 0; `IS_SANDBOX=1` is its documented escape hatch for containers | the guest should run the agent as an unprivileged user, with the data disk owned by it |
+| ssh login env | `EAI_AGAIN`: the API client tried DNS directly and gave up after 233 s of retries. An ssh session starts with a fresh environment, without the `HTTPS_PROXY` the guest init exported to its own tree. The egress log was empty, so nothing leaked; it only failed | the guest's ssh server, or the launch wrapper, must set the proxy variables for every session, and the agent must fail fast rather than retry for minutes against a route that cannot exist |
+| proxy in env | 11 `CONNECT api.anthropic.com:443` through the proxy, nothing else, then `401 OAuth access token has expired` in 6.6 s | the channel, the proxy and the CLI's path to the API all work; the stored access token was already stale, which is exactly why the host refreshes before each launch today |
+
+Claude Code wrote its transcript under `/data/home/.claude/projects/<slug>/` on
+the data disk for every attempt, 86 to 104 KB each, so the host-side transcript
+reader has a file to fetch.
+
+One more lesson from this phase: **a killed VM loses recent writes.** The
+earlier guest was stopped with `kill`; on the next boot the libraries dropbear
+had just installed were zero-byte files. ext4 on a virtio block device needs a
+clean shutdown or a `sync` first. The runtime stops a box through the guest,
+with `kill` only as the last resort after a timeout, and treats a disk that was
+not cleanly unmounted as suspect.
+
+With a fresh token the turn completed, after one more image gap: Claude Code's
+Bash tool requires `bash`, which the Alpine image lacks ("No suitable shell
+found"); the model noticed and refused to invent command output. With bash
+installed from Alpine's packages onto the data disk and `SHELL` pointing at it:
+
+| What | Result |
+| --- | --- |
+| `claude -p` creates `BOX_TURN.md`, commits it | 5.9 s wall, 4.7 s inside Claude, 2 model turns, $0.02 on `claude-sonnet-5-5` |
+| Egress during the turn | 10 `CONNECT api.anthropic.com`; 1 denied `http-intake.logs.us5.datadoghq.com` (telemetry); nothing else |
+| Host fetches the agent's commit over ssh | 0.35 s; author and committer are the clone's frozen identity; Claude added its `Co-Authored-By` trailer |
+| Host pulls the transcript off the data disk | 151 KB in 0.15 s; 33 records; the `Bash` tool call is in it |
+| Interactive `claude` over an ssh PTY | starts authenticated into first-run onboarding (theme chooser, then the security notes); keystrokes from the host advance it |
+| Clean stop | `sync`, then sysrq `u` (remount read-only) and `o` (power off) over ssh; the VM process exited within 100 ms. The spike init's own stop file did not work because its reverse-channel loop was blocked in a vsock connect, a spike artifact; the product init stops on a channel message and the host falls back to sysrq, then `kill` |
+
+Two more things for the image and the launch: the box needs claude's
+onboarding state seeded (`~/.claude.json`) the way the Docker entrypoint
+already does, or the first interactive session lands in the theme chooser;
+and the launch environment must carry `SHELL`, the proxy variables and
+`IS_SANDBOX=1` (until the agent runs unprivileged) for every session.
+
+Criterion 1 is therefore met for Claude Code: a real turn inside the box,
+through the proxy, with the commit and transcript recovered by the host over
+the one channel. Remaining: the base image decision for Cursor, and the KVM and
+container-fallback check on a Linux host.
 
 ## Delivery
 
