@@ -43,6 +43,16 @@ pub trait RemoteExecutor: Send + Sync + fmt::Debug {
     fn stat(&self, path: &Path) -> io::Result<Option<Stat>>;
 
     fn list(&self, dir: &Path) -> io::Result<Vec<DirEntry>>;
+
+    /// `mkdir -p`.
+    fn create_dir_all(&self, dir: &Path) -> io::Result<()>;
+
+    /// Remove a file, or a directory with everything in it; nothing there is
+    /// fine. The file panel's delete.
+    fn remove(&self, path: &Path) -> io::Result<()>;
+
+    /// `std::fs::rename`: the file panel's move.
+    fn rename(&self, from: &Path, to: &Path) -> io::Result<()>;
 }
 
 /// What [`Executor::stat`] reports about a path.
@@ -185,6 +195,40 @@ impl Executor {
             Self::Remote(remote) => remote.list(dir),
         }
     }
+
+    /// `std::fs::create_dir_all`, where the directory lives.
+    pub fn create_dir_all(&self, dir: &Path) -> io::Result<()> {
+        match self {
+            Self::Local => std::fs::create_dir_all(dir),
+            Self::Remote(remote) => remote.create_dir_all(dir),
+        }
+    }
+
+    /// Remove a file or a whole directory; already gone is success.
+    pub fn remove(&self, path: &Path) -> io::Result<()> {
+        match self {
+            Self::Local => {
+                let removed = if path.is_dir() {
+                    std::fs::remove_dir_all(path)
+                } else {
+                    std::fs::remove_file(path)
+                };
+                match removed {
+                    Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+                    other => other,
+                }
+            }
+            Self::Remote(remote) => remote.remove(path),
+        }
+    }
+
+    /// `std::fs::rename`, where both paths live.
+    pub fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
+        match self {
+            Self::Local => std::fs::rename(from, to),
+            Self::Remote(remote) => remote.rename(from, to),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -209,6 +253,15 @@ mod tests {
         }
         fn list(&self, _: &Path) -> io::Result<Vec<DirEntry>> {
             Ok(Vec::new())
+        }
+        fn create_dir_all(&self, _: &Path) -> io::Result<()> {
+            Ok(())
+        }
+        fn remove(&self, _: &Path) -> io::Result<()> {
+            Ok(())
+        }
+        fn rename(&self, _: &Path, _: &Path) -> io::Result<()> {
+            Ok(())
         }
     }
 
@@ -289,6 +342,9 @@ mod tests {
         // The codegraph CLI in its host-side mirror of the checkout, never the
         // checkout itself.
         "codegraph/mirror.rs",
+        // The box executor's ssh client: its cwd is `/` on the host, the
+        // guest's cwd travels in the remote command.
+        "sandbox/boxes/executor.rs",
     ];
 
     fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {

@@ -44,6 +44,29 @@ enum Cmd {
         #[command(subcommand)]
         command: ImageCmd,
     },
+    /// Tools disks: a provider's CLI on a read-only disk.
+    Tools {
+        #[command(subcommand)]
+        command: ToolsCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum ToolsCmd {
+    /// Boot a throwaway box on the base image and install a provider's CLI
+    /// onto a fresh disk (docs/boxes-spec.md §7.5).
+    Build {
+        /// `claude`, `codex`, `cursor` or `opencode`.
+        provider: String,
+        /// The CLI version to install (`latest` for cursor).
+        version: String,
+        /// The base image (`base.erofs`).
+        #[arg(long)]
+        image: PathBuf,
+        /// Where the disk lands; default `<run root>/tools/<provider>-<version>.img`.
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
 }
 
 #[derive(clap::Args)]
@@ -125,6 +148,31 @@ async fn run(cli: Cli) -> Result<ExitCode, String> {
         Cmd::Ssh { id, user, cmd } => ssh(&id, user.as_deref(), &cmd),
         Cmd::Stop { id } => stop(&id).await.map(|()| ExitCode::SUCCESS),
         Cmd::Image { command } => image(command).await.map(|()| ExitCode::SUCCESS),
+        Cmd::Tools {
+            command:
+                ToolsCmd::Build {
+                    provider,
+                    version,
+                    image,
+                    out,
+                },
+        } => {
+            let paths = paths()?;
+            let out = match out {
+                Some(out) => out,
+                None => {
+                    fletch_box::tools::disk_path(&dev_root()?.join("tools"), &provider, &version)
+                }
+            };
+            let t0 = Instant::now();
+            fletch_box::tools::build(&paths, &image, &provider, &version, &out, |line| {
+                println!("{line}")
+            })
+            .await
+            .map_err(|e| e.to_string())?;
+            println!("built {} in {:.1?}", out.display(), t0.elapsed());
+            Ok(ExitCode::SUCCESS)
+        }
     }
 }
 

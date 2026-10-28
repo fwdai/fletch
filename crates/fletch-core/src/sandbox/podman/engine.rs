@@ -214,7 +214,11 @@ impl SandboxEngine for PodmanEngine {
     fn kill(&self, plan: &KillPlan) -> Result<()> {
         // The launch's pinned connection, not the current default — a default
         // that moved since would signal into the wrong machine.
-        let KillPlan::Container { name, connection } = plan;
+        // `KillHandle::Engine` pairs a plan with its engine, so another
+        // engine's plan never arrives here; refuse it rather than guess.
+        let KillPlan::Container { name, connection } = plan else {
+            return Ok(());
+        };
         let on = connection.as_deref();
         match cli::run_podman_on(on, &["kill", "-s", "TERM", name], KILL_TIMEOUT) {
             Ok(out) if out.status.success() => {

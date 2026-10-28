@@ -81,8 +81,10 @@ elif ! mount_data; then
   fi
   mount_data || fail "the data disk still does not mount (fsck exit $fsck_status)"
 fi
-mkdir -p /data/ws /data/rpc /data/home /data/ssh /data/run
-chown agent:agent /data/ws /data/rpc /data/home /data/run
+# tools/ is where a tools-disk build installs the provider CLIs (packaging/box-image/tools),
+# as agent over ssh; on a workspace disk it stays empty.
+mkdir -p /data/ws /data/rpc /data/home /data/ssh /data/run /data/tools
+chown agent:agent /data/ws /data/rpc /data/home /data/run /data/tools
 chmod 700 /data/run   # env files, 0600 and owned by agent, land here
 
 step="binding the host paths"

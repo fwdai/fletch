@@ -58,11 +58,14 @@ pub struct PinnedImage {
 }
 
 impl PinnedImage {
-    // TODO(phase 2): pin the first Debian image once `packaging/box-image`
-    // publishes it; an empty sha256 means nothing can be installed yet.
-    pub const VERSION: &'static str = "0.1.0";
-    pub const SIZE: u64 = 0;
-    pub const SHA256: &'static str = "";
+    // Copied from `packaging/box-image/out/manifest.json` of the current dev
+    // build (`build-mac.sh`); the release workflow replaces these three when
+    // it publishes `box-image-v<version>`. Kept as constants rather than an
+    // `include_str!` of the manifest because `out/` is a build artifact.
+    pub const VERSION: &'static str = "0.1.0-dev";
+    pub const SIZE: u64 = 848_302_080;
+    pub const SHA256: &'static str =
+        "05b0967a394ff42857fa83657d47ce9230744c14c779672424db2d36190b4ac4";
 
     /// The image this build pins, from `base_url` (the `box_image_url`
     /// setting) or the GitHub release.
@@ -307,7 +310,10 @@ pub fn file_matches(path: &Path, size: Option<u64>, sha256: &str) -> Result<bool
 }
 
 /// Streams `image.url` to a new file at `path`, hashing as it goes, and checks
-/// size and sha256. On error the file is the caller's to remove.
+/// size and sha256. On error the file is the caller's to remove. A `file://`
+/// URL (the `box_image_url` setting pointed at a local `packaging/box-image/out`
+/// before any release exists) is cloned instead of fetched, then verified the
+/// same way.
 async fn download(
     image: &PinnedImage,
     path: &Path,
@@ -317,6 +323,32 @@ async fn download(
         url: image.url.clone(),
         message,
     };
+    if let Some(local) = image.url.strip_prefix("file://") {
+        let source = Path::new(local);
+        crate::disks::clone(source, path)
+            .map_err(Error::io(format!("copy {}", source.display())))?;
+        if progress(Progress {
+            done: image.size,
+            total: image.size,
+        })
+        .is_break()
+        {
+            return Err(Error::Cancelled);
+        }
+        let len = fs::metadata(path)
+            .map_err(Error::io(format!("stat {}", path.display())))?
+            .len();
+        if len != image.size {
+            return Err(Error::Size {
+                expected: image.size,
+                actual: len,
+            });
+        }
+        if !file_matches(path, Some(image.size), &image.sha256)? {
+            return Err(Error::Sha256);
+        }
+        return Ok(());
+    }
     let client = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(30))
         .read_timeout(Duration::from_secs(60))
@@ -479,12 +511,47 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let store = ImageStore::new(root.path());
         let result = store
-            .install(
-                &PinnedImage::this_build(None),
-                |_| ControlFlow::Continue(()),
-            )
+            .install(&PinnedImage::pinned("9.9.9", 0, "", None), |_| {
+                ControlFlow::Continue(())
+            })
             .await;
         assert!(matches!(result, Err(Error::NotPublished)));
+    }
+
+    /// This build's pin is a real one: a version, a size and a 64-hex sha.
+    #[test]
+    fn this_build_pins_a_published_shape() {
+        let pinned = PinnedImage::this_build(None);
+        assert!(!pinned.version.is_empty());
+        assert!(pinned.size > 0);
+        assert_eq!(pinned.sha256.len(), 64);
+        assert!(pinned.sha256.bytes().all(|b| b.is_ascii_hexdigit()));
+    }
+
+    /// A `file://` base URL installs by copying, verified like a download.
+    #[tokio::test]
+    async fn install_from_a_local_directory_copies_and_verifies() {
+        let src = tempfile::tempdir().unwrap();
+        fs::write(src.path().join(BASE_IMAGE), b"hello").unwrap();
+        let base = format!("file://{}", src.path().display());
+        let root = tempfile::tempdir().unwrap();
+        let store = ImageStore::new(root.path());
+
+        let installed = store
+            .install(
+                &PinnedImage::pinned("3.0.0", 5, HELLO_SHA256, Some(&base)),
+                |_| ControlFlow::Continue(()),
+            )
+            .await
+            .unwrap();
+        assert_eq!(fs::read(installed.path()).unwrap(), b"hello");
+
+        let wrong = PinnedImage::pinned("3.1.0", 5, &"0".repeat(64), Some(&base));
+        assert!(matches!(
+            store.install(&wrong, |_| ControlFlow::Continue(())).await,
+            Err(Error::Sha256)
+        ));
+        assert!(store.find("3.1.0").is_none());
     }
 
     #[tokio::test]

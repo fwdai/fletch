@@ -787,6 +787,14 @@ pub fn boot(cfg: BootConfig) -> Result<Engine, BootError> {
     // never waits on either.
     sandbox::docker::sweep_orphans_at_startup();
     sandbox::podman::sweep_orphans_at_startup();
+    // The box engine (docs/boxes-spec.md): its settings mirrored like the
+    // container knobs, its `box:*` events through the fanout, every live
+    // box-stamped agent's root routed to its box, and the helpers of dead
+    // instances swept — on a thread, like the container sweeps. With the
+    // developer flag off this registers nothing and only the sweep runs.
+    sandbox::boxes::settings::seed(&db.lock());
+    sandbox::boxes::set_event_sink(sink.clone());
+    sandbox::boxes::startup(&workspace);
 
     // Quitting the desktop normally goes through `RunEvent::ExitRequested`, but
     // a SIGINT (Ctrl-C under `tauri dev`) or SIGTERM (sent by the OS on

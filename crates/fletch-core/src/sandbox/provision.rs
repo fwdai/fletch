@@ -579,7 +579,7 @@ async fn rewrite_origin(spec: &CheckoutSpec<'_>) -> Result<()> {
 /// conventional names and finally to `"main"`. A merely conventional guess is
 /// recoverable; confidently naming the user's in-progress branch as the repo
 /// default is the bug.
-async fn rewrite_origin_head(spec: &CheckoutSpec<'_>) {
+pub(crate) async fn rewrite_origin_head(spec: &CheckoutSpec<'_>) {
     // `rewrite_origin` *removes* the remote when the source has none, taking
     // every `refs/remotes/origin/*` with it — including the bad symref. There
     // is nothing left to correct, and no remote to correct it against.
@@ -730,17 +730,19 @@ async fn install_delegation_hooks(dest: &Path) -> Result<()> {
     // commit is a merge commit (it has a second parent, `HEAD^2`); a plain commit
     // does not — so branch on that.
     let post_commit = hooks_dir.join("post-commit");
-    let set_action = concat!(
-        "if git rev-parse -q --verify HEAD^2 >/dev/null 2>&1; then\n",
-        "  action=\"git_update_branch\"\n",
-        "else\n",
-        "  action=\"git_commit\"\n",
-        "fi",
-    );
-    tokio::fs::write(&post_commit, delegation_hook_script(set_action)).await?;
+    tokio::fs::write(&post_commit, delegation_hook_script(POST_COMMIT_ACTION)).await?;
     set_executable(&post_commit).await?;
     Ok(())
 }
+
+/// post-commit's `set_action`: a merge-completion commit has a second parent.
+pub(crate) const POST_COMMIT_ACTION: &str = concat!(
+    "if git rev-parse -q --verify HEAD^2 >/dev/null 2>&1; then\n",
+    "  action=\"git_update_branch\"\n",
+    "else\n",
+    "  action=\"git_commit\"\n",
+    "fi",
+);
 
 /// The body of a delegation hook. `set_action` is a shell fragment that assigns
 /// the reported op to `$action` (a literal for post-merge, a merge-commit test
@@ -748,7 +750,8 @@ async fn install_delegation_hooks(dest: &Path) -> Result<()> {
 /// shell and macOS `/bin/sh` alike. Writes the mailbox request atomically
 /// (`.tmp` then `mv`) so the watcher never reads a half-written file, and
 /// swallows every error — the git op must not depend on the signal landing.
-fn delegation_hook_script(set_action: &str) -> String {
+/// The box engine writes the same script over its channel.
+pub(crate) fn delegation_hook_script(set_action: &str) -> String {
     format!(
         r#"#!/bin/sh
 # Fletch-managed: delegation signal. Pings the app RPC mailbox so the panel can
@@ -801,7 +804,7 @@ async fn set_executable(path: &Path) -> Result<()> {
 /// sandbox match the container engines — unsigned — while the user's own repos
 /// keep signing. Where a signature is wanted, the host — which holds the key —
 /// is the place to make it.
-async fn seed_identity(spec: &CheckoutSpec<'_>) -> Result<()> {
+pub(crate) async fn seed_identity(spec: &CheckoutSpec<'_>) -> Result<()> {
     let (fallback_name, fallback_email) = crate::git_dist::fallback_identity();
     for (key, fallback) in [("user.name", fallback_name), ("user.email", fallback_email)] {
         // `--get` (no `--local`) is the effective value across every scope;

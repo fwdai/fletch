@@ -64,11 +64,24 @@ impl Channel {
         cmd
     }
 
+    /// The synchronous twin of [`ssh`](Self::ssh): `ssh -F <config>` as a
+    /// `std::process::Command`, for callers on a thread with no runtime (the
+    /// engine's path-routed executor builds commands synchronously).
+    pub fn std_command(&self) -> std::process::Command {
+        let mut cmd = std::process::Command::new(SSH);
+        cmd.arg("-F").arg(&self.config);
+        cmd
+    }
+
     /// The remote command line for `cmd`: through `fletch-guest exec` when a
     /// working directory or env file is given (that wrapper's whole job), else
     /// `cmd` itself. Each word is quoted for the guest's shell, which re-splits
     /// what ssh joins with spaces.
-    fn remote_command(cwd: Option<&Path>, env_file: Option<&Path>, cmd: &[&str]) -> Vec<String> {
+    pub fn remote_command(
+        cwd: Option<&Path>,
+        env_file: Option<&Path>,
+        cmd: &[&str],
+    ) -> Vec<String> {
         let mut words: Vec<String> = Vec::new();
         if cwd.is_some() || env_file.is_some() {
             words.push(guest::GUEST_AGENT.into());

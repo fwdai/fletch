@@ -68,6 +68,9 @@ tokio-tungstenite = { version = "0.27", default-features = false, features = [
 # framing. A path dependency rather than a workspace member, so each *binary*
 # package keeps its own lockfile and the release workflow needs no change.
 fletch-proto = { path = "../fletch-proto" }
+# The box sandbox runtime (docs/boxes-spec.md): libkrun micro-VMs reached over
+# ssh on vsock. Depends on nothing in Fletch; `sandbox::boxes` composes it.
+fletch-box = { path = "../fletch-box" }
 # `sink` for `SinkExt` on the split WebSocket writer; nothing else in the crate
 # needs the combinator zoo.
 futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }

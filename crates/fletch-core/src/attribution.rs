@@ -139,7 +139,7 @@ fn is_attribution_line(line: &str) -> bool {
 /// first and honours its verdict, then strips attribution when armed. git's
 /// message cleanup afterwards collapses the blank lines left behind. `LC_ALL=C`
 /// makes `[^ -~]` (an emoji's bytes) locale-independent.
-fn commit_msg_hook() -> String {
+pub(crate) fn commit_msg_hook() -> String {
     let emails = AGENT_EMAILS
         .iter()
         .map(|e| e.replace('.', r"\."))

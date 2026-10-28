@@ -69,15 +69,26 @@ fn active_account(ctx: &EngineCtx, provider: &str) -> Option<String> {
 /// unsupported provider. Consults the capability lookup rather than string-
 /// matching a single provider id.
 fn ensure_engine_supports_provider(engine: EngineKind, provider: &str) -> Result<()> {
-    if engine.is_container() && sandbox::docker::DockerProvider::from_id(provider).is_none() {
-        let label = per_turn_descriptor(provider)
-            .map(|d| d.label())
-            .unwrap_or(provider);
-        return Err(Error::Other(format!(
-            "{label} isn't available in container sandboxes yet"
-        )));
+    match engine {
+        EngineKind::Docker | EngineKind::Podman => {
+            if sandbox::docker::DockerProvider::from_id(provider).is_none() {
+                let label = per_turn_descriptor(provider)
+                    .map(|d| d.label())
+                    .unwrap_or(provider);
+                return Err(Error::Other(format!(
+                    "{label} isn't available in container sandboxes yet"
+                )));
+            }
+            Ok(())
+        }
+        // Its own gate: a provider needs a tools-disk script and a launch
+        // whose credential is one host-resolved variable (`boxes::supports_provider`).
+        EngineKind::Box => match sandbox::boxes::provider_refusal(provider) {
+            Some(why) => Err(Error::Other(why)),
+            None => Ok(()),
+        },
+        EngineKind::SandboxExec => Ok(()),
     }
-    Ok(())
 }
 
 /// Wire codegraph indexing into a freshly-provisioned checkout — best-effort and
@@ -755,14 +766,19 @@ impl Supervisor {
                 discard_if_still_dead(&sup, &id_for_task, &parent_dir).await;
                 return;
             }
-            let provision_result = match &run_repo_for_task {
+            let provision_result = match (&run_repo_for_task, engine_kind) {
                 _ if adopted_for_task => Ok(()),
+                // A workflow step's fork reads the run repo, a host path the
+                // guest cannot see; fail closed rather than clone a stale base.
+                (Some(_), EngineKind::Box) => Err(Error::Other(
+                    "workflow step agents don't run in box sandboxes yet".into(),
+                )),
                 // Workflow step (§12.1): fork from `fork_base` in the run repo.
                 // `base_ref` is used as-is and never fetched from `origin` —
                 // it's a run-internal commit-ish, not a branch: step 1's
                 // `base_sha` is already in the fresh source clone, and step N's
                 // `refs/wf/steps/<prev>` is fetched from the run repo instead.
-                Some(run_repo) => {
+                (Some(run_repo), _) => {
                     let spec = CheckoutSpec {
                         source_repo: &repo_path,
                         base_ref: &parent_for_fork,
@@ -770,7 +786,32 @@ impl Supervisor {
                     };
                     provision::provision_forking_run_repo(&spec, run_repo).await
                 }
-                None => {
+                // Into the guest: `git init` there, the base pushed over the
+                // channel, the same fixups (docs/boxes-spec.md §7.4).
+                (None, EngineKind::Box) => {
+                    let fallback = git::base_tip(&repo_path, &parent_for_fork).await;
+                    let spec = CheckoutSpec {
+                        source_repo: &repo_path,
+                        base_ref: fallback.as_deref().unwrap_or(&parent_for_fork),
+                        dest: &primary_checkout,
+                    };
+                    match sandbox::boxes::BoxIdentity::new(
+                        &id_for_task,
+                        &project_id_for_task,
+                        &provider_for_task,
+                    ) {
+                        Ok(identity) => sandbox::boxes::provision::provision(
+                            &identity,
+                            &spec,
+                            Some(&parent_for_fork),
+                            sandbox::boxes::provision::Landing::Detached,
+                        )
+                        .await
+                        .map(|freshness| base_freshness = Some(freshness)),
+                        Err(e) => Err(e),
+                    }
+                }
+                (None, _) => {
                     // Offline fallback: the base as this machine already knows
                     // it, never `HEAD` — that is the source repo's checked-out
                     // branch, unrelated to the base the user picked (see
@@ -961,7 +1002,12 @@ impl Supervisor {
         // uses the normal (`--shared`) clone path. A later restore relaunches
         // the container and re-provisions via `--shared` + mount.
         let record = self.workspace.agent(agent_id)?;
-        let self_contained = stamped_engine(&record).is_container();
+        let self_contained = match stamped_engine(&record) {
+            EngineKind::Docker | EngineKind::Podman => true,
+            // A box checkout is always a full copy pushed into the guest
+            // (`boxes::provision`), so the flag has nothing to decide there.
+            EngineKind::SandboxExec | EngineKind::Box => false,
+        };
         self.attach_repo_checkout(&ctx, agent_id, repo_path, self_contained)
             .await
     }
@@ -1012,7 +1058,21 @@ impl Supervisor {
             base_ref: fallback.as_deref().unwrap_or(&parent_branch),
             dest: &checkout,
         };
-        provision::provision_at_remote_base(&spec, &parent_branch, !self_contained).await?;
+        match stamped_engine(&record) {
+            EngineKind::Box => {
+                let identity = sandbox::boxes::BoxIdentity::for_record(&record)?;
+                sandbox::boxes::provision::provision(
+                    &identity,
+                    &spec,
+                    Some(&parent_branch),
+                    sandbox::boxes::provision::Landing::Detached,
+                )
+                .await?;
+            }
+            EngineKind::SandboxExec | EngineKind::Docker | EngineKind::Podman => {
+                provision::provision_at_remote_base(&spec, &parent_branch, !self_contained).await?;
+            }
+        }
         let base_sha = git::rev_parse(&checkout, "HEAD").await.ok();
 
         // Warm the codegraph index for this additional checkout too, so a
@@ -1189,8 +1249,14 @@ impl Supervisor {
         );
 
         // A session from before claude accounts became token sources lives in
-        // the account's dir; this launch resumes in the default one.
-        if record.provider == "claude" && !stamped_engine(&record).is_container() {
+        // the account's dir; this launch resumes in the default one. Only a
+        // seatbelt agent's sessions are in the host's dirs at all: a container
+        // keeps them beside the checkout, a box inside its guest.
+        let sessions_on_host = match stamped_engine(&record) {
+            EngineKind::SandboxExec => true,
+            EngineKind::Docker | EngineKind::Podman | EngineKind::Box => false,
+        };
+        if record.provider == "claude" && sessions_on_host {
             if let Some(session) = record.session_id.as_deref() {
                 match crate::transcripts::adopt_account_session(session, &cwd) {
                     Ok(Some(path)) => tracing::info!(

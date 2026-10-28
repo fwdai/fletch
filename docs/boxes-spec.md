@@ -621,7 +621,79 @@ Each of these cost time in the spike or is a decision already made.
     the image gives sftp, `AcceptEnv` control and `AllowUsers`; dropbear
     hardcodes the sftp-server path and has no per-user allow list.
 
-## 13. Open decisions deferred to implementation
+## 13. Implementation notes (phase 4a, as built)
+
+Where `crates/fletch-core/src/sandbox/boxes/` departs from the text above, and
+why. The spec stays the design; this is the record.
+
+- **Box dir is `~/.fletch/[dev/]boxes/<agent id>/`**, a sibling of the
+  workspaces root, not `<workspace>/box/` (§5). Inside the root it would be a
+  host file under the path the seam routes remotely, and socket paths get
+  shorter. `sources.json` (checkout → source repo, for the mirror) joins the
+  listed contents. The host also keeps an **empty placeholder directory** at
+  each box checkout's path: the ssh launcher is spawned with the checkout as
+  its cwd, which must exist on the host, and the host-side checks keyed on the
+  directory (`hardening::is_inside`) then behave as for any checkout.
+- **Routing spans the box's life, not the VM's** (§7.1, §7.7). The writable
+  root is registered with `exec::register_root` from the first boot (or boot of
+  the app, for live box agents) until `discard`; a routed operation on a
+  stopped box boots it again (0.4–1 s) instead of reading a mirror, so
+  `git_state` needs no stopped-box fallback. `unregister` happens on discard.
+- **No `fletch-guest exec` for host commands.** The executor's `command` is
+  `ssh box "cd <cwd> && exec env K=V… <program> <args>"`; `exec --env-file`
+  (which clears the environment) is for launches only. Because ssh joins its
+  arguments and the guest shell re-splits them, every returned `Command` and
+  every `LaunchPlan` is `bash -c <wrapper>` that single-quotes the appended
+  arguments and `exec`s ssh (`executor::quoting_wrapper`).
+- **Tools disk off the spawn path** (§7.5). A missing disk is built in the
+  background (`box:tools` events) and the box boots without one; provisioning
+  proceeds, and a *launch* fails closed until the disk exists, then restarts
+  the box to attach it. Built once per `<provider>-<host CLI version>`
+  (`agent::cached_provider_version`, `latest` without a host CLI). **Blocker
+  found while building the first disk**: the install scripts write
+  `/data/tools/<provider>`, but init leaves `/data` root-owned and sshd admits
+  only `agent`, so `mkdir /data/tools` is refused. Init needs
+  `mkdir -p /data/tools && chown agent:agent /data/tools` after the `/data`
+  mounts (one line in `packaging/box-image/rootfs/opt/fletch/init`) and an
+  image rebuild; the runtime side (`fletch_box::tools::build`, shared by
+  `fletch-box tools build` and the engine) is in place.
+- **Image pin** (§6.1): `PinnedImage::this_build` carries the values of
+  `packaging/box-image/out/manifest.json` (`0.1.0-dev`); `box_image_url` may
+  be a `file://` directory holding `base.erofs`, which `ImageStore::install`
+  copies and verifies like a download.
+- **Providers**: Claude Code only. Codex, Cursor and OpenCode have tools-disk
+  scripts, but their logins are files the host writes into a host-side
+  overlay; delivering those into a guest is later work
+  (`boxes::supports_provider`). Workflow step agents (adopted trees, run
+  repos) are refused too.
+- **Stop ladder** (§7.7): the sysrq rung needs root in the guest; on the
+  product image `agent` cannot write `/proc/sysrq-trigger`, so the rung is
+  inert (its wait is skipped) and the ladder goes control → SIGTERM → SIGKILL.
+- **Transport and publish** (§7.4): `Transport::open` on a box checkout runs
+  the config refusal and the origin check in the guest, then operates over
+  the refreshed `mirror.git` (alternates → the source repo). Tracking refs it
+  moves in the mirror are pushed back into the guest (`mirror::push_tracking`),
+  and a signed copy made on publish is pushed in before the guest branch is
+  moved onto it (`mirror::export_commit`). `mirror::refresh` also runs after
+  each turn checkpoint and before every non-discard stop.
+- **Idle timer**: `attach` is the launch, `detach` the engine's `kill`, which
+  every session shape calls once when its process ends (`PtySession::drop`),
+  so no second liveness probe is needed. A box booted by a read with no launch
+  attached arms the timer at boot.
+- **Settings**: five host keys (`boxes_enabled`, `box_memory_mib`, `box_cpus`,
+  `box_image_url`, `box_idle_stop_minutes`) written through
+  `set_box_setting_impl`, which validates, mirrors in-process and announces
+  `settings:changed`; turning the flag off while `box` is the selected engine
+  resets the selection to `sandbox-exec`. `box.egress_allow` is written through
+  `box_egress_allow_impl`, which also updates running proxies.
+- **Native handoff into a box** (`materialize`): the transcript is written to
+  the box's `claude-projects` mirror on the host, which the guest does not
+  read; a forked conversation is not yet carried into a box.
+- **Launch credential**: the container auth chain (`container::auth::resolve`)
+  supplies the env — the host-resolved token, else the stored setup-token or
+  the shell's own key — so a box signs in exactly like a container.
+
+## 14. Open decisions deferred to implementation
 
 - Rust SSH client (`russh`) versus the system OpenSSH client. This spec uses
   OpenSSH with a generated config, which is what git and editors also use;

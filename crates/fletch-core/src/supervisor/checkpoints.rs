@@ -171,6 +171,12 @@ impl Supervisor {
                     tracing::warn!(error = %e, agent_id, turn_id, subdir = %repo.subdir, "turn checkpoint failed");
                 }
             }
+            // A box agent's checkpoint lives in the guest; the host-side
+            // mirror follows it so publish has the objects whenever the box
+            // next stops (docs/boxes-spec.md §7.4). Best effort, like the rest.
+            if let Err(e) = crate::sandbox::boxes::mirror::refresh_agent(agent_id).await {
+                tracing::info!(error = %e, agent_id, "box mirror refresh after checkpoint failed");
+            }
         };
         if tokio::time::timeout(CAPTURE_TIMEOUT, capture_all)
             .await

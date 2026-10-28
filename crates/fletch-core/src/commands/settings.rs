@@ -35,6 +35,11 @@ const HOST_SETTING_KEYS: &[&str] = &[
     sandbox::podman::IMAGE_SETTING,
     sandbox::podman::MEMORY_SETTING,
     sandbox::podman::CPUS_SETTING,
+    sandbox::boxes::settings::ENABLED_SETTING,
+    sandbox::boxes::settings::MEMORY_SETTING,
+    sandbox::boxes::settings::CPUS_SETTING,
+    sandbox::boxes::settings::IMAGE_URL_SETTING,
+    sandbox::boxes::settings::IDLE_STOP_SETTING,
     publish_prefs::BRANCH_PREFIX_SETTING,
     publish_prefs::DRAFT_PRS_SETTING,
     rpc::approval::SETTING,
@@ -276,6 +281,21 @@ pub async fn set_sandbox_engine_impl(ctx: &EngineCtx, engine: &str) -> Result<()
             }
         }
     }
+    if kind == sandbox::EngineKind::Box {
+        // The developer flag first, then the runtime and the image: the same
+        // refusal a launch would meet (`boxes::availability`), so a stored
+        // `box` always names an engine that can boot one. The image hash check
+        // is not run here; the first boot does that.
+        if !sandbox::boxes::settings::enabled() {
+            return Err(Error::Other(
+                "box sandbox is off; enable it in Developer settings".into(),
+            ));
+        }
+        tokio::task::spawn_blocking(sandbox::boxes::availability)
+            .await
+            .map_err(blocking)?
+            .map_err(|e| Error::Other(e.to_string()))?;
+    }
     if kind == sandbox::EngineKind::Docker {
         // A blocking worker: the probe can take up to its 2s timeout.
         let probe = tokio::task::spawn_blocking(sandbox::docker_availability)
@@ -438,6 +458,11 @@ mod tests {
             "podman_image",
             "podman_memory",
             "podman_cpus",
+            "boxes_enabled",
+            "box_memory_mib",
+            "box_cpus",
+            "box_image_url",
+            "box_idle_stop_minutes",
             "agent_bin_path_claude",
         ] {
             assert!(is_host_setting_key(key), "{key} must be answered");
@@ -546,5 +571,17 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.to_string().contains("firecracker"));
+    }
+
+    /// `box` is refused while the developer flag is off, before any probe, and
+    /// nothing is stored. (The flag is process-wide; the test leaves it off.)
+    #[tokio::test]
+    async fn the_box_engine_is_refused_while_the_flag_is_off() {
+        let (ctx, sink, _dir) = test_ctx();
+        sandbox::boxes::settings::set(sandbox::boxes::settings::BoxSettings::default());
+        let err = set_sandbox_engine_impl(&ctx, "box").await.unwrap_err();
+        assert!(err.to_string().contains("Developer settings"), "{err}");
+        assert!(get_settings_impl(&ctx).unwrap().is_empty());
+        assert!(sink.events().is_empty());
     }
 }
