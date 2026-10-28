@@ -1,0 +1,128 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Alex Chaplinsky <ai@joineve.ai>
+Subject: [PATCH 2/4] balloon: give freed guest memory back to macOS
+
+On macOS, free page reporting calls madvise(MADV_FREE) on each reported
+range. That doesn't lower the VMM's footprint (phys_footprint, which
+Activity Monitor shows and memory pressure is based on): a guest that
+allocates and frees 1 GiB keeps costing the host 1 GiB until it exits.
+
+MADV_FREE_REUSABLE drops the footprint at once in a plain process, but
+not here: memory that is mapped into the guest with hv_vm_map() stays
+charged for as long as that mapping exists, whatever madvise() says.
+
+So unmap the reported range from the guest, mark it reusable, and map it
+back. The guest leaves reported pages alone until the report is
+acknowledged, so it never sees the gap. When it touches them again, the
+stage-2 fault brings them back and Darwin charges them to the footprint
+again. Darwin documents MADV_FREE_REUSE as the call to make before
+reusing such pages; free page reporting gives no reuse signal, but
+because the first touch after the remap always faults, the accounting
+comes back without it.
+
+A 2 GiB guest allocates 1 GiB, frees it, allocates 1 GiB again filled
+with a pattern and checks it. VMM footprint (macOS 27, Apple M-series):
+
+                      allocated   freed    reallocated   contents
+  MADV_FREE (before)    1150 MB   1150 MB      1735 MB   intact
+  MADV_FREE_REUSABLE    1146 MB   1146 MB      1727 MB   intact
+  this patch            1148 MB    149 MB      1150 MB   intact
+
+The footprint after reallocating matches what the guest uses, so it is
+not under-reported, and it keeps tracking over repeated cycles. Linux is
+unchanged (MADV_DONTNEED).
+
+If the range can't be unmapped, it is left mapped, which only means the
+memory isn't returned. If it can't be mapped back, the VMM aborts rather
+than acknowledge the report: the guest would later touch a range nothing
+can service.
+---
+diff --git a/src/devices/src/virtio/balloon/device.rs b/src/devices/src/virtio/balloon/device.rs
+index 85b2812..fbf1ecb 100644
+--- a/src/devices/src/virtio/balloon/device.rs
++++ b/src/devices/src/virtio/balloon/device.rs
+@@ -93,17 +93,7 @@ impl Balloon {
+                     "balloon: should release guest_addr={:?} host_addr={:p} len={}",
+                     desc.addr, host_addr, desc.len
+                 );
+-                #[cfg(target_os = "linux")]
+-                let advice = libc::MADV_DONTNEED;
+-                #[cfg(target_os = "macos")]
+-                let advice = libc::MADV_FREE;
+-                unsafe {
+-                    libc::madvise(
+-                        host_addr as *mut libc::c_void,
+-                        desc.len.try_into().unwrap(),
+-                        advice,
+-                    )
+-                };
++                release_memory(desc.addr.0, host_addr, desc.len.try_into().unwrap());
+             }
+ 
+             have_used = true;
+@@ -116,6 +106,65 @@ impl Balloon {
+     }
+ }
+ 
++/// Return the host memory behind a free page report to the OS.
++#[cfg(target_os = "linux")]
++fn release_memory(_guest_addr: u64, host_addr: *mut u8, len: usize) {
++    unsafe { libc::madvise(host_addr as *mut libc::c_void, len, libc::MADV_DONTNEED) };
++}
++
++/// Return the host memory behind a free page report to the OS.
++///
++/// On macOS, memory mapped into the guest stays charged to this process's
++/// footprint whatever madvise() says: neither MADV_FREE nor MADV_FREE_REUSABLE
++/// changes it while the guest mapping exists. So unmap the range from the
++/// guest, mark it reusable, which drops it from the footprint at once, and map
++/// it back. The guest's next touch faults the pages back in and charges them
++/// again, so the footprint follows what the guest uses even though nothing
++/// calls MADV_FREE_REUSE (the guest doesn't say when it reuses a page).
++///
++/// The guest doesn't touch reported pages until the report is acknowledged,
++/// so the range being briefly unmapped is invisible to it. If the range can't
++/// be unmapped, it stays mapped and charged, which is safe. If it can't be
++/// mapped back, the VM is stopped: the guest would otherwise touch a hole.
++#[cfg(target_os = "macos")]
++fn release_memory(guest_addr: u64, host_addr: *mut u8, len: usize) {
++    use hvf::bindings::{
++        hv_vm_map, hv_vm_unmap, HV_MEMORY_EXEC, HV_MEMORY_READ, HV_MEMORY_WRITE, HV_SUCCESS,
++    };
++
++    // Hypervisor.framework maps whole host pages.
++    let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as u64;
++    if (guest_addr | host_addr as u64 | len as u64) % page_size != 0 {
++        debug!("balloon: unaligned range at {guest_addr:#x}, not released");
++        return;
++    }
++
++    unsafe {
++        if hv_vm_unmap(guest_addr, len) != HV_SUCCESS {
++            error!("balloon: failed to unmap guest memory at {guest_addr:#x}");
++            return;
++        }
++        libc::madvise(
++            host_addr as *mut libc::c_void,
++            len,
++            libc::MADV_FREE_REUSABLE,
++        );
++        let flags = HV_MEMORY_READ | HV_MEMORY_WRITE | HV_MEMORY_EXEC;
++        if hv_vm_map(
++            host_addr as *mut libc::c_void,
++            guest_addr,
++            len,
++            flags.into(),
++        ) != HV_SUCCESS
++        {
++            // The guest would fault on this range the next time it uses it, and nothing could
++            // service that fault. Stopping the VM is the only safe outcome.
++            error!("balloon: failed to map back guest memory at {guest_addr:#x}; stopping the VM");
++            std::process::abort();
++        }
++    }
++}
++
+ impl VirtioDevice for Balloon {
+     fn avail_features(&self) -> u64 {
+         self.avail_features

@@ -1,0 +1,15 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "build": {
+    "beforeBundleCommand": "packaging/box-bundle/prepare.sh"
+  },
+  "bundle": {
+    "macOS": {
+      "files": {
+        "Helpers/fletch-vm": "../packaging/box-bundle/out/fletch-vm",
+        "Frameworks/libkrun.1.dylib": "../packaging/box-bundle/out/libkrun.1.dylib",
+        "Frameworks/libkrunfw.5.dylib": "../packaging/box-bundle/out/libkrunfw.5.dylib"
+      }
+    }
+  }
+}

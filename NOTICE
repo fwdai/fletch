@@ -11,3 +11,25 @@ AGPL-3.0 terms apply retroactively to all earlier releases of Quorum,
 including v0.1.0 and earlier, to the extent the copyright is held by the
 authors named above. The license file was authored and committed as of
 2026-06-07; it is not backdated in version-control history.
+
+Third-party components in the macOS app
+----------------------------------------
+The box sandbox runtime (docs/boxes-spec.md) ships inside Fletch.app:
+
+- libkrun 1.19.6 — Contents/Frameworks/libkrun.1.dylib. Apache-2.0.
+  https://github.com/libkrun/libkrun, built from the v1.19.6 source tarball
+  with the patches in packaging/libkrun/patches (packaging/libkrun/build.sh).
+
+- libkrunfw 5.6.2 — Contents/Frameworks/libkrunfw.5.dylib, a bundled Linux
+  6.12 kernel. GPL-2.0 (with the Linux-syscall-note). The build pins the
+  prebuilt bundle libkrunfw-prebuilt-aarch64.tgz from
+  https://github.com/libkrun/libkrunfw/releases/tag/v5.6.2; the corresponding
+  source is that tagged tree (the Makefile names the exact kernel tarball from
+  kernel.org and the config it is built with, config-libkrunfw_aarch64):
+  https://github.com/libkrun/libkrunfw/tree/v5.6.2
+
+- The box base image is not in the app bundle; it is downloaded on demand
+  from this repository's GitHub release tagged box-image-v<version>. It is a
+  Debian root filesystem (packaging/box-image): every package's licence is in
+  the image under /usr/share/doc/<package>/copyright, and the release's
+  manifest.json lists the packages with their versions.

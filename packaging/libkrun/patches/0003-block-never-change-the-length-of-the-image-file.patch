@@ -1,0 +1,132 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Alex Chaplinsky <ai@joineve.ai>
+Subject: [PATCH 3/4] block: never change the length of the image file
+
+A discard or write-zeroes request that reaches the end of the device
+shrinks the image file. imago (0.2) discards a range that reaches the
+end of a file by truncating the file to where the range starts
+(File::try_discard_by_truncate), and for a raw image the end of the file
+is the end of the disk. The tail reads back as zeroes for the rest of
+the session, but the next VM sees a smaller disk, and a filesystem that
+spans the device no longer fits. In the guest,
+
+  blkdiscard -z -o $((1073741824 - 1048576)) -l 1048576 /dev/vda
+
+shrinks a 1 GiB raw image by 1 MiB, and so does a plain discard
+(blkdiscard -f). mkfs's wipe of the end of the device hits this.
+
+Never pass imago a range that ends at the end of the disk: leave the
+last sector out and zero it with a plain write (or, for a discard, which
+is advisory, leave it alone). The rest is still punched out as before.
+Also fail requests that go past the end of the disk instead of handing
+them to imago.
+
+This affects Linux hosts too. The better fix is in imago, where
+truncating only makes sense for files that are not a fixed-size disk.
+---
+diff --git a/src/devices/src/virtio/block/worker.rs b/src/devices/src/virtio/block/worker.rs
+--- a/src/devices/src/virtio/block/worker.rs
++++ b/src/devices/src/virtio/block/worker.rs
+@@ -2,6 +2,7 @@ use super::device::{CacheType, DiskProperties};
+ 
+ use super::super::DeviceQueue;
+ use super::device::{CacheType, DiskProperties};
++use super::SECTOR_SIZE;
+ 
+ use crate::virtio::InterruptTransport;
+ use std::io::{self, Write};
+@@ -211,6 +212,36 @@ impl BlockWorker {
+         }
+     }
+ 
++    /// Byte range of a discard or write-zeroes request, minus the disk's last
++    /// sector if the request covers it, plus that sector's offset.
++    ///
++    /// imago discards a range that reaches the end of the image file by
++    /// truncating the file to where the range starts. For a raw image that
++    /// shrinks the disk for good: the next VM sees a smaller device. So imago
++    /// never gets a range that ends at the end of the disk; the caller zeroes
++    /// the last sector with a plain write instead.
++    fn split_off_last_sector(
++        &self,
++        data: &DiscardWriteData,
++    ) -> io::Result<(u64, u64, Option<u64>)> {
++        let capacity = self.disk.nsectors() * SECTOR_SIZE;
++        let offset = data.sector.saturating_mul(SECTOR_SIZE);
++        let end = offset.saturating_add(data.num_sectors as u64 * SECTOR_SIZE);
++        if end > capacity {
++            return Err(io::Error::new(
++                io::ErrorKind::InvalidInput,
++                "range past the end of the disk",
++            ));
++        }
++
++        if end == capacity && end > offset {
++            let last_sector = end - SECTOR_SIZE;
++            Ok((offset, last_sector - offset, Some(last_sector)))
++        } else {
++            Ok((offset, end - offset, None))
++        }
++    }
++
+     fn process_request(
+         &mut self,
+         request_header: RequestHeader,
+@@ -263,14 +294,15 @@ impl BlockWorker {
+                 let discard_write_data: DiscardWriteData = reader
+                     .read_obj()
+                     .map_err(RequestError::ReadingFromDescriptor)?;
++                // Discarding is advisory, so the last sector can stay as it is.
++                let (offset, length, _) = self
++                    .split_off_last_sector(&discard_write_data)
++                    .map_err(RequestError::Discarding)?;
+                 self.disk
+                     .file
+                     .lock()
+                     .unwrap()
+-                    .discard_to_any(
+-                        discard_write_data.sector * 512,
+-                        discard_write_data.num_sectors as u64 * 512,
+-                    )
++                    .discard_to_any(offset, length)
+                     .map_err(RequestError::Discarding)?;
+                 Ok(0)
+             }
+@@ -279,27 +311,21 @@ impl BlockWorker {
+                     .read_obj()
+                     .map_err(RequestError::ReadingFromDescriptor)?;
+                 let unmap = (discard_write_data.flags & VIRTIO_BLK_WRITE_ZEROES_FLAG_UNMAP) != 0;
++                let (offset, length, last_sector) = self
++                    .split_off_last_sector(&discard_write_data)
++                    .map_err(RequestError::WritingZeroes)?;
++                let mut file = self.disk.file.lock().unwrap();
+                 if unmap {
+-                    self.disk
+-                        .file
+-                        .lock()
+-                        .unwrap()
+-                        .discard_to_zero(
+-                            discard_write_data.sector * 512,
+-                            discard_write_data.num_sectors as u64 * 512,
+-                        )
++                    file.discard_to_zero(offset, length)
+                         .map_err(RequestError::DiscardingToZero)?;
+                 } else {
+-                    self.disk
+-                        .file
+-                        .lock()
+-                        .unwrap()
+-                        .write_zeroes(
+-                            discard_write_data.sector * 512,
+-                            discard_write_data.num_sectors as u64 * 512,
+-                        )
++                    file.write_zeroes(offset, length)
+                         .map_err(RequestError::WritingZeroes)?;
+                 }
++                if let Some(last_sector) = last_sector {
++                    file.write(&vec![0u8; SECTOR_SIZE as usize], last_sector)
++                        .map_err(RequestError::WritingZeroes)?;
++                }
+                 Ok(0)
+             }
+             _ => Err(RequestError::UnknownRequest),
