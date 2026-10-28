@@ -460,8 +460,34 @@ and the launch environment must carry `SHELL`, the proxy variables and
 
 Criterion 1 is therefore met for Claude Code: a real turn inside the box,
 through the proxy, with the commit and transcript recovered by the host over
-the one channel. Remaining: the base image decision for Cursor, and the KVM and
-container-fallback check on a Linux host.
+the one channel.
+
+### Phase 2c: Cursor and the base image (2026-10-28)
+
+Cursor's installer ran under the bash on the data disk, through the proxy
+(`cursor.com`, `downloads.cursor.com`), in 7 s, and unpacked 546 MB under
+`~/.local/share/cursor-agent/versions/<ver>/`. What it ships decides the image:
+
+- its own `node` and two `*-sea` launchers, all with `/lib/ld-linux-aarch64.so.1`
+  as interpreter, i.e. glibc;
+- a dozen native addons (`pty.node`, `better_sqlite3.node`, tree-sitter,
+  `*.linux-arm64-gnu.node`), glibc-linked too;
+- `rg` and `crepectl`, static.
+
+On the musl image it fails at once: `node: cannot execute: required file not
+found`. Alpine's `gcompat` shim, installed on an overlay over `/lib`, gets as
+far as `Error relocating node: fcntl64: symbol not found`: the shim does not
+cover the glibc ABI Node uses. There is no musl build of Cursor to fall back to.
+
+**Decision: the base image is glibc, Debian as Fletch's container images
+already are.** Everything else measured in this spike came from Alpine's
+packages and is available on Debian unchanged (node, python, git, socat,
+Chromium, dropbear or OpenSSH, bash). Expect a larger image, roughly 700 MB to
+1 GB, and a build path that is a Debian rootfs rather than Calina's Alpine
+`build.sh`. Claude, Codex and OpenCode run on both, so nothing else moves.
+
+Not run, by decision: the KVM and container-fallback check on a Linux host.
+It is a `fletch-host` concern and can wait until a Linux box matters.
 
 ## Delivery
 
