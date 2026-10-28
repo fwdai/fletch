@@ -10,7 +10,7 @@ use crate::exec_session::{ExecCallbacks, ExecExit, ExecSession, ExecSpawn};
 use crate::managed_session::{ManagedExit, ManagedSession, ManagedSpawn, ToolUseBehavior};
 use crate::pty_session::{PtyExit, PtySession, PtySpawn};
 use crate::sandbox;
-use crate::sandbox::{AgentLaunchCtx, EngineKind, LaunchPlan, SandboxEngine};
+use crate::sandbox::{AgentLaunchCtx, EngineKind, EnvDelivery, LaunchPlan, SandboxEngine};
 
 use super::accounts;
 use super::args::{prepare_managed_args, prepare_pty_args};
@@ -168,6 +168,33 @@ fn rpc_env(rpc_dir: &Path) -> Vec<(String, String)> {
     )];
     env.extend(crate::attribution::agent_env());
     env
+}
+
+/// Of the agent's assembled env, what the launcher process itself keeps when
+/// the engine ships that env into a guest ([`EnvDelivery::GuestFile`]): the ssh
+/// client's own lookup paths and terminal. The exact set is phase 4's to tune.
+const LAUNCHER_ENV: &[&str] = &["PATH", "HOME", "TERM"];
+
+/// The env the launcher process is spawned with, once the agent's own
+/// (`launch_env + rpc_env + mcp.env …`) is assembled: that env itself under
+/// [`EnvDelivery::Process`]; under [`EnvDelivery::GuestFile`] the engine ships
+/// it into the guest first and the launcher keeps only [`LAUNCHER_ENV`].
+fn launcher_env(
+    engine: &dyn SandboxEngine,
+    agent_id: &str,
+    delivery: &EnvDelivery,
+    env: Vec<(String, String)>,
+) -> Result<Vec<(String, String)>> {
+    match delivery {
+        EnvDelivery::Process => Ok(env),
+        EnvDelivery::GuestFile { launch_id } => {
+            engine.deliver_env(agent_id, launch_id, &env)?;
+            Ok(env
+                .into_iter()
+                .filter(|(k, _)| LAUNCHER_ENV.contains(&k.as_str()))
+                .collect())
+        }
+    }
 }
 
 /// What a launch needs from the managed account it runs under: a codex
@@ -353,6 +380,7 @@ impl Agent {
             prefix_args,
             env: launch_env,
             env_remove,
+            env_delivery,
             kill,
         } = engine.launch_agent(&ctx, &claude)?;
         account.unset.extend(env_remove);
@@ -361,6 +389,7 @@ impl Agent {
         let mut env = launch_env;
         env.extend(rpc_env(&spec.rpc_dir));
         env.extend(mcp.env);
+        let env = launcher_env(engine.as_ref(), spec.agent_id, &env_delivery, env)?;
 
         tracing::info!(
             agent_id = %spec.agent_id,
@@ -461,6 +490,7 @@ impl Agent {
             prefix_args,
             env: launch_env,
             env_remove,
+            env_delivery,
             kill,
         } = engine.launch_agent(&ctx, &bin)?;
         account.unset.extend(env_remove);
@@ -470,6 +500,7 @@ impl Agent {
         env.extend(rpc_env(&spec.rpc_dir));
         env.extend(mcp.env);
         env.extend(codex.as_ref().map(CodexHome::env));
+        let env = launcher_env(engine.as_ref(), spec.agent_id, &env_delivery, env)?;
 
         tracing::info!(
             agent_id = %spec.agent_id,
@@ -537,6 +568,7 @@ impl Agent {
             prefix_args,
             env: launch_env,
             env_remove,
+            env_delivery,
             kill,
         } = engine.launch_agent(&ctx, &claude)?;
         account.unset.extend(env_remove);
@@ -545,6 +577,7 @@ impl Agent {
         let mut env = launch_env;
         env.extend(rpc_env(&spec.rpc_dir));
         env.extend(mcp.env);
+        let env = launcher_env(engine.as_ref(), spec.agent_id, &env_delivery, env)?;
 
         tracing::info!(
             agent_id = %spec.agent_id,
@@ -702,18 +735,21 @@ impl Agent {
             codex_home: codex.as_ref().map(|c| c.overlay.as_path()),
             adopted_read_only: spec.adopted_read_only,
         };
+        let engine = sandbox::engine_for(spec.engine)?;
         let LaunchPlan {
             program: launch_program,
             prefix_args,
             env: launch_env,
             env_remove,
+            env_delivery,
             kill,
-        } = sandbox::engine_for(spec.engine)?.launch_agent(&ctx, agent_bin)?;
+        } = engine.launch_agent(&ctx, agent_bin)?;
         account.unset.extend(env_remove);
         let mut env = launch_env;
         env.extend(rpc_env(&spec.rpc_dir));
         env.extend(mcp_env);
         env.extend(codex.as_ref().map(CodexHome::env));
+        let env = launcher_env(engine.as_ref(), &spec.agent_id, &env_delivery, env)?;
         // Every turn is a fresh process, so every turn gets a fresh credential.
         let before_turn = codex.map(|codex| {
             let codex = std::sync::Arc::new(codex);

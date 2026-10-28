@@ -30,6 +30,7 @@ pub mod context;
 pub mod database;
 pub mod download;
 pub mod error;
+pub mod exec;
 pub mod exec_session;
 pub mod git;
 pub mod git_dist;

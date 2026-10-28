@@ -638,13 +638,15 @@ pub async fn read_checkout_file_impl(
         return Ok(empty(text, false, false));
     }
 
-    if !abs.is_file() {
+    // Where the checkout lives: a box keeps it in its guest (`crate::exec`).
+    let exec = crate::exec::for_path(&checkout);
+    let Some(meta) = exec.stat(&abs).ok().flatten().filter(|m| m.is_file) else {
         return Ok(empty(String::new(), false, false));
-    }
-    if std::fs::metadata(&abs)?.len() > MAX_FILE_BYTES {
+    };
+    if meta.len > MAX_FILE_BYTES {
         return Ok(empty(String::new(), false, true));
     }
-    let bytes = std::fs::read(&abs)?;
+    let bytes = exec.read(&abs)?;
     if bytes.contains(&0) {
         return Ok(empty(String::new(), true, false));
     }

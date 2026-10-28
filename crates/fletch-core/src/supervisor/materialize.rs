@@ -95,11 +95,11 @@ impl Supervisor {
             .first()
             .ok_or_else(|| Error::Other("agent has no tracked repos".into()))?
             .checkout_path(&record.id)?;
-        let container = stamped_engine(record).is_container();
         // A launch under a removed account would fail, so the conversation it
         // would resume isn't written either.
         crate::agent::accounts::existing_account_dir(provider, record.account.as_deref())?;
-        let Some(path) = write(session_id, &record.id, &cwd, container, bodies)? else {
+        let Some(path) = write(session_id, &record.id, &cwd, stamped_engine(record), bodies)?
+        else {
             return Ok(None);
         };
         let mut diag = ReadDiagnostics::default();

@@ -164,17 +164,18 @@ pub(crate) fn content_text(content: &Value, sep: &str) -> Option<String> {
 }
 
 /// Writes `bodies` as session `session_id`'s own transcript, where the
-/// provider's CLI looks for it when it runs in `cwd` (`container`: in a
-/// container sandbox; `account_dir`: under that managed account's config dir,
-/// `None` for the default), so the CLI resumes it like any session of its own. The
-/// mirror image of `locate` / `read`: the bodies go out as they are, with only
-/// the session-identity fields the format requires naming the new session.
-/// `Ok(None)` when they hold nothing the CLI can resume, so nothing is written.
+/// provider's CLI looks for it when it runs in `cwd` under `engine` (which
+/// decides whether the agent has a per-agent projects dir,
+/// `sandbox::transcript_root`), so the CLI resumes it like any session of its
+/// own. The mirror image of `locate` / `read`: the bodies go out as they are,
+/// with only the session-identity fields the format requires naming the new
+/// session. `Ok(None)` when they hold nothing the CLI can resume, so nothing is
+/// written.
 pub type TranscriptWrite = fn(
     session_id: &str,
     agent_id: &str,
     cwd: &Path,
-    container: bool,
+    engine: crate::sandbox::EngineKind,
     bodies: &[Value],
 ) -> Result<Option<PathBuf>>;
 

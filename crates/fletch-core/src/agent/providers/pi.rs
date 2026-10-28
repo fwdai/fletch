@@ -68,7 +68,7 @@ pub(crate) fn pi_write(
     session_id: &str,
     _agent_id: &str,
     cwd: &Path,
-    _container: bool,
+    _engine: crate::sandbox::EngineKind,
     bodies: &[Value],
 ) -> Result<Option<PathBuf>> {
     let sessions = pi_sessions_dir()

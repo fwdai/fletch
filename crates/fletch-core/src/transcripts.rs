@@ -9,12 +9,14 @@ use std::path::{Path, PathBuf};
 use serde_json::Value;
 
 use crate::agent::ReadDiagnostics;
+use crate::sandbox::{transcript_root, EngineKind};
 
-/// Directory (under an agent's writable root) that the Docker sandbox binds
-/// over the container's read-only `<config-dir>/projects`, so claude's session
-/// transcripts persist on a per-agent host dir instead of the shared, read-only
-/// `~/.claude` (see `sandbox::docker`). Shared with the mount side so the writer
-/// and this reader agree on one name.
+/// Directory (under an agent's writable root) that the container sandboxes
+/// bind over the container's read-only `<config-dir>/projects`, so claude's
+/// session transcripts persist on a per-agent host dir instead of the shared,
+/// read-only `~/.claude` (see `sandbox::container`). Shared with the mount side
+/// so the writer and this reader agree on one name; [`transcript_root`] is
+/// where an engine is mapped to it.
 pub(crate) const DOCKER_CLAUDE_PROJECTS_DIRNAME: &str = ".fletch-claude-projects";
 
 /// Locate the claude session JSONL by scanning the candidate `projects/*/`
@@ -22,35 +24,49 @@ pub(crate) const DOCKER_CLAUDE_PROJECTS_DIRNAME: &str = ".fletch-claude-projects
 /// path-encoding scheme isn't part of its public API, so we glob instead of
 /// recomputing the encoded directory name from the checkout path.
 ///
-/// A Docker-sandboxed agent writes its transcript to a per-agent host dir
-/// ([`DOCKER_CLAUDE_PROJECTS_DIRNAME`]) rather than the shared `~/.claude`, so
-/// that dir is scanned first. The agent's cwd is `<writable_root>/<repo>`, so
-/// its parent is the writable root that holds it. Seatbelt agents have no such
-/// dir (it won't exist and is skipped), so the scan falls through to the
-/// standard `~/.claude` / `CLAUDE_CONFIG_DIR` candidates.
+/// An engine that keeps a per-agent projects dir ([`transcript_root`]) has the
+/// agent write its transcript there rather than to the shared `~/.claude`, so
+/// those dirs are scanned first. The agent's cwd is `<writable_root>/<repo>`,
+/// so its parent is the writable root that holds it. An agent of an engine
+/// without one has no such dir (it won't exist and is skipped), so the scan
+/// falls through to the standard `~/.claude` / `CLAUDE_CONFIG_DIR` candidates.
 pub(crate) fn find_session_jsonl(
     session_id: &str,
     cwd: &Path,
     diag: &mut ReadDiagnostics,
 ) -> Option<PathBuf> {
-    let mut dirs: Vec<PathBuf> = Vec::new();
-    if let Some(parent) = cwd.parent() {
-        dirs.push(parent.join(DOCKER_CLAUDE_PROJECTS_DIRNAME));
-    }
+    let mut dirs = per_agent_projects_dirs(cwd);
     dirs.extend(claude_projects_dirs());
     find_session_jsonl_in(&dirs, session_id, diag)
 }
 
-/// The `projects` directory claude keeps its sessions in when it runs in
-/// `cwd`: the per-agent dir a container sandbox mounts over it (`container`),
-/// else the active default config dir, where every agent runs whatever its
-/// account (a claude account is a token source only). The first place
-/// [`find_session_jsonl`] looks for each kind of agent.
-pub(crate) fn claude_projects_dir(cwd: &Path, container: bool) -> Option<PathBuf> {
-    if container {
-        return Some(cwd.parent()?.join(DOCKER_CLAUDE_PROJECTS_DIRNAME));
+/// Every per-agent `projects` dir some engine keeps for the agent working in
+/// `cwd` — for a reader that does not know the agent's engine. Deduped: the
+/// container engines share one.
+fn per_agent_projects_dirs(cwd: &Path) -> Vec<PathBuf> {
+    let Some(root) = cwd.parent() else {
+        return Vec::new();
+    };
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    for &kind in EngineKind::ALL {
+        if let Some(dir) = transcript_root(kind, root) {
+            if !dirs.contains(&dir) {
+                dirs.push(dir);
+            }
+        }
     }
-    claude_projects_dirs().into_iter().next()
+    dirs
+}
+
+/// The `projects` directory claude keeps its sessions in when it runs in
+/// `cwd` under `engine`: the per-agent dir the engine keeps for it
+/// ([`transcript_root`]), else the active default config dir, where every
+/// agent runs whatever its account (a claude account is a token source only).
+/// The first place [`find_session_jsonl`] looks for each kind of agent.
+pub(crate) fn claude_projects_dir(cwd: &Path, engine: EngineKind) -> Option<PathBuf> {
+    cwd.parent()
+        .and_then(|root| transcript_root(engine, root))
+        .or_else(|| claude_projects_dirs().into_iter().next())
 }
 
 /// Move a session that only exists under a managed claude account's dir —
@@ -64,7 +80,7 @@ pub(crate) fn adopt_account_session(
     session_id: &str,
     cwd: &Path,
 ) -> std::io::Result<Option<PathBuf>> {
-    let Some(default) = claude_projects_dir(cwd, false) else {
+    let Some(default) = claude_projects_dirs().into_iter().next() else {
         return Ok(None);
     };
     let Some(found) = find_session_jsonl(session_id, cwd, &mut ReadDiagnostics::default()) else {
@@ -630,7 +646,7 @@ mod tests {
             );
             assert_eq!(found.as_deref(), Some(jsonl.as_path()));
             assert_ne!(
-                claude_projects_dir(Path::new("/w/a/repo"), false),
+                claude_projects_dir(Path::new("/w/a/repo"), EngineKind::SandboxExec),
                 Some(claude.join("projects")),
                 "new sessions land in the default dir, not the account's"
             );
