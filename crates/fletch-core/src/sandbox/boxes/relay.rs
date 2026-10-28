@@ -13,8 +13,11 @@
 //!   `<box dir>/relay/delivered/<name>`, which outlives idle stops and app
 //!   restarts and goes with the box on discard (`rpc_watch` consumes the
 //!   request file, so a replayed request would otherwise run its op twice);
-//!   the guest's in `/data/run/relay/delivered/<name>` on the data disk. Names
-//!   are UUIDs chosen by the agent, so the markers are never pruned.
+//!   the guest's in `/data/run/relay/delivered/<name>` on the data disk. A
+//!   marker is only needed while the sender may still hold the file, and a
+//!   sender re-sends everything it still holds at session start and then says
+//!   `synced`, so on `synced` the receiver deletes every marker it was not
+//!   shown this session. Markers made after the sync wait for the next one.
 //! - **Transcript tail**: `fletch-guest tail <home>/.claude/projects` emits
 //!   `create`/`append` lines for every `*.jsonl` under claude's projects dir;
 //!   the host appends them under `<box>/claude-projects/`, and on reconnect
@@ -59,6 +62,9 @@ pub enum Event {
     Ack {
         name: String,
     },
+    /// The sender has re-sent everything it still held at session start; the
+    /// receiver may drop receipt markers for every other name.
+    Synced,
     Create {
         path: String,
     },
@@ -186,7 +192,9 @@ where
 /// with a marker already is acked without being written again. Each response
 /// file is sent once per session and deleted when the guest acks it, so a
 /// session that drops before the ack leaves the file for the next session to
-/// re-send.
+/// re-send: that re-send is the first thing a session does, followed by
+/// `synced`. The guest's own `synced` closes its replay, and every marker in
+/// `delivered` the replay did not name is deleted then.
 pub async fn pump_mailbox(
     mut child: Child,
     rpc_dir: PathBuf,
@@ -207,11 +215,29 @@ pub async fn pump_mailbox(
     std::fs::create_dir_all(&responses)?;
     // Responses sent on this session and awaiting the guest's ack.
     let mut in_flight: HashSet<String> = HashSet::new();
+    // Request names the guest has replayed this session, until its `synced`.
+    let mut replayed: Option<HashSet<String>> = Some(HashSet::new());
+
+    // Whatever the last session left unacked goes first, then `synced`.
+    for (name, body) in pending_responses(&responses)? {
+        stdin
+            .write_all(response_line(&name, &body).as_bytes())
+            .await?;
+        in_flight.insert(name);
+    }
+    stdin
+        .write_all(event_line(&Event::Synced).as_bytes())
+        .await?;
+    stdin.flush().await?;
+
     loop {
         tokio::select! {
             line = lines.next_line() => match line? {
                 Some(line) => match handle_guest_line(&rpc_dir, &delivered, &line) {
                     Ok(Reply::Ack(name)) => {
+                        if let Some(replayed) = &mut replayed {
+                            replayed.insert(name.clone());
+                        }
                         stdin.write_all(ack_line(&name).as_bytes()).await?;
                         stdin.flush().await?;
                     }
@@ -220,6 +246,11 @@ pub async fn pump_mailbox(
                         let _ = std::fs::remove_file(responses.join(&name));
                         in_flight.remove(&name);
                     }
+                    // Only the first one counts: markers made after it belong
+                    // to requests the guest may still hold.
+                    Ok(Reply::Synced) => if let Some(keep) = replayed.take() {
+                        prune_markers(&delivered, &keep)?;
+                    },
                     Err(e) => tracing::warn!(error = %e, "box relay: bad guest line"),
                 },
                 // The guest closed the stream: the session is over.
@@ -251,6 +282,32 @@ pub enum Reply {
     Ack(String),
     /// The guest acked this response; nothing to send, delete the host copy.
     Acked(String),
+    /// The guest's replay is complete; prune the markers it did not name.
+    Synced,
+}
+
+/// Deletes every marker in `dir` whose name is not in `keep`. Returns how
+/// many went. A missing dir is an empty one.
+pub fn prune_markers(dir: &Path, keep: &HashSet<String>) -> io::Result<usize> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(0),
+        Err(e) => return Err(e),
+    };
+    let mut gone = 0;
+    for entry in entries.filter_map(|e| e.ok()) {
+        let Ok(name) = entry.file_name().into_string() else {
+            continue;
+        };
+        if !keep.contains(&name) {
+            match std::fs::remove_file(entry.path()) {
+                Ok(()) => gone += 1,
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e),
+            }
+        }
+    }
+    Ok(gone)
 }
 
 /// One line from the guest. A `request` goes to `rpc_dir/requests/<name>`
@@ -283,15 +340,20 @@ pub fn handle_guest_line(rpc_dir: &Path, delivered: &Path, line: &str) -> io::Re
             }
             Ok(Reply::Acked(name))
         }
-        _ => Err(io::Error::other("expected a request or ack line")),
+        Event::Synced => Ok(Reply::Synced),
+        _ => Err(io::Error::other("expected a request, ack or synced line")),
     }
 }
 
 pub fn ack_line(name: &str) -> String {
-    let mut line = serde_json::to_string(&Event::Ack {
+    event_line(&Event::Ack {
         name: name.to_string(),
     })
-    .expect("an ack serializes");
+}
+
+/// One event as the newline-terminated JSON line it goes out as.
+pub fn event_line(event: &Event) -> String {
+    let mut line = serde_json::to_string(event).expect("an event serializes");
     line.push('\n');
     line
 }
@@ -494,8 +556,11 @@ mod tests {
         let rpc = dir.path().join("rpc");
         let got_ack = dir.path().join("got_ack");
         let got_response = dir.path().join("got_response");
+        // On stdin: the host's `synced` (nothing pending), the ack, then the
+        // response.
         let script = format!(
-            "printf '%s\\n' '{}'; IFS= read -r line; printf '%s' \"$line\" > '{}'; \
+            "printf '%s\\n' '{}'; IFS= read -r line; \
+             IFS= read -r line; printf '%s' \"$line\" > '{}'; \
              IFS= read -r line; printf '%s' \"$line\" > '{}'; printf '%s\\n' '{}'",
             request_line("r1.json", r#"{"id":"r1","op":"noop"}"#),
             got_ack.display(),
@@ -546,8 +611,9 @@ mod tests {
         let request = request_line("r1.json", r#"{"id":"r1","op":"noop"}"#);
         let (_stop, rx) = watch::channel(false);
 
-        // Session one: the guest emits and is gone before the ack reaches it.
-        let script = format!("printf '%s\\n' '{request}'");
+        // Session one: the guest emits, sees the host's `synced`, and is gone
+        // before the ack reaches it.
+        let script = format!("printf '%s\\n' '{request}'; IFS= read -r line");
         let pump = tokio::spawn(pump_mailbox(
             scripted(&script),
             rpc.clone(),
@@ -564,10 +630,12 @@ mod tests {
         // `rpc_watch` takes it.
         std::fs::remove_file(&request_file).unwrap();
 
-        // Session two, a new `Relays` life: the same request again.
+        // Session two, a new `Relays` life: the same request again. On stdin
+        // `synced` first, then the ack.
         let got = dir.path().join("got");
         let script = format!(
-            "printf '%s\\n' '{request}'; IFS= read -r line; printf '%s' \"$line\" > '{}'",
+            "printf '%s\\n' '{request}'; IFS= read -r line; \
+             IFS= read -r line; printf '%s' \"$line\" > '{}'",
             got.display()
         );
         finished(tokio::spawn(pump_mailbox(
@@ -643,11 +711,86 @@ mod tests {
         assert!(!response_file.exists());
     }
 
+    /// Session one delivered A and B (and the guest, acked, deleted both).
+    /// Session two starts with the guest still holding A — its ack was lost
+    /// — so it replays A and says `synced`: B's marker goes, A's stays and a
+    /// later replay of A is still acked without writing. A marker made after
+    /// the sync survives a stray second `synced`.
+    #[tokio::test]
+    async fn a_session_sync_prunes_markers_for_requests_the_guest_no_longer_holds() {
+        let dir = tempfile::tempdir().unwrap();
+        let rpc = dir.path().join("rpc");
+        let markers = delivered(dir.path());
+        let a = request_line("a.json", "A");
+        let b = request_line("b.json", "B");
+        let (_stop, rx) = watch::channel(false);
+
+        // Session one: A and B, replayed-then-synced, acked. On stdin the
+        // host's `synced` and two acks.
+        let script = format!(
+            "printf '%s\\n' '{a}' '{b}' '{}'; IFS= read -r l; IFS= read -r l; IFS= read -r l",
+            event_line(&Event::Synced).trim()
+        );
+        finished(tokio::spawn(pump_mailbox(
+            scripted(&script),
+            rpc.clone(),
+            markers.clone(),
+            rx.clone(),
+        )))
+        .await;
+        assert!(markers.join("a.json").exists());
+        assert!(markers.join("b.json").exists());
+        // `rpc_watch` takes both.
+        std::fs::remove_file(rpc.join("requests/a.json")).unwrap();
+        std::fs::remove_file(rpc.join("requests/b.json")).unwrap();
+
+        // Session two: only A comes back before `synced`.
+        let script = format!(
+            "printf '%s\\n' '{a}' '{}'; IFS= read -r l; IFS= read -r l",
+            event_line(&Event::Synced).trim()
+        );
+        finished(tokio::spawn(pump_mailbox(
+            scripted(&script),
+            rpc.clone(),
+            markers.clone(),
+            rx,
+        )))
+        .await;
+        assert!(markers.join("a.json").exists(), "A may still be replayed");
+        assert!(!markers.join("b.json").exists(), "nothing can replay B");
+        assert!(!rpc.join("requests/a.json").exists());
+        assert!(!rpc.join("requests/b.json").exists());
+
+        // A again, still deduped.
+        assert_eq!(
+            handle_guest_line(&rpc, &markers, &a).unwrap(),
+            Reply::Ack("a.json".into())
+        );
+        assert!(!rpc.join("requests/a.json").exists());
+
+        // After the sync a new request's marker is not touched by a second
+        // `synced` in the same session.
+        let keep = HashSet::new();
+        assert_eq!(
+            handle_guest_line(&rpc, &markers, &request_line("c.json", "C")).unwrap(),
+            Reply::Ack("c.json".into())
+        );
+        assert!(markers.join("c.json").exists());
+        // What `pump_mailbox` does on the first `synced` only; a pump that
+        // already synced leaves `replayed` as `None` and never calls this.
+        assert_eq!(prune_markers(&markers, &keep).unwrap(), 2);
+        assert!(!markers.exists() || std::fs::read_dir(&markers).unwrap().next().is_none());
+    }
+
     #[test]
     fn guest_lines_are_validated() {
         let dir = tempfile::tempdir().unwrap();
         let rpc = dir.path().join("rpc");
         let delivered = delivered(dir.path());
+        assert_eq!(
+            handle_guest_line(&rpc, &delivered, r#"{"op":"synced"}"#).unwrap(),
+            Reply::Synced
+        );
         let escape = r#"{"op":"request","name":"../x","body":""}"#;
         assert!(handle_guest_line(&rpc, &delivered, escape).is_err());
         let escape_ack = r#"{"op":"ack","name":"../x"}"#;

@@ -14,10 +14,16 @@
 //! `/data/run/relay/delivered/<name>` (an empty file on the data disk, which
 //! outlives relay processes and reboots alike); a response the host re-sends
 //! because its ack was lost finds the marker and is acked without being
-//! rewritten, so an answer the agent already consumed cannot come back. Names
-//! are UUIDs the agent chose, so the markers are never pruned; they go with the
-//! box. Polling at 100 ms matches the host's mailbox watcher; stdin EOF means
-//! the host is gone and the relay exits.
+//! rewritten, so an answer the agent already consumed cannot come back.
+//!
+//! Markers are pruned by a session sync. A marker is only needed while the
+//! host may still hold the file, and the host re-sends everything it still
+//! holds at the start of each session, then says `{"op":"synced"}`; on that
+//! the guest deletes every marker it was not shown this session. The guest
+//! does the same for the host: after its first sweep of `requests/` it emits
+//! `synced` so the host can prune its request markers. Markers made after the
+//! sync stay until the next session's. Polling at 100 ms matches the host's
+//! mailbox watcher; stdin EOF means the host is gone and the relay exits.
 
 use std::collections::HashSet;
 use std::fs;
@@ -51,12 +57,16 @@ pub fn run(args: &[String]) -> Result<()> {
         std::process::exit(0);
     });
 
+    // The replay of whatever the last session left behind, then `synced`.
+    {
+        let mut out = io::stdout().lock();
+        lock(&mailbox).emit_requests(&mut out)?;
+        write_line(&mut out, &Event::Synced)?;
+    }
     loop {
-        {
-            let mut out = io::stdout().lock();
-            lock(&mailbox).emit_requests(&mut out)?;
-        }
         thread::sleep(POLL);
+        let mut out = io::stdout().lock();
+        lock(&mailbox).emit_requests(&mut out)?;
     }
 }
 
@@ -73,6 +83,9 @@ pub struct Mailbox {
     /// Request names emitted on this session and not yet acked by the host.
     /// Per process on purpose: a new session must re-emit what is still here.
     emitted: HashSet<String>,
+    /// Response names the host has sent this session, until its `synced`;
+    /// `None` afterwards. Markers for every other name go on `synced`.
+    replayed: Option<HashSet<String>>,
 }
 
 impl Mailbox {
@@ -82,6 +95,7 @@ impl Mailbox {
             responses: dir.join("responses"),
             delivered: delivered.to_path_buf(),
             emitted: HashSet::new(),
+            replayed: Some(HashSet::new()),
         }
     }
 
@@ -123,7 +137,8 @@ impl Mailbox {
 
     /// One line from the host: a `response` is written atomically into
     /// `responses` unless its receipt marker exists, the marker is created,
-    /// and it is acked; an `ack` deletes the request it names.
+    /// and it is acked; an `ack` deletes the request it names; the session's
+    /// first `synced` prunes the markers the host did not re-send.
     pub fn handle_host_line(&mut self, line: &str, out: &mut impl Write) -> Result<()> {
         match serde_json::from_str(line)? {
             Event::Response { name, body } => {
@@ -136,6 +151,9 @@ impl Mailbox {
                     fs::rename(&tmp, self.responses.join(&name))?;
                     fs::create_dir_all(&self.delivered)?;
                     fs::File::create(&marker)?;
+                }
+                if let Some(replayed) = &mut self.replayed {
+                    replayed.insert(name.clone());
                 }
                 write_line(out, &Event::Ack { name })?;
                 Ok(())
@@ -150,9 +168,41 @@ impl Mailbox {
                 self.emitted.remove(&name);
                 Ok(())
             }
-            _ => Err("expected {\"op\":\"response\",...} or {\"op\":\"ack\",...}".into()),
+            Event::Synced => {
+                // Only the first one counts: markers made after it belong to
+                // responses the host may still hold.
+                if let Some(keep) = self.replayed.take() {
+                    prune_markers(&self.delivered, &keep)?;
+                }
+                Ok(())
+            }
+            _ => Err("expected a response, ack or synced line".into()),
         }
     }
+}
+
+/// Deletes every marker in `dir` whose name is not in `keep`. Returns how
+/// many went. A missing dir is an empty one.
+pub fn prune_markers(dir: &Path, keep: &HashSet<String>) -> io::Result<usize> {
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(0),
+        Err(err) => return Err(err),
+    };
+    let mut gone = 0;
+    for entry in entries.filter_map(|e| e.ok()) {
+        let Ok(name) = entry.file_name().into_string() else {
+            continue;
+        };
+        if !keep.contains(&name) {
+            match fs::remove_file(entry.path()) {
+                Ok(()) => gone += 1,
+                Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+                Err(err) => return Err(err),
+            }
+        }
+    }
+    Ok(gone)
 }
 
 /// A mailbox file name: one component, no traversal.
@@ -185,6 +235,10 @@ mod tests {
             body: body.into(),
         })
         .unwrap()
+    }
+
+    fn synced() -> String {
+        serde_json::to_string(&Event::Synced).unwrap()
     }
 
     /// A mailbox over `<tmp>/rpc` with markers in `<tmp>/delivered`.
@@ -328,6 +382,55 @@ mod tests {
                 name: "a.json".into()
             }]
         );
+    }
+
+    /// Session one took A and B. Session two's host still holds A (its ack
+    /// was lost) and re-sends it before `synced`: B's marker goes, A's stays
+    /// and keeps A from being rewritten; a marker made after the sync is kept
+    /// through a stray second `synced`.
+    #[test]
+    fn synced_prunes_markers_for_responses_the_host_no_longer_holds() {
+        let dir = tempfile::tempdir().unwrap();
+        let markers = dir.path().join("delivered");
+        let answers = dir.path().join("rpc/responses");
+        let a = response("a.json", "A");
+        let b = response("b.json", "B");
+        let mut sink = Vec::new();
+
+        let mut first = mailbox(dir.path());
+        first.handle_host_line(&a, &mut sink).unwrap();
+        first.handle_host_line(&b, &mut sink).unwrap();
+        drop(first);
+        fs::remove_file(answers.join("a.json")).unwrap();
+        fs::remove_file(answers.join("b.json")).unwrap();
+        assert!(markers.join("a.json").exists());
+        assert!(markers.join("b.json").exists());
+
+        let mut second = mailbox(dir.path());
+        second.handle_host_line(&a, &mut sink).unwrap();
+        second.handle_host_line(&synced(), &mut sink).unwrap();
+        assert!(markers.join("a.json").exists(), "A may still be replayed");
+        assert!(!markers.join("b.json").exists(), "nothing can replay B");
+        assert!(!answers.join("a.json").exists());
+
+        // A again, still deduped.
+        let mut out = Vec::new();
+        second.handle_host_line(&a, &mut out).unwrap();
+        assert!(!answers.join("a.json").exists());
+        assert_eq!(
+            events(&out),
+            vec![Event::Ack {
+                name: "a.json".into()
+            }]
+        );
+
+        // New after the sync: its marker outlives a second `synced`.
+        second
+            .handle_host_line(&response("c.json", "C"), &mut sink)
+            .unwrap();
+        second.handle_host_line(&synced(), &mut sink).unwrap();
+        assert!(markers.join("c.json").exists());
+        assert!(markers.join("a.json").exists());
     }
 
     #[test]

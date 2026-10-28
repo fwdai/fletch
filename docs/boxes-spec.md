@@ -212,7 +212,7 @@ Everything init needs is env or on disk.
 | `vsock-listen <port> -- <cmd...>` | Accept on `AF_VSOCK` port, spawn `cmd` per connection with the socket as stdin/stdout (inetd style). |
 | `egress-loopback <tcp port> <vsock port>` | Relay guest loopback TCP to the host vsock port. |
 | `exec --env-file <path> [--cwd <dir>] -- <cmd...>` | Clear the environment, load `KEY=VALUE` lines from the file, `chdir`, exec. Used as the remote command for every launch and host exec (§7.2). |
-| `relay <mailbox dir>` | Watch `<dir>/requests/*.json` (100 ms poll); emit each as one JSON line on stdout `{"op":"request","name":...,"body":...}` and keep the file until the host answers `{"op":"ack","name":...}` on stdin, then delete it. Read `{"op":"response","name":...,"body":...}` lines on stdin, write each atomically to `<dir>/responses/`, create the receipt marker `/data/run/relay/delivered/<name>`, then answer `{"op":"ack","name":...}` on stdout. On start (so on every reconnect) re-emit every request file still present; within one process emit each name once. A response whose marker already exists is acked without being rewritten, whatever process or boot wrote it. |
+| `relay <mailbox dir>` | Watch `<dir>/requests/*.json` (100 ms poll); emit each as one JSON line on stdout `{"op":"request","name":...,"body":...}` and keep the file until the host answers `{"op":"ack","name":...}` on stdin, then delete it. Read `{"op":"response","name":...,"body":...}` lines on stdin, write each atomically to `<dir>/responses/`, create the receipt marker `/data/run/relay/delivered/<name>`, then answer `{"op":"ack","name":...}` on stdout. On start (so on every reconnect) re-emit every request file still present and then `{"op":"synced"}`; within one process emit each name once. A response whose marker already exists is acked without being rewritten, whatever process or boot wrote it; on the host's first `{"op":"synced"}` delete every marker for a response it did not re-send this session. |
 | `tail <dir>` | Watch a directory tree for JSONL files; emit `{"op":"append","path":...,"data":base64}` for new bytes, `{"op":"create"...}` for new files. Used for transcript mirroring. |
 | `wait-stop <vsock port>` | Block until the host connects and sends `stop`; used by init. |
 
@@ -327,13 +327,14 @@ Started by `BoxRegistry::ensure_running`, stopped with the VM:
   Delivery is acknowledged, not assumed: a flushed ssh pipe only proves the
   local kernel took the bytes. Each side keeps its file until the peer says it
   has written its own copy, and re-sends what is still on disk when a session
-  reconnects. One JSON object per line, three shapes:
+  reconnects. One JSON object per line, four shapes:
 
   | Line | Direction | Sender keeps | Receiver does |
   | --- | --- | --- | --- |
-  | `{"op":"request","name","body"}` | guest → host | `requests/<name>` until acked | tmp + rename into host `requests/`, then `ack` |
-  | `{"op":"response","name","body"}` | host → guest | `responses/<name>` until acked | tmp + rename into guest `responses/`, then `ack` |
+  | `{"op":"request","name","body"}` | guest → host | `requests/<name>` until acked | tmp + rename into host `requests/`, create the receipt marker, then `ack` |
+  | `{"op":"response","name","body"}` | host → guest | `responses/<name>` until acked | tmp + rename into guest `responses/`, create the receipt marker, then `ack` |
   | `{"op":"ack","name"}` | either | — | delete the named file it sent |
+  | `{"op":"synced"}` | either, once per session, right after re-sending every file it still held at session start | — | delete every receipt marker not named by this session's replay |
 
   Replays are deduped by name (UUIDs the agent chose) with receipt markers on
   disk, not in memory, so they survive relay reconnects, idle stops, reboots
@@ -344,8 +345,17 @@ Started by `BoxRegistry::ensure_running`, stopped with the VM:
   agent-owned data disk). A replay whose marker exists is acked again without
   being rewritten; this matters because `rpc_watch` consumes the request file
   and a re-created one would run the op twice, and because the agent may have
-  consumed a response that a rewrite would resurrect. Markers are never pruned;
-  they go with the box.
+  consumed a response that a rewrite would resurrect.
+
+  Markers are pruned by the session sync, so the marker dirs hold only names
+  that can still be replayed rather than every request the box ever made. A
+  marker is needed exactly while the sender may still hold the file, and a
+  sender re-sends everything it still holds at the start of every session and
+  then says `synced`; so on the first `synced` of a session the receiver
+  deletes every marker not named since the session began. Markers created after
+  that wait for the next session's sync; a later `synced` in the same session
+  is ignored. The guest's sync comes after its first sweep of `requests/`, the
+  host's after it has sent every pending file in `responses/`.
 - **Transcript mirror**: `ssh -F cfg box fletch-guest tail <home>/.claude/projects`
   (and the provider's equivalent root), appending into
   `<box>/claude-projects/<slug>/…`. The transcript readers already know how to

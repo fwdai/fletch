@@ -152,11 +152,16 @@ pub fn availability() -> Result<RuntimePaths> {
 
 /// This build's pinned image, when installed.
 pub fn installed_image() -> Result<Option<InstalledImage>> {
-    // This build's pinned version, never the newest on disk: a newer image left
-    // by a later build would boot a guest whose init contract this build does
-    // not know, and the per-boot hash check would compare against that image's
-    // own hash rather than the pin.
-    Ok(image_store().find(&pinned_image().version))
+    // This build's pin, by version *and* recorded hash, never the newest on
+    // disk: a newer image left by a later build would boot a guest whose init
+    // contract this build does not know, and a same-version image from a
+    // different build would pass here only to fail the per-boot hash check
+    // after the spawn started. A mismatch reads as absent, so the install path
+    // replaces it.
+    let pin = pinned_image();
+    Ok(image_store()
+        .find(&pin.version)
+        .filter(|image| image.sha256 == pin.sha256))
 }
 
 /// The runtime probe alone, for the Settings page: `None` when no runtime
