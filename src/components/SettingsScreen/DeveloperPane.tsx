@@ -1,9 +1,9 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Icon } from "@/components/Icon";
 import { Button } from "@/components/ui/Button";
 import { useAppStore } from "@/store";
 import { SetGroup, SetHead, SetRow, SetToggle } from "./primitives";
-import { BoxRuntimeStatus } from "./Sandbox/BoxRuntimeStatus";
+import { BoxSetupStatus } from "./Sandbox/BoxSetupStatus";
 
 /** Dev-only settings surface. The nav entry that routes here is gated on
  *  `import.meta.env.DEV`, so this pane only ships under `bun tauri dev`. */
@@ -19,7 +19,17 @@ export function DeveloperPane() {
   const setContextLayerEnabled = useAppStore((s) => s.setContextLayerEnabled);
   const boxesEnabled = useAppStore((s) => s.boxesEnabled);
   const setBoxesEnabled = useAppStore((s) => s.setBoxesEnabled);
+  const boxProbe = useAppStore((s) => s.boxProbe);
+  const refreshBoxProbe = useAppStore((s) => s.refreshBoxProbe);
   const [refreshingModels, setRefreshingModels] = useState(false);
+
+  // Probed with the flag off too: an Intel Mac, or one without the runtime,
+  // gets a disabled toggle that says why rather than a refusal on click.
+  useEffect(() => {
+    void refreshBoxProbe();
+  }, [refreshBoxProbe]);
+  const boxRuntimeProblem =
+    boxProbe && !boxProbe.runtime_ok ? boxProbe.problems.join("; ") : undefined;
 
   const handleRefreshModels = async () => {
     if (refreshingModels) return;
@@ -63,11 +73,16 @@ export function DeveloperPane() {
         </SetRow>
         <SetRow
           title="Box sandbox (micro-VM)"
-          sub="Run agents in libkrun micro-VMs reachable only over SSH; needs the helper, the image and Apple silicon."
+          sub="New agents run in isolated micro-VMs. Turning this on downloads the 850 MB image once and switches new agents to boxes."
         >
-          <SetToggle on={boxesEnabled} onClick={() => void setBoxesEnabled(!boxesEnabled)} />
+          <SetToggle
+            on={boxesEnabled}
+            onClick={() => void setBoxesEnabled(!boxesEnabled)}
+            disabled={!!boxRuntimeProblem && !boxesEnabled}
+            tip={boxRuntimeProblem}
+          />
         </SetRow>
-        {boxesEnabled && <BoxRuntimeStatus />}
+        {boxesEnabled && <BoxSetupStatus />}
       </SetGroup>
 
       <SetGroup label="Onboarding">

@@ -12,6 +12,8 @@
 //! - [`relay`]: the mailbox and transcript relays over the channel.
 //! - [`provision`]: a checkout provisioned *inside* the guest.
 //! - [`mirror`]: the host-side bare mirror publish and transport read from.
+//! - [`setup`]: the image install and the tools prebuild, and how a launch
+//!   waits on them.
 //!
 //! Host-side layout per box (`~/.fletch/[dev/]boxes/<agent id>/`, a sibling of
 //! the workspaces root rather than inside it, so no host file sits under a path
@@ -25,6 +27,7 @@ pub mod provision;
 pub mod registry;
 pub mod relay;
 pub mod settings;
+pub mod setup;
 #[cfg(test)]
 mod tests;
 
@@ -97,9 +100,12 @@ pub fn pinned_image() -> PinnedImage {
     PinnedImage::this_build(settings::current().image_url.as_deref())
 }
 
-/// Where the helper and libkrun are: the dev env (`scripts/box-dev.sh`), the
-/// app bundle, else a dev checkout's `crates/fletch-box/target/release`
-/// found by walking up from the running binary. `None` when nothing is there.
+/// Where the helper and libkrun are, in order: the `FLETCH_BOX_HELPER` /
+/// `FLETCH_BOX_LIB_DIR` override, the app bundle (`Contents/Helpers`,
+/// `Contents/Frameworks`), else the dev checkout the running binary is inside
+/// (`packaging/box-bundle/out`, staged by `ensure-dev.sh` on `tauri dev`).
+/// `None` only outside all three; a dev checkout resolves even before the
+/// runtime is built, so the probe can say what to run.
 pub fn runtime_paths() -> Option<RuntimePaths> {
     let run_root = boxes_root().ok()?;
     if let Some(mut paths) = RuntimePaths::from_env() {
@@ -107,33 +113,7 @@ pub fn runtime_paths() -> Option<RuntimePaths> {
         return Some(paths);
     }
     let exe = std::env::current_exe().ok()?;
-    if let Some(paths) = RuntimePaths::bundled(&exe, run_root.clone()) {
-        return Some(paths);
-    }
-    dev_runtime_paths(&exe, run_root)
-}
-
-/// A dev build: `<repo>/crates/fletch-box/target/release/fletch-vm` for the
-/// repo some ancestor of `exe` is, with libkrun from `packaging/libkrun/dist`
-/// or Calina's identical dist.
-fn dev_runtime_paths(exe: &Path, run_root: PathBuf) -> Option<RuntimePaths> {
-    let repo = exe.ancestors().find(|dir| {
-        dir.join("crates/fletch-box/target/release/fletch-vm")
-            .is_file()
-    })?;
-    let helper = repo.join("crates/fletch-box/target/release/fletch-vm");
-    let dist = |dir: PathBuf| {
-        (dir.join(fletch_box::runtime::LIBKRUN).is_file()
-            && dir.join(fletch_box::runtime::LIBKRUNFW).is_file())
-        .then_some(dir)
-    };
-    let lib_dir = dist(repo.join("packaging/libkrun/dist"))
-        .or_else(|| dist(dirs::home_dir()?.join("Code/calina/sandbox/libkrun/dist")));
-    Some(RuntimePaths {
-        helper,
-        lib_dir,
-        run_root,
-    })
+    RuntimePaths::bundled(&exe, run_root.clone()).or_else(|| RuntimePaths::dev(&exe, run_root))
 }
 
 /// Everything a boot needs, checked.
@@ -142,21 +122,24 @@ pub struct Ready {
     pub image: InstalledImage,
 }
 
-/// Why `engine_for(Box)` refuses, else what a boot needs. Fail closed at every
-/// rung: the flag, the machine, the helper and dylibs, then the image.
-pub fn availability() -> Result<Ready> {
+/// The sentence for a host with no runtime location at all.
+pub const RUNTIME_NOT_FOUND: &str = "the box runtime was not found: no fletch-vm helper in the \
+                                     app bundle, in packaging/box-bundle/out (run \
+                                     packaging/box-bundle/ensure-dev.sh), or named by \
+                                     FLETCH_BOX_HELPER";
+
+/// Why `engine_for(Box)` refuses, else the runtime a boot uses. Fail closed at
+/// every rung: the flag, the machine, the helper and dylibs. The image is not
+/// a rung: a launch waits for its download ([`setup::ready`]) rather than
+/// refusing, so the engine is handed out while it is still on its way.
+pub fn availability() -> Result<RuntimePaths> {
     if !settings::enabled() {
         return Err(Error::SandboxUnavailable(
             "box sandbox is off; enable it in Developer settings".into(),
         ));
     }
-    let paths = runtime_paths().ok_or_else(|| {
-        Error::SandboxUnavailable(
-            "the box runtime was not found: no fletch-vm helper in the app bundle, in \
-             crates/fletch-box/target/release, or named by FLETCH_BOX_HELPER"
-                .into(),
-        )
-    })?;
+    let paths =
+        runtime_paths().ok_or_else(|| Error::SandboxUnavailable(RUNTIME_NOT_FOUND.into()))?;
     let probe = paths.probe();
     if !probe.ok() {
         return Err(Error::SandboxUnavailable(format!(
@@ -164,15 +147,14 @@ pub fn availability() -> Result<Ready> {
             probe.problems().join("; ")
         )));
     }
-    let image = image_store()
+    Ok(paths)
+}
+
+/// This build's pinned image, when installed.
+pub fn installed_image() -> Result<Option<InstalledImage>> {
+    image_store()
         .current()
-        .map_err(|e| Error::SandboxUnavailable(format!("reading the box image store failed: {e}")))?
-        .ok_or_else(|| {
-            Error::SandboxUnavailable(
-                "the box image is not installed; install it from Settings → Sandbox".into(),
-            )
-        })?;
-    Ok(Ready { paths, image })
+        .map_err(|e| Error::SandboxUnavailable(format!("reading the box image store failed: {e}")))
 }
 
 /// The runtime probe alone, for the Settings page: `None` when no runtime
@@ -329,19 +311,13 @@ impl SandboxEngine for BoxEngine {
         }
         let identity = identity_of(ctx);
         let registry = BoxRegistry::global();
+        // Waits for the image and the tools disk when they are still being
+        // set up (`setup`), so a launch during setup is late, never refused.
         let mut running = block_on(registry.ensure_running(&identity))?;
         if running.tools_disk.is_none() {
-            // The box may have booted (for provisioning) before the disk was
-            // built: a disk that exists now is attached by a restart; one that
-            // does not fails the launch closed while the build runs.
-            if !registry::tools_disk_path(ctx.provider).is_file() {
-                return Err(Error::SandboxUnavailable(format!(
-                    "the {} tools disk ({}) is still being built; launch again once the \
-                     box:tools event reports it ready",
-                    ctx.provider,
-                    registry::tools_version(ctx.provider)
-                )));
-            }
+            // Booted before the disk existed (an older build, or a host CLI
+            // upgrade since): a restart attaches the disk `ensure_running`
+            // now waits for.
             block_on(registry.stop(ctx.agent_id, StopReason::Reattach))?;
             running = block_on(registry.ensure_running(&identity))?;
             if running.tools_disk.is_none() {

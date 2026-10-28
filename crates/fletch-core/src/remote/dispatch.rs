@@ -2059,7 +2059,7 @@ async fn boxes_op(ctx: &Arc<EngineCtx>, op: &str, args: Value) -> DispatchResult
     match op {
         "box_runtime_probe" => ok(c::box_runtime_probe_impl()),
         "box_image_status" => ok(c::box_image_status_impl()),
-        "box_image_install" => res(c::box_image_install_impl(ctx)),
+        "box_image_install" => res(c::box_image_install_impl()),
         "box_image_cancel" => res(c::box_image_cancel_impl()),
         "box_state" => {
             let a: AgentArgs = parse(args)?;

@@ -282,10 +282,11 @@ pub async fn set_sandbox_engine_impl(ctx: &EngineCtx, engine: &str) -> Result<()
         }
     }
     if kind == sandbox::EngineKind::Box {
-        // The developer flag first, then the runtime and the image: the same
-        // refusal a launch would meet (`boxes::availability`), so a stored
-        // `box` always names an engine that can boot one. The image hash check
-        // is not run here; the first boot does that.
+        // The developer flag first, then the runtime: the same refusal a
+        // launch would meet (`boxes::availability`), so a stored `box` always
+        // names an engine that can boot one. Not the image: a launch waits for
+        // its download (`boxes::setup`), so `box` is selectable as soon as the
+        // flag is on.
         if !sandbox::boxes::settings::enabled() {
             return Err(Error::Other(
                 "box sandbox is off; enable it in Developer settings".into(),
@@ -317,6 +318,12 @@ pub async fn set_sandbox_engine_impl(ctx: &EngineCtx, engine: &str) -> Result<()
     }
     store(ctx, sandbox::ENGINE_SETTING, kind.as_setting())?;
     sandbox::set_selected_engine_kind(kind);
+    // The user's own choice: the box flag no longer owns the selection, so
+    // turning it off later leaves this alone (`commands::boxes::set_enabled`).
+    ctx.db.lock().execute(
+        "DELETE FROM settings WHERE key = ?1",
+        [sandbox::boxes::settings::ENGINE_AUTO_SETTING],
+    )?;
     Ok(())
 }
 
@@ -577,6 +584,7 @@ mod tests {
     /// nothing is stored. (The flag is process-wide; the test leaves it off.)
     #[tokio::test]
     async fn the_box_engine_is_refused_while_the_flag_is_off() {
+        let _serial = sandbox::boxes::settings::TEST_LOCK.lock().await;
         let (ctx, sink, _dir) = test_ctx();
         sandbox::boxes::settings::set(sandbox::boxes::settings::BoxSettings::default());
         let err = set_sandbox_engine_impl(&ctx, "box").await.unwrap_err();

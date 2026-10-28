@@ -117,6 +117,15 @@
 .set-nav-foot .dim {
   color: var(--fg-3);
 }
+.set-nav-licence {
+  padding: 0 11px 8px;
+  color: var(--fg-3);
+  line-height: 1.4;
+}
+.set-nav-licence a {
+  color: inherit;
+  text-decoration: underline;
+}
 
 /* ── content column ──────────────────────────────────────────────────── */
 .set-main {
@@ -606,31 +615,16 @@
   line-height: var(--lh-snug);
 }
 
-/* The box image download bar sits under its row, full width. */
-.set-box-progress {
+/* Settings › Developer: the box setup line under the toggle, with its one
+   action (Cancel / Retry) inline. */
+.set-box-setup {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   margin-top: 6px;
 }
-
-/* Settings › Developer: the box runtime probe as a label/value list. */
-.set-box-probe {
-  display: grid;
-  grid-template-columns: max-content 1fr;
-  gap: 2px 12px;
-  margin: 6px 0;
-}
-.set-box-probe div {
-  display: contents;
-}
-.set-box-probe dt {
-  color: var(--fg-3);
-}
-.set-box-probe dd {
-  margin: 0;
-  word-break: break-all;
-}
-.set-box-problems {
-  margin: 0;
-  padding-left: 16px;
+.set-box-setup[data-state="error"] {
+  color: var(--danger);
 }
 
 /* ── PROVIDERS ───────────────────────────────────────────────────────── */

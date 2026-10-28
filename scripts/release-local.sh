@@ -27,6 +27,11 @@ set +a
 # Ensure both arch targets exist for the universal lipo.
 rustup target add aarch64-apple-darwin x86_64-apple-darwin >/dev/null 2>&1 || true
 
+# The box runtime's dylibs, as the release workflow builds them in its own step:
+# with a real signing identity prepare.sh (Tauri's beforeBundleCommand) expects
+# packaging/libkrun/dist to exist rather than building it mid-bundle. Needs Xcode.
+packaging/libkrun/ensure.sh
+
 echo "Building signed + notarized universal macOS app…"
 bun run tauri build --target universal-apple-darwin
 

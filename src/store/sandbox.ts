@@ -5,6 +5,7 @@ import {
   type BoxRuntimeProbe,
   type BoxSettingKey,
   type BoxStateEvent,
+  type BoxToolsStatus,
   type ContainerAuthStatus,
   type DockerBuildEvent,
   type DockerProbe,
@@ -131,12 +132,14 @@ export interface SandboxSlice {
   boxCpus: string;
   boxImageUrl: string;
   boxIdleStopMinutes: string;
-  /** Latest box runtime probe; `null` until the first lands. Refreshed only
-   *  while the flag is on. */
+  /** Latest box runtime probe; `null` until the first lands. */
   boxProbe: BoxRuntimeProbe | null;
   /** The pinned guest image's install state: `box_image_status` once, then
    *  every `box:image`. `null` until the first read lands. */
   boxImage: BoxImageStatus | null;
+  /** Each supported provider's tools disk by provider id: seeded by the probe,
+   *  then every `box:tools`. */
+  boxTools: Record<string, BoxToolsStatus>;
   /** Each box agent's phase by agent id, from `box:state`. */
   boxStates: Record<string, BoxStateEvent>;
   /** Connections the egress proxy refused, oldest first, until dismissed. */
@@ -194,7 +197,10 @@ export interface SandboxSlice {
    *  `lastError`. */
   startDockerDesktop: () => Promise<void>;
   /** Flip the box developer flag (host-owned `boxes_enabled`, written through
-   *  `set_box_setting`). Reverts the toggle on refusal. */
+   *  `set_box_setting`). On the host, turning it on is the whole setup: the
+   *  image download, the tools disks, and `box` as the engine for new agents;
+   *  those arrive back as events and `settings:changed`. Reverts the toggle
+   *  on refusal (an Intel Mac, no runtime). */
   setBoxesEnabled: (enabled: boolean) => Promise<void>;
   /** Write one box knob; blank restores the default. Resolves to the host's
    *  validation message, or `null` when it stuck — the field shows it inline.
@@ -206,11 +212,13 @@ export interface SandboxSlice {
   refreshBoxProbe: () => Promise<void>;
   /** Read the image's install state into `boxImage`. */
   refreshBoxImage: () => Promise<void>;
-  /** Start or cancel the image install; refusals go to `lastError`. */
+  /** Start (or retry) the image install and the tools builds after it, or
+   *  cancel the download; refusals go to `lastError`. */
   installBoxImage: () => Promise<void>;
   cancelBoxImage: () => Promise<void>;
   applyBoxImage: (e: BoxImageStatus) => void;
   applyBoxState: (e: BoxStateEvent) => void;
+  applyBoxTools: (e: BoxToolsStatus) => void;
   /** Keep a refused connection for the workspace to show. */
   receiveBoxEgress: (e: BoxEgressEvent) => void;
   dismissBoxEgress: (index: number) => void;
@@ -258,6 +266,7 @@ export const createSandboxSlice: SliceCreator<SandboxSlice> = (set, get) => ({
   boxIdleStopMinutes: "",
   boxProbe: null,
   boxImage: null,
+  boxTools: {},
   boxStates: {},
   boxEgressDenials: [],
 
@@ -417,7 +426,13 @@ export const createSandboxSlice: SliceCreator<SandboxSlice> = (set, get) => ({
   },
   refreshBoxProbe: async () => {
     try {
-      set({ boxProbe: await api.boxRuntimeProbe() });
+      const probe = await api.boxRuntimeProbe();
+      // The probe is also the one read of the tools disks; `box:tools` carries
+      // every change after.
+      set({
+        boxProbe: probe,
+        boxTools: Object.fromEntries(probe.tools.map((t) => [t.provider, t])),
+      });
     } catch {
       // A host that cannot answer (too old, or no box runtime) keeps whatever
       // was on screen; the probe is advisory.
@@ -446,6 +461,7 @@ export const createSandboxSlice: SliceCreator<SandboxSlice> = (set, get) => ({
   },
   applyBoxImage: (e) => set({ boxImage: e }),
   applyBoxState: (e) => set((s) => ({ boxStates: { ...s.boxStates, [e.agent_id]: e } })),
+  applyBoxTools: (e) => set((s) => ({ boxTools: { ...s.boxTools, [e.provider]: e } })),
   receiveBoxEgress: (e) => set((s) => ({ boxEgressDenials: [...s.boxEgressDenials, e] })),
   dismissBoxEgress: (index) =>
     set((s) => ({ boxEgressDenials: s.boxEgressDenials.filter((_, i) => i !== index) })),

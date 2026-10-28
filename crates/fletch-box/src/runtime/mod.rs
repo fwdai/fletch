@@ -28,6 +28,13 @@ pub const MAX_SOCKET_PATH: usize = 103;
 const CONSOLE_TAIL: usize = 4096;
 const POLL: Duration = Duration::from_millis(25);
 
+/// Where a dev checkout stages the runtime (`packaging/box-bundle/ensure-dev.sh`
+/// via `prepare.sh`): the helper and both dylibs, side by side.
+pub const DEV_OUT_DIR: &str = "packaging/box-bundle/out";
+/// A file every checkout has, so a dev build is recognised before the runtime
+/// is built and the probe can say so.
+const DEV_MARKER: &str = "packaging/box-bundle/ensure-dev.sh";
+
 /// Where the runtime's own files live on the host.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimePaths {
@@ -56,9 +63,23 @@ impl RuntimePaths {
         })
     }
 
-    /// A dev build: `FLETCH_BOX_HELPER` and `FLETCH_BOX_LIB_DIR` (what
-    /// `scripts/box-dev.sh` prints), with `FLETCH_BOX_RUN_ROOT` defaulting to
-    /// `~/.fletch/box-dev`.
+    /// A dev checkout: `<repo>/packaging/box-bundle/out/{fletch-vm,*.dylib}`
+    /// for the repo some ancestor of `exe` is (`src-tauri/target/debug/fletch`
+    /// under `tauri dev`). Resolves as soon as the checkout is recognised, built
+    /// or not, so [`probe`](Self::probe) can name the missing build.
+    pub fn dev(exe: &Path, run_root: PathBuf) -> Option<RuntimePaths> {
+        let repo = exe.ancestors().find(|dir| dir.join(DEV_MARKER).is_file())?;
+        let out = repo.join(DEV_OUT_DIR);
+        Some(RuntimePaths {
+            helper: out.join(HELPER),
+            lib_dir: Some(out),
+            run_root,
+        })
+    }
+
+    /// An explicit override: `FLETCH_BOX_HELPER` and `FLETCH_BOX_LIB_DIR`
+    /// (what `scripts/box-dev.sh` prints), with `FLETCH_BOX_RUN_ROOT`
+    /// defaulting to `~/.fletch/box-dev`.
     pub fn from_env() -> Option<RuntimePaths> {
         let helper = PathBuf::from(std::env::var_os("FLETCH_BOX_HELPER")?);
         let run_root = std::env::var_os("FLETCH_BOX_RUN_ROOT")
@@ -125,7 +146,12 @@ impl Probe {
             out.push("this Mac reports no hypervisor support".to_owned());
         }
         if !self.helper_present {
-            out.push(format!("the helper is missing: {}", self.helper.display()));
+            // In a dev checkout the runtime is staged by the hook `tauri dev`
+            // runs; the one way to end up here is that it could not build.
+            out.push(format!(
+                "box runtime not built; run {DEV_MARKER} (needs Xcode); no helper at {}",
+                self.helper.display()
+            ));
         } else if !self.helper_entitled {
             out.push(format!(
                 "the helper is not signed with the hypervisor entitlement: {}",
@@ -699,7 +725,28 @@ mod tests {
         .probe();
         assert!(!probe.ok());
         let text = probe.problems().join("\n");
-        assert!(text.contains("helper is missing"));
+        assert!(text.contains("box runtime not built; run packaging/box-bundle/ensure-dev.sh"));
+        assert!(text.contains("/nowhere/fletch-vm"));
         assert!(text.contains("libkrun is missing"));
+    }
+
+    /// The dev lookup finds this checkout from a binary anywhere under it,
+    /// whether or not the runtime has been built, and nothing outside one.
+    #[test]
+    fn finds_the_dev_runtime_from_a_binary_inside_the_checkout() {
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(2)
+            .unwrap()
+            .to_path_buf();
+        let exe = repo.join("src-tauri/target/debug/fletch");
+        let paths = RuntimePaths::dev(&exe, "/r".into()).expect("inside the checkout");
+        assert_eq!(paths.helper, repo.join(DEV_OUT_DIR).join(HELPER));
+        assert_eq!(paths.lib_dir, Some(repo.join(DEV_OUT_DIR)));
+        assert!(RuntimePaths::dev(
+            Path::new("/Applications/Fletch.app/Contents/MacOS/fletch"),
+            "/r".into()
+        )
+        .is_none());
     }
 }

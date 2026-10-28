@@ -18,12 +18,13 @@ use fletch_box::egress::{EgressEvent, EgressPolicy, EgressProxy};
 use fletch_box::{guest, Channel, StopOutcome, Vm, VmSpec};
 use parking_lot::Mutex;
 use serde::Serialize;
+use tokio::sync::watch;
 
 use crate::error::{Error, Result};
 use crate::workspace::AgentRecord;
 
 use super::executor::BoxExecutor;
-use super::{relay, settings, tools_root, EgressEventPayload, EVENT_STATE, EVENT_TOOLS};
+use super::{relay, settings, setup, tools_root, EgressEventPayload, EVENT_STATE, EVENT_TOOLS};
 
 pub const DATA_DISK: &str = "data.img";
 pub const CONSOLE: &str = "console.log";
@@ -80,6 +81,11 @@ impl BoxIdentity {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BoxPhase {
     Stopped,
+    /// Waiting for the host's setup before the first boot: `detail` is what
+    /// for ("downloading image 43%", "installing Claude Code 2.1.312").
+    Preparing {
+        detail: String,
+    },
     Starting,
     /// `since` is unix milliseconds, for the UI.
     Running {
@@ -95,6 +101,7 @@ impl BoxPhase {
     pub fn name(&self) -> &'static str {
         match self {
             Self::Stopped => "stopped",
+            Self::Preparing { .. } => "preparing",
             Self::Starting => "starting",
             Self::Running { .. } => "running",
             Self::Stopping => "stopping",
@@ -125,6 +132,8 @@ pub struct BoxStateReport {
     pub phase: &'static str,
     pub since: Option<i64>,
     pub reason: Option<String>,
+    /// What a `preparing` box waits on.
+    pub detail: Option<String>,
 }
 
 impl BoxStateReport {
@@ -140,18 +149,31 @@ impl BoxStateReport {
                 BoxPhase::Failed { reason } => Some(reason.clone()),
                 _ => None,
             },
+            detail: match phase {
+                BoxPhase::Preparing { detail } => Some(detail.clone()),
+                _ => None,
+            },
         }
     }
 }
 
-/// `box:tools`.
-#[derive(Debug, Clone, Serialize)]
-struct ToolsEventPayload {
-    provider: String,
-    version: String,
-    phase: &'static str,
+/// One provider's tools disk: the `box:tools` event and a row of
+/// `box_runtime_probe`. `phase` is `missing` | `building` | `ready` | `failed`.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct ToolsStatus {
+    pub provider: String,
+    pub version: String,
+    pub phase: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
-    error: Option<String>,
+    pub error: Option<String>,
+}
+
+/// Where one tools disk build stands, as its waiters see it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ToolsBuild {
+    Building,
+    Ready,
+    Failed(String),
 }
 
 /// A box with its VM up.
@@ -210,8 +232,9 @@ pub struct BoxRegistry {
     /// The image is hashed once per process before the first boot
     /// (`ImageStore::verify`); a damaged image is removed and reported.
     image_verified: Mutex<HashSet<String>>,
-    /// Tools disks being built right now, by `<provider>-<version>`.
-    tools_building: Mutex<HashSet<String>>,
+    /// The tools disk build running or last run per `<provider>-<version>`:
+    /// a launch waits on a running one, the UI reads a failed one.
+    tools_builds: Mutex<HashMap<String, watch::Receiver<ToolsBuild>>>,
 }
 
 impl BoxRegistry {
@@ -220,7 +243,7 @@ impl BoxRegistry {
         REGISTRY.get_or_init(|| BoxRegistry {
             entries: Mutex::new(HashMap::new()),
             image_verified: Mutex::new(HashSet::new()),
-            tools_building: Mutex::new(HashSet::new()),
+            tools_builds: Mutex::new(HashMap::new()),
         })
     }
 
@@ -313,8 +336,12 @@ impl BoxRegistry {
     }
 
     /// Boot `identity`'s box unless it runs already (docs/boxes-spec.md §7.2
-    /// step 1). Fails closed with the reason, the console tail included when
-    /// the guest never became ready.
+    /// step 1). While the host is still being set up — the image downloading,
+    /// the provider's tools disk being built — this waits for it (`setup`),
+    /// reporting the box as `Preparing` with what it waits on, so a launch
+    /// made right after the flag went on is late rather than refused. Fails
+    /// closed with the reason, the console tail included when the guest never
+    /// became ready.
     pub async fn ensure_running(&self, identity: &BoxIdentity) -> Result<Arc<RunningBox>> {
         self.register(identity.clone());
         let lifecycle = {
@@ -329,11 +356,33 @@ impl BoxRegistry {
         if let Some(running) = self.running(&identity.agent_id) {
             return Ok(running);
         }
-        let ready = super::availability()?;
-        self.verify_image_once(&ready).await?;
-        let tools_disk = self.tools_disk(&ready, &identity.provider);
-        self.set_phase(&identity.agent_id, BoxPhase::Starting);
-        match boot(identity, &ready, tools_disk).await {
+        let agent_id = &identity.agent_id;
+        let prepared = async {
+            let ready = setup::ready(|detail| {
+                self.set_phase(agent_id, BoxPhase::Preparing { detail });
+            })
+            .await?;
+            self.verify_image_once(&ready).await?;
+            let tools_disk = self
+                .tools_disk(&ready, agent_id, &identity.provider)
+                .await?;
+            Ok::<_, Error>((ready, tools_disk))
+        }
+        .await;
+        let (ready, tools_disk) = match prepared {
+            Ok(prepared) => prepared,
+            Err(e) => {
+                self.set_phase(
+                    agent_id,
+                    BoxPhase::Failed {
+                        reason: e.to_string(),
+                    },
+                );
+                return Err(e);
+            }
+        };
+        self.set_phase(agent_id, BoxPhase::Starting);
+        match boot(identity, &ready, Some(tools_disk)).await {
             Ok(running) => {
                 let running = Arc::new(running);
                 let arm_idle = {
@@ -392,46 +441,94 @@ impl BoxRegistry {
         Ok(())
     }
 
-    /// The tools disk a launch of `provider` attaches, built once per
-    /// `<provider>-<version>`. A missing disk is not built on the spawn path —
-    /// an npm install over the proxy takes longer than the spawn watchdog
-    /// allows — but in the background (`box:tools` events), and the box boots
-    /// without one meanwhile so provisioning can proceed; a *launch* needs the
-    /// disk and restarts the box to attach it once built (`BoxEngine::launch_agent`).
-    fn tools_disk(&self, ready: &super::Ready, provider: &str) -> Option<PathBuf> {
-        let version = tools_version(provider);
+    /// The tools disk a box of `provider` attaches, built once per
+    /// `<provider>-<version>`. A missing disk is built now (the toggle's
+    /// prebuild normally has it done first) and waited for, up to
+    /// [`setup::TOOLS_WAIT`], with the box reported `Preparing` meanwhile;
+    /// the spawn watchdog allows for this (`setup::setup_allowance`).
+    async fn tools_disk(
+        &self,
+        ready: &super::Ready,
+        agent_id: &str,
+        provider: &str,
+    ) -> Result<PathBuf> {
         let path = tools_disk_path(provider);
         if path.is_file() {
-            return Some(path);
+            return Ok(path);
         }
-        tracing::info!(
-            provider,
-            version,
-            "no tools disk yet; booting without one and building it"
+        let build = self.start_tools_build(ready, provider);
+        let label = crate::agent::provider_bin_label(provider).map_or(provider, |(_, l)| l);
+        self.set_phase(
+            agent_id,
+            BoxPhase::Preparing {
+                detail: format!("installing {label} {}", tools_version(provider)),
+            },
         );
-        self.build_tools_in_background(ready, provider, &version, &path);
-        None
+        wait_tools_build(build, setup::TOOLS_WAIT).await?;
+        if !path.is_file() {
+            return Err(Error::SandboxUnavailable(format!(
+                "the {provider} tools disk was reported built but {} is missing",
+                path.display()
+            )));
+        }
+        Ok(path)
     }
 
-    fn build_tools_in_background(
+    /// Where `provider`'s tools disk stands, for the probe.
+    pub fn tools_status(&self, provider: &str) -> ToolsStatus {
+        let version = tools_version(provider);
+        let (phase, error) = if tools_disk_path(provider).is_file() {
+            ("ready", None)
+        } else {
+            match self
+                .tools_builds
+                .lock()
+                .get(&format!("{provider}-{version}"))
+                .map(|rx| rx.borrow().clone())
+            {
+                Some(ToolsBuild::Building) => ("building", None),
+                Some(ToolsBuild::Failed(e)) => ("failed", Some(e)),
+                // `Ready` with no file: the disk was removed since; a launch
+                // builds it again.
+                Some(ToolsBuild::Ready) | None => ("missing", None),
+            }
+        };
+        ToolsStatus {
+            provider: provider.to_string(),
+            version,
+            phase,
+            error,
+        }
+    }
+
+    /// Build `provider`'s tools disk for the current version in the background
+    /// (`box:tools` events) and hand back a receiver of its outcome. Joins a
+    /// build already running; a finished one (failed, or built and since
+    /// removed) is replaced by a fresh attempt.
+    pub fn start_tools_build(
         &self,
         ready: &super::Ready,
         provider: &str,
-        version: &str,
-        out: &Path,
-    ) {
+    ) -> watch::Receiver<ToolsBuild> {
+        let version = tools_version(provider);
+        let out = tools_disk_path(provider);
         let key = format!("{provider}-{version}");
-        if !self.tools_building.lock().insert(key.clone()) {
-            return;
+        let mut builds = self.tools_builds.lock();
+        if let Some(rx) = builds.get(&key) {
+            if *rx.borrow() == ToolsBuild::Building {
+                return rx.clone();
+            }
         }
+        let (tx, rx) = watch::channel(ToolsBuild::Building);
+        builds.insert(key, rx.clone());
+        drop(builds);
         let (paths, image) = (ready.paths.clone(), ready.image.path());
-        let (provider, version, out) =
-            (provider.to_string(), version.to_string(), out.to_path_buf());
+        let provider = provider.to_string();
         crate::host::spawn(async move {
             let event = |phase, error: Option<String>| {
                 super::emit(
                     EVENT_TOOLS,
-                    &ToolsEventPayload {
+                    &ToolsStatus {
                         provider: provider.clone(),
                         version: version.clone(),
                         phase,
@@ -452,15 +549,17 @@ impl BoxRegistry {
             match built {
                 Ok(()) => {
                     tracing::info!(provider, version, path = %out.display(), "tools disk built");
+                    tx.send_replace(ToolsBuild::Ready);
                     event("ready", None);
                 }
                 Err(e) => {
                     tracing::warn!(provider, version, error = %e, "tools disk build failed");
+                    tx.send_replace(ToolsBuild::Failed(e.to_string()));
                     event("failed", Some(e.to_string()));
                 }
             }
-            BoxRegistry::global().tools_building.lock().remove(&key);
         });
+        rx
     }
 
     /// Stop `agent_id`'s VM through the ladder (§7.7): the mirror refreshed
@@ -605,6 +704,35 @@ impl BoxRegistry {
 
     fn emit_state(&self, agent_id: &str) {
         super::emit(EVENT_STATE, &self.report(agent_id));
+    }
+}
+
+/// Wait for one tools build's outcome: the disk, the build's own error, or
+/// `timeout` passing. A build whose sender is gone without a verdict counts
+/// as failed.
+async fn wait_tools_build(mut build: watch::Receiver<ToolsBuild>, timeout: Duration) -> Result<()> {
+    let outcome = tokio::time::timeout(timeout, async {
+        loop {
+            match build.borrow_and_update().clone() {
+                ToolsBuild::Building => {}
+                ToolsBuild::Ready => return Ok(()),
+                ToolsBuild::Failed(e) => return Err(e),
+            }
+            if build.changed().await.is_err() {
+                return Err("the build ended without a result".to_string());
+            }
+        }
+    })
+    .await;
+    match outcome {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(e)) => Err(Error::SandboxUnavailable(format!(
+            "the tools disk build failed: {e}"
+        ))),
+        Err(_) => Err(Error::SandboxUnavailable(format!(
+            "the tools disk build did not finish within {} minutes",
+            timeout.as_secs() / 60
+        ))),
     }
 }
 
@@ -908,6 +1036,87 @@ mod tests {
             BoxStateReport::new("x", &BoxPhase::Stopped).phase,
             "stopped"
         );
+    }
+
+    /// A waiter on a tools build gets the verdict, the build's own error, or
+    /// the timeout — never a disk that is not there.
+    #[tokio::test]
+    async fn a_tools_build_wait_ends_with_the_verdict() {
+        let (tx, rx) = watch::channel(ToolsBuild::Building);
+        let waiter = tokio::spawn(wait_tools_build(rx, Duration::from_secs(5)));
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        tx.send_replace(ToolsBuild::Ready);
+        waiter.await.unwrap().unwrap();
+
+        let (tx, rx) = watch::channel(ToolsBuild::Building);
+        let waiter = tokio::spawn(wait_tools_build(rx, Duration::from_secs(5)));
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        tx.send_replace(ToolsBuild::Failed("npm exploded".into()));
+        let err = waiter.await.unwrap().unwrap_err().to_string();
+        assert!(err.contains("npm exploded"), "{err}");
+
+        let (_tx, rx) = watch::channel(ToolsBuild::Building);
+        let err = wait_tools_build(rx, Duration::from_millis(30))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("did not finish"), "{err}");
+    }
+
+    /// A launch whose provider's disk is being built reports the box as
+    /// `preparing` with what it installs, joins the running build instead of
+    /// starting another, and fails with the build's error when that fails.
+    #[tokio::test]
+    async fn a_launch_waits_on_the_running_tools_build_and_surfaces_its_failure() {
+        let registry = BoxRegistry::global();
+        let provider = "registry-unit-test-provider";
+        let agent_id = "registry-unit-test-waiter";
+        registry.register(BoxIdentity {
+            agent_id: agent_id.into(),
+            project_id: "p".into(),
+            provider: provider.into(),
+            writable_root: PathBuf::from("/registry-unit-test-waiter/root"),
+            rpc_dir: PathBuf::from("/registry-unit-test-waiter/rpc"),
+            home: PathBuf::from("/registry-unit-test-waiter/home"),
+        });
+        // The fake build stands in for `start_tools_build`'s task: same key,
+        // same channel shape.
+        let (tx, rx) = watch::channel(ToolsBuild::Building);
+        registry
+            .tools_builds
+            .lock()
+            .insert(format!("{provider}-{}", tools_version(provider)), rx);
+        assert_eq!(registry.tools_status(provider).phase, "building");
+        let ready = super::super::Ready {
+            paths: fletch_box::RuntimePaths {
+                helper: PathBuf::from("/nonexistent/fletch-vm"),
+                lib_dir: None,
+                run_root: PathBuf::from("/nonexistent/run"),
+            },
+            image: fletch_box::InstalledImage {
+                dir: PathBuf::from("/nonexistent/image"),
+                version: "0.0.0-test".into(),
+                sha256: String::new(),
+            },
+        };
+        let waiter = async { registry.tools_disk(&ready, agent_id, provider).await };
+        let driver = async {
+            tokio::time::sleep(Duration::from_millis(30)).await;
+            assert_eq!(
+                registry.state(agent_id),
+                BoxPhase::Preparing {
+                    detail: format!("installing {provider} latest")
+                }
+            );
+            tx.send_replace(ToolsBuild::Failed("no install script".into()));
+        };
+        let (outcome, ()) = tokio::join!(waiter, driver);
+        let err = outcome.unwrap_err().to_string();
+        assert!(err.contains("no install script"), "{err}");
+        let status = registry.tools_status(provider);
+        assert_eq!(status.phase, "failed");
+        assert_eq!(status.error.as_deref(), Some("no install script"));
+        registry.discard(agent_id).await.unwrap();
     }
 
     /// An unknown agent is stopped and has no channel; registering routes its

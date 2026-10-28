@@ -645,12 +645,38 @@ why. The spec stays the design; this is the record.
   arguments and the guest shell re-splits them, every returned `Command` and
   every `LaunchPlan` is `bash -c <wrapper>` that single-quotes the appended
   arguments and `exec`s ssh (`executor::quoting_wrapper`).
-- **Tools disk off the spawn path** (§7.5). A missing disk is built in the
-  background (`box:tools` events) and the box boots without one; provisioning
-  proceeds, and a *launch* fails closed until the disk exists, then restarts
-  the box to attach it. Built once per `<provider>-<host CLI version>`
-  (`agent::cached_provider_version`, `latest` without a host CLI). **Blocker
-  found while building the first disk**: the install scripts write
+- **The toggle is the setup** (§4). `set_box_setting("boxes_enabled", true)`
+  (`commands::boxes::set_enabled`, host-side, so a paired client and
+  `fletch-host` behave the same) is refused with the probe's sentence unless
+  the machine and runtime can boot a box; then it stores the flag, starts the
+  image install (`boxes::setup::start_install`, one at a time, `box:image`),
+  and makes `box` the engine for new agents, remembering that it did under
+  `box_engine_auto` (host-internal, not a client key). Once the image is in,
+  `setup::prebuild_tools` builds the tools disk of every supported provider
+  whose CLI the host has (`box:tools`). Off: `box_engine_auto` is cleared and,
+  only when it was set — a user's own `set_sandbox_engine` clears it — the
+  engine goes back to `sandbox-exec`; every running box is stopped cleanly
+  (`BoxRegistry::shutdown_all`), nothing deleted. `boxes::availability`
+  checks the flag and the runtime, not the image, so `engine_for(Box)` and
+  `set_sandbox_engine("box")` work while the download is still on its way.
+- **A launch waits for setup, never fails on it** (§7.2). `ensure_running`
+  (both the launch and the in-guest provision reach it) waits for a running
+  image install — starting one when the image is missing and none runs — for
+  up to 30 minutes, then for the provider's tools disk build (joining a running
+  one, starting one otherwise) for up to 10 minutes, and only then boots, with
+  the disk attached. Meanwhile the box's phase is `Preparing { detail }`
+  ("downloading image 43%", "installing Claude Code 2.1.312"), on `box:state`,
+  which the workspace capsule shows. Only a download error, a cancel, a build
+  error, a probe failure or the timeout fails the launch, with that error. The
+  supervisor's 15 s spawn watchdog is extended by `setup::setup_allowance`
+  (the two waits, while the image or the disk is missing) for box-stamped
+  agents, so it does not time out a spawn that is waiting by design.
+- **Tools disk** (§7.5). Built once per `<provider>-<host CLI version>`
+  (`agent::cached_provider_version`, `latest` without a host CLI), by
+  `BoxRegistry::start_tools_build`, whose outcome waiters follow on a `watch`
+  channel; `box_runtime_probe` reports each disk as missing, building, ready
+  or failed. **Blocker found while building the first disk**: the install
+  scripts write
   `/data/tools/<provider>`, but init leaves `/data` root-owned and sshd admits
   only `agent`, so `mkdir /data/tools` is refused. Init needs
   `mkdir -p /data/tools && chown agent:agent /data/tools` after the `/data`
@@ -683,23 +709,42 @@ why. The spec stays the design; this is the record.
 - **Settings**: five host keys (`boxes_enabled`, `box_memory_mib`, `box_cpus`,
   `box_image_url`, `box_idle_stop_minutes`) written through
   `set_box_setting_impl`, which validates, mirrors in-process and announces
-  `settings:changed`; turning the flag off while `box` is the selected engine
-  resets the selection to `sandbox-exec`. `box.egress_allow` is written through
-  `box_egress_allow_impl`, which also updates running proxies.
+  `settings:changed`; the flag's own effects are above. `box.egress_allow` is
+  written through `box_egress_allow_impl`, which also updates running proxies.
 - **Native handoff into a box** (`materialize`): the transcript is written to
   the box's `claude-projects` mirror on the host, which the guest does not
   read; a forked conversation is not yet carried into a box.
 - **Launch credential**: the container auth chain (`container::auth::resolve`)
   supplies the env — the host-resolved token, else the stored setup-token or
   the shell's own key — so a box signs in exactly like a container.
-- **Phase 4b surface** (§4, §9): the Sandbox page shows the image panel and
-  the box knobs whenever the flag is on (not only with `box` selected), since
-  the option stays disabled until the image is installed; the `box` option
-  appears once the probe reports Apple silicon. No "Box smoke test" button:
-  `commands/boxes.rs` exposes no smoke-test command yet. Denied egress is a
-  dismissable toast, with no allow action until 5c. The remote dispatcher
-  answers the eight `box_*` ops and forwards the four `box:*` events;
-  `docs/remote-protocol.md` has no rows for them yet.
+- **Surface** (§4, §9): the Developer pane's row ("Box sandbox (micro-VM)")
+  is disabled with the probe's sentence on a machine that cannot boot a box,
+  and while on shows one line for the setup — "Downloading image 43% ·
+  Cancel", "Installing Claude Code tools…", "Ready · image v0.1.0 · Claude Code
+  2.1.312", or the error with Retry (`BoxSetupStatus`, the only install
+  surface). The Sandbox page offers `Box (micro-VM)` as soon as the flag is
+  on, selectable at once, its hint the same setup line, plus the box knobs.
+  No "Box smoke test" button: `commands/boxes.rs` exposes no smoke-test
+  command yet. Denied egress is a dismissable toast, with no allow action
+  until 5c. The remote dispatcher answers the eight `box_*` ops and forwards
+  the four `box:*` events, tabulated in `docs/remote-protocol.md`.
+- **Runtime location and shipping** (§3, nuances 15, 18, 19). `runtime_paths`
+  looks in order at the `FLETCH_BOX_HELPER`/`FLETCH_BOX_LIB_DIR` override, the
+  bundle (`Contents/Helpers/fletch-vm`, `Contents/Frameworks`), then the dev
+  checkout the binary runs from (`RuntimePaths::dev`:
+  `packaging/box-bundle/out/`, found by walking up to a directory holding
+  `packaging/box-bundle/ensure-dev.sh`). The dev lookup resolves before the
+  runtime is built so the probe can say "box runtime not built; run
+  packaging/box-bundle/ensure-dev.sh (needs Xcode)"; `bun run tauri dev` runs
+  that hook, best effort, before Vite (`scripts/tauri.sh`). Release builds get
+  the runtime from `src-tauri/tauri.macos.conf.json` (`beforeBundleCommand` →
+  `prepare.sh`, `bundle.macOS.files`); `release.yml` builds and caches libkrun
+  and imports the signing certificate ahead of the Tauri build. The image is
+  published by `.github/workflows/box-image.yml` as the release
+  `box-image-v<version>` and pinned with `scripts/box-image-pin.sh`
+  (`packaging/box-image/README.md`). libkrun is arm64 only: the universal app
+  carries arm64 runtime files and an Intel Mac gets "unavailable" from the
+  probe. `NOTICE` and the Settings footer carry the libkrun/libkrunfw licences.
 
 ## 14. Open decisions deferred to implementation
 

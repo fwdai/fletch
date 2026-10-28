@@ -78,7 +78,7 @@ for that. Paths under the guest's own directories (`/usr`, `/var`, `/opt`, `/etc
 With the spike runner (`spike/boxes/README.md`; `/tmp/fletch-box-spike/bin/krun-run` and Calina's dylibs):
 
 ```sh
-LIB=~/Code/calina/sandbox/libkrun/dist; W=/tmp/fletch-box-dev; S=spike/boxes; mkdir -p $W/ws
+LIB=packaging/libkrun/dist; W=/tmp/fletch-box-dev; S=spike/boxes; mkdir -p $W/ws
 ssh-keygen -q -t ed25519 -N '' -f $W/key
 truncate -s 8g $W/ws/data.img                                            # sparse; init formats it
 python3 -I $S/host/egress_proxy.py $W/egress.sock $W/egress.log deb.debian.org registry.npmjs.org &
@@ -128,14 +128,22 @@ the host marks the disk read-only and attaches it as `/dev/vdc`; init exposes it
 ## Publishing a release
 
 Images are GitHub releases on this repository tagged `box-image-v<version>`, each holding `base.erofs` and
-`manifest.json`; the app downloads `<base URL>/base.erofs` and checks the size and sha256 its `ImageStore`
-pins from the manifest.
+`manifest.json`; the app downloads `<base URL>/base.erofs`
+(`https://fletch.sh/releases/download/box-image-v<version>/`, or the `box_image_url` setting)
+and checks the size and sha256 its `ImageStore` pins from the manifest. The repository is private and the
+app carries no GitHub credentials, so `fletch.sh` proxies `/releases/download/<tag>/<asset>` to the
+release asset the same way it serves the updater's `latest.json` and artifacts; the website must route that
+path before the first image release is usable. Bumping the image is three steps:
 
-```sh
-v=0.1.0
-packaging/box-image/build-mac.sh packaging/box-image/out/$v $v
-gh release create box-image-v$v --title "Box image $v" --notes "Box base image $v" \
-  packaging/box-image/out/$v/base.erofs packaging/box-image/out/$v/manifest.json
-```
+1. **Build and publish.** Actions → *Box image* → *Run workflow* with the version (`X.Y.Z`), or push a tag
+   `box-image-v<version>`. The workflow (`.github/workflows/box-image.yml`) runs on GitHub's arm64 runner,
+   builds `fletch-guest` and runs `build.sh` in a `debian:trixie` container (`build-mac.sh`, which is cargo
+   plus docker and works there too), and creates the release with the pin values in its body. It refuses a
+   version that already has a release: never publish two different `base.erofs` under one version, an app
+   that has one treats it as installed.
+2. **Pin.** `scripts/box-image-pin.sh box-image-v<version>` downloads the release's `manifest.json` and
+   rewrites `PinnedImage::{VERSION, SIZE, SHA256}` in `crates/fletch-box/src/image_store/mod.rs`.
+3. **Commit** that change; the next app release installs the new image on first use and prunes the old one.
 
-Never publish two different `base.erofs` under one version: an app that has one treats it as installed.
+For a local image (`build-mac.sh` → `out/`), point the `box_image_url` setting at `file://<path to out>` and
+pin with `scripts/box-image-pin.sh packaging/box-image/out/manifest.json` (do not commit a dev pin).

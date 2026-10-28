@@ -10,6 +10,9 @@
 #
 # Signs with APPLE_SIGNING_IDENTITY, the variable Tauri signs the app with;
 # unset means ad hoc. Port of Calina's sandbox/bundle/prepare.sh.
+#
+# The dev build runs this too, through ensure-dev.sh, which is what puts the
+# runtime in out/ for a `tauri dev` binary to find (RuntimePaths::dev).
 set -eu
 
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
@@ -23,7 +26,21 @@ PROFILE=release
 [ "${TAURI_ENV_DEBUG:-false}" = true ] && PROFILE=debug
 
 [ "$(uname -s)" = Darwin ] || { echo "prepare.sh: the VM runtime is bundled on macOS only" >&2; exit 1; }
-[ -n "${FLETCH_LIBKRUN_DIR:-}" ] || "$ROOT/packaging/libkrun/ensure.sh"
+if [ -n "${FLETCH_LIBKRUN_DIR:-}" ]; then
+  : # a prebuilt dist was named; nothing to build
+elif [ -n "${CI:-}" ] || [ "$IDENTITY" != - ]; then
+  # A release build (CI, or signing with a real identity) must not quietly spend
+  # a minute compiling libkrun inside the Tauri bundle step: the workflow builds
+  # and caches dist/ in its own step (release.yml), so a missing dist there is a
+  # broken workflow and the bundle fails here, loudly.
+  [ -f "$LIB_DIR/libkrun.1.dylib" ] || {
+    echo "prepare.sh: $LIB_DIR is missing; run packaging/libkrun/ensure.sh before the Tauri build" >&2
+    echo "  (release.yml does this in its 'Build libkrun' step; or point FLETCH_LIBKRUN_DIR at a built dist)" >&2
+    exit 1
+  }
+else
+  "$ROOT/packaging/libkrun/ensure.sh"
+fi
 for lib in libkrun.1.dylib libkrunfw.5.dylib; do
   [ -f "$LIB_DIR/$lib" ] || { echo "prepare.sh: no $LIB_DIR/$lib (FLETCH_LIBKRUN_DIR)" >&2; exit 1; }
 done

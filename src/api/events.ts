@@ -54,6 +54,7 @@ import type {
   BoxEgressEvent,
   BoxImageStatus,
   BoxStateEvent,
+  BoxToolsStatus,
   DockerBuildEvent,
   PublishApproval,
   PublishApprovalResolved,
@@ -435,9 +436,15 @@ export function onBoxImage(cb: (e: BoxImageStatus) => void): Promise<UnlistenFn>
   return on<BoxImageStatus>("box:image", cb);
 }
 
-/** One agent's box changed phase (stopped / starting / running / failed). */
+/** One agent's box changed phase (preparing / starting / running / failed…). */
 export function onBoxState(cb: (e: BoxStateEvent) => void): Promise<UnlistenFn> {
   return on<BoxStateEvent>("box:state", cb);
+}
+
+/** A provider's tools disk build started, finished or failed. Feeds the
+ *  Developer pane's setup line. */
+export function onBoxTools(cb: (e: BoxToolsStatus) => void): Promise<UnlistenFn> {
+  return on<BoxToolsStatus>("box:tools", cb);
 }
 
 /** The egress proxy answered a connection from a box; the workspace surfaces

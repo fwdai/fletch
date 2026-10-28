@@ -3,22 +3,27 @@
 # carries the hypervisor entitlement, and that helper boots a guest with the
 # dylibs from the bundle's own Frameworks folder (no lib dir given).
 #
-#   packaging/box-bundle/check.sh APP IMAGE [INIT]
+#   packaging/box-bundle/check.sh APP [IMAGE [INIT]]
 #
 # APP is a built Fletch.app; IMAGE is a base.erofs whose init prints the
 # FLETCH_READY marker (the product image), or any image whose init runs a
 # command when INIT is given (Calina's: /opt/calina/init, with a script disk
-# that prints the markers). Port of Calina's sandbox/bundle/check.sh.
+# that prints the markers). Without IMAGE only the signature and entitlement
+# checks run: that is what the release workflow does, since hosted runners
+# cannot boot a VM. Port of Calina's sandbox/bundle/check.sh.
 set -eu
 
-APP=$(cd "${1:?usage: check.sh APP IMAGE [INIT]}" && pwd)
-IMAGE=${2:?usage: check.sh APP IMAGE [INIT]}
+APP=$(cd "${1:?usage: check.sh APP [IMAGE [INIT]]}" && pwd)
+IMAGE=${2:-}
 INIT=${3:-/opt/fletch/init}
 VM="$APP/Contents/Helpers/fletch-vm"
-ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 
 echo "== signatures"
 codesign --verify --strict "$APP"
+for f in "$VM" "$APP/Contents/Frameworks/libkrun.1.dylib" "$APP/Contents/Frameworks/libkrunfw.5.dylib"; do
+  [ -f "$f" ] || { echo "check: $f is missing from the bundle" >&2; exit 1; }
+  codesign --verify --strict "$f"
+done
 codesign -d --entitlements - --xml "$VM" 2>/dev/null | grep -q com.apple.security.hypervisor ||
   { echo "check: $VM lacks the hypervisor entitlement" >&2; exit 1; }
 if codesign -d --entitlements - --xml "$APP/Contents/MacOS/fletch" 2>/dev/null | grep -q hypervisor; then
@@ -26,6 +31,13 @@ if codesign -d --entitlements - --xml "$APP/Contents/MacOS/fletch" 2>/dev/null |
   exit 1
 fi
 echo "ok   app valid; only Helpers/fletch-vm has com.apple.security.hypervisor"
+# libkrun is arm64 only; beside a universal app that is expected (an Intel Mac
+# gets "unavailable" from the probe), but the helper must at least be arm64.
+echo "ok   fletch-vm: $(lipo -archs "$VM")"
+if [ -z "$IMAGE" ]; then
+  echo "check: PASS (no IMAGE given, boot skipped)"
+  exit 0
+fi
 
 # Under /tmp, not $TMPDIR: socket paths must stay under 104 bytes.
 RUN=$(mktemp -d /tmp/fletch-box-check.XXXXXX)

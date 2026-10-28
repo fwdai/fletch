@@ -4,8 +4,8 @@ import type { SandboxEngine } from "@/storage/preferences";
 import { useAppStore } from "@/store";
 import { useGate } from "@/store/capabilities";
 import { SetGroup, SetHead, SetRow } from "../primitives";
-import { BoxImagePanel } from "./BoxImagePanel";
 import { BoxKnobs } from "./BoxKnobs";
+import { boxSetup } from "./boxSetup";
 import { ContainerAuth } from "./ContainerAuth";
 import { ContainerLaunchKnobs } from "./ContainerLaunchKnobs";
 
@@ -31,6 +31,8 @@ export function SandboxPane() {
   // nothing below asks about it, so this page is what it was before boxes.
   const boxesEnabled = useAppStore((s) => s.boxesEnabled);
   const boxProbe = useAppStore((s) => s.boxProbe);
+  const boxImage = useAppStore((s) => s.boxImage);
+  const boxTools = useAppStore((s) => s.boxTools);
   const refreshBoxProbe = useAppStore((s) => s.refreshBoxProbe);
   const refreshBoxImage = useAppStore((s) => s.refreshBoxImage);
   // The engine (and the launch knobs below) are the host's: it stamps them on
@@ -83,15 +85,12 @@ export function SandboxPane() {
       : podmanProbe.status === "machine-down"
         ? "Run podman machine start"
         : "Install Podman";
-  // Shown only once the probe says this is Apple silicon: libkrun has no Intel
-  // backend (docs/boxes-spec.md §12.18). Selectable once every item passes,
-  // the image included; until then the hint says what is missing.
-  const boxOffered = boxesEnabled && !!boxProbe?.arch_ok;
-  const boxHint = boxProbe?.ok
-    ? boxProbe.image.version && `image v${boxProbe.image.version}`
-    : boxProbe?.image.phase === "installed"
-      ? "Runtime not found"
-      : "Install the image below";
+  // Offered as soon as the flag is on (the toggle already refused a machine
+  // that cannot boot a box), and selectable right away: a launch waits for
+  // the image and the tools disk while they are still being set up, so the
+  // hint only says where that stands. Settings › Developer has the controls.
+  const boxOffered = boxesEnabled;
+  const boxHint = boxSetup(boxProbe, boxImage, boxTools).text;
 
   return (
     <div className="set-pane">
@@ -132,8 +131,7 @@ export function SandboxPane() {
                     {
                       value: "box" as const,
                       label: "Box (micro-VM)",
-                      hint: boxHint || undefined,
-                      disabled: !boxProbe?.ok,
+                      hint: boxHint,
                     },
                   ]
                 : []),
@@ -161,7 +159,6 @@ export function SandboxPane() {
             or switch back to Seatbelt.
           </div>
         )}
-        {boxOffered && <BoxImagePanel disabled={!!hostGate} />}
         <ContainerAuth />
       </SetGroup>
 

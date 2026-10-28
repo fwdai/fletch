@@ -31,9 +31,13 @@ const SHA256_FILE: &str = "base.erofs.sha256";
 const STAGING_PREFIX: &str = ".staging-";
 const IMAGES_DIR: &str = "images";
 
-/// Where image releases live: one GitHub release per image, tagged
-/// `box-image-v<version>`, holding `base.erofs` and `manifest.json`.
-pub const RELEASES_URL: &str = "https://github.com/fwdai/fletch/releases/download";
+/// Where image releases are downloaded from: one GitHub release per image,
+/// tagged `box-image-v<version>`, holding `base.erofs` and `manifest.json`.
+/// The repository is private, so the app cannot fetch release assets from
+/// github.com without credentials; the website that already serves the
+/// updater's `latest.json` and artifacts proxies `/releases/download/<tag>/<asset>`
+/// as well (docs/RELEASING.md).
+pub const RELEASES_URL: &str = "https://fletch.sh/releases/download";
 
 /// The release manifest (`manifest.json`), the shape `packaging/box-image`
 /// writes and the pin below is copied from.
@@ -58,11 +62,12 @@ pub struct PinnedImage {
 }
 
 impl PinnedImage {
-    // Copied from `packaging/box-image/out/manifest.json` of the current dev
-    // build (`build-mac.sh`); the release workflow replaces these three when
-    // it publishes `box-image-v<version>`. Kept as constants rather than an
-    // `include_str!` of the manifest because `out/` is a build artifact.
-    pub const VERSION: &'static str = "0.1.0-dev";
+    // The `manifest.json` of the GitHub release `box-image-v<VERSION>`, written
+    // here by `scripts/box-image-pin.sh` after the `box-image` workflow
+    // publishes one (packaging/box-image/README.md, "Publishing a release").
+    // Constants rather than an `include_str!` of the manifest because `out/`
+    // is a build artifact.
+    pub const VERSION: &'static str = "0.1.0";
     pub const SIZE: u64 = 848_302_080;
     pub const SHA256: &'static str =
         "7094fcbbceef8c087d5a206467133e121902884419918a3e45e5bd249f342660";
@@ -437,7 +442,7 @@ mod tests {
         let pinned = PinnedImage::from_manifest(&manifest, None);
         assert_eq!(
             pinned.url,
-            "https://github.com/fwdai/fletch/releases/download/box-image-v0.1.0/base.erofs"
+            "https://fletch.sh/releases/download/box-image-v0.1.0/base.erofs"
         );
         assert_eq!(pinned.sha256, "abc");
         let mirrored = PinnedImage::from_manifest(&manifest, Some("https://mirror.test/images/"));

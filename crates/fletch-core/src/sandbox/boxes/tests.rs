@@ -78,10 +78,9 @@ async fn a_box_runs_the_whole_workspace_contract() {
     let registry = BoxRegistry::global();
     std::fs::create_dir_all(&identity.writable_root).unwrap();
 
-    // Boot.
+    // Boot. Without `FLETCH_BOX_TOOLS_DISK` this first builds the tools disk
+    // (minutes), as the engine does for a launch during setup.
     let t0 = Instant::now();
-    // Without a tools disk the box still boots (a launch would be refused, a
-    // provision is not) and a build starts in the background.
     let running = registry
         .ensure_running(&identity)
         .await

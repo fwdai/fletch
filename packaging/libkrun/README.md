@@ -30,9 +30,11 @@ bindgen needs libclang), rustup and cargo. Sources are pinned by sha256 and
 downloaded into `build/`. The first run takes about a minute, later ones about
 15 s. Two runs in the same checkout give byte-identical dylibs.
 
-Until this has been run in a Fletch checkout, `scripts/box-dev.sh` falls back
-to Calina's built `~/Code/calina/sandbox/libkrun/dist`, which is the same
-output.
+Nothing calls `build.sh` by hand in the normal flow: `packaging/box-bundle/prepare.sh`
+runs `ensure.sh` for a dev build (`ensure-dev.sh`, which `bun run tauri dev`
+runs), and the release workflow runs it in its own cached step
+(`.github/workflows/release.yml`). Until the first run `dist/` does not exist
+and the runtime probe reports boxes as not built.
 
 Build environment notes:
 

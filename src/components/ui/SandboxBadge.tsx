@@ -19,11 +19,20 @@ const BOX_HINT =
 /** The box's phase as the chip spells it (docs/boxes-spec.md §9). */
 const BOX_PHASE_LABEL: Record<BoxStateEvent["phase"], string> = {
   stopped: "Stopped",
+  preparing: "Preparing",
   starting: "Starting",
   running: "Running",
   stopping: "Stopping",
   failed: "Failed",
 };
+
+/** `Preparing · downloading image 43%`: a box waiting on the host's setup
+ *  says what for, so a launch right after the flag went on reads as late,
+ *  not stuck. */
+function phaseLabel(state: BoxStateEvent): string {
+  const label = BOX_PHASE_LABEL[state.phase];
+  return state.phase === "preparing" && state.detail ? `${label} · ${state.detail}` : label;
+}
 
 /** A subtle sandbox chip shown next to the workspace path on containerized and
  *  box agents. Renders nothing for the default seatbelt engine. `engine` is the
@@ -39,7 +48,7 @@ export function SandboxBadge({
   boxState?: BoxStateEvent | null;
 }) {
   if (engine === "box") {
-    const phase = boxState ? BOX_PHASE_LABEL[boxState.phase] : null;
+    const phase = boxState ? phaseLabel(boxState) : null;
     return (
       <Badge
         variant={boxState?.phase === "failed" ? "err" : "docker"}

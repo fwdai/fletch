@@ -2325,6 +2325,10 @@ fn arm_spawn_watchdog(
     timeout: Duration,
 ) {
     crate::host::spawn(async move {
+        // A box agent may first have to wait for the host's setup — the image
+        // download, its tools disk build (`boxes::setup`) — far longer than any
+        // process start; the box reports that wait as its own phase meanwhile.
+        let timeout = timeout + box_setup_allowance(&sup, &agent_id);
         tokio::time::sleep(timeout).await;
         // Atomically claim the timeout outcome. Only an agent still in the
         // live Spawning state may be timed out; if the swap fails the spawn
@@ -2348,6 +2352,18 @@ fn arm_spawn_watchdog(
         }
         sup.activities.lock().remove(&agent_id);
     });
+}
+
+/// The extra time a box-stamped agent's spawn gets for the setup it may wait
+/// on; zero for every other engine and once the setup is done.
+fn box_setup_allowance(sup: &Supervisor, agent_id: &str) -> Duration {
+    sup.workspace
+        .agent(agent_id)
+        .ok()
+        .filter(|record| stamped_engine(record) == EngineKind::Box)
+        .map_or(Duration::ZERO, |record| {
+            sandbox::boxes::setup::setup_allowance(&record.provider)
+        })
 }
 
 pub(super) fn fail_spawn(sup: &Supervisor, ctx: &Arc<EngineCtx>, agent_id: &str, err: String) {

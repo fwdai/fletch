@@ -1,3 +1,4 @@
+import { open as openExternal } from "@tauri-apps/plugin-shell";
 import { Fragment, lazy, Suspense, useMemo } from "react";
 import { Icon, type IconName } from "@/components/Icon";
 import type { SettingsSection } from "@/storage/preferences";
@@ -20,6 +21,10 @@ import { ReviewPane } from "./ReviewPane";
 import { SandboxPane } from "./Sandbox";
 import { ShortcutsPane } from "./ShortcutsPane";
 import { SkillsPane } from "./Skills";
+
+// The libkrunfw release packaging/libkrun/build.sh pins; its tree names the
+// kernel tarball and config the bundled kernel was built from.
+const KERNEL_SOURCE_URL = "https://github.com/libkrun/libkrunfw/tree/v5.6.2";
 
 // Lazily loaded — code-split into its own chunk, fetched only when the Developer
 // section is actually opened. Visibility is gated at render (dev builds, or an
@@ -202,6 +207,22 @@ export function SettingsScreen() {
           <span className="mono">Fletch</span>
           <span className="mono dim">v{pkg.version}</span>
         </div>
+        {IS_MAC && (
+          // The macOS app bundles a GPL-2.0 kernel (libkrunfw) for the box
+          // sandbox, so its source is offered next to the version (NOTICE).
+          <div className="set-nav-licence text-xs">
+            Box runtime: libkrun (Apache-2.0) and a Linux 6.12 kernel (GPL-2.0),{" "}
+            <a
+              href={KERNEL_SOURCE_URL}
+              onClick={(e) => {
+                e.preventDefault();
+                void openExternal(KERNEL_SOURCE_URL).catch(() => {});
+              }}
+            >
+              source
+            </a>
+          </div>
+        )}
       </nav>
 
       <div className="set-main">

@@ -89,27 +89,41 @@ export interface BoxImageStatus {
   error?: string;
 }
 
-/** `box_runtime_probe`: can this host boot a box, item by item. `ok` means
- *  every item passed and the image is installed; `problems` is one sentence
- *  per failing item (the flag and the image included). */
+/** One provider's tools disk (the CLI a box runs): the `box:tools` event and
+ *  a row of `box_runtime_probe`. */
+export interface BoxToolsStatus {
+  provider: string;
+  version: string;
+  phase: "missing" | "building" | "ready" | "failed";
+  error?: string;
+}
+
+/** `box_runtime_probe`: can this host boot a box, item by item. `runtime_ok`
+ *  is the machine and the runtime (Apple silicon, hypervisor, helper, dylibs)
+ *  — what the toggle needs — with `problems` one sentence per failing item;
+ *  `ok` adds the flag and an installed image. */
 export interface BoxRuntimeProbe {
   enabled: boolean;
   ok: boolean;
+  runtime_ok: boolean;
   problems: string[];
   helper?: string;
   lib_dir?: string;
   arch_ok: boolean;
   hypervisor: boolean;
   image: BoxImageStatus;
+  tools: BoxToolsStatus[];
 }
 
 /** `box_state(agent_id)` and the `box:state` event: one agent's box.
- *  `since` is set while running, `reason` when failed. */
+ *  `since` is set while running, `reason` when failed, `detail` while
+ *  preparing (what the box waits for: the image download, the tools disk). */
 export interface BoxStateEvent {
   agent_id: string;
-  phase: "stopped" | "starting" | "running" | "stopping" | "failed";
+  phase: "stopped" | "preparing" | "starting" | "running" | "stopping" | "failed";
   since?: number | null;
   reason?: string | null;
+  detail?: string | null;
 }
 
 /** `box:egress`: the proxy answered one connection request from a box. */

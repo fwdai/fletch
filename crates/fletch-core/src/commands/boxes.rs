@@ -2,120 +2,64 @@
 //! Settings › Sandbox page, the Developer pane and the agent's isolation row
 //! ask. Phase 4b wraps each in a `#[tauri::command]` and a remote op.
 
-use std::ops::ControlFlow;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
-
+use fletch_box::Probe;
 use serde::Serialize;
 
 use crate::error::{Error, Result};
 use crate::host::EngineCtx;
-use crate::sandbox::boxes::{self, settings, BoxRegistry, StopReason, EVENT_IMAGE};
+use crate::sandbox::boxes::{
+    self, registry::ToolsStatus, settings, setup, BoxRegistry, StopReason,
+};
 use crate::{database, sandbox};
 
 use super::settings::announce;
+
+pub use crate::sandbox::boxes::setup::BoxImageStatus;
 
 /// `box_runtime_probe`: can this host boot a box, item by item.
 #[derive(Debug, Clone, Serialize)]
 pub struct BoxRuntimeProbe {
     /// The developer flag.
     pub enabled: bool,
-    /// Every item passed and an image is installed.
+    /// Every item passed, the flag and image included.
     pub ok: bool,
-    /// One sentence per failing item, the flag and image included.
+    /// The machine and the runtime pass: Apple silicon, the hypervisor, the
+    /// helper and its dylibs. What the toggle needs; the image and the tools
+    /// disks are set up after it.
+    pub runtime_ok: bool,
+    /// One sentence per failing runtime item.
     pub problems: Vec<String>,
     pub helper: Option<String>,
     pub lib_dir: Option<String>,
     pub arch_ok: bool,
     pub hypervisor: bool,
     pub image: BoxImageStatus,
-}
-
-/// `box_image_status` and the `box:image` event.
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-pub struct BoxImageStatus {
-    /// `not_installed` | `downloading` | `verifying` | `installed` | `damaged` | `unavailable`
-    pub phase: &'static str,
-    /// Percent, while downloading.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub progress: Option<u8>,
-    /// The installed version, or the one being installed.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub version: Option<String>,
-    /// The version this build pins and where it downloads from.
-    pub pinned_version: String,
-    pub url: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
-}
-
-/// The one install at a time, with its cancel flag.
-struct Install {
-    cancel: Arc<AtomicBool>,
-    progress: Arc<Mutex<Option<u8>>>,
-}
-
-fn install_slot() -> &'static Mutex<Option<Install>> {
-    static SLOT: OnceLock<Mutex<Option<Install>>> = OnceLock::new();
-    SLOT.get_or_init(|| Mutex::new(None))
+    /// Each supported provider's tools disk.
+    pub tools: Vec<ToolsStatus>,
 }
 
 pub fn box_image_status_impl() -> BoxImageStatus {
-    let pinned = boxes::pinned_image();
-    let mut status = BoxImageStatus {
-        phase: "not_installed",
-        progress: None,
-        version: None,
-        pinned_version: pinned.version.clone(),
-        url: pinned.url.clone(),
-        error: None,
-    };
-    if let Some(install) = install_slot()
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .as_ref()
-    {
-        status.phase = "downloading";
-        status.progress = *install.progress.lock().unwrap_or_else(|p| p.into_inner());
-        status.version = Some(pinned.version);
-        return status;
-    }
-    match boxes::image_store().current() {
-        Ok(Some(image)) => {
-            status.phase = "installed";
-            status.version = Some(image.version);
-        }
-        Ok(None) => {}
-        Err(e) => {
-            status.phase = "unavailable";
-            status.error = Some(e.to_string());
-        }
-    }
-    status
+    setup::image_status()
 }
 
 pub fn box_runtime_probe_impl() -> BoxRuntimeProbe {
     let enabled = settings::enabled();
     let probe = boxes::probe();
     let image = box_image_status_impl();
-    let mut problems = Vec::new();
-    if !enabled {
-        problems.push("box sandbox is off; enable it in Developer settings".to_string());
-    }
-    match &probe {
-        Some(probe) => problems.extend(probe.problems()),
-        None => problems.push(
-            "the box runtime was not found: no fletch-vm helper in the app bundle, in \
-             crates/fletch-box/target/release, or named by FLETCH_BOX_HELPER"
-                .to_string(),
-        ),
-    }
-    if image.phase != "installed" {
-        problems.push("the box image is not installed".to_string());
-    }
+    let problems = match &probe {
+        Some(probe) => probe.problems(),
+        None => vec![boxes::RUNTIME_NOT_FOUND.to_string()],
+    };
+    let runtime_ok = problems.is_empty();
+    let tools = fletch_box::tools::PROVIDERS
+        .iter()
+        .filter(|p| boxes::supports_provider(p))
+        .map(|p| BoxRegistry::global().tools_status(p))
+        .collect();
     BoxRuntimeProbe {
         enabled,
-        ok: problems.is_empty(),
+        ok: enabled && runtime_ok && image.phase == "installed",
+        runtime_ok,
         problems,
         helper: probe
             .as_ref()
@@ -126,95 +70,19 @@ pub fn box_runtime_probe_impl() -> BoxRuntimeProbe {
         arch_ok: probe.as_ref().is_some_and(|p| p.arch_ok),
         hypervisor: probe.as_ref().is_some_and(|p| p.hypervisor),
         image,
+        tools,
     }
 }
 
-/// Start downloading (or copying, for a `file://` URL) this build's pinned
-/// image in the background; progress and the outcome arrive as `box:image`
-/// events. Refused while an install is running.
-pub fn box_image_install_impl(ctx: &EngineCtx) -> Result<()> {
-    if !settings::enabled() {
-        return Err(Error::Other(
-            "box sandbox is off; enable it in Developer settings".into(),
-        ));
-    }
-    let install = Install {
-        cancel: Arc::new(AtomicBool::new(false)),
-        progress: Arc::new(Mutex::new(Some(0))),
-    };
-    let (cancel, progress) = (install.cancel.clone(), install.progress.clone());
-    {
-        let mut slot = install_slot().lock().unwrap_or_else(|p| p.into_inner());
-        if slot.is_some() {
-            return Err(Error::Other(
-                "the box image is already being installed".into(),
-            ));
-        }
-        *slot = Some(install);
-    }
-    let sink = ctx.sink.clone();
-    let pinned = boxes::pinned_image();
-    crate::host::spawn(async move {
-        let emit = |status: &BoxImageStatus| crate::host::emit(sink.as_ref(), EVENT_IMAGE, status);
-        let mut status = BoxImageStatus {
-            phase: "downloading",
-            progress: Some(0),
-            version: Some(pinned.version.clone()),
-            pinned_version: pinned.version.clone(),
-            url: pinned.url.clone(),
-            error: None,
-        };
-        emit(&status);
-        let mut last = 0u8;
-        let result = boxes::image_store()
-            .install(&pinned, |p| {
-                if cancel.load(Ordering::Relaxed) {
-                    return ControlFlow::Break(());
-                }
-                let pct = (p.done * 100).checked_div(p.total).unwrap_or(0) as u8;
-                if pct != last {
-                    last = pct;
-                    *progress.lock().unwrap_or_else(|e| e.into_inner()) = Some(pct);
-                    status.progress = Some(pct);
-                    emit(&status);
-                }
-                ControlFlow::Continue(())
-            })
-            .await;
-        *install_slot().lock().unwrap_or_else(|p| p.into_inner()) = None;
-        match result {
-            Ok(image) => {
-                status.phase = "installed";
-                status.progress = None;
-                status.version = Some(image.version);
-            }
-            Err(fletch_box::Error::Cancelled) => {
-                status = box_image_status_impl();
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, "box image install failed");
-                status.phase = "unavailable";
-                status.progress = None;
-                status.error = Some(e.to_string());
-            }
-        }
-        emit(&status);
-    });
-    Ok(())
+/// Start downloading this build's pinned image in the background, then build
+/// the tools disks; progress and the outcome arrive as `box:image` and
+/// `box:tools` events. Idempotent, so it is also the Retry after a failure.
+pub fn box_image_install_impl() -> Result<()> {
+    setup::start_install()
 }
 
 pub fn box_image_cancel_impl() -> Result<()> {
-    match install_slot()
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .as_ref()
-    {
-        Some(install) => {
-            install.cancel.store(true, Ordering::Relaxed);
-            Ok(())
-        }
-        None => Err(Error::Other("no box image install is running".into())),
-    }
+    setup::cancel_install()
 }
 
 /// `box_state(agent_id)`: the registry's phase for the agent's box.
@@ -257,7 +125,9 @@ pub fn box_egress_allow_impl(
 /// `box_image_url`, `box_idle_stop_minutes`), validated, and mirror it for the
 /// engine; `None` restores the default. The Developer pane's toggle and the
 /// Sandbox page's knobs go through here, not the client-side `set_setting`,
-/// since the engine reads these.
+/// since the engine reads these. The flag is the whole setup
+/// ([`set_enabled`]): on, it starts the image install and makes `box` the
+/// engine for new agents.
 pub fn set_box_setting_impl(ctx: &EngineCtx, key: &str, value: Option<&str>) -> Result<()> {
     let normalized = match value {
         Some(value) => Some(
@@ -271,6 +141,19 @@ pub fn set_box_setting_impl(ctx: &EngineCtx, key: &str, value: Option<&str>) -> 
             None
         }
     };
+    if key == settings::ENABLED_SETTING {
+        let on = normalized.as_deref() == Some("true");
+        let probe = on.then(boxes::probe).flatten();
+        set_enabled(ctx, on, probe.as_ref())?;
+        if on {
+            // The download, then the tools disks (`setup::prebuild_tools`);
+            // quick when both are in place already.
+            if let Err(e) = setup::start_install() {
+                tracing::warn!(error = %e, "the box image install did not start");
+            }
+        }
+        return Ok(());
+    }
     {
         let conn = ctx.db.lock();
         match &normalized {
@@ -282,17 +165,74 @@ pub fn set_box_setting_impl(ctx: &EngineCtx, key: &str, value: Option<&str>) -> 
         settings::set(settings::load(&conn));
     }
     announce(ctx, key, normalized.as_deref());
-    // Turning the flag off while `box` is the selected engine would stamp new
-    // agents with an engine that refuses to launch; fall back to the default.
-    if key == settings::ENABLED_SETTING
-        && !settings::enabled()
-        && sandbox::selected_engine_kind() == sandbox::EngineKind::Box
-    {
-        let kind = sandbox::EngineKind::SandboxExec;
-        database::set_setting(&ctx.db.lock(), sandbox::ENGINE_SETTING, kind.as_setting())?;
-        sandbox::set_selected_engine_kind(kind);
-        announce(ctx, sandbox::ENGINE_SETTING, Some(kind.as_setting()));
+    Ok(())
+}
+
+/// Flip the flag. On: refused, and nothing stored, unless `probe` says this
+/// machine and runtime can boot a box (Intel, a missing helper); then `box`
+/// becomes the engine for new agents, remembered as the flag's doing
+/// (`box_engine_auto`). Off: the engine goes back to `sandbox-exec` only if
+/// the flag set it and the user did not choose otherwise since, and every
+/// running box is stopped cleanly — nothing is deleted. The install itself is
+/// the caller's, so this stays testable without a download.
+pub(crate) fn set_enabled(ctx: &EngineCtx, on: bool, probe: Option<&Probe>) -> Result<()> {
+    if on {
+        let problem = match probe {
+            None => Some(boxes::RUNTIME_NOT_FOUND.to_string()),
+            Some(probe) if !probe.ok() => Some(format!(
+                "the box runtime is not usable: {}.",
+                probe.problems().join("; ")
+            )),
+            Some(_) => None,
+        };
+        if let Some(why) = problem {
+            return Err(Error::Other(why));
+        }
     }
+    let value = if on { "true" } else { "false" };
+    {
+        let conn = ctx.db.lock();
+        database::set_setting(&conn, settings::ENABLED_SETTING, value)?;
+        settings::set(settings::load(&conn));
+    }
+    announce(ctx, settings::ENABLED_SETTING, Some(value));
+
+    let selected = sandbox::selected_engine_kind();
+    if on {
+        if selected != sandbox::EngineKind::Box {
+            database::set_setting(&ctx.db.lock(), settings::ENGINE_AUTO_SETTING, "true")?;
+            select_engine(ctx, sandbox::EngineKind::Box)?;
+        }
+        return Ok(());
+    }
+    let auto = {
+        let conn = ctx.db.lock();
+        let auto =
+            database::get_setting(&conn, settings::ENGINE_AUTO_SETTING).as_deref() == Some("true");
+        conn.execute(
+            "DELETE FROM settings WHERE key = ?1",
+            [settings::ENGINE_AUTO_SETTING],
+        )?;
+        auto
+    };
+    if auto && selected == sandbox::EngineKind::Box {
+        select_engine(ctx, sandbox::EngineKind::SandboxExec)?;
+    }
+    // Only when something runs: the stop is async, and a bare unit test has
+    // no runtime to spawn it on.
+    if !BoxRegistry::global().running_ids().is_empty() {
+        crate::host::spawn(BoxRegistry::global().shutdown_all());
+    }
+    Ok(())
+}
+
+/// Persist, mirror and announce the engine new agents get, with none of the
+/// probing `set_sandbox_engine_impl` does: the flag's own switch is already
+/// behind the runtime probe, and the switch back is to the default.
+fn select_engine(ctx: &EngineCtx, kind: sandbox::EngineKind) -> Result<()> {
+    database::set_setting(&ctx.db.lock(), sandbox::ENGINE_SETTING, kind.as_setting())?;
+    sandbox::set_selected_engine_kind(kind);
+    announce(ctx, sandbox::ENGINE_SETTING, Some(kind.as_setting()));
     Ok(())
 }
 
@@ -301,6 +241,25 @@ mod tests {
     use super::*;
     use crate::host::ctx::test_ctx;
     use serde_json::json;
+    use std::path::PathBuf;
+
+    use settings::TEST_LOCK as ENGINE_LOCK;
+
+    fn probe(ok: bool) -> Probe {
+        Probe {
+            helper: PathBuf::from("/x/fletch-vm"),
+            helper_present: true,
+            helper_entitled: true,
+            lib_dir: PathBuf::from("/x/lib"),
+            dylibs_present: true,
+            arch_ok: ok,
+            hypervisor: true,
+        }
+    }
+
+    fn engine_row(ctx: &EngineCtx) -> Option<String> {
+        database::get_setting(&ctx.db.lock(), sandbox::ENGINE_SETTING)
+    }
 
     #[test]
     fn a_box_setting_is_validated_persisted_mirrored_and_announced() {
@@ -325,23 +284,109 @@ mod tests {
         assert_eq!(settings::current().memory_mib, settings::DEFAULT_MEMORY_MIB);
     }
 
-    /// Switching the flag off while `box` is selected moves the selection
-    /// back to the default engine, so no new agent is stamped with an engine
-    /// that cannot launch.
+    /// An Intel Mac, or one without the runtime, cannot turn the flag on: the
+    /// refusal carries the probe's sentence and nothing is stored or announced.
     #[test]
-    fn disabling_the_flag_unselects_the_box_engine() {
-        let (ctx, _sink, _dir) = test_ctx();
-        set_box_setting_impl(&ctx, settings::ENABLED_SETTING, Some("true")).unwrap();
-        sandbox::set_selected_engine_kind(sandbox::EngineKind::Box);
-        set_box_setting_impl(&ctx, settings::ENABLED_SETTING, Some("false")).unwrap();
+    fn enabling_with_a_failing_probe_is_refused() {
+        let _serial = ENGINE_LOCK.blocking_lock();
+        let (ctx, sink, _dir) = test_ctx();
+        settings::set(settings::BoxSettings::default());
+        sandbox::set_selected_engine_kind(sandbox::EngineKind::SandboxExec);
+        let err = set_enabled(&ctx, true, Some(&probe(false))).unwrap_err();
+        assert!(err.to_string().contains("Apple silicon"), "{err}");
+        let err = set_enabled(&ctx, true, None).unwrap_err();
+        assert!(err.to_string().contains("not found"), "{err}");
+        assert!(!settings::enabled());
+        assert!(sink.events().is_empty());
+        assert_eq!(engine_row(&ctx), None);
         assert_eq!(
             sandbox::selected_engine_kind(),
             sandbox::EngineKind::SandboxExec
         );
+    }
+
+    /// On makes `box` the engine and remembers that it did; off undoes exactly
+    /// that, and both ends are announced.
+    #[test]
+    fn the_flag_switches_the_engine_to_box_and_back() {
+        let _serial = ENGINE_LOCK.blocking_lock();
+        let (ctx, sink, _dir) = test_ctx();
+        settings::set(settings::BoxSettings::default());
+        sandbox::set_selected_engine_kind(sandbox::EngineKind::SandboxExec);
+
+        set_enabled(&ctx, true, Some(&probe(true))).unwrap();
+        assert!(settings::enabled());
+        assert_eq!(sandbox::selected_engine_kind(), sandbox::EngineKind::Box);
+        assert_eq!(engine_row(&ctx).as_deref(), Some("box"));
         assert_eq!(
-            database::get_setting(&ctx.db.lock(), sandbox::ENGINE_SETTING).as_deref(),
-            Some("sandbox-exec")
+            database::get_setting(&ctx.db.lock(), settings::ENGINE_AUTO_SETTING).as_deref(),
+            Some("true")
         );
+        assert_eq!(
+            sink.events(),
+            vec![
+                (
+                    super::super::settings::SETTINGS_CHANGED.to_string(),
+                    json!({ "key": "boxes_enabled", "value": "true" })
+                ),
+                (
+                    super::super::settings::SETTINGS_CHANGED.to_string(),
+                    json!({ "key": "sandbox_engine", "value": "box" })
+                ),
+            ]
+        );
+
+        set_enabled(&ctx, false, None).unwrap();
+        assert!(!settings::enabled());
+        assert_eq!(
+            sandbox::selected_engine_kind(),
+            sandbox::EngineKind::SandboxExec
+        );
+        assert_eq!(engine_row(&ctx).as_deref(), Some("sandbox-exec"));
+        assert_eq!(
+            database::get_setting(&ctx.db.lock(), settings::ENGINE_AUTO_SETTING),
+            None,
+            "the marker is cleared"
+        );
+        assert_eq!(sink.events().len(), 4, "the flag and the engine, twice");
+    }
+
+    /// A user who picked another engine in between keeps it: the flag only
+    /// undoes its own switch.
+    #[test]
+    fn the_flag_leaves_an_engine_the_user_chose_meanwhile() {
+        let _serial = ENGINE_LOCK.blocking_lock();
+        let (ctx, _sink, _dir) = test_ctx();
+        settings::set(settings::BoxSettings::default());
+        sandbox::set_selected_engine_kind(sandbox::EngineKind::SandboxExec);
+
+        set_enabled(&ctx, true, Some(&probe(true))).unwrap();
+        // The user's own choice, as `set_sandbox_engine_impl` records it.
+        database::set_setting(&ctx.db.lock(), sandbox::ENGINE_SETTING, "docker").unwrap();
+        sandbox::set_selected_engine_kind(sandbox::EngineKind::Docker);
+        ctx.db
+            .lock()
+            .execute(
+                "DELETE FROM settings WHERE key = ?1",
+                [settings::ENGINE_AUTO_SETTING],
+            )
+            .unwrap();
+
+        set_enabled(&ctx, false, None).unwrap();
+        assert_eq!(sandbox::selected_engine_kind(), sandbox::EngineKind::Docker);
+        assert_eq!(engine_row(&ctx).as_deref(), Some("docker"));
+
+        // Flag on with `box` chosen by hand: nothing to switch, nothing to
+        // remember, so off leaves `box` as the user set it.
+        sandbox::set_selected_engine_kind(sandbox::EngineKind::Box);
+        set_enabled(&ctx, true, Some(&probe(true))).unwrap();
+        assert_eq!(
+            database::get_setting(&ctx.db.lock(), settings::ENGINE_AUTO_SETTING),
+            None
+        );
+        set_enabled(&ctx, false, None).unwrap();
+        assert_eq!(sandbox::selected_engine_kind(), sandbox::EngineKind::Box);
+        sandbox::set_selected_engine_kind(sandbox::EngineKind::SandboxExec);
     }
 
     #[test]
@@ -368,16 +413,14 @@ mod tests {
     }
 
     #[test]
-    fn the_probe_reports_the_flag_and_the_image() {
+    fn the_probe_reports_the_flag_the_image_and_the_tools() {
         let probe = box_runtime_probe_impl();
         assert_eq!(probe.enabled, settings::enabled());
         if !probe.enabled {
             assert!(!probe.ok);
-            assert!(probe
-                .problems
-                .iter()
-                .any(|p| p.contains("Developer settings")));
         }
+        assert_eq!(probe.runtime_ok, probe.problems.is_empty());
         assert!(!probe.image.pinned_version.is_empty());
+        assert!(probe.tools.iter().any(|t| t.provider == "claude"));
     }
 }

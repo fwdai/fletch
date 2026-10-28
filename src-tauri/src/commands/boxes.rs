@@ -24,10 +24,11 @@ pub fn box_image_status() -> engine::BoxImageStatus {
     engine::box_image_status_impl()
 }
 
-/// Start installing the pinned image in the background.
+/// Start installing the pinned image in the background, then the tools
+/// disks; a no-op while one runs, so it doubles as Retry.
 #[tauri::command]
-pub fn box_image_install(ctx: State<'_, Arc<EngineCtx>>) -> Result<()> {
-    engine::box_image_install_impl(&ctx)
+pub fn box_image_install() -> Result<()> {
+    engine::box_image_install_impl()
 }
 
 #[tauri::command]

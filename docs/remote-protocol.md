@@ -902,9 +902,17 @@ allowlist; any op not listed returns `{ ok: false, error: "unknown op" }`.
 | `set_auto_archive_idle_days` | `{ days: number }` — `auto_archive_idle_days`; `0` turns the idle sweep off | `null` |
 | `set_code_indexing_enabled` | `{ enabled: boolean }` — `code_indexing_enabled`; turning it on also installs codegraph and warms the index for every pinned repo, in the background on the host | `null` |
 | `set_context_layer_enabled` | `{ enabled: boolean }` — `context_layer_enabled`: the project context layer's developer gate; off, the layer's ops, instruction block, ingesters and extractor are inert and the project page shows no Context tab | `null` |
-| `set_sandbox_engine` | `{ engine: "sandbox-exec" \| "docker" \| "podman" }` — `sandbox_engine` for *new* agents; a container engine is probed live on the host first and refused when its runtime is unreachable or cannot launch | `null` |
+| `set_sandbox_engine` | `{ engine: "sandbox-exec" \| "docker" \| "podman" \| "box" }` — `sandbox_engine` for *new* agents; a container engine is probed live on the host first and refused when its runtime is unreachable or cannot launch; `box` needs `boxes_enabled` and a runtime that passes `box_runtime_probe` (not the image: a launch waits for its download) | `null` |
 | `set_docker_launch_settings` | `{ image: string \| null, memory: string \| null, cpus: string \| null }` — `docker_image` / `docker_memory` / `docker_cpus`, written together; blank or `null` clears one back to the launch default | `null` |
 | `set_podman_launch_settings` | `{ image, memory, cpus }` — the podman twin over `podman_image` / `podman_memory` / `podman_cpus` | `null` |
+| `box_runtime_probe` | `{}` — can this host boot a box (docs/boxes-spec.md §9): the flag, the machine and runtime (`runtime_ok`, with one sentence per failing item in `problems`), the image's install state and each supported provider's tools disk. Read-only | `BoxRuntimeProbe` |
+| `box_image_status` | `{}` — the pinned guest image's install state; `box:image` carries every change after | `BoxImageStatus` |
+| `box_image_install` | `{}` — download this build's pinned image in the background, then build the tools disks; a no-op while an install runs, so it is also the Retry after a failure. Refused with the flag off | `null` |
+| `box_image_cancel` | `{}` — stop the running download; refused when none runs | `null` |
+| `box_state` | `{ agentId }` — the registry's phase for one agent's box, as the `box:state` event spells it | `BoxStateEvent` |
+| `box_stop` | `{ agentId }` — stop the agent's box now through the stop ladder; answers which rung worked (`control` \| `sysrq` \| `term` \| `killed` \| `alreadyexited`). The box's disk stays; the next launch boots it again | `string` |
+| `box_egress_allow` | `{ projectId, pattern }` — add one host pattern to the project's egress allow-list (`box.egress_allow`) and update its running boxes; refused for a pattern that does not parse | `string[]` (the list as stored) |
+| `set_box_setting` | `{ key, value: string \| null }` — one of the five host-owned box settings (see "Settings"), validated on the host; `null` restores the default. `boxes_enabled: "true"` is the whole setup: refused unless the runtime probe passes, else it starts the image install, builds the tools disks after it and makes `box` the engine for new agents; `"false"` stops every running box cleanly and restores `sandbox-exec` if the flag was what selected `box` | `null` |
 | `set_agent_bin_override` | `{ id, path: string \| null }` — `agent_bin_path_<id>`, a path *on the host*; blank or `null` clears it. Live agents on that provider are respawned so they exec the new binary | `null` |
 | `set_branch_prefix` | `{ prefix }` — `git_branch_prefix`; validated and trimmed on the host, empty clears it | `string` (the prefix as stored) |
 | `set_draft_prs` | `{ enabled: boolean }` — `github_draft_prs` | `null` |
@@ -1125,6 +1133,7 @@ default the host does):
 | `sandbox_engine` | `set_sandbox_engine` | `projects` |
 | `docker_image`, `docker_memory`, `docker_cpus` | `set_docker_launch_settings` | `projects` |
 | `podman_image`, `podman_memory`, `podman_cpus` | `set_podman_launch_settings` | `projects` |
+| `boxes_enabled`, `box_memory_mib`, `box_cpus`, `box_image_url`, `box_idle_stop_minutes` | `set_box_setting` | `projects` |
 | `agent_bin_path_<id>` | `set_agent_bin_override` | `projects` |
 | `git_branch_prefix` | `set_branch_prefix` | `publish` |
 | `github_draft_prs` | `set_draft_prs` | `publish` |
@@ -1341,7 +1350,15 @@ roadmap:project-hold   roadmap:project-hold-released
 roadmap:queue-note
 settings:changed       project_settings:changed
 context:changed
+box:state              box:egress             box:image
+box:tools
 ```
+
+The four `box:*` events are the box sandbox's (docs/boxes-spec.md §9): one
+agent's box changing phase (`preparing` carries `detail`, what it waits for),
+a connection its egress proxy answered, the image install's progress and
+outcome, and a provider's tools disk build. All of them happen on the host, so
+a remote Settings page and workspace follow them as the desktop's do.
 
 `agent:event` is forwarded unfiltered, including the provider's
 `control_request` records: that is the only way a held tool-use approval

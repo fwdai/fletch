@@ -13,6 +13,11 @@
 #      hosted runner): the release workflow provisions its own toolchain, and
 #      a developer-machine preflight has no business gating a release.
 #      `FLETCH_SKIP_DOCTOR=1` skips it anywhere.
+#   3. For `dev` only, `packaging/box-bundle/ensure-dev.sh` stages the box
+#      runtime (libkrun + an ad hoc signed fletch-vm) where the debug binary
+#      looks for it. Best effort: without Xcode it prints one warning and the
+#      Sandbox page reports boxes as unavailable. `build` gets the runtime from
+#      Tauri's beforeBundleCommand instead (src-tauri/tauri.macos.conf.json).
 
 set -uo pipefail
 cd "$(dirname "$0")/.."
@@ -26,7 +31,11 @@ fi
 
 if [[ -z "${CI:-}" ]]; then
   case "${1:-}" in
-    dev|build)
+    dev)
+      scripts/doctor.sh --quiet || exit 1
+      packaging/box-bundle/ensure-dev.sh
+      ;;
+    build)
       scripts/doctor.sh --quiet || exit 1
       ;;
   esac
