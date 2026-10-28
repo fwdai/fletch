@@ -389,6 +389,35 @@ Debian versus Alpine base image for Cursor, the guest SSH server in place of
 the spike's `socat` channels, and the KVM and container-fallback check on a
 Linux host.
 
+### Phase 2a: SSH as the workspace channel (2026-10-28)
+
+Dropbear 2026.91 from Alpine's packages, installed onto the data disk at
+runtime (plus `utmps-libs` and `skalibs-libs`, which it links), running as a
+daemon on guest loopback behind a `socat` vsock relay on port 2222. The host
+side is stock OpenSSH with a config file whose `ProxyCommand` is the
+stdio-to-socket pipe, so `ssh`, `git`, `sftp` and `scp` all work unchanged.
+Key-only auth with a key the host minted for this box.
+
+| Channel use | Result |
+| --- | --- |
+| `ssh box cmd` | 0.31 s cold including key exchange, 0.12 s after |
+| `ssh -tt box` | a real PTY (`/dev/pts/0`) |
+| `git fetch box:/data/workspace/repo` | 0.19 s, same commit as the vsock-direct fetch |
+| `ssh -L 15175:127.0.0.1:5173 box` | HTTP 200 from a guest dev server in 6 ms, no guest relay needed for the forwarded port |
+| `sftp` / `scp` | failed: Alpine's dropbear hardcodes `/usr/lib/ssh/sftp-server`, which is on the read-only root. The image build puts it there; not a design problem |
+
+Conclusion: the guest contract reduces to an SSH server bound to vsock plus the
+guest init. No bespoke control protocol, no per-feature relay. `ssh -L` also
+replaces the guest-side `socat` relay the phase 1 port forward needed, because
+the SSH server itself connects to the guest's TCP port. Dropbear is a candidate
+for the product image (small, inetd or daemon mode, pubkey auth, forwards);
+`sshd -i` is the alternative if sftp or `ssh -R` semantics need OpenSSH.
+
+Remaining after phase 2a: a real agent turn with a credential (the sandbox this
+spike ran in holds none by design; the host resolves the token outside it),
+the base image decision for Cursor, and the KVM and container-fallback check on
+a Linux host.
+
 ## Delivery
 
 Each slice is a PR on its own; 2 and 3 share no code with 4 and may run in

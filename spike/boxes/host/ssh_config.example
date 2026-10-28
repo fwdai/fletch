@@ -1,0 +1,7 @@
+Host box
+  User root
+  IdentityFile /tmp/fletch-box-spike/keys/box
+  IdentitiesOnly yes
+  StrictHostKeyChecking no
+  UserKnownHostsFile /tmp/fletch-box-spike/known_hosts
+  ProxyCommand python3 -I /Users/alex/.fletch/workspaces/arenal/fletch/spike/boxes/host/sockpipe.py /tmp/fletch-box-spike/ws1/ssh.sock
