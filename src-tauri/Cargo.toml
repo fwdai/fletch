@@ -140,3 +140,13 @@ opt-level = "z"
 lto = true
 codegen-units = 1
 strip = true
+
+# The box engine hashes the 848 MB base image once per process before the first
+# VM boots (fletch-box image_store::verify), and git_dist checksums its tarball.
+# Unoptimised sha2 takes ~35 s for the image in a dev build; at `z` it is slower
+# than it needs to be too. Only the hasher is affected.
+[profile.dev.package.sha2]
+opt-level = 3
+
+[profile.release.package.sha2]
+opt-level = 3

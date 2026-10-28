@@ -105,3 +105,8 @@ ctor = "0.2"
 # deterministically. Test-only (unioned with the runtime `full` feature); it
 # activates no extra crates, so the lockfile is unchanged.
 tokio = { version = "1", features = ["test-util"] }
+
+# sha2 verifies the 848 MB box image once per test process; unoptimised it
+# takes ~35 s, optimised about a second. Only the hasher is affected.
+[profile.dev.package.sha2]
+opt-level = 3
