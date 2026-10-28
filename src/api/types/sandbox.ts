@@ -76,3 +76,68 @@ export interface PublishApprovalResolved {
   id: string;
   outcome: PublishApprovalOutcome;
 }
+
+/** `box_image_status` and the `box:image` event: the pinned guest image's
+ *  install state. `progress` rides `downloading`,
+ *  `error` the two failure phases. */
+export interface BoxImageStatus {
+  phase: "not_installed" | "downloading" | "verifying" | "installed" | "damaged" | "unavailable";
+  progress?: number;
+  version?: string;
+  pinned_version: string;
+  url: string;
+  error?: string;
+}
+
+/** One provider's tools disk (the CLI a box runs): the `box:tools` event and
+ *  a row of `box_runtime_probe`. */
+export interface BoxToolsStatus {
+  provider: string;
+  version: string;
+  phase: "missing" | "building" | "ready" | "failed";
+  error?: string;
+}
+
+/** `box_runtime_probe`: can this host boot a box, item by item. `runtime_ok`
+ *  is the machine and the runtime (Apple silicon, hypervisor, helper, dylibs)
+ *  — what the toggle needs — with `problems` one sentence per failing item;
+ *  `ok` adds the flag and an installed image. */
+export interface BoxRuntimeProbe {
+  enabled: boolean;
+  ok: boolean;
+  runtime_ok: boolean;
+  problems: string[];
+  helper?: string;
+  lib_dir?: string;
+  arch_ok: boolean;
+  hypervisor: boolean;
+  image: BoxImageStatus;
+  tools: BoxToolsStatus[];
+}
+
+/** `box_state(agent_id)` and the `box:state` event: one agent's box.
+ *  `since` is set while running, `reason` when failed, `detail` while
+ *  preparing (what the box waits for: the image download, the tools disk). */
+export interface BoxStateEvent {
+  agent_id: string;
+  phase: "stopped" | "preparing" | "starting" | "running" | "stopping" | "failed";
+  since?: number | null;
+  reason?: string | null;
+  detail?: string | null;
+}
+
+/** `box:egress`: the proxy answered one connection request from a box. */
+export interface BoxEgressEvent {
+  agent_id: string;
+  host: string;
+  port: number;
+  allowed: boolean;
+}
+
+/** The host-owned box settings `set_box_setting` accepts. */
+export type BoxSettingKey =
+  | "boxes_enabled"
+  | "box_memory_mib"
+  | "box_cpus"
+  | "box_image_url"
+  | "box_idle_stop_minutes";

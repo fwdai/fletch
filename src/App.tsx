@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { BootScreen } from "./components/BootScreen";
+import { BoxEgressToast } from "./components/BoxEgressToast";
 import { DockerBuildToast } from "./components/DockerBuildToast";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { Feedback } from "./components/Feedback";
@@ -192,6 +193,7 @@ function AppShell() {
 
       <UpdateToast />
       <DockerBuildToast />
+      <BoxEgressToast />
       <PublishApproval />
       <PairRequestPrompt />
       {/* One bubble for every `data-tip` trigger in the app. */}

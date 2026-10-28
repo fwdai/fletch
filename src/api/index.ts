@@ -1,4 +1,5 @@
 import { agentsApi } from "./domains/agents";
+import { boxesApi } from "./domains/boxes";
 import { commandsApi } from "./domains/commands";
 import { contextApi } from "./domains/context";
 import { dictationApi } from "./domains/dictation";
@@ -50,6 +51,7 @@ export const api = {
   ...workspaceApi,
   ...miscApi,
   ...sandboxApi,
+  ...boxesApi,
   ...githubApi,
   ...issuesApi,
   ...agentsApi,

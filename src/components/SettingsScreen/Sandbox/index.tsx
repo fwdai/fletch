@@ -4,6 +4,8 @@ import type { SandboxEngine } from "@/storage/preferences";
 import { useAppStore } from "@/store";
 import { useGate } from "@/store/capabilities";
 import { SetGroup, SetHead, SetRow } from "../primitives";
+import { BoxKnobs } from "./BoxKnobs";
+import { boxSetup } from "./boxSetup";
 import { ContainerAuth } from "./ContainerAuth";
 import { ContainerLaunchKnobs } from "./ContainerLaunchKnobs";
 
@@ -25,6 +27,14 @@ export function SandboxPane() {
   const refreshDockerProbe = useAppStore((s) => s.refreshDockerProbe);
   const podmanProbe = useAppStore((s) => s.podmanProbe);
   const refreshPodmanProbe = useAppStore((s) => s.refreshPodmanProbe);
+  // The box sandbox is piloted behind Settings › Developer: with the flag off
+  // nothing below asks about it, so this page is what it was before boxes.
+  const boxesEnabled = useAppStore((s) => s.boxesEnabled);
+  const boxProbe = useAppStore((s) => s.boxProbe);
+  const boxImage = useAppStore((s) => s.boxImage);
+  const boxTools = useAppStore((s) => s.boxTools);
+  const refreshBoxProbe = useAppStore((s) => s.refreshBoxProbe);
+  const refreshBoxImage = useAppStore((s) => s.refreshBoxImage);
   // The engine (and the launch knobs below) are the host's: it stamps them on
   // the agents it spawns.
   const hostGate = useGate("hostSettings");
@@ -35,6 +45,7 @@ export function SandboxPane() {
       if (cancelled) return;
       void refreshDockerProbe();
       void refreshPodmanProbe();
+      if (boxesEnabled) void refreshBoxProbe();
     };
     probe(); // immediately on mount
     const timer = setInterval(probe, PROBE_INTERVAL_MS);
@@ -47,7 +58,12 @@ export function SandboxPane() {
       clearInterval(timer);
       window.removeEventListener("focus", onFocus);
     };
-  }, [refreshDockerProbe, refreshPodmanProbe]);
+  }, [refreshDockerProbe, refreshPodmanProbe, refreshBoxProbe, boxesEnabled]);
+
+  // The image state is read once; `box:image` carries every change after.
+  useEffect(() => {
+    if (boxesEnabled) void refreshBoxImage();
+  }, [refreshBoxImage, boxesEnabled]);
 
   // Each container option is enabled only when the runtime answered the probe;
   // otherwise it's disabled with a hint saying how to fix it. A `null` probe is
@@ -69,6 +85,12 @@ export function SandboxPane() {
       : podmanProbe.status === "machine-down"
         ? "Run podman machine start"
         : "Install Podman";
+  // Offered as soon as the flag is on (the toggle already refused a machine
+  // that cannot boot a box), and selectable right away: a launch waits for
+  // the image and the tools disk while they are still being set up, so the
+  // hint only says where that stands. Settings › Developer has the controls.
+  const boxOffered = boxesEnabled;
+  const boxHint = boxSetup(boxProbe, boxImage, boxTools).text;
 
   return (
     <div className="set-pane">
@@ -104,6 +126,15 @@ export function SandboxPane() {
                 hint: podmanHint || undefined,
                 disabled: !podmanAvailable,
               },
+              ...(boxOffered
+                ? [
+                    {
+                      value: "box" as const,
+                      label: "Box (micro-VM)",
+                      hint: boxHint,
+                    },
+                  ]
+                : []),
             ]}
             onChange={(v) => void setSandboxEngine(v)}
           />
@@ -132,7 +163,8 @@ export function SandboxPane() {
       </SetGroup>
 
       <ContainerLaunchKnobs runtime="docker" />
-      <ContainerLaunchKnobs runtime="podman" last />
+      <ContainerLaunchKnobs runtime="podman" last={!boxesEnabled} />
+      {boxesEnabled && <BoxKnobs last />}
     </div>
   );
 }

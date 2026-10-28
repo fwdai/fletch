@@ -275,7 +275,7 @@ export function parseRoadmapBoardWidth(raw: string | undefined): number | null {
 /** Isolation engine new agents are stamped with. Mirrors the backend's
  *  `EngineKind::as_setting` spellings (`sandbox/engine.rs`), so both sides
  *  agree on the wire strings. */
-export type SandboxEngine = "sandbox-exec" | "docker" | "podman";
+export type SandboxEngine = "sandbox-exec" | "docker" | "podman" | "box";
 
 export const DEFAULT_SANDBOX_ENGINE: SandboxEngine = "sandbox-exec";
 
@@ -284,7 +284,7 @@ export const DEFAULT_SANDBOX_ENGINE: SandboxEngine = "sandbox-exec";
  *  `setSetting`, same posture as `telemetry_enabled`). Unknown/missing values
  *  fall back to the seatbelt default, matching the backend's parser. */
 export function parseSandboxEngine(raw: string | undefined): SandboxEngine {
-  return raw === "docker" || raw === "podman" ? raw : DEFAULT_SANDBOX_ENGINE;
+  return raw === "docker" || raw === "podman" || raw === "box" ? raw : DEFAULT_SANDBOX_ENGINE;
 }
 
 /** Seconds a publish-approval prompt waits before denying — the backend's
@@ -326,6 +326,8 @@ export function sandboxEngineLabel(engine: SandboxEngine): string {
       return "Docker";
     case "podman":
       return "Podman";
+    case "box":
+      return "Box";
     default:
       return "Seatbelt";
   }

@@ -290,6 +290,16 @@ pub const OPS: &[&str] = &[
     // And a project's: one allowlisted pair over `project_settings`.
     "get_project_settings",
     "set_project_setting",
+    // The box sandbox: the Sandbox page's probe, image and settings, and a
+    // workspace's box, on the host that runs them.
+    "box_runtime_probe",
+    "box_image_status",
+    "box_image_install",
+    "box_image_cancel",
+    "box_state",
+    "box_stop",
+    "box_egress_allow",
+    "set_box_setting",
     // The project context layer (protocol doc, "Project context"): the
     // Context tab's reads and the user's own writes, so a paired client
     // curates the same knowledge the host serves its agents.
@@ -587,6 +597,17 @@ const OP_SCOPES: &[(&str, Scope)] = &[
     ("set_podman_launch_settings", Scope::Projects),
     ("set_agent_bin_override", Scope::Projects),
     ("set_project_setting", Scope::Projects),
+    // The box sandbox: three reads; the image, the settings and a project's
+    // egress list are host configuration like the knobs above; stopping a box
+    // is stopping an agent's process.
+    ("box_runtime_probe", Scope::Observe),
+    ("box_image_status", Scope::Observe),
+    ("box_state", Scope::Observe),
+    ("box_image_install", Scope::Projects),
+    ("box_image_cancel", Scope::Projects),
+    ("box_egress_allow", Scope::Projects),
+    ("set_box_setting", Scope::Projects),
+    ("box_stop", Scope::Agents),
     // How a publish happens, and whether one waits for a human: a device that
     // may not publish must not be able to switch the approval gate off.
     ("set_branch_prefix", Scope::Publish),
@@ -1804,6 +1825,10 @@ impl Dispatch for SupervisorDispatch {
                 | "get_project_settings"
                 | "set_project_setting" => settings_op(ctx, sup, op, args).await,
 
+                "box_runtime_probe" | "box_image_status" | "box_image_install"
+                | "box_image_cancel" | "box_state" | "box_stop" | "box_egress_allow"
+                | "set_box_setting" => boxes_op(ctx, op, args).await,
+
                 "context_overview"
                 | "context_preview"
                 | "context_record_entity"
@@ -2021,6 +2046,36 @@ pub(super) async fn settings_op(
                 &a.key,
                 a.value.as_deref(),
             ))
+        }
+        _ => Err(UNKNOWN_OP.to_string()),
+    }
+}
+
+/// The box sandbox ops: the same `commands::box_*_impl` bodies the Tauri
+/// commands call, so a remote install or setting write emits the same
+/// `box:image` / `settings:changed` a click in the host's window does.
+async fn boxes_op(ctx: &Arc<EngineCtx>, op: &str, args: Value) -> DispatchResult {
+    use crate::commands as c;
+    match op {
+        "box_runtime_probe" => ok(c::box_runtime_probe_impl()),
+        "box_image_status" => ok(c::box_image_status_impl()),
+        "box_image_install" => res(c::box_image_install_impl()),
+        "box_image_cancel" => res(c::box_image_cancel_impl()),
+        "box_state" => {
+            let a: AgentArgs = parse(args)?;
+            ok(c::box_state_impl(&a.agent_id))
+        }
+        "box_stop" => {
+            let a: AgentArgs = parse(args)?;
+            res(c::box_stop_impl(&a.agent_id).await)
+        }
+        "box_egress_allow" => {
+            let a: EgressAllowArgs = parse(args)?;
+            res(c::box_egress_allow_impl(ctx, &a.project_id, &a.pattern))
+        }
+        "set_box_setting" => {
+            let a: BoxSettingArgs = parse(args)?;
+            res(c::set_box_setting_impl(ctx, &a.key, a.value.as_deref()))
         }
         _ => Err(UNKNOWN_OP.to_string()),
     }
@@ -2740,6 +2795,21 @@ struct ProjectChatsArgs {
 #[serde(rename_all = "camelCase")]
 struct ProjectArgs {
     project_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct EgressAllowArgs {
+    project_id: String,
+    pattern: String,
+}
+
+/// `value: null` restores the setting's default.
+#[derive(Deserialize)]
+struct BoxSettingArgs {
+    key: String,
+    #[serde(default)]
+    value: Option<String>,
 }
 
 #[derive(Deserialize)]
