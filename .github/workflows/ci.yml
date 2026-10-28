@@ -102,6 +102,7 @@ jobs:
             crates/fletch-proto
             crates/fletch-host
             crates/fletch-box
+            crates/fletch-guest
 
       - name: Rustfmt
         run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
@@ -167,7 +168,8 @@ jobs:
         run: cargo test --manifest-path crates/fletch-host/Cargo.toml
 
       # `fletch-box` is the micro-VM sandbox runtime (libkrun guests reached
-      # over SSH on vsock). Its VM tests are `#[ignore]`d — hosted runners have no nested
+      # over SSH on vsock). Its
+      # VM tests are `#[ignore]`d — hosted runners have no nested
       # virtualisation — so this gate is the unit tests plus the proof that the
       # crate's macOS-only calls are properly cfg-gated for the Linux host.
       - name: Rustfmt (fletch-box)
@@ -180,3 +182,26 @@ jobs:
 
       - name: Test (fletch-box)
         run: cargo test --manifest-path crates/fletch-box/Cargo.toml
+
+      # `fletch-guest` runs inside the box image as a static musl binary. The
+      # unit tests run on the host target; the cross-build is what the image
+      # pipeline (packaging/box-image) consumes, so it is checked here too.
+      - name: Rustfmt (fletch-guest)
+        run: cargo fmt --manifest-path crates/fletch-guest/Cargo.toml --check
+
+      - name: Clippy (fletch-guest)
+        run: >
+          cargo clippy --manifest-path crates/fletch-guest/Cargo.toml --all-targets --
+          -D warnings -A clippy::significant_drop_tightening
+
+      - name: Test (fletch-guest)
+        run: cargo test --manifest-path crates/fletch-guest/Cargo.toml
+
+      - name: Cross-build (fletch-guest, aarch64 musl)
+        # From inside the crate: its linker settings live in
+        # crates/fletch-guest/.cargo/config.toml, which cargo reads from the
+        # working directory, not from --manifest-path.
+        working-directory: crates/fletch-guest
+        run: |
+          rustup target add aarch64-unknown-linux-musl
+          cargo build --release --target aarch64-unknown-linux-musl
