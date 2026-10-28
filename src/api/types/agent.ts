@@ -128,7 +128,8 @@ export interface AgentRecord {
   /** The custom agent this session was spawned from (null for a built-in
    *  spawn). Used to show the custom agent's name/color in the sidebar. */
   custom_agent_id?: string | null;
-  /** Sandbox engine stamped at creation ("sandbox-exec" | "docker") and kept
+  /** Sandbox engine stamped at creation ("sandbox-exec" | "docker" | "podman"
+   *  | "box") and kept
    *  for the agent's life — a settings change never re-engines it. Null for
    *  agents created before engine selection existed (they run sandbox-exec). */
   sandbox_engine?: string | null;

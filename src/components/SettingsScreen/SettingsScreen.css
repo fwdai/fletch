@@ -117,6 +117,15 @@
 .set-nav-foot .dim {
   color: var(--fg-3);
 }
+.set-nav-licence {
+  padding: 0 11px 8px;
+  color: var(--fg-3);
+  line-height: 1.4;
+}
+.set-nav-licence a {
+  color: inherit;
+  text-decoration: underline;
+}
 
 /* ── content column ──────────────────────────────────────────────────── */
 .set-main {
@@ -604,6 +613,18 @@
   color: var(--fg-1);
   font-size: var(--fs-sm);
   line-height: var(--lh-snug);
+}
+
+/* Settings › Developer: the box setup line under the toggle, with its one
+   action (Cancel / Retry) inline. */
+.set-box-setup {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+}
+.set-box-setup[data-state="error"] {
+  color: var(--danger);
 }
 
 /* ── PROVIDERS ───────────────────────────────────────────────────────── */

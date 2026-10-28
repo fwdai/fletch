@@ -28,6 +28,8 @@ export function Capsule({ agent, repoPath, projectName }: Props) {
   const rightCollapsed = useAppStore((s) => s.rightCollapsed);
   const toggleRight = useAppStore((s) => s.toggleRight);
   const setRightPanelTab = useAppStore((s) => s.setRightPanelTab);
+  // Only a box agent has an entry; the chip shows its phase.
+  const boxState = useAppStore((s) => s.boxStates[agent.id]);
   const { shortstats, gitState, prState, checks, prs } = useCapsuleData(agent.id);
   const { lanes } = useWorkspaceLanes(agent);
 
@@ -48,7 +50,7 @@ export function Capsule({ agent, repoPath, projectName }: Props) {
           <span className="ws-ctx">
             {!hasProject && <StatusDot status={status} />}
             <span className="ws-agent-name">{agent.name}</span>
-            <SandboxBadge engine={agent.sandbox_engine} />
+            <SandboxBadge engine={agent.sandbox_engine} boxState={boxState} />
           </span>
           <span className="ws-cap-git">
             <GitBadge pr={prState} git={gitState} checks={checks} stats={shortstats} prs={prs} />

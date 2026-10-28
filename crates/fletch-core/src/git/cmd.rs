@@ -67,11 +67,8 @@ pub(crate) async fn git_output_env(
     // reason the `-c` overrides live at the spawn seam — an opt-in guard is one a
     // future caller forgets.
     super::hardening::refuse_steerable_config(dir).await?;
-    let mut cmd = crate::git_dist::command(dir);
+    let mut cmd = crate::git_dist::command_env(dir, env);
     cmd.args(args).kill_on_drop(true);
-    for (k, v) in env {
-        cmd.env(k, v);
-    }
     tokio::time::timeout(LOCAL_TIMEOUT, cmd.output())
         .await
         .map_err(|_| {
@@ -96,11 +93,8 @@ pub(crate) async fn git_output_stdin(
     stdin: &[u8],
 ) -> Result<std::process::Output> {
     super::hardening::refuse_steerable_config(dir).await?;
-    let mut cmd = crate::git_dist::command(dir);
+    let mut cmd = crate::git_dist::command_env(dir, env);
     cmd.args(args);
-    for (k, v) in env {
-        cmd.env(k, v);
-    }
     let what = format!("git {}", args.first().copied().unwrap_or(""));
     output_with_stdin(cmd, stdin, LOCAL_TIMEOUT, &what).await
 }

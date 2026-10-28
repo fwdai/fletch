@@ -17,7 +17,7 @@ use crate::sandbox::container::run_args::{
 use crate::sandbox::container::util::{container_name, describe_exit_code, non_blank, ExitCopy};
 use crate::sandbox::container::ContainerProvider;
 use crate::sandbox::engine::{
-    AgentLaunchCtx, EngineKind, KillHandle, KillPlan, LaunchPlan, SandboxEngine,
+    AgentLaunchCtx, EngineKind, EnvDelivery, KillHandle, KillPlan, LaunchPlan, SandboxEngine,
 };
 
 use super::settings::{IMAGE_SETTING, LAUNCH_SETTINGS};
@@ -200,6 +200,7 @@ impl SandboxEngine for PodmanEngine {
             prefix_args,
             env: prep.env,
             env_remove: Vec::new(),
+            env_delivery: EnvDelivery::Process,
             kill: KillHandle::Engine {
                 engine: PodmanEngine::shared(),
                 plan: KillPlan::Container { name, connection },
@@ -213,7 +214,11 @@ impl SandboxEngine for PodmanEngine {
     fn kill(&self, plan: &KillPlan) -> Result<()> {
         // The launch's pinned connection, not the current default — a default
         // that moved since would signal into the wrong machine.
-        let KillPlan::Container { name, connection } = plan;
+        // `KillHandle::Engine` pairs a plan with its engine, so another
+        // engine's plan never arrives here; refuse it rather than guess.
+        let KillPlan::Container { name, connection } = plan else {
+            return Ok(());
+        };
         let on = connection.as_deref();
         match cli::run_podman_on(on, &["kill", "-s", "TERM", name], KILL_TIMEOUT) {
             Ok(out) if out.status.success() => {

@@ -1371,6 +1371,15 @@ pub fn run() {
             commands::set_podman_launch_settings,
             commands::get_project_settings,
             commands::set_project_setting,
+            // The box sandbox, shared with the remote dispatcher.
+            commands::box_runtime_probe,
+            commands::box_image_status,
+            commands::box_image_install,
+            commands::box_image_cancel,
+            commands::box_state,
+            commands::box_stop,
+            commands::box_egress_allow,
+            commands::set_box_setting,
             // The project context layer, shared with the remote dispatcher.
             commands::context_overview,
             commands::context_preview,

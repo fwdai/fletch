@@ -1,5 +1,11 @@
 import {
   api,
+  type BoxEgressEvent,
+  type BoxImageStatus,
+  type BoxRuntimeProbe,
+  type BoxSettingKey,
+  type BoxStateEvent,
+  type BoxToolsStatus,
   type ContainerAuthStatus,
   type DockerBuildEvent,
   type DockerProbe,
@@ -116,6 +122,28 @@ export interface SandboxSlice {
    *  head. Unanswered requests are denied backend-side after a timeout, so a
    *  dropped entry fails closed. */
   pendingPublishApprovals: PublishApproval[];
+  /** The box sandbox's developer flag, mirrored from the host-owned
+   *  `boxes_enabled`. Everything box-related on the Sandbox page renders only
+   *  while this is on. */
+  boxesEnabled: boolean;
+  /** The box knobs, mirrored from the host-owned `box_*` settings. Empty
+   *  string = unset (the engine's defaults apply). */
+  boxMemoryMib: string;
+  boxCpus: string;
+  boxImageUrl: string;
+  boxIdleStopMinutes: string;
+  /** Latest box runtime probe; `null` until the first lands. */
+  boxProbe: BoxRuntimeProbe | null;
+  /** The pinned guest image's install state: `box_image_status` once, then
+   *  every `box:image`. `null` until the first read lands. */
+  boxImage: BoxImageStatus | null;
+  /** Each supported provider's tools disk by provider id: seeded by the probe,
+   *  then every `box:tools`. */
+  boxTools: Record<string, BoxToolsStatus>;
+  /** Each box agent's phase by agent id, from `box:state`. */
+  boxStates: Record<string, BoxStateEvent>;
+  /** Connections the egress proxy refused, oldest first, until dismissed. */
+  boxEgressDenials: BoxEgressEvent[];
 
   /** Persist a new engine choice via the backend, which validates docker
    *  against a live daemon probe — reverts the store on refusal. */
@@ -168,6 +196,34 @@ export interface SandboxSlice {
   /** Launch Docker Desktop (daemon-down error action); surfaces failures via
    *  `lastError`. */
   startDockerDesktop: () => Promise<void>;
+  /** Flip the box developer flag (host-owned `boxes_enabled`, written through
+   *  `set_box_setting`). On the host, turning it on is the whole setup: the
+   *  image download, the tools disks, and `box` as the engine for new agents;
+   *  those arrive back as events and `settings:changed`. Reverts the toggle
+   *  on refusal (an Intel Mac, no runtime). */
+  setBoxesEnabled: (enabled: boolean) => Promise<void>;
+  /** Write one box knob; blank restores the default. Resolves to the host's
+   *  validation message, or `null` when it stuck — the field shows it inline.
+   *  The stored value arrives back as `settings:changed`, so no optimistic
+   *  write here. */
+  saveBoxSetting: (key: BoxSettingKey, value: string) => Promise<string | null>;
+  /** Re-probe the box runtime into `boxProbe`; a host that cannot answer
+   *  leaves it as is. */
+  refreshBoxProbe: () => Promise<void>;
+  /** Read the image's install state into `boxImage`. */
+  refreshBoxImage: () => Promise<void>;
+  /** Start (or retry) the image install and the tools builds after it, or
+   *  cancel the download; refusals go to `lastError`. */
+  installBoxImage: () => Promise<void>;
+  cancelBoxImage: () => Promise<void>;
+  applyBoxImage: (e: BoxImageStatus) => void;
+  applyBoxState: (e: BoxStateEvent) => void;
+  applyBoxTools: (e: BoxToolsStatus) => void;
+  /** Keep a refused connection for the workspace to show. */
+  receiveBoxEgress: (e: BoxEgressEvent) => void;
+  dismissBoxEgress: (index: number) => void;
+  /** Stop one agent's box now; refusals go to `lastError`. */
+  stopBox: (agentId: string) => Promise<void>;
 }
 
 type StoreSet = Parameters<SliceCreator<SandboxSlice>>[0];
@@ -203,6 +259,16 @@ export const createSandboxSlice: SliceCreator<SandboxSlice> = (set, get) => ({
   podmanCpus: "",
   publishConfirmation: false,
   pendingPublishApprovals: [],
+  boxesEnabled: false,
+  boxMemoryMib: "",
+  boxCpus: "",
+  boxImageUrl: "",
+  boxIdleStopMinutes: "",
+  boxProbe: null,
+  boxImage: null,
+  boxTools: {},
+  boxStates: {},
+  boxEgressDenials: [],
 
   setPublishConfirmation: async (enabled) => {
     await api.setPublishConfirmation(enabled);
@@ -341,6 +407,67 @@ export const createSandboxSlice: SliceCreator<SandboxSlice> = (set, get) => ({
   startDockerDesktop: async () => {
     try {
       await api.startDockerDesktop();
+    } catch (e) {
+      set({ lastError: String(e) });
+    }
+  },
+
+  setBoxesEnabled: (enabled) =>
+    optimistic(set, { boxesEnabled: enabled }, { boxesEnabled: get().boxesEnabled }, () =>
+      api.setBoxSetting("boxes_enabled", String(enabled)),
+    ),
+  saveBoxSetting: async (key, value) => {
+    try {
+      await api.setBoxSetting(key, value || null);
+      return null;
+    } catch (e) {
+      return String(e);
+    }
+  },
+  refreshBoxProbe: async () => {
+    try {
+      const probe = await api.boxRuntimeProbe();
+      // The probe is also the one read of the tools disks; `box:tools` carries
+      // every change after.
+      set({
+        boxProbe: probe,
+        boxTools: Object.fromEntries(probe.tools.map((t) => [t.provider, t])),
+      });
+    } catch {
+      // A host that cannot answer (too old, or no box runtime) keeps whatever
+      // was on screen; the probe is advisory.
+    }
+  },
+  refreshBoxImage: async () => {
+    try {
+      set({ boxImage: await api.boxImageStatus() });
+    } catch {
+      // Same posture as the probe.
+    }
+  },
+  installBoxImage: async () => {
+    try {
+      await api.boxImageInstall();
+    } catch (e) {
+      set({ lastError: String(e) });
+    }
+  },
+  cancelBoxImage: async () => {
+    try {
+      await api.boxImageCancel();
+    } catch (e) {
+      set({ lastError: String(e) });
+    }
+  },
+  applyBoxImage: (e) => set({ boxImage: e }),
+  applyBoxState: (e) => set((s) => ({ boxStates: { ...s.boxStates, [e.agent_id]: e } })),
+  applyBoxTools: (e) => set((s) => ({ boxTools: { ...s.boxTools, [e.provider]: e } })),
+  receiveBoxEgress: (e) => set((s) => ({ boxEgressDenials: [...s.boxEgressDenials, e] })),
+  dismissBoxEgress: (index) =>
+    set((s) => ({ boxEgressDenials: s.boxEgressDenials.filter((_, i) => i !== index) })),
+  stopBox: async (agentId) => {
+    try {
+      await api.boxStop(agentId);
     } catch (e) {
       set({ lastError: String(e) });
     }

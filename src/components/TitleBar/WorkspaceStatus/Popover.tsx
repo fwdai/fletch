@@ -4,6 +4,7 @@ import { ProviderIcon } from "@/components/ProviderIcon";
 import { LaneRow } from "@/components/RightPanel/GitPanel/Lanes";
 import type { Lane } from "@/components/RightPanel/GitPanel/laneModel";
 import { providerChip } from "@/data/providers";
+import { useAppStore } from "@/store";
 import { type DotStatus, STATUS_LABEL } from "./derive";
 import { StatusDot } from "./StatusDot";
 
@@ -20,6 +21,13 @@ interface Props {
  *  breakdown — and one way in: the panel, where every action lives. The PR
  *  chip on a lane is the link to GitHub, as it is in the panel. */
 export function Popover({ agent, status, lanes, onOpenPanel }: Props) {
+  // A box outlives the agent's process (its registry keeps it up until the
+  // idle timer fires): while it is up the user can stop it here without
+  // archiving the workspace.
+  const boxPhase = useAppStore((s) => s.boxStates[agent.id]?.phase);
+  const stopBox = useAppStore((s) => s.stopBox);
+  const boxUp =
+    agent.sandbox_engine === "box" && (boxPhase === "running" || boxPhase === "starting");
   return (
     <div className="ws-pop" role="dialog">
       <div className="ws-pop-head">
@@ -52,6 +60,11 @@ export function Popover({ agent, status, lanes, onOpenPanel }: Props) {
         <button type="button" className="ws-act primary" onClick={onOpenPanel}>
           <Icon name="branch" size={12} /> Open Git panel
         </button>
+        {boxUp && (
+          <button type="button" className="ws-act" onClick={() => void stopBox(agent.id)}>
+            <Icon name="stop" size={12} /> Stop box
+          </button>
+        )}
       </div>
     </div>
   );

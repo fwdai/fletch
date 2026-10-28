@@ -23,6 +23,10 @@ import {
   onAutopilotEvent,
   onAutopilotState,
   onAutopilotSwitches,
+  onBoxEgress,
+  onBoxImage,
+  onBoxState,
+  onBoxTools,
   onDelegationChanged,
   onDockerBuildProgress,
   onLocalSettingsChanged,
@@ -745,6 +749,19 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
   await bind(
     onDockerBuildProgress((e) => {
       set((s) => ({ containerBuilds: applyBuildEvent(s.containerBuilds, e) }));
+    }),
+  );
+
+  // The box sandbox: the image install and the tools builds for the Developer
+  // pane's setup line, each box's phase for the workspace capsule, and the
+  // connections the egress proxy refused for the toast. Allowed connections
+  // are routine.
+  await bind(onBoxImage((e) => get().applyBoxImage(e)));
+  await bind(onBoxTools((e) => get().applyBoxTools(e)));
+  await bind(onBoxState((e) => get().applyBoxState(e)));
+  await bind(
+    onBoxEgress((e) => {
+      if (!e.allowed) get().receiveBoxEgress(e);
     }),
   );
 };

@@ -53,7 +53,9 @@
 
 use std::path::{Path, PathBuf};
 
-use super::engine::{AgentLaunchCtx, EngineKind, KillHandle, LaunchPlan, SandboxEngine};
+use super::engine::{
+    AgentLaunchCtx, EngineKind, EnvDelivery, KillHandle, LaunchPlan, SandboxEngine,
+};
 use super::policy;
 use crate::error::{Error, Result};
 
@@ -131,6 +133,7 @@ impl SandboxEngine for SandboxExecEngine {
             prefix_args,
             env,
             env_remove: HOST_CREDENTIAL_ENV.iter().map(|v| v.to_string()).collect(),
+            env_delivery: EnvDelivery::Process,
             // sandbox-exec is a plain process wrapper — the session's own
             // process-group escalation tears everything down; the trait's
             // default no-op `kill` applies.

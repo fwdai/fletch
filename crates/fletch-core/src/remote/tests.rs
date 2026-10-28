@@ -530,7 +530,7 @@ fn begin_pairing_names_the_preset_and_refuses_an_unknown_one() {
 
 #[test]
 fn allowlist_matches_the_protocol_table() {
-    // The 153 rows of docs/remote-protocol.md's op table, spelled out here so a
+    // The 172 rows of docs/remote-protocol.md's op table, spelled out here so a
     // silent widening of the wire surface fails this test. `register_push` is
     // the one the session layer answers itself (it needs the connection's
     // device identity), so it lives in `SESSION_OPS`; the two together are what
@@ -686,6 +686,14 @@ fn allowlist_matches_the_protocol_table() {
         "set_agent_attribution_removed",
         "get_project_settings",
         "set_project_setting",
+        "box_runtime_probe",
+        "box_image_status",
+        "box_image_install",
+        "box_image_cancel",
+        "box_state",
+        "box_stop",
+        "box_egress_allow",
+        "set_box_setting",
         "context_overview",
         "context_preview",
         "context_record_entity",
@@ -4044,7 +4052,8 @@ async fn every_settings_op_has_an_arm() {
             assert_ne!(e, dispatch::UNKNOWN_OP, "{op} has no arm");
         }
     }
-    assert_eq!(seen, 17, "the settings family is 17 ops");
+    // 17 through `settings_op`, plus `set_box_setting` through `boxes_op`.
+    assert_eq!(seen, 18, "the settings family is 18 ops");
 }
 
 /// The two settings events are forwarded and advertised, so a second desktop

@@ -246,6 +246,13 @@ impl Supervisor {
                 base_ref: tip_sha,
                 dest: &checkout,
             };
+            // A box-stamped agent's checkout is rebuilt inside its box from
+            // what the source repository holds; the clone-based restore
+            // ladders below are for host checkouts.
+            let box_identity = match stamped_engine(&record) {
+                EngineKind::Box => Some(crate::sandbox::boxes::BoxIdentity::for_record(&record)?),
+                EngineKind::SandboxExec | EngineKind::Docker | EngineKind::Podman => None,
+            };
             let branch = match &snap.branch_name {
                 // The agent had pushed a branch → recreate it at the tip,
                 // resolving name collisions with a -restored suffix. If the
@@ -258,13 +265,26 @@ impl Supervisor {
                     // tip must be refetched, the remote only knows the original
                     // name, not the -restored rename. `parent_branch_sha` is
                     // the last-resort detached base.
-                    let landed_on_branch = provision::provision_on_branch(
-                        &spec,
-                        &chosen,
-                        desired_name,
-                        snap.parent_branch_sha.as_deref(),
-                    )
-                    .await?;
+                    let landed_on_branch = match &box_identity {
+                        Some(identity) => {
+                            crate::sandbox::boxes::provision::restore(
+                                identity,
+                                &spec,
+                                Some(&chosen),
+                                snap.parent_branch_sha.as_deref(),
+                            )
+                            .await?
+                        }
+                        None => {
+                            provision::provision_on_branch(
+                                &spec,
+                                &chosen,
+                                desired_name,
+                                snap.parent_branch_sha.as_deref(),
+                            )
+                            .await?
+                        }
+                    };
                     landed_on_branch.then_some(chosen)
                 }
                 // No branch of record → restore detached at the tip, ready to
@@ -273,8 +293,24 @@ impl Supervisor {
                 // then merged), so this recovers by SHA with the parent base
                 // as the last resort, like the branch path's lower rungs.
                 None => {
-                    provision::provision_recovering(&spec, snap.parent_branch_sha.as_deref())
-                        .await?;
+                    match &box_identity {
+                        Some(identity) => {
+                            crate::sandbox::boxes::provision::restore(
+                                identity,
+                                &spec,
+                                None,
+                                snap.parent_branch_sha.as_deref(),
+                            )
+                            .await?;
+                        }
+                        None => {
+                            provision::provision_recovering(
+                                &spec,
+                                snap.parent_branch_sha.as_deref(),
+                            )
+                            .await?;
+                        }
+                    }
                     None
                 }
             };
@@ -557,7 +593,9 @@ async fn choose_restore_branch_name(repo_path: &Path, desired: &str) -> String {
 ///    round-trip to report success to the user.
 fn reap_agent_containers(agent_id: &str, record: Option<&AgentRecord>, op: &'static str) {
     let engine = record.map(stamped_engine);
-    if engine.is_some_and(|k| !k.is_container()) {
+    // Seatbelt runs no container; neither does a box, whose VM goes with
+    // `boxes::discard_if_any` in the checkout teardown instead.
+    if matches!(engine, Some(EngineKind::SandboxExec | EngineKind::Box)) {
         return;
     }
     let agent_id = agent_id.to_string();
@@ -605,6 +643,11 @@ fn reap_agent_containers(agent_id: &str, record: Option<&AgentRecord>, op: &'sta
 /// its first completed step otherwise.
 async fn teardown_agent_checkouts(agent_id: &str, repos: &[TrackedRepo], op: &str) -> Vec<String> {
     let mut failures = Vec::new();
+    // A box-stamped agent's checkouts live on its disk: stop the VM and delete
+    // the box directory. The host paths below then hold only the placeholder
+    // directories the launch needed, which the removals handle like any tree.
+    // A directory probe for every other agent, so it stays here unconditionally.
+    crate::sandbox::boxes::discard_if_any(agent_id).await;
     for repo in repos {
         if repo.is_adopted() {
             continue;

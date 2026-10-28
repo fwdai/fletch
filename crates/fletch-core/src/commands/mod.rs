@@ -11,6 +11,7 @@
 
 pub mod accounts;
 pub mod agent;
+pub mod boxes;
 pub mod context;
 pub mod files;
 pub mod git_ops;
@@ -25,6 +26,7 @@ pub mod workspace;
 
 pub use accounts::*;
 pub use agent::*;
+pub use boxes::*;
 pub use context::*;
 pub use files::*;
 pub use git_ops::*;

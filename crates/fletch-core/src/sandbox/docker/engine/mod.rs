@@ -79,7 +79,7 @@ use std::time::Duration;
 
 use crate::error::{Error, Result};
 use crate::sandbox::engine::{
-    AgentLaunchCtx, EngineKind, KillHandle, KillPlan, LaunchPlan, SandboxEngine,
+    AgentLaunchCtx, EngineKind, EnvDelivery, KillHandle, KillPlan, LaunchPlan, SandboxEngine,
 };
 
 use super::{cli, image, DockerProvider};
@@ -252,6 +252,7 @@ impl SandboxEngine for DockerEngine {
             prefix_args,
             env: prep.env,
             env_remove: Vec::new(),
+            env_delivery: EnvDelivery::Process,
             kill: KillHandle::Engine {
                 engine: DockerEngine::shared(),
                 // One daemon endpoint: nothing to pin teardown to.
@@ -269,7 +270,12 @@ impl SandboxEngine for DockerEngine {
     /// exit), and an error here would abort the caller's local process-group
     /// teardown of the docker CLI child.
     fn kill(&self, plan: &KillPlan) -> Result<()> {
-        let KillPlan::Container { name, .. } = plan;
+        // Only `KillHandle::Engine` pairs a plan with its engine, so another
+        // engine's plan never arrives here; refusing it is still the right
+        // shape for a kill that must not touch the wrong thing.
+        let KillPlan::Container { name, .. } = plan else {
+            return Ok(());
+        };
         match cli::run_docker(&["kill", "-s", "TERM", name], KILL_TIMEOUT) {
             Ok(out) if out.status.success() => {
                 if !container_gone_within(name, TERM_GRACE) {

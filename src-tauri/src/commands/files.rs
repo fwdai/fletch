@@ -1,10 +1,12 @@
 //! File panel — browse the checkout, view & edit file contents.
 //!
 //! The Tauri half. The path-safety guard (`safe_join`), the agent → repo →
-//! checkout resolution and the read surfaces the remote dispatcher shares all
-//! live in `fletch_core::commands::files`; the handlers below are the webview's
-//! way in. The resolution helpers are re-exported so the sibling command
-//! modules keep reaching them as `super::files::…`.
+//! checkout resolution and every read and write surface live in
+//! `fletch_core::commands::files`, routed through the path-routed executor so a
+//! box agent's checkout (which lives in its guest) is reached the same way as
+//! a host one; the handlers below are the webview's way in. The resolution
+//! helpers are re-exported so the sibling command modules keep reaching them as
+//! `super::files::…`.
 
 use std::sync::Arc;
 use tauri::State;
@@ -13,8 +15,9 @@ use crate::error::{Error, Result};
 use crate::git;
 use crate::supervisor::Supervisor;
 use fletch_core::commands::files::{
-    checkout_scope_for_path, get_file_diff_impl, list_checkout_tree_impl, list_dir_impl,
-    read_checkout_file_impl, resolve_new_path, safe_join,
+    copy_checkout_file_impl, create_checkout_dir_impl, create_checkout_file_impl,
+    delete_checkout_path_impl, get_file_diff_impl, list_checkout_tree_impl, list_dir_impl,
+    read_checkout_file_impl, rename_checkout_path_impl, write_checkout_file_impl,
 };
 
 pub use fletch_core::commands::files::{
@@ -95,20 +98,11 @@ pub async fn write_checkout_file(
     path: String,
     contents: String,
 ) -> Result<()> {
-    let (checkout, _base, path) = checkout_scope_for_path(&supervisor, &agent_id, &path).await?;
-    let abs = safe_join(&checkout, &path)?;
-    if let Some(dir) = abs.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    std::fs::write(&abs, contents)?;
-    Ok(())
+    write_checkout_file_impl(&supervisor, &agent_id, &path, &contents).await
 }
 
 /// Rename/move a checkout path (file or directory). Refuses to clobber an
-/// existing destination so a rename can never silently overwrite a sibling.
-/// Source and destination resolve their repo scope independently, so a move
-/// between a multi-repo agent's checkouts (sibling directories on the same
-/// volume) works like any other rename.
+/// existing destination.
 #[tauri::command]
 pub async fn rename_checkout_path(
     supervisor: State<'_, Arc<Supervisor>>,
@@ -116,32 +110,18 @@ pub async fn rename_checkout_path(
     from: String,
     to: String,
 ) -> Result<()> {
-    let (checkout_from, _base, from) =
-        checkout_scope_for_path(&supervisor, &agent_id, &from).await?;
-    let (checkout_to, _base, to) = checkout_scope_for_path(&supervisor, &agent_id, &to).await?;
-    let src = safe_join(&checkout_from, &from)?;
-    let dst = resolve_new_path(&checkout_to, &to)?;
-    std::fs::rename(&src, &dst)?;
-    Ok(())
+    rename_checkout_path_impl(&supervisor, &agent_id, &from, &to).await
 }
 
-/// Delete a checkout path. Files are removed directly; directories are
-/// removed recursively (the UI guards this behind a confirm step). Deleting a
-/// path that's already gone is a no-op, so concurrent deletes don't error.
+/// Delete a checkout path: a file directly, a directory recursively (the UI
+/// guards this behind a confirm step). Already gone is a no-op.
 #[tauri::command]
 pub async fn delete_checkout_path(
     supervisor: State<'_, Arc<Supervisor>>,
     agent_id: String,
     path: String,
 ) -> Result<()> {
-    let (checkout, _base, path) = checkout_scope_for_path(&supervisor, &agent_id, &path).await?;
-    let abs = safe_join(&checkout, &path)?;
-    if abs.is_dir() {
-        std::fs::remove_dir_all(&abs)?;
-    } else if abs.exists() {
-        std::fs::remove_file(&abs)?;
-    }
-    Ok(())
+    delete_checkout_path_impl(&supervisor, &agent_id, &path).await
 }
 
 /// Create a new empty file, making parent directories as needed. Refuses to
@@ -152,10 +132,7 @@ pub async fn create_checkout_file(
     agent_id: String,
     path: String,
 ) -> Result<()> {
-    let (checkout, _base, path) = checkout_scope_for_path(&supervisor, &agent_id, &path).await?;
-    let abs = resolve_new_path(&checkout, &path)?;
-    std::fs::write(&abs, "")?;
-    Ok(())
+    create_checkout_file_impl(&supervisor, &agent_id, &path).await
 }
 
 /// Create a new directory. Refuses to clobber an existing path.
@@ -165,10 +142,7 @@ pub async fn create_checkout_dir(
     agent_id: String,
     path: String,
 ) -> Result<()> {
-    let (checkout, _base, path) = checkout_scope_for_path(&supervisor, &agent_id, &path).await?;
-    let abs = resolve_new_path(&checkout, &path)?;
-    std::fs::create_dir_all(&abs)?;
-    Ok(())
+    create_checkout_dir_impl(&supervisor, &agent_id, &path).await
 }
 
 /// Copy a checkout file to a new path (the explorer's "Duplicate"). Refuses
@@ -180,13 +154,7 @@ pub async fn copy_checkout_file(
     from: String,
     to: String,
 ) -> Result<()> {
-    let (checkout_from, _base, from) =
-        checkout_scope_for_path(&supervisor, &agent_id, &from).await?;
-    let (checkout_to, _base, to) = checkout_scope_for_path(&supervisor, &agent_id, &to).await?;
-    let src = safe_join(&checkout_from, &from)?;
-    let dst = resolve_new_path(&checkout_to, &to)?;
-    std::fs::copy(&src, &dst)?;
-    Ok(())
+    copy_checkout_file_impl(&supervisor, &agent_id, &from, &to).await
 }
 
 /// Persist a file the user pasted into the composer (a screenshot from the

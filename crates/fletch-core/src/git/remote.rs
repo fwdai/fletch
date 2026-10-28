@@ -87,7 +87,15 @@ const TRANSPORT_CONFIG: &[(&str, &str)] = &[
 /// config once.
 #[derive(Debug)]
 pub struct Transport {
+    /// The repository whose objects and per-worktree refs transport runs
+    /// over: the checkout, or for a checkout inside a box its host-side
+    /// mirror (`sandbox::boxes::mirror`), since host git never runs in a
+    /// guest's checkout.
     checkout: PathBuf,
+    /// The guest checkout a box mirror stands in for, so the tracking refs
+    /// transport moves in the mirror are pushed back where the agent reads
+    /// them. `None` for a host checkout.
+    guest: Option<PathBuf>,
     source_repo: PathBuf,
     /// `None` when the checkout *is* the user's repository.
     split: Option<Split>,
@@ -145,6 +153,12 @@ impl Transport {
     pub async fn open(checkout: &Path, source_repo: &Path) -> Result<Self> {
         super::hardening::refuse_steerable_config(checkout).await?;
         require_origin_unchanged(checkout, source_repo).await?;
+        // A box checkout's objects reach host git only through its mirror,
+        // refreshed from the guest now. The two checks above ran against the
+        // real checkout, routed into the guest.
+        let mirror = crate::sandbox::boxes::mirror::for_transport(checkout, source_repo).await?;
+        let guest = mirror.as_ref().map(|_| checkout.to_path_buf());
+        let checkout = mirror.as_deref().unwrap_or(checkout);
         let split = if checkout == source_repo {
             None
         } else {
@@ -174,6 +188,7 @@ impl Transport {
         };
         let mut t = Self {
             checkout: checkout.to_path_buf(),
+            guest,
             source_repo: source_repo.to_path_buf(),
             split,
             fetch_remote: "origin".to_string(),
@@ -263,6 +278,27 @@ impl Transport {
 
     /// [`Self::fetch_branches`] with its own deadline, for the spawn path.
     pub(crate) async fn fetch_branches_within(
+        &self,
+        which: Branches<'_>,
+        timeout: Duration,
+    ) -> Result<()> {
+        self.fetch_branches_into_store(which, timeout).await?;
+        self.sync_guest().await
+    }
+
+    /// For a box checkout, the tracking refs just moved in the mirror are
+    /// pushed back into the guest, where the agent and the Git panel read
+    /// them; a host checkout moved its own and has nothing to sync.
+    async fn sync_guest(&self) -> Result<()> {
+        match &self.guest {
+            Some(guest) => {
+                crate::sandbox::boxes::mirror::push_tracking(&self.checkout, guest).await
+            }
+            None => Ok(()),
+        }
+    }
+
+    async fn fetch_branches_into_store(
         &self,
         which: Branches<'_>,
         timeout: Duration,
@@ -460,7 +496,8 @@ impl Transport {
         if self.split.is_none() {
             return Ok(());
         }
-        self.set_tracking(branch, commit).await
+        self.set_tracking(branch, commit).await?;
+        self.sync_guest().await
     }
 
     /// Fetch `commit` itself into the checkout's store, no ref: a tip whose

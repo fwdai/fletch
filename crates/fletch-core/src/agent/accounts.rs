@@ -329,7 +329,7 @@ fn seed_claude_state(dir: &Path, home: &Path) {
 
 /// Pure core of [`seed_claude_state`]: onboarding done, and the theme from the
 /// user's own state file when it has one.
-fn claude_state_seed(own: Option<&[u8]>) -> serde_json::Value {
+pub(crate) fn claude_state_seed(own: Option<&[u8]>) -> serde_json::Value {
     let mut seed = serde_json::Map::new();
     seed.insert(
         "hasCompletedOnboarding".into(),

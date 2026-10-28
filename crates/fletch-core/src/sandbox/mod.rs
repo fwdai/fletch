@@ -1,3 +1,4 @@
+pub mod boxes;
 pub mod cargo_home;
 pub(crate) mod container;
 pub mod docker;
@@ -9,7 +10,7 @@ pub mod provision;
 mod seatbelt;
 pub mod toolchain_cache;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
 use parking_lot::RwLock;
@@ -17,12 +18,13 @@ use parking_lot::RwLock;
 use crate::error::{Error, Result};
 
 pub use docker::{availability as docker_availability, DockerAvailability};
-pub use engine::{AgentLaunchCtx, EngineKind, KillHandle, LaunchPlan, SandboxEngine};
+pub use engine::{AgentLaunchCtx, EngineKind, EnvDelivery, KillHandle, LaunchPlan, SandboxEngine};
 pub use guarantees::{describe as describe_isolation, IsolationReport};
 pub use podman::{
     availability as podman_availability, launch_blocker as podman_launch_blocker,
     PodmanAvailability,
 };
+pub(crate) use seatbelt::pid_alive;
 pub use seatbelt::{
     build_run_profile, cleanup_nested_checkouts_roots, cleanup_nested_rpc_roots,
     nested_checkouts_root, nested_rpc_root, profile_args, SANDBOX_EXEC,
@@ -91,6 +93,10 @@ pub(crate) fn configured_data_dir() -> Option<PathBuf> {
 pub fn engine_for(kind: EngineKind) -> Result<Arc<dyn SandboxEngine>> {
     match kind {
         EngineKind::SandboxExec => Ok(seatbelt_engine()),
+        // Behind the `boxes_enabled` developer flag, then the runtime probe
+        // and the image: `boxes::availability` refuses with the first thing
+        // missing, so a box-stamped agent never launches elsewhere.
+        EngineKind::Box => boxes::availability().map(|_| boxes::BoxEngine::shared() as Arc<_>),
         EngineKind::Docker => match docker::availability() {
             DockerAvailability::Available { .. } => Ok(docker::DockerEngine::shared()),
             status => {
@@ -121,6 +127,26 @@ pub fn engine_for(kind: EngineKind) -> Result<Arc<dyn SandboxEngine>> {
                 )))
             }
         },
+    }
+}
+
+/// The `projects` dir `kind` gives claude in place of the shared
+/// `~/.claude/projects`, for the agent whose writable root is `writable_root`;
+/// `None` when the engine lets claude write the shared one (seatbelt). The
+/// container engines bind this dir over the image's config dir
+/// (`container::launch`); the box engine mirrors the guest's projects dir into
+/// `<box dir>/claude-projects` over its transcript relay. The transcript
+/// writer (`transcripts::claude_projects_dir`) and reader (`transcripts::
+/// find_session_jsonl`) consult this, so neither names an engine.
+pub(crate) fn transcript_root(kind: EngineKind, writable_root: &Path) -> Option<PathBuf> {
+    match kind {
+        EngineKind::Docker | EngineKind::Podman => {
+            Some(writable_root.join(crate::transcripts::DOCKER_CLAUDE_PROJECTS_DIRNAME))
+        }
+        // The box dir is a sibling of the writable root, named by the same
+        // agent id (its last component).
+        EngineKind::Box => boxes::transcript_dir_for_root(writable_root),
+        EngineKind::SandboxExec => None,
     }
 }
 
