@@ -148,7 +148,7 @@ pub(crate) fn codex_write(
     session_id: &str,
     agent_id: &str,
     cwd: &Path,
-    _container: bool,
+    _engine: crate::sandbox::EngineKind,
     bodies: &[Value],
 ) -> Result<Option<PathBuf>> {
     let overlay = crate::agent::codex_home::overlay_for_agent(agent_id)?;

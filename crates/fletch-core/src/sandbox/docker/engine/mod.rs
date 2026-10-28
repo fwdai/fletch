@@ -79,7 +79,7 @@ use std::time::Duration;
 
 use crate::error::{Error, Result};
 use crate::sandbox::engine::{
-    AgentLaunchCtx, EngineKind, KillHandle, KillPlan, LaunchPlan, SandboxEngine,
+    AgentLaunchCtx, EngineKind, EnvDelivery, KillHandle, KillPlan, LaunchPlan, SandboxEngine,
 };
 
 use super::{cli, image, DockerProvider};
@@ -252,6 +252,7 @@ impl SandboxEngine for DockerEngine {
             prefix_args,
             env: prep.env,
             env_remove: Vec::new(),
+            env_delivery: EnvDelivery::Process,
             kill: KillHandle::Engine {
                 engine: DockerEngine::shared(),
                 // One daemon endpoint: nothing to pin teardown to.

@@ -1,13 +1,17 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use crate::error::Result;
+use crate::error::{Error, Result};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EngineKind {
     SandboxExec,
     Docker,
     Podman,
+    /// A libkrun micro-VM per agent (docs/boxes-spec.md). Named here so
+    /// settings, guarantees and the seams can refer to it; [`super::engine_for`]
+    /// refuses it until the engine lands (phase 4).
+    Box,
 }
 
 impl EngineKind {
@@ -15,7 +19,7 @@ impl EngineKind {
     /// notably [`super::guarantees`], which must state each engine's coverage of
     /// each guarantee, so an engine added here without a coverage declaration
     /// fails to compile.
-    pub const ALL: &'static [Self] = &[Self::SandboxExec, Self::Docker, Self::Podman];
+    pub const ALL: &'static [Self] = &[Self::SandboxExec, Self::Docker, Self::Podman, Self::Box];
 
     /// The `sandbox_engine` settings-value spelling for this kind. Shared with
     /// the frontend's `SandboxEngine` type, so both sides agree on the wire
@@ -25,6 +29,7 @@ impl EngineKind {
             Self::SandboxExec => "sandbox-exec",
             Self::Docker => "docker",
             Self::Podman => "podman",
+            Self::Box => "box",
         }
     }
 
@@ -36,7 +41,10 @@ impl EngineKind {
     pub fn is_container(self) -> bool {
         match self {
             Self::Docker | Self::Podman => true,
-            Self::SandboxExec => false,
+            // A box is as self-contained as a container, but shares none of the
+            // container plumbing this gates (provider images, bind mounts, the
+            // in-image bin). Phase 4 revisits each caller.
+            Self::SandboxExec | Self::Box => false,
         }
     }
 
@@ -47,6 +55,7 @@ impl EngineKind {
             "sandbox-exec" => Some(Self::SandboxExec),
             "docker" => Some(Self::Docker),
             "podman" => Some(Self::Podman),
+            "box" => Some(Self::Box),
             _ => None,
         }
     }
@@ -196,6 +205,20 @@ impl KillHandle {
     }
 }
 
+/// How the agent's assembled env reaches its process (docs/boxes-spec.md §7.6).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum EnvDelivery {
+    /// Set on the launcher process the spawn starts, which the agent inherits
+    /// — every engine whose launcher runs where the agent runs.
+    #[default]
+    Process,
+    /// Shipped into the guest by [`SandboxEngine::deliver_env`] as a file the
+    /// plan's `prefix_args` already name, because the launcher is an ssh
+    /// client whose env never reaches the remote. `launch_id` is the engine's
+    /// name for this launch, chosen when it built the plan.
+    GuestFile { launch_id: String },
+}
+
 pub struct LaunchPlan {
     pub program: std::path::PathBuf,
     pub prefix_args: Vec<String>,
@@ -204,6 +227,7 @@ pub struct LaunchPlan {
     /// into the session's `env_remove`, applied before `env`). Seatbelt drops
     /// `SSH_AUTH_SOCK` here; the container engines pass no host env to strip.
     pub env_remove: Vec<String>,
+    pub env_delivery: EnvDelivery,
     pub kill: KillHandle,
 }
 
@@ -211,6 +235,21 @@ pub trait SandboxEngine: Send + Sync {
     fn kind(&self) -> EngineKind;
 
     fn launch_agent(&self, ctx: &AgentLaunchCtx, agent_bin: &str) -> Result<LaunchPlan>;
+
+    /// Ship `env` into the guest for launch `launch_id` of `agent_id`, and
+    /// return the guest path it was written to — the one the plan's
+    /// `prefix_args` already name. Called by the spawn shapes in
+    /// `agent::spawn` only for a plan whose delivery is
+    /// [`EnvDelivery::GuestFile`], so an engine that delivers in-process never
+    /// implements it; the box engine does (phase 4).
+    fn deliver_env(
+        &self,
+        _agent_id: &str,
+        _launch_id: &str,
+        _env: &[(String, String)],
+    ) -> Result<PathBuf> {
+        Err(Error::Other("this engine delivers env in-process".into()))
+    }
 
     /// Engine-side teardown for a plan this engine produced. Reached only via
     /// [`KillHandle::Engine`], which pairs the plan with its engine, so an
@@ -281,6 +320,7 @@ mod tests {
         assert!(EngineKind::Docker.is_container());
         assert!(EngineKind::Podman.is_container());
         assert!(!EngineKind::SandboxExec.is_container());
+        assert!(!EngineKind::Box.is_container());
     }
 
     #[test]

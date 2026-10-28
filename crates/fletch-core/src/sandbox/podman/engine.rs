@@ -17,7 +17,7 @@ use crate::sandbox::container::run_args::{
 use crate::sandbox::container::util::{container_name, describe_exit_code, non_blank, ExitCopy};
 use crate::sandbox::container::ContainerProvider;
 use crate::sandbox::engine::{
-    AgentLaunchCtx, EngineKind, KillHandle, KillPlan, LaunchPlan, SandboxEngine,
+    AgentLaunchCtx, EngineKind, EnvDelivery, KillHandle, KillPlan, LaunchPlan, SandboxEngine,
 };
 
 use super::settings::{IMAGE_SETTING, LAUNCH_SETTINGS};
@@ -200,6 +200,7 @@ impl SandboxEngine for PodmanEngine {
             prefix_args,
             env: prep.env,
             env_remove: Vec::new(),
+            env_delivery: EnvDelivery::Process,
             kill: KillHandle::Engine {
                 engine: PodmanEngine::shared(),
                 plan: KillPlan::Container { name, connection },

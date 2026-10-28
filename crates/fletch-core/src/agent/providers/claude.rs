@@ -228,17 +228,17 @@ fn claude_write(
     session_id: &str,
     _agent_id: &str,
     cwd: &Path,
-    container: bool,
+    engine: crate::sandbox::EngineKind,
     bodies: &[Value],
 ) -> Result<Option<PathBuf>> {
     if !bodies.iter().any(|b| b.get("uuid").is_some()) {
         return Ok(None);
     }
-    let projects = crate::transcripts::claude_projects_dir(cwd, container)
+    let projects = crate::transcripts::claude_projects_dir(cwd, engine)
         .ok_or_else(|| Error::Other("claude's projects directory can't be resolved".into()))?;
     // Claude goes by its working directory as the OS reports it, symlinks
     // resolved; in a container, that is the path the checkout is mounted at.
-    let run_dir = if container {
+    let run_dir = if engine.is_container() {
         cwd.to_path_buf()
     } else {
         std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf())
@@ -535,7 +535,9 @@ mod tests {
         let cwd = container_cwd(td.path());
         let lines = session_lines();
 
-        let path = claude_write(NEW, "a", &cwd, true, &lines).unwrap().unwrap();
+        let path = claude_write(NEW, "a", &cwd, crate::sandbox::EngineKind::Docker, &lines)
+            .unwrap()
+            .unwrap();
 
         // Claude's own dir for the new checkout, under the container's mount.
         assert_eq!(
@@ -575,8 +577,21 @@ mod tests {
         let cwd = container_cwd(td.path());
         let metadata = [json!({ "type": "mode", "mode": "normal", "sessionId": "old" })];
 
-        assert_eq!(claude_write(NEW, "a", &cwd, true, &metadata).unwrap(), None);
-        assert_eq!(claude_write(NEW, "a", &cwd, true, &[]).unwrap(), None);
+        assert_eq!(
+            claude_write(
+                NEW,
+                "a",
+                &cwd,
+                crate::sandbox::EngineKind::Docker,
+                &metadata
+            )
+            .unwrap(),
+            None
+        );
+        assert_eq!(
+            claude_write(NEW, "a", &cwd, crate::sandbox::EngineKind::Docker, &[]).unwrap(),
+            None
+        );
         assert!(!claude_session_has_messages(NEW, &cwd));
     }
 
@@ -585,10 +600,19 @@ mod tests {
         let td = tempfile::tempdir().unwrap();
         let cwd = container_cwd(td.path());
         let lines = session_lines();
-        let path = claude_write(NEW, "a", &cwd, true, &lines).unwrap().unwrap();
+        let path = claude_write(NEW, "a", &cwd, crate::sandbox::EngineKind::Docker, &lines)
+            .unwrap()
+            .unwrap();
         let before = std::fs::read(&path).unwrap();
 
-        assert!(claude_write(NEW, "a", &cwd, true, &lines[..2]).is_err());
+        assert!(claude_write(
+            NEW,
+            "a",
+            &cwd,
+            crate::sandbox::EngineKind::Docker,
+            &lines[..2]
+        )
+        .is_err());
         assert_eq!(std::fs::read(&path).unwrap(), before);
     }
 

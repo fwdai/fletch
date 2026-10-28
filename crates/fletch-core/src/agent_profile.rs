@@ -51,6 +51,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
+use crate::exec::Executor;
 use crate::instructions::toml_basic_string;
 
 #[path = "agent_profile/library.rs"]
@@ -173,6 +174,11 @@ fn dedupe(base: &str, used: &mut Vec<String>, sep: char) -> String {
 /// per component we own (profile root, skills dir) since `create_dir_all`
 /// happily follows an existing symlink.
 fn ensure_real_dir(dir: &Path) -> Result<()> {
+    // A host-side concern: a box's tree is not on the host, and the remote
+    // `write` below creates the directories it needs.
+    let Executor::Local = crate::exec::for_path(dir) else {
+        return Ok(());
+    };
     if let Ok(meta) = std::fs::symlink_metadata(dir) {
         if meta.file_type().is_symlink() || !meta.is_dir() {
             std::fs::remove_file(dir)
@@ -191,16 +197,21 @@ fn ensure_real_dir(dir: &Path) -> Result<()> {
 /// running while the host materializes the profile, so there is no live race
 /// with this check.
 fn write_profile_file(path: &Path, contents: &str) -> Result<()> {
-    if let Ok(meta) = std::fs::symlink_metadata(path) {
-        if meta.is_dir() {
-            std::fs::remove_dir_all(path)
-                .map_err(|e| Error::Other(format!("failed to clear profile path: {e}")))?;
-        } else if meta.file_type().is_symlink() {
-            std::fs::remove_file(path)
-                .map_err(|e| Error::Other(format!("failed to clear profile path: {e}")))?;
+    let exec = crate::exec::for_path(path);
+    // The clearing guards a host path against a link planted on the host; in a
+    // box the tree is the guest's own, where a link can lead nowhere else.
+    if let Executor::Local = exec {
+        if let Ok(meta) = std::fs::symlink_metadata(path) {
+            if meta.is_dir() {
+                std::fs::remove_dir_all(path)
+                    .map_err(|e| Error::Other(format!("failed to clear profile path: {e}")))?;
+            } else if meta.file_type().is_symlink() {
+                std::fs::remove_file(path)
+                    .map_err(|e| Error::Other(format!("failed to clear profile path: {e}")))?;
+            }
         }
     }
-    std::fs::write(path, contents)
+    exec.write(path, contents.as_bytes())
         .map_err(|e| Error::Other(format!("failed to write profile file: {e}")))
 }
 

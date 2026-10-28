@@ -254,12 +254,40 @@ pub fn command(dir: &Path) -> tokio::process::Command {
     tokio::process::Command::from(std_command(dir))
 }
 
+/// [`command`] with `env` set for git itself. The `git::cmd` helpers pass the
+/// identity and no-hooks env this way rather than through `Command::env`,
+/// which on a remote wrapper would reach only the ssh client.
+pub fn command_env(dir: &Path, env: &[(String, String)]) -> tokio::process::Command {
+    tokio::process::Command::from(std_command_env(dir, env))
+}
+
 /// Synchronous sibling of [`command`] — for the rare caller outside an async
 /// context. The Run sandbox builder resolves the target's git common dir while
 /// assembling the profile (a sync path, before the PTY spawns), so it can't
 /// await. Same resolved binary, env, and hardening.
 pub fn std_command(dir: &Path) -> StdCommand {
-    resolved(Some(dir), !crate::git::hardening::agent_writable(dir))
+    std_command_env(dir, &[])
+}
+
+/// Synchronous sibling of [`command_env`], and the one place git in a
+/// directory is routed: [`crate::exec::for_path`] decides whether `dir` is on
+/// this host or inside a sandbox that holds it, and a remote runs its own git
+/// — the hardening overrides still apply, the host's relocation env does not.
+pub fn std_command_env(dir: &Path, env: &[(String, String)]) -> StdCommand {
+    match crate::exec::for_path(dir) {
+        crate::exec::Executor::Local => {
+            let mut cmd = resolved(Some(dir), !crate::git::hardening::agent_writable(dir));
+            for (k, v) in env {
+                cmd.env(k, v);
+            }
+            cmd
+        }
+        remote => {
+            let mut cmd = remote.command("git", dir, env);
+            cmd.args(crate::git::hardening::config_overrides_for(dir));
+            cmd
+        }
+    }
 }
 
 /// [`command`] without a cwd — for the rare op whose target doesn't exist

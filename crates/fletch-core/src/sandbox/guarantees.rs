@@ -118,14 +118,19 @@ impl Guarantee {
     /// memory, is what forces a new guarantee or a new engine to declare its
     /// coverage. That is this module's whole job.
     pub fn coverage(self, engine: EngineKind) -> Coverage {
-        use EngineKind::{Docker, Podman, SandboxExec};
+        use EngineKind::{Box, Docker, Podman, SandboxExec};
         match (self, engine) {
             // Every engine's primary job: seatbelt by SBPL deny-then-allow, the
-            // container runtimes by mounting nothing else writable.
+            // container runtimes by mounting nothing else writable, a box by
+            // having no shared folder at all.
             (Self::ConfinedWrites, _) => Coverage::Enforced,
 
             // Policy invariant 3 (`super::policy::GIT_EXEC_CONFIG_FILES`).
             (Self::WithheldGitConfig, SandboxExec) => Coverage::Enforced,
+            // Host git never runs in a box's checkout: the checkout is in the
+            // guest, and the host reaches it only over the ssh transport
+            // (docs/boxes-spec.md §7.4).
+            (Self::WithheldGitConfig, Box) => Coverage::Enforced,
             (Self::WithheldGitConfig, Docker) => Coverage::Partial(concat!(
                 "the checkout is bind-mounted read-write, so an agent can still write its own \
                  .git/config — nested read-only binds would stop a direct write but not a \
@@ -150,12 +155,12 @@ impl Guarantee {
             )),
 
             // Seatbelt denies the app-data dir explicitly; a container runtime
-            // never mounts it.
+            // never mounts it; a box has no host filesystem to reach it on.
             (Self::OpaqueAppData, _) => Coverage::Enforced,
 
             // Agents work in a clone with its own .git; under a container runtime
             // the source .git is never mounted, only its object store and only
-            // read-only.
+            // read-only; a box holds a full copy and no mount at all.
             (Self::UntouchableSourceGit, _) => Coverage::Enforced,
 
             (Self::ConfinedReads, SandboxExec) => Coverage::Unenforced(
@@ -166,13 +171,19 @@ impl Guarantee {
                  Desktop, Documents, iCloud Drive, other apps' containers)",
             ),
             // Both container runtimes mount only the paths `container::run_args`
-            // lists, so nothing else on the disk is reachable to read.
-            (Self::ConfinedReads, Docker | Podman) => Coverage::Enforced,
+            // lists, so nothing else on the disk is reachable to read; a box
+            // sees only its own disks.
+            (Self::ConfinedReads, Docker | Podman | Box) => Coverage::Enforced,
 
-            (Self::ConfinedNetwork, _) => Coverage::Unenforced(
+            (Self::ConfinedNetwork, SandboxExec | Docker | Podman) => Coverage::Unenforced(
                 "no engine restricts egress: seatbelt's (allow default) leaves it open and the \
                  container launches set no --network. Treat every agent as network-capable",
             ),
+            // No network device: egress only through the host proxy's
+            // allow-list, per project (docs/boxes-spec.md §7.8). `Enforced`
+            // carries no note, so the allow-list is stated here, not in the
+            // panel; phase 4 decides whether the panel should say it.
+            (Self::ConfinedNetwork, Box) => Coverage::Enforced,
 
             // Push/PR never run in the sandbox — they are brokered host-side
             // (`crate::rpc::git`), so no credential enters an agent's process.
@@ -197,6 +208,14 @@ impl Guarantee {
                 "credentials stay host-side: no GitHub credential is mounted or passed in, and \
                  sandbox clones use an HTTPS GitHub origin, so git in the sandbox has no \
                  credential path. ",
+                brokered_publish_gating!(),
+            )),
+            // Nothing of the host's is in the guest: no mount, no inherited env,
+            // only the launch's own env file (docs/boxes-spec.md §7.6).
+            (Self::HostHeldCredentials, Box) => Coverage::Partial(concat!(
+                "credentials stay host-side: the box shares no folder and inherits no \
+                 environment from the host, only the launch's own env file, and sandbox clones \
+                 use an HTTPS GitHub origin, so git in the box has no credential path. ",
                 brokered_publish_gating!(),
             )),
         }
