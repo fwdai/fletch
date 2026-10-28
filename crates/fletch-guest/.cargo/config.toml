@@ -1,0 +1,8 @@
+# Cross-compiling the guest agent from any host without a Linux toolchain:
+#   rustup target add aarch64-unknown-linux-musl
+#   cargo build --release --target aarch64-unknown-linux-musl
+# rust-lld plus the self-contained musl CRT shipped with rust-std links a fully
+# static binary, which is what the Debian image expects at /opt/fletch/bin.
+[target.aarch64-unknown-linux-musl]
+linker = "rust-lld"
+rustflags = ["-C", "target-feature=+crt-static", "-C", "link-self-contained=yes"]
