@@ -46,6 +46,54 @@ jobs:
       - name: Install frontend dependencies
         run: bun install --frozen-lockfile
 
+      # The box sandbox runtime (docs/boxes-spec.md) ships inside the app:
+      # Helpers/fletch-vm and the two libkrun dylibs in Frameworks, staged by
+      # packaging/box-bundle/prepare.sh from Tauri's beforeBundleCommand
+      # (src-tauri/tauri.macos.conf.json). libkrun is arm64 only, so beside a
+      # universal app these are arm64 files and an Intel Mac gets "unavailable"
+      # from the runtime probe. The dylibs are built here, ahead of the Tauri
+      # build, and cached: ensure.sh is a no-op when dist/ was built from the
+      # same build.sh and patches, which is exactly the cache key. prepare.sh
+      # refuses to build them itself in CI, so a broken cache fails loudly in
+      # the bundle step instead of silently costing a minute.
+      - name: Cache libkrun
+        uses: actions/cache@v4
+        with:
+          path: packaging/libkrun/dist
+          key: libkrun-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('packaging/libkrun/build.sh', 'packaging/libkrun/patches/*') }}
+
+      - name: Build libkrun
+        # Needs Xcode (bindgen wants libclang), which the macOS runner has.
+        run: packaging/libkrun/ensure.sh
+
+      - name: Import the signing certificate
+        # prepare.sh signs fletch-vm and the dylibs with APPLE_SIGNING_IDENTITY
+        # (hardened runtime, timestamp: what notarization checks) before Tauri
+        # has imported the certificate — the Tauri CLI sets up its keychain in
+        # the bundle step, after the hook has run. So the identity goes into a
+        # keychain on the user search list here first, with the same `security`
+        # sequence the Tauri CLI uses (tauri-macos-sign). Tauri still imports
+        # its own copy later; the two do not interfere.
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN="$RUNNER_TEMP/fletch-box.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -hex 16)"
+          echo "$APPLE_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$RUNNER_TEMP/cert.p12" -P "$APPLE_CERTIFICATE_PASSWORD" \
+            -T /usr/bin/codesign -k "$KEYCHAIN"
+          security set-keychain-settings -t 3600 -u "$KEYCHAIN"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s \
+            -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" > /dev/null
+          # shellcheck disable=SC2046
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '" ')
+          rm "$RUNNER_TEMP/cert.p12"
+          security find-identity -v -p codesigning "$KEYCHAIN"
+
       - name: Build, sign, notarize and publish release
         uses: tauri-apps/tauri-action@v0
         env:
@@ -82,6 +130,13 @@ jobs:
           prerelease: false
           tauriScript: bun run tauri
           args: --target universal-apple-darwin
+
+      # The app as built: only Helpers/fletch-vm carries the hypervisor
+      # entitlement and the runtime's signatures verify. No image argument:
+      # hosted runners cannot boot a VM, so the boot half of the check is
+      # skipped (packaging/box-bundle/README.md shows the full check for a Mac).
+      - name: Check the box runtime in the app
+        run: packaging/box-bundle/check.sh src-tauri/target/universal-apple-darwin/release/bundle/macos/Fletch.app
 
       # Replace the placeholder release body with GitHub's auto-generated
       # release notes (the same "What's Changed" list the UI button produces),

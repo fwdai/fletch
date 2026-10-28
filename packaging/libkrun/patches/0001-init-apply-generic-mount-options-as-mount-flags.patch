@@ -1,0 +1,133 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Alex Chaplinsky <ai@joineve.ai>
+Subject: [PATCH 1/4] init: apply generic mount options as mount flags
+
+krun_set_root_disk_remount() hands its options string to mount(2) as
+filesystem data and never sets any mount flags. The kernel happens to
+accept the few superblock options it also parses from data ("ro",
+"sync", ...), but generic options such as "nodev", "nosuid" or "noatime"
+reach the filesystem, which rejects them with EINVAL, and the guest has
+no root. And a disk added with krun_add_disk(..., read_only=true) can
+only be the root if the caller remembers to pass "ro": without it the
+mount asks for write access to a read-only device and gets EACCES.
+
+Parse the options the way mount(8) does: generic options become MS_*
+flags and the rest goes to the filesystem as before. If the mount fails
+with EACCES or EROFS and "ro" wasn't requested, retry read-only, which
+is what mount(8) does for a write-protected device.
+---
+diff --git a/src/init_blob/init/init.c b/src/init_blob/init/init.c
+--- a/src/init_blob/init/init.c
++++ b/src/init_blob/init/init.c
+@@ -1242,7 +1242,70 @@ char *clone_str(const char *str)
+         return NULL;
+     }
+     return strdup(str);
++}
++
++#if __linux__
++/* Generic mount options, which are mount flags rather than filesystem data. */
++static const struct {
++    const char *name;
++    unsigned long flag;
++    bool clear;
++} mount_flags[] = {
++    {"ro", MS_RDONLY, false},          {"rw", MS_RDONLY, true},
++    {"nosuid", MS_NOSUID, false},      {"suid", MS_NOSUID, true},
++    {"nodev", MS_NODEV, false},        {"dev", MS_NODEV, true},
++    {"noexec", MS_NOEXEC, false},      {"exec", MS_NOEXEC, true},
++    {"sync", MS_SYNCHRONOUS, false},   {"async", MS_SYNCHRONOUS, true},
++    {"dirsync", MS_DIRSYNC, false},    {"noatime", MS_NOATIME, false},
++    {"atime", MS_NOATIME, true},       {"nodiratime", MS_NODIRATIME, false},
++    {"diratime", MS_NODIRATIME, true}, {"relatime", MS_RELATIME, false},
++    {"norelatime", MS_RELATIME, true}, {"strictatime", MS_STRICTATIME, false},
++};
++
++/*
++ * Split mount(8)-style options into mount flags and filesystem data, so that
++ * options like "nodev" or "noatime" work: passed to mount(2) as data, the
++ * filesystem rejects them with EINVAL. Edits opts in place, leaving only the
++ * filesystem's own options.
++ */
++static unsigned long parse_mount_options(char *opts)
++{
++    unsigned long flags = 0;
++    char *out = opts;
++    char *token, *saveptr;
++    size_t i, len;
++
++    if (opts == NULL) {
++        return 0;
++    }
++
++    for (token = strtok_r(opts, ",", &saveptr); token != NULL;
++         token = strtok_r(NULL, ",", &saveptr)) {
++        for (i = 0; i < sizeof(mount_flags) / sizeof(mount_flags[0]); i++) {
++            if (strcmp(token, mount_flags[i].name) == 0) {
++                break;
++            }
++        }
++        if (i < sizeof(mount_flags) / sizeof(mount_flags[0])) {
++            if (mount_flags[i].clear) {
++                flags &= ~mount_flags[i].flag;
++            } else {
++                flags |= mount_flags[i].flag;
++            }
++            continue;
++        }
++        if (out != opts) {
++            *out++ = ',';
++        }
++        len = strlen(token);
++        memmove(out, token, len);
++        out += len;
++    }
++    *out = '\0';
++
++    return flags;
+ }
++#endif
+ 
+ #if __linux__
+ static bool tsi_enabled()
+@@ -1365,6 +1428,7 @@ int main(int argc, char **argv)
+     char *krun_root;
+     char *krun_root_fstype;
+     char *krun_root_options;
++    unsigned long krun_root_flags;
+ #endif
+     char *env_init_pid1;
+     char *config_workdir, *env_workdir;
+@@ -1414,6 +1478,8 @@ int main(int argc, char **argv)
+ #if __linux__
+     krun_root = clone_str(getenv("KRUN_BLOCK_ROOT_DEVICE"));
+     if (krun_root) {
++        int ret;
++
+         if (mkdir("/newroot", 0755) < 0 && errno != EEXIST) {
+             perror("mkdir(/newroot)");
+             exit(-1);
+@@ -1421,9 +1487,21 @@ int main(int argc, char **argv)
+ 
+         krun_root_fstype = clone_str(getenv("KRUN_BLOCK_ROOT_FSTYPE"));
+         krun_root_options = clone_str(getenv("KRUN_BLOCK_ROOT_OPTIONS"));
++        krun_root_flags = parse_mount_options(krun_root_options);
++        if (krun_root_options && *krun_root_options == '\0') {
++            free(krun_root_options);
++            krun_root_options = NULL;
++        }
+ 
+-        if (try_mount(krun_root, "/newroot", krun_root_fstype, 0,
+-                      krun_root_options) < 0) {
++        ret = try_mount(krun_root, "/newroot", krun_root_fstype,
++                        krun_root_flags, krun_root_options);
++        if (ret < 0 && (errno == EACCES || errno == EROFS) &&
++            !(krun_root_flags & MS_RDONLY)) {
++            // Like mount(8): a disk attached read-only is mounted read-only.
++            ret = try_mount(krun_root, "/newroot", krun_root_fstype,
++                            krun_root_flags | MS_RDONLY, krun_root_options);
++        }
++        if (ret < 0) {
+             perror("mount KRUN_BLOCK_ROOT_DEVICE");
+             exit(-1);
+         }

@@ -123,7 +123,51 @@ cp .env.example .env   # then fill in the values
 ```
 
 Artifacts land in
-`src-tauri/target/universal-apple-darwin/release/bundle/`.
+`src-tauri/target/universal-apple-darwin/release/bundle/`. The box runtime
+(below) is built on the way: this needs Xcode, not only the Command Line Tools.
+
+## The box runtime in the app
+
+The macOS app ships the box sandbox runtime (`docs/boxes-spec.md`):
+`Contents/Helpers/fletch-vm`, the one binary signed with the hypervisor
+entitlement, and `libkrun.1.dylib` + `libkrunfw.5.dylib` in
+`Contents/Frameworks`. These are arm64 only; in the universal app an Intel Mac
+simply gets "unavailable" from the runtime probe. Moving parts, all in
+`packaging/`:
+
+- **`packaging/libkrun/ensure.sh`** builds the two dylibs (pinned libkrun
+  1.19.6 + patches, libkrunfw 5.6.2). The release job runs it in its own step
+  with `actions/cache` keyed on `build.sh` and the patches, so a release pays
+  the minute once per libkrun change.
+- **Signing certificate import.** The job imports `APPLE_CERTIFICATE` into a
+  keychain before the Tauri build, because `prepare.sh` signs the runtime from
+  Tauri's `beforeBundleCommand`, which runs before the Tauri CLI sets up its
+  own keychain. No new secrets.
+- **`packaging/box-bundle/prepare.sh`** (`src-tauri/tauri.macos.conf.json`,
+  `beforeBundleCommand`) builds `fletch-vm`, stages it with the dylibs in
+  `packaging/box-bundle/out/`, and signs them with `APPLE_SIGNING_IDENTITY`,
+  the hardened runtime and a timestamp (what notarization checks);
+  `bundle.macOS.files` then places them. In CI it refuses to build libkrun
+  itself: a missing `dist/` fails the bundle with the step to run.
+- **`packaging/box-bundle/check.sh`** runs on the built app after the Tauri
+  step: signatures verify and only the helper is entitled. The boot half needs
+  a VM and is skipped on hosted runners; run it on a Mac with an image path.
+
+The guest image is **not** in the app. It is a separate GitHub release on this
+repository, `box-image-v<version>`, published by the *Box image* workflow
+(`.github/workflows/box-image.yml`) and pinned into the app by
+`scripts/box-image-pin.sh`; `packaging/box-image/README.md` has the three-step
+bump. An image release is created with `--latest=false` so it never becomes
+the release the updater endpoint serves. The app downloads it from
+`https://fletch.sh/releases/download/box-image-v<version>/base.erofs`: the
+repository is private, so the website that proxies the updater's assets must
+also route `/releases/download/<tag>/<asset>` to the release asset, with
+`Accept: application/octet-stream` and range requests passed through (the
+image is 850 MB).
+
+Licences: libkrun is Apache-2.0 and libkrunfw bundles a GPL-2.0 Linux kernel;
+`NOTICE` lists both with the source location, and the Settings screen's version
+footer shows the same line on macOS.
 
 ## How the in-app updater behaves
 
