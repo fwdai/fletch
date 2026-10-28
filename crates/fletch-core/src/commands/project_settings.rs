@@ -31,6 +31,10 @@ const PROJECT_SETTING_KEYS: &[&str] = &[
     // Both opt-out: absent is on, `"false"` is off (`context::project_flag`).
     crate::context::ENABLED_KEY,
     crate::context::EXTRACT_KEY,
+    // A JSON array of host patterns a project's boxes may also reach
+    // (`sandbox::boxes::settings`); written through `box_egress_allow`, which
+    // also updates the running proxies, but readable like any project key.
+    crate::sandbox::boxes::settings::EGRESS_ALLOW_KEY,
 ];
 
 /// The key family a client may write in full: `run.<row>` (the project's run

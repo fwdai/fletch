@@ -689,13 +689,108 @@ pub async fn get_file_diff_impl(
 /// no-clobber + path-safety contract lives in exactly one place.
 pub fn resolve_new_path(checkout: &Path, rel: &str) -> Result<PathBuf> {
     let abs = safe_join(checkout, rel)?;
-    if abs.exists() {
+    // Where the checkout lives: a box keeps it in its guest (`crate::exec`).
+    let exec = crate::exec::for_path(checkout);
+    if exec.exists(&abs)? {
         return Err(Error::Other(format!("\"{rel}\" already exists")));
     }
     if let Some(dir) = abs.parent() {
-        std::fs::create_dir_all(dir)?;
+        exec.create_dir_all(dir)?;
     }
     Ok(abs)
+}
+
+/// Overwrite a checkout file with new contents (the editor's Save / Revert).
+pub async fn write_checkout_file_impl(
+    supervisor: &Supervisor,
+    agent_id: &str,
+    path: &str,
+    contents: &str,
+) -> Result<()> {
+    let (checkout, _base, path) = checkout_scope_for_path(supervisor, agent_id, path).await?;
+    let abs = safe_join(&checkout, &path)?;
+    let exec = crate::exec::for_path(&checkout);
+    if let Some(dir) = abs.parent() {
+        exec.create_dir_all(dir)?;
+    }
+    exec.write(&abs, contents.as_bytes())?;
+    Ok(())
+}
+
+/// Rename/move a checkout path (file or directory). Refuses to clobber an
+/// existing destination so a rename can never silently overwrite a sibling.
+/// Source and destination resolve their repo scope independently, so a move
+/// between a multi-repo agent's checkouts (sibling directories on the same
+/// volume, or in the same box) works like any other rename.
+pub async fn rename_checkout_path_impl(
+    supervisor: &Supervisor,
+    agent_id: &str,
+    from: &str,
+    to: &str,
+) -> Result<()> {
+    let (checkout_from, _base, from) = checkout_scope_for_path(supervisor, agent_id, from).await?;
+    let (checkout_to, _base, to) = checkout_scope_for_path(supervisor, agent_id, to).await?;
+    let src = safe_join(&checkout_from, &from)?;
+    let dst = resolve_new_path(&checkout_to, &to)?;
+    crate::exec::for_path(&checkout_from).rename(&src, &dst)?;
+    Ok(())
+}
+
+/// Delete a checkout path. Files are removed directly; directories are
+/// removed recursively (the UI guards this behind a confirm step). Deleting a
+/// path that's already gone is a no-op, so concurrent deletes don't error.
+pub async fn delete_checkout_path_impl(
+    supervisor: &Supervisor,
+    agent_id: &str,
+    path: &str,
+) -> Result<()> {
+    let (checkout, _base, path) = checkout_scope_for_path(supervisor, agent_id, path).await?;
+    let abs = safe_join(&checkout, &path)?;
+    crate::exec::for_path(&checkout).remove(&abs)?;
+    Ok(())
+}
+
+/// Create a new empty file, making parent directories as needed. Refuses to
+/// overwrite an existing path.
+pub async fn create_checkout_file_impl(
+    supervisor: &Supervisor,
+    agent_id: &str,
+    path: &str,
+) -> Result<()> {
+    let (checkout, _base, path) = checkout_scope_for_path(supervisor, agent_id, path).await?;
+    let abs = resolve_new_path(&checkout, &path)?;
+    crate::exec::for_path(&checkout).write(&abs, b"")?;
+    Ok(())
+}
+
+/// Create a new directory. Refuses to clobber an existing path.
+pub async fn create_checkout_dir_impl(
+    supervisor: &Supervisor,
+    agent_id: &str,
+    path: &str,
+) -> Result<()> {
+    let (checkout, _base, path) = checkout_scope_for_path(supervisor, agent_id, path).await?;
+    let abs = resolve_new_path(&checkout, &path)?;
+    crate::exec::for_path(&checkout).create_dir_all(&abs)?;
+    Ok(())
+}
+
+/// Copy a checkout file to a new path (the explorer's "Duplicate"). Refuses
+/// to overwrite an existing destination.
+pub async fn copy_checkout_file_impl(
+    supervisor: &Supervisor,
+    agent_id: &str,
+    from: &str,
+    to: &str,
+) -> Result<()> {
+    let (checkout_from, _base, from) = checkout_scope_for_path(supervisor, agent_id, from).await?;
+    let (checkout_to, _base, to) = checkout_scope_for_path(supervisor, agent_id, to).await?;
+    let src = safe_join(&checkout_from, &from)?;
+    let dst = resolve_new_path(&checkout_to, &to)?;
+    let exec = crate::exec::for_path(&checkout_from);
+    let bytes = exec.read(&src)?;
+    exec.write(&dst, &bytes)?;
+    Ok(())
 }
 
 #[cfg(test)]

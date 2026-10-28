@@ -147,8 +147,15 @@ fn wants_codegraph(
     can_receive_mcp: bool,
     existing_names: &[&str],
 ) -> bool {
+    // The MCP server is a host binary the agent's process must be able to
+    // exec: only the seatbelt engine runs the agent on the host. A container
+    // has its own filesystem, and so does a box.
+    let agent_runs_on_host = match engine {
+        EngineKind::SandboxExec => true,
+        EngineKind::Docker | EngineKind::Podman | EngineKind::Box => false,
+    };
     enabled
-        && !engine.is_container()
+        && agent_runs_on_host
         && can_receive_mcp
         && !existing_names
             .iter()

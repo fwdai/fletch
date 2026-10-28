@@ -128,7 +128,7 @@ impl Guarantee {
             // Policy invariant 3 (`super::policy::GIT_EXEC_CONFIG_FILES`).
             (Self::WithheldGitConfig, SandboxExec) => Coverage::Enforced,
             // Host git never runs in a box's checkout: the checkout is in the
-            // guest, and the host reaches it only over the ssh transport
+            // guest, and the host reaches it only over the ssh transport.
             (Self::WithheldGitConfig, Box) => Coverage::Enforced,
             (Self::WithheldGitConfig, Docker) => Coverage::Partial(concat!(
                 "the checkout is bind-mounted read-write, so an agent can still write its own \
@@ -179,9 +179,9 @@ impl Guarantee {
                  container launches set no --network. Treat every agent as network-capable",
             ),
             // No network device: egress only through the host proxy's
-            // allow-list, per project. `Enforced`
-            // carries no note, so the allow-list is stated here, not in the
-            // panel; phase 4 decides whether the panel should say it.
+            // allow-list, per project. `Enforced` carries no note, so the
+            // allow-list is stated here, not in the panel; whether the panel
+            // should say it is still open.
             (Self::ConfinedNetwork, Box) => Coverage::Enforced,
 
             // Push/PR never run in the sandbox — they are brokered host-side

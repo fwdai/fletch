@@ -31,6 +31,16 @@ pub fn init(handle: Handle) {
     }
 }
 
+/// The engine's runtime handle: the one [`init`] published, else the current
+/// thread's own runtime (unit tests), else `None`. For a synchronous caller
+/// that must *wait* on engine work rather than spawn it — the box engine's
+/// launch path boots a VM from inside `SandboxEngine::launch_agent`, which is
+/// sync — and does so on a scoped thread with `Handle::block_on`, never on a
+/// runtime worker.
+pub fn handle() -> Option<Handle> {
+    HANDLE.get().cloned().or_else(|| Handle::try_current().ok())
+}
+
 /// Spawn one of the engine's background tasks.
 ///
 /// Callable from any thread, like the `tauri::async_runtime::spawn` it replaces.

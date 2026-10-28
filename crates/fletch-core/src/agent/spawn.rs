@@ -172,7 +172,7 @@ fn rpc_env(rpc_dir: &Path) -> Vec<(String, String)> {
 
 /// Of the agent's assembled env, what the launcher process itself keeps when
 /// the engine ships that env into a guest ([`EnvDelivery::GuestFile`]): the ssh
-/// client's own lookup paths and terminal. The exact set is phase 4's to tune.
+/// client's own lookup paths and terminal. The exact set is still to tune.
 const LAUNCHER_ENV: &[&str] = &["PATH", "HOME", "TERM"];
 
 /// The env the launcher process is spawned with, once the agent's own
@@ -980,16 +980,22 @@ fn agent_bin_for(
     engine: &dyn SandboxEngine,
     home: &Path,
 ) -> Result<String> {
-    if engine.kind().is_container() {
-        sandbox::docker::DockerProvider::from_id(provider)
-            .map(|p| p.image_bin().to_string())
-            .ok_or_else(|| {
-                Error::Other(format!(
-                    "{label} isn't available in container sandboxes yet"
-                ))
-            })
-    } else {
-        resolve_agent_bin(provider, bin, label, home)
+    use sandbox::EngineKind;
+    match engine.kind() {
+        EngineKind::Docker | EngineKind::Podman => {
+            sandbox::docker::DockerProvider::from_id(provider)
+                .map(|p| p.image_bin().to_string())
+                .ok_or_else(|| {
+                    Error::Other(format!(
+                        "{label} isn't available in container sandboxes yet"
+                    ))
+                })
+        }
+        // The CLI on the box's tools disk; a host path would mean nothing in
+        // the guest.
+        EngineKind::Box => fletch_box::tools::bin_path(provider)
+            .ok_or_else(|| Error::Other(format!("{label} isn't available in box sandboxes yet"))),
+        EngineKind::SandboxExec => resolve_agent_bin(provider, bin, label, home),
     }
 }
 

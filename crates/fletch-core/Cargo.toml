@@ -68,6 +68,8 @@ tokio-tungstenite = { version = "0.27", default-features = false, features = [
 # framing. A path dependency rather than a workspace member, so each *binary*
 # package keeps its own lockfile and the release workflow needs no change.
 fletch-proto = { path = "../fletch-proto" }
+# The box sandbox runtime: libkrun micro-VMs reached over ssh on vsock. Depends on nothing in Fletch; `sandbox::boxes` composes it.
+fletch-box = { path = "../fletch-box" }
 # `sink` for `SinkExt` on the split WebSocket writer; nothing else in the crate
 # needs the combinator zoo.
 futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }
@@ -102,3 +104,8 @@ ctor = "0.2"
 # deterministically. Test-only (unioned with the runtime `full` feature); it
 # activates no extra crates, so the lockfile is unchanged.
 tokio = { version = "1", features = ["test-util"] }
+
+# sha2 verifies the 848 MB box image once per test process; unoptimised it
+# takes ~35 s, optimised about a second. Only the hasher is affected.
+[profile.dev.package.sha2]
+opt-level = 3

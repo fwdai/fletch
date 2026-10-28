@@ -3,7 +3,8 @@
 //!
 //! Dozens of call sites resolve an agent's checkout and then run git in it or
 //! read and write files under it. Under the box engine that tree exists only
-//! inside the guest — at the *same absolute paths* (path identity, spec §1), so
+//! inside the guest — at the *same absolute paths* (path identity: a guest
+//! path is the host path, nothing is remapped), so
 //! nothing here translates a path. Instead every such operation asks
 //! [`for_path`] once and gets back an [`Executor`] that does the work locally or
 //! through the engine's channel. With no remote root registered, which is every
@@ -43,6 +44,16 @@ pub trait RemoteExecutor: Send + Sync + fmt::Debug {
     fn stat(&self, path: &Path) -> io::Result<Option<Stat>>;
 
     fn list(&self, dir: &Path) -> io::Result<Vec<DirEntry>>;
+
+    /// `mkdir -p`.
+    fn create_dir_all(&self, dir: &Path) -> io::Result<()>;
+
+    /// Remove a file, or a directory with everything in it; nothing there is
+    /// fine. The file panel's delete.
+    fn remove(&self, path: &Path) -> io::Result<()>;
+
+    /// `std::fs::rename`: the file panel's move.
+    fn rename(&self, from: &Path, to: &Path) -> io::Result<()>;
 }
 
 /// What [`Executor::stat`] reports about a path.
@@ -185,6 +196,40 @@ impl Executor {
             Self::Remote(remote) => remote.list(dir),
         }
     }
+
+    /// `std::fs::create_dir_all`, where the directory lives.
+    pub fn create_dir_all(&self, dir: &Path) -> io::Result<()> {
+        match self {
+            Self::Local => std::fs::create_dir_all(dir),
+            Self::Remote(remote) => remote.create_dir_all(dir),
+        }
+    }
+
+    /// Remove a file or a whole directory; already gone is success.
+    pub fn remove(&self, path: &Path) -> io::Result<()> {
+        match self {
+            Self::Local => {
+                let removed = if path.is_dir() {
+                    std::fs::remove_dir_all(path)
+                } else {
+                    std::fs::remove_file(path)
+                };
+                match removed {
+                    Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+                    other => other,
+                }
+            }
+            Self::Remote(remote) => remote.remove(path),
+        }
+    }
+
+    /// `std::fs::rename`, where both paths live.
+    pub fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
+        match self {
+            Self::Local => std::fs::rename(from, to),
+            Self::Remote(remote) => remote.rename(from, to),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -209,6 +254,15 @@ mod tests {
         }
         fn list(&self, _: &Path) -> io::Result<Vec<DirEntry>> {
             Ok(Vec::new())
+        }
+        fn create_dir_all(&self, _: &Path) -> io::Result<()> {
+            Ok(())
+        }
+        fn remove(&self, _: &Path) -> io::Result<()> {
+            Ok(())
+        }
+        fn rename(&self, _: &Path, _: &Path) -> io::Result<()> {
+            Ok(())
         }
     }
 
@@ -274,13 +328,13 @@ mod tests {
         "git_dist.rs",
         "exec.rs",
         // The agent launcher itself: the cwd is the sandbox engine's program's
-        // (`sandbox-exec`, `docker`, and in phase 4 `ssh`), not a host git.
+        // (`sandbox-exec`, `docker`, or `ssh` for a box), not a host git.
         "managed_session.rs",
         "exec_session.rs",
-        // A provider CLI run for a one-shot handoff summary; a box runs it
-        // through its engine in phase 4.
+        // A provider CLI run for a one-shot handoff summary; a box would run
+        // it through its engine.
         "handoff/run.rs",
-        // The project's verify command; the box path is phase 5a.
+        // The project's verify command; boxes do not run it yet.
         "verify.rs",
         // Provider CLIs run in the user's home on the host (sign-out, codex
         // app-server), never in a checkout.
@@ -289,6 +343,9 @@ mod tests {
         // The codegraph CLI in its host-side mirror of the checkout, never the
         // checkout itself.
         "codegraph/mirror.rs",
+        // The box executor's ssh client: its cwd is `/` on the host, the
+        // guest's cwd travels in the remote command.
+        "sandbox/boxes/executor.rs",
     ];
 
     fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {

@@ -8,9 +8,10 @@ pub enum EngineKind {
     SandboxExec,
     Docker,
     Podman,
-    /// A libkrun micro-VM per agent. Named here so
-    /// settings, guarantees and the seams can refer to it; [`super::engine_for`]
-    /// refuses it until the engine lands (phase 4).
+    /// A libkrun micro-VM per agent, reached only over ssh on vsock and an
+    /// egress proxy. Named here so settings, guarantees and the seams can refer
+    /// to it; [`super::engine_for`] refuses it while the `boxes_enabled`
+    /// developer flag is off.
     Box,
 }
 
@@ -43,7 +44,7 @@ impl EngineKind {
             Self::Docker | Self::Podman => true,
             // A box is as self-contained as a container, but shares none of the
             // container plumbing this gates (provider images, bind mounts, the
-            // in-image bin). Phase 4 revisits each caller.
+            // in-image bin), so each caller handles it on its own.
             Self::SandboxExec | Self::Box => false,
         }
     }
@@ -154,6 +155,11 @@ pub enum KillPlan {
         /// docker — one daemon endpoint, nothing to distinguish.
         connection: Option<String>,
     },
+    /// One ssh session into an agent's box. The session's own process-group
+    /// kill ends the ssh client, and with it the
+    /// guest PTY; the engine only detaches the launch, leaving the VM to the
+    /// registry's idle timer.
+    Box { agent_id: String, launch_id: String },
 }
 
 /// Teardown handle bound at launch time. Sessions call [`KillHandle::kill`]
@@ -241,7 +247,7 @@ pub trait SandboxEngine: Send + Sync {
     /// `prefix_args` already name. Called by the spawn shapes in
     /// `agent::spawn` only for a plan whose delivery is
     /// [`EnvDelivery::GuestFile`], so an engine that delivers in-process never
-    /// implements it; the box engine does (phase 4).
+    /// implements it; the box engine does.
     fn deliver_env(
         &self,
         _agent_id: &str,

@@ -34,6 +34,15 @@ pub enum Error {
     Other(String),
 }
 
+/// The box runtime's errors read as plain text: none of them is one a caller
+/// matches on (the engine maps "not ready" and "unavailable" into
+/// [`Error::SandboxUnavailable`] itself where that distinction matters).
+impl From<fletch_box::Error> for Error {
+    fn from(e: fletch_box::Error) -> Self {
+        Error::Other(e.to_string())
+    }
+}
+
 /// Tauri requires command return errors to be `Serialize` so they can cross
 /// the IPC boundary. We serialize as the display string.
 impl Serialize for Error {
