@@ -1,0 +1,41 @@
+[package]
+name = "fletch-box"
+version = "0.1.0"
+description = "The box sandbox runtime: libkrun micro-VMs reachable only over SSH on vsock and an egress proxy (docs/boxes-spec.md)"
+authors = ["Alex Chaplinsky", "fwdai.org"]
+license = "AGPL-3.0-only"
+edition = "2021"
+rust-version = "1.77"
+
+# No dependency on fletch-core or fletch-proto: the crate is tested alone and
+# the helper binary stays small. fletch-core depends on this crate, not the
+# other way round.
+
+[[bin]]
+# The helper: the only binary signed with the hypervisor entitlement. It links
+# none of the library (its one shared module comes in by `#[path]`), so it
+# needs only libc.
+name = "fletch-vm"
+path = "src/bin/fletch-vm/main.rs"
+
+[[bin]]
+# Manual-test CLI: boot, ssh, stop, image.
+name = "fletch-box"
+path = "src/bin/fletch-box/main.rs"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tracing = "0.1"
+# Image download verification; same version as fletch-core's.
+sha2 = "0.10"
+reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
+libc = "0.2"
+# The CLI's argument parsing, pinned to the series fletch-host uses: this
+# package has no committed lockfile (see /.gitignore).
+clap = { version = "~4.4", features = ["derive"] }
+
+[dev-dependencies]
+tempfile = "3"

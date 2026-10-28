@@ -1,0 +1,72 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Alex Chaplinsky <ai@joineve.ai>
+Subject: [PATCH 4/4] init: report the exit code when the root is a disk
+
+init reports the workload's exit code with KRUN_EXIT_CODE_IOCTL on the
+virtio-fs root, which the VMM implements. With
+krun_set_root_disk_remount(), init switches to a block device root
+first, so by the time the workload exits "/" isn't virtio-fs any more,
+set_exit_code() skips the ioctl, and krun_start_enter() exits with 0
+whatever the workload returned.
+
+Open the virtio-fs root before the switch and keep the descriptor
+(close-on-exec, so the workload doesn't inherit it) for the ioctl.
+---
+diff --git a/src/init_blob/init/init.c b/src/init_blob/init/init.c
+--- a/src/init_blob/init/init.c
++++ b/src/init_blob/init/init.c
+@@ -1168,10 +1168,14 @@ int is_virtiofs(const char *path)
+     return (fs.f_type == 0x65735546) ? 1 : 0;
+ }
+ 
+-void set_exit_code(int code)
++/*
++ * The VMM takes the workload's exit code through an ioctl on its virtio-fs
++ * root. Open it before switching to a block device root, which hides it.
++ */
++static int exit_code_fd = -1;
++
++static void open_exit_code_fd(void)
+ {
+-    int fd;
+-    int ret;
+     int virtiofs_check;
+ 
+     // Only use the ioctl if virtiofs is used for root filesystem
+@@ -1185,18 +1189,21 @@ void set_exit_code(int code)
+         return;
+     }
+ 
+-    fd = open("/", O_RDONLY);
+-    if (fd < 0) {
++    exit_code_fd = open("/", O_RDONLY | O_CLOEXEC);
++    if (exit_code_fd < 0) {
+         perror("Couldn't open root filesystem to report exit code");
++    }
++}
++
++void set_exit_code(int code)
++{
++    if (exit_code_fd < 0) {
+         return;
+     }
+ 
+-    ret = ioctl(fd, KRUN_EXIT_CODE_IOCTL, code);
+-    if (ret < 0) {
++    if (ioctl(exit_code_fd, KRUN_EXIT_CODE_IOCTL, code) < 0) {
+         perror("Error using the ioctl to set the exit code");
+     }
+-
+-    close(fd);
+ }
+ 
+ #if __linux__
+@@ -1474,6 +1481,8 @@ int main(int argc, char **argv)
+         printf("Couldn't mount filesystems, bailing out\n");
+         exit(-2);
+     }
++
++    open_exit_code_fd();
+ 
+ #if __linux__
+     krun_root = clone_str(getenv("KRUN_BLOCK_ROOT_DEVICE"));
