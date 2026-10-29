@@ -96,8 +96,8 @@ const NAV: NavItem[] = [
     subsections: CUSTOMIZE_IDS,
   },
   // Sandbox leads the group so the header's meaning lands at a glance. The box
-  // is the app's existing sandbox glyph (SandboxBadge, the env-vars sandbox
-  // toggle), so the nav entry matches it.
+  // is the app's existing sandbox glyph (the title bar's box workspaces, the
+  // env-vars sandbox toggle), so the nav entry matches it.
   { id: "sandbox", label: "Sandbox", icon: "cube", order: 50, group: GUARDRAILS_GROUP },
   { id: "git", label: "Git", icon: "branch", order: 53, group: GUARDRAILS_GROUP },
   // Beside Git: what leaves a workspace is reviewed before it does.

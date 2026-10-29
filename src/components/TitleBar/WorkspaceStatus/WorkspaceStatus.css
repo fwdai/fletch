@@ -1,8 +1,8 @@
 /* ═══ workspace status capsule ═══════════════════════════════════════
- * The functional center of the title bar, split in two pills: the project
- * pill (a link to the full-screen project page) and the workspace pill
- * (status dot + agent name + git/PR badge) that reveals a details popover
- * on hover/focus. Plain/home variants share the tokens. */
+ * The functional center of the title bar, three segments: the project pill
+ * (a link to the full-screen project page), the workspace (isolation icon +
+ * agent name) and its git state (git/PR badge), each of the last two with
+ * its own popover on hover/focus. Plain/home variants share the tokens. */
 .ws-cap-wrap {
   -webkit-app-region: no-drag;
   display: flex;
@@ -47,10 +47,50 @@
   cursor: pointer;
 }
 
-/* the separator between the project and workspace pills */
+/* the git segment opens on its badge, which brings its own inset */
+.ws-cap-gitseg {
+  gap: 6px;
+  padding-left: 5px;
+}
+
+/* the separator between segments */
 .ws-slash {
   color: var(--fg-3);
   font-size: 12px;
+}
+
+/* how the workspace is isolated: a quiet glyph for seatbelt and containers;
+ * a box's carries its phase (lit while it runs, pulsing on the way up or
+ * down, red when it failed, dim when stopped) */
+.ws-iso {
+  display: inline-flex;
+  flex-shrink: 0;
+  color: var(--fg-2);
+}
+.ws-iso.box {
+  color: var(--fg-3);
+}
+.ws-iso.box.running {
+  color: var(--info);
+}
+.ws-iso.box.preparing,
+.ws-iso.box.starting,
+.ws-iso.box.stopping {
+  color: var(--info);
+  animation: ws-iso-pulse 1.4s ease-in-out infinite;
+}
+.ws-iso.box.failed {
+  color: var(--danger);
+}
+@keyframes ws-iso-pulse {
+  50% {
+    opacity: 0.4;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ws-iso.box {
+    animation: none;
+  }
 }
 
 .ws-ctx {
@@ -342,6 +382,58 @@
   height: 1px;
   background: var(--bd-soft);
   margin: 11px 0;
+}
+
+/* where the workspace runs: the isolation, a box's phase, what it means */
+.ws-pop-iso {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+.ws-pop-iso .ws-iso {
+  margin-top: 1px;
+}
+.ws-pop-iso-text {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.ws-pop-iso-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 550;
+  color: var(--fg-0);
+}
+.ws-pop-iso-phase {
+  font-size: 10.5px;
+  font-weight: 500;
+  color: var(--fg-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ws-pop-iso-phase.running,
+.ws-pop-iso-phase.preparing,
+.ws-pop-iso-phase.starting,
+.ws-pop-iso-phase.stopping {
+  color: var(--info);
+}
+.ws-pop-iso-phase.failed,
+.ws-pop-iso-fail {
+  color: var(--danger);
+}
+.ws-pop-iso-fail {
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+.ws-pop-iso-hint {
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--fg-2);
 }
 
 /* the checkout's lanes — the Git panel's own rows (`LaneRow`), flush with the
