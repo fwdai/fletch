@@ -557,16 +557,18 @@ fn push_line(lines: &mut String, key: &str, value: &str) -> Result<()> {
 
 /// Stop and delete the box of `agent_id` if it has one; nothing to do for an
 /// agent of another engine. Teardown calls this for every agent, so it must
-/// stay cheap when there is no box: one directory probe.
-pub async fn discard_if_any(agent_id: &str) {
-    let Ok(dir) = box_dir(agent_id) else { return };
+/// stay cheap when there is no box: one directory probe. An error is logged
+/// and returned, for archive to record on the row; a box directory it leaves
+/// is reclaimed at the next start ([`startup`]).
+pub async fn discard_if_any(agent_id: &str) -> Result<()> {
+    let dir = box_dir(agent_id)?;
     let registry = BoxRegistry::global();
     if !dir.exists() && !registry.knows(agent_id) {
-        return;
+        return Ok(());
     }
-    if let Err(e) = registry.discard(agent_id).await {
+    registry.discard(agent_id).await.inspect_err(|e| {
         tracing::warn!(agent_id, error = %e, "box discard failed");
-    }
+    })
 }
 
 /// Stop every running box cleanly; app exit (`Supervisor::shutdown`).
@@ -599,5 +601,55 @@ pub fn startup(workspace: &crate::workspace::WorkspaceManager) {
             }
         }
     }
-    std::thread::spawn(registry::sweep_orphans);
+    let leaked = leaked_box_dirs(workspace);
+    std::thread::spawn(move || {
+        // Helpers first: a leaked box may still have its VM up.
+        registry::sweep_orphans();
+        for dir in leaked {
+            match std::fs::remove_dir_all(&dir) {
+                Ok(()) => {
+                    tracing::info!(box_dir = %dir.display(), "removed a box no live agent owns")
+                }
+                Err(e) => {
+                    tracing::warn!(box_dir = %dir.display(), error = %e, "removing a leaked box failed")
+                }
+            }
+        }
+    });
+}
+
+/// Box directories no live agent owns: left by a discard that failed, or by
+/// an archive the app died in the middle of (`begin_archive` has already
+/// marked the row). Each holds a whole data disk, so nothing else would ever
+/// reclaim it. Only a directory with a data disk counts — the root also holds
+/// a tools build's throwaway `tools-<pid>` box — and the directories are
+/// listed before the agents are read, so a box made in between belongs to a
+/// row that is already live.
+fn leaked_box_dirs(workspace: &crate::workspace::WorkspaceManager) -> Vec<PathBuf> {
+    let Some(entries) = boxes_root()
+        .ok()
+        .and_then(|root| std::fs::read_dir(root).ok())
+    else {
+        return Vec::new();
+    };
+    let boxes: Vec<(String, PathBuf)> = entries
+        .flatten()
+        .filter_map(|entry| {
+            let name = entry.file_name().into_string().ok()?;
+            let path = entry.path();
+            (!name.starts_with("tools-") && path.join(registry::DATA_DISK).is_file())
+                .then_some((name, path))
+        })
+        .collect();
+    if boxes.is_empty() {
+        return Vec::new();
+    }
+    let Ok(live) = workspace.live_agent_ids() else {
+        return Vec::new();
+    };
+    boxes
+        .into_iter()
+        .filter(|(agent_id, _)| !live.contains(agent_id))
+        .map(|(_, dir)| dir)
+        .collect()
 }

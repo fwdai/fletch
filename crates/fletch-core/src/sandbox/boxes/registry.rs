@@ -212,6 +212,8 @@ struct Entry {
     idle_gen: u64,
     /// Serializes boots and stops of this one box.
     lifecycle: Arc<tokio::sync::Mutex<()>>,
+    /// Set by [`BoxRegistry::discard`]: no boot starts from then on.
+    discarding: bool,
 }
 
 impl Entry {
@@ -223,6 +225,7 @@ impl Entry {
             attached: HashSet::new(),
             idle_gen: 0,
             lifecycle: Arc::new(tokio::sync::Mutex::new(())),
+            discarding: false,
         }
     }
 }
@@ -357,6 +360,12 @@ impl BoxRegistry {
             return Ok(running);
         }
         let agent_id = &identity.agent_id;
+        // A discard waits on this lock before it forgets the box, so a boot
+        // that reaches it once one has begun must not start a VM for an agent
+        // that is going: checked here and again after the (long) preparation.
+        if self.discarded(agent_id) {
+            return Err(discarded_error(agent_id));
+        }
         let prepared = async {
             let ready = setup::ready(|detail| {
                 self.set_phase(agent_id, BoxPhase::Preparing { detail });
@@ -381,6 +390,9 @@ impl BoxRegistry {
                 return Err(e);
             }
         };
+        if self.discarded(agent_id) {
+            return Err(discarded_error(agent_id));
+        }
         self.set_phase(agent_id, BoxPhase::Starting);
         match boot(identity, &ready, Some(tools_disk)).await {
             Ok(running) => {
@@ -602,24 +614,38 @@ impl BoxRegistry {
 
     /// Stop the box and delete its directory: the agent is gone. Forgets the
     /// box and stops routing its root.
+    ///
+    /// No boot starts once this has begun ([`Self::ensure_running`] checks),
+    /// and one already under way — or a stop — is waited out first: either
+    /// holds the box's lifecycle lock until its VM is up or down. `stop` alone
+    /// read a box still booting as already exited, so its directory was
+    /// deleted under the boot and the VM came up after the agent was gone.
     pub async fn discard(&self, agent_id: &str) -> Result<()> {
+        let lifecycle = {
+            let mut entries = self.entries.lock();
+            entries.get_mut(agent_id).map(|entry| {
+                entry.discarding = true;
+                entry.lifecycle.clone()
+            })
+        };
+        if let Some(lifecycle) = lifecycle {
+            drop(lifecycle.lock().await);
+        }
         let _ = self.stop(agent_id, StopReason::Discard).await?;
         let identity = self.entries.lock().remove(agent_id).map(|e| e.identity);
         if let Some(identity) = &identity {
             crate::exec::unregister_root(&identity.writable_root);
         }
-        let dir = super::box_dir(agent_id)?;
-        match std::fs::remove_dir_all(&dir) {
-            Ok(()) => tracing::info!(agent_id, "box directory removed"),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => {
-                return Err(Error::Other(format!(
-                    "remove box dir {}: {e}",
-                    dir.display()
-                )))
-            }
-        }
-        Ok(())
+        remove_box_dir(&super::box_dir(agent_id)?).await
+    }
+
+    /// Whether `agent_id`'s box is being discarded, or already was (it is no
+    /// longer known).
+    fn discarded(&self, agent_id: &str) -> bool {
+        self.entries
+            .lock()
+            .get(agent_id)
+            .map_or(true, |e| e.discarding)
     }
 
     /// A launch began a session in the box; the idle timer stands down.
@@ -928,6 +954,36 @@ fn on_egress(agent_id: &str, event: EgressEvent) {
 /// The ladder, rung by rung. The sysrq rung needs root in the guest, which the
 /// product image's `agent` user is not, so on it the rung is inert and only
 /// its wait is skipped; it stays for an image that allows it.
+fn discarded_error(agent_id: &str) -> Error {
+    Error::SandboxUnavailable(format!("the box for {agent_id} was discarded"))
+}
+
+/// Delete a box directory — its data disk, the agent's whole tree — retrying
+/// briefly: a helper just killed can still be releasing its files.
+async fn remove_box_dir(dir: &Path) -> Result<()> {
+    const ATTEMPTS: u32 = 3;
+    for attempt in 1..=ATTEMPTS {
+        match tokio::fs::remove_dir_all(dir).await {
+            Ok(()) => {
+                tracing::info!(box_dir = %dir.display(), "box directory removed");
+                return Ok(());
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) if attempt < ATTEMPTS => {
+                tracing::warn!(box_dir = %dir.display(), attempt, error = %e, "box dir removal failed; retrying");
+                tokio::time::sleep(Duration::from_millis(200 * u64::from(attempt))).await;
+            }
+            Err(e) => {
+                return Err(Error::Other(format!(
+                    "remove box dir {}: {e}",
+                    dir.display()
+                )))
+            }
+        }
+    }
+    unreachable!("the last attempt returns")
+}
+
 async fn stop_ladder(vm: &Vm, channel: &Channel) -> StopOutcome {
     if matches!(vm.try_wait(), Ok(Some(_))) {
         return StopOutcome::AlreadyExited;
@@ -1139,6 +1195,49 @@ mod tests {
         assert_eq!(status.phase, "failed");
         assert_eq!(status.error.as_deref(), Some("no install script"));
         registry.discard(agent_id).await.unwrap();
+    }
+
+    /// A discard waits out a boot or stop in flight (the holder of the box's
+    /// lifecycle lock), and a boot queued behind the discard starts no VM: it
+    /// finds the box gone and fails, rather than booting for an agent that
+    /// is being archived.
+    #[tokio::test]
+    async fn a_discard_waits_out_the_lifecycle_and_a_boot_behind_it_starts_nothing() {
+        let registry = BoxRegistry::global();
+        let id = "registry-unit-test-discard-race";
+        let identity = BoxIdentity {
+            agent_id: id.into(),
+            project_id: "p".into(),
+            provider: "claude".into(),
+            writable_root: PathBuf::from("/registry-unit-test-discard-race/root"),
+            rpc_dir: PathBuf::from("/registry-unit-test-discard-race/rpc"),
+            home: PathBuf::from("/registry-unit-test-discard-race/home"),
+        };
+        registry.register(identity.clone());
+        // A boot in flight, as far as the lock is concerned.
+        let lifecycle = registry.entries.lock().get(id).unwrap().lifecycle.clone();
+        let in_flight = lifecycle.lock().await;
+
+        let discard = tokio::spawn(BoxRegistry::global().discard(id));
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert!(registry.knows(id), "the discard waits for the boot");
+        let boot = tokio::spawn(async move {
+            BoxRegistry::global()
+                .ensure_running(&identity)
+                .await
+                .map(drop)
+        });
+        tokio::time::sleep(Duration::from_millis(30)).await;
+
+        drop(in_flight);
+        discard.await.unwrap().unwrap();
+        let err = boot.await.unwrap().unwrap_err().to_string();
+        assert!(err.contains("discarded"), "{err}");
+        assert!(!registry.knows(id));
+        assert!(matches!(
+            crate::exec::for_path(Path::new("/registry-unit-test-discard-race/root/repo")),
+            crate::exec::Executor::Local
+        ));
     }
 
     /// An unknown agent is stopped and has no channel; registering routes its
