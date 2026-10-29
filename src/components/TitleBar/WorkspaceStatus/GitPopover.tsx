@@ -1,49 +1,21 @@
-import type { AgentRecord, PrChecks } from "@/api";
+import type { PrChecks } from "@/api";
 import { Icon } from "@/components/Icon";
-import { ProviderIcon } from "@/components/ProviderIcon";
 import { LaneRow } from "@/components/RightPanel/GitPanel/Lanes";
 import type { Lane } from "@/components/RightPanel/GitPanel/laneModel";
-import { providerChip } from "@/data/providers";
-import { useAppStore } from "@/store";
-import { type DotStatus, STATUS_LABEL } from "./derive";
-import { StatusDot } from "./StatusDot";
 
 interface Props {
-  agent: AgentRecord;
-  status: DotStatus;
   /** The checkout's lanes, exactly as the Git panel's header draws them. */
   lanes: Lane[];
   onOpenPanel: () => void;
 }
 
-/** The hover/focus details popover: who + what, then the checkout's lanes —
- *  the same rows as the Git panel's header, each open PR with its check
- *  breakdown — and one way in: the panel, where every action lives. The PR
- *  chip on a lane is the link to GitHub, as it is in the panel. */
-export function Popover({ agent, status, lanes, onOpenPanel }: Props) {
-  // A box outlives the agent's process (its registry keeps it up until the
-  // idle timer fires): while it is up the user can stop it here without
-  // archiving the workspace.
-  const boxPhase = useAppStore((s) => s.boxStates[agent.id]?.phase);
-  const stopBox = useAppStore((s) => s.stopBox);
-  const boxUp =
-    agent.sandbox_engine === "box" && (boxPhase === "running" || boxPhase === "starting");
+/** The git segment's hover/focus popover: the checkout's lanes — the same
+ *  rows as the Git panel's header, each open PR with its check breakdown —
+ *  and one way in: the panel, where every action lives. The PR chip on a lane
+ *  is the link to GitHub, as it is in the panel. */
+export function GitPopover({ lanes, onOpenPanel }: Props) {
   return (
-    <div className="ws-pop" role="dialog">
-      <div className="ws-pop-head">
-        <StatusDot status={status} big />
-        <div className="ws-pop-id">
-          <div className="ws-pop-name">{agent.name}</div>
-          <div className="ws-pop-sub">
-            {STATUS_LABEL[status]}
-            {agent.task && <> · {agent.task}</>}
-          </div>
-        </div>
-        <ProviderIcon slug={agent.provider} {...providerChip(agent.provider)} size={22} />
-      </div>
-
-      <div className="ws-pop-div" />
-
+    <div className="ws-pop" role="dialog" aria-label="Git status">
       <div className="ws-pop-lanes">
         {lanes.map((lane) => (
           <div key={lane.id} className="ws-pop-lane">
@@ -55,16 +27,10 @@ export function Popover({ agent, status, lanes, onOpenPanel }: Props) {
         ))}
       </div>
 
-      <div className="ws-pop-div" />
       <div className="ws-pop-actions">
         <button type="button" className="ws-act primary" onClick={onOpenPanel}>
           <Icon name="branch" size={12} /> Open Git panel
         </button>
-        {boxUp && (
-          <button type="button" className="ws-act" onClick={() => void stopBox(agent.id)}>
-            <Icon name="stop" size={12} /> Stop box
-          </button>
-        )}
       </div>
     </div>
   );
