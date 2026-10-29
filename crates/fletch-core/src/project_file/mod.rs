@@ -261,7 +261,7 @@ pub fn watch(db: crate::roadmap::Db, sink: Sink) {
                         .read()
                         .as_ref()
                         .and_then(|m| m.get(&project_id))
-                        .is_none_or(|e| {
+                        .map_or(true, |e| {
                             e.repo_path.as_deref().map(stamp).unwrap_or_default() != e.stamp
                         });
                     if moved && refresh(&conn, &project_id).1 {
