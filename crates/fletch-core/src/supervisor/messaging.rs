@@ -72,7 +72,14 @@ impl Supervisor {
         // paths pass through unchanged. Runs exactly once per user message: the
         // re-queue/flush paths carry the already-rewritten `PendingMsg`, and a
         // rehydrated pending message was persisted with the workspace path.
-        let attachments = crate::attachments::adopt(agent_id, attachments);
+        // A box agent's files are also written into its guest, which may boot
+        // the box: off the runtime's workers, and an error fails the send.
+        let attachments = {
+            let (id, paths) = (agent_id.to_string(), attachments.to_vec());
+            tokio::task::spawn_blocking(move || crate::attachments::adopt(&id, &paths))
+                .await
+                .map_err(|e| Error::Other(format!("adopting attachments: {e}")))??
+        };
         let attachments = attachments.as_slice();
 
         let busy = self.is_busy(agent_id);

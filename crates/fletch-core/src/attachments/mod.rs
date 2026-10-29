@@ -20,6 +20,12 @@
 //! (`remove_agent_dir` → `remove_dir_all`), so a sent attachment's lifetime is
 //! the workspace's. Non-staged paths pass through untouched.
 //!
+//! A box agent's workspace lives in its guest, which has no view of the host's
+//! files: the host holds only placeholders at the same paths. So when the
+//! workspace is a remote tree (`exec::for_path`), `adopt` also writes each file
+//! into the guest at the very path the agent is handed, before anything moves
+//! on the host. The host copy stays for the transcript to show.
+//!
 //! A paired phone stages the same way, in chunks over the remote protocol
 //! ([`remote`]): its files have no path on this Mac at all, so they are written
 //! into the staging area as they arrive and reach the agent through the very
@@ -30,6 +36,7 @@ pub mod remote;
 use std::path::{Path, PathBuf};
 
 use crate::error::{Error, Result};
+use crate::exec::Executor;
 use crate::workspace::agent_parent_dir;
 
 /// Subdir of the app-data dir where the composer stages pasted attachments.
@@ -118,42 +125,97 @@ fn stage_copy_into(staging: &Path, path: &Path) -> Result<PathBuf> {
 /// the rewritten path list. A path that isn't under the staging root (a dragged
 /// or browsed file, kept at its original location) passes through unchanged.
 ///
-/// Best-effort: if the workspace dir can't be resolved, or a single move fails,
-/// the original path is kept and the failure logged — the send still proceeds
-/// (the agent then hits the same read error it would have without adoption,
-/// rather than losing the message entirely).
-pub fn adopt(agent_id: &str, paths: &[String]) -> Vec<String> {
+/// On the host this is best-effort: if the workspace dir can't be resolved, or
+/// a single move fails, the original path is kept and the failure logged — the
+/// send still proceeds (the agent then hits the same read error it would have
+/// without adoption, rather than losing the message entirely).
+///
+/// Into a box it is not: a file that cannot be written into the guest fails the
+/// send with the reason, since the path would name nothing the agent can read.
+/// The guest is written first, so on that error every attachment is still
+/// staged and a resend carries it.
+///
+/// Blocking: a stopped box is booted to receive the files.
+pub fn adopt(agent_id: &str, paths: &[String]) -> Result<Vec<String>> {
+    if paths.is_empty() {
+        return Ok(Vec::new());
+    }
     let dest_base = match workspace_attachments_dir(agent_id) {
         Ok(dir) => dir,
         Err(e) => {
             tracing::warn!(agent_id, error = %e, "cannot resolve workspace attachments dir; leaving staged paths");
-            return paths.to_vec();
+            return Ok(paths.to_vec());
         }
     };
-    adopt_into(&staging_root(), &dest_base, paths)
+    let exec = crate::exec::for_path(&dest_base);
+    adopt_into(&staging_root(), &dest_base, &exec, paths)
 }
 
-/// Core of [`adopt`], with both roots passed explicitly so it's testable without
-/// the process-global app-data / workspaces roots.
-fn adopt_into(staging: &Path, dest_base: &Path, paths: &[String]) -> Vec<String> {
+/// Core of [`adopt`], with both roots and the workspace's executor passed
+/// explicitly so it's testable without the process-global app-data /
+/// workspaces roots or a box.
+fn adopt_into(
+    staging: &Path,
+    dest_base: &Path,
+    exec: &Executor,
+    paths: &[String],
+) -> Result<Vec<String>> {
     // Resolve the staging root once, so the per-path containment check below
     // compares real, `..`-and-symlink-free paths. If it can't be resolved
     // (nothing was ever staged), nothing is a staged file — pass everything
     // through untouched.
     let staging = match staging.canonicalize() {
         Ok(root) => root,
-        Err(_) => return paths.to_vec(),
+        Err(_) => return Ok(paths.to_vec()),
     };
-    paths
+    // Each staged file and where it lands; `None` for a path left as it is.
+    let moves: Vec<Option<(PathBuf, PathBuf)>> = paths
         .iter()
-        .map(|p| adopt_one(&staging, dest_base, Path::new(p)).unwrap_or_else(|| p.clone()))
-        .collect()
+        .map(|p| {
+            let src = staged_file(&staging, Path::new(p))?;
+            let name = src.file_name()?;
+            let dest = dest_base.join(uuid::Uuid::new_v4().to_string()).join(name);
+            Some((src, dest))
+        })
+        .collect();
+    let remote = matches!(exec, Executor::Remote(_));
+    if remote {
+        for (src, dest) in moves.iter().flatten() {
+            let bytes = std::fs::read(src)?;
+            exec.write(dest, &bytes).map_err(|e| {
+                Error::Other(format!(
+                    "could not copy attachment {} into the box: {e}",
+                    dest.file_name().unwrap_or_default().to_string_lossy()
+                ))
+            })?;
+        }
+    }
+    Ok(paths
+        .iter()
+        .zip(moves)
+        .map(|(p, planned)| match planned {
+            Some((src, dest)) => match move_to(&src, &dest) {
+                Ok(()) => dest.to_string_lossy().into_owned(),
+                // The guest holds it at `dest` already, which is the copy the
+                // agent reads; only the transcript's host copy is missing.
+                Err(e) if remote => {
+                    tracing::warn!(path = %p, error = %e, "failed to keep a host copy of a box attachment");
+                    dest.to_string_lossy().into_owned()
+                }
+                Err(e) => {
+                    tracing::warn!(path = %p, error = %e, "failed to adopt attachment; leaving staged path");
+                    p.clone()
+                }
+            },
+            None => p.clone(),
+        })
+        .collect())
 }
 
-/// Move `path` into `dest_base` and return the rewritten path, but only if it
-/// resolves to a **regular file at the exact shape [`save_pasted`] writes**:
-/// `<staging>/<uuid>/<filename>`. `None` leaves the caller's original string in
-/// place, which is the safe outcome for every reject:
+/// The canonical form of `path` when it resolves to a **regular file at the
+/// exact shape [`save_pasted`] writes**: `<staging>/<uuid>/<filename>`. `None`
+/// leaves the caller's original string in place, which is the safe outcome for
+/// every reject:
 /// - a dragged/browsed file kept at its own location;
 /// - a `..` or symlink path that escapes staging — moving it would drag an
 ///   app-data file (e.g. `fletch.db`) into agent-readable space, whereas
@@ -165,7 +227,7 @@ fn adopt_into(staging: &Path, dest_base: &Path, paths: &[String]) -> Vec<String>
 /// The strict `<staging>/<uuid>/<filename>` shape (a regular file exactly one
 /// dir below the canonical staging root) rejects all three at once, without a
 /// separate `starts_with`.
-fn adopt_one(staging: &Path, dest_base: &Path, path: &Path) -> Option<String> {
+fn staged_file(staging: &Path, path: &Path) -> Option<PathBuf> {
     let canonical = path.canonicalize().ok()?;
     if !canonical.is_file() {
         return None;
@@ -173,41 +235,153 @@ fn adopt_one(staging: &Path, dest_base: &Path, path: &Path) -> Option<String> {
     if canonical.parent().and_then(Path::parent) != Some(staging) {
         return None;
     }
-    match move_into(dest_base, &canonical) {
-        Ok(dest) => Some(dest.to_string_lossy().into_owned()),
-        Err(e) => {
-            tracing::warn!(path = %path.display(), error = %e, "failed to adopt attachment; leaving staged path");
-            None
-        }
-    }
+    Some(canonical)
 }
 
-/// Move one staged file to a fresh UUID dir under `dest_base` and return the new
-/// path. `path` is the canonicalized, verified-under-staging source. The empty
-/// staging dir it leaves behind is removed best-effort.
-fn move_into(dest_base: &Path, path: &Path) -> Result<PathBuf> {
-    let name = path
-        .file_name()
-        .ok_or_else(|| Error::Other("staged attachment has no file name".into()))?;
-    let dest_dir = dest_base.join(uuid::Uuid::new_v4().to_string());
-    std::fs::create_dir_all(&dest_dir)?;
-    let dest = dest_dir.join(name);
+/// Move one staged file to `dest` (a fresh UUID dir under the workspace's
+/// attachments dir) on the host. `src` is the canonicalized, verified-under-
+/// staging source. The empty staging dir it leaves behind is removed
+/// best-effort.
+fn move_to(src: &Path, dest: &Path) -> Result<()> {
+    if let Some(dir) = dest.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
     // Same-volume rename is atomic; fall back to copy+remove across volumes
     // (staging is under `~/Library`, the workspace under `~/.fletch` — usually
     // one volume, but not guaranteed).
-    if std::fs::rename(path, &dest).is_err() {
-        std::fs::copy(path, &dest)?;
-        let _ = std::fs::remove_file(path);
+    if std::fs::rename(src, dest).is_err() {
+        std::fs::copy(src, dest)?;
+        let _ = std::fs::remove_file(src);
     }
-    if let Some(parent) = path.parent() {
+    if let Some(parent) = src.parent() {
         let _ = std::fs::remove_dir(parent);
     }
-    Ok(dest)
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
+    use std::io;
+    use std::sync::Arc;
+
+    use parking_lot::Mutex;
+
     use super::*;
+    use crate::exec::{DirEntry, RemoteExecutor, Stat};
+
+    /// [`adopt_into`] for a workspace on this host.
+    fn adopt_local(staging: &Path, dest_base: &Path, paths: &[String]) -> Vec<String> {
+        adopt_into(staging, dest_base, &Executor::Local, paths).unwrap()
+    }
+
+    /// A box's tree as the host sees it through `exec`: records every write,
+    /// or refuses them all.
+    #[derive(Debug, Default)]
+    struct FakeBox {
+        writes: Mutex<Vec<(PathBuf, Vec<u8>)>>,
+        unreachable: bool,
+    }
+
+    impl RemoteExecutor for FakeBox {
+        fn command(&self, _: &str, _: &Path, _: &[(String, String)]) -> std::process::Command {
+            unreachable!("adoption runs no command in the box")
+        }
+        fn read(&self, _: &Path) -> io::Result<Vec<u8>> {
+            unreachable!("adoption reads nothing from the box")
+        }
+        fn write(&self, path: &Path, bytes: &[u8]) -> io::Result<()> {
+            if self.unreachable {
+                return Err(io::Error::other("ssh to the box failed"));
+            }
+            self.writes
+                .lock()
+                .push((path.to_path_buf(), bytes.to_vec()));
+            Ok(())
+        }
+        fn stat(&self, _: &Path) -> io::Result<Option<Stat>> {
+            Ok(None)
+        }
+        fn list(&self, _: &Path) -> io::Result<Vec<DirEntry>> {
+            Ok(Vec::new())
+        }
+        fn create_dir_all(&self, _: &Path) -> io::Result<()> {
+            Ok(())
+        }
+        fn remove(&self, _: &Path) -> io::Result<()> {
+            Ok(())
+        }
+        fn rename(&self, _: &Path, _: &Path) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Into a box, each staged file is written into the guest at exactly the
+    /// path the agent is handed — the guest has no view of the host's copy —
+    /// and the host keeps its copy there too, for the transcript. A path that
+    /// was never staged is not sent.
+    #[test]
+    fn a_box_workspace_receives_each_staged_file_at_the_handed_path() {
+        let staging = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let staged = staging.path().join("abc").join("shot.png");
+        std::fs::create_dir_all(staged.parent().unwrap()).unwrap();
+        std::fs::write(&staged, b"pixels").unwrap();
+        let elsewhere = "/elsewhere/notes.txt".to_string();
+        let guest = Arc::new(FakeBox::default());
+
+        let out = adopt_into(
+            staging.path(),
+            workspace.path(),
+            &Executor::Remote(guest.clone()),
+            &[staged.to_string_lossy().into_owned(), elsewhere.clone()],
+        )
+        .unwrap();
+
+        let handed = PathBuf::from(&out[0]);
+        assert!(handed.starts_with(workspace.path()), "{out:?}");
+        assert_eq!(out[1], elsewhere);
+        assert_eq!(
+            *guest.writes.lock(),
+            vec![(handed.clone(), b"pixels".to_vec())],
+            "the guest holds the bytes at the handed path, and nothing else"
+        );
+        assert_eq!(std::fs::read(&handed).unwrap(), b"pixels");
+        assert!(!staged.exists());
+    }
+
+    /// A box that cannot take the files fails the send, naming the file, and
+    /// leaves every attachment staged: nothing has moved on the host, so a
+    /// resend still carries them.
+    #[test]
+    fn a_box_that_cannot_take_the_files_fails_and_leaves_them_staged() {
+        let staging = tempfile::tempdir().unwrap();
+        let workspace = tempfile::tempdir().unwrap();
+        let staged = staging.path().join("abc").join("shot.png");
+        std::fs::create_dir_all(staged.parent().unwrap()).unwrap();
+        std::fs::write(&staged, b"pixels").unwrap();
+        let guest = Arc::new(FakeBox {
+            unreachable: true,
+            ..FakeBox::default()
+        });
+
+        let err = adopt_into(
+            staging.path(),
+            workspace.path(),
+            &Executor::Remote(guest),
+            &[staged.to_string_lossy().into_owned()],
+        )
+        .unwrap_err();
+
+        assert!(err.to_string().contains("shot.png"), "{err}");
+        assert!(staged.exists(), "the attachment stays staged");
+        assert!(
+            std::fs::read_dir(workspace.path())
+                .unwrap()
+                .next()
+                .is_none(),
+            "nothing lands in the workspace"
+        );
+    }
 
     /// A staged file is moved under the workspace root and its path rewritten;
     /// the original is gone and the bytes survive.
@@ -219,7 +393,7 @@ mod tests {
         std::fs::create_dir_all(staged.parent().unwrap()).unwrap();
         std::fs::write(&staged, b"pixels").unwrap();
 
-        let out = adopt_into(
+        let out = adopt_local(
             staging.path(),
             workspace.path(),
             &[staged.to_string_lossy().into_owned()],
@@ -253,7 +427,7 @@ mod tests {
         assert!(dropped.exists(), "the original is left in place");
 
         let workspace = tempfile::tempdir().unwrap();
-        let out = adopt_into(
+        let out = adopt_local(
             staging.path(),
             workspace.path(),
             &[staged.to_string_lossy().into_owned()],
@@ -282,7 +456,7 @@ mod tests {
         let workspace = tempfile::tempdir().unwrap();
         let original = "/Users/someone/pictures/cat.png".to_string();
 
-        let out = adopt_into(
+        let out = adopt_local(
             staging.path(),
             workspace.path(),
             std::slice::from_ref(&original),
@@ -306,7 +480,7 @@ mod tests {
         assert!(escape.starts_with(staging.path()));
         let escape_str = escape.to_string_lossy().into_owned();
 
-        let out = adopt_into(
+        let out = adopt_local(
             staging.path(),
             workspace.path(),
             std::slice::from_ref(&escape_str),
@@ -333,7 +507,7 @@ mod tests {
         let link = staging.path().join("innocent.png");
         std::os::unix::fs::symlink(&secret, &link).unwrap();
 
-        let out = adopt_into(
+        let out = adopt_local(
             staging.path(),
             workspace.path(),
             std::slice::from_ref(&link.to_string_lossy().into_owned()),
@@ -361,7 +535,7 @@ mod tests {
             staging.path().to_string_lossy().into_owned(), // the root itself
             uuid_dir.to_string_lossy().into_owned(),       // a dir beneath it
         ];
-        let out = adopt_into(staging.path(), workspace.path(), &dirs);
+        let out = adopt_local(staging.path(), workspace.path(), &dirs);
 
         assert_eq!(out, dirs.to_vec(), "directories pass through, unmoved");
         assert!(other.exists(), "no other staged file is relocated");
@@ -384,7 +558,7 @@ mod tests {
         std::fs::write(&staged, b"a").unwrap();
         let dragged = "/elsewhere/b.txt".to_string();
 
-        let out = adopt_into(
+        let out = adopt_local(
             staging.path(),
             workspace.path(),
             &[staged.to_string_lossy().into_owned(), dragged.clone()],

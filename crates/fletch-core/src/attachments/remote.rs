@@ -265,8 +265,10 @@ mod tests {
         let adopted = super::super::adopt_into(
             root.path(),
             workspace.path(),
+            &crate::exec::Executor::Local,
             &[path.to_string_lossy().into_owned()],
-        );
+        )
+        .unwrap();
         assert!(Path::new(&adopted[0]).starts_with(workspace.path()));
         assert_eq!(std::fs::read(&adopted[0]).unwrap(), b"pixels");
     }
