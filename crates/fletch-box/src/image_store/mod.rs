@@ -31,13 +31,10 @@ const SHA256_FILE: &str = "base.erofs.sha256";
 const STAGING_PREFIX: &str = ".staging-";
 const IMAGES_DIR: &str = "images";
 
-/// Where image releases are downloaded from: one GitHub release per image,
-/// tagged `box-image-v<version>`, holding `base.erofs` and `manifest.json`.
-/// The repository is private, so the app cannot fetch release assets from
-/// github.com without credentials; the website that already serves the
-/// updater's `latest.json` and artifacts proxies `/releases/download/<tag>/<asset>`
-/// as well (docs/RELEASING.md).
-pub const RELEASES_URL: &str = "https://fletch.sh/releases/download";
+/// Where image releases are downloaded from: one GitHub release per image on
+/// the public repository, tagged `box-image-v<version>`, holding `base.erofs`
+/// and `manifest.json`.
+pub const RELEASES_URL: &str = "https://github.com/fwdai/fletch/releases/download";
 
 /// The release manifest (`manifest.json`), the shape `packaging/box-image`
 /// writes and the pin below is copied from.
@@ -442,7 +439,7 @@ mod tests {
         let pinned = PinnedImage::from_manifest(&manifest, None);
         assert_eq!(
             pinned.url,
-            "https://fletch.sh/releases/download/box-image-v0.1.0/base.erofs"
+            "https://github.com/fwdai/fletch/releases/download/box-image-v0.1.0/base.erofs"
         );
         assert_eq!(pinned.sha256, "abc");
         let mirrored = PinnedImage::from_manifest(&manifest, Some("https://mirror.test/images/"));

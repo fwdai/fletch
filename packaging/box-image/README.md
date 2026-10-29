@@ -118,11 +118,8 @@ build` and the engine's tools prebuild share.
 
 Images are GitHub releases on this repository tagged `box-image-v<version>`, each holding `base.erofs` and
 `manifest.json`; the app downloads `<base URL>/base.erofs`
-(`https://fletch.sh/releases/download/box-image-v<version>/`, or the `box_image_url` setting)
-and checks the size and sha256 its `ImageStore` pins from the manifest. The repository is private and the
-app carries no GitHub credentials, so `fletch.sh` proxies `/releases/download/<tag>/<asset>` to the
-release asset the same way it serves the updater's `latest.json` and artifacts; the website must route that
-path before the first image release is usable. Bumping the image is three steps:
+(`https://github.com/fwdai/fletch/releases/download/box-image-v<version>/`, or the `box_image_url` setting)
+and checks the size and sha256 its `ImageStore` pins from the manifest. Bumping the image is three steps:
 
 1. **Build and publish.** Actions → *Box image* → *Run workflow* with the version (`X.Y.Z`), or push a tag
    `box-image-v<version>`. The workflow (`.github/workflows/box-image.yml`) runs on GitHub's arm64 runner,
