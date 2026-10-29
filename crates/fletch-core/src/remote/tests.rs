@@ -4057,8 +4057,9 @@ async fn every_settings_op_has_an_arm() {
             assert_ne!(e, dispatch::UNKNOWN_OP, "{op} has no arm");
         }
     }
-    // 17 through `settings_op`, plus `set_box_setting` through `boxes_op`.
-    assert_eq!(seen, 18, "the settings family is 18 ops");
+    // 17 through `settings_op`, plus `set_box_setting` through `boxes_op` and
+    // `set_box_egress_global` through `project_file_op`.
+    assert_eq!(seen, 19, "the settings family is 19 ops");
 }
 
 /// The two settings events are forwarded and advertised, so a second desktop
