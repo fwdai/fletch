@@ -14,3 +14,49 @@ export interface ProjectSettingsChangedEvent {
   key: string;
   value: string | null;
 }
+
+/** One of a project's settings files (`.fletch/settings.json`,
+ *  `.fletch/settings.local.json`) as last read on the host. */
+export interface ProjectFileReport {
+  /** Repo-relative path. */
+  path: string;
+  exists: boolean;
+  /** Why nothing in it applies: unreadable, too large, not JSON. */
+  error: string | null;
+  /** What was skipped while the rest applied. */
+  warnings: string[];
+  /** This file's `egress.allow`. */
+  allow: string[];
+  /** This file's `egress.disable`. */
+  disable: string[];
+}
+
+/** Which settings file an edit goes to: the team's `.fletch/settings.json`
+ *  or the user's own `.fletch/settings.local.json`. */
+export type ProjectFileWhich = "shared" | "local";
+
+/** An edit to one settings file's `egress` lists. */
+export interface ProjectFileEdit {
+  allowAdd?: string[];
+  allowRemove?: string[];
+  disableAdd?: string[];
+  disableRemove?: string[];
+}
+
+/** `project_file_status`: what a project's settings files say, read from its
+ *  primary repo on the host, and what of it applies. Host patterns the files
+ *  add under `egress.allow` apply only once the user approved them. */
+export interface ProjectFileStatus {
+  project_id: string;
+  repo_path: string | null;
+  /** Why the repository was not read at all. */
+  error: string | null;
+  files: ProjectFileReport[];
+  /** `disabled`: inherited patterns the files turn off. */
+  egress: { applied: string[]; pending: string[]; disabled: string[] };
+}
+
+/** `project_file:changed`: reload `project_file_status`. */
+export interface ProjectFileChangedEvent {
+  project_id: string;
+}

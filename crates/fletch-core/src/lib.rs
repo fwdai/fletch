@@ -50,6 +50,7 @@ pub mod native_input;
 pub mod new_project;
 pub mod oauth;
 pub mod power;
+pub mod project_file;
 pub mod pty_session;
 pub mod publish_prefs;
 pub mod remote;

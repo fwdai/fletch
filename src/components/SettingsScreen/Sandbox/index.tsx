@@ -8,6 +8,7 @@ import { BoxKnobs } from "./BoxKnobs";
 import { boxSetup } from "./boxSetup";
 import { ContainerAuth } from "./ContainerAuth";
 import { ContainerLaunchKnobs } from "./ContainerLaunchKnobs";
+import { EgressGlobal } from "./EgressGlobal";
 
 // A container runtime can start or stop while this pane stays open, so we
 // re-probe on a steady interval (plus immediately on mount and on window focus)
@@ -164,7 +165,8 @@ export function SandboxPane() {
 
       <ContainerLaunchKnobs runtime="docker" />
       <ContainerLaunchKnobs runtime="podman" last={!boxesEnabled} />
-      {boxesEnabled && <BoxKnobs last />}
+      {boxesEnabled && <BoxKnobs />}
+      {boxesEnabled && <EgressGlobal last />}
     </div>
   );
 }

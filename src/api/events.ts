@@ -53,6 +53,7 @@ import type { RunOutputEvent, RunPortEvent, RunStateEvent } from "./types/run";
 import type {
   BoxEgressEvent,
   BoxImageStatus,
+  BoxPolicyEvent,
   BoxStateEvent,
   BoxToolsStatus,
   DockerBuildEvent,
@@ -65,7 +66,11 @@ import type {
   TurnSentEvent,
   TurnStartedEvent,
 } from "./types/session";
-import type { ProjectSettingsChangedEvent, SettingsChangedEvent } from "./types/settings";
+import type {
+  ProjectFileChangedEvent,
+  ProjectSettingsChangedEvent,
+  SettingsChangedEvent,
+} from "./types/settings";
 import type { VerificationReportEvent } from "./types/verify";
 import type { WfEventEnvelope, WfRun } from "./types/workflow";
 
@@ -453,6 +458,12 @@ export function onBoxEgress(cb: (e: BoxEgressEvent) => void): Promise<UnlistenFn
   return on<BoxEgressEvent>("box:egress", cb);
 }
 
+/** What boxes may reach changed in the app: the global list, or a project's
+ *  in-app additions. Reload `boxEgressOverview`. */
+export function onBoxPolicy(cb: (e: BoxPolicyEvent) => void): Promise<UnlistenFn> {
+  return on<BoxPolicyEvent>("box:policy", cb);
+}
+
 /** A host-owned global setting was written — by this window, another desktop
  *  or a phone. Fold it over what `get_settings` answered. */
 export function onSettingsChanged(cb: (e: SettingsChangedEvent) => void): Promise<UnlistenFn> {
@@ -471,6 +482,14 @@ export function onProjectSettingsChanged(
   cb: (e: ProjectSettingsChangedEvent) => void,
 ): Promise<UnlistenFn> {
   return on<ProjectSettingsChangedEvent>("project_settings:changed", cb);
+}
+
+/** A project's `.fletch/settings.json` changed on the host, or what of it is
+ *  approved did. Reload `projectFileStatus`. */
+export function onProjectFileChanged(
+  cb: (e: ProjectFileChangedEvent) => void,
+): Promise<UnlistenFn> {
+  return on<ProjectFileChangedEvent>("project_file:changed", cb);
 }
 
 /** A write landed on one project's context, from any client or the host's own

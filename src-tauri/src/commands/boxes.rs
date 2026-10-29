@@ -58,6 +58,24 @@ pub fn box_egress_allow(
     engine::box_egress_allow_impl(&ctx, &project_id, &pattern)
 }
 
+/// The egress allow-list, layer by layer; with a project, its own too.
+#[tauri::command]
+pub fn box_egress_overview(
+    ctx: State<'_, Arc<EngineCtx>>,
+    project_id: Option<String>,
+) -> Result<engine::EgressOverview> {
+    engine::box_egress_overview_impl(&ctx, project_id.as_deref())
+}
+
+/// Replace the user's global egress changes over the template.
+#[tauri::command]
+pub fn set_box_egress_global(
+    ctx: State<'_, Arc<EngineCtx>>,
+    delta: fletch_core::sandbox::boxes::allowlist::Delta,
+) -> Result<fletch_core::sandbox::boxes::allowlist::Delta> {
+    engine::set_box_egress_global_impl(&ctx, &delta)
+}
+
 /// Write one validated box setting; `null` restores its default.
 #[tauri::command]
 pub fn set_box_setting(

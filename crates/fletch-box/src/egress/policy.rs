@@ -3,41 +3,151 @@
 use std::fmt;
 use std::str::FromStr;
 
-/// The hosts every box may reach before a project adds its own: the providers'
-/// full host sets and the package registries. Telemetry hosts are deliberately
-/// absent; the CLIs tolerate their denial.
-pub const DEFAULT_ALLOW: &[&str] = &[
-    "api.anthropic.com",
-    "platform.claude.com",
-    "*.anthropic.com",
-    "*.claude.ai",
-    "api.openai.com",
-    "chatgpt.com",
-    "auth.openai.com",
-    "api2.cursor.sh",
-    "*.cursor.sh",
-    "api.cursor.com",
-    "opencode.ai",
-    "*.opencode.ai",
-    "registry.npmjs.org",
-    "*.npmjs.org",
-    "pypi.org",
-    "files.pythonhosted.org",
-    "crates.io",
-    "static.crates.io",
-    "index.crates.io",
-    "github.com",
-    "api.github.com",
-    "objects.githubusercontent.com",
-    "raw.githubusercontent.com",
-    "codeload.github.com",
-    "deb.debian.org",
-    "security.debian.org",
-    "proxy.golang.org",
-    "sum.golang.org",
-    "repo.packagist.org",
-    "rubygems.org",
+/// What a template entry is for, so the app can group the list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Category {
+    /// The agent CLIs' own APIs and sign-in hosts.
+    Providers,
+    /// Package registries.
+    Registries,
+    /// Toolchain installers and their download CDNs.
+    Toolchains,
+    /// Source hosting.
+    SourceHosting,
+    /// The guest's own package mirrors.
+    OsPackages,
+}
+
+impl Category {
+    /// The stable name the app keys on.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Category::Providers => "providers",
+            Category::Registries => "registries",
+            Category::Toolchains => "toolchains",
+            Category::SourceHosting => "source_hosting",
+            Category::OsPackages => "os_packages",
+        }
+    }
+}
+
+/// The template every box starts from, maintained here and grouped by what it
+/// serves: the providers' full host sets, the package registries, the common
+/// toolchain installers and CDNs, source hosting and the guest's apt mirrors.
+/// The user's global list and a project's settings build on top of it.
+///
+/// What stays out on purpose: general-purpose upload sinks (cloud storage
+/// buckets such as `storage.googleapis.com`, pastebins, tunnels), where a box
+/// could put the code it can read; and telemetry ([`QUIET`]), which the CLIs
+/// tolerate losing.
+pub const TEMPLATE: &[(&str, Category)] = &[
+    ("api.anthropic.com", Category::Providers),
+    ("platform.claude.com", Category::Providers),
+    ("*.anthropic.com", Category::Providers),
+    ("*.claude.ai", Category::Providers),
+    ("api.openai.com", Category::Providers),
+    ("chatgpt.com", Category::Providers),
+    ("auth.openai.com", Category::Providers),
+    ("api2.cursor.sh", Category::Providers),
+    ("*.cursor.sh", Category::Providers),
+    ("api.cursor.com", Category::Providers),
+    ("opencode.ai", Category::Providers),
+    ("*.opencode.ai", Category::Providers),
+    ("registry.npmjs.org", Category::Registries),
+    ("*.npmjs.org", Category::Registries),
+    ("registry.yarnpkg.com", Category::Registries),
+    ("repo.yarnpkg.com", Category::Registries),
+    ("jsr.io", Category::Registries),
+    ("pypi.org", Category::Registries),
+    ("files.pythonhosted.org", Category::Registries),
+    ("crates.io", Category::Registries),
+    ("static.crates.io", Category::Registries),
+    ("index.crates.io", Category::Registries),
+    ("proxy.golang.org", Category::Registries),
+    ("sum.golang.org", Category::Registries),
+    ("repo.packagist.org", Category::Registries),
+    ("rubygems.org", Category::Registries),
+    ("index.rubygems.org", Category::Registries),
+    ("repo1.maven.org", Category::Registries),
+    ("repo.maven.apache.org", Category::Registries),
+    ("plugins.gradle.org", Category::Registries),
+    ("api.nuget.org", Category::Registries),
+    ("static.rust-lang.org", Category::Toolchains),
+    ("sh.rustup.rs", Category::Toolchains),
+    ("nodejs.org", Category::Toolchains),
+    ("bun.sh", Category::Toolchains),
+    ("deno.land", Category::Toolchains),
+    ("dl.deno.land", Category::Toolchains),
+    ("astral.sh", Category::Toolchains),
+    ("bootstrap.pypa.io", Category::Toolchains),
+    ("go.dev", Category::Toolchains),
+    ("dl.google.com", Category::Toolchains),
+    ("services.gradle.org", Category::Toolchains),
+    ("downloads.gradle.org", Category::Toolchains),
+    ("getcomposer.org", Category::Toolchains),
+    ("cdn.playwright.dev", Category::Toolchains),
+    (
+        "playwright.download.prss.microsoft.com",
+        Category::Toolchains,
+    ),
+    ("github.com", Category::SourceHosting),
+    ("api.github.com", Category::SourceHosting),
+    ("objects.githubusercontent.com", Category::SourceHosting),
+    ("raw.githubusercontent.com", Category::SourceHosting),
+    ("codeload.github.com", Category::SourceHosting),
+    (
+        "release-assets.githubusercontent.com",
+        Category::SourceHosting,
+    ),
+    ("gitlab.com", Category::SourceHosting),
+    ("bitbucket.org", Category::SourceHosting),
+    ("deb.debian.org", Category::OsPackages),
+    ("security.debian.org", Category::OsPackages),
+    ("snapshot.debian.org", Category::OsPackages),
 ];
+
+/// The template's patterns, in order. Kept for the callers that want the
+/// plain list.
+pub const DEFAULT_ALLOW: &[&str] = &{
+    let mut out = [""; TEMPLATE.len()];
+    let mut i = 0;
+    while i < TEMPLATE.len() {
+        out[i] = TEMPLATE[i].0;
+        i += 1;
+    }
+    out
+};
+
+/// Hosts the agent CLIs and their tools reach for on their own — telemetry,
+/// error reporting, feature flags — and that nothing needs: denied like any
+/// host not allowed, but quietly. A denial of one is recorded, never surfaced
+/// as something to act on. A user who allows one anyway is obeyed.
+pub const QUIET: &[&str] = &[
+    "*.datadoghq.com",
+    "*.datadoghq.eu",
+    "sentry.io",
+    "*.sentry.io",
+    "statsig.com",
+    "*.statsig.com",
+    "featuregates.org",
+    "*.featuregates.org",
+    "*.featureassets.org",
+    "*.prodregistryv2.org",
+    "api.segment.io",
+    "*.posthog.com",
+    "*.amplitude.com",
+    "*.mixpanel.com",
+    "api.honeycomb.io",
+];
+
+/// Whether a denial of `host` is noise ([`QUIET`]). `host` must be normalized.
+pub fn is_quiet(host: &str) -> bool {
+    QUIET.iter().any(|p| {
+        p.parse::<HostPattern>()
+            .map(|pattern| pattern.matches(host))
+            .unwrap_or(false)
+    })
+}
 
 pub const DEFAULT_PORTS: &[u16] = &[80, 443];
 
@@ -221,5 +331,55 @@ mod tests {
         let extra = EgressPolicy::with_extra(["example.com"]).unwrap();
         assert_eq!(extra.check("example.com", 443), Ok(()));
         assert_eq!(extra.allow.len(), DEFAULT_ALLOW.len() + 1);
+    }
+
+    /// Every template and quiet pattern parses, none is listed twice, and the
+    /// plain list is the template's patterns in order.
+    #[test]
+    fn the_template_and_quiet_list_are_well_formed() {
+        let mut seen = std::collections::HashSet::new();
+        for (pattern, _) in TEMPLATE {
+            assert!(pattern.parse::<HostPattern>().is_ok(), "{pattern}");
+            assert!(seen.insert(*pattern), "listed twice: {pattern}");
+        }
+        for pattern in QUIET {
+            assert!(pattern.parse::<HostPattern>().is_ok(), "{pattern}");
+        }
+        assert_eq!(
+            DEFAULT_ALLOW,
+            TEMPLATE
+                .iter()
+                .map(|(p, _)| *p)
+                .collect::<Vec<_>>()
+                .as_slice()
+        );
+    }
+
+    /// The toolchains a box commonly installs are reached; telemetry is quiet
+    /// and not allowed; a general-purpose upload sink is neither.
+    #[test]
+    fn toolchains_are_allowed_and_telemetry_is_quiet() {
+        let policy = EgressPolicy::default();
+        for host in [
+            "static.rust-lang.org",
+            "sh.rustup.rs",
+            "bun.sh",
+            "cdn.playwright.dev",
+        ] {
+            assert_eq!(policy.check(host, 443), Ok(()), "{host}");
+        }
+        for host in [
+            "http-intake.logs.us5.datadoghq.com",
+            "o1.ingest.sentry.io",
+            "statsig.com",
+        ] {
+            assert!(is_quiet(host), "{host}");
+            assert_eq!(policy.check(host, 443), Err(Denial::Host), "{host}");
+        }
+        assert!(!is_quiet("storage.googleapis.com"));
+        assert_eq!(
+            policy.check("storage.googleapis.com", 443),
+            Err(Denial::Host)
+        );
     }
 }

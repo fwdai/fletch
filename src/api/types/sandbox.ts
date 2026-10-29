@@ -1,3 +1,5 @@
+import type { ProjectFileStatus } from "./settings";
+
 /** Result of probing the local Docker installation (Settings › Sandbox).
  *  `version` is the daemon's server version, present only when available. */
 export interface DockerProbe {
@@ -132,6 +134,50 @@ export interface BoxEgressEvent {
   host: string;
   port: number;
   allowed: boolean;
+  /** A denied host that is known noise (telemetry and the like): recorded,
+   *  nothing to act on. */
+  quiet: boolean;
+}
+
+/** One layer's changes to the egress allow-list it inherits. */
+export interface EgressDelta {
+  add: string[];
+  remove: string[];
+}
+
+/** Which layer put a pattern on a box's allow-list. */
+export type EgressSource = "template" | "global" | "project_file" | "project";
+
+/** One pattern a box may reach. `category` is the template's, for a template
+ *  entry: `providers` | `registries` | `toolchains` | `source_hosting` |
+ *  `os_packages`. */
+export interface EgressEntry {
+  pattern: string;
+  source: EgressSource;
+  category: string | null;
+}
+
+/** `box_egress_overview`: the allow-list layer by layer. */
+export interface EgressOverview {
+  template: { pattern: string; category: string }[];
+  /** Telemetry hosts denied quietly. */
+  quiet: string[];
+  global: EgressDelta;
+  /** The template with the global changes applied: where every project
+   *  starts. */
+  base: EgressEntry[];
+  project: {
+    entries: EgressEntry[];
+    file: ProjectFileStatus;
+    /** Hosts added in the app before the settings files existed. */
+    in_app: string[];
+  } | null;
+}
+
+/** `box:policy`: the global list (`project_id: null`) or a project's in-app
+ *  additions changed. */
+export interface BoxPolicyEvent {
+  project_id: string | null;
 }
 
 /** The host-owned box settings `set_box_setting` accepts. */

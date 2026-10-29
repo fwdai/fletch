@@ -1,44 +1,75 @@
 import { useAppStore } from "@/store";
 import { Icon } from "./Icon";
+import { ProjectFilePrompt, useProjectFilePrompts } from "./ProjectFilePrompts";
 import { Button } from "./ui/Button";
 
 /**
- * Bottom-left toasts for connections a box's egress proxy refused, one per
- * denial, each dismissed by hand. Fed by `box:egress` (see
- * store/eventListeners), which the box engine emits for every answer; only the
- * denied ones land here. Allowing a host from this toast is not built yet, so
- * for now it only says what was blocked. Renders
- * nothing when there is nothing to show, which is nearly always.
+ * Bottom-left toasts for what a box may reach. A workspace's box being refused
+ * a host it has not been refused before says so once — one toast per
+ * workspace, however many hosts and connections — and leads to the project's
+ * Network section, where blocked hosts are reviewed and allowed. Known noise
+ * (telemetry and the like) never prompts; it is only listed there. Fed by
+ * `box:egress` through `foldBlocked` (store/sandbox).
+ *
+ * Above them sit the prompts of a project's `.fletch/settings.json` asking for
+ * hosts the user has not approved (`ProjectFilePrompts`): the same stack,
+ * since both are about what a box may reach. Renders nothing when there is
+ * nothing to show, which is nearly always.
  */
 export function BoxEgressToast() {
-  const denials = useAppStore((s) => s.boxEgressDenials);
+  const blocked = useAppStore((s) => s.boxEgressBlocked);
   const dismiss = useAppStore((s) => s.dismissBoxEgress);
   const agents = useAppStore((s) => s.workspace?.agents);
+  const openProjectScreen = useAppStore((s) => s.openProjectScreen);
+  const { prompts, dismiss: dismissPrompt } = useProjectFilePrompts();
 
-  if (denials.length === 0) return null;
+  // Unseen hosts, grouped by workspace in the order they were first refused.
+  const byAgent = new Map<string, string[]>();
+  for (const b of blocked) {
+    if (b.seen) continue;
+    byAgent.set(b.agent_id, [...(byAgent.get(b.agent_id) ?? []), b.host]);
+  }
+
+  if (byAgent.size === 0 && prompts.length === 0) return null;
 
   return (
     <div className="docker-build-stack">
-      {denials.map((d, i) => {
-        const name = agents?.find((a) => a.id === d.agent_id)?.name ?? d.agent_id;
+      {prompts.map((status) => (
+        <ProjectFilePrompt
+          key={status.project_id}
+          status={status}
+          onDismiss={() => dismissPrompt(status)}
+        />
+      ))}
+      {[...byAgent].map(([agentId, hosts]) => {
+        const agent = agents?.find((a) => a.id === agentId);
+        const name = agent?.name ?? agentId;
+        const repoPath = agent?.repos[0]?.repo_path;
+        const more = hosts.length - 1;
         return (
-          <div
-            // A denial has no id of its own; the index is its position in the
-            // dismissable list, and dismissing one shifts the rest.
-            key={`${d.agent_id}:${d.host}:${d.port}:${i}`}
-            className="update-toast docker-build-toast"
-            role="alert"
-          >
+          <div key={agentId} className="update-toast docker-build-toast" role="alert">
             <Icon name="close" />
             <div className="update-toast-body">
               <div className="update-toast-text">
                 <strong>
-                  Blocked connection to {d.host}:{d.port}
+                  {name} couldn&rsquo;t reach {hosts[0]}
+                  {more > 0 && ` and ${more} more`}
                 </strong>
-                <span>{name} runs in a box, which reaches only the project's allowed hosts.</span>
+                <span>Its box reaches only the hosts allowed for the project.</span>
               </div>
               <div className="update-toast-actions">
-                <Button variant="ghost" onClick={() => dismiss(i)}>
+                {repoPath && (
+                  <Button
+                    variant="primary"
+                    onClick={() => {
+                      openProjectScreen(repoPath, "settings");
+                      dismiss(agentId);
+                    }}
+                  >
+                    Review
+                  </Button>
+                )}
+                <Button variant="ghost" onClick={() => dismiss(agentId)}>
                   Dismiss
                 </Button>
               </div>

@@ -300,6 +300,14 @@ pub const OPS: &[&str] = &[
     "box_stop",
     "box_egress_allow",
     "set_box_setting",
+    // A project's `.fletch/settings.json`: what it says, and the approval of
+    // what it adds.
+    "project_file_status",
+    "project_file_approve",
+    "project_file_edit",
+    // The egress allow-list, layer by layer, and the user's global list.
+    "box_egress_overview",
+    "set_box_egress_global",
     // The project context layer (protocol doc, "Project context"): the
     // Context tab's reads and the user's own writes, so a paired client
     // curates the same knowledge the host serves its agents.
@@ -608,6 +616,14 @@ const OP_SCOPES: &[(&str, Scope)] = &[
     ("box_egress_allow", Scope::Projects),
     ("set_box_setting", Scope::Projects),
     ("box_stop", Scope::Agents),
+    // Reading a project's settings file is a look; approving what it adds
+    // widens what the project's boxes reach, like `box_egress_allow`.
+    ("project_file_status", Scope::Observe),
+    ("project_file_approve", Scope::Projects),
+    // Writing the files or the global list widens or narrows what boxes reach.
+    ("project_file_edit", Scope::Projects),
+    ("box_egress_overview", Scope::Observe),
+    ("set_box_egress_global", Scope::Projects),
     // How a publish happens, and whether one waits for a human: a device that
     // may not publish must not be able to switch the approval gate off.
     ("set_branch_prefix", Scope::Publish),
@@ -1829,6 +1845,12 @@ impl Dispatch for SupervisorDispatch {
                 | "box_image_cancel" | "box_state" | "box_stop" | "box_egress_allow"
                 | "set_box_setting" => boxes_op(ctx, op, args).await,
 
+                "project_file_status"
+                | "project_file_approve"
+                | "project_file_edit"
+                | "box_egress_overview"
+                | "set_box_egress_global" => project_file_op(ctx, op, args),
+
                 "context_overview"
                 | "context_preview"
                 | "context_record_entity"
@@ -2076,6 +2098,45 @@ async fn boxes_op(ctx: &Arc<EngineCtx>, op: &str, args: Value) -> DispatchResult
         "set_box_setting" => {
             let a: BoxSettingArgs = parse(args)?;
             res(c::set_box_setting_impl(ctx, &a.key, a.value.as_deref()))
+        }
+        _ => Err(UNKNOWN_OP.to_string()),
+    }
+}
+
+/// A project's settings file (`crate::project_file`) and the egress
+/// allow-list it is one layer of: the same `commands::*_impl` bodies the
+/// Tauri commands call.
+fn project_file_op(ctx: &Arc<EngineCtx>, op: &str, args: Value) -> DispatchResult {
+    use crate::commands as c;
+    match op {
+        "project_file_status" => {
+            let a: ProjectArgs = parse(args)?;
+            res(c::project_file_status_impl(ctx, &a.project_id))
+        }
+        "project_file_edit" => {
+            let a: ProjectFileEditArgs = parse(args)?;
+            res(c::project_file_edit_impl(
+                ctx,
+                &a.project_id,
+                a.file,
+                &a.edit,
+            ))
+        }
+        "box_egress_overview" => {
+            let a: EgressOverviewArgs = parse(args)?;
+            res(c::box_egress_overview_impl(ctx, a.project_id.as_deref()))
+        }
+        "set_box_egress_global" => {
+            let a: EgressGlobalArgs = parse(args)?;
+            res(c::set_box_egress_global_impl(ctx, &a.delta))
+        }
+        "project_file_approve" => {
+            let a: ProjectFileApproveArgs = parse(args)?;
+            res(c::project_file_approve_impl(
+                ctx,
+                &a.project_id,
+                &a.patterns,
+            ))
         }
         _ => Err(UNKNOWN_OP.to_string()),
     }
@@ -2802,6 +2863,33 @@ struct ProjectArgs {
 struct EgressAllowArgs {
     project_id: String,
     pattern: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProjectFileApproveArgs {
+    project_id: String,
+    patterns: Vec<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProjectFileEditArgs {
+    project_id: String,
+    file: crate::project_file::Which,
+    edit: crate::project_file::Edit,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct EgressOverviewArgs {
+    #[serde(default)]
+    project_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct EgressGlobalArgs {
+    delta: crate::sandbox::boxes::allowlist::Delta,
 }
 
 /// `value: null` restores the setting's default.

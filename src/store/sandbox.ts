@@ -142,8 +142,9 @@ export interface SandboxSlice {
   boxTools: Record<string, BoxToolsStatus>;
   /** Each box agent's phase by agent id, from `box:state`. */
   boxStates: Record<string, BoxStateEvent>;
-  /** Connections the egress proxy refused, oldest first, until dismissed. */
-  boxEgressDenials: BoxEgressEvent[];
+  /** Hosts a box's egress proxy refused, one entry per workspace and host
+   *  however many connections it took, oldest first. */
+  boxEgressBlocked: BlockedHost[];
 
   /** Persist a new engine choice via the backend, which validates docker
    *  against a live daemon probe — reverts the store on refusal. */
@@ -219,11 +220,56 @@ export interface SandboxSlice {
   applyBoxImage: (e: BoxImageStatus) => void;
   applyBoxState: (e: BoxStateEvent) => void;
   applyBoxTools: (e: BoxToolsStatus) => void;
-  /** Keep a refused connection for the workspace to show. */
+  /** Fold a refused connection into its workspace's blocked hosts. A new
+   *  host that is not known noise (`quiet`) is unseen until dismissed. */
   receiveBoxEgress: (e: BoxEgressEvent) => void;
-  dismissBoxEgress: (index: number) => void;
+  /** The user saw one workspace's blocked hosts: none of them prompts again. */
+  dismissBoxEgress: (agentId: string) => void;
+  /** Forget a blocked host — it was allowed. */
+  clearBoxEgress: (host: string) => void;
   /** Stop one agent's box now; refusals go to `lastError`. */
   stopBox: (agentId: string) => Promise<void>;
+}
+
+/** One host a workspace's box was refused, across its connections. */
+export interface BlockedHost {
+  agent_id: string;
+  host: string;
+  port: number;
+  /** Connections refused. */
+  count: number;
+  /** When the last one was, ms since the epoch. */
+  lastAt: number;
+  /** Known noise: telemetry and the like. Never prompts. */
+  quiet: boolean;
+  /** The user has seen it (or it is quiet): it does not prompt. */
+  seen: boolean;
+}
+
+/** Most hosts kept: enough for any session, bounded for a box that spins. */
+const MAX_BLOCKED = 200;
+
+/** `blocked` with one more refused connection folded in: counted on its
+ *  workspace and host when known, else added — unseen unless it is noise. */
+export function foldBlocked(blocked: BlockedHost[], e: BoxEgressEvent): BlockedHost[] {
+  const now = Date.now();
+  const at = blocked.findIndex((b) => b.agent_id === e.agent_id && b.host === e.host);
+  if (at >= 0) {
+    const next = [...blocked];
+    next[at] = { ...blocked[at], count: blocked[at].count + 1, lastAt: now, port: e.port };
+    return next;
+  }
+  const quiet = e.quiet === true;
+  const entry: BlockedHost = {
+    agent_id: e.agent_id,
+    host: e.host,
+    port: e.port,
+    count: 1,
+    lastAt: now,
+    quiet,
+    seen: quiet,
+  };
+  return [...blocked, entry].slice(-MAX_BLOCKED);
 }
 
 type StoreSet = Parameters<SliceCreator<SandboxSlice>>[0];
@@ -268,7 +314,7 @@ export const createSandboxSlice: SliceCreator<SandboxSlice> = (set, get) => ({
   boxImage: null,
   boxTools: {},
   boxStates: {},
-  boxEgressDenials: [],
+  boxEgressBlocked: [],
 
   setPublishConfirmation: async (enabled) => {
     await api.setPublishConfirmation(enabled);
@@ -462,9 +508,15 @@ export const createSandboxSlice: SliceCreator<SandboxSlice> = (set, get) => ({
   applyBoxImage: (e) => set({ boxImage: e }),
   applyBoxState: (e) => set((s) => ({ boxStates: { ...s.boxStates, [e.agent_id]: e } })),
   applyBoxTools: (e) => set((s) => ({ boxTools: { ...s.boxTools, [e.provider]: e } })),
-  receiveBoxEgress: (e) => set((s) => ({ boxEgressDenials: [...s.boxEgressDenials, e] })),
-  dismissBoxEgress: (index) =>
-    set((s) => ({ boxEgressDenials: s.boxEgressDenials.filter((_, i) => i !== index) })),
+  receiveBoxEgress: (e) => set((s) => ({ boxEgressBlocked: foldBlocked(s.boxEgressBlocked, e) })),
+  dismissBoxEgress: (agentId) =>
+    set((s) => ({
+      boxEgressBlocked: s.boxEgressBlocked.map((b) =>
+        b.agent_id === agentId ? { ...b, seen: true } : b,
+      ),
+    })),
+  clearBoxEgress: (host) =>
+    set((s) => ({ boxEgressBlocked: s.boxEgressBlocked.filter((b) => b.host !== host) })),
   stopBox: async (agentId) => {
     try {
       await api.boxStop(agentId);

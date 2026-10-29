@@ -8,6 +8,8 @@ import type {
   BoxRuntimeProbe,
   BoxSettingKey,
   BoxStateEvent,
+  EgressDelta,
+  EgressOverview,
 } from "../types/sandbox";
 
 export const boxesApi = {
@@ -27,6 +29,13 @@ export const boxesApi = {
    *  list as stored. */
   boxEgressAllow: (projectId: string, pattern: string) =>
     invoke<string[]>("box_egress_allow", { projectId, pattern }),
+  /** The egress allow-list layer by layer; with a project, its own too. */
+  boxEgressOverview: (projectId?: string) =>
+    invoke<EgressOverview>("box_egress_overview", { projectId: projectId ?? null }),
+  /** Replace the user's global changes over the template; resolves to what
+   *  was stored. Rejects a pattern that does not parse. */
+  setBoxEgressGlobal: (delta: EgressDelta) =>
+    invoke<EgressDelta>("set_box_egress_global", { delta }),
   /** Write one validated box setting; `null` restores its default. Rejects
    *  with the validation message. */
   setBoxSetting: (key: BoxSettingKey, value: string | null) =>

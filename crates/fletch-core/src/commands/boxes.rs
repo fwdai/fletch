@@ -118,7 +118,104 @@ pub fn box_egress_allow_impl(
     super::set_project_setting_impl(ctx, project_id, settings::EGRESS_ALLOW_KEY, Some(&json))?;
     settings::set_egress_allow(project_id, patterns.clone());
     BoxRegistry::global().update_egress(project_id);
+    crate::host::emit(
+        ctx.sink.as_ref(),
+        boxes::EVENT_POLICY,
+        &boxes::PolicyEventPayload {
+            project_id: Some(project_id.to_string()),
+        },
+    );
     Ok(patterns)
+}
+
+/// One template entry, for the Network lists.
+#[derive(Debug, Clone, Serialize)]
+pub struct TemplateEntry {
+    pub pattern: &'static str,
+    pub category: &'static str,
+}
+
+/// A project's egress allow-list, layer by layer.
+#[derive(Debug, Clone, Serialize)]
+pub struct ProjectEgress {
+    /// What its boxes may reach, each entry with the layer it came from.
+    pub entries: Vec<boxes::allowlist::Entry>,
+    /// Its settings files, read now.
+    pub file: crate::project_file::ProjectFileStatus,
+    /// The hosts added in the app before the settings files existed.
+    pub in_app: Vec<String>,
+}
+
+/// `box_egress_overview(project_id?)`: what the Network lists show — the
+/// template with its categories, the quiet list, the user's global changes,
+/// the list every project starts from, and with a project, its own.
+#[derive(Debug, Clone, Serialize)]
+pub struct EgressOverview {
+    pub template: Vec<TemplateEntry>,
+    pub quiet: Vec<&'static str>,
+    pub global: boxes::allowlist::Delta,
+    /// The template with the global changes applied.
+    pub base: Vec<boxes::allowlist::Entry>,
+    pub project: Option<ProjectEgress>,
+}
+
+pub fn box_egress_overview_impl(
+    ctx: &EngineCtx,
+    project_id: Option<&str>,
+) -> Result<EgressOverview> {
+    use boxes::allowlist::{effective, Source};
+    let global = settings::global_egress();
+    let project = match project_id {
+        Some(project_id) => {
+            let (file, _) = crate::project_file::refresh(&ctx.db.lock(), project_id);
+            Some(ProjectEgress {
+                entries: boxes::registry::egress_entries(project_id),
+                file,
+                in_app: settings::egress_allow(project_id),
+            })
+        }
+        None => None,
+    };
+    Ok(EgressOverview {
+        template: fletch_box::egress::TEMPLATE
+            .iter()
+            .map(|(pattern, category)| TemplateEntry {
+                pattern,
+                category: category.as_str(),
+            })
+            .collect(),
+        quiet: fletch_box::egress::QUIET.to_vec(),
+        base: effective(&[(Source::Global, &global)]),
+        global,
+        project,
+    })
+}
+
+/// `set_box_egress_global(delta)`: replace the user's global changes over the
+/// template — hosts every project's boxes may also reach, template entries
+/// turned off. Validated and normalized; every running box takes the new list
+/// from its next connection. Answers what was stored.
+pub fn set_box_egress_global_impl(
+    ctx: &EngineCtx,
+    delta: &boxes::allowlist::Delta,
+) -> Result<boxes::allowlist::Delta> {
+    let delta = delta.normalized()?;
+    {
+        let conn = ctx.db.lock();
+        database::set_setting(
+            &conn,
+            boxes::allowlist::GLOBAL_SETTING,
+            &serde_json::to_string(&delta)?,
+        )?;
+    }
+    settings::set_global_egress(delta.clone());
+    BoxRegistry::global().update_egress_all();
+    crate::host::emit(
+        ctx.sink.as_ref(),
+        boxes::EVENT_POLICY,
+        &boxes::PolicyEventPayload { project_id: None },
+    );
+    Ok(delta)
 }
 
 /// Write one box setting (`boxes_enabled`, `box_memory_mib`, `box_cpus`,
@@ -435,6 +532,68 @@ mod tests {
             r#"["example.com"]"#
         );
         assert_eq!(settings::egress_allow("pb"), list);
+    }
+
+    /// The global list is validated, stored, mirrored and announced; the
+    /// overview's base list and a project's entries both follow it, the
+    /// project's own in-app additions on top.
+    #[test]
+    fn the_global_list_reaches_every_project() {
+        use crate::sandbox::boxes::allowlist::{Delta, Source};
+        let (ctx, sink, _dir) = test_ctx();
+        ctx.db
+            .lock()
+            .execute(
+                "INSERT INTO projects (id, name, created_at) VALUES ('pg', 'p', 0)",
+                [],
+            )
+            .unwrap();
+        let bad = Delta {
+            add: vec!["not a host".into()],
+            remove: Vec::new(),
+        };
+        assert!(set_box_egress_global_impl(&ctx, &bad).is_err());
+        let stored = set_box_egress_global_impl(
+            &ctx,
+            &Delta {
+                add: vec!["Internal.Example.com".into()],
+                remove: vec!["rubygems.org".into()],
+            },
+        )
+        .unwrap();
+        assert_eq!(stored.add, vec!["internal.example.com"]);
+        assert_eq!(
+            Delta::parse(
+                database::get_setting(
+                    &ctx.db.lock(),
+                    crate::sandbox::boxes::allowlist::GLOBAL_SETTING
+                )
+                .as_deref()
+            ),
+            stored
+        );
+        assert!(sink
+            .events()
+            .iter()
+            .any(|(event, _)| event == boxes::EVENT_POLICY));
+
+        box_egress_allow_impl(&ctx, "pg", "mine.example").unwrap();
+        let overview = box_egress_overview_impl(&ctx, Some("pg")).unwrap();
+        let base: Vec<&str> = overview.base.iter().map(|e| e.pattern.as_str()).collect();
+        assert!(base.contains(&"internal.example.com"));
+        assert!(!base.contains(&"rubygems.org"));
+        let project = overview.project.unwrap();
+        let mine = project
+            .entries
+            .iter()
+            .find(|e| e.pattern == "mine.example")
+            .unwrap();
+        assert_eq!(mine.source, Source::Project);
+        assert_eq!(project.in_app, vec!["mine.example"]);
+        assert_eq!(overview.template.len(), fletch_box::egress::TEMPLATE.len());
+
+        // Process-wide: leave it as the other tests expect it.
+        settings::set_global_egress(Delta::default());
     }
 
     #[test]
