@@ -25,6 +25,22 @@ export interface ProjectFileReport {
   error: string | null;
   /** What was skipped while the rest applied. */
   warnings: string[];
+  /** This file's `egress.allow`. */
+  allow: string[];
+  /** This file's `egress.disable`. */
+  disable: string[];
+}
+
+/** Which settings file an edit goes to: the team's `.fletch/settings.json`
+ *  or the user's own `.fletch/settings.local.json`. */
+export type ProjectFileWhich = "shared" | "local";
+
+/** An edit to one settings file's `egress` lists. */
+export interface ProjectFileEdit {
+  allowAdd?: string[];
+  allowRemove?: string[];
+  disableAdd?: string[];
+  disableRemove?: string[];
 }
 
 /** `project_file_status`: what a project's settings files say, read from its
@@ -36,7 +52,8 @@ export interface ProjectFileStatus {
   /** Why the repository was not read at all. */
   error: string | null;
   files: ProjectFileReport[];
-  egress: { applied: string[]; pending: string[] };
+  /** `disabled`: inherited patterns the files turn off. */
+  egress: { applied: string[]; pending: string[]; disabled: string[] };
 }
 
 /** `project_file:changed`: reload `project_file_status`. */

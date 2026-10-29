@@ -6,7 +6,7 @@ use serde::Serialize;
 
 use crate::error::Result;
 use crate::host::EngineCtx;
-use crate::project_file::{self, ProjectFileStatus, EVENT_CHANGED};
+use crate::project_file::{self, Edit, ProjectFileStatus, Which, EVENT_CHANGED};
 
 #[derive(Serialize)]
 struct Changed<'a> {
@@ -32,6 +32,21 @@ pub fn project_file_approve_impl(
     patterns: &[String],
 ) -> Result<ProjectFileStatus> {
     let status = project_file::approve(&ctx.db.lock(), project_id, patterns)?;
+    emit_changed(ctx, project_id);
+    Ok(status)
+}
+
+/// `project_file_edit(project_id, file, edit)`: change the `egress` lists of
+/// one of the project's settings files from the app — `shared` is the team's
+/// `.fletch/settings.json`, `local` the user's own. Hosts added this way are
+/// approved as they are written. Refused for a file with comments.
+pub fn project_file_edit_impl(
+    ctx: &EngineCtx,
+    project_id: &str,
+    file: Which,
+    edit: &Edit,
+) -> Result<ProjectFileStatus> {
+    let status = project_file::edit(&ctx.db.lock(), project_id, file, edit)?;
     emit_changed(ctx, project_id);
     Ok(status)
 }

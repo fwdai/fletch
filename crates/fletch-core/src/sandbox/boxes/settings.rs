@@ -85,6 +85,10 @@ static SETTINGS: RwLock<BoxSettings> = RwLock::new(BoxSettings {
 /// `project_id → patterns`, the per-project egress additions.
 static EGRESS: RwLock<Option<HashMap<String, Vec<String>>>> = RwLock::new(None);
 
+/// The user's global egress changes over the template
+/// (`allowlist::GLOBAL_SETTING`).
+static GLOBAL_EGRESS: RwLock<Option<super::allowlist::Delta>> = RwLock::new(None);
+
 /// Held by every test that flips the flag or the selected engine: both are
 /// process-wide, so such tests run one at a time. Async-aware so an async test
 /// may hold it across its awaits; a sync test takes `blocking_lock`.
@@ -134,6 +138,9 @@ pub fn load(conn: &Connection) -> BoxSettings {
 /// Seed both mirrors from the database (boot).
 pub fn seed(conn: &Connection) {
     set(load(conn));
+    set_global_egress(super::allowlist::Delta::parse(
+        database::get_setting(conn, super::allowlist::GLOBAL_SETTING).as_deref(),
+    ));
     let mut map = HashMap::new();
     if let Ok(mut stmt) =
         conn.prepare("SELECT project_id, value FROM project_settings WHERE key = ?1")
@@ -248,6 +255,16 @@ pub fn egress_allow(project_id: &str) -> Vec<String> {
         .as_ref()
         .and_then(|m| m.get(project_id).cloned())
         .unwrap_or_default()
+}
+
+/// The user's global egress changes, from the mirror.
+pub fn global_egress() -> super::allowlist::Delta {
+    GLOBAL_EGRESS.read().clone().unwrap_or_default()
+}
+
+/// Replace the global egress changes in the mirror (the setter persists).
+pub fn set_global_egress(delta: super::allowlist::Delta) {
+    *GLOBAL_EGRESS.write() = Some(delta);
 }
 
 /// Replace a project's egress additions in the mirror (the setter persists).

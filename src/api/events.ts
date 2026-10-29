@@ -53,6 +53,7 @@ import type { RunOutputEvent, RunPortEvent, RunStateEvent } from "./types/run";
 import type {
   BoxEgressEvent,
   BoxImageStatus,
+  BoxPolicyEvent,
   BoxStateEvent,
   BoxToolsStatus,
   DockerBuildEvent,
@@ -455,6 +456,12 @@ export function onBoxTools(cb: (e: BoxToolsStatus) => void): Promise<UnlistenFn>
  *  the denied ones. */
 export function onBoxEgress(cb: (e: BoxEgressEvent) => void): Promise<UnlistenFn> {
   return on<BoxEgressEvent>("box:egress", cb);
+}
+
+/** What boxes may reach changed in the app: the global list, or a project's
+ *  in-app additions. Reload `boxEgressOverview`. */
+export function onBoxPolicy(cb: (e: BoxPolicyEvent) => void): Promise<UnlistenFn> {
+  return on<BoxPolicyEvent>("box:policy", cb);
 }
 
 /** A host-owned global setting was written — by this window, another desktop

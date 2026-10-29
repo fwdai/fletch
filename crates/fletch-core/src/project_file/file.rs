@@ -29,13 +29,20 @@ pub struct FileReport {
     /// What was skipped while the rest applied: an unknown key, a value that
     /// is not a host pattern.
     pub warnings: Vec<String>,
+    /// This file's `egress.allow`, as read.
+    pub allow: Vec<String>,
+    /// This file's `egress.disable`, as read.
+    pub disable: Vec<String>,
 }
 
 /// What one file asks for.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Parsed {
-    /// Normalized host patterns (`HostPattern`'s spelling), deduplicated.
+    /// Host patterns to allow, normalized (`HostPattern`'s spelling) and
+    /// deduplicated.
     pub egress_allow: Vec<String>,
+    /// Inherited patterns to turn off, likewise.
+    pub egress_disable: Vec<String>,
     pub warnings: Vec<String>,
 }
 
@@ -65,36 +72,220 @@ fn parse_egress(value: Value, parsed: &mut Parsed) {
         return;
     };
     for (key, value) in egress {
-        if key != "allow" {
-            parsed
-                .warnings
-                .push(format!("unknown setting `egress.{key}`"));
-            continue;
-        }
+        let list = match key.as_str() {
+            "allow" => &mut parsed.egress_allow,
+            "disable" => &mut parsed.egress_disable,
+            _ => {
+                parsed
+                    .warnings
+                    .push(format!("unknown setting `egress.{key}`"));
+                continue;
+            }
+        };
         let Value::Array(items) = value else {
             parsed
                 .warnings
-                .push("`egress.allow` must be a list of host patterns".into());
+                .push(format!("`egress.{key}` must be a list of host patterns"));
             continue;
         };
         for item in items {
             let Value::String(raw) = &item else {
                 parsed
                     .warnings
-                    .push(format!("`egress.allow`: {item} is not a string"));
+                    .push(format!("`egress.{key}`: {item} is not a string"));
                 continue;
             };
             match raw.parse::<fletch_box::HostPattern>() {
                 Ok(pattern) => {
                     let spelled = pattern.to_string();
-                    if !parsed.egress_allow.contains(&spelled) {
-                        parsed.egress_allow.push(spelled);
+                    if !list.contains(&spelled) {
+                        list.push(spelled);
                     }
                 }
-                Err(e) => parsed.warnings.push(format!("`egress.allow`: {e}")),
+                Err(e) => parsed.warnings.push(format!("`egress.{key}`: {e}")),
             }
         }
     }
+}
+
+/// Whether `text` holds a `//` or `/* */` comment outside a string: what an
+/// edit from the app, which writes plain JSON, would lose.
+pub fn has_comments(text: &str) -> bool {
+    let mut chars = text.chars().peekable();
+    let mut in_string = false;
+    while let Some(c) = chars.next() {
+        if in_string {
+            match c {
+                '\\' => {
+                    chars.next();
+                }
+                '"' => in_string = false,
+                _ => {}
+            }
+        } else if c == '"' {
+            in_string = true;
+        } else if c == '/' && matches!(chars.peek(), Some('/') | Some('*')) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Which of the two files an edit goes to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Which {
+    /// `.fletch/settings.json`, the team's.
+    Shared,
+    /// `.fletch/settings.local.json`, the user's own.
+    Local,
+}
+
+impl Which {
+    pub fn file_name(self) -> &'static str {
+        match self {
+            Which::Shared => SHARED_FILE,
+            Which::Local => LOCAL_FILE,
+        }
+    }
+}
+
+/// An edit to one file's `egress` lists: each pattern is normalized; adds go
+/// after removes.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Edit {
+    #[serde(default)]
+    pub allow_add: Vec<String>,
+    #[serde(default)]
+    pub allow_remove: Vec<String>,
+    #[serde(default)]
+    pub disable_add: Vec<String>,
+    #[serde(default)]
+    pub disable_remove: Vec<String>,
+}
+
+/// `text` (a settings file, or `None` for one that does not exist yet) with
+/// `edit` applied, as the JSON to write. Refused for a file with comments,
+/// which plain JSON would drop — that file is edited by hand — and for a
+/// pattern that does not parse. Everything else in the file is kept; an
+/// emptied list, and then an emptied `egress`, is left out.
+pub fn edit_text(text: Option<&str>, edit: &Edit) -> Result<String, String> {
+    let text = text.unwrap_or("{}");
+    if has_comments(text) {
+        return Err(
+            "this file has comments, which an edit from Fletch would drop; edit it by \
+                    hand instead"
+                .into(),
+        );
+    }
+    let value: Value =
+        serde_json::from_str(&strip_jsonc(text)).map_err(|e| format!("not valid JSON: {e}"))?;
+    let Value::Object(mut top) = value else {
+        return Err("the file must hold a JSON object".into());
+    };
+    let mut egress = match top.remove("egress") {
+        Some(Value::Object(egress)) => egress,
+        Some(_) => return Err("`egress` must be an object".into()),
+        None => serde_json::Map::new(),
+    };
+    for (key, remove, add) in [
+        ("allow", &edit.allow_remove, &edit.allow_add),
+        ("disable", &edit.disable_remove, &edit.disable_add),
+    ] {
+        let mut list: Vec<String> = match egress.remove(key) {
+            Some(Value::Array(items)) => items
+                .into_iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect(),
+            Some(_) => return Err(format!("`egress.{key}` must be a list")),
+            None => Vec::new(),
+        };
+        let normalize = |raw: &String| {
+            raw.parse::<fletch_box::HostPattern>()
+                .map(|p| p.to_string())
+                .map_err(|e| e.to_string())
+        };
+        for raw in remove {
+            let spelled = normalize(raw)?;
+            list.retain(|p| {
+                p.parse::<fletch_box::HostPattern>()
+                    .map(|q| q.to_string() != spelled)
+                    .unwrap_or(true)
+            });
+        }
+        for raw in add {
+            let spelled = normalize(raw)?;
+            if !list.contains(&spelled) {
+                list.push(spelled);
+            }
+        }
+        if !list.is_empty() {
+            egress.insert(
+                key.to_string(),
+                Value::Array(list.into_iter().map(Value::String).collect()),
+            );
+        }
+    }
+    if !egress.is_empty() {
+        top.insert("egress".into(), Value::Object(egress));
+    }
+    let mut out = serde_json::to_string_pretty(&Value::Object(top)).map_err(|e| e.to_string())?;
+    out.push('\n');
+    Ok(out)
+}
+
+/// The repository's `info/exclude`, the git-ignore that is never committed:
+/// `.git/info/exclude`, or for a worktree (`.git` a file naming its git dir)
+/// the common dir's. `None` when `repo` is not a git checkout.
+pub fn exclude_file(repo: &Path) -> Option<PathBuf> {
+    let dot_git = repo.join(".git");
+    let git_dir = if dot_git.is_dir() {
+        dot_git
+    } else {
+        let text = std::fs::read_to_string(&dot_git).ok()?;
+        let dir = PathBuf::from(text.trim().strip_prefix("gitdir:")?.trim());
+        let dir = if dir.is_absolute() {
+            dir
+        } else {
+            repo.join(dir)
+        };
+        match std::fs::read_to_string(dir.join("commondir")) {
+            Ok(common) => {
+                let common = PathBuf::from(common.trim());
+                if common.is_absolute() {
+                    common
+                } else {
+                    dir.join(common)
+                }
+            }
+            Err(_) => dir,
+        }
+    };
+    Some(git_dir.join("info").join("exclude"))
+}
+
+/// Keep `.fletch/settings.local.json` out of git, through `info/exclude` so
+/// the user's tracked `.gitignore` is never touched. Idempotent; a repository
+/// that is not a git checkout has nothing to exclude from.
+pub fn exclude_local_file(repo: &Path) -> std::io::Result<()> {
+    let Some(exclude) = exclude_file(repo) else {
+        return Ok(());
+    };
+    let line = format!("/{DIR}/{LOCAL_FILE}");
+    let current = std::fs::read_to_string(&exclude).unwrap_or_default();
+    if current.lines().any(|l| l.trim() == line) {
+        return Ok(());
+    }
+    if let Some(dir) = exclude.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let sep = if current.is_empty() || current.ends_with('\n') {
+        ""
+    } else {
+        "\n"
+    };
+    std::fs::write(&exclude, format!("{current}{sep}{line}\n"))
 }
 
 /// JSON with comments made JSON: `//` line and `/* */` block comments become
@@ -195,6 +386,8 @@ pub struct Read {
     pub files: Vec<FileReport>,
     /// Both files' egress additions, the team's first, deduplicated.
     pub egress_allow: Vec<String>,
+    /// Both files' turned-off patterns, likewise.
+    pub egress_disable: Vec<String>,
 }
 
 fn file_paths(repo: &Path) -> [(String, PathBuf); 2] {
@@ -259,11 +452,18 @@ pub fn read_files(repo: &Path, agents_root: Option<&Path>) -> Read {
                         Err(e) => report.error = Some(e),
                         Ok(parsed) => {
                             report.warnings = parsed.warnings;
-                            for pattern in parsed.egress_allow {
-                                if !read.egress_allow.contains(&pattern) {
-                                    read.egress_allow.push(pattern);
+                            for (from, into) in [
+                                (&parsed.egress_allow, &mut read.egress_allow),
+                                (&parsed.egress_disable, &mut read.egress_disable),
+                            ] {
+                                for pattern in from {
+                                    if !into.contains(pattern) {
+                                        into.push(pattern.clone());
+                                    }
                                 }
                             }
+                            report.allow = parsed.egress_allow;
+                            report.disable = parsed.egress_disable;
                         }
                     },
                 }
@@ -381,6 +581,124 @@ mod tests {
             read_files(&mine, Some(&agents)).egress_allow,
             vec!["ok.example"]
         );
+    }
+
+    /// `egress.disable` is read like `allow`, and each file reports its own
+    /// lists.
+    #[test]
+    fn reads_disable_and_reports_each_files_lists() {
+        let parsed =
+            parse(r#"{ "egress": { "allow": ["a.com"], "disable": ["RubyGems.org", 7] } }"#)
+                .unwrap();
+        assert_eq!(parsed.egress_disable, vec!["rubygems.org"]);
+        assert_eq!(parsed.warnings.len(), 1);
+
+        let td = tempfile::tempdir().unwrap();
+        let repo = td.path().join("repo");
+        write(
+            &repo,
+            SHARED_FILE,
+            r#"{ "egress": { "disable": ["a.org"] } }"#,
+        );
+        write(&repo, LOCAL_FILE, r#"{ "egress": { "allow": ["b.org"] } }"#);
+        let read = read_files(&repo, None);
+        assert_eq!(read.egress_disable, vec!["a.org"]);
+        assert_eq!(read.files[0].disable, vec!["a.org"]);
+        assert_eq!(read.files[1].allow, vec!["b.org"]);
+    }
+
+    /// Comments are found outside strings only.
+    #[test]
+    fn finds_comments_outside_strings() {
+        assert!(has_comments("{ // x\n }"));
+        assert!(has_comments("{ /* x */ }"));
+        assert!(!has_comments(r#"{ "url": "https://x//y/*z*/" }"#));
+        assert!(!has_comments(r#"{ "q": "a\"//" }"#));
+    }
+
+    /// An edit adds and removes in both lists, keeps the rest of the file,
+    /// drops what it emptied, and refuses a file with comments or a bad
+    /// pattern.
+    #[test]
+    fn edits_the_egress_lists() {
+        let out = edit_text(
+            None,
+            &Edit {
+                allow_add: vec!["A.com".into(), "b.com".into()],
+                disable_add: vec!["rubygems.org".into()],
+                ..Edit::default()
+            },
+        )
+        .unwrap();
+        let parsed = parse(&out).unwrap();
+        assert_eq!(parsed.egress_allow, vec!["a.com", "b.com"]);
+        assert_eq!(parsed.egress_disable, vec!["rubygems.org"]);
+
+        let out = edit_text(
+            Some(&format!(
+                r#"{{ "$schema": "s", {} }}"#,
+                &out[1..out.len() - 2]
+            )),
+            &Edit {
+                allow_remove: vec!["a.com".into()],
+                disable_remove: vec!["rubygems.org".into()],
+                ..Edit::default()
+            },
+        )
+        .unwrap();
+        let value: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(value["$schema"], "s");
+        assert_eq!(value["egress"]["allow"], serde_json::json!(["b.com"]));
+        assert!(value["egress"].get("disable").is_none());
+
+        let emptied = edit_text(
+            Some(r#"{ "egress": { "allow": ["b.com"] } }"#),
+            &Edit {
+                allow_remove: vec!["b.com".into()],
+                ..Edit::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(emptied.trim(), "{}");
+
+        assert!(edit_text(Some("{ // mine\n }"), &Edit::default()).is_err());
+        let bad = Edit {
+            allow_add: vec!["not a host".into()],
+            ..Edit::default()
+        };
+        assert!(edit_text(None, &bad).is_err());
+    }
+
+    /// The local file is excluded through the repository's `info/exclude`,
+    /// once; a worktree's goes to the common dir; a non-repository is left
+    /// alone.
+    #[test]
+    fn excludes_the_local_file_from_git() {
+        let td = tempfile::tempdir().unwrap();
+        let repo = td.path().join("repo");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        exclude_local_file(&repo).unwrap();
+        exclude_local_file(&repo).unwrap();
+        let exclude = std::fs::read_to_string(repo.join(".git/info/exclude")).unwrap();
+        assert_eq!(exclude, "/.fletch/settings.local.json\n");
+
+        let common = td.path().join("main.git");
+        let worktree_git = common.join("worktrees").join("wt");
+        std::fs::create_dir_all(&worktree_git).unwrap();
+        std::fs::write(worktree_git.join("commondir"), "../..").unwrap();
+        let wt = td.path().join("wt");
+        std::fs::create_dir_all(&wt).unwrap();
+        std::fs::write(
+            wt.join(".git"),
+            format!("gitdir: {}\n", worktree_git.display()),
+        )
+        .unwrap();
+        assert_eq!(
+            exclude_file(&wt).unwrap(),
+            worktree_git.join("../..").join("info").join("exclude")
+        );
+
+        assert!(exclude_file(&td.path().join("plain")).is_none());
     }
 
     /// The stamp moves when a file is written, and stays put otherwise.

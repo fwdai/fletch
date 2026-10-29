@@ -8,7 +8,7 @@
 // or `dbUpsert` (src/storage/hostOwnedKeys.test.ts enforces it).
 import type { SandboxEngine } from "@/storage/preferences";
 import { invoke } from "../invoke";
-import type { ProjectFileStatus } from "../types/settings";
+import type { ProjectFileEdit, ProjectFileStatus, ProjectFileWhich } from "../types/settings";
 
 export const settingsApi = {
   /** The host-owned global settings as stored, and nothing else (no secret,
@@ -57,6 +57,10 @@ export const settingsApi = {
    *  reach them. Rejects a pattern the files do not hold now. */
   projectFileApprove: (projectId: string, patterns: string[]) =>
     invoke<ProjectFileStatus>("project_file_approve", { projectId, patterns }),
+  /** Change the `egress` lists of one settings file. Hosts added this way are
+   *  approved as written. Rejects a file with comments (edit it by hand). */
+  projectFileEdit: (projectId: string, file: ProjectFileWhich, edit: ProjectFileEdit) =>
+    invoke<ProjectFileStatus>("project_file_edit", { projectId, file, edit }),
   /** "Remove agent attribution": true strips agents' commit/PR attribution
    *  whatever their own settings say. */
   setAgentAttributionRemoved: (removed: boolean) =>

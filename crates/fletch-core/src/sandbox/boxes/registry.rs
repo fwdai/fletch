@@ -678,6 +678,20 @@ impl BoxRegistry {
 
     /// A project's egress additions changed: every running box of that
     /// project serves the new policy from its next connection.
+    /// Every running box serves the policy of its project from its next
+    /// connection: the global list changed.
+    pub fn update_egress_all(&self) {
+        let projects: std::collections::HashSet<String> = self
+            .entries
+            .lock()
+            .values()
+            .filter_map(|e| e.running.as_ref().map(|r| r.identity.project_id.clone()))
+            .collect();
+        for project_id in projects {
+            self.update_egress(&project_id);
+        }
+    }
+
     pub fn update_egress(&self, project_id: &str) {
         let policy = egress_policy(project_id);
         for running in self
@@ -746,21 +760,37 @@ pub fn tools_disk_path(provider: &str) -> PathBuf {
     fletch_box::tools::disk_path(&tools_root(), provider, &tools_version(provider))
 }
 
-/// The defaults plus the project's additions — those made in the app, and
-/// those of its `.fletch/settings.json` the user approved (`project_file`); a
-/// stored pattern that no longer parses is dropped with a warning rather than
-/// blocking the launch.
+/// What `project_id`'s boxes may reach, every layer applied
+/// (`allowlist::effective`): the template, the user's global list, the
+/// project's settings files (approved additions, turned-off entries) and its
+/// in-app additions.
+pub fn egress_entries(project_id: &str) -> Vec<super::allowlist::Entry> {
+    use super::allowlist::{effective, Delta, Source};
+    let global = settings::global_egress();
+    let file = crate::project_file::egress_delta(project_id);
+    let in_app = Delta {
+        add: settings::egress_allow(project_id),
+        remove: Vec::new(),
+    };
+    effective(&[
+        (Source::Global, &global),
+        (Source::ProjectFile, &file),
+        (Source::Project, &in_app),
+    ])
+}
+
+/// [`egress_entries`] as the proxy's policy. Every layer was normalized when
+/// stored, so a pattern that no longer parses is dropped with a warning
+/// rather than blocking the launch.
 pub fn egress_policy(project_id: &str) -> EgressPolicy {
-    let mut extra = settings::egress_allow(project_id);
-    for pattern in crate::project_file::applied_egress(project_id) {
-        if !extra.contains(&pattern) {
-            extra.push(pattern);
-        }
-    }
-    match EgressPolicy::with_extra(&extra) {
+    let patterns: Vec<String> = egress_entries(project_id)
+        .into_iter()
+        .map(|e| e.pattern)
+        .collect();
+    match EgressPolicy::new(&patterns) {
         Ok(policy) => policy,
         Err(e) => {
-            tracing::warn!(project_id, error = %e, "ignoring the project's egress additions");
+            tracing::warn!(project_id, error = %e, "ignoring the project's egress layers");
             EgressPolicy::default()
         }
     }
@@ -890,10 +920,12 @@ fn on_egress(agent_id: &str, event: EgressEvent) {
                 host,
                 port,
                 allowed: true,
+                quiet: false,
             },
         ),
         EgressEvent::Denied { host, port, reason } => {
-            tracing::info!(agent_id, host, port, %reason, "box egress denied");
+            let quiet = fletch_box::egress::is_quiet(&host);
+            tracing::info!(agent_id, host, port, %reason, quiet, "box egress denied");
             super::emit(
                 super::EVENT_EGRESS,
                 &EgressEventPayload {
@@ -901,6 +933,7 @@ fn on_egress(agent_id: &str, event: EgressEvent) {
                     host,
                     port,
                     allowed: false,
+                    quiet,
                 },
             )
         }

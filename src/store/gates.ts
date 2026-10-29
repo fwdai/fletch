@@ -130,6 +130,19 @@ export const GATES = {
     reason:
       "This host is too old to read this project's .fletch/settings.json — review it on the host.",
   },
+  /** Changing a project's settings file from the app. */
+  projectFileEdit: {
+    op: "project_file_edit",
+    label: "Editing the settings file",
+    reason:
+      "This host is too old to edit this project's .fletch/settings.json from here — edit the file on the host.",
+  },
+  /** The egress allow-list layer by layer, and the user's global list. */
+  egressPolicy: {
+    op: ["box_egress_overview", "set_box_egress_global"],
+    label: "Box network allow-list",
+    reason: "This host is too old to show or change what boxes may reach — change it on the host.",
+  },
   sideShell: {
     op: "open_agent_shell",
     label: "Terminals",

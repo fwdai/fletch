@@ -15,7 +15,8 @@ use tokio::task::JoinHandle;
 mod policy;
 
 pub use policy::{
-    normalize_host, Denial, EgressPolicy, HostPattern, PatternError, DEFAULT_ALLOW, DEFAULT_PORTS,
+    is_quiet, normalize_host, Category, Denial, EgressPolicy, HostPattern, PatternError,
+    DEFAULT_ALLOW, DEFAULT_PORTS, QUIET, TEMPLATE,
 };
 
 /// A proxy request's whole header must arrive within this.

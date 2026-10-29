@@ -157,6 +157,17 @@ pub fn project_file_approve(
     engine::project_file_approve_impl(&ctx, &project_id, &patterns)
 }
 
+/// Change the `egress` lists of one of a project's settings files.
+#[tauri::command]
+pub fn project_file_edit(
+    ctx: State<'_, Arc<EngineCtx>>,
+    project_id: String,
+    file: fletch_core::project_file::Which,
+    edit: fletch_core::project_file::Edit,
+) -> Result<fletch_core::project_file::ProjectFileStatus> {
+    engine::project_file_edit_impl(&ctx, &project_id, file, &edit)
+}
+
 /// Write one allowlisted project key; `null` deletes the row.
 #[tauri::command]
 pub fn set_project_setting(

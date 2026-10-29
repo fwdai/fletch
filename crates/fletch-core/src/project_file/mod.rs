@@ -39,7 +39,7 @@ use serde::Serialize;
 use crate::error::{Error, Result};
 use crate::host::Sink;
 
-pub use file::{parse, FileReport, Parsed, DIR, LOCAL_FILE, SHARED_FILE};
+pub use file::{parse, Edit, FileReport, Parsed, Which, DIR, LOCAL_FILE, SHARED_FILE};
 use file::{read_files, stamp, Read, Stamp};
 
 /// Project setting: a JSON array of the host patterns the user approved from
@@ -57,6 +57,9 @@ const POLL: Duration = Duration::from_secs(3);
 pub struct EgressStatus {
     pub applied: Vec<String>,
     pub pending: Vec<String>,
+    /// Inherited patterns the files turn off. Applies without approval: it
+    /// only narrows what a box may reach.
+    pub disabled: Vec<String>,
 }
 
 /// `project_file_status`: what a project's files say and what of it applies.
@@ -100,7 +103,11 @@ impl Entry {
                 .map(|p| p.to_string_lossy().into_owned()),
             error: self.read.error.clone(),
             files: self.read.files.clone(),
-            egress: EgressStatus { applied, pending },
+            egress: EgressStatus {
+                applied,
+                pending,
+                disabled: self.read.egress_disable.clone(),
+            },
         }
     }
 }
@@ -118,6 +125,17 @@ pub fn applied_egress(project_id: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// The files' layer of `project_id`'s egress allow-list
+/// (`sandbox::boxes::allowlist`): the approved additions, and what the files
+/// turn off.
+pub fn egress_delta(project_id: &str) -> crate::sandbox::boxes::allowlist::Delta {
+    let status = status(project_id);
+    crate::sandbox::boxes::allowlist::Delta {
+        add: status.egress.applied,
+        remove: status.egress.disabled,
+    }
+}
+
 /// What the files of `project_id` say, as last read.
 pub fn status(project_id: &str) -> ProjectFileStatus {
     STATE
@@ -132,7 +150,8 @@ pub fn status(project_id: &str) -> ProjectFileStatus {
 }
 
 /// Store `entry` for `project_id`; whether anything a reader sees changed —
-/// the status, or the applied additions the running boxes enforce.
+/// the status, or the layer the running boxes enforce (the applied additions
+/// and the turned-off entries).
 fn store(project_id: &str, entry: Entry) -> (bool, bool) {
     let mut state = STATE.write();
     let map = state.get_or_insert_with(HashMap::new);
@@ -140,7 +159,8 @@ fn store(project_id: &str, entry: Entry) -> (bool, bool) {
     let after = entry.status(project_id);
     map.insert(project_id.to_string(), entry);
     let changed = before.as_ref() != Some(&after);
-    let applied_changed = before.map(|b| b.egress.applied) != Some(after.egress.applied);
+    let enforced = |s: &ProjectFileStatus| (s.egress.applied.clone(), s.egress.disabled.clone());
+    let applied_changed = before.as_ref().map(enforced) != Some(enforced(&after));
     (changed, applied_changed)
 }
 
@@ -213,16 +233,67 @@ pub fn approve(
             approved.push(spelled);
         }
     }
+    store_approved(conn, project_id, &approved)?;
+    Ok(refresh(conn, project_id).0)
+}
+
+/// Write `edit` into one of `project_id`'s files, creating it (and
+/// `.fletch/`) when missing. Hosts the user adds this way are theirs, so they
+/// are approved as they are written. The local file is kept out of git
+/// through `info/exclude`. Refused for a file with comments (plain JSON would
+/// drop them), and for a repository inside an agent's workspace.
+pub fn edit(
+    conn: &Connection,
+    project_id: &str,
+    which: Which,
+    edit: &Edit,
+) -> Result<ProjectFileStatus> {
+    let repo = crate::roadmap::drainer::primary_repo_path(conn, project_id)
+        .map(PathBuf::from)
+        .ok_or_else(|| Error::Other("this project has no repository".into()))?;
+    if let Some(error) = read_files(&repo, agents_root().as_deref()).error {
+        return Err(Error::Other(error));
+    }
+    let path = repo.join(DIR).join(which.file_name());
+    let current = match std::fs::read_to_string(&path) {
+        Ok(text) => Some(text),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => return Err(e.into()),
+    };
+    let text = file::edit_text(current.as_deref(), edit)
+        .map_err(|e| Error::Other(format!("{DIR}/{}: {e}", which.file_name())))?;
+    std::fs::create_dir_all(repo.join(DIR))?;
+    std::fs::write(&path, text)?;
+    if which == Which::Local {
+        if let Err(e) = file::exclude_local_file(&repo) {
+            tracing::warn!(project_id, error = %e, "could not keep the local settings file out of git");
+        }
+    }
+    let mut approved = load_approved(conn, project_id);
+    for pattern in &edit.allow_add {
+        let spelled = pattern
+            .parse::<fletch_box::HostPattern>()
+            .map_err(|e| Error::Other(e.to_string()))?
+            .to_string();
+        if !approved.contains(&spelled) {
+            approved.push(spelled);
+        }
+    }
+    store_approved(conn, project_id, &approved)?;
+    Ok(refresh(conn, project_id).0)
+}
+
+fn store_approved(conn: &Connection, project_id: &str, approved: &[String]) -> Result<()> {
     conn.execute(
         "INSERT INTO project_settings (project_id, key, value) VALUES (?1, ?2, ?3) \
          ON CONFLICT(project_id, key) DO UPDATE SET value = excluded.value",
         rusqlite::params![
             project_id,
             APPROVED_EGRESS_KEY,
-            serde_json::to_string(&approved)?
+            serde_json::to_string(approved)?
         ],
     )?;
-    Ok(refresh(conn, project_id).0)
+    Ok(())
 }
 
 /// Read every project's files into the mirror; boot.
@@ -342,6 +413,46 @@ mod tests {
         write(&repo, r#"{ "egress": { "allow": ["b.com"] } }"#);
         assert!(refresh(&conn, "pf").0.egress.applied.is_empty());
         assert!(applied_egress("pf").is_empty());
+    }
+
+    /// An edit from the app writes the file, approves the hosts it adds, and
+    /// what it turns off applies at once; a file with comments is refused and
+    /// left as it is.
+    #[test]
+    fn edits_from_the_app_apply_at_once() {
+        let td = tempfile::tempdir().unwrap();
+        let repo = td.path().join("repo");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        let (db, _dir) = db_with_project(&repo);
+        let conn = db.lock();
+
+        let status = edit(
+            &conn,
+            "pf",
+            Which::Local,
+            &Edit {
+                allow_add: vec!["mine.example".into()],
+                disable_add: vec!["rubygems.org".into()],
+                ..Edit::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(status.egress.applied, vec!["mine.example"]);
+        assert!(status.egress.pending.is_empty());
+        assert_eq!(status.egress.disabled, vec!["rubygems.org"]);
+        let delta = egress_delta("pf");
+        assert_eq!(delta.add, vec!["mine.example"]);
+        assert_eq!(delta.remove, vec!["rubygems.org"]);
+        assert!(std::fs::read_to_string(repo.join(".git/info/exclude"))
+            .unwrap()
+            .contains("settings.local.json"));
+
+        write(&repo, "{ // the team's\n }");
+        assert!(edit(&conn, "pf", Which::Shared, &Edit::default()).is_err());
+        assert_eq!(
+            std::fs::read_to_string(repo.join(DIR).join(SHARED_FILE)).unwrap(),
+            "{ // the team's\n }"
+        );
     }
 
     /// The approval is no client's to write: it is not a client project key,

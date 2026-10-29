@@ -581,3 +581,45 @@
 .ps-pf-actions {
   display: flex;
 }
+.ps-pf-rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+.ps-pf-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 30px;
+  font-size: 12.5px;
+  color: var(--fg-0);
+}
+.ps-pf-row > .mono {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ps-pf-off {
+  color: var(--fg-3);
+  text-decoration: line-through;
+}
+.ps-pf-which {
+  flex: 0 0 auto;
+  width: auto;
+}
+.ps-pf-inherited {
+  margin-top: 18px;
+}
+.ps-pf-inherited > summary {
+  cursor: pointer;
+}
+.ps-pf-group {
+  margin-top: 12px;
+}
+.ps-pf-group-t {
+  color: var(--fg-2);
+  margin-bottom: 2px;
+}

@@ -914,6 +914,9 @@ allowlist; any op not listed returns `{ ok: false, error: "unknown op" }`.
 | `box_egress_allow` | `{ projectId, pattern }` — add one host pattern to the project's egress allow-list (`box.egress_allow`) and update its running boxes; refused for a pattern that does not parse | `string[]` (the list as stored) |
 | `project_file_status` | `{ projectId }` — the project's `.fletch/settings.json` and `.fletch/settings.local.json`, read now from its primary repo on the host (never an agent's checkout): each file's state (`exists`, `error`, `warnings`) and the host patterns they add under `egress.allow`, split into `applied` (approved by the user) and `pending`. Read-only | `ProjectFileStatus` |
 | `project_file_approve` | `{ projectId, patterns: string[] }` — approve host patterns the files add, so the project's boxes may reach them; the files are re-read first and a pattern they do not hold now is refused. Updates the project's running boxes | `ProjectFileStatus` |
+| `project_file_edit` | `{ projectId, file: "shared" \| "local", edit: { allowAdd?, allowRemove?, disableAdd?, disableRemove? } }` — change the `egress` lists of one of the project's settings files on the host (`shared` is `.fletch/settings.json`, `local` is `.fletch/settings.local.json`, kept out of git through `info/exclude`); creates the file when missing. Hosts added this way are approved as they are written. Refused for a file with comments, which plain JSON would drop, and for a pattern that does not parse | `ProjectFileStatus` |
+| `box_egress_overview` | `{ projectId?: string }` — the egress allow-list layer by layer: the template with categories, the quiet (telemetry) list, the user's global changes, the list every project starts from, and with `projectId` that project's own entries (each with its source), settings files and in-app additions. Read-only | `EgressOverview` |
+| `set_box_egress_global` | `{ delta: { add: string[], remove: string[] } }` — replace the user's global changes over the template: hosts every project's boxes may also reach, template entries turned off. Validated and normalized; every running box takes the new list from its next connection | `{ add, remove }` (as stored) |
 | `set_box_setting` | `{ key, value: string \| null }` — one of the five host-owned box settings (see "Settings"), validated on the host; `null` restores the default. `boxes_enabled: "true"` is the whole setup: refused unless the runtime probe passes, else it starts the image install, builds the tools disks after it and makes `box` the engine for new agents; `"false"` stops every running box cleanly and restores `sandbox-exec` if the flag was what selected `box` | `null` |
 | `set_agent_bin_override` | `{ id, path: string \| null }` — `agent_bin_path_<id>`, a path *on the host*; blank or `null` clears it. Live agents on that provider are respawned so they exec the new binary | `null` |
 | `set_branch_prefix` | `{ prefix }` — `git_branch_prefix`; validated and trimmed on the host, empty clears it | `string` (the prefix as stored) |
@@ -1353,15 +1356,20 @@ roadmap:queue-note
 settings:changed       project_settings:changed
 context:changed
 box:state              box:egress             box:image
-box:tools
+box:tools              box:policy
 project_file:changed
 ```
 
-The four `box:*` events are the box sandbox's (docs/boxes-spec.md §9): one
+The `box:*` events are the box sandbox's (docs/boxes-spec.md §9): one
 agent's box changing phase (`preparing` carries `detail`, what it waits for),
 a connection its egress proxy answered, the image install's progress and
 outcome, and a provider's tools disk build. All of them happen on the host, so
 a remote Settings page and workspace follow them as the desktop's do.
+
+`box:policy { project_id }` says what boxes may reach changed in the app: the
+user's global list (`project_id: null`) or one project's in-app additions.
+Reload `box_egress_overview`. A denied `box:egress` carries `quiet: true` for a
+known telemetry host, which is recorded but nothing to act on.
 
 `project_file:changed { project_id }` says a project's `.fletch/settings.json`
 (or `.fletch/settings.local.json`) changed on the host, or what of it is

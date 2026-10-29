@@ -25,6 +25,7 @@
 //! `known_hosts`, `ssh_config`, `ssh.sock`, `ctl.sock`, `egress.sock`,
 //! `console.log`, `mirror.git/`, `claude-projects/`.
 
+pub mod allowlist;
 pub mod executor;
 pub mod mirror;
 pub mod provision;
@@ -177,6 +178,11 @@ pub const EVENT_STATE: &str = "box:state";
 pub const EVENT_EGRESS: &str = "box:egress";
 pub const EVENT_IMAGE: &str = "box:image";
 pub const EVENT_TOOLS: &str = "box:tools";
+/// `box:policy { project_id }`: what boxes may reach changed — the global list
+/// (`project_id: null`, every project) or one project's in-app layer. Reload
+/// `box_egress_overview`. A project's settings files say so with
+/// `project_file:changed` instead.
+pub const EVENT_POLICY: &str = "box:policy";
 
 static SINK: OnceLock<Sink> = OnceLock::new();
 
@@ -201,6 +207,15 @@ pub struct EgressEventPayload {
     pub host: String,
     pub port: u16,
     pub allowed: bool,
+    /// A denied host that is known noise (`fletch_box::egress::QUIET`):
+    /// telemetry and the like, recorded but nothing to act on.
+    pub quiet: bool,
+}
+
+/// `box:policy`.
+#[derive(Debug, Clone, Serialize)]
+pub struct PolicyEventPayload {
+    pub project_id: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
