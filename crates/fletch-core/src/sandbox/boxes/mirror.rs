@@ -149,7 +149,13 @@ pub async fn push_tracking(mirror: &Path, checkout: &Path) -> Result<()> {
         .running_or_start(&identity.agent_id)
         .await?;
     let refspecs: Vec<String> = TRACKING_SYNC.iter().map(|s| s.to_string()).collect();
-    push(mirror, &running.channel, &running.git_url(checkout), &refspecs).await
+    push(
+        mirror,
+        &running.channel,
+        &running.git_url(checkout),
+        &refspecs,
+    )
+    .await
 }
 
 /// What [`push_tracking`] pushes. `origin/HEAD` is left out: in the guest it
@@ -262,7 +268,10 @@ mod tests {
             ],
         );
         git(&mirror, &["update-ref", "refs/remotes/origin/main", &moved]);
-        git(&mirror, &["update-ref", "refs/remotes/origin/feat/x", &base]);
+        git(
+            &mirror,
+            &["update-ref", "refs/remotes/origin/feat/x", &base],
+        );
 
         let mut args = vec!["push", "-q", guest.to_str().unwrap()];
         args.extend(TRACKING_SYNC);

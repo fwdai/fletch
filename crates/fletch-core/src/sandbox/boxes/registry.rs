@@ -860,7 +860,11 @@ async fn boot(
     let rpc = identity.rpc_dir.to_string_lossy();
     let (requests, responses) = (format!("{rpc}/requests"), format!("{rpc}/responses"));
     match channel
-        .exec(None, None, &["mkdir", "-p", "-m", "700", "--", &requests, &responses])
+        .exec(
+            None,
+            None,
+            &["mkdir", "-p", "-m", "700", "--", &requests, &responses],
+        )
         .await
     {
         Ok(out) if out.status.success() => {}
