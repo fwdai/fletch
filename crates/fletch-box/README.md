@@ -18,7 +18,7 @@ the host.
 | `guest` | The guest contract as constants: vsock ports, console markers, env names, paths, `fletch-guest` subcommands. `fletch-guest` and the image's init implement the other side from the same table. |
 | `runtime` | `RuntimePaths` (where the helper and dylibs are, `probe()`), `VmSpec` → helper argv (`launch.rs`, shared with the helper by `#[path]`), `Vm` (start, `wait_ready` on the console markers, the stop ladder, kill). |
 | `disks` | Sparse data disk, APFS `clone`, script disks for tests, the `dirty` marker. |
-| `image_store` | Pinned base image download with size and sha256 verification, versions, prune. |
+| `image_store` | Base image download verified against the release manifest's size and sha256, versions, prune. |
 | `egress` | `HostPattern`, `EgressPolicy` with the default allow-list, the HTTP `CONNECT` proxy on a unix socket emitting `EgressEvent`s. |
 | `channel` | `Channel`: the system OpenSSH client over a generated `ssh_config` whose `ProxyCommand` is `fletch-vm pipe <ssh.sock>`; exec, PTY command, put/get over stdin, `GIT_SSH_COMMAND`, `-L` forwards, relays; key generation and `known_hosts`. |
 | `tools` | Tools disks: one read-only ext4 disk per `<provider>-<version>` holding that provider's CLI, built by booting a throwaway box and running the embedded install script through the egress proxy. |

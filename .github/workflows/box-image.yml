@@ -3,10 +3,10 @@ name: Box image
 # Builds the box base image (packaging/box-image) and publishes it as the
 # GitHub release `box-image-v<version>` holding `base.erofs` and
 # `manifest.json`: the URL `fletch-box`'s ImageStore downloads from
-# (`image_store::RELEASES_URL`). The app does not pick it up by itself; pinning
-# is a separate commit: `scripts/box-image-pin.sh box-image-v<version>`
-# rewrites `PinnedImage::{VERSION, SIZE, SHA256}` (the release body carries
-# the same three values). See packaging/box-image/README.md.
+# (`image_store::RELEASES_URL`), verifying `base.erofs` against the manifest.
+# The app boots the version `PinnedImage::VERSION` names
+# (crates/fletch-box/src/image_store/mod.rs); a new image reaches users once
+# that constant is bumped to it. See packaging/box-image/README.md.
 #
 # Run it from Actions → Box image → Run workflow with the version, or push a
 # tag `box-image-v<version>`. A version is published once: an app that has
@@ -85,11 +85,7 @@ jobs:
           {
             echo "Box base image for Fletch (\`packaging/box-image\`): the Debian root filesystem every box boots."
             echo
-            echo "Pin for \`PinnedImage\` in \`crates/fletch-box/src/image_store/mod.rs\` (\`scripts/box-image-pin.sh ${GITHUB_REF_NAME:-box-image-v$(jq -r .version "$M")}\` writes it):"
-            echo
-            echo '```'
-            jq -r '"VERSION = \"\(.version)\"\nSIZE    = \(.size)\nSHA256  = \"\(.sha256)\""' "$M"
-            echo '```'
+            jq -r '"`base.erofs` is \(.size) bytes, sha256 `\(.sha256)` (`manifest.json`, which the app verifies its download against). The app boots it once `PinnedImage::VERSION` in `crates/fletch-box/src/image_store/mod.rs` is `\(.version)`."' "$M"
             echo
             echo "$(jq -r '.packages | length' "$M") packages (\`$(jq -r .arch "$M")\`), among them:"
             echo

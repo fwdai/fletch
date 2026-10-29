@@ -15,13 +15,14 @@ pub enum Error {
     /// The guest did not reach `FLETCH_READY`; `console` is the tail of what it printed.
     #[error("{reason}\n--- console ---\n{console}")]
     NotReady { reason: String, console: String },
-    #[error("no image is published for this build yet")]
-    NotPublished,
     #[error("{url}: {message}")]
     Http { url: String, message: String },
-    #[error("the download is {actual} bytes, not the {expected} expected")]
+    /// The release's `manifest.json` is unreadable or not for this build's image.
+    #[error("{url}: {message}")]
+    Manifest { url: String, message: String },
+    #[error("the download is {actual} bytes, not the {expected} its manifest lists")]
     Size { expected: u64, actual: u64 },
-    #[error("the download's sha256 is not the one this build pins")]
+    #[error("the download's sha256 is not the one its manifest lists")]
     Sha256,
     #[error("cancelled")]
     Cancelled,

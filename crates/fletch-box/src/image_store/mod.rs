@@ -1,10 +1,11 @@
 //! The base images this host has downloaded, and downloading the one this
-//! build pins (port of Calina's image store).
+//! build boots (port of Calina's image store).
 //!
-//! Each build names one image release ([`PinnedImage::this_build`]) with its
-//! exact size and sha256, so a download over HTTPS is trusted exactly as far as
-//! the app binary is. A verified download is not trusted forever: the file can
-//! be damaged on disk later, and [`ImageStore::verify`] hashes it again before
+//! Each build names one image release ([`PinnedImage::this_build`]). The
+//! release's `manifest.json` gives the exact size and sha256 `base.erofs` is
+//! verified against as it arrives, so a truncated or corrupted download never
+//! installs. A verified download is not trusted forever: the file can be
+//! damaged on disk later, and [`ImageStore::verify`] hashes it again before
 //! the first boot of a session.
 //!
 //! ```text
@@ -27,6 +28,9 @@ use tokio::io::AsyncWriteExt;
 use crate::error::{Error, Result};
 
 pub const BASE_IMAGE: &str = "base.erofs";
+pub const MANIFEST: &str = "manifest.json";
+/// A manifest is a few KB; anything past this is not one.
+const MAX_MANIFEST: u64 = 1 << 20;
 const SHA256_FILE: &str = "base.erofs.sha256";
 const STAGING_PREFIX: &str = ".staging-";
 const IMAGES_DIR: &str = "images";
@@ -36,8 +40,8 @@ const IMAGES_DIR: &str = "images";
 /// and `manifest.json`.
 pub const RELEASES_URL: &str = "https://github.com/fwdai/fletch/releases/download";
 
-/// The release manifest (`manifest.json`), the shape `packaging/box-image`
-/// writes and the pin below is copied from.
+/// The release manifest (`manifest.json`), written by `packaging/box-image`
+/// next to `base.erofs`; a download is verified against its size and sha256.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ImageManifest {
     pub version: String,
@@ -47,50 +51,46 @@ pub struct ImageManifest {
     pub sha256: String,
 }
 
-/// One image as this build would download it.
+/// The image this build boots: a version and the release directory holding
+/// its `base.erofs` and `manifest.json`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PinnedImage {
     pub version: String,
-    /// The URL of `base.erofs` itself.
-    pub url: String,
-    pub size: u64,
-    /// Lowercase hex; empty when this build has no published image.
-    pub sha256: String,
+    /// The release directory, without a trailing slash.
+    pub base: String,
 }
 
 impl PinnedImage {
-    // The `manifest.json` of the GitHub release `box-image-v<VERSION>`, written
-    // here by `scripts/box-image-pin.sh` after the `box-image` workflow
-    // publishes one (packaging/box-image/README.md, "Publishing a release").
-    // Constants rather than an `include_str!` of the manifest because `out/`
-    // is a build artifact.
+    /// The image release this build boots, `box-image-v<VERSION>`
+    /// (packaging/box-image/README.md, "Publishing a release"). Bump it once
+    /// the release exists; nothing else in the app changes with an image.
     pub const VERSION: &'static str = "0.1.0";
-    pub const SIZE: u64 = 848_318_464;
-    pub const SHA256: &'static str =
-        "b1d5c6ec96f5516734a8859df3af48bc26dff775ad5be0a8086ec86dc05722fc";
 
-    /// The image this build pins, from `base_url` (the `box_image_url`
-    /// setting) or the GitHub release.
+    /// This build's image, from `base_url` (the `box_image_url` setting) or
+    /// the GitHub release.
     pub fn this_build(base_url: Option<&str>) -> PinnedImage {
-        PinnedImage::pinned(Self::VERSION, Self::SIZE, Self::SHA256, base_url)
+        PinnedImage::new(Self::VERSION, base_url)
     }
 
-    /// A manifest's image, for a dev build pointing at a local or staging release.
-    pub fn from_manifest(manifest: &ImageManifest, base_url: Option<&str>) -> PinnedImage {
-        PinnedImage::pinned(&manifest.version, manifest.size, &manifest.sha256, base_url)
-    }
-
-    fn pinned(version: &str, size: u64, sha256: &str, base_url: Option<&str>) -> PinnedImage {
+    pub fn new(version: &str, base_url: Option<&str>) -> PinnedImage {
         let base = base_url.filter(|url| !url.trim().is_empty()).map_or_else(
             || release_url(version),
-            |url| url.trim_end_matches('/').to_owned(),
+            |url| url.trim().trim_end_matches('/').to_owned(),
         );
         PinnedImage {
             version: version.to_owned(),
-            url: format!("{base}/{BASE_IMAGE}"),
-            size,
-            sha256: sha256.to_ascii_lowercase(),
+            base,
         }
+    }
+
+    /// The URL of `base.erofs`.
+    pub fn url(&self) -> String {
+        format!("{}/{BASE_IMAGE}", self.base)
+    }
+
+    /// The URL of `manifest.json`.
+    pub fn manifest_url(&self) -> String {
+        format!("{}/{MANIFEST}", self.base)
     }
 }
 
@@ -158,18 +158,12 @@ impl ImageStore {
         image_at(self.dir.join(version), version.to_owned())
     }
 
-    /// Hashes `image` again and compares it with `pinned` when that pins the
-    /// same version, else with the hash recorded when it was installed. On a
-    /// mismatch the image is removed and the result is [`Error::Damaged`].
-    /// Reads the whole file: call it once per session, off the UI thread.
-    pub fn verify(&self, image: &InstalledImage, pinned: Option<&PinnedImage>) -> Result<()> {
-        let (size, sha256) = match pinned {
-            Some(pin) if pin.version == image.version && !pin.sha256.is_empty() => {
-                (Some(pin.size), pin.sha256.as_str())
-            }
-            _ => (None, image.sha256.as_str()),
-        };
-        if file_matches(&image.path(), size, sha256)? {
+    /// Hashes `image` again and compares it with the hash recorded when it was
+    /// installed. On a mismatch the image is removed and the result is
+    /// [`Error::Damaged`]. Reads the whole file: call it once per session, off
+    /// the UI thread.
+    pub fn verify(&self, image: &InstalledImage) -> Result<()> {
+        if file_matches(&image.path(), None, &image.sha256)? {
             return Ok(());
         }
         fs::remove_dir_all(&image.dir)
@@ -179,30 +173,29 @@ impl ImageStore {
         })
     }
 
-    /// Downloads `image` unless it is installed and matches its pin already.
-    /// The file is hashed as it arrives and refused the moment it runs past its
-    /// size; it becomes `<version>/` by one rename once it matched, so a failed
-    /// or cancelled install leaves nothing behind. `progress` sees every chunk;
-    /// returning `Break` cancels.
+    /// Downloads `image` unless it is installed and matches its release
+    /// manifest already. The manifest is fetched first and must describe
+    /// `image.version`; the file is then hashed as it arrives and refused the
+    /// moment it runs past the manifest's size. It becomes `<version>/` by one
+    /// rename once it matched, so a failed or cancelled install leaves nothing
+    /// behind. `progress` sees every chunk; returning `Break` cancels.
     pub async fn install(
         &self,
         image: &PinnedImage,
         mut progress: impl FnMut(Progress) -> ControlFlow<()>,
     ) -> Result<InstalledImage> {
-        if image.sha256.is_empty() {
-            return Err(Error::NotPublished);
-        }
+        let manifest = fetch_manifest(image).await?;
         fs::create_dir_all(&self.dir)
             .map_err(Error::io(format!("create {}", self.dir.display())))?;
         let target = self.dir.join(&image.version);
         let installed = InstalledImage {
             dir: target.clone(),
             version: image.version.clone(),
-            sha256: image.sha256.clone(),
+            sha256: manifest.sha256.clone(),
         };
         if let Some(existing) = self.find(&image.version) {
-            if existing.sha256 == image.sha256
-                && file_matches(&existing.path(), Some(image.size), &image.sha256)?
+            if existing.sha256 == manifest.sha256
+                && file_matches(&existing.path(), Some(manifest.size), &manifest.sha256)?
             {
                 return Ok(installed);
             }
@@ -216,10 +209,16 @@ impl ImageStore {
         ));
         fs::create_dir(&staging).map_err(Error::io(format!("create {}", staging.display())))?;
         let result = async {
-            download(image, &staging.join(BASE_IMAGE), &mut progress).await?;
+            download(
+                &image.url(),
+                &manifest,
+                &staging.join(BASE_IMAGE),
+                &mut progress,
+            )
+            .await?;
             write_synced(
                 &staging.join(SHA256_FILE),
-                format!("{}\n", image.sha256).as_bytes(),
+                format!("{}\n", manifest.sha256).as_bytes(),
             )?;
             // A same-version directory that did not match (a damaged copy) is replaced.
             if target.exists() {
@@ -283,15 +282,19 @@ fn image_at(dir: PathBuf, version: String) -> Option<InstalledImage> {
     let base = fs::metadata(dir.join(BASE_IMAGE)).ok()?;
     let recorded = fs::read_to_string(dir.join(SHA256_FILE)).ok()?;
     let sha256 = recorded.trim();
-    let well_formed = sha256.len() == 64
-        && sha256
-            .bytes()
-            .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
-    (base.is_file() && base.len() > 0 && well_formed).then(|| InstalledImage {
+    (base.is_file() && base.len() > 0 && well_formed_sha256(sha256)).then(|| InstalledImage {
         dir,
         version,
         sha256: sha256.to_owned(),
     })
+}
+
+/// 64 lowercase hex digits.
+fn well_formed_sha256(sha256: &str) -> bool {
+    sha256.len() == 64
+        && sha256
+            .bytes()
+            .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 
 /// Whether the file at `path` has `size` (checked first, without reading) and `sha256`.
@@ -311,27 +314,84 @@ pub fn file_matches(path: &Path, size: Option<u64>, sha256: &str) -> Result<bool
     Ok(format!("{:x}", hasher.finalize()) == sha256.to_ascii_lowercase())
 }
 
-/// Streams `image.url` to a new file at `path`, hashing as it goes, and checks
-/// size and sha256. On error the file is the caller's to remove. A `file://`
-/// URL (the `box_image_url` setting pointed at a local `packaging/box-image/out`
-/// before any release exists) is cloned instead of fetched, then verified the
+fn client() -> Result<reqwest::Client> {
+    reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(30))
+        .read_timeout(Duration::from_secs(60))
+        .build()
+        .map_err(|e| Error::Other(e.to_string()))
+}
+
+/// The `manifest.json` of `image`'s release, checked to describe that version
+/// with a non-zero size and a well-formed sha256 (returned lowercase). A
+/// `file://` base is read from disk.
+async fn fetch_manifest(image: &PinnedImage) -> Result<ImageManifest> {
+    let url = image.manifest_url();
+    let bad = |message: String| Error::Manifest {
+        url: url.clone(),
+        message,
+    };
+    let bytes = if let Some(local) = url.strip_prefix("file://") {
+        fs::read(local).map_err(Error::io(format!("read {local}")))?
+    } else {
+        let http = |e: reqwest::Error| Error::Http {
+            url: url.clone(),
+            message: e.to_string(),
+        };
+        let mut response = client()?
+            .get(&url)
+            .send()
+            .await
+            .and_then(|r| r.error_for_status())
+            .map_err(http)?;
+        let mut bytes = Vec::new();
+        while let Some(chunk) = response.chunk().await.map_err(http)? {
+            bytes.extend_from_slice(&chunk);
+            if bytes.len() as u64 > MAX_MANIFEST {
+                return Err(bad(format!("larger than {MAX_MANIFEST} bytes")));
+            }
+        }
+        bytes
+    };
+    let manifest: ImageManifest = serde_json::from_slice(&bytes).map_err(|e| bad(e.to_string()))?;
+    if manifest.version != image.version {
+        return Err(bad(format!(
+            "describes image {}, not the {} this build boots",
+            manifest.version, image.version
+        )));
+    }
+    if manifest.size == 0 {
+        return Err(bad("size is 0".to_owned()));
+    }
+    let sha256 = manifest.sha256.to_ascii_lowercase();
+    if !well_formed_sha256(&sha256) {
+        return Err(bad("sha256 is not 64 hex digits".to_owned()));
+    }
+    Ok(ImageManifest { sha256, ..manifest })
+}
+
+/// Streams `url` to a new file at `path`, hashing as it goes, and checks the
+/// size and sha256 `manifest` lists. On error the file is the caller's to
+/// remove. A `file://` URL (the `box_image_url` setting pointed at a local
+/// `packaging/box-image/out`) is cloned instead of fetched, then verified the
 /// same way.
 async fn download(
-    image: &PinnedImage,
+    url: &str,
+    manifest: &ImageManifest,
     path: &Path,
     progress: &mut impl FnMut(Progress) -> ControlFlow<()>,
 ) -> Result<()> {
-    let http = |message: String| Error::Http {
-        url: image.url.clone(),
-        message,
+    let http = |e: reqwest::Error| Error::Http {
+        url: url.to_owned(),
+        message: e.to_string(),
     };
-    if let Some(local) = image.url.strip_prefix("file://") {
+    if let Some(local) = url.strip_prefix("file://") {
         let source = Path::new(local);
         crate::disks::clone(source, path)
             .map_err(Error::io(format!("copy {}", source.display())))?;
         if progress(Progress {
-            done: image.size,
-            total: image.size,
+            done: manifest.size,
+            total: manifest.size,
         })
         .is_break()
         {
@@ -340,32 +400,27 @@ async fn download(
         let len = fs::metadata(path)
             .map_err(Error::io(format!("stat {}", path.display())))?
             .len();
-        if len != image.size {
+        if len != manifest.size {
             return Err(Error::Size {
-                expected: image.size,
+                expected: manifest.size,
                 actual: len,
             });
         }
-        if !file_matches(path, Some(image.size), &image.sha256)? {
+        if !file_matches(path, Some(manifest.size), &manifest.sha256)? {
             return Err(Error::Sha256);
         }
         return Ok(());
     }
-    let client = reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(30))
-        .read_timeout(Duration::from_secs(60))
-        .build()
-        .map_err(|e| http(e.to_string()))?;
-    let mut response = client
-        .get(&image.url)
+    let mut response = client()?
+        .get(url)
         .send()
         .await
         .and_then(|r| r.error_for_status())
-        .map_err(|e| http(e.to_string()))?;
+        .map_err(http)?;
     if let Some(len) = response.content_length() {
-        if len != image.size {
+        if len != manifest.size {
             return Err(Error::Size {
-                expected: image.size,
+                expected: manifest.size,
                 actual: len,
             });
         }
@@ -376,15 +431,15 @@ async fn download(
         .map_err(Error::io(format!("create {}", path.display())))?;
     let mut hasher = Sha256::new();
     let mut received = 0u64;
-    let total = image.size;
+    let total = manifest.size;
     if progress(Progress { done: 0, total }).is_break() {
         return Err(Error::Cancelled);
     }
-    while let Some(chunk) = response.chunk().await.map_err(|e| http(e.to_string()))? {
+    while let Some(chunk) = response.chunk().await.map_err(http)? {
         received += chunk.len() as u64;
-        if received > image.size {
+        if received > manifest.size {
             return Err(Error::Size {
-                expected: image.size,
+                expected: manifest.size,
                 actual: received,
             });
         }
@@ -401,13 +456,13 @@ async fn download(
             return Err(Error::Cancelled);
         }
     }
-    if received < image.size {
+    if received < manifest.size {
         return Err(Error::Size {
-            expected: image.size,
+            expected: manifest.size,
             actual: received,
         });
     }
-    if format!("{:x}", hasher.finalize()) != image.sha256 {
+    if format!("{:x}", hasher.finalize()) != manifest.sha256 {
         return Err(Error::Sha256);
     }
     out.sync_all()
@@ -429,24 +484,44 @@ mod tests {
 
     const HELLO_SHA256: &str = "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824";
 
-    #[test]
-    fn manifest_parses_and_pins() {
-        let manifest: ImageManifest = serde_json::from_str(
-            r#"{"version":"0.1.0","arch":"aarch64","file":"base.erofs","size":123,"sha256":"ABC"}"#,
+    /// A `manifest.json` as `packaging/box-image/build.sh` writes it.
+    fn manifest_json(version: &str, size: u64, sha256: &str) -> String {
+        serde_json::json!({
+            "version": version, "arch": "aarch64", "file": BASE_IMAGE,
+            "size": size, "sha256": sha256, "packages": ["bash=5.2"],
+        })
+        .to_string()
+    }
+
+    /// A local release directory: `base.erofs` holding `content` and a
+    /// manifest describing it as `version` with `sha256`.
+    fn local_release(version: &str, content: &[u8], sha256: &str) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join(BASE_IMAGE), content).unwrap();
+        fs::write(
+            dir.path().join(MANIFEST),
+            manifest_json(version, content.len() as u64, sha256),
         )
         .unwrap();
-        assert_eq!(manifest.arch, "aarch64");
-        let pinned = PinnedImage::from_manifest(&manifest, None);
+        dir
+    }
+
+    #[test]
+    fn a_pin_names_its_release_files() {
+        let pinned = PinnedImage::new("0.1.0", None);
         assert_eq!(
-            pinned.url,
+            pinned.url(),
             "https://github.com/fwdai/fletch/releases/download/box-image-v0.1.0/base.erofs"
         );
-        assert_eq!(pinned.sha256, "abc");
-        let mirrored = PinnedImage::from_manifest(&manifest, Some("https://mirror.test/images/"));
-        assert_eq!(mirrored.url, "https://mirror.test/images/base.erofs");
         assert_eq!(
-            PinnedImage::this_build(Some("  ")).url,
-            PinnedImage::this_build(None).url
+            pinned.manifest_url(),
+            "https://github.com/fwdai/fletch/releases/download/box-image-v0.1.0/manifest.json"
+        );
+        let mirrored = PinnedImage::new("0.1.0", Some("https://mirror.test/images/"));
+        assert_eq!(mirrored.url(), "https://mirror.test/images/base.erofs");
+        assert_eq!(
+            PinnedImage::this_build(Some("  ")),
+            PinnedImage::this_build(None)
         );
     }
 
@@ -481,21 +556,12 @@ mod tests {
         let current = store.current().unwrap().unwrap();
         assert_eq!(current.version, "0.10.0");
         assert_eq!(current.path(), store.dir().join("0.10.0").join(BASE_IMAGE));
-        store.verify(&current, None).unwrap();
-        let pinned = PinnedImage::pinned("0.10.0", 5, HELLO_SHA256, None);
-        store.verify(&current, Some(&pinned)).unwrap();
-        let wrong_size = PinnedImage::pinned("0.10.0", 6, HELLO_SHA256, None);
-        assert!(matches!(
-            store.verify(&current, Some(&wrong_size)),
-            Err(Error::Damaged { .. })
-        ));
-        assert!(store.find("0.10.0").is_none());
+        store.verify(&current).unwrap();
+        assert!(store.find("0.10.0").is_some());
 
         let damaged = store.find("0.2.0").unwrap();
-        assert!(matches!(
-            store.verify(&damaged, None),
-            Err(Error::Damaged { .. })
-        ));
+        assert!(matches!(store.verify(&damaged), Err(Error::Damaged { .. })));
+        assert!(store.find("0.2.0").is_none());
 
         store.prune("0.9.0").unwrap();
         let left: Vec<_> = store
@@ -508,49 +574,71 @@ mod tests {
         assert!(!store.dir().join(".staging-x-1").exists());
     }
 
+    /// A manifest of another version, or a malformed one, is refused before
+    /// anything is downloaded.
     #[tokio::test]
-    async fn install_refuses_an_unpublished_pin() {
+    async fn install_refuses_a_manifest_that_is_not_this_builds_image() {
         let root = tempfile::tempdir().unwrap();
         let store = ImageStore::new(root.path());
-        let result = store
-            .install(&PinnedImage::pinned("9.9.9", 0, "", None), |_| {
-                ControlFlow::Continue(())
-            })
-            .await;
-        assert!(matches!(result, Err(Error::NotPublished)));
+        let store = &store;
+        let install = |version: &'static str, src: &tempfile::TempDir| {
+            let base = format!("file://{}", src.path().display());
+            let pin = PinnedImage::new(version, Some(&base));
+            async move { store.install(&pin, |_| ControlFlow::Continue(())).await }
+        };
+
+        let other = local_release("3.1.0", b"hello", HELLO_SHA256);
+        assert!(matches!(
+            install("3.0.0", &other).await,
+            Err(Error::Manifest { .. })
+        ));
+        let malformed = local_release("3.0.0", b"hello", "not a sha");
+        assert!(matches!(
+            install("3.0.0", &malformed).await,
+            Err(Error::Manifest { .. })
+        ));
+        let missing = tempfile::tempdir().unwrap();
+        assert!(matches!(
+            install("3.0.0", &missing).await,
+            Err(Error::Io { .. })
+        ));
+        assert!(store.installed().unwrap().is_empty());
     }
 
-    /// This build's pin is a real one: a version, a size and a 64-hex sha.
+    /// This build names a real release on the public repository.
     #[test]
-    fn this_build_pins_a_published_shape() {
+    fn this_build_names_a_release() {
         let pinned = PinnedImage::this_build(None);
         assert!(!pinned.version.is_empty());
-        assert!(pinned.size > 0);
-        assert_eq!(pinned.sha256.len(), 64);
-        assert!(pinned.sha256.bytes().all(|b| b.is_ascii_hexdigit()));
+        assert_eq!(pinned.base, release_url(&pinned.version));
+        assert!(pinned.base.starts_with(RELEASES_URL));
     }
 
     /// A `file://` base URL installs by copying, verified like a download.
     #[tokio::test]
     async fn install_from_a_local_directory_copies_and_verifies() {
-        let src = tempfile::tempdir().unwrap();
-        fs::write(src.path().join(BASE_IMAGE), b"hello").unwrap();
-        let base = format!("file://{}", src.path().display());
         let root = tempfile::tempdir().unwrap();
         let store = ImageStore::new(root.path());
 
+        let src = local_release("3.0.0", b"hello", HELLO_SHA256);
+        let base = format!("file://{}", src.path().display());
         let installed = store
-            .install(
-                &PinnedImage::pinned("3.0.0", 5, HELLO_SHA256, Some(&base)),
-                |_| ControlFlow::Continue(()),
-            )
+            .install(&PinnedImage::new("3.0.0", Some(&base)), |_| {
+                ControlFlow::Continue(())
+            })
             .await
             .unwrap();
         assert_eq!(fs::read(installed.path()).unwrap(), b"hello");
+        assert_eq!(installed.sha256, HELLO_SHA256);
 
-        let wrong = PinnedImage::pinned("3.1.0", 5, &"0".repeat(64), Some(&base));
+        let wrong = local_release("3.1.0", b"hello", &"0".repeat(64));
+        let base = format!("file://{}", wrong.path().display());
         assert!(matches!(
-            store.install(&wrong, |_| ControlFlow::Continue(())).await,
+            store
+                .install(&PinnedImage::new("3.1.0", Some(&base)), |_| {
+                    ControlFlow::Continue(())
+                })
+                .await,
             Err(Error::Sha256)
         ));
         assert!(store.find("3.1.0").is_none());
@@ -561,30 +649,38 @@ mod tests {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
+        // A release per `/<version>/<good|bad>/`: the manifest always describes
+        // "hello", which `bad` then does not serve.
         tokio::spawn(async move {
             loop {
                 let (mut s, _) = listener.accept().await.unwrap();
                 let mut buf = [0u8; 1024];
-                let _ = s.read(&mut buf).await;
-                let body = if buf.starts_with(b"GET /bad/") {
-                    b"hellp"
+                let n = s.read(&mut buf).await.unwrap_or(0);
+                let request = String::from_utf8_lossy(&buf[..n]).into_owned();
+                let path = request.split_whitespace().nth(1).unwrap_or("");
+                let mut parts = path.trim_start_matches('/').splitn(3, '/');
+                let version = parts.next().unwrap_or("").to_owned();
+                let kind = parts.next().unwrap_or("");
+                let file = parts.next().unwrap_or("");
+                let body: Vec<u8> = if file == MANIFEST {
+                    manifest_json(&version, 5, HELLO_SHA256).into_bytes()
+                } else if kind == "bad" {
+                    b"hellp".to_vec()
                 } else {
-                    b"hello"
+                    b"hello".to_vec()
                 };
-                let head = b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\n";
-                s.write_all(head).await.unwrap();
-                s.write_all(body).await.unwrap();
+                let head = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                s.write_all(head.as_bytes()).await.unwrap();
+                s.write_all(&body).await.unwrap();
             }
         });
         let root = tempfile::tempdir().unwrap();
         let store = ImageStore::new(root.path());
 
-        let bad = PinnedImage::pinned(
-            "1.0.0",
-            5,
-            HELLO_SHA256,
-            Some(&format!("http://127.0.0.1:{port}/bad")),
-        );
+        let bad = PinnedImage::new("1.0.0", Some(&format!("http://127.0.0.1:{port}/1.0.0/bad")));
         assert!(matches!(
             store.install(&bad, |_| ControlFlow::Continue(())).await,
             Err(Error::Sha256)
@@ -595,11 +691,9 @@ mod tests {
             "staging left behind"
         );
 
-        let good = PinnedImage::pinned(
+        let good = PinnedImage::new(
             "1.0.0",
-            5,
-            HELLO_SHA256,
-            Some(&format!("http://127.0.0.1:{port}/good")),
+            Some(&format!("http://127.0.0.1:{port}/1.0.0/good")),
         );
         let mut seen = Vec::new();
         let installed = store
@@ -613,7 +707,7 @@ mod tests {
         assert_eq!(fs::read(installed.path()).unwrap(), b"hello");
         assert_eq!(seen.last(), Some(&5));
         assert_eq!(store.current().unwrap(), Some(installed.clone()));
-        store.verify(&installed, Some(&good)).unwrap();
+        store.verify(&installed).unwrap();
 
         let again = store
             .install(&good, |_| ControlFlow::Break(()))
@@ -623,11 +717,9 @@ mod tests {
             again, installed,
             "an installed match is not downloaded again"
         );
-        let cancelled = PinnedImage::pinned(
+        let cancelled = PinnedImage::new(
             "2.0.0",
-            5,
-            HELLO_SHA256,
-            Some(&format!("http://127.0.0.1:{port}/good")),
+            Some(&format!("http://127.0.0.1:{port}/2.0.0/good")),
         );
         assert!(matches!(
             store.install(&cancelled, |_| ControlFlow::Break(())).await,
