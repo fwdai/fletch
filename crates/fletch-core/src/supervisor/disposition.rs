@@ -647,7 +647,9 @@ async fn teardown_agent_checkouts(agent_id: &str, repos: &[TrackedRepo], op: &st
     // the box directory. The host paths below then hold only the placeholder
     // directories the launch needed, which the removals handle like any tree.
     // A directory probe for every other agent, so it stays here unconditionally.
-    crate::sandbox::boxes::discard_if_any(agent_id).await;
+    if let Err(e) = crate::sandbox::boxes::discard_if_any(agent_id).await {
+        failures.push(format!("box: {e}"));
+    }
     for repo in repos {
         if repo.is_adopted() {
             continue;
