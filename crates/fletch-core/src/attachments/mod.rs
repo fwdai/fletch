@@ -293,7 +293,9 @@ mod tests {
             if self.unreachable {
                 return Err(io::Error::other("ssh to the box failed"));
             }
-            self.writes.lock().push((path.to_path_buf(), bytes.to_vec()));
+            self.writes
+                .lock()
+                .push((path.to_path_buf(), bytes.to_vec()));
             Ok(())
         }
         fn stat(&self, _: &Path) -> io::Result<Option<Stat>> {
