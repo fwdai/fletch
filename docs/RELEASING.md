@@ -159,11 +159,7 @@ repository, `box-image-v<version>`, published by the *Box image* workflow
 `scripts/box-image-pin.sh`; `packaging/box-image/README.md` has the three-step
 bump. An image release is created with `--latest=false` so it never becomes
 the release the updater endpoint serves. The app downloads it from
-`https://fletch.sh/releases/download/box-image-v<version>/base.erofs`: the
-repository is private, so the website that proxies the updater's assets must
-also route `/releases/download/<tag>/<asset>` to the release asset, with
-`Accept: application/octet-stream` and range requests passed through (the
-image is 850 MB).
+`https://github.com/fwdai/fletch/releases/download/box-image-v<version>/base.erofs`.
 
 Licences: libkrun is Apache-2.0 and libkrunfw bundles a GPL-2.0 Linux kernel;
 `NOTICE` lists both with the source location, and the Settings screen's version
