@@ -297,30 +297,35 @@ fn new_agents_of_unsupported_providers_fall_back_to_seatbelt() {
     );
 }
 
-/// An image directory of the pinned version counts as installed only when its
-/// recorded hash is this build's pin: a same-version image from another build
-/// reads as absent, so the install path replaces it instead of a spawn failing
-/// at the per-boot check.
+/// An image directory counts as installed only for this build's version and
+/// only once it carries the recorded hash a verified download leaves behind.
 #[test]
-fn a_same_version_image_with_another_hash_is_not_installed() {
+fn only_a_verified_image_of_this_builds_version_is_installed() {
     let _serial = settings::TEST_LOCK.blocking_lock();
     let data = tempfile::tempdir().unwrap();
     crate::sandbox::set_data_dir(data.path().to_path_buf());
     settings::set(BoxSettings::default());
     let pin = super::pinned_image();
-    let dir = super::data_root().join("images").join(&pin.version);
+    let images = super::data_root().join("images");
+    let other = images.join("99.0.0");
+    std::fs::create_dir_all(&other).unwrap();
+    std::fs::write(other.join("base.erofs"), b"a newer image").unwrap();
+    std::fs::write(
+        other.join("base.erofs.sha256"),
+        format!("{}\n", "0".repeat(64)),
+    )
+    .unwrap();
+    let dir = images.join(&pin.version);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("base.erofs"), b"not really an image").unwrap();
+    assert!(super::installed_image().unwrap().is_none());
+    assert_eq!(super::setup::image_status().phase, "not_installed");
 
     std::fs::write(
         dir.join("base.erofs.sha256"),
         format!("{}\n", "0".repeat(64)),
     )
     .unwrap();
-    assert!(super::installed_image().unwrap().is_none());
-    assert_eq!(super::setup::image_status().phase, "not_installed");
-
-    std::fs::write(dir.join("base.erofs.sha256"), format!("{}\n", pin.sha256)).unwrap();
     let installed = super::installed_image().unwrap().expect("the pinned image");
     assert_eq!(installed.version, pin.version);
     assert_eq!(super::setup::image_status().phase, "installed");

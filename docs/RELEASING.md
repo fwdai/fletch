@@ -155,9 +155,11 @@ simply gets "unavailable" from the runtime probe. Moving parts, all in
 
 The guest image is **not** in the app. It is a separate GitHub release on this
 repository, `box-image-v<version>`, published by the *Box image* workflow
-(`.github/workflows/box-image.yml`) and pinned into the app by
-`scripts/box-image-pin.sh`; `packaging/box-image/README.md` has the three-step
-bump. An image release is created with `--latest=false` so it never becomes
+(`.github/workflows/box-image.yml`). The app boots the version
+`PinnedImage::VERSION` names and verifies the download against the release's
+`manifest.json`, so publishing an image needs no app change until that
+constant is bumped (`packaging/box-image/README.md`, "Publishing a release").
+An image release is created with `--latest=false` so it never becomes
 the release the updater endpoint serves. The app downloads it from
 `https://github.com/fwdai/fletch/releases/download/box-image-v<version>/base.erofs`.
 

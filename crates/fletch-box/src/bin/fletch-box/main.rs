@@ -406,16 +406,7 @@ async fn image(command: ImageCmd) -> Result<(), String> {
     match command {
         ImageCmd::Status => {
             let pinned = PinnedImage::this_build(None);
-            println!(
-                "pinned: {} ({}){}",
-                pinned.version,
-                pinned.url,
-                if pinned.sha256.is_empty() {
-                    " [not published yet]"
-                } else {
-                    ""
-                }
-            );
+            println!("pinned: {} ({})", pinned.version, pinned.url());
             match store.current().map_err(|e| e.to_string())? {
                 Some(image) => {
                     println!("installed: {} at {}", image.version, image.path().display())

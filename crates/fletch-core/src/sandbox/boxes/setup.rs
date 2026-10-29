@@ -71,12 +71,11 @@ pub fn image_status() -> BoxImageStatus {
         progress: None,
         version: None,
         pinned_version: pinned.version.clone(),
-        url: pinned.url,
+        url: pinned.url(),
         error: None,
     };
-    // Installed means this build's pin is present (`installed_image`); another
-    // version, or the same version from another build, is neither bootable by
-    // this build nor an error.
+    // Installed means this build's version is present (`installed_image`);
+    // another version is neither bootable by this build nor an error.
     if let Ok(Some(image)) = super::installed_image() {
         status.phase = "installed";
         status.version = Some(image.version);
@@ -101,7 +100,7 @@ pub fn start_install() -> Result<()> {
         progress: Some(0),
         version: Some(pinned.version.clone()),
         pinned_version: pinned.version.clone(),
-        url: pinned.url.clone(),
+        url: pinned.url(),
         error: None,
     };
     let (tx, rx) = watch::channel(status.clone());

@@ -428,8 +428,7 @@ impl BoxRegistry {
             return Ok(());
         }
         let image = ready.image.clone();
-        let pinned = super::pinned_image();
-        tokio::task::spawn_blocking(move || super::image_store().verify(&image, Some(&pinned)))
+        tokio::task::spawn_blocking(move || super::image_store().verify(&image))
             .await
             .map_err(|e| Error::Other(e.to_string()))?
             .map_err(|e| {

@@ -117,19 +117,22 @@ build` and the engine's tools prebuild share.
 ## Publishing a release
 
 Images are GitHub releases on this repository tagged `box-image-v<version>`, each holding `base.erofs` and
-`manifest.json`; the app downloads `<base URL>/base.erofs`
-(`https://github.com/fwdai/fletch/releases/download/box-image-v<version>/`, or the `box_image_url` setting)
-and checks the size and sha256 its `ImageStore` pins from the manifest. Bumping the image is three steps:
+`manifest.json`. The app boots the one version `PinnedImage::VERSION` names
+(`crates/fletch-box/src/image_store/mod.rs`) and fetches it from `<base URL>/`
+(`https://github.com/fwdai/fletch/releases/download/box-image-v<version>/`, or the `box_image_url` setting):
+`manifest.json` first, which must describe that version, then `base.erofs`, verified against the manifest's
+size and sha256 as it arrives. No hash lives in the app, so publishing an image is one step:
 
-1. **Build and publish.** Actions → *Box image* → *Run workflow* with the version (`X.Y.Z`), or push a tag
-   `box-image-v<version>`. The workflow (`.github/workflows/box-image.yml`) runs on GitHub's arm64 runner,
-   builds `fletch-guest` and runs `build.sh` in a `debian:trixie` container (`build-mac.sh`, which is cargo
-   plus docker and works there too), and creates the release with the pin values in its body. It refuses a
-   version that already has a release: never publish two different `base.erofs` under one version, an app
-   that has one treats it as installed.
-2. **Pin.** `scripts/box-image-pin.sh box-image-v<version>` downloads the release's `manifest.json` and
-   rewrites `PinnedImage::{VERSION, SIZE, SHA256}` in `crates/fletch-box/src/image_store/mod.rs`.
-3. **Commit** that change; the next app release installs the new image on first use and prunes the old one.
+Actions → *Box image* → *Run workflow* with the version (`X.Y.Z`), or push a tag `box-image-v<version>`. The
+workflow (`.github/workflows/box-image.yml`) runs on GitHub's arm64 runner, builds `fletch-guest` and runs
+`build.sh` in a `debian:trixie` container (`build-mac.sh`, which is cargo plus docker and works there too), and
+creates the release. It refuses a version that already has a release: never publish two different `base.erofs`
+under one version, an app that has one treats it as installed.
 
-For a local image (`build-mac.sh` → `out/`), point the `box_image_url` setting at `file://<path to out>` and
-pin with `scripts/box-image-pin.sh packaging/box-image/out/manifest.json` (do not commit a dev pin).
+The app moves to a new image when `PinnedImage::VERSION` is bumped to it, in a normal commit after the release
+exists (before, every download would 404); the next app release then installs the new image on first use and
+prunes the old one. That bump is the only place the app and the image are coupled: do it when the guest
+(`fletch-guest`, init, packages) changes, not with every app release.
+
+For a local image, build it under the version the app boots (`build-mac.sh out <version>`) and point the
+`box_image_url` setting at `file://<path to out>`; a manifest of any other version is refused.
