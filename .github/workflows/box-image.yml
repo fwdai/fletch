@@ -122,11 +122,14 @@ jobs:
 
       - name: Open the pin pull request
         # The pin comes from the manifest just published, on a branch off the
-        # checked-out commit, as a PR against the default branch. Needs
-        # "Allow GitHub Actions to create and approve pull requests" (repository
-        # Settings → Actions → General). GitHub does not run workflows for
-        # events a GITHUB_TOKEN caused, so ci.yml does not start on this PR by
-        # itself: close and reopen it, or push to it, to get the checks.
+        # checked-out commit, as a PR against the default branch. Opening the
+        # PR needs "Allow GitHub Actions to create and approve pull requests"
+        # (repository Settings → Actions → General); without it the branch is
+        # still pushed and the run summary carries the link to open the PR by
+        # hand, so a published image never fails the job here. GitHub does not
+        # run workflows for events a GITHUB_TOKEN caused, so ci.yml does not
+        # start on this PR by itself: close and reopen it, or push to it, to
+        # get the checks.
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ steps.version.outputs.version }}
@@ -147,4 +150,10 @@ jobs:
             echo
             echo "Opened by the Box image workflow ($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID). CI does not start on a workflow-opened PR: close and reopen it, or push to it, before merging."
           } > "$BODY"
-          gh pr create --base "$BASE" --head "$BRANCH" --title "$TITLE" --body-file "$BODY"
+          if URL=$(gh pr create --base "$BASE" --head "$BRANCH" --title "$TITLE" --body-file "$BODY"); then
+            echo "Pin pull request: $URL" >> "$GITHUB_STEP_SUMMARY"
+          else
+            URL="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/compare/$BASE...$BRANCH?expand=1"
+            echo "::warning::could not open the pin pull request (is \"Allow GitHub Actions to create and approve pull requests\" enabled under Settings → Actions → General?). The branch $BRANCH is pushed; open the PR at $URL"
+            echo "Pin branch \`$BRANCH\` pushed but the pull request could not be opened: [open it]($URL)" >> "$GITHUB_STEP_SUMMARY"
+          fi

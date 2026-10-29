@@ -135,8 +135,9 @@ image is two steps:
    close and reopen it, or push to it, for the checks, then merge. The next app release installs the new
    image on first use and prunes the old one.
 
-The PR step needs *Allow GitHub Actions to create and approve pull requests* (repository Settings → Actions →
-General). Without it, or if the step failed, pin by hand: `scripts/box-image-pin.sh box-image-v<version>`
+Opening the PR needs *Allow GitHub Actions to create and approve pull requests* (repository Settings → Actions
+→ General). Without it the branch is still pushed and the run's summary links to the compare page: open the
+PR from there. If the step failed altogether, pin by hand: `scripts/box-image-pin.sh box-image-v<version>`
 downloads the release's `manifest.json` and rewrites the same constants; commit that change.
 
 For a local image (`build-mac.sh` → `out/`), point the `box_image_url` setting at `file://<path to out>` and
