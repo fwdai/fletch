@@ -607,8 +607,12 @@ pub fn startup(workspace: &crate::workspace::WorkspaceManager) {
         registry::sweep_orphans();
         for dir in leaked {
             match std::fs::remove_dir_all(&dir) {
-                Ok(()) => tracing::info!(box_dir = %dir.display(), "removed a box no live agent owns"),
-                Err(e) => tracing::warn!(box_dir = %dir.display(), error = %e, "removing a leaked box failed"),
+                Ok(()) => {
+                    tracing::info!(box_dir = %dir.display(), "removed a box no live agent owns")
+                }
+                Err(e) => {
+                    tracing::warn!(box_dir = %dir.display(), error = %e, "removing a leaked box failed")
+                }
             }
         }
     });
@@ -622,7 +626,10 @@ pub fn startup(workspace: &crate::workspace::WorkspaceManager) {
 /// listed before the agents are read, so a box made in between belongs to a
 /// row that is already live.
 fn leaked_box_dirs(workspace: &crate::workspace::WorkspaceManager) -> Vec<PathBuf> {
-    let Some(entries) = boxes_root().ok().and_then(|root| std::fs::read_dir(root).ok()) else {
+    let Some(entries) = boxes_root()
+        .ok()
+        .and_then(|root| std::fs::read_dir(root).ok())
+    else {
         return Vec::new();
     };
     let boxes: Vec<(String, PathBuf)> = entries
