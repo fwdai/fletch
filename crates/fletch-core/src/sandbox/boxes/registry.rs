@@ -645,7 +645,7 @@ impl BoxRegistry {
         self.entries
             .lock()
             .get(agent_id)
-            .is_none_or(|e| e.discarding)
+            .map_or(true, |e| e.discarding)
     }
 
     /// A launch began a session in the box; the idle timer stands down.
