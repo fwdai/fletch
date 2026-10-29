@@ -2102,7 +2102,11 @@ fn project_file_op(ctx: &Arc<EngineCtx>, op: &str, args: Value) -> DispatchResul
         }
         "project_file_approve" => {
             let a: ProjectFileApproveArgs = parse(args)?;
-            res(c::project_file_approve_impl(ctx, &a.project_id, &a.patterns))
+            res(c::project_file_approve_impl(
+                ctx,
+                &a.project_id,
+                &a.patterns,
+            ))
         }
         _ => Err(UNKNOWN_OP.to_string()),
     }

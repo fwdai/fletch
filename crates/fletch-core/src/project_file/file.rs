@@ -330,8 +330,16 @@ mod tests {
     fn reads_both_files_and_reports_a_broken_one() {
         let td = tempfile::tempdir().unwrap();
         let repo = td.path().join("repo");
-        write(&repo, SHARED_FILE, r#"{ "egress": { "allow": ["a.com", "b.com"] } }"#);
-        write(&repo, LOCAL_FILE, r#"{ "egress": { "allow": ["b.com", "c.com"] } }"#);
+        write(
+            &repo,
+            SHARED_FILE,
+            r#"{ "egress": { "allow": ["a.com", "b.com"] } }"#,
+        );
+        write(
+            &repo,
+            LOCAL_FILE,
+            r#"{ "egress": { "allow": ["b.com", "c.com"] } }"#,
+        );
         let read = read_files(&repo, None);
         assert_eq!(read.egress_allow, vec!["a.com", "b.com", "c.com"]);
         assert!(read.files.iter().all(|f| f.exists && f.error.is_none()));
@@ -353,14 +361,22 @@ mod tests {
         let td = tempfile::tempdir().unwrap();
         let agents = td.path().join("workspaces");
         let checkout = agents.join("lofoten").join("fletch");
-        write(&checkout, SHARED_FILE, r#"{ "egress": { "allow": ["evil.example"] } }"#);
+        write(
+            &checkout,
+            SHARED_FILE,
+            r#"{ "egress": { "allow": ["evil.example"] } }"#,
+        );
         let read = read_files(&checkout, Some(&agents));
         assert!(read.error.is_some());
         assert!(read.egress_allow.is_empty());
         assert!(read.files.is_empty());
 
         let mine = td.path().join("code").join("fletch");
-        write(&mine, SHARED_FILE, r#"{ "egress": { "allow": ["ok.example"] } }"#);
+        write(
+            &mine,
+            SHARED_FILE,
+            r#"{ "egress": { "allow": ["ok.example"] } }"#,
+        );
         assert_eq!(
             read_files(&mine, Some(&agents)).egress_allow,
             vec!["ok.example"]
