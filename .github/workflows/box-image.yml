@@ -3,10 +3,13 @@ name: Box image
 # Builds the box base image (packaging/box-image) and publishes it as the
 # GitHub release `box-image-v<version>` holding `base.erofs` and
 # `manifest.json`: the URL `fletch-box`'s ImageStore downloads from
-# (`image_store::RELEASES_URL`). The app does not pick it up by itself; pinning
-# is a separate commit: `scripts/box-image-pin.sh box-image-v<version>`
-# rewrites `PinnedImage::{VERSION, SIZE, SHA256}` (the release body carries
-# the same three values). See packaging/box-image/README.md.
+# (`image_store::RELEASES_URL`). The app does not pick it up by itself: the
+# hash in the binary is what a download is trusted against, so the pin is a
+# reviewed commit, never fetched when the app is built. After publishing, the
+# job runs `scripts/box-image-pin.sh` on the manifest it built, which rewrites
+# `PinnedImage::{VERSION, SIZE, SHA256}`, and opens a pull request with that
+# commit (the release body carries the same three values for pinning by
+# hand). See packaging/box-image/README.md.
 #
 # Run it from Actions → Box image → Run workflow with the version, or push a
 # tag `box-image-v<version>`. A version is published once: an app that has
@@ -29,6 +32,7 @@ jobs:
     runs-on: ubuntu-24.04-arm
     permissions:
       contents: write
+      pull-requests: write
     steps:
       - uses: actions/checkout@v4
 
@@ -115,3 +119,32 @@ jobs:
           --latest=false
           "$RUNNER_TEMP/image/base.erofs"
           "$RUNNER_TEMP/image/manifest.json"
+
+      - name: Open the pin pull request
+        # The pin comes from the manifest just published, on a branch off the
+        # checked-out commit, as a PR against the default branch. Needs
+        # "Allow GitHub Actions to create and approve pull requests" (repository
+        # Settings → Actions → General). GitHub does not run workflows for
+        # events a GITHUB_TOKEN caused, so ci.yml does not start on this PR by
+        # itself: close and reopen it, or push to it, to get the checks.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+          BASE: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          scripts/box-image-pin.sh "$RUNNER_TEMP/image/manifest.json"
+          BRANCH="chore/pin-box-image-v$VERSION"
+          TITLE="chore(box): pin box image v$VERSION"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BRANCH"
+          git commit -am "$TITLE"
+          git push origin "$BRANCH"
+          BODY="$RUNNER_TEMP/pr.md"
+          {
+            echo "Pins the image published as release [box-image-v$VERSION]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/tag/box-image-v$VERSION) into \`PinnedImage\` (\`crates/fletch-box/src/image_store/mod.rs\`), written by \`scripts/box-image-pin.sh\` from its \`manifest.json\`."
+            echo
+            echo "Opened by the Box image workflow ($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID). CI does not start on a workflow-opened PR: close and reopen it, or push to it, before merging."
+          } > "$BODY"
+          gh pr create --base "$BASE" --head "$BRANCH" --title "$TITLE" --body-file "$BODY"

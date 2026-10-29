@@ -119,7 +119,9 @@ build` and the engine's tools prebuild share.
 Images are GitHub releases on this repository tagged `box-image-v<version>`, each holding `base.erofs` and
 `manifest.json`; the app downloads `<base URL>/base.erofs`
 (`https://github.com/fwdai/fletch/releases/download/box-image-v<version>/`, or the `box_image_url` setting)
-and checks the size and sha256 its `ImageStore` pins from the manifest. Bumping the image is three steps:
+and checks the size and sha256 its `ImageStore` pins from the manifest. The pin is a reviewed commit, never
+fetched when the app is built: the hash in the binary is what a download is trusted against. Bumping the
+image is two steps:
 
 1. **Build and publish.** Actions → *Box image* → *Run workflow* with the version (`X.Y.Z`), or push a tag
    `box-image-v<version>`. The workflow (`.github/workflows/box-image.yml`) runs on GitHub's arm64 runner,
@@ -127,9 +129,15 @@ and checks the size and sha256 its `ImageStore` pins from the manifest. Bumping 
    plus docker and works there too), and creates the release with the pin values in its body. It refuses a
    version that already has a release: never publish two different `base.erofs` under one version, an app
    that has one treats it as installed.
-2. **Pin.** `scripts/box-image-pin.sh box-image-v<version>` downloads the release's `manifest.json` and
-   rewrites `PinnedImage::{VERSION, SIZE, SHA256}` in `crates/fletch-box/src/image_store/mod.rs`.
-3. **Commit** that change; the next app release installs the new image on first use and prunes the old one.
+2. **Merge the pin PR.** The same run then runs `scripts/box-image-pin.sh` on the manifest it built, which
+   rewrites `PinnedImage::{VERSION, SIZE, SHA256}` in `crates/fletch-box/src/image_store/mod.rs`, and opens
+   a pull request from `chore/pin-box-image-v<version>`. GitHub does not run CI on a PR a workflow opened:
+   close and reopen it, or push to it, for the checks, then merge. The next app release installs the new
+   image on first use and prunes the old one.
+
+The PR step needs *Allow GitHub Actions to create and approve pull requests* (repository Settings → Actions →
+General). Without it, or if the step failed, pin by hand: `scripts/box-image-pin.sh box-image-v<version>`
+downloads the release's `manifest.json` and rewrites the same constants; commit that change.
 
 For a local image (`build-mac.sh` → `out/`), point the `box_image_url` setting at `file://<path to out>` and
 pin with `scripts/box-image-pin.sh packaging/box-image/out/manifest.json` (do not commit a dev pin).
