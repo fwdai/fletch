@@ -148,18 +148,23 @@ pub async fn push_tracking(mirror: &Path, checkout: &Path) -> Result<()> {
     let running = BoxRegistry::global()
         .running_or_start(&identity.agent_id)
         .await?;
-    push(
-        mirror,
-        &running.channel,
-        &running.git_url(checkout),
-        &[
-            "--prune".to_string(),
-            "+refs/remotes/origin/*:refs/remotes/origin/*".to_string(),
-            "+refs/pull/*:refs/pull/*".to_string(),
-        ],
-    )
-    .await
+    let refspecs: Vec<String> = TRACKING_SYNC.iter().map(|s| s.to_string()).collect();
+    push(mirror, &running.channel, &running.git_url(checkout), &refspecs).await
 }
+
+/// What [`push_tracking`] pushes. `origin/HEAD` is left out: in the guest it
+/// is a symref to `origin/<default>` (provisioning sets it), while the mirror
+/// has it at most as a plain ref, fetched from the guest by value and pruned
+/// by the next transport fetch. Pruned into the guest, receive-pack deletes
+/// through the symref, so `origin/main` went with it: every commit on the base
+/// then read as unpublished, and a signed publish refused the base's merge
+/// commits as foreign (GitHub commits those as noreply@github.com).
+const TRACKING_SYNC: &[&str] = &[
+    "--prune",
+    "+refs/remotes/origin/*:refs/remotes/origin/*",
+    "^refs/remotes/origin/HEAD",
+    "+refs/pull/*:refs/pull/*",
+];
 
 async fn push(mirror: &Path, channel: &Arc<Channel>, url: &str, refspecs: &[String]) -> Result<()> {
     let mut cmd = crate::git_dist::command(mirror);
@@ -214,4 +219,70 @@ async fn output(cmd: &mut tokio::process::Command, what: &str) -> Result<std::pr
         .await
         .map_err(|_| Error::Git(format!("{what} timed out after {}s", TIMEOUT.as_secs())))?
         .map_err(Error::from)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::git::testing::{bare, commit_file, git, init_repo};
+
+    /// The tracking sync leaves the guest's `origin/HEAD` symref, and the
+    /// branch it names, standing — the mirror has no `origin/HEAD` of its own
+    /// to send — while it still moves and prunes every branch. A prune of
+    /// `origin/HEAD` deletes through the symref, and the base went with it.
+    #[test]
+    fn the_tracking_sync_keeps_origin_head_and_the_base_it_names() {
+        let td = tempfile::tempdir().unwrap();
+        let guest = td.path().join("guest");
+        init_repo(&guest);
+        let base = commit_file(&guest, "a");
+        git(&guest, &["update-ref", "refs/remotes/origin/main", &base]);
+        git(&guest, &["update-ref", "refs/remotes/origin/gone", &base]);
+        git(
+            &guest,
+            &[
+                "symbolic-ref",
+                "refs/remotes/origin/HEAD",
+                "refs/remotes/origin/main",
+            ],
+        );
+        git(&guest, &["checkout", "-q", "-b", "work"]);
+        let moved = commit_file(&guest, "b");
+
+        // The mirror after a transport fetch: the remote's branches, `main`
+        // moved on, `gone` deleted upstream, and no `origin/HEAD`.
+        let mirror = bare(td.path(), "mirror.git");
+        git(
+            &mirror,
+            &[
+                "fetch",
+                "-q",
+                guest.to_str().unwrap(),
+                "refs/heads/*:refs/heads/*",
+            ],
+        );
+        git(&mirror, &["update-ref", "refs/remotes/origin/main", &moved]);
+        git(&mirror, &["update-ref", "refs/remotes/origin/feat/x", &base]);
+
+        let mut args = vec!["push", "-q", guest.to_str().unwrap()];
+        args.extend(TRACKING_SYNC);
+        git(&mirror, &args);
+
+        let refs = git(
+            &guest,
+            &[
+                "for-each-ref",
+                "--format=%(refname) %(objectname) %(symref)",
+                "refs/remotes/origin",
+            ],
+        );
+        assert_eq!(
+            refs.lines().map(str::trim_end).collect::<Vec<_>>(),
+            vec![
+                format!("refs/remotes/origin/HEAD {moved} refs/remotes/origin/main"),
+                format!("refs/remotes/origin/feat/x {base}"),
+                format!("refs/remotes/origin/main {moved}"),
+            ],
+        );
+    }
 }

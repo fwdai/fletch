@@ -854,6 +854,24 @@ async fn boot(
         "box ready"
     );
 
+    // The guest's mailbox laid out like the host's (`rpc::ensure_mailbox`):
+    // the agent writes straight into `requests/`, and on images whose relay
+    // does not make it every box agent's first request failed.
+    let rpc = identity.rpc_dir.to_string_lossy();
+    let (requests, responses) = (format!("{rpc}/requests"), format!("{rpc}/responses"));
+    match channel
+        .exec(None, None, &["mkdir", "-p", "-m", "700", "--", &requests, &responses])
+        .await
+    {
+        Ok(out) if out.status.success() => {}
+        Ok(out) => tracing::warn!(
+            agent_id,
+            stderr = %String::from_utf8_lossy(&out.stderr).trim(),
+            "could not create the guest's rpc mailbox"
+        ),
+        Err(e) => tracing::warn!(agent_id, error = %e, "could not create the guest's rpc mailbox"),
+    }
+
     let relays = relay::Relays::start(
         channel.clone(),
         &dir,

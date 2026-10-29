@@ -55,6 +55,7 @@ pub const DELIVERED_DIR: &str = "/data/run/relay/delivered";
 pub fn run(args: &[String]) -> Result<()> {
     let dir = PathBuf::from(args.first().ok_or("relay: missing <mailbox dir>")?);
     let mailbox = Mailbox::new(&dir, Path::new(DELIVERED_DIR));
+    mailbox.create_dirs()?;
     mailbox.sweep_staged()?;
     let mailbox = Arc::new(Mutex::new(mailbox));
     let reader = mailbox.clone();
@@ -109,6 +110,14 @@ impl Mailbox {
             emitted: HashSet::new(),
             replayed: Some(HashSet::new()),
         }
+    }
+
+    /// `requests/` and `responses/`, made before the agent needs them: it is
+    /// taught to write straight into `requests/<id>.json.tmp`, with no `mkdir`
+    /// of its own, so on a fresh box its first request failed.
+    pub fn create_dirs(&self) -> io::Result<()> {
+        fs::create_dir_all(&self.requests)?;
+        fs::create_dir_all(&self.responses)
     }
 
     /// Emits every `*.json` in `requests` (oldest name first) that this
@@ -320,6 +329,16 @@ mod tests {
     /// A mailbox over `<tmp>/rpc` with markers in `<tmp>/delivered`.
     fn mailbox(dir: &Path) -> Mailbox {
         Mailbox::new(&dir.join("rpc"), &dir.join("delivered"))
+    }
+
+    /// A fresh mailbox has both directories, so the agent's first request,
+    /// written straight into `requests/`, lands.
+    #[test]
+    fn a_fresh_mailbox_is_ready_for_the_agent() {
+        let dir = tempfile::tempdir().unwrap();
+        mailbox(dir.path()).create_dirs().unwrap();
+        assert!(dir.path().join("rpc/requests").is_dir());
+        assert!(dir.path().join("rpc/responses").is_dir());
     }
 
     /// A request goes out as a line and stays on disk until the host acks it.
