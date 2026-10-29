@@ -65,7 +65,11 @@ import type {
   TurnSentEvent,
   TurnStartedEvent,
 } from "./types/session";
-import type { ProjectSettingsChangedEvent, SettingsChangedEvent } from "./types/settings";
+import type {
+  ProjectFileChangedEvent,
+  ProjectSettingsChangedEvent,
+  SettingsChangedEvent,
+} from "./types/settings";
 import type { VerificationReportEvent } from "./types/verify";
 import type { WfEventEnvelope, WfRun } from "./types/workflow";
 
@@ -471,6 +475,14 @@ export function onProjectSettingsChanged(
   cb: (e: ProjectSettingsChangedEvent) => void,
 ): Promise<UnlistenFn> {
   return on<ProjectSettingsChangedEvent>("project_settings:changed", cb);
+}
+
+/** A project's `.fletch/settings.json` changed on the host, or what of it is
+ *  approved did. Reload `projectFileStatus`. */
+export function onProjectFileChanged(
+  cb: (e: ProjectFileChangedEvent) => void,
+): Promise<UnlistenFn> {
+  return on<ProjectFileChangedEvent>("project_file:changed", cb);
 }
 
 /** A write landed on one project's context, from any client or the host's own

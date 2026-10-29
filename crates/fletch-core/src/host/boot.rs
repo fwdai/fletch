@@ -795,6 +795,10 @@ pub fn boot(cfg: BootConfig) -> Result<Engine, BootError> {
     sandbox::boxes::settings::seed(&db.lock());
     sandbox::boxes::set_event_sink(sink.clone());
     sandbox::boxes::startup(&workspace);
+    // Each project's `.fletch/settings.json`, read into its mirror before any
+    // box boots and watched from here on (`project_file`).
+    crate::project_file::seed(&db.lock());
+    crate::project_file::watch(db.clone(), sink.clone());
 
     // Quitting the desktop normally goes through `RunEvent::ExitRequested`, but
     // a SIGINT (Ctrl-C under `tauri dev`) or SIGTERM (sent by the OS on

@@ -8,6 +8,7 @@
 // or `dbUpsert` (src/storage/hostOwnedKeys.test.ts enforces it).
 import type { SandboxEngine } from "@/storage/preferences";
 import { invoke } from "../invoke";
+import type { ProjectFileStatus } from "../types/settings";
 
 export const settingsApi = {
   /** The host-owned global settings as stored, and nothing else (no secret,
@@ -48,6 +49,14 @@ export const settingsApi = {
     invoke<void>("set_publish_confirmation", { enabled }),
   /** Seconds a publish approval waits before denying; 0 = until answered. */
   setPublishApprovalWait: (secs: number) => invoke<void>("set_publish_approval_wait", { secs }),
+  /** A project's `.fletch/settings.json` (and `.local`), re-read now on the
+   *  host: each file's state and the hosts it adds, applied or pending. */
+  projectFileStatus: (projectId: string) =>
+    invoke<ProjectFileStatus>("project_file_status", { projectId }),
+  /** Approve host patterns the settings files add, so the project's boxes may
+   *  reach them. Rejects a pattern the files do not hold now. */
+  projectFileApprove: (projectId: string, patterns: string[]) =>
+    invoke<ProjectFileStatus>("project_file_approve", { projectId, patterns }),
   /** "Remove agent attribution": true strips agents' commit/PR attribution
    *  whatever their own settings say. */
   setAgentAttributionRemoved: (removed: boolean) =>

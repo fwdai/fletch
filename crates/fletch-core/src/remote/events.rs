@@ -92,6 +92,8 @@ pub const FORWARDED_EVENTS: &[&str] = &[
     crate::sandbox::boxes::EVENT_EGRESS,
     crate::sandbox::boxes::EVENT_IMAGE,
     crate::sandbox::boxes::EVENT_TOOLS,
+    // A project's `.fletch/settings.json` changed, or what of it is approved.
+    crate::project_file::EVENT_CHANGED,
 ];
 
 /// Install the taps and hand back the push-alert one.

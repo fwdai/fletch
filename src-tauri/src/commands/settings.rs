@@ -136,6 +136,27 @@ pub fn get_project_settings(
     engine::get_project_settings_impl(&ctx, &project_id)
 }
 
+/// A project's `.fletch/settings.json`: what it says, re-read now, and what of
+/// it applies.
+#[tauri::command]
+pub fn project_file_status(
+    ctx: State<'_, Arc<EngineCtx>>,
+    project_id: String,
+) -> Result<fletch_core::project_file::ProjectFileStatus> {
+    engine::project_file_status_impl(&ctx, &project_id)
+}
+
+/// Approve host patterns a project's settings file adds; refused for one the
+/// file does not hold.
+#[tauri::command]
+pub fn project_file_approve(
+    ctx: State<'_, Arc<EngineCtx>>,
+    project_id: String,
+    patterns: Vec<String>,
+) -> Result<fletch_core::project_file::ProjectFileStatus> {
+    engine::project_file_approve_impl(&ctx, &project_id, &patterns)
+}
+
 /// Write one allowlisted project key; `null` deletes the row.
 #[tauri::command]
 pub fn set_project_setting(

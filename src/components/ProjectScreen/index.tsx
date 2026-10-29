@@ -11,6 +11,7 @@ import { DeleteSection } from "./DeleteSection";
 import { EnvVarsSection } from "./EnvVarsSection";
 import { GeneralSection } from "./GeneralSection";
 import { LinearSection } from "./LinearSection";
+import { ProjectFileSection } from "./ProjectFileSection";
 import { ProjectHeader } from "./ProjectHeader";
 import { Roadmap, useRoadmap } from "./Roadmap";
 import { RoadmapSection } from "./RoadmapSection";
@@ -126,6 +127,7 @@ export function ProjectScreen({ repoPath }: { repoPath: string }) {
                   initialOverrides={loaded.overrides}
                 />
                 <EnvVarsSection projectId={loaded.projectId} repoPath={repoPath} />
+                <ProjectFileSection projectId={loaded.projectId} />
                 <LinearSection projectId={loaded.projectId} />
                 <RoadmapSection projectId={loaded.projectId} />
                 <AutopilotSection projectId={loaded.projectId} />

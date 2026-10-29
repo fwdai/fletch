@@ -122,6 +122,14 @@ export const GATES = {
     label: "Project preferences",
     reason: "This host is too old to change this project's settings — change them on the host.",
   },
+  /** A project's `.fletch/settings.json`: what it says, and approving the hosts
+   *  it adds for the project's boxes. */
+  projectFile: {
+    op: ["project_file_status", "project_file_approve"],
+    label: "Project settings file",
+    reason:
+      "This host is too old to read this project's .fletch/settings.json — review it on the host.",
+  },
   sideShell: {
     op: "open_agent_shell",
     label: "Terminals",

@@ -1380,6 +1380,8 @@ pub fn run() {
             commands::box_stop,
             commands::box_egress_allow,
             commands::set_box_setting,
+            commands::project_file_status,
+            commands::project_file_approve,
             // The project context layer, shared with the remote dispatcher.
             commands::context_overview,
             commands::context_preview,

@@ -746,10 +746,17 @@ pub fn tools_disk_path(provider: &str) -> PathBuf {
     fletch_box::tools::disk_path(&tools_root(), provider, &tools_version(provider))
 }
 
-/// The defaults plus the project's additions; a stored pattern that no longer
-/// parses is dropped with a warning rather than blocking the launch.
+/// The defaults plus the project's additions — those made in the app, and
+/// those of its `.fletch/settings.json` the user approved (`project_file`); a
+/// stored pattern that no longer parses is dropped with a warning rather than
+/// blocking the launch.
 pub fn egress_policy(project_id: &str) -> EgressPolicy {
-    let extra = settings::egress_allow(project_id);
+    let mut extra = settings::egress_allow(project_id);
+    for pattern in crate::project_file::applied_egress(project_id) {
+        if !extra.contains(&pattern) {
+            extra.push(pattern);
+        }
+    }
     match EgressPolicy::with_extra(&extra) {
         Ok(policy) => policy,
         Err(e) => {
