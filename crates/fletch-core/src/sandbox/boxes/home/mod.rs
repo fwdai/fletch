@@ -540,7 +540,7 @@ mod tests {
             mirror_for_agent("codex", "agent-7").unwrap(),
             "the two spellings of one agent's mirror agree"
         );
-        assert_eq!(mirror_for_agent("cursor", "agent-7"), None);
+        assert_eq!(mirror_for_agent("antigravity", "agent-7"), None);
     }
 
     /// A host tree is copied file by file under the guest path, directories
@@ -670,7 +670,16 @@ mod tests {
             builder.append_data(&mut header, path, body).unwrap();
         };
         file("./message/ses_1/msg_1.json", b"{\"id\":\"msg_1\"}");
-        file("../escaped.json", b"{}");
+        // The builder refuses to spell `..` itself, as a guest's `tar` would
+        // not: the name is written into the header by hand.
+        let mut escaped = tar::Header::new_gnu();
+        let name = b"../escaped.json";
+        escaped.as_old_mut().name[..name.len()].copy_from_slice(name);
+        escaped.set_size(2);
+        escaped.set_mode(0o644);
+        escaped.set_entry_type(tar::EntryType::Regular);
+        escaped.set_cksum();
+        builder.append(&escaped, &b"{}"[..]).unwrap();
         let mut link = tar::Header::new_gnu();
         link.set_size(0);
         link.set_mode(0o777);

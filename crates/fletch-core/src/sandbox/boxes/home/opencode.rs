@@ -68,64 +68,60 @@ impl ProviderHome for OpenCode {
         Transport::Pull
     }
 
-    /// The data dir, and the config dir as a copy of the user's, replaced
-    /// whole (nothing when the user has none: opencode runs without it).
+    /// The data dir, and the config dir as a copy of the user's (wherever
+    /// their `XDG_CONFIG_HOME` puts it), replaced whole — nothing when the
+    /// user has none: opencode runs without it.
     fn seed(&self, home: &Path, _writable_root: &Path) -> Result<Vec<GuestEntry>> {
-        let config = Self::config_dir(home);
-        let mut entries = vec![
-            GuestEntry::Dir(Self::data_dir(home)),
-            GuestEntry::Absent(config.clone()),
-        ];
-        entries.extend(copy_tree(&policy::opencode_config_dir(home), &config)?);
-        Ok(entries)
+        seed_from(home, &policy::opencode_config_dir(home))
     }
 
-    /// The login files the user's data dir holds, for the guest's data dir,
-    /// and every provider API key the login shell exports; one of the two is
-    /// required, as for a container.
+    /// The login files the user's data dir (wherever their `XDG_DATA_HOME`
+    /// puts it) holds, for the guest's data dir, and every provider API key
+    /// the login shell exports; one of the two is required, as for a
+    /// container.
     fn credential(&self, ctx: &AgentLaunchCtx) -> Result<Credential> {
-        let source = policy::opencode_data_dir(ctx.home);
-        let guest = Self::data_dir(ctx.home);
-        let files: Vec<ShippedFile> = LOGIN_FILES
-            .iter()
-            .filter(|name| source.join(name).is_file())
-            .map(|name| ShippedFile {
-                host: source.join(name),
-                guest: guest.join(name),
-            })
-            .collect();
-        let env = multi_provider_auth_env(
+        credential_from(
+            ctx.home,
+            &policy::opencode_data_dir(ctx.home),
             present_api_keys(login_shell_var),
-            !files.is_empty(),
-            NO_AUTH_MSG,
-        )?;
-        Ok(Credential { env, files })
+        )
     }
+}
+
+/// [`OpenCode::seed`] with the user's config dir given.
+fn seed_from(home: &Path, host_config: &Path) -> Result<Vec<GuestEntry>> {
+    let config = OpenCode::config_dir(home);
+    let mut entries = vec![
+        GuestEntry::Dir(OpenCode::data_dir(home)),
+        GuestEntry::Absent(config.clone()),
+    ];
+    entries.extend(copy_tree(host_config, &config)?);
+    Ok(entries)
+}
+
+/// [`OpenCode::credential`] with the user's data dir and the shell's keys
+/// given.
+fn credential_from(
+    home: &Path,
+    host_data: &Path,
+    api_keys: Vec<(String, String)>,
+) -> Result<Credential> {
+    let guest = OpenCode::data_dir(home);
+    let files: Vec<ShippedFile> = LOGIN_FILES
+        .iter()
+        .filter(|name| host_data.join(name).is_file())
+        .map(|name| ShippedFile {
+            host: host_data.join(name),
+            guest: guest.join(name),
+        })
+        .collect();
+    let env = multi_provider_auth_env(api_keys, !files.is_empty(), NO_AUTH_MSG)?;
+    Ok(Credential { env, files })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn ctx(home: &Path) -> AgentLaunchCtx<'_> {
-        AgentLaunchCtx {
-            agent_id: "a",
-            project_id: "p",
-            provider: "opencode",
-            writable_root: home,
-            source_repos: &[],
-            rpc_dir: Path::new("/rpc/a"),
-            cwd: home,
-            home,
-            interactive: false,
-            blackboard: None,
-            account_dir: None,
-            oauth_token: None,
-            codex_home: None,
-            adopted_read_only: false,
-            folder_grants: &[],
-        }
-    }
 
     #[test]
     fn sessions_are_the_data_dirs_store_and_the_host_pulls_them() {
@@ -138,24 +134,25 @@ mod tests {
         assert_eq!(OpenCode.transport(), Transport::Pull);
     }
 
-    /// The seed is the data dir and the config dir copied whole; the login
-    /// files are the credential, never part of the seed.
+    /// The seed is the data dir and the user's config dir — wherever it is on
+    /// the host — copied whole to the guest's default place; the login files
+    /// are the credential, never part of the seed.
     #[test]
     fn the_seed_copies_the_config_dir_and_leaves_the_login_to_the_credential() {
         let td = tempfile::tempdir().unwrap();
-        let home = td.path();
-        let config = home.join(".config/opencode");
-        std::fs::create_dir_all(&config).unwrap();
-        std::fs::write(config.join("opencode.json"), b"{}").unwrap();
-        let data = home.join(".local/share/opencode");
-        std::fs::create_dir_all(&data).unwrap();
-        std::fs::write(data.join("auth.json"), b"{\"anthropic\":{}}").unwrap();
+        let home = Path::new("/Users/u");
+        let host_config = td.path().join("xdg-config/opencode");
+        std::fs::create_dir_all(&host_config).unwrap();
+        std::fs::write(host_config.join("opencode.json"), b"{}").unwrap();
+        let host_data = td.path().join("xdg-data/opencode");
+        std::fs::create_dir_all(&host_data).unwrap();
+        std::fs::write(host_data.join("auth.json"), b"{\"anthropic\":{}}").unwrap();
 
-        let entries = OpenCode.seed(home, home).unwrap();
+        let config = home.join(".config/opencode");
         assert_eq!(
-            entries,
+            seed_from(home, &host_config).unwrap(),
             vec![
-                GuestEntry::Dir(data.clone()),
+                GuestEntry::Dir(home.join(".local/share/opencode")),
                 GuestEntry::Absent(config.clone()),
                 GuestEntry::Dir(config.clone()),
                 GuestEntry::File {
@@ -167,33 +164,33 @@ mod tests {
             ]
         );
 
-        let credential = OpenCode.credential(&ctx(home)).unwrap();
+        let credential = credential_from(home, &host_data, Vec::new()).unwrap();
+        assert!(credential.env.is_empty());
         assert_eq!(
             credential.files,
             vec![ShippedFile {
-                host: data.join("auth.json"),
-                guest: data.join("auth.json"),
+                host: host_data.join("auth.json"),
+                guest: home.join(".local/share/opencode/auth.json"),
             }]
         );
     }
 
-    /// With no login file, a provider key from the shell is enough; with
-    /// neither, the launch is refused with what to do.
+    /// With no login file, a provider key is enough and travels in the env;
+    /// with neither, the launch is refused with what to do.
     #[test]
     fn a_login_or_a_key_is_required() {
         let td = tempfile::tempdir().unwrap();
-        let home = td.path();
-        let keys = present_api_keys(login_shell_var);
-        let credential = OpenCode.credential(&ctx(home));
-        if keys.is_empty() {
-            assert_eq!(
-                credential.unwrap_err().to_string(),
-                crate::error::Error::Other(NO_AUTH_MSG.into()).to_string()
-            );
-        } else {
-            let credential = credential.unwrap();
-            assert_eq!(credential.env, keys);
-            assert!(credential.files.is_empty());
-        }
+        let home = Path::new("/Users/u");
+        let key = vec![("OPENAI_API_KEY".to_string(), "sk-test".to_string())];
+        let credential = credential_from(home, td.path(), key.clone()).unwrap();
+        assert_eq!(credential.env, key);
+        assert!(credential.files.is_empty());
+
+        assert_eq!(
+            credential_from(home, td.path(), Vec::new())
+                .unwrap_err()
+                .to_string(),
+            crate::error::Error::Other(NO_AUTH_MSG.into()).to_string()
+        );
     }
 }
