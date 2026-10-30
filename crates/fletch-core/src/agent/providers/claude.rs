@@ -261,29 +261,20 @@ fn claude_write(
             line
         })
         .collect();
-    let path = projects.join(&dirname).join(format!("{session_id}.jsonl"));
+    let rel = Path::new(&dirname).join(format!("{session_id}.jsonl"));
     if engine == crate::sandbox::EngineKind::Box {
         // The claude that resumes this runs in the guest and reads its own
-        // `~/.claude/projects`; `projects` is the host's mirror of that dir,
-        // which the relay fills guest → host only. So the session is created
-        // in the guest first, then the mirror copy is written by hand, so
-        // the launch that follows sees a resumable session at once rather
-        // than after the tail relays it back.
-        let home = crate::sandbox::boxes::box_holding(cwd)
-            .map(|b| b.home)
-            .ok_or_else(|| Error::Other(format!("{} is in no box", cwd.display())))?;
-        let guest_path = home
-            .join(".claude")
-            .join("projects")
-            .join(&dirname)
-            .join(format!("{session_id}.jsonl"));
-        let mut bytes = Vec::new();
-        for line in &lines {
-            serde_json::to_writer(&mut bytes, line)?;
-            bytes.push(b'\n');
-        }
-        crate::sandbox::boxes::write_new_guest_file(cwd, &guest_path, &bytes)?;
+        // `~/.claude/projects`; `projects` is the host's mirror of that dir.
+        // Created in both (`boxes::home::create_session_file`).
+        return crate::sandbox::boxes::home::create_session_file(
+            &crate::sandbox::boxes::home::claude::Claude,
+            cwd,
+            &rel,
+            &lines,
+        )
+        .map(Some);
     }
+    let path = projects.join(rel);
     write_new_jsonl(&path, &lines)?;
     Ok(Some(path))
 }

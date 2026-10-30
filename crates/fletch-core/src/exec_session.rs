@@ -35,8 +35,9 @@ type ArgsBuilder =
     Arc<dyn Fn(&str, Option<&str>, Option<&str>, Option<&str>) -> Vec<String> + Send + Sync>;
 type IdExtractor = Arc<dyn Fn(&Value) -> Option<String> + Send + Sync>;
 /// Runs on the host before each turn's process is spawned; an error fails the
-/// turn before anything launches.
-pub type TurnPrep = Arc<dyn Fn() -> Result<()> + Send + Sync>;
+/// turn before anything launches. The engine's own step is declared on its
+/// launch plan (`sandbox::engine::LaunchPlan::before_turn`) in the same shape.
+pub type TurnPrep = crate::sandbox::TurnPrep;
 
 pub struct ExecSpawn {
     /// Program to launch each turn. Normally `sandbox-exec`, with the real

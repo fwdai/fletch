@@ -18,7 +18,9 @@ use parking_lot::RwLock;
 use crate::error::{Error, Result};
 
 pub use docker::{availability as docker_availability, DockerAvailability};
-pub use engine::{AgentLaunchCtx, EngineKind, EnvDelivery, KillHandle, LaunchPlan, SandboxEngine};
+pub use engine::{
+    AgentLaunchCtx, EngineKind, EnvDelivery, KillHandle, LaunchPlan, SandboxEngine, TurnPrep,
+};
 pub use guarantees::{describe as describe_isolation, IsolationReport};
 pub use podman::{
     availability as podman_availability, launch_blocker as podman_launch_blocker,

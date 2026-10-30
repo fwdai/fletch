@@ -37,7 +37,6 @@ pub const CONSOLE: &str = "console.log";
 pub const SSH_SOCK: &str = "ssh.sock";
 pub const CTL_SOCK: &str = "ctl.sock";
 pub const EGRESS_SOCK: &str = "egress.sock";
-pub const CLAUDE_PROJECTS_DIR: &str = "claude-projects";
 pub const MIRROR_DIR: &str = "mirror.git";
 
 /// `FLETCH_READY` must arrive within this, else the boot fails closed.
@@ -1143,12 +1142,15 @@ async fn boot(
         Err(e) => tracing::warn!(agent_id, error = %e, "could not create the guest's rpc mailbox"),
     }
 
+    // The owner's sessions dir, tailed into its mirror under the box dir
+    // (`home`): where the provider's CLI writes its transcripts in this guest.
+    let provider_home = super::home::require(&identity.provider)?;
     let relays = relay::Relays::start(
         channel.clone(),
         &dir,
         &identity.rpc_dir,
-        &identity.home.join(".claude").join("projects"),
-        &dir.join(CLAUDE_PROJECTS_DIR),
+        &provider_home.sessions_dir(&identity.home, &identity.writable_root),
+        &dir.join(provider_home.mirror_dirname()),
     );
     Ok(RunningBox {
         identity: identity.clone(),

@@ -10,7 +10,9 @@ use crate::exec_session::{ExecCallbacks, ExecExit, ExecSession, ExecSpawn};
 use crate::managed_session::{ManagedExit, ManagedSession, ManagedSpawn, ToolUseBehavior};
 use crate::pty_session::{PtyExit, PtySession, PtySpawn};
 use crate::sandbox;
-use crate::sandbox::{AgentLaunchCtx, EngineKind, EnvDelivery, LaunchPlan, SandboxEngine};
+use crate::sandbox::{
+    AgentLaunchCtx, EngineKind, EnvDelivery, LaunchPlan, SandboxEngine, TurnPrep,
+};
 
 use super::accounts;
 use super::args::{prepare_managed_args, prepare_pty_args};
@@ -178,6 +180,20 @@ fn rpc_env(rpc_dir: &Path) -> Vec<(String, String)> {
 /// the engine ships that env into a guest ([`EnvDelivery::GuestFile`]): the ssh
 /// client's own lookup paths and terminal. The exact set is still to tune.
 const LAUNCHER_ENV: &[&str] = &["PATH", "HOME", "TERM"];
+
+/// The per-turn preparation of a session: the host's own step (`first`),
+/// then the engine's (`then`), each only when there is one. Order matters:
+/// the engine ships what the host just wrote.
+fn chain_turn_prep(first: Option<TurnPrep>, then: Option<TurnPrep>) -> Option<TurnPrep> {
+    match (first, then) {
+        (None, None) => None,
+        (Some(one), None) | (None, Some(one)) => Some(one),
+        (Some(first), Some(then)) => Some(std::sync::Arc::new(move || {
+            first()?;
+            then()
+        }) as TurnPrep),
+    }
+}
 
 /// The env the launcher process is spawned with, once the agent's own
 /// (`launch_env + rpc_env + mcp.env …`) is assembled: that env itself under
@@ -386,6 +402,8 @@ impl Agent {
             env: launch_env,
             env_remove,
             env_delivery,
+            // A long-lived session: its credential is delivered once, at launch.
+            before_turn: _,
             kill,
         } = engine.launch_agent(&ctx, &claude)?;
         account.unset.extend(env_remove);
@@ -497,6 +515,8 @@ impl Agent {
             env: launch_env,
             env_remove,
             env_delivery,
+            // The TUI is one long process: its credential is delivered once.
+            before_turn: _,
             kill,
         } = engine.launch_agent(&ctx, &bin)?;
         account.unset.extend(env_remove);
@@ -576,6 +596,8 @@ impl Agent {
             env: launch_env,
             env_remove,
             env_delivery,
+            // A long-lived session: its credential is delivered once, at launch.
+            before_turn: _,
             kill,
         } = engine.launch_agent(&ctx, &claude)?;
         account.unset.extend(env_remove);
@@ -750,6 +772,7 @@ impl Agent {
             env: launch_env,
             env_remove,
             env_delivery,
+            before_turn: engine_before_turn,
             kill,
         } = engine.launch_agent(&ctx, agent_bin)?;
         account.unset.extend(env_remove);
@@ -758,11 +781,14 @@ impl Agent {
         env.extend(mcp_env);
         env.extend(codex.as_ref().map(CodexHome::env));
         let env = launcher_env(engine.as_ref(), &spec.agent_id, &env_delivery, env)?;
-        // Every turn is a fresh process, so every turn gets a fresh credential.
-        let before_turn = codex.map(|codex| {
+        // Every turn is a fresh process, so every turn gets a fresh
+        // credential: the host writes it, then the engine's own step takes
+        // it where the agent runs (a box ships the file into its guest).
+        let host_before_turn = codex.map(|codex| {
             let codex = std::sync::Arc::new(codex);
-            std::sync::Arc::new(move || codex.write_credential()) as crate::exec_session::TurnPrep
+            std::sync::Arc::new(move || codex.write_credential()) as TurnPrep
         });
+        let before_turn = chain_turn_prep(host_before_turn, engine_before_turn);
 
         tracing::info!(
             agent_bin = %program.display(),
@@ -1246,5 +1272,37 @@ mod tests {
         );
         assert_eq!(rollouts.len(), 1);
         assert!(rollouts[0].starts_with(&codex.overlay), "{rollouts:?}");
+    }
+
+    /// Before a turn the host's step runs first (it writes the credential),
+    /// then the engine's (it ships it); a failure of the first stops the
+    /// second, and a missing side leaves the other alone.
+    #[test]
+    fn turn_prep_runs_the_hosts_step_then_the_engines() {
+        use std::sync::{Arc, Mutex};
+        let log: Arc<Mutex<Vec<&'static str>>> = Arc::new(Mutex::new(Vec::new()));
+        let step = |name: &'static str| {
+            let log = log.clone();
+            Arc::new(move || {
+                log.lock().unwrap().push(name);
+                Ok(())
+            }) as TurnPrep
+        };
+        let failing = Arc::new(|| Err(Error::Other("no login".into()))) as TurnPrep;
+
+        chain_turn_prep(Some(step("host")), Some(step("engine"))).unwrap()().unwrap();
+        assert_eq!(*log.lock().unwrap(), ["host", "engine"]);
+
+        log.lock().unwrap().clear();
+        assert!(chain_turn_prep(Some(failing), Some(step("engine"))).unwrap()().is_err());
+        assert!(
+            log.lock().unwrap().is_empty(),
+            "the engine's step never ran"
+        );
+
+        chain_turn_prep(None, Some(step("engine"))).unwrap()().unwrap();
+        chain_turn_prep(Some(step("host")), None).unwrap()().unwrap();
+        assert_eq!(*log.lock().unwrap(), ["engine", "host"]);
+        assert!(chain_turn_prep(None, None).is_none());
     }
 }

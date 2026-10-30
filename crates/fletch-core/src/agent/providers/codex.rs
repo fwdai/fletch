@@ -148,12 +148,62 @@ pub(crate) fn codex_write(
     session_id: &str,
     agent_id: &str,
     cwd: &Path,
-    _engine: crate::sandbox::EngineKind,
+    engine: crate::sandbox::EngineKind,
     bodies: &[Value],
 ) -> Result<Option<PathBuf>> {
+    if engine == crate::sandbox::EngineKind::Box {
+        // The codex that resumes this runs in the guest and reads the
+        // overlay's `sessions` there; the host's copy is the mirror the relay
+        // fills. Created in both (`boxes::home::create_session_file`).
+        let rollout = Rollout::new(session_id, cwd, bodies)?;
+        return crate::sandbox::boxes::home::create_session_file(
+            &crate::sandbox::boxes::home::codex::Codex,
+            cwd,
+            &rollout.rel,
+            &rollout.lines,
+        )
+        .map(Some);
+    }
     let overlay = crate::agent::codex_home::overlay_for_agent(agent_id)?;
     let sessions = crate::agent::codex_home::open_overlay(&overlay)?.subdir("sessions")?;
     codex_write_in(&sessions, session_id, cwd, bodies).map(Some)
+}
+
+/// A rollout to write: its lines, re-identified as thread `session_id`
+/// run in `cwd`, and its path relative to the `sessions` dir, dated now
+/// as codex dates its own.
+struct Rollout {
+    rel: PathBuf,
+    lines: Vec<Value>,
+}
+
+impl Rollout {
+    fn new(session_id: &str, cwd: &Path, bodies: &[Value]) -> Result<Self> {
+        let cwd = cwd.to_string_lossy();
+        let lines = bodies
+            .iter()
+            .map(|body| {
+                let mut line = body.clone();
+                if line.get("type").and_then(Value::as_str) == Some("session_meta") {
+                    if let Some(meta) = line.get_mut("payload") {
+                        replace_field(meta, "id", session_id);
+                        replace_field(meta, "session_id", session_id);
+                        replace_field(meta, "cwd", &cwd);
+                    }
+                }
+                line
+            })
+            .collect();
+        let now = chrono::Local::now();
+        let rel = PathBuf::from(now.format("%Y").to_string())
+            .join(now.format("%m").to_string())
+            .join(now.format("%d").to_string())
+            .join(format!(
+                "rollout-{}-{session_id}.jsonl",
+                now.format("%Y-%m-%dT%H-%M-%S")
+            ));
+        Ok(Self { rel, lines })
+    }
 }
 
 /// Copy thread `session_id` from where codex kept it before agents had their
@@ -262,37 +312,27 @@ fn codex_write_in(
     cwd: &Path,
     bodies: &[Value],
 ) -> Result<PathBuf> {
-    let cwd = cwd.to_string_lossy();
+    let rollout = Rollout::new(session_id, cwd, bodies)?;
     let mut out: Vec<u8> = Vec::new();
-    for body in bodies {
-        let mut line = body.clone();
-        if line.get("type").and_then(Value::as_str) == Some("session_meta") {
-            if let Some(meta) = line.get_mut("payload") {
-                replace_field(meta, "id", session_id);
-                replace_field(meta, "session_id", session_id);
-                replace_field(meta, "cwd", &cwd);
-            }
-        }
-        serde_json::to_writer(&mut out, &line)?;
+    for line in &rollout.lines {
+        serde_json::to_writer(&mut out, line)?;
         out.push(b'\n');
     }
-    let now = chrono::Local::now();
-    let (year, month, day) = (
-        now.format("%Y").to_string(),
-        now.format("%m").to_string(),
-        now.format("%d").to_string(),
-    );
-    let file = format!(
-        "rollout-{}-{session_id}.jsonl",
-        now.format("%Y-%m-%dT%H-%M-%S")
-    );
-    let dir = rollout_dir(sessions, &year, &month, &day)?;
-    if dir.entry(&file)? != Entry::Missing {
+    let names: Vec<&str> = rollout
+        .rel
+        .components()
+        .filter_map(|c| c.as_os_str().to_str())
+        .collect();
+    let [year, month, day, file] = names[..] else {
+        return Err(Error::Other("not a sessions/YYYY/MM/DD rollout".into()));
+    };
+    let dir = rollout_dir(sessions, year, month, day)?;
+    if dir.entry(file)? != Entry::Missing {
         return Err(Error::Other(format!(
             "a codex thread named {file} already exists"
         )));
     }
-    dir.write_file(&file, &out, 0o600)?;
+    dir.write_file(file, &out, 0o600)?;
     Ok(dir.path().join(file))
 }
 

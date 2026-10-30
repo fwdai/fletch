@@ -22,9 +22,12 @@
 //!   sender re-sends everything it still holds at session start and then says
 //!   `synced`, so on `synced` the receiver deletes every marker it was not
 //!   shown this session. Markers made after the sync wait for the next one.
-//! - **Transcript tail**: `fletch-guest tail <home>/.claude/projects` emits
-//!   `create`/`append` lines for every `*.jsonl` under claude's projects dir;
-//!   the host appends them under `<box>/claude-projects/`, and on reconnect
+//! - **Transcript tail**: `fletch-guest tail <sessions dir>` emits
+//!   `create`/`append` lines for every `*.jsonl` under the dir the provider's
+//!   CLI writes its sessions to (`super::home::ProviderHome::sessions_dir`:
+//!   claude's `<home>/.claude/projects`, codex's `<CODEX_HOME>/sessions`);
+//!   the host appends them under the provider's mirror in the box dir
+//!   (`<box>/claude-projects/`, `<box>/codex-sessions/`), and on reconnect
 //!   tells the guest how much it already holds (`--offsets`).
 //!
 //! Both reconnect with backoff while the VM runs; `Relays::stop` ends them.

@@ -288,19 +288,25 @@ async fn wait_for(mut done: impl FnMut() -> bool, timeout: Duration) {
 
 /// Enabling the pilot must not make providers boxes cannot run unsendable:
 /// they are stamped with the default engine, and nothing else is touched.
+/// A provider boxes run — one with a guest-home adapter and a tools-disk
+/// script — is stamped `Box`.
 #[test]
 fn new_agents_of_unsupported_providers_fall_back_to_seatbelt() {
     use crate::sandbox::EngineKind;
+    for supported in ["claude", "codex"] {
+        assert!(super::supports_provider(supported), "{supported}");
+        assert_eq!(
+            super::engine_for_new_agent(EngineKind::Box, supported),
+            EngineKind::Box
+        );
+    }
+    assert!(!super::supports_provider("cursor"));
     assert_eq!(
-        super::engine_for_new_agent(EngineKind::Box, "claude"),
-        EngineKind::Box
-    );
-    assert_eq!(
-        super::engine_for_new_agent(EngineKind::Box, "codex"),
+        super::engine_for_new_agent(EngineKind::Box, "cursor"),
         EngineKind::SandboxExec
     );
     assert_eq!(
-        super::engine_for_new_agent(EngineKind::Docker, "codex"),
+        super::engine_for_new_agent(EngineKind::Docker, "cursor"),
         EngineKind::Docker
     );
 }

@@ -24,7 +24,14 @@
 //! the workspaces root rather than inside it, so no host file sits under a path
 //! the seam routes remotely): `data.img`, `dirty`, `key`, `key.pub`,
 //! `known_hosts`, `ssh_config`, `ssh.sock`, `ctl.sock`, `egress.sock`,
-//! `console.log`, `mirror.git/`, `claude-projects/`, `relay/`.
+//! `console.log`, `mirror.git/`, the provider's sessions mirror
+//! (`claude-projects/`, `codex-sessions/` — [`home`]), `relay/`.
+//!
+//! **The engine names no provider.** What a CLI keeps outside the checkout —
+//! its config, its login, its transcripts — and how each reaches or leaves
+//! the guest is one adapter per provider behind [`home::ProviderHome`]; the
+//! engine seeds the guest home, delivers the credential and mirrors the
+//! sessions through that one interface.
 //!
 //! **An agent runs where the tree it works in lives.** An agent that adopts
 //! an existing checkout instead of provisioning one (the local reviewer, which
@@ -49,6 +56,7 @@
 
 pub mod allowlist;
 pub mod executor;
+pub mod home;
 pub mod mirror;
 pub mod provision;
 pub mod registry;
@@ -69,6 +77,7 @@ use crate::error::{Error, Result};
 use crate::host::Sink;
 use crate::sandbox::engine::{
     AgentLaunchCtx, EngineKind, EnvDelivery, KillHandle, KillPlan, LaunchPlan, SandboxEngine,
+    TurnPrep,
 };
 
 pub use registry::{BoxIdentity, BoxPhase, BoxRegistry, RunningBox, StopReason};
@@ -102,9 +111,11 @@ pub(crate) fn box_dir_for_root(writable_root: &Path) -> Option<PathBuf> {
     box_dir(agent_id).ok()
 }
 
-/// The transcript mirror of a box (`sandbox::transcript_root` for `Box`).
+/// The claude transcript mirror of a box (`sandbox::transcript_root` for
+/// `Box`, which the claude session locators walk). Codex rollouts are
+/// located through [`home::mirror_for_agent`] instead.
 pub(crate) fn transcript_dir_for_root(writable_root: &Path) -> Option<PathBuf> {
-    box_dir_for_root(writable_root).map(|dir| dir.join(registry::CLAUDE_PROJECTS_DIR))
+    home::mirror_for_root(&home::claude::Claude, writable_root)
 }
 
 /// The box whose writable root holds `path`, when a registered one does: the
@@ -332,6 +343,9 @@ struct PendingLaunch {
     box_agent_id: String,
     provider: String,
     home: PathBuf,
+    /// The host file the launch's credential is, shipped after the env file
+    /// ([`home::Credential::File`]); `None` when it travels in the env.
+    credential_file: Option<PathBuf>,
 }
 
 /// `EngineKind::Box`. One instance per process ([`BoxEngine::shared`]), like
@@ -351,14 +365,23 @@ impl BoxEngine {
             })
             .clone()
     }
+
+    /// Ship the credential file at host `path` into `box_agent_id`'s guest
+    /// ([`home::ship_credential`]): the plan's `before_turn`, run after the
+    /// host rewrote the file for the turn.
+    fn ship_credential(&self, box_agent_id: &str, path: &Path) -> Result<()> {
+        let channel = BoxRegistry::global().channel_for(box_agent_id)?;
+        home::ship_credential(&channel, path)
+    }
 }
 
-/// Which providers run in a box so far: the ones with a tools-disk script
-/// *and* a launch whose credential is one host-resolved env var. Codex, Cursor
-/// and OpenCode have a script but their logins live in files the host writes
-/// into a host-side overlay; delivering those into a guest is later work.
+/// Which providers run in a box: the ones with a guest-home adapter
+/// ([`home::ProviderHome`] — claude and codex so far) and a tools-disk
+/// script. Cursor and OpenCode have a script but no adapter yet: their logins
+/// live in files the host writes into a host-side overlay, which an adapter
+/// would ship the way codex's does.
 pub fn supports_provider(provider: &str) -> bool {
-    provider == "claude"
+    home::supported(provider) && fletch_box::tools::install_script(provider).is_some()
 }
 
 /// The codegraph launcher's path in `agent_id`'s guest, when the tools disk
@@ -444,6 +467,7 @@ impl SandboxEngine for BoxEngine {
         if let Some(why) = provider_refusal(ctx.provider) {
             return Err(Error::Other(why));
         }
+        let provider_home = home::require(ctx.provider)?;
         if ctx.blackboard.is_some() {
             return Err(Error::Other(
                 "workflow step agents don't run in box sandboxes yet".into(),
@@ -509,6 +533,9 @@ impl SandboxEngine for BoxEngine {
             }
             running.relay_mailbox(ctx.rpc_dir, ctx.agent_id);
         }
+        // The provider's home in the guest, as its adapter lays it out:
+        // before every launch, so the user's config changes reach it.
+        home::seed(&running.channel, provider_home, ctx.home, ctx.writable_root)?;
         let launch_id = uuid::Uuid::new_v4().to_string();
         let env_file = env_file_path(&launch_id);
 
@@ -526,17 +553,22 @@ impl SandboxEngine for BoxEngine {
             &remote,
         );
 
-        // The claude login the host resolved (`agent::host_login`), as the
-        // seatbelt engine passes it; the container auth chain adds the stored
-        // setup-token or the shell's own key when there is no host login.
+        // The login as the host resolved it for this launch, the way the
+        // provider's adapter spells it: in the env file, or a host file
+        // shipped with the env file and again before every turn.
         let mut env = Vec::new();
-        match crate::sandbox::container::auth::resolve(ctx.oauth_token) {
-            crate::sandbox::container::auth::ContainerAuth::Resolved { env: auth, .. } => {
-                env.extend(auth)
-            }
-            crate::sandbox::container::auth::ContainerAuth::Unavailable => {}
+        let mut credential_file = None;
+        match provider_home.credential(ctx) {
+            home::Credential::Env(auth) => env.extend(auth),
+            home::Credential::File(path) => credential_file = Some(path),
+            home::Credential::None => {}
         }
         env.push(("GIT_TERMINAL_PROMPT".to_string(), "0".to_string()));
+        let before_turn = credential_file.clone().map(|path| {
+            let engine = BoxEngine::shared();
+            let box_agent_id = box_agent_id.clone();
+            Arc::new(move || engine.ship_credential(&box_agent_id, &path)) as TurnPrep
+        });
 
         self.pending
             .lock()
@@ -548,6 +580,7 @@ impl SandboxEngine for BoxEngine {
                     box_agent_id: box_agent_id.clone(),
                     provider: ctx.provider.to_string(),
                     home: ctx.home.to_path_buf(),
+                    credential_file,
                 },
             );
         // Attached to the box it runs in: a tenant's session keeps its host's
@@ -561,6 +594,7 @@ impl SandboxEngine for BoxEngine {
             env_delivery: EnvDelivery::GuestFile {
                 launch_id: launch_id.clone(),
             },
+            before_turn,
             kill: KillHandle::Engine {
                 engine: BoxEngine::shared(),
                 plan: KillPlan::Box {
@@ -596,6 +630,9 @@ impl SandboxEngine for BoxEngine {
         let channel = BoxRegistry::global().channel_for(&pending.box_agent_id)?;
         let path = env_file_path(launch_id);
         executor::put(&channel, contents.as_bytes(), &path, 0o600)?;
+        if let Some(credential) = &pending.credential_file {
+            home::ship_credential(&channel, credential)?;
+        }
         Ok(path)
     }
 

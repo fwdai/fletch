@@ -83,8 +83,8 @@ fn ensure_engine_supports_provider(engine: EngineKind, provider: &str) -> Result
             }
             Ok(())
         }
-        // Its own gate: a provider needs a tools-disk script and a launch
-        // whose credential is one host-resolved variable (`boxes::supports_provider`).
+        // Its own gate: a provider needs a tools-disk script and a guest-home
+        // adapter (`boxes::supports_provider`, `boxes::home`).
         EngineKind::Box => match sandbox::boxes::provider_refusal(provider) {
             Some(why) => Err(Error::Other(why)),
             None => Ok(()),
