@@ -364,18 +364,22 @@ mod tests {
 
     /// A database holding project `pf` whose primary repo is `repo`, and the
     /// directory it lives in (dropping that deletes it).
-    fn db_with_project(repo: &Path) -> (crate::roadmap::Db, tempfile::TempDir) {
+    /// A database with one project `project_id` whose repo is `repo`. Each
+    /// test names its own project: the module's `STATE` is process-wide and
+    /// keyed by project id, so two tests on one id would see each other's
+    /// edits.
+    fn db_with_project(repo: &Path, project_id: &str) -> (crate::roadmap::Db, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         let db = crate::database::init(dir.path()).unwrap();
         let conn = db.lock();
         conn.execute(
-            "INSERT INTO projects (id, name, created_at) VALUES ('pf', 'p', 0)",
-            [],
+            "INSERT INTO projects (id, name, created_at) VALUES (?1, 'p', 0)",
+            [project_id],
         )
         .unwrap();
         conn.execute(
-            "INSERT INTO repos (id, project_id, path, created_at) VALUES ('r', 'pf', ?1, 0)",
-            [repo.to_string_lossy()],
+            "INSERT INTO repos (id, project_id, path, created_at) VALUES ('r', ?1, ?2, 0)",
+            rusqlite::params![project_id, repo.to_string_lossy()],
         )
         .unwrap();
         drop(conn);
@@ -391,7 +395,7 @@ mod tests {
         let td = tempfile::tempdir().unwrap();
         let repo = td.path().join("repo");
         write(&repo, r#"{ "egress": { "allow": ["a.com"] } }"#);
-        let (db, _dir) = db_with_project(&repo);
+        let (db, _dir) = db_with_project(&repo, "pf");
         let conn = db.lock();
 
         let (status, _) = refresh(&conn, "pf");
@@ -423,12 +427,12 @@ mod tests {
         let td = tempfile::tempdir().unwrap();
         let repo = td.path().join("repo");
         std::fs::create_dir_all(repo.join(".git")).unwrap();
-        let (db, _dir) = db_with_project(&repo);
+        let (db, _dir) = db_with_project(&repo, "pf-edit");
         let conn = db.lock();
 
         let status = edit(
             &conn,
-            "pf",
+            "pf-edit",
             Which::Local,
             &Edit {
                 allow_add: vec!["mine.example".into()],
@@ -440,7 +444,7 @@ mod tests {
         assert_eq!(status.egress.applied, vec!["mine.example"]);
         assert!(status.egress.pending.is_empty());
         assert_eq!(status.egress.disabled, vec!["rubygems.org"]);
-        let delta = egress_delta("pf");
+        let delta = egress_delta("pf-edit");
         assert_eq!(delta.add, vec!["mine.example"]);
         assert_eq!(delta.remove, vec!["rubygems.org"]);
         assert!(std::fs::read_to_string(repo.join(".git/info/exclude"))
@@ -448,7 +452,7 @@ mod tests {
             .contains("settings.local.json"));
 
         write(&repo, "{ // the team's\n }");
-        assert!(edit(&conn, "pf", Which::Shared, &Edit::default()).is_err());
+        assert!(edit(&conn, "pf-edit", Which::Shared, &Edit::default()).is_err());
         assert_eq!(
             std::fs::read_to_string(repo.join(DIR).join(SHARED_FILE)).unwrap(),
             "{ // the team's\n }"
