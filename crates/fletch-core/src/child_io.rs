@@ -344,7 +344,8 @@ mod tests {
     #[test]
     fn reaper_reports_a_genuine_exit() {
         let dir = tempfile::tempdir().unwrap();
-        let slot = Arc::new(Mutex::new(Some(spawn(dir.path(), "exit 3\n"))));
+        let slot = ChildSlot::new(None);
+        slot.put(spawn(dir.path(), "exit 3\n"));
         let (tx, rx) = mpsc::channel();
         spawn_reaper(slot, "t", move |status| {
             let _ = tx.send(status.unwrap().code());
@@ -357,13 +358,12 @@ mod tests {
     #[test]
     fn reaper_stays_silent_when_the_slot_is_taken_away() {
         let dir = tempfile::tempdir().unwrap();
-        let slot = Arc::new(Mutex::new(Some(spawn(dir.path(), "sleep 30\n"))));
+        let slot = ChildSlot::new(None);
+        slot.put(spawn(dir.path(), "sleep 30\n"));
         let (tx, rx) = mpsc::channel();
         // Empty the slot (and reap the child) as the superseding owner would,
         // before starting the reaper so it observes `None` on its first poll.
-        let mut taken = slot.lock().take().unwrap();
-        let _ = taken.kill();
-        let _ = taken.wait();
+        slot.kill_and_reap("t");
         spawn_reaper(slot, "t", move |_| {
             let _ = tx.send(());
         });
