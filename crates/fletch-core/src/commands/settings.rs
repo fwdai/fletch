@@ -182,8 +182,9 @@ pub fn set_agent_attribution_removed_impl(ctx: &EngineCtx, removed: bool) -> Res
 ///
 /// Turning it ON kicks a best-effort background task: install the codegraph
 /// bundle, then warm the index mirror for every pinned repo so the first agent
-/// spawn after a fresh enable already has an index to copy in. Turning it OFF
-/// does nothing else — indexes die with their workspaces.
+/// spawn after a fresh enable already has an index to copy in; with boxes on,
+/// the tools disks carrying codegraph are built too. Turning it OFF does
+/// nothing else — indexes die with their workspaces.
 pub fn set_code_indexing_enabled_impl(
     ctx: &EngineCtx,
     sup: &Supervisor,
@@ -205,6 +206,11 @@ pub fn set_code_indexing_enabled_impl(
             })
             .unwrap_or_default();
         crate::host::spawn(warm_codegraph_index(repos));
+        // A box takes codegraph from its tools disk: build the disk carrying
+        // it now rather than at the next box boot.
+        if sandbox::boxes::settings::enabled() {
+            sandbox::boxes::setup::prebuild_tools();
+        }
     }
     Ok(())
 }

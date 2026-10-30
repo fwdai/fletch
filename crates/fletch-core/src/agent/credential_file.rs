@@ -1,7 +1,7 @@
 //! How the host's logins touch the disk: how a credential file is written and
 //! stamped, and how the host writes into a directory a sandboxed agent can
-//! also write (its codex overlay) without following anything the agent
-//! planted there.
+//! also write (its codex overlay, a checkout's `.git/info` and `.codegraph`,
+//! its RPC mailbox) without following anything the agent planted there.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -64,13 +64,23 @@ mod imp {
     use std::io::{Error, ErrorKind, Result, Write};
     use std::os::fd::{AsRawFd, FromRawFd};
     use std::os::unix::ffi::OsStrExt;
-    use std::os::unix::fs::OpenOptionsExt;
-    use std::path::{Path, PathBuf};
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    use std::path::{Component, Path, PathBuf};
     use std::sync::atomic::{AtomicU64, Ordering};
 
     use nix::libc;
 
     use super::{Entry, TEMP_PREFIX};
+
+    /// A fresh temp name for a write about to be renamed into place.
+    fn temp_name() -> String {
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        format!(
+            "{TEMP_PREFIX}{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        )
+    }
 
     /// A directory opened by handle, never by path again: every host write
     /// into a directory a sandboxed agent can also write goes through one, so
@@ -163,6 +173,57 @@ mod imp {
                 }
             }
             self.openat_dir(name)
+        }
+
+        /// The subdirectory `name`, created if missing. Unlike
+        /// [`subdir`](Self::subdir) nothing at the name is replaced: a link or
+        /// a file there is refused, for a directory that isn't the host's to
+        /// recreate (a repository's `.git`, which a linked worktree keeps as a
+        /// file).
+        pub(crate) fn dir(&self, name: &str) -> Result<Self> {
+            match self.openat_dir(name) {
+                Err(e) if e.kind() == ErrorKind::NotFound => {}
+                opened => return opened,
+            }
+            let c = cname(name)?;
+            // SAFETY: as in `openat_dir`.
+            match check(unsafe { libc::mkdirat(self.dir.as_raw_fd(), c.as_ptr(), 0o755) }) {
+                Ok(_) => {}
+                Err(e) if e.kind() == ErrorKind::AlreadyExists => {}
+                Err(e) => return Err(e),
+            }
+            self.openat_dir(name)
+        }
+
+        /// The directory at `rel` beneath this one, every component opened
+        /// without following a link: a link (or a file) anywhere along it is
+        /// refused, and missing directories are created when `create`, else
+        /// reported as `NotFound`.
+        pub(crate) fn walk(&self, rel: &Path, create: bool) -> Result<Self> {
+            let mut names = rel.components().map(|c| match c {
+                Component::Normal(name) => name
+                    .to_str()
+                    .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "non-UTF-8 component")),
+                _ => Err(Error::new(
+                    ErrorKind::InvalidInput,
+                    "not a plain relative path",
+                )),
+            });
+            let step = |dir: &Self, name: &str| {
+                if create {
+                    dir.dir(name)
+                } else {
+                    dir.openat_dir(name)
+                }
+            };
+            let first = names
+                .next()
+                .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "empty path"))??;
+            let mut dir = step(self, first)?;
+            for name in names {
+                dir = step(&dir, name?)?;
+            }
+            Ok(dir)
         }
 
         /// What is at `name`, without following it.
@@ -332,14 +393,9 @@ mod imp {
             contents: &mut dyn std::io::Read,
             mode: u32,
         ) -> Result<()> {
-            static SEQ: AtomicU64 = AtomicU64::new(0);
             let target = cname(name)?;
             let (tmp_name, file) = loop {
-                let tmp_name = format!(
-                    "{TEMP_PREFIX}{}-{}",
-                    std::process::id(),
-                    SEQ.fetch_add(1, Ordering::Relaxed)
-                );
+                let tmp_name = temp_name();
                 let c = cname(&tmp_name)?;
                 // SAFETY: as in `openat_dir`.
                 let fd = unsafe {
@@ -365,6 +421,9 @@ mod imp {
             let tmp = cname(&tmp_name)?;
             let written = (|| -> Result<()> {
                 let mut file = file;
+                // `mode` exactly, not narrowed by the umask: by handle, so the
+                // file chmod-ed is the one just created.
+                file.set_permissions(std::fs::Permissions::from_mode(mode))?;
                 std::io::copy(contents, &mut file)?;
                 file.flush()?;
                 file.sync_all()?;
@@ -386,23 +445,142 @@ mod imp {
             written
         }
 
-        /// The bytes of the regular file `name`, refusing a link.
-        #[cfg(test)]
+        /// Replace `name` with a copy of the host file `from`, the way
+        /// [`write_file`](Self::write_file) replaces it: a link at `name` is
+        /// replaced, never written through. On macOS a copy-on-write clone
+        /// where the volume allows, as `std::fs::copy` makes one, so a big
+        /// file shared by many checkouts costs its blocks once.
+        pub(crate) fn copy_file(&self, name: &str, from: &Path, mode: u32) -> Result<()> {
+            let src = File::open(from)?;
+            #[cfg(target_vendor = "apple")]
+            if self.clone_file(name, &src).is_ok() {
+                return Ok(());
+            }
+            let mut reader = &src;
+            self.write_stream(name, &mut reader, mode)
+        }
+
+        /// [`copy_file`](Self::copy_file)'s clone: `fclonefileat` into a temp
+        /// name of this directory (it never follows or replaces anything at
+        /// the name), then renamed into place.
+        #[cfg(target_vendor = "apple")]
+        fn clone_file(&self, name: &str, src: &File) -> Result<()> {
+            let target = cname(name)?;
+            let tmp = loop {
+                let tmp = cname(&temp_name())?;
+                // SAFETY: valid fds and a NUL-terminated name.
+                let ret = unsafe {
+                    libc::fclonefileat(src.as_raw_fd(), self.dir.as_raw_fd(), tmp.as_ptr(), 0)
+                };
+                if ret == 0 {
+                    break tmp;
+                }
+                let e = Error::last_os_error();
+                if e.kind() != ErrorKind::AlreadyExists {
+                    return Err(e);
+                }
+            };
+            // SAFETY: both names are single components of this directory.
+            let renamed = check(unsafe {
+                libc::renameat(
+                    self.dir.as_raw_fd(),
+                    tmp.as_ptr(),
+                    self.dir.as_raw_fd(),
+                    target.as_ptr(),
+                )
+            });
+            if renamed.is_err() {
+                // SAFETY: as above.
+                unsafe { libc::unlinkat(self.dir.as_raw_fd(), tmp.as_ptr(), 0) };
+            }
+            renamed.map(|_| ())
+        }
+
+        /// Rename `from` to `to` within this directory: a link at `from` is
+        /// moved as the link, never resolved.
+        pub(crate) fn rename(&self, from: &str, to: &str) -> Result<()> {
+            let (from, to) = (cname(from)?, cname(to)?);
+            // SAFETY: both names are single components of this directory.
+            check(unsafe {
+                libc::renameat(
+                    self.dir.as_raw_fd(),
+                    from.as_ptr(),
+                    self.dir.as_raw_fd(),
+                    to.as_ptr(),
+                )
+            })
+            .map(|_| ())
+        }
+
+        /// The bytes of the regular file `name`. Anything else there — a
+        /// link, a directory, a FIFO that would block the read forever — is
+        /// refused as `InvalidInput`.
         pub(crate) fn read_file(&self, name: &str) -> Result<Vec<u8>> {
             let c = cname(name)?;
-            // SAFETY: as in `openat_dir`.
-            let fd = check(unsafe {
+            // SAFETY: as in `openat_dir`. `O_NONBLOCK` so opening a FIFO
+            // returns at once; it changes nothing for a regular file.
+            let fd = unsafe {
                 libc::openat(
                     self.dir.as_raw_fd(),
                     c.as_ptr(),
-                    libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                    libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC,
                 )
-            })?;
+            };
+            if fd < 0 {
+                let e = Error::last_os_error();
+                return Err(match e.raw_os_error() {
+                    Some(libc::ELOOP) => not_a_file(),
+                    _ => e,
+                });
+            }
             let mut file = unsafe { File::from_raw_fd(fd) };
+            if !file.metadata()?.is_file() {
+                return Err(not_a_file());
+            }
             let mut out = Vec::new();
             std::io::Read::read_to_end(&mut file, &mut out)?;
             Ok(out)
         }
+
+        /// When `name` was last modified, without following it.
+        pub(crate) fn modified(&self, name: &str) -> Result<std::time::SystemTime> {
+            let c = cname(name)?;
+            let mut st: libc::stat = unsafe { std::mem::zeroed() };
+            // SAFETY: as in `entry`.
+            check(unsafe {
+                libc::fstatat(
+                    self.dir.as_raw_fd(),
+                    c.as_ptr(),
+                    &mut st,
+                    libc::AT_SYMLINK_NOFOLLOW,
+                )
+            })?;
+            let since_epoch = std::time::Duration::new(
+                st.st_mtime.max(0) as u64,
+                st.st_mtime_nsec.clamp(0, 999_999_999) as u32,
+            );
+            Ok(std::time::UNIX_EPOCH + since_epoch)
+        }
+
+        /// The names in this directory that are UTF-8; no caller has a use
+        /// for one that isn't.
+        pub(crate) fn list(&self) -> Result<Vec<String>> {
+            Ok(self
+                .names()?
+                .into_iter()
+                .filter_map(|n| n.into_string().ok())
+                .collect())
+        }
+
+        /// Set this directory's own mode, by handle.
+        pub(crate) fn set_mode(&self, mode: u32) -> Result<()> {
+            self.dir
+                .set_permissions(std::fs::Permissions::from_mode(mode))
+        }
+    }
+
+    fn not_a_file() -> Error {
+        Error::new(ErrorKind::InvalidInput, "not a regular file")
     }
 }
 
@@ -434,6 +612,18 @@ mod imp {
         pub(crate) fn subdir(&self, name: &str) -> Result<Self> {
             let path = self.path.join(name);
             std::fs::create_dir_all(&path)?;
+            Ok(Self { path })
+        }
+        pub(crate) fn dir(&self, name: &str) -> Result<Self> {
+            self.subdir(name)
+        }
+        pub(crate) fn walk(&self, rel: &Path, create: bool) -> Result<Self> {
+            let path = self.path.join(rel);
+            if create {
+                std::fs::create_dir_all(&path)?;
+            } else if !path.is_dir() {
+                return Err(std::io::ErrorKind::NotFound.into());
+            }
             Ok(Self { path })
         }
         pub(crate) fn entry(&self, name: &str) -> Result<Entry> {
@@ -489,9 +679,26 @@ mod imp {
             contents.read_to_end(&mut buf)?;
             self.write_file(name, &buf, mode)
         }
-        #[cfg(test)]
+        pub(crate) fn copy_file(&self, name: &str, from: &Path, _mode: u32) -> Result<()> {
+            std::fs::copy(from, self.path.join(name)).map(drop)
+        }
+        pub(crate) fn rename(&self, from: &str, to: &str) -> Result<()> {
+            std::fs::rename(self.path.join(from), self.path.join(to))
+        }
         pub(crate) fn read_file(&self, name: &str) -> Result<Vec<u8>> {
             std::fs::read(self.path.join(name))
+        }
+        pub(crate) fn modified(&self, name: &str) -> Result<std::time::SystemTime> {
+            self.path.join(name).symlink_metadata()?.modified()
+        }
+        pub(crate) fn list(&self) -> Result<Vec<String>> {
+            Ok(std::fs::read_dir(&self.path)?
+                .flatten()
+                .filter_map(|e| e.file_name().into_string().ok())
+                .collect())
+        }
+        pub(crate) fn set_mode(&self, _mode: u32) -> Result<()> {
+            Ok(())
         }
     }
 }
@@ -566,6 +773,112 @@ mod tests {
 
         assert_eq!(dir.entry("sessions").unwrap(), Entry::Dir);
         assert!(!elsewhere.join("x").exists());
+    }
+
+    /// A walk opens every component without following a link: one anywhere
+    /// along the way is refused, not replaced (it may be a repository's own
+    /// `.git`), and missing directories are made only when asked.
+    #[test]
+    fn a_walk_refuses_a_link_anywhere_along_it() {
+        let td = tempfile::tempdir().unwrap();
+        let root_path = td.path().join("checkout");
+        let elsewhere = td.path().join("elsewhere");
+        std::fs::create_dir_all(elsewhere.join("info")).unwrap();
+        std::fs::create_dir_all(&root_path).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, root_path.join(".git")).unwrap();
+        let root = PrivateDir::open(&root_path).unwrap();
+
+        assert!(root.walk(Path::new(".git/info"), true).is_err());
+        assert!(matches!(root.entry(".git").unwrap(), Entry::Link(_)));
+
+        std::fs::remove_file(root_path.join(".git")).unwrap();
+        let missing = root.walk(Path::new(".git/info"), false).err().unwrap();
+        assert_eq!(missing.kind(), std::io::ErrorKind::NotFound);
+        let info = root.walk(Path::new(".git/info"), true).unwrap();
+        info.write_file("exclude", b"x\n", 0o644).unwrap();
+        assert_eq!(
+            std::fs::read(root_path.join(".git/info/exclude")).unwrap(),
+            b"x\n"
+        );
+        assert!(root.walk(Path::new("../elsewhere"), true).is_err());
+    }
+
+    /// A linked worktree keeps `.git` as a file; `dir` leaves it be.
+    #[test]
+    fn dir_refuses_a_file_where_a_directory_belongs() {
+        let td = tempfile::tempdir().unwrap();
+        std::fs::write(td.path().join(".git"), "gitdir: /elsewhere\n").unwrap();
+        let root = PrivateDir::open(td.path()).unwrap();
+        assert!(root.dir(".git").is_err());
+        assert_eq!(
+            std::fs::read_to_string(td.path().join(".git")).unwrap(),
+            "gitdir: /elsewhere\n"
+        );
+    }
+
+    #[test]
+    fn a_copy_replaces_a_planted_link_and_reads_refuse_one() {
+        let td = tempfile::tempdir().unwrap();
+        let victim = td.path().join("victim");
+        std::fs::write(&victim, "keep").unwrap();
+        let source = td.path().join("source");
+        std::fs::write(&source, "index").unwrap();
+        let dir_path = td.path().join("dir");
+        std::fs::create_dir_all(&dir_path).unwrap();
+        std::os::unix::fs::symlink(&victim, dir_path.join("db")).unwrap();
+        let dir = PrivateDir::open(&dir_path).unwrap();
+
+        let refused = dir.read_file("db").unwrap_err();
+        assert_eq!(refused.kind(), std::io::ErrorKind::InvalidInput);
+        dir.copy_file("db", &source, 0o644).unwrap();
+
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "keep");
+        assert_eq!(dir.entry("db").unwrap(), Entry::Other);
+        assert_eq!(dir.read_file("db").unwrap(), b"index");
+    }
+
+    /// A FIFO planted where the host reads would block the read until a
+    /// writer came; it is refused at once, as is a directory.
+    #[test]
+    fn a_read_refuses_a_fifo_or_a_directory_without_blocking() {
+        use std::os::unix::ffi::OsStrExt;
+        let td = tempfile::tempdir().unwrap();
+        let fifo = std::ffi::CString::new(td.path().join("x.json").as_os_str().as_bytes()).unwrap();
+        // SAFETY: a NUL-terminated path.
+        assert_eq!(unsafe { nix::libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+        std::fs::create_dir(td.path().join("d.json")).unwrap();
+        let path = td.path().to_path_buf();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let dir = PrivateDir::open(&path).unwrap();
+            let kinds = ["x.json", "d.json"].map(|n| dir.read_file(n).unwrap_err().kind());
+            tx.send(kinds).unwrap();
+        });
+        let kinds = rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("reading a FIFO blocked");
+        assert_eq!(kinds, [std::io::ErrorKind::InvalidInput; 2]);
+    }
+
+    #[test]
+    fn a_rename_moves_a_link_and_a_write_sets_its_mode_exactly() {
+        use std::os::unix::fs::PermissionsExt;
+        let td = tempfile::tempdir().unwrap();
+        let dir = PrivateDir::open(td.path()).unwrap();
+        dir.symlink(Path::new("/nonexistent"), "hook").unwrap();
+        dir.rename("hook", "hook.orig").unwrap();
+        assert_eq!(
+            dir.entry("hook.orig").unwrap(),
+            Entry::Link(PathBuf::from("/nonexistent"))
+        );
+        assert_eq!(dir.entry("hook").unwrap(), Entry::Missing);
+
+        dir.write_file("hook", b"#!/bin/sh\n", 0o755).unwrap();
+        let mode = std::fs::metadata(td.path().join("hook"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o755);
     }
 
     /// An agent can name a file with bytes that aren't UTF-8; removing the
