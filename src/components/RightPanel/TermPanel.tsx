@@ -16,12 +16,11 @@ export function TermPanel({ agent }: { agent: AgentRecord }) {
       scrollback: 20000,
     },
     (term) => {
-      // Opening into a box can fail (it would not boot): say so in the
-      // terminal, which would otherwise just stay blank.
-      let mounted = true;
+      // A failed open (a box that would not boot) is written into the shell's
+      // own stream by the engine, so whichever mount is showing gets it —
+      // this call may return to a mount that is already gone.
       api.openAgentShell(agent.id).catch((err) => {
         console.error("openAgentShell failed", err);
-        if (mounted) term.writeln(`\x1b[31mCould not open a shell: ${String(err)}\x1b[0m`);
       });
 
       const detachSearch = search.attach(term);
@@ -41,7 +40,6 @@ export function TermPanel({ agent }: { agent: AgentRecord }) {
       const unregister = registerShellSink(agent.id, (bytes) => term.write(bytes));
 
       return () => {
-        mounted = false;
         detachSearch();
         unregister();
         onResize.dispose();
