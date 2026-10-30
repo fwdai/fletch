@@ -5,6 +5,7 @@ pub mod boot;
 pub mod ctx;
 pub mod runtime;
 pub mod sink;
+pub(crate) mod watchdog;
 
 pub use boot::{
     boot, BootConfig, BootError, BootPhase, BootProgress, BootStep, Engine, HeadlessRelay,

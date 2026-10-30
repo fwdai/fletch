@@ -345,7 +345,10 @@ pub fn boot(cfg: BootConfig) -> Result<Engine, BootError> {
 
     // The runtime the engine's background tasks belong to. Published before
     // anything below can spawn, so the engine never has to reach for `tauri::`
-    // to start a task (see `host::runtime`).
+    // to start a task (see `host::runtime`). Watched from its own thread, so
+    // a runtime whose every worker is pinned is in the log rather than silent
+    // (see `host::watchdog`).
+    crate::host::watchdog::start(&runtime);
     crate::host::runtime::init(runtime);
 
     // Where the engine's events go: the host's own sink (the desktop webview,

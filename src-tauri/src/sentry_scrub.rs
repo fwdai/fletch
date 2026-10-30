@@ -45,11 +45,24 @@ use sentry::Breadcrumb;
 /// * `op`       — a short static operation label;
 /// * `exception_name` — an Objective-C exception's name, a constant the
 ///   throwing framework defines (`NSInternalInconsistencyException`, …);
-///   its free-form `reason` is dropped.
+///   its free-form `reason` is dropped;
+/// * `stalled_ms`, `num_workers`, `num_alive_tasks`, `global_queue_depth` —
+///   integers from the runtime watchdog's stall report
+///   (`fletch_core::host::watchdog`).
 ///
 /// Everything else is dropped, including `error`, `path`, `file`, `cwd`, `argv`,
 /// `sandbox_root`, and `stderr`.
-const ALLOWLIST: &[&str] = &["agent_id", "session", "start", "op", "exception_name"];
+const ALLOWLIST: &[&str] = &[
+    "agent_id",
+    "session",
+    "start",
+    "op",
+    "exception_name",
+    "stalled_ms",
+    "num_workers",
+    "num_alive_tasks",
+    "global_queue_depth",
+];
 
 /// Drop every entry whose key is not in [`ALLOWLIST`].
 fn retain_allowlisted(map: &mut BTreeMap<String, Value>) {
@@ -220,6 +233,30 @@ mod tests {
 
         assert!(!event.extra.contains_key("path"));
         assert_eq!(event.extra.get("session"), Some(&json!("sess-9")));
+    }
+
+    /// The runtime watchdog's stall report reaches Sentry with its numbers.
+    #[test]
+    fn scrub_event_keeps_the_runtime_stall_numbers() {
+        let mut fields = BTreeMap::new();
+        for key in [
+            "stalled_ms",
+            "num_workers",
+            "num_alive_tasks",
+            "global_queue_depth",
+        ] {
+            fields.insert(key.into(), json!(15_000));
+        }
+        let mut event = Event::default();
+        event
+            .contexts
+            .insert("Rust Tracing Fields".into(), Context::Other(fields.clone()));
+
+        let event = scrub_event(event).expect("event not dropped");
+        assert_eq!(
+            event.contexts.get("Rust Tracing Fields"),
+            Some(&Context::Other(fields))
+        );
     }
 
     #[test]
