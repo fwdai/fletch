@@ -19,6 +19,8 @@
 //! - [`mirror`]: the host-side bare mirror publish and transport read from.
 //! - [`setup`]: the image install and the tools prebuild, and how a launch
 //!   waits on them.
+//! - [`ssh_access`]: the user's own ssh client reaching a box, for an
+//!   editor's remote mode.
 //!
 //! Host-side layout per box (`~/.fletch/[dev/]boxes/<agent id>/`, a sibling of
 //! the workspaces root rather than inside it, so no host file sits under a path
@@ -63,6 +65,7 @@ pub mod registry;
 pub mod relay;
 pub mod settings;
 pub mod setup;
+pub mod ssh_access;
 #[cfg(test)]
 mod tests;
 
@@ -865,7 +868,7 @@ pub struct Hold {
 
 impl Hold {
     /// Attach `launch_id` to `agent_id`'s box, which must be registered.
-    fn take(agent_id: &str, launch_id: &str) -> Hold {
+    pub(super) fn take(agent_id: &str, launch_id: &str) -> Hold {
         BoxRegistry::global().attach(agent_id, launch_id);
         Hold {
             agent_id: agent_id.to_string(),

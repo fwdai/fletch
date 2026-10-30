@@ -293,6 +293,46 @@ pub fn render_config(
     config
 }
 
+/// A `Host` entry for the user's own ssh client (an editor's remote mode, a
+/// terminal) to reach the same guest: the same key, host key, proxy and
+/// timeouts as [`render_config`], under `alias` instead of `box`. `HostKeyAlias`
+/// keeps the `known_hosts` lookup on `box`, which is what the box's file
+/// names. No connection sharing: the editor's sessions must not ride on, or
+/// hold open, the master the engine's own config keeps.
+pub fn render_user_entry(
+    alias: &str,
+    ssh_sock: &Path,
+    key: &Path,
+    known_hosts: &Path,
+    helper: &Path,
+) -> String {
+    let q = |p: &Path| format!("\"{}\"", p.display());
+    format!(
+        "Host {alias}\n\
+         \x20 User {user}\n\
+         \x20 HostKeyAlias {hostkey_alias}\n\
+         \x20 IdentityFile {key}\n\
+         \x20 IdentitiesOnly yes\n\
+         \x20 IdentityAgent none\n\
+         \x20 ForwardAgent no\n\
+         \x20 BatchMode yes\n\
+         \x20 StrictHostKeyChecking yes\n\
+         \x20 UpdateHostKeys no\n\
+         \x20 UserKnownHostsFile {known_hosts}\n\
+         \x20 GlobalKnownHostsFile /dev/null\n\
+         \x20 ProxyCommand {helper} pipe {sock}\n\
+         \x20 ConnectTimeout 10\n\
+         \x20 ServerAliveInterval 15\n\
+         \x20 ServerAliveCountMax 3\n",
+        user = guest::USER,
+        hostkey_alias = guest::SSH_HOST_ALIAS,
+        key = q(key),
+        known_hosts = q(known_hosts),
+        helper = q(helper),
+        sock = q(ssh_sock),
+    )
+}
+
 /// Creates `<box_dir>/key` and `key.pub` (ed25519, no passphrase) unless the
 /// key exists. Returns the private key path.
 pub fn keygen(box_dir: &Path) -> Result<PathBuf> {
@@ -378,6 +418,32 @@ mod tests {
             None,
         );
         assert!(!without.contains("ControlMaster"));
+    }
+
+    #[test]
+    fn user_entry_checks_the_host_key_under_the_box_alias() {
+        let entry = render_user_entry(
+            "fletch-a1",
+            Path::new("/b/ssh.sock"),
+            Path::new("/b/key"),
+            Path::new("/b/known_hosts"),
+            Path::new("/v"),
+        );
+        for line in [
+            "Host fletch-a1",
+            "  User agent",
+            "  HostKeyAlias box",
+            "  IdentityFile \"/b/key\"",
+            "  StrictHostKeyChecking yes",
+            "  UserKnownHostsFile \"/b/known_hosts\"",
+            "  ProxyCommand \"/v\" pipe \"/b/ssh.sock\"",
+        ] {
+            assert!(
+                entry.lines().any(|l| l == line),
+                "missing {line:?} in\n{entry}"
+            );
+        }
+        assert!(!entry.contains("ControlMaster"));
     }
 
     #[test]

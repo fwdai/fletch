@@ -1,6 +1,7 @@
 //! Misc app-level handlers: workspace snapshot, log/Docker/editor launchers,
 //! and an agent's HEAD sha.
 
+use serde::Serialize;
 use std::sync::Arc;
 use tauri::State;
 
@@ -88,22 +89,48 @@ pub fn detect_editors() -> Vec<crate::editors::DetectedEditor> {
     crate::editors::detect()
 }
 
-/// Open an agent's primary checkout in the chosen editor.
+/// What `open_in_editor` did.
+#[derive(Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OpenInEditorOutcome {
+    Opened,
+    /// A box checkout, and `~/.ssh/config` does not include Fletch's box
+    /// entries yet: the frontend asks the user and calls again with
+    /// `ssh_include_consent`.
+    NeedsSshInclude,
+}
+
+/// Open an agent's primary checkout in the chosen editor. A box keeps the
+/// checkout in its guest (the host path is an empty placeholder), so the
+/// editor opens it over ssh instead, through a `Host` entry Fletch writes
+/// (`boxes::ssh_access`); that can boot the box, hence async + `spawn_blocking`.
 #[tauri::command]
-pub fn open_in_editor(
+pub async fn open_in_editor(
     supervisor: State<'_, Arc<Supervisor>>,
     agent_id: String,
     editor_id: String,
-) -> Result<()> {
+    ssh_include_consent: bool,
+) -> Result<OpenInEditorOutcome> {
+    use crate::sandbox::boxes::{box_holding, ssh_access};
+
     let (_, checkout) = primary_repo_checkout(&supervisor, &agent_id)?;
-    // A box keeps the checkout in its guest; the host path is an empty
-    // placeholder an editor would open as an empty folder.
-    if crate::sandbox::boxes::box_holding(&checkout).is_some() {
-        return Err(Error::Other(
-            "This workspace runs inside a box sandbox; its files live in the box, not in a folder on this Mac. Use the workspace's file panel or terminal instead.".into(),
-        ));
+    if box_holding(&checkout).is_none() {
+        crate::editors::open(&editor_id, &checkout)?;
+        return Ok(OpenInEditorOutcome::Opened);
     }
-    crate::editors::open(&editor_id, &checkout)
+    if !ssh_include_consent && !ssh_access::include_present()? {
+        return Ok(OpenInEditorOutcome::NeedsSshInclude);
+    }
+    tauri::async_runtime::spawn_blocking(move || -> Result<OpenInEditorOutcome> {
+        ssh_access::add_include()?;
+        let host = ssh_access::open(&checkout)?.ok_or_else(|| {
+            Error::Other("the workspace's box is no longer registered".into())
+        })?;
+        crate::editors::open_remote(&editor_id, &host, &checkout)?;
+        Ok(OpenInEditorOutcome::Opened)
+    })
+    .await
+    .map_err(|e| Error::Other(format!("open in editor: {e}")))?
 }
 
 /// The current HEAD commit SHA of an agent's checkout (primary repo when

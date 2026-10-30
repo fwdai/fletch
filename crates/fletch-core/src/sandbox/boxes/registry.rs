@@ -451,6 +451,15 @@ impl BoxRegistry {
         self.entries.lock().contains_key(agent_id)
     }
 
+    /// Every registered box's identity, running or not.
+    pub fn identities(&self) -> Vec<BoxIdentity> {
+        self.entries
+            .lock()
+            .values()
+            .map(|e| e.identity.clone())
+            .collect()
+    }
+
     pub fn state(&self, agent_id: &str) -> BoxPhase {
         self.entries
             .lock()
