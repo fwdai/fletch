@@ -31,9 +31,12 @@ pub(crate) async fn once(
     input: &str,
     timeout: Duration,
 ) -> Result<String> {
+    // In the host's own scratch dir: the CLI runs unsandboxed, writes its
+    // reply by path and treats `work/` as a project, so none of it may sit
+    // where an agent can plant a link or a project config.
     let scratch = tempfile::Builder::new()
         .prefix("fletch-handoff-")
-        .tempdir()?;
+        .tempdir_in(crate::host_scratch_dir()?)?;
     let cwd = scratch.path().join("work");
     std::fs::create_dir(&cwd)?;
     let reply_file = scratch.path().join("reply.txt");

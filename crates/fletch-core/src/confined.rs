@@ -350,6 +350,24 @@ impl Dir {
     }
 }
 
+/// Open the regular file at `path` for reading, without following a link at
+/// its last component or waiting on a FIFO, and refusing a file hard-linked
+/// from elsewhere: for a file the host reads in a tree an agent can write,
+/// where only the file itself is the agent's to swap (`.git/index`).
+pub fn open_regular(path: &Path) -> io::Result<File> {
+    let flags = OFlag::O_RDONLY | OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK | OFlag::O_CLOEXEC;
+    let file = File::from(owned(fcntl::open(path, flags, Mode::empty())?));
+    let st = stat::fstat(file.as_raw_fd())?;
+    let regular = SFlag::from_bits_truncate(st.st_mode) & SFlag::S_IFMT == SFlag::S_IFREG;
+    if !regular || st.st_nlink != 1 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("{} is not a regular file", path.display()),
+        ));
+    }
+    Ok(file)
+}
+
 fn owned(fd: RawFd) -> OwnedFd {
     // SAFETY: `fd` was just returned by a successful open, and nothing else
     // holds it.
@@ -553,6 +571,27 @@ pub(crate) mod tests {
         assert_eq!(root.read("plain").unwrap().as_deref(), Some(&b"mine"[..]));
         for name in ["link", "hard", "fifo", "dir", "missing"] {
             assert_eq!(root.read(name).unwrap(), None, "{name}");
+        }
+    }
+
+    #[test]
+    fn open_regular_refuses_a_link_a_fifo_and_a_hard_link() {
+        let (_td, checkout, outside) = tree();
+        let secret = outside.path().join("secret");
+        std::fs::write(&secret, "private").unwrap();
+        std::fs::write(checkout.join("plain"), "mine").unwrap();
+        symlink(&secret, checkout.join("link")).unwrap();
+        std::fs::hard_link(&secret, checkout.join("hard")).unwrap();
+        unistd::mkfifo(&checkout.join("fifo"), Mode::S_IRWXU).unwrap();
+
+        let mut body = String::new();
+        open_regular(&checkout.join("plain"))
+            .unwrap()
+            .read_to_string(&mut body)
+            .unwrap();
+        assert_eq!(body, "mine");
+        for name in ["link", "hard", "fifo", "missing"] {
+            assert!(open_regular(&checkout.join(name)).is_err(), "{name}");
         }
     }
 

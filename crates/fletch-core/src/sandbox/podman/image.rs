@@ -149,8 +149,9 @@ fn run_build(
     no_cache: bool,
     on_line: Progress,
 ) -> Result<()> {
-    // A throwaway context dir, so nothing from the host repo leaks in.
-    let ctx = tempfile::tempdir()?;
+    // A throwaway context dir, so nothing from the host repo leaks in — and in
+    // the host's own scratch dir, where no agent can swap its files.
+    let ctx = tempfile::tempdir_in(crate::host_scratch_dir()?)?;
     write_build_context(ctx.path(), dockerfile, entrypoint)?;
     let args = build_args(tag, ctx.path(), no_cache);
     let args: Vec<&str> = args.iter().map(String::as_str).collect();

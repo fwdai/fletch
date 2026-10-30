@@ -61,10 +61,12 @@ pub async fn commit_all(repo: &Path, message: &str) -> Result<()> {
 /// records the full state (committed + uncommitted). What `git::checkpoint`
 /// pins; [`apply_snapshot`] is its inverse.
 pub async fn snapshot_worktree(checkout: &Path) -> Result<String> {
-    // A throwaway index so `add -A` never stages into the live agent's index.
+    // A throwaway index so `add -A` never stages into the live agent's index,
+    // somewhere no agent can swap it for a link while git and the copy below
+    // reach it by path.
     let tmp = tempfile::Builder::new()
         .prefix("fletch-snapshot-index-")
-        .tempfile()
+        .tempfile_in(crate::host_scratch_dir()?)
         .map_err(Error::from)?;
     let index_env = vec![(
         "GIT_INDEX_FILE".to_string(),
@@ -156,15 +158,18 @@ async fn seed_index_from_live(checkout: &Path, tmp: &Path, index_env: &[(String,
 /// Copy the index at `live` to `dest`, keeping its mtime. Git distrusts the
 /// stat data of an entry modified in the same instant the index was written
 /// (racy git) by comparing it with the index file's mtime — a copy stamped
-/// later would vouch for exactly those entries. The mtime is read first, so a
-/// live index replaced mid-copy can only make the copy look older (stricter).
+/// later would vouch for exactly those entries. Mtime and bytes come from one
+/// open file, so a live index replaced mid-copy is copied whole, as it was.
+///
+/// The live index is the agent's to replace: opened without following a link
+/// or waiting on a FIFO ([`crate::confined::open_regular`]), so it can neither
+/// copy another file of the user's into the snapshot nor hang the host.
 fn copy_index(live: &Path, dest: &Path) -> std::io::Result<()> {
-    let mtime = std::fs::metadata(live)?.modified()?;
-    std::fs::copy(live, dest)?;
-    std::fs::File::options()
-        .write(true)
-        .open(dest)?
-        .set_modified(mtime)
+    let mut src = crate::confined::open_regular(live)?;
+    let mtime = src.metadata()?.modified()?;
+    let mut out = std::fs::File::create(dest)?;
+    std::io::copy(&mut src, &mut out)?;
+    out.set_modified(mtime)
 }
 
 /// Make `checkout`'s working tree exactly `snapshot`'s tree with HEAD (and the
@@ -374,6 +379,28 @@ mod tests {
             tmp.path().display().to_string(),
         )];
         seed_index_from_live(repo, tmp.path(), &env).await
+    }
+
+    #[test]
+    fn a_linked_live_index_is_not_copied() {
+        // `.git/index` swapped for a link to a file the sandbox won't let the
+        // agent read: the host must not copy it into the snapshot's index.
+        let td = tempfile::tempdir().unwrap();
+        let secret = td.path().join("secret");
+        std::fs::write(&secret, b"private key").unwrap();
+        let live = td.path().join("index");
+        std::os::unix::fs::symlink(&secret, &live).unwrap();
+        let dest = td.path().join("copy");
+
+        assert!(copy_index(&live, &dest).is_err());
+        assert!(!dest.exists());
+
+        std::fs::remove_file(&live).unwrap();
+        nix::unistd::mkfifo(&live, nix::sys::stat::Mode::S_IRWXU).unwrap();
+        assert!(
+            copy_index(&live, &dest).is_err(),
+            "a FIFO must not hang the copy"
+        );
     }
 
     #[tokio::test]

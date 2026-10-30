@@ -187,7 +187,9 @@ fn run_build(
     no_cache: bool,
     on_line: Progress,
 ) -> Result<()> {
-    let ctx = tempfile::tempdir()?;
+    // Not the system temp dir, where an agent could swap the files before the
+    // build reads them.
+    let ctx = tempfile::tempdir_in(crate::host_scratch_dir()?)?;
     write_build_context(ctx.path(), dockerfile, entrypoint)?;
 
     // Every build passes `--pull`, which can move [`BASE_IMAGE`] onto a newer

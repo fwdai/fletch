@@ -100,6 +100,26 @@ pub fn data_dir() -> PathBuf {
     }
 }
 
+/// A directory for the host's own temp files: `<data dir>/tmp`, owner-only.
+///
+/// Not the system temp dir. Every seatbelt agent can write that
+/// (`/private/var/folders` holds the host's `$TMPDIR` too), so a temp file
+/// the host creates there and then reopens by path — a scratch index handed
+/// to git, a reply file a CLI writes, a build context — can be swapped for a
+/// link mid-use. The data dir is denied to agents on every engine.
+pub fn host_scratch_dir() -> std::io::Result<PathBuf> {
+    let dir = sandbox::configured_data_dir()
+        .unwrap_or_else(data_dir)
+        .join("tmp");
+    std::fs::create_dir_all(&dir)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(dir)
+}
+
 /// The per-build path segment for a kind of on-disk state under a shared base
 /// (`~/.fletch`, or an override root): `<leaf>` for release, `dev/<leaf>` for
 /// debug — the same `dev` split [`data_dir`] applies to app data. Release keeps
