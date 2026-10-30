@@ -333,27 +333,82 @@ fn extension_installed(extensions_dir: &Path, extension: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// The string value of `key` in a VS Code `settings.json`, which is JSON with
-/// comments and trailing commas, so this scans for the key rather than
-/// parsing: `"<key>": "<value>"`, with JSON escapes in the value undone.
+/// The non-empty string value of top-level `key` in a VS Code `settings.json`.
+/// The file is JSONC — comments and trailing commas on top of JSON — so it is
+/// reduced to JSON ([`jsonc_to_json`]) and parsed; a commented-out copy of the
+/// key is therefore just a comment, and of duplicate keys the last wins, as in
+/// the editor. An unparsable file reads as having no setting.
 fn json_string_setting(settings: &str, key: &str) -> Option<String> {
-    let needle = format!("\"{key}\"");
-    let after_key = &settings[settings.find(&needle)? + needle.len()..];
-    let after_colon = after_key.trim_start().strip_prefix(':')?.trim_start();
-    let mut chars = after_colon.strip_prefix('"')?.chars();
-    let mut value = String::new();
-    loop {
-        match chars.next()? {
-            '"' => break,
-            '\\' => match chars.next()? {
-                'n' => value.push('\n'),
-                't' => value.push('\t'),
-                c => value.push(c),
-            },
-            c => value.push(c),
+    let value: serde_json::Value = serde_json::from_str(&jsonc_to_json(settings)).ok()?;
+    value
+        .get(key)?
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
+}
+
+/// JSONC to JSON: drops `//` and `/* */` comments outside strings and the
+/// comma before a closing `}` or `]`. Strings pass through untouched, escapes
+/// included, so a `//` inside one is kept.
+fn jsonc_to_json(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    // Index in `out` of a comma that may turn out to be trailing.
+    let mut pending_comma: Option<usize> = None;
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => {
+                pending_comma = None;
+                out.push(c);
+                while let Some(s) = chars.next() {
+                    out.push(s);
+                    match s {
+                        '\\' => {
+                            if let Some(e) = chars.next() {
+                                out.push(e);
+                            }
+                        }
+                        '"' => break,
+                        _ => {}
+                    }
+                }
+            }
+            '/' if chars.peek() == Some(&'/') => {
+                for s in chars.by_ref() {
+                    if s == '\n' {
+                        out.push(s);
+                        break;
+                    }
+                }
+            }
+            '/' if chars.peek() == Some(&'*') => {
+                chars.next();
+                let mut prev = '\0';
+                for s in chars.by_ref() {
+                    if prev == '*' && s == '/' {
+                        break;
+                    }
+                    prev = s;
+                }
+            }
+            ',' => {
+                pending_comma = Some(out.len());
+                out.push(c);
+            }
+            '}' | ']' => {
+                if let Some(at) = pending_comma.take() {
+                    out.remove(at);
+                }
+                out.push(c);
+            }
+            c if c.is_whitespace() => out.push(c),
+            _ => {
+                pending_comma = None;
+                out.push(c);
+            }
         }
     }
-    (!value.is_empty()).then_some(value)
+    out
 }
 
 fn expand_home(path: &str, home: &Path) -> PathBuf {
@@ -519,7 +574,7 @@ mod tests {
     }
 
     #[test]
-    fn settings_scan_tolerates_comments_and_escapes() {
+    fn settings_are_read_as_jsonc() {
         let settings = r#"{
             // my settings
             "editor.fontSize": 13,
@@ -533,6 +588,50 @@ mod tests {
         assert_eq!(json_string_setting(settings, "remote.SSH.port"), None);
         assert_eq!(json_string_setting("{\"k\": \"\"}", "k"), None);
         assert_eq!(json_string_setting("{\"k\": 3}", "k"), None);
+        assert_eq!(json_string_setting("not json", "k"), None);
+    }
+
+    #[test]
+    fn commented_out_settings_do_not_count() {
+        // A commented-out copy before the live one, in both comment styles,
+        // plus a line comment holding a quote that must not open a string.
+        let settings = r#"{
+            // "remote.SSH.configFile": "~/old/config",
+            /* "remote.SSH.configFile": "~/older/config", */
+            // it's fine
+            "remote.SSH.configFile": "~/live/config", // trailing note
+            "remote.SSH.configFile": "~/last/config",
+            "url": "https://example.com/x", /* a URL keeps its slashes */
+        }"#;
+        assert_eq!(
+            json_string_setting(settings, "remote.SSH.configFile").as_deref(),
+            Some("~/last/config"),
+            "the last live value wins, as in VS Code"
+        );
+        assert_eq!(
+            json_string_setting(settings, "url").as_deref(),
+            Some("https://example.com/x")
+        );
+        // Only commented out: no setting at all, so the default applies.
+        let only_comment = "{\n  // \"remote.SSH.configFile\": \"~/old/config\"\n}";
+        assert_eq!(
+            json_string_setting(only_comment, "remote.SSH.configFile"),
+            None
+        );
+    }
+
+    #[test]
+    fn jsonc_reduction_handles_trailing_commas_and_strings() {
+        assert_eq!(jsonc_to_json("[1, 2, ]"), "[1, 2 ]");
+        assert_eq!(jsonc_to_json("{\"a\": [1,],}"), "{\"a\": [1]}");
+        assert_eq!(jsonc_to_json("{\"a\": \"x, //y\"}"), "{\"a\": \"x, //y\"}");
+        assert_eq!(
+            jsonc_to_json("{\"a\": \"q\\\"//\"}"),
+            "{\"a\": \"q\\\"//\"}"
+        );
+        assert_eq!(jsonc_to_json("1 /* c */ 2"), "1  2");
+        // A comma followed by a value is kept; a line comment leaves its newline.
+        assert_eq!(jsonc_to_json("[1,\n// c\n2]"), "[1,\n\n2]");
         let home = Path::new("/Users/me");
         assert_eq!(
             expand_home("~/dotfiles/config", home),
