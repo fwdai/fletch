@@ -1747,10 +1747,16 @@ pub fn ensure_git_exclude(checkout: &Path, entry: &str) -> Result<()> {
     use crate::error::Error;
 
     let info_dir = checkout.join(".git").join("info");
-    std::fs::create_dir_all(&info_dir)
+    // Where the checkout is: this host, or a box's guest.
+    let exec = crate::exec::for_path(&info_dir);
+    exec.create_dir_all(&info_dir)
         .map_err(|e| Error::Other(format!("create .git/info: {e}")))?;
     let exclude = info_dir.join("exclude");
-    let existing = std::fs::read_to_string(&exclude).unwrap_or_default();
+    let existing = exec
+        .read(&exclude)
+        .ok()
+        .and_then(|bytes| String::from_utf8(bytes).ok())
+        .unwrap_or_default();
     if existing.lines().any(|l| l.trim() == entry) {
         return Ok(());
     }
@@ -1760,7 +1766,7 @@ pub fn ensure_git_exclude(checkout: &Path, entry: &str) -> Result<()> {
     }
     next.push_str(entry);
     next.push('\n');
-    std::fs::write(&exclude, next)
+    exec.write(&exclude, next.as_bytes())
         .map_err(|e| Error::Other(format!("write .git/info/exclude: {e}")))?;
     Ok(())
 }

@@ -21,7 +21,7 @@ the host.
 | `image_store` | Base image download verified against the release manifest's size and sha256, versions, prune. |
 | `egress` | `HostPattern`, `EgressPolicy` with the default allow-list, the HTTP `CONNECT` proxy on a unix socket emitting `EgressEvent`s. |
 | `channel` | `Channel`: the system OpenSSH client over a generated `ssh_config` whose `ProxyCommand` is `fletch-vm pipe <ssh.sock>`; exec, PTY command, put/get over stdin, `GIT_SSH_COMMAND`, `-L` forwards, relays; key generation and `known_hosts`. |
-| `tools` | Tools disks: one read-only ext4 disk per `<provider>-<version>` holding that provider's CLI, built by booting a throwaway box and running the embedded install script through the egress proxy. |
+| `tools` | Tools disks: one read-only ext4 disk per `<provider>-<version>` holding that provider's CLI, built by booting a throwaway box and running the embedded install script through the egress proxy. A disk can also carry codegraph (`/opt/fletch/tools/codegraph`) from a bundle the caller verified; its name says so (`…+codegraph-<tag>.img`). |
 | `bin/fletch-vm` | The helper: the only binary signed with the hypervisor entitlement. Loads libkrun at runtime, exits when its stdin closes, also the stdio-to-socket bridge (`pipe`). |
 | `bin/fletch-box` | Manual-test CLI: `probe`, `boot`, `ssh`, `stop`, `image`, `tools build`. |
 

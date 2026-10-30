@@ -178,12 +178,24 @@ pub(super) async fn provision_codegraph_index(
         }
         // Late index: nothing was copied synchronously, so copy the db the
         // mirror just built — provided the checkout wasn't torn down meanwhile.
-        if !copied_sync && checkout.exists() {
+        if !copied_sync && checkout_still_reachable(&checkout) {
             if let Err(e) = codegraph::copy_index_into(&mirror, &checkout).await {
                 tracing::warn!(error = %e, "codegraph late index copy failed");
             }
         }
     });
+}
+
+/// Whether a late index copy should still go to `checkout`: it exists on this
+/// host, or it lives in a box that is running. A stopped box is not booted
+/// for it — the index is best-effort, and the agent searches files without
+/// one — and a discarded box's root is no longer routed, so its leftover
+/// host-side placeholder is gone with the agent's dir.
+fn checkout_still_reachable(checkout: &Path) -> bool {
+    match crate::exec::for_path(checkout) {
+        crate::exec::Executor::Local => checkout.exists(),
+        crate::exec::Executor::Remote(_) => sandbox::boxes::running_for_path(checkout),
+    }
 }
 
 /// Run a spawn's `provisioning`, then release the pin its code came from (a
@@ -1427,7 +1439,8 @@ impl Supervisor {
 
         // Dynamically fold the codegraph MCP server into the session's snapshot
         // for this launch, when code indexing is on, the engine isn't a
-        // container engine, the binary is installed, and this provider can
+        // container engine, the binary is there for this agent's sandbox (the
+        // host's install, or the box's tools disk), and this provider can
         // actually receive an MCP server at all. Injected here (not persisted
         // onto the session snapshot) so this runs identically for fresh spawns
         // and resumes and the toggle's *current* state always wins. A
@@ -1446,7 +1459,12 @@ impl Supervisor {
                 codegraph_available: false,
             }
         } else {
-            crate::codegraph::inject_mcp_server(&record.mcp_servers, engine, &record.provider)
+            crate::codegraph::inject_mcp_server(
+                &record.mcp_servers,
+                engine,
+                agent_id,
+                &record.provider,
+            )
         };
 
         // Materialize the session's skill snapshot under the writable root and
