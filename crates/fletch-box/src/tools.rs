@@ -28,7 +28,7 @@ use crate::guest;
 use crate::runtime::{RuntimePaths, StopOutcome, Vm, VmSpec};
 
 /// The providers with an install script, by id.
-pub const PROVIDERS: &[&str] = &["claude", "codex", "cursor", "opencode"];
+pub const PROVIDERS: &[&str] = &["claude", "codex", "cursor", "opencode", "pi"];
 
 /// How big the sparse disk is. Only what the install writes is allocated.
 pub const DISK_BYTES: u64 = 4 << 30;
@@ -44,6 +44,7 @@ pub fn install_script(provider: &str) -> Option<&'static str> {
         "codex" => include_str!("../tools/codex.sh"),
         "cursor" => include_str!("../tools/cursor.sh"),
         "opencode" => include_str!("../tools/opencode.sh"),
+        "pi" => include_str!("../tools/pi.sh"),
         _ => return None,
     })
 }
@@ -55,6 +56,7 @@ pub fn cli_bin(provider: &str) -> Option<&'static str> {
         "codex" => "codex",
         "cursor" => "cursor-agent",
         "opencode" => "opencode",
+        "pi" => "pi",
         _ => return None,
     })
 }
@@ -407,7 +409,7 @@ mod tests {
             assert!(bin.starts_with(&format!("{}/{provider}/bin/", guest::TOOLS_MOUNT)));
             assert!(bin.ends_with(cli_bin(provider).unwrap()));
         }
-        assert!(install_script("pi").is_none());
+        assert!(install_script("antigravity").is_none());
         assert!(bin_path("antigravity").is_none());
         assert_eq!(
             disk_path(Path::new("/d/tools"), "claude", "2.1.0", None),

@@ -35,6 +35,7 @@ pub mod claude;
 pub mod codex;
 pub mod cursor;
 pub mod opencode;
+pub mod pi;
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -150,6 +151,7 @@ const ALL: &[&dyn ProviderHome] = &[
     &codex::Codex,
     &cursor::Cursor,
     &opencode::OpenCode,
+    &pi::Pi,
 ];
 
 /// `name` as the login shell exports it (over the app's own env,
@@ -511,10 +513,10 @@ mod tests {
 
     #[test]
     fn claude_and_codex_have_adapters_and_nothing_else_does() {
-        for supported in ["claude", "codex", "cursor", "opencode"] {
+        for supported in ["claude", "codex", "cursor", "opencode", "pi"] {
             assert_eq!(for_provider(supported).map(|h| h.id()), Some(supported));
         }
-        for other in ["pi", "antigravity", "gemini", ""] {
+        for other in ["antigravity", "gemini", ""] {
             assert!(!supported(other), "{other}");
             assert!(require(other).is_err(), "{other}");
         }

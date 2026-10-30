@@ -53,6 +53,14 @@ pub const TEMPLATE: &[(&str, Category)] = &[
     ("api.cursor.com", Category::Providers),
     ("opencode.ai", Category::Providers),
     ("*.opencode.ai", Category::Providers),
+    // The model providers the multi-provider CLIs (opencode, pi) talk to
+    // directly, by the API keys they honour.
+    ("generativelanguage.googleapis.com", Category::Providers),
+    ("openrouter.ai", Category::Providers),
+    ("api.groq.com", Category::Providers),
+    ("api.x.ai", Category::Providers),
+    ("api.deepseek.com", Category::Providers),
+    ("api.mistral.ai", Category::Providers),
     ("registry.npmjs.org", Category::Registries),
     ("*.npmjs.org", Category::Registries),
     ("registry.yarnpkg.com", Category::Registries),
@@ -323,6 +331,8 @@ mod tests {
             "platform.claude.com",
             "registry.npmjs.org",
             "api2.cursor.sh",
+            "generativelanguage.googleapis.com",
+            "openrouter.ai",
             "github.com",
         ] {
             assert_eq!(policy.check(host, 443), Ok(()), "{host}");
