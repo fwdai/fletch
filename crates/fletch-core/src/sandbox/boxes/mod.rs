@@ -299,24 +299,42 @@ pub struct PolicyEventPayload {
 // ---------------------------------------------------------------------------
 
 /// Run `fut` to completion from a synchronous caller (`launch_agent`,
-/// `deliver_env`, the executor) on the engine's runtime, from a scoped thread
-/// so a runtime worker never blocks on itself.
+/// `deliver_env`, the executor) on the engine's runtime.
 pub(crate) fn block_on<T: Send>(fut: impl Future<Output = T> + Send) -> T {
-    let handle = crate::host::runtime::handle();
-    std::thread::scope(|scope| {
-        scope
-            .spawn(move || match handle {
-                Some(handle) => handle.block_on(fut),
-                // No runtime at all (a bare unit test): a throwaway one.
-                None => tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .expect("build a runtime")
-                    .block_on(fut),
-            })
-            .join()
-            .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
-    })
+    block_on_with(crate::host::runtime::handle(), fut)
+}
+
+/// [`block_on`] on `handle`'s runtime (a throwaway one when `None`). On a
+/// multi-thread runtime the wait goes through `block_in_place`, which hands
+/// this worker's queue to another thread and leaves the runtime context, so
+/// the work `fut` waits on keeps being polled. Elsewhere `fut` runs on a
+/// scoped thread, as `Handle::block_on` cannot nest in a runtime context.
+pub(crate) fn block_on_with<T: Send>(
+    handle: Option<tokio::runtime::Handle>,
+    fut: impl Future<Output = T> + Send,
+) -> T {
+    let run = move || match handle {
+        Some(handle) => handle.block_on(fut),
+        // No runtime at all (a bare unit test): a throwaway one.
+        None => tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("build a runtime")
+            .block_on(fut),
+    };
+    let on_multi_thread = tokio::runtime::Handle::try_current().is_ok_and(|current| {
+        current.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread
+    });
+    if on_multi_thread {
+        tokio::task::block_in_place(run)
+    } else {
+        std::thread::scope(|scope| {
+            scope
+                .spawn(run)
+                .join()
+                .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+        })
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -405,7 +423,7 @@ pub fn supports_provider(provider: &str) -> bool {
 pub fn codegraph_bin(agent_id: &str, provider: &str) -> Option<String> {
     let disk = BoxRegistry::global()
         .attached_tools_disk(agent_id)
-        .or_else(|| registry::built_tools_disk(provider))?;
+        .or_else(|| registry::bootable_tools_disk(provider))?;
     fletch_box::tools::carries_codegraph(&disk).then(fletch_box::tools::codegraph_bin_path)
 }
 
@@ -534,13 +552,13 @@ impl SandboxEngine for BoxEngine {
             block_on(registry.stop(&box_agent_id, StopReason::Reshare))?;
             running = block_on(registry.ensure_running(&identity))?;
         }
-        if running.tools_disk.is_none() {
+        if running.tools_disk().is_none() {
             // Booted before the disk existed (an older build, or a host CLI
             // upgrade since): a restart attaches the disk `ensure_running`
             // now waits for.
             block_on(registry.stop(&box_agent_id, StopReason::Reattach))?;
             running = block_on(registry.ensure_running(&identity))?;
-            if running.tools_disk.is_none() {
+            if running.tools_disk().is_none() {
                 return Err(Error::SandboxUnavailable(
                     "the box restarted without its tools disk".into(),
                 ));
@@ -998,6 +1016,16 @@ pub fn startup(workspace: &crate::workspace::WorkspaceManager) {
                 if let Err(e) = route_tenant(&record) {
                     tracing::warn!(agent_id = %record.id, error = %e, "box tenant not routed");
                 }
+            }
+        }
+        // The CLI version a tools disk is keyed by is probed once per process,
+        // so a CLI update since the last run shows here first: start its disk
+        // now rather than at the first boot that misses it. Skips a settled disk.
+        setup::prebuild_tools();
+        // And the disks an earlier update superseded go, off this thread.
+        for provider in fletch_box::tools::PROVIDERS {
+            if supports_provider(provider) {
+                registry::sweep_tools_disks_in_background(provider.to_string());
             }
         }
     }

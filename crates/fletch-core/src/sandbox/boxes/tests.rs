@@ -20,6 +20,7 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use super::block_on_with;
 use super::provision::Landing;
 use super::registry::{BoxIdentity, BoxRegistry, StopReason};
 use super::settings::{self, BoxSettings};
@@ -97,7 +98,7 @@ async fn a_box_runs_the_whole_workspace_contract() {
     eprintln!(
         "first boot ready in {booted:.2?} (includes hashing the image once per process; \
          tools disk attached: {})",
-        running.tools_disk.is_some()
+        running.tools_disk().is_some()
     );
 
     let uname = running
@@ -343,4 +344,52 @@ fn only_a_verified_image_of_this_builds_version_is_installed() {
     let installed = super::installed_image().unwrap().expect("the pinned image");
     assert_eq!(installed.version, pin.version);
     assert_eq!(super::setup::image_status().phase, "installed");
+}
+
+// `block_on` from the sync seams (`launch_agent`, the executor).
+
+/// More sync waits than the runtime has workers, each on a worker and
+/// waiting on a task spawned onto that same runtime (and its timer), all
+/// finish. Bounded, so a regression fails instead of hanging the suite.
+#[test]
+fn sync_waits_on_every_worker_still_let_the_runtime_run() {
+    const WAITS: usize = 6;
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    for i in 0..WAITS {
+        let handle = runtime.handle().clone();
+        let done_tx = done_tx.clone();
+        runtime.spawn(async move {
+            // A sync seam called from async code, as `launch_agent` is.
+            let value = block_on_with(Some(handle), async move {
+                tokio::spawn(async move {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                    i
+                })
+                .await
+                .unwrap()
+            });
+            let _ = done_tx.send(value);
+        });
+    }
+    let mut done: Vec<usize> = (0..WAITS)
+        .map_while(|_| done_rx.recv_timeout(Duration::from_secs(10)).ok())
+        .collect();
+    // A starved runtime never finishes its shutdown; leave it behind.
+    runtime.shutdown_background();
+    done.sort_unstable();
+    assert_eq!(done, (0..WAITS).collect::<Vec<_>>(), "the runtime starved");
+}
+
+/// A current-thread runtime cannot `block_in_place`; the wait still runs, on
+/// that runtime's handle or a throwaway one.
+#[tokio::test(flavor = "current_thread")]
+async fn a_current_thread_caller_does_not_panic() {
+    let handle = tokio::runtime::Handle::current();
+    assert_eq!(block_on_with(Some(handle), async { 7 }), 7);
+    assert_eq!(block_on_with(None, async { 8 }), 8);
 }

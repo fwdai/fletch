@@ -106,6 +106,21 @@ pub fn disk_path(root: &Path, provider: &str, version: &str, codegraph: Option<&
     }
 }
 
+/// The CLI version and codegraph version (if any) a disk of `provider` was
+/// named with by [`disk_path`], read back from its file name; `None` for any
+/// other file, a build's staging file included.
+pub fn parse_disk_name<'a>(name: &'a str, provider: &str) -> Option<(&'a str, Option<&'a str>)> {
+    let rest = name
+        .strip_prefix(provider)?
+        .strip_prefix('-')?
+        .strip_suffix(".img")?;
+    let (version, codegraph) = match rest.split_once(CODEGRAPH_MARK) {
+        Some((version, codegraph)) => (version, Some(codegraph)),
+        None => (rest, None),
+    };
+    valid_version(version).then_some((version, codegraph))
+}
+
 /// Whether the tools disk at `disk` carries codegraph, as its name
 /// ([`disk_path`]) records.
 pub fn carries_codegraph(disk: &Path) -> bool {
@@ -415,6 +430,38 @@ mod tests {
             disk_path(Path::new("/d/tools"), "claude", "2.1.0", None),
             PathBuf::from("/d/tools/claude-2.1.0.img")
         );
+    }
+
+    /// `parse_disk_name` reads back what `disk_path` wrote, for that provider
+    /// only, and nothing from a staging file or a stray name.
+    #[test]
+    fn a_disk_name_reads_back_its_versions() {
+        let root = Path::new("/d/tools");
+        let name = |path: PathBuf| path.file_name().unwrap().to_string_lossy().into_owned();
+        let plain = name(disk_path(root, "claude", "2.1.0", None));
+        let with = name(disk_path(root, "claude", "v2.1.0", Some("v1.4.1")));
+        assert_eq!(parse_disk_name(&plain, "claude"), Some(("2.1.0", None)));
+        assert_eq!(
+            parse_disk_name(&with, "claude"),
+            Some(("v2.1.0", Some("v1.4.1")))
+        );
+        assert_eq!(parse_disk_name(&plain, "codex"), None);
+        assert_eq!(parse_disk_name(&plain, "claud"), None);
+        assert_eq!(parse_disk_name("claude-2.1.0.img.building", "claude"), None);
+        assert_eq!(parse_disk_name("claude-.img", "claude"), None);
+        assert_eq!(parse_disk_name("claude.img", "claude"), None);
+    }
+
+    /// The engine deletes disks by what this reads back, so no provider's
+    /// disk may parse as another's: no name is another's plus `-…`.
+    #[test]
+    fn no_providers_disks_read_as_anothers() {
+        for a in PROVIDERS {
+            for b in PROVIDERS {
+                let name = format!("{b}-v1.0.0.img");
+                assert_eq!(parse_disk_name(&name, a).is_some(), a == b, "{a} / {b}");
+            }
+        }
     }
 
     /// The name is the record of whether codegraph is on a disk: the two
