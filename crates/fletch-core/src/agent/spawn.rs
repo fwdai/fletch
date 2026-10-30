@@ -378,7 +378,7 @@ impl Agent {
             oauth_token: spec.oauth_token,
             codex_home: None,
             adopted_read_only: spec.adopted_read_only,
-            folder_grants: &spec.folder_grants,
+            folder_grants: spec.folder_grants,
         };
         let LaunchPlan {
             program,
@@ -489,7 +489,7 @@ impl Agent {
             oauth_token: None,
             codex_home: codex.as_ref().map(|c| c.overlay.as_path()),
             adopted_read_only: spec.adopted_read_only,
-            folder_grants: &spec.folder_grants,
+            folder_grants: spec.folder_grants,
         };
         let LaunchPlan {
             program,
@@ -568,7 +568,7 @@ impl Agent {
             oauth_token: spec.oauth_token,
             codex_home: None,
             adopted_read_only: spec.adopted_read_only,
-            folder_grants: &spec.folder_grants,
+            folder_grants: spec.folder_grants,
         };
         let LaunchPlan {
             program,
