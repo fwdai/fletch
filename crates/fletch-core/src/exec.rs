@@ -118,6 +118,52 @@ pub fn unregister_root(root: &Path) {
     ROOTS.write().retain(|(r, _)| r != root);
 }
 
+tokio::task_local! {
+    /// Set for the duration of a [`passive`] future.
+    static PASSIVE: ();
+}
+
+/// Run `fut` as a passive read: a remote it reaches that is stopped is not
+/// woken for it, and the operation fails with [`Stopped`] instead. For what
+/// polls or refreshes on its own (the Git panel's status, the sidebar's
+/// stats) rather than for anything a user or agent asked to run: a box
+/// otherwise boots on every tick of every poll, so stopping it, or restarting
+/// the app, never sticks. Scoped to this task: work `fut` spawns onto another
+/// task or thread is not passive.
+pub async fn passive<F: std::future::Future>(fut: F) -> F::Output {
+    PASSIVE.scope((), fut).await
+}
+
+/// Whether the caller runs inside [`passive`].
+pub fn is_passive() -> bool {
+    PASSIVE.try_with(|()| ()).is_ok()
+}
+
+/// The error of a [`passive`] operation on a remote that is stopped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Stopped;
+
+impl fmt::Display for Stopped {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("box is stopped")
+    }
+}
+
+impl std::error::Error for Stopped {}
+
+impl Stopped {
+    /// Whether `e` is this error, as a remote executor returns it.
+    pub fn is(e: &io::Error) -> bool {
+        e.get_ref().is_some_and(|inner| inner.is::<Self>())
+    }
+}
+
+impl From<Stopped> for io::Error {
+    fn from(stopped: Stopped) -> Self {
+        io::Error::other(stopped)
+    }
+}
+
 impl Executor {
     /// A command that runs `program` in `cwd` with `env` set for it. Locally
     /// the plain `Command` a caller would build; remotely the executor's

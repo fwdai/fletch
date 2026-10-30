@@ -669,9 +669,14 @@ pub async fn resolve_all_pr_status(
                     continue;
                 }
                 if slug.is_none() {
+                    // A sweep does not wake a sleeping box for its origin:
+                    // read passively, it falls back to the source repo's,
+                    // which the checkout shares.
                     slug = Some(match repo.checkout_path(&agent.id) {
                         Ok(checkout) => {
-                            crate::github::resolve_slug(&checkout, Some(&repo.repo_path)).await
+                            let read =
+                                crate::github::resolve_slug(&checkout, Some(&repo.repo_path));
+                            crate::exec::passive(read).await
                         }
                         Err(_) => None,
                     });

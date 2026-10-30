@@ -4,8 +4,10 @@
 //!
 //! A box's writable root is routed to its executor for as long as the registry
 //! knows the box, not only while the VM runs: a routed operation on a stopped
-//! box (`git status` for the Git panel) boots it again instead of failing on a
-//! host path that holds nothing. Unregistering happens on [`BoxRegistry::discard`].
+//! box (reading a file for the file panel) boots it again instead of failing
+//! on a host path that holds nothing. A poll's is [passive](crate::exec::passive)
+//! and fails with [`crate::exec::Stopped`] instead (the Git panel's `git
+//! status`). Unregistering happens on [`BoxRegistry::discard`].
 //!
 //! A box also has *tenants* ([`Tenant`]): agents with no box of their own that
 //! run in this one because the tree they adopted lives here — the local

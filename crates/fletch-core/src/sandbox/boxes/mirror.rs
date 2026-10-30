@@ -70,13 +70,13 @@ fn read_sources(box_dir: &Path) -> std::collections::BTreeMap<String, String> {
 
 /// [`refresh_running`] for an agent by id: a no-op for one with no running
 /// box (another engine's, or a box that is stopped and so already mirrored).
+/// Never boots one: the running box is taken as is, not checked for and then
+/// started, which booted it again when it stopped in between.
 pub async fn refresh_agent(agent_id: &str) -> Result<()> {
-    match BoxRegistry::global().channel_for_running(agent_id) {
-        Ok(_) => {}
-        Err(_) => return Ok(()),
+    match BoxRegistry::global().running(agent_id) {
+        Some(running) => refresh_running(&running).await,
+        None => Ok(()),
     }
-    let running = BoxRegistry::global().running_or_start(agent_id).await?;
-    refresh_running(&running).await
 }
 
 /// Refresh the mirror from every checkout of a running box: the stop ladder's

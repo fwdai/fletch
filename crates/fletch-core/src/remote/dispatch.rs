@@ -947,7 +947,7 @@ impl Dispatch for SupervisorDispatch {
                 "get_git_state" => {
                     let a: AgentSubdirArgs = parse(args)?;
                     res(
-                        crate::commands::get_git_state_impl(sup, &a.agent_id, a.subdir.as_deref())
+                        crate::commands::poll_git_state_impl(sup, &a.agent_id, a.subdir.as_deref())
                             .await,
                     )
                 }

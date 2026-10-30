@@ -10,14 +10,15 @@ use crate::git_state::{self, GitState, ShortStats};
 use crate::supervisor::Supervisor;
 
 /// Returns git state for one of the agent's checkouts — the repo whose
-/// `subdir` matches, or the primary when none is given.
+/// `subdir` matches, or the primary when none is given. The Git panel polls
+/// this, so a sleeping box is not woken for it (`None`).
 #[tauri::command]
 pub async fn get_git_state(
     supervisor: State<'_, Arc<Supervisor>>,
     agent_id: String,
     subdir: Option<String>,
 ) -> Result<Option<GitState>> {
-    fletch_core::commands::get_git_state_impl(&supervisor, &agent_id, subdir.as_deref()).await
+    fletch_core::commands::poll_git_state_impl(&supervisor, &agent_id, subdir.as_deref()).await
 }
 
 /// Returns a compact shortstat (additions / deletions / file count) for

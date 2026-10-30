@@ -1108,6 +1108,14 @@ struct Look {
     sighting: Sighting,
 }
 
+/// Whether the coder's checkout is in a box that is not running.
+fn checkout_asleep(sup: &Supervisor, key: &Key) -> bool {
+    crate::commands::agent_repo_checkout_opt(sup, &key.0, key.1.as_deref())
+        .ok()
+        .flatten()
+        .is_some_and(|(_, checkout)| crate::sandbox::boxes::asleep_for_path(&checkout))
+}
+
 /// [`look`] reading the code.
 async fn scan(ctx: &Arc<EngineCtx>, sup: &Supervisor, key: &Key) -> Option<ReviewState> {
     look(ctx, sup, key, Scan::Git).await.map(|l| l.state)
@@ -2003,7 +2011,9 @@ async fn tick(ctx: &Arc<EngineCtx>, sup: &Arc<Supervisor>) {
             continue;
         };
         let pr_open = counts(sup, &key).pr_open;
-        let scan = if tracked.wants_scan(pr_open, now) {
+        // A tick does not wake a sleeping box to scan it: the last read
+        // stands, and the scan it still wants runs once the box is up.
+        let scan = if tracked.wants_scan(pr_open, now) && !checkout_asleep(sup, &key) {
             Scan::Git
         } else {
             Scan::Cached
