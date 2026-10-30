@@ -1649,6 +1649,43 @@ mod tests {
         ));
     }
 
+    /// A user's session in a box (the workspace terminal) holds it against the
+    /// idle stop until the session's kill; a host tree has no box to hold.
+    #[tokio::test]
+    async fn a_user_session_holds_its_box_until_killed() {
+        use crate::sandbox::KillHandle;
+        let registry = BoxRegistry::global();
+        let id = "session-hold-test";
+        registry.register(BoxIdentity {
+            agent_id: id.into(),
+            project_id: "p".into(),
+            provider: "claude".into(),
+            writable_root: PathBuf::from("/session-hold-test/root"),
+            rpc_dir: PathBuf::from("/session-hold-test/rpc"),
+            home: PathBuf::from("/session-hold-test/home"),
+            shares: Vec::new(),
+        });
+        let attached = || {
+            registry
+                .entries
+                .lock()
+                .get(id)
+                .map_or(0, |e| e.attached.len())
+        };
+
+        let host_tree = super::super::attach_session(Path::new("/session-hold-test/elsewhere"));
+        assert!(matches!(host_tree, KillHandle::ProcessGroup));
+        assert_eq!(attached(), 0);
+
+        let hold = super::super::attach_session(Path::new("/session-hold-test/root/repo"));
+        assert!(matches!(hold, KillHandle::Engine { .. }));
+        assert_eq!(attached(), 1);
+        hold.kill().unwrap();
+        assert_eq!(attached(), 0);
+
+        registry.discard(id).await.unwrap();
+    }
+
     /// A box boots with the disk carrying codegraph once it is built, the
     /// plain one until then, and nothing before either is.
     #[test]

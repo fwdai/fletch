@@ -747,6 +747,25 @@ pub fn guest_program(
     Ok(Some((PathBuf::from(BASH), wrapper)))
 }
 
+/// Hold the box that holds `tree` up for a session the user keeps open in it
+/// (the workspace terminal), as an agent's launch is held: the idle timer
+/// stands down until the returned handle's kill, which the session runs when
+/// it ends. `ProcessGroup` for a host tree, which has no box to hold.
+pub fn attach_session(tree: &Path) -> KillHandle {
+    let Some(identity) = box_holding(tree) else {
+        return KillHandle::ProcessGroup;
+    };
+    let launch_id = uuid::Uuid::new_v4().to_string();
+    BoxRegistry::global().attach(&identity.agent_id, &launch_id);
+    KillHandle::Engine {
+        engine: BoxEngine::shared(),
+        plan: KillPlan::Box {
+            agent_id: identity.agent_id,
+            launch_id,
+        },
+    }
+}
+
 /// Create `guest_path` with `bytes` in the guest that holds `tree`, failing
 /// when something is already there — the twin of a host `create_new` write,
 /// for a file the host materializes for an agent outside the routed roots
