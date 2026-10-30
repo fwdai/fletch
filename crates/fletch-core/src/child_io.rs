@@ -98,39 +98,111 @@ pub fn spawn_stderr_reader<R>(
     });
 }
 
-/// Poll a shared child slot until the process exits, then hand the terminal
-/// status to `on_exit` exactly once. Runs on its own thread.
+/// One child, in the one place it is ever reaped from: by its reaper thread
+/// when it exits on its own ([`spawn_reaper`]), by a kill, by a superseding
+/// turn ([`kill_and_reap`](Self::kill_and_reap)). Whichever path takes the
+/// child out runs the step that must follow every reap — the launch plan's
+/// `after_exit`, which a box uses to write the CLI's credential changes back
+/// — exactly once, after the process is gone. A caller cannot reap around
+/// it: the child is only reachable through here.
 ///
-/// The slot is shared with whatever spawns replacement children. If that code
-/// takes the child out from under us — a kill+take for a superseded turn — we
-/// observe `None` and return silently, leaving the new owner to report its own
-/// lifecycle. On a genuine exit we `take()` the child so it is reaped once, then
-/// fire `on_exit`; a handed-off slot never fires it.
-pub fn spawn_reaper<F>(slot: Arc<Mutex<Option<Child>>>, name: &'static str, on_exit: F)
-where
-    F: FnOnce(std::io::Result<ExitStatus>) + Send + 'static,
-{
-    thread::spawn(move || loop {
+/// A slot is made with its child and never refilled: a session that runs a
+/// child per turn makes a slot per turn. So a reaper, which watches one
+/// slot, can only ever reap the child it was spawned for — never a
+/// replacement published after its child was killed, which a reusable slot
+/// let a late-polling reaper do.
+pub struct ChildSlot {
+    child: Mutex<Option<Child>>,
+    after_exit: Option<crate::sandbox::TurnPrep>,
+}
+
+impl ChildSlot {
+    pub fn new(child: Child, after_exit: Option<crate::sandbox::TurnPrep>) -> Arc<Self> {
+        Arc::new(Self {
+            child: Mutex::new(Some(child)),
+            after_exit,
+        })
+    }
+
+    /// A slot that never had a child, for a session built without one in
+    /// tests.
+    #[cfg(test)]
+    pub fn vacant() -> Arc<Self> {
+        Arc::new(Self {
+            child: Mutex::new(None),
+            after_exit: None,
+        })
+    }
+
+    /// The occupant's pid, to signal it.
+    pub fn pid(&self) -> Option<u32> {
+        self.child.lock().as_ref().map(Child::id)
+    }
+
+    /// Kill the occupant and reap it, running the after-exit step; nothing to
+    /// do for an empty slot. Blocks until the process is gone.
+    pub fn kill_and_reap(&self, name: &'static str) {
+        let Some(mut child) = self.child.lock().take() else {
+            return;
+        };
+        let _ = child.kill();
+        let status = child.wait();
+        tracing::debug!(name, status = ?status.as_ref().ok(), "child killed and reaped");
+        self.after_reap(name);
+    }
+
+    /// Reap the occupant if it has exited, running the after-exit step: the
+    /// reaper thread's poll. `None` while it runs or when the slot is empty.
+    fn try_reap(&self, name: &'static str) -> Option<std::io::Result<ExitStatus>> {
         let outcome = {
-            let mut guard = slot.lock();
-            let Some(child) = guard.as_mut() else {
-                return;
-            };
+            let mut guard = self.child.lock();
+            let child = guard.as_mut()?;
             match child.try_wait() {
                 Ok(Some(status)) => {
                     let _ = guard.take();
                     tracing::debug!(name, %status, "child exited");
-                    Some(Ok(status))
+                    Ok(status)
                 }
-                Ok(None) => None,
+                Ok(None) => return None,
                 Err(e) => {
                     let _ = guard.take();
                     tracing::warn!(name, error = %e, "child wait failed");
-                    Some(Err(e))
+                    Err(e)
                 }
             }
         };
-        match outcome {
+        self.after_reap(name);
+        Some(outcome)
+    }
+
+    /// The step after a reap, outside the slot's lock: it may do I/O of its
+    /// own (a box's ssh round trip).
+    fn after_reap(&self, name: &'static str) {
+        if let Some(step) = &self.after_exit {
+            if let Err(e) = step() {
+                tracing::warn!(name, error = %e, "after-exit step failed");
+            }
+        }
+    }
+}
+
+/// Poll a child's slot until the process exits, then hand the terminal
+/// status to `on_exit` exactly once. Runs on its own thread.
+///
+/// If another path reaps the child first — a kill, a superseding turn — the
+/// slot reads empty and the thread returns silently, leaving that path's
+/// owner to report its own lifecycle; the after-exit step ran there. A slot
+/// is never refilled, so the thread can reap nothing but its own child. On a
+/// genuine exit the slot reaps (and runs the step) before `on_exit` fires.
+pub fn spawn_reaper<F>(slot: Arc<ChildSlot>, name: &'static str, on_exit: F)
+where
+    F: FnOnce(std::io::Result<ExitStatus>) + Send + 'static,
+{
+    thread::spawn(move || loop {
+        if slot.child.lock().is_none() {
+            return;
+        }
+        match slot.try_reap(name) {
             Some(status) => return on_exit(status),
             None => thread::sleep(Duration::from_millis(50)),
         }
@@ -172,6 +244,80 @@ mod tests {
             }
         }
         unreachable!()
+    }
+
+    /// A counting after-exit step, shared by every slot made with it.
+    fn counter() -> (
+        crate::sandbox::TurnPrep,
+        Arc<std::sync::atomic::AtomicUsize>,
+    ) {
+        let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let step = {
+            let count = count.clone();
+            Arc::new(move || {
+                count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(())
+            }) as crate::sandbox::TurnPrep
+        };
+        (step, count)
+    }
+
+    /// A slot holding a child running `body`, with the counting step.
+    fn counted_slot(
+        dir: &std::path::Path,
+        body: &str,
+    ) -> (Arc<ChildSlot>, Arc<std::sync::atomic::AtomicUsize>) {
+        let (step, count) = counter();
+        (ChildSlot::new(spawn(dir, body), Some(step)), count)
+    }
+
+    /// The reaper thread reaps a child that exits on its own: the after-exit
+    /// step runs once, before the exit is reported; a later kill finds the
+    /// slot empty and runs nothing.
+    #[test]
+    fn after_exit_runs_once_when_the_child_exits_on_its_own() {
+        use std::sync::atomic::Ordering;
+        let dir = tempfile::tempdir().unwrap();
+        let (slot, count) = counted_slot(dir.path(), "exit 0\n");
+        let (tx, rx) = mpsc::channel();
+        let seen = count.clone();
+        spawn_reaper(slot.clone(), "t", move |status| {
+            let _ = tx.send((status.map(|s| s.success()), seen.load(Ordering::SeqCst)));
+        });
+        let (status, count_at_report) = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(status.unwrap());
+        assert_eq!(
+            count_at_report, 1,
+            "the step runs before the exit is reported"
+        );
+        slot.kill_and_reap("t");
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+    }
+
+    /// A kill reaps a running child itself: the after-exit step runs once
+    /// there, and the reaper thread, finding the slot empty, reports nothing.
+    #[test]
+    fn after_exit_runs_once_when_a_kill_reaps_the_child() {
+        use std::sync::atomic::Ordering;
+        let dir = tempfile::tempdir().unwrap();
+        let (slot, count) = counted_slot(dir.path(), "sleep 30\n");
+        let (tx, rx) = mpsc::channel();
+        spawn_reaper(slot.clone(), "t", move |status| {
+            let _ = tx.send(status.map(|s| s.success()));
+        });
+        slot.kill_and_reap("t");
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+        assert!(slot.pid().is_none());
+        assert!(
+            rx.recv_timeout(Duration::from_millis(300)).is_err(),
+            "a child reaped by the kill is not reported as an exit"
+        );
+        slot.kill_and_reap("t");
+        assert_eq!(
+            count.load(Ordering::SeqCst),
+            1,
+            "an empty slot runs nothing"
+        );
     }
 
     #[test]
@@ -217,7 +363,7 @@ mod tests {
     #[test]
     fn reaper_reports_a_genuine_exit() {
         let dir = tempfile::tempdir().unwrap();
-        let slot = Arc::new(Mutex::new(Some(spawn(dir.path(), "exit 3\n"))));
+        let slot = ChildSlot::new(spawn(dir.path(), "exit 3\n"), None);
         let (tx, rx) = mpsc::channel();
         spawn_reaper(slot, "t", move |status| {
             let _ = tx.send(status.unwrap().code());
@@ -230,13 +376,11 @@ mod tests {
     #[test]
     fn reaper_stays_silent_when_the_slot_is_taken_away() {
         let dir = tempfile::tempdir().unwrap();
-        let slot = Arc::new(Mutex::new(Some(spawn(dir.path(), "sleep 30\n"))));
+        let slot = ChildSlot::new(spawn(dir.path(), "sleep 30\n"), None);
         let (tx, rx) = mpsc::channel();
         // Empty the slot (and reap the child) as the superseding owner would,
         // before starting the reaper so it observes `None` on its first poll.
-        let mut taken = slot.lock().take().unwrap();
-        let _ = taken.kill();
-        let _ = taken.wait();
+        slot.kill_and_reap("t");
         spawn_reaper(slot, "t", move |_| {
             let _ = tx.send(());
         });
@@ -245,5 +389,50 @@ mod tests {
             assert!(rx.try_recv().is_err(), "reaper fired on a handed-off slot");
             thread::sleep(Duration::from_millis(20));
         }
+    }
+
+    /// The superseding race: the old child's reaper is asleep between polls
+    /// when the old child is killed and a replacement starts. The reaper
+    /// wakes to its own, now empty, slot and stays silent; the replacement,
+    /// in a slot of its own, runs on and is reported by its own reaper.
+    #[test]
+    fn a_stale_reaper_cannot_reap_a_replacement_child() {
+        use std::sync::atomic::Ordering;
+        let dir = tempfile::tempdir().unwrap();
+        let (step, count) = counter();
+        let old = ChildSlot::new(spawn(dir.path(), "sleep 30\n"), Some(step.clone()));
+        let (old_tx, old_rx) = mpsc::channel();
+        spawn_reaper(old.clone(), "old", move |_| {
+            let _ = old_tx.send(());
+        });
+        // Within one poll interval: kill the old, publish the new.
+        old.kill_and_reap("old");
+        let new = ChildSlot::new(spawn(dir.path(), "sleep 0.3\n"), Some(step));
+        let (new_tx, new_rx) = mpsc::channel();
+        spawn_reaper(new.clone(), "new", move |status| {
+            let _ = new_tx.send(status.map(|s| s.success()));
+        });
+        assert_eq!(
+            count.load(Ordering::SeqCst),
+            1,
+            "the old child's step ran at its kill"
+        );
+        assert!(
+            new.pid().is_some(),
+            "the replacement is untouched by the old reaper"
+        );
+        assert!(new_rx
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap()
+            .unwrap());
+        assert_eq!(
+            count.load(Ordering::SeqCst),
+            2,
+            "the replacement's step ran at its exit"
+        );
+        assert!(
+            old_rx.recv_timeout(Duration::from_millis(200)).is_err(),
+            "the old reaper never reported anything"
+        );
     }
 }

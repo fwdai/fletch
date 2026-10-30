@@ -924,6 +924,7 @@ mod tests {
                 rows: 24,
                 env_remove: &[],
                 kill_plan: KillHandle::ProcessGroup,
+                after_exit: None,
             },
             |_| {},
             |_| {},
@@ -1003,6 +1004,7 @@ mod tests {
                 rows: 24,
                 env_remove: &[],
                 kill_plan: KillHandle::ProcessGroup,
+                after_exit: None,
             },
             |_| {},
             move |_exit| {

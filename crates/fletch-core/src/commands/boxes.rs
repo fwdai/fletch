@@ -493,7 +493,7 @@ mod tests {
         assert_eq!(sandbox::selected_engine_kind(), sandbox::EngineKind::Box);
         assert_eq!(settings::fallback_engine(), sandbox::EngineKind::Docker);
         assert_eq!(
-            boxes::engine_for_new_agent(sandbox::EngineKind::Box, "codex"),
+            boxes::engine_for_new_agent(sandbox::EngineKind::Box, "antigravity"),
             sandbox::EngineKind::Docker
         );
         assert_eq!(

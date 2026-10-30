@@ -31,16 +31,26 @@ fn pi_sessions_dir() -> Option<PathBuf> {
     dirs::home_dir().map(|home| home.join(".pi/agent/sessions"))
 }
 
+/// A box agent's sessions are in its guest; the host reads the mirror the
+/// relay fills under its box dir (`sandbox::boxes::home`), scanned first.
+/// Absent for every other engine's agent, so the scan falls through to the
+/// user's own sessions dir.
 pub(crate) fn pi_locate(
     session_id: &str,
-    _agent_id: &str,
+    agent_id: &str,
     cwd: &Path,
     diag: &mut ReadDiagnostics,
 ) -> Vec<PathBuf> {
-    match pi_sessions_dir() {
-        Some(sessions) => pi_locate_in(&sessions, session_id, cwd, diag),
-        None => Vec::new(),
+    let roots = crate::sandbox::boxes::home::mirror_for_agent("pi", agent_id)
+        .into_iter()
+        .chain(pi_sessions_dir());
+    for sessions in roots {
+        let found = pi_locate_in(&sessions, session_id, cwd, diag);
+        if !found.is_empty() {
+            return found;
+        }
     }
+    Vec::new()
 }
 
 /// [`pi_locate`] under the `sessions` root given.
@@ -50,7 +60,8 @@ fn pi_locate_in(
     cwd: &Path,
     diag: &mut ReadDiagnostics,
 ) -> Vec<PathBuf> {
-    diag.root_exists = sessions.exists();
+    // Or-ed, not set: a scan over several roots has a live one if any is.
+    diag.root_exists |= sessions.exists();
     let dir = sessions.join(pi_session_slug(cwd));
     // Files are `<ts>_<session_id>.jsonl`.
     let out = jsonl_files_ending(&dir, &format!("_{session_id}.jsonl"));
@@ -66,11 +77,25 @@ fn pi_locate_in(
 /// copied as is.
 pub(crate) fn pi_write(
     session_id: &str,
-    _agent_id: &str,
+    agent_id: &str,
     cwd: &Path,
-    _engine: crate::sandbox::EngineKind,
+    engine: crate::sandbox::EngineKind,
     bodies: &[Value],
 ) -> Result<Option<PathBuf>> {
+    if engine == crate::sandbox::EngineKind::Box {
+        // The pi that resumes this runs in the guest and reads its own
+        // `~/.pi/agent/sessions`; the host's copy is the mirror the relay
+        // fills. Created in both (`boxes::home::create_session_file`).
+        let (rel, lines) = pi_session_file(session_id, cwd, bodies);
+        return crate::sandbox::boxes::home::create_session_file(
+            &crate::sandbox::boxes::home::pi::Pi,
+            agent_id,
+            cwd,
+            &rel,
+            &lines,
+        )
+        .map(Some);
+    }
     let sessions = pi_sessions_dir()
         .ok_or_else(|| Error::Other("pi's sessions directory can't be resolved".into()))?;
     pi_write_in(&sessions, session_id, cwd, bodies).map(Some)
@@ -78,6 +103,16 @@ pub(crate) fn pi_write(
 
 /// [`pi_write`] under the `sessions` root given.
 fn pi_write_in(sessions: &Path, session_id: &str, cwd: &Path, bodies: &[Value]) -> Result<PathBuf> {
+    let (rel, lines) = pi_session_file(session_id, cwd, bodies);
+    let path = sessions.join(rel);
+    write_new_jsonl(&path, &lines)?;
+    Ok(path)
+}
+
+/// The session file to write: its path relative to the `sessions` dir,
+/// dated now as pi dates its own, and its lines re-identified as session
+/// `session_id` run in `cwd`.
+fn pi_session_file(session_id: &str, cwd: &Path, bodies: &[Value]) -> (PathBuf, Vec<Value>) {
     let cwd_text = cwd.to_string_lossy();
     let lines: Vec<Value> = bodies
         .iter()
@@ -91,11 +126,8 @@ fn pi_write_in(sessions: &Path, session_id: &str, cwd: &Path, bodies: &[Value]) 
         })
         .collect();
     let stamp = chrono::Utc::now().format("%Y-%m-%dT%H-%M-%S-%3fZ");
-    let path = sessions
-        .join(pi_session_slug(cwd))
-        .join(format!("{stamp}_{session_id}.jsonl"));
-    write_new_jsonl(&path, &lines)?;
-    Ok(path)
+    let rel = PathBuf::from(pi_session_slug(cwd)).join(format!("{stamp}_{session_id}.jsonl"));
+    (rel, lines)
 }
 
 pub(crate) fn pi_read(paths: &[PathBuf], diag: &mut ReadDiagnostics) -> Vec<RawRecord> {

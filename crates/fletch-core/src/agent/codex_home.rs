@@ -22,6 +22,12 @@ pub(crate) fn overlay_in(agent_dir: &Path) -> PathBuf {
     agent_dir.join(OVERLAY_DIRNAME)
 }
 
+/// The launch credential in `overlay`: the file [`write_launch_credential`]
+/// writes, which a sandbox whose overlay lives elsewhere (a box) copies over.
+pub(crate) fn launch_credential_path(overlay: &Path) -> PathBuf {
+    overlay.join(AUTH_FILE)
+}
+
 /// The `CODEX_HOME` agent `agent_id` runs in. The one answer the launch, the
 /// fork/rewind writer and the transcript locator all use, so a thread is
 /// always where the next `codex exec resume` looks, whatever the agent's
