@@ -94,10 +94,15 @@ pub fn detect_editors() -> Vec<crate::editors::DetectedEditor> {
 #[serde(rename_all = "snake_case")]
 pub enum OpenInEditorOutcome {
     Opened,
-    /// A box checkout, and `~/.ssh/config` does not include Fletch's box
-    /// entries yet: the frontend asks the user and calls again with
-    /// `ssh_include_consent`.
-    NeedsSshInclude,
+    /// A box checkout whose editor is not set up for it yet. The frontend
+    /// shows what would change and calls again with `setup_consent`.
+    NeedsSetup {
+        /// The editor's ssh config, when it lacks the `Include` of Fletch's
+        /// box entries.
+        ssh_config: Option<String>,
+        /// The remote extension the editor lacks.
+        extension: Option<String>,
+    },
 }
 
 /// Open an agent's primary checkout in the chosen editor. A box keeps the
@@ -109,23 +114,32 @@ pub async fn open_in_editor(
     supervisor: State<'_, Arc<Supervisor>>,
     agent_id: String,
     editor_id: String,
-    ssh_include_consent: bool,
+    setup_consent: bool,
 ) -> Result<OpenInEditorOutcome> {
+    use crate::editors;
     use crate::sandbox::boxes::{box_holding, ssh_access};
 
     let (_, checkout) = primary_repo_checkout(&supervisor, &agent_id)?;
     if box_holding(&checkout).is_none() {
-        crate::editors::open(&editor_id, &checkout)?;
+        editors::open(&editor_id, &checkout)?;
         return Ok(OpenInEditorOutcome::Opened);
     }
-    if !ssh_include_consent && !ssh_access::include_present()? {
-        return Ok(OpenInEditorOutcome::NeedsSshInclude);
+    let setup = editors::remote_setup(&editor_id)?;
+    let include_missing = !ssh_access::include_present(&setup.ssh_config)?;
+    if !setup_consent && (include_missing || setup.missing_extension.is_some()) {
+        return Ok(OpenInEditorOutcome::NeedsSetup {
+            ssh_config: include_missing.then(|| setup.ssh_config.display().to_string()),
+            extension: setup.missing_extension.map(str::to_owned),
+        });
     }
     tauri::async_runtime::spawn_blocking(move || -> Result<OpenInEditorOutcome> {
-        ssh_access::add_include()?;
-        let host = ssh_access::open(&checkout)?
-            .ok_or_else(|| Error::Other("the workspace's box is no longer registered".into()))?;
-        crate::editors::open_remote(&editor_id, &host, &checkout)?;
+        ssh_access::add_include(&setup.ssh_config)?;
+        if let Some(extension) = setup.missing_extension {
+            editors::install_extension(&editor_id, extension)?;
+        }
+        ssh_access::open(&checkout, |host| {
+            editors::open_remote(&editor_id, host, &checkout)
+        })?;
         Ok(OpenInEditorOutcome::Opened)
     })
     .await

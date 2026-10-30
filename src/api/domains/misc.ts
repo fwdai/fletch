@@ -8,14 +8,11 @@ export const miscApi = {
   /** Editors installed on this machine, in picker order. */
   detectEditors: () => invokeLocal<DetectedEditor[]>("detect_editors"),
   /** Open an agent's checkout in the chosen editor. For a box checkout the
-   *  editor connects over ssh; `sshIncludeConsent` lets Fletch add its
-   *  `Include` line to `~/.ssh/config` once the user has agreed. */
-  openInEditor: (agentId: string, editorId: string, sshIncludeConsent = false) =>
-    invokeLocal<OpenInEditorOutcome>("open_in_editor", {
-      agentId,
-      editorId,
-      sshIncludeConsent,
-    }),
+   *  editor connects over ssh; `setupConsent` lets Fletch add its `Include`
+   *  line to the editor's ssh config and install the editor's remote
+   *  extension, once the user has agreed. */
+  openInEditor: (agentId: string, editorId: string, setupConsent = false) =>
+    invokeLocal<OpenInEditorOutcome>("open_in_editor", { agentId, editorId, setupConsent }),
   // Anonymous usage telemetry. Persists the opt-out flag and toggles the live
   // pipeline (events themselves are emitted from the backend).
   setTelemetryEnabled: (enabled: boolean) =>

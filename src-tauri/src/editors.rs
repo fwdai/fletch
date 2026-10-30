@@ -31,10 +31,23 @@ struct KnownEditor {
     /// and to launch it by name via LaunchServices. Only read on macOS.
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     mac_app: Option<&'static str>,
-    /// The CLI whose `--remote ssh-remote+<host>` opens a folder over ssh —
-    /// the VS Code family, with the Remote-SSH extension. Those are the only
-    /// tools that can open a checkout kept inside a box.
-    remote_cli: Option<&'static str>,
+    /// How the tool opens a folder over ssh, for a checkout kept inside a box.
+    /// Only the VS Code family has such a mode.
+    remote: Option<Remote>,
+}
+
+/// A VS Code-family editor's remote mode: its first CLI takes
+/// `--remote ssh-remote+<host> <path>`, resolving `<host>` through the ssh
+/// config its `remote.SSH.configFile` setting names (default `~/.ssh/config`),
+/// once the extension that provides the mode is installed.
+struct Remote {
+    /// The extension id to install when its directory is missing; `None` when
+    /// the mode is built into the editor.
+    extension: Option<&'static str>,
+    /// `~/<dot_dir>/extensions` holds the installed extensions.
+    dot_dir: &'static str,
+    /// `<config dir>/<data_dir>/User/settings.json` is the user's settings.
+    data_dir: &'static str,
 }
 
 const fn editor(
@@ -49,22 +62,25 @@ const fn editor(
         kind: Kind::Editor,
         clis,
         mac_app: Some(mac_app),
-        remote_cli: None,
+        remote: None,
     }
 }
 
-/// An editor whose first CLI also opens folders over ssh.
 const fn remote_editor(
     id: &'static str,
     label: &'static str,
     clis: &'static [&'static str],
     mac_app: &'static str,
+    remote: Remote,
 ) -> KnownEditor {
     KnownEditor {
-        remote_cli: Some(clis[0]),
+        remote: Some(remote),
         ..editor(id, label, clis, mac_app)
     }
 }
+
+/// Microsoft's Remote - SSH, licensed to Microsoft's builds only.
+const MS_REMOTE_SSH: &str = "ms-vscode-remote.remote-ssh";
 
 const fn terminal(
     id: &'static str,
@@ -78,7 +94,7 @@ const fn terminal(
         kind: Kind::Terminal,
         clis,
         mac_app: Some(mac_app),
-        remote_cli: None,
+        remote: None,
     }
 }
 
@@ -86,17 +102,54 @@ const fn terminal(
 /// then terminals). Detection filters this to what's actually installed.
 const KNOWN: &[KnownEditor] = &[
     // ── editors ──
-    remote_editor("cursor", "Cursor", &["cursor"], "Cursor"),
-    remote_editor("vscode", "VS Code", &["code"], "Visual Studio Code"),
+    remote_editor(
+        "cursor",
+        "Cursor",
+        &["cursor"],
+        "Cursor",
+        Remote {
+            // Cursor's own fork; its marketplace substitutes it for Microsoft's.
+            extension: Some("anysphere.remote-ssh"),
+            dot_dir: ".cursor",
+            data_dir: "Cursor",
+        },
+    ),
+    remote_editor(
+        "vscode",
+        "VS Code",
+        &["code"],
+        "Visual Studio Code",
+        Remote {
+            extension: Some(MS_REMOTE_SSH),
+            dot_dir: ".vscode",
+            data_dir: "Code",
+        },
+    ),
     remote_editor(
         "vscode-insiders",
         "VS Code Insiders",
         &["code-insiders"],
         "Visual Studio Code - Insiders",
+        Remote {
+            extension: Some(MS_REMOTE_SSH),
+            dot_dir: ".vscode-insiders",
+            data_dir: "Code - Insiders",
+        },
     ),
-    // Microsoft's Remote-SSH extension is licensed to Microsoft's builds only.
+    // No licensed Remote - SSH for VSCodium.
     editor("vscodium", "VSCodium", &["codium"], "VSCodium"),
-    remote_editor("windsurf", "Windsurf", &["windsurf"], "Windsurf"),
+    remote_editor(
+        "windsurf",
+        "Windsurf",
+        &["windsurf"],
+        "Windsurf",
+        Remote {
+            // Built in; Windsurf's docs warn against installing Microsoft's.
+            extension: None,
+            dot_dir: ".windsurf",
+            data_dir: "Windsurf",
+        },
+    ),
     editor("zed", "Zed", &["zed"], "Zed"),
     editor("sublime", "Sublime Text", &["subl"], "Sublime Text"),
     editor("nova", "Nova", &["nova"], "Nova"),
@@ -165,28 +218,36 @@ impl From<&KnownEditor> for DetectedEditor {
             id: ed.id.into(),
             label: ed.label.into(),
             kind: ed.kind,
-            remote: ed.remote_cli.is_some(),
+            remote: ed.remote.is_some(),
         }
     }
 }
 
-/// Open `checkout` as it exists on the ssh host `host` — a box's alias in the
-/// user's ssh config — in the tool identified by `editor_id`. The editor
-/// connects itself and installs its server in the guest on first use; nothing
-/// runs here beyond the launch. The CLI is the one inside the app's own
-/// bundle when it is there: `open -a` cannot pass `--remote` to an app that
-/// is already running, and a `code` on PATH may belong to another editor.
-pub fn open_remote(editor_id: &str, host: &str, checkout: &Path) -> Result<()> {
+/// What an editor's remote mode needs on this machine before a box can be
+/// opened in it (`remote_setup`).
+pub struct RemoteSetup {
+    /// The ssh config the editor resolves hosts through.
+    pub ssh_config: PathBuf,
+    /// The extension to install first, when the editor lacks it.
+    pub missing_extension: Option<&'static str>,
+}
+
+/// The remote-mode editor behind `editor_id` and its CLI; an error for a tool
+/// without one. The CLI is the one inside the app's own bundle when it is
+/// there: `open -a` cannot pass `--remote` to an app that is already running,
+/// and a `code` on PATH may belong to another editor.
+fn remote_cli(editor_id: &str) -> Result<(&'static KnownEditor, &'static Remote, PathBuf)> {
     let ed = KNOWN
         .iter()
         .find(|e| e.id == editor_id)
         .ok_or_else(|| Error::Other(format!("unknown editor: {editor_id}")))?;
-    let Some(cli_name) = ed.remote_cli else {
+    let Some(remote) = &ed.remote else {
         return Err(Error::Other(format!(
             "{} cannot open a workspace that runs in a box; it has no remote mode. Use VS Code, Cursor or Windsurf, or the workspace's Files panel.",
             ed.label
         )));
     };
+    let cli_name = ed.clis[0];
     let home = dirs::home_dir();
     let cli = bundled_cli(ed, cli_name, home.as_deref())
         .or_else(|| {
@@ -195,12 +256,112 @@ pub fn open_remote(editor_id: &str, host: &str, checkout: &Path) -> Result<()> {
                 .map(PathBuf::from)
         })
         .ok_or_else(|| Error::Other(format!("{} is not available", ed.label)))?;
+    Ok((ed, remote, cli))
+}
+
+/// What opening a box in `editor_id` needs: the ssh config its
+/// `remote.SSH.configFile` setting names (else `~/.ssh/config`), and the
+/// remote extension if it is not installed.
+pub fn remote_setup(editor_id: &str) -> Result<RemoteSetup> {
+    let (_, remote, _) = remote_cli(editor_id)?;
+    let home = dirs::home_dir().ok_or_else(|| Error::Other("no home directory".into()))?;
+    let settings = dirs::config_dir()
+        .map(|c| c.join(remote.data_dir).join("User").join("settings.json"))
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .unwrap_or_default();
+    let ssh_config = json_string_setting(&settings, "remote.SSH.configFile")
+        .map(|p| expand_home(&p, &home))
+        .unwrap_or_else(|| home.join(".ssh").join("config"));
+    let missing_extension = remote
+        .extension
+        .filter(|ext| !extension_installed(&home.join(remote.dot_dir).join("extensions"), ext));
+    Ok(RemoteSetup {
+        ssh_config,
+        missing_extension,
+    })
+}
+
+/// Install `extension` into `editor_id` through its CLI, waiting for it: a
+/// network fetch of a few seconds. The user agreed to the install first.
+pub fn install_extension(editor_id: &str, extension: &str) -> Result<()> {
+    let (ed, _, cli) = remote_cli(editor_id)?;
+    let mut cmd = Command::new(cli);
+    bin_resolve::apply_login_shell_env(&mut cmd);
+    let out = cmd
+        .args(["--install-extension", extension])
+        .output()
+        .map_err(|e| Error::Other(format!("install {extension} in {}: {e}", ed.label)))?;
+    if out.status.success() {
+        return Ok(());
+    }
+    Err(Error::Other(format!(
+        "{} could not install {extension}: {}",
+        ed.label,
+        String::from_utf8_lossy(&out.stderr).trim()
+    )))
+}
+
+/// Open `checkout` as it exists on the ssh host `host` — a box's alias in the
+/// editor's ssh config — in the tool identified by `editor_id`. The editor
+/// connects itself and installs its server in the guest on first use; nothing
+/// runs here beyond the launch.
+pub fn open_remote(editor_id: &str, host: &str, checkout: &Path) -> Result<()> {
+    let (ed, _, cli) = remote_cli(editor_id)?;
     let mut cmd = Command::new(cli);
     bin_resolve::apply_login_shell_env(&mut cmd);
     cmd.arg("--remote")
         .arg(format!("ssh-remote+{host}"))
         .arg(checkout);
     spawn(cmd, ed.label)
+}
+
+/// Whether `extensions_dir` holds `extension`: installed extensions live in
+/// `<publisher>.<name>-<version>` directories, lower-cased. The version must
+/// follow, so `remote-ssh-edit` is not taken for `remote-ssh`.
+fn extension_installed(extensions_dir: &Path, extension: &str) -> bool {
+    let prefix = format!("{}-", extension.to_ascii_lowercase());
+    std::fs::read_dir(extensions_dir)
+        .map(|entries| {
+            entries.flatten().any(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .to_ascii_lowercase()
+                    .strip_prefix(&prefix)
+                    .is_some_and(|version| version.starts_with(|c: char| c.is_ascii_digit()))
+            })
+        })
+        .unwrap_or(false)
+}
+
+/// The string value of `key` in a VS Code `settings.json`, which is JSON with
+/// comments and trailing commas, so this scans for the key rather than
+/// parsing: `"<key>": "<value>"`, with JSON escapes in the value undone.
+fn json_string_setting(settings: &str, key: &str) -> Option<String> {
+    let needle = format!("\"{key}\"");
+    let after_key = &settings[settings.find(&needle)? + needle.len()..];
+    let after_colon = after_key.trim_start().strip_prefix(':')?.trim_start();
+    let mut chars = after_colon.strip_prefix('"')?.chars();
+    let mut value = String::new();
+    loop {
+        match chars.next()? {
+            '"' => break,
+            '\\' => match chars.next()? {
+                'n' => value.push('\n'),
+                't' => value.push('\t'),
+                c => value.push(c),
+            },
+            c => value.push(c),
+        }
+    }
+    (!value.is_empty()).then_some(value)
+}
+
+fn expand_home(path: &str, home: &Path) -> PathBuf {
+    match path.strip_prefix("~/") {
+        Some(rest) => home.join(rest),
+        None if path == "~" => home.to_path_buf(),
+        None => PathBuf::from(path),
+    }
 }
 
 /// The CLI a VS Code-family app ships at `<App>.app/Contents/Resources/app/bin/<cli>`.
@@ -330,17 +491,57 @@ mod tests {
     fn remote_editors_are_the_vscode_family() {
         let remote: Vec<&str> = KNOWN
             .iter()
-            .filter(|e| e.remote_cli.is_some())
+            .filter(|e| e.remote.is_some())
             .map(|e| e.id)
             .collect();
         assert_eq!(remote, ["cursor", "vscode", "vscode-insiders", "windsurf"]);
-        // The remote CLI is also a detection CLI, so a remote-capable editor
-        // found on PATH is launchable through the same binary.
-        for ed in KNOWN {
-            if let Some(cli) = ed.remote_cli {
-                assert!(ed.clis.contains(&cli), "{}", ed.id);
-            }
+        // The remote launch goes through the first CLI, which must exist.
+        for ed in KNOWN.iter().filter(|e| e.remote.is_some()) {
+            assert!(!ed.clis.is_empty(), "{}", ed.id);
         }
+    }
+
+    #[test]
+    fn extension_is_found_by_its_directory_prefix() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!extension_installed(dir.path(), MS_REMOTE_SSH));
+        std::fs::create_dir(dir.path().join("ms-vscode-remote.remote-ssh-edit-0.87.0")).unwrap();
+        assert!(
+            !extension_installed(dir.path(), MS_REMOTE_SSH),
+            "a sibling extension sharing the prefix does not count"
+        );
+        std::fs::create_dir(dir.path().join("ms-vscode-remote.remote-ssh-0.120.0")).unwrap();
+        assert!(extension_installed(dir.path(), MS_REMOTE_SSH));
+        assert!(!extension_installed(
+            &dir.path().join("missing"),
+            MS_REMOTE_SSH
+        ));
+    }
+
+    #[test]
+    fn settings_scan_tolerates_comments_and_escapes() {
+        let settings = r#"{
+            // my settings
+            "editor.fontSize": 13,
+            "remote.SSH.configFile": "~/dotfiles/ssh\\config",
+            "remote.SSH.path": "/usr/bin/ssh",
+        }"#;
+        assert_eq!(
+            json_string_setting(settings, "remote.SSH.configFile").as_deref(),
+            Some("~/dotfiles/ssh\\config")
+        );
+        assert_eq!(json_string_setting(settings, "remote.SSH.port"), None);
+        assert_eq!(json_string_setting("{\"k\": \"\"}", "k"), None);
+        assert_eq!(json_string_setting("{\"k\": 3}", "k"), None);
+        let home = Path::new("/Users/me");
+        assert_eq!(
+            expand_home("~/dotfiles/config", home),
+            PathBuf::from("/Users/me/dotfiles/config")
+        );
+        assert_eq!(
+            expand_home("/etc/ssh/config", home),
+            PathBuf::from("/etc/ssh/config")
+        );
     }
 
     #[test]

@@ -53,15 +53,21 @@ export function editorsFor(agent: AgentRecord, editors: DetectedEditor[]): Detec
 export const EDITOR_PREF_KEY = "fletch:openInEditor";
 
 /** Open an agent's checkout in `editorId`. A box checkout opens over ssh,
- *  which needs one `Include` line in `~/.ssh/config`: the first time, the
- *  user is asked before it is written. */
+ *  which needs one `Include` line in the editor's ssh config and the
+ *  editor's remote extension: the first time, the user is shown what Fletch
+ *  will change and asked before it happens. */
 export async function openEditor(agent: AgentRecord, editorId: string): Promise<void> {
   const outcome = await api.openInEditor(agent.id, editorId);
-  if (outcome !== "needs_ssh_include") return;
+  if (outcome === "opened") return;
+  const { ssh_config, extension } = outcome.needs_setup;
+  const steps = [
+    ssh_config && `add one Include line to ${ssh_config}, so the box has a host name`,
+    extension && `install the ${extension} extension in the editor`,
+  ].filter(Boolean);
   const agreed = await ask(
     "This workspace runs in a box. The editor connects to it over ssh and installs its own helper inside the box.\n\n" +
-      "Fletch will add one Include line to ~/.ssh/config so the box has a host name, and keep the box running while this workspace is open.",
-    { title: "Open the box in your editor?", okLabel: "Add and open", cancelLabel: "Cancel" },
+      `Fletch will ${steps.join(", and ")}, and keep the box running while this workspace is open.`,
+    { title: "Open the box in your editor?", okLabel: "Set up and open", cancelLabel: "Cancel" },
   );
   if (agreed) await api.openInEditor(agent.id, editorId, true);
 }

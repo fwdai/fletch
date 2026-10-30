@@ -1,8 +1,11 @@
 //! The user's own ssh client reaching a box: an editor's remote mode opens the
 //! checkout where it lives, in the guest. Each registered box gets a `Host
 //! fletch-<agent id>` entry in one file under the boxes root, which a single
-//! `Include` line in `~/.ssh/config` brings in; the entry reuses the box's key,
-//! host key and `fletch-vm pipe` proxy (`fletch_box::channel::render_user_entry`).
+//! `Include` line in the client's ssh config brings in; the entry reuses the
+//! box's key, host key and `fletch-vm pipe` proxy
+//! (`fletch_box::channel::render_user_entry`). Which config that is belongs to
+//! the caller: `~/.ssh/config` for most clients, the file an editor's own
+//! setting names otherwise.
 //!
 //! The file is regenerated from the registry on every open, so a deleted box's
 //! entry goes with it and a moved helper is picked up. A box an editor was
@@ -34,42 +37,35 @@ fn config_path() -> Result<PathBuf> {
     Ok(boxes_root()?.join(CONFIG_FILE))
 }
 
-fn user_config_path() -> Result<PathBuf> {
-    dirs::home_dir()
-        .map(|h| h.join(".ssh").join("config"))
-        .ok_or_else(|| Error::Other("no home directory".into()))
-}
-
 fn include_line() -> Result<String> {
     Ok(format!("Include \"{}\"", config_path()?.display()))
 }
 
-/// Whether `~/.ssh/config` already includes the generated file.
-pub fn include_present() -> Result<bool> {
-    let config = std::fs::read_to_string(user_config_path()?).unwrap_or_default();
+/// Whether the ssh config at `user_config` already includes the generated file.
+pub fn include_present(user_config: &Path) -> Result<bool> {
+    let config = std::fs::read_to_string(user_config).unwrap_or_default();
     Ok(has_include(&config, &include_line()?))
 }
 
-/// Add the `Include` to `~/.ssh/config` (created if absent), at the top so
-/// no `Host` block above it scopes it. The user agreed to this edit first.
-/// An existing file is written in place: it may be a symlink into the user's
-/// dotfiles, which a replace would sever.
-pub fn add_include() -> Result<()> {
-    let path = user_config_path()?;
+/// Add the `Include` to the ssh config at `user_config` (created if absent),
+/// at the top so no `Host` block above it scopes it. The user agreed to this
+/// edit first. An existing file is written in place: it may be a symlink into
+/// the user's dotfiles, which a replace would sever.
+pub fn add_include(user_config: &Path) -> Result<()> {
     let line = include_line()?;
-    let updated = match std::fs::read_to_string(&path) {
+    let updated = match std::fs::read_to_string(user_config) {
         Ok(current) if has_include(&current, &line) => return Ok(()),
         Ok(current) => with_include(&current, &line),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            if let Some(dir) = path.parent() {
+            if let Some(dir) = user_config.parent() {
                 create_private_dir(dir)?;
             }
-            return write_private(&path, &with_include("", &line));
+            return write_private(user_config, &with_include("", &line));
         }
-        Err(e) => return Err(Error::Other(format!("read {}: {e}", path.display()))),
+        Err(e) => return Err(Error::Other(format!("read {}: {e}", user_config.display()))),
     };
-    std::fs::write(&path, updated)
-        .map_err(|e| Error::Other(format!("write {}: {e}", path.display())))
+    std::fs::write(user_config, updated)
+        .map_err(|e| Error::Other(format!("write {}: {e}", user_config.display())))
 }
 
 fn has_include(config: &str, line: &str) -> bool {
@@ -80,24 +76,29 @@ fn with_include(config: &str, line: &str) -> String {
     format!("{line}\n\n{config}")
 }
 
-/// A box an editor was opened in stays up: one hold per box, released with
-/// the process (the registry's detach is a no-op once the box is gone).
+/// The boxes an editor was opened in, each held once; released with the
+/// process (the registry's detach is a no-op once the box is gone).
 static HOLDS: Mutex<BTreeMap<String, Hold>> = Mutex::new(BTreeMap::new());
 
-/// Make the box that holds `tree` reachable as a `Host` alias: hold it, boot
-/// it if stopped, regenerate the config. `None` for a host tree. Needs the
-/// `Include` in place ([`add_include`]) for the alias to resolve.
-pub fn open(tree: &Path) -> Result<Option<String>> {
-    let Some(identity) = box_holding(tree) else {
-        return Ok(None);
-    };
-    HOLDS
-        .lock()
-        .entry(identity.agent_id.clone())
-        .or_insert_with(|| Hold::take(&identity.agent_id, &uuid::Uuid::new_v4().to_string()));
+/// Open the box that holds `tree` to the user's ssh client, then run `launch`
+/// with the `Host` alias: the box is held, booted if stopped, and the config
+/// regenerated before `launch` runs. The hold is kept only once `launch` has
+/// succeeded; a failure anywhere on the way drops it, so a box nothing is
+/// connected to idles out as usual. Needs the `Include` in place
+/// ([`add_include`]) for the alias to resolve.
+pub fn open(tree: &Path, launch: impl FnOnce(&str) -> Result<()>) -> Result<()> {
+    let identity = box_holding(tree)
+        .ok_or_else(|| Error::Other(format!("{} is in no box", tree.display())))?;
+    // Taken before the box is reached, as every session's hold is, so the
+    // idle stop cannot take the VM between the boot and the launch.
+    let hold = Hold::take(&identity.agent_id, &uuid::Uuid::new_v4().to_string());
     BoxRegistry::global().channel_for(&identity.agent_id)?;
     write_config()?;
-    Ok(Some(host_alias(&identity.agent_id)))
+    launch(&host_alias(&identity.agent_id))?;
+    // A box already held by an earlier open keeps that hold; this one drops
+    // and detaches its own launch id only.
+    HOLDS.lock().entry(identity.agent_id).or_insert(hold);
+    Ok(())
 }
 
 /// Rewrite the generated file from every registered box that has booted at
@@ -176,6 +177,31 @@ mod tests {
             "Include \"/Users/me/.fletch/dev/boxes/ssh_config\"",
             LINE
         ));
+    }
+
+    #[test]
+    fn add_include_creates_or_edits_the_named_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("ssh").join("config");
+        add_include(&config).unwrap();
+        let fresh = std::fs::read_to_string(&config).unwrap();
+        assert!(fresh.starts_with("Include \""), "{fresh}");
+        std::fs::write(&config, "Host h\n  User u\n").unwrap();
+        add_include(&config).unwrap();
+        add_include(&config).unwrap();
+        let edited = std::fs::read_to_string(&config).unwrap();
+        assert_eq!(edited.matches("Include").count(), 1, "{edited}");
+        assert!(edited.ends_with("Host h\n  User u\n"));
+    }
+
+    #[test]
+    fn open_refuses_a_host_tree_without_holding_anything() {
+        let err = open(Path::new("/nowhere/in/a/box"), |_| {
+            panic!("launch must not run")
+        })
+        .unwrap_err();
+        assert!(err.to_string().contains("in no box"), "{err}");
+        assert!(HOLDS.lock().is_empty());
     }
 
     #[test]

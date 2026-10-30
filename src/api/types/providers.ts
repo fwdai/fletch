@@ -46,10 +46,13 @@ export interface DetectedEditor {
   remote: boolean;
 }
 
-/** What `open_in_editor` did: `needs_ssh_include` is a box checkout whose
- *  `~/.ssh/config` does not include Fletch's entries yet — ask, then call
- *  again with consent. */
-export type OpenInEditorOutcome = "opened" | "needs_ssh_include";
+/** What `open_in_editor` did: `needs_setup` is a box checkout whose editor
+ *  is not set up for it yet — the ssh config missing Fletch's `Include`
+ *  and/or the remote extension the editor lacks. Show both, then call again
+ *  with consent. */
+export type OpenInEditorOutcome =
+  | "opened"
+  | { needs_setup: { ssh_config: string | null; extension: string | null } };
 
 /** Payload of the `agent-install:state` event: progress of a one-click agent
  *  CLI install (`api.installAgent`). `line` carries installer output while
