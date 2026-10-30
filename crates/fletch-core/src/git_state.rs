@@ -1743,24 +1743,36 @@ mod tests {
 ///
 /// Only hides files git isn't already tracking; a *tracked* path stays visible
 /// as a modification, which is the honest outcome — see `cursor_mcp_delivery`.
+///
+/// The checkout is the agent's, and this runs while it may be working, so the
+/// file is reached through [`crate::confined`]: a link the agent planted at
+/// `.git`, `info` or `exclude` is never followed, and a link or FIFO at
+/// `exclude` reads as an empty file that the write then replaces.
 pub fn ensure_git_exclude(checkout: &Path, entry: &str) -> Result<()> {
     use crate::error::Error;
 
-    let info_dir = checkout.join(".git").join("info");
-    std::fs::create_dir_all(&info_dir)
-        .map_err(|e| Error::Other(format!("create .git/info: {e}")))?;
-    let exclude = info_dir.join("exclude");
-    let existing = std::fs::read_to_string(&exclude).unwrap_or_default();
-    if existing.lines().any(|l| l.trim() == entry) {
+    let info = crate::confined::Dir::checkout(checkout)
+        .and_then(|root| root.create_dir(".git"))
+        .and_then(|git| git.claim_dir("info"))
+        .map_err(|e| Error::Other(format!("open .git/info: {e}")))?;
+    let mut next = info
+        .read("exclude")
+        .map_err(|e| Error::Other(format!("read .git/info/exclude: {e}")))?
+        .unwrap_or_default();
+    // Compared line by line as text, but written back byte for byte: a line
+    // that isn't UTF-8 is still the user's.
+    if next
+        .split(|&b| b == b'\n')
+        .any(|line| String::from_utf8_lossy(line).trim() == entry)
+    {
         return Ok(());
     }
-    let mut next = existing;
-    if !next.is_empty() && !next.ends_with('\n') {
-        next.push('\n');
+    if !next.is_empty() && !next.ends_with(b"\n") {
+        next.push(b'\n');
     }
-    next.push_str(entry);
-    next.push('\n');
-    std::fs::write(&exclude, next)
+    next.extend_from_slice(entry.as_bytes());
+    next.push(b'\n');
+    info.write("exclude", &next)
         .map_err(|e| Error::Other(format!("write .git/info/exclude: {e}")))?;
     Ok(())
 }
@@ -1811,5 +1823,61 @@ mod exclude_tests {
             std::fs::read_to_string(&exclude).unwrap(),
             "build/\n.codegraph\n"
         );
+    }
+
+    #[test]
+    fn a_planted_link_at_exclude_is_replaced_not_read_or_written_through() {
+        // The agent points `.git/info/exclude` at a file of the user's: the
+        // host must neither copy its contents into the checkout nor rewrite it.
+        let td = repo();
+        let outside = tempfile::tempdir().unwrap();
+        let victim = outside.path().join("victim");
+        std::fs::write(&victim, "user secret\n").unwrap();
+        let exclude = td.path().join(".git/info/exclude");
+        std::os::unix::fs::symlink(&victim, &exclude).unwrap();
+
+        ensure_git_exclude(td.path(), ".codegraph").unwrap();
+
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "user secret\n");
+        assert!(!std::fs::symlink_metadata(&exclude)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(std::fs::read_to_string(&exclude).unwrap(), ".codegraph\n");
+    }
+
+    #[test]
+    fn a_planted_link_at_info_is_replaced_not_followed() {
+        let td = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::create_dir(td.path().join(".git")).unwrap();
+        std::os::unix::fs::symlink(outside.path(), td.path().join(".git/info")).unwrap();
+
+        ensure_git_exclude(td.path(), ".codegraph").unwrap();
+
+        assert!(std::fs::read_dir(outside.path()).unwrap().next().is_none());
+        assert!(td.path().join(".git/info/exclude").is_file());
+    }
+
+    #[test]
+    fn a_fifo_at_exclude_does_not_hang_the_host() {
+        let td = repo();
+        let exclude = td.path().join(".git/info/exclude");
+        nix::unistd::mkfifo(&exclude, nix::sys::stat::Mode::S_IRWXU).unwrap();
+
+        ensure_git_exclude(td.path(), ".codegraph").unwrap();
+        assert_eq!(std::fs::read_to_string(&exclude).unwrap(), ".codegraph\n");
+    }
+
+    #[test]
+    fn a_linked_git_dir_is_refused() {
+        // `.git` itself is never replaced (a linked worktree keeps it as a
+        // file), so a link there fails the write instead of steering it.
+        let td = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(outside.path(), td.path().join(".git")).unwrap();
+
+        assert!(ensure_git_exclude(td.path(), ".codegraph").is_err());
+        assert!(std::fs::read_dir(outside.path()).unwrap().next().is_none());
     }
 }

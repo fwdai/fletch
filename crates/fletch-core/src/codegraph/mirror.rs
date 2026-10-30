@@ -200,25 +200,38 @@ async fn run_codegraph(bin: &Path, mirror_dir: &Path, subcommand: &str) -> Resul
 /// copied daemon socket/pid would point another checkout's runtime at stale
 /// state. A no-op when the mirror has no `codegraph.db` yet (a late index copies
 /// on a subsequent spawn).
+///
+/// The late copy runs while the agent is already working in the checkout, so
+/// the destination is reached through [`crate::confined`]: a link the agent
+/// swaps in at `.codegraph` or at a db file — before or during the copy — is
+/// replaced, never followed.
 pub async fn copy_index_into(mirror_dir: &Path, checkout: &Path) -> Result<()> {
     let src_index = mirror_dir.join(INDEX_DIR);
-    let db = src_index.join(INDEX_DB_FILES[0]);
-    if !db.exists() {
+    if !src_index.join(INDEX_DB_FILES[0]).exists() {
         return Ok(());
     }
-    let dst_index = checkout.join(INDEX_DIR);
-    tokio::fs::create_dir_all(&dst_index)
+    let checkout = checkout.to_path_buf();
+    tokio::task::spawn_blocking(move || copy_index_blocking(&src_index, &checkout))
         .await
-        .map_err(|e| Error::Other(format!("create checkout .codegraph: {e}")))?;
+        .map_err(|e| Error::Other(format!("codegraph index copy task: {e}")))?
+}
+
+fn copy_index_blocking(src_index: &Path, checkout: &Path) -> Result<()> {
+    let dst_index = crate::confined::Dir::checkout(checkout)
+        .and_then(|root| root.claim_dir(INDEX_DIR))
+        .map_err(|e| Error::Other(format!("open checkout .codegraph: {e}")))?;
     for name in INDEX_DB_FILES {
-        let from = src_index.join(name);
-        if from.exists() {
-            tokio::fs::copy(&from, dst_index.join(name))
-                .await
-                .map_err(|e| Error::Other(format!("copy {name} into checkout: {e}")))?;
-        }
+        // The mirror is the host's own, so its side is read by path.
+        let from = match std::fs::File::open(src_index.join(name)) {
+            Ok(file) => file,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(Error::Other(format!("open mirror {name}: {e}"))),
+        };
+        dst_index
+            .write_from(name, from)
+            .map_err(|e| Error::Other(format!("copy {name} into checkout: {e}")))?;
     }
-    append_git_exclude(checkout).await
+    crate::git_state::ensure_git_exclude(checkout, INDEX_DIR)
 }
 
 /// Add `.codegraph` to a checkout's `.git/info/exclude` so the copied index
@@ -348,6 +361,62 @@ mod tests {
         assert!(
             !checkout.join(".codegraph").exists(),
             "no index dir should be created without a db"
+        );
+    }
+
+    /// A mirror with a built index, and a checkout at the `<ws>/<repo>` depth
+    /// [`crate::confined::Dir::checkout`] walks.
+    fn mirror_and_checkout(td: &Path) -> (PathBuf, PathBuf) {
+        let mirror = td.join("mirror");
+        std::fs::create_dir_all(mirror.join(INDEX_DIR)).unwrap();
+        std::fs::write(mirror.join(INDEX_DIR).join("codegraph.db"), b"DB").unwrap();
+        let checkout = td.join("ws").join("repo");
+        std::fs::create_dir_all(checkout.join(".git")).unwrap();
+        (mirror, checkout)
+    }
+
+    #[tokio::test]
+    async fn planted_links_at_the_index_dir_or_db_are_replaced_not_followed() {
+        let td = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let (mirror, checkout) = mirror_and_checkout(td.path());
+
+        std::os::unix::fs::symlink(outside.path(), checkout.join(INDEX_DIR)).unwrap();
+        copy_index_into(&mirror, &checkout).await.unwrap();
+        assert!(std::fs::read_dir(outside.path()).unwrap().next().is_none());
+
+        let victim = outside.path().join("victim");
+        std::fs::write(&victim, "user file").unwrap();
+        let db = checkout.join(INDEX_DIR).join("codegraph.db");
+        std::fs::remove_file(&db).unwrap();
+        std::os::unix::fs::symlink(&victim, &db).unwrap();
+        copy_index_into(&mirror, &checkout).await.unwrap();
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "user file");
+        assert_eq!(std::fs::read(&db).unwrap(), b"DB");
+    }
+
+    #[test]
+    fn a_link_swapped_in_during_the_copy_never_redirects_it() {
+        // The late copy runs beside a live agent. Flip `.codegraph` between a
+        // real directory and a link to the outside while copying over and
+        // over: a copy may fail, none may write outside the checkout.
+        let td = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let (mirror, checkout) = mirror_and_checkout(td.path());
+        let src_index = mirror.join(INDEX_DIR);
+        let flips = crate::confined::tests::race_dir_against_link(
+            &checkout,
+            INDEX_DIR,
+            outside.path(),
+            || {
+                let _ = copy_index_blocking(&src_index, &checkout);
+            },
+        );
+
+        assert!(flips > 0, "the agent never ran");
+        assert!(
+            std::fs::read_dir(outside.path()).unwrap().next().is_none(),
+            "a host write escaped the checkout through the link"
         );
     }
 }

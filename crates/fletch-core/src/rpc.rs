@@ -11,6 +11,7 @@ use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::confined::Dir;
 use crate::error::{Error, Result};
 
 /// Grace window for a non-compliant agent caught mid-write; a compliant one
@@ -129,23 +130,47 @@ fn rpc_root_in(base: &Path) -> PathBuf {
     base.join(crate::build_state_subpath("rpc"))
 }
 
+/// Create the mailbox at `dir` (`<root>/<agent-id>`) and its `requests` and
+/// `responses`, owner-only. The agent's grant covers the mailbox from its own
+/// entry down, so whatever it left at any of the three names — a link
+/// included — is replaced by a real directory rather than followed.
 pub fn ensure_mailbox(dir: &Path) -> Result<()> {
-    let requests = dir.join("requests");
-    let responses = dir.join("responses");
-    for sub in [&requests, &responses] {
-        std::fs::create_dir_all(sub)
-            .map_err(|e| Error::Other(format!("create rpc mailbox {}: {e}", sub.display())))?;
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        // 0700 on the root and both subdirs: responses can carry sensitive tool output.
-        for p in [dir, requests.as_path(), responses.as_path()] {
-            std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o700))
-                .map_err(|e| Error::Other(format!("chmod rpc mailbox {}: {e}", p.display())))?;
-        }
+    let (Some(root), Some(name)) = (dir.parent(), dir.file_name()) else {
+        return Err(Error::InvalidPath(dir.display().to_string()));
+    };
+    let failed = |what: &str, e: std::io::Error| {
+        Error::Other(format!("{what} rpc mailbox {}: {e}", dir.display()))
+    };
+    // The root is the host's: no agent is granted more than its own mailbox.
+    std::fs::create_dir_all(root).map_err(|e| failed("create", e))?;
+    let mailbox = Dir::trusted(root)
+        .and_then(|root| root.claim_dir(name))
+        .map_err(|e| failed("create", e))?;
+    // 0700 on the root and both subdirs: responses can carry sensitive tool output.
+    mailbox.make_private().map_err(|e| failed("chmod", e))?;
+    for sub in ["requests", "responses"] {
+        let sub = mailbox.claim_dir(sub).map_err(|e| failed("create", e))?;
+        sub.make_private().map_err(|e| failed("chmod", e))?;
     }
     Ok(())
+}
+
+/// A mailbox's two directories, held open: the agent can swap any of the
+/// mailbox's names for a link at any moment, so nothing below is reached by
+/// path again.
+struct Mailbox {
+    requests: Dir,
+    responses: Dir,
+}
+
+impl Mailbox {
+    fn open(dir: &Path) -> std::io::Result<Self> {
+        let mailbox = Dir::open(dir, 1)?;
+        Ok(Self {
+            requests: mailbox.open_dir("requests")?,
+            responses: mailbox.open_dir("responses")?,
+        })
+    }
 }
 
 /// Best-effort: an absent dir is success, and a surviving mailbox is wasted
@@ -199,31 +224,38 @@ pub(crate) fn sweep_orphan_mailboxes_in(root: &Path, live: &HashSet<String>) {
 
 /// One bad request file is logged and isolated, never stalls the rest.
 pub async fn process_pending(rpc_dir: &Path, dispatcher: &dyn RpcDispatcher) -> Vec<RpcEvent> {
-    let requests = rpc_dir.join("requests");
-    let responses = rpc_dir.join("responses");
-
-    let entries = match std::fs::read_dir(&requests) {
-        Ok(e) => e,
+    let mailbox = match Mailbox::open(rpc_dir) {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::debug!(error = %e, dir = %rpc_dir.display(), "rpc: mailbox not openable");
+            return Vec::new();
+        }
+    };
+    let names = match mailbox.requests.entries() {
+        Ok(names) => names,
         Err(_) => return Vec::new(),
     };
 
     let mut effects = Vec::new();
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+    for name in names {
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if !name.ends_with(".json") {
             continue;
         }
-        effects.extend(handle_request_file(&path, &responses, dispatcher).await);
+        effects.extend(handle_request_file(&mailbox, name, dispatcher).await);
     }
     effects
 }
 
 async fn handle_request_file(
-    path: &Path,
-    responses: &Path,
+    mailbox: &Mailbox,
+    name: &str,
     dispatcher: &dyn RpcDispatcher,
 ) -> Vec<RpcEvent> {
-    let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+    let path = mailbox.requests.path().join(name);
+    let Some(stem) = name.strip_suffix(".json") else {
         return Vec::new();
     };
     if !is_safe_key(stem) {
@@ -234,21 +266,36 @@ async fn handle_request_file(
     // Claim before the response-file check: two concurrent triggers could
     // otherwise both dispatch. In-memory suffices; after a crash the request file
     // survives for retry.
-    let Some(_claim) = InFlightClaim::acquire(path) else {
+    let Some(_claim) = InFlightClaim::acquire(&path) else {
         tracing::debug!(file = %path.display(), "rpc: request already in flight, skipping");
         return Vec::new();
     };
 
     // Already answered by a tick that failed to remove the file, or a racing
     // trigger: never re-dispatch a side-effectful op.
-    if responses.join(format!("{stem}.json")).exists() {
-        remove_request_file(path);
+    if mailbox
+        .responses
+        .contains(format!("{stem}.json"))
+        .unwrap_or(false)
+    {
+        remove_request_file(mailbox, name);
         return Vec::new();
     }
 
-    let raw = match std::fs::read(path) {
-        Ok(b) => b,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+    let raw = match mailbox.requests.read(name) {
+        Ok(Some(b)) => b,
+        // Not a regular file: a link (read through, it would hand the agent
+        // any file of the user's) or a FIFO. Never readable, so answered and
+        // dropped at once rather than left to age.
+        Ok(None) if mailbox.requests.contains(name).unwrap_or(false) => {
+            tracing::warn!(file = %path.display(), "rpc: request is not a regular file, refusing");
+            let resp = Response::err(stem, "request is not a regular file");
+            if write_response_atomic(&mailbox.responses, stem, &resp).is_ok() {
+                remove_request_file(mailbox, name);
+            }
+            return Vec::new();
+        }
+        Ok(None) => {
             tracing::debug!(file = %path.display(), "rpc: request vanished before read");
             return Vec::new();
         }
@@ -261,11 +308,11 @@ async fn handle_request_file(
     let req: Request = match serde_json::from_slice(&raw) {
         Ok(r) => r,
         Err(e) => {
-            if file_age(path).is_some_and(|age| age >= STALE_REQUEST_AGE) {
+            if file_age(&mailbox.requests, name).is_some_and(|age| age >= STALE_REQUEST_AGE) {
                 tracing::warn!(error = %e, file = %path.display(), "rpc: malformed request, answering with error");
                 let resp = Response::err(stem, format!("malformed request JSON: {e}"));
-                if write_response_atomic(responses, stem, &resp).is_ok() {
-                    remove_request_file(path);
+                if write_response_atomic(&mailbox.responses, stem, &resp).is_ok() {
+                    remove_request_file(mailbox, name);
                 }
             } else {
                 tracing::debug!(error = %e, file = %path.display(), "rpc: unparseable request (will retry)");
@@ -278,11 +325,11 @@ async fn handle_request_file(
 
     // The op ran; remove the request even if writing the response fails, so it
     // can't be re-dispatched. A lost response is safer than a doubled push.
-    if let Err(e) = write_response_atomic(responses, stem, &resp) {
+    if let Err(e) = write_response_atomic(&mailbox.responses, stem, &resp) {
         tracing::error!(error = %e, id = %stem, "rpc: write response failed after dispatch; dropping request to avoid re-execution");
     }
 
-    remove_request_file(path);
+    remove_request_file(mailbox, name);
 
     effects
 }
@@ -309,25 +356,22 @@ impl Drop for InFlightClaim {
     }
 }
 
-/// NotFound is a no-op: a concurrent trigger beat us to it.
-fn remove_request_file(path: &Path) {
-    if let Err(e) = std::fs::remove_file(path) {
-        if e.kind() != std::io::ErrorKind::NotFound {
-            tracing::warn!(error = %e, file = %path.display(), "rpc: remove request failed");
-        }
+/// Nothing there is a no-op: a concurrent trigger beat us to it.
+fn remove_request_file(mailbox: &Mailbox, name: &str) {
+    if let Err(e) = mailbox.requests.remove(name) {
+        tracing::warn!(error = %e, file = %mailbox.requests.path().join(name).display(), "rpc: remove request failed");
     }
 }
 
-fn write_response_atomic(responses: &Path, key: &str, resp: &Response) -> Result<()> {
+/// A temp written in `responses` and renamed to `<key>.json`, so the agent
+/// never sees a half-written response — and, the key being the agent's choice,
+/// a link it planted at either name is replaced, never written through.
+fn write_response_atomic(responses: &Dir, key: &str, resp: &Response) -> Result<()> {
     let json = serde_json::to_vec_pretty(resp)
         .map_err(|e| Error::Other(format!("serialize rpc response: {e}")))?;
-    let final_path = responses.join(format!("{key}.json"));
-    let tmp_path = responses.join(format!("{key}.json.tmp"));
-    std::fs::write(&tmp_path, &json)
-        .map_err(|e| Error::Other(format!("write rpc response tmp: {e}")))?;
-    std::fs::rename(&tmp_path, &final_path)
-        .map_err(|e| Error::Other(format!("rename rpc response: {e}")))?;
-    Ok(())
+    responses
+        .write(format!("{key}.json"), &json)
+        .map_err(|e| Error::Other(format!("write rpc response: {e}")))
 }
 
 fn is_safe_key(s: &str) -> bool {
@@ -336,8 +380,8 @@ fn is_safe_key(s: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
-fn file_age(path: &Path) -> Option<Duration> {
-    let modified = std::fs::metadata(path).ok()?.modified().ok()?;
+fn file_age(dir: &Dir, name: &str) -> Option<Duration> {
+    let modified = dir.modified(name).ok()?;
     SystemTime::now().duration_since(modified).ok()
 }
 
@@ -510,11 +554,11 @@ mod tests {
     #[test]
     fn file_age_is_small_for_a_fresh_file() {
         let td = tempfile::tempdir().unwrap();
-        let f = td.path().join("fresh");
-        std::fs::write(&f, b"x").unwrap();
-        let age = file_age(&f).expect("fresh file has an age");
+        std::fs::write(td.path().join("fresh"), b"x").unwrap();
+        let dir = Dir::trusted(td.path()).unwrap();
+        let age = file_age(&dir, "fresh").expect("fresh file has an age");
         assert!(age < STALE_REQUEST_AGE);
-        assert!(file_age(&td.path().join("nope")).is_none());
+        assert!(file_age(&dir, "nope").is_none());
     }
 
     #[test]
@@ -670,11 +714,30 @@ mod tests {
             r#"{"id":"req-8","op":"ping"}"#,
         );
 
-        // A directory at `responses/req-8.json.tmp` makes the tmp write fail on every
-        // platform.
-        std::fs::create_dir(rpc_dir.join("responses/req-8.json.tmp")).unwrap();
-
-        let dispatcher = CountingDispatcher(std::sync::atomic::AtomicUsize::new(0));
+        // The op deletes `responses` out from under the held handle, so the
+        // response write fails on every platform: nothing can be created in a
+        // removed directory.
+        struct DeletingDispatcher(std::sync::atomic::AtomicUsize, PathBuf);
+        impl RpcDispatcher for DeletingDispatcher {
+            fn dispatch<'a>(
+                &'a self,
+                id: &'a str,
+                _op: &'a str,
+                _args: &'a Value,
+            ) -> RpcFuture<'a, (Response, Vec<RpcEvent>)> {
+                self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                std::fs::remove_dir(&self.1).unwrap();
+                Box::pin(async move {
+                    (
+                        Response::ok(id, 0, "pong".into(), String::new()),
+                        Vec::new(),
+                    )
+                })
+            }
+        }
+        let responses = rpc_dir.join("responses");
+        let dispatcher =
+            DeletingDispatcher(std::sync::atomic::AtomicUsize::new(0), responses.clone());
         process_pending(&rpc_dir, &dispatcher).await;
 
         assert_eq!(
@@ -686,8 +749,9 @@ mod tests {
             !rpc_dir.join("requests/req-8.json").exists(),
             "request must be removed even when the response write fails"
         );
-        assert!(!rpc_dir.join("responses/req-8.json").exists());
+        assert!(!responses.join("req-8.json").exists());
 
+        std::fs::create_dir(&responses).unwrap();
         process_pending(&rpc_dir, &dispatcher).await;
         assert_eq!(
             dispatcher.0.load(std::sync::atomic::Ordering::SeqCst),
@@ -702,11 +766,119 @@ mod tests {
         let rpc_dir = td.path().join(".fletch-rpc");
         ensure_mailbox(&rpc_dir).unwrap();
 
-        let gone = rpc_dir.join("requests/req-5.json");
-        let effects = handle_request_file(&gone, &rpc_dir.join("responses"), &MockDispatcher).await;
+        let mailbox = Mailbox::open(&rpc_dir).unwrap();
+        let effects = handle_request_file(&mailbox, "req-5.json", &MockDispatcher).await;
 
         assert!(effects.is_empty());
         assert!(!rpc_dir.join("responses/req-5.json").exists());
+    }
+
+    #[tokio::test]
+    async fn links_planted_at_response_names_are_never_written_through() {
+        // The key is the agent's choice, so it can plant a link at the very
+        // name the host is about to write — no race needed.
+        let td = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let rpc_dir = td.path().join(".fletch-rpc");
+        ensure_mailbox(&rpc_dir).unwrap();
+        let responses = rpc_dir.join("responses");
+        let victim = outside.path().join("victim");
+        std::fs::write(&victim, "user file").unwrap();
+
+        // At the temp name the writer once used.
+        std::os::unix::fs::symlink(&victim, responses.join("req-9.json.tmp")).unwrap();
+        write_request(
+            &rpc_dir.join("requests"),
+            "req-9.json",
+            r#"{"id":"req-9","op":"ping"}"#,
+        );
+        process_pending(&rpc_dir, &MockDispatcher).await;
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "user file");
+        let body = std::fs::read_to_string(responses.join("req-9.json")).unwrap();
+        let v: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["ok"], true);
+
+        // At the final name: the request reads as answered and is dropped
+        // without a write.
+        std::os::unix::fs::symlink(&victim, responses.join("req-11.json")).unwrap();
+        write_request(
+            &rpc_dir.join("requests"),
+            "req-11.json",
+            r#"{"id":"req-11","op":"ping"}"#,
+        );
+        let dispatcher = CountingDispatcher(std::sync::atomic::AtomicUsize::new(0));
+        process_pending(&rpc_dir, &dispatcher).await;
+        assert_eq!(dispatcher.0.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "user file");
+        assert!(!rpc_dir.join("requests/req-11.json").exists());
+    }
+
+    #[tokio::test]
+    async fn a_linked_request_is_refused_and_its_target_left_alone() {
+        // A request that links to a user file: read through, its contents
+        // would reach the agent in the error; removed through, the file would go.
+        let td = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let rpc_dir = td.path().join(".fletch-rpc");
+        ensure_mailbox(&rpc_dir).unwrap();
+        let secret = outside.path().join("secret.json");
+        std::fs::write(&secret, r#"{"op":"ping","token":"s3cret"}"#).unwrap();
+        std::os::unix::fs::symlink(&secret, rpc_dir.join("requests/req-10.json")).unwrap();
+
+        let dispatcher = CountingDispatcher(std::sync::atomic::AtomicUsize::new(0));
+        process_pending(&rpc_dir, &dispatcher).await;
+
+        assert_eq!(dispatcher.0.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert!(secret.exists(), "the link's target must survive");
+        assert!(std::fs::symlink_metadata(rpc_dir.join("requests/req-10.json")).is_err());
+        let body = std::fs::read_to_string(rpc_dir.join("responses/req-10.json")).unwrap();
+        assert!(!body.contains("s3cret"), "{body}");
+    }
+
+    #[tokio::test]
+    async fn a_linked_requests_dir_is_never_read_or_cleaned() {
+        // `requests` swapped for a link to a user directory: the host must not
+        // treat that directory's `*.json` files as requests (and delete them).
+        let td = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let rpc_dir = td.path().join(".fletch-rpc");
+        ensure_mailbox(&rpc_dir).unwrap();
+        let package = outside.path().join("package.json");
+        std::fs::write(&package, "{ not a request").unwrap();
+        std::fs::remove_dir(rpc_dir.join("requests")).unwrap();
+        std::os::unix::fs::symlink(outside.path(), rpc_dir.join("requests")).unwrap();
+
+        process_pending(&rpc_dir, &MockDispatcher).await;
+        assert!(package.exists());
+
+        // The next spawn's mailbox setup replaces the link with a real dir.
+        ensure_mailbox(&rpc_dir).unwrap();
+        assert!(!std::fs::symlink_metadata(rpc_dir.join("requests"))
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert!(package.exists());
+    }
+
+    #[test]
+    fn a_linked_mailbox_is_replaced_and_its_target_keeps_its_mode() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let td = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(outside.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        let rpc_dir = td.path().join("agent-1");
+        std::os::unix::fs::symlink(outside.path(), &rpc_dir).unwrap();
+
+        ensure_mailbox(&rpc_dir).unwrap();
+
+        assert!(rpc_dir.join("requests").is_dir());
+        assert!(std::fs::read_dir(outside.path()).unwrap().next().is_none());
+        let mode = std::fs::metadata(outside.path())
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o755, "chmod went through the link");
     }
 
     #[tokio::test]

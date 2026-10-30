@@ -35,6 +35,7 @@ pub mod remote;
 
 use std::path::{Path, PathBuf};
 
+use crate::confined::Dir;
 use crate::error::{Error, Result};
 use crate::exec::Executor;
 use crate::workspace::agent_parent_dir;
@@ -242,17 +243,34 @@ fn staged_file(staging: &Path, path: &Path) -> Option<PathBuf> {
 /// attachments dir) on the host. `src` is the canonicalized, verified-under-
 /// staging source. The empty staging dir it leaves behind is removed
 /// best-effort.
+///
+/// The workspace dir and its `.fletch-attachments` are the agent's to replace,
+/// so `dest` is reached through [`crate::confined`] from the directory above
+/// the workspace: a link planted at either is never followed, and the move
+/// can't be steered into a directory of the user's.
 fn move_to(src: &Path, dest: &Path) -> Result<()> {
-    if let Some(dir) = dest.parent() {
-        std::fs::create_dir_all(dir)?;
+    let invalid = || Error::InvalidPath(dest.display().to_string());
+    // `<root>/<workspace>/.fletch-attachments/<uuid>/<name>`, root first.
+    let mut parts: Vec<&std::ffi::OsStr> = Vec::with_capacity(4);
+    let mut root = dest;
+    for _ in 0..4 {
+        parts.push(root.file_name().ok_or_else(invalid)?);
+        root = root.parent().ok_or_else(invalid)?;
     }
-    // Same-volume rename is atomic; fall back to copy+remove across volumes
-    // (staging is under `~/Library`, the workspace under `~/.fletch` — usually
-    // one volume, but not guaranteed).
-    if std::fs::rename(src, dest).is_err() {
-        std::fs::copy(src, dest)?;
-        let _ = std::fs::remove_file(src);
-    }
+    let [name, entry, attachments, workspace] = parts[..] else {
+        return Err(invalid());
+    };
+    // The root is the host's; the workspace dir is made when missing, as for
+    // a box, whose tree is not on the host.
+    std::fs::create_dir_all(root)?;
+    // Same-volume rename is atomic; `move_in` falls back to copy+remove across
+    // volumes (staging is under `~/Library`, the workspace under `~/.fletch` —
+    // usually one volume, but not guaranteed).
+    Dir::trusted(root)
+        .and_then(|root| root.create_dir(workspace))
+        .and_then(|ws| ws.claim_dir(attachments))
+        .and_then(|dir| dir.create_dir(entry))
+        .and_then(|dir| dir.move_in(src, name))?;
     if let Some(parent) = src.parent() {
         let _ = std::fs::remove_dir(parent);
     }
@@ -408,6 +426,37 @@ mod tests {
         assert_eq!(moved.file_name().unwrap(), "shot.png");
         assert_eq!(std::fs::read(moved).unwrap(), b"pixels");
         assert!(!staged.exists(), "the staged copy is gone");
+    }
+
+    /// An agent-planted link at `.fletch-attachments` is replaced, not
+    /// followed: the attachment lands in the workspace, never in the
+    /// directory the link points at.
+    #[test]
+    #[cfg(unix)]
+    fn a_linked_attachments_dir_does_not_steer_the_move() {
+        let staging = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let staged = staging.path().join("abc").join("shot.png");
+        std::fs::create_dir_all(staged.parent().unwrap()).unwrap();
+        std::fs::write(&staged, b"pixels").unwrap();
+        let ws = root.path().join("ws");
+        std::fs::create_dir(&ws).unwrap();
+        let dest_base = ws.join(WORKSPACE_ATTACHMENTS_DIR);
+        std::os::unix::fs::symlink(outside.path(), &dest_base).unwrap();
+
+        let out = adopt_local(
+            staging.path(),
+            &dest_base,
+            &[staged.to_string_lossy().into_owned()],
+        );
+
+        assert!(std::fs::read_dir(outside.path()).unwrap().next().is_none());
+        assert!(!std::fs::symlink_metadata(&dest_base)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(std::fs::read(&out[0]).unwrap(), b"pixels");
     }
 
     /// A dropped file is copied into staging at the shape `adopt` carries into

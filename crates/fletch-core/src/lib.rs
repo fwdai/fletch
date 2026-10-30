@@ -26,6 +26,7 @@ pub mod codegraph;
 /// the remote dispatcher (`remote::dispatch`) calls directly, so a phone and
 /// the desktop window take the same code path.
 pub mod commands;
+pub mod confined;
 pub mod context;
 pub mod database;
 pub mod download;

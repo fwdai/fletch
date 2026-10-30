@@ -50,6 +50,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::confined::Dir;
 use crate::error::{Error, Result};
 use crate::exec::Executor;
 use crate::instructions::toml_basic_string;
@@ -147,10 +148,8 @@ fn profile_dir(sandbox_root: &Path) -> PathBuf {
     sandbox_root.join(PROFILE_DIR)
 }
 
-/// Directory the skill files are materialized into.
-fn skills_dir(sandbox_root: &Path) -> PathBuf {
-    profile_dir(sandbox_root).join("skills")
-}
+/// Directory under the profile dir the skill files are materialized into.
+const SKILLS_DIR: &str = "skills";
 
 /// Dedupe `base` against `used` by suffixing `<sep>2`, `<sep>3`, … until free,
 /// recording and returning the winner. Shared by the skill-file, claude-config,
@@ -166,53 +165,39 @@ fn dedupe(base: &str, used: &mut Vec<String>, sep: char) -> String {
     candidate
 }
 
-/// Ensure `dir` is a real directory, replacing an agent-planted symlink (or
-/// stray file) at that path. The profile dir sits under the agent-writable
-/// root but is written by the *host* on every spawn; without this check a
-/// prompt-injected agent could swap `.fletch-profile` for a symlink between
-/// spawns and redirect the host's writes anywhere the user can write. Checked
-/// per component we own (profile root, skills dir) since `create_dir_all`
-/// happily follows an existing symlink.
-fn ensure_real_dir(dir: &Path) -> Result<()> {
-    // A host-side concern: a box's tree is not on the host, and the remote
-    // `write` below creates the directories it needs.
-    let Executor::Local = crate::exec::for_path(dir) else {
-        return Ok(());
+/// Write a profile artifact at `<sandbox_root>/.fletch-profile/<rel>` and
+/// return its path.
+///
+/// The profile dir sits under the agent-writable root but is written by the
+/// *host* on every spawn, so a prompt-injected agent could swap
+/// `.fletch-profile`, `skills` or an artifact for a symlink and redirect the
+/// host's write anywhere the user can write — between spawns, or during one
+/// while a sibling agent or a leftover process of its own still runs. On this
+/// host the write goes through [`crate::confined`]: a link or a file where a
+/// directory belongs is replaced by a real one, and the artifact replaces
+/// whatever is at its name (a link, or a directory that would otherwise fail
+/// every later respawn with "is a directory"), none of them ever followed.
+fn write_profile_file(sandbox_root: &Path, rel: &Path, contents: &str) -> Result<PathBuf> {
+    let path = profile_dir(sandbox_root).join(rel);
+    let failed = |e: std::io::Error| Error::Other(format!("failed to write profile file: {e}"));
+    let exec = crate::exec::for_path(&path);
+    // In a box the tree is the guest's own, where a link can lead nowhere
+    // else, and the remote `write` creates the directories it needs.
+    if let Executor::Remote(_) = exec {
+        exec.write(&path, contents.as_bytes()).map_err(failed)?;
+        return Ok(path);
+    }
+    let (Some(parent), Some(name)) = (rel.parent(), rel.file_name()) else {
+        return Err(Error::InvalidPath(path.display().to_string()));
     };
-    if let Ok(meta) = std::fs::symlink_metadata(dir) {
-        if meta.file_type().is_symlink() || !meta.is_dir() {
-            std::fs::remove_file(dir)
-                .map_err(|e| Error::Other(format!("failed to clear profile path: {e}")))?;
-        }
+    let mut dir = Dir::open(sandbox_root, 1)
+        .and_then(|root| root.claim_dir(PROFILE_DIR))
+        .map_err(failed)?;
+    for component in parent.iter() {
+        dir = dir.claim_dir(component).map_err(failed)?;
     }
-    std::fs::create_dir_all(dir)
-        .map_err(|e| Error::Other(format!("failed to create profile dir: {e}")))
-}
-
-/// Write a profile artifact, clearing whatever an agent left at the target
-/// path first: a symlink would be *followed* by `fs::write` (redirecting the
-/// host's write), and a directory would fail it with "is a directory",
-/// blocking every later respawn. These are host-owned paths — anything at
-/// them that isn't our regular file is replaced. The agent process is not
-/// running while the host materializes the profile, so there is no live race
-/// with this check.
-fn write_profile_file(path: &Path, contents: &str) -> Result<()> {
-    let exec = crate::exec::for_path(path);
-    // The clearing guards a host path against a link planted on the host; in a
-    // box the tree is the guest's own, where a link can lead nowhere else.
-    if let Executor::Local = exec {
-        if let Ok(meta) = std::fs::symlink_metadata(path) {
-            if meta.is_dir() {
-                std::fs::remove_dir_all(path)
-                    .map_err(|e| Error::Other(format!("failed to clear profile path: {e}")))?;
-            } else if meta.file_type().is_symlink() {
-                std::fs::remove_file(path)
-                    .map_err(|e| Error::Other(format!("failed to clear profile path: {e}")))?;
-            }
-        }
-    }
-    exec.write(path, contents.as_bytes())
-        .map_err(|e| Error::Other(format!("failed to write profile file: {e}")))
+    dir.write(name, contents.as_bytes()).map_err(failed)?;
+    Ok(path)
 }
 
 /// Filesystem-safe slug for a skill file name: lowercased, runs of
@@ -246,9 +231,6 @@ pub fn materialize_skills(skills: &[SkillSnapshot], sandbox_root: &Path) -> Resu
     if skills.is_empty() {
         return Ok(None);
     }
-    let dir = skills_dir(sandbox_root);
-    ensure_real_dir(&profile_dir(sandbox_root))?;
-    ensure_real_dir(&dir)?;
 
     let mut index = String::from(
         "## Skills\n\nThe following skill documents are available. When your task matches one, \
@@ -257,8 +239,8 @@ pub fn materialize_skills(skills: &[SkillSnapshot], sandbox_root: &Path) -> Resu
     let mut used: Vec<String> = Vec::new();
     for skill in skills {
         let file = dedupe(&slug(&skill.name), &mut used, '-');
-        let path = dir.join(format!("{file}.md"));
-        write_profile_file(&path, &skill.body)?;
+        let rel = Path::new(SKILLS_DIR).join(format!("{file}.md"));
+        let path = write_profile_file(sandbox_root, &rel, &skill.body)?;
         let desc = skill.description.trim();
         if desc.is_empty() {
             index.push_str(&format!("- {} — {}\n", skill.name, path.display()));
@@ -456,12 +438,9 @@ pub fn write_claude_mcp_config(
         return Ok(None);
     }
     let config = serde_json::json!({ "mcpServers": mcp_servers_object(servers) });
-    let dir = profile_dir(sandbox_root);
-    ensure_real_dir(&dir)?;
-    let path = dir.join("mcp-servers.json");
     let body = serde_json::to_string_pretty(&config)
         .map_err(|e| Error::Other(format!("failed to encode MCP config: {e}")))?;
-    write_profile_file(&path, &body)?;
+    let path = write_profile_file(sandbox_root, Path::new("mcp-servers.json"), &body)?;
     Ok(Some(path))
 }
 
@@ -537,12 +516,9 @@ pub fn opencode_mcp_delivery(target: &McpTarget<'_>) -> Result<McpDelivery> {
         "mcp": serde_json::Value::Object(map),
     });
 
-    let dir = profile_dir(target.sandbox_root);
-    ensure_real_dir(&dir)?;
-    let path = dir.join("opencode-mcp.json");
     let body = serde_json::to_string_pretty(&config)
         .map_err(|e| Error::Other(format!("failed to encode opencode MCP config: {e}")))?;
-    write_profile_file(&path, &body)?;
+    let path = write_profile_file(target.sandbox_root, Path::new("opencode-mcp.json"), &body)?;
 
     Ok(McpDelivery {
         args: Vec::new(),
@@ -1202,6 +1178,23 @@ mod tests {
             .file_type()
             .is_symlink());
         assert_eq!(std::fs::read_to_string(&target).unwrap(), "before");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_linked_skills_dir_is_replaced_not_followed() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let profile = dir.path().join(PROFILE_DIR);
+        std::fs::create_dir(&profile).unwrap();
+        std::os::unix::fs::symlink(outside.path(), profile.join(SKILLS_DIR)).unwrap();
+
+        materialize_skills(&[skill("Deploy", "", "steps")], dir.path())
+            .unwrap()
+            .unwrap();
+
+        assert!(std::fs::read_dir(outside.path()).unwrap().next().is_none());
+        assert!(profile.join("skills/deploy.md").is_file());
     }
 
     #[test]
