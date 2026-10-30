@@ -265,7 +265,7 @@ mod tests {
             let _ = tx.send((status.map(|s| s.success()), seen.load(Ordering::SeqCst)));
         });
         let (status, count_at_report) = rx.recv_timeout(Duration::from_secs(5)).unwrap();
-        assert_eq!(status.unwrap(), true);
+        assert!(status.unwrap());
         assert_eq!(
             count_at_report, 1,
             "the step runs before the exit is reported"
