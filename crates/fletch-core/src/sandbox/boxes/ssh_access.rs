@@ -106,9 +106,8 @@ fn write_config() -> Result<()> {
     let helper = runtime_paths()
         .ok_or_else(|| Error::Other("box runtime not found".into()))?
         .helper;
-    let mut config = String::from(
-        "# Written by Fletch for the boxes on this Mac; edits are overwritten.\n\n",
-    );
+    let mut config =
+        String::from("# Written by Fletch for the boxes on this Mac; edits are overwritten.\n\n");
     for identity in BoxRegistry::global().identities() {
         let dir = identity.box_dir()?;
         let key = dir.join(fletch_box::channel::KEY_FILE);

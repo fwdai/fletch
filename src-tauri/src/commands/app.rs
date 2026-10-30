@@ -123,9 +123,8 @@ pub async fn open_in_editor(
     }
     tauri::async_runtime::spawn_blocking(move || -> Result<OpenInEditorOutcome> {
         ssh_access::add_include()?;
-        let host = ssh_access::open(&checkout)?.ok_or_else(|| {
-            Error::Other("the workspace's box is no longer registered".into())
-        })?;
+        let host = ssh_access::open(&checkout)?
+            .ok_or_else(|| Error::Other("the workspace's box is no longer registered".into()))?;
         crate::editors::open_remote(&editor_id, &host, &checkout)?;
         Ok(OpenInEditorOutcome::Opened)
     })
