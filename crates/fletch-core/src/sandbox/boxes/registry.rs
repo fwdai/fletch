@@ -16,7 +16,9 @@
 //! profile) lands where the tenant runs; its mailbox gets a relay of its own.
 
 use std::collections::{HashMap, HashSet};
+use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
@@ -53,6 +55,10 @@ const CONTROL_GRACE: Duration = Duration::from_secs(10);
 const SYSRQ_GRACE: Duration = Duration::from_secs(5);
 const TERM_GRACE: Duration = Duration::from_secs(3);
 const KILL_GRACE: Duration = Duration::from_secs(5);
+/// A [`StopReason::Shutdown`] stop's bound on the lifecycle lock wait, on the
+/// sessions pull, and from `send_stop` on, on the clean rungs together; then
+/// TERM/KILL.
+const SHUTDOWN_GRACE: Duration = CONTROL_GRACE;
 
 /// The paths one box mirrors from the host, and who it belongs to.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -303,6 +309,8 @@ pub struct BoxRegistry {
     tools_builds: Mutex<HashMap<String, watch::Receiver<ToolsBuild>>>,
     /// Tools disks in use ([`ToolsLease`]), with how many boxes use each.
     tools_leases: Leases,
+    /// Set by [`BoxRegistry::close`] (app exit): no box boots from then on.
+    closing: AtomicBool,
     /// [`MAX_CONCURRENT_BOOTS`] permits, one held per VM start.
     boots: tokio::sync::Semaphore,
 }
@@ -353,6 +361,7 @@ impl BoxRegistry {
             image_verified: Mutex::new(HashSet::new()),
             tools_builds: Mutex::new(HashMap::new()),
             tools_leases: Leases::default(),
+            closing: AtomicBool::new(false),
             boots: tokio::sync::Semaphore::new(MAX_CONCURRENT_BOOTS),
         })
     }
@@ -538,8 +547,9 @@ impl BoxRegistry {
         // A discard waits on this lock before it forgets the box, so a boot
         // that reaches it once one has begun must not start a VM for an agent
         // that is going: checked here and again after the (long) preparation.
-        if self.discarded(agent_id) {
-            return Err(discarded_error(agent_id));
+        // Likewise once the app is quitting ([`Self::close`]).
+        if let Some(refused) = self.refuse_boot(agent_id) {
+            return Err(refused);
         }
         let prepared = async {
             let ready = setup::ready(|detail| {
@@ -566,10 +576,10 @@ impl BoxRegistry {
             }
         };
         // Not held across the preparation, which can wait minutes on a tools
-        // disk. A discard begun during the wait is honored below.
+        // disk. A discard or app exit begun during the wait is honored below.
         let slot = self.boot_slot(agent_id).await;
-        if self.discarded(agent_id) {
-            return Err(discarded_error(agent_id));
+        if let Some(refused) = self.refuse_boot(agent_id) {
+            return Err(refused);
         }
         self.set_phase(agent_id, BoxPhase::Starting);
         let booted = boot(identity, &ready, Some(tools_disk)).await;
@@ -577,8 +587,14 @@ impl BoxRegistry {
         match booted {
             Ok(running) => {
                 let running = Arc::new(running);
-                let arm_idle = {
+                let published = 'publish: {
                     let mut entries = self.entries.lock();
+                    // Read under the lock `close` sets it under, so this box is
+                    // either running before shutdown snapshots the running
+                    // boxes, or never published at all.
+                    if self.closing.load(Ordering::SeqCst) {
+                        break 'publish None;
+                    }
                     let entry = entries
                         .get_mut(&identity.agent_id)
                         .expect("registered above");
@@ -587,7 +603,13 @@ impl BoxRegistry {
                         since: running.since,
                     };
                     entry.idle_gen += 1;
-                    entry.attached.is_empty().then_some(entry.idle_gen)
+                    Some(entry.attached.is_empty().then_some(entry.idle_gen))
+                };
+                let Some(arm_idle) = published else {
+                    // The app began quitting during the boot, after
+                    // `shutdown_all` listed the running boxes: end it here.
+                    self.finish_stop(&running, kill_rungs(&running.vm)).await;
+                    return Err(closing_error(agent_id));
                 };
                 self.emit_state(&identity.agent_id);
                 // A box booted by a read (no launch attached) must not run
@@ -908,31 +930,48 @@ impl BoxRegistry {
     }
 
     /// The ladder for a VM [`Self::take_running`] took.
+    ///
+    /// A [`StopReason::Shutdown`] stop is bounded by [`SHUTDOWN_GRACE`] (the
+    /// lock wait, the sessions pull, and the clean rungs from `send_stop` on)
+    /// and skips the mirror refresh: every turn checkpoint already refreshed
+    /// it. Nothing holds the lifecycle lock long once a box runs, but if
+    /// something did, the VM is killed without it. On app exit nothing can boot
+    /// meanwhile ([`Self::close`]); with the box flag going off, a boot could
+    /// start a second VM on the same disk while this one is killed.
     async fn stop_taken(
         &self,
         agent_id: &str,
         reason: StopReason,
         (running, lifecycle): (Arc<RunningBox>, Arc<tokio::sync::Mutex<()>>),
     ) -> Result<StopOutcome> {
-        let _guard = lifecycle.lock().await;
-        if reason != StopReason::Discard {
-            if let Err(e) = super::mirror::refresh_running(&running).await {
-                tracing::info!(agent_id, error = %e, "mirror refresh before stop failed");
+        let bound = (reason == StopReason::Shutdown).then_some(SHUTDOWN_GRACE);
+        let guard = match bound {
+            Some(bound) => tokio::time::timeout(bound, lifecycle.lock()).await.ok(),
+            None => Some(lifecycle.lock().await),
+        };
+        let outcome = if let Some(_guard) = guard {
+            match reason {
+                StopReason::Discard => {}
+                StopReason::Shutdown => {
+                    let pulled = super::home::pull_before_stop(&running);
+                    if tokio::time::timeout(SHUTDOWN_GRACE, pulled).await.is_err() {
+                        tracing::warn!(agent_id, "sessions pull before shutdown timed out");
+                    }
+                }
+                _ => {
+                    if let Err(e) = super::mirror::refresh_running(&running).await {
+                        tracing::info!(agent_id, error = %e, "mirror refresh before stop failed");
+                    }
+                    super::home::pull_before_stop(&running).await;
+                }
             }
-            super::home::pull_before_stop(&running).await;
-        }
-        running.relays.stop().await;
-        let outcome = stop_ladder(&running.vm, &running.channel).await;
-        if outcome.clean() {
-            if let Err(e) = running.dirty.clear() {
-                tracing::warn!(agent_id, error = %e, "clearing the dirty marker failed");
-            }
+            self.finish_stop(&running, stop_ladder(&running.vm, &running.channel, bound))
+                .await
         } else {
-            tracing::warn!(agent_id, "box was killed; its disk is marked dirty");
-        }
-        drop(running.proxy.lock().take());
+            tracing::warn!(agent_id, "box lifecycle lock still held; killing its VM");
+            self.finish_stop(&running, kill_rungs(&running.vm)).await
+        };
         tracing::info!(agent_id, ?reason, ?outcome, "box stopped");
-        self.set_phase(agent_id, BoxPhase::Stopped);
         // Its disk's lease goes with it (unless another holder of the box
         // outlives this), so a disk an update superseded can go now rather
         // than at the next app start. Not on app exit: the next start sweeps.
@@ -943,6 +982,35 @@ impl BoxRegistry {
             sweep_tools_disks_in_background(provider);
         }
         Ok(outcome)
+    }
+
+    /// End `running`'s VM with `halt` (the ladder or the kill rungs) and clean
+    /// up after it: relays stopped first, so none reconnects to a guest going
+    /// down; then the proxy dropped, the dirty marker cleared after a clean
+    /// outcome, and the phase `Stopped` unless a newer box was published.
+    async fn finish_stop(
+        &self,
+        running: &RunningBox,
+        halt: impl Future<Output = StopOutcome>,
+    ) -> StopOutcome {
+        let agent_id = running.agent_id();
+        running.relays.stop().await;
+        let outcome = halt.await;
+        drop(running.proxy.lock().take());
+        if outcome.clean() {
+            if let Err(e) = running.dirty.clear() {
+                tracing::warn!(agent_id, error = %e, "clearing the dirty marker failed");
+            }
+        } else {
+            tracing::warn!(agent_id, "box was killed; its disk is marked dirty");
+        }
+        if let Some(entry) = self.entries.lock().get_mut(agent_id) {
+            if entry.running.is_none() {
+                entry.phase = BoxPhase::Stopped;
+            }
+        }
+        self.emit_state(agent_id);
+        outcome
     }
 
     /// Stop the box and delete its directory: the agent is gone. Forgets the
@@ -981,6 +1049,25 @@ impl BoxRegistry {
             .lock()
             .get(agent_id)
             .map_or(true, |e| e.discarding)
+    }
+
+    /// Why no boot may start for `agent_id` now: the app is quitting
+    /// ([`Self::close`]), or its box is being discarded.
+    fn refuse_boot(&self, agent_id: &str) -> Option<Error> {
+        if self.closing.load(Ordering::SeqCst) {
+            return Some(closing_error(agent_id));
+        }
+        self.discarded(agent_id).then(|| discarded_error(agent_id))
+    }
+
+    /// App exit: no box boots from here on; a boot already past its checks
+    /// kills its VM rather than publish it. Set under the entries lock a boot
+    /// publishes under, so a later [`Self::shutdown_all`] sees every box that
+    /// will ever run. One-way, so only the app's exit paths call it, never
+    /// `Supervisor::shutdown` (unit tests call that) or the box flag going off.
+    pub fn close(&self) {
+        let _entries = self.entries.lock();
+        self.closing.store(true, Ordering::SeqCst);
     }
 
     /// A session in the box is starting; the idle timer stands down. Attach
@@ -1033,13 +1120,31 @@ impl BoxRegistry {
         });
     }
 
-    /// Stop every running box; app exit.
+    /// Stop every running box, all at once, each bounded by
+    /// [`SHUTDOWN_GRACE`] ([`Self::stop_taken`]); app exit and the box flag
+    /// going off.
     pub async fn shutdown_all(&self) {
-        for id in self.running_ids() {
-            if let Err(e) = self.stop(&id, StopReason::Shutdown).await {
+        let ids = self.running_ids();
+        if ids.is_empty() {
+            return;
+        }
+        let started = std::time::Instant::now();
+        let stops = futures_util::future::join_all(ids.iter().map(|id| async move {
+            let stopped = self.stop(id, StopReason::Shutdown).await;
+            if let Err(e) = &stopped {
                 tracing::warn!(agent_id = %id, error = %e, "box shutdown failed");
             }
-        }
+            stopped
+        }))
+        .await;
+        let tally = ShutdownTally::of(&stops);
+        tracing::info!(
+            clean = tally.clean,
+            killed = tally.killed,
+            failed = tally.failed,
+            elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+            "boxes shut down"
+        );
     }
 
     /// A project's egress additions changed: every running box of that
@@ -1542,6 +1647,12 @@ fn discarded_error(agent_id: &str) -> Error {
     Error::SandboxUnavailable(format!("the box for {agent_id} was discarded"))
 }
 
+fn closing_error(agent_id: &str) -> Error {
+    Error::SandboxUnavailable(format!(
+        "the box for {agent_id} did not start: the app is quitting"
+    ))
+}
+
 /// Delete a box directory — its data disk, the agent's whole tree — retrying
 /// briefly: a helper just killed can still be releasing its files.
 async fn remove_box_dir(dir: &Path) -> Result<()> {
@@ -1568,14 +1679,22 @@ async fn remove_box_dir(dir: &Path) -> Result<()> {
     unreachable!("the last attempt returns")
 }
 
-async fn stop_ladder(vm: &Vm, channel: &Channel) -> StopOutcome {
-    if matches!(vm.try_wait(), Ok(Some(_))) {
+/// The stop ladder (§7.7). With a `bound`, the clean rungs together get that
+/// long from `send_stop` on; the TERM/KILL rungs follow either way.
+async fn stop_ladder(vm: &Vm, channel: &Channel, bound: Option<Duration>) -> StopOutcome {
+    if exited(vm) {
         return StopOutcome::AlreadyExited;
     }
+    cut_short(bound, clean_rungs(vm, channel), || kill_rungs(vm)).await
+}
+
+/// `stop` on the control port, then the ssh sysrq rung; `None` when neither
+/// brought the VM down.
+async fn clean_rungs(vm: &Vm, channel: &Channel) -> Option<StopOutcome> {
     match vm.send_stop().await {
         Ok(()) => {
             if vm.wait_exit(CONTROL_GRACE).await.is_some() {
-                return StopOutcome::Control;
+                return Some(StopOutcome::Control);
             }
         }
         Err(e) => tracing::info!(error = %e, "control stop failed; trying sysrq"),
@@ -1591,9 +1710,32 @@ async fn stop_ladder(vm: &Vm, channel: &Channel) -> StopOutcome {
             ],
         )
         .await;
-    if matches!(sysrq, Ok(out) if out.status.success()) && vm.wait_exit(SYSRQ_GRACE).await.is_some()
-    {
-        return StopOutcome::Sysrq;
+    (matches!(sysrq, Ok(out) if out.status.success()) && vm.wait_exit(SYSRQ_GRACE).await.is_some())
+        .then_some(StopOutcome::Sysrq)
+}
+
+/// `clean`, given up at `bound` if one is set, then `kill` unless it ended
+/// the VM.
+async fn cut_short<Kill: Future<Output = StopOutcome>>(
+    bound: Option<Duration>,
+    clean: impl Future<Output = Option<StopOutcome>>,
+    kill: impl FnOnce() -> Kill,
+) -> StopOutcome {
+    let clean = match bound {
+        Some(bound) => tokio::time::timeout(bound, clean).await.ok().flatten(),
+        None => clean.await,
+    };
+    match clean {
+        Some(outcome) => outcome,
+        None => kill().await,
+    }
+}
+
+/// The ladder's last two rungs, SIGTERM then SIGKILL. Checks the VM first: a
+/// helper already reaped must not be signalled by a pid that may be reused.
+async fn kill_rungs(vm: &Vm) -> StopOutcome {
+    if exited(vm) {
+        return StopOutcome::AlreadyExited;
     }
     vm.terminate();
     if vm.wait_exit(TERM_GRACE).await.is_some() {
@@ -1602,6 +1744,34 @@ async fn stop_ladder(vm: &Vm, channel: &Channel) -> StopOutcome {
     vm.kill();
     vm.wait_exit(KILL_GRACE).await;
     StopOutcome::Killed
+}
+
+fn exited(vm: &Vm) -> bool {
+    matches!(vm.try_wait(), Ok(Some(_)))
+}
+
+/// How the boxes of one [`BoxRegistry::shutdown_all`] went.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct ShutdownTally {
+    /// Down through a clean outcome (`StopOutcome::clean`).
+    clean: usize,
+    killed: usize,
+    /// Their stop returned an error.
+    failed: usize,
+}
+
+impl ShutdownTally {
+    fn of(stops: &[Result<StopOutcome>]) -> Self {
+        let mut tally = Self::default();
+        for stop in stops {
+            match stop {
+                Ok(outcome) if outcome.clean() => tally.clean += 1,
+                Ok(_) => tally.killed += 1,
+                Err(_) => tally.failed += 1,
+            }
+        }
+        tally
+    }
 }
 
 /// Boot-time housekeeping on a thread: log boxes whose last VM was killed, and
@@ -1903,6 +2073,7 @@ mod tests {
             image_verified: Mutex::new(HashSet::new()),
             tools_builds: Mutex::new(HashMap::new()),
             tools_leases: Leases::default(),
+            closing: AtomicBool::new(false),
             boots: tokio::sync::Semaphore::new(MAX_CONCURRENT_BOOTS),
         };
         let disk = PathBuf::from("/tools/claude-v2.1.312.img");
@@ -1926,6 +2097,100 @@ mod tests {
 ";
         let orphans = orphan_helpers(ps, |pid| pid == 500);
         assert_eq!(orphans, vec![(102, 600)]);
+    }
+
+    /// A bounded ladder gives up its clean rungs at the bound and runs the
+    /// kill rungs; an unbounded one waits them out. The tally counts what the
+    /// kill rungs achieved (a `Term` is clean). Stand-ins for the rungs: they
+    /// need a VM.
+    #[tokio::test(start_paused = true)]
+    async fn a_bounded_ladder_kills_at_its_bound_and_the_tally_counts_outcomes() {
+        let bound = Duration::from_secs(10);
+        let ladder = |bound: Option<Duration>, clean_after: Option<Duration>, kill: StopOutcome| {
+            cut_short(
+                bound,
+                async move {
+                    match clean_after {
+                        Some(after) => {
+                            tokio::time::sleep(after).await;
+                            Some(StopOutcome::Control)
+                        }
+                        None => std::future::pending().await,
+                    }
+                },
+                move || async move { kill },
+            )
+        };
+
+        let started = tokio::time::Instant::now();
+        let outcomes = futures_util::future::join_all([
+            ladder(
+                Some(bound),
+                Some(Duration::from_secs(3)),
+                StopOutcome::Killed,
+            ),
+            ladder(Some(bound), None, StopOutcome::Killed),
+            ladder(Some(bound), None, StopOutcome::Term),
+        ])
+        .await;
+        assert_eq!(started.elapsed(), bound);
+        assert_eq!(
+            outcomes,
+            [StopOutcome::Control, StopOutcome::Killed, StopOutcome::Term]
+        );
+        let stops: Vec<Result<StopOutcome>> = outcomes
+            .into_iter()
+            .map(Ok)
+            .chain([Err(Error::Other("gone".into()))])
+            .collect();
+        assert_eq!(
+            ShutdownTally::of(&stops),
+            ShutdownTally {
+                clean: 2,
+                killed: 1,
+                failed: 1
+            }
+        );
+
+        let started = tokio::time::Instant::now();
+        let unbounded = ladder(None, Some(bound * 2), StopOutcome::Killed).await;
+        assert_eq!(unbounded, StopOutcome::Control);
+        assert_eq!(started.elapsed(), bound * 2);
+    }
+
+    /// Once the registry is closed (app exit), a boot refuses before it does
+    /// anything, rather than start a VM behind the shutdown.
+    #[tokio::test]
+    async fn a_closed_registry_boots_nothing() {
+        let registry = BoxRegistry {
+            entries: Mutex::new(HashMap::new()),
+            tenants: Mutex::new(HashMap::new()),
+            image_verified: Mutex::new(HashSet::new()),
+            tools_builds: Mutex::new(HashMap::new()),
+            tools_leases: Leases::default(),
+            closing: AtomicBool::new(false),
+            boots: tokio::sync::Semaphore::new(MAX_CONCURRENT_BOOTS),
+        };
+        let root = PathBuf::from("/registry-unit-test-closed/root");
+        let identity = BoxIdentity {
+            agent_id: "registry-unit-test-closed".into(),
+            project_id: "p".into(),
+            provider: "claude".into(),
+            writable_root: root.clone(),
+            rpc_dir: PathBuf::from("/registry-unit-test-closed/rpc"),
+            home: PathBuf::from("/registry-unit-test-closed/home"),
+            shares: Vec::new(),
+        };
+        registry.close();
+        let err = registry
+            .ensure_running(&identity)
+            .await
+            .map(drop)
+            .unwrap_err()
+            .to_string();
+        crate::exec::unregister_root(&root);
+        assert!(err.contains("quitting"), "{err}");
+        assert_eq!(registry.state(&identity.agent_id), BoxPhase::Stopped);
     }
 
     #[test]

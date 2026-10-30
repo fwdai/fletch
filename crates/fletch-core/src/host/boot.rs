@@ -823,6 +823,7 @@ pub fn boot(cfg: BootConfig) -> Result<Engine, BootError> {
                 _ = sigterm.recv() => {}
             }
             tracing::info!("termination signal received; killing child processes");
+            crate::sandbox::boxes::close();
             supervisor.shutdown();
             // Off the nearby list before the process goes.
             if let Some(remote) = &remote {
