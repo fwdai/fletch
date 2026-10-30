@@ -991,6 +991,12 @@ pub fn shutdown_all() {
     block_on(BoxRegistry::global().shutdown_all());
 }
 
+/// App exit, before `Supervisor::shutdown`: no box boots from here on
+/// (`BoxRegistry::close`), so that shutdown stops every box there will be.
+pub fn close() {
+    BoxRegistry::global().close();
+}
+
 /// At boot: route every live box-stamped agent's writable root to its box
 /// (so a Git panel read before the first launch boots it lazily), route every
 /// tenant to its host's box, log boxes whose last VM did not stop cleanly,

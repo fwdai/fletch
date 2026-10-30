@@ -1682,6 +1682,7 @@ pub fn run() {
                 // isn't reliably dropped on macOS app termination, so the
                 // per-session Drop impls can't be trusted to fire; without this,
                 // quitting mid-run orphans the processes.
+                crate::sandbox::boxes::close();
                 if let Some(supervisor) = app.try_state::<Arc<Supervisor>>() {
                     supervisor.shutdown();
                 }
