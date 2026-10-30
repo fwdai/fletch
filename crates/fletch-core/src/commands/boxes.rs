@@ -85,6 +85,13 @@ pub fn box_image_cancel_impl() -> Result<()> {
     setup::cancel_install()
 }
 
+/// `box_tools_retry(provider)`: build the provider's tools disk now, past the
+/// backoff that holds builds off after failures; the outcome arrives as
+/// `box:tools`. The Retry of a failed tools disk.
+pub fn box_tools_retry_impl(provider: &str) -> Result<()> {
+    setup::retry_tools(provider)
+}
+
 /// `box_state(agent_id)`: the registry's phase for the agent's box.
 pub fn box_state_impl(agent_id: &str) -> boxes::registry::BoxStateReport {
     BoxRegistry::global().report(agent_id)

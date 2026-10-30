@@ -693,6 +693,7 @@ fn allowlist_matches_the_protocol_table() {
         "box_image_status",
         "box_image_install",
         "box_image_cancel",
+        "box_tools_retry",
         "box_state",
         "box_stop",
         "box_egress_allow",

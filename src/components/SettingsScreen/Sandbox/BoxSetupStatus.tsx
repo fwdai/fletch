@@ -17,6 +17,7 @@ export function BoxSetupStatus() {
   const refreshImage = useAppStore((s) => s.refreshBoxImage);
   const install = useAppStore((s) => s.installBoxImage);
   const cancel = useAppStore((s) => s.cancelBoxImage);
+  const retryTools = useAppStore((s) => s.retryBoxTools);
 
   useEffect(() => {
     void refreshProbe();
@@ -33,7 +34,10 @@ export function BoxSetupStatus() {
         </Button>
       )}
       {setup.state === "error" && (
-        <Button variant="ghost" onClick={() => void install()}>
+        <Button
+          variant="ghost"
+          onClick={() => void (setup.retry === "tools" ? retryTools(setup.provider) : install())}
+        >
           Retry
         </Button>
       )}

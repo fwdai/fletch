@@ -217,6 +217,9 @@ export interface SandboxSlice {
    *  cancel the download; refusals go to `lastError`. */
   installBoxImage: () => Promise<void>;
   cancelBoxImage: () => Promise<void>;
+  /** Build a provider's tools disk now, past the backoff after failed
+   *  builds; the outcome arrives as `box:tools`, refusals go to `lastError`. */
+  retryBoxTools: (provider: string) => Promise<void>;
   applyBoxImage: (e: BoxImageStatus) => void;
   applyBoxState: (e: BoxStateEvent) => void;
   applyBoxTools: (e: BoxToolsStatus) => void;
@@ -501,6 +504,13 @@ export const createSandboxSlice: SliceCreator<SandboxSlice> = (set, get) => ({
   cancelBoxImage: async () => {
     try {
       await api.boxImageCancel();
+    } catch (e) {
+      set({ lastError: String(e) });
+    }
+  },
+  retryBoxTools: async (provider) => {
+    try {
+      await api.boxToolsRetry(provider);
     } catch (e) {
       set({ lastError: String(e) });
     }

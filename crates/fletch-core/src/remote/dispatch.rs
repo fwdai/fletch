@@ -299,6 +299,7 @@ pub const OPS: &[&str] = &[
     "box_image_status",
     "box_image_install",
     "box_image_cancel",
+    "box_tools_retry",
     "box_state",
     "box_stop",
     "box_egress_allow",
@@ -619,6 +620,7 @@ const OP_SCOPES: &[(&str, Scope)] = &[
     ("box_state", Scope::Observe),
     ("box_image_install", Scope::Projects),
     ("box_image_cancel", Scope::Projects),
+    ("box_tools_retry", Scope::Projects),
     ("box_egress_allow", Scope::Projects),
     ("set_box_setting", Scope::Projects),
     ("box_stop", Scope::Agents),
@@ -1869,8 +1871,8 @@ impl Dispatch for SupervisorDispatch {
                 | "set_project_setting" => settings_op(ctx, sup, op, args).await,
 
                 "box_runtime_probe" | "box_image_status" | "box_image_install"
-                | "box_image_cancel" | "box_state" | "box_stop" | "box_egress_allow"
-                | "set_box_setting" => boxes_op(ctx, op, args).await,
+                | "box_image_cancel" | "box_tools_retry" | "box_state" | "box_stop"
+                | "box_egress_allow" | "set_box_setting" => boxes_op(ctx, op, args).await,
 
                 "project_file_status"
                 | "project_file_approve"
@@ -2110,6 +2112,10 @@ async fn boxes_op(ctx: &Arc<EngineCtx>, op: &str, args: Value) -> DispatchResult
         "box_image_status" => ok(c::box_image_status_impl()),
         "box_image_install" => res(c::box_image_install_impl()),
         "box_image_cancel" => res(c::box_image_cancel_impl()),
+        "box_tools_retry" => {
+            let a: ProviderArgs = parse(args)?;
+            res(c::box_tools_retry_impl(&a.provider))
+        }
         "box_state" => {
             let a: AgentArgs = parse(args)?;
             ok(c::box_state_impl(&a.agent_id))

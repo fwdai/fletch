@@ -16,7 +16,7 @@
 //! ```
 
 use std::fs::{self, File};
-use std::io::{self, Write};
+use std::io;
 use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -26,6 +26,7 @@ use sha2::{Digest, Sha256};
 use tokio::io::AsyncWriteExt;
 
 use crate::error::{Error, Result};
+use crate::fsutil;
 use crate::version::version_key;
 
 pub const BASE_IMAGE: &str = "base.erofs";
@@ -217,17 +218,16 @@ impl ImageStore {
                 &mut progress,
             )
             .await?;
-            write_synced(
-                &staging.join(SHA256_FILE),
-                format!("{}\n", manifest.sha256).as_bytes(),
-            )?;
+            let sha256_file = staging.join(SHA256_FILE);
+            fsutil::write_synced(&sha256_file, format!("{}\n", manifest.sha256).as_bytes())
+                .map_err(Error::io(format!("write {}", sha256_file.display())))?;
             // A same-version directory that did not match (a damaged copy) is replaced.
             if target.exists() {
                 fs::remove_dir_all(&target)
                     .map_err(Error::io(format!("remove {}", target.display())))?;
             }
             fs::rename(&staging, &target)
-                .and_then(|()| File::open(&self.dir)?.sync_all())
+                .and_then(|()| fsutil::sync_dir(&target))
                 .map_err(Error::io(format!("install {}", target.display())))
         }
         .await;
@@ -285,7 +285,7 @@ fn image_at(dir: PathBuf, version: String) -> Option<InstalledImage> {
 }
 
 /// 64 lowercase hex digits.
-fn well_formed_sha256(sha256: &str) -> bool {
+pub(crate) fn well_formed_sha256(sha256: &str) -> bool {
     sha256.len() == 64
         && sha256
             .bytes()
@@ -304,9 +304,15 @@ pub fn file_matches(path: &Path, size: Option<u64>, sha256: &str) -> Result<bool
             return Ok(false);
         }
     }
+    let actual = sha256_of(&mut file).map_err(Error::io(format!("read {}", path.display())))?;
+    Ok(actual == sha256.to_ascii_lowercase())
+}
+
+/// The sha256 of everything `reader` yields, lowercase hex.
+pub(crate) fn sha256_of(mut reader: impl io::Read) -> io::Result<String> {
     let mut hasher = Sha256::new();
-    io::copy(&mut file, &mut hasher).map_err(Error::io(format!("read {}", path.display())))?;
-    Ok(format!("{:x}", hasher.finalize()) == sha256.to_ascii_lowercase())
+    io::copy(&mut reader, &mut hasher)?;
+    Ok(format!("{:x}", hasher.finalize()))
 }
 
 fn client() -> Result<reqwest::Client> {
@@ -463,14 +469,6 @@ async fn download(
     out.sync_all()
         .await
         .map_err(Error::io(format!("sync {}", path.display())))
-}
-
-fn write_synced(path: &Path, content: &[u8]) -> Result<()> {
-    let mut file =
-        File::create_new(path).map_err(Error::io(format!("create {}", path.display())))?;
-    file.write_all(content)
-        .and_then(|()| file.sync_all())
-        .map_err(Error::io(format!("write {}", path.display())))
 }
 
 #[cfg(test)]

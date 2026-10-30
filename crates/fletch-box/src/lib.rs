@@ -15,6 +15,7 @@ pub mod channel;
 pub mod disks;
 pub mod egress;
 mod error;
+pub mod fsutil;
 pub mod guest;
 pub mod image_store;
 pub mod runtime;

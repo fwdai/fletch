@@ -61,10 +61,7 @@ impl EgressProxy {
         policy: EgressPolicy,
         on_event: impl Fn(EgressEvent) + Send + Sync + 'static,
     ) -> io::Result<EgressProxy> {
-        match std::fs::remove_file(socket) {
-            Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
-            _ => {}
-        }
+        crate::fsutil::remove_if_exists(socket)?;
         let listener = UnixListener::bind(socket)?;
         let policy = Arc::new(RwLock::new(policy));
         let on_event: OnEvent = Arc::new(on_event);
