@@ -512,22 +512,75 @@ mod imp {
             .map(|_| ())
         }
 
-        /// The bytes of the regular file `name`, refusing a link.
+        /// The bytes of the regular file `name`. Anything else there — a
+        /// link, a directory, a FIFO that would block the read forever — is
+        /// refused as `InvalidInput`.
         pub(crate) fn read_file(&self, name: &str) -> Result<Vec<u8>> {
             let c = cname(name)?;
-            // SAFETY: as in `openat_dir`.
-            let fd = check(unsafe {
+            // SAFETY: as in `openat_dir`. `O_NONBLOCK` so opening a FIFO
+            // returns at once; it changes nothing for a regular file.
+            let fd = unsafe {
                 libc::openat(
                     self.dir.as_raw_fd(),
                     c.as_ptr(),
-                    libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                    libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC,
                 )
-            })?;
+            };
+            if fd < 0 {
+                let e = Error::last_os_error();
+                return Err(match e.raw_os_error() {
+                    Some(libc::ELOOP) => not_a_file(),
+                    _ => e,
+                });
+            }
             let mut file = unsafe { File::from_raw_fd(fd) };
+            if !file.metadata()?.is_file() {
+                return Err(not_a_file());
+            }
             let mut out = Vec::new();
             std::io::Read::read_to_end(&mut file, &mut out)?;
             Ok(out)
         }
+
+        /// When `name` was last modified, without following it.
+        pub(crate) fn modified(&self, name: &str) -> Result<std::time::SystemTime> {
+            let c = cname(name)?;
+            let mut st: libc::stat = unsafe { std::mem::zeroed() };
+            // SAFETY: as in `entry`.
+            check(unsafe {
+                libc::fstatat(
+                    self.dir.as_raw_fd(),
+                    c.as_ptr(),
+                    &mut st,
+                    libc::AT_SYMLINK_NOFOLLOW,
+                )
+            })?;
+            let since_epoch = std::time::Duration::new(
+                st.st_mtime.max(0) as u64,
+                st.st_mtime_nsec.clamp(0, 999_999_999) as u32,
+            );
+            Ok(std::time::UNIX_EPOCH + since_epoch)
+        }
+
+        /// The names in this directory that are UTF-8; no caller has a use
+        /// for one that isn't.
+        pub(crate) fn list(&self) -> Result<Vec<String>> {
+            Ok(self
+                .names()?
+                .into_iter()
+                .filter_map(|n| n.into_string().ok())
+                .collect())
+        }
+
+        /// Set this directory's own mode, by handle.
+        pub(crate) fn set_mode(&self, mode: u32) -> Result<()> {
+            self.dir
+                .set_permissions(std::fs::Permissions::from_mode(mode))
+        }
+    }
+
+    fn not_a_file() -> Error {
+        Error::new(ErrorKind::InvalidInput, "not a regular file")
     }
 }
 
@@ -634,6 +687,18 @@ mod imp {
         }
         pub(crate) fn read_file(&self, name: &str) -> Result<Vec<u8>> {
             std::fs::read(self.path.join(name))
+        }
+        pub(crate) fn modified(&self, name: &str) -> Result<std::time::SystemTime> {
+            self.path.join(name).symlink_metadata()?.modified()
+        }
+        pub(crate) fn list(&self) -> Result<Vec<String>> {
+            Ok(std::fs::read_dir(&self.path)?
+                .flatten()
+                .filter_map(|e| e.file_name().into_string().ok())
+                .collect())
+        }
+        pub(crate) fn set_mode(&self, _mode: u32) -> Result<()> {
+            Ok(())
         }
     }
 }
@@ -763,12 +828,36 @@ mod tests {
         std::os::unix::fs::symlink(&victim, dir_path.join("db")).unwrap();
         let dir = PrivateDir::open(&dir_path).unwrap();
 
-        assert!(dir.read_file("db").is_err());
+        let refused = dir.read_file("db").unwrap_err();
+        assert_eq!(refused.kind(), std::io::ErrorKind::InvalidInput);
         dir.copy_file("db", &source, 0o644).unwrap();
 
         assert_eq!(std::fs::read_to_string(&victim).unwrap(), "keep");
         assert_eq!(dir.entry("db").unwrap(), Entry::Other);
         assert_eq!(dir.read_file("db").unwrap(), b"index");
+    }
+
+    /// A FIFO planted where the host reads would block the read until a
+    /// writer came; it is refused at once, as is a directory.
+    #[test]
+    fn a_read_refuses_a_fifo_or_a_directory_without_blocking() {
+        use std::os::unix::ffi::OsStrExt;
+        let td = tempfile::tempdir().unwrap();
+        let fifo = std::ffi::CString::new(td.path().join("x.json").as_os_str().as_bytes()).unwrap();
+        // SAFETY: a NUL-terminated path.
+        assert_eq!(unsafe { nix::libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+        std::fs::create_dir(td.path().join("d.json")).unwrap();
+        let path = td.path().to_path_buf();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let dir = PrivateDir::open(&path).unwrap();
+            let kinds = ["x.json", "d.json"].map(|n| dir.read_file(n).unwrap_err().kind());
+            tx.send(kinds).unwrap();
+        });
+        let kinds = rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("reading a FIFO blocked");
+        assert_eq!(kinds, [std::io::ErrorKind::InvalidInput; 2]);
     }
 
     #[test]
