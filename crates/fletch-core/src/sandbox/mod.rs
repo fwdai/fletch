@@ -194,6 +194,7 @@ mod adopted_tree_tests {
             writable_root: root.clone(),
             rpc_dir: PathBuf::from("/adopted-tree-test/rpc"),
             home: PathBuf::from("/adopted-tree-test/home"),
+            shares: Vec::new(),
         });
         assert_eq!(engine_for_adopted_tree(&root.join("repo")), EngineKind::Box);
         // Whatever Settings selects, a host tree never resolves to a box.

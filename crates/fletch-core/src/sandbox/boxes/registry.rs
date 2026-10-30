@@ -1607,6 +1607,7 @@ mod tests {
             writable_root: host_root.clone(),
             rpc_dir: PathBuf::from("/tenant-test/host-rpc"),
             home: PathBuf::from("/tenant-test/home"),
+            shares: Vec::new(),
         });
         let tenant_root = PathBuf::from("/tenant-test/tenant-root");
         assert!(matches!(
