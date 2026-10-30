@@ -1,15 +1,16 @@
 import type { BoxImageStatus, BoxRuntimeProbe, BoxToolsStatus } from "@/api";
 
-/** The provider whose tools disk the setup line reports. Claude Code is the
- *  one provider boxes run today. */
-const PROVIDER = "claude";
-const PROVIDER_LABEL = "Claude Code";
+/** The providers boxes run (`boxes::supports_provider`), by label. Claude
+ *  Code's disk is built by setup and gates readiness; Codex's is built by
+ *  setup when the host has the CLI, else on the first Codex launch. */
+const PROVIDER_LABELS: Record<string, string> = { claude: "Claude Code", codex: "Codex" };
+const GATE = "claude";
 
 /** Where the host's box setup stands, as one line: `busy` while the image
- *  downloads or the tools disk builds (`cancel` only while the download can
+ *  downloads or a tools disk builds (`cancel` only while the download can
  *  still be stopped), `error` when either failed or the image is simply not
  *  there (Retry starts the install again, which also rebuilds the disk),
- *  `ready` once both are in. */
+ *  `ready` once the image and Claude Code's disk are in. */
 export type BoxSetup =
   | { state: "checking"; text: string }
   | { state: "busy"; text: string; cancel: boolean }
@@ -40,18 +41,30 @@ export function boxSetup(
     default:
       break;
   }
-  const disk = tools[PROVIDER];
-  if (!disk || disk.phase === "building" || disk.phase === "missing") {
-    return { state: "busy", text: `Installing ${PROVIDER_LABEL} tools…`, cancel: false };
-  }
-  if (disk.phase === "failed") {
+  const label = (provider: string) => PROVIDER_LABELS[provider] ?? provider;
+  const disks = Object.keys(PROVIDER_LABELS).map((provider) => ({
+    provider,
+    disk: tools[provider],
+  }));
+  const failed = disks.find(({ disk }) => disk?.phase === "failed");
+  if (failed) {
     return {
       state: "error",
-      text: `${PROVIDER_LABEL} tools failed: ${disk.error ?? "unknown error"}`,
+      text: `${label(failed.provider)} tools failed: ${failed.disk?.error ?? "unknown error"}`,
     };
   }
+  const building = disks.find(
+    ({ provider, disk }) =>
+      disk?.phase === "building" || (provider === GATE && (!disk || disk.phase === "missing")),
+  );
+  if (building) {
+    return { state: "busy", text: `Installing ${label(building.provider)} tools…`, cancel: false };
+  }
+  const ready = disks
+    .filter(({ disk }) => disk?.phase === "ready")
+    .map(({ provider, disk }) => `${label(provider)} ${disk?.version}`);
   return {
     state: "ready",
-    text: `Ready · image v${image.version ?? image.pinned_version} · ${PROVIDER_LABEL} ${disk.version} · other providers keep the previous sandbox`,
+    text: `Ready · image v${image.version ?? image.pinned_version} · ${ready.join(" · ")} · other providers keep the previous sandbox`,
   };
 }

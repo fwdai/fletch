@@ -86,17 +86,16 @@ pub enum GuestEntry {
     Absent(PathBuf),
 }
 
-/// How a launch authenticates, as the host resolved it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Credential {
-    /// The CLI finds its login some other way (or has none).
-    None,
+/// How a launch authenticates, as the host resolved it. Empty when the CLI
+/// finds its login some other way, or has none.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Credential {
     /// Variables for the launch's env file, good for the whole launch.
-    Env(Vec<(String, String)>),
+    pub env: Vec<(String, String)>,
     /// A host file the host rewrites fresh before every launch and turn;
     /// shipped to the same guest path each time, and removed there when the
     /// host has none to ship.
-    File(PathBuf),
+    pub file: Option<PathBuf>,
 }
 
 /// The adapters, one per provider boxes run.
@@ -151,7 +150,7 @@ pub(crate) fn seed(
 fn apply(channel: &Channel, entries: &[GuestEntry]) -> Result<()> {
     let mut script = String::from("umask 077");
     let mut tar: Vec<&GuestEntry> = Vec::new();
-    let mut guarded: Vec<&GuestEntry> = Vec::new();
+    let mut guarded: Vec<(&Path, &[u8], u32)> = Vec::new();
     for entry in entries {
         match entry {
             GuestEntry::Dir(path) => {
@@ -163,9 +162,11 @@ fn apply(channel: &Channel, entries: &[GuestEntry]) -> Result<()> {
                 script.push_str(&fletch_box::channel::shell_quote(&path.to_string_lossy()));
             }
             GuestEntry::File {
+                path,
+                bytes,
+                mode,
                 keep_existing: true,
-                ..
-            } => guarded.push(entry),
+            } => guarded.push((path, bytes, *mode)),
             GuestEntry::File { .. } => tar.push(entry),
         }
     }
@@ -194,19 +195,13 @@ fn apply(channel: &Channel, entries: &[GuestEntry]) -> Result<()> {
             )));
         }
     }
-    for entry in guarded {
-        let GuestEntry::File {
-            path, bytes, mode, ..
-        } = entry
-        else {
-            continue;
-        };
+    for (path, bytes, mode) in guarded {
         let exists = executor::run(channel, &["test", "-e", &path.to_string_lossy()], None)
             .map_err(|e| Error::Other(format!("probing {}: {e}", path.display())))?
             .status
             .success();
         if !exists {
-            executor::put(channel, bytes, path, *mode)?;
+            executor::put(channel, bytes, path, mode)?;
         }
     }
     Ok(())

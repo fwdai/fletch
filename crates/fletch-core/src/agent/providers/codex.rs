@@ -155,7 +155,7 @@ pub(crate) fn codex_write(
         // The codex that resumes this runs in the guest and reads the
         // overlay's `sessions` there; the host's copy is the mirror the relay
         // fills. Created in both (`boxes::home::create_session_file`).
-        let rollout = Rollout::new(session_id, cwd, bodies)?;
+        let rollout = Rollout::new(session_id, cwd, bodies);
         return crate::sandbox::boxes::home::create_session_file(
             &crate::sandbox::boxes::home::codex::Codex,
             cwd,
@@ -178,7 +178,7 @@ struct Rollout {
 }
 
 impl Rollout {
-    fn new(session_id: &str, cwd: &Path, bodies: &[Value]) -> Result<Self> {
+    fn new(session_id: &str, cwd: &Path, bodies: &[Value]) -> Self {
         let cwd = cwd.to_string_lossy();
         let lines = bodies
             .iter()
@@ -202,7 +202,7 @@ impl Rollout {
                 "rollout-{}-{session_id}.jsonl",
                 now.format("%Y-%m-%dT%H-%M-%S")
             ));
-        Ok(Self { rel, lines })
+        Self { rel, lines }
     }
 }
 
@@ -312,7 +312,7 @@ fn codex_write_in(
     cwd: &Path,
     bodies: &[Value],
 ) -> Result<PathBuf> {
-    let rollout = Rollout::new(session_id, cwd, bodies)?;
+    let rollout = Rollout::new(session_id, cwd, bodies);
     let mut out: Vec<u8> = Vec::new();
     for line in &rollout.lines {
         serde_json::to_writer(&mut out, line)?;

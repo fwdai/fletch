@@ -487,6 +487,18 @@ impl SandboxEngine for BoxEngine {
             _ => identity_of(ctx),
         };
         let is_tenant = identity.agent_id != ctx.agent_id;
+        if is_tenant && identity.provider != ctx.provider {
+            // A box carries one provider's CLI (its tools disk): a tenant of
+            // another provider would find no binary on its PATH.
+            let label = |p: &str| {
+                crate::agent::provider_bin_label(p).map_or(p.to_string(), |(_, l)| l.to_string())
+            };
+            return Err(Error::SandboxUnavailable(format!(
+                "{} can't run in a {} box: a box carries one provider's CLI",
+                label(ctx.provider),
+                label(&identity.provider)
+            )));
+        }
         let box_agent_id = identity.agent_id.clone();
         let registry = BoxRegistry::global();
         // Waits for the image and the tools disk when they are still being
@@ -556,13 +568,10 @@ impl SandboxEngine for BoxEngine {
         // The login as the host resolved it for this launch, the way the
         // provider's adapter spells it: in the env file, or a host file
         // shipped with the env file and again before every turn.
-        let mut env = Vec::new();
-        let mut credential_file = None;
-        match provider_home.credential(ctx) {
-            home::Credential::Env(auth) => env.extend(auth),
-            home::Credential::File(path) => credential_file = Some(path),
-            home::Credential::None => {}
-        }
+        let home::Credential {
+            mut env,
+            file: credential_file,
+        } = provider_home.credential(ctx);
         env.push(("GIT_TERMINAL_PROMPT".to_string(), "0".to_string()));
         let before_turn = credential_file.clone().map(|path| {
             let engine = BoxEngine::shared();
@@ -787,7 +796,7 @@ pub fn guest_program(
 /// Create `guest_path` with `bytes` in the guest that holds `tree`, failing
 /// when something is already there — the twin of a host `create_new` write,
 /// for a file the host materializes for an agent outside the routed roots
-/// (a claude session under the guest's `~/.claude/projects`).
+/// (a session the provider's CLI will resume, `home::create_session_file`).
 pub fn write_new_guest_file(tree: &Path, guest_path: &Path, bytes: &[u8]) -> Result<()> {
     let identity = box_holding(tree)
         .ok_or_else(|| Error::Other(format!("{} is in no box", tree.display())))?;
