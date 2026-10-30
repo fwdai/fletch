@@ -920,6 +920,9 @@ enum Scan {
     /// The status, and the content digest only when the status alone can't
     /// tell the code from the reviewed code.
     Git,
+    /// [`Scan::Git`] for the tick, which does not wake a sleeping box: one is
+    /// [`Sighting::NotScanned`], so the scan it still wants runs once it is up.
+    Poll,
     /// The status and the content digest: a signature to record.
     Full,
 }
@@ -1051,6 +1054,12 @@ async fn look(ctx: &Arc<EngineCtx>, sup: &Supervisor, key: &Key, scan: Scan) -> 
     let sighting = match scan {
         Scan::Cached => Sighting::NotScanned,
         Scan::Git | Scan::Full => sight(sup, key, scan == Scan::Full).await,
+        Scan::Poll => {
+            let asleep = || crate::commands::checkout_asleep(sup, &key.0, key.1.as_deref());
+            crate::commands::poll_unless_asleep(asleep, sight(sup, key, false))
+                .await
+                .unwrap_or(Sighting::NotScanned)
+        }
     };
     let counts = counts(sup, key);
     let now = now_ms();
@@ -1106,14 +1115,6 @@ struct Look {
     state: ReviewState,
     counts: Counts,
     sighting: Sighting,
-}
-
-/// Whether the coder's checkout is in a box that is not running.
-fn checkout_asleep(sup: &Supervisor, key: &Key) -> bool {
-    crate::commands::agent_repo_checkout_opt(sup, &key.0, key.1.as_deref())
-        .ok()
-        .flatten()
-        .is_some_and(|(_, checkout)| crate::sandbox::boxes::asleep_for_path(&checkout))
 }
 
 /// [`look`] reading the code.
@@ -2011,10 +2012,8 @@ async fn tick(ctx: &Arc<EngineCtx>, sup: &Arc<Supervisor>) {
             continue;
         };
         let pr_open = counts(sup, &key).pr_open;
-        // A tick does not wake a sleeping box to scan it: the last read
-        // stands, and the scan it still wants runs once the box is up.
-        let scan = if tracked.wants_scan(pr_open, now) && !checkout_asleep(sup, &key) {
-            Scan::Git
+        let scan = if tracked.wants_scan(pr_open, now) {
+            Scan::Poll
         } else {
             Scan::Cached
         };

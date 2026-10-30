@@ -437,10 +437,10 @@ pub fn running_for_path(path: &Path) -> bool {
 }
 
 /// Whether `path` lies in a box that is not running, so work there would boot
-/// it: what a poll checks to skip a sleeping box quietly
-/// ([`crate::exec::passive`]). `false` for a host path.
+/// it. `false` for a host path.
 pub fn asleep_for_path(path: &Path) -> bool {
-    box_holding(path).is_some() && !running_for_path(path)
+    box_holding(path)
+        .is_some_and(|identity| BoxRegistry::global().running(&identity.agent_id).is_none())
 }
 
 /// Why `provider` cannot launch in a box, for the spawn gate.

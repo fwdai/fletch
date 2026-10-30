@@ -20,8 +20,10 @@ export const gitApi = {
   // Git/PR commands below take an optional `subdir` (a checkout's directory
   // name from `TrackedRepo.subdir`) to target one repo of a multi-repo agent.
   // Omitted/undefined serializes to None = the agent's primary (first) repo.
-  getGitState: (agentId: string, subdir?: string) =>
-    invoke<GitState | null>("get_git_state", { agentId, subdir }),
+  /** `poll` marks a timer's read: a sleeping box answers `null` instead of
+   *  being booted. Leave it off for anything the user asked for. */
+  getGitState: (agentId: string, subdir?: string, poll?: boolean) =>
+    invoke<GitState | null>("get_git_state", { agentId, subdir, poll }),
   getAllShortstats: () => invoke<Record<string, ShortStats>>("get_all_shortstats"),
   getAllGitMeta: () => invoke<Record<string, GitMeta>>("get_all_git_meta"),
   /** Hand a git playbook (`action`) to the agent. The host composes the

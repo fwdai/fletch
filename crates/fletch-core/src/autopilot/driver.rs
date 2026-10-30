@@ -108,9 +108,8 @@ impl World for Live {
         crate::supervisor::delegation::is_live(key)
     }
 
-    /// This loop's every-10s observation of every agent, so it does not wake
-    /// a sleeping box: its git state reads as unknown, and the step waits.
-    /// (The PR reads below are polls too, and passive of their own.)
+    /// A poll, so a sleeping box is not woken: its state reads as unknown and
+    /// the step waits.
     async fn git(&self, key: &Key) -> Option<GitState> {
         // A checkout Fletch refuses to run git in reads as a zero state —
         // "clean, nothing unpushed" — which must not count as a world.

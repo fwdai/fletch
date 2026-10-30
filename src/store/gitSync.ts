@@ -23,7 +23,7 @@
 //     nothing cached for it, or when its PR changes under it (see
 //     `focusedPrReads`).
 
-import { useCallback, useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { useAppStore } from "@/store";
 import { usePoll } from "@/util/hooks";
@@ -43,7 +43,7 @@ export function useGitSync() {
   usePoll(fetchAllGitMeta, 15000, [fetchAllGitMeta]);
 
   const panelVisible = useAppStore((s) => !s.rightCollapsed && !s.activeDraftId);
-  useTrackedRepoPoll(fetchGitState, panelVisible ? 1000 : 10000);
+  useTrackedRepoPoll(fetchGitState, panelVisible ? 1000 : 10000, panelVisible);
 
   // The fleet seed on launch: GitHub is probed asynchronously, so this runs
   // when it reports connected rather than at mount (and again if it
@@ -69,6 +69,10 @@ function focusedCheckoutKeys(s: AppState): string[] {
 
 /** Run `fetch` for every focused checkout, on `intervalMs`.
  *
+ *  Interval ticks pass `poll`, so they never wake a sleeping box. The first
+ *  read after the panel opens or the focus moves (`wakeFirst`) is the user
+ *  looking, so it may.
+ *
  *  Covering *all* of the focused agent's repos — not just the ones a panel
  *  section happens to render — is what retired `GitPanel`'s `pollDormant`.
  *  No-ops when there's nothing to track, so callers need no guard of their
@@ -76,18 +80,24 @@ function focusedCheckoutKeys(s: AppState): string[] {
  *  callback it was last given, so an unstable one would keep firing a stale
  *  closure. */
 function useTrackedRepoPoll(
-  fetch: (agentId: string, subdir?: string) => Promise<void>,
+  fetch: (agentId: string, subdir?: string, poll?: boolean) => Promise<void>,
   intervalMs: number,
+  wakeFirst: boolean,
 ) {
   const keys = useAppStore(useShallow(focusedCheckoutKeys));
-  const tick = useCallback(async () => {
-    await Promise.all(
-      keys.map((key) => {
-        const { agentId, subdir } = splitCheckoutKey(key);
-        return fetch(agentId, subdir);
-      }),
-    );
-  }, [keys, fetch]);
+  const tick = useMemo(() => {
+    let first = wakeFirst;
+    return async () => {
+      const poll = !first;
+      first = false;
+      await Promise.all(
+        keys.map((key) => {
+          const { agentId, subdir } = splitCheckoutKey(key);
+          return fetch(agentId, subdir, poll);
+        }),
+      );
+    };
+  }, [keys, fetch, wakeFirst]);
   usePoll(tick, intervalMs, [tick]);
 }
 

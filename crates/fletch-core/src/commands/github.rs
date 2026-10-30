@@ -183,10 +183,9 @@ pub async fn get_pr_checks_impl(
 /// — and is no longer conflated with "the lookup failed". The frontend relies on
 /// that distinction to decide whether writing `null` is safe.
 ///
-/// A poll (the panel's, autopilot's), so a sleeping box is not woken for it
+/// Autopilot polls this, so a sleeping box is not woken for it
 /// ([`crate::exec::passive`]): a bound PR is read through the source repo's
-/// origin, which the checkout shares, and an unbound one is not looked for
-/// until the box runs again.
+/// origin, which the checkout shares; an unbound one waits for the box.
 ///
 /// Shared with the remote dispatcher.
 pub async fn get_pr_live_impl(
@@ -238,8 +237,8 @@ async fn pr_live(
 /// the local reviewer's findings, then the focused open PR's GitHub threads
 /// (Greptile / other bots / humans) flattened to each thread's root comment.
 /// One merged set, so the panel, the ladder, autopilot and the agent's
-/// `pr_threads` op all read the same threads (`review::threads_for`). A poll,
-/// passive like [`get_pr_live_impl`].
+/// `pr_threads` op all read the same threads (`review::threads_for`).
+/// Passive like [`get_pr_live_impl`].
 ///
 /// Shared with the remote dispatcher.
 pub async fn get_pr_threads_impl(

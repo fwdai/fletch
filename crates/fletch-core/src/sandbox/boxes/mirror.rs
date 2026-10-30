@@ -70,8 +70,7 @@ fn read_sources(box_dir: &Path) -> std::collections::BTreeMap<String, String> {
 
 /// [`refresh_running`] for an agent by id: a no-op for one with no running
 /// box (another engine's, or a box that is stopped and so already mirrored).
-/// Never boots one: the running box is taken as is, not checked for and then
-/// started, which booted it again when it stopped in between.
+/// Never boots one.
 pub async fn refresh_agent(agent_id: &str) -> Result<()> {
     match BoxRegistry::global().running(agent_id) {
         Some(running) => refresh_running(&running).await,

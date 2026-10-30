@@ -5,9 +5,9 @@
 //! A box's writable root is routed to its executor for as long as the registry
 //! knows the box, not only while the VM runs: a routed operation on a stopped
 //! box (reading a file for the file panel) boots it again instead of failing
-//! on a host path that holds nothing. A poll's is [passive](crate::exec::passive)
-//! and fails with [`crate::exec::Stopped`] instead (the Git panel's `git
-//! status`). Unregistering happens on [`BoxRegistry::discard`].
+//! on a host path that holds nothing; a [passive](crate::exec::passive) one
+//! (a poll's `git status`) fails instead. Unregistering happens on
+//! [`BoxRegistry::discard`].
 //!
 //! A box also has *tenants* ([`Tenant`]): agents with no box of their own that
 //! run in this one because the tree they adopted lives here — the local
@@ -46,6 +46,8 @@ pub const MIRROR_DIR: &str = "mirror.git";
 const READY_TIMEOUT: Duration = Duration::from_secs(10);
 /// VMs started at once ([`BoxRegistry::boot_slot`]); further boots queue.
 const MAX_CONCURRENT_BOOTS: usize = 2;
+/// The `Preparing` detail of a box waiting for a boot slot.
+const WAITING_FOR_SLOT: &str = "waiting for another box to start";
 /// The stop ladder's rungs (§7.7).
 const CONTROL_GRACE: Duration = Duration::from_secs(10);
 const SYSRQ_GRACE: Duration = Duration::from_secs(5);
@@ -307,6 +309,19 @@ pub struct BoxRegistry {
 
 type Leases = Arc<Mutex<HashMap<PathBuf, usize>>>;
 
+/// Puts a box back to `Stopped` when its wait for a boot slot is abandoned,
+/// so it does not report waiting forever.
+struct StopOnDrop<'a> {
+    registry: &'a BoxRegistry,
+    agent_id: &'a str,
+}
+
+impl Drop for StopOnDrop<'_> {
+    fn drop(&mut self) {
+        self.registry.set_phase(self.agent_id, BoxPhase::Stopped);
+    }
+}
+
 /// One box's hold on its tools disk, from the moment [`BoxRegistry::tools_disk`]
 /// picks it until its [`RunningBox`] is dropped or its boot fails. The sweep
 /// never deletes a leased disk, and picking and leasing happen under the lock
@@ -550,9 +565,8 @@ impl BoxRegistry {
                 return Err(e);
             }
         };
-        // Taken for the VM start only, never across the preparation above,
-        // which can wait minutes on a tools disk build. A discard begun while
-        // this waited is honored below, as one begun during the preparation is.
+        // Not held across the preparation, which can wait minutes on a tools
+        // disk. A discard begun during the wait is honored below.
         let slot = self.boot_slot(agent_id).await;
         if self.discarded(agent_id) {
             return Err(discarded_error(agent_id));
@@ -599,13 +613,11 @@ impl BoxRegistry {
         }
     }
 
-    /// One of the [`MAX_CONCURRENT_BOOTS`] VM starts, held until the guard
-    /// drops — however the boot ends, failed or abandoned included. Each start
-    /// reserves a VM's memory and boots a guest; after an app restart every
-    /// box a launch or a read wanted would otherwise start at once. A box
-    /// waiting for a slot is reported `Preparing`, saying so. The caller holds
-    /// the box's lifecycle lock and no `parking_lot` lock: the order is
-    /// lifecycle, then this.
+    /// One of the [`MAX_CONCURRENT_BOOTS`] VM starts, held until the permit
+    /// drops: each start reserves a VM's memory, and after an app restart
+    /// every box would otherwise start at once. A box waiting for one reports
+    /// so, and goes back to `Stopped` if the wait is abandoned. Lock order:
+    /// the box's lifecycle lock (held by the caller), then this.
     async fn boot_slot(&self, agent_id: &str) -> tokio::sync::SemaphorePermit<'_> {
         if let Ok(slot) = self.boots.try_acquire() {
             return slot;
@@ -613,13 +625,16 @@ impl BoxRegistry {
         self.set_phase(
             agent_id,
             BoxPhase::Preparing {
-                detail: "waiting for another box to start".into(),
+                detail: WAITING_FOR_SLOT.into(),
             },
         );
-        self.boots
-            .acquire()
-            .await
-            .expect("the boot semaphore is never closed")
+        let abandoned = StopOnDrop {
+            registry: self,
+            agent_id,
+        };
+        let slot = self.boots.acquire().await;
+        std::mem::forget(abandoned);
+        slot.expect("the boot semaphore is never closed")
     }
 
     /// Hash the installed image against its pin once per process, off the
@@ -961,7 +976,7 @@ impl BoxRegistry {
 
     /// Whether `agent_id`'s box is being discarded, or already was (it is no
     /// longer known).
-    fn discarded(&self, agent_id: &str) -> bool {
+    pub(super) fn discarded(&self, agent_id: &str) -> bool {
         self.entries
             .lock()
             .get(agent_id)
@@ -1648,6 +1663,41 @@ fn orphan_helpers(ps: &str, alive: impl Fn(i32) -> bool) -> Vec<(i32, i32)> {
         .collect()
 }
 
+/// A never-booted box registered for a test, its writable root `/<id>/root`.
+/// Forgotten on drop, so a failed assertion does not leave it routing paths
+/// for the rest of the test binary.
+#[cfg(test)]
+pub(crate) struct TestBox(&'static str);
+
+#[cfg(test)]
+impl TestBox {
+    pub(crate) fn register(id: &'static str) -> Self {
+        BoxRegistry::global().register(BoxIdentity {
+            agent_id: id.into(),
+            project_id: "p".into(),
+            provider: "claude".into(),
+            writable_root: PathBuf::from(format!("/{id}/root")),
+            rpc_dir: PathBuf::from(format!("/{id}/rpc")),
+            home: PathBuf::from(format!("/{id}/home")),
+            shares: Vec::new(),
+        });
+        Self(id)
+    }
+
+    pub(crate) fn root(&self) -> PathBuf {
+        PathBuf::from(format!("/{}/root", self.0))
+    }
+}
+
+#[cfg(test)]
+impl Drop for TestBox {
+    fn drop(&mut self) {
+        if let Some(entry) = BoxRegistry::global().entries.lock().remove(self.0) {
+            crate::exec::unregister_root(&entry.identity.writable_root);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2067,63 +2117,49 @@ mod tests {
     }
 
     /// No more than [`MAX_CONCURRENT_BOOTS`] VM starts hold a slot at once,
-    /// however many contend; one waiting for a slot says so; and a slot comes
-    /// back however its holder ends, a waiter abandoned mid-wait included.
-    /// `boot_slot` is the whole gate `ensure_running` puts around `boot`, so
-    /// the fake boots here are what it admits.
+    /// however many contend; one waiting for a slot says so, and goes back to
+    /// `Stopped` when its wait is abandoned; every slot comes back.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn boot_slots_admit_at_most_the_limit() {
         use std::sync::atomic::{AtomicUsize, Ordering};
 
         let registry = BoxRegistry::global();
         let id = "registry-unit-test-boot-slots";
-        registry.register(BoxIdentity {
-            agent_id: id.into(),
-            project_id: "p".into(),
-            provider: "claude".into(),
-            writable_root: PathBuf::from("/registry-unit-test-boot-slots/root"),
-            rpc_dir: PathBuf::from("/registry-unit-test-boot-slots/rpc"),
-            home: PathBuf::from("/registry-unit-test-boot-slots/home"),
-            shares: Vec::new(),
-        });
+        let _test_box = TestBox::register(id);
 
         let held: Vec<_> = futures_util::future::join_all(
             (0..MAX_CONCURRENT_BOOTS).map(|_| registry.boot_slot(id)),
         )
         .await;
         assert_eq!(registry.boots.available_permits(), 0);
-        let abandoned =
-            tokio::time::timeout(Duration::from_millis(30), registry.boot_slot(id)).await;
-        assert!(abandoned.is_err(), "a third boot waits for a slot");
+        let mut third = Box::pin(registry.boot_slot(id));
+        let waited = tokio::time::timeout(Duration::from_millis(30), &mut third).await;
+        assert!(waited.is_err(), "a third boot waits for a slot");
         assert_eq!(
             registry.state(id),
             BoxPhase::Preparing {
-                detail: "waiting for another box to start".into()
+                detail: WAITING_FOR_SLOT.into()
             }
         );
+        drop(third);
+        assert_eq!(registry.state(id), BoxPhase::Stopped);
         drop(held);
         assert_eq!(registry.boots.available_permits(), MAX_CONCURRENT_BOOTS);
 
         let (now, peak) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
         let mut boots = tokio::task::JoinSet::new();
-        for i in 0..8 {
+        for _ in 0..8 {
             let (now, peak) = (now.clone(), peak.clone());
             boots.spawn(async move {
                 let _slot = BoxRegistry::global().boot_slot(id).await;
                 peak.fetch_max(now.fetch_add(1, Ordering::SeqCst) + 1, Ordering::SeqCst);
                 tokio::time::sleep(Duration::from_millis(10)).await;
                 now.fetch_sub(1, Ordering::SeqCst);
-                // A boot that fails gives its slot back as one that succeeds.
-                if i % 2 == 0 {
-                    return Err(Error::Other("boot failed".into()));
-                }
-                Ok(())
             });
         }
         while boots.join_next().await.is_some() {}
         assert_eq!(peak.load(Ordering::SeqCst), MAX_CONCURRENT_BOOTS);
         assert_eq!(registry.boots.available_permits(), MAX_CONCURRENT_BOOTS);
-        registry.discard(id).await.unwrap();
     }
 
     /// An unknown agent is stopped and has no channel; registering routes its

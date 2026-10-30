@@ -945,11 +945,13 @@ impl Dispatch for SupervisorDispatch {
                 }
 
                 "get_git_state" => {
-                    let a: AgentSubdirArgs = parse(args)?;
-                    res(
-                        crate::commands::poll_git_state_impl(sup, &a.agent_id, a.subdir.as_deref())
-                            .await,
-                    )
+                    let a: GitStateArgs = parse(args)?;
+                    let subdir = a.subdir.as_deref();
+                    res(if a.poll {
+                        crate::commands::poll_git_state_impl(sup, &a.agent_id, subdir).await
+                    } else {
+                        crate::commands::get_git_state_impl(sup, &a.agent_id, subdir).await
+                    })
                 }
 
                 "get_all_shortstats" => res(crate::commands::get_all_shortstats_impl(sup).await),
@@ -2618,6 +2620,17 @@ struct AgentSubdirArgs {
     agent_id: String,
     #[serde(default)]
     subdir: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GitStateArgs {
+    agent_id: String,
+    #[serde(default)]
+    subdir: Option<String>,
+    /// A timer's poll, which must not wake a sleeping box.
+    #[serde(default)]
+    poll: bool,
 }
 
 #[derive(Deserialize)]
