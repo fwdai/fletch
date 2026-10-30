@@ -20,17 +20,18 @@ use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use fletch_box::channel;
 use fletch_box::disks::{self, Dirty};
 use fletch_box::egress::{EgressEvent, EgressPolicy, EgressProxy};
-use fletch_box::version::version_key;
+use fletch_box::tools::{self, DiskMarker, DiskState, FoundDisk};
 use fletch_box::{guest, Channel, StopOutcome, Vm, VmSpec};
 use parking_lot::Mutex;
 use serde::Serialize;
 use tokio::sync::watch;
 
+use crate::codegraph::CODEGRAPH_VERSION;
 use crate::error::{Error, Result};
 use crate::workspace::{AgentRecord, FolderGrant};
 
@@ -204,6 +205,11 @@ pub struct ToolsStatus {
     pub phase: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// With `failed`: until when (unix ms) failed builds hold a launch's or
+    /// the prebuild's next build off ([`tools_backoff`]). Nothing builds at
+    /// that time by itself; absent once it has passed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retry_at: Option<i64>,
 }
 
 /// Where one tools disk build stands, as its waiters see it.
@@ -305,10 +311,15 @@ pub struct BoxRegistry {
     /// (`ImageStore::verify`); a damaged image is removed and reported.
     image_verified: Mutex<HashSet<String>>,
     /// The tools disk build running or last run per `<provider>-<version>`:
-    /// a launch waits on a running one, the UI reads a failed one.
-    tools_builds: Mutex<HashMap<String, watch::Receiver<ToolsBuild>>>,
+    /// a launch waits on a running one, the UI reads a failed one, and the
+    /// failures since the last success hold the next build off.
+    tools_builds: Builds,
     /// Tools disks in use ([`ToolsLease`]), with how many boxes use each.
     tools_leases: Leases,
+    /// Tools disks hashed against their marker this process, or being
+    /// hashed, or built by it: by path and the marker's hash
+    /// ([`BoxRegistry::verify_tools_disks`]).
+    tools_verified: Verified,
     /// Set by [`BoxRegistry::close`] (app exit): no box boots from then on.
     closing: AtomicBool,
     /// [`MAX_CONCURRENT_BOOTS`] permits, one held per VM start.
@@ -316,6 +327,92 @@ pub struct BoxRegistry {
 }
 
 type Leases = Arc<Mutex<HashMap<PathBuf, usize>>>;
+type Builds = Arc<Mutex<HashMap<String, ToolsBuildSlot>>>;
+type Verified = Arc<Mutex<HashSet<(PathBuf, String)>>>;
+
+/// One `<provider>-<version>`'s tools disk builds.
+#[derive(Debug)]
+struct ToolsBuildSlot {
+    /// The build running, or the last one's outcome.
+    build: watch::Receiver<ToolsBuild>,
+    /// The failures in a row since the last success; `None` after one, after
+    /// a user's Retry ([`BoxRegistry::reset_tools_backoff`]), and for a key
+    /// no build of has failed. A new CLI version is a new key: it starts clean.
+    failures: Option<BuildFailures>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct BuildFailures {
+    count: u32,
+    /// No launch or prebuild starts a build of the key before this.
+    retry_at: Instant,
+}
+
+/// How long the `failures`-th failed build in a row holds the next one off.
+/// A persistent failure (the registry down, an install script the CLI
+/// outgrew) otherwise rebuilt ~4 GB on every launch; with growing waits,
+/// later launches still try again, and the user's Retry skips the wait.
+fn tools_backoff(failures: u32) -> Duration {
+    const MINUTE: Duration = Duration::from_secs(60);
+    match failures {
+        0 | 1 => MINUTE,
+        2 => 5 * MINUTE,
+        3 => 30 * MINUTE,
+        _ => 120 * MINUTE,
+    }
+}
+
+/// Claim `key` for a new build at `now`: registers it, the failures before it
+/// kept, and hands back the sender of its outcome. `Err` with the receiver to
+/// follow instead while a build of `key` runs, or while failed ones hold the
+/// next off ([`tools_backoff`]).
+fn claim_tools_build(
+    builds: &mut HashMap<String, ToolsBuildSlot>,
+    key: &str,
+    now: Instant,
+) -> std::result::Result<watch::Sender<ToolsBuild>, watch::Receiver<ToolsBuild>> {
+    let failures = match builds.get(key) {
+        Some(slot) if *slot.build.borrow() == ToolsBuild::Building => {
+            return Err(slot.build.clone())
+        }
+        Some(slot) if slot.failures.is_some_and(|f| now < f.retry_at) => {
+            return Err(slot.build.clone())
+        }
+        Some(slot) => slot.failures,
+        None => None,
+    };
+    let (tx, rx) = watch::channel(ToolsBuild::Building);
+    builds.insert(
+        key.to_string(),
+        ToolsBuildSlot {
+            build: rx,
+            failures,
+        },
+    );
+    Ok(tx)
+}
+
+/// Record how `key`'s build ended at `now`: a success clears its failures, a
+/// failure adds one and holds the next build off ([`tools_backoff`]).
+/// Answers until when, after a failure.
+fn record_tools_build(builds: &Builds, key: &str, ok: bool, now: Instant) -> Option<Instant> {
+    let mut builds = builds.lock();
+    let slot = builds.get_mut(key)?;
+    slot.failures = (!ok).then(|| {
+        let count = slot.failures.map_or(1, |f| f.count + 1);
+        BuildFailures {
+            count,
+            retry_at: now + tools_backoff(count),
+        }
+    });
+    slot.failures.map(|f| f.retry_at)
+}
+
+/// `at` as unix milliseconds for the UI, while it is ahead of `now`.
+fn unix_ms_ahead(at: Instant, now: Instant) -> Option<i64> {
+    let ahead = at.checked_duration_since(now).filter(|d| !d.is_zero())?;
+    Some(chrono::Utc::now().timestamp_millis() + ahead.as_millis() as i64)
+}
 
 /// Puts a box back to `Stopped` when its wait for a boot slot is abandoned,
 /// so it does not report waiting forever.
@@ -359,8 +456,9 @@ impl BoxRegistry {
             entries: Mutex::new(HashMap::new()),
             tenants: Mutex::new(HashMap::new()),
             image_verified: Mutex::new(HashSet::new()),
-            tools_builds: Mutex::new(HashMap::new()),
+            tools_builds: Builds::default(),
             tools_leases: Leases::default(),
+            tools_verified: Verified::default(),
             closing: AtomicBool::new(false),
             boots: tokio::sync::Semaphore::new(MAX_CONCURRENT_BOOTS),
         })
@@ -678,16 +776,13 @@ impl BoxRegistry {
         Ok(())
     }
 
-    /// The tools disk a box of `provider` attaches, built once per
-    /// `<provider>-<version>`. A missing disk is built now (the toggle's
-    /// prebuild normally has it done first) and waited for, up to
-    /// [`setup::tools_wait`], with the box reported `Preparing` meanwhile;
-    /// the spawn watchdog allows for this (`setup::setup_allowance`). A disk
-    /// built without codegraph while indexing is on is used as is, and the one
-    /// carrying it is built in the background for the next boot: codegraph
-    /// never holds a box up. Nor does a host CLI update: with no disk for the
-    /// new version yet, the newest one built is used ([`bootable_tools_disk`])
-    /// while the new one builds. Only a provider with no disk at all waits.
+    /// The tools disk a box of `provider` attaches. Neither codegraph nor a
+    /// host CLI update holds a box up: the disk at hand boots
+    /// ([`bootable_tools_disk`]) while the wanted one builds. Only a provider
+    /// with no disk waits for its build, up to [`setup::tools_wait`] (the
+    /// spawn watchdog allows for it, `setup::setup_allowance`), reported
+    /// `Preparing`; while failed builds hold the next off ([`tools_backoff`])
+    /// it fails at once instead.
     async fn tools_disk(
         &self,
         ready: &super::Ready,
@@ -697,14 +792,19 @@ impl BoxRegistry {
         // Probed here, never under the lease lock (it may run `--version`).
         let version = tools_version(provider);
         let root = tools_root();
-        if let Some(lease) = self.lease_tools_disk(|| built_disk_in(&root, provider, &version)) {
+        let built =
+            || tools::built_disk_in(&root, provider, &version, CODEGRAPH_VERSION).map(|d| d.path);
+        if let Some(lease) = self.lease_tools_disk(built) {
             if !tools_disk_settled(provider) {
                 drop(self.start_tools_build(ready, provider));
             }
             return Ok(lease);
         }
         let build = self.start_tools_build(ready, provider);
-        if let Some(lease) = self.lease_tools_disk(|| bootable_disk_in(&root, provider, &version)) {
+        let bootable = || {
+            tools::bootable_disk_in(&root, provider, &version, CODEGRAPH_VERSION).map(|d| d.path)
+        };
+        if let Some(lease) = self.lease_tools_disk(bootable) {
             tracing::info!(
                 agent_id,
                 provider,
@@ -715,6 +815,20 @@ impl BoxRegistry {
             return Ok(lease);
         }
         let label = crate::agent::provider_bin_label(provider).map_or(provider, |(_, l)| l);
+        // A fresh build reads `Building`: `Failed` is the backoff's verdict.
+        let failed = match &*build.borrow() {
+            ToolsBuild::Failed(e) => Some(e.clone()),
+            _ => None,
+        };
+        if let Some(e) = failed {
+            let minutes = self
+                .tools_backoff_left(provider)
+                .map_or(1, |left| left.as_secs().div_ceil(60).max(1));
+            return Err(Error::SandboxUnavailable(format!(
+                "installing {label} {version} failed: {e}. Retry now in Settings, or it's \
+                 tried again on a launch after {minutes} min"
+            )));
+        }
         self.set_phase(
             agent_id,
             BoxPhase::Preparing {
@@ -722,13 +836,12 @@ impl BoxRegistry {
             },
         );
         wait_tools_build(build, setup::tools_wait()).await?;
-        self.lease_tools_disk(|| built_disk_in(&root, provider, &version))
-            .ok_or_else(|| {
-                Error::SandboxUnavailable(format!(
-                    "the {provider} tools disk was reported built but {} is missing",
-                    fletch_box::tools::disk_path(&root, provider, &version, None).display()
-                ))
-            })
+        self.lease_tools_disk(built).ok_or_else(|| {
+            Error::SandboxUnavailable(format!(
+                "the {provider} tools disk was reported built but {} is missing",
+                fletch_box::tools::disk_path(&root, provider, &version, None).display()
+            ))
+        })
     }
 
     /// Lease the disk `pick` names, picked under the lease lock so a sweep
@@ -744,11 +857,106 @@ impl BoxRegistry {
         })
     }
 
+    /// Hash `provider`'s bootable tools disk against its marker, off the
+    /// launch path: a launch trusts a marker whose size matches (the
+    /// install's fsync order makes one proof the install finished), and this
+    /// catches a disk damaged in place since. Blocking, seconds per disk; run
+    /// once per process from `boxes::startup`. A damaged disk no box has
+    /// leased is removed, and the disk rebuilt.
+    pub fn verify_tools_disks(&self, provider: &str) {
+        let version = tools_version(provider);
+        if !self.verify_tools_disks_in(&tools_root(), provider, &version)
+            || tools_disk_settled(provider)
+        {
+            return;
+        }
+        match setup::ready_now() {
+            Ok(ready) => drop(self.start_tools_build(&ready, provider)),
+            Err(e) => tracing::info!(
+                provider,
+                error = %e,
+                "no tools rebuild after a damaged disk: the box runtime is not ready"
+            ),
+        }
+    }
+
+    /// [`Self::verify_tools_disks`] in `root`: the disk the next boot takes,
+    /// then, after removing a damaged one, the next. Single-flight per path
+    /// and marker hash (`tools_verified`). Whether it removed a disk.
+    fn verify_tools_disks_in(&self, root: &Path, provider: &str, version: &str) -> bool {
+        let mut removed = false;
+        loop {
+            // A disk with no marker has nothing to be checked against.
+            let Some(FoundDisk {
+                path,
+                marker: Some(marker),
+            }) = tools::bootable_disk_in(root, provider, version, CODEGRAPH_VERSION)
+            else {
+                return removed;
+            };
+            let key = (path.clone(), marker.sha256.clone());
+            if !self.tools_verified.lock().insert(key.clone()) {
+                return removed;
+            }
+            match fletch_box::image_store::file_matches(&path, Some(marker.size), &marker.sha256) {
+                Ok(true) => return removed,
+                Ok(false) => {}
+                Err(e) => {
+                    self.tools_verified.lock().remove(&key);
+                    tracing::warn!(
+                        provider,
+                        disk = %path.display(),
+                        error = %e,
+                        "tools disk could not be verified"
+                    );
+                    return removed;
+                }
+            }
+            if !self.remove_damaged_tools_disk(&path, &marker) {
+                return removed;
+            }
+            removed = true;
+        }
+    }
+
+    /// Remove `disk`, which does not hash to `marker`, unless a box has
+    /// leased it or a build replaced it since. Under the lease lock, so no
+    /// boot picks it meanwhile. Whether it was removed.
+    fn remove_damaged_tools_disk(&self, disk: &Path, marker: &DiskMarker) -> bool {
+        let leases = self.tools_leases.lock();
+        if leases.contains_key(disk) {
+            tracing::warn!(
+                disk = %disk.display(),
+                "tools disk does not match its marker; a box runs on it, so it stays"
+            );
+            return false;
+        }
+        if tools::disk_state(disk) != DiskState::Built(marker.clone()) {
+            return false;
+        }
+        tracing::warn!(
+            disk = %disk.display(),
+            "tools disk does not match its marker; removing it"
+        );
+        match tools::remove_disk(disk) {
+            Ok(()) => true,
+            Err(e) => {
+                tracing::warn!(
+                    disk = %disk.display(),
+                    error = %e,
+                    "removing a damaged tools disk failed"
+                );
+                false
+            }
+        }
+    }
+
     /// Delete `provider`'s tools disks that no boot takes again
-    /// ([`superseded_tools_files`]), so each CLI update does not leave a ~4 GB
-    /// disk behind. Holds the lease lock (no disk is picked meanwhile) and the
-    /// build table (no build starts staging meanwhile). A disk skipped for
-    /// being in use goes at a later sweep. Best effort: failures are logged.
+    /// ([`tools::superseded_files`]), so each CLI update does not leave a
+    /// ~4 GB disk behind. Holds the lease lock (no disk is picked meanwhile)
+    /// and the build table (no build starts staging meanwhile). A disk skipped
+    /// for being in use goes at a later sweep. Best effort: failures are
+    /// logged.
     pub fn sweep_tools_disks(&self, provider: &str) {
         // Probed before taking any lock (it may run `--version`).
         let version = tools_version(provider);
@@ -756,21 +964,48 @@ impl BoxRegistry {
         let builds = self.tools_builds.lock();
         let building: HashSet<String> = builds
             .iter()
-            .filter(|(_, rx)| *rx.borrow() == ToolsBuild::Building)
+            .filter(|(_, slot)| *slot.build.borrow() == ToolsBuild::Building)
             .filter_map(|(key, _)| Some(key.strip_prefix(provider)?.strip_prefix('-')?.to_string()))
             .collect();
         let in_use: HashSet<PathBuf> = leases.keys().cloned().collect();
-        for path in superseded_tools_files(&tools_root(), provider, &version, &in_use, &building) {
-            match std::fs::remove_file(&path) {
-                Ok(()) => {
-                    tracing::info!(provider, path = %path.display(), "removed a superseded tools disk")
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        let swept = tools::superseded_files(
+            &tools_root(),
+            provider,
+            &version,
+            CODEGRAPH_VERSION,
+            &in_use,
+            &building,
+        );
+        for (disk, kind) in &swept.unreadable {
+            tracing::warn!(
+                provider,
+                disk = %disk.display(),
+                error = %kind,
+                "a tools disk's marker could not be read; leaving the disk"
+            );
+        }
+        let removed = swept
+            .disks
+            .iter()
+            .map(|disk| (disk, tools::remove_disk(disk)))
+            .chain(
+                swept
+                    .files
+                    .iter()
+                    .map(|file| (file, fletch_box::fsutil::remove_if_exists(file))),
+            );
+        for (path, outcome) in removed {
+            match outcome {
+                Ok(()) => tracing::info!(
+                    provider,
+                    path = %path.display(),
+                    "removed a superseded tools disk file"
+                ),
                 Err(e) => tracing::warn!(
                     provider,
                     path = %path.display(),
                     error = %e,
-                    "removing a superseded tools disk failed"
+                    "removing a superseded tools disk file failed"
                 ),
             }
         }
@@ -787,20 +1022,25 @@ impl BoxRegistry {
     /// `missing`), which is the truth about the disk the next boots want.
     pub fn tools_status(&self, provider: &str) -> ToolsStatus {
         let version = tools_version(provider);
-        let (phase, error) = if built_tools_disk(provider).is_some() {
-            ("ready", None)
+        let (phase, error, retry_at) = if built_tools_disk(provider).is_some() {
+            ("ready", None, None)
         } else {
+            let now = Instant::now();
             match self
                 .tools_builds
                 .lock()
                 .get(&format!("{provider}-{version}"))
-                .map(|rx| rx.borrow().clone())
+                .map(|slot| (slot.build.borrow().clone(), slot.failures))
             {
-                Some(ToolsBuild::Building) => ("building", None),
-                Some(ToolsBuild::Failed(e)) => ("failed", Some(e)),
+                Some((ToolsBuild::Building, _)) => ("building", None, None),
+                Some((ToolsBuild::Failed(e), failures)) => (
+                    "failed",
+                    Some(e),
+                    failures.and_then(|f| unix_ms_ahead(f.retry_at, now)),
+                ),
                 // `Ready` with no file: the disk was removed since; a launch
                 // builds it again.
-                Some(ToolsBuild::Ready) | None => ("missing", None),
+                Some((ToolsBuild::Ready, _)) | None => ("missing", None, None),
             }
         };
         ToolsStatus {
@@ -808,15 +1048,40 @@ impl BoxRegistry {
             version,
             phase,
             error,
+            retry_at,
+        }
+    }
+
+    /// How long failed builds still hold off the next build of `provider`'s
+    /// disk for the current version ([`tools_backoff`]).
+    fn tools_backoff_left(&self, provider: &str) -> Option<Duration> {
+        let key = format!("{provider}-{}", tools_version(provider));
+        let failures = self.tools_builds.lock().get(&key)?.failures?;
+        failures.retry_at.checked_duration_since(Instant::now())
+    }
+
+    /// Forget `provider`'s failed builds, every CLI version's: the user asked
+    /// for a build now (`setup::retry_tools`), so the next one starts whatever
+    /// the backoff said. A build already running is left to finish.
+    pub fn reset_tools_backoff(&self, provider: &str) {
+        for (key, slot) in self.tools_builds.lock().iter_mut() {
+            if key
+                .strip_prefix(provider)
+                .is_some_and(|rest| rest.starts_with('-'))
+            {
+                slot.failures = None;
+            }
         }
     }
 
     /// Build `provider`'s tools disk for the current version in the background
     /// (`box:tools` events) and hand back a receiver of its outcome. Joins a
     /// build already running; a finished one (failed, or built and since
-    /// removed) is replaced by a fresh attempt. The disk carries codegraph
-    /// when indexing is on and its bundle can be had, and is built plain
-    /// otherwise — unless the plain one is there already, when there is
+    /// removed) is replaced by a fresh attempt — after a failure, only once
+    /// the backoff has passed ([`tools_backoff`]): until then this hands back
+    /// the failed build's receiver and starts nothing. The disk carries
+    /// codegraph when indexing is on and its bundle can be had, and is built
+    /// plain otherwise — unless the plain one is there already, when there is
     /// nothing to build.
     pub fn start_tools_build(
         &self,
@@ -827,19 +1092,18 @@ impl BoxRegistry {
         // One key for both variants, so they never build (and share the build
         // box's run dir) at once.
         let key = format!("{provider}-{version}");
-        let mut builds = self.tools_builds.lock();
-        if let Some(rx) = builds.get(&key) {
-            if *rx.borrow() == ToolsBuild::Building {
-                return rx.clone();
-            }
-        }
-        let (tx, rx) = watch::channel(ToolsBuild::Building);
-        builds.insert(key, rx.clone());
-        drop(builds);
+        let claimed = claim_tools_build(&mut self.tools_builds.lock(), &key, Instant::now());
+        let tx = match claimed {
+            Ok(tx) => tx,
+            Err(rx) => return rx,
+        };
+        let rx = tx.subscribe();
+        let builds = self.tools_builds.clone();
+        let verified = self.tools_verified.clone();
         let (paths, image) = (ready.paths.clone(), ready.image.path());
         let provider = provider.to_string();
         crate::host::spawn(async move {
-            let event = |phase, error: Option<String>| {
+            let event = |phase, error: Option<String>, retry_at: Option<Instant>| {
                 super::emit(
                     EVENT_TOOLS,
                     &ToolsStatus {
@@ -847,17 +1111,19 @@ impl BoxRegistry {
                         version: version.clone(),
                         phase,
                         error,
+                        retry_at: retry_at.and_then(|at| unix_ms_ahead(at, Instant::now())),
                     },
                 )
             };
-            event("building", None);
+            event("building", None, None);
             let bundle = codegraph_bundle_for_build().await;
             let out = tools_disk_path(&provider, bundle.is_some());
-            if out.is_file() {
+            if matches!(tools::disk_state(&out), DiskState::Built(_)) {
                 // A build for codegraph whose bundle could not be had: the
                 // plain disk it fell back to is the one already there.
+                record_tools_build(&builds, &key, true, Instant::now());
                 tx.send_replace(ToolsBuild::Ready);
-                event("ready", None);
+                event("ready", None, None);
                 return;
             }
             let codegraph = bundle
@@ -876,17 +1142,29 @@ impl BoxRegistry {
                 |line| tracing::info!(target: "fletch::box_tools", provider, line, "tools build"),
             )
             .await;
+            // The failures are recorded before the verdict goes out, so a
+            // waiter that reads it and asks for a build again sees the backoff.
             match built {
-                Ok(()) => {
+                Ok(marker) => {
                     tracing::info!(provider, version, path = %out.display(), "tools disk built");
+                    // Hashed as it was installed: no need to hash it again.
+                    verified.lock().insert((out.clone(), marker.sha256));
+                    record_tools_build(&builds, &key, true, Instant::now());
                     tx.send_replace(ToolsBuild::Ready);
-                    event("ready", None);
+                    event("ready", None, None);
                     sweep_tools_disks_in_background(provider.clone());
                 }
                 Err(e) => {
-                    tracing::warn!(provider, version, error = %e, "tools disk build failed");
+                    let retry_at = record_tools_build(&builds, &key, false, Instant::now());
+                    tracing::warn!(
+                        provider,
+                        version,
+                        error = %e,
+                        retry_in_secs = retry_at.map(|at| at.saturating_duration_since(Instant::now()).as_secs()),
+                        "tools disk build failed"
+                    );
                     tx.send_replace(ToolsBuild::Failed(e.to_string()));
-                    event("failed", Some(e.to_string()));
+                    event("failed", Some(e.to_string()), retry_at);
                 }
             }
         });
@@ -1211,7 +1489,7 @@ async fn wait_tools_build(mut build: watch::Receiver<ToolsBuild>, timeout: Durat
     match outcome {
         Ok(Ok(())) => Ok(()),
         Ok(Err(e)) => Err(Error::SandboxUnavailable(format!(
-            "the tools disk build failed: {e}"
+            "the tools disk build failed: {e}. Retry in Settings to build it again"
         ))),
         Err(_) => Err(Error::SandboxUnavailable(format!(
             "the tools disk build did not finish within {} minutes",
@@ -1220,13 +1498,12 @@ async fn wait_tools_build(mut build: watch::Receiver<ToolsBuild>, timeout: Durat
     }
 }
 
-/// The version [`tools_version`] reads when the host CLI's is unknown.
-const LATEST: &str = "latest";
-
 /// The CLI version a provider's tools disk installs: the host CLI's, as the
-/// container engines' version-parity check reads it, else [`LATEST`].
+/// container engines' version-parity check reads it, else
+/// [`tools::LATEST_VERSION`].
 pub fn tools_version(provider: &str) -> String {
-    crate::agent::cached_provider_version(provider).unwrap_or_else(|| LATEST.to_string())
+    crate::agent::cached_provider_version(provider)
+        .unwrap_or_else(|| tools::LATEST_VERSION.to_string())
 }
 
 /// Where `provider`'s tools disk for the current version is (or will be), with
@@ -1241,124 +1518,72 @@ pub fn tools_disk_path(provider: &str, codegraph: bool) -> PathBuf {
 }
 
 /// The tools disk a box of `provider` boots with now, `None` before one is
-/// built.
+/// built ([`tools::built_disk_in`]). A disk with no marker, even under this
+/// version's name, is no more than a fallback, so this version's disk is
+/// built again with one and the sweep then removes the old one.
 pub fn built_tools_disk(provider: &str) -> Option<PathBuf> {
-    built_disk_in(&tools_root(), provider, &tools_version(provider))
+    tools::built_disk_in(
+        &tools_root(),
+        provider,
+        &tools_version(provider),
+        CODEGRAPH_VERSION,
+    )
+    .map(|disk| disk.path)
 }
 
-/// [`built_tools_disk`] for `version`, in `root`.
-fn built_disk_in(root: &Path, provider: &str, version: &str) -> Option<PathBuf> {
-    let disk = |codegraph| fletch_box::tools::disk_path(root, provider, version, codegraph);
-    first_built([disk(Some(crate::codegraph::CODEGRAPH_VERSION)), disk(None)])
-}
-
-/// The first of `disks` that is built. The disk carrying codegraph goes first
-/// whether indexing is on or not: it holds everything the plain one does, and
-/// with indexing off its server is simply never injected.
-fn first_built(disks: [PathBuf; 2]) -> Option<PathBuf> {
-    disks.into_iter().find(|disk| disk.is_file())
-}
-
-/// The tools disk a box of `provider` can boot with right now: the current
-/// version's ([`built_tools_disk`]), else the newest built of any version, so
-/// a box boots on another CLI version rather than wait minutes for a ~4 GB
-/// build; its next boot after the build takes the current one. `None` only
-/// when no disk of `provider` is built at all.
+/// The tools disk a box of `provider` can boot with right now
+/// ([`tools::bootable_disk_in`]). It may have no marker: users have disks
+/// from before markers, and refusing them would turn the first launch after
+/// the upgrade into a wait for a build. A damaged one is never booted.
 pub fn bootable_tools_disk(provider: &str) -> Option<PathBuf> {
-    bootable_disk_in(&tools_root(), provider, &tools_version(provider))
-}
-
-/// [`bootable_tools_disk`] for `version`, in `root`.
-fn bootable_disk_in(root: &Path, provider: &str, version: &str) -> Option<PathBuf> {
-    built_disk_in(root, provider, version).or_else(|| newest_tools_disk_in(root, provider))
-}
-
-/// The newest disk of `provider` in `root` by CLI version, among those built
-/// plain or with this build's codegraph: one carrying another codegraph
-/// release is passed over, its server may not read the index this host
-/// builds. At one version the disk carrying codegraph wins, as in
-/// [`first_built`].
-fn newest_tools_disk_in(root: &Path, provider: &str) -> Option<PathBuf> {
-    std::fs::read_dir(root)
-        .ok()?
-        .filter_map(|entry| {
-            let entry = entry.ok()?;
-            let name = entry.file_name();
-            let (version, codegraph) =
-                fletch_box::tools::parse_disk_name(name.to_str()?, provider)?;
-            if codegraph.is_some_and(|tag| tag != crate::codegraph::CODEGRAPH_VERSION) {
-                return None;
-            }
-            let path = entry.path();
-            let rank = (version_key(version), codegraph.is_some());
-            path.is_file().then_some((rank, path))
-        })
-        .max_by(|(a, _), (b, _)| a.cmp(b))
-        .map(|(_, path)| path)
-}
-
-/// The files of `provider` in `root` a tools sweep deletes, `version` being
-/// the current CLI version:
-/// - a disk ([`fletch_box::tools::parse_disk_name`]) that is neither the one
-///   the next boot takes ([`bootable_disk_in`]) nor `in_use`. None when no
-///   disk is bootable (a sweep never empties a provider), or when `version`
-///   or that disk's is [`LATEST`] (an unknown CLI version is no reason to
-///   delete a disk of a known one);
-/// - a staging file (`<disk>.building`) whose version is not `building`: a
-///   build that crashed or was killed mid-write.
-///
-/// Anything else, another provider's disks included, is not touched.
-fn superseded_tools_files(
-    root: &Path,
-    provider: &str,
-    version: &str,
-    in_use: &HashSet<PathBuf>,
-    building: &HashSet<String>,
-) -> Vec<PathBuf> {
-    let Ok(entries) = std::fs::read_dir(root) else {
-        return Vec::new();
-    };
-    let is_latest = |disk: &Path| {
-        let name = disk.file_name().and_then(|name| name.to_str());
-        name.and_then(|name| fletch_box::tools::parse_disk_name(name, provider))
-            .is_some_and(|(version, _)| version == LATEST)
-    };
-    let next_boot = bootable_disk_in(root, provider, version)
-        .filter(|next| version != LATEST && !is_latest(next));
-    entries
-        .filter_map(|entry| {
-            let entry = entry.ok()?;
-            let name = entry.file_name();
-            let name = name.to_str()?;
-            let path = entry.path();
-            let superseded = match name.strip_suffix(".building") {
-                Some(disk) => {
-                    let (version, _) = fletch_box::tools::parse_disk_name(disk, provider)?;
-                    !building.contains(version)
-                }
-                None => {
-                    fletch_box::tools::parse_disk_name(name, provider)?;
-                    next_boot.as_ref().is_some_and(|next| *next != path) && !in_use.contains(&path)
-                }
-            };
-            (superseded && path.is_file()).then_some(path)
-        })
-        .collect()
+    tools::bootable_disk_in(
+        &tools_root(),
+        provider,
+        &tools_version(provider),
+        CODEGRAPH_VERSION,
+    )
+    .map(|disk| disk.path)
 }
 
 /// [`BoxRegistry::sweep_tools_disks`] on a thread of its own, so cleanup
 /// never holds up what triggered it.
 pub(crate) fn sweep_tools_disks_in_background(provider: String) {
-    let spawned = std::thread::Builder::new()
-        .name("box-tools-sweep".into())
-        .spawn(move || BoxRegistry::global().sweep_tools_disks(&provider));
+    tools_task("box-tools-sweep", move || {
+        BoxRegistry::global().sweep_tools_disks(&provider)
+    });
+}
+
+/// [`BoxRegistry::verify_tools_disks`] on a thread of its own.
+pub(crate) fn verify_tools_disks_in_background(provider: String) {
+    tools_task("box-tools-verify", move || {
+        BoxRegistry::global().verify_tools_disks(&provider)
+    });
+}
+
+fn tools_task(name: &str, task: impl FnOnce() + Send + 'static) {
+    let spawned = std::thread::Builder::new().name(name.into()).spawn(task);
     if let Err(e) = spawned {
-        tracing::warn!(error = %e, "the tools disk sweep did not start");
+        tracing::warn!(task = name, error = %e, "a tools disk task did not start");
     }
 }
 
-/// Whether `provider`'s tools disk needs no build: one is built, and it
-/// carries codegraph unless indexing is off.
+/// Tell the UI `provider`'s tools disk could not be built before any build
+/// started (`box:tools` `failed`): a Retry with the box runtime not ready.
+pub(crate) fn emit_tools_failed(provider: &str, error: String) {
+    super::emit(
+        EVENT_TOOLS,
+        &ToolsStatus {
+            provider: provider.to_string(),
+            version: tools_version(provider),
+            phase: "failed",
+            error: Some(error),
+            retry_at: None,
+        },
+    );
+}
+
+/// Whether `provider`'s tools disk needs no build: one is built
+/// ([`built_tools_disk`]), and it carries codegraph unless indexing is off.
 pub fn tools_disk_settled(provider: &str) -> bool {
     built_tools_disk(provider).is_some_and(|disk| {
         fletch_box::tools::carries_codegraph(&disk) || !crate::codegraph::enabled()
@@ -1872,210 +2097,152 @@ impl Drop for TestBox {
 mod tests {
     use super::*;
 
-    /// Empty files named the way `fletch_box::tools::disk_path` names disks.
-    fn disks(root: &Path, names: &[&str]) {
-        for name in names {
-            std::fs::write(root.join(name), b"").unwrap();
+    fn test_registry() -> BoxRegistry {
+        BoxRegistry {
+            entries: Mutex::new(HashMap::new()),
+            tenants: Mutex::new(HashMap::new()),
+            image_verified: Mutex::new(HashSet::new()),
+            tools_builds: Builds::default(),
+            tools_leases: Leases::default(),
+            tools_verified: Verified::default(),
+            closing: AtomicBool::new(false),
+            boots: tokio::sync::Semaphore::new(MAX_CONCURRENT_BOOTS),
         }
     }
 
-    /// After a host CLI update the newest disk built stands in: ordered by
-    /// version as numbers, never another provider's, a staging file or a disk
-    /// with another codegraph release.
-    #[test]
-    fn the_newest_built_disk_stands_in_for_a_missing_one() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
-        assert_eq!(newest_tools_disk_in(root, "claude"), None);
-        assert_eq!(newest_tools_disk_in(&root.join("absent"), "claude"), None);
-        disks(
-            root,
-            &[
-                "claude-latest.img",
-                "claude-v2.1.9.img",
-                "claude-v2.1.312.img",
-                "claude-v2.1.400.img.building",
-                "claude-v2.1.500+codegraph-v0.0.1.img",
-                "codex-v9.9.9.img",
-            ],
-        );
-        assert_eq!(
-            newest_tools_disk_in(root, "claude"),
-            Some(root.join("claude-v2.1.312.img"))
-        );
-        assert_eq!(
-            newest_tools_disk_in(root, "codex"),
-            Some(root.join("codex-v9.9.9.img"))
-        );
-        assert_eq!(newest_tools_disk_in(root, "cursor"), None);
+    /// A disk installed the way a build installs one.
+    fn installed(disk: &Path) {
+        let staging = disk.with_extension("img.building");
+        std::fs::write(&staging, b"tools").unwrap();
+        tools::install_disk(&staging, disk).unwrap();
     }
 
-    /// At one version the disk carrying this build's codegraph wins, as it
-    /// does for the current version (`first_built`).
-    #[test]
-    fn at_one_version_the_codegraph_disk_stands_in() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
-        let with = format!(
-            "claude-v2.1.312+codegraph-{}.img",
-            crate::codegraph::CODEGRAPH_VERSION
-        );
-        disks(root, &["claude-v2.1.312.img", &with, "claude-v2.1.311.img"]);
-        assert_eq!(newest_tools_disk_in(root, "claude"), Some(root.join(with)));
+    /// Damage the read-only disk at `disk` in place: same size, other bytes.
+    fn damage(disk: &Path) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(disk, std::fs::Permissions::from_mode(0o644)).unwrap();
+        std::fs::write(disk, b"t00ls").unwrap();
     }
 
-    fn swept(
-        root: &Path,
-        provider: &str,
-        version: &str,
-        in_use: &[&str],
-        building: &[&str],
-    ) -> Vec<String> {
-        let in_use = in_use.iter().map(|n| root.join(n)).collect();
-        let building = building.iter().map(|v| v.to_string()).collect();
-        let mut names: Vec<String> =
-            superseded_tools_files(root, provider, version, &in_use, &building)
-                .into_iter()
-                .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
-                .collect();
-        names.sort();
-        names
-    }
-
-    /// A sweep removes every disk of the provider but the one the next boot
-    /// takes and those in use, and staging files no build is writing; never
-    /// another provider's files or a name it does not parse.
+    /// The background hash removes a damaged disk no box uses and checks the
+    /// disk the next boot takes instead; a disk in use stays; a disk hashed
+    /// (or built) this process is not hashed again.
     #[test]
-    fn a_sweep_removes_only_superseded_disks_of_its_provider() {
+    fn the_background_hash_removes_a_damaged_disk_unless_it_is_in_use() {
+        let registry = test_registry();
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
-        let codegraph = format!(
-            "claude-v2.1.314+codegraph-{}.img",
-            crate::codegraph::CODEGRAPH_VERSION
+        let (good, bad) = (
+            root.join("claude-v2.1.312.img"),
+            root.join("claude-v2.1.314.img"),
         );
-        disks(
-            root,
-            &[
-                "claude-latest.img",
-                "claude-v2.1.311.img",
-                "claude-v2.1.312.img",
-                "claude-v2.1.314.img",
-                &codegraph,
-                "claude-v2.1.314+codegraph-v0.0.1.img",
-                "claude-v2.1.300.img.building",
-                "codex-v1.0.0.img",
-                "codex-v1.0.1.img.building",
-                "claude-notes.txt",
-            ],
-        );
-        std::fs::create_dir(root.join("claude-v9.9.9.img")).unwrap();
-        // The new version's disk is built; 2.1.312 still runs in a box.
+        installed(&good);
+        installed(&bad);
+        damage(&bad);
+        let lease = registry.lease_tools_disk(|| Some(bad.clone())).unwrap();
+        assert!(!registry.verify_tools_disks_in(root, "claude", "v2.1.314"));
+        assert!(bad.exists(), "a box runs on it");
+        drop(lease);
+
+        // Once per process: forget it to check it again.
+        registry.tools_verified.lock().clear();
+        assert!(registry.verify_tools_disks_in(root, "claude", "v2.1.314"));
+        assert_eq!(tools::disk_state(&bad), DiskState::Missing);
+        assert!(!tools::marker_path(&bad).exists());
+        assert!(good.exists());
+        let verified = registry.tools_verified.lock().clone();
+        assert!(verified.iter().any(|(path, _)| *path == good));
+
+        // Damage after a match is not looked for again this process.
+        damage(&good);
+        assert!(!registry.verify_tools_disks_in(root, "claude", "v2.1.314"));
+        assert!(good.exists());
+    }
+
+    /// A failed build holds the next one of its key off, longer after each
+    /// failure in a row; a success, or the user's Retry, clears the count; a
+    /// running build is joined; another CLI version is another key.
+    #[test]
+    fn failed_builds_back_off_until_a_success_or_a_retry() {
+        let registry = test_registry();
+        let builds = &registry.tools_builds;
+        let key = "claude-v2.1.314";
+        let t0 = Instant::now();
+        let claim = |at: Instant| claim_tools_build(&mut builds.lock(), key, at);
+        let fail = |tx: watch::Sender<ToolsBuild>, at: Instant| {
+            let retry_at = record_tools_build(builds, key, false, at);
+            tx.send_replace(ToolsBuild::Failed("npm exploded".into()));
+            retry_at
+        };
+
+        let tx = claim(t0).unwrap();
+        assert!(claim(t0).is_err(), "a running build is joined");
+        let minute = Duration::from_secs(60);
+        assert_eq!(fail(tx, t0), Some(t0 + minute));
+        let held = claim(t0 + minute / 2).unwrap_err();
+        assert_eq!(*held.borrow(), ToolsBuild::Failed("npm exploded".into()));
+        // Another version is not held off.
+        assert!(claim_tools_build(&mut builds.lock(), "claude-v2.1.315", t0).is_ok());
+
+        let t1 = t0 + minute;
+        let tx = claim(t1).unwrap();
+        assert_eq!(fail(tx, t1), Some(t1 + 5 * minute));
+        assert!(claim(t1 + 4 * minute).is_err());
+        let t2 = t1 + 5 * minute;
+        let tx = claim(t2).unwrap();
+        assert_eq!(fail(tx, t2), Some(t2 + 30 * minute));
+
+        // The user's Retry starts one now; a success clears the count.
+        registry.reset_tools_backoff("claude");
+        let tx = claim(t2).unwrap();
+        assert_eq!(fail(tx, t2), Some(t2 + minute), "counted from zero again");
+        let t3 = t2 + minute;
+        let tx = claim(t3).unwrap();
+        assert_eq!(record_tools_build(builds, key, true, t3), None);
+        tx.send_replace(ToolsBuild::Ready);
+        let tx = claim(t3).unwrap();
+        assert_eq!(fail(tx, t3), Some(t3 + minute));
+        // Another provider's Retry leaves this one's backoff alone.
+        registry.reset_tools_backoff("codex");
+        assert!(claim(t3).is_err());
+    }
+
+    #[test]
+    fn the_tools_backoff_grows_to_two_hours() {
+        let minutes = |n| tools_backoff(n).as_secs() / 60;
         assert_eq!(
-            swept(root, "claude", "v2.1.314", &["claude-v2.1.312.img"], &[]),
-            [
-                "claude-latest.img",
-                "claude-v2.1.300.img.building",
-                "claude-v2.1.311.img",
-                "claude-v2.1.314+codegraph-v0.0.1.img",
-                "claude-v2.1.314.img",
-            ]
-        );
-        // Once nothing uses it, 2.1.312 goes too.
-        assert!(swept(root, "claude", "v2.1.314", &[], &[])
-            .contains(&"claude-v2.1.312.img".to_string()));
-        // The other provider: its own disks only.
-        assert_eq!(
-            swept(root, "codex", "v1.0.0", &[], &[]),
-            ["codex-v1.0.1.img.building"]
+            (1..=6).map(minutes).collect::<Vec<_>>(),
+            [1, 5, 30, 120, 120, 120]
         );
     }
 
-    /// While a version builds, its staging file stays, and the fallback the
-    /// next boot takes stays; with no disk to boot, no disk is removed.
+    /// While failed builds hold the next one off, the status says `failed`
+    /// with the error and when a build may start again; past that, no
+    /// `retry_at`.
     #[test]
-    fn a_sweep_spares_a_running_build_and_never_empties_a_provider() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
-        disks(
-            root,
-            &[
-                "claude-latest.img",
-                "claude-v2.1.312.img",
-                "claude-v2.1.314.img.building",
-            ],
-        );
-        assert_eq!(
-            swept(root, "claude", "v2.1.314", &[], &["v2.1.314"]),
-            ["claude-latest.img"]
-        );
-        // A build that is gone left its staging file behind.
-        assert_eq!(
-            swept(root, "claude", "v2.1.314", &[], &[]),
-            ["claude-latest.img", "claude-v2.1.314.img.building"]
-        );
-        // Only a disk with another codegraph release: nothing bootable.
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
-        disks(
-            root,
-            &[
-                "claude-v2.1.312+codegraph-v0.0.1.img",
-                "claude-v2.1.314.img.building",
-            ],
-        );
-        assert_eq!(
-            swept(root, "claude", "v2.1.314", &[], &[]),
-            ["claude-v2.1.314.img.building"]
-        );
-        assert!(swept(&root.join("absent"), "claude", "v2.1.314", &[], &[]).is_empty());
-    }
-
-    /// While the CLI version is unknown (`latest`) no disk is swept, whether
-    /// a `latest` disk is built or a versioned one stands in; and a `latest`
-    /// disk standing in for a known version displaces no versioned one.
-    #[test]
-    fn a_latest_version_sweeps_no_versioned_disk() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
-        disks(
-            root,
-            &[
-                "claude-latest.img",
-                "claude-v2.1.311.img",
-                "claude-v2.1.312.img",
-                "claude-latest.img.building",
-            ],
-        );
-        assert_eq!(
-            swept(root, "claude", "latest", &[], &[]),
-            ["claude-latest.img.building"]
-        );
-        std::fs::remove_file(root.join("claude-latest.img")).unwrap();
-        assert_eq!(
-            swept(root, "claude", "latest", &[], &[]),
-            ["claude-latest.img.building"]
-        );
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
-        disks(
-            root,
-            &["claude-latest.img", "claude-v2.1.312+codegraph-v0.0.1.img"],
-        );
-        assert!(swept(root, "claude", "v2.1.314", &[], &[]).is_empty());
+    fn a_failed_status_says_when_the_next_build_may_start() {
+        let registry = test_registry();
+        let provider = "registry-unit-test-backoff";
+        let key = format!("{provider}-{}", tools_version(provider));
+        let now = Instant::now();
+        let tx = claim_tools_build(&mut registry.tools_builds.lock(), &key, now).unwrap();
+        record_tools_build(&registry.tools_builds, &key, false, now);
+        tx.send_replace(ToolsBuild::Failed("npm exploded".into()));
+        let status = registry.tools_status(provider);
+        assert_eq!(status.phase, "failed");
+        assert_eq!(status.error.as_deref(), Some("npm exploded"));
+        let ahead = status.retry_at.unwrap() - chrono::Utc::now().timestamp_millis();
+        assert!((50_000..=60_000).contains(&ahead), "{ahead}");
+        assert!(registry.tools_backoff_left(provider).is_some());
+        registry.reset_tools_backoff(provider);
+        assert_eq!(registry.tools_status(provider).retry_at, None);
+        assert_eq!(registry.tools_status(provider).phase, "failed");
     }
 
     /// A disk stays leased while any box holds it.
     #[test]
     fn a_lease_lasts_until_its_last_holder_is_gone() {
-        let registry = BoxRegistry {
-            entries: Mutex::new(HashMap::new()),
-            tenants: Mutex::new(HashMap::new()),
-            image_verified: Mutex::new(HashSet::new()),
-            tools_builds: Mutex::new(HashMap::new()),
-            tools_leases: Leases::default(),
-            closing: AtomicBool::new(false),
-            boots: tokio::sync::Semaphore::new(MAX_CONCURRENT_BOOTS),
-        };
+        let registry = test_registry();
         let disk = PathBuf::from("/tools/claude-v2.1.312.img");
         let first = registry.lease_tools_disk(|| Some(disk.clone())).unwrap();
         let second = registry.lease_tools_disk(|| Some(disk.clone())).unwrap();
@@ -2162,15 +2329,7 @@ mod tests {
     /// anything, rather than start a VM behind the shutdown.
     #[tokio::test]
     async fn a_closed_registry_boots_nothing() {
-        let registry = BoxRegistry {
-            entries: Mutex::new(HashMap::new()),
-            tenants: Mutex::new(HashMap::new()),
-            image_verified: Mutex::new(HashSet::new()),
-            tools_builds: Mutex::new(HashMap::new()),
-            tools_leases: Leases::default(),
-            closing: AtomicBool::new(false),
-            boots: tokio::sync::Semaphore::new(MAX_CONCURRENT_BOOTS),
-        };
+        let registry = test_registry();
         let root = PathBuf::from("/registry-unit-test-closed/root");
         let identity = BoxIdentity {
             agent_id: "registry-unit-test-closed".into(),
@@ -2300,10 +2459,13 @@ mod tests {
         // The fake build stands in for `start_tools_build`'s task: same key,
         // same channel shape.
         let (tx, rx) = watch::channel(ToolsBuild::Building);
-        registry
-            .tools_builds
-            .lock()
-            .insert(format!("{provider}-{}", tools_version(provider)), rx);
+        registry.tools_builds.lock().insert(
+            format!("{provider}-{}", tools_version(provider)),
+            ToolsBuildSlot {
+                build: rx,
+                failures: None,
+            },
+        );
         assert_eq!(registry.tools_status(provider).phase, "building");
         let ready = super::super::Ready {
             paths: fletch_box::RuntimePaths {
@@ -2564,23 +2726,6 @@ mod tests {
         assert_eq!(attached(), 0);
 
         registry.discard(id).await.unwrap();
-    }
-
-    /// A box boots with the disk carrying codegraph once it is built, the
-    /// plain one until then, and nothing before either is.
-    #[test]
-    fn the_disk_carrying_codegraph_is_preferred_once_built() {
-        let td = tempfile::tempdir().unwrap();
-        let with = fletch_box::tools::disk_path(td.path(), "claude", "2.1.0", Some("v1.4.1"));
-        let plain = fletch_box::tools::disk_path(td.path(), "claude", "2.1.0", None);
-        let disks = || [with.clone(), plain.clone()];
-        assert_eq!(first_built(disks()), None);
-        std::fs::write(&plain, b"").unwrap();
-        assert_eq!(first_built(disks()), Some(plain.clone()));
-        std::fs::write(&with, b"").unwrap();
-        assert_eq!(first_built(disks()), Some(with.clone()));
-        std::fs::remove_file(&plain).unwrap();
-        assert_eq!(first_built(disks()), Some(with.clone()));
     }
 
     /// `built_tools_disk` asks in that order, with the codegraph disk named

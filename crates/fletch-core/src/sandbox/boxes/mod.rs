@@ -1035,10 +1035,13 @@ pub fn startup(workspace: &crate::workspace::WorkspaceManager) {
         // so a CLI update since the last run shows here first: start its disk
         // now rather than at the first boot that misses it. Skips a settled disk.
         setup::prebuild_tools();
-        // And the disks an earlier update superseded go, off this thread.
+        // And the disks an earlier update superseded go, and the one the next
+        // boot takes is hashed against its marker, off this thread: a launch
+        // checks only the marker's size.
         for provider in fletch_box::tools::PROVIDERS {
             if supports_provider(provider) {
                 registry::sweep_tools_disks_in_background(provider.to_string());
+                registry::verify_tools_disks_in_background(provider.to_string());
             }
         }
     }

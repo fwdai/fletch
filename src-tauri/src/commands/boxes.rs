@@ -36,6 +36,13 @@ pub fn box_image_cancel() -> Result<()> {
     engine::box_image_cancel_impl()
 }
 
+/// Build a provider's tools disk now, past the backoff after failed builds;
+/// the Retry of a failed `box:tools`.
+#[tauri::command]
+pub fn box_tools_retry(provider: String) -> Result<()> {
+    engine::box_tools_retry_impl(&provider)
+}
+
 /// The registry's phase for one agent's box.
 #[tauri::command]
 pub fn box_state(agent_id: String) -> fletch_core::sandbox::boxes::registry::BoxStateReport {

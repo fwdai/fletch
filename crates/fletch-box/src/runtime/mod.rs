@@ -451,11 +451,8 @@ impl Vm {
         // libkrun binds listen-mode sockets itself and fails with EEXIST on a
         // stale path.
         for (_, socket) in &spec.listen_ports {
-            match std::fs::remove_file(socket) {
-                Ok(()) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => return Err(Error::io(format!("remove {}", socket.display()))(e)),
-            }
+            crate::fsutil::remove_if_exists(socket)
+                .map_err(Error::io(format!("remove {}", socket.display())))?;
         }
         let console = File::create(&spec.console)
             .map_err(Error::io(format!("create {}", spec.console.display())))?;

@@ -262,30 +262,81 @@ async fn wait_for_image(on_progress: &mut impl FnMut(String)) -> Result<Installe
 /// codegraph (`registry::tools_disk_settled`). Off the caller's thread: the
 /// probe and the CLI version lookups run processes.
 pub fn prebuild_tools() {
-    crate::host::spawn(async {
-        let planned = tokio::task::spawn_blocking(|| {
-            let ready = ready_now()?;
-            let providers: Vec<String> = fletch_box::tools::PROVIDERS
+    start_tools_builds(
+        || {
+            fletch_box::tools::PROVIDERS
                 .iter()
                 .filter(|p| super::supports_provider(p))
                 .filter(|p| crate::agent::cached_provider_version(p).is_some())
+                .filter(|p| !registry::tools_disk_settled(p))
                 .map(|p| p.to_string())
-                .collect();
-            Ok::<_, Error>((ready, providers))
+                .collect()
+        },
+        |e| tracing::info!(error = %e, "no tools prebuild: the box runtime is not ready"),
+    );
+}
+
+/// Build `provider`'s tools disk now, whatever the backoff after failed builds
+/// says (`BoxRegistry::reset_tools_backoff`): the Retry of a failed
+/// `box:tools`. In the background like [`prebuild_tools`], joining a build
+/// already running. With the image not installed, the install starts instead
+/// and builds the disks once it is in.
+pub fn retry_tools(provider: &str) -> Result<()> {
+    if !settings::enabled() {
+        return Err(Error::Other(
+            "box sandbox is off; enable it in Developer settings".into(),
+        ));
+    }
+    if !super::supports_provider(provider) {
+        return Err(Error::Other(format!(
+            "boxes have no tools disk for `{provider}`"
+        )));
+    }
+    registry::BoxRegistry::global().reset_tools_backoff(provider);
+    if !matches!(super::installed_image(), Ok(Some(_))) {
+        return start_install();
+    }
+    let (provider, unready) = (provider.to_string(), provider.to_string());
+    start_tools_builds(
+        move || vec![provider],
+        // The UI would still read the old failure: say why nothing started.
+        move |e| {
+            tracing::info!(
+                provider = unready,
+                error = %e,
+                "no tools retry: the box runtime is not ready"
+            );
+            registry::emit_tools_failed(&unready, e.to_string());
+        },
+    );
+    Ok(())
+}
+
+/// Start a tools disk build for each provider `pick` names once the box
+/// runtime is ready ([`ready_now`]), joining any running; `unready` hears why
+/// it is not. In the background, the probe and `pick` off the runtime: they
+/// run processes.
+fn start_tools_builds(
+    pick: impl FnOnce() -> Vec<String> + Send + 'static,
+    unready: impl FnOnce(Error) + Send + 'static,
+) {
+    crate::host::spawn(async move {
+        let planned = tokio::task::spawn_blocking(move || match ready_now() {
+            Ok(ready) => Some((ready, pick())),
+            Err(e) => {
+                unready(e);
+                None
+            }
         })
         .await;
         match planned {
-            Ok(Ok((ready, providers))) => {
+            Ok(Some((ready, providers))) => {
                 for provider in providers {
-                    if !registry::tools_disk_settled(&provider) {
-                        registry::BoxRegistry::global().start_tools_build(&ready, &provider);
-                    }
+                    drop(registry::BoxRegistry::global().start_tools_build(&ready, &provider));
                 }
             }
-            Ok(Err(e)) => {
-                tracing::info!(error = %e, "no tools prebuild: the box runtime is not ready")
-            }
-            Err(e) => tracing::warn!(error = %e, "tools prebuild task failed"),
+            Ok(None) => {}
+            Err(e) => tracing::warn!(error = %e, "tools build task failed"),
         }
     });
 }

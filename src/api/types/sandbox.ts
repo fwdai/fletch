@@ -92,12 +92,14 @@ export interface BoxImageStatus {
 }
 
 /** One provider's tools disk (the CLI a box runs): the `box:tools` event and
- *  a row of `box_runtime_probe`. */
+ *  a row of `box_runtime_probe`. `failed` carries `error`, and `retry_at`
+ *  (unix ms) while the backoff holds the next automatic build off. */
 export interface BoxToolsStatus {
   provider: string;
   version: string;
   phase: "missing" | "building" | "ready" | "failed";
   error?: string;
+  retry_at?: number;
 }
 
 /** `box_runtime_probe`: can this host boot a box, item by item. `runtime_ok`

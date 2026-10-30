@@ -93,10 +93,7 @@ impl Dirty {
     }
 
     pub fn clear(&self) -> io::Result<()> {
-        match std::fs::remove_file(&self.0) {
-            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
-            other => other,
-        }
+        crate::fsutil::remove_if_exists(&self.0)
     }
 }
 

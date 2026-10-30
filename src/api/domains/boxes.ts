@@ -21,6 +21,9 @@ export const boxesApi = {
    *  is running, or with the flag off. */
   boxImageInstall: () => invoke<void>("box_image_install"),
   boxImageCancel: () => invoke<void>("box_image_cancel"),
+  /** Build a provider's tools disk now, past the backoff that holds builds
+   *  off after failures; the outcome arrives as `onBoxTools`. */
+  boxToolsRetry: (provider: string) => invoke<void>("box_tools_retry", { provider }),
   /** The registry's phase for one agent's box. */
   boxState: (agentId: string) => invoke<BoxStateEvent>("box_state", { agentId }),
   /** Stop the agent's box now; resolves to which rung of the ladder worked. */

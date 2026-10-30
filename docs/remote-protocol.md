@@ -912,6 +912,7 @@ allowlist; any op not listed returns `{ ok: false, error: "unknown op" }`.
 | `box_image_status` | `{}` — the pinned guest image's install state; `box:image` carries every change after | `BoxImageStatus` |
 | `box_image_install` | `{}` — download this build's pinned image in the background, then build the tools disks; a no-op while an install runs, so it is also the Retry after a failure. Refused with the flag off | `null` |
 | `box_image_cancel` | `{}` — stop the running download; refused when none runs | `null` |
+| `box_tools_retry` | `{ provider }` — build the provider's tools disk now: after a failed build, a launch or the prebuild builds again only once a backoff has passed (1, 5, 30 minutes, then 2 hours between attempts), and this skips it. Nothing builds by itself when the backoff ends. With the box runtime not ready it starts nothing and sends a `box:tools` `failed` saying why. In the background; the outcome arrives as `box:tools`. With the image not installed it starts the install, which builds the disks after. Refused with the flag off and for a provider boxes do not run | `null` |
 | `box_state` | `{ agentId }` — the registry's phase for one agent's box, as the `box:state` event spells it | `BoxStateEvent` |
 | `box_stop` | `{ agentId }` — stop the agent's box now through the stop ladder; answers which rung worked (`control` \| `sysrq` \| `term` \| `killed` \| `alreadyexited`). The box's disk stays; the next launch boots it again | `string` |
 | `box_egress_allow` | `{ projectId, pattern }` — add one host pattern to the project's egress allow-list (`box.egress_allow`) and update its running boxes; refused for a pattern that does not parse | `string[]` (the list as stored) |
@@ -1367,7 +1368,9 @@ The `box:*` events are the box sandbox's (docs/boxes-spec.md §9): one
 agent's box changing phase (`preparing` carries `detail`, what it waits for),
 a connection its egress proxy answered, the image install's progress and
 outcome, and a provider's tools disk build. All of them happen on the host, so
-a remote Settings page and workspace follow them as the desktop's do.
+a remote Settings page and workspace follow them as the desktop's do. A
+`box:tools` with `phase: "failed"` carries `error` and, while the backoff
+holds a launch's or the prebuild's next build off, `retry_at` (unix ms); nothing builds at that time by itself. `box_tools_retry` builds now.
 
 `box:policy { project_id }` says what boxes may reach changed in the app: the
 user's global list (`project_id: null`) or one project's in-app additions.
