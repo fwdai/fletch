@@ -1,15 +1,18 @@
 // Desktop chores: reveal a folder, open an editor on this machine, this
 // client's telemetry and feedback. Local whatever environment is active.
 import { invokeLocal } from "../invoke";
-import type { DetectedEditor } from "../types/providers";
+import type { DetectedEditor, OpenInEditorOutcome } from "../types/providers";
 
 export const miscApi = {
   revealLogs: () => invokeLocal<void>("reveal_logs"),
   /** Editors installed on this machine, in picker order. */
   detectEditors: () => invokeLocal<DetectedEditor[]>("detect_editors"),
-  /** Open an agent's checkout in the chosen editor. */
-  openInEditor: (agentId: string, editorId: string) =>
-    invokeLocal<void>("open_in_editor", { agentId, editorId }),
+  /** Open an agent's checkout in the chosen editor. For a box checkout the
+   *  editor connects over ssh; `setupConsent` lets Fletch add its `Include`
+   *  line to the editor's ssh config and install the editor's remote
+   *  extension, once the user has agreed. */
+  openInEditor: (agentId: string, editorId: string, setupConsent = false) =>
+    invokeLocal<OpenInEditorOutcome>("open_in_editor", { agentId, editorId, setupConsent }),
   // Anonymous usage telemetry. Persists the opt-out flag and toggles the live
   // pipeline (events themselves are emitted from the backend).
   setTelemetryEnabled: (enabled: boolean) =>

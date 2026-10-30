@@ -152,7 +152,7 @@ const ACTIONS: Record<string, Action> = {
     run: () => {
       const s = useAppStore.getState();
       const agent = surfaceAgent(s);
-      if (agent) void openInPreferredEditor(agent.id).catch((e) => s.setLastError(String(e)));
+      if (agent) void openInPreferredEditor(agent).catch((e) => s.setLastError(String(e)));
     },
   },
   stopAgent: {

@@ -42,7 +42,17 @@ export interface DetectedEditor {
   id: string;
   label: string;
   kind: "editor" | "terminal";
+  /** Can open a checkout that lives in a box, over ssh (the VS Code family). */
+  remote: boolean;
 }
+
+/** What `open_in_editor` did: `needs_setup` is a box checkout whose editor
+ *  is not set up for it yet — the ssh config missing Fletch's `Include`
+ *  and/or the remote extension the editor lacks. Show both, then call again
+ *  with consent. */
+export type OpenInEditorOutcome =
+  | "opened"
+  | { needs_setup: { ssh_config: string | null; extension: string | null } };
 
 /** Payload of the `agent-install:state` event: progress of a one-click agent
  *  CLI install (`api.installAgent`). `line` carries installer output while

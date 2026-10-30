@@ -32,6 +32,15 @@
 .oe-main:hover {
   background: var(--hover);
 }
+/* a box workspace with no remote-capable editor installed: the tooltip says
+ * which editors can open it */
+.oe-main:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.oe-main:disabled:hover {
+  background: transparent;
+}
 .oe-caret {
   display: inline-flex;
   align-items: center;
