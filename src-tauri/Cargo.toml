@@ -144,8 +144,9 @@ codegen-units = 1
 strip = true
 # The shipped binary stays stripped; its symbols go to a separate `.dSYM`
 # (line tables only: function names and lines, no variable info), which the
-# release workflow uploads to Sentry so native crash reports and minidumps
-# symbolicate. Without it every frame of ours read as `Fletch + 0x…`.
+# release workflow attaches to the GitHub release, so a crash report's frames
+# can be symbolicated (docs/debugging-crashes.md). Without it every frame of
+# ours reads as `Fletch + 0x…`.
 debug = "line-tables-only"
 split-debuginfo = "packed"
 

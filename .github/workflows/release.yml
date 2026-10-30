@@ -136,21 +136,30 @@ jobs:
       # hosted runners cannot boot a VM, so the boot half of the check is
       # skipped (packaging/box-bundle/README.md shows the full check for a Mac).
       # The release profile writes a `.dSYM` per architecture beside the
-      # stripped binary (src-tauri/Cargo.toml); Sentry matches them to crash
-      # reports by Mach-O UUID. Skipped until the Sentry secrets exist.
-      - name: Upload debug symbols to Sentry
+      # stripped binary (src-tauri/Cargo.toml). Attached to the release so a
+      # crash report's `Fletch + 0x…` frames can be symbolicated by hand for
+      # that exact version: `atos -o <dSYM>/Contents/Resources/DWARF/* -arch
+      # arm64 -l <load address> <address>` (docs/debugging-crashes.md). A
+      # missing dSYM warns rather than failing an already-published release.
+      - name: Attach debug symbols to the release
         env:
-          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
-          SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
-          SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if [ -z "$SENTRY_AUTH_TOKEN" ]; then
-            echo "SENTRY_AUTH_TOKEN is not set; skipping the symbol upload"
-            exit 0
+          VERSION=$(jq -r .version src-tauri/tauri.conf.json)
+          OUT="$RUNNER_TEMP/Fletch-$VERSION-dSYMs"
+          mkdir -p "$OUT"
+          for ARCH in aarch64 x86_64; do
+            DSYM="src-tauri/target/$ARCH-apple-darwin/release/fletch.dSYM"
+            if [ -d "$DSYM" ]; then
+              ditto "$DSYM" "$OUT/$ARCH/fletch.dSYM"
+            else
+              echo "::warning::no dSYM at $DSYM"
+            fi
+          done
+          if [ -n "$(ls -A "$OUT")" ]; then
+            ditto -c -k --keepParent "$OUT" "$OUT.zip"
+            gh release upload "v$VERSION" "$OUT.zip" --clobber
           fi
-          npx --yes @sentry/cli@2 debug-files upload --type dsym --wait \
-            src-tauri/target/aarch64-apple-darwin/release \
-            src-tauri/target/x86_64-apple-darwin/release
 
       - name: Check the box runtime in the app
         run: packaging/box-bundle/check.sh src-tauri/target/universal-apple-darwin/release/bundle/macos/Fletch.app
