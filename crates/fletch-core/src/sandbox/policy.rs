@@ -625,6 +625,210 @@ pub fn resolve_existing_prefix(p: &Path) -> PathBuf {
     }
 }
 
+/// Link hops a walk follows before giving up, as the kernel's `MAXSYMLINKS`.
+const MAX_LINK_HOPS: usize = 32;
+
+/// Which links the host may follow when it resolves a path it is about to
+/// grant or mount.
+///
+/// [`resolve_existing_prefix`] follows every link, which is right for the
+/// host's own layout (`/tmp` → `/private/tmp`, a home or `~/.fletch` moved
+/// behind a link) and exactly wrong for a link an agent left in a folder it
+/// can write: replace `~/.npm` with a link to `~` and the next launch's
+/// `(subpath …)` — or a container's bind mount, which the runtime resolves
+/// itself — hands the agent the whole home. So a walk stops at any link whose
+/// entry an agent can write, and a grant's own entry counts as one wherever it
+/// sits (the grant covers it). What it stops at stays in the path, which the
+/// sandbox — resolving every access — never matches: the agent's writes there
+/// are denied, never redirected. A user who keeps such a folder behind a link
+/// of their own loses agent writes to it the same way, fail-closed.
+///
+/// The temp trees are left out: no grant sits below them by Fletch's own
+/// layout, and a grant's own entry is guarded wherever it is.
+#[derive(Debug, Clone)]
+pub struct AgentLinks {
+    /// Agent-writable from their own entry down: every provider's state dirs,
+    /// the scratch dirs, `~/.claude.json`.
+    within: Vec<PathBuf>,
+    /// Agent-writable strictly below: the roots every agent's workspace,
+    /// mailbox, run tree and toolchain cache hang off, each agent's grant
+    /// covering its own entry there.
+    below: Vec<PathBuf>,
+}
+
+/// A path as [`AgentLinks`] resolved it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Resolved {
+    pub path: PathBuf,
+    /// The link the walk refused to follow; `path` still runs through it.
+    pub planted: Option<PathBuf>,
+}
+
+impl AgentLinks {
+    /// The folders any agent on this host can write, whatever its launch.
+    pub fn for_home(home: &Path) -> Self {
+        let within = all_provider_state_dirs(home)
+            .into_iter()
+            .chain(agent_scratch_dirs(home))
+            .chain(std::iter::once(home.join(".claude.json")));
+        let below = [
+            crate::workspace::checkouts_root().ok(),
+            crate::rpc::rpc_root().ok(),
+            crate::workflow::blackboard::runs_root().ok(),
+            Some(super::toolchain_cache::toolchain_cache_dir(home)),
+        ]
+        .into_iter()
+        .flatten();
+        Self {
+            within: with_resolved(within),
+            below: with_resolved(below),
+        }
+    }
+
+    fn agent_writable(&self, entry: &Path) -> bool {
+        self.within.iter().any(|dir| entry.starts_with(dir))
+            || self
+                .below
+                .iter()
+                .any(|root| entry.starts_with(root) && entry != root)
+    }
+
+    /// `p` with its links resolved, except one whose entry an agent can
+    /// write: the walk stops there and the rest is appended as given. A link
+    /// it does follow is walked the same way, so a link of the user's cannot
+    /// carry it through one the agent planted. A missing tail, or a dangling
+    /// link, is appended as given, as [`resolve_existing_prefix`] leaves it.
+    pub fn resolve(&self, p: &Path) -> Resolved {
+        use std::collections::VecDeque;
+        use std::ffi::OsString;
+        use std::path::Component;
+
+        if !p.is_absolute() {
+            return Resolved {
+                path: resolve_existing_prefix(p),
+                planted: None,
+            };
+        }
+        let mut pending: VecDeque<OsString> = p
+            .components()
+            .filter(|c| !matches!(c, Component::RootDir | Component::Prefix(_)))
+            .map(|c| c.as_os_str().to_os_string())
+            .collect();
+        let rest = |mut at: PathBuf, pending: VecDeque<OsString>| {
+            at.extend(pending);
+            at
+        };
+        let mut out = PathBuf::from("/");
+        let mut hops = 0;
+        while let Some(name) = pending.pop_front() {
+            if name == "." {
+                continue;
+            }
+            if name == ".." {
+                out.pop();
+                continue;
+            }
+            let next = out.join(&name);
+            match std::fs::symlink_metadata(&next) {
+                Ok(meta) if meta.file_type().is_symlink() => {
+                    if self.agent_writable(&next) {
+                        return Resolved {
+                            path: rest(next.clone(), pending),
+                            planted: Some(next),
+                        };
+                    }
+                    let target = match std::fs::read_link(&next) {
+                        Ok(target) if hops < MAX_LINK_HOPS && next.exists() => target,
+                        _ => {
+                            return Resolved {
+                                path: rest(next, pending),
+                                planted: None,
+                            }
+                        }
+                    };
+                    hops += 1;
+                    if target.is_absolute() {
+                        out = PathBuf::from("/");
+                    }
+                    for c in target.components().rev() {
+                        if !matches!(c, Component::RootDir | Component::Prefix(_)) {
+                            pending.push_front(c.as_os_str().to_os_string());
+                        }
+                    }
+                }
+                Ok(_) => out = next,
+                Err(_) => {
+                    return Resolved {
+                        path: rest(next, pending),
+                        planted: None,
+                    }
+                }
+            }
+        }
+        Resolved {
+            path: out,
+            planted: None,
+        }
+    }
+
+    /// [`resolve`](Self::resolve) for a path about to be granted: the grant
+    /// covers its own entry, so a link there is the agent's to plant wherever
+    /// it sits, and is never followed.
+    pub fn resolve_grant(&self, p: &Path) -> Resolved {
+        let (Some(parent), Some(name)) = (p.parent(), p.file_name()) else {
+            return self.resolve(p);
+        };
+        let parent = self.resolve(parent);
+        let path = parent.path.join(name);
+        if parent.planted.is_some() {
+            return Resolved {
+                path,
+                planted: parent.planted,
+            };
+        }
+        let is_link = std::fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_symlink());
+        Resolved {
+            planted: is_link.then(|| path.clone()),
+            path,
+        }
+    }
+
+    /// A root the host made for this launch (its workspace, its mailbox, a
+    /// run's blackboard or tree), resolved for its grant. A planted link on
+    /// the way is refused rather than granted as wherever it points, and so
+    /// is a root that isn't there.
+    pub fn grant_root(&self, p: &Path) -> std::io::Result<PathBuf> {
+        let resolved = self.resolve_grant(p);
+        if let Some(link) = resolved.planted {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "{} is a link in a folder agents can write; not following it",
+                    link.display()
+                ),
+            ));
+        }
+        std::fs::metadata(&resolved.path)?;
+        Ok(resolved.path)
+    }
+}
+
+/// `paths` with each one's [`resolve_existing_prefix`] form beside it: a walk
+/// compares resolved entries, and a folder reached through a link of the
+/// host's is writable at its target.
+fn with_resolved(paths: impl IntoIterator<Item = PathBuf>) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = Vec::new();
+    for p in paths {
+        let resolved = resolve_existing_prefix(&p);
+        for form in [p, resolved] {
+            if !out.contains(&form) {
+                out.push(form);
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1067,5 +1271,101 @@ mod tests {
             resolve_existing_prefix(&dir),
             std::fs::canonicalize(&dir).unwrap()
         );
+    }
+
+    /// A tree standing in for a home: `scratch` is agent-writable from its
+    /// entry down, `roots` below (as the checkouts root is), and `outside` is
+    /// the rest of the user's disk.
+    fn agent_tree() -> (tempfile::TempDir, AgentLinks, PathBuf, PathBuf) {
+        let td = tempfile::tempdir().unwrap();
+        let base = std::fs::canonicalize(td.path()).unwrap();
+        let outside = base.join("outside");
+        for d in ["scratch", "roots/ws-1", "outside", "real-parent"] {
+            std::fs::create_dir_all(base.join(d)).unwrap();
+        }
+        let links = AgentLinks {
+            within: vec![base.join("scratch")],
+            below: vec![base.join("roots")],
+        };
+        (td, links, base, outside)
+    }
+
+    #[test]
+    fn a_link_in_an_agent_writable_folder_is_never_followed() {
+        let (_td, links, base, outside) = agent_tree();
+        // `~/.npm/x` → the user's disk, planted by the agent.
+        std::os::unix::fs::symlink(&outside, base.join("scratch/x")).unwrap();
+        let resolved = links.resolve(&base.join("scratch/x/deeper"));
+        assert_eq!(resolved.planted, Some(base.join("scratch/x")));
+        assert_eq!(resolved.path, base.join("scratch/x/deeper"));
+    }
+
+    #[test]
+    fn an_agents_own_root_entry_is_never_followed() {
+        // The agent renames its workspace dir away and leaves a link: an entry
+        // strictly below a root the host keeps.
+        let (_td, links, base, outside) = agent_tree();
+        std::fs::remove_dir(base.join("roots/ws-1")).unwrap();
+        std::os::unix::fs::symlink(&outside, base.join("roots/ws-1")).unwrap();
+        assert_eq!(
+            links.resolve(&base.join("roots/ws-1/repo")).planted,
+            Some(base.join("roots/ws-1"))
+        );
+        assert!(links.grant_root(&base.join("roots/ws-1")).is_err());
+    }
+
+    #[test]
+    fn a_hosts_own_links_are_still_followed() {
+        // `/tmp` → `/private/tmp`, or a root the host keeps moved behind a
+        // link: neither entry is the agent's to write.
+        let (_td, links, base, _outside) = agent_tree();
+        std::os::unix::fs::symlink(base.join("real-parent"), base.join("parent")).unwrap();
+        let resolved = links.resolve(&base.join("parent/not-yet"));
+        assert_eq!(resolved.planted, None);
+        assert_eq!(resolved.path, base.join("real-parent/not-yet"));
+
+        let below = AgentLinks {
+            within: Vec::new(),
+            below: vec![base.join("parent")],
+        };
+        assert_eq!(below.resolve(&base.join("parent")).planted, None);
+    }
+
+    #[test]
+    fn a_users_link_cannot_carry_the_walk_through_a_planted_one() {
+        let (_td, links, base, outside) = agent_tree();
+        std::os::unix::fs::symlink(&outside, base.join("scratch/x")).unwrap();
+        std::os::unix::fs::symlink(base.join("scratch/x"), base.join("users-link")).unwrap();
+        assert_eq!(
+            links.resolve(&base.join("users-link/y")).planted,
+            Some(base.join("scratch/x"))
+        );
+    }
+
+    #[test]
+    fn a_grants_own_entry_is_never_followed_wherever_it_sits() {
+        // Outside every agent-writable folder, yet granted: the grant covers
+        // the entry, so the agent can replace it.
+        let (_td, links, base, outside) = agent_tree();
+        let granted = base.join("real-parent/granted");
+        std::os::unix::fs::symlink(&outside, &granted).unwrap();
+        let resolved = links.resolve_grant(&granted);
+        assert_eq!(resolved.planted, Some(granted.clone()));
+        assert_eq!(resolved.path, granted);
+
+        let real = base.join("real-parent/real");
+        std::fs::create_dir(&real).unwrap();
+        assert_eq!(links.grant_root(&real).unwrap(), real);
+        assert!(links.grant_root(&base.join("real-parent/missing")).is_err());
+    }
+
+    #[test]
+    fn a_dangling_link_is_kept_as_given() {
+        let (_td, links, base, _outside) = agent_tree();
+        let link = base.join("real-parent/dangling");
+        std::os::unix::fs::symlink(base.join("nowhere"), &link).unwrap();
+        let resolved = links.resolve(&link.join("leaf"));
+        assert_eq!(resolved.planted, None);
+        assert_eq!(resolved.path, link.join("leaf"));
     }
 }

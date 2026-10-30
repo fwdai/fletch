@@ -56,7 +56,7 @@ use std::path::{Path, PathBuf};
 use super::engine::{
     AgentLaunchCtx, EngineKind, EnvDelivery, KillHandle, LaunchPlan, SandboxEngine,
 };
-use super::policy;
+use super::policy::{self, AgentLinks};
 use crate::error::{Error, Result};
 
 pub struct SandboxExecEngine;
@@ -287,13 +287,14 @@ fn engine_data_dir_rules(data_dir: &Path, home_s: &str, state_roots: &[&Path]) -
         );
     }
     // Resolved for the same reason as the deny they sit inside: the sandbox
-    // matches resolved paths.
+    // matches resolved paths. Callers hand them over resolved through
+    // `AgentLinks`, which a second, link-following resolution here would undo.
     let reallows = state_roots
         .iter()
         .map(|root| {
             format!(
                 "(allow file-read* file-write* (subpath {}))",
-                sbpl_string(&policy::resolve_existing_prefix(root).to_string_lossy())
+                sbpl_string(&root.to_string_lossy())
             )
         })
         .collect::<Vec<_>>()
@@ -519,7 +520,12 @@ fn deny_appsupport_exec(home_s: &str) -> String {
 /// re-allows before the invariant-2/3/4 denies (or a re-allowed checkout would
 /// take `.git/config` back out of invariant 3). Agent profile only: the Run
 /// panel is the documented weaker boundary, and a dev server never walks home.
-fn deny_macos_privacy_dirs(home: &Path, writable: &[&Path], readable: &[&Path]) -> String {
+fn deny_macos_privacy_dirs(
+    links: &AgentLinks,
+    home: &Path,
+    writable: &[&Path],
+    readable: &[&Path],
+) -> String {
     let denied = policy::macos_privacy_dirs(home);
     let inside = |root: &Path| {
         let resolved = policy::resolve_existing_prefix(root);
@@ -534,12 +540,12 @@ fn deny_macos_privacy_dirs(home: &Path, writable: &[&Path], readable: &[&Path]) 
         .join("\n");
     let mut reallows: Vec<String> = Vec::new();
     for root in writable.iter().filter(|r| inside(r)) {
-        for line in subpath_grants([root.to_path_buf()]) {
+        for line in subpath_grants(links, [root.to_path_buf()]) {
             reallows.push(format!("(allow file-read* file-write*\n{line})"));
         }
     }
     for root in readable.iter().filter(|r| inside(r)) {
-        for line in subpath_grants([root.to_path_buf()]) {
+        for line in subpath_grants(links, [root.to_path_buf()]) {
             reallows.push(format!("(allow file-read*\n{line})"));
         }
     }
@@ -636,8 +642,10 @@ pub fn build_run_profile(
     toolchain_cache: &Path,
     extra_writable: &[PathBuf],
 ) -> Result<String> {
-    let writable_root = canonical(writable_root)?;
     let home = canonical(home)?;
+    let links = AgentLinks::for_home(&home);
+    let writable_root = launch_root(&links, writable_root)?;
+    let toolchain_cache_resolved = granted_form(&links, toolchain_cache);
     let writable_root_s = sbpl_string(&writable_root.to_string_lossy());
     let home_s = home.to_string_lossy();
 
@@ -662,7 +670,7 @@ pub fn build_run_profile(
     // shares its agents' warm caches. Run also keeps RUN_TOOLCHAIN_DIRS below,
     // so a build that ignores the redirect env still writes its default location
     // — belt and braces, since Run's boundary is deliberately the looser one.
-    grants.extend(subpath_grants([toolchain_cache.to_path_buf()]));
+    grants.extend(subpath_grants(&links, [toolchain_cache.to_path_buf()]));
     // Run-only toolchain + broad-state dirs, including the whole `~/.config`
     // and `~/.local` the agent profile pointedly withholds (see the const's
     // doc-comment). `~/.local` here supersets the scratch `~/.local/share`/
@@ -689,7 +697,7 @@ pub fn build_run_profile(
     // `deny_engine_data_dir`.
     let deny_engine_data = block_after(deny_engine_data_dir(
         &home_s,
-        &[writable_root.as_path(), toolchain_cache],
+        &[writable_root.as_path(), &toolchain_cache_resolved],
     ));
     let app_data_dev = sbpl_string(&format!(
         "{home_s}/Library/Application Support/{}/dev",
@@ -865,9 +873,13 @@ pub fn build_profile(
     codex_home: Option<&Path>,
     source_repos: &[PathBuf],
 ) -> Result<String> {
-    let writable_root = canonical(writable_root)?;
-    let rpc_root = canonical(rpc_dir)?;
     let home = canonical(home)?;
+    // Every root below is resolved through this, never by plain
+    // canonicalization: see `AgentLinks`.
+    let links = AgentLinks::for_home(&home);
+    let writable_root = launch_root(&links, writable_root)?;
+    let rpc_root = launch_root(&links, rpc_dir)?;
+    let toolchain_cache_resolved = granted_form(&links, toolchain_cache);
 
     let writable_root_s = sbpl_string(&writable_root.to_string_lossy());
     let rpc_root_s = sbpl_string(&rpc_root.to_string_lossy());
@@ -875,13 +887,13 @@ pub fn build_profile(
 
     // A workflow step agent's blackboard lives outside the checkout tree (under
     // `~/.fletch/runs/`), so it needs its own writable subpath — the same shape
-    // as the rpc mailbox grant. Canonicalized so the SBPL path matches what the
+    // as the rpc mailbox grant. Resolved so the SBPL path matches what the
     // sandbox sees at write time; empty for non-workflow agents.
-    let blackboard_grant = match blackboard {
-        Some(board) => {
-            let board = canonical(board)?;
-            format!("\n  (subpath {})", sbpl_string(&board.to_string_lossy()))
-        }
+    let blackboard_root = blackboard
+        .map(|board| launch_root(&links, board))
+        .transpose()?;
+    let blackboard_grant = match &blackboard_root {
+        Some(board) => format!("\n  (subpath {})", sbpl_string(&board.to_string_lossy())),
         None => String::new(),
     };
 
@@ -889,7 +901,7 @@ pub fn build_profile(
     // writable root because the run owns it — so without this grant the agent
     // couldn't write the files it was spawned to change.
     let adopted = match adopted_workspace {
-        Some(dir) => Some(canonical(dir)?),
+        Some(dir) => Some(launch_root(&links, dir)?),
         None => None,
     };
     let adopted_grant = match &adopted {
@@ -953,7 +965,22 @@ pub fn build_profile(
         // rejection every env-relocated policy dir gets (invariant 1;
         // fail-closed: claude's config writes are denied, never a hijack).
         .filter(|p| !policy::bin_resident(p))
-        .map(policy::resolve_existing_prefix)
+        // Followed only through links no agent could have planted: one that
+        // was drops the relocation's grants, fail-closed, rather than grant
+        // them wherever it points.
+        .and_then(|p| {
+            let resolved = links.resolve(p);
+            match resolved.planted {
+                Some(link) => {
+                    tracing::warn!(
+                        link = %link.display(),
+                        "CLAUDE_CONFIG_DIR runs through a link in a folder agents can write; not granting it"
+                    );
+                    None
+                }
+                None => Some(resolved.path),
+            }
+        })
         .filter(|resolved| resolved.to_string_lossy() != claude_default_dir.to_string_lossy());
     let claude_config_extra = relocated_claude_dir
         .as_ref()
@@ -964,9 +991,9 @@ pub fn build_profile(
             // inside the dir (`<dir>/.claude.json`, the twin of the default's
             // `~/.claude.json` literal below), so that file is granted too —
             // without it a managed account can't record its onboarding/login.
-            let mut lines = subpath_grants(policy::claude_write_island_dirs(resolved));
+            let mut lines = subpath_grants(&links, policy::claude_write_island_dirs(resolved));
             lines.extend(claude_credentials_rules(resolved));
-            lines.extend(literal_grants(&resolved.join(".claude.json")));
+            lines.extend(literal_grants(&links, &resolved.join(".claude.json")));
             format!("\n{}", lines.join("\n"))
         })
         .unwrap_or_default();
@@ -976,7 +1003,12 @@ pub fn build_profile(
     // that true wherever it lives. Its shared items are links into the user's
     // codex home, which is not granted, so a write through one is denied.
     let codex_home_grant = codex_home
-        .map(|dir| format!("\n{}", subpath_grants([dir.to_path_buf()]).join("\n")))
+        .map(|dir| {
+            format!(
+                "\n{}",
+                subpath_grants(&links, [dir.to_path_buf()]).join("\n")
+            )
+        })
         .unwrap_or_default();
     // The write allow-list is the engine-independent policy, not a list local to
     // this file: every provider's host-persistence dirs (claude's config-dir
@@ -991,6 +1023,7 @@ pub fn build_profile(
     // Plus the project's toolchain cache root, the one grant that replaces an
     // open-ended list of per-toolchain default locations (`super::toolchain_cache`).
     let policy_dirs = subpath_grants(
+        &links,
         policy::all_provider_state_dirs(&home)
             .into_iter()
             .chain(policy::agent_scratch_dirs(&home))
@@ -1007,14 +1040,17 @@ pub fn build_profile(
     // the read-only portable-git exception is emitted — see `deny_engine_data_dir`.
     let deny_engine_data = block_after(deny_engine_data_dir(
         &home_s,
-        &[writable_root.as_path(), rpc_root.as_path(), toolchain_cache],
+        &[
+            writable_root.as_path(),
+            rpc_root.as_path(),
+            &toolchain_cache_resolved,
+        ],
     ));
 
     // The folders macOS guards with a privacy prompt, denied so an agent's
     // first `find ~` can't raise one — with this launch's own roots and the
     // user's source repos given back when one happens to live inside. Agent
     // profile only, like the invariant denies below.
-    let blackboard_root = blackboard.map(canonical).transpose()?;
     let adopted_writable = adopted.as_deref().filter(|_| !adopted_read_only);
     let adopted_readable = adopted.as_deref().filter(|_| adopted_read_only);
     let writable_roots: Vec<&Path> = [
@@ -1032,7 +1068,8 @@ pub fn build_profile(
         .map(PathBuf::as_path)
         .chain(adopted_readable)
         .collect();
-    let deny_privacy_dirs = deny_macos_privacy_dirs(&home, &writable_roots, &readable_roots);
+    let deny_privacy_dirs =
+        deny_macos_privacy_dirs(&links, &home, &writable_roots, &readable_roots);
 
     // Invariant 3, agent profile only. The Run profile deliberately does NOT
     // carry this: Run executes real project toolchains, and `npm install` on a
@@ -1357,10 +1394,10 @@ impl LoginDeny {
 /// through that check, so it's re-applied here at the emission seam. Skipping
 /// is fail-closed: with the resolved form denied, the provider's writes
 /// through the symlink are refused rather than hijackable.
-fn subpath_grants(dirs: impl IntoIterator<Item = PathBuf>) -> Vec<String> {
+fn subpath_grants(links: &AgentLinks, dirs: impl IntoIterator<Item = PathBuf>) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for dir in dirs {
-        let resolved = policy::resolve_existing_prefix(&dir);
+        let resolved = granted_form(links, &dir);
         for p in [dir, resolved] {
             if policy::bin_resident(&p) {
                 continue;
@@ -1377,9 +1414,9 @@ fn subpath_grants(dirs: impl IntoIterator<Item = PathBuf>) -> Vec<String> {
 /// SBPL `(literal …)` grant lines for one file, in its literal and — when
 /// different — symlink-resolved form, minus any bin-resident form (invariant 1),
 /// the file counterpart of [`subpath_grants`].
-fn literal_grants(file: &Path) -> Vec<String> {
+fn literal_grants(links: &AgentLinks, file: &Path) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
-    for p in [file.to_path_buf(), policy::resolve_existing_prefix(file)] {
+    for p in [file.to_path_buf(), granted_form(links, file)] {
         if policy::bin_resident(&p) {
             continue;
         }
@@ -1500,6 +1537,29 @@ fn sbpl_regex_escape(s: &str) -> String {
 
 fn canonical(p: &Path) -> Result<PathBuf> {
     std::fs::canonicalize(p).map_err(|e| Error::Other(format!("canonicalize {}: {e}", p.display())))
+}
+
+/// A root the host made for this launch, resolved for its grant without
+/// following a link an agent could have planted on the way: the launch fails
+/// rather than grant wherever such a link points ([`AgentLinks::grant_root`]).
+fn launch_root(links: &AgentLinks, p: &Path) -> Result<PathBuf> {
+    links
+        .grant_root(p)
+        .map_err(|e| Error::Other(format!("resolve {}: {e}", p.display())))
+}
+
+/// The resolved form a grant of `p` adds beside its literal one. A link the
+/// walk refused stays in it, so the grant never matches what the link points
+/// at; logged, since the agent's writes there will now be denied.
+fn granted_form(links: &AgentLinks, p: &Path) -> PathBuf {
+    let resolved = links.resolve_grant(p);
+    if let Some(link) = &resolved.planted {
+        tracing::warn!(
+            link = %link.display(),
+            "not granting through a link in a folder agents can write; replace it with the real directory"
+        );
+    }
+    resolved.path
 }
 
 #[cfg(test)]
@@ -2056,21 +2116,27 @@ mod tests {
         );
     }
 
+    /// No agent-writable folders at all: only a grant's own entry is guarded.
+    fn no_agent_links() -> AgentLinks {
+        AgentLinks::for_home(Path::new("/nonexistent-home"))
+    }
+
     #[test]
-    fn subpath_grants_emit_resolved_form_for_symlinked_dirs() {
+    fn subpath_grants_emit_resolved_form_for_dirs_behind_a_host_link() {
         // The sandbox checks resolved write paths: an env-relocated dir behind
         // a symlink (CODEX_HOME=/tmp/codex → /private/tmp/codex) must be
         // granted in resolved form too, or its writes are denied.
         let td = tempfile::tempdir().unwrap();
         let real = td.path().join("real");
-        std::fs::create_dir_all(&real).unwrap();
+        std::fs::create_dir_all(real.join("codex")).unwrap();
         let link = td.path().join("link");
         std::os::unix::fs::symlink(&real, &link).unwrap();
 
-        let grants = subpath_grants([link.clone()]);
-        let canonical_real = std::fs::canonicalize(&real).unwrap();
+        let links = no_agent_links();
+        let grants = subpath_grants(&links, [link.join("codex")]);
+        let canonical_real = std::fs::canonicalize(&real).unwrap().join("codex");
         assert!(
-            grants.contains(&format!("  (subpath \"{}\")", link.display())),
+            grants.contains(&format!("  (subpath \"{}/codex\")", link.display())),
             "literal form kept"
         );
         assert!(
@@ -2080,7 +2146,21 @@ mod tests {
 
         // A dir that resolves to itself yields exactly one grant — no
         // duplicate lines for the common (canonical) case.
-        assert_eq!(subpath_grants([canonical_real]).len(), 1);
+        assert_eq!(subpath_grants(&links, [canonical_real]).len(), 1);
+    }
+
+    #[test]
+    fn subpath_grants_never_follow_a_link_at_the_granted_dir_itself() {
+        // The grant covers its own entry, so the agent can swap the dir for a
+        // link (`~/.npm` → `~`); the next profile must not grant the target.
+        let td = tempfile::tempdir().unwrap();
+        let home = std::fs::canonicalize(td.path()).unwrap().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let npm = home.join(".npm");
+        std::os::unix::fs::symlink(&home, &npm).unwrap();
+
+        let grants = subpath_grants(&no_agent_links(), [npm.clone()]);
+        assert_eq!(grants, vec![format!("  (subpath \"{}\")", npm.display())]);
     }
 
     #[test]
@@ -2095,7 +2175,7 @@ mod tests {
         let link = td.path().join(".claude");
         std::os::unix::fs::symlink(&target, &link).unwrap();
 
-        let grants = subpath_grants([link]);
+        let grants = subpath_grants(&no_agent_links(), [link]);
         assert!(
             grants.is_empty(),
             "no grant may be emitted for a bin-resident dir, got: {grants:?}"
@@ -2434,6 +2514,71 @@ mod tests {
             std::fs::create_dir_all(p).unwrap();
         }
         (td, root, rpc, home)
+    }
+
+    #[test]
+    fn a_link_planted_at_a_writable_dir_never_widens_the_next_profile() {
+        // `rm -rf ~/.npm && ln -s ~ ~/.npm` (or `~/.pi`, or the project's
+        // toolchain cache) from inside the sandbox: the next launch must not
+        // grant the link's target.
+        let (td, root, rpc, home) = sandbox_dirs();
+        let canonical_home = std::fs::canonicalize(&home).unwrap();
+        std::os::unix::fs::symlink(&canonical_home, home.join(".npm")).unwrap();
+        std::os::unix::fs::symlink(&canonical_home, home.join(".pi")).unwrap();
+        let cache = td.path().join("cache");
+        std::os::unix::fs::symlink(&canonical_home, &cache).unwrap();
+
+        let profile = build_profile(
+            &root,
+            &rpc,
+            &home,
+            &cache,
+            None,
+            None,
+            None,
+            false,
+            None,
+            &[],
+        )
+        .unwrap();
+        let run = build_run_profile(&root, &home, &cache, &[]).unwrap();
+        let home_grant = format!("(subpath \"{}\")", canonical_home.display());
+        for (name, profile) in [("agent", &profile), ("run", &run)] {
+            assert!(
+                !profile.contains(&home_grant),
+                "{name} profile grants the home a planted link points at"
+            );
+        }
+        // The link itself is still granted, so the agent can put the real
+        // directory back.
+        assert!(profile.contains(&format!("(subpath \"{}/.npm\")", canonical_home.display())));
+    }
+
+    #[test]
+    fn a_launch_root_replaced_by_a_link_fails_the_launch() {
+        // The agent's grant covers its workspace dir's own entry: renamed away
+        // and replaced by a link, it must not be granted as the link's target.
+        let (td, root, rpc, home) = sandbox_dirs();
+        let outside = td.path().join("outside");
+        std::fs::create_dir(&outside).unwrap();
+        std::fs::remove_dir(&root).unwrap();
+        std::os::unix::fs::symlink(&outside, &root).unwrap();
+
+        let err = build_profile(
+            &root,
+            &rpc,
+            &home,
+            &CACHE,
+            None,
+            None,
+            None,
+            false,
+            None,
+            &[],
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("link"), "{err}");
+        assert!(build_run_profile(&root, &home, &CACHE, &[]).is_err());
     }
 
     #[test]

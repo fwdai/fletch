@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use crate::error::{Error, Result};
 use crate::sandbox::engine::AgentLaunchCtx;
-use crate::sandbox::policy::{opencode_config_dir, opencode_data_dir};
+use crate::sandbox::policy::{opencode_config_dir, opencode_data_dir, AgentLinks};
 
 use super::config_dir::{
     borrowed_object_stores, nondefault_claude_config_dir, xdg_base_is_nondefault,
@@ -373,6 +373,34 @@ pub(crate) fn prepare(
         }
     }
 
+    // Every host path the run will bind. The runtime resolves a source itself,
+    // following every link, so one an agent could have planted on the way
+    // would mount wherever it points: refused here instead.
+    let claude_dir = ctx.home.join(".claude");
+    let mut sources: Vec<&Path> = vec![ctx.writable_root, ctx.rpc_dir, &cache.root];
+    sources.extend(ctx.blackboard);
+    sources.extend(ctx.adopted_workspace());
+    sources.extend(borrowed_object_stores.iter().map(PathBuf::as_path));
+    if provider == ContainerProvider::Claude {
+        sources.push(&claude_dir);
+    }
+    sources.extend(
+        [
+            &claude_config_dir,
+            &projects_src,
+            &codex_home,
+            &oc_data,
+            &oc_config,
+            &pi_data,
+            &cursor_data,
+        ]
+        .into_iter()
+        .flatten()
+        .map(PathBuf::as_path),
+    );
+    sources.extend(codex_shared.iter().map(PathBuf::as_path));
+    refuse_planted_sources(ctx.home, sources)?;
+
     Ok(ContainerLaunch {
         env,
         borrowed_object_stores,
@@ -394,6 +422,27 @@ pub(crate) fn prepare(
         cursor_data,
         mapped,
     })
+}
+
+/// Fail the launch on a bind source that runs through a link an agent could
+/// have planted — at `~/.pi`, at its own workspace dir, under the toolchain
+/// cache — which the runtime would follow to mount the link's target read-write
+/// (see [`AgentLinks`]).
+fn refuse_planted_sources<'a>(
+    home: &Path,
+    sources: impl IntoIterator<Item = &'a Path>,
+) -> Result<()> {
+    let links = AgentLinks::for_home(home);
+    for source in sources {
+        if let Some(link) = links.resolve(source).planted {
+            return Err(Error::Other(format!(
+                "not mounting {}: {} is a link in a folder agents can write; replace it with the real directory",
+                source.display(),
+                link.display()
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// The `/etc/passwd` of a uid-mapped container: root, plus the mapped `user`
@@ -449,6 +498,45 @@ mod tests {
             passwd_contents("12345:12345", Path::new("/home/svc")),
             "root:x:0:0:root:/root:/bin/sh\nfletch:x:12345:12345:fletch:/home/svc:/bin/sh\n",
         );
+    }
+
+    /// `~/.pi` swapped for a link to the home by an agent (a seatbelt one can
+    /// write it): the runtime would follow it and mount the whole home
+    /// read-write, so the launch fails instead.
+    #[test]
+    fn a_mount_source_behind_a_planted_link_fails_the_launch() {
+        let td = tempfile::tempdir().unwrap();
+        let home = std::fs::canonicalize(td.path()).unwrap().join("home");
+        let root = td.path().join("w");
+        let rpc = td.path().join("rpc");
+        for dir in [&home, &root, &rpc] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        std::os::unix::fs::symlink(&home, home.join(".pi")).unwrap();
+        // A pi login behind the link, so auth resolves and the mount is reached.
+        std::fs::create_dir_all(home.join("agent")).unwrap();
+        std::fs::write(home.join("agent/auth.json"), "{}").unwrap();
+        let ctx = AgentLaunchCtx {
+            agent_id: "a1",
+            project_id: "p1",
+            provider: "pi",
+            writable_root: &root,
+            source_repos: &[],
+            rpc_dir: &rpc,
+            cwd: &root,
+            home: &home,
+            interactive: false,
+            blackboard: None,
+            account_dir: None,
+            oauth_token: None,
+            codex_home: None,
+            adopted_read_only: false,
+        };
+
+        let err = prepare(&ctx, ContainerProvider::Pi, None)
+            .err()
+            .expect("a planted link must not be mounted");
+        assert!(err.to_string().contains("not mounting"), "{err}");
     }
 
     /// A codex launch under a managed account mounts and forwards the
