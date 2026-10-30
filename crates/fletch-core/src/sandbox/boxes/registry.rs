@@ -21,6 +21,7 @@ use std::time::Duration;
 use fletch_box::channel;
 use fletch_box::disks::{self, Dirty};
 use fletch_box::egress::{EgressEvent, EgressPolicy, EgressProxy};
+use fletch_box::version::version_key;
 use fletch_box::{guest, Channel, StopOutcome, Vm, VmSpec};
 use parking_lot::Mutex;
 use serde::Serialize;
@@ -208,10 +209,8 @@ pub struct RunningBox {
     pub dir: PathBuf,
     pub channel: Arc<Channel>,
     pub since: i64,
-    /// The provider's CLI disk, when one was built by boot time.
-    pub tools_disk: Option<PathBuf>,
-    /// Holds `tools_disk` against the tools sweep for as long as this box
-    /// lives, its stop included ([`ToolsLease`]).
+    /// The provider's CLI disk, held against the tools sweep for as long as
+    /// this box lives, its stop included.
     tools_lease: Option<ToolsLease>,
     vm: Vm,
     proxy: Mutex<Option<EgressProxy>>,
@@ -222,6 +221,11 @@ pub struct RunningBox {
 impl RunningBox {
     pub fn agent_id(&self) -> &str {
         &self.identity.agent_id
+    }
+
+    /// The provider's CLI disk, when one was built by boot time.
+    pub fn tools_disk(&self) -> Option<&Path> {
+        self.tools_lease.as_ref().map(|lease| lease.path.as_path())
     }
 
     /// `box:<path>` for git over the channel.
@@ -292,11 +296,9 @@ pub struct BoxRegistry {
 type Leases = Arc<Mutex<HashMap<PathBuf, usize>>>;
 
 /// One box's hold on its tools disk, from the moment [`BoxRegistry::tools_disk`]
-/// picks the disk until the box that booted with it is gone (stopped, its
-/// [`RunningBox`] dropped), or its boot failed. The tools sweep never deletes
-/// a leased disk, and a disk is picked and leased under the same lock the
-/// sweep holds, so a disk handed to a boot cannot vanish before the VM opens
-/// it.
+/// picks it until its [`RunningBox`] is dropped or its boot fails. The sweep
+/// never deletes a leased disk, and picking and leasing happen under the lock
+/// the sweep holds, so a disk handed to a boot cannot vanish before it opens.
 #[derive(Debug)]
 struct ToolsLease {
     leases: Leases,
@@ -528,9 +530,8 @@ impl BoxRegistry {
             return Err(discarded_error(agent_id));
         }
         self.set_phase(agent_id, BoxPhase::Starting);
-        match boot(identity, &ready, Some(tools_disk.path.clone())).await {
-            Ok(mut running) => {
-                running.tools_lease = Some(tools_disk);
+        match boot(identity, &ready, Some(tools_disk)).await {
+            Ok(running) => {
                 let running = Arc::new(running);
                 let arm_idle = {
                     let mut entries = self.entries.lock();
@@ -595,29 +596,31 @@ impl BoxRegistry {
     /// built without codegraph while indexing is on is used as is, and the one
     /// carrying it is built in the background for the next boot: codegraph
     /// never holds a box up. Nor does a host CLI update: with no disk for the
-    /// new version yet, the newest one built for an earlier version is used
-    /// ([`bootable_tools_disk`]) while the new one builds. Only a provider
-    /// with no disk at all waits.
+    /// new version yet, the newest one built is used ([`bootable_tools_disk`])
+    /// while the new one builds. Only a provider with no disk at all waits.
     async fn tools_disk(
         &self,
         ready: &super::Ready,
         agent_id: &str,
         provider: &str,
     ) -> Result<ToolsLease> {
-        if let Some(lease) = self.lease_tools_disk(|| built_tools_disk(provider)) {
+        // Probed here, never under the lease lock (it may run `--version`).
+        let version = tools_version(provider);
+        let root = tools_root();
+        if let Some(lease) = self.lease_tools_disk(|| built_disk_in(&root, provider, &version)) {
             if !tools_disk_settled(provider) {
                 drop(self.start_tools_build(ready, provider));
             }
             return Ok(lease);
         }
         let build = self.start_tools_build(ready, provider);
-        if let Some(lease) = self.lease_tools_disk(|| bootable_tools_disk(provider)) {
+        if let Some(lease) = self.lease_tools_disk(|| bootable_disk_in(&root, provider, &version)) {
             tracing::info!(
                 agent_id,
                 provider,
-                version = %tools_version(provider),
+                version,
                 disk = %lease.path.display(),
-                "no tools disk for this CLI version yet; booting an earlier one while it builds"
+                "no tools disk for this CLI version yet; booting the newest built while it builds"
             );
             return Ok(lease);
         }
@@ -625,21 +628,22 @@ impl BoxRegistry {
         self.set_phase(
             agent_id,
             BoxPhase::Preparing {
-                detail: format!("installing {label} {}", tools_version(provider)),
+                detail: format!("installing {label} {version}"),
             },
         );
         wait_tools_build(build, setup::tools_wait()).await?;
-        self.lease_tools_disk(|| built_tools_disk(provider))
+        self.lease_tools_disk(|| built_disk_in(&root, provider, &version))
             .ok_or_else(|| {
                 Error::SandboxUnavailable(format!(
                     "the {provider} tools disk was reported built but {} is missing",
-                    tools_disk_path(provider, false).display()
+                    fletch_box::tools::disk_path(&root, provider, &version, None).display()
                 ))
             })
     }
 
     /// Lease the disk `pick` names, picked under the lease lock so a sweep
-    /// cannot delete it between the pick and the lease.
+    /// cannot delete it between the pick and the lease. `pick` only reads the
+    /// file system: it must not probe the CLI version.
     fn lease_tools_disk(&self, pick: impl FnOnce() -> Option<PathBuf>) -> Option<ToolsLease> {
         let mut leases = self.tools_leases.lock();
         let path = pick()?;
@@ -651,17 +655,13 @@ impl BoxRegistry {
     }
 
     /// Delete `provider`'s tools disks that no boot takes again
-    /// ([`superseded_tools_files`]): every disk but the one the next boot
-    /// takes ([`bootable_tools_disk`]) and those in use ([`ToolsLease`]), and
-    /// staging files no build is writing. Each CLI update otherwise leaves a
-    /// ~4 GB disk behind. Holds the lease lock throughout (no disk is picked
-    /// meanwhile) and the build table (no build starts staging meanwhile). A
-    /// disk skipped for being in use goes at a later sweep: after the next
-    /// build, the next stop of a box, or the next app start. Best effort: a
-    /// failure is logged and left for the next sweep.
+    /// ([`superseded_tools_files`]), so each CLI update does not leave a ~4 GB
+    /// disk behind. Holds the lease lock (no disk is picked meanwhile) and the
+    /// build table (no build starts staging meanwhile). A disk skipped for
+    /// being in use goes at a later sweep. Best effort: failures are logged.
     pub fn sweep_tools_disks(&self, provider: &str) {
-        // Probe the CLI version (memoized) before taking any lock.
-        let _ = tools_version(provider);
+        // Probed before taking any lock (it may run `--version`).
+        let version = tools_version(provider);
         let leases = self.tools_leases.lock();
         let builds = self.tools_builds.lock();
         let building: HashSet<String> = builds
@@ -670,14 +670,7 @@ impl BoxRegistry {
             .filter_map(|(key, _)| Some(key.strip_prefix(provider)?.strip_prefix('-')?.to_string()))
             .collect();
         let in_use: HashSet<PathBuf> = leases.keys().cloned().collect();
-        let next_boot = bootable_tools_disk(provider);
-        for path in superseded_tools_files(
-            &tools_root(),
-            provider,
-            next_boot.as_deref(),
-            &in_use,
-            &building,
-        ) {
+        for path in superseded_tools_files(&tools_root(), provider, &version, &in_use, &building) {
             match std::fs::remove_file(&path) {
                 Ok(()) => {
                     tracing::info!(provider, path = %path.display(), "removed a superseded tools disk")
@@ -695,11 +688,11 @@ impl BoxRegistry {
 
     /// The tools disk `agent_id`'s box runs with, while it runs with one.
     pub fn attached_tools_disk(&self, agent_id: &str) -> Option<PathBuf> {
-        self.running(agent_id)?.tools_disk.clone()
+        Some(self.running(agent_id)?.tools_disk()?.to_path_buf())
     }
 
     /// Where `provider`'s tools disk stands, for the probe: the disk for the
-    /// current CLI version. While an earlier version's disk stands in for it
+    /// current CLI version. While another version's disk stands in for it
     /// ([`bootable_tools_disk`]) this still reads `building` (or `failed`,
     /// `missing`), which is the truth about the disk the next boots want.
     pub fn tools_status(&self, provider: &str) -> ToolsStatus {
@@ -850,7 +843,7 @@ impl BoxRegistry {
         // outlives this), so a disk an update superseded can go now rather
         // than at the next app start. Not on app exit: the next start sweeps.
         let provider = running.identity.provider.clone();
-        let had_disk = running.tools_disk.is_some();
+        let had_disk = running.tools_disk().is_some();
         drop(running);
         if had_disk && reason != StopReason::Shutdown {
             sweep_tools_disks_in_background(provider);
@@ -1023,10 +1016,13 @@ async fn wait_tools_build(mut build: watch::Receiver<ToolsBuild>, timeout: Durat
     }
 }
 
+/// The version [`tools_version`] reads when the host CLI's is unknown.
+const LATEST: &str = "latest";
+
 /// The CLI version a provider's tools disk installs: the host CLI's, as the
-/// container engines' version-parity check reads it, else `latest`.
+/// container engines' version-parity check reads it, else [`LATEST`].
 pub fn tools_version(provider: &str) -> String {
-    crate::agent::cached_provider_version(provider).unwrap_or_else(|| "latest".to_string())
+    crate::agent::cached_provider_version(provider).unwrap_or_else(|| LATEST.to_string())
 }
 
 /// Where `provider`'s tools disk for the current version is (or will be), with
@@ -1043,10 +1039,13 @@ pub fn tools_disk_path(provider: &str, codegraph: bool) -> PathBuf {
 /// The tools disk a box of `provider` boots with now, `None` before one is
 /// built.
 pub fn built_tools_disk(provider: &str) -> Option<PathBuf> {
-    first_built([
-        tools_disk_path(provider, true),
-        tools_disk_path(provider, false),
-    ])
+    built_disk_in(&tools_root(), provider, &tools_version(provider))
+}
+
+/// [`built_tools_disk`] for `version`, in `root`.
+fn built_disk_in(root: &Path, provider: &str, version: &str) -> Option<PathBuf> {
+    let disk = |codegraph| fletch_box::tools::disk_path(root, provider, version, codegraph);
+    first_built([disk(Some(crate::codegraph::CODEGRAPH_VERSION)), disk(None)])
 }
 
 /// The first of `disks` that is built. The disk carrying codegraph goes first
@@ -1057,13 +1056,17 @@ fn first_built(disks: [PathBuf; 2]) -> Option<PathBuf> {
 }
 
 /// The tools disk a box of `provider` can boot with right now: the current
-/// version's ([`built_tools_disk`]), else the newest built for an earlier
-/// version — the host CLI updated since, and the disk for its new version is
-/// still to be built. A box boots on the older CLI meanwhile rather than wait
-/// minutes for a ~4 GB build; its next boot after the build takes the new one.
-/// `None` only when no disk of `provider` is built at all.
+/// version's ([`built_tools_disk`]), else the newest built of any version, so
+/// a box boots on another CLI version rather than wait minutes for a ~4 GB
+/// build; its next boot after the build takes the current one. `None` only
+/// when no disk of `provider` is built at all.
 pub fn bootable_tools_disk(provider: &str) -> Option<PathBuf> {
-    built_tools_disk(provider).or_else(|| newest_tools_disk_in(&tools_root(), provider))
+    bootable_disk_in(&tools_root(), provider, &tools_version(provider))
+}
+
+/// [`bootable_tools_disk`] for `version`, in `root`.
+fn bootable_disk_in(root: &Path, provider: &str, version: &str) -> Option<PathBuf> {
+    built_disk_in(root, provider, version).or_else(|| newest_tools_disk_in(root, provider))
 }
 
 /// The newest disk of `provider` in `root` by CLI version, among those built
@@ -1083,33 +1086,20 @@ fn newest_tools_disk_in(root: &Path, provider: &str) -> Option<PathBuf> {
                 return None;
             }
             let path = entry.path();
-            let rank = (version_rank(version), codegraph.is_some());
+            let rank = (version_key(version), codegraph.is_some());
             path.is_file().then_some((rank, path))
         })
         .max_by(|(a, _), (b, _)| a.cmp(b))
         .map(|(_, path)| path)
 }
 
-/// A CLI version as numbers to order by: `v2.1.312` → `[2, 1, 312]`. A part
-/// with no leading digits counts as 0, so `latest` (no host CLI when it was
-/// built) orders before any real version.
-fn version_rank(version: &str) -> Vec<u64> {
-    version
-        .trim_start_matches('v')
-        .split('.')
-        .map(|part| {
-            let digits = part
-                .find(|c: char| !c.is_ascii_digit())
-                .map_or(part, |end| &part[..end]);
-            digits.parse().unwrap_or(0)
-        })
-        .collect()
-}
-
-/// The files of `provider` in `root` a tools sweep deletes:
-/// - a disk ([`fletch_box::tools::parse_disk_name`]) that is neither
-///   `next_boot` nor `in_use`, and none at all when there is no `next_boot`,
-///   so a sweep never leaves a provider with no disk by its own hand;
+/// The files of `provider` in `root` a tools sweep deletes, `version` being
+/// the current CLI version:
+/// - a disk ([`fletch_box::tools::parse_disk_name`]) that is neither the one
+///   the next boot takes ([`bootable_disk_in`]) nor `in_use`. None when no
+///   disk is bootable (a sweep never empties a provider), or when `version`
+///   or that disk's is [`LATEST`] (an unknown CLI version is no reason to
+///   delete a disk of a known one);
 /// - a staging file (`<disk>.building`) whose version is not `building`: a
 ///   build that crashed or was killed mid-write.
 ///
@@ -1117,13 +1107,20 @@ fn version_rank(version: &str) -> Vec<u64> {
 fn superseded_tools_files(
     root: &Path,
     provider: &str,
-    next_boot: Option<&Path>,
+    version: &str,
     in_use: &HashSet<PathBuf>,
     building: &HashSet<String>,
 ) -> Vec<PathBuf> {
     let Ok(entries) = std::fs::read_dir(root) else {
         return Vec::new();
     };
+    let is_latest = |disk: &Path| {
+        let name = disk.file_name().and_then(|name| name.to_str());
+        name.and_then(|name| fletch_box::tools::parse_disk_name(name, provider))
+            .is_some_and(|(version, _)| version == LATEST)
+    };
+    let next_boot = bootable_disk_in(root, provider, version)
+        .filter(|next| version != LATEST && !is_latest(next));
     entries
         .filter_map(|entry| {
             let entry = entry.ok()?;
@@ -1137,7 +1134,7 @@ fn superseded_tools_files(
                 }
                 None => {
                     fletch_box::tools::parse_disk_name(name, provider)?;
-                    next_boot.is_some_and(|next| next != path.as_path()) && !in_use.contains(&path)
+                    next_boot.as_ref().is_some_and(|next| *next != path) && !in_use.contains(&path)
                 }
             };
             (superseded && path.is_file()).then_some(path)
@@ -1145,9 +1142,8 @@ fn superseded_tools_files(
         .collect()
 }
 
-/// [`BoxRegistry::sweep_tools_disks`] on a thread of its own: it lists and
-/// deletes files (and may probe the CLI version), and cleanup never holds up
-/// what triggered it.
+/// [`BoxRegistry::sweep_tools_disks`] on a thread of its own, so cleanup
+/// never holds up what triggered it.
 pub(crate) fn sweep_tools_disks_in_background(provider: String) {
     let spawned = std::thread::Builder::new()
         .name("box-tools-sweep".into())
@@ -1233,7 +1229,7 @@ pub fn egress_policy(project_id: &str) -> EgressPolicy {
 async fn boot(
     identity: &BoxIdentity,
     ready: &super::Ready,
-    tools_disk: Option<PathBuf>,
+    tools_lease: Option<ToolsLease>,
 ) -> Result<RunningBox> {
     let agent_id = identity.agent_id.clone();
     let dir = identity.box_dir()?;
@@ -1277,7 +1273,7 @@ async fn boot(
     let mut spec = VmSpec::new(&agent_id, &ready.image.path(), &data, &dir.join(CONSOLE));
     spec.cpus = knobs.cpus;
     spec.memory_mib = knobs.memory_mib;
-    spec.tools_disk = tools_disk.clone();
+    spec.tools_disk = tools_lease.as_ref().map(|lease| lease.path.clone());
     spec.shares = identity
         .shares
         .iter()
@@ -1371,8 +1367,7 @@ async fn boot(
         dir,
         channel,
         since: chrono::Utc::now().timestamp_millis(),
-        tools_disk,
-        tools_lease: None,
+        tools_lease,
         vm,
         proxy: Mutex::new(Some(proxy)),
         relays,
@@ -1578,11 +1573,11 @@ mod tests {
         }
     }
 
-    /// After a host CLI update the newest disk built for an earlier version
-    /// stands in: ordered by version as numbers, never another provider's,
-    /// a staging file or a disk with another codegraph release.
+    /// After a host CLI update the newest disk built stands in: ordered by
+    /// version as numbers, never another provider's, a staging file or a disk
+    /// with another codegraph release.
     #[test]
-    fn the_newest_earlier_disk_stands_in_for_a_missing_one() {
+    fn the_newest_built_disk_stands_in_for_a_missing_one() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         assert_eq!(newest_tools_disk_in(root, "claude"), None);
@@ -1626,15 +1621,14 @@ mod tests {
     fn swept(
         root: &Path,
         provider: &str,
-        next_boot: Option<&str>,
+        version: &str,
         in_use: &[&str],
         building: &[&str],
     ) -> Vec<String> {
         let in_use = in_use.iter().map(|n| root.join(n)).collect();
         let building = building.iter().map(|v| v.to_string()).collect();
-        let next_boot = next_boot.map(|n| root.join(n));
         let mut names: Vec<String> =
-            superseded_tools_files(root, provider, next_boot.as_deref(), &in_use, &building)
+            superseded_tools_files(root, provider, version, &in_use, &building)
                 .into_iter()
                 .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
                 .collect();
@@ -1671,13 +1665,7 @@ mod tests {
         std::fs::create_dir(root.join("claude-v9.9.9.img")).unwrap();
         // The new version's disk is built; 2.1.312 still runs in a box.
         assert_eq!(
-            swept(
-                root,
-                "claude",
-                Some(&codegraph),
-                &["claude-v2.1.312.img"],
-                &[]
-            ),
+            swept(root, "claude", "v2.1.314", &["claude-v2.1.312.img"], &[]),
             [
                 "claude-latest.img",
                 "claude-v2.1.300.img.building",
@@ -1687,11 +1675,11 @@ mod tests {
             ]
         );
         // Once nothing uses it, 2.1.312 goes too.
-        assert!(swept(root, "claude", Some(&codegraph), &[], &[])
+        assert!(swept(root, "claude", "v2.1.314", &[], &[])
             .contains(&"claude-v2.1.312.img".to_string()));
         // The other provider: its own disks only.
         assert_eq!(
-            swept(root, "codex", Some("codex-v1.0.0.img"), &[], &[]),
+            swept(root, "codex", "v1.0.0", &[], &[]),
             ["codex-v1.0.1.img.building"]
         );
     }
@@ -1711,36 +1699,63 @@ mod tests {
             ],
         );
         assert_eq!(
-            swept(
-                root,
-                "claude",
-                Some("claude-v2.1.312.img"),
-                &[],
-                &["v2.1.314"]
-            ),
+            swept(root, "claude", "v2.1.314", &[], &["v2.1.314"]),
             ["claude-latest.img"]
         );
         // A build that is gone left its staging file behind.
         assert_eq!(
-            swept(root, "claude", Some("claude-v2.1.312.img"), &[], &[]),
+            swept(root, "claude", "v2.1.314", &[], &[]),
             ["claude-latest.img", "claude-v2.1.314.img.building"]
         );
-        // `latest` is a version like any other: kept when it is the one booted.
-        assert_eq!(
-            swept(
-                root,
-                "claude",
-                Some("claude-latest.img"),
-                &[],
-                &["v2.1.314"]
-            ),
-            ["claude-v2.1.312.img"]
+        // Only a disk with another codegraph release: nothing bootable.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        disks(
+            root,
+            &[
+                "claude-v2.1.312+codegraph-v0.0.1.img",
+                "claude-v2.1.314.img.building",
+            ],
         );
         assert_eq!(
-            swept(root, "claude", None, &[], &[]),
+            swept(root, "claude", "v2.1.314", &[], &[]),
             ["claude-v2.1.314.img.building"]
         );
-        assert!(swept(&root.join("absent"), "claude", None, &[], &[]).is_empty());
+        assert!(swept(&root.join("absent"), "claude", "v2.1.314", &[], &[]).is_empty());
+    }
+
+    /// While the CLI version is unknown (`latest`) no disk is swept, whether
+    /// a `latest` disk is built or a versioned one stands in; and a `latest`
+    /// disk standing in for a known version displaces no versioned one.
+    #[test]
+    fn a_latest_version_sweeps_no_versioned_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        disks(
+            root,
+            &[
+                "claude-latest.img",
+                "claude-v2.1.311.img",
+                "claude-v2.1.312.img",
+                "claude-latest.img.building",
+            ],
+        );
+        assert_eq!(
+            swept(root, "claude", "latest", &[], &[]),
+            ["claude-latest.img.building"]
+        );
+        std::fs::remove_file(root.join("claude-latest.img")).unwrap();
+        assert_eq!(
+            swept(root, "claude", "latest", &[], &[]),
+            ["claude-latest.img.building"]
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        disks(
+            root,
+            &["claude-latest.img", "claude-v2.1.312+codegraph-v0.0.1.img"],
+        );
+        assert!(swept(root, "claude", "v2.1.314", &[], &[]).is_empty());
     }
 
     /// A disk stays leased while any box holds it.
@@ -1762,15 +1777,6 @@ mod tests {
         assert_eq!(registry.tools_leases.lock().get(&disk), Some(&1));
         drop(second);
         assert!(registry.tools_leases.lock().is_empty());
-    }
-
-    #[test]
-    fn versions_rank_as_numbers() {
-        assert!(version_rank("v2.1.314") > version_rank("v2.1.312"));
-        assert!(version_rank("2.1.312") > version_rank("2.1.9"));
-        assert!(version_rank("v2.10.0") > version_rank("v2.9.99"));
-        assert!(version_rank("v0.0.1") > version_rank("latest"));
-        assert_eq!(version_rank("v1.2.3"), version_rank("1.2.3"));
     }
 
     #[test]

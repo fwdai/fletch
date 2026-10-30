@@ -98,7 +98,7 @@ async fn a_box_runs_the_whole_workspace_contract() {
     eprintln!(
         "first boot ready in {booted:.2?} (includes hashing the image once per process; \
          tools disk attached: {})",
-        running.tools_disk.is_some()
+        running.tools_disk().is_some()
     );
 
     let uname = running
@@ -343,9 +343,8 @@ fn only_a_verified_image_of_this_builds_version_is_installed() {
 // `block_on` from the sync seams (`launch_agent`, the executor).
 
 /// More sync waits than the runtime has workers, each on a worker and
-/// each waiting on a task spawned onto that same runtime (and on its
-/// timer), all finish: no worker is pinned by the wait. Bounded, so a
-/// regression fails here instead of hanging the suite.
+/// waiting on a task spawned onto that same runtime (and its timer), all
+/// finish. Bounded, so a regression fails instead of hanging the suite.
 #[test]
 fn sync_waits_on_every_worker_still_let_the_runtime_run() {
     const WAITS: usize = 6;
@@ -380,8 +379,11 @@ fn sync_waits_on_every_worker_still_let_the_runtime_run() {
     assert_eq!(done, (0..WAITS).collect::<Vec<_>>(), "the runtime starved");
 }
 
-/// A current-thread runtime cannot `block_in_place`; the wait still runs.
+/// A current-thread runtime cannot `block_in_place`; the wait still runs, on
+/// that runtime's handle or a throwaway one.
 #[tokio::test(flavor = "current_thread")]
 async fn a_current_thread_caller_does_not_panic() {
-    assert_eq!(block_on_with(None, async { 7 }), 7);
+    let handle = tokio::runtime::Handle::current();
+    assert_eq!(block_on_with(Some(handle), async { 7 }), 7);
+    assert_eq!(block_on_with(None, async { 8 }), 8);
 }

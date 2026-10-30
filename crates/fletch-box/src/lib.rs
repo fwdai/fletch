@@ -19,6 +19,7 @@ pub mod guest;
 pub mod image_store;
 pub mod runtime;
 pub mod tools;
+pub mod version;
 
 pub use channel::{Channel, Forward};
 pub use egress::{EgressEvent, EgressPolicy, EgressProxy, HostPattern};

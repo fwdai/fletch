@@ -26,6 +26,7 @@ use sha2::{Digest, Sha256};
 use tokio::io::AsyncWriteExt;
 
 use crate::error::{Error, Result};
+use crate::version::version_key;
 
 pub const BASE_IMAGE: &str = "base.erofs";
 pub const MANIFEST: &str = "manifest.json";
@@ -145,7 +146,7 @@ impl ImageStore {
                 (!name.starts_with('.')).then(|| image_at(entry.path(), name))?
             })
             .collect();
-        images.sort_by_key(|image| version_key(&image.version));
+        images.sort_by_key(|image| (version_key(&image.version), image.version.clone()));
         Ok(images)
     }
 
@@ -269,12 +270,6 @@ impl ImageStore {
             Err(e) => Err(e),
         }
     }
-}
-
-/// `a.b.c` as numbers, so `0.10.0` sorts after `0.9.0`; anything else sorts by text.
-fn version_key(version: &str) -> (Vec<u64>, String) {
-    let parts: Option<Vec<u64>> = version.split('.').map(|p| p.parse().ok()).collect();
-    (parts.unwrap_or_default(), version.to_owned())
 }
 
 /// The image in `dir`, if it has a non-empty `base.erofs` and a well-formed recorded hash.

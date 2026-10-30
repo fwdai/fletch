@@ -302,8 +302,8 @@ pub fn setup_allowance(provider: &str) -> Duration {
     if !matches!(super::installed_image(), Ok(Some(_))) {
         extra += IMAGE_WAIT;
     }
-    // A disk without codegraph, or one for an earlier CLI version, is booted
-    // as is; only a provider with no disk at all is waited on.
+    // A disk without codegraph, or the newest built for another CLI version,
+    // is booted as is; only a provider with no disk at all is waited on.
     if registry::bootable_tools_disk(provider).is_none() {
         extra += tools_wait();
     }
