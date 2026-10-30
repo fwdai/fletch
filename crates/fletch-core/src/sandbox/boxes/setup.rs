@@ -25,6 +25,19 @@ pub const IMAGE_WAIT: Duration = Duration::from_secs(30 * 60);
 /// How long a launch waits for a tools disk build: an npm install through the
 /// egress proxy in a fresh box.
 pub const TOOLS_WAIT: Duration = Duration::from_secs(10 * 60);
+/// How long a tools disk build waits for codegraph's guest bundle (a 55 MB
+/// download, seconds as a rule) before building the disk without it.
+pub const CODEGRAPH_BUNDLE_WAIT: Duration = Duration::from_secs(3 * 60);
+
+/// How long a launch waits for a tools disk build to finish, the codegraph
+/// bundle it fetches first included when indexing is on.
+pub fn tools_wait() -> Duration {
+    if crate::codegraph::enabled() {
+        TOOLS_WAIT + CODEGRAPH_BUNDLE_WAIT
+    } else {
+        TOOLS_WAIT
+    }
+}
 
 /// `box_image_status` and the `box:image` event.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -245,8 +258,9 @@ async fn wait_for_image(on_progress: &mut impl FnMut(String)) -> Result<Installe
 
 /// Build the tools disk of every supported provider whose CLI this host has,
 /// in the background (`box:tools` events), so the first launch finds its disk
-/// ready. Skips what is built already. Off the caller's thread: the probe and
-/// the CLI version lookups run processes.
+/// ready. Skips what is built already, unless indexing is on and the disk lacks
+/// codegraph (`registry::tools_disk_settled`). Off the caller's thread: the
+/// probe and the CLI version lookups run processes.
 pub fn prebuild_tools() {
     crate::host::spawn(async {
         let planned = tokio::task::spawn_blocking(|| {
@@ -263,7 +277,7 @@ pub fn prebuild_tools() {
         match planned {
             Ok(Ok((ready, providers))) => {
                 for provider in providers {
-                    if !registry::tools_disk_path(&provider).is_file() {
+                    if !registry::tools_disk_settled(&provider) {
                         registry::BoxRegistry::global().start_tools_build(&ready, &provider);
                     }
                 }
@@ -288,8 +302,9 @@ pub fn setup_allowance(provider: &str) -> Duration {
     if !matches!(super::installed_image(), Ok(Some(_))) {
         extra += IMAGE_WAIT;
     }
-    if !registry::tools_disk_path(provider).is_file() {
-        extra += TOOLS_WAIT;
+    // A disk without codegraph is booted as is; only a missing one is waited on.
+    if registry::built_tools_disk(provider).is_none() {
+        extra += tools_wait();
     }
     extra
 }

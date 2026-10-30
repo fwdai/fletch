@@ -360,6 +360,27 @@ pub fn supports_provider(provider: &str) -> bool {
     provider == "claude"
 }
 
+/// The codegraph launcher's path in `agent_id`'s guest, when the tools disk
+/// its box runs with carries codegraph: the disk attached now, or for a box
+/// that is stopped (or will reattach, see `launch_agent`) the one its next
+/// boot takes. That is the disk the agent's MCP server will find, so the
+/// session is told about codegraph exactly when it is there.
+pub fn codegraph_bin(agent_id: &str, provider: &str) -> Option<String> {
+    let disk = BoxRegistry::global()
+        .attached_tools_disk(agent_id)
+        .or_else(|| registry::built_tools_disk(provider))?;
+    fletch_box::tools::carries_codegraph(&disk).then(fletch_box::tools::codegraph_bin_path)
+}
+
+/// Whether the box whose writable root holds `path` is running, so work there
+/// would not boot it.
+pub fn running_for_path(path: &Path) -> bool {
+    let registry = BoxRegistry::global();
+    registry
+        .identity_for_path(path)
+        .is_some_and(|identity| registry.channel_for_running(&identity.agent_id).is_ok())
+}
+
 /// Why `provider` cannot launch in a box, for the spawn gate.
 pub fn provider_refusal(provider: &str) -> Option<String> {
     (!supports_provider(provider)).then(|| {

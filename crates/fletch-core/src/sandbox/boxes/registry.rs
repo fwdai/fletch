@@ -537,16 +537,21 @@ impl BoxRegistry {
     /// The tools disk a box of `provider` attaches, built once per
     /// `<provider>-<version>`. A missing disk is built now (the toggle's
     /// prebuild normally has it done first) and waited for, up to
-    /// [`setup::TOOLS_WAIT`], with the box reported `Preparing` meanwhile;
-    /// the spawn watchdog allows for this (`setup::setup_allowance`).
+    /// [`setup::tools_wait`], with the box reported `Preparing` meanwhile;
+    /// the spawn watchdog allows for this (`setup::setup_allowance`). A disk
+    /// built without codegraph while indexing is on is used as is, and the one
+    /// carrying it is built in the background for the next boot: codegraph
+    /// never holds a box up.
     async fn tools_disk(
         &self,
         ready: &super::Ready,
         agent_id: &str,
         provider: &str,
     ) -> Result<PathBuf> {
-        let path = tools_disk_path(provider);
-        if path.is_file() {
+        if let Some(path) = built_tools_disk(provider) {
+            if !tools_disk_settled(provider) {
+                drop(self.start_tools_build(ready, provider));
+            }
             return Ok(path);
         }
         let build = self.start_tools_build(ready, provider);
@@ -557,20 +562,24 @@ impl BoxRegistry {
                 detail: format!("installing {label} {}", tools_version(provider)),
             },
         );
-        wait_tools_build(build, setup::TOOLS_WAIT).await?;
-        if !path.is_file() {
-            return Err(Error::SandboxUnavailable(format!(
+        wait_tools_build(build, setup::tools_wait()).await?;
+        built_tools_disk(provider).ok_or_else(|| {
+            Error::SandboxUnavailable(format!(
                 "the {provider} tools disk was reported built but {} is missing",
-                path.display()
-            )));
-        }
-        Ok(path)
+                tools_disk_path(provider, false).display()
+            ))
+        })
+    }
+
+    /// The tools disk `agent_id`'s box runs with, while it runs with one.
+    pub fn attached_tools_disk(&self, agent_id: &str) -> Option<PathBuf> {
+        self.running(agent_id)?.tools_disk.clone()
     }
 
     /// Where `provider`'s tools disk stands, for the probe.
     pub fn tools_status(&self, provider: &str) -> ToolsStatus {
         let version = tools_version(provider);
-        let (phase, error) = if tools_disk_path(provider).is_file() {
+        let (phase, error) = if built_tools_disk(provider).is_some() {
             ("ready", None)
         } else {
             match self
@@ -597,14 +606,18 @@ impl BoxRegistry {
     /// Build `provider`'s tools disk for the current version in the background
     /// (`box:tools` events) and hand back a receiver of its outcome. Joins a
     /// build already running; a finished one (failed, or built and since
-    /// removed) is replaced by a fresh attempt.
+    /// removed) is replaced by a fresh attempt. The disk carries codegraph
+    /// when indexing is on and its bundle can be had, and is built plain
+    /// otherwise — unless the plain one is there already, when there is
+    /// nothing to build.
     pub fn start_tools_build(
         &self,
         ready: &super::Ready,
         provider: &str,
     ) -> watch::Receiver<ToolsBuild> {
         let version = tools_version(provider);
-        let out = tools_disk_path(provider);
+        // One key for both variants, so they never build (and share the build
+        // box's run dir) at once.
         let key = format!("{provider}-{version}");
         let mut builds = self.tools_builds.lock();
         if let Some(rx) = builds.get(&key) {
@@ -630,11 +643,27 @@ impl BoxRegistry {
                 )
             };
             event("building", None);
+            let bundle = codegraph_bundle_for_build().await;
+            let out = tools_disk_path(&provider, bundle.is_some());
+            if out.is_file() {
+                // A build for codegraph whose bundle could not be had: the
+                // plain disk it fell back to is the one already there.
+                tx.send_replace(ToolsBuild::Ready);
+                event("ready", None);
+                return;
+            }
+            let codegraph = bundle
+                .as_deref()
+                .map(|bundle| fletch_box::tools::Codegraph {
+                    version: crate::codegraph::CODEGRAPH_VERSION,
+                    bundle,
+                });
             let built = fletch_box::tools::build(
                 &paths,
                 &image,
                 &provider,
                 &version,
+                codegraph,
                 &out,
                 |line| tracing::info!(target: "fletch::box_tools", provider, line, "tools build"),
             )
@@ -865,9 +894,67 @@ pub fn tools_version(provider: &str) -> String {
     crate::agent::cached_provider_version(provider).unwrap_or_else(|| "latest".to_string())
 }
 
-/// Where `provider`'s tools disk for the current version is (or will be).
-pub fn tools_disk_path(provider: &str) -> PathBuf {
-    fletch_box::tools::disk_path(&tools_root(), provider, &tools_version(provider))
+/// Where `provider`'s tools disk for the current version is (or will be), with
+/// codegraph on it at the pinned version or without.
+pub fn tools_disk_path(provider: &str, codegraph: bool) -> PathBuf {
+    fletch_box::tools::disk_path(
+        &tools_root(),
+        provider,
+        &tools_version(provider),
+        codegraph.then_some(crate::codegraph::CODEGRAPH_VERSION),
+    )
+}
+
+/// The tools disk a box of `provider` boots with now, `None` before one is
+/// built.
+pub fn built_tools_disk(provider: &str) -> Option<PathBuf> {
+    first_built([
+        tools_disk_path(provider, true),
+        tools_disk_path(provider, false),
+    ])
+}
+
+/// The first of `disks` that is built. The disk carrying codegraph goes first
+/// whether indexing is on or not: it holds everything the plain one does, and
+/// with indexing off its server is simply never injected.
+fn first_built(disks: [PathBuf; 2]) -> Option<PathBuf> {
+    disks.into_iter().find(|disk| disk.is_file())
+}
+
+/// Whether `provider`'s tools disk needs no build: one is built, and it
+/// carries codegraph unless indexing is off.
+pub fn tools_disk_settled(provider: &str) -> bool {
+    built_tools_disk(provider).is_some_and(|disk| {
+        fletch_box::tools::carries_codegraph(&disk) || !crate::codegraph::enabled()
+    })
+}
+
+/// The verified Linux codegraph bundle a tools disk build should install, or
+/// `None` when indexing is off or the bundle can't be had within
+/// [`setup::CODEGRAPH_BUNDLE_WAIT`]: the disk is what lets a box boot at all,
+/// codegraph is best-effort (a later boot asks for it again, see `tools_disk`).
+async fn codegraph_bundle_for_build() -> Option<PathBuf> {
+    if !crate::codegraph::enabled() {
+        return None;
+    }
+    match tokio::time::timeout(
+        setup::CODEGRAPH_BUNDLE_WAIT,
+        crate::codegraph::ensure_guest_bundle(),
+    )
+    .await
+    {
+        Ok(Ok(bundle)) => Some(bundle),
+        Ok(Err(e)) => {
+            tracing::warn!(error = %e, "no codegraph bundle; the tools disk is built without it");
+            None
+        }
+        Err(_) => {
+            tracing::warn!(
+                "the codegraph bundle download timed out; the tools disk is built without it"
+            );
+            None
+        }
+    }
 }
 
 /// What `project_id`'s boxes may reach, every layer applied
@@ -1455,5 +1542,49 @@ mod tests {
             crate::exec::for_path(&tenant_root.join(".fletch-profile")),
             crate::exec::Executor::Local
         ));
+    }
+
+    /// A box boots with the disk carrying codegraph once it is built, the
+    /// plain one until then, and nothing before either is.
+    #[test]
+    fn the_disk_carrying_codegraph_is_preferred_once_built() {
+        let td = tempfile::tempdir().unwrap();
+        let with = fletch_box::tools::disk_path(td.path(), "claude", "2.1.0", Some("v1.4.1"));
+        let plain = fletch_box::tools::disk_path(td.path(), "claude", "2.1.0", None);
+        let disks = || [with.clone(), plain.clone()];
+        assert_eq!(first_built(disks()), None);
+        std::fs::write(&plain, b"").unwrap();
+        assert_eq!(first_built(disks()), Some(plain.clone()));
+        std::fs::write(&with, b"").unwrap();
+        assert_eq!(first_built(disks()), Some(with.clone()));
+        std::fs::remove_file(&plain).unwrap();
+        assert_eq!(first_built(disks()), Some(with.clone()));
+    }
+
+    /// `built_tools_disk` asks in that order, with the codegraph disk named
+    /// for the pinned release.
+    #[test]
+    fn the_codegraph_disk_is_named_for_the_pinned_release() {
+        // A provider with no CLI to probe for its version.
+        let with = tools_disk_path("no-such-provider", true);
+        let plain = tools_disk_path("no-such-provider", false);
+        assert!(fletch_box::tools::carries_codegraph(&with));
+        assert!(!fletch_box::tools::carries_codegraph(&plain));
+        assert!(with
+            .to_string_lossy()
+            .contains(crate::codegraph::CODEGRAPH_VERSION));
+        assert_eq!(with.parent(), plain.parent());
+    }
+
+    /// Not running and no disk built: no codegraph for the session.
+    #[test]
+    fn a_box_without_a_codegraph_disk_offers_no_codegraph() {
+        let td = tempfile::tempdir().unwrap();
+        let disk = fletch_box::tools::disk_path(td.path(), "claude", "2.1.0", None);
+        assert!(!fletch_box::tools::carries_codegraph(&disk));
+        assert_eq!(
+            super::super::codegraph_bin("registry-unit-test-no-box", "no-such-provider"),
+            None
+        );
     }
 }

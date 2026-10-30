@@ -9,8 +9,9 @@
 //!
 //! `FLETCH_BOX_IMAGE_DIR` is the directory holding `base.erofs` (what the
 //! `box_image_url` setting would name as `file://…`); the test installs it into
-//! a temporary data dir. A tools disk is built when `FLETCH_BOX_TOOLS_DISK`
-//! names an existing one to attach instead (a build takes minutes).
+//! a temporary data dir. A tools disk is built unless `FLETCH_BOX_TOOLS_DISK`
+//! names an existing one to attach instead (a build takes minutes); one named
+//! `…+codegraph-<tag>.img` is taken as carrying codegraph.
 //!
 //! The runtime is multi-threaded on purpose: the sync seams boot a box from a
 //! scoped thread with `Handle::block_on`, which a current-thread runtime
@@ -53,8 +54,15 @@ async fn setup() -> tempfile::TempDir {
         t0.elapsed()
     );
     if let Some(disk) = std::env::var_os("FLETCH_BOX_TOOLS_DISK") {
-        let version = super::registry::tools_version("claude");
-        let target = fletch_box::tools::disk_path(&super::tools_root(), "claude", &version);
+        // Its name says whether it carries codegraph (`fletch_box::tools::
+        // disk_path`). A plain one with indexing on would have the first boot
+        // build the codegraph disk beside the test; the point of passing a
+        // disk is to build none.
+        let codegraph = fletch_box::tools::carries_codegraph(Path::new(&disk));
+        if !codegraph {
+            crate::codegraph::set_enabled(false);
+        }
+        let target = super::registry::tools_disk_path("claude", codegraph);
         std::fs::create_dir_all(target.parent().unwrap()).unwrap();
         fletch_box::disks::clone(Path::new(&disk), &target).unwrap();
     }

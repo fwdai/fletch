@@ -199,34 +199,48 @@ async fn run_codegraph(bin: &Path, mirror_dir: &Path, subcommand: &str) -> Resul
 /// runtime files (`daemon.pid`/`daemon.sock`) and anything else are skipped: a
 /// copied daemon socket/pid would point another checkout's runtime at stale
 /// state. A no-op when the mirror has no `codegraph.db` yet (a late index copies
-/// on a subsequent spawn).
+/// on a subsequent spawn). The mirror is always on this host; the checkout is
+/// wherever its executor puts it (`crate::exec`), a box's guest included.
 pub async fn copy_index_into(mirror_dir: &Path, checkout: &Path) -> Result<()> {
     let src_index = mirror_dir.join(INDEX_DIR);
-    let db = src_index.join(INDEX_DB_FILES[0]);
-    if !db.exists() {
+    if !src_index.join(INDEX_DB_FILES[0]).exists() {
         return Ok(());
     }
-    let dst_index = checkout.join(INDEX_DIR);
-    tokio::fs::create_dir_all(&dst_index)
+    let dst = checkout.to_path_buf();
+    // Blocking: a box's executor speaks ssh.
+    tokio::task::spawn_blocking(move || copy_index_files(&src_index, &dst))
         .await
-        .map_err(|e| Error::Other(format!("create checkout .codegraph: {e}")))?;
+        .map_err(|e| Error::Other(format!("codegraph index copy task: {e}")))??;
+    append_git_exclude(checkout).await
+}
+
+/// [`copy_index_into`]'s copy, through the checkout's executor as one of
+/// Fletch's own files (`Executor::copy_beneath`): a clone or copy that never
+/// follows a link the agent planted for a checkout on this host, the bytes
+/// written over the channel for a box's.
+fn copy_index_files(src_index: &Path, checkout: &Path) -> Result<()> {
+    let exec = crate::exec::for_path(checkout);
     for name in INDEX_DB_FILES {
         let from = src_index.join(name);
-        if from.exists() {
-            tokio::fs::copy(&from, dst_index.join(name))
-                .await
-                .map_err(|e| Error::Other(format!("copy {name} into checkout: {e}")))?;
+        if !from.exists() {
+            continue;
         }
+        exec.copy_beneath(&from, checkout, &Path::new(INDEX_DIR).join(name), 0o644)
+            .map_err(|e| Error::Other(format!("copy {name} into checkout: {e}")))?;
     }
-    append_git_exclude(checkout).await
+    Ok(())
 }
 
 /// Add `.codegraph` to a checkout's `.git/info/exclude` so the copied index
 /// never surfaces in `git status`/diffs. Thin async wrapper over the shared
 /// [`crate::git_state::ensure_git_exclude`] — the same helper cursor's MCP
-/// config write uses — since the underlying work is a few bytes of file I/O.
+/// config write uses — off the runtime, since a box's checkout is written over
+/// ssh.
 pub async fn append_git_exclude(checkout: &Path) -> Result<()> {
-    crate::git_state::ensure_git_exclude(checkout, INDEX_DIR)
+    let checkout = checkout.to_path_buf();
+    tokio::task::spawn_blocking(move || crate::git_state::ensure_git_exclude(&checkout, INDEX_DIR))
+        .await
+        .map_err(|e| Error::Other(format!("codegraph exclude task: {e}")))?
 }
 
 fn path_str(path: &Path) -> Result<String> {
@@ -333,6 +347,113 @@ mod tests {
         // The copy also registered the exclude entry.
         let body = std::fs::read_to_string(checkout.join(".git/info/exclude")).unwrap();
         assert!(body.contains(".codegraph"));
+    }
+
+    /// A box's checkout as the host sees it through `exec`: an in-memory tree.
+    #[derive(Debug, Default)]
+    struct GuestTree {
+        files: parking_lot::Mutex<std::collections::BTreeMap<PathBuf, Vec<u8>>>,
+    }
+
+    impl crate::exec::RemoteExecutor for GuestTree {
+        fn command(&self, _: &str, _: &Path, _: &[(String, String)]) -> std::process::Command {
+            unreachable!("the index copy runs nothing in the box")
+        }
+        fn read(&self, path: &Path) -> std::io::Result<Vec<u8>> {
+            self.files
+                .lock()
+                .get(path)
+                .cloned()
+                .ok_or_else(|| std::io::ErrorKind::NotFound.into())
+        }
+        fn write(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+            self.files.lock().insert(path.to_path_buf(), bytes.to_vec());
+            Ok(())
+        }
+        fn stat(&self, path: &Path) -> std::io::Result<Option<crate::exec::Stat>> {
+            Ok(self.files.lock().get(path).map(|b| crate::exec::Stat {
+                is_dir: false,
+                is_file: true,
+                len: b.len() as u64,
+            }))
+        }
+        fn list(&self, _: &Path) -> std::io::Result<Vec<crate::exec::DirEntry>> {
+            Ok(Vec::new())
+        }
+        fn create_dir_all(&self, _: &Path) -> std::io::Result<()> {
+            Ok(())
+        }
+        fn remove(&self, _: &Path) -> std::io::Result<()> {
+            Ok(())
+        }
+        fn rename(&self, _: &Path, _: &Path) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Into a box, the db and its exclude entry are written into the guest
+    /// through its executor; nothing lands at the host-side path.
+    #[tokio::test]
+    async fn copy_index_into_a_box_goes_through_its_executor() {
+        let td = tempfile::tempdir().unwrap();
+        let mirror = td.path().join("mirror");
+        std::fs::create_dir_all(mirror.join(".codegraph")).unwrap();
+        std::fs::write(mirror.join(".codegraph/codegraph.db"), b"DB").unwrap();
+        std::fs::write(mirror.join(".codegraph/daemon.pid"), b"1").unwrap();
+
+        // A root no other test registers, under the tempdir so nothing could
+        // be written anywhere real if routing failed.
+        let root = td.path().join("box-root");
+        let guest = std::sync::Arc::new(GuestTree::default());
+        crate::exec::register_root(root.clone(), guest.clone());
+        let checkout = root.join("repo");
+        let copied = copy_index_into(&mirror, &checkout).await;
+        crate::exec::unregister_root(&root);
+        copied.unwrap();
+
+        let files = guest.files.lock();
+        assert_eq!(
+            files.get(&checkout.join(".codegraph/codegraph.db")),
+            Some(&b"DB".to_vec())
+        );
+        assert!(!files.contains_key(&checkout.join(".codegraph/daemon.pid")));
+        let exclude = files.get(&checkout.join(".git/info/exclude")).unwrap();
+        assert_eq!(exclude, b".codegraph\n");
+        assert!(!root.exists(), "nothing may be written on the host side");
+    }
+
+    /// On this host the copy never follows a link the agent planted: a
+    /// `.codegraph` swapped for one is refused, a link at the db itself is
+    /// replaced by the copy.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn copy_index_does_not_follow_a_planted_link() {
+        let td = tempfile::tempdir().unwrap();
+        let mirror = td.path().join("mirror");
+        std::fs::create_dir_all(mirror.join(".codegraph")).unwrap();
+        std::fs::write(mirror.join(".codegraph/codegraph.db"), b"DB").unwrap();
+        let outside = td.path().join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("precious"), b"keep").unwrap();
+
+        let checkout = td.path().join("checkout");
+        std::fs::create_dir_all(&checkout).unwrap();
+        std::os::unix::fs::symlink(&outside, checkout.join(".codegraph")).unwrap();
+        assert!(copy_index_into(&mirror, &checkout).await.is_err());
+        assert!(!outside.join("codegraph.db").exists());
+
+        // A real `.codegraph` with a link at the db.
+        std::fs::remove_file(checkout.join(".codegraph")).unwrap();
+        std::fs::create_dir_all(checkout.join(".codegraph")).unwrap();
+        let db = checkout.join(".codegraph/codegraph.db");
+        std::os::unix::fs::symlink(outside.join("precious"), &db).unwrap();
+        copy_index_into(&mirror, &checkout).await.unwrap();
+        assert_eq!(std::fs::read(outside.join("precious")).unwrap(), b"keep");
+        assert!(!std::fs::symlink_metadata(&db)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(std::fs::read(&db).unwrap(), b"DB");
     }
 
     #[tokio::test]

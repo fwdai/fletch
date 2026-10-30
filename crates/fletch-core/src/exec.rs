@@ -10,6 +10,11 @@
 //! through the engine's channel. With no remote root registered, which is every
 //! current engine, [`for_path`] is always [`Executor::Local`] and each method is
 //! exactly the `std` call it replaced.
+//!
+//! Fletch's *own* files inside an agent's tree (its `.git/info/exclude`, the
+//! `.codegraph` index) are the exception: they go through
+//! [`Executor::write_beneath`] and friends, which on this host never follow a
+//! link the agent planted, since the host writes with the user's full rights.
 
 use std::fmt;
 use std::io;
@@ -230,6 +235,86 @@ impl Executor {
             Self::Remote(remote) => remote.rename(from, to),
         }
     }
+
+    /// Write one of Fletch's own files into a tree an agent can also write
+    /// (`.git/info/exclude`, the `.codegraph` index): `bytes` at `rel` beneath
+    /// `anchor`, missing directories created. The one way host code puts such
+    /// a file there, because where it lands must not be the agent's to choose.
+    ///
+    /// Locally the agent shares the host's filesystem, so a link it planted
+    /// anywhere under `anchor` would carry a plain write out of its tree:
+    /// every component of `rel` is opened by handle without following a link
+    /// (a link is refused), and the file is replaced in one rename, so a link
+    /// at the name itself is replaced rather than written through
+    /// (`agent::credential_file::PrivateDir`). `anchor` must not be a link and
+    /// what is above it must be the host's own, like the checkout root. In a
+    /// box the tree is the guest's own, where a link leads nowhere else, so
+    /// the remote write is the plain one.
+    pub fn write_beneath(
+        &self,
+        anchor: &Path,
+        rel: &Path,
+        bytes: &[u8],
+        mode: u32,
+    ) -> io::Result<()> {
+        match self {
+            Self::Local => {
+                let (dir, name) = local_parent(anchor, rel, true)?;
+                dir.write_file(name, bytes, mode)
+            }
+            Self::Remote(remote) => remote.write(&anchor.join(rel), bytes),
+        }
+    }
+
+    /// [`write_beneath`](Self::write_beneath) with the bytes of the host file
+    /// `from`. Locally a copy-on-write clone where the volume allows.
+    pub fn copy_beneath(
+        &self,
+        from: &Path,
+        anchor: &Path,
+        rel: &Path,
+        mode: u32,
+    ) -> io::Result<()> {
+        match self {
+            Self::Local => {
+                let (dir, name) = local_parent(anchor, rel, true)?;
+                dir.copy_file(name, from, mode)
+            }
+            Self::Remote(remote) => remote.write(&anchor.join(rel), &std::fs::read(from)?),
+        }
+    }
+
+    /// Read back one of Fletch's own files written with
+    /// [`write_beneath`](Self::write_beneath), refusing (locally) a link
+    /// anywhere under `anchor`, the file itself included.
+    pub fn read_beneath(&self, anchor: &Path, rel: &Path) -> io::Result<Vec<u8>> {
+        match self {
+            Self::Local => {
+                let (dir, name) = local_parent(anchor, rel, false)?;
+                dir.read_file(name)
+            }
+            Self::Remote(remote) => remote.read(&anchor.join(rel)),
+        }
+    }
+}
+
+/// The directory holding `rel` beneath `anchor`, opened by handle without
+/// following a link (created when `create`), and `rel`'s file name.
+fn local_parent<'a>(
+    anchor: &Path,
+    rel: &'a Path,
+    create: bool,
+) -> io::Result<(crate::agent::credential_file::PrivateDir, &'a str)> {
+    let name = rel
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "no file name"))?;
+    let root = crate::agent::credential_file::PrivateDir::open(anchor)?;
+    let dir = match rel.parent().filter(|p| !p.as_os_str().is_empty()) {
+        Some(parent) => root.walk(parent, create)?,
+        None => root,
+    };
+    Ok((dir, name))
 }
 
 #[cfg(test)]

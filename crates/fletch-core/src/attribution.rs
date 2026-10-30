@@ -170,34 +170,46 @@ exit 0
 /// it (`git::hardening`) and agents can't edit `.git/hooks` (`sandbox::policy`).
 ///
 /// An existing foreign `commit-msg` (e.g. Gerrit's Change-Id) moves to
-/// `commit-msg.orig`, which ours runs first. Existence is checked with
-/// `symlink_metadata` and ownership on raw bytes, so a binary or dangling-symlink
-/// hook still counts. If `.orig` is taken too, nothing is touched: losing the
-/// user's hook is worse than keeping attribution.
+/// `commit-msg.orig`, which ours runs first. Existence is checked without
+/// following a link and ownership on raw bytes, so a binary or symlinked hook
+/// still counts as foreign. If `.orig` is taken too, nothing is touched: losing
+/// the user's hook is worse than keeping attribution.
+///
+/// By handle (`PrivateDir`), not by path: the policy's deny is by path, so a
+/// `.git` renamed and linked back would carry a path-based write (of an
+/// executable, here) out of the checkout. A link anywhere along `.git/hooks`
+/// is refused.
 pub(crate) async fn install_hook(checkout: &Path) -> crate::error::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    let hooks_dir = checkout.join(".git/hooks");
-    tokio::fs::create_dir_all(&hooks_dir).await?;
-    let hook = hooks_dir.join("commit-msg");
-    if tokio::fs::symlink_metadata(&hook).await.is_ok() {
+    let checkout = checkout.to_path_buf();
+    tokio::task::spawn_blocking(move || install_hook_in(&checkout))
+        .await
+        .map_err(|e| crate::error::Error::Other(format!("attribution hook task: {e}")))?
+}
+
+fn install_hook_in(checkout: &Path) -> crate::error::Result<()> {
+    use crate::agent::credential_file::{Entry, PrivateDir};
+    let hooks = PrivateDir::open(checkout)?.walk(Path::new(".git/hooks"), true)?;
+    let ours = |bytes: Vec<u8>| {
         let marker = HOOK_MARKER.as_bytes();
-        let ours = tokio::fs::read(&hook)
-            .await
-            .is_ok_and(|bytes| bytes.windows(marker.len()).any(|w| w == marker));
-        if !ours {
-            let orig = hooks_dir.join("commit-msg.orig");
-            if tokio::fs::symlink_metadata(&orig).await.is_ok() {
-                tracing::warn!(
-                    checkout = %checkout.display(),
-                    "commit-msg and commit-msg.orig both exist; not installing the attribution hook"
-                );
-                return Ok(());
-            }
-            tokio::fs::rename(&hook, &orig).await?;
+        bytes.windows(marker.len()).any(|w| w == marker)
+    };
+    let foreign = match hooks.entry("commit-msg")? {
+        Entry::Missing => false,
+        // A link is never ours: its target isn't the host's to read or write.
+        Entry::Other => !hooks.read_file("commit-msg").is_ok_and(ours),
+        Entry::Dir | Entry::Link(_) => true,
+    };
+    if foreign {
+        if hooks.entry("commit-msg.orig")? != Entry::Missing {
+            tracing::warn!(
+                checkout = %checkout.display(),
+                "commit-msg and commit-msg.orig both exist; not installing the attribution hook"
+            );
+            return Ok(());
         }
+        hooks.rename("commit-msg", "commit-msg.orig")?;
     }
-    tokio::fs::write(&hook, commit_msg_hook()).await?;
-    tokio::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).await?;
+    hooks.write_file("commit-msg", commit_msg_hook().as_bytes(), 0o755)?;
     Ok(())
 }
 

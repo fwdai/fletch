@@ -64,9 +64,17 @@ enum ToolsCmd {
         /// The base image (`base.erofs`).
         #[arg(long)]
         image: PathBuf,
-        /// Where the disk lands; default `<run root>/tools/<provider>-<version>.img`.
+        /// Where the disk lands; default `<run root>/tools/<provider>-<version>.img`
+        /// (`…+codegraph-<tag>.img` with `--codegraph-bundle`).
         #[arg(long)]
         out: Option<PathBuf>,
+        /// A codegraph release bundle (`codegraph-linux-<arch>.tar.gz`) to install
+        /// next to the CLI. Not checked here: pass one you have verified.
+        #[arg(long, requires = "codegraph_version")]
+        codegraph_bundle: Option<PathBuf>,
+        /// The release tag of `--codegraph-bundle`, as the disk's name records it.
+        #[arg(long, requires = "codegraph_bundle")]
+        codegraph_version: Option<String>,
     },
 }
 
@@ -156,19 +164,34 @@ async fn run(cli: Cli) -> Result<ExitCode, String> {
                     version,
                     image,
                     out,
+                    codegraph_bundle,
+                    codegraph_version,
                 },
         } => {
             let paths = paths()?;
+            let codegraph = codegraph_bundle
+                .as_deref()
+                .zip(codegraph_version.as_deref())
+                .map(|(bundle, version)| fletch_box::tools::Codegraph { version, bundle });
             let out = match out {
                 Some(out) => out,
-                None => {
-                    fletch_box::tools::disk_path(&dev_root()?.join("tools"), &provider, &version)
-                }
+                None => fletch_box::tools::disk_path(
+                    &dev_root()?.join("tools"),
+                    &provider,
+                    &version,
+                    codegraph.map(|c| c.version),
+                ),
             };
             let t0 = Instant::now();
-            fletch_box::tools::build(&paths, &image, &provider, &version, &out, |line| {
-                println!("{line}")
-            })
+            fletch_box::tools::build(
+                &paths,
+                &image,
+                &provider,
+                &version,
+                codegraph,
+                &out,
+                |line| println!("{line}"),
+            )
             .await
             .map_err(|e| e.to_string())?;
             println!("built {} in {:.1?}", out.display(), t0.elapsed());
