@@ -10,7 +10,7 @@
 
 use std::path::{Path, PathBuf};
 
-use super::{copy_tree, login_shell_var, Credential, GuestEntry, ProviderHome};
+use super::{copy_tree, login_shell_var, Credential, GuestEntry, ProviderHome, ShippedFile};
 use crate::agent::{accounts, codex_home};
 use crate::error::Result;
 use crate::sandbox::engine::AgentLaunchCtx;
@@ -65,7 +65,11 @@ impl ProviderHome for Codex {
     /// the container engines forward (`container::launch_auth`); a managed
     /// account runs on its stored login alone, as it does there.
     fn credential(&self, ctx: &AgentLaunchCtx) -> Result<Credential> {
-        let file = ctx.codex_home.map(codex_home::launch_credential_path);
+        let files = ctx
+            .codex_home
+            .map(|overlay| ShippedFile::at(codex_home::launch_credential_path(overlay)))
+            .into_iter()
+            .collect();
         let env = match ctx.account_dir {
             None => login_shell_var(OPENAI_API_KEY)
                 .map(|key| (OPENAI_API_KEY.to_string(), key))
@@ -73,7 +77,7 @@ impl ProviderHome for Codex {
                 .collect(),
             Some(_) => Vec::new(),
         };
-        Ok(Credential { env, file })
+        Ok(Credential { env, files })
     }
 }
 
@@ -170,10 +174,11 @@ mod tests {
     fn the_credential_is_the_overlays_launch_file() {
         let root = Path::new("/Users/u/.fletch/workspaces/a");
         let overlay = root.join(".fletch-codex-home");
+        let launch_file = vec![ShippedFile::at(overlay.join("auth.json"))];
         let default = Codex
             .credential(&ctx(root, Some(overlay.as_path())))
             .unwrap();
-        assert_eq!(default.file, Some(overlay.join("auth.json")));
+        assert_eq!(default.files, launch_file);
         assert!(default.env.iter().all(|(k, _)| k == OPENAI_API_KEY));
 
         let mut managed = ctx(root, Some(overlay.as_path()));
@@ -182,9 +187,9 @@ mod tests {
             Codex.credential(&managed).unwrap(),
             Credential {
                 env: Vec::new(),
-                file: Some(overlay.join("auth.json")),
+                files: launch_file,
             }
         );
-        assert_eq!(Codex.credential(&ctx(root, None)).unwrap().file, None);
+        assert!(Codex.credential(&ctx(root, None)).unwrap().files.is_empty());
     }
 }

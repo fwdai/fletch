@@ -13,16 +13,20 @@
 //!   stream for the files, one probe per file that must not clobber what the
 //!   CLI wrote.
 //! - **The credential** ([`Credential`]): resolved on the host for the launch,
-//!   never the stored login. Either env, which travels in the launch's env
-//!   file, or a host file the host rewrites before every launch and turn
-//!   (`agent::codex_home`), which [`ship_credential`] copies to the same guest
-//!   path each time — the engine's `before_turn` hook on the launch plan.
+//!   never the stored login. Env, which travels in the launch's env file,
+//!   and/or host files the host keeps current (`agent::codex_home` rewrites
+//!   codex's before every launch and turn), which [`ship_credential`] copies
+//!   into the guest with the env file and again before every turn — the
+//!   engine's `before_turn` hook on the launch plan.
 //! - **Transcripts**: the guest dir the CLI writes its sessions to
-//!   ([`ProviderHome::sessions_dir`]) is tailed by the relay into a mirror
-//!   under the box dir ([`mirror_for_root`]), where the host reads them. A
-//!   session the host writes itself (a fork, a rewind) is created in the
-//!   guest, where the CLI resumes it, and in the mirror, where the next
-//!   launch's locator finds it at once ([`create_session_file`]).
+//!   ([`ProviderHome::sessions_dir`]) reaches a mirror under the box dir
+//!   ([`mirror_for_root`]), where the host reads them, one of two ways
+//!   ([`Transport`]): tailed by the relay as it grows (append-only JSONL),
+//!   or pulled whole by the host when it reads and before the box stops
+//!   (a blob store the CLI rewrites in place). A session the host writes
+//!   itself (a fork, a rewind) is created in the guest, where the CLI resumes
+//!   it, and in the mirror, where the next launch's locator finds it at once
+//!   ([`create_session_file`]).
 //!
 //! Adding a provider is one adapter plus its tools-disk script
 //! (`fletch_box::tools`); nothing in the engine names a provider.
@@ -30,6 +34,7 @@
 pub mod claude;
 pub mod codex;
 pub mod cursor;
+pub mod opencode;
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -59,6 +64,12 @@ pub trait ProviderHome: Send + Sync {
     /// [`sessions_dir`](Self::sessions_dir) into.
     fn mirror_dirname(&self) -> &'static str;
 
+    /// How the sessions dir reaches its mirror. Tailed unless the CLI
+    /// rewrites its files in place.
+    fn transport(&self) -> Transport {
+        Transport::Tail
+    }
+
     /// What the guest home must hold before the CLI runs. Applied by
     /// [`seed`] before every launch; must be idempotent.
     fn seed(&self, home: &Path, writable_root: &Path) -> Result<Vec<GuestEntry>>;
@@ -67,6 +78,19 @@ pub trait ProviderHome: Send + Sync {
     /// launch: a CLI that could only fail on its first turn fails here, with
     /// what to do about it.
     fn credential(&self, ctx: &AgentLaunchCtx) -> Result<Credential>;
+}
+
+/// How a provider's sessions dir reaches the host's mirror of it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Transport {
+    /// The relay follows every `*.jsonl` under it as it grows, from the
+    /// moment the box boots: for a CLI that only appends.
+    Tail,
+    /// The host copies the whole dir over when it reads the transcript
+    /// ([`sessions_mirror`]) and before the box stops ([`pull_before_stop`]):
+    /// for a CLI that rewrites its files in place, which a tail would
+    /// garble.
+    Pull,
 }
 
 /// One thing the guest home holds after seeding. Removals and directories
@@ -95,14 +119,38 @@ pub enum GuestEntry {
 pub struct Credential {
     /// Variables for the launch's env file, good for the whole launch.
     pub env: Vec<(String, String)>,
-    /// A host file the host rewrites fresh before every launch and turn;
-    /// shipped to the same guest path each time, and removed there when the
-    /// host has none to ship.
-    pub file: Option<PathBuf>,
+    /// Host files the host keeps current, shipped into the guest with the
+    /// env file and again before every turn, and removed there when the
+    /// host no longer has one.
+    pub files: Vec<ShippedFile>,
+}
+
+/// A host file and where it lands in the guest — the same path for
+/// per-agent state under the writable root (path identity), a different
+/// one for state the user keeps where an XDG variable put it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShippedFile {
+    pub host: PathBuf,
+    pub guest: PathBuf,
+}
+
+impl ShippedFile {
+    /// A file at the same path on both sides.
+    pub fn at(path: PathBuf) -> Self {
+        Self {
+            host: path.clone(),
+            guest: path,
+        }
+    }
 }
 
 /// The adapters, one per provider boxes run.
-const ALL: &[&dyn ProviderHome] = &[&claude::Claude, &codex::Codex, &cursor::Cursor];
+const ALL: &[&dyn ProviderHome] = &[
+    &claude::Claude,
+    &codex::Codex,
+    &cursor::Cursor,
+    &opencode::OpenCode,
+];
 
 /// `name` as the login shell exports it (over the app's own env,
 /// `bin_resolve::effective_env_var`), trimmed, when non-blank: how a
@@ -301,27 +349,126 @@ fn copy_into(host: &Path, guest: &Path, depth: usize, into: &mut Vec<GuestEntry>
     Ok(())
 }
 
-/// Ship the credential file at host `path` into the guest at the same path,
-/// 0600; remove the guest's copy when the host has none (the login was
-/// revoked or signed out since).
-pub(crate) fn ship_credential(channel: &Channel, path: &Path) -> Result<()> {
-    match std::fs::read(path) {
-        Ok(bytes) => executor::put(channel, &bytes, path, 0o600),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => {
-            let out = executor::run(channel, &["rm", "-f", "--", &path.to_string_lossy()], None)
-                .map_err(|e| {
-                    Error::Other(format!("removing {} in the box: {e}", path.display()))
-                })?;
-            if !out.status.success() {
-                return Err(Error::Other(format!(
-                    "removing {} in the box failed: {}",
-                    path.display(),
-                    String::from_utf8_lossy(&out.stderr).trim()
-                )));
+/// Ship each credential file into the guest, 0600; remove the guest's copy
+/// of one the host no longer has (the login was revoked or signed out since).
+pub(crate) fn ship_credential(channel: &Channel, files: &[ShippedFile]) -> Result<()> {
+    for ShippedFile { host, guest } in files {
+        match std::fs::read(host) {
+            Ok(bytes) => executor::put(channel, &bytes, guest, 0o600)?,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                let out =
+                    executor::run(channel, &["rm", "-f", "--", &guest.to_string_lossy()], None)
+                        .map_err(|e| {
+                            Error::Other(format!("removing {} in the box: {e}", guest.display()))
+                        })?;
+                if !out.status.success() {
+                    return Err(Error::Other(format!(
+                        "removing {} in the box failed: {}",
+                        guest.display(),
+                        String::from_utf8_lossy(&out.stderr).trim()
+                    )));
+                }
             }
-            Ok(())
+            Err(e) => return Err(Error::Io(e)),
         }
-        Err(e) => Err(Error::Io(e)),
+    }
+    Ok(())
+}
+
+/// Copy the guest's `guest_root` into `mirror` on the host, whole: one tar
+/// over the channel, unpacked file by file. Only regular files land —
+/// never a link the agent planted, which the host would then follow — and
+/// only inside `mirror`. Nothing there is removed: a CLI's session store
+/// only grows. A `guest_root` that does not exist yet copies nothing.
+pub(crate) fn pull_sessions(channel: &Channel, guest_root: &Path, mirror: &Path) -> Result<()> {
+    let root = guest_root.to_string_lossy();
+    let out = executor::run(
+        channel,
+        &[
+            "sh",
+            "-c",
+            "[ -d \"$1\" ] && exec tar -cf - -C \"$1\" . ; exit 0",
+            "sh",
+            &root,
+        ],
+        None,
+    )
+    .map_err(|e| {
+        Error::Other(format!(
+            "pulling {} from the box: {e}",
+            guest_root.display()
+        ))
+    })?;
+    if !out.status.success() {
+        return Err(Error::Other(format!(
+            "pulling {} from the box failed: {}",
+            guest_root.display(),
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
+    unpack_files(&out.stdout, mirror)
+}
+
+/// Unpack the regular files of a tar stream under `dir`, skipping every
+/// other entry and anything that would land outside `dir`.
+fn unpack_files(archive: &[u8], dir: &Path) -> Result<()> {
+    if archive.is_empty() {
+        return Ok(());
+    }
+    std::fs::create_dir_all(dir)?;
+    let mut archive = tar::Archive::new(archive);
+    for entry in archive.entries()? {
+        let mut entry = entry?;
+        if !entry.header().entry_type().is_file() {
+            continue;
+        }
+        // `unpack_in` refuses a path that escapes `dir` (`..`), reporting
+        // `false`; it creates the parents it needs.
+        entry.unpack_in(dir)?;
+    }
+    Ok(())
+}
+
+/// The mirror of `provider`'s sessions for agent `agent_id`, as current as
+/// it can be made: for a provider the host pulls, refreshed from the box
+/// first when it is running (a stopped box was pulled before it stopped;
+/// it is never booted for a read). `None` when boxes do not run the
+/// provider.
+pub(crate) fn sessions_mirror(provider: &str, agent_id: &str) -> Option<PathBuf> {
+    let home = for_provider(provider)?;
+    let mirror = mirror_for_agent(provider, agent_id)?;
+    if home.transport() == Transport::Pull {
+        if let Some(running) = super::BoxRegistry::global().running(agent_id) {
+            let root = home.sessions_dir(&running.identity.home, &running.identity.writable_root);
+            if let Err(e) = pull_sessions(&running.channel, &root, &mirror) {
+                tracing::warn!(agent_id, provider, error = %e, "pulling the sessions mirror failed");
+            }
+        }
+    }
+    Some(mirror)
+}
+
+/// Bring a pulled provider's mirror up to date before its box stops, so
+/// what the agent wrote since the last read is not lost with the VM's
+/// pause; nothing to do for a tailed one. Logged, never fatal: the stop
+/// goes on either way.
+pub(crate) async fn pull_before_stop(running: &super::RunningBox) {
+    let identity = &running.identity;
+    let Some(home) = for_provider(&identity.provider) else {
+        return;
+    };
+    if home.transport() != Transport::Pull {
+        return;
+    }
+    let channel = running.channel.clone();
+    let root = home.sessions_dir(&identity.home, &identity.writable_root);
+    let mirror = running.dir.join(home.mirror_dirname());
+    let pulled = tokio::task::spawn_blocking(move || pull_sessions(&channel, &root, &mirror))
+        .await
+        .map_err(|e| Error::Other(e.to_string()))
+        .and_then(|r| r);
+    if let Err(e) = pulled {
+        tracing::warn!(agent_id = %identity.agent_id, error = %e, "sessions pull before stop failed");
     }
 }
 
@@ -364,10 +511,10 @@ mod tests {
 
     #[test]
     fn claude_and_codex_have_adapters_and_nothing_else_does() {
-        for supported in ["claude", "codex", "cursor"] {
+        for supported in ["claude", "codex", "cursor", "opencode"] {
             assert_eq!(for_provider(supported).map(|h| h.id()), Some(supported));
         }
-        for other in ["opencode", "pi", "antigravity", ""] {
+        for other in ["pi", "antigravity", "gemini", ""] {
             assert!(!supported(other), "{other}");
             assert!(require(other).is_err(), "{other}");
         }
@@ -505,6 +652,44 @@ mod tests {
                 ),
             ]
         );
+    }
+
+    /// A pulled archive lands its regular files under the mirror and nothing
+    /// else: a link (which the host would follow on read) and an entry that
+    /// climbs out are dropped; an empty pull is nothing.
+    #[test]
+    fn unpack_keeps_regular_files_inside_the_mirror_only() {
+        let td = tempfile::tempdir().unwrap();
+        let mirror = td.path().join("mirror");
+        let mut builder = tar::Builder::new(Vec::new());
+        let mut file = |path: &str, body: &[u8]| {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(body.len() as u64);
+            header.set_mode(0o644);
+            header.set_entry_type(tar::EntryType::Regular);
+            builder.append_data(&mut header, path, body).unwrap();
+        };
+        file("./message/ses_1/msg_1.json", b"{\"id\":\"msg_1\"}");
+        file("../escaped.json", b"{}");
+        let mut link = tar::Header::new_gnu();
+        link.set_size(0);
+        link.set_mode(0o777);
+        link.set_entry_type(tar::EntryType::Symlink);
+        builder
+            .append_link(&mut link, "./message/ses_1/link.json", "/etc/passwd")
+            .unwrap();
+        let archive = builder.into_inner().unwrap();
+
+        unpack_files(&archive, &mirror).unwrap();
+        assert_eq!(
+            std::fs::read(mirror.join("message/ses_1/msg_1.json")).unwrap(),
+            b"{\"id\":\"msg_1\"}"
+        );
+        assert!(!mirror.join("message/ses_1/link.json").exists());
+        assert!(!td.path().join("escaped.json").exists());
+
+        unpack_files(&[], &td.path().join("none")).unwrap();
+        assert!(!td.path().join("none").exists());
     }
 
     #[test]

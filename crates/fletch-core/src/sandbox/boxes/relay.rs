@@ -109,12 +109,15 @@ pub fn tenant_delivered_dir(box_dir: &Path, tenant_agent_id: &str) -> PathBuf {
 impl Relays {
     /// `box_dir` is the box's own directory, which outlives the VM: the
     /// request receipt markers live under it.
+    ///
+    /// `tail` is the guest sessions dir to follow and the host mirror to
+    /// append it to; `None` for a provider whose sessions the host pulls
+    /// instead (`super::home::Transport`).
     pub fn start(
         channel: Arc<Channel>,
         box_dir: &Path,
         rpc_dir: &Path,
-        guest_projects: &Path,
-        mirror: &Path,
+        tail: Option<(&Path, &Path)>,
     ) -> Self {
         let (stop, rx) = watch::channel(false);
         let mailbox = spawn_mailbox(
@@ -123,27 +126,28 @@ impl Relays {
             box_dir.join(DELIVERED_DIR),
             rx.clone(),
         );
-        let tail = {
-            let (guest_projects, mirror) = (guest_projects.to_path_buf(), mirror.to_path_buf());
-            crate::host::spawn(async move {
-                let root = guest_projects.to_string_lossy().into_owned();
+        let mut tasks = vec![mailbox];
+        if let Some((guest_sessions, mirror)) = tail {
+            let (guest_sessions, mirror) = (guest_sessions.to_path_buf(), mirror.to_path_buf());
+            tasks.push(crate::host::spawn(async move {
+                let root = guest_sessions.to_string_lossy().into_owned();
                 run_with_reconnect(
                     rx,
                     || {
                         // What the host already holds, so the guest resends
                         // only what is new; a damaged mirror file starts over.
-                        let offsets = serde_json::to_string(&offsets(&guest_projects, &mirror))
+                        let offsets = serde_json::to_string(&offsets(&guest_sessions, &mirror))
                             .unwrap_or_else(|_| "{}".into());
                         channel.spawn_relay(&[guest::TAIL, &root, "--offsets", &offsets])
                     },
-                    |child, stop| pump_tail(child, guest_projects.clone(), mirror.clone(), stop),
+                    |child, stop| pump_tail(child, guest_sessions.clone(), mirror.clone(), stop),
                 )
                 .await;
-            })
-        };
+            }));
+        }
         Self {
             stop,
-            tasks: parking_lot::Mutex::new(vec![mailbox, tail]),
+            tasks: parking_lot::Mutex::new(tasks),
             mailboxes: parking_lot::Mutex::new(HashSet::from([rpc_dir.to_path_buf()])),
         }
     }

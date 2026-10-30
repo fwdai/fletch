@@ -57,7 +57,7 @@ impl ProviderHome for Cursor {
         let key = login_shell_var(API_KEY).ok_or_else(|| Error::Other(NO_AUTH_MSG.into()))?;
         Ok(Credential {
             env: vec![(API_KEY.to_string(), key)],
-            file: None,
+            files: Vec::new(),
         })
     }
 }

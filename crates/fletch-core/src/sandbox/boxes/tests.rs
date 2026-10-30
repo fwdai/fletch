@@ -293,7 +293,7 @@ async fn wait_for(mut done: impl FnMut() -> bool, timeout: Duration) {
 #[test]
 fn new_agents_of_unsupported_providers_fall_back_to_seatbelt() {
     use crate::sandbox::EngineKind;
-    for supported in ["claude", "codex", "cursor"] {
+    for supported in ["claude", "codex", "cursor", "opencode"] {
         assert!(super::supports_provider(supported), "{supported}");
         assert_eq!(
             super::engine_for_new_agent(EngineKind::Box, supported),

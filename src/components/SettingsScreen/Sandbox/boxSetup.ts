@@ -7,6 +7,7 @@ const PROVIDER_LABELS: Record<string, string> = {
   claude: "Claude Code",
   codex: "Codex",
   cursor: "Cursor",
+  opencode: "OpenCode",
 };
 const GATE = "claude";
 

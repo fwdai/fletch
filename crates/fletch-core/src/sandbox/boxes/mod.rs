@@ -343,9 +343,9 @@ struct PendingLaunch {
     box_agent_id: String,
     provider: String,
     home: PathBuf,
-    /// The host file the launch's credential is, shipped after the env file
-    /// ([`home::Credential::File`]); `None` when it travels in the env.
-    credential_file: Option<PathBuf>,
+    /// The host files the launch's credential is, shipped after the env file
+    /// ([`home::Credential::files`]); empty when it travels in the env.
+    credential_files: Vec<home::ShippedFile>,
 }
 
 /// `EngineKind::Box`. One instance per process ([`BoxEngine::shared`]), like
@@ -366,12 +366,12 @@ impl BoxEngine {
             .clone()
     }
 
-    /// Ship the credential file at host `path` into `box_agent_id`'s guest
+    /// Ship the launch's credential files into `box_agent_id`'s guest
     /// ([`home::ship_credential`]): the plan's `before_turn`, run after the
-    /// host rewrote the file for the turn.
-    fn ship_credential(&self, box_agent_id: &str, path: &Path) -> Result<()> {
+    /// host refreshed them for the turn.
+    fn ship_credential(&self, box_agent_id: &str, files: &[home::ShippedFile]) -> Result<()> {
         let channel = BoxRegistry::global().channel_for(box_agent_id)?;
-        home::ship_credential(&channel, path)
+        home::ship_credential(&channel, files)
     }
 }
 
@@ -566,17 +566,18 @@ impl SandboxEngine for BoxEngine {
         );
 
         // The login as the host resolved it for this launch, the way the
-        // provider's adapter spells it: in the env file, or a host file
+        // provider's adapter spells it: in the env file, and/or host files
         // shipped with the env file and again before every turn.
         let home::Credential {
             mut env,
-            file: credential_file,
+            files: credential_files,
         } = provider_home.credential(ctx)?;
         env.push(("GIT_TERMINAL_PROMPT".to_string(), "0".to_string()));
-        let before_turn = credential_file.clone().map(|path| {
+        let before_turn = (!credential_files.is_empty()).then(|| {
             let engine = BoxEngine::shared();
             let box_agent_id = box_agent_id.clone();
-            Arc::new(move || engine.ship_credential(&box_agent_id, &path)) as TurnPrep
+            let files = credential_files.clone();
+            Arc::new(move || engine.ship_credential(&box_agent_id, &files)) as TurnPrep
         });
 
         self.pending
@@ -589,7 +590,7 @@ impl SandboxEngine for BoxEngine {
                     box_agent_id: box_agent_id.clone(),
                     provider: ctx.provider.to_string(),
                     home: ctx.home.to_path_buf(),
-                    credential_file,
+                    credential_files,
                 },
             );
         // Attached to the box it runs in: a tenant's session keeps its host's
@@ -639,9 +640,7 @@ impl SandboxEngine for BoxEngine {
         let channel = BoxRegistry::global().channel_for(&pending.box_agent_id)?;
         let path = env_file_path(launch_id);
         executor::put(&channel, contents.as_bytes(), &path, 0o600)?;
-        if let Some(credential) = &pending.credential_file {
-            home::ship_credential(&channel, credential)?;
-        }
+        home::ship_credential(&channel, &pending.credential_files)?;
         Ok(path)
     }
 

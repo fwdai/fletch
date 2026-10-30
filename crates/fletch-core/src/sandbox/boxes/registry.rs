@@ -389,7 +389,8 @@ impl BoxRegistry {
             .collect()
     }
 
-    fn running(&self, agent_id: &str) -> Option<Arc<RunningBox>> {
+    /// The box of `agent_id` while its VM is up; never boots it.
+    pub(super) fn running(&self, agent_id: &str) -> Option<Arc<RunningBox>> {
         self.entries.lock().get(agent_id)?.running.clone()
     }
 
@@ -726,6 +727,7 @@ impl BoxRegistry {
             if let Err(e) = super::mirror::refresh_running(&running).await {
                 tracing::info!(agent_id, error = %e, "mirror refresh before stop failed");
             }
+            super::home::pull_before_stop(&running).await;
         }
         running.relays.stop().await;
         let outcome = stop_ladder(&running.vm, &running.channel).await;
@@ -1142,16 +1144,15 @@ async fn boot(
         Err(e) => tracing::warn!(agent_id, error = %e, "could not create the guest's rpc mailbox"),
     }
 
-    // The owner's sessions dir, tailed into its mirror under the box dir
-    // (`home`): where the provider's CLI writes its transcripts in this guest.
+    // The owner's sessions dir — where the provider's CLI writes its
+    // transcripts in this guest — tailed into its mirror under the box dir
+    // when the provider's adapter has it tailed (`home::Transport`).
     let provider_home = super::home::require(&identity.provider)?;
-    let relays = relay::Relays::start(
-        channel.clone(),
-        &dir,
-        &identity.rpc_dir,
-        &provider_home.sessions_dir(&identity.home, &identity.writable_root),
-        &dir.join(provider_home.mirror_dirname()),
-    );
+    let sessions = provider_home.sessions_dir(&identity.home, &identity.writable_root);
+    let mirror = dir.join(provider_home.mirror_dirname());
+    let tail = (provider_home.transport() == super::home::Transport::Tail)
+        .then_some((sessions.as_path(), mirror.as_path()));
+    let relays = relay::Relays::start(channel.clone(), &dir, &identity.rpc_dir, tail);
     Ok(RunningBox {
         identity: identity.clone(),
         dir,

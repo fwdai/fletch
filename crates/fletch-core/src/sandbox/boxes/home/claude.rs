@@ -66,7 +66,10 @@ impl ProviderHome for Claude {
             ContainerAuth::Resolved { env, .. } => env,
             ContainerAuth::Unavailable => Vec::new(),
         };
-        Ok(Credential { env, file: None })
+        Ok(Credential {
+            env,
+            files: Vec::new(),
+        })
     }
 }
 

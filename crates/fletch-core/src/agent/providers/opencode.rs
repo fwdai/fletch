@@ -28,19 +28,29 @@ fn opencode_storage_root() -> Option<PathBuf> {
     Some(base.join("opencode").join("storage"))
 }
 
+/// A box agent's store is in its guest; the host reads the mirror it pulls
+/// under the agent's box dir (`sandbox::boxes::home::sessions_mirror`,
+/// refreshed from a running box first), scanned before the user's own
+/// store. Absent for every other engine's agent.
 pub(crate) fn opencode_locate(
     session_id: &str,
-    _agent_id: &str,
+    agent_id: &str,
     _cwd: &Path,
     diag: &mut ReadDiagnostics,
 ) -> Vec<PathBuf> {
-    let Some(root) = opencode_storage_root() else {
-        return Vec::new();
-    };
-    diag.root_exists = root.exists();
-    let out = json_files_in(&root.join("message").join(session_id));
-    diag.files_matched += out.len();
-    out
+    let roots = crate::sandbox::boxes::home::sessions_mirror("opencode", agent_id)
+        .into_iter()
+        .chain(opencode_storage_root());
+    for root in roots {
+        // Or-ed, not set: a scan over several roots has a live one if any is.
+        diag.root_exists |= root.exists();
+        let out = json_files_in(&root.join("message").join(session_id));
+        if !out.is_empty() {
+            diag.files_matched += out.len();
+            return out;
+        }
+    }
+    Vec::new()
 }
 
 pub(crate) fn opencode_read(
