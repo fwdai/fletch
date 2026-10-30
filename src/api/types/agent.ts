@@ -273,6 +273,13 @@ export interface FolderGrantsUpdate {
   applies_at_turn_end: boolean;
 }
 
+/** What a grant left in place, and the folder it granted as the backend stored
+ *  it: canonical (`~` expanded, links resolved), so it can differ from the path
+ *  asked for — the one to name the folder by, in a message too. */
+export interface FolderGranted extends FolderGrantsUpdate {
+  granted: string;
+}
+
 /** `agent:folder-grants`: the agent's whole grant list after a change. */
 export interface AgentFolderGrantsEvent extends FolderGrantsUpdate {
   agent_id: string;

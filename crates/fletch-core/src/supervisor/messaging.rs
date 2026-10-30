@@ -702,11 +702,14 @@ fn supersede_member_turns(
 }
 
 /// Whether `attachments` name one of the folders granted to `record`'s agent
-/// (a folder chip sent with the message, `workspace::folder_grants`).
+/// (a folder chip sent with the message, `workspace::folder_grants`), spelled
+/// as stored or any way that resolves to it: a client that sent the path it
+/// asked for, not the canonical one, must not have the message reach a process
+/// launched before the folder was.
 fn names_granted_folder(record: &AgentRecord, attachments: &[String]) -> bool {
-    attachments
-        .iter()
-        .any(|a| record.folder_grants.iter().any(|g| g.path == Path::new(a)))
+    attachments.iter().any(|a| {
+        crate::workspace::folder_grants::find(&record.folder_grants, Path::new(a)).is_some()
+    })
 }
 
 /// At a turn-end Idle transition, flush any queued follow-up messages as the
@@ -807,6 +810,27 @@ mod tests {
                 "/tmp/shot.png".to_string(),
                 "/Users/u/Projects/lib".to_string()
             ]
+        ));
+    }
+
+    /// A client that names the folder by the path it picked — a link to the
+    /// granted folder — still has its message wait for the relaunch.
+    #[test]
+    #[cfg(unix)]
+    fn a_folder_named_through_a_link_still_waits_for_its_relaunch() {
+        let td = tempfile::tempdir().unwrap();
+        let real = std::fs::canonicalize(td.path()).unwrap().join("lib");
+        std::fs::create_dir(&real).unwrap();
+        let link = td.path().join("lib-link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let mut record = record_with_status("grants-link", AgentStatus::Running);
+        record.folder_grants = vec![crate::workspace::FolderGrant {
+            path: real,
+            writable: false,
+        }];
+        assert!(names_granted_folder(
+            &record,
+            &[link.to_string_lossy().into_owned()]
         ));
     }
 

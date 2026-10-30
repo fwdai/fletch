@@ -9,7 +9,7 @@ use crate::error::Result;
 use crate::host::EngineCtx;
 use crate::managed_session::ToolUseBehavior;
 use crate::supervisor::Supervisor;
-use crate::workspace::folder_grants::FolderGrantsUpdate;
+use crate::workspace::folder_grants::{FolderGranted, FolderGrantsUpdate};
 use crate::workspace::{AgentRecord, AgentView, FolderGrant, TrackedRepo};
 
 // Args mirror the frontend `invoke("spawn_agent", ...)` payload one-to-one;
@@ -272,8 +272,9 @@ pub async fn set_agent_model(
 }
 
 /// Grant a folder on this machine to the agent (read-only unless `writable`),
-/// or change a granted folder's mode. Returns the workspace's grants and
-/// whether the change waits for the running turn to end.
+/// or change a granted folder's mode. Returns the folder as stored (the
+/// canonical path to name it by), the workspace's grants and whether the
+/// change waits for the running turn to end.
 #[tauri::command]
 pub async fn grant_agent_folder(
     supervisor: State<'_, Arc<Supervisor>>,
@@ -281,7 +282,7 @@ pub async fn grant_agent_folder(
     agent_id: String,
     path: String,
     writable: bool,
-) -> Result<FolderGrantsUpdate> {
+) -> Result<FolderGranted> {
     let sup = supervisor.inner().clone();
     sup.grant_folder(ctx.inner(), &agent_id, Path::new(&path), writable)
         .await

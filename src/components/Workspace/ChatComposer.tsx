@@ -7,7 +7,7 @@
 // through the identical send machinery instead of a second copy of it.
 
 import { useCallback, useEffect, useState } from "react";
-import { type AgentRecord, api, type FolderGrant } from "@/api";
+import { type AgentRecord, api } from "@/api";
 import { Composer } from "@/components/Composer";
 import { providerLabel } from "@/data/providers";
 import { spawnStageLabel } from "@/data/spawnStage";
@@ -16,15 +16,6 @@ import { getLinearTeamId } from "@/storage/projectSettings";
 import { useAppStore } from "@/store";
 import { currentAccountId } from "./AccountPicker/choices";
 import { ChatWorkingStatus } from "./ChatWorkingStatus";
-
-/** The path the backend stored for a folder granted as `requested`: canonical,
- *  so it can differ from what was picked (a symlink, `~`). The grant just made
- *  is the one whose path `requested` resolves to; the requested path stands in
- *  when none matches exactly. */
-function grantedPath(grants: FolderGrant[], requested: string): string {
-  const trimmed = requested.replace(/\/+$/, "");
-  return grants.find((g) => g.path === trimmed)?.path ?? (grants.at(-1)?.path || trimmed);
-}
 
 export function ChatComposer({
   agent,
@@ -202,11 +193,13 @@ export function ChatComposer({
               // turn's end (or "Apply now" in the working strip); one the
               // agent can already read goes in live. A refusal is in the error
               // banner, and returning false puts the draft back to fix.
+              // Each is named by the path the backend stored, which can differ
+              // from the one picked (a link, `~`).
               const granted: string[] = [];
               for (const folder of folders) {
-                const grants = await grantFolder(agent.id, folder.path, folder.writable);
-                if (!grants) return false;
-                granted.push(grantedPath(grants, folder.path));
+                const path = await grantFolder(agent.id, folder.path, folder.writable);
+                if (!path) return false;
+                granted.push(path);
               }
               // Effort is session-level now (persisted via onChangeEffort and
               // read from the record each turn), so sends carry no per-message

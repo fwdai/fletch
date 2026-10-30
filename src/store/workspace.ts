@@ -220,9 +220,11 @@ export interface WorkspaceSlice {
   setAgentModel: (id: string, model: string | null) => Promise<void>;
   /** Grant a folder to the agent, or change a granted folder's mode. Queued
    *  with the config changes, so a send right after reaches an agent that can
-   *  already see the folder. Applies the returned grants; on refusal sets
-   *  `lastError` and resolves to null. */
-  grantAgentFolder: (id: string, path: string, writable: boolean) => Promise<FolderGrant[] | null>;
+   *  already see the folder. Applies the returned grants and resolves to the
+   *  folder's path as the backend stored it (canonical, so it can differ from
+   *  `path`) — the one a message must name it by; on refusal sets `lastError`
+   *  and resolves to null. */
+  grantAgentFolder: (id: string, path: string, writable: boolean) => Promise<string | null>;
   /** Take back a granted folder (see `grantAgentFolder`). */
   revokeAgentFolder: (id: string, path: string) => Promise<FolderGrant[] | null>;
   /** End the running turn so a folder change waiting for it applies now, and
@@ -524,7 +526,7 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
     try {
       const update = await configOps.run(id, () => api.grantAgentFolder(id, path, writable));
       set((state) => applyFolderGrantsUpdate(state, id, update));
-      return update.folder_grants;
+      return update.granted;
     } catch (e) {
       set({ lastError: String(e) });
       return null;

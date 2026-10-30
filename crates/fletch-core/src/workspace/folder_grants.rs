@@ -50,6 +50,37 @@ pub struct FolderGrantsUpdate {
     pub applies_at_turn_end: bool,
 }
 
+/// What a grant left in place, and the folder it granted, as stored: the
+/// canonical path a client must name it by (`~` expanded, links resolved),
+/// which may differ from the path it asked for.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct FolderGranted {
+    pub granted: PathBuf,
+    #[serde(flatten)]
+    pub update: FolderGrantsUpdate,
+}
+
+/// The form a grant stores `path` under: `~/` expanded and links resolved —
+/// or, for a folder that no longer resolves, the expanded path as given. The
+/// one canonicalization [`check`] applies, so a path a client names a grant by
+/// matches it however the client spelled it.
+pub fn normalize(path: &Path) -> PathBuf {
+    let expanded = match (path.strip_prefix("~"), dirs::home_dir()) {
+        (Ok(rest), Some(home)) => home.canonicalize().unwrap_or(home).join(rest),
+        _ => path.to_path_buf(),
+    };
+    std::fs::canonicalize(&expanded).unwrap_or(expanded)
+}
+
+/// The grant among `grants` that `path` names, spelled as stored or any way
+/// [`normalize`] resolves to it.
+pub fn find<'a>(grants: &'a [FolderGrant], path: &Path) -> Option<&'a FolderGrant> {
+    grants.iter().find(|g| g.path == path).or_else(|| {
+        let path = normalize(path);
+        grants.iter().find(|g| g.path == path)
+    })
+}
+
 /// The only folder under `~/Library` a grant may name: iCloud Drive.
 const ICLOUD_DRIVE: &str = "Library/Mobile Documents";
 
@@ -351,6 +382,31 @@ mod tests {
     use super::*;
 
     const HOME: &str = "/Users/u";
+
+    #[test]
+    #[cfg(unix)]
+    fn find_names_a_grant_however_the_path_is_spelled() {
+        let td = tempfile::tempdir().unwrap();
+        let real = std::fs::canonicalize(td.path()).unwrap().join("lib");
+        std::fs::create_dir(&real).unwrap();
+        let link = td.path().join("lib-link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let grants = vec![
+            FolderGrant {
+                path: td.path().join("other"),
+                writable: true,
+            },
+            FolderGrant {
+                path: real.clone(),
+                writable: false,
+            },
+        ];
+        assert_eq!(find(&grants, &real).map(|g| &g.path), Some(&real));
+        assert_eq!(find(&grants, &link).map(|g| &g.path), Some(&real));
+        // A deleted folder is still found by its stored path.
+        assert!(find(&grants, &td.path().join("other")).is_some());
+        assert!(find(&grants, &td.path().join("missing")).is_none());
+    }
 
     fn refused(path: &str, writable: bool, engine: EngineKind) -> Option<&'static str> {
         refusal(

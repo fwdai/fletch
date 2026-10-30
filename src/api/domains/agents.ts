@@ -5,6 +5,7 @@ import type {
   AgentRecord,
   AgentView,
   FolderGrant,
+  FolderGranted,
   FolderGrantsUpdate,
   ForkCode,
   ForkContext,
@@ -150,9 +151,10 @@ export const agentsApi = {
    *  `writable`), or change a granted folder's mode. The backend checks it and,
    *  when the agent's launch sees the change, relaunches it on its own session:
    *  at once when idle, at the turn's end when busy (`applies_at_turn_end`) —
-   *  a message naming the folder sent meanwhile waits for the new process. */
+   *  a message naming the folder sent meanwhile waits for the new process.
+   *  `granted` is the folder as stored, to name it by. */
   grantAgentFolder: (agentId: string, path: string, writable: boolean) =>
-    invoke<FolderGrantsUpdate>("grant_agent_folder", { agentId, path, writable }),
+    invoke<FolderGranted>("grant_agent_folder", { agentId, path, writable }),
   /** Take back a granted folder (`path` as the grant list has it). */
   revokeAgentFolder: (agentId: string, path: string) =>
     invoke<FolderGrantsUpdate>("revoke_agent_folder", { agentId, path }),

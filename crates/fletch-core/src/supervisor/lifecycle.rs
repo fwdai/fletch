@@ -18,7 +18,8 @@ use crate::rpc;
 use crate::sandbox::provision::{self, CheckoutSpec};
 use crate::sandbox::{self, EngineKind};
 use crate::workspace::{
-    agent_parent_dir, allocate_repo_subdir, folder_grants::FolderGrantsUpdate,
+    agent_parent_dir, allocate_repo_subdir,
+    folder_grants::{FolderGranted, FolderGrantsUpdate},
     is_per_turn_provider, new_agent_record, repo_checkout_path, AgentRecord, AgentStatus,
     AgentView, FolderGrant, TrackedRepo,
 };
@@ -472,12 +473,18 @@ impl Supervisor {
             }
             None => None,
         };
-        // So does the folder check, which may wait on a privacy prompt: against
-        // the engine the agent will be stamped with (resolved again under the
-        // lock below, from the same setting).
+        // The engine this agent will be stamped with, resolved once: the folder
+        // check, the provider gate, the stamp and the provisioning mode below
+        // must all see the same one, and the setting can change while the
+        // check waits on a privacy prompt. A second read under the lock could
+        // stamp an engine the folders were never checked for.
+        let engine_kind =
+            sandbox::boxes::engine_for_new_agent(sandbox::selected_engine_kind(), &req.provider);
+        // The folder check may wait on a privacy prompt, so it too runs before
+        // the lifecycle lock.
         let folder_grants = crate::workspace::folder_grants::check_all(
             std::mem::take(&mut req.folder_grants),
-            sandbox::boxes::engine_for_new_agent(sandbox::selected_engine_kind(), &req.provider),
+            engine_kind,
         )
         .await?;
         let _lifecycle_guard = self.agent_lifecycle.lock().await;
@@ -518,10 +525,6 @@ impl Supervisor {
         // can't fail with a missing working directory downstream.
         git::ensure_head_commit(&repo_path).await?;
 
-        // The engine this agent will be stamped with, resolved once so the
-        // provider gate, the stamp, and the provisioning mode below all agree.
-        let engine_kind =
-            sandbox::boxes::engine_for_new_agent(sandbox::selected_engine_kind(), &provider);
         ensure_engine_supports_provider(engine_kind, &provider)?;
 
         // Only agents with a wired native (PTY/TUI) view can honor a Native
@@ -1855,14 +1858,15 @@ impl Supervisor {
     /// session-preserving respawn: at once when idle, at the turn's end when
     /// busy (or sooner, through [`Self::apply_changes_now`]). A follow-up that
     /// names the folder waits for that respawn rather than reaching the old
-    /// process (`send_user_message`).
+    /// process (`send_user_message`). Returns the folder as stored, which is
+    /// how a client must name it from then on.
     pub async fn grant_folder(
         self: &Arc<Self>,
         ctx: &Arc<EngineCtx>,
         agent_id: &str,
         path: &Path,
         writable: bool,
-    ) -> Result<FolderGrantsUpdate> {
+    ) -> Result<FolderGranted> {
         let record = self.workspace.agent(agent_id)?;
         if record.archive.is_some() {
             return Err(Error::Other("an archived workspace runs no agent".into()));
@@ -1875,24 +1879,29 @@ impl Supervisor {
             crate::workspace::folder_grants::check_all(vec![requested], stamped_engine(&record))
                 .await?;
         let Some(FolderGrant { path, .. }) = checked.into_iter().next() else {
-            return Ok(self.folder_grants_update(agent_id, record.folder_grants));
+            return Err(Error::Other("no folder to grant".into()));
         };
         let unchanged = record
             .folder_grants
             .iter()
             .any(|g| g.path == path && g.writable == writable);
-        if unchanged {
-            return Ok(self.folder_grants_update(agent_id, record.folder_grants));
-        }
-        let grants = self
-            .workspace
-            .upsert_folder_grant(agent_id, &path, writable)?;
-        self.apply_folder_grants(ctx, &record, grants).await
+        let update = if unchanged {
+            self.folder_grants_update(agent_id, record.folder_grants)
+        } else {
+            let grants = self
+                .workspace
+                .upsert_folder_grant(agent_id, &path, writable)?;
+            self.apply_folder_grants(ctx, &record, grants).await?
+        };
+        Ok(FolderGranted {
+            granted: path,
+            update,
+        })
     }
 
     /// Take back a folder granted to `agent_id`'s agent, relaunching it as
-    /// [`Self::grant_folder`] does when the launch saw the folder. `path` is the
-    /// stored (canonical) path, as the grant list reports it.
+    /// [`Self::grant_folder`] does when the launch saw the folder. `path` names
+    /// the grant as stored (canonical), or any spelling that resolves to it.
     pub async fn revoke_folder(
         self: &Arc<Self>,
         ctx: &Arc<EngineCtx>,
@@ -1900,10 +1909,12 @@ impl Supervisor {
         path: &Path,
     ) -> Result<FolderGrantsUpdate> {
         let record = self.workspace.agent(agent_id)?;
-        if !record.folder_grants.iter().any(|g| g.path == path) {
+        let Some(stored) = crate::workspace::folder_grants::find(&record.folder_grants, path)
+            .map(|g| g.path.clone())
+        else {
             return Ok(self.folder_grants_update(agent_id, record.folder_grants));
-        }
-        let grants = self.workspace.remove_folder_grant(agent_id, path)?;
+        };
+        let grants = self.workspace.remove_folder_grant(agent_id, &stored)?;
         self.apply_folder_grants(ctx, &record, grants).await
     }
 
