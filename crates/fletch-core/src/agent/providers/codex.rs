@@ -158,6 +158,7 @@ pub(crate) fn codex_write(
         let rollout = Rollout::new(session_id, cwd, bodies);
         return crate::sandbox::boxes::home::create_session_file(
             &crate::sandbox::boxes::home::codex::Codex,
+            agent_id,
             cwd,
             &rollout.rel,
             &rollout.lines,

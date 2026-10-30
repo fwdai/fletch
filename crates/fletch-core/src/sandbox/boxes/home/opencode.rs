@@ -19,7 +19,8 @@
 use std::path::{Path, PathBuf};
 
 use super::{
-    copy_tree, login_shell_var, Credential, GuestEntry, ProviderHome, ShippedFile, Transport,
+    copy_tree, login_shell_var, Credential, CredentialFile, FileOwner, GuestEntry, ProviderHome,
+    Transport,
 };
 use crate::error::Result;
 use crate::sandbox::container::launch_auth::{multi_provider_auth_env, present_api_keys};
@@ -95,7 +96,7 @@ fn seed_from(home: &Path, host_config: &Path) -> Result<Vec<GuestEntry>> {
         GuestEntry::Dir(OpenCode::data_dir(home)),
         GuestEntry::Absent(config.clone()),
     ];
-    entries.extend(copy_tree(host_config, &config)?);
+    entries.extend(copy_tree(host_config, &config));
     Ok(entries)
 }
 
@@ -107,12 +108,13 @@ fn credential_from(
     api_keys: Vec<(String, String)>,
 ) -> Result<Credential> {
     let guest = OpenCode::data_dir(home);
-    let files: Vec<ShippedFile> = LOGIN_FILES
+    let files: Vec<CredentialFile> = LOGIN_FILES
         .iter()
         .filter(|name| host_data.join(name).is_file())
-        .map(|name| ShippedFile {
+        .map(|name| CredentialFile {
             host: host_data.join(name),
             guest: guest.join(name),
+            owner: FileOwner::Cli,
         })
         .collect();
     let env = multi_provider_auth_env(api_keys, !files.is_empty(), NO_AUTH_MSG)?;
@@ -168,9 +170,10 @@ mod tests {
         assert!(credential.env.is_empty());
         assert_eq!(
             credential.files,
-            vec![ShippedFile {
+            vec![CredentialFile {
                 host: host_data.join("auth.json"),
                 guest: home.join(".local/share/opencode/auth.json"),
+                owner: FileOwner::Cli,
             }]
         );
     }

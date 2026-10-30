@@ -230,6 +230,13 @@ impl RunningBox {
         self.relays
             .add_mailbox(self.channel.clone(), &self.dir, rpc_dir, tenant_agent_id);
     }
+
+    /// Tail a tenant's sessions dir out of this box into the tenant's own
+    /// mirror too (`relay::Relays::add_tail`).
+    pub fn relay_tail(&self, guest_sessions: &Path, mirror: &Path) {
+        self.relays
+            .add_tail(self.channel.clone(), guest_sessions, mirror);
+    }
 }
 
 /// An agent that runs in another agent's box because the tree it adopted
@@ -336,6 +343,16 @@ impl BoxRegistry {
     }
 
     /// Forget every tenant of `host_agent_id`'s box: the box is going.
+    /// The tenants of `host_agent_id`'s box, by agent id.
+    pub fn tenants_of(&self, host_agent_id: &str) -> Vec<(String, Tenant)> {
+        self.tenants
+            .lock()
+            .iter()
+            .filter(|(_, t)| t.host_agent_id == host_agent_id)
+            .map(|(id, t)| (id.clone(), t.clone()))
+            .collect()
+    }
+
     fn forget_tenants_of(&self, host_agent_id: &str) {
         let gone: Vec<Tenant> = {
             let mut tenants = self.tenants.lock();

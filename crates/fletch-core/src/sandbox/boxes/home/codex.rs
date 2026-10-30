@@ -10,7 +10,7 @@
 
 use std::path::{Path, PathBuf};
 
-use super::{copy_tree, login_shell_var, Credential, GuestEntry, ProviderHome, ShippedFile};
+use super::{copy_tree, login_shell_var, Credential, CredentialFile, GuestEntry, ProviderHome};
 use crate::agent::{accounts, codex_home};
 use crate::error::Result;
 use crate::sandbox::engine::AgentLaunchCtx;
@@ -52,7 +52,7 @@ impl ProviderHome for Codex {
         let mut entries = vec![GuestEntry::Dir(overlay.join("sessions"))];
         for item in accounts::shared_items("codex") {
             entries.push(GuestEntry::Absent(overlay.join(item)));
-            entries.extend(copy_tree(&source.join(item), &overlay.join(item))?);
+            entries.extend(copy_tree(&source.join(item), &overlay.join(item)));
         }
         Ok(entries)
     }
@@ -67,7 +67,7 @@ impl ProviderHome for Codex {
     fn credential(&self, ctx: &AgentLaunchCtx) -> Result<Credential> {
         let files = ctx
             .codex_home
-            .map(|overlay| ShippedFile::at(codex_home::launch_credential_path(overlay)))
+            .map(|overlay| CredentialFile::host_owned(codex_home::launch_credential_path(overlay)))
             .into_iter()
             .collect();
         let env = match ctx.account_dir {
@@ -174,7 +174,7 @@ mod tests {
     fn the_credential_is_the_overlays_launch_file() {
         let root = Path::new("/Users/u/.fletch/workspaces/a");
         let overlay = root.join(".fletch-codex-home");
-        let launch_file = vec![ShippedFile::at(overlay.join("auth.json"))];
+        let launch_file = vec![CredentialFile::host_owned(overlay.join("auth.json"))];
         let default = Codex
             .credential(&ctx(root, Some(overlay.as_path())))
             .unwrap();

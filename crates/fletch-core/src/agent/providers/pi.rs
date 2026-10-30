@@ -77,7 +77,7 @@ fn pi_locate_in(
 /// copied as is.
 pub(crate) fn pi_write(
     session_id: &str,
-    _agent_id: &str,
+    agent_id: &str,
     cwd: &Path,
     engine: crate::sandbox::EngineKind,
     bodies: &[Value],
@@ -89,6 +89,7 @@ pub(crate) fn pi_write(
         let (rel, lines) = pi_session_file(session_id, cwd, bodies);
         return crate::sandbox::boxes::home::create_session_file(
             &crate::sandbox::boxes::home::pi::Pi,
+            agent_id,
             cwd,
             &rel,
             &lines,

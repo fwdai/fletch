@@ -38,9 +38,13 @@ pub mod opencode;
 pub mod pi;
 
 use std::io;
+use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::{Duration, SystemTime};
 
 use fletch_box::Channel;
+use parking_lot::Mutex;
 use serde_json::Value;
 
 use crate::error::{Error, Result};
@@ -120,29 +124,244 @@ pub enum GuestEntry {
 pub struct Credential {
     /// Variables for the launch's env file, good for the whole launch.
     pub env: Vec<(String, String)>,
-    /// Host files the host keeps current, shipped into the guest with the
-    /// env file and again before every turn, and removed there when the
-    /// host no longer has one.
-    pub files: Vec<ShippedFile>,
+    /// Files the launch runs with, each kept in step between host and guest
+    /// by its owner ([`FileOwner`]) for as long as the launch lives
+    /// ([`CredentialSync`]).
+    pub files: Vec<CredentialFile>,
 }
 
-/// A host file and where it lands in the guest — the same path for
-/// per-agent state under the writable root (path identity), a different
-/// one for state the user keeps where an XDG variable put it.
+/// A credential file on the host and where it lives in the guest — the same
+/// path for per-agent state under the writable root (path identity), a
+/// different one for state the user keeps where an XDG variable put it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ShippedFile {
+pub struct CredentialFile {
     pub host: PathBuf,
     pub guest: PathBuf,
+    pub owner: FileOwner,
 }
 
-impl ShippedFile {
-    /// A file at the same path on both sides.
-    pub fn at(path: PathBuf) -> Self {
+/// Who writes a credential file while a launch lives, and so which way it
+/// is copied.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileOwner {
+    /// The host derives it from its stored login before every launch and
+    /// turn (`agent::codex_home`: an access token with the refresh token
+    /// blanked). The guest's copy is replaced each time and never read back:
+    /// the CLI cannot refresh it, so it has nothing to say.
+    Host,
+    /// The CLI's own login, which it refreshes itself (an OAuth token it
+    /// rotates mid-turn; a map of provider credentials). Shipped at launch,
+    /// then reconciled as a read-write mount would keep both sides: what the
+    /// guest changed is copied back to the host after every turn and when
+    /// the launch ends, and what the host changed meanwhile (a new sign-in)
+    /// is shipped when the guest did not touch its copy. The guest wins when
+    /// both changed: its session is the live one.
+    Cli,
+}
+
+impl CredentialFile {
+    /// A host-owned file at the same path on both sides.
+    pub fn host_owned(path: PathBuf) -> Self {
         Self {
             host: path.clone(),
             guest: path,
+            owner: FileOwner::Host,
         }
     }
+
+    /// A CLI-owned file at the same path on both sides.
+    pub fn cli_owned(path: PathBuf) -> Self {
+        Self {
+            host: path.clone(),
+            guest: path,
+            owner: FileOwner::Cli,
+        }
+    }
+}
+
+/// The credential files of one launch, kept in step for as long as it lives:
+/// [`launch`](Self::launch) when the env file is delivered,
+/// [`turn`](Self::turn) before every turn of a per-turn session,
+/// [`end`](Self::end) when the launch is killed. Remembers what each side
+/// last held, so a change on either side is told from the other's.
+#[derive(Debug, Default)]
+pub struct CredentialSync {
+    files: Vec<CredentialFile>,
+    /// What both sides held after the last sync, by guest path: a digest of
+    /// the contents, or `None` for no file.
+    synced: std::collections::HashMap<PathBuf, Option<[u8; 32]>>,
+}
+
+impl CredentialSync {
+    pub fn new(files: Vec<CredentialFile>) -> Self {
+        Self {
+            files,
+            synced: Default::default(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.files.is_empty()
+    }
+
+    /// At launch the host is authoritative for every file: what a previous
+    /// launch left in the guest is replaced, since the host's copy is what
+    /// the user signed in to (or back out of) since.
+    pub fn launch(&mut self, channel: &Channel) -> Result<()> {
+        for i in 0..self.files.len() {
+            self.ship(channel, i)?;
+        }
+        Ok(())
+    }
+
+    /// Before a turn: a host-owned file is shipped afresh (the host rewrote
+    /// it for the turn); a CLI-owned one is reconciled.
+    pub fn turn(&mut self, channel: &Channel) -> Result<()> {
+        for i in 0..self.files.len() {
+            match self.files[i].owner {
+                FileOwner::Host => self.ship(channel, i)?,
+                FileOwner::Cli => self.reconcile(channel, i)?,
+            }
+        }
+        Ok(())
+    }
+
+    /// When the launch ends: what the CLI changed goes back to the host.
+    pub fn end(&mut self, channel: &Channel) -> Result<()> {
+        for i in 0..self.files.len() {
+            if self.files[i].owner == FileOwner::Cli {
+                self.reconcile(channel, i)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Host → guest: put the host's copy, or remove the guest's when the host
+    /// has none (the login was revoked or signed out).
+    fn ship(&mut self, channel: &Channel, i: usize) -> Result<()> {
+        let CredentialFile { host, guest, .. } = &self.files[i];
+        let bytes = read_optional(host)?;
+        put_optional(channel, guest, bytes.as_deref())?;
+        self.synced
+            .insert(guest.clone(), bytes.as_deref().map(digest));
+        Ok(())
+    }
+
+    /// Both ways, by what changed since the last sync: the guest's change
+    /// goes to the host (the guest wins a race); otherwise the host's change
+    /// goes to the guest; otherwise nothing moves.
+    fn reconcile(&mut self, channel: &Channel, i: usize) -> Result<()> {
+        let CredentialFile { host, guest, .. } = &self.files[i];
+        let last = self.synced.get(guest).copied().flatten();
+        let in_guest = get_optional(channel, guest)?;
+        let on_host = read_optional(host)?;
+        let guest_digest = in_guest.as_deref().map(digest);
+        let host_digest = on_host.as_deref().map(digest);
+        match reconcile_direction(last, guest_digest, host_digest) {
+            Move::ToHost => {
+                write_host_file(host, in_guest.as_deref().unwrap_or_default())?;
+                self.synced.insert(guest.clone(), guest_digest);
+            }
+            Move::ToGuest => {
+                put_optional(channel, guest, on_host.as_deref())?;
+                self.synced.insert(guest.clone(), host_digest);
+            }
+            Move::Nothing => {}
+        }
+        Ok(())
+    }
+}
+
+/// Which way a CLI-owned file moves at a reconcile.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Move {
+    ToHost,
+    ToGuest,
+    Nothing,
+}
+
+/// The rule of [`CredentialSync::reconcile`], over digests: what the guest
+/// changed goes to the host (the guest wins a race, and a file the guest
+/// removed is left to the host's next sign-in rather than removed there);
+/// otherwise what the host changed goes to the guest; otherwise nothing.
+fn reconcile_direction(
+    last: Option<[u8; 32]>,
+    guest: Option<[u8; 32]>,
+    host: Option<[u8; 32]>,
+) -> Move {
+    if guest.is_some() && guest != last {
+        Move::ToHost
+    } else if host != last {
+        Move::ToGuest
+    } else {
+        Move::Nothing
+    }
+}
+
+fn digest(bytes: &[u8]) -> [u8; 32] {
+    use sha2::Digest as _;
+    sha2::Sha256::digest(bytes).into()
+}
+
+/// The host file's contents, `None` when there is none.
+fn read_optional(path: &Path) -> Result<Option<Vec<u8>>> {
+    match std::fs::read(path) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(Error::Io(e)),
+    }
+}
+
+/// The guest file's contents, `None` when there is none.
+fn get_optional(channel: &Channel, path: &Path) -> Result<Option<Vec<u8>>> {
+    match executor::get(channel, path) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(Error::Other(format!(
+            "reading {} from the box: {e}",
+            path.display()
+        ))),
+    }
+}
+
+/// Put `bytes` at the guest path, 0600, or remove it for `None`.
+fn put_optional(channel: &Channel, path: &Path, bytes: Option<&[u8]>) -> Result<()> {
+    match bytes {
+        Some(bytes) => executor::put(channel, bytes, path, 0o600),
+        None => {
+            let out = executor::run(channel, &["rm", "-f", "--", &path.to_string_lossy()], None)
+                .map_err(|e| {
+                    Error::Other(format!("removing {} in the box: {e}", path.display()))
+                })?;
+            if !out.status.success() {
+                return Err(Error::Other(format!(
+                    "removing {} in the box failed: {}",
+                    path.display(),
+                    String::from_utf8_lossy(&out.stderr).trim()
+                )));
+            }
+            Ok(())
+        }
+    }
+}
+
+/// Write a credential the CLI refreshed back to its host file: the user's
+/// own login store, which a box agent cannot otherwise reach. Whole and in
+/// one rename, 0600, so a reader never sees a half-written login.
+fn write_host_file(path: &Path, bytes: &[u8]) -> Result<()> {
+    use std::io::Write as _;
+    let dir = path
+        .parent()
+        .ok_or_else(|| Error::InvalidPath(path.display().to_string()))?;
+    std::fs::create_dir_all(dir)?;
+    let mut file = tempfile::Builder::new()
+        .prefix(".fletch-credential-")
+        .tempfile_in(dir)?;
+    file.write_all(bytes)?;
+    file.as_file()
+        .set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    file.persist(path).map_err(|e| Error::Io(e.error))?;
+    Ok(())
 }
 
 /// The adapters, one per provider boxes run.
@@ -302,96 +521,141 @@ fn tar_of(entries: &[&GuestEntry]) -> Result<Vec<u8>> {
         .map_err(|e| Error::Other(format!("tar: {e}")))
 }
 
-/// How deep a host tree is copied: deep enough for any config layout, and a
-/// bound on a symlink loop, which the walk follows rather than resolves.
+/// What a copied config tree may amount to: a file past [`MAX_FILE_BYTES`]
+/// is left out, and the copy stops at [`MAX_TREE_BYTES`] or
+/// [`MAX_TREE_FILES`] in all. A config dir is small; a link out of it into
+/// a build tree or a cache is not, and must not make a launch ship it.
+const MAX_FILE_BYTES: u64 = 4 << 20;
+const MAX_TREE_BYTES: u64 = 64 << 20;
+const MAX_TREE_FILES: usize = 4096;
+/// How deep a config layout can reasonably go.
 const COPY_DEPTH: usize = 16;
 
 /// Entries that make `guest` a copy of the host's `host`: nothing when the
-/// host has nothing there, one file for a file, the tree for a directory
-/// (symlinks followed, as a link into a config dir means its target). Files
-/// land mode 0644, in private directories (the seed's umask). Unreadable
-/// items are skipped: a config file the host cannot read would not reach a
-/// seatbelt launch either.
-pub(crate) fn copy_tree(host: &Path, guest: &Path) -> Result<Vec<GuestEntry>> {
-    let mut entries = Vec::new();
-    copy_into(host, guest, 0, &mut entries)?;
-    Ok(entries)
+/// host has nothing there, one file for a file, the tree for a directory.
+/// Symlinks are followed, as a link into a config dir means its target —
+/// but a directory already on the path down is a cycle and is not entered
+/// again, whatever the link that led there. Files land mode 0644, in
+/// private directories (the seed's umask). What cannot be read or
+/// resolved, and what is too big ([`MAX_FILE_BYTES`] and the tree limits),
+/// is left out with a log line: a config oddity must not refuse a launch,
+/// and a config file the host cannot read would not reach a seatbelt launch
+/// either.
+pub(crate) fn copy_tree(host: &Path, guest: &Path) -> Vec<GuestEntry> {
+    let mut walk = TreeCopy {
+        entries: Vec::new(),
+        bytes: 0,
+        on_path: Vec::new(),
+    };
+    walk.descend(host, guest);
+    walk.entries
 }
 
-fn copy_into(host: &Path, guest: &Path, depth: usize, into: &mut Vec<GuestEntry>) -> Result<()> {
-    let meta = match std::fs::metadata(host) {
-        Ok(meta) => meta,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
-        Err(e) if e.kind() == io::ErrorKind::PermissionDenied => return Ok(()),
-        Err(e) => return Err(Error::Io(e)),
-    };
-    if meta.is_file() {
-        if let Ok(bytes) = std::fs::read(host) {
-            into.push(GuestEntry::File {
-                path: guest.to_path_buf(),
-                bytes,
-                mode: 0o644,
-                keep_existing: false,
-            });
-        }
-        return Ok(());
-    }
-    if !meta.is_dir() || depth >= COPY_DEPTH {
-        return Ok(());
-    }
-    into.push(GuestEntry::Dir(guest.to_path_buf()));
-    let Ok(read) = std::fs::read_dir(host) else {
-        return Ok(());
-    };
-    let mut names: Vec<_> = read.filter_map(|e| e.ok().map(|e| e.file_name())).collect();
-    names.sort();
-    for name in names {
-        copy_into(&host.join(&name), &guest.join(&name), depth + 1, into)?;
-    }
-    Ok(())
+/// One copy in progress.
+struct TreeCopy {
+    entries: Vec<GuestEntry>,
+    /// File bytes gathered so far, against [`MAX_TREE_BYTES`].
+    bytes: u64,
+    /// The directories entered on the way down, by identity: a cycle is a
+    /// directory that is already here.
+    on_path: Vec<(u64, u64)>,
 }
 
-/// Ship each credential file into the guest, 0600; remove the guest's copy
-/// of one the host no longer has (the login was revoked or signed out since).
-pub(crate) fn ship_credential(channel: &Channel, files: &[ShippedFile]) -> Result<()> {
-    for ShippedFile { host, guest } in files {
-        match std::fs::read(host) {
-            Ok(bytes) => executor::put(channel, &bytes, guest, 0o600)?,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                let out =
-                    executor::run(channel, &["rm", "-f", "--", &guest.to_string_lossy()], None)
-                        .map_err(|e| {
-                            Error::Other(format!("removing {} in the box: {e}", guest.display()))
-                        })?;
-                if !out.status.success() {
-                    return Err(Error::Other(format!(
-                        "removing {} in the box failed: {}",
-                        guest.display(),
-                        String::from_utf8_lossy(&out.stderr).trim()
-                    )));
-                }
+impl TreeCopy {
+    fn descend(&mut self, host: &Path, guest: &Path) {
+        use std::os::unix::fs::MetadataExt as _;
+        let meta = match std::fs::metadata(host) {
+            Ok(meta) => meta,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return,
+            Err(e) => {
+                tracing::debug!(path = %host.display(), error = %e, "config item skipped");
+                return;
             }
-            Err(e) => return Err(Error::Io(e)),
+        };
+        if meta.is_file() {
+            if meta.len() > MAX_FILE_BYTES {
+                tracing::info!(path = %host.display(), len = meta.len(), "config file too big to copy into a box");
+                return;
+            }
+            if self.bytes + meta.len() > MAX_TREE_BYTES || self.entries.len() >= MAX_TREE_FILES {
+                tracing::info!(path = %host.display(), "config tree too big to copy into a box; the rest is left out");
+                return;
+            }
+            if let Ok(bytes) = std::fs::read(host) {
+                self.bytes += bytes.len() as u64;
+                self.entries.push(GuestEntry::File {
+                    path: guest.to_path_buf(),
+                    bytes,
+                    mode: 0o644,
+                    keep_existing: false,
+                });
+            }
+            return;
         }
+        if !meta.is_dir() {
+            return;
+        }
+        let identity = (meta.dev(), meta.ino());
+        if self.on_path.contains(&identity) || self.on_path.len() >= COPY_DEPTH {
+            tracing::debug!(path = %host.display(), "config directory cycle or depth; not entered");
+            return;
+        }
+        self.entries.push(GuestEntry::Dir(guest.to_path_buf()));
+        let Ok(read) = std::fs::read_dir(host) else {
+            return;
+        };
+        let mut names: Vec<_> = read.filter_map(|e| e.ok().map(|e| e.file_name())).collect();
+        names.sort();
+        self.on_path.push(identity);
+        for name in names {
+            self.descend(&host.join(&name), &guest.join(&name));
+        }
+        self.on_path.pop();
     }
-    Ok(())
 }
 
-/// Copy the guest's `guest_root` into `mirror` on the host, whole: one tar
-/// over the channel, unpacked file by file. Only regular files land —
-/// never a link the agent planted, which the host would then follow — and
-/// only inside `mirror`. Nothing there is removed: a CLI's session store
-/// only grows. A `guest_root` that does not exist yet copies nothing.
-pub(crate) fn pull_sessions(channel: &Channel, guest_root: &Path, mirror: &Path) -> Result<()> {
+/// How far back a pull reaches past the last one: the host's clock against
+/// the guest's, and a file still being written when the last pull looked.
+/// A file sent twice only overwrites its own copy.
+const PULL_OVERLAP: Duration = Duration::from_secs(30);
+
+/// When each agent's sessions were last pulled, so the next pull takes
+/// only what changed since (`tar --newer-mtime`). Per process: a restart
+/// pulls whole once.
+static LAST_PULL: Mutex<Option<std::collections::HashMap<String, SystemTime>>> = Mutex::new(None);
+
+/// Copy what changed in the guest's `guest_root` since `agent_id`'s last
+/// pull into `mirror` on the host — everything, the first time: one tar over
+/// the channel, unpacked file by file. Only regular files land — never a
+/// link the agent planted, which the host would then follow — and only
+/// inside `mirror`. Nothing there is removed: a CLI's session store only
+/// grows. A `guest_root` that does not exist yet copies nothing.
+pub(crate) fn pull_sessions(
+    channel: &Channel,
+    agent_id: &str,
+    guest_root: &Path,
+    mirror: &Path,
+) -> Result<()> {
+    let started = SystemTime::now();
+    let since = LAST_PULL
+        .lock()
+        .as_ref()
+        .and_then(|m| m.get(agent_id).copied())
+        .map(|t| t.checked_sub(PULL_OVERLAP).unwrap_or(t));
     let root = guest_root.to_string_lossy();
+    let newer = match since.and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok()) {
+        Some(epoch) => format!("--newer-mtime=@{}", epoch.as_secs()),
+        None => String::new(),
+    };
     let out = executor::run(
         channel,
         &[
             "sh",
             "-c",
-            "[ -d \"$1\" ] && exec tar -cf - -C \"$1\" . ; exit 0",
+            "[ -d \"$1\" ] && exec tar -cf - -C \"$1\" $2 . ; exit 0",
             "sh",
             &root,
+            &newer,
         ],
         None,
     )
@@ -408,7 +672,12 @@ pub(crate) fn pull_sessions(channel: &Channel, guest_root: &Path, mirror: &Path)
             String::from_utf8_lossy(&out.stderr).trim()
         )));
     }
-    unpack_files(&out.stdout, mirror)
+    unpack_files(&out.stdout, mirror)?;
+    LAST_PULL
+        .lock()
+        .get_or_insert_with(Default::default)
+        .insert(agent_id.to_string(), started);
+    Ok(())
 }
 
 /// Unpack the regular files of a tar stream under `dir`, skipping every
@@ -431,29 +700,55 @@ fn unpack_files(archive: &[u8], dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Where agent `agent_id`'s sessions are while its box (its own, or its
+/// host's when it is a tenant) runs: the channel, the guest sessions dir of
+/// the agent's own writable root, and the host mirror. `None` when nothing
+/// of the agent's runs now.
+fn live_sessions(
+    home: &dyn ProviderHome,
+    agent_id: &str,
+) -> Option<(Arc<Channel>, PathBuf, PathBuf)> {
+    let registry = super::BoxRegistry::global();
+    let (running, root) = match registry.running(agent_id) {
+        Some(running) => {
+            let root = running.identity.writable_root.clone();
+            (running, root)
+        }
+        None => {
+            let tenant = registry.tenant_of(agent_id)?;
+            (
+                registry.running(&tenant.host_agent_id)?,
+                tenant.writable_root,
+            )
+        }
+    };
+    let sessions = home.sessions_dir(&running.identity.home, &root);
+    let mirror = mirror_for_agent(home.id(), agent_id)?;
+    Some((running.channel.clone(), sessions, mirror))
+}
+
 /// The mirror of `provider`'s sessions for agent `agent_id`, as current as
 /// it can be made: for a provider the host pulls, refreshed from the box
-/// first when it is running (a stopped box was pulled before it stopped;
-/// it is never booted for a read). `None` when boxes do not run the
-/// provider.
+/// first when the agent runs now (a stopped box was pulled before it
+/// stopped; it is never booted for a read). `None` when boxes do not run
+/// the provider.
 pub(crate) fn sessions_mirror(provider: &str, agent_id: &str) -> Option<PathBuf> {
     let home = for_provider(provider)?;
-    let mirror = mirror_for_agent(provider, agent_id)?;
     if home.transport() == Transport::Pull {
-        if let Some(running) = super::BoxRegistry::global().running(agent_id) {
-            let root = home.sessions_dir(&running.identity.home, &running.identity.writable_root);
-            if let Err(e) = pull_sessions(&running.channel, &root, &mirror) {
+        if let Some((channel, sessions, mirror)) = live_sessions(home, agent_id) {
+            if let Err(e) = pull_sessions(&channel, agent_id, &sessions, &mirror) {
                 tracing::warn!(agent_id, provider, error = %e, "pulling the sessions mirror failed");
             }
         }
     }
-    Some(mirror)
+    mirror_for_agent(provider, agent_id)
 }
 
-/// Bring a pulled provider's mirror up to date before its box stops, so
-/// what the agent wrote since the last read is not lost with the VM's
-/// pause; nothing to do for a tailed one. Logged, never fatal: the stop
-/// goes on either way.
+/// Bring a pulled provider's mirrors up to date before its box stops — the
+/// owner's and every tenant's, which share the owner's provider — so what
+/// the agents wrote since the last read is not lost with the VM's pause;
+/// nothing to do for a tailed one. Logged, never fatal: the stop goes on
+/// either way.
 pub(crate) async fn pull_before_stop(running: &super::RunningBox) {
     let identity = &running.identity;
     let Some(home) = for_provider(&identity.provider) else {
@@ -462,41 +757,54 @@ pub(crate) async fn pull_before_stop(running: &super::RunningBox) {
     if home.transport() != Transport::Pull {
         return;
     }
-    let channel = running.channel.clone();
-    let root = home.sessions_dir(&identity.home, &identity.writable_root);
-    let mirror = running.dir.join(home.mirror_dirname());
-    let pulled = tokio::task::spawn_blocking(move || pull_sessions(&channel, &root, &mirror))
-        .await
-        .map_err(|e| Error::Other(e.to_string()))
-        .and_then(|r| r);
-    if let Err(e) = pulled {
-        tracing::warn!(agent_id = %identity.agent_id, error = %e, "sessions pull before stop failed");
+    let mut agents = vec![(identity.agent_id.clone(), identity.writable_root.clone())];
+    agents.extend(
+        super::BoxRegistry::global()
+            .tenants_of(&identity.agent_id)
+            .into_iter()
+            .map(|(id, tenant)| (id, tenant.writable_root)),
+    );
+    for (agent_id, root) in agents {
+        let Some(mirror) = mirror_for_agent(home.id(), &agent_id) else {
+            continue;
+        };
+        let channel = running.channel.clone();
+        let sessions = home.sessions_dir(&identity.home, &root);
+        let id = agent_id.clone();
+        let pulled =
+            tokio::task::spawn_blocking(move || pull_sessions(&channel, &id, &sessions, &mirror))
+                .await
+                .map_err(|e| Error::Other(e.to_string()))
+                .and_then(|r| r);
+        if let Err(e) = pulled {
+            tracing::warn!(agent_id, error = %e, "sessions pull before stop failed");
+        }
     }
 }
 
 /// Create the session file `rel` (relative to `home`'s sessions dir) with
-/// `lines`, for an agent working in `tree` — a session the host wrote: a
-/// fork, a rewind. In the guest, where the CLI that resumes it reads its own
-/// sessions dir; and in the host's mirror of that dir, which the relay fills
-/// guest → host only, so the launch that follows sees a resumable session at
-/// once rather than after the tail relays it back. Fails when something is
-/// already there on either side. Returns the mirror path, the one the host's
-/// locators read.
+/// `lines`, for agent `agent_id` working in `tree` — a session the host
+/// wrote: a fork, a rewind. In the guest that holds `tree` (the agent's own
+/// box, or its host's when it adopted the tree as a tenant), under the
+/// agent's *own* sessions dir, where the CLI that resumes it looks; and in
+/// the agent's mirror of that dir, which the relay fills guest → host only,
+/// so the launch that follows sees a resumable session at once rather than
+/// after the tail relays it back. Fails when something is already there on
+/// either side. Returns the mirror path, the one the host's locators read.
 pub(crate) fn create_session_file(
     home: &dyn ProviderHome,
+    agent_id: &str,
     tree: &Path,
     rel: &Path,
     lines: &[Value],
 ) -> Result<PathBuf> {
     let identity = super::box_holding(tree)
         .ok_or_else(|| Error::Other(format!("{} is in no box", tree.display())))?;
-    let root = tree
-        .parent()
-        .ok_or_else(|| Error::InvalidPath(tree.display().to_string()))?;
-    let mirror = mirror_for_root(home, root)
+    let root = crate::workspace::agent_parent_dir(agent_id)?;
+    let mirror = mirror_for_agent(home.id(), agent_id)
         .ok_or_else(|| Error::Other("the box's mirror directory can't be resolved".into()))?
         .join(rel);
-    let guest_path = home.sessions_dir(&identity.home, root).join(rel);
+    let guest_path = home.sessions_dir(&identity.home, &root).join(rel);
     let mut bytes = Vec::new();
     for line in lines {
         serde_json::to_writer(&mut bytes, line)?;
@@ -561,7 +869,7 @@ mod tests {
         std::os::unix::fs::symlink(&elsewhere, src.join("linked")).unwrap();
 
         let guest = Path::new("/g/.fletch-codex-home/skills");
-        let entries = copy_tree(&src, guest).unwrap();
+        let entries = copy_tree(&src, guest);
         assert_eq!(
             entries,
             vec![
@@ -586,27 +894,80 @@ mod tests {
 
         let file = td.path().join("config.toml");
         std::fs::write(&file, b"model = \"x\"").unwrap();
-        let entries = copy_tree(&file, Path::new("/g/config.toml")).unwrap();
+        let entries = copy_tree(&file, Path::new("/g/config.toml"));
         assert_eq!(entries.len(), 1);
         assert!(
             matches!(&entries[0], GuestEntry::File { path, .. } if path == Path::new("/g/config.toml"))
         );
 
-        assert!(copy_tree(&td.path().join("missing"), guest)
-            .unwrap()
-            .is_empty());
+        assert!(copy_tree(&td.path().join("missing"), guest).is_empty());
     }
 
-    /// A symlink loop ends at the depth bound instead of never.
+    /// A link back into a directory on the way down is a cycle: the
+    /// directory is not entered again, whatever the link's spelling, and
+    /// the rest of the tree still copies.
     #[test]
-    fn copy_tree_is_bounded_on_a_link_loop() {
+    fn copy_tree_does_not_enter_a_directory_twice() {
         let td = tempfile::tempdir().unwrap();
         let src = td.path().join("loop");
-        std::fs::create_dir_all(&src).unwrap();
+        std::fs::create_dir_all(src.join("sub")).unwrap();
+        std::fs::write(src.join("sub/a.md"), b"a").unwrap();
         std::os::unix::fs::symlink(&src, src.join("again")).unwrap();
-        let entries = copy_tree(&src, Path::new("/g/loop")).unwrap();
-        assert_eq!(entries.len(), COPY_DEPTH);
-        assert!(entries.iter().all(|e| matches!(e, GuestEntry::Dir(_))));
+        std::os::unix::fs::symlink("..", src.join("sub/up")).unwrap();
+        let guest = Path::new("/g/loop");
+        assert_eq!(
+            copy_tree(&src, guest),
+            vec![
+                GuestEntry::Dir(guest.to_path_buf()),
+                GuestEntry::Dir(guest.join("sub")),
+                GuestEntry::File {
+                    path: guest.join("sub/a.md"),
+                    bytes: b"a".to_vec(),
+                    mode: 0o644,
+                    keep_existing: false,
+                },
+            ]
+        );
+    }
+
+    /// A file past the per-file limit is left out; the rest still copies.
+    #[test]
+    fn copy_tree_leaves_out_a_file_too_big_to_ship() {
+        let td = tempfile::tempdir().unwrap();
+        let src = td.path().join("cfg");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("small.json"), b"{}").unwrap();
+        let big = std::fs::File::create(src.join("big.bin")).unwrap();
+        big.set_len(MAX_FILE_BYTES + 1).unwrap();
+        let guest = Path::new("/g/cfg");
+        assert_eq!(
+            copy_tree(&src, guest),
+            vec![
+                GuestEntry::Dir(guest.to_path_buf()),
+                GuestEntry::File {
+                    path: guest.join("small.json"),
+                    bytes: b"{}".to_vec(),
+                    mode: 0o644,
+                    keep_existing: false,
+                },
+            ]
+        );
+    }
+
+    /// The guest's change goes to the host, the host's to the guest, a
+    /// change on both sides goes the guest's way, and a file the guest
+    /// removed is not removed on the host.
+    #[test]
+    fn a_cli_owned_file_moves_toward_whoever_did_not_change_it() {
+        let (a, b, c) = (Some([1; 32]), Some([2; 32]), Some([3; 32]));
+        assert_eq!(reconcile_direction(a, a, a), Move::Nothing);
+        assert_eq!(reconcile_direction(a, b, a), Move::ToHost);
+        assert_eq!(reconcile_direction(a, a, b), Move::ToGuest);
+        assert_eq!(reconcile_direction(a, b, c), Move::ToHost);
+        assert_eq!(reconcile_direction(a, None, a), Move::Nothing);
+        assert_eq!(reconcile_direction(a, None, None), Move::ToGuest);
+        assert_eq!(reconcile_direction(None, None, a), Move::ToGuest);
+        assert_eq!(reconcile_direction(None, a, None), Move::ToHost);
     }
 
     /// The archive holds exactly the files, at their guest paths relative to

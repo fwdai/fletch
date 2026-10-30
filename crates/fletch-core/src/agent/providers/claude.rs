@@ -226,7 +226,7 @@ fn tag_body<'a>(text: &'a str, tag: &str) -> Option<&'a str> {
 /// starting the session fresh ("already in use").
 fn claude_write(
     session_id: &str,
-    _agent_id: &str,
+    agent_id: &str,
     cwd: &Path,
     engine: crate::sandbox::EngineKind,
     bodies: &[Value],
@@ -268,6 +268,7 @@ fn claude_write(
         // Created in both (`boxes::home::create_session_file`).
         return crate::sandbox::boxes::home::create_session_file(
             &crate::sandbox::boxes::home::claude::Claude,
+            agent_id,
             cwd,
             &rel,
             &lines,

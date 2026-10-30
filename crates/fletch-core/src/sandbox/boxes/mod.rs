@@ -343,15 +343,20 @@ struct PendingLaunch {
     box_agent_id: String,
     provider: String,
     home: PathBuf,
-    /// The host files the launch's credential is, shipped after the env file
-    /// ([`home::Credential::files`]); empty when it travels in the env.
-    credential_files: Vec<home::ShippedFile>,
+    /// The launch's credential files, shipped after the env file
+    /// ([`home::CredentialSync::launch`]) and kept in step for as long as
+    /// the launch lives.
+    credentials: Arc<Mutex<home::CredentialSync>>,
 }
 
 /// `EngineKind::Box`. One instance per process ([`BoxEngine::shared`]), like
 /// the container engines; launches park an `Arc` of it in their `KillHandle`.
 pub struct BoxEngine {
     pending: Mutex<std::collections::HashMap<String, PendingLaunch>>,
+    /// Each live launch's credential files, by launch id, from the plan to
+    /// the kill: the before-turn step reconciles them, the kill writes the
+    /// CLI's changes back.
+    credentials: Mutex<std::collections::HashMap<String, Arc<Mutex<home::CredentialSync>>>>,
 }
 
 impl BoxEngine {
@@ -361,17 +366,10 @@ impl BoxEngine {
             .get_or_init(|| {
                 Arc::new(BoxEngine {
                     pending: Mutex::new(std::collections::HashMap::new()),
+                    credentials: Mutex::new(std::collections::HashMap::new()),
                 })
             })
             .clone()
-    }
-
-    /// Ship the launch's credential files into `box_agent_id`'s guest
-    /// ([`home::ship_credential`]): the plan's `before_turn`, run after the
-    /// host refreshed them for the turn.
-    fn ship_credential(&self, box_agent_id: &str, files: &[home::ShippedFile]) -> Result<()> {
-        let channel = BoxRegistry::global().channel_for(box_agent_id)?;
-        home::ship_credential(&channel, files)
     }
 }
 
@@ -544,6 +542,14 @@ impl SandboxEngine for BoxEngine {
                 )));
             }
             running.relay_mailbox(ctx.rpc_dir, ctx.agent_id);
+            // Its sessions, tailed into its own mirror, as the owner's are
+            // into the owner's (a pulled provider's are pulled per agent).
+            if provider_home.transport() == home::Transport::Tail {
+                if let Some(mirror) = home::mirror_for_agent(ctx.provider, ctx.agent_id) {
+                    let sessions = provider_home.sessions_dir(ctx.home, ctx.writable_root);
+                    running.relay_tail(&sessions, &mirror);
+                }
+            }
         }
         // The provider's home in the guest, as its adapter lays it out:
         // before every launch, so the user's config changes reach it.
@@ -566,19 +572,31 @@ impl SandboxEngine for BoxEngine {
         );
 
         // The login as the host resolved it for this launch, the way the
-        // provider's adapter spells it: in the env file, and/or host files
-        // shipped with the env file and again before every turn.
-        let home::Credential {
-            mut env,
-            files: credential_files,
-        } = provider_home.credential(ctx)?;
+        // provider's adapter spells it: in the env file, and/or files kept
+        // in step between host and guest for as long as the launch lives
+        // (`home::CredentialSync`).
+        let home::Credential { mut env, files } = provider_home.credential(ctx)?;
         env.push(("GIT_TERMINAL_PROMPT".to_string(), "0".to_string()));
-        let before_turn = (!credential_files.is_empty()).then(|| {
-            let engine = BoxEngine::shared();
+        let credentials = Arc::new(Mutex::new(home::CredentialSync::new(files)));
+        let before_turn = (!credentials
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .is_empty())
+        .then(|| {
             let box_agent_id = box_agent_id.clone();
-            let files = credential_files.clone();
-            Arc::new(move || engine.ship_credential(&box_agent_id, &files)) as TurnPrep
+            let credentials = credentials.clone();
+            Arc::new(move || {
+                let channel = BoxRegistry::global().channel_for(&box_agent_id)?;
+                credentials
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .turn(&channel)
+            }) as TurnPrep
         });
+        self.credentials
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(launch_id.clone(), credentials.clone());
 
         self.pending
             .lock()
@@ -590,7 +608,7 @@ impl SandboxEngine for BoxEngine {
                     box_agent_id: box_agent_id.clone(),
                     provider: ctx.provider.to_string(),
                     home: ctx.home.to_path_buf(),
-                    credential_files,
+                    credentials,
                 },
             );
         // Attached to the box it runs in: a tenant's session keeps its host's
@@ -640,13 +658,18 @@ impl SandboxEngine for BoxEngine {
         let channel = BoxRegistry::global().channel_for(&pending.box_agent_id)?;
         let path = env_file_path(launch_id);
         executor::put(&channel, contents.as_bytes(), &path, 0o600)?;
-        home::ship_credential(&channel, &pending.credential_files)?;
+        pending
+            .credentials
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .launch(&channel)?;
         Ok(path)
     }
 
     /// The session's own kill ends the ssh client (and so the guest PTY); the
-    /// engine detaches the launch so the idle timer may stop the VM, and
-    /// removes the env file the launch's token sat in.
+    /// engine writes back what the CLI changed in its credential files,
+    /// removes the env file the launch's token sat in, and detaches the
+    /// launch so the idle timer may stop the VM.
     fn kill(&self, plan: &KillPlan) -> Result<()> {
         let KillPlan::Box {
             agent_id,
@@ -659,8 +682,22 @@ impl SandboxEngine for BoxEngine {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .remove(launch_id);
+        let credentials = self
+            .credentials
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(launch_id);
         let registry = BoxRegistry::global();
         if let Ok(channel) = registry.channel_for_running(agent_id) {
+            if let Some(credentials) = credentials {
+                if let Err(e) = credentials
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .end(&channel)
+                {
+                    tracing::warn!(agent_id, launch_id, error = %e, "credential write-back at the launch's end failed");
+                }
+            }
             let path = env_file_path(launch_id);
             let _ = executor::run(&channel, &["rm", "-f", &path.to_string_lossy()], None);
         }

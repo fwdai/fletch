@@ -10,7 +10,7 @@
 
 use std::path::{Path, PathBuf};
 
-use super::{copy_tree, login_shell_var, Credential, GuestEntry, ProviderHome, ShippedFile};
+use super::{copy_tree, login_shell_var, Credential, CredentialFile, GuestEntry, ProviderHome};
 use crate::error::Result;
 use crate::sandbox::container::launch_auth::{multi_provider_auth_env, present_api_keys};
 use crate::sandbox::engine::AgentLaunchCtx;
@@ -59,7 +59,7 @@ impl ProviderHome for Pi {
             GuestEntry::Dir(Self::agent_dir(home)),
             GuestEntry::Absent(settings.clone()),
         ];
-        entries.extend(copy_tree(&settings, &settings)?);
+        entries.extend(copy_tree(&settings, &settings));
         Ok(entries)
     }
 
@@ -73,9 +73,9 @@ impl ProviderHome for Pi {
 /// [`Pi::credential`] with the shell's keys given.
 fn credential_from(home: &Path, api_keys: Vec<(String, String)>) -> Result<Credential> {
     let auth = Pi::agent_dir(home).join("auth.json");
-    let files: Vec<ShippedFile> = auth
+    let files: Vec<CredentialFile> = auth
         .is_file()
-        .then(|| ShippedFile::at(auth))
+        .then(|| CredentialFile::cli_owned(auth))
         .into_iter()
         .collect();
     let env = multi_provider_auth_env(api_keys, !files.is_empty(), NO_AUTH_MSG)?;
@@ -125,7 +125,7 @@ mod tests {
         assert!(credential.env.is_empty());
         assert_eq!(
             credential.files,
-            vec![ShippedFile::at(agent.join("auth.json"))]
+            vec![CredentialFile::cli_owned(agent.join("auth.json"))]
         );
     }
 
