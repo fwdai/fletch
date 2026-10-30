@@ -396,7 +396,7 @@ pub fn supports_provider(provider: &str) -> bool {
 pub fn codegraph_bin(agent_id: &str, provider: &str) -> Option<String> {
     let disk = BoxRegistry::global()
         .attached_tools_disk(agent_id)
-        .or_else(|| registry::built_tools_disk(provider))?;
+        .or_else(|| registry::bootable_tools_disk(provider))?;
     fletch_box::tools::carries_codegraph(&disk).then(fletch_box::tools::codegraph_bin_path)
 }
 
@@ -893,6 +893,12 @@ pub fn startup(workspace: &crate::workspace::WorkspaceManager) {
                 }
             }
         }
+        // The CLI version a tools disk is keyed by is probed once per process,
+        // so a host CLI that updated since the last run shows here first:
+        // start the new version's disk now, in the background, rather than at
+        // the first boot that finds it missing (which boots an earlier disk
+        // meanwhile, `registry::bootable_tools_disk`). Skips a settled disk.
+        setup::prebuild_tools();
     }
     let leaked = leaked_box_dirs(workspace);
     std::thread::spawn(move || {

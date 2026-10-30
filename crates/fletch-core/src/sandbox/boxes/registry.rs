@@ -561,7 +561,10 @@ impl BoxRegistry {
     /// the spawn watchdog allows for this (`setup::setup_allowance`). A disk
     /// built without codegraph while indexing is on is used as is, and the one
     /// carrying it is built in the background for the next boot: codegraph
-    /// never holds a box up.
+    /// never holds a box up. Nor does a host CLI update: with no disk for the
+    /// new version yet, the newest one built for an earlier version is used
+    /// ([`bootable_tools_disk`]) while the new one builds. Only a provider
+    /// with no disk at all waits.
     async fn tools_disk(
         &self,
         ready: &super::Ready,
@@ -575,6 +578,16 @@ impl BoxRegistry {
             return Ok(path);
         }
         let build = self.start_tools_build(ready, provider);
+        if let Some(path) = bootable_tools_disk(provider) {
+            tracing::info!(
+                agent_id,
+                provider,
+                version = %tools_version(provider),
+                disk = %path.display(),
+                "no tools disk for this CLI version yet; booting an earlier one while it builds"
+            );
+            return Ok(path);
+        }
         let label = crate::agent::provider_bin_label(provider).map_or(provider, |(_, l)| l);
         self.set_phase(
             agent_id,
@@ -596,7 +609,10 @@ impl BoxRegistry {
         self.running(agent_id)?.tools_disk.clone()
     }
 
-    /// Where `provider`'s tools disk stands, for the probe.
+    /// Where `provider`'s tools disk stands, for the probe: the disk for the
+    /// current CLI version. While an earlier version's disk stands in for it
+    /// ([`bootable_tools_disk`]) this still reads `building` (or `failed`,
+    /// `missing`), which is the truth about the disk the next boots want.
     pub fn tools_status(&self, provider: &str) -> ToolsStatus {
         let version = tools_version(provider);
         let (phase, error) = if built_tools_disk(provider).is_some() {
@@ -939,6 +955,56 @@ pub fn built_tools_disk(provider: &str) -> Option<PathBuf> {
 /// with indexing off its server is simply never injected.
 fn first_built(disks: [PathBuf; 2]) -> Option<PathBuf> {
     disks.into_iter().find(|disk| disk.is_file())
+}
+
+/// The tools disk a box of `provider` can boot with right now: the current
+/// version's ([`built_tools_disk`]), else the newest built for an earlier
+/// version — the host CLI updated since, and the disk for its new version is
+/// still to be built. A box boots on the older CLI meanwhile rather than wait
+/// minutes for a ~4 GB build; its next boot after the build takes the new one.
+/// `None` only when no disk of `provider` is built at all.
+pub fn bootable_tools_disk(provider: &str) -> Option<PathBuf> {
+    built_tools_disk(provider).or_else(|| newest_tools_disk_in(&tools_root(), provider))
+}
+
+/// The newest disk of `provider` in `root` by CLI version, among those built
+/// plain or with this build's codegraph: one carrying another codegraph
+/// release is passed over, its server may not read the index this host
+/// builds. At one version the disk carrying codegraph wins, as in
+/// [`first_built`].
+fn newest_tools_disk_in(root: &Path, provider: &str) -> Option<PathBuf> {
+    std::fs::read_dir(root)
+        .ok()?
+        .filter_map(|entry| {
+            let entry = entry.ok()?;
+            let name = entry.file_name();
+            let (version, codegraph) =
+                fletch_box::tools::parse_disk_name(name.to_str()?, provider)?;
+            if codegraph.is_some_and(|tag| tag != crate::codegraph::CODEGRAPH_VERSION) {
+                return None;
+            }
+            let path = entry.path();
+            let rank = (version_rank(version), codegraph.is_some());
+            path.is_file().then_some((rank, path))
+        })
+        .max_by(|(a, _), (b, _)| a.cmp(b))
+        .map(|(_, path)| path)
+}
+
+/// A CLI version as numbers to order by: `v2.1.312` → `[2, 1, 312]`. A part
+/// with no leading digits counts as 0, so `latest` (no host CLI when it was
+/// built) orders before any real version.
+fn version_rank(version: &str) -> Vec<u64> {
+    version
+        .trim_start_matches('v')
+        .split('.')
+        .map(|part| {
+            let digits = part
+                .find(|c: char| !c.is_ascii_digit())
+                .map_or(part, |end| &part[..end]);
+            digits.parse().unwrap_or(0)
+        })
+        .collect()
 }
 
 /// Whether `provider`'s tools disk needs no build: one is built, and it
@@ -1353,6 +1419,67 @@ fn orphan_helpers(ps: &str, alive: impl Fn(i32) -> bool) -> Vec<(i32, i32)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Empty files named the way `fletch_box::tools::disk_path` names disks.
+    fn disks(root: &Path, names: &[&str]) {
+        for name in names {
+            std::fs::write(root.join(name), b"").unwrap();
+        }
+    }
+
+    /// After a host CLI update the newest disk built for an earlier version
+    /// stands in: ordered by version as numbers, never another provider's,
+    /// a staging file or a disk with another codegraph release.
+    #[test]
+    fn the_newest_earlier_disk_stands_in_for_a_missing_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        assert_eq!(newest_tools_disk_in(root, "claude"), None);
+        assert_eq!(newest_tools_disk_in(&root.join("absent"), "claude"), None);
+        disks(
+            root,
+            &[
+                "claude-latest.img",
+                "claude-v2.1.9.img",
+                "claude-v2.1.312.img",
+                "claude-v2.1.400.img.building",
+                "claude-v2.1.500+codegraph-v0.0.1.img",
+                "codex-v9.9.9.img",
+            ],
+        );
+        assert_eq!(
+            newest_tools_disk_in(root, "claude"),
+            Some(root.join("claude-v2.1.312.img"))
+        );
+        assert_eq!(
+            newest_tools_disk_in(root, "codex"),
+            Some(root.join("codex-v9.9.9.img"))
+        );
+        assert_eq!(newest_tools_disk_in(root, "cursor"), None);
+    }
+
+    /// At one version the disk carrying this build's codegraph wins, as it
+    /// does for the current version (`first_built`).
+    #[test]
+    fn at_one_version_the_codegraph_disk_stands_in() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let with = format!(
+            "claude-v2.1.312+codegraph-{}.img",
+            crate::codegraph::CODEGRAPH_VERSION
+        );
+        disks(root, &["claude-v2.1.312.img", &with, "claude-v2.1.311.img"]);
+        assert_eq!(newest_tools_disk_in(root, "claude"), Some(root.join(with)));
+    }
+
+    #[test]
+    fn versions_rank_as_numbers() {
+        assert!(version_rank("v2.1.314") > version_rank("v2.1.312"));
+        assert!(version_rank("2.1.312") > version_rank("2.1.9"));
+        assert!(version_rank("v2.10.0") > version_rank("v2.9.99"));
+        assert!(version_rank("v0.0.1") > version_rank("latest"));
+        assert_eq!(version_rank("v1.2.3"), version_rank("1.2.3"));
+    }
 
     #[test]
     fn orphan_helpers_need_a_dead_host_pid() {
