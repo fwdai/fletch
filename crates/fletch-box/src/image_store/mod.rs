@@ -64,7 +64,7 @@ impl PinnedImage {
     /// The image release this build boots, `box-image-v<VERSION>`
     /// (packaging/box-image/README.md, "Publishing a release"). Bump it once
     /// the release exists; nothing else in the app changes with an image.
-    pub const VERSION: &'static str = "0.1.0";
+    pub const VERSION: &'static str = "0.2.0";
 
     /// This build's image, from `base_url` (the `box_image_url` setting) or
     /// the GitHub release.
