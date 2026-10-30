@@ -138,6 +138,33 @@ jobs:
       - name: Check the box runtime in the app
         run: packaging/box-bundle/check.sh src-tauri/target/universal-apple-darwin/release/bundle/macos/Fletch.app
 
+      # The release profile writes a `.dSYM` per architecture beside the
+      # stripped binary (src-tauri/Cargo.toml). Attached to the release so a
+      # crash report's `Fletch + 0x…` frames can be symbolicated by hand for
+      # that exact version: `atos -o <dSYM>/Contents/Resources/DWARF/* -arch
+      # arm64 -l <load address> <address>` (docs/debugging-crashes.md). The release is
+      # already published, so a missing dSYM or failed upload only warns.
+      - name: Attach debug symbols to the release
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION=$(jq -r .version src-tauri/tauri.conf.json)
+          OUT="$RUNNER_TEMP/Fletch-$VERSION-dSYMs"
+          mkdir -p "$OUT"
+          for ARCH in aarch64 x86_64; do
+            DSYM="src-tauri/target/$ARCH-apple-darwin/release/fletch.dSYM"
+            if [ -d "$DSYM" ]; then
+              ditto "$DSYM" "$OUT/$ARCH/fletch.dSYM"
+            else
+              echo "::warning::no dSYM at $DSYM"
+            fi
+          done
+          if [ -n "$(ls -A "$OUT")" ]; then
+            ditto -c -k --keepParent "$OUT" "$OUT.zip"
+            gh release upload "v$VERSION" "$OUT.zip" --clobber
+          fi
+
       # Replace the placeholder release body with GitHub's auto-generated
       # release notes (the same "What's Changed" list the UI button produces),
       # built from PRs/commits since the previous release.
