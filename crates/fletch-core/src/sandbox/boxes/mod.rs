@@ -288,24 +288,51 @@ pub struct PolicyEventPayload {
 // ---------------------------------------------------------------------------
 
 /// Run `fut` to completion from a synchronous caller (`launch_agent`,
-/// `deliver_env`, the executor) on the engine's runtime, from a scoped thread
-/// so a runtime worker never blocks on itself.
+/// `deliver_env`, the executor) on the engine's runtime.
 pub(crate) fn block_on<T: Send>(fut: impl Future<Output = T> + Send) -> T {
-    let handle = crate::host::runtime::handle();
-    std::thread::scope(|scope| {
-        scope
-            .spawn(move || match handle {
-                Some(handle) => handle.block_on(fut),
-                // No runtime at all (a bare unit test): a throwaway one.
-                None => tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .expect("build a runtime")
-                    .block_on(fut),
-            })
-            .join()
-            .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
-    })
+    block_on_with(crate::host::runtime::handle(), fut)
+}
+
+/// [`block_on`] on `handle`'s runtime. The future runs on a scoped thread, so
+/// `Handle::block_on` never nests inside the caller's runtime context. And
+/// when the caller is itself a multi-thread runtime worker — the sync seams
+/// are reached from async code (`start_process` → `launch_agent`, a `git
+/// status` poll → the executor) — the wait goes through `block_in_place`,
+/// which hands the worker's queue to a fresh thread first. Without it, every
+/// worker joined on a boot that waits on work spawned onto the same runtime
+/// (the tools disk build) and nothing was left to poll that work, or to drive
+/// the timer that would have ended the wait: a dozen launches at once froze
+/// the app for good. A current-thread runtime cannot `block_in_place` (it
+/// panics) and keeps the plain join; production runs multi-thread.
+pub(crate) fn block_on_with<T: Send>(
+    handle: Option<tokio::runtime::Handle>,
+    fut: impl Future<Output = T> + Send,
+) -> T {
+    let wait = move || {
+        std::thread::scope(|scope| {
+            scope
+                .spawn(move || match handle {
+                    Some(handle) => handle.block_on(fut),
+                    // No runtime at all (a bare unit test): a throwaway one.
+                    None => tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .expect("build a runtime")
+                        .block_on(fut),
+                })
+                .join()
+                .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+        })
+    };
+    let on_multi_thread = tokio::runtime::Handle::try_current().is_ok_and(|current| {
+        current.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread
+    });
+    if on_multi_thread {
+        // Off a worker (a `spawn_blocking` thread, say) this just runs `wait`.
+        tokio::task::block_in_place(wait)
+    } else {
+        wait()
+    }
 }
 
 // ---------------------------------------------------------------------------
