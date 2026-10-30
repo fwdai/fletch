@@ -1,8 +1,10 @@
 import { open } from "@tauri-apps/plugin-dialog";
+import { stat } from "@tauri-apps/plugin-fs";
 import { useEffect, useRef, useState } from "react";
-import { api, type DirListing, type PrSummary } from "@/api";
+import { api, type DirListing, type FolderGrant, type PrSummary } from "@/api";
 import type { LocalCommandAction } from "@/data/slashCommands";
 import { useAppStore } from "@/store";
+import { activeEnvironment } from "@/store/environments";
 import { useCommandSource } from "./autocomplete/sources/commands";
 import { useFileSource } from "./autocomplete/sources/files";
 import { usePrSource } from "./autocomplete/sources/prs";
@@ -31,6 +33,10 @@ export interface ComposerInputConfig {
   listDir?: (path: string) => Promise<DirListing>;
   /** Lists the repo's open PRs for the `#` mention. Omit to disable `#`. */
   listPrs?: () => Promise<PrSummary[]>;
+  /** Folders can be attached — given to the agent live, at their own paths —
+   *  from the `@` listing or a drop. Only where there is an agent to give
+   *  them to; elsewhere a dropped folder is refused like any unreadable file. */
+  folders?: boolean;
   /** Persists unsent text across the remounts a view switch causes. */
   draftKey?: string;
   autoFocus?: boolean;
@@ -74,6 +80,9 @@ export function useComposerInput(cfg: ComposerInputConfig) {
   // is where the browser puts the caret of a textarea given a value.
   const [caret, setCaret] = useState(text.length);
   const [attachments, setAttachments] = useState<string[]>([]);
+  // Folders waiting for the next send, which grants them (read-only unless
+  // the user flips one) before the message goes out.
+  const [folders, setFolders] = useState<FolderGrant[]>([]);
   const ta = useRef<HTMLTextAreaElement>(null);
 
   function placeCaret(pos: number) {
@@ -98,6 +107,20 @@ export function useComposerInput(cfg: ComposerInputConfig) {
     setAttachments((cur) => cur.filter((x) => x !== path));
   }
 
+  function addFolder(path: string) {
+    setFolders((cur) =>
+      cur.some((f) => f.path === path) ? cur : [...cur, { path, writable: false }],
+    );
+  }
+
+  function removeFolder(path: string) {
+    setFolders((cur) => cur.filter((f) => f.path !== path));
+  }
+
+  function toggleFolder(path: string) {
+    setFolders((cur) => cur.map((f) => (f.path === path ? { ...f, writable: !f.writable } : f)));
+  }
+
   /** Attach whatever each job stages, and say so once for the ones that
    *  failed — a file too big for the host, one that could not be read. The
    *  rest still attach: losing four attachments because the fifth was a video
@@ -118,9 +141,18 @@ export function useComposerInput(cfg: ComposerInputConfig) {
 
   /** Paths from a drop or the picker. Staged rather than attached as-is, so
    *  the composer only ever holds paths the environment being driven can
-   *  read (see `stageAttachmentPath`). */
-  const attachPaths = (paths: string[]) =>
-    stageAll("file", paths.map(stageAttachmentPath)).catch(() => {});
+   *  read (see `stageAttachmentPath`). A dropped folder becomes a folder chip
+   *  instead: it is granted, never copied. */
+  const attachPaths = async (paths: string[]) => {
+    const dirs = cfg.folders ? await droppedFolders(paths) : [];
+    const files = paths.filter((p) => !dirs.includes(p));
+    if (dirs.length && activeEnvironment().kind !== "local") {
+      setLastError("A folder on this Mac can't be given to an agent running on another machine.");
+    } else {
+      for (const dir of dirs) addFolder(dir);
+    }
+    if (files.length) await stageAll("file", files.map(stageAttachmentPath)).catch(() => {});
+  };
 
   const isDropTarget = useFileDrop((paths) => void attachPaths(paths));
 
@@ -161,6 +193,9 @@ export function useComposerInput(cfg: ComposerInputConfig) {
     // the agent can read it from wherever on this Mac it came from.
     attachFsPaths: (paths) =>
       void stageAll("file", paths.map(stageEnvironmentPath)).catch(() => {}),
+    // The listed folder itself: a path on the environment being driven, as
+    // the listing is, so it is granted there as it stands.
+    attachFsDir: cfg.folders ? addFolder : undefined,
   });
   const prSource = usePrSource({
     query: triggerQueryAt(text, caret, "#")?.query ?? null,
@@ -230,7 +265,17 @@ export function useComposerInput(cfg: ComposerInputConfig) {
   function clear() {
     setText("");
     setAttachments([]);
+    setFolders([]);
     if (ta.current) ta.current.style.height = "auto";
+  }
+
+  /** Put back a draft whose send failed after `clear` (a refused folder, a
+   *  failed spawn), unless the user has started a new one meanwhile. */
+  function restore(draft: { text: string; attachments: string[]; folders: FolderGrant[] }) {
+    setText((cur) => (cur ? cur : draft.text));
+    setAttachments((cur) => (cur.length ? cur : draft.attachments));
+    setFolders((cur) => (cur.length ? cur : draft.folders));
+    placeCaret(draft.text.length);
   }
 
   return {
@@ -244,11 +289,17 @@ export function useComposerInput(cfg: ComposerInputConfig) {
     attachments,
     addPaths,
     removePath,
+    /** Folder chips for the next send (see `ComposerInputConfig.folders`). */
+    folders,
+    acceptsFolders: !!cfg.folders,
+    removeFolder,
+    toggleFolder,
     ta,
     autocomplete,
     isDropTarget,
     browse,
     clear,
+    restore,
     /** Spread onto the `<textarea>` — Enter-to-submit defers to the menu first. */
     textareaHandlers: {
       onChange: (e: React.ChangeEvent<HTMLTextAreaElement>) => {
@@ -277,3 +328,19 @@ export function useComposerInput(cfg: ComposerInputConfig) {
 }
 
 export type ComposerInput = ReturnType<typeof useComposerInput>;
+
+/** Which of `paths` (just dropped) are folders. The drop handler granted the
+ *  webview's fs scope each dropped path (`src-tauri/src/lib.rs`), so `stat`
+ *  may read them; one it can't read is left to the file path, which reports
+ *  why. */
+async function droppedFolders(paths: string[]): Promise<string[]> {
+  const kinds = await Promise.all(
+    paths.map((p) =>
+      stat(p).then(
+        (info) => info.isDirectory,
+        () => false,
+      ),
+    ),
+  );
+  return paths.filter((_, i) => kinds[i]);
+}

@@ -242,7 +242,16 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
                   onPick: (account) => updateDraft(draft.id, { account }),
                 }}
                 placeholder="Describe the task for the agent. ↵ to spawn."
-                onSend={({ text, provider, model, attachments, thinking, customAgentId }) =>
+                folders
+                onSend={({
+                  text,
+                  provider,
+                  model,
+                  attachments,
+                  thinking,
+                  customAgentId,
+                  folders,
+                }) =>
                   spawnFromDraft(
                     draft.id,
                     text,
@@ -251,6 +260,7 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
                     attachments,
                     thinking,
                     customAgentId,
+                    folders,
                   )
                 }
               />

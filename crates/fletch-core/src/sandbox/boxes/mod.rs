@@ -3,8 +3,9 @@
 //! The guest holds the agent's checkout at the same absolute paths the host
 //! uses, so host code that touches the tree is routed into the guest, never
 //! given a translated path. Nothing of the host's enters the guest except the
-//! env file written for each launch, and a step that cannot keep that promise
-//! fails closed. With the flag off nothing here is reachable:
+//! env file written for each launch and the folders the user granted the
+//! workspace (`workspace::folder_grants`, mounted as virtio-fs shares at their
+//! own paths), and a step that cannot keep that promise fails closed. With the flag off nothing here is reachable:
 //! [`availability`] refuses first, and `engine_for(Box)` asks it.
 //!
 //! Layout:
@@ -331,7 +332,9 @@ fn identity_of(ctx: &AgentLaunchCtx) -> BoxIdentity {
         writable_root: ctx.writable_root.to_path_buf(),
         rpc_dir: ctx.rpc_dir.to_path_buf(),
         home: ctx.home.to_path_buf(),
+        shares: Vec::new(),
     }
+    .with_shares(ctx.folder_grants)
 }
 
 impl SandboxEngine for BoxEngine {
@@ -357,6 +360,13 @@ impl SandboxEngine for BoxEngine {
         // Waits for the image and the tools disk when they are still being
         // set up (`setup`), so a launch during setup is late, never refused.
         let mut running = block_on(registry.ensure_running(&identity))?;
+        if running.identity.shares != identity.shares {
+            // The user granted or revoked a folder since this box booted (or a
+            // read booted it before the grant was stored): virtio-fs devices
+            // are fixed at boot, so a restart is what mounts the new set.
+            block_on(registry.stop(ctx.agent_id, StopReason::Reshare))?;
+            running = block_on(registry.ensure_running(&identity))?;
+        }
         if running.tools_disk.is_none() {
             // Booted before the disk existed (an older build, or a host CLI
             // upgrade since): a restart attaches the disk `ensure_running`

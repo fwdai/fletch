@@ -10,8 +10,9 @@ use std::path::{Path, PathBuf};
 
 use crate::error::{Error, Result};
 use crate::sandbox::policy::{
-    CLAUDE_CREDENTIALS_FILE, CLAUDE_EPHEMERAL_RUNTIME_SUBDIRS, CLAUDE_PROJECTS_SUBDIR,
+    self, CLAUDE_CREDENTIALS_FILE, CLAUDE_EPHEMERAL_RUNTIME_SUBDIRS, CLAUDE_PROJECTS_SUBDIR,
 };
+use crate::workspace::FolderGrant;
 
 use super::labels;
 
@@ -144,6 +145,10 @@ pub(crate) struct RunSpec<'a> {
     /// Object stores borrowed via git alternates, bound read-only at their
     /// identical host paths. Empty for a worktree or a full-copy clone.
     pub borrowed_object_stores: &'a [PathBuf],
+    /// Folders the user granted this workspace
+    /// (`AgentLaunchCtx::folder_grants`), each bound at its identical host
+    /// path: `:ro` unless granted writable.
+    pub folder_grants: &'a [FolderGrant],
     pub memory: &'a str,
     pub cpus: &'a str,
     /// The user to run the container as, or `None` to run it as the image's
@@ -253,6 +258,19 @@ pub(crate) fn run_args(spec: &RunSpec<'_>) -> Vec<String> {
         let path = store.to_string_lossy();
         args.push("-v".into());
         args.push(format!("{path}:{path}:ro"));
+    }
+    // The folders the user granted, at their identical host paths (invariant
+    // 1). A writable one that is a repository keeps its git-executable config
+    // read-only on top (invariant 3): the user runs git there, outside any
+    // sandbox. Listed in `mount_sources` by the same helper.
+    for (path, read_only) in folder_grant_binds(spec.folder_grants) {
+        let path = path.to_string_lossy();
+        args.push("-v".into());
+        args.push(if read_only {
+            format!("{path}:{path}:ro")
+        } else {
+            format!("{path}:{path}")
+        });
     }
     // Provider config-dir mount(s), layered after the workspace/mailbox/object
     // stores.
@@ -374,6 +392,11 @@ pub(crate) fn mount_sources(spec: &RunSpec<'_>) -> Vec<PathBuf> {
         out.push(tree.into());
     }
     out.extend(spec.borrowed_object_stores.iter().cloned());
+    out.extend(
+        folder_grant_binds(spec.folder_grants)
+            .into_iter()
+            .map(|(p, _)| p),
+    );
     match &spec.mounts {
         // The `.credentials.json` overlays are subpaths of the config dirs
         // listed here, so a containment check over these covers them too.
@@ -404,6 +427,33 @@ pub(crate) fn mount_sources(spec: &RunSpec<'_>) -> Vec<PathBuf> {
         }
         ProviderMounts::Pi { data_dir } => out.push((*data_dir).into()),
         ProviderMounts::Cursor { data_dir } => out.push((*data_dir).into()),
+    }
+    out
+}
+
+/// The binds for the user's folder grants, in mount order: `(host path,
+/// read-only)`. A writable grant is followed by read-only binds over the
+/// git-executable config of a repository at its top (`.git/config`,
+/// `.git/hooks`, … — `policy::GIT_EXEC_CONFIG_*`), the ones that exist: a
+/// bind needs its source. Seatbelt denies the same names by regex at any
+/// depth; a container can only cover the repository the user granted.
+fn folder_grant_binds(grants: &[FolderGrant]) -> Vec<(PathBuf, bool)> {
+    let mut out = Vec::new();
+    for grant in grants {
+        out.push((grant.path.clone(), !grant.writable));
+        if !grant.writable {
+            continue;
+        }
+        let git = grant.path.join(".git");
+        let names = policy::GIT_EXEC_CONFIG_FILES
+            .iter()
+            .chain(policy::GIT_EXEC_CONFIG_DIRS);
+        for name in names {
+            let path = git.join(name);
+            if path.exists() {
+                out.push((path, true));
+            }
+        }
     }
     out
 }
@@ -506,6 +556,16 @@ mod tests {
             PathBuf::from("/tmp/fletch-run-args/store-b/objects"),
         ];
         let projects = root.join("claude-projects");
+        let grants = [
+            FolderGrant {
+                path: PathBuf::from("/tmp/fletch-run-args/specs"),
+                writable: false,
+            },
+            FolderGrant {
+                path: PathBuf::from("/tmp/fletch-run-args/out"),
+                writable: true,
+            },
+        ];
 
         let shapes = [
             ProviderMounts::Claude {
@@ -541,6 +601,7 @@ mod tests {
                 blackboard: Some(board),
                 adopted_workspace: Some(tree),
                 adopted_read_only: false,
+                folder_grants: &grants,
                 mounts,
                 borrowed_object_stores: &stores,
                 memory: DEFAULT_MEMORY,
@@ -583,6 +644,46 @@ mod tests {
         }
     }
 
+    /// A folder the user granted is bound at its own path, read-only unless
+    /// granted writable; a writable repository keeps the git config and hooks
+    /// that exist bound read-only over it, and nothing that doesn't exist (a
+    /// bind needs its source).
+    #[test]
+    fn folder_grants_are_bound_at_their_paths_by_mode() {
+        let td = tempfile::tempdir().unwrap();
+        let specs = td.path().join("specs");
+        let repo = td.path().join("lib");
+        std::fs::create_dir_all(&specs).unwrap();
+        std::fs::create_dir_all(repo.join(".git/hooks")).unwrap();
+        std::fs::write(repo.join(".git/config"), "").unwrap();
+        let grants = [
+            FolderGrant {
+                path: specs.clone(),
+                writable: false,
+            },
+            FolderGrant {
+                path: repo.clone(),
+                writable: true,
+            },
+        ];
+        let binds = folder_grant_binds(&grants);
+        assert_eq!(
+            binds,
+            vec![
+                (specs, true),
+                (repo.clone(), false),
+                (repo.join(".git/config"), true),
+                (repo.join(".git/hooks"), true),
+            ]
+        );
+        // The overlays come after the read-write bind they sit inside, or the
+        // runtime would mount the folder over them.
+        let rw = binds.iter().position(|(p, _)| p == &repo).unwrap();
+        assert!(binds[rw + 1..]
+            .iter()
+            .all(|(p, ro)| *ro && p.starts_with(&repo)));
+    }
+
     /// A kernel step's working tree lives outside the writable root, so without
     /// its own bind the container would start in a directory the runtime
     /// invented — the agent would see an empty workspace and none of the run's
@@ -604,6 +705,7 @@ mod tests {
             blackboard: None,
             adopted_workspace: Some(tree),
             adopted_read_only: false,
+            folder_grants: &[],
             mounts: ProviderMounts::Claude {
                 config_dir: None,
                 credentials_rw: false,

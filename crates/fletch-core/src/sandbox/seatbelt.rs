@@ -58,6 +58,7 @@ use super::engine::{
 };
 use super::policy;
 use crate::error::{Error, Result};
+use crate::workspace::FolderGrant;
 
 pub struct SandboxExecEngine;
 
@@ -91,6 +92,7 @@ impl SandboxEngine for SandboxExecEngine {
             ctx.adopted_read_only,
             ctx.codex_home.filter(|_| ctx.provider == "codex"),
             ctx.source_repos,
+            ctx.folder_grants,
         )?;
         let mut env = cache.env;
         // Claude reads it once at start and ranks it above any `/login`
@@ -521,12 +523,7 @@ fn deny_appsupport_exec(home_s: &str) -> String {
 /// panel is the documented weaker boundary, and a dev server never walks home.
 fn deny_macos_privacy_dirs(home: &Path, writable: &[&Path], readable: &[&Path]) -> String {
     let denied = policy::macos_privacy_dirs(home);
-    let inside = |root: &Path| {
-        let resolved = policy::resolve_existing_prefix(root);
-        denied
-            .iter()
-            .any(|d| root.starts_with(d) || resolved.starts_with(d))
-    };
+    let inside = |root: &Path| policy::inside_macos_privacy_dir(home, root);
     let clauses = denied
         .iter()
         .map(|d| format!("  (subpath {})", sbpl_string(&d.to_string_lossy())))
@@ -852,6 +849,11 @@ pub(crate) fn pid_alive(_pid: i32) -> bool {
 /// from (`AgentLaunchCtx::source_repos`): read back out of the macOS privacy
 /// deny when one lives in Documents or iCloud Drive, since the `--shared`
 /// clone borrows its objects — never writable.
+/// `folder_grants` are the folders the user granted this workspace
+/// (`AgentLaunchCtx::folder_grants`): a read-only one is read back out of the
+/// privacy deny (everywhere else reads are open already); a writable one joins
+/// the write allow-list, with its own invariant-3 deny so a repository inside
+/// it cannot be handed a hook the user's next `git commit` would run.
 #[allow(clippy::too_many_arguments)]
 pub fn build_profile(
     writable_root: &Path,
@@ -864,6 +866,7 @@ pub fn build_profile(
     adopted_read_only: bool,
     codex_home: Option<&Path>,
     source_repos: &[PathBuf],
+    folder_grants: &[FolderGrant],
 ) -> Result<String> {
     let writable_root = canonical(writable_root)?;
     let rpc_root = canonical(rpc_dir)?;
@@ -978,6 +981,20 @@ pub fn build_profile(
     let codex_home_grant = codex_home
         .map(|dir| format!("\n{}", subpath_grants([dir.to_path_buf()]).join("\n")))
         .unwrap_or_default();
+    // The folders the user granted writable, at their own paths (stored
+    // canonical; `subpath_grants` adds nothing else and still drops a
+    // bin-resident one).
+    let granted_writable: Vec<&Path> = folder_grants
+        .iter()
+        .filter(|g| g.writable)
+        .map(|g| g.path.as_path())
+        .collect();
+    let folder_grant_lines = subpath_grants(granted_writable.iter().map(|p| p.to_path_buf()));
+    let folder_grant_grant = if folder_grant_lines.is_empty() {
+        String::new()
+    } else {
+        format!("\n{}", folder_grant_lines.join("\n"))
+    };
     // The write allow-list is the engine-independent policy, not a list local to
     // this file: every provider's host-persistence dirs (claude's config-dir
     // *islands* — see above, NOT the `~/.claude` root — `~/.codex`, `~/.cursor`,
@@ -1026,11 +1043,18 @@ pub fn build_profile(
     ]
     .into_iter()
     .flatten()
+    .chain(granted_writable.iter().copied())
     .collect();
     let readable_roots: Vec<&Path> = source_repos
         .iter()
         .map(PathBuf::as_path)
         .chain(adopted_readable)
+        .chain(
+            folder_grants
+                .iter()
+                .filter(|g| !g.writable)
+                .map(|g| g.path.as_path()),
+        )
         .collect();
     let deny_privacy_dirs = deny_macos_privacy_dirs(&home, &writable_roots, &readable_roots);
 
@@ -1043,8 +1067,11 @@ pub fn build_profile(
     // git on exactly like a provisioned one, so invariant 3 has to cover it too
     // — its grant above would otherwise leave `.git/config` (hooks, filters,
     // merge drivers) agent-writable.
+    // A writable folder grant is often another project's repository: the user
+    // runs git there, so the same deny covers it.
     let deny_git_config = std::iter::once(writable_root.to_string_lossy())
         .chain(adopted.iter().map(|dir| dir.to_string_lossy()))
+        .chain(granted_writable.iter().map(|dir| dir.to_string_lossy()))
         .map(|root| deny_git_exec_config(&root))
         .collect::<Vec<_>>()
         .join("\n\n");
@@ -1085,7 +1112,7 @@ pub fn build_profile(
   (subpath "/private/var/folders")
   (subpath "/private/var/tmp")
   (literal {claude_json})
-{claude_credentials}{claude_config_extra}{codex_home_grant}
+{claude_credentials}{claude_config_extra}{codex_home_grant}{folder_grant_grant}
 {policy_dirs})
 
 {deny_app_data}{deny_engine_data}
@@ -1537,6 +1564,7 @@ mod tests {
             false,
             None,
             &[],
+            &[],
         )
         .unwrap();
         let canonical_root = std::fs::canonicalize(&root).unwrap();
@@ -1577,6 +1605,7 @@ mod tests {
             None,
             false,
             None,
+            &[],
             &[],
         )
         .unwrap();
@@ -1642,6 +1671,7 @@ mod tests {
             None,
             false,
             None,
+            &[],
             &[],
         )
         .unwrap();
@@ -1725,6 +1755,7 @@ mod tests {
             false,
             Some(codex.as_path()),
             &[],
+            &[],
         )
         .unwrap();
         let rollout = codex.join("sessions/rollout.jsonl");
@@ -1746,6 +1777,7 @@ mod tests {
             None,
             false,
             None,
+            &[],
             &[],
         )
         .unwrap();
@@ -1799,6 +1831,7 @@ mod tests {
                 false,
                 Some(overlay.as_path()),
                 &[],
+                &[],
             )
             .unwrap();
             let reads = |file: &Path| {
@@ -1844,6 +1877,7 @@ mod tests {
             None,
             false,
             None,
+            &[],
             &[],
         )
         .unwrap();
@@ -1906,6 +1940,7 @@ mod tests {
             None,
             false,
             None,
+            &[],
             &[],
         )
         .unwrap();
@@ -1989,6 +2024,7 @@ mod tests {
             None,
             false,
             None,
+            &[],
             &[],
         )
         .unwrap();
@@ -2124,6 +2160,7 @@ mod tests {
             false,
             None,
             &[],
+            &[],
         )
         .unwrap();
         let canonical_home = std::fs::canonicalize(&home).unwrap();
@@ -2164,6 +2201,7 @@ mod tests {
             false,
             None,
             &[],
+            &[],
         )
         .unwrap();
         assert!(
@@ -2192,6 +2230,7 @@ mod tests {
             false,
             None,
             &[],
+            &[],
         )
         .unwrap();
         assert!(
@@ -2210,6 +2249,7 @@ mod tests {
             None,
             false,
             None,
+            &[],
             &[],
         )
         .unwrap();
@@ -2253,6 +2293,7 @@ mod tests {
             false,
             None,
             &[],
+            &[],
         )
         .unwrap();
         let deny_at = plain
@@ -2279,6 +2320,7 @@ mod tests {
             false,
             None,
             &[in_documents.clone(), elsewhere.clone()],
+            &[],
         )
         .unwrap();
         let repo = std::fs::canonicalize(&in_documents).unwrap();
@@ -2303,6 +2345,86 @@ mod tests {
         assert!(reallow_at < granted.find("\\.git/(config|config\\.worktree)$").unwrap());
     }
 
+    /// A folder the user granted read-only is read back out of the privacy deny
+    /// and never written; one granted writable joins the write allow-list, is
+    /// re-allowed read-write inside the guarded folder, and carries invariant 3
+    /// so a repository in it cannot be handed a hook.
+    #[test]
+    fn agent_profile_applies_folder_grants_by_mode() {
+        let (td, root, rpc, home) = sandbox_dirs();
+        let specs = home.join("Documents/specs");
+        let out = home.join("Desktop/out");
+        let elsewhere = td.path().join("code/lib");
+        for d in [&specs, &out, &elsewhere] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        let canon = |p: &Path| std::fs::canonicalize(p).unwrap();
+        let grants = [
+            FolderGrant {
+                path: canon(&specs),
+                writable: false,
+            },
+            FolderGrant {
+                path: canon(&out),
+                writable: true,
+            },
+            FolderGrant {
+                path: canon(&elsewhere),
+                writable: false,
+            },
+        ];
+
+        let profile = build_profile(
+            &root,
+            &rpc,
+            &home,
+            &CACHE,
+            None,
+            None,
+            None,
+            false,
+            None,
+            &[],
+            &grants,
+        )
+        .unwrap();
+        let (specs, out, elsewhere) = (canon(&specs), canon(&out), canon(&elsewhere));
+        let allow_block = {
+            let start = profile.find("(allow file-write*").unwrap();
+            &profile[start..start + profile[start..].find("\n\n").unwrap()]
+        };
+        assert!(
+            allow_block.contains(&format!("(subpath \"{}\")", out.display())),
+            "a writable grant is on the write allow-list: {allow_block}"
+        );
+        assert!(
+            !allow_block.contains(&specs.to_string_lossy().to_string()),
+            "a read-only grant is not: {allow_block}"
+        );
+        let deny_at = profile
+            .find("(deny file-read* file-write*\n  (subpath \"")
+            .unwrap();
+        let read_back = format!("(allow file-read*\n  (subpath \"{}\"))", specs.display());
+        assert!(profile.find(&read_back).unwrap() > deny_at);
+        let write_back = format!(
+            "(allow file-read* file-write*\n  (subpath \"{}\"))",
+            out.display()
+        );
+        assert!(profile.find(&write_back).unwrap() > deny_at);
+        assert!(
+            !profile.contains(&elsewhere.to_string_lossy().to_string()),
+            "a read-only grant outside the guarded folders needs no rule"
+        );
+        let git_deny = format!(
+            "(regex #\"^{}(/.*)?/\\.git/",
+            sbpl_regex_escape(&out.to_string_lossy())
+        );
+        assert!(
+            profile.find(&git_deny).unwrap() > profile.find(&write_back).unwrap(),
+            "invariant 3 covers a writable grant and wins over its re-allow"
+        );
+    }
+
     /// A kernel step's checkout is the run's shared tree, outside the writable
     /// root — so the profile has to grant it (or the agent can't edit the code
     /// it was spawned for) *and* carry invariant 3 into it (or `.git/config`
@@ -2325,6 +2447,7 @@ mod tests {
             false,
             None,
             &[],
+            &[],
         )
         .unwrap();
         assert!(
@@ -2342,6 +2465,7 @@ mod tests {
             Some(tree.as_path()),
             false,
             None,
+            &[],
             &[],
         )
         .unwrap();
@@ -2386,6 +2510,7 @@ mod tests {
                 Some(tree.as_path()),
                 read_only,
                 None,
+                &[],
                 &[],
             )
             .unwrap()
@@ -2457,6 +2582,7 @@ mod tests {
             false,
             None,
             &[],
+            &[],
         )
         .unwrap();
         // The emitted paths must be canonical (symlink-resolved) so they match
@@ -2509,6 +2635,7 @@ mod tests {
             false,
             None,
             &[],
+            &[],
         )
         .unwrap();
         assert!(
@@ -2546,6 +2673,7 @@ mod tests {
             false,
             None,
             &[],
+            &[],
         )
         .unwrap();
         assert!(!plain.contains(&deny));
@@ -2560,6 +2688,7 @@ mod tests {
             None,
             false,
             None,
+            &[],
             &[],
         )
         .unwrap();
@@ -2598,6 +2727,7 @@ mod tests {
             false,
             None,
             &[],
+            &[],
         )
         .unwrap();
         assert!(!plain.contains(&canonical_account.to_string_lossy().to_string()));
@@ -2612,6 +2742,7 @@ mod tests {
             None,
             false,
             Some(account.as_path()),
+            &[],
             &[],
         )
         .unwrap();
@@ -2647,6 +2778,7 @@ mod tests {
                 None,
                 false,
                 None,
+                &[],
                 &[],
             )
             .unwrap();
@@ -2692,6 +2824,7 @@ mod tests {
                 false,
                 None,
                 &[],
+                &[],
             )
             .unwrap();
             let parent = crate::agent::limits::app_server::limits_parent().unwrap();
@@ -2731,6 +2864,7 @@ mod tests {
                 oauth_token: None,
                 codex_home: None,
                 adopted_read_only: false,
+                folder_grants: &[],
             };
             SandboxExecEngine
                 .launch_agent(&ctx, "/usr/local/bin/agent")
@@ -2774,6 +2908,7 @@ mod tests {
                 None,
                 false,
                 None,
+                &[],
                 &[],
             )
             .unwrap();
@@ -2830,6 +2965,7 @@ mod tests {
                 None,
                 false,
                 None,
+                &[],
                 &[],
             )
             .unwrap();
@@ -2905,6 +3041,7 @@ mod tests {
             false,
             None,
             &[],
+            &[],
         )
         .unwrap();
         let out = std::process::Command::new(SANDBOX_EXEC)
@@ -2963,6 +3100,7 @@ mod tests {
             oauth_token: None,
             codex_home: Some(&codex_home),
             adopted_read_only: false,
+            folder_grants: &[],
         };
         let mut plan = SandboxExecEngine.launch_agent(&ctx, &codex).unwrap();
         if std::env::var_os("FLETCH_LIVE_WITHOUT_KEYCHAIN_DENY").is_some() {
@@ -3070,6 +3208,7 @@ mod tests {
             false,
             None,
             &[],
+            &[],
         )
         .unwrap();
         assert!(profile.contains(KEYCHAIN_MACH_DENY));
@@ -3106,6 +3245,7 @@ mod tests {
                         None,
                         false,
                         None,
+                        &[],
                         &[],
                     )
                     .unwrap(),
@@ -3179,6 +3319,7 @@ mod tests {
                     false,
                     None,
                     &[],
+                    &[],
                 )
                 .unwrap();
                 deny_host_git_credentials(&home)
@@ -3244,6 +3385,7 @@ mod tests {
                 oauth_token: None,
                 codex_home: None,
                 adopted_read_only: false,
+                folder_grants: &[],
             };
             let plan = SandboxExecEngine
                 .launch_agent(&ctx, "/usr/local/bin/agent")
@@ -3287,6 +3429,7 @@ mod tests {
             None,
             false,
             None,
+            &[],
             &[],
         )
         .unwrap();
@@ -3397,6 +3540,7 @@ mod tests {
             oauth_token: Some(&token),
             codex_home: None,
             adopted_read_only: false,
+            folder_grants: &[],
         };
         let plan = SandboxExecEngine
             .launch_agent(&ctx, "/usr/local/bin/claude")
@@ -3467,6 +3611,7 @@ mod tests {
             false,
             None,
             &[],
+            &[],
         )
         .unwrap();
         for island in policy::claude_write_island_dirs(&default_claude) {
@@ -3505,6 +3650,7 @@ mod tests {
             None,
             false,
             None,
+            &[],
             &[],
         )
         .unwrap();
@@ -3583,6 +3729,7 @@ mod tests {
             None,
             false,
             None,
+            &[],
             &[],
         )
         .unwrap();
@@ -3696,6 +3843,7 @@ mod tests {
             None,
             false,
             None,
+            &[],
             &[],
         )
         .unwrap();
@@ -3902,6 +4050,7 @@ mod tests {
             false,
             None,
             &[],
+            &[],
         )
         .unwrap();
 
@@ -3996,6 +4145,7 @@ mod tests {
             false,
             None,
             &[],
+            &[],
         )
         .unwrap();
         let canonical_home = std::fs::canonicalize(&home).unwrap();
@@ -4027,6 +4177,7 @@ mod tests {
             None,
             false,
             None,
+            &[],
             &[],
         )
         .unwrap();
@@ -4151,6 +4302,7 @@ mod tests {
             None,
             false,
             None,
+            &[],
             &[],
         )
         .unwrap();
@@ -4411,6 +4563,7 @@ mod tests {
             oauth_token: None,
             codex_home: None,
             adopted_read_only: false,
+            folder_grants: &[],
         };
         let plan = SandboxExecEngine
             .launch_agent(&ctx, "/usr/local/bin/claude")

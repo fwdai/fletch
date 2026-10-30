@@ -133,6 +133,11 @@ export interface AgentRecord {
    *  for the agent's life — a settings change never re-engines it. Null for
    *  agents created before engine selection existed (they run sandbox-exec). */
   sandbox_engine?: string | null;
+  /** Folders on the user's machine granted to this agent, live at their own
+   *  paths (read-only unless `writable`). Every engine applies them at launch;
+   *  changing them relaunches the agent on its own session. Empty for most
+   *  agents; absent from a host that predates folder grants. */
+  folder_grants?: FolderGrant[];
   /** The provider account (Settings › Providers) the agent's turns run under.
    *  Stamped at creation: the composer's pick, else the active account.
    *  Changing the active account moves every agent; `switchAgentAccount` (the
@@ -251,6 +256,26 @@ export interface AgentViewEvent {
 export interface AgentEffortEvent {
   agent_id: string;
   effort: string | null;
+}
+
+/** A folder on the user's machine granted to an agent (see
+ *  `AgentRecord.folder_grants`). `path` is canonical once granted. */
+export interface FolderGrant {
+  path: string;
+  writable: boolean;
+}
+
+/** What a grant or revoke left in place: the agent's grants, and whether the
+ *  change still waits for the running turn to end before the agent relaunches
+ *  with it (`applyAgentChangesNow` ends the turn early instead). */
+export interface FolderGrantsUpdate {
+  folder_grants: FolderGrant[];
+  applies_at_turn_end: boolean;
+}
+
+/** `agent:folder-grants`: the agent's whole grant list after a change. */
+export interface AgentFolderGrantsEvent extends FolderGrantsUpdate {
+  agent_id: string;
 }
 
 export interface AgentModelEvent {

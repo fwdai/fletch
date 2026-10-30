@@ -5,6 +5,7 @@ import {
   type AgentRecord,
   type AgentView,
   api,
+  type FolderGrant,
   type ForkCode,
   type ForkContext,
   type RunPhase,
@@ -16,6 +17,7 @@ import {
 import { discoverCommands } from "@/data/slashCommands";
 import {
   agentRecord,
+  applyFolderGrantsUpdate,
   dropAgentEntries,
   expandSlashCommand,
   isAgentBusy,
@@ -154,6 +156,11 @@ export interface WorkspaceSlice {
   /** True while an account switch is in flight, so the header picker and the
    *  composer hint cannot both start one. */
   switchingAccount: Record<string, boolean>;
+  /** True while a folder grant (or revoke) waits for the agent's running turn
+   *  to end before it relaunches with it — the composer offers to apply it
+   *  now. Set from the grant's reply and `agent:folder-grants`; cleared once
+   *  the turn is over. */
+  folderChangeWaiting: Record<string, boolean>;
   /** True for agents that completed a turn while not focused — drives the
    *  "new results to review" dot in the sidebar. Set on turn-end for any
    *  non-selected agent (covers research-only turns with no diff), cleared
@@ -211,6 +218,16 @@ export interface WorkspaceSlice {
   setAgentEffort: (id: string, effort: string | null) => Promise<void>;
   /** Persist a mid-session model change (see `setAgentEffort`). */
   setAgentModel: (id: string, model: string | null) => Promise<void>;
+  /** Grant a folder to the agent, or change a granted folder's mode. Queued
+   *  with the config changes, so a send right after reaches an agent that can
+   *  already see the folder. Applies the returned grants; on refusal sets
+   *  `lastError` and resolves to null. */
+  grantAgentFolder: (id: string, path: string, writable: boolean) => Promise<FolderGrant[] | null>;
+  /** Take back a granted folder (see `grantAgentFolder`). */
+  revokeAgentFolder: (id: string, path: string) => Promise<FolderGrant[] | null>;
+  /** End the running turn so a folder change waiting for it applies now, and
+   *  what was sent behind it reaches the relaunched agent next. */
+  applyAgentChangesNow: (id: string) => Promise<void>;
   /** Move the agent onto another account of its provider (an id, or
    *  `DEFAULT_ACCOUNT_ID`) from its next turn. Queued with the config changes
    *  so a send right after it runs under the new account. Applies the returned
@@ -307,6 +324,7 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
   spawnStage: {},
   switchInFlight: {},
   switchingAccount: {},
+  folderChangeWaiting: {},
   unseenResults: {},
   syncHealth: {},
   usage: {},
@@ -502,6 +520,37 @@ export const createWorkspaceSlice: SliceCreator<WorkspaceSlice> = (set, get) => 
 
   setAgentEffort: (id, effort) => configOps.run(id, () => api.setAgentEffort(id, effort)),
   setAgentModel: (id, model) => configOps.run(id, () => api.setAgentModel(id, model)),
+  grantAgentFolder: async (id, path, writable) => {
+    try {
+      const update = await configOps.run(id, () => api.grantAgentFolder(id, path, writable));
+      set((state) => applyFolderGrantsUpdate(state, id, update));
+      return update.folder_grants;
+    } catch (e) {
+      set({ lastError: String(e) });
+      return null;
+    }
+  },
+  revokeAgentFolder: async (id, path) => {
+    try {
+      const update = await configOps.run(id, () => api.revokeAgentFolder(id, path));
+      set((state) => applyFolderGrantsUpdate(state, id, update));
+      return update.folder_grants;
+    } catch (e) {
+      set({ lastError: String(e) });
+      return null;
+    }
+  },
+  applyAgentChangesNow: async (id) => {
+    // The turn it ends is the user's doing, like a stop: no completion chime.
+    interruptedAgents.add(id);
+    try {
+      const ended = await api.applyAgentChangesNow(id);
+      if (!ended) interruptedAgents.delete(id);
+    } catch (e) {
+      interruptedAgents.delete(id);
+      set({ lastError: String(e) });
+    }
+  },
   switchAgentAccount: async (id, account) => {
     if (get().switchingAccount[id]) return null;
     set((state) => ({ switchingAccount: { ...state.switchingAccount, [id]: true } }));

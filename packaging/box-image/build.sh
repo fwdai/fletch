@@ -84,8 +84,9 @@ install -D -m 755 "$GUEST" "$ROOT/opt/fletch/bin/fletch-guest"
 ln -s /opt/fletch/bin/fletch-guest "$ROOT/usr/local/bin/fletch-guest"
 # Mountpoints init needs: the data disk, the tools disk, and /Users, the first
 # component of every identity path from a macOS host (init shadows it with a
-# tmpfs; /home and /root already exist for Linux hosts).
-mkdir -p "$ROOT/data" "$ROOT/opt/fletch/tools" "$ROOT/Users"
+# tmpfs; /home and /root already exist for Linux hosts). /Volumes is the other
+# root a folder the user shares with a box can sit under (an external disk).
+mkdir -p "$ROOT/data" "$ROOT/opt/fletch/tools" "$ROOT/Users" "$ROOT/Volumes"
 # The agent runs as `agent`: uid 1000, home on the data disk, no password but
 # not locked (`*`, not `!`), or sshd would refuse the account.
 chroot "$ROOT" useradd --uid 1000 --user-group --no-create-home \

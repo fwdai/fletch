@@ -1,7 +1,7 @@
 //! Agent lifecycle: spawn / fork, input (write, message, tool-use answers),
 //! terminal control, run-state transitions, and per-agent repo attach.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tauri::State;
 
@@ -9,7 +9,8 @@ use crate::error::Result;
 use crate::host::EngineCtx;
 use crate::managed_session::ToolUseBehavior;
 use crate::supervisor::Supervisor;
-use crate::workspace::{AgentRecord, AgentView, TrackedRepo};
+use crate::workspace::folder_grants::FolderGrantsUpdate;
+use crate::workspace::{AgentRecord, AgentView, FolderGrant, TrackedRepo};
 
 // Args mirror the frontend `invoke("spawn_agent", ...)` payload one-to-one;
 // they're the IPC wire surface, not collapsible into a struct here.
@@ -41,6 +42,9 @@ pub async fn spawn_agent(
     // The provider account picked in the composer (an id, or `default`);
     // absent follows the active account in Settings.
     account: Option<String>,
+    // The composer's folder chips: folders on this machine to grant the new
+    // agent, checked by the spawn. Absent grants nothing.
+    folder_grants: Option<Vec<FolderGrant>>,
 ) -> Result<AgentRecord> {
     fletch_core::commands::spawn_agent_impl(
         supervisor.inner().clone(),
@@ -60,6 +64,7 @@ pub async fn spawn_agent(
         purpose,
         task,
         account,
+        folder_grants,
     )
     .await
 }
@@ -264,6 +269,47 @@ pub async fn set_agent_model(
     let sup = supervisor.inner().clone();
     sup.set_agent_model(ctx.inner(), &agent_id, model.as_deref())
         .await
+}
+
+/// Grant a folder on this machine to the agent (read-only unless `writable`),
+/// or change a granted folder's mode. Returns the workspace's grants and
+/// whether the change waits for the running turn to end.
+#[tauri::command]
+pub async fn grant_agent_folder(
+    supervisor: State<'_, Arc<Supervisor>>,
+    ctx: State<'_, Arc<EngineCtx>>,
+    agent_id: String,
+    path: String,
+    writable: bool,
+) -> Result<FolderGrantsUpdate> {
+    let sup = supervisor.inner().clone();
+    sup.grant_folder(ctx.inner(), &agent_id, Path::new(&path), writable)
+        .await
+}
+
+/// Take back a folder granted to the agent (see `grant_agent_folder`).
+#[tauri::command]
+pub async fn revoke_agent_folder(
+    supervisor: State<'_, Arc<Supervisor>>,
+    ctx: State<'_, Arc<EngineCtx>>,
+    agent_id: String,
+    path: String,
+) -> Result<FolderGrantsUpdate> {
+    let sup = supervisor.inner().clone();
+    sup.revoke_folder(ctx.inner(), &agent_id, Path::new(&path))
+        .await
+}
+
+/// End the agent's running turn so a change waiting for it (a granted folder)
+/// applies now; what was queued behind it is delivered next. Returns whether
+/// a turn was ended — `false` when nothing was waiting any more.
+#[tauri::command]
+pub async fn apply_agent_changes_now(
+    supervisor: State<'_, Arc<Supervisor>>,
+    agent_id: String,
+) -> Result<bool> {
+    let sup = supervisor.inner().clone();
+    sup.apply_changes_now(&agent_id).await
 }
 
 #[tauri::command]

@@ -2,7 +2,7 @@
 // (AppState/Workspace/DraftAgent). Type-only store import, erased at compile
 // time, so there's no runtime cycle.
 
-import type { AgentRecord, AgentStatus, Workspace } from "../api";
+import type { AgentRecord, AgentStatus, FolderGrantsUpdate, Workspace } from "../api";
 import type { AppState, DraftAgent } from "../store";
 
 /** An agent's record, wherever it lives: the sidebar snapshot, or the
@@ -65,6 +65,20 @@ export function patchAgentRecord(
   const off = state.offSidebarAgents[agentId];
   if (off) out.offSidebarAgents = { ...state.offSidebarAgents, [agentId]: apply(off) };
   return out;
+}
+
+/** Apply a folder grant/revoke result — the reply, or `agent:folder-grants`
+ *  from any client — as a state patch: the agent's grants, and whether the
+ *  change waits for its running turn to end (`folderChangeWaiting`). */
+export function applyFolderGrantsUpdate(
+  state: AppState,
+  agentId: string,
+  update: FolderGrantsUpdate,
+): Partial<AppState> {
+  return {
+    ...patchAgentRecord(state, agentId, { folder_grants: update.folder_grants }),
+    folderChangeWaiting: { ...state.folderChangeWaiting, [agentId]: update.applies_at_turn_end },
+  };
 }
 
 /** The primary repo path for an agent (`repos[0]`), used to scope
@@ -151,8 +165,11 @@ export function dropAgentEntries(state: AppState, id: string): Partial<AppState>
   // A code undo names the agent's checkouts, which go with it; a recycled name
   // must not inherit it.
   const { [id]: _undo, ...codeUndo } = state.codeUndo;
+  // A folder change waiting on the agent's turn dies with its process.
+  const { [id]: _waiting, ...folderChangeWaiting } = state.folderChangeWaiting;
   return {
     offSidebarAgents,
+    folderChangeWaiting,
     backgroundTasks,
     codeUndo,
     managedLogs,

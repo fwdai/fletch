@@ -44,6 +44,8 @@ kernel environment (`krun_set_env`), never from argv:
 | `FLETCH_BOX_HOME`           | host path of `$HOME`, from `/data/home` (mounted first; the others may lie inside it) |
 | `FLETCH_BOX_AUTHORIZED_KEY` | one OpenSSH public key line, written to `/data/ssh/authorized_keys`      |
 | `FLETCH_BOX_ID`             | optional, shown in log lines                                             |
+| `FLETCH_BOX_SHARES`         | optional count `n` of folders the user shared with this box              |
+| `FLETCH_BOX_SHARE_<i>`      | `ro:<path>` or `rw:<path>`: virtio-fs device `fletch-share-<i>`, mounted at `<path>` (under `/Users` or `/Volumes`) after the binds, parents first |
 
 | Path / port             | What                                                                                      |
 | ----------------------- | ----------------------------------------------------------------------------------------- |

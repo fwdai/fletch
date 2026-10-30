@@ -1,6 +1,7 @@
 //! User-message routing: durable turn capture, live injection, and the
 //! follow-up queue drained at turn boundaries.
 
+use std::path::Path;
 use std::sync::Arc;
 
 use tokio::sync::OwnedMutexGuard;
@@ -10,7 +11,7 @@ use crate::error::{Error, Result};
 use crate::host::EngineCtx;
 use crate::managed_session::ToolUseBehavior;
 use crate::message_queue::{decide_delivery, Delivery, PendingMsg};
-use crate::workspace::AgentStatus;
+use crate::workspace::{AgentRecord, AgentStatus};
 
 use super::events::{emit_task, emit_turn_sent, emit_turn_started};
 use super::{transition_active, Supervisor};
@@ -83,11 +84,20 @@ impl Supervisor {
         let attachments = attachments.as_slice();
 
         let busy = self.is_busy(agent_id);
-        let tool_gated = self
-            .agents
-            .lock()
-            .get(agent_id)
-            .is_some_and(|a| a.is_tool_gated());
+        // A follow-up that names a granted folder while the relaunch that
+        // applies it waits for the turn's end would reach a process that
+        // cannot see the folder yet: queue it, like a tool-gated one, and the
+        // relaunch's flush delivers it to the new process (or "apply now" ends
+        // the turn for it, `apply_changes_now`). Anything else still goes in
+        // live — a pending relaunch is no reason to hold plain text back.
+        let waits_for_relaunch = self.respawn_pending.lock().contains(agent_id)
+            && names_granted_folder(&record, attachments);
+        let live_closed = waits_for_relaunch
+            || self
+                .agents
+                .lock()
+                .get(agent_id)
+                .is_some_and(|a| a.is_tool_gated());
         let queue_nonempty = !self.message_queue.lock().is_empty(agent_id);
 
         let msg = PendingMsg {
@@ -125,7 +135,7 @@ impl Supervisor {
             text.to_string(),
         );
 
-        let delivery = decide_delivery(busy, mode, tool_gated, queue_nonempty);
+        let delivery = decide_delivery(busy, mode, live_closed, queue_nonempty);
         // Whether the message is genuinely held for a later boundary. A path
         // that delivers now returns `false`; a still-busy `Enqueue` returns
         // `true`; a flush whose delivery failed and re-queued the follow-ups
@@ -691,6 +701,14 @@ fn supersede_member_turns(
     }
 }
 
+/// Whether `attachments` name one of the folders granted to `record`'s agent
+/// (a folder chip sent with the message, `workspace::folder_grants`).
+fn names_granted_folder(record: &AgentRecord, attachments: &[String]) -> bool {
+    attachments
+        .iter()
+        .any(|a| record.folder_grants.iter().any(|g| g.path == Path::new(a)))
+}
+
 /// At a turn-end Idle transition, flush any queued follow-up messages as the
 /// next turn — but only on a *natural* completion. Order of the guards matters:
 ///
@@ -768,6 +786,29 @@ mod tests {
         committed_repo, record_in_checkouts, record_with_status, test_supervisor,
     };
     use std::time::Duration;
+
+    /// Only a message that names a granted folder waits for the relaunch that
+    /// applies it; plain text, or a file, goes in live as it always did.
+    #[test]
+    fn only_a_message_naming_a_granted_folder_waits_for_its_relaunch() {
+        let mut record = record_with_status("grants", AgentStatus::Running);
+        record.folder_grants = vec![crate::workspace::FolderGrant {
+            path: "/Users/u/Projects/lib".into(),
+            writable: false,
+        }];
+        assert!(!names_granted_folder(&record, &[]));
+        assert!(!names_granted_folder(
+            &record,
+            &["/tmp/shot.png".to_string()]
+        ));
+        assert!(names_granted_folder(
+            &record,
+            &[
+                "/tmp/shot.png".to_string(),
+                "/Users/u/Projects/lib".to_string()
+            ]
+        ));
+    }
 
     #[test]
     fn delivery_to_unready_agent_leaves_canonical_store_clean_but_captures_turn() {

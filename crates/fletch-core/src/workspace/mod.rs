@@ -17,6 +17,7 @@ use crate::names;
 // re-exports below keep every `crate::workspace::X` path stable.
 mod agents;
 mod factory;
+pub mod folder_grants;
 mod lineage;
 mod message_queue;
 mod paths;
@@ -29,6 +30,7 @@ mod turns;
 
 pub use agents::{agent_accounts, live_agents_on_account, session_accounts};
 pub use factory::{is_per_turn_provider, new_agent_record};
+pub use folder_grants::FolderGrant;
 pub use lineage::{Anchor, HistoryPage, SessionLineage, HISTORY_PAGE_DEFAULT, HISTORY_PAGE_MAX};
 pub use paths::{
     agent_parent_dir, allocate_repo_subdir, checkouts_root, discard_root, discard_tombstone,
@@ -307,6 +309,12 @@ pub struct AgentRecord {
     /// existed — such agents always ran (and keep running) under sandbox-exec.
     #[serde(default)]
     pub sandbox_engine: Option<String>,
+    /// Folders on the user's machine granted to this workspace's agent, live
+    /// at their own paths (`folder_grants`): applied by every engine on each
+    /// process spawn, so a grant changed mid-session takes a session-preserving
+    /// respawn (`Supervisor::grant_folder`). Empty for most workspaces.
+    #[serde(default)]
+    pub folder_grants: Vec<FolderGrant>,
     /// The provider account (`agent::accounts`) stamped at creation from the
     /// active-account setting and reused on every process spawn, so switching
     /// the active account never moves an existing agent to another login.

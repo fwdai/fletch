@@ -4,6 +4,8 @@ import { invoke } from "../invoke";
 import type {
   AgentRecord,
   AgentView,
+  FolderGrant,
+  FolderGrantsUpdate,
   ForkCode,
   ForkContext,
   RestoreReport,
@@ -48,6 +50,10 @@ export const agentsApi = {
     /** The provider account picked for this agent (an id, or `default`).
      *  `undefined` follows the active account in Settings. */
     account?: string,
+    /** Folders on the machine the agent runs on, granted from its first
+     *  launch (the composer's folder chips). Each is checked by the backend;
+     *  a refused one fails the spawn with the reason. */
+    folderGrants?: FolderGrant[],
   ) =>
     invoke<AgentRecord>("spawn_agent", {
       view,
@@ -65,6 +71,7 @@ export const agentsApi = {
       purpose: purpose ?? null,
       task: task ?? null,
       account: account ?? null,
+      folderGrants: folderGrants?.length ? folderGrants : null,
     }),
   /** A project's purpose-tagged chats, newest first (see `ROADMAP_PM_PURPOSE`).
    *  These never appear in the workspace snapshot, so the surface that owns
@@ -139,6 +146,22 @@ export const agentsApi = {
     invoke<void>("set_agent_effort", { agentId, effort }),
   setAgentModel: (agentId: string, model: string | null) =>
     invoke<void>("set_agent_model", { agentId, model }),
+  /** Grant a folder on the machine the agent runs on (read-only unless
+   *  `writable`), or change a granted folder's mode. The backend checks it and,
+   *  when the agent's launch sees the change, relaunches it on its own session:
+   *  at once when idle, at the turn's end when busy (`applies_at_turn_end`) —
+   *  a message naming the folder sent meanwhile waits for the new process. */
+  grantAgentFolder: (agentId: string, path: string, writable: boolean) =>
+    invoke<FolderGrantsUpdate>("grant_agent_folder", { agentId, path, writable }),
+  /** Take back a granted folder (`path` as the grant list has it). */
+  revokeAgentFolder: (agentId: string, path: string) =>
+    invoke<FolderGrantsUpdate>("revoke_agent_folder", { agentId, path }),
+  /** End the running turn so a change waiting for it (a granted folder)
+   *  applies now; what was queued behind it goes to the relaunched agent next.
+   *  Unlike `stopAgent` the queue is not held. Resolves whether a turn was
+   *  ended — false when nothing was waiting any more. */
+  applyAgentChangesNow: (agentId: string) =>
+    invoke<boolean>("apply_agent_changes_now", { agentId }),
   /** Move the agent onto another signed-in account of its provider (an id, or
    *  `DEFAULT_ACCOUNT_ID`) from its next turn, keeping workspace and
    *  conversation. Resolves to the restamped record; rejects with the host's

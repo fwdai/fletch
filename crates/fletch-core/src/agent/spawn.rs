@@ -67,6 +67,8 @@ pub struct PerTurnSpec {
     /// The adopted checkout is read-only to this agent (the local reviewer):
     /// `AgentLaunchCtx::adopted_read_only`.
     pub adopted_read_only: bool,
+    /// Folders the user granted this workspace: `AgentLaunchCtx::folder_grants`.
+    pub folder_grants: Vec<crate::workspace::FolderGrant>,
 }
 
 /// How a claude launch attaches to its conversation (see `args::session_args`).
@@ -154,6 +156,8 @@ pub struct SpawnSpec<'a> {
     /// The adopted checkout is read-only to this agent (the local reviewer):
     /// `AgentLaunchCtx::adopted_read_only`.
     pub adopted_read_only: bool,
+    /// Folders the user granted this workspace: `AgentLaunchCtx::folder_grants`.
+    pub folder_grants: &'a [crate::workspace::FolderGrant],
 }
 
 /// The environment Fletch injects into every agent child: the absolute path to
@@ -374,6 +378,7 @@ impl Agent {
             oauth_token: spec.oauth_token,
             codex_home: None,
             adopted_read_only: spec.adopted_read_only,
+            folder_grants: &spec.folder_grants,
         };
         let LaunchPlan {
             program,
@@ -484,6 +489,7 @@ impl Agent {
             oauth_token: None,
             codex_home: codex.as_ref().map(|c| c.overlay.as_path()),
             adopted_read_only: spec.adopted_read_only,
+            folder_grants: &spec.folder_grants,
         };
         let LaunchPlan {
             program,
@@ -562,6 +568,7 @@ impl Agent {
             oauth_token: spec.oauth_token,
             codex_home: None,
             adopted_read_only: spec.adopted_read_only,
+            folder_grants: &spec.folder_grants,
         };
         let LaunchPlan {
             program,
@@ -734,6 +741,7 @@ impl Agent {
             oauth_token: None,
             codex_home: codex.as_ref().map(|c| c.overlay.as_path()),
             adopted_read_only: spec.adopted_read_only,
+            folder_grants: &spec.folder_grants,
         };
         let engine = sandbox::engine_for(spec.engine)?;
         let LaunchPlan {
@@ -1180,6 +1188,7 @@ mod tests {
             oauth_token: None,
             codex_home: Some(&codex.overlay),
             adopted_read_only: false,
+            folder_grants: &[],
         };
         let bin = resolve_agent_bin("codex", "codex", "Codex", &home).unwrap();
         let plan = sandbox::engine_for(EngineKind::SandboxExec)

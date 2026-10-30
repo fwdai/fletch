@@ -289,6 +289,32 @@ pub(super) fn emit_effort(sink: &dyn EventSink, agent_id: &str, effort: Option<&
 }
 
 #[derive(Clone, serde::Serialize)]
+struct AgentFolderGrantsPayload {
+    agent_id: String,
+    #[serde(flatten)]
+    update: crate::workspace::folder_grants::FolderGrantsUpdate,
+}
+
+/// The folders granted to a workspace's agent changed (`Supervisor::
+/// grant_folder` / `revoke_folder`): the whole list, so every client's
+/// composer shows the same grants without a resync, and whether the change
+/// still waits for the running turn to end (so each can offer "apply now").
+pub(super) fn emit_folder_grants(
+    sink: &dyn EventSink,
+    agent_id: &str,
+    update: &crate::workspace::folder_grants::FolderGrantsUpdate,
+) {
+    emit(
+        sink,
+        "agent:folder-grants",
+        AgentFolderGrantsPayload {
+            agent_id: agent_id.to_string(),
+            update: update.clone(),
+        },
+    );
+}
+
+#[derive(Clone, serde::Serialize)]
 struct AgentModelPayload {
     agent_id: String,
     model: Option<String>,

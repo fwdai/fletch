@@ -2,6 +2,7 @@ import { type ReactNode, useEffect, useRef } from "react";
 import { Icon } from "@/components/Icon";
 import { AttachmentList } from "./AttachmentList";
 import { AutocompleteMenu } from "./autocomplete/AutocompleteMenu";
+import { FolderList } from "./FolderList";
 import { type GhostProps, InterimGhost } from "./InterimGhost";
 import type { ComposerInput } from "./useComposerInput";
 import { MAX_HEIGHT } from "./useComposerInput";
@@ -68,11 +69,20 @@ export function ComposerFrame({
       {input.isDropTarget && (
         <div className="composer-drop-overlay flex-center text-sm">
           <Icon name="upload" size={20} />
-          <span>Drop files to attach</span>
+          <span>
+            {input.acceptsFolders ? "Drop files or folders to attach" : "Drop files to attach"}
+          </span>
         </div>
       )}
       {input.autocomplete.menu && <AutocompleteMenu {...input.autocomplete.menu} />}
       {top}
+      {input.folders.length > 0 && (
+        <FolderList
+          folders={input.folders}
+          onToggle={(f) => input.toggleFolder(f.path)}
+          onRemove={input.removeFolder}
+        />
+      )}
       {input.attachments.length > 0 && (
         <AttachmentList paths={input.attachments} onRemove={input.removePath} />
       )}
