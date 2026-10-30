@@ -116,6 +116,7 @@ pub fn open_provider_login(
             rows,
             env_remove: &env_remove,
             kill_plan: crate::sandbox::KillHandle::ProcessGroup,
+            after_exit: None,
         },
         move |bytes| {
             let _ = app_out.emit(

@@ -38,6 +38,7 @@ fn live_with_login(sup: &Supervisor, dir: &std::path::Path, expires_at_ms: i64) 
             rows: 24,
             env_remove: &[],
             kill_plan: KillHandle::ProcessGroup,
+            after_exit: None,
         },
         |_| {},
         |_| {},
