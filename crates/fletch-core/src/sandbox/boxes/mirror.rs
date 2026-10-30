@@ -24,9 +24,10 @@ pub fn mirror_dir(box_dir: &Path) -> PathBuf {
     box_dir.join(MIRROR_DIR)
 }
 
-/// Whether `checkout` lives in some box: the registered identity, if any.
+/// Whether `checkout` lives in some box: the registered identity, if any
+/// ([`super::box_holding`]).
 pub fn box_of(checkout: &Path) -> Option<super::BoxIdentity> {
-    BoxRegistry::global().identity_for_path(checkout)
+    super::box_holding(checkout)
 }
 
 /// The mirror to run transport over for `checkout`, refreshed from the guest

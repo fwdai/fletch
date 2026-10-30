@@ -598,6 +598,10 @@ mod tests {
 
     #[test]
     fn the_probe_reports_the_flag_the_image_and_the_tools() {
+        // The flag is process-wide and the tests above flip it; the probe
+        // reads it once and this test reads it again, so both reads happen
+        // under the same lock those tests hold, or they can straddle a flip.
+        let _serial = ENGINE_LOCK.blocking_lock();
         let probe = box_runtime_probe_impl();
         assert_eq!(probe.enabled, settings::enabled());
         if !probe.enabled {

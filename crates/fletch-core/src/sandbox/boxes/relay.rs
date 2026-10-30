@@ -78,14 +78,30 @@ pub enum Event {
     },
 }
 
-/// The relays of one running box.
+/// The relays of one running box: the owner's mailbox, the transcript tail,
+/// and one more mailbox per tenant ([`Relays::add_mailbox`]).
 pub struct Relays {
     stop: watch::Sender<bool>,
     tasks: parking_lot::Mutex<Vec<tokio::task::JoinHandle<()>>>,
+    /// The mailboxes relayed, by rpc dir, so a tenant's relaunch adds no
+    /// second relay for the same mailbox.
+    mailboxes: parking_lot::Mutex<HashSet<PathBuf>>,
 }
 
-/// Where, under the box dir, the host keeps its receipt markers.
+/// Where, under the box dir, the host keeps its receipt markers for the
+/// owner's mailbox.
 pub const DELIVERED_DIR: &str = "relay/delivered";
+
+/// The receipt markers of a tenant's mailbox, kept apart from the owner's and
+/// from every other tenant's: a session sync prunes every marker in its dir
+/// that the sender did not re-send, so two mailboxes sharing one dir would
+/// prune each other's.
+pub fn tenant_delivered_dir(box_dir: &Path, tenant_agent_id: &str) -> PathBuf {
+    box_dir
+        .join("relay/tenants")
+        .join(tenant_agent_id)
+        .join("delivered")
+}
 
 impl Relays {
     /// `box_dir` is the box's own directory, which outlives the VM: the
@@ -98,19 +114,12 @@ impl Relays {
         mirror: &Path,
     ) -> Self {
         let (stop, rx) = watch::channel(false);
-        let mailbox = {
-            let (channel, rpc_dir, rx) = (channel.clone(), rpc_dir.to_path_buf(), rx.clone());
-            let delivered = box_dir.join(DELIVERED_DIR);
-            crate::host::spawn(async move {
-                let rpc = rpc_dir.to_string_lossy().into_owned();
-                run_with_reconnect(
-                    rx,
-                    || channel.spawn_relay(&[guest::RELAY, &rpc]),
-                    |child, stop| pump_mailbox(child, rpc_dir.clone(), delivered.clone(), stop),
-                )
-                .await;
-            })
-        };
+        let mailbox = spawn_mailbox(
+            channel.clone(),
+            rpc_dir.to_path_buf(),
+            box_dir.join(DELIVERED_DIR),
+            rx.clone(),
+        );
         let tail = {
             let (guest_projects, mirror) = (guest_projects.to_path_buf(), mirror.to_path_buf());
             crate::host::spawn(async move {
@@ -132,10 +141,36 @@ impl Relays {
         Self {
             stop,
             tasks: parking_lot::Mutex::new(vec![mailbox, tail]),
+            mailboxes: parking_lot::Mutex::new(HashSet::from([rpc_dir.to_path_buf()])),
         }
     }
 
-    /// Tell both loops to end and wait briefly for them; whatever is still
+    /// Relay one more mailbox out of this box: a tenant's — an agent that
+    /// runs in this box because it adopted a tree the box holds (the local
+    /// reviewer of the box's owner) — with its own rpc dir and its own
+    /// receipt markers. Idempotent per rpc dir; the relay ends with the
+    /// box's others ([`Self::stop`]), and a later boot of the box adds it
+    /// again at the tenant's next launch.
+    pub fn add_mailbox(
+        &self,
+        channel: Arc<Channel>,
+        box_dir: &Path,
+        rpc_dir: &Path,
+        tenant_agent_id: &str,
+    ) {
+        if !self.mailboxes.lock().insert(rpc_dir.to_path_buf()) {
+            return;
+        }
+        let task = spawn_mailbox(
+            channel,
+            rpc_dir.to_path_buf(),
+            tenant_delivered_dir(box_dir, tenant_agent_id),
+            self.stop.subscribe(),
+        );
+        self.tasks.lock().push(task);
+    }
+
+    /// Tell every loop to end and wait briefly for them; whatever is still
     /// running is aborted (its ssh child is `kill_on_drop`).
     pub async fn stop(&self) {
         let _ = self.stop.send(true);
@@ -150,6 +185,26 @@ impl Relays {
             }
         }
     }
+}
+
+/// One mailbox relay, kept alive until `stop`: `fletch-guest relay <rpc dir>`
+/// in the guest, pumped into the host's `rpc_dir` with its receipt markers
+/// in `delivered`.
+fn spawn_mailbox(
+    channel: Arc<Channel>,
+    rpc_dir: PathBuf,
+    delivered: PathBuf,
+    stop: watch::Receiver<bool>,
+) -> tokio::task::JoinHandle<()> {
+    crate::host::spawn(async move {
+        let rpc = rpc_dir.to_string_lossy().into_owned();
+        run_with_reconnect(
+            stop,
+            || channel.spawn_relay(&[guest::RELAY, &rpc]),
+            |child, stop| pump_mailbox(child, rpc_dir.clone(), delivered.clone(), stop),
+        )
+        .await;
+    })
 }
 
 /// Keep one relay alive: spawn, pump until the child ends, back off, again —

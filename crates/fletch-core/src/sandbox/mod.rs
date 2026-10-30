@@ -57,6 +57,24 @@ pub fn selected_engine_kind() -> EngineKind {
     *SELECTED_ENGINE.read()
 }
 
+/// The engine an agent that *adopts* `tree` — works in an existing checkout
+/// instead of provisioning one (the local reviewer in a coder's checkout) —
+/// is stamped with: **where the tree lives**, not what Settings selects. A
+/// tree inside a box is reachable only from that box, so the agent runs there
+/// as its tenant whatever the host's setting; a host tree is invisible to a
+/// guest, so a `box` selection falls back to the engine it replaced, as it
+/// does for a provider boxes cannot run. The caller still gates the provider
+/// against the result.
+pub fn engine_for_adopted_tree(tree: &Path) -> EngineKind {
+    if boxes::box_holding(tree).is_some() {
+        return EngineKind::Box;
+    }
+    match selected_engine_kind() {
+        EngineKind::Box => boxes::settings::fallback_engine(),
+        kind => kind,
+    }
+}
+
 /// This engine's own data directory ([`crate::host::BootConfig::data_dir`]),
 /// mirrored process-wide so the macOS profile builder — reached on the spawn
 /// path, with no handle on the boot config — can carve it out of what a confined
@@ -157,4 +175,34 @@ fn seatbelt_engine() -> Arc<dyn SandboxEngine> {
     ENGINE
         .get_or_init(|| Arc::new(seatbelt::SandboxExecEngine))
         .clone()
+}
+
+#[cfg(test)]
+mod adopted_tree_tests {
+    use super::*;
+
+    /// An agent adopting a tree runs where the tree lives: in the box that
+    /// holds it, and never in a box for a tree no box holds.
+    #[tokio::test]
+    async fn an_adopting_agent_runs_where_its_tree_lives() {
+        let registry = boxes::BoxRegistry::global();
+        let root = PathBuf::from("/adopted-tree-test/coder-root");
+        registry.register(boxes::BoxIdentity {
+            agent_id: "adopted-tree-test-coder".into(),
+            project_id: "p".into(),
+            provider: "claude".into(),
+            writable_root: root.clone(),
+            rpc_dir: PathBuf::from("/adopted-tree-test/rpc"),
+            home: PathBuf::from("/adopted-tree-test/home"),
+            shares: Vec::new(),
+        });
+        assert_eq!(engine_for_adopted_tree(&root.join("repo")), EngineKind::Box);
+        // Whatever Settings selects, a host tree never resolves to a box.
+        assert_ne!(
+            engine_for_adopted_tree(Path::new("/adopted-tree-test/runs/run-1/repo")),
+            EngineKind::Box
+        );
+        registry.discard("adopted-tree-test-coder").await.unwrap();
+        assert_ne!(engine_for_adopted_tree(&root.join("repo")), EngineKind::Box);
+    }
 }

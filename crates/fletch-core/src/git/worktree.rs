@@ -2,7 +2,7 @@
 //! checkpoints, worktree removal/prune, and the unborn-HEAD seed used before
 //! forking a checkout.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::error::{Error, Result};
 
@@ -62,10 +62,75 @@ pub async fn commit_all(repo: &Path, message: &str) -> Result<()> {
 /// pins; [`apply_snapshot`] is its inverse.
 pub async fn snapshot_worktree(checkout: &Path) -> Result<String> {
     // A throwaway index so `add -A` never stages into the live agent's index.
-    let tmp = tempfile::Builder::new()
-        .prefix("fletch-snapshot-index-")
-        .tempfile()
-        .map_err(Error::from)?;
+    let tmp = SnapshotIndex::new(checkout).await?;
+    let result = snapshot_with_index(checkout, &tmp).await;
+    tmp.cleanup();
+    result
+}
+
+/// The throwaway index a snapshot stages into, where the checkout lives.
+/// `GIT_INDEX_FILE` reaches git where it runs: for a host checkout a host
+/// temp file, removed with the guard; for a checkout a box keeps in its guest
+/// a file beside the live index there, since no host temp path exists in the
+/// guest, removed by [`Self::cleanup`].
+enum SnapshotIndex {
+    Host(tempfile::NamedTempFile),
+    Guest {
+        exec: crate::exec::Executor,
+        path: PathBuf,
+    },
+}
+
+impl SnapshotIndex {
+    async fn new(checkout: &Path) -> Result<Self> {
+        match crate::exec::for_path(checkout) {
+            crate::exec::Executor::Local => Ok(Self::Host(
+                tempfile::Builder::new()
+                    .prefix("fletch-snapshot-index-")
+                    .tempfile()
+                    .map_err(Error::from)?,
+            )),
+            exec @ crate::exec::Executor::Remote(_) => {
+                let live = live_index_path(checkout).await?;
+                let path =
+                    live.with_file_name(format!("fletch-snapshot-index-{}", uuid::Uuid::new_v4()));
+                Ok(Self::Guest { exec, path })
+            }
+        }
+    }
+
+    fn path(&self) -> &Path {
+        match self {
+            Self::Host(file) => file.path(),
+            Self::Guest { path, .. } => path,
+        }
+    }
+
+    /// Remove the guest's file; the host's goes with its guard. Best-effort:
+    /// a leftover is a stray file in the checkout's `.git`, never a wrong
+    /// snapshot.
+    fn cleanup(self) {
+        if let Self::Guest { exec, path } = self {
+            if let Err(e) = exec.remove(&path) {
+                tracing::info!(path = %path.display(), error = %e, "snapshot index not removed");
+            }
+        }
+    }
+}
+
+/// `<checkout>/.git/index`, or wherever `--git-path index` says it is
+/// (absolute in a linked worktree).
+async fn live_index_path(checkout: &Path) -> Result<PathBuf> {
+    let out = run_git(
+        checkout,
+        &["rev-parse", "--git-path", "index"],
+        "rev-parse --git-path",
+    )
+    .await?;
+    Ok(checkout.join(String::from_utf8_lossy(&out.stdout).trim()))
+}
+
+async fn snapshot_with_index(checkout: &Path, tmp: &SnapshotIndex) -> Result<String> {
     let index_env = vec![(
         "GIT_INDEX_FILE".to_string(),
         tmp.path().display().to_string(),
@@ -74,7 +139,7 @@ pub async fn snapshot_worktree(checkout: &Path) -> Result<String> {
     // Seed the temp index, then stage every working-tree change (adds/mods/
     // dels, honoring .gitignore) into it — the snapshot tree. `read-tree`
     // replaces whatever the copy attempt left in the temp index.
-    if !seed_index_from_live(checkout, tmp.path(), &index_env).await {
+    if !seed_index_from_live(checkout, tmp, &index_env).await {
         run_git_env(
             checkout,
             &["read-tree", "HEAD"],
@@ -117,22 +182,23 @@ pub async fn snapshot_worktree(checkout: &Path) -> Result<String> {
 /// skip-worktree (sparse checkouts) or assume-unchanged — so a copy carrying
 /// either is not used. Returns whether the copy seeded the index; on `false`
 /// the caller seeds from HEAD.
-async fn seed_index_from_live(checkout: &Path, tmp: &Path, index_env: &[(String, String)]) -> bool {
-    let Ok(out) = run_git(
-        checkout,
-        &["rev-parse", "--git-path", "index"],
-        "rev-parse --git-path",
-    )
-    .await
-    else {
+async fn seed_index_from_live(
+    checkout: &Path,
+    tmp: &SnapshotIndex,
+    index_env: &[(String, String)],
+) -> bool {
+    let Ok(live) = live_index_path(checkout).await else {
         return false;
     };
-    // Relative to the checkout (`.git/index`), or absolute in a linked worktree.
-    let live = checkout.join(String::from_utf8_lossy(&out.stdout).trim());
-    // Inline rather than on a blocking thread: a local copy of a few MB at
-    // most, and a snapshot abandoned mid-copy (a checkpoint timing out) must
-    // not leave a detached copy to recreate the temp file after its cleanup.
-    if copy_index(&live, tmp).is_err() {
+    let copied = match tmp {
+        // Inline rather than on a blocking thread: a local copy of a few MB
+        // at most, and a snapshot abandoned mid-copy (a checkpoint timing
+        // out) must not leave a detached copy to recreate the temp file after
+        // its cleanup.
+        SnapshotIndex::Host(file) => copy_index(&live, file.path()).is_ok(),
+        SnapshotIndex::Guest { exec, path } => copy_index_in(exec, checkout, &live, path).await,
+    };
+    if !copied {
         return false;
     }
     // `ls-files -v` tags assume-unchanged entries lowercase and skip-worktree
@@ -165,6 +231,24 @@ fn copy_index(live: &Path, dest: &Path) -> std::io::Result<()> {
         .write(true)
         .open(dest)?
         .set_modified(mtime)
+}
+
+/// [`copy_index`] in the guest that holds `checkout`: `cp -p` keeps the
+/// mtime, for the same racy-git reason. `false` when the copy did not happen.
+async fn copy_index_in(
+    exec: &crate::exec::Executor,
+    checkout: &Path,
+    live: &Path,
+    dest: &Path,
+) -> bool {
+    let mut cmd = tokio::process::Command::from(exec.command("cp", checkout, &[]));
+    cmd.arg("-p")
+        .arg("--")
+        .arg(live)
+        .arg(dest)
+        .stdin(std::process::Stdio::null())
+        .kill_on_drop(true);
+    cmd.output().await.is_ok_and(|out| out.status.success())
 }
 
 /// Make `checkout`'s working tree exactly `snapshot`'s tree with HEAD (and the
@@ -368,12 +452,12 @@ mod tests {
 
     /// Whether the index-copy seed would be used for `repo`'s current index.
     async fn copy_seed_used(repo: &Path) -> bool {
-        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let tmp = SnapshotIndex::new(repo).await.unwrap();
         let env = vec![(
             "GIT_INDEX_FILE".to_string(),
             tmp.path().display().to_string(),
         )];
-        seed_index_from_live(repo, tmp.path(), &env).await
+        seed_index_from_live(repo, &tmp, &env).await
     }
 
     #[tokio::test]

@@ -24,7 +24,28 @@
 //! the workspaces root rather than inside it, so no host file sits under a path
 //! the seam routes remotely): `data.img`, `dirty`, `key`, `key.pub`,
 //! `known_hosts`, `ssh_config`, `ssh.sock`, `ctl.sock`, `egress.sock`,
-//! `console.log`, `mirror.git/`, `claude-projects/`.
+//! `console.log`, `mirror.git/`, `claude-projects/`, `relay/`.
+//!
+//! **An agent runs where the tree it works in lives.** An agent that adopts
+//! an existing checkout instead of provisioning one (the local reviewer, which
+//! reads the coder's checkout) runs *in the box that holds it* when that box
+//! is another agent's — as its tenant ([`registry::Tenant`]): same VM, its own
+//! ssh session, env file, mailbox relay and profile dir, no box of its own.
+//! Conversely an agent adopting a host tree never runs in a box, which cannot
+//! see it ([`crate::sandbox::engine_for_adopted_tree`]). The one thing a
+//! tenant launch does not get is the read-only grant on the adopted tree the
+//! seatbelt and container engines give the reviewer: inside the guest both
+//! agents are one user, so the reviewer's mandate not to change the coder's
+//! tree is held by its brief and its capability grant alone.
+//!
+//! What touches a checkout from the host goes through the seam, or asks
+//! [`box_holding`] and refuses with the reason. Not in the guest yet, each
+//! refusing or skipping rather than acting on the host's empty placeholder:
+//! the Run panel (`supervisor::run`), verification (`verify`), codegraph
+//! indexing (`codegraph::wants_codegraph`), workflow step agents, carrying a
+//! checkpoint between a box and another workspace (`git::checkpoint::
+//! fetch_into`: a fork of a box agent), and the attribution hook refresh
+//! (`attribution::refresh_hooks`, which provisioning covers in the guest).
 
 pub mod allowlist;
 pub mod executor;
@@ -84,6 +105,49 @@ pub(crate) fn box_dir_for_root(writable_root: &Path) -> Option<PathBuf> {
 /// The transcript mirror of a box (`sandbox::transcript_root` for `Box`).
 pub(crate) fn transcript_dir_for_root(writable_root: &Path) -> Option<PathBuf> {
     box_dir_for_root(writable_root).map(|dir| dir.join(registry::CLAUDE_PROJECTS_DIR))
+}
+
+/// The box whose writable root holds `path`, when a registered one does: the
+/// one answer to "which guest has this tree" — for transport and publish
+/// (`mirror`), and for an agent that adopts the tree and so must run there.
+/// Only boxes the registry knows (every live box-stamped agent's, from
+/// [`startup`] on), so a path under no box reads as a host path.
+pub fn box_holding(path: &Path) -> Option<BoxIdentity> {
+    BoxRegistry::global().identity_for_path(path)
+}
+
+/// Whether `record` is a tenant: an agent whose primary checkout is adopted
+/// from inside another agent's box. The box must be registered for the answer
+/// to be yes, as for [`box_holding`].
+fn tenancy_of(record: &crate::workspace::AgentRecord) -> Option<BoxIdentity> {
+    let adopted = record.repos.first()?.adopted_checkout.as_deref()?;
+    box_holding(adopted).filter(|host| host.agent_id != record.id)
+}
+
+/// Route a box-stamped `record` that is a tenant to its host's box, and say
+/// whose. Called before every launch of a box-stamped agent and at
+/// [`startup`], so the tenant's own writable root is routed when the host
+/// writes the launch's profile under it. `Ok(None)` for an agent with a box
+/// of its own; an error for a box-stamped agent adopting a tree that is in no
+/// box — a guest cannot see a host tree, so that launch has nowhere to run.
+pub fn route_tenant(record: &crate::workspace::AgentRecord) -> Result<Option<BoxIdentity>> {
+    let Some(adopted) = record
+        .repos
+        .first()
+        .and_then(|r| r.adopted_checkout.as_deref())
+    else {
+        return Ok(None);
+    };
+    let Some(host) = tenancy_of(record) else {
+        return Err(Error::SandboxUnavailable(format!(
+            "{} adopts {}, which is in no box; an agent in a box can only adopt a tree another box holds",
+            record.id,
+            adopted.display()
+        )));
+    };
+    let writable_root = crate::workspace::agent_parent_dir(&record.id)?;
+    BoxRegistry::global().register_tenant(&record.id, writable_root, &host.agent_id);
+    Ok(Some(host))
 }
 
 /// The engine's box data: images and tools disks under `<data dir>/box`.
@@ -261,7 +325,11 @@ pub const ENV_DENY: &[&str] = &[
 
 /// What a launch needs to deliver its env file after the plan was built.
 struct PendingLaunch {
+    /// The agent launching.
     agent_id: String,
+    /// The agent whose box it runs in: itself, or its host when it is a
+    /// tenant — whose channel the env file travels over.
+    box_agent_id: String,
     provider: String,
     home: PathBuf,
 }
@@ -367,16 +435,35 @@ impl SandboxEngine for BoxEngine {
     /// `agent_bin` under `fletch-guest exec` with the env file [`deliver_env`]
     /// writes next. The launcher is `bash -c` quoting the agent's arguments for
     /// the guest shell, then `exec ssh`.
+    ///
+    /// An agent whose cwd is a tree it adopted runs in the box that holds the
+    /// tree, as that box's tenant (module docs): the host's VM, with the
+    /// tenant's own env file, mailbox relay and launch attached to the host's
+    /// idle timer.
     fn launch_agent(&self, ctx: &AgentLaunchCtx, agent_bin: &str) -> Result<LaunchPlan> {
         if let Some(why) = provider_refusal(ctx.provider) {
             return Err(Error::Other(why));
         }
-        if ctx.adopted_workspace().is_some() || ctx.blackboard.is_some() {
+        if ctx.blackboard.is_some() {
             return Err(Error::Other(
                 "workflow step agents don't run in box sandboxes yet".into(),
             ));
         }
-        let identity = identity_of(ctx);
+        let host = match ctx.adopted_workspace() {
+            None => None,
+            Some(tree) => Some(box_holding(tree).ok_or_else(|| {
+                Error::SandboxUnavailable(format!(
+                    "{} is in no box; an agent in a box can only adopt a tree another box holds",
+                    tree.display()
+                ))
+            })?),
+        };
+        let identity = match &host {
+            Some(host) if host.agent_id != ctx.agent_id => host.clone(),
+            _ => identity_of(ctx),
+        };
+        let is_tenant = identity.agent_id != ctx.agent_id;
+        let box_agent_id = identity.agent_id.clone();
         let registry = BoxRegistry::global();
         // Waits for the image and the tools disk when they are still being
         // set up (`setup`), so a launch during setup is late, never refused.
@@ -385,20 +472,42 @@ impl SandboxEngine for BoxEngine {
             // The user granted or revoked a folder since this box booted (or a
             // read booted it before the grant was stored): virtio-fs devices
             // are fixed at boot, so a restart is what mounts the new set.
-            block_on(registry.stop(ctx.agent_id, StopReason::Reshare))?;
+            block_on(registry.stop(&box_agent_id, StopReason::Reshare))?;
             running = block_on(registry.ensure_running(&identity))?;
         }
         if running.tools_disk.is_none() {
             // Booted before the disk existed (an older build, or a host CLI
             // upgrade since): a restart attaches the disk `ensure_running`
             // now waits for.
-            block_on(registry.stop(ctx.agent_id, StopReason::Reattach))?;
+            block_on(registry.stop(&box_agent_id, StopReason::Reattach))?;
             running = block_on(registry.ensure_running(&identity))?;
             if running.tools_disk.is_none() {
                 return Err(Error::SandboxUnavailable(
                     "the box restarted without its tools disk".into(),
                 ));
             }
+        }
+        if is_tenant {
+            // The tenant's writable root is routed to this box (its profile is
+            // written there before the launch — `route_tenant` — but a launch
+            // reached another way must not miss it), its mailbox exists in
+            // the guest before its first request, and is relayed like the
+            // owner's.
+            registry.register_tenant(ctx.agent_id, ctx.writable_root.to_path_buf(), &box_agent_id);
+            let rpc = ctx.rpc_dir.to_string_lossy();
+            let (requests, responses) = (format!("{rpc}/requests"), format!("{rpc}/responses"));
+            let made = executor::run(
+                &running.channel,
+                &["mkdir", "-p", "-m", "700", "--", &requests, &responses],
+                None,
+            )?;
+            if !made.status.success() {
+                return Err(Error::Other(format!(
+                    "could not create the tenant's rpc mailbox in the box: {}",
+                    String::from_utf8_lossy(&made.stderr).trim()
+                )));
+            }
+            running.relay_mailbox(ctx.rpc_dir, ctx.agent_id);
         }
         let launch_id = uuid::Uuid::new_v4().to_string();
         let env_file = env_file_path(&launch_id);
@@ -436,11 +545,14 @@ impl SandboxEngine for BoxEngine {
                 launch_id.clone(),
                 PendingLaunch {
                     agent_id: ctx.agent_id.to_string(),
+                    box_agent_id: box_agent_id.clone(),
                     provider: ctx.provider.to_string(),
                     home: ctx.home.to_path_buf(),
                 },
             );
-        BoxRegistry::global().attach(ctx.agent_id, &launch_id);
+        // Attached to the box it runs in: a tenant's session keeps its host's
+        // VM from stopping idle under it.
+        registry.attach(&box_agent_id, &launch_id);
         Ok(LaunchPlan {
             program: PathBuf::from(BASH),
             prefix_args,
@@ -452,7 +564,7 @@ impl SandboxEngine for BoxEngine {
             kill: KillHandle::Engine {
                 engine: BoxEngine::shared(),
                 plan: KillPlan::Box {
-                    agent_id: ctx.agent_id.to_string(),
+                    agent_id: box_agent_id,
                     launch_id,
                 },
             },
@@ -481,7 +593,7 @@ impl SandboxEngine for BoxEngine {
             )));
         }
         let contents = render_env_file(env, &pending.provider, &pending.home, ENV_DENY)?;
-        let channel = BoxRegistry::global().channel_for(agent_id)?;
+        let channel = BoxRegistry::global().channel_for(&pending.box_agent_id)?;
         let path = env_file_path(launch_id);
         executor::put(&channel, contents.as_bytes(), &path, 0o600)?;
         Ok(path)
@@ -529,11 +641,31 @@ pub fn render_env_file(
     home: &Path,
     deny: &[&str],
 ) -> Result<String> {
+    let guest = guest_env(provider, home);
+    let guest_keys: Vec<&str> = guest.iter().map(|(k, _)| k.as_str()).collect();
+    let mut lines = String::new();
+    for (key, value) in env {
+        if deny.contains(&key.as_str()) || guest_keys.contains(&key.as_str()) {
+            continue;
+        }
+        push_line(&mut lines, key, value)?;
+    }
+    for (key, value) in &guest {
+        push_line(&mut lines, key, value)?;
+    }
+    Ok(lines)
+}
+
+/// What every process in a guest needs that the host never sets: `HOME` by
+/// path identity, the provider's tools disk on `PATH`, the loopback egress
+/// proxy, a shell and a locale. The env file of an agent launch ends with
+/// these; a shell or a tool run in the guest for the user starts from them.
+pub fn guest_env(provider: &str, home: &Path) -> Vec<(String, String)> {
     let term = std::env::var("TERM")
         .ok()
         .filter(|t| !t.is_empty())
         .unwrap_or_else(|| "xterm-256color".to_string());
-    let guest: Vec<(String, String)> = vec![
+    vec![
         ("HOME".into(), home.to_string_lossy().into_owned()),
         ("USER".into(), fletch_box::guest::USER.into()),
         ("LOGNAME".into(), fletch_box::guest::USER.into()),
@@ -566,19 +698,79 @@ pub fn render_env_file(
         ("NO_PROXY".into(), "127.0.0.1,localhost".into()),
         ("no_proxy".into(), "127.0.0.1,localhost".into()),
         ("GIT_TERMINAL_PROMPT".into(), "0".into()),
+    ]
+}
+
+/// A program to run in the guest that holds `tree`, for the user rather than
+/// an agent — the workspace terminal, a `claude doctor` — as the `(program,
+/// args)` a host PTY or process spawns: `bash -c <wrapper> … ssh -F <cfg> -tt
+/// box "cd <tree> && exec env <guest env> <program> <args>"`. `None` when
+/// `tree` is a host path. Boots a stopped box, since the point is to look
+/// inside it.
+pub fn guest_program(
+    tree: &Path,
+    program: &str,
+    args: &[String],
+) -> Result<Option<(PathBuf, Vec<String>)>> {
+    let Some(identity) = box_holding(tree) else {
+        return Ok(None);
+    };
+    let channel = BoxRegistry::global().channel_for(&identity.agent_id)?;
+    let quote = fletch_box::channel::shell_quote;
+    let mut remote = vec![
+        "cd".to_string(),
+        quote(&tree.to_string_lossy()),
+        "&&".to_string(),
+        "exec".to_string(),
+        "env".to_string(),
     ];
-    let guest_keys: Vec<&str> = guest.iter().map(|(k, _)| k.as_str()).collect();
-    let mut lines = String::new();
-    for (key, value) in env {
-        if deny.contains(&key.as_str()) || guest_keys.contains(&key.as_str()) {
-            continue;
-        }
-        push_line(&mut lines, key, value)?;
+    remote.extend(
+        guest_env(&identity.provider, &identity.home)
+            .iter()
+            .map(|(k, v)| quote(&format!("{k}={v}"))),
+    );
+    remote.push(quote(program));
+    remote.extend(args.iter().map(|a| quote(a)));
+    let wrapper = executor::quoting_wrapper(
+        SSH,
+        &[
+            "-F".to_string(),
+            channel.config.to_string_lossy().into_owned(),
+            // The host side is a PTY or a pipe; a tty in the guest only
+            // when the client has one, which is what the shell wants and
+            // a captured command does not get.
+            "-t".to_string(),
+            fletch_box::guest::SSH_HOST_ALIAS.to_string(),
+        ],
+        &remote,
+    );
+    Ok(Some((PathBuf::from(BASH), wrapper)))
+}
+
+/// Create `guest_path` with `bytes` in the guest that holds `tree`, failing
+/// when something is already there — the twin of a host `create_new` write,
+/// for a file the host materializes for an agent outside the routed roots
+/// (a claude session under the guest's `~/.claude/projects`).
+pub fn write_new_guest_file(tree: &Path, guest_path: &Path, bytes: &[u8]) -> Result<()> {
+    let identity = box_holding(tree)
+        .ok_or_else(|| Error::Other(format!("{} is in no box", tree.display())))?;
+    let channel = BoxRegistry::global().channel_for(&identity.agent_id)?;
+    // `set -C` (noclobber) makes `>` refuse an existing file.
+    let script =
+        "umask 077 && mkdir -p \"$(dirname \"$1\")\" && set -C && cat > \"$1\" && chmod 644 \"$1\"";
+    let out = executor::run(
+        &channel,
+        &["sh", "-c", script, "sh", &guest_path.to_string_lossy()],
+        Some(bytes),
+    )?;
+    if !out.status.success() {
+        return Err(Error::Other(format!(
+            "could not create {} in the box: {}",
+            guest_path.display(),
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
     }
-    for (key, value) in &guest {
-        push_line(&mut lines, key, value)?;
-    }
-    Ok(lines)
+    Ok(())
 }
 
 fn push_line(lines: &mut String, key: &str, value: &str) -> Result<()> {
@@ -605,10 +797,25 @@ fn push_line(lines: &mut String, key: &str, value: &str) -> Result<()> {
 /// agent of another engine. Teardown calls this for every agent, so it must
 /// stay cheap when there is no box: one directory probe. An error is logged
 /// and returned, for archive to record on the row; a box directory it leaves
-/// is reclaimed at the next start ([`startup`]).
+/// is reclaimed at the next start ([`startup`]). A tenant has no box to
+/// delete: it stops being routed to its host's.
 pub async fn discard_if_any(agent_id: &str) -> Result<()> {
-    let dir = box_dir(agent_id)?;
     let registry = BoxRegistry::global();
+    if let Some(tenant) = registry.tenant_of(agent_id) {
+        // What the host wrote for its launches sits in the host's guest; it
+        // is removed while that box is up, and otherwise left — a stale
+        // profile dir there is harmless and the next tenant launch rewrites
+        // it — rather than booting a VM to delete a directory.
+        if let Ok(channel) = registry.channel_for_running(&tenant.host_agent_id) {
+            let root = tenant.writable_root.to_string_lossy().into_owned();
+            if let Err(e) = executor::run(&channel, &["rm", "-rf", "--", &root], None) {
+                tracing::info!(agent_id, error = %e, "tenant's guest dir not removed");
+            }
+        }
+        registry.forget_tenant(agent_id);
+        return Ok(());
+    }
+    let dir = box_dir(agent_id)?;
     if !dir.exists() && !registry.knows(agent_id) {
         return Ok(());
     }
@@ -626,23 +833,36 @@ pub fn shutdown_all() {
 }
 
 /// At boot: route every live box-stamped agent's writable root to its box
-/// (so a Git panel read before the first launch boots it lazily), log boxes
-/// whose last VM did not stop cleanly, and kill `fletch-vm` processes whose
-/// owning Fletch is dead. Off the boot thread for the process scan.
+/// (so a Git panel read before the first launch boots it lazily), route every
+/// tenant to its host's box, log boxes whose last VM did not stop cleanly,
+/// and kill `fletch-vm` processes whose owning Fletch is dead. Off the boot
+/// thread for the process scan.
 pub fn startup(workspace: &crate::workspace::WorkspaceManager) {
     if settings::enabled() {
         if let Ok(ids) = workspace.live_agent_ids() {
-            for id in ids {
-                let Ok(record) = workspace.agent(&id) else {
-                    continue;
-                };
-                if record.sandbox_engine.as_deref() != Some(EngineKind::Box.as_setting()) {
-                    continue;
-                }
-                let identity = BoxIdentity::for_record(&record);
-                match identity {
+            let records: Vec<_> = ids
+                .iter()
+                .filter_map(|id| workspace.agent(id).ok())
+                .filter(|r| r.sandbox_engine.as_deref() == Some(EngineKind::Box.as_setting()))
+                .collect();
+            // Owners first: a tenant resolves its host through the registry,
+            // so every box must be known before any tenant is placed. An
+            // adopting record is a tenant by construction — a box-stamped
+            // agent never adopts a tree outside a box (`engine_for_adopted_tree`).
+            let (tenants, owners): (Vec<_>, Vec<_>) = records
+                .into_iter()
+                .partition(|r| r.repos.first().is_some_and(|repo| repo.is_adopted()));
+            for record in owners {
+                match BoxIdentity::for_record(&record) {
                     Ok(identity) => BoxRegistry::global().register(identity),
-                    Err(e) => tracing::warn!(agent_id = %id, error = %e, "box identity failed"),
+                    Err(e) => {
+                        tracing::warn!(agent_id = %record.id, error = %e, "box identity failed")
+                    }
+                }
+            }
+            for record in tenants {
+                if let Err(e) = route_tenant(&record) {
+                    tracing::warn!(agent_id = %record.id, error = %e, "box tenant not routed");
                 }
             }
         }

@@ -33,6 +33,14 @@ impl Supervisor {
             .first()
             .ok_or_else(|| Error::Other("agent has no repos".into()))?;
         let cwd = primary.checkout_path(agent_id)?;
+        // The Run panel's process runs on the host, in the checkout; a box
+        // keeps the checkout in its guest, where nothing here can reach yet.
+        // Refused with the reason rather than run in the empty placeholder.
+        if crate::sandbox::boxes::box_holding(&cwd).is_some() {
+            return Err(Error::Other(
+                "the Run panel doesn't run inside box sandboxes yet".into(),
+            ));
+        }
 
         let (setup_cmd, run_cmd, intended_port) =
             self.read_run_config(agent_id, &record.project_id, &cwd);

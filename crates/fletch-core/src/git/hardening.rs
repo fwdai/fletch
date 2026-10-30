@@ -418,6 +418,11 @@ async fn submodule_configs(dir: &Path) -> Vec<SubmoduleConfig> {
     };
     let common = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim());
     let mut found = Vec::new();
+    // Walked where the checkout lives: a box keeps `.git` in its guest. The
+    // local listing reports an entry's own type (a link to a directory is not
+    // descended); the guest's follows links, so there the entry bound below
+    // is what holds a planted loop of links in check.
+    let exec = crate::exec::for_path(dir);
     // Bounded, because the tree is the agent's: no deeper than submodules
     // realistically nest, and no more entries than a scan should ever
     // visit, so a planted directory bomb cannot keep the app busy.
@@ -426,10 +431,10 @@ async fn submodule_configs(dir: &Path) -> Vec<SubmoduleConfig> {
     let mut visited = 0usize;
     let mut pending = vec![(common.join("modules"), 0usize)];
     while let Some((root, depth)) = pending.pop() {
-        let Ok(entries) = std::fs::read_dir(&root) else {
+        let Ok(entries) = exec.list(&root) else {
             continue;
         };
-        for entry in entries.flatten() {
+        for entry in entries {
             visited += 1;
             if visited > MAX_ENTRIES {
                 tracing::warn!(
@@ -438,18 +443,19 @@ async fn submodule_configs(dir: &Path) -> Vec<SubmoduleConfig> {
                 );
                 return found;
             }
-            let path = entry.path();
-            // `file_type` does not follow links; `is_file` below does.
-            let Ok(kind) = entry.file_type() else {
-                continue;
-            };
-            if kind.is_dir() {
+            let path = root.join(&entry.name);
+            if entry.is_dir {
                 if depth < MAX_DEPTH {
                     pending.push((path, depth + 1));
                 }
-            } else if path.file_name().is_some_and(|n| n == "config")
-                && path.is_file()
-                && path.with_file_name("HEAD").exists()
+            } else if entry.name == "config"
+                // `stat` follows a link, as git reads through one.
+                && exec
+                    .stat(&path)
+                    .ok()
+                    .flatten()
+                    .is_some_and(|s| s.is_file)
+                && exec.exists(&path.with_file_name("HEAD")).unwrap_or(false)
             {
                 let name = path
                     .strip_prefix(&common)

@@ -6,6 +6,12 @@
 //! knows the box, not only while the VM runs: a routed operation on a stopped
 //! box (`git status` for the Git panel) boots it again instead of failing on a
 //! host path that holds nothing. Unregistering happens on [`BoxRegistry::discard`].
+//!
+//! A box also has *tenants* ([`Tenant`]): agents with no box of their own that
+//! run in this one because the tree they adopted lives here — the local
+//! reviewer of the box's owner. A tenant's own writable root is routed to the
+//! host's box the same way, so what the host writes there for the launch (the
+//! profile) lands where the tenant runs; its mailbox gets a relay of its own.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -219,6 +225,22 @@ impl RunningBox {
     pub fn git_url(&self, guest_path: &Path) -> String {
         format!("{}:{}", guest::SSH_HOST_ALIAS, guest_path.display())
     }
+
+    /// Relay a tenant's mailbox out of this box too (`relay::Relays::add_mailbox`).
+    pub fn relay_mailbox(&self, rpc_dir: &Path, tenant_agent_id: &str) {
+        self.relays
+            .add_mailbox(self.channel.clone(), &self.dir, rpc_dir, tenant_agent_id);
+    }
+}
+
+/// An agent that runs in another agent's box because the tree it adopted
+/// lives there (`exec::for_path` routes its own writable root there too).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Tenant {
+    /// The agent whose box it runs in.
+    pub host_agent_id: String,
+    /// The tenant's own writable root, routed to the host's box.
+    pub writable_root: PathBuf,
 }
 
 struct Entry {
@@ -252,6 +274,8 @@ impl Entry {
 
 pub struct BoxRegistry {
     entries: Mutex<HashMap<String, Entry>>,
+    /// Agents that run in another agent's box, by their own id ([`Tenant`]).
+    tenants: Mutex<HashMap<String, Tenant>>,
     /// The image is hashed once per process before the first boot
     /// (`ImageStore::verify`); a damaged image is removed and reported.
     image_verified: Mutex<HashSet<String>>,
@@ -265,9 +289,67 @@ impl BoxRegistry {
         static REGISTRY: OnceLock<BoxRegistry> = OnceLock::new();
         REGISTRY.get_or_init(|| BoxRegistry {
             entries: Mutex::new(HashMap::new()),
+            tenants: Mutex::new(HashMap::new()),
             image_verified: Mutex::new(HashSet::new()),
             tools_builds: Mutex::new(HashMap::new()),
         })
+    }
+
+    /// Make `tenant_agent_id` a tenant of `host_agent_id`'s box: its own
+    /// writable root (where the host writes its profile — skills, the MCP
+    /// config) is routed to that box, so those land in the guest the tenant
+    /// runs in. Idempotent; a tenant moving to another host is re-routed.
+    pub fn register_tenant(
+        &self,
+        tenant_agent_id: &str,
+        writable_root: PathBuf,
+        host_agent_id: &str,
+    ) {
+        let tenant = Tenant {
+            host_agent_id: host_agent_id.to_string(),
+            writable_root: writable_root.clone(),
+        };
+        let previous = self
+            .tenants
+            .lock()
+            .insert(tenant_agent_id.to_string(), tenant);
+        if let Some(previous) = previous.filter(|p| p.writable_root != writable_root) {
+            crate::exec::unregister_root(&previous.writable_root);
+        }
+        crate::exec::register_root(writable_root, BoxExecutor::new(host_agent_id));
+    }
+
+    /// The host of `tenant_agent_id`, when it is a tenant.
+    pub fn tenant_of(&self, tenant_agent_id: &str) -> Option<Tenant> {
+        self.tenants.lock().get(tenant_agent_id).cloned()
+    }
+
+    /// Stop routing `tenant_agent_id`'s writable root; a no-op for an agent
+    /// that is no tenant. `true` when it was one.
+    pub fn forget_tenant(&self, tenant_agent_id: &str) -> bool {
+        match self.tenants.lock().remove(tenant_agent_id) {
+            Some(tenant) => {
+                crate::exec::unregister_root(&tenant.writable_root);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Forget every tenant of `host_agent_id`'s box: the box is going.
+    fn forget_tenants_of(&self, host_agent_id: &str) {
+        let gone: Vec<Tenant> = {
+            let mut tenants = self.tenants.lock();
+            let ids: Vec<String> = tenants
+                .iter()
+                .filter(|(_, t)| t.host_agent_id == host_agent_id)
+                .map(|(id, _)| id.clone())
+                .collect();
+            ids.iter().filter_map(|id| tenants.remove(id)).collect()
+        };
+        for tenant in gone {
+            crate::exec::unregister_root(&tenant.writable_root);
+        }
     }
 
     /// Know `identity`'s box and route its writable root to it. Idempotent;
@@ -685,6 +767,8 @@ impl BoxRegistry {
         if let Some(identity) = &identity {
             crate::exec::unregister_root(&identity.writable_root);
         }
+        // Its tenants' roots pointed into a guest that no longer exists.
+        self.forget_tenants_of(agent_id);
         remove_box_dir(&super::box_dir(agent_id)?).await
     }
 
@@ -1504,6 +1588,63 @@ mod tests {
         assert!(!registry.knows(id));
         assert!(matches!(
             crate::exec::for_path(Path::new("/registry-unit-test/root/repo")),
+            crate::exec::Executor::Local
+        ));
+    }
+
+    /// A tenant's own root is routed to its host's box, the tenant resolves
+    /// to its host, and the route ends with the tenant — or with the host's
+    /// box, whichever goes first.
+    #[tokio::test]
+    async fn tenants_are_routed_to_their_host_and_forgotten_with_it() {
+        let registry = BoxRegistry::global();
+        let host = "tenant-test-host";
+        let host_root = PathBuf::from("/tenant-test/host-root");
+        registry.register(BoxIdentity {
+            agent_id: host.into(),
+            project_id: "p".into(),
+            provider: "claude".into(),
+            writable_root: host_root.clone(),
+            rpc_dir: PathBuf::from("/tenant-test/host-rpc"),
+            home: PathBuf::from("/tenant-test/home"),
+            shares: Vec::new(),
+        });
+        let tenant_root = PathBuf::from("/tenant-test/tenant-root");
+        assert!(matches!(
+            crate::exec::for_path(&tenant_root.join(".fletch-profile")),
+            crate::exec::Executor::Local
+        ));
+
+        registry.register_tenant("tenant-test-reviewer", tenant_root.clone(), host);
+        assert!(matches!(
+            crate::exec::for_path(&tenant_root.join(".fletch-profile")),
+            crate::exec::Executor::Remote(_)
+        ));
+        assert_eq!(
+            registry.tenant_of("tenant-test-reviewer"),
+            Some(Tenant {
+                host_agent_id: host.into(),
+                writable_root: tenant_root.clone(),
+            })
+        );
+        // A tenant is not a box: nothing to boot, no identity of its own.
+        assert!(!registry.knows("tenant-test-reviewer"));
+        assert!(registry.identity_for_path(&tenant_root).is_none());
+
+        // Forgotten on its own.
+        assert!(registry.forget_tenant("tenant-test-reviewer"));
+        assert!(!registry.forget_tenant("tenant-test-reviewer"));
+        assert!(matches!(
+            crate::exec::for_path(&tenant_root.join(".fletch-profile")),
+            crate::exec::Executor::Local
+        ));
+
+        // Forgotten with its host's box.
+        registry.register_tenant("tenant-test-reviewer", tenant_root.clone(), host);
+        registry.discard(host).await.unwrap();
+        assert_eq!(registry.tenant_of("tenant-test-reviewer"), None);
+        assert!(matches!(
+            crate::exec::for_path(&tenant_root.join(".fletch-profile")),
             crate::exec::Executor::Local
         ));
     }

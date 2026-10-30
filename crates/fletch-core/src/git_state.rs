@@ -435,6 +435,11 @@ async fn untracked_additions(checkout_path: &Path, rels: Vec<String>) -> (Vec<u3
     /// file costs a stat, never a read, and never touches the budget.
     const MAX_FILE_BYTES: u64 = 4 * 1024 * 1024;
 
+    // A checkout a box keeps in its guest is counted there.
+    if let exec @ crate::exec::Executor::Remote(_) = crate::exec::for_path(checkout_path) {
+        return untracked_additions_in_guest(&exec, checkout_path, rels, MAX_FILE_BYTES).await;
+    }
+
     let root = checkout_path.to_path_buf();
     let empty = rels.len();
     tokio::task::spawn_blocking(move || {
@@ -503,6 +508,92 @@ async fn untracked_additions(checkout_path: &Path, rels: Vec<String>) -> (Vec<u3
     })
     .await
     .unwrap_or_else(|_| (vec![0; empty], false))
+}
+
+/// [`untracked_additions`] for a checkout a box keeps in its guest: one
+/// command there counts every file by the same rules — regular files only,
+/// nothing with a NUL byte, nothing over `max_file_bytes`, a final line
+/// without a newline counts, the pass ends when the byte budget would be
+/// exceeded — instead of a round trip over the channel per file. The paths
+/// travel on stdin, one per line (a name with a newline in it counts 0), and
+/// the counts come back one per line in order, `over` where the budget cut
+/// the pass short.
+async fn untracked_additions_in_guest(
+    exec: &crate::exec::Executor,
+    checkout_path: &Path,
+    rels: Vec<String>,
+    max_file_bytes: u64,
+) -> (Vec<u32>, bool) {
+    const SCRIPT: &str = r#"
+max_file=$1; budget=$2; spent=0
+while IFS= read -r f; do
+  if [ -z "$f" ] || [ ! -f "$f" ]; then echo 0; continue; fi
+  size=$(stat -L -c %s -- "$f" 2>/dev/null) || { echo 0; continue; }
+  if [ "$size" -eq 0 ] || [ "$size" -gt "$max_file" ]; then echo 0; continue; fi
+  if [ $((spent + size)) -gt "$budget" ]; then echo over; exit 0; fi
+  if [ "$(tr -d '\000' < "$f" | wc -c)" -ne "$size" ]; then echo 0; continue; fi
+  spent=$((spent + size))
+  n=$(wc -l < "$f")
+  if [ -n "$(tail -c1 -- "$f")" ]; then n=$((n + 1)); fi
+  echo "$n"
+done
+"#;
+    use tokio::io::AsyncWriteExt;
+
+    let mut out = vec![0u32; rels.len()];
+    let mut input = String::new();
+    for rel in &rels {
+        // A newline cannot travel in a line; the file counts 0 like an
+        // unreadable one.
+        input.push_str(if rel.contains('\n') { "" } else { rel });
+        input.push('\n');
+    }
+    let mut cmd = tokio::process::Command::from(exec.command("bash", checkout_path, &[]));
+    cmd.args([
+        "-c",
+        SCRIPT,
+        "bash",
+        &max_file_bytes.to_string(),
+        &MAX_UNTRACKED_READ_BYTES.to_string(),
+    ])
+    .stdin(std::process::Stdio::piped())
+    .stdout(std::process::Stdio::piped())
+    .stderr(std::process::Stdio::piped())
+    .kill_on_drop(true);
+    let mut child = match cmd.spawn() {
+        Ok(child) => child,
+        Err(e) => {
+            tracing::info!(error = %e, "untracked line counts in the box not read");
+            return (out, false);
+        }
+    };
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(input.as_bytes()).await;
+        drop(stdin);
+    }
+    let result = match child.wait_with_output().await {
+        Ok(result) if result.status.success() => result,
+        Ok(result) => {
+            tracing::info!(
+                stderr = %String::from_utf8_lossy(&result.stderr).trim(),
+                "untracked line counts in the box failed"
+            );
+            return (out, false);
+        }
+        Err(e) => {
+            tracing::info!(error = %e, "untracked line counts in the box not read");
+            return (out, false);
+        }
+    };
+    let text = String::from_utf8_lossy(&result.stdout);
+    for (slot, line) in out.iter_mut().zip(text.lines()) {
+        let line = line.trim();
+        if line == "over" {
+            return (out, true);
+        }
+        *slot = line.parse().unwrap_or(0);
+    }
+    (out, false)
 }
 
 /// Build a git command for this module's state queries with `GIT_OPTIONAL_LOCKS`
@@ -713,6 +804,17 @@ async fn query_worktrees(checkout_path: &Path) -> Vec<LinkedWorktree> {
     let all = parse_worktree_list(&String::from_utf8_lossy(&out.stdout));
     if all.len() <= 1 {
         return vec![];
+    }
+    // A checkout a box keeps in its guest: the paths are the guest's, taken
+    // as git printed them, since nothing on the host can resolve them.
+    if let crate::exec::Executor::Remote(_) = crate::exec::for_path(checkout_path) {
+        return all
+            .into_iter()
+            .filter(|wt| {
+                let path = Path::new(&wt.path);
+                path != checkout_path && path.starts_with(checkout_path)
+            })
+            .collect();
     }
     let Ok(root) = std::fs::canonicalize(checkout_path) else {
         return vec![];

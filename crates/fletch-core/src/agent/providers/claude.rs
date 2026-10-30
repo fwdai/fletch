@@ -237,8 +237,10 @@ fn claude_write(
     let projects = crate::transcripts::claude_projects_dir(cwd, engine)
         .ok_or_else(|| Error::Other("claude's projects directory can't be resolved".into()))?;
     // Claude goes by its working directory as the OS reports it, symlinks
-    // resolved; in a container, that is the path the checkout is mounted at.
-    let run_dir = if engine.is_container() {
+    // resolved; in a container, that is the path the checkout is mounted at,
+    // and in a box the guest's path, which is the host's by identity (the
+    // host has only a placeholder there, so nothing of its own to resolve).
+    let run_dir = if engine.is_container() || engine == crate::sandbox::EngineKind::Box {
         cwd.to_path_buf()
     } else {
         std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf())
@@ -259,7 +261,29 @@ fn claude_write(
             line
         })
         .collect();
-    let path = projects.join(dirname).join(format!("{session_id}.jsonl"));
+    let path = projects.join(&dirname).join(format!("{session_id}.jsonl"));
+    if engine == crate::sandbox::EngineKind::Box {
+        // The claude that resumes this runs in the guest and reads its own
+        // `~/.claude/projects`; `projects` is the host's mirror of that dir,
+        // which the relay fills guest → host only. So the session is created
+        // in the guest first, then the mirror copy is written by hand, so
+        // the launch that follows sees a resumable session at once rather
+        // than after the tail relays it back.
+        let home = crate::sandbox::boxes::box_holding(cwd)
+            .map(|b| b.home)
+            .ok_or_else(|| Error::Other(format!("{} is in no box", cwd.display())))?;
+        let guest_path = home
+            .join(".claude")
+            .join("projects")
+            .join(&dirname)
+            .join(format!("{session_id}.jsonl"));
+        let mut bytes = Vec::new();
+        for line in &lines {
+            serde_json::to_writer(&mut bytes, line)?;
+            bytes.push(b'\n');
+        }
+        crate::sandbox::boxes::write_new_guest_file(cwd, &guest_path, &bytes)?;
+    }
     write_new_jsonl(&path, &lines)?;
     Ok(Some(path))
 }
