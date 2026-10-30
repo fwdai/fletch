@@ -137,7 +137,8 @@ pub(crate) fn get(channel: &Channel, guest_path: &Path) -> io::Result<Vec<u8>> {
 }
 
 /// A box's executor: the registry's channel for `agent_id`, booting the box
-/// when it is stopped.
+/// when it is stopped — unless the caller is [passive](crate::exec::passive),
+/// which gets an error from a stopped box instead.
 #[derive(Debug)]
 pub struct BoxExecutor {
     agent_id: String,
@@ -151,9 +152,20 @@ impl BoxExecutor {
     }
 
     fn channel(&self) -> io::Result<Arc<Channel>> {
-        BoxRegistry::global()
-            .channel_for(&self.agent_id)
-            .map_err(|e| io::Error::other(format!("box {}: {e}", self.agent_id)))
+        let registry = BoxRegistry::global();
+        let id = &self.agent_id;
+        if !crate::exec::is_passive() {
+            return registry
+                .channel_for(id)
+                .map_err(|e| io::Error::other(format!("box {id}: {e}")));
+        }
+        match registry.running(id) {
+            Some(running) => Ok(running.channel.clone()),
+            None if registry.discarded(id) => {
+                Err(io::Error::other(format!("box {id} was discarded")))
+            }
+            None => Err(io::Error::other(format!("box {id} is stopped"))),
+        }
     }
 
     fn path_str(path: &Path) -> String {
@@ -383,6 +395,39 @@ mod tests {
             .output()
             .unwrap();
         assert_eq!(nul_words(&check.stdout), tricky);
+    }
+
+    /// A passive read of a stopped box fails and boots nothing: the box stays
+    /// `Stopped`, where a boot would have moved it on (`Preparing`, then
+    /// `Failed` with no image here). The scope ends with its future.
+    #[tokio::test]
+    async fn a_passive_read_of_a_stopped_box_fails_without_booting_it() {
+        use super::super::registry::{BoxPhase, TestBox};
+        use crate::exec::passive;
+
+        let id = "executor-unit-test-passive";
+        let test_box = TestBox::register(id);
+        let repo = test_box.root().join("repo");
+        assert!(super::super::asleep_for_path(&repo));
+        assert!(!super::super::asleep_for_path(Path::new(
+            "/executor-unit-test-passive/elsewhere"
+        )));
+        let exec = crate::exec::for_path(&repo);
+        assert!(matches!(exec, crate::exec::Executor::Remote(_)));
+
+        let err = passive(async { exec.read(&repo.join("README.md")) })
+            .await
+            .unwrap_err();
+        assert_eq!(err.to_string(), format!("box {id} is stopped"));
+        assert!(passive(async { exec.stat(&repo) }).await.is_err());
+        assert_eq!(BoxRegistry::global().state(id), BoxPhase::Stopped);
+        assert!(!crate::exec::is_passive());
+
+        drop(test_box);
+        let err = passive(async { BoxExecutor::new(id).read(&repo) })
+            .await
+            .unwrap_err();
+        assert_eq!(err.to_string(), format!("box {id} was discarded"));
     }
 
     #[test]

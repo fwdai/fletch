@@ -117,8 +117,9 @@ export interface GitSlice {
 
   /** Fetch full git state for one agent (used by the focused panel's poll).
    *  `subdir` targets a secondary repo of a multi-repo agent (stored under
-   *  `checkoutKey(agentId, subdir)`); omitted = the primary repo, plain key. */
-  fetchGitState: (agentId: string, subdir?: string) => Promise<void>;
+   *  `checkoutKey(agentId, subdir)`); omitted = the primary repo, plain key.
+   *  `poll` (the interval tick only) leaves a sleeping box asleep. */
+  fetchGitState: (agentId: string, subdir?: string, poll?: boolean) => Promise<void>;
   /** Fetch compact shortstats for every live agent in one round-trip
    *  (used by the app-wide background poll). */
   fetchAllShortstats: () => Promise<void>;
@@ -464,11 +465,11 @@ export const createGitSlice: SliceCreator<GitSlice> = (set, get) => ({
   branchPrefix: "",
   draftPrs: false,
 
-  fetchGitState: async (agentId, subdir) => {
+  fetchGitState: async (agentId, subdir, poll) => {
     try {
       // Dropped if the user switched environment mid-poll: agent ids recur
       // across hosts, so a late answer would land on the new host's checkout.
-      const state = await forActiveEnvironment(() => api.getGitState(agentId, subdir));
+      const state = await forActiveEnvironment(() => api.getGitState(agentId, subdir, poll));
       if (!state) return;
       const key = checkoutKey(agentId, subdir);
       const blocked = state.blocked_config ?? [];

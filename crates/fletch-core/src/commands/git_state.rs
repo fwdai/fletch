@@ -2,8 +2,11 @@
 //! state, the fleet-wide shortstats poll behind the sidebar badges, and the
 //! base-freshness fetch the host runs on its own clock.
 
-use std::collections::BTreeSet;
-use std::path::PathBuf;
+use std::collections::{BTreeMap, BTreeSet};
+use std::future::Future;
+use std::path::{Path, PathBuf};
+
+use parking_lot::Mutex;
 
 use crate::error::Result;
 use crate::git_state::{self, GitMeta, GitState, ShortStats};
@@ -42,11 +45,78 @@ pub async fn get_git_state_impl(
     Ok(Some(state))
 }
 
+/// [`get_git_state_impl`] for a timer poll (the Git panel's interval tick,
+/// autopilot): `None` for a sleeping box, which it does not wake, so the panel
+/// keeps what it showed. Anything a user asked for takes `get_git_state_impl`.
+///
+/// Shared with the remote dispatcher.
+pub async fn poll_git_state_impl(
+    supervisor: &Supervisor,
+    agent_id: &str,
+    subdir: Option<&str>,
+) -> Result<Option<GitState>> {
+    let asleep = || checkout_asleep(supervisor, agent_id, subdir);
+    poll_unless_asleep(asleep, get_git_state_impl(supervisor, agent_id, subdir))
+        .await
+        .unwrap_or(Ok(None))
+}
+
+/// Whether the agent's checkout for `subdir` is in a box that is not running.
+pub(crate) fn checkout_asleep(
+    supervisor: &Supervisor,
+    agent_id: &str,
+    subdir: Option<&str>,
+) -> bool {
+    agent_repo_checkout_opt(supervisor, agent_id, subdir)
+        .ok()
+        .flatten()
+        .is_some_and(|(_, checkout)| crate::sandbox::boxes::asleep_for_path(&checkout))
+}
+
+/// `read` as a [passive](crate::exec::passive) poll: `None` when `asleep`
+/// holds before it or after it. Checked after too because a box that stops
+/// mid-read fails its git commands, which `git_state` absorbs into an empty,
+/// clean-looking answer.
+pub(crate) async fn poll_unless_asleep<T>(
+    asleep: impl Fn() -> bool,
+    read: impl Future<Output = T>,
+) -> Option<T> {
+    if asleep() {
+        return None;
+    }
+    let value = crate::exec::passive(read).await;
+    (!asleep()).then_some(value)
+}
+
+/// What [`poll_checkout`] last read from each box checkout, per poll. Each
+/// sweep drops the checkouts it no longer reads.
+static LAST_SHORTSTATS: Mutex<BTreeMap<PathBuf, ShortStats>> = Mutex::new(BTreeMap::new());
+static LAST_GIT_META: Mutex<BTreeMap<PathBuf, GitMeta>> = Mutex::new(BTreeMap::new());
+
+/// `read` of `checkout` for a bulk poll ([`poll_unless_asleep`]). A sleeping
+/// box answers its last read, which its stopped guest cannot have changed, so
+/// the sidebar keeps its numbers; `None` before a first read.
+async fn poll_checkout<T: Clone>(
+    last: &Mutex<BTreeMap<PathBuf, T>>,
+    checkout: &Path,
+    read: impl Future<Output = T>,
+) -> Option<T> {
+    use crate::sandbox::boxes;
+    let Some(value) = poll_unless_asleep(|| boxes::asleep_for_path(checkout), read).await else {
+        return last.lock().get(checkout).cloned();
+    };
+    if boxes::box_holding(checkout).is_some() {
+        last.lock().insert(checkout.to_path_buf(), value.clone());
+    }
+    Some(value)
+}
+
 /// A compact shortstat (additions / deletions / file count) for every live
 /// agent's primary repo, keyed by agent id. Used by the app-wide background
 /// poll that powers per-agent shortstats in the sidebar and the right-rail
 /// file-count badge. Archived agents and agents with no resolvable repo are
-/// omitted; a git error degrades to zeroes.
+/// omitted; a git error degrades to zeroes. A sleeping box is not woken to be
+/// counted ([`poll_checkout`]).
 ///
 /// Each agent's stats come from `git_state::shortstats`, which spawns just the
 /// two git processes the badge reads (status + numstat) rather than the ~7 a
@@ -64,6 +134,7 @@ pub async fn get_all_shortstats_impl(
         None => return Ok(Default::default()),
     };
     let mut set = tokio::task::JoinSet::new();
+    let mut seen = BTreeSet::new();
     for agent in workspace.agents {
         // Omitted while provisioning for the same reason as archived agents:
         // there is nothing to count yet, and counting a half-written clone
@@ -79,12 +150,17 @@ pub async fn get_all_shortstats_impl(
                 continue;
             };
             let agent_id = agent.id.clone();
-            set.spawn(async move { (agent_id, git_state::shortstats(&checkout).await) });
+            seen.insert(checkout.clone());
+            set.spawn(async move {
+                let read = git_state::shortstats(&checkout);
+                let stats = poll_checkout(&LAST_SHORTSTATS, &checkout, read).await;
+                (agent_id, stats)
+            });
         }
     }
     let mut out: std::collections::HashMap<String, ShortStats> = std::collections::HashMap::new();
     while let Some(res) = set.join_next().await {
-        if let Ok((id, stats)) = res {
+        if let Ok((id, Some(stats))) = res {
             let entry = out.entry(id).or_insert(ShortStats {
                 additions: 0,
                 deletions: 0,
@@ -95,6 +171,9 @@ pub async fn get_all_shortstats_impl(
             entry.file_count += stats.file_count;
         }
     }
+    LAST_SHORTSTATS
+        .lock()
+        .retain(|checkout, _| seen.contains(checkout));
     Ok(out)
 }
 
@@ -113,7 +192,8 @@ pub async fn get_all_shortstats_impl(
 /// always resolve (local status), so overlap hints work with or without GitHub.
 ///
 /// Queried in parallel; a git error degrades that checkout to a bare
-/// unknown-behind / empty-files entry rather than dropping it.
+/// unknown-behind / empty-files entry rather than dropping it. A sleeping box
+/// is not woken to be read ([`poll_checkout`]).
 ///
 /// Shared with the remote dispatcher.
 pub async fn get_all_git_meta_impl(
@@ -124,6 +204,7 @@ pub async fn get_all_git_meta_impl(
         None => return Ok(Default::default()),
     };
     let mut set = tokio::task::JoinSet::new();
+    let mut seen = BTreeSet::new();
     for agent in workspace.agents {
         if agent.archive.is_some() || checkout_pending(supervisor, &agent.id) {
             continue;
@@ -137,19 +218,25 @@ pub async fn get_all_git_meta_impl(
             // shells out to git, and doing that serially would make the poll's
             // latency scale with the fleet size instead of the slowest checkout.
             let repo = repo.clone();
+            seen.insert(checkout.clone());
             set.spawn(async move {
-                let base = repo.resolve_base(&checkout).await;
-                let meta = git_state::git_meta(&checkout, &base).await;
-                (key, meta)
+                let read = async {
+                    let base = repo.resolve_base(&checkout).await;
+                    git_state::git_meta(&checkout, &base).await
+                };
+                (key, poll_checkout(&LAST_GIT_META, &checkout, read).await)
             });
         }
     }
     let mut out = std::collections::HashMap::new();
     while let Some(res) = set.join_next().await {
-        if let Ok((key, meta)) = res {
+        if let Ok((key, Some(meta))) = res {
             out.insert(key, meta);
         }
     }
+    LAST_GIT_META
+        .lock()
+        .retain(|checkout, _| seen.contains(checkout));
     Ok(out)
 }
 
@@ -220,4 +307,53 @@ pub async fn refresh_base_freshness_impl(supervisor: &Supervisor) -> BaseFreshne
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sandbox::boxes::registry::TestBox;
+
+    /// A poll reads a host checkout as before, and never a sleeping box's:
+    /// that one answers its last read, or nothing before one.
+    #[tokio::test]
+    async fn a_poll_answers_a_sleeping_box_from_its_last_read() {
+        let id = "poll-checkout-unit-test";
+        let checkout = PathBuf::from(format!("/{id}/root/repo"));
+        let last: Mutex<BTreeMap<PathBuf, u32>> = Mutex::new(BTreeMap::new());
+
+        assert_eq!(poll_checkout(&last, &checkout, async { 7 }).await, Some(7));
+        assert!(last.lock().is_empty(), "a host checkout is not remembered");
+
+        let _test_box = TestBox::register(id);
+        let unread = || async { panic!("a sleeping box's checkout is not read") };
+        assert_eq!(poll_checkout(&last, &checkout, unread()).await, None);
+        last.lock().insert(checkout.clone(), 3);
+        assert_eq!(poll_checkout(&last, &checkout, unread()).await, Some(3));
+    }
+
+    /// A box that goes to sleep during the read answers `None`, not what the
+    /// failed read made of it; the bulk poll answers its last read instead.
+    #[tokio::test]
+    async fn a_box_asleep_after_the_read_answers_none() {
+        let id = "poll-asleep-after-read-unit-test";
+        let checkout = PathBuf::from(format!("/{id}/root/repo"));
+        let asleep = || crate::sandbox::boxes::asleep_for_path(&checkout);
+
+        let mut test_box = None;
+        let read = async {
+            test_box = Some(TestBox::register(id));
+            "clean"
+        };
+        assert_eq!(poll_unless_asleep(asleep, read).await, None);
+
+        let last = Mutex::new(BTreeMap::from([(checkout.clone(), "dirty")]));
+        drop(test_box.take());
+        let read = async {
+            test_box = Some(TestBox::register(id));
+            "clean"
+        };
+        assert_eq!(poll_checkout(&last, &checkout, read).await, Some("dirty"));
+        assert_eq!(last.lock().get(&checkout), Some(&"dirty"));
+    }
 }

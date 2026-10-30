@@ -118,6 +118,24 @@ pub fn unregister_root(root: &Path) {
     ROOTS.write().retain(|(r, _)| r != root);
 }
 
+tokio::task_local! {
+    /// Set for the duration of a [`passive`] future.
+    static PASSIVE: ();
+}
+
+/// Run `fut` as a poll: a stopped remote it reaches fails the operation
+/// instead of being woken, so background polling never boots a box. A scope
+/// rather than an executor because routing is by path, deep in every git
+/// helper. It covers this task only, not work `fut` spawns elsewhere.
+pub async fn passive<F: std::future::Future>(fut: F) -> F::Output {
+    PASSIVE.scope((), fut).await
+}
+
+/// Whether the caller runs inside [`passive`].
+pub(crate) fn is_passive() -> bool {
+    PASSIVE.try_with(|()| ()).is_ok()
+}
+
 impl Executor {
     /// A command that runs `program` in `cwd` with `env` set for it. Locally
     /// the plain `Command` a caller would build; remotely the executor's

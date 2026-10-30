@@ -436,6 +436,13 @@ pub fn running_for_path(path: &Path) -> bool {
         .is_some_and(|identity| registry.channel_for_running(&identity.agent_id).is_ok())
 }
 
+/// Whether `path` lies in a box that is not running, so work there would boot
+/// it. `false` for a host path.
+pub fn asleep_for_path(path: &Path) -> bool {
+    box_holding(path)
+        .is_some_and(|identity| BoxRegistry::global().running(&identity.agent_id).is_none())
+}
+
 /// Why `provider` cannot launch in a box, for the spawn gate.
 pub fn provider_refusal(provider: &str) -> Option<String> {
     (!supports_provider(provider)).then(|| {

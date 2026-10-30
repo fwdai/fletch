@@ -920,6 +920,9 @@ enum Scan {
     /// The status, and the content digest only when the status alone can't
     /// tell the code from the reviewed code.
     Git,
+    /// [`Scan::Git`] for the tick, which does not wake a sleeping box: one is
+    /// [`Sighting::NotScanned`], so the scan it still wants runs once it is up.
+    Poll,
     /// The status and the content digest: a signature to record.
     Full,
 }
@@ -1051,6 +1054,12 @@ async fn look(ctx: &Arc<EngineCtx>, sup: &Supervisor, key: &Key, scan: Scan) -> 
     let sighting = match scan {
         Scan::Cached => Sighting::NotScanned,
         Scan::Git | Scan::Full => sight(sup, key, scan == Scan::Full).await,
+        Scan::Poll => {
+            let asleep = || crate::commands::checkout_asleep(sup, &key.0, key.1.as_deref());
+            crate::commands::poll_unless_asleep(asleep, sight(sup, key, false))
+                .await
+                .unwrap_or(Sighting::NotScanned)
+        }
     };
     let counts = counts(sup, key);
     let now = now_ms();
@@ -2004,7 +2013,7 @@ async fn tick(ctx: &Arc<EngineCtx>, sup: &Arc<Supervisor>) {
         };
         let pr_open = counts(sup, &key).pr_open;
         let scan = if tracked.wants_scan(pr_open, now) {
-            Scan::Git
+            Scan::Poll
         } else {
             Scan::Cached
         };
