@@ -17,7 +17,7 @@
 
 use parking_lot::Mutex;
 use std::path::PathBuf;
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc};
 use std::time::Duration;
@@ -81,9 +81,10 @@ pub struct ExecSession {
     env_remove: Vec<String>,
     kill_plan: KillHandle,
     before_turn: Option<TurnPrep>,
-    after_exit: Option<TurnPrep>,
     session_id: Arc<Mutex<Option<String>>>,
-    child: Arc<Mutex<Option<Child>>>,
+    /// The turn's child, reaped only through the slot so the plan's
+    /// `after_exit` runs once per turn whichever path ends it.
+    child: Arc<child_io::ChildSlot>,
     interrupted: Arc<AtomicBool>,
     /// Monotonic turn counter. A reap thread only reports its exit if its
     /// turn is still the latest — so a superseded turn's late exit can't
@@ -137,9 +138,8 @@ impl ExecSession {
             env_remove: spec.env_remove,
             kill_plan: spec.kill_plan,
             before_turn: spec.before_turn,
-            after_exit: spec.after_exit,
             session_id: Arc::new(Mutex::new(spec.session_id)),
-            child: Arc::new(Mutex::new(None)),
+            child: child_io::ChildSlot::new(spec.after_exit),
             interrupted: Arc::new(AtomicBool::new(false)),
             turn_seq: Arc::new(AtomicU64::new(0)),
             build_args: Arc::new(build_args),
@@ -168,10 +168,7 @@ impl ExecSession {
 
         // A new turn supersedes any still-running one (e.g. the user
         // sent again before the prior turn finished). Kill + reap it.
-        if let Some(mut prev) = self.child.lock().take() {
-            let _ = prev.kill();
-            let _ = prev.wait();
-        }
+        self.child.kill_and_reap("agent");
 
         // The typed message plus one reference line per attachment, so
         // file paths never pollute the user's prose; the agent reads each
@@ -246,7 +243,7 @@ impl ExecSession {
             .take()
             .ok_or_else(|| Error::Other("agent: child stderr missing".into()))?;
 
-        *self.child.lock() = Some(child);
+        self.child.put(child);
 
         // Honor an interrupt that arrived during the spawn/retry window, when
         // no child yet existed for `interrupt()` to signal. Loading the flag
@@ -284,15 +281,7 @@ impl ExecSession {
         let on_exit = self.on_exit.clone();
         let interrupted = self.interrupted.clone();
         let kill_plan = self.kill_plan.clone();
-        let after_exit = self.after_exit.clone();
         child_io::spawn_reaper(self.child.clone(), "agent", move |status| {
-            // The child is gone: the engine's own step runs now, whatever
-            // turn this was, before the exit is reported.
-            if let Some(step) = &after_exit {
-                if let Err(e) = step() {
-                    tracing::warn!(error = %e, "after-exit step failed");
-                }
-            }
             let interrupted = interrupted.load(Ordering::SeqCst);
             let exit = match status {
                 Ok(status) => {
@@ -348,8 +337,8 @@ impl ExecSession {
         {
             use nix::sys::signal::{kill, Signal};
             use nix::unistd::Pid;
-            if let Some(child) = self.child.lock().as_ref() {
-                let _ = kill(Pid::from_raw(child.id() as i32), Signal::SIGINT);
+            if let Some(pid) = self.child.pid() {
+                let _ = kill(Pid::from_raw(pid as i32), Signal::SIGINT);
             }
         }
     }
@@ -360,10 +349,7 @@ impl ExecSession {
         // engine error. Otherwise a Docker-backed session whose container kill
         // errors would leave the host-side wrapper running.
         let engine_result = self.kill_plan.kill();
-        if let Some(mut child) = self.child.lock().take() {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
+        self.child.kill_and_reap("agent");
         engine_result
     }
 }
@@ -444,6 +430,76 @@ mod tests {
         } else {
             None
         }
+    }
+
+    /// A session whose turns run `sleep 30`, with a counting after-exit step.
+    fn sleeping_session(
+        dir: &std::path::Path,
+    ) -> (ExecSession, Arc<std::sync::atomic::AtomicUsize>) {
+        let script = dir.join("sleeper.sh");
+        std::fs::write(&script, "#!/bin/sh\nsleep 30\n").unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let step = {
+            let count = count.clone();
+            Arc::new(move || {
+                count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(())
+            }) as TurnPrep
+        };
+        let session = ExecSession::new(
+            ExecSpawn {
+                program: script,
+                prefix_args: vec![],
+                cwd: dir.to_path_buf(),
+                session_id: None,
+                stdout_is_json: true,
+                env: vec![],
+                env_remove: Vec::new(),
+                kill_plan: KillHandle::ProcessGroup,
+                before_turn: None,
+                after_exit: Some(step),
+            },
+            codex_args,
+            codex_id,
+            ExecCallbacks {
+                on_event: |_| {},
+                on_session_id: |_| {},
+                on_exit: |_| {},
+            },
+        );
+        (session, count)
+    }
+
+    /// Killing a session mid-turn reaps the turn's child through the slot:
+    /// the after-exit step runs exactly once, and once more for nothing on
+    /// a second kill.
+    #[test]
+    fn kill_mid_turn_runs_the_after_exit_step_once() {
+        use std::sync::atomic::Ordering;
+        let dir = tempfile::tempdir().unwrap();
+        let (session, count) = sleeping_session(dir.path());
+        session.send_user_message("go", &[], None, None).unwrap();
+        assert_eq!(count.load(Ordering::SeqCst), 0);
+        session.kill().unwrap();
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+        session.kill().unwrap();
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+    }
+
+    /// A turn sent over a running one supersedes it: the old child is
+    /// reaped through the slot, with its after-exit step, before the new
+    /// one starts.
+    #[test]
+    fn a_superseding_turn_runs_the_after_exit_step_for_the_old_one() {
+        use std::sync::atomic::Ordering;
+        let dir = tempfile::tempdir().unwrap();
+        let (session, count) = sleeping_session(dir.path());
+        session.send_user_message("one", &[], None, None).unwrap();
+        session.send_user_message("two", &[], None, None).unwrap();
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+        session.kill().unwrap();
+        assert_eq!(count.load(Ordering::SeqCst), 2);
     }
 
     #[test]

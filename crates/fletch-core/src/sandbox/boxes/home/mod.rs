@@ -624,7 +624,17 @@ impl TreeCopy {
         let Ok(read) = std::fs::read_dir(host) else {
             return;
         };
-        let mut names: Vec<_> = read.filter_map(|e| e.ok().map(|e| e.file_name())).collect();
+        // Listed only as far as the entry limit allows: a link into a
+        // directory of a million children costs at most the limit.
+        let remaining = MAX_TREE_ENTRIES.saturating_sub(self.seen);
+        let mut names: Vec<_> = read
+            .filter_map(|e| e.ok().map(|e| e.file_name()))
+            .take(remaining + 1)
+            .collect();
+        if names.len() > remaining {
+            tracing::info!(path = %host.display(), "config directory too wide to copy into a box; the rest is left out");
+            names.truncate(remaining);
+        }
         names.sort();
         self.on_path.push(identity);
         for name in names {

@@ -24,7 +24,7 @@ use parking_lot::Mutex;
 use std::collections::HashSet;
 use std::io::Write;
 use std::path::Path;
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::process::{ChildStdin, Command, Stdio};
 use std::sync::Arc;
 
 use serde::Deserialize;
@@ -48,7 +48,9 @@ pub enum ToolUseBehavior {
 }
 
 pub struct ManagedSession {
-    child: Arc<Mutex<Option<Child>>>,
+    /// The child, reaped only through the slot so the plan's `after_exit`
+    /// runs once whichever path ends it.
+    child: Arc<child_io::ChildSlot>,
     stdin: Stdin,
     /// `request_id`s of `can_use_tool` prompts we're holding open, awaiting a
     /// human answer. Drained on interrupt so the turn can unwind.
@@ -144,7 +146,8 @@ impl ManagedSession {
             .take()
             .ok_or_else(|| Error::Other("managed: child stdin missing".into()))?;
 
-        let child_arc = Arc::new(Mutex::new(Some(child)));
+        let child_arc = child_io::ChildSlot::new(spec.after_exit.clone());
+        child_arc.put(child);
         let stdin_arc: Stdin = Arc::new(Mutex::new(Some(stdin)));
         let pending: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
 
@@ -178,13 +181,7 @@ impl ManagedSession {
         child_io::spawn_stderr_reader(stderr, "managed", |_| {});
 
         let kill_plan_for_exit = spec.kill_plan.clone();
-        let after_exit = spec.after_exit.clone();
         child_io::spawn_reaper(child_arc.clone(), "managed", move |status| {
-            if let Some(step) = &after_exit {
-                if let Err(e) = step() {
-                    tracing::warn!(error = %e, "after-exit step failed");
-                }
-            }
             let exit = match status {
                 Ok(status) => ManagedExit {
                     success: status.success(),
@@ -277,8 +274,7 @@ impl ManagedSession {
         {
             use nix::sys::signal::{kill, Signal};
             use nix::unistd::Pid;
-            if let Some(child) = self.child.lock().as_ref() {
-                let id = child.id();
+            if let Some(id) = self.child.pid() {
                 let _ = kill(Pid::from_raw(id as i32), Signal::SIGINT);
             }
         }
@@ -298,10 +294,7 @@ impl ManagedSession {
         // kill is exactly what unblocks that writer (EPIPE). Closing stdin (the
         // EOF that lets claude exit cleanly) is now only best-effort cleanup
         // after the forced kill, so it can never gate the reap.
-        if let Some(mut child) = self.child.lock().take() {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
+        self.child.kill_and_reap("managed");
         let _ = self.stdin.lock().take();
         engine_result
     }
@@ -421,7 +414,7 @@ mod tests {
     #[test]
     fn stale_tool_answer_does_not_write() {
         let session = ManagedSession {
-            child: Arc::new(Mutex::new(None)),
+            child: child_io::ChildSlot::new(None),
             stdin: Arc::new(Mutex::new(None)),
             pending: Arc::new(Mutex::new(HashSet::new())),
             kill_plan: KillHandle::ProcessGroup,
