@@ -318,8 +318,11 @@ impl Supervisor {
         }
         drop(runs);
 
-        // Interactive shells: PtySession::drop kills the child.
-        drop(std::mem::take(&mut *self.shells.lock()));
+        // Interactive shells: PtySession::drop kills the child. Bound first,
+        // so the drop runs after the guard is released (a temporary guard in
+        // the `drop(...)` statement itself lives until its end).
+        let shells = std::mem::take(&mut *self.shells.lock());
+        drop(shells);
 
         // Agent sessions: `Agent::shutdown` consumes and drops, killing the
         // managed/pty/per-turn child. Bump each generation *first* so the

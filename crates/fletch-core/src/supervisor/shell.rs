@@ -5,7 +5,7 @@ use std::sync::Arc;
 use crate::error::{Error, Result};
 use crate::host::EngineCtx;
 use crate::pty_session::{PtySession, PtySpawn};
-use crate::sandbox::KillHandle;
+use crate::sandbox::{boxes, KillHandle};
 
 use super::events::emit_shell_output;
 use super::Supervisor;
@@ -31,7 +31,12 @@ impl Supervisor {
         // directory there). The guest shell is interactive but not a login
         // shell: Debian's /etc/profile resets PATH, dropping the tools disk
         // (claude, codegraph) the guest env puts on it.
-        let guest = crate::sandbox::boxes::guest_program(&checkout, "bash", &["-i".to_string()])?;
+        //
+        // The box is held like an agent's session, from before it is reached,
+        // so its idle stop never ends the user's shell (and whatever it runs)
+        // under them. Any return without a shell drops the hold.
+        let hold = boxes::hold_session(&checkout);
+        let guest = boxes::guest_program(&checkout, "bash", &["-i".to_string()])?;
 
         // Two opens race while one waits on a boot (the panel's mount effect
         // runs twice in dev): the first past this lock keeps its shell. The
@@ -42,12 +47,10 @@ impl Supervisor {
             return Ok(());
         }
         let (shell_path, args, kill_plan) = match guest {
-            // Held like an agent's session, so the box's idle stop never ends
-            // the user's shell (and whatever it runs) under them.
             Some((program, args)) => (
                 program,
                 args,
-                crate::sandbox::boxes::attach_session(&checkout),
+                hold.map_or(KillHandle::ProcessGroup, boxes::Hold::into_kill),
             ),
             None => {
                 let shell_str = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
@@ -63,7 +66,7 @@ impl Supervisor {
         let agent_id_out = agent_id.to_string();
         let agent_id_exit = agent_id.to_string();
 
-        let session = PtySession::spawn(
+        let spawned = PtySession::spawn(
             PtySpawn {
                 program: &shell_path,
                 args: &args,
@@ -85,27 +88,37 @@ impl Supervisor {
                     "shell exited"
                 );
                 if let Some(sup) = sup_weak.upgrade() {
-                    // Dropped (and so killed: a box session detaches over
-                    // ssh) after the lock is released.
-                    let gone = sup.shells.lock().remove(&agent_id_exit);
-                    drop(gone);
+                    sup.end_shell(&agent_id_exit);
                 }
             },
-        )
-        // No session to run the kill: release the box hold here.
-        .inspect_err(|_| {
-            let _ = kill_plan.kill();
-        })?;
-
-        shells.insert(agent_id.to_string(), session);
-        Ok(())
+        );
+        match spawned {
+            Ok(session) => {
+                shells.insert(agent_id.to_string(), session);
+                Ok(())
+            }
+            Err(e) => {
+                // No session to run the kill: release the box hold here, off
+                // the lock like every other shell teardown (`end_shell`).
+                drop(shells);
+                let _ = kill_plan.kill();
+                Err(e)
+            }
+        }
     }
 
     pub fn close_agent_shell(&self, agent_id: &str) -> Result<()> {
-        // Drop impl kills the PTY, after the lock is released.
-        let gone = self.shells.lock().remove(agent_id);
-        drop(gone);
+        self.end_shell(agent_id);
         Ok(())
+    }
+
+    /// End `agent_id`'s shell, if it has one — the one way a shell leaves the
+    /// map. The session is dropped, and so killed (a process-group reap, plus
+    /// an ssh round trip for a box session), only once the lock is released:
+    /// every other agent's shell input waits on that lock.
+    pub(super) fn end_shell(&self, agent_id: &str) {
+        let shell = self.shells.lock().remove(agent_id);
+        drop(shell);
     }
 
     pub fn write_to_shell(&self, agent_id: &str, data: &[u8]) -> Result<()> {
