@@ -10,11 +10,14 @@ const LIBKRUN: &str = "libkrun.1.dylib";
 const LIBKRUNFW: &str = "libkrunfw.5.dylib";
 /// Where a bundled helper (`Contents/Helpers`) finds the dylibs.
 const BUNDLE_LIB_DIR: &str = "@executable_path/../Frameworks";
+/// libkrun.h's `KRUN_SEMANTICS_LINUX_SIMPLIFIED`.
+const KRUN_SEMANTICS_LINUX_SIMPLIFIED: u32 = 1;
 
 type CtxFn = unsafe extern "C" fn() -> i32;
 type U32Fn = unsafe extern "C" fn(u32) -> i32;
 type VmConfigFn = unsafe extern "C" fn(u32, u8, u32) -> i32;
 type AddDiskFn = unsafe extern "C" fn(u32, *const c_char, *const c_char, bool) -> i32;
+type AddVirtiofsFn = unsafe extern "C" fn(u32, *const c_char, *const c_char, u64, bool, u32) -> i32;
 type RootDiskFn = unsafe extern "C" fn(u32, *const c_char, *const c_char, *const c_char) -> i32;
 type StrFn = unsafe extern "C" fn(u32, *const c_char) -> i32;
 type U32U32Fn = unsafe extern "C" fn(u32, u32) -> i32;
@@ -27,6 +30,7 @@ pub struct Krun {
     create_ctx: CtxFn,
     set_vm_config: VmConfigFn,
     add_disk: AddDiskFn,
+    add_virtiofs: AddVirtiofsFn,
     set_root_disk_remount: RootDiskFn,
     disable_implicit_vsock: U32Fn,
     add_vsock: U32U32Fn,
@@ -51,6 +55,7 @@ impl Krun {
                 create_ctx: sym(lib, c"krun_create_ctx")?,
                 set_vm_config: sym(lib, c"krun_set_vm_config")?,
                 add_disk: sym(lib, c"krun_add_disk")?,
+                add_virtiofs: sym(lib, c"krun_add_virtiofs4")?,
                 set_root_disk_remount: sym(lib, c"krun_set_root_disk_remount")?,
                 disable_implicit_vsock: sym(lib, c"krun_disable_implicit_vsock")?,
                 add_vsock: sym(lib, c"krun_add_vsock")?,
@@ -105,6 +110,24 @@ impl Krun {
                 "krun_set_root_disk_remount",
                 (self.set_root_disk_remount)(ctx, dev.as_ptr(), fs.as_ptr(), opts.as_ptr()),
             )?;
+            // The folders the user shared with this box. Simplified semantics:
+            // every file reads as owned by the guest process asking (the agent),
+            // and modes stay the host's own, so the user's folder is never
+            // written ownership xattrs. No DAX window.
+            for share in &c.shares {
+                let (tag, path) = (cstr(&share.tag)?, cpath(&share.path)?);
+                check(
+                    "krun_add_virtiofs4",
+                    (self.add_virtiofs)(
+                        ctx,
+                        tag.as_ptr(),
+                        path.as_ptr(),
+                        0,
+                        share.read_only,
+                        KRUN_SEMANTICS_LINUX_SIMPLIFIED,
+                    ),
+                )?;
+            }
             // No network: a vsock device without TSI, so guest sockets reach
             // nothing. The only ways out are the ports mapped below, each
             // served or bound by the host.

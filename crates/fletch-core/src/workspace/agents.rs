@@ -274,6 +274,8 @@ impl WorkspaceManager {
         for repo in &record.repos {
             Self::insert_worktree(tx, &record.id, repo)?;
         }
+        // Folders granted at spawn, so the first launch already has them.
+        super::folder_grants::insert_folder_grants(tx, &record.id, &record.folder_grants)?;
 
         Ok(cleanup)
     }

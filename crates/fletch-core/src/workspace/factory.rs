@@ -55,6 +55,9 @@ pub fn new_agent_record(
         // from the live setting — callers building records directly (tests)
         // default to the pre-selection NULL, which spawns under sandbox-exec.
         sandbox_engine: None,
+        // Set by the spawn path from the composer's folder chips (checked
+        // there); a plain spawn grants nothing.
+        folder_grants: Vec::new(),
         // Stamped by the same spawn path from the active-account setting;
         // `None` runs under the CLI's own default account.
         account: None,

@@ -11,6 +11,7 @@ import {
   onAgentBranch,
   onAgentEffort,
   onAgentEvent,
+  onAgentFolderGrants,
   onAgentInstallState,
   onAgentModel,
   onAgentNotify,
@@ -56,6 +57,7 @@ import {
   type AgentPatch,
   agentRecord,
   applyEvent,
+  applyFolderGrantsUpdate,
   carryForwardStoreOnly,
   dischargeSending,
   isAgentBusy,
@@ -517,11 +519,24 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
   );
 
   await bind(
+    onAgentFolderGrants((e) => {
+      set((state) => applyFolderGrantsUpdate(state, e.agent_id, e));
+    }),
+  );
+
+  await bind(
     onAgentStatus((e) => {
       // A new turn starting clears any stale stop-suppression flag: if the
       // killed process never flushed a turn_end, this ensures the next genuine
       // completion still chimes.
       if (e.status === "running") interruptedAgents.delete(e.agent_id);
+      // A folder change held for the turn's end is being applied once the turn
+      // is over (the relaunch follows at once): nothing is left to apply now.
+      if (e.status !== "running" && get().folderChangeWaiting[e.agent_id]) {
+        set((state) => ({
+          folderChangeWaiting: { ...state.folderChangeWaiting, [e.agent_id]: false },
+        }));
+      }
       // Delivering the agent's next turn retires a rewind's code undo point
       // (undoing after it would discard that turn's work too), so re-ask
       // whether one is left. Any other change to the code (a native-view turn,

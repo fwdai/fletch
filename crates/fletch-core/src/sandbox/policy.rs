@@ -480,6 +480,17 @@ pub fn macos_privacy_dirs(home: &Path) -> Vec<PathBuf> {
     MACOS_PRIVACY_DIRS.iter().map(|d| home.join(d)).collect()
 }
 
+/// Whether `path` sits inside one of the [`MACOS_PRIVACY_DIRS`] under `home`
+/// (canonical), as given or with its symlinks resolved — the one test both the
+/// seatbelt profile's re-allows and the folder-grant relaunch decision
+/// (`workspace::folder_grants::launch_relevant`) make, so they cannot disagree.
+pub fn inside_macos_privacy_dir(home: &Path, path: &Path) -> bool {
+    let resolved = resolve_existing_prefix(path);
+    macos_privacy_dirs(home)
+        .iter()
+        .any(|d| path.starts_with(d) || resolved.starts_with(d))
+}
+
 /// OpenCode's data dir: `$XDG_DATA_HOME/opencode` if set, else
 /// `~/.local/share/opencode`. This is both the dir Docker bind-mounts read-write
 /// and where `agent::opencode_locate` reads its session storage on the host, so

@@ -28,6 +28,21 @@ pub const ENV_HOME: &str = "FLETCH_BOX_HOME";
 /// One OpenSSH public key line; init writes it to the agent's authorized_keys.
 pub const ENV_AUTHORIZED_KEY: &str = "FLETCH_BOX_AUTHORIZED_KEY";
 pub const ENV_BOX_ID: &str = "FLETCH_BOX_ID";
+/// How many folders the host shares with the guest (absent = none). Share `n`
+/// is the virtio-fs device tagged [`share_tag`]`(n)`, described by
+/// `FLETCH_BOX_SHARE_<n>` = `ro:<path>` or `rw:<path>`: init mounts it at that
+/// path, in index order (the host lists parents before the folders inside
+/// them), after the identity binds.
+pub const ENV_SHARES: &str = "FLETCH_BOX_SHARES";
+pub const ENV_SHARE_PREFIX: &str = "FLETCH_BOX_SHARE_";
+/// The roots init can mount a share under: the image ships both as empty
+/// mountpoints.
+pub const SHARE_ROOTS: &[&str] = &["/Users", "/Volumes"];
+
+/// The virtio-fs tag of share `n`.
+pub fn share_tag(n: usize) -> String {
+    format!("fletch-share-{n}")
+}
 
 /// Guest paths.
 pub const INIT: &str = "/opt/fletch/init";

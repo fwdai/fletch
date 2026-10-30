@@ -18,13 +18,15 @@ use crate::rpc;
 use crate::sandbox::provision::{self, CheckoutSpec};
 use crate::sandbox::{self, EngineKind};
 use crate::workspace::{
-    agent_parent_dir, allocate_repo_subdir, is_per_turn_provider, new_agent_record,
-    repo_checkout_path, AgentRecord, AgentStatus, AgentView, TrackedRepo,
+    agent_parent_dir, allocate_repo_subdir,
+    folder_grants::{FolderGranted, FolderGrantsUpdate},
+    is_per_turn_provider, new_agent_record, repo_checkout_path, AgentRecord, AgentStatus,
+    AgentView, FolderGrant, TrackedRepo,
 };
 
 use super::events::{
-    emit_agent_event, emit_agent_output, emit_effort, emit_model, emit_repo_added,
-    emit_spawn_progress, emit_view, emit_workspace_changed, SpawnStage,
+    emit_agent_event, emit_agent_output, emit_effort, emit_folder_grants, emit_model,
+    emit_repo_added, emit_spawn_progress, emit_view, emit_workspace_changed, SpawnStage,
 };
 use super::messaging::{
     drain_message_queue, flush_queued, mark_user_turn_started, on_first_user_message,
@@ -469,13 +471,19 @@ pub struct SpawnRequest {
     /// (an id, or `default`) instead of the active account in Settings — the
     /// composer's per-chat override. `None` follows Settings.
     pub account: Option<String>,
+    /// Folders on this machine to grant the new agent (the composer's folder
+    /// chips, a fork's parent's grants), as requested: each is checked
+    /// (`workspace::folder_grants::check`) against the engine the agent is
+    /// stamped with before the record is written, so the first launch already
+    /// has them and a refused folder fails the spawn with the reason.
+    pub folder_grants: Vec<FolderGrant>,
 }
 
 impl Supervisor {
     pub async fn spawn_agent(
         self: Arc<Self>,
         ctx: Arc<EngineCtx>,
-        req: SpawnRequest,
+        mut req: SpawnRequest,
     ) -> Result<AgentRecord> {
         // The probe can read the Keychain, so it runs before the lifecycle
         // lock every agent shares.
@@ -485,43 +493,6 @@ impl Supervisor {
             }
             None => None,
         };
-        let _lifecycle_guard = self.agent_lifecycle.lock().await;
-        let SpawnRequest {
-            view,
-            repo_path,
-            provider,
-            name,
-            effort,
-            model,
-            instructions,
-            handoff,
-            lineage,
-            custom_agent_id,
-            skills,
-            mcp_servers,
-            fork_base,
-            run_repo,
-            owner_run_id,
-            existing_workspace,
-            code_from,
-            issue_ref,
-            purpose,
-            task,
-            account: _,
-        } = req;
-        if !repo_path.join(".git").exists() {
-            return Err(Error::InvalidPath(format!(
-                "not a git repository: {}",
-                repo_path.display()
-            )));
-        }
-        // Provisioning forks a workspace (a `--shared` clone by default) from
-        // this repo, which needs a resolvable HEAD. Adopting a folder normally
-        // seeds one, but a repo added while it had no commits — or before that
-        // guarantee existed — still has an unborn HEAD; seed it here so the fork
-        // can't fail with a missing working directory downstream.
-        git::ensure_head_commit(&repo_path).await?;
-
         // Adopting a pre-provisioned tree must be decided before anything else:
         // it is the one mode in which no clone happens, so the base the caller
         // asked for is only ever the *recorded* parent branch, never a fork
@@ -530,8 +501,9 @@ impl Supervisor {
         // `SpawnRequest`), the reviewer's coder has one — and discovering
         // otherwise later means a spawn that failed after the record was
         // written. Asked where the tree lives: a coder's checkout in a box
-        // exists only in its guest, and the host path is an empty placeholder.
-        let adopted = match existing_workspace {
+        // exists only in its guest, and the host path is an empty placeholder;
+        // asking may boot that box, so it too runs before the lifecycle lock.
+        let adopted = match req.existing_workspace.take() {
             Some(path) => {
                 let is_repo = crate::exec::for_path(&path)
                     .exists(&path.join(".git"))
@@ -551,17 +523,65 @@ impl Supervisor {
             }
             None => None,
         };
-
-        // The engine this agent will be stamped with, resolved once so the
-        // provider gate, the stamp, and the provisioning mode below all agree.
-        // An adopting agent runs where its tree lives (`engine_for_adopted_tree`):
-        // in the box that holds it, or never in a box for a host tree.
+        // The engine this agent will be stamped with, resolved once: the folder
+        // check, the provider gate, the stamp and the provisioning mode below
+        // must all see the same one, and the setting can change while the
+        // check waits on a privacy prompt. A second read under the lock could
+        // stamp an engine the folders were never checked for. An adopting
+        // agent runs where its tree lives (`engine_for_adopted_tree`): in the
+        // box that holds it, or never in a box for a host tree.
         let engine_kind = match &adopted {
             Some(tree) => sandbox::engine_for_adopted_tree(tree),
             None => {
-                sandbox::boxes::engine_for_new_agent(sandbox::selected_engine_kind(), &provider)
+                sandbox::boxes::engine_for_new_agent(sandbox::selected_engine_kind(), &req.provider)
             }
         };
+        // The folder check may wait on a privacy prompt, so it too runs before
+        // the lifecycle lock.
+        let folder_grants = crate::workspace::folder_grants::check_all(
+            std::mem::take(&mut req.folder_grants),
+            engine_kind,
+        )
+        .await?;
+        let _lifecycle_guard = self.agent_lifecycle.lock().await;
+        let SpawnRequest {
+            view,
+            repo_path,
+            provider,
+            name,
+            effort,
+            model,
+            instructions,
+            handoff,
+            lineage,
+            custom_agent_id,
+            skills,
+            mcp_servers,
+            fork_base,
+            run_repo,
+            owner_run_id,
+            // Taken above, where the adopted tree decided the engine.
+            existing_workspace: _,
+            code_from,
+            issue_ref,
+            purpose,
+            task,
+            account: _,
+            folder_grants: _,
+        } = req;
+        if !repo_path.join(".git").exists() {
+            return Err(Error::InvalidPath(format!(
+                "not a git repository: {}",
+                repo_path.display()
+            )));
+        }
+        // Provisioning forks a workspace (a `--shared` clone by default) from
+        // this repo, which needs a resolvable HEAD. Adopting a folder normally
+        // seeds one, but a repo added while it had no commits — or before that
+        // guarantee existed — still has an unborn HEAD; seed it here so the fork
+        // can't fail with a missing working directory downstream.
+        git::ensure_head_commit(&repo_path).await?;
+
         ensure_engine_supports_provider(engine_kind, &provider)?;
 
         // Only agents with a wired native (PTY/TUI) view can honor a Native
@@ -679,6 +699,9 @@ impl Supervisor {
         // PM chat) so it's hidden from the sidebar, listed by that surface, and
         // stamped with the narrower capability grant below.
         record.purpose = purpose;
+        // Written with the row, so the provisioning box and the first launch
+        // see them (`add_agent`).
+        record.folder_grants = folder_grants;
         // Insert first: on the auto path this both allocates the id and writes
         // the row under one lock, so `record.id` is final only afterward. A
         // pinned name goes through `add_agent`, where a clash is a real error.
@@ -727,6 +750,9 @@ impl Supervisor {
         let id_for_task = agent_id.clone();
         let project_id_for_task = record.project_id.clone();
         let provider_for_task = record.provider.clone();
+        // The box a box-stamped spawn provisions into boots with the shares
+        // its first launch will ask for, so that launch need not restart it.
+        let folder_grants_for_task = record.folder_grants.clone();
         let model_for_task = record.model.clone();
         let mcp_servers_for_task = record.mcp_servers.clone();
         let adopted_for_task = adopted.is_some();
@@ -837,7 +863,9 @@ impl Supervisor {
                         &id_for_task,
                         &project_id_for_task,
                         &provider_for_task,
-                    ) {
+                    )
+                    .map(|identity| identity.with_shares(&folder_grants_for_task))
+                    {
                         Ok(identity) => sandbox::boxes::provision::provision(
                             &identity,
                             &spec,
@@ -1600,6 +1628,8 @@ impl Supervisor {
         // agent could rewrite to smuggle an arbitrary read-only host mount into
         // a reused-checkout relaunch). See `sandbox::engine::AgentLaunchCtx`.
         let source_repos: Vec<PathBuf> = record.repos.iter().map(|r| r.repo_path.clone()).collect();
+        // The folders the user granted, minus any that are gone since.
+        let folder_grants = crate::workspace::folder_grants::present(&record.folder_grants);
 
         if per_turn {
             match record.view {
@@ -1636,6 +1666,7 @@ impl Supervisor {
                         oauth_token: None,
                         blackboard: blackboard.as_deref(),
                         adopted_read_only,
+                        folder_grants: &folder_grants,
                     };
                     spawn_pty_per_turn_agent(
                         spec,
@@ -1668,6 +1699,7 @@ impl Supervisor {
                         account: record.account.clone(),
                         blackboard: blackboard.clone(),
                         adopted_read_only,
+                        folder_grants: folder_grants.clone(),
                     },
                     ctx.clone(),
                     agent_id_str.clone(),
@@ -1709,6 +1741,7 @@ impl Supervisor {
                 oauth_token: oauth_token.as_ref(),
                 blackboard: blackboard.as_deref(),
                 adopted_read_only,
+                folder_grants: &folder_grants,
             };
             let spawned = match record.view {
                 AgentView::Native => spawn_pty_agent(
@@ -1870,6 +1903,147 @@ impl Supervisor {
         self.workspace.update_agent_model(agent_id, model)?;
         emit_model(ctx.sink.as_ref(), agent_id, model);
         self.reapply_session_config(ctx, agent_id).await
+    }
+
+    /// Grant `path` — a folder on this machine — to `agent_id`'s agent, or
+    /// change the mode of a folder already granted
+    /// (`workspace::folder_grants`). Checked here, on the host, before it is
+    /// stored; the stored path is canonical. Engines apply grants at launch,
+    /// so when the change is one the launch sees a live agent takes a
+    /// session-preserving respawn: at once when idle, at the turn's end when
+    /// busy (or sooner, through [`Self::apply_changes_now`]). A follow-up that
+    /// names the folder waits for that respawn rather than reaching the old
+    /// process (`send_user_message`). Returns the folder as stored, which is
+    /// how a client must name it from then on.
+    pub async fn grant_folder(
+        self: &Arc<Self>,
+        ctx: &Arc<EngineCtx>,
+        agent_id: &str,
+        path: &Path,
+        writable: bool,
+    ) -> Result<FolderGranted> {
+        let record = self.workspace.agent(agent_id)?;
+        if record.archive.is_some() {
+            return Err(Error::Other("an archived workspace runs no agent".into()));
+        }
+        let requested = FolderGrant {
+            path: path.to_path_buf(),
+            writable,
+        };
+        let checked =
+            crate::workspace::folder_grants::check_all(vec![requested], stamped_engine(&record))
+                .await?;
+        let Some(FolderGrant { path, .. }) = checked.into_iter().next() else {
+            return Err(Error::Other("no folder to grant".into()));
+        };
+        let unchanged = record
+            .folder_grants
+            .iter()
+            .any(|g| g.path == path && g.writable == writable);
+        let update = if unchanged {
+            self.folder_grants_update(agent_id, record.folder_grants)
+        } else {
+            let grants = self
+                .workspace
+                .upsert_folder_grant(agent_id, &path, writable)?;
+            self.apply_folder_grants(ctx, &record, grants).await?
+        };
+        Ok(FolderGranted {
+            granted: path,
+            update,
+        })
+    }
+
+    /// Take back a folder granted to `agent_id`'s agent, relaunching it as
+    /// [`Self::grant_folder`] does when the launch saw the folder. `path` names
+    /// the grant as stored (canonical), or any spelling that resolves to it.
+    pub async fn revoke_folder(
+        self: &Arc<Self>,
+        ctx: &Arc<EngineCtx>,
+        agent_id: &str,
+        path: &Path,
+    ) -> Result<FolderGrantsUpdate> {
+        let record = self.workspace.agent(agent_id)?;
+        let Some(stored) = crate::workspace::folder_grants::find(&record.folder_grants, path)
+            .map(|g| g.path.clone())
+        else {
+            return Ok(self.folder_grants_update(agent_id, record.folder_grants));
+        };
+        let grants = self.workspace.remove_folder_grant(agent_id, &stored)?;
+        self.apply_folder_grants(ctx, &record, grants).await
+    }
+
+    /// Make `record`'s just-stored `grants` (it holds the ones before) take
+    /// effect, and tell every client. Only a change the launch sees relaunches
+    /// the agent (`folder_grants::launch_relevant`): a read-only folder that
+    /// seatbelt already lets the agent read needs none, either way.
+    async fn apply_folder_grants(
+        self: &Arc<Self>,
+        ctx: &Arc<EngineCtx>,
+        record: &AgentRecord,
+        grants: Vec<FolderGrant>,
+    ) -> Result<FolderGrantsUpdate> {
+        use crate::workspace::folder_grants::launch_relevant;
+        let engine = stamped_engine(record);
+        let home =
+            dirs::home_dir().ok_or_else(|| Error::Other("HOME directory not available".into()))?;
+        let home = home.canonicalize().unwrap_or(home);
+        let relaunch = launch_relevant(engine, &record.folder_grants, &home)
+            != launch_relevant(engine, &grants, &home);
+        // Announced before a respawn that may take a while: the chips are
+        // the user's to see at once, whatever the relaunch does.
+        let mut update = self.folder_grants_update(&record.id, grants);
+        emit_folder_grants(ctx.sink.as_ref(), &record.id, &update);
+        if relaunch {
+            self.respawn_agent_preserving_session(ctx, &record.id)
+                .await?;
+            let waiting = self.respawn_pending.lock().contains(&record.id);
+            if waiting != update.applies_at_turn_end {
+                update.applies_at_turn_end = waiting;
+                emit_folder_grants(ctx.sink.as_ref(), &record.id, &update);
+            }
+        }
+        Ok(update)
+    }
+
+    /// `grants` as the clients see them: with whether a relaunch held for the
+    /// running turn's end is still to apply them.
+    fn folder_grants_update(&self, agent_id: &str, grants: Vec<FolderGrant>) -> FolderGrantsUpdate {
+        FolderGrantsUpdate {
+            folder_grants: grants,
+            applies_at_turn_end: self.respawn_pending.lock().contains(agent_id),
+        }
+    }
+
+    /// End `agent_id`'s running turn now so the session-preserving respawn
+    /// waiting for it (a folder grant, a model change) happens at once; the
+    /// follow-ups queued behind it — a message naming the new folder — then
+    /// reach the new process as the next turn. Unlike [`Self::stop_agent`] the
+    /// queue is not held: the user asked for the change to land now, not for
+    /// the work to stop. Returns whether a turn was ended.
+    ///
+    /// Under the lifecycle lock, so the respawn cannot swap the process between
+    /// the check and the interrupt: with nothing waiting, or the turn already
+    /// over (its respawn queued behind this lock), this does nothing — an
+    /// interrupt must never land on the new process, which the queued message
+    /// may already be running in.
+    pub async fn apply_changes_now(self: &Arc<Self>, agent_id: &str) -> Result<bool> {
+        let _lifecycle_guard = self.agent_lifecycle.lock().await;
+        // Running only: a process still spawning has no turn to end, and a
+        // SIGINT there could kill it outright.
+        let running = matches!(self.live_status(agent_id), Some(AgentStatus::Running));
+        if !running || !self.respawn_pending.lock().contains(agent_id) {
+            return Ok(false);
+        }
+        let Ok(agent) = self.live_agent(agent_id) else {
+            return Ok(false);
+        };
+        tracing::info!(
+            agent_id,
+            "ending the turn early to apply a pending relaunch"
+        );
+        agent.interrupt();
+        Ok(true)
     }
 
     /// Make a just-persisted model/effort change take effect.

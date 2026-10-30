@@ -765,7 +765,7 @@ allowlist; any op not listed returns `{ ok: false, error: "unknown op" }`.
 |---|---|---|
 | `get_workspace` | `{}` | `Workspace \| null` |
 | `allocate_draft_name` | `{ drafts: string[] }` | `string` |
-| `spawn_agent` | as command; host forces `view: "custom"` and ignores `skills` / `mcpServers` — it resolves `customAgentId` against its own library instead, stamping that row's brief, skills and MCP servers on the session (a dangling id spawns a plain agent, and the phone's `instructions` are used only when the row's brief is blank). `purpose` is honoured only when it is `"roadmap-pm"` (see "Planning chats from the phone") and dropped otherwise | `AgentRecord` |
+| `spawn_agent` | as command; host forces `view: "custom"` and ignores `skills` / `mcpServers` — it resolves `customAgentId` against its own library instead, stamping that row's brief, skills and MCP servers on the session (a dangling id spawns a plain agent, and the phone's `instructions` are used only when the row's brief is blank). `purpose` is honoured only when it is `"roadmap-pm"` (see "Planning chats from the phone") and dropped otherwise. `folderGrants` (`{ path, writable }[]`) name folders on the host, each checked as `grant_agent_folder` checks it; one refused fails the spawn | `AgentRecord` |
 | `send_user_message` | `{ agentId, turnId, text, attachments: string[] }` — paths from `attachment_end` (see "Attachments") | `boolean` |
 | `answer_tool_use` | `{ agentId, requestId, updatedInput, behavior, message? }` | `null` |
 | `answer_publish_approval` | `{ id, approved }` — `id` from the `publish:approval-requested` event; an id the host has already timed out is ignored | `null` |
@@ -777,6 +777,9 @@ allowlist; any op not listed returns `{ ok: false, error: "unknown op" }`.
 | `discard_agent` | `{ agentId }` — destructive: record, checkout and transcript all go | `null` |
 | `set_agent_model` | `{ agentId, model }` | `null` |
 | `set_agent_effort` | `{ agentId, effort }` | `null` |
+| `grant_agent_folder` | `{ agentId, path, writable? }` — a folder **on the host**, granted to the agent at its own path (read-only unless `writable`), or a granted folder's mode changed. Checked by the host, which refuses home and anything above it, hidden home folders, `~/Library` but iCloud Drive, Fletch's own data, and — writable only — system and PATH folders; a box takes folders under `/Users` and `/Volumes` only. A change the agent's launch sees relaunches it on its own session — at once when idle, at the turn's end when busy (`applies_at_turn_end`), until then a follow-up naming the folder is queued for the new process. A read-only folder seatbelt already lets the agent read needs no relaunch. `agent:folder-grants` follows | `{ granted: string, folder_grants: FolderGrant[], applies_at_turn_end: boolean }` — `granted` is the folder as stored, canonical (`~` expanded, links resolved), which may differ from the `path` asked for: name it by this, in a message's attachments too. `FolderGrant` is `{ path, writable }`, the stored path canonical |
+| `revoke_agent_folder` | `{ agentId, path }` — `path` as the grant list reports it, or any spelling that resolves to it; relaunches like `grant_agent_folder` | `{ folder_grants: FolderGrant[], applies_at_turn_end: boolean }` |
+| `apply_agent_changes_now` | `{ agentId }` — end the running turn so a relaunch waiting for it (`applies_at_turn_end`) happens now; what was queued behind it is delivered to the new process next. Unlike `stop_agent` the queue is not held. Does nothing when nothing waits or the turn already ended | `boolean` — whether a turn was ended |
 | `switch_agent_account` | `{ agentId, account }` — `account` is one of the **host's** accounts of the agent's provider, an id or `"default"`; refused mid-turn and for a signed-out or current target, with the reason as the error. The next turn runs under it; a live process is relaunched on its own session | `AgentRecord` |
 | `read_session_records` | `{ agentId }` — the agent's display history: what its session inherits through lineage (a fork's parent conversation, `inherited: true`), then its own records | `SessionRecord[]` |
 | `read_session_page` | `{ agentId, before?: string \| null, limit?: number }` — the same history one page at a time, newest page first: the last `limit` records before the cursor `before` (from the end when absent), crossing into inherited history exactly as `read_session_records` does. `limit` defaults to 200 and is clamped to 1–500. `records` are in display order (oldest first within the page); `older` is the cursor for the page before this one, `null` once nothing older is left. The cursor is opaque (`"<chainIndex>:<seq>"`, parsed strictly — a malformed or out-of-range one is an error) and belongs to the history it was read from: after a turn ends, start again from the newest page. Lets a phone open a long session without shipping every tool result it ever read. No desktop command of this name | `{ records: SessionRecord[], older: string \| null }` |
@@ -1336,7 +1339,7 @@ these names to every authenticated connection:
 agent:event            agent:status           agent:task
 agent:spawn-progress
 agent:title            agent:branch           agent:model
-agent:effort
+agent:effort           agent:folder-grants
 agent:repo_added       agent:git-action       session:records-appended
 turn:sent              turn:started           workspace:changed
 workspace:auto-archived

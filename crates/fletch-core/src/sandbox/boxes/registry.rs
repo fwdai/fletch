@@ -27,7 +27,7 @@ use serde::Serialize;
 use tokio::sync::watch;
 
 use crate::error::{Error, Result};
-use crate::workspace::AgentRecord;
+use crate::workspace::{AgentRecord, FolderGrant};
 
 use super::executor::BoxExecutor;
 use super::{relay, settings, setup, tools_root, EgressEventPayload, EVENT_STATE, EVENT_TOOLS};
@@ -57,6 +57,11 @@ pub struct BoxIdentity {
     pub writable_root: PathBuf,
     pub rpc_dir: PathBuf,
     pub home: PathBuf,
+    /// The folders the user granted the agent, mounted from virtio-fs devices
+    /// at their own paths, parents first ([`Self::with_shares`]). A device
+    /// can only be added at boot, so a box whose shares differ from its
+    /// agent's grants is restarted by the next launch.
+    pub shares: Vec<FolderGrant>,
 }
 
 impl BoxIdentity {
@@ -72,11 +77,23 @@ impl BoxIdentity {
             rpc_dir: crate::rpc::mailbox_dir(agent_id)?,
             home: dirs::home_dir()
                 .ok_or_else(|| Error::Other("HOME directory not available".into()))?,
+            shares: Vec::new(),
         })
     }
 
     pub fn for_record(record: &AgentRecord) -> Result<Self> {
-        Self::new(&record.id, &record.project_id, &record.provider)
+        Ok(Self::new(&record.id, &record.project_id, &record.provider)?
+            .with_shares(&record.folder_grants))
+    }
+
+    /// This identity sharing `grants` that still exist, in mount order: a
+    /// folder before the folders inside it (fewer components first), so a
+    /// nested mount lands on top of its parent rather than under it.
+    pub fn with_shares(mut self, grants: &[FolderGrant]) -> Self {
+        let mut shares = crate::workspace::folder_grants::present(grants);
+        shares.sort_by_cached_key(|g| (g.path.components().count(), g.path.clone()));
+        self.shares = shares;
+        self
     }
 
     pub fn box_dir(&self) -> Result<PathBuf> {
@@ -129,6 +146,9 @@ pub enum StopReason {
     Shutdown,
     /// A launch needs the tools disk that was built since this box booted.
     Reattach,
+    /// A launch needs the folders the user shares with this box now, which
+    /// differ from the ones it booted with.
+    Reshare,
 }
 
 /// `box:state`.
@@ -1042,6 +1062,11 @@ async fn boot(
     spec.cpus = knobs.cpus;
     spec.memory_mib = knobs.memory_mib;
     spec.tools_disk = tools_disk.clone();
+    spec.shares = identity
+        .shares
+        .iter()
+        .map(|grant| (grant.path.clone(), !grant.writable))
+        .collect();
     spec.listen_ports = vec![
         (guest::SSH_PORT, dir.join(SSH_SOCK)),
         (guest::CONTROL_PORT, dir.join(CTL_SOCK)),
@@ -1088,6 +1113,14 @@ async fn boot(
         "box ready"
     );
 
+    // An image whose init predates shared folders boots without mounting
+    // them, and the agent would find empty directories where the user's
+    // folders should be: refuse the box instead, with what to do about it.
+    if let Err(e) = verify_shares(&channel, &identity.shares).await {
+        vm.kill();
+        return Err(e);
+    }
+
     // The guest's mailbox laid out like the host's (`rpc::ensure_mailbox`):
     // the agent writes straight into `requests/`, and on images whose relay
     // does not make it every box agent's first request failed.
@@ -1128,6 +1161,33 @@ async fn boot(
         relays,
         dirty,
     })
+}
+
+/// Every shared folder is a mountpoint in the guest (`mountpoint -q`, one ssh
+/// round trip for all of them).
+async fn verify_shares(channel: &Channel, shares: &[FolderGrant]) -> Result<()> {
+    if shares.is_empty() {
+        return Ok(());
+    }
+    let script = r#"for p in "$@"; do mountpoint -q -- "$p" || { echo "$p"; exit 1; }; done"#;
+    let argv: Vec<String> = ["sh", "-c", script, "sh"]
+        .into_iter()
+        .map(String::from)
+        .chain(shares.iter().map(|s| s.path.to_string_lossy().into_owned()))
+        .collect();
+    let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
+    let out = channel
+        .exec(None, None, &argv)
+        .await
+        .map_err(|e| Error::Other(format!("check the shared folders: {e}")))?;
+    if out.status.success() {
+        return Ok(());
+    }
+    let missing = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    Err(Error::SandboxUnavailable(format!(
+        "the box did not mount the shared folder {missing}: its image predates shared \
+         folders. Update the box image, or remove the folder from this workspace."
+    )))
 }
 
 fn on_egress(agent_id: &str, event: EgressEvent) {
@@ -1353,6 +1413,47 @@ mod tests {
     }
 
     /// A launch whose provider's disk is being built reports the box as
+    /// Shares mount in the order the identity lists them, so a folder inside
+    /// another granted folder must come after it whatever order the user
+    /// granted them in — or the parent's mount would hide the nested one. A
+    /// folder gone since it was granted is left out rather than failing boot.
+    #[test]
+    fn shares_list_parents_before_the_folders_inside_them() {
+        let td = tempfile::tempdir().unwrap();
+        let root = td.path();
+        for dir in ["app/vendor/lib", "out"] {
+            std::fs::create_dir_all(root.join(dir)).unwrap();
+        }
+        let grant = |p: &str| FolderGrant {
+            path: root.join(p),
+            writable: false,
+        };
+        let identity = BoxIdentity {
+            agent_id: "a".into(),
+            project_id: "p".into(),
+            provider: "claude".into(),
+            writable_root: PathBuf::from("/w"),
+            rpc_dir: PathBuf::from("/r"),
+            home: PathBuf::from("/Users/u"),
+            shares: Vec::new(),
+        }
+        .with_shares(&[
+            grant("app/vendor/lib"),
+            grant("gone"),
+            grant("out"),
+            grant("app"),
+        ]);
+        let order: Vec<_> = identity.shares.iter().map(|g| g.path.clone()).collect();
+        assert_eq!(
+            order,
+            [
+                root.join("app"),
+                root.join("out"),
+                root.join("app/vendor/lib")
+            ]
+        );
+    }
+
     /// `preparing` with what it installs, joins the running build instead of
     /// starting another, and fails with the build's error when that fails.
     #[tokio::test]
@@ -1367,6 +1468,7 @@ mod tests {
             writable_root: PathBuf::from("/registry-unit-test-waiter/root"),
             rpc_dir: PathBuf::from("/registry-unit-test-waiter/rpc"),
             home: PathBuf::from("/registry-unit-test-waiter/home"),
+            shares: Vec::new(),
         });
         // The fake build stands in for `start_tools_build`'s task: same key,
         // same channel shape.
@@ -1423,6 +1525,7 @@ mod tests {
             writable_root: PathBuf::from("/registry-unit-test-discard-race/root"),
             rpc_dir: PathBuf::from("/registry-unit-test-discard-race/rpc"),
             home: PathBuf::from("/registry-unit-test-discard-race/home"),
+            shares: Vec::new(),
         };
         registry.register(identity.clone());
         // A boot in flight, as far as the lock is concerned.
@@ -1467,6 +1570,7 @@ mod tests {
             writable_root: PathBuf::from("/registry-unit-test/root"),
             rpc_dir: PathBuf::from("/registry-unit-test/rpc"),
             home: PathBuf::from("/registry-unit-test/home"),
+            shares: Vec::new(),
         });
         assert!(registry.knows(id));
         assert!(matches!(

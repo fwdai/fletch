@@ -213,7 +213,7 @@ impl ManagedSession {
             content.push(json!({"type": "text", "text": text}));
         }
         for path in attachments {
-            content.push(json!({"type": "text", "text": format!("Attached file: {path}")}));
+            content.push(json!({"type": "text", "text": crate::attachments::reference_line(path)}));
         }
         write_line(
             &self.stdin,

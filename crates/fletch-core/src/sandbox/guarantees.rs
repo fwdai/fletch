@@ -99,14 +99,19 @@ impl Guarantee {
         Self::HostHeldCredentials,
     ];
 
-    /// The claim in plain English, phrased as what an agent *cannot* do.
+    /// The claim in plain English, phrased as what an agent *cannot* do. The
+    /// folders a user grants a workspace (`workspace::folder_grants`) are the
+    /// one exception every engine makes, at the user's word, so the claims
+    /// that a grant widens say so.
     pub fn claim(self) -> &'static str {
         match self {
-            Self::ConfinedWrites => "Cannot write outside its own workspace",
+            Self::ConfinedWrites => {
+                "Cannot write outside its own workspace, except folders you made writable for it"
+            }
             Self::WithheldGitConfig => "Cannot make host-side git execute code it chose",
             Self::OpaqueAppData => "Cannot read or forge Fletch's own app data",
             Self::UntouchableSourceGit => "Cannot write your repository's .git",
-            Self::ConfinedReads => "Cannot read the rest of your disk",
+            Self::ConfinedReads => "Cannot read the rest of your disk, except folders you gave it",
             Self::ConfinedNetwork => "Cannot reach arbitrary network hosts",
             Self::HostHeldCredentials => "Cannot hold your GitHub credentials",
         }

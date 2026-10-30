@@ -135,6 +135,27 @@
   background: var(--hover);
   color: var(--fg-0);
 }
+/* A folder given to the agent live: its mode is a small toggle beside the
+ * name. A granted one (already applied) is outlined in the accent. */
+.folder-grant {
+  max-width: 280px;
+}
+.folder-grant.is-granted {
+  border-color: var(--accent-line);
+}
+.folder-grant-mode {
+  flex-shrink: 0;
+  height: 16px;
+  padding: 0 5px;
+  border-radius: var(--r-xs);
+  background: var(--hover);
+  color: var(--fg-2);
+  font-size: 11px;
+  transition: var(--transition-ui);
+}
+.folder-grant-mode:hover {
+  color: var(--fg-0);
+}
 .cmp-field {
   position: relative;
 }

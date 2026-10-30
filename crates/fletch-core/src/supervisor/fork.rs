@@ -160,6 +160,10 @@ impl Supervisor {
             task: None,
             // A fresh agent follows the account active in Settings.
             account: None,
+            // The folders the parent's conversation was working with go with
+            // it, checked again for the fork's engine — those still there: a
+            // folder deleted since must not stop the fork.
+            folder_grants: crate::workspace::folder_grants::present(&parent.folder_grants),
         };
         let spawned = self.spawn_agent(ctx, req).await;
         // Once spawned, its provisioning releases the code's pin; a spawn

@@ -175,6 +175,8 @@ impl AgentDriver for SupervisorDriver {
                         task: None,
                         // Steps run under the account active in Settings.
                         account: None,
+                        // A step works in its run's tree only.
+                        folder_grants: Vec::new(),
                     },
                 )
                 .await?;

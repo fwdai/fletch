@@ -2,6 +2,7 @@ import { activeTransport, localTransport, type UnlistenFn } from "./transport";
 import type {
   AgentBranchEvent,
   AgentEffortEvent,
+  AgentFolderGrantsEvent,
   AgentManagedEvent,
   AgentModelEvent,
   AgentNotifyEvent,
@@ -284,6 +285,12 @@ export function onAgentView(cb: (e: AgentViewEvent) => void): Promise<UnlistenFn
  *  composer's effort chip reflects the new value without a full resync. */
 export function onAgentEffort(cb: (e: AgentEffortEvent) => void): Promise<UnlistenFn> {
   return on<AgentEffortEvent>("agent:effort", cb);
+}
+
+/** Fires when the folders granted to an agent change, from any client, so its
+ *  composer shows the same grants everywhere. */
+export function onAgentFolderGrants(cb: (e: AgentFolderGrantsEvent) => void): Promise<UnlistenFn> {
+  return on<AgentFolderGrantsEvent>("agent:folder-grants", cb);
 }
 
 /** Fires when a session's model is changed mid-conversation, so the composer's

@@ -123,6 +123,13 @@ pub struct AgentLaunchCtx<'a> {
     /// workflow step, which adopts its run's tree to change it. Meaningless
     /// without an adopted workspace.
     pub adopted_read_only: bool,
+    /// Folders on the user's machine the user granted this workspace
+    /// (`AgentRecord::folder_grants`), each exposed at its own path: seatbelt
+    /// re-allows it (read, or read-write with the invariant-3 deny over any
+    /// `.git` inside), containers bind it (`:ro` unless writable), a box mounts
+    /// it as a virtiofs share (read-only enforced by the host). Already
+    /// checked (`workspace::folder_grants::check`); empty for most launches.
+    pub folder_grants: &'a [crate::workspace::FolderGrant],
 }
 
 impl<'a> AgentLaunchCtx<'a> {
@@ -296,6 +303,7 @@ mod tests {
             oauth_token: None,
             codex_home: None,
             adopted_read_only: false,
+            folder_grants: &[],
         }
     }
 

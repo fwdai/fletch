@@ -135,6 +135,9 @@ pub const OPS: &[&str] = &[
     "discard_agent",
     "set_agent_model",
     "set_agent_effort",
+    "grant_agent_folder",
+    "revoke_agent_folder",
+    "apply_agent_changes_now",
     "switch_agent_account",
     "read_session_records",
     "read_session_page",
@@ -449,6 +452,9 @@ const OP_SCOPES: &[(&str, Scope)] = &[
     ("discard_agent", Scope::Agents),
     ("set_agent_model", Scope::Agents),
     ("set_agent_effort", Scope::Agents),
+    ("grant_agent_folder", Scope::Agents),
+    ("revoke_agent_folder", Scope::Agents),
+    ("apply_agent_changes_now", Scope::Agents),
     ("switch_agent_account", Scope::Agents),
     ("read_session_records", Scope::Observe),
     ("read_session_page", Scope::Observe),
@@ -785,6 +791,7 @@ impl Dispatch for SupervisorDispatch {
                         remote_purpose(a.purpose),
                         a.task,
                         None,
+                        a.folder_grants,
                     )
                     .await)
                 }
@@ -863,6 +870,24 @@ impl Dispatch for SupervisorDispatch {
                     let a: EffortArgs = parse(args)?;
                     res(sup
                         .set_agent_effort(ctx, &a.agent_id, a.effort.as_deref())
+                        .await)
+                }
+
+                // A folder on *this host*, checked here like the desktop's.
+                "grant_agent_folder" => {
+                    let a: FolderGrantArgs = parse(args)?;
+                    res(sup
+                        .grant_folder(ctx, &a.agent_id, Path::new(&a.path), a.writable)
+                        .await)
+                }
+                "apply_agent_changes_now" => {
+                    let a: AgentArgs = parse(args)?;
+                    res(sup.apply_changes_now(&a.agent_id).await)
+                }
+                "revoke_agent_folder" => {
+                    let a: FolderGrantArgs = parse(args)?;
+                    res(sup
+                        .revoke_folder(ctx, &a.agent_id, Path::new(&a.path))
                         .await)
                 }
 
@@ -2842,6 +2867,9 @@ struct SpawnArgs {
     /// The first prompt, persisted as the task at creation (see `SpawnRequest`).
     #[serde(default)]
     task: Option<String>,
+    /// Folders on the host to grant the new agent (see `grant_agent_folder`).
+    #[serde(default)]
+    folder_grants: Option<Vec<crate::workspace::FolderGrant>>,
 }
 
 /// One project's purpose-scoped chats (`workspace::PURPOSE_ROADMAP_PM`).
@@ -3220,6 +3248,16 @@ struct EffortArgs {
     agent_id: String,
     #[serde(default)]
     effort: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FolderGrantArgs {
+    agent_id: String,
+    path: String,
+    /// `grant_agent_folder` only; a grant is read-only unless asked.
+    #[serde(default)]
+    writable: bool,
 }
 
 #[derive(Deserialize)]

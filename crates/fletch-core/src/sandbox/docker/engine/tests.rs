@@ -108,6 +108,7 @@ fn test_spec<'a>(interactive: bool) -> RunSpec<'a> {
         blackboard: None,
         adopted_workspace: None,
         adopted_read_only: false,
+        folder_grants: &[],
         mounts: claude_mounts(None, false, false),
         borrowed_object_stores: &[],
         memory: "4g",
@@ -148,6 +149,7 @@ fn rw_config_spec<'a>(
         blackboard: None,
         adopted_workspace: None,
         adopted_read_only: false,
+        folder_grants: &[],
         mounts,
         borrowed_object_stores: &[],
         memory: "4g",
@@ -1349,6 +1351,7 @@ fn docker_run_echo_round_trip() {
         blackboard: None,
         adopted_workspace: None,
         adopted_read_only: false,
+        folder_grants: &[],
         mounts: ProviderMounts::Claude {
             config_dir: None,
             credentials_rw: false,

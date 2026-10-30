@@ -8,7 +8,9 @@
 #   FLETCH_BOX_RPC_DIR         host path of the RPC mailbox           -> /data/rpc
 #   FLETCH_BOX_HOME            host path of $HOME                     -> /data/home
 #   FLETCH_BOX_AUTHORIZED_KEY  one OpenSSH public key line, the host's key for this box
-# Optional: FLETCH_BOX_ID, shown in log lines.
+# Optional: FLETCH_BOX_ID, shown in log lines; FLETCH_BOX_SHARES=<n> with
+# FLETCH_BOX_SHARE_<i>=ro:<path> | rw:<path> for i < n, the folders the user
+# shared with this box, each the virtio-fs device tagged fletch-share-<i>.
 #
 # Console markers the host reads, in order:
 #   FLETCH_HOSTKEY <type> <base64>   the guest's ssh host key (persisted on /data)
@@ -108,6 +110,30 @@ bind_identity "$FLETCH_BOX_HOME" /data/home
 bind_identity "$FLETCH_BOX_RPC_DIR" /data/rpc
 bind_identity "$FLETCH_BOX_WRITABLE_ROOT" /data/ws
 
+# The folders the user shared with this box, each at its own host path from its
+# virtio-fs device, after HOME so one inside it lands on top, and in the host's
+# order (parents first). Read-only is enforced on the host side; `ro` here only
+# makes the mount say so. A share that does not mount fails the boot: an agent
+# told about a folder must never find an empty directory in its place.
+mount_share() { # <tag> <ro|rw> <guest path>
+  step="mounting the shared folder $3"
+  case "$3" in /Users/?*|/Volumes/?*) ;; *) fail "cannot mount $3: shared folders sit under /Users or /Volumes";; esac
+  top=${3#/}; top=/${top%%/*}
+  mountpoint -q "$top" || mount -t tmpfs -o mode=755,nosuid,nodev tmpfs "$top"
+  mkdir -p "$3"
+  opts=nosuid,nodev
+  [ "$2" = ro ] && opts="ro,$opts"
+  mount -t virtiofs -o "$opts" "$1" "$3"
+}
+shares=${FLETCH_BOX_SHARES:-0}
+i=0
+while [ "$i" -lt "$shares" ]; do
+  eval "share=\${FLETCH_BOX_SHARE_$i:-}"
+  [ -n "$share" ] || fail "FLETCH_BOX_SHARE_$i is not set"
+  mount_share "fletch-share-$i" "${share%%:*}" "${share#*:}"
+  i=$((i + 1))
+done
+
 step="mounting the tools disk"
 if [ -b "$TOOLS_DEV" ]; then
   # The disk was built by booting a box with it as /data, so the CLIs sit under
@@ -156,6 +182,13 @@ kill -TERM -1 2>/dev/null || true
 sleep 0.2
 kill -KILL -1 2>/dev/null || true
 sync
+# Shared folders first, the last mounted first: one inside HOME pins its bind.
+i=$shares
+while [ "$i" -gt 0 ]; do
+  i=$((i - 1))
+  eval "share=\${FLETCH_BOX_SHARE_$i}"
+  umount "${share#*:}" || echo "fletch-init: could not unmount ${share#*:}" >&2
+done
 # The binds hold the data filesystem open; drop them (children before HOME) so
 # /data really unmounts and the journal is clean for the next boot.
 umount "$FLETCH_BOX_WRITABLE_ROOT" "$FLETCH_BOX_RPC_DIR" "$FLETCH_BOX_HOME"
