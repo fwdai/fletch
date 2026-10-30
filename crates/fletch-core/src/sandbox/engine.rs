@@ -253,6 +253,13 @@ pub struct LaunchPlan {
     /// launcher runs where the agent runs, and ignored by the long-lived
     /// session shapes, which get their credential once at launch.
     pub before_turn: Option<TurnPrep>,
+    /// The engine's own step once a process of this launch has exited, run
+    /// by the session's reaper before it reports the exit: after each turn's
+    /// process of a per-turn session, after the one process of a long-lived
+    /// session. The box engine writes back what the CLI changed in its
+    /// credential files here — after the process, so nothing races it, and
+    /// after every turn, so a host crash between turns loses nothing.
+    pub after_exit: Option<TurnPrep>,
     pub kill: KillHandle,
 }
 

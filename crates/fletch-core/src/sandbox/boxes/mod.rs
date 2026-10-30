@@ -353,10 +353,6 @@ struct PendingLaunch {
 /// the container engines; launches park an `Arc` of it in their `KillHandle`.
 pub struct BoxEngine {
     pending: Mutex<std::collections::HashMap<String, PendingLaunch>>,
-    /// Each live launch's credential files, by launch id, from the plan to
-    /// the kill: the before-turn step reconciles them, the kill writes the
-    /// CLI's changes back.
-    credentials: Mutex<std::collections::HashMap<String, Arc<Mutex<home::CredentialSync>>>>,
 }
 
 impl BoxEngine {
@@ -366,11 +362,30 @@ impl BoxEngine {
             .get_or_init(|| {
                 Arc::new(BoxEngine {
                     pending: Mutex::new(std::collections::HashMap::new()),
-                    credentials: Mutex::new(std::collections::HashMap::new()),
                 })
             })
             .clone()
     }
+}
+
+/// A launch plan step over the launch's credential files: the box's channel,
+/// then `step` on the sync. The credential state lives in the plan's own
+/// closures and ends with the session, so no engine bookkeeping can run
+/// ahead of, or outlive, the process it is about.
+fn credential_step(
+    box_agent_id: &str,
+    credentials: &Arc<Mutex<home::CredentialSync>>,
+    step: fn(&mut home::CredentialSync, &fletch_box::Channel) -> Result<()>,
+) -> TurnPrep {
+    let box_agent_id = box_agent_id.to_string();
+    let credentials = credentials.clone();
+    Arc::new(move || {
+        let channel = BoxRegistry::global().channel_for(&box_agent_id)?;
+        step(
+            &mut credentials.lock().unwrap_or_else(|p| p.into_inner()),
+            &channel,
+        )
+    })
 }
 
 /// Which providers run in a box: the ones with a guest-home adapter
@@ -578,25 +593,19 @@ impl SandboxEngine for BoxEngine {
         let home::Credential { mut env, files } = provider_home.credential(ctx)?;
         env.push(("GIT_TERMINAL_PROMPT".to_string(), "0".to_string()));
         let credentials = Arc::new(Mutex::new(home::CredentialSync::new(files)));
-        let before_turn = (!credentials
+        let synced = !credentials
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .is_empty())
-        .then(|| {
-            let box_agent_id = box_agent_id.clone();
-            let credentials = credentials.clone();
-            Arc::new(move || {
-                let channel = BoxRegistry::global().channel_for(&box_agent_id)?;
-                credentials
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .turn(&channel)
-            }) as TurnPrep
+            .is_empty();
+        let before_turn = synced
+            .then(|| credential_step(&box_agent_id, &credentials, home::CredentialSync::turn));
+        let after_exit = synced.then(|| {
+            credential_step(
+                &box_agent_id,
+                &credentials,
+                home::CredentialSync::after_exit,
+            )
         });
-        self.credentials
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .insert(launch_id.clone(), credentials.clone());
 
         self.pending
             .lock()
@@ -623,6 +632,7 @@ impl SandboxEngine for BoxEngine {
                 launch_id: launch_id.clone(),
             },
             before_turn,
+            after_exit,
             kill: KillHandle::Engine {
                 engine: BoxEngine::shared(),
                 plan: KillPlan::Box {
@@ -667,9 +677,10 @@ impl SandboxEngine for BoxEngine {
     }
 
     /// The session's own kill ends the ssh client (and so the guest PTY); the
-    /// engine writes back what the CLI changed in its credential files,
-    /// removes the env file the launch's token sat in, and detaches the
-    /// launch so the idle timer may stop the VM.
+    /// engine detaches the launch so the idle timer may stop the VM, and
+    /// removes the env file the launch's token sat in. The CLI's credential
+    /// changes were written back as each process exited (`after_exit`),
+    /// never here, where the process may still be running.
     fn kill(&self, plan: &KillPlan) -> Result<()> {
         let KillPlan::Box {
             agent_id,
@@ -682,22 +693,8 @@ impl SandboxEngine for BoxEngine {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .remove(launch_id);
-        let credentials = self
-            .credentials
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .remove(launch_id);
         let registry = BoxRegistry::global();
         if let Ok(channel) = registry.channel_for_running(agent_id) {
-            if let Some(credentials) = credentials {
-                if let Err(e) = credentials
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .end(&channel)
-                {
-                    tracing::warn!(agent_id, launch_id, error = %e, "credential write-back at the launch's end failed");
-                }
-            }
             let path = env_file_path(launch_id);
             let _ = executor::run(&channel, &["rm", "-f", &path.to_string_lossy()], None);
         }

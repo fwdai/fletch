@@ -137,6 +137,7 @@ impl SandboxEngine for SandboxExecEngine {
             env_remove: HOST_CREDENTIAL_ENV.iter().map(|v| v.to_string()).collect(),
             env_delivery: EnvDelivery::Process,
             before_turn: None,
+            after_exit: None,
             // sandbox-exec is a plain process wrapper — the session's own
             // process-group escalation tears everything down; the trait's
             // default no-op `kill` applies.

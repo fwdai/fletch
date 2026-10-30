@@ -45,6 +45,9 @@ pub struct PtySpawn<'a> {
     pub env_remove: &'a [String],
     /// How to terminate the child (chosen by the sandbox engine).
     pub kill_plan: KillHandle,
+    /// Host work once the child has exited — a box writes the CLI's
+    /// credential changes back (`LaunchPlan::after_exit`).
+    pub after_exit: Option<crate::sandbox::TurnPrep>,
 }
 
 #[derive(Debug, Clone)]
@@ -178,8 +181,14 @@ impl PtySession {
         thread::spawn(move || coalesce_output(rx, on_output));
 
         let kill_plan_for_exit = spec.kill_plan.clone();
+        let after_exit = spec.after_exit.clone();
         thread::spawn(move || match child.wait() {
             Ok(status) => {
+                if let Some(step) = &after_exit {
+                    if let Err(e) = step() {
+                        tracing::warn!(error = %e, "after-exit step failed");
+                    }
+                }
                 let exit = exit_from_status(status, &kill_plan_for_exit);
                 tracing::info!(
                     success = exit.success,
@@ -441,6 +450,7 @@ mod tests {
                 rows: 24,
                 env_remove: &[],
                 kill_plan: KillHandle::ProcessGroup,
+                after_exit: None,
             },
             move |bytes| {
                 let _ = out_tx.send(bytes);
@@ -480,6 +490,7 @@ mod tests {
                 rows: 24,
                 env_remove: &["FLETCH_PTY_TEST_SECRET".to_string()],
                 kill_plan: KillHandle::ProcessGroup,
+                after_exit: None,
             },
             move |bytes| {
                 let _ = out_tx.send(bytes);
@@ -529,6 +540,7 @@ mod tests {
                 rows: 24,
                 env_remove: &["FLETCH_PTY_TEST_PLANNED".to_string()],
                 kill_plan: KillHandle::ProcessGroup,
+                after_exit: None,
             },
             move |bytes| {
                 let _ = out_tx.send(bytes);
@@ -579,6 +591,7 @@ mod tests {
                 rows: 24,
                 env_remove: &[],
                 kill_plan: KillHandle::ProcessGroup,
+                after_exit: None,
             },
             |_| {},
             |_| {},

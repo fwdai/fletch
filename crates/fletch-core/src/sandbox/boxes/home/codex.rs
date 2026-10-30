@@ -47,14 +47,10 @@ impl ProviderHome for Codex {
     /// as a copy of the user's — replaced whole, so an item the user removed
     /// or renamed since the last launch does not linger.
     fn seed(&self, home: &Path, writable_root: &Path) -> Result<Vec<GuestEntry>> {
-        let overlay = codex_home::overlay_in(writable_root);
-        let source = accounts::shared_source_dir("codex", home);
-        let mut entries = vec![GuestEntry::Dir(overlay.join("sessions"))];
-        for item in accounts::shared_items("codex") {
-            entries.push(GuestEntry::Absent(overlay.join(item)));
-            entries.extend(copy_tree(&source.join(item), &overlay.join(item)));
-        }
-        Ok(entries)
+        Ok(seed_from(
+            writable_root,
+            &accounts::shared_source_dir("codex", home),
+        ))
     }
 
     /// The launch credential the host wrote into the overlay
@@ -82,6 +78,18 @@ impl ProviderHome for Codex {
 }
 
 const OPENAI_API_KEY: &str = "OPENAI_API_KEY";
+
+/// [`Codex::seed`] with the user's codex home given (wherever their
+/// `CODEX_HOME` puts it).
+fn seed_from(writable_root: &Path, source: &Path) -> Vec<GuestEntry> {
+    let overlay = codex_home::overlay_in(writable_root);
+    let mut entries = vec![GuestEntry::Dir(overlay.join("sessions"))];
+    for item in accounts::shared_items("codex") {
+        entries.push(GuestEntry::Absent(overlay.join(item)));
+        entries.extend(copy_tree(&source.join(item), &overlay.join(item)));
+    }
+    entries
+}
 
 #[cfg(test)]
 mod tests {
@@ -123,16 +131,16 @@ mod tests {
     #[test]
     fn the_seed_copies_the_shared_config_in_and_clears_what_is_gone() {
         let td = tempfile::tempdir().unwrap();
-        let home = td.path();
-        let codex = home.join(".codex");
+        // The user's codex home, wherever CODEX_HOME puts it on the host.
+        let codex = td.path().join("codex-home");
         std::fs::create_dir_all(codex.join("prompts")).unwrap();
         std::fs::write(codex.join("config.toml"), b"model = \"gpt\"").unwrap();
         std::fs::write(codex.join("prompts/fix.md"), b"fix it").unwrap();
         std::fs::write(codex.join("auth.json"), b"{\"secret\":1}").unwrap();
-        let root = home.join("workspaces/a");
+        let root = Path::new("/Users/u/.fletch/workspaces/a");
         let overlay = root.join(".fletch-codex-home");
 
-        let entries = Codex.seed(home, &root).unwrap();
+        let entries = seed_from(root, &codex);
 
         assert_eq!(entries[0], GuestEntry::Dir(overlay.join("sessions")));
         assert!(entries.contains(&GuestEntry::Absent(overlay.join("config.toml"))));

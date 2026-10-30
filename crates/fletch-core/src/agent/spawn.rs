@@ -404,6 +404,7 @@ impl Agent {
             env_delivery,
             // A long-lived session: its credential is delivered once, at launch.
             before_turn: _,
+            after_exit,
             kill,
         } = engine.launch_agent(&ctx, &claude)?;
         account.unset.extend(env_remove);
@@ -434,6 +435,7 @@ impl Agent {
                 rows: spec.rows,
                 env_remove: &account.unset,
                 kill_plan: kill,
+                after_exit,
             },
             on_output,
             on_exit,
@@ -517,6 +519,7 @@ impl Agent {
             env_delivery,
             // The TUI is one long process: its credential is delivered once.
             before_turn: _,
+            after_exit,
             kill,
         } = engine.launch_agent(&ctx, &bin)?;
         account.unset.extend(env_remove);
@@ -549,6 +552,7 @@ impl Agent {
                 rows: spec.rows,
                 env_remove: &account.unset,
                 kill_plan: kill,
+                after_exit,
             },
             on_output,
             on_exit,
@@ -598,6 +602,7 @@ impl Agent {
             env_delivery,
             // A long-lived session: its credential is delivered once, at launch.
             before_turn: _,
+            after_exit,
             kill,
         } = engine.launch_agent(&ctx, &claude)?;
         account.unset.extend(env_remove);
@@ -626,6 +631,7 @@ impl Agent {
                 env: &env,
                 env_remove: &account.unset,
                 kill_plan: kill,
+                after_exit,
             },
             on_event,
             on_exit,
@@ -773,6 +779,7 @@ impl Agent {
             env_remove,
             env_delivery,
             before_turn: engine_before_turn,
+            after_exit,
             kill,
         } = engine.launch_agent(&ctx, agent_bin)?;
         account.unset.extend(env_remove);
@@ -807,6 +814,7 @@ impl Agent {
                 env,
                 env_remove: account.unset,
                 kill_plan: kill,
+                after_exit,
                 before_turn,
             },
             build_args,

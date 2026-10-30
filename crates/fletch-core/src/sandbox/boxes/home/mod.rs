@@ -182,8 +182,9 @@ impl CredentialFile {
 /// The credential files of one launch, kept in step for as long as it lives:
 /// [`launch`](Self::launch) when the env file is delivered,
 /// [`turn`](Self::turn) before every turn of a per-turn session,
-/// [`end`](Self::end) when the launch is killed. Remembers what each side
-/// last held, so a change on either side is told from the other's.
+/// [`after_exit`](Self::after_exit) once each process of the launch has
+/// exited. Remembers what each side last held, so a change on either side
+/// is told from the other's.
 #[derive(Debug, Default)]
 pub struct CredentialSync {
     files: Vec<CredentialFile>,
@@ -226,8 +227,10 @@ impl CredentialSync {
         Ok(())
     }
 
-    /// When the launch ends: what the CLI changed goes back to the host.
-    pub fn end(&mut self, channel: &Channel) -> Result<()> {
+    /// Once a process of the launch has exited — each turn's, or the one
+    /// long-lived one: what the CLI changed goes back to the host, now that
+    /// nothing is writing it and before anything else could be lost.
+    pub fn after_exit(&mut self, channel: &Channel) -> Result<()> {
         for i in 0..self.files.len() {
             if self.files[i].owner == FileOwner::Cli {
                 self.reconcile(channel, i)?;
@@ -522,12 +525,14 @@ fn tar_of(entries: &[&GuestEntry]) -> Result<Vec<u8>> {
 }
 
 /// What a copied config tree may amount to: a file past [`MAX_FILE_BYTES`]
-/// is left out, and the copy stops at [`MAX_TREE_BYTES`] or
-/// [`MAX_TREE_FILES`] in all. A config dir is small; a link out of it into
-/// a build tree or a cache is not, and must not make a launch ship it.
+/// is left out, and the whole copy stops — nothing more is read or even
+/// listed — at [`MAX_TREE_BYTES`] of file contents or [`MAX_TREE_ENTRIES`]
+/// items looked at, files and directories alike. A config dir is small; a
+/// link out of it into a build tree or a cache is not, and must not make a
+/// launch walk it, let alone ship it.
 const MAX_FILE_BYTES: u64 = 4 << 20;
 const MAX_TREE_BYTES: u64 = 64 << 20;
-const MAX_TREE_FILES: usize = 4096;
+const MAX_TREE_ENTRIES: usize = 4096;
 /// How deep a config layout can reasonably go.
 const COPY_DEPTH: usize = 16;
 
@@ -545,6 +550,7 @@ pub(crate) fn copy_tree(host: &Path, guest: &Path) -> Vec<GuestEntry> {
     let mut walk = TreeCopy {
         entries: Vec::new(),
         bytes: 0,
+        seen: 0,
         on_path: Vec::new(),
     };
     walk.descend(host, guest);
@@ -556,14 +562,27 @@ struct TreeCopy {
     entries: Vec<GuestEntry>,
     /// File bytes gathered so far, against [`MAX_TREE_BYTES`].
     bytes: u64,
+    /// Items looked at so far, files and directories alike, against
+    /// [`MAX_TREE_ENTRIES`]: the bound on the walk itself.
+    seen: usize,
     /// The directories entered on the way down, by identity: a cycle is a
     /// directory that is already here.
     on_path: Vec<(u64, u64)>,
 }
 
 impl TreeCopy {
+    /// Whether the copy has hit a tree limit; once it has, nothing more is
+    /// looked at.
+    fn full(&self) -> bool {
+        self.seen >= MAX_TREE_ENTRIES || self.bytes >= MAX_TREE_BYTES
+    }
+
     fn descend(&mut self, host: &Path, guest: &Path) {
         use std::os::unix::fs::MetadataExt as _;
+        if self.full() {
+            return;
+        }
+        self.seen += 1;
         let meta = match std::fs::metadata(host) {
             Ok(meta) => meta,
             Err(e) if e.kind() == io::ErrorKind::NotFound => return,
@@ -577,8 +596,9 @@ impl TreeCopy {
                 tracing::info!(path = %host.display(), len = meta.len(), "config file too big to copy into a box");
                 return;
             }
-            if self.bytes + meta.len() > MAX_TREE_BYTES || self.entries.len() >= MAX_TREE_FILES {
+            if self.bytes + meta.len() > MAX_TREE_BYTES {
                 tracing::info!(path = %host.display(), "config tree too big to copy into a box; the rest is left out");
+                self.bytes = MAX_TREE_BYTES;
                 return;
             }
             if let Ok(bytes) = std::fs::read(host) {
@@ -608,6 +628,10 @@ impl TreeCopy {
         names.sort();
         self.on_path.push(identity);
         for name in names {
+            if self.full() {
+                tracing::info!(path = %host.display(), "config tree too big to copy into a box; the rest is left out");
+                break;
+            }
             self.descend(&host.join(&name), &guest.join(&name));
         }
         self.on_path.pop();
@@ -952,6 +976,23 @@ mod tests {
                 },
             ]
         );
+    }
+
+    /// The walk itself is bounded: past the entry limit nothing more is
+    /// listed, directories included, so a link into a vast tree costs at
+    /// most the limit.
+    #[test]
+    fn copy_tree_stops_walking_at_the_entry_limit() {
+        let td = tempfile::tempdir().unwrap();
+        let src = td.path().join("wide");
+        // More directories than the limit, each empty: nothing to ship, but
+        // a walk to bound.
+        for i in 0..MAX_TREE_ENTRIES + 50 {
+            std::fs::create_dir_all(src.join(format!("d{i:05}"))).unwrap();
+        }
+        let entries = copy_tree(&src, Path::new("/g/wide"));
+        assert_eq!(entries.len(), MAX_TREE_ENTRIES);
+        assert!(entries.iter().all(|e| matches!(e, GuestEntry::Dir(_))));
     }
 
     /// The guest's change goes to the host, the host's to the guest, a

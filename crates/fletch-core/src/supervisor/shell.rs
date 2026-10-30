@@ -53,6 +53,7 @@ impl Supervisor {
                 rows: 32,
                 env_remove: &[],
                 kill_plan: crate::sandbox::KillHandle::ProcessGroup,
+                after_exit: None,
             },
             move |bytes| {
                 emit_shell_output(ctx.sink.as_ref(), &agent_id_out, bytes);

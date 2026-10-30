@@ -69,6 +69,9 @@ pub struct ManagedSpawn<'a> {
     pub env_remove: &'a [String],
     /// How to terminate the child (chosen by the sandbox engine).
     pub kill_plan: KillHandle,
+    /// Host work once the child has exited — a box writes the CLI's
+    /// credential changes back (`LaunchPlan::after_exit`).
+    pub after_exit: Option<crate::sandbox::TurnPrep>,
 }
 
 #[derive(Debug, Clone)]
@@ -175,7 +178,13 @@ impl ManagedSession {
         child_io::spawn_stderr_reader(stderr, "managed", |_| {});
 
         let kill_plan_for_exit = spec.kill_plan.clone();
+        let after_exit = spec.after_exit.clone();
         child_io::spawn_reaper(child_arc.clone(), "managed", move |status| {
+            if let Some(step) = &after_exit {
+                if let Err(e) = step() {
+                    tracing::warn!(error = %e, "after-exit step failed");
+                }
+            }
             let exit = match status {
                 Ok(status) => ManagedExit {
                     success: status.success(),
@@ -416,6 +425,7 @@ mod tests {
             stdin: Arc::new(Mutex::new(None)),
             pending: Arc::new(Mutex::new(HashSet::new())),
             kill_plan: KillHandle::ProcessGroup,
+            after_exit: None,
         };
 
         assert!(session

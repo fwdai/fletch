@@ -67,6 +67,9 @@ pub struct ExecSpawn {
     pub kill_plan: KillHandle,
     /// Host work each turn needs fresh — codex's per-turn launch credential.
     pub before_turn: Option<TurnPrep>,
+    /// Host work once a turn's child has exited — a box writes the CLI's
+    /// credential changes back (`LaunchPlan::after_exit`).
+    pub after_exit: Option<TurnPrep>,
 }
 
 pub struct ExecSession {
@@ -78,6 +81,7 @@ pub struct ExecSession {
     env_remove: Vec<String>,
     kill_plan: KillHandle,
     before_turn: Option<TurnPrep>,
+    after_exit: Option<TurnPrep>,
     session_id: Arc<Mutex<Option<String>>>,
     child: Arc<Mutex<Option<Child>>>,
     interrupted: Arc<AtomicBool>,
@@ -133,6 +137,7 @@ impl ExecSession {
             env_remove: spec.env_remove,
             kill_plan: spec.kill_plan,
             before_turn: spec.before_turn,
+            after_exit: spec.after_exit,
             session_id: Arc::new(Mutex::new(spec.session_id)),
             child: Arc::new(Mutex::new(None)),
             interrupted: Arc::new(AtomicBool::new(false)),
@@ -279,7 +284,15 @@ impl ExecSession {
         let on_exit = self.on_exit.clone();
         let interrupted = self.interrupted.clone();
         let kill_plan = self.kill_plan.clone();
+        let after_exit = self.after_exit.clone();
         child_io::spawn_reaper(self.child.clone(), "agent", move |status| {
+            // The child is gone: the engine's own step runs now, whatever
+            // turn this was, before the exit is reported.
+            if let Some(step) = &after_exit {
+                if let Err(e) = step() {
+                    tracing::warn!(error = %e, "after-exit step failed");
+                }
+            }
             let interrupted = interrupted.load(Ordering::SeqCst);
             let exit = match status {
                 Ok(status) => {
@@ -457,6 +470,7 @@ mod tests {
                 env_remove: Vec::new(),
                 kill_plan: KillHandle::ProcessGroup,
                 before_turn: None,
+                after_exit: None,
             },
             codex_args,
             codex_id,
@@ -516,6 +530,7 @@ mod tests {
                 env_remove: Vec::new(),
                 kill_plan: KillHandle::ProcessGroup,
                 before_turn: None,
+                after_exit: None,
             },
             codex_args,
             codex_id,
@@ -557,6 +572,7 @@ mod tests {
                 env_remove: Vec::new(),
                 kill_plan: KillHandle::ProcessGroup,
                 before_turn: None,
+                after_exit: None,
             },
             codex_args,
             codex_id,
@@ -631,6 +647,7 @@ mod tests {
                 env_remove: Vec::new(),
                 kill_plan: KillHandle::ProcessGroup,
                 before_turn: None,
+                after_exit: None,
             },
             codex_args,
             codex_id,
@@ -684,6 +701,7 @@ mod tests {
                 env: vec![],
                 env_remove: Vec::new(),
                 kill_plan: KillHandle::ProcessGroup,
+                after_exit: None,
                 before_turn: Some(Arc::new(move || {
                     counted.fetch_add(1, Ordering::SeqCst);
                     Err(Error::Other("login expired".into()))
