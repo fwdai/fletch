@@ -54,19 +54,32 @@ pub async fn run_claude_command(
 ) -> Result<ClaudeCommandOutput> {
     let (_, checkout) = primary_repo_checkout(&supervisor, &agent_id)?;
     let home = dirs::home_dir().ok_or_else(|| Error::Other("no home directory".into()))?;
-    let bin = match crate::bin_resolve::resolve_agent_override(&agent_id, &home) {
-        Some(Ok(path)) => path,
-        _ => crate::bin_resolve::resolve_bin("claude", &home)
-            .ok_or_else(|| Error::Other("claude binary not found".into()))?,
-    };
 
-    let mut cmd = tokio::process::Command::new(&bin);
-    cmd.args(&args).current_dir(&checkout).kill_on_drop(true);
-    if let Some(env) = crate::bin_resolve::login_shell_env() {
-        for (k, v) in env {
-            cmd.env(k, v);
+    // The claude that answers is the one the agent runs: for a checkout a box
+    // keeps in its guest, the guest's claude, in the guest (the host's would
+    // report on an empty placeholder); otherwise the host's binary.
+    let mut cmd = match crate::sandbox::boxes::guest_program(&checkout, "claude", &args)? {
+        Some((program, wrapper_args)) => {
+            let mut cmd = tokio::process::Command::new(program);
+            cmd.args(wrapper_args).kill_on_drop(true);
+            cmd
         }
-    }
+        None => {
+            let bin = match crate::bin_resolve::resolve_agent_override(&agent_id, &home) {
+                Some(Ok(path)) => path,
+                _ => crate::bin_resolve::resolve_bin("claude", &home)
+                    .ok_or_else(|| Error::Other("claude binary not found".into()))?,
+            };
+            let mut cmd = tokio::process::Command::new(&bin);
+            cmd.args(&args).current_dir(&checkout).kill_on_drop(true);
+            if let Some(env) = crate::bin_resolve::login_shell_env() {
+                for (k, v) in env {
+                    cmd.env(k, v);
+                }
+            }
+            cmd
+        }
+    };
 
     const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
     let out = tokio::time::timeout(TIMEOUT, cmd.output())

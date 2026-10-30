@@ -96,6 +96,13 @@ pub fn open_in_editor(
     editor_id: String,
 ) -> Result<()> {
     let (_, checkout) = primary_repo_checkout(&supervisor, &agent_id)?;
+    // A box keeps the checkout in its guest; the host path is an empty
+    // placeholder an editor would open as an empty folder.
+    if crate::sandbox::boxes::box_holding(&checkout).is_some() {
+        return Err(Error::Other(
+            "This workspace runs inside a box sandbox; its files live in the box, not in a folder on this Mac. Use the workspace's file panel or terminal instead.".into(),
+        ));
+    }
     crate::editors::open(&editor_id, &checkout)
 }
 

@@ -193,6 +193,23 @@ impl Verifier {
             }
             return VerificationReport { checks };
         }
+        // The checks run on the host, in the worktree; a box keeps its
+        // checkout in the guest, which they cannot reach yet. Skipped and
+        // reported as such, rather than run in the empty host placeholder.
+        if matches!(
+            crate::exec::for_path(worktree),
+            crate::exec::Executor::Remote(_)
+        ) {
+            tracing::info!(
+                worktree = %worktree.display(),
+                "verify: the checkout is inside a box; skipping checks"
+            );
+            let mut checks = vec![skipped("test", "")];
+            if include_lint {
+                checks.push(skipped("lint", ""));
+            }
+            return VerificationReport { checks };
+        }
 
         let resolved = resolve(
             worktree,

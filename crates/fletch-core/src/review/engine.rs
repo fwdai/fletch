@@ -1145,11 +1145,24 @@ async fn ensure_reviewer(
     spec: &ReviewerSpec,
     existing: Option<&ReviewerView>,
 ) -> Result<ReviewerView> {
+    let checkout = repo.checkout_path(&coder.id)?;
+    // Where the reviewer must run: where the coder's checkout lives
+    // (`sandbox::engine_for_adopted_tree`). A reviewer on record that was
+    // stamped with another engine — one made before placement followed the
+    // tree, which could leave a box-stamped reviewer facing a host tree — is
+    // replaced rather than resumed into a launch that has nowhere to run.
+    let wanted_engine = crate::sandbox::engine_for_adopted_tree(&checkout);
     if let Some(id) = existing.and_then(|r| r.agent_id.as_deref()) {
         match sup.workspace.agent(id) {
             Ok(record)
                 if record.archive.is_none()
-                    && record.custom_agent_id.as_deref() == Some(spec.custom_agent_id.as_str()) =>
+                    && record.custom_agent_id.as_deref() == Some(spec.custom_agent_id.as_str())
+                    && record
+                        .sandbox_engine
+                        .as_deref()
+                        .and_then(crate::sandbox::EngineKind::from_setting)
+                        .unwrap_or(crate::sandbox::EngineKind::SandboxExec)
+                        == wanted_engine =>
             {
                 if !sup.agents.lock().contains_key(id) {
                     sup.clone().resume_agent(ctx.clone(), id).await?;
@@ -1163,7 +1176,8 @@ async fn ensure_reviewer(
                 });
             }
             Ok(record) if record.archive.is_none() => {
-                // Built from another reviewer: replaced, not reused.
+                // Built from another reviewer, or stamped with an engine that
+                // cannot reach the checkout: replaced, not reused.
                 if let Err(e) = sup.clone().discard_agent(id).await {
                     tracing::warn!(error = %e, reviewer = id, "old reviewer not discarded");
                 }
@@ -1179,7 +1193,6 @@ async fn ensure_reviewer(
             &spec.base,
         )
     };
-    let checkout = repo.checkout_path(&coder.id)?;
     let coder_name = coder.title.clone().unwrap_or_else(|| coder.name.clone());
     let req = SpawnRequest {
         view: AgentView::Custom,

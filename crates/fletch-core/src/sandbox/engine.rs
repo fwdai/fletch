@@ -155,10 +155,11 @@ pub enum KillPlan {
         /// docker — one daemon endpoint, nothing to distinguish.
         connection: Option<String>,
     },
-    /// One ssh session into an agent's box. The session's own process-group
-    /// kill ends the ssh client, and with it the
-    /// guest PTY; the engine only detaches the launch, leaving the VM to the
-    /// registry's idle timer.
+    /// One ssh session into a box. The session's own process-group kill ends
+    /// the ssh client, and with it the guest PTY; the engine only detaches the
+    /// launch, leaving the VM to the registry's idle timer. `agent_id` is the
+    /// box's owner — the launching agent, or its host when the launch is a
+    /// tenant's (`sandbox::boxes`).
     Box { agent_id: String, launch_id: String },
 }
 

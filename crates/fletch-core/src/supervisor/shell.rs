@@ -25,8 +25,19 @@ impl Supervisor {
             .ok_or_else(|| Error::Other("agent has no repos".into()))?;
         let checkout = repo.checkout_path(agent_id)?;
 
-        let shell_str = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
-        let shell_path = std::path::PathBuf::from(&shell_str);
+        // The shell opens where the checkout is: a box keeps it in its guest,
+        // so the terminal is a login shell there, over the box's channel; a
+        // host checkout gets the user's own shell. The host PTY's cwd is the
+        // checkout either way (a box has a placeholder directory there).
+        let (shell_path, args) =
+            match crate::sandbox::boxes::guest_program(&checkout, "bash", &["-l".to_string()])? {
+                Some(launch) => launch,
+                None => {
+                    let shell_str =
+                        std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
+                    (std::path::PathBuf::from(&shell_str), Vec::new())
+                }
+            };
 
         let sup_weak = Arc::downgrade(&self);
         let agent_id_out = agent_id.to_string();
@@ -35,7 +46,7 @@ impl Supervisor {
         let session = PtySession::spawn(
             PtySpawn {
                 program: &shell_path,
-                args: &[],
+                args: &args,
                 cwd: &checkout,
                 env: &[],
                 cols: 120,

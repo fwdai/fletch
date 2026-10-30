@@ -207,7 +207,11 @@ pub(super) async fn provision_then_release(
 /// always removed: it holds only Fletch-generated per-agent artifacts, and an
 /// adopted tree is never inside it (adoption records the real path rather than
 /// linking to it, so no recursive delete can reach through).
-async fn discard_failed_spawn(checkout: Option<&Path>, parent_dir: &Path) {
+async fn discard_failed_spawn(agent_id: &str, checkout: Option<&Path>, parent_dir: &Path) {
+    // A box-stamped spawn provisioned into its guest: the box goes first, data
+    // disk and all, so the host paths below are only its placeholders and a
+    // later attempt never finds a half-made checkout on a surviving disk.
+    let _ = sandbox::boxes::discard_if_any(agent_id).await;
     if let Some(checkout) = checkout {
         let _ = provision::teardown(checkout).await;
     }
@@ -275,11 +279,15 @@ async fn discard_if_still_dead(sup: &Supervisor, agent_id: &str, parent_dir: &Pa
                     error = %e,
                     "abandoned spawn: could not set its dir aside; removing in place"
                 );
-                discard_failed_spawn(None, parent_dir).await;
+                discard_failed_spawn(agent_id, None, parent_dir).await;
                 return;
             }
         }
     };
+    // A box-stamped spawn's checkout is on its data disk, which no tombstone
+    // sweep reaches: the box goes with the attempt, outside the lock like the
+    // delete below (a stop ladder is slow).
+    let _ = sandbox::boxes::discard_if_any(agent_id).await;
     // Once set aside the tree is invisible to every other path, so a failed
     // delete costs disk, not correctness: `boot` sweeps leftover tombstones
     // (`workspace::sweep_discarded_checkouts`), which is the retry.
@@ -502,10 +510,46 @@ impl Supervisor {
         // can't fail with a missing working directory downstream.
         git::ensure_head_commit(&repo_path).await?;
 
+        // Adopting a pre-provisioned tree must be decided before anything else:
+        // it is the one mode in which no clone happens, so the base the caller
+        // asked for is only ever the *recorded* parent branch, never a fork
+        // point — and it decides the engine below. The directory must already
+        // be a working tree — the run provisions it before the first step (see
+        // `SpawnRequest`), the reviewer's coder has one — and discovering
+        // otherwise later means a spawn that failed after the record was
+        // written. Asked where the tree lives: a coder's checkout in a box
+        // exists only in its guest, and the host path is an empty placeholder.
+        let adopted = match existing_workspace {
+            Some(path) => {
+                let is_repo = crate::exec::for_path(&path)
+                    .exists(&path.join(".git"))
+                    .map_err(|e| {
+                        Error::InvalidPath(format!(
+                            "adopted workspace {} could not be read: {e}",
+                            path.display()
+                        ))
+                    })?;
+                if !is_repo {
+                    return Err(Error::InvalidPath(format!(
+                        "adopted workspace is not a git repository: {}",
+                        path.display()
+                    )));
+                }
+                Some(path)
+            }
+            None => None,
+        };
+
         // The engine this agent will be stamped with, resolved once so the
         // provider gate, the stamp, and the provisioning mode below all agree.
-        let engine_kind =
-            sandbox::boxes::engine_for_new_agent(sandbox::selected_engine_kind(), &provider);
+        // An adopting agent runs where its tree lives (`engine_for_adopted_tree`):
+        // in the box that holds it, or never in a box for a host tree.
+        let engine_kind = match &adopted {
+            Some(tree) => sandbox::engine_for_adopted_tree(tree),
+            None => {
+                sandbox::boxes::engine_for_new_agent(sandbox::selected_engine_kind(), &provider)
+            }
+        };
         ensure_engine_supports_provider(engine_kind, &provider)?;
 
         // Only agents with a wired native (PTY/TUI) view can honor a Native
@@ -544,25 +588,6 @@ impl Supervisor {
         let parent_branch = match &fork_base {
             Some(base) if !base.trim().is_empty() => base.trim().to_string(),
             _ => git::default_branch(&repo_path).await,
-        };
-        // Adopting a pre-provisioned tree must be decided before anything else:
-        // it is the one mode in which no clone happens, so the base the caller
-        // asked for is only ever the *recorded* parent branch, never a fork
-        // point. The directory must already be a working tree — the run
-        // provisions it before the first step (see `SpawnRequest`), and
-        // discovering otherwise later means a spawn that failed after the record
-        // was written.
-        let adopted = match existing_workspace {
-            Some(path) => {
-                if !path.join(".git").exists() {
-                    return Err(Error::InvalidPath(format!(
-                        "adopted workspace is not a git repository: {}",
-                        path.display()
-                    )));
-                }
-                Some(path)
-            }
-            None => None,
         };
         let subdir = allocate_repo_subdir(&repo_path, &[]);
         // Cloned for the background fork task — `parent_branch`/`subdir` are
@@ -900,7 +925,8 @@ impl Supervisor {
                         .attach_repo_checkout(&ctx_for_task, &id_for_task, source.clone(), false)
                         .await
                     {
-                        discard_failed_spawn(owned_checkout.as_deref(), &parent_dir).await;
+                        discard_failed_spawn(&id_for_task, owned_checkout.as_deref(), &parent_dir)
+                            .await;
                         fail_spawn(
                             &sup,
                             &ctx_for_task,
@@ -923,7 +949,8 @@ impl Supervisor {
                     return;
                 }
                 if let Err(e) = sup.start_from(&id_for_task, code).await {
-                    discard_failed_spawn(owned_checkout.as_deref(), &parent_dir).await;
+                    discard_failed_spawn(&id_for_task, owned_checkout.as_deref(), &parent_dir)
+                        .await;
                     fail_spawn(&sup, &ctx_for_task, &id_for_task, e.to_string());
                     return;
                 }
@@ -939,7 +966,8 @@ impl Supervisor {
             match &handoff {
                 Some(SpawnHandoff::Native { .. }) => {
                     if let Err(e) = sup.materialize(&id_for_task) {
-                        discard_failed_spawn(owned_checkout.as_deref(), &parent_dir).await;
+                        discard_failed_spawn(&id_for_task, owned_checkout.as_deref(), &parent_dir)
+                            .await;
                         fail_spawn(
                             &sup,
                             &ctx_for_task,
@@ -961,7 +989,8 @@ impl Supervisor {
                     )
                     .await;
                     if let Err(e) = sup.workspace.set_handoff_context(&id_for_task, &context) {
-                        discard_failed_spawn(owned_checkout.as_deref(), &parent_dir).await;
+                        discard_failed_spawn(&id_for_task, owned_checkout.as_deref(), &parent_dir)
+                            .await;
                         fail_spawn(&sup, &ctx_for_task, &id_for_task, e.to_string());
                         return;
                     }
@@ -976,7 +1005,7 @@ impl Supervisor {
             tokio::time::sleep(Duration::from_millis(350)).await;
 
             if let Err(e) = sup.start_process(&ctx_for_task, &id_for_task).await {
-                discard_failed_spawn(owned_checkout.as_deref(), &parent_dir).await;
+                discard_failed_spawn(&id_for_task, owned_checkout.as_deref(), &parent_dir).await;
                 fail_spawn(&sup, &ctx_for_task, &id_for_task, e.to_string());
             }
         };
@@ -1421,6 +1450,13 @@ impl Supervisor {
         // respawn), not just fresh spawns: not every provider is wired up to run
         // under a container engine.
         ensure_engine_supports_provider(engine, &record.provider)?;
+        // A box-stamped agent that adopted its tree runs in the box that
+        // holds it (`sandbox::boxes`, tenants). Routed before the profile is
+        // materialized under `sandbox_root` below, so those writes land in
+        // the guest it will run in rather than on the host.
+        if engine == EngineKind::Box {
+            sandbox::boxes::route_tenant(record)?;
+        }
         // Every launch path, so a checkout older than the attribution hook
         // gets it on the agent's next start.
         crate::attribution::refresh_hooks(agent_id, &record.repos).await;

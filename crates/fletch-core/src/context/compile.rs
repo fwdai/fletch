@@ -503,7 +503,11 @@ fn missing_anchors(
             )
         })
         .map(|p| trim_path(p))
-        .filter(|p| checkable(p) && !root.join(p).exists())
+        // Asked where the checkout lives: a box keeps it in its guest. A path
+        // that cannot be checked at all is not reported missing.
+        .filter(|p| {
+            checkable(p) && matches!(crate::exec::for_path(root).exists(&root.join(p)), Ok(false))
+        })
         .collect()
 }
 
