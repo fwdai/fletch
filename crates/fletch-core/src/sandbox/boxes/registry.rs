@@ -726,19 +726,44 @@ impl BoxRegistry {
     /// the control port, the ssh sysrq rung, SIGTERM, SIGKILL. `dirty` is
     /// cleared only after a clean rung.
     pub async fn stop(&self, agent_id: &str, reason: StopReason) -> Result<StopOutcome> {
-        let (running, lifecycle) = {
+        match self.take_running(agent_id, |_| true) {
+            Some(taken) => self.stop_taken(agent_id, reason, taken).await,
+            None => Ok(StopOutcome::AlreadyExited),
+        }
+    }
+
+    /// Take `agent_id`'s running VM for a stop, if `may_stop` allows it: both
+    /// under one lock, so what `may_stop` checks still holds when the VM is
+    /// taken. The idle timer's "nothing attached" must: a session attaching
+    /// between a separate check and the take would have its VM stopped under
+    /// it. `None` when there is no running VM or `may_stop` refuses.
+    fn take_running(
+        &self,
+        agent_id: &str,
+        may_stop: impl FnOnce(&Entry) -> bool,
+    ) -> Option<(Arc<RunningBox>, Arc<tokio::sync::Mutex<()>>)> {
+        let taken = {
             let mut entries = self.entries.lock();
-            let Some(entry) = entries.get_mut(agent_id) else {
-                return Ok(StopOutcome::AlreadyExited);
-            };
-            let Some(running) = entry.running.take() else {
-                return Ok(StopOutcome::AlreadyExited);
-            };
+            let entry = entries.get_mut(agent_id)?;
+            if !may_stop(entry) {
+                return None;
+            }
+            let running = entry.running.take()?;
             entry.phase = BoxPhase::Stopping;
             entry.idle_gen += 1;
             (running, entry.lifecycle.clone())
         };
         self.emit_state(agent_id);
+        Some(taken)
+    }
+
+    /// The ladder for a VM [`Self::take_running`] took.
+    async fn stop_taken(
+        &self,
+        agent_id: &str,
+        reason: StopReason,
+        (running, lifecycle): (Arc<RunningBox>, Arc<tokio::sync::Mutex<()>>),
+    ) -> Result<StopOutcome> {
         let _guard = lifecycle.lock().await;
         if reason != StopReason::Discard {
             if let Err(e) = super::mirror::refresh_running(&running).await {
@@ -799,7 +824,10 @@ impl BoxRegistry {
             .map_or(true, |e| e.discarding)
     }
 
-    /// A launch began a session in the box; the idle timer stands down.
+    /// A session in the box is starting; the idle timer stands down. Attach
+    /// *before* reaching the box (`boxes::Hold`): the idle stop only spares a
+    /// box that is attached when it takes the VM, so a session that attaches
+    /// once it has the channel can still be handed a VM being stopped.
     pub fn attach(&self, agent_id: &str, launch_id: &str) {
         let mut entries = self.entries.lock();
         if let Some(entry) = entries.get_mut(agent_id) {
@@ -832,14 +860,16 @@ impl BoxRegistry {
         crate::host::spawn(async move {
             tokio::time::sleep(idle).await;
             let registry = BoxRegistry::global();
-            let still_idle =
-                registry.entries.lock().get(&agent_id).is_some_and(|e| {
-                    e.idle_gen == gen && e.attached.is_empty() && e.running.is_some()
-                });
-            if still_idle {
-                if let Err(e) = registry.stop(&agent_id, StopReason::Idle).await {
-                    tracing::warn!(agent_id, error = %e, "idle stop failed");
-                }
+            let Some(taken) =
+                registry.take_running(&agent_id, |e| e.idle_gen == gen && e.attached.is_empty())
+            else {
+                return;
+            };
+            if let Err(e) = registry
+                .stop_taken(&agent_id, StopReason::Idle, taken)
+                .await
+            {
+                tracing::warn!(agent_id, error = %e, "idle stop failed");
             }
         });
     }
@@ -1667,6 +1697,50 @@ mod tests {
             crate::exec::for_path(&tenant_root.join(".fletch-profile")),
             crate::exec::Executor::Local
         ));
+    }
+
+    /// A session's hold keeps its box attached until the session's kill, or
+    /// until it is dropped when no session came of it; a host tree has no box
+    /// to hold.
+    #[tokio::test]
+    async fn a_session_hold_is_released_by_its_kill_or_its_drop() {
+        use crate::sandbox::KillHandle;
+        let registry = BoxRegistry::global();
+        let id = "session-hold-test";
+        registry.register(BoxIdentity {
+            agent_id: id.into(),
+            project_id: "p".into(),
+            provider: "claude".into(),
+            writable_root: PathBuf::from("/session-hold-test/root"),
+            rpc_dir: PathBuf::from("/session-hold-test/rpc"),
+            home: PathBuf::from("/session-hold-test/home"),
+            shares: Vec::new(),
+        });
+        let attached = || {
+            registry
+                .entries
+                .lock()
+                .get(id)
+                .map_or(0, |e| e.attached.len())
+        };
+
+        let tree = Path::new("/session-hold-test/root/repo");
+        assert!(super::super::hold_session(Path::new("/session-hold-test/elsewhere")).is_none());
+
+        // Dropped on the way to a session that never started.
+        let hold = super::super::hold_session(tree).expect("a box holds the tree");
+        assert_eq!(attached(), 1);
+        drop(hold);
+        assert_eq!(attached(), 0);
+
+        // Handed to the session, whose kill releases it.
+        let kill = super::super::hold_session(tree).unwrap().into_kill();
+        assert!(matches!(kill, KillHandle::Engine { .. }));
+        assert_eq!(attached(), 1);
+        kill.kill().unwrap();
+        assert_eq!(attached(), 0);
+
+        registry.discard(id).await.unwrap();
     }
 
     /// A box boots with the disk carrying codegraph once it is built, the

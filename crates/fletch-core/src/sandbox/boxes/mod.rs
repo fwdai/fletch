@@ -514,6 +514,16 @@ impl SandboxEngine for BoxEngine {
         }
         let box_agent_id = identity.agent_id.clone();
         let registry = BoxRegistry::global();
+        let launch_id = uuid::Uuid::new_v4().to_string();
+        // Held on the box it runs in before reaching it, so the idle stop
+        // cannot take the VM between handing it out and the session (a
+        // tenant's session keeps its host's VM up too). Every failure below
+        // drops the hold; after that the plan's kill releases it, which
+        // `KillGuard` runs should the session never start.
+        // Registered first: a first launch's box is not known yet, and a hold
+        // on an unknown box holds nothing.
+        registry.register(identity.clone());
+        let hold = Hold::take(&box_agent_id, &launch_id);
         // Waits for the image and the tools disk when they are still being
         // set up (`setup`), so a launch during setup is late, never refused.
         let mut running = block_on(registry.ensure_running(&identity))?;
@@ -569,7 +579,6 @@ impl SandboxEngine for BoxEngine {
         // The provider's home in the guest, as its adapter lays it out:
         // before every launch, so the user's config changes reach it.
         home::seed(&running.channel, provider_home, ctx.home, ctx.writable_root)?;
-        let launch_id = uuid::Uuid::new_v4().to_string();
         let env_file = env_file_path(&launch_id);
 
         let remote =
@@ -614,32 +623,21 @@ impl SandboxEngine for BoxEngine {
                 launch_id.clone(),
                 PendingLaunch {
                     agent_id: ctx.agent_id.to_string(),
-                    box_agent_id: box_agent_id.clone(),
+                    box_agent_id,
                     provider: ctx.provider.to_string(),
                     home: ctx.home.to_path_buf(),
                     credentials,
                 },
             );
-        // Attached to the box it runs in: a tenant's session keeps its host's
-        // VM from stopping idle under it.
-        registry.attach(&box_agent_id, &launch_id);
         Ok(LaunchPlan {
             program: PathBuf::from(BASH),
             prefix_args,
             env,
             env_remove: ENV_DENY.iter().map(|v| v.to_string()).collect(),
-            env_delivery: EnvDelivery::GuestFile {
-                launch_id: launch_id.clone(),
-            },
+            env_delivery: EnvDelivery::GuestFile { launch_id },
             before_turn,
             after_exit,
-            kill: KillHandle::Engine {
-                engine: BoxEngine::shared(),
-                plan: KillPlan::Box {
-                    agent_id: box_agent_id,
-                    launch_id,
-                },
-            },
+            kill: hold.into_kill(),
         })
     }
 
@@ -824,6 +822,63 @@ pub fn guest_program(
         &remote,
     );
     Ok(Some((PathBuf::from(BASH), wrapper)))
+}
+
+/// A session's claim on its box against the idle stop
+/// ([`BoxRegistry::attach`]), taken *before* the session reaches the box: the
+/// idle stop spares only a box attached when it takes the VM, so a session
+/// that held first is never handed a VM being stopped idle. Dropped — any
+/// failure on the way to the session — it detaches; [`Hold::into_kill`] hands
+/// that to the session's kill instead ([`BoxEngine::kill`] detaches), which
+/// must then run whether or not the session starts (`sandbox::KillGuard`).
+#[must_use]
+pub struct Hold {
+    agent_id: String,
+    launch_id: String,
+    handed_off: bool,
+}
+
+impl Hold {
+    /// Attach `launch_id` to `agent_id`'s box, which must be registered.
+    fn take(agent_id: &str, launch_id: &str) -> Hold {
+        BoxRegistry::global().attach(agent_id, launch_id);
+        Hold {
+            agent_id: agent_id.to_string(),
+            launch_id: launch_id.to_string(),
+            handed_off: false,
+        }
+    }
+
+    /// The kill handle of the session this hold was for, which releases it.
+    pub fn into_kill(mut self) -> KillHandle {
+        self.handed_off = true;
+        KillHandle::Engine {
+            engine: BoxEngine::shared(),
+            plan: KillPlan::Box {
+                agent_id: std::mem::take(&mut self.agent_id),
+                launch_id: std::mem::take(&mut self.launch_id),
+            },
+        }
+    }
+}
+
+impl Drop for Hold {
+    fn drop(&mut self) {
+        if !self.handed_off {
+            BoxRegistry::global().detach(&self.agent_id, &self.launch_id);
+        }
+    }
+}
+
+/// Hold the box that holds `tree` for a session the user opens in it (the
+/// workspace terminal), as an agent's launch is held. Take it before
+/// [`guest_program`] reaches the box. `None` for a host tree.
+pub fn hold_session(tree: &Path) -> Option<Hold> {
+    let identity = box_holding(tree)?;
+    Some(Hold::take(
+        &identity.agent_id,
+        &uuid::Uuid::new_v4().to_string(),
+    ))
 }
 
 /// Create `guest_path` with `bytes` in the guest that holds `tree`, failing

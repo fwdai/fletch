@@ -50,7 +50,6 @@ use crate::error::{Error, Result};
 use crate::host::EngineCtx;
 use crate::message_queue::MessageQueue;
 use crate::native_input::NativeInputTracker;
-use crate::pty_session::PtySession;
 use crate::run_session::RunSession;
 use crate::workspace::{
     AgentRecord, AgentStatus, ClosedTurn, ProjectDeleteResult, TurnOutcome, Workspace,
@@ -100,7 +99,9 @@ pub struct Supervisor {
     /// Per-agent native-view input trackers, reconstructing submitted lines
     /// from raw keystroke bytes (see `native_input`).
     pub native_inputs: Mutex<HashMap<String, NativeInputTracker>>,
-    pub shells: Mutex<HashMap<String, PtySession>>,
+    /// Per-agent workspace terminals, each open or still opening (see
+    /// `shell::ShellSlot`).
+    pub shells: Mutex<HashMap<String, shell::ShellSlot>>,
     /// Per-agent run-panel processes (dev server + setup). Reused
     /// across start/stop cycles so the log buffer survives.
     pub runs: Mutex<HashMap<String, Arc<RunSession>>>,
@@ -318,8 +319,12 @@ impl Supervisor {
         }
         drop(runs);
 
-        // Interactive shells: PtySession::drop kills the child.
-        drop(std::mem::take(&mut *self.shells.lock()));
+        // Interactive shells: PtySession::drop kills the child, and an open
+        // still under way finds its slot gone and drops what it starts. Bound
+        // first, so the drop runs after the guard is released (a temporary
+        // guard in the `drop(...)` statement itself lives until its end).
+        let shells = std::mem::take(&mut *self.shells.lock());
+        drop(shells);
 
         // Agent sessions: `Agent::shutdown` consumes and drops, killing the
         // managed/pty/per-turn child. Bump each generation *first* so the
@@ -803,7 +808,7 @@ fn transition_active(sup: &Supervisor, ctx: &Arc<EngineCtx>, agent_id: &str, new
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pty_session::PtySpawn;
+    use crate::pty_session::{PtySession, PtySpawn};
     use crate::sandbox::KillHandle;
     use crate::workspace::{new_agent_record, AgentView, TrackedRepo};
     use std::path::Path;
@@ -925,7 +930,13 @@ mod tests {
             |_| {},
         )
         .unwrap();
-        sup.shells.lock().insert("agent".to_string(), pty);
+        sup.shells.lock().insert(
+            "agent".to_string(),
+            shell::ShellSlot::Open {
+                gen: 0,
+                session: pty,
+            },
+        );
 
         // Wait for both pids to be recorded by the spawned tree.
         let (mut leader, mut child) = (0i32, 0i32);
@@ -1001,7 +1012,13 @@ mod tests {
             },
         )
         .unwrap();
-        sup.shells.lock().insert("agent".to_string(), pty);
+        sup.shells.lock().insert(
+            "agent".to_string(),
+            shell::ShellSlot::Open {
+                gen: 0,
+                session: pty,
+            },
+        );
 
         sup.shutdown();
 

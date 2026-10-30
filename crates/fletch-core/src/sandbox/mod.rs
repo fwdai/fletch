@@ -19,7 +19,8 @@ use crate::error::{Error, Result};
 
 pub use docker::{availability as docker_availability, DockerAvailability};
 pub use engine::{
-    AgentLaunchCtx, EngineKind, EnvDelivery, KillHandle, LaunchPlan, SandboxEngine, TurnPrep,
+    AgentLaunchCtx, EngineKind, EnvDelivery, KillGuard, KillHandle, LaunchPlan, SandboxEngine,
+    TurnPrep,
 };
 pub use guarantees::{describe as describe_isolation, IsolationReport};
 pub use podman::{

@@ -16,6 +16,9 @@ export function TermPanel({ agent }: { agent: AgentRecord }) {
       scrollback: 20000,
     },
     (term) => {
+      // A failed open (a box that would not boot) is written into the shell's
+      // own stream by the engine, so whichever mount is showing gets it —
+      // this call may return to a mount that is already gone.
       api.openAgentShell(agent.id).catch((err) => {
         console.error("openAgentShell failed", err);
       });
