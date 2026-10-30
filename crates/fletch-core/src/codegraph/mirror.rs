@@ -206,53 +206,29 @@ pub async fn copy_index_into(mirror_dir: &Path, checkout: &Path) -> Result<()> {
     if !src_index.join(INDEX_DB_FILES[0]).exists() {
         return Ok(());
     }
-    let dst_index = checkout.join(INDEX_DIR);
+    let dst = checkout.to_path_buf();
     // Blocking: a box's executor speaks ssh.
-    tokio::task::spawn_blocking(move || copy_index_files(&src_index, &dst_index))
+    tokio::task::spawn_blocking(move || copy_index_files(&src_index, &dst))
         .await
         .map_err(|e| Error::Other(format!("codegraph index copy task: {e}")))??;
     append_git_exclude(checkout).await
 }
 
-/// [`copy_index_into`]'s copy, through `dst_index`'s executor: a file copy for
-/// a checkout on this host, the bytes written over the channel for a box's.
-fn copy_index_files(src_index: &Path, dst_index: &Path) -> Result<()> {
-    let exec = crate::exec::for_path(dst_index);
-    let local = matches!(exec, crate::exec::Executor::Local);
-    if local {
-        // The host writes into a tree the agent writes too: a `.codegraph` the
-        // agent swapped for a link would carry these writes anywhere the user
-        // can write (as `agent_profile::ensure_real_dir` guards). In a box the
-        // tree is the guest's own, where a link leads nowhere else.
-        clear_link(dst_index)?;
-    }
-    exec.create_dir_all(dst_index)
-        .map_err(|e| Error::Other(format!("create checkout .codegraph: {e}")))?;
+/// [`copy_index_into`]'s copy, through the checkout's executor as one of
+/// Fletch's own files (`Executor::copy_beneath`): a clone or copy that never
+/// follows a link the agent planted for a checkout on this host, the bytes
+/// written over the channel for a box's.
+fn copy_index_files(src_index: &Path, checkout: &Path) -> Result<()> {
+    let exec = crate::exec::for_path(checkout);
     for name in INDEX_DB_FILES {
         let from = src_index.join(name);
         if !from.exists() {
             continue;
         }
-        let to = dst_index.join(name);
-        let copied = if local {
-            clear_link(&to)?;
-            std::fs::copy(&from, &to).map(drop)
-        } else {
-            std::fs::read(&from).and_then(|bytes| exec.write(&to, &bytes))
-        };
-        copied.map_err(|e| Error::Other(format!("copy {name} into checkout: {e}")))?;
+        exec.copy_beneath(&from, checkout, &Path::new(INDEX_DIR).join(name), 0o644)
+            .map_err(|e| Error::Other(format!("copy {name} into checkout: {e}")))?;
     }
     Ok(())
-}
-
-/// Remove a symlink at `path`, so a write there creates a file instead of
-/// following it. Anything else is left alone.
-fn clear_link(path: &Path) -> Result<()> {
-    match std::fs::symlink_metadata(path) {
-        Ok(meta) if meta.file_type().is_symlink() => std::fs::remove_file(path)
-            .map_err(|e| Error::Other(format!("clear {}: {e}", path.display()))),
-        _ => Ok(()),
-    }
 }
 
 /// Add `.codegraph` to a checkout's `.git/info/exclude` so the copied index
@@ -446,8 +422,9 @@ mod tests {
         assert!(!root.exists(), "nothing may be written on the host side");
     }
 
-    /// On this host, a `.codegraph` (or db) the agent swapped for a link is
-    /// replaced, never written through.
+    /// On this host the copy never follows a link the agent planted: a
+    /// `.codegraph` swapped for one is refused, a link at the db itself is
+    /// replaced by the copy.
     #[cfg(unix)]
     #[tokio::test]
     async fn copy_index_does_not_follow_a_planted_link() {
@@ -462,19 +439,20 @@ mod tests {
         let checkout = td.path().join("checkout");
         std::fs::create_dir_all(&checkout).unwrap();
         std::os::unix::fs::symlink(&outside, checkout.join(".codegraph")).unwrap();
-        copy_index_into(&mirror, &checkout).await.unwrap();
-        assert!(!std::fs::symlink_metadata(checkout.join(".codegraph"))
-            .unwrap()
-            .file_type()
-            .is_symlink());
+        assert!(copy_index_into(&mirror, &checkout).await.is_err());
         assert!(!outside.join("codegraph.db").exists());
 
-        // A link at the db itself, planted after a first copy.
+        // A real `.codegraph` with a link at the db.
+        std::fs::remove_file(checkout.join(".codegraph")).unwrap();
+        std::fs::create_dir_all(checkout.join(".codegraph")).unwrap();
         let db = checkout.join(".codegraph/codegraph.db");
-        std::fs::remove_file(&db).unwrap();
         std::os::unix::fs::symlink(outside.join("precious"), &db).unwrap();
         copy_index_into(&mirror, &checkout).await.unwrap();
         assert_eq!(std::fs::read(outside.join("precious")).unwrap(), b"keep");
+        assert!(!std::fs::symlink_metadata(&db)
+            .unwrap()
+            .file_type()
+            .is_symlink());
         assert_eq!(std::fs::read(&db).unwrap(), b"DB");
     }
 

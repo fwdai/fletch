@@ -318,16 +318,18 @@ fn remove_request_file(path: &Path) {
     }
 }
 
+/// Write `<key>.json` into `responses` in one rename. The mailbox is the
+/// agent's to write too, and the agent picks `key`, so the write goes by
+/// handle (`PrivateDir`): a link it planted at the response's name is
+/// replaced rather than written through, and a `responses` that is itself a
+/// link is refused. A path-based write here let an agent aim a response at
+/// any file the user can write.
 fn write_response_atomic(responses: &Path, key: &str, resp: &Response) -> Result<()> {
     let json = serde_json::to_vec_pretty(resp)
         .map_err(|e| Error::Other(format!("serialize rpc response: {e}")))?;
-    let final_path = responses.join(format!("{key}.json"));
-    let tmp_path = responses.join(format!("{key}.json.tmp"));
-    std::fs::write(&tmp_path, &json)
-        .map_err(|e| Error::Other(format!("write rpc response tmp: {e}")))?;
-    std::fs::rename(&tmp_path, &final_path)
-        .map_err(|e| Error::Other(format!("rename rpc response: {e}")))?;
-    Ok(())
+    crate::agent::credential_file::PrivateDir::open(responses)
+        .and_then(|dir| dir.write_file(&format!("{key}.json"), &json, 0o600))
+        .map_err(|e| Error::Other(format!("write rpc response: {e}")))
 }
 
 fn is_safe_key(s: &str) -> bool {
@@ -547,7 +549,48 @@ mod tests {
         assert_eq!(v["ok"], true);
         assert_eq!(v["exit_code"], 0);
         assert_eq!(v["stdout"], "pong");
-        assert!(!rpc_dir.join("responses/req-1.json.tmp").exists());
+        // Nothing but the response: no temp file left beside it.
+        let left: Vec<_> = std::fs::read_dir(rpc_dir.join("responses"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(left, ["req-1.json"]);
+    }
+
+    /// The agent names the request, so it can plant a link where the host
+    /// would put the response, or its temp file, ahead of asking: the
+    /// response must replace the link, never land in what it points at.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_response_never_follows_a_link_planted_in_the_mailbox() {
+        let td = tempfile::tempdir().unwrap();
+        let rpc_dir = td.path().join(".fletch-rpc");
+        ensure_mailbox(&rpc_dir).unwrap();
+        let precious = td.path().join("precious");
+        std::fs::write(&precious, "keep").unwrap();
+        let responses = rpc_dir.join("responses");
+        // The temp name the host once wrote through, and a dangling link at the
+        // response's own name (an existing target would read as answered).
+        std::os::unix::fs::symlink(&precious, responses.join("req-9.json.tmp")).unwrap();
+        let unborn = td.path().join("unborn");
+        std::os::unix::fs::symlink(&unborn, responses.join("req-9.json")).unwrap();
+        write_request(
+            &rpc_dir.join("requests"),
+            "req-9.json",
+            r#"{"id":"req-9","op":"ping"}"#,
+        );
+
+        process_pending(&rpc_dir, &MockDispatcher).await;
+
+        assert_eq!(std::fs::read_to_string(&precious).unwrap(), "keep");
+        assert!(!unborn.exists());
+        let response = responses.join("req-9.json");
+        assert!(!std::fs::symlink_metadata(&response)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(&response).unwrap()).unwrap();
+        assert_eq!(v["stdout"], "pong");
     }
 
     #[tokio::test]
@@ -659,6 +702,7 @@ mod tests {
         assert_eq!(v["ok"], true);
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn write_failure_after_dispatch_does_not_redispatch() {
         let td = tempfile::tempdir().unwrap();
@@ -670,9 +714,12 @@ mod tests {
             r#"{"id":"req-8","op":"ping"}"#,
         );
 
-        // A directory at `responses/req-8.json.tmp` makes the tmp write fail on every
-        // platform.
-        std::fs::create_dir(rpc_dir.join("responses/req-8.json.tmp")).unwrap();
+        // A `responses` swapped for a link is refused, so the write fails (for
+        // root too, unlike a read-only directory).
+        let responses = rpc_dir.join("responses");
+        let elsewhere = td.path().join("elsewhere");
+        std::fs::rename(&responses, &elsewhere).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, &responses).unwrap();
 
         let dispatcher = CountingDispatcher(std::sync::atomic::AtomicUsize::new(0));
         process_pending(&rpc_dir, &dispatcher).await;

@@ -138,6 +138,23 @@ One limit to state plainly: the **Run panel deliberately carries neither half** 
 `npm install` on a husky project legitimately writes `core.hooksPath`, and Run is
 already the weaker boundary by design.
 
+The same shape holds for **files Fletch itself writes into a tree the agent can
+also write**: the `.codegraph` index and its `.git/info/exclude` entry, the
+attribution `commit-msg` hook, the session profile (`.fletch-profile`: MCP
+config, skills), the RPC mailbox's responses, the codex overlay.
+The host writes with the user's full rights, so a link the agent planted at, or
+anywhere above, such a file would carry the write out of the sandbox, and a path
+deny cannot stop that on its own: renaming `.git` to a name the rules don't
+mention and linking it back walks around them. So these writes go **by handle,
+never by path**: every directory is opened without following a link, and the
+file is replaced in one rename, which replaces a planted link instead of writing
+through it (`agent/credential_file.rs`, `PrivateDir`). For a checkout that is
+`exec::Executor::write_beneath`, which in a box is the guest's own write, since
+a link there leads nowhere outside the box. The file panel's Save is the one
+host write into a checkout that follows links, because repositories
+legitimately contain them; it checks that the resolved path stays inside the
+checkout instead (`commands/files.rs`, `safe_join`).
+
 ### What the Docker container mounts
 
 Only the agent's writable root, its RPC mailbox and its project's toolchain

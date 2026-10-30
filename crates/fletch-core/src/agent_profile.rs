@@ -166,53 +166,73 @@ fn dedupe(base: &str, used: &mut Vec<String>, sep: char) -> String {
     candidate
 }
 
-/// Ensure `dir` is a real directory, replacing an agent-planted symlink (or
-/// stray file) at that path. The profile dir sits under the agent-writable
-/// root but is written by the *host* on every spawn; without this check a
-/// prompt-injected agent could swap `.fletch-profile` for a symlink between
-/// spawns and redirect the host's writes anywhere the user can write. Checked
-/// per component we own (profile root, skills dir) since `create_dir_all`
-/// happily follows an existing symlink.
-fn ensure_real_dir(dir: &Path) -> Result<()> {
-    // A host-side concern: a box's tree is not on the host, and the remote
-    // `write` below creates the directories it needs.
-    let Executor::Local = crate::exec::for_path(dir) else {
-        return Ok(());
-    };
-    if let Ok(meta) = std::fs::symlink_metadata(dir) {
-        if meta.file_type().is_symlink() || !meta.is_dir() {
-            std::fs::remove_file(dir)
-                .map_err(|e| Error::Other(format!("failed to clear profile path: {e}")))?;
+/// The profile directory `dir` (`<sandbox_root>/.fletch-profile`, or a
+/// directory under it) opened by handle on this host, every component from
+/// the writable root down made a real directory: a symlink (or stray file)
+/// the agent planted at one is replaced, never followed. The profile dir sits
+/// under the agent-writable root but is written by the *host* on every spawn;
+/// a path-based check-then-write here once raced a process the agent left
+/// running in its sandbox, which could re-plant the link between the two.
+fn profile_dir_handle(dir: &Path) -> Result<crate::agent::credential_file::PrivateDir> {
+    let profile_root = dir
+        .ancestors()
+        .find(|a| a.file_name().is_some_and(|n| n == PROFILE_DIR))
+        .ok_or_else(|| Error::Other(format!("{} is not a profile dir", dir.display())))?;
+    let anchor = profile_root
+        .parent()
+        .ok_or_else(|| Error::Other("profile dir has no parent".into()))?;
+    let rel = dir
+        .strip_prefix(anchor)
+        .map_err(|e| Error::Other(format!("profile dir: {e}")))?;
+    let open = || -> std::io::Result<_> {
+        let mut handle = crate::agent::credential_file::PrivateDir::open(anchor)?;
+        for name in rel.iter() {
+            let name = name.to_str().ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::InvalidInput, "non-UTF-8 profile path")
+            })?;
+            handle = handle.subdir(name)?;
         }
-    }
-    std::fs::create_dir_all(dir)
-        .map_err(|e| Error::Other(format!("failed to create profile dir: {e}")))
+        Ok(handle)
+    };
+    open().map_err(|e| Error::Other(format!("failed to create profile dir: {e}")))
 }
 
-/// Write a profile artifact, clearing whatever an agent left at the target
-/// path first: a symlink would be *followed* by `fs::write` (redirecting the
-/// host's write), and a directory would fail it with "is a directory",
-/// blocking every later respawn. These are host-owned paths — anything at
-/// them that isn't our regular file is replaced. The agent process is not
-/// running while the host materializes the profile, so there is no live race
-/// with this check.
-fn write_profile_file(path: &Path, contents: &str) -> Result<()> {
-    let exec = crate::exec::for_path(path);
-    // The clearing guards a host path against a link planted on the host; in a
-    // box the tree is the guest's own, where a link can lead nowhere else.
-    if let Executor::Local = exec {
-        if let Ok(meta) = std::fs::symlink_metadata(path) {
-            if meta.is_dir() {
-                std::fs::remove_dir_all(path)
-                    .map_err(|e| Error::Other(format!("failed to clear profile path: {e}")))?;
-            } else if meta.file_type().is_symlink() {
-                std::fs::remove_file(path)
-                    .map_err(|e| Error::Other(format!("failed to clear profile path: {e}")))?;
-            }
-        }
+/// Ensure `dir` is a real directory ([`profile_dir_handle`]). A host-side
+/// concern: a box's tree is not on the host, and the remote `write` below
+/// creates the directories it needs.
+fn ensure_real_dir(dir: &Path) -> Result<()> {
+    match crate::exec::for_path(dir) {
+        Executor::Local => profile_dir_handle(dir).map(drop),
+        Executor::Remote(_) => Ok(()),
     }
-    exec.write(path, contents.as_bytes())
-        .map_err(|e| Error::Other(format!("failed to write profile file: {e}")))
+}
+
+/// Write a profile artifact, replacing whatever an agent left at the target
+/// path: a symlink is replaced in the rename, never followed, and a directory
+/// is cleared first, since it would fail the write with "is a directory" and
+/// block every later respawn. These are host-owned paths — anything at them
+/// that isn't our regular file is replaced. In a box the tree is the guest's
+/// own, where a link can lead nowhere else, so the remote write is the plain
+/// one.
+fn write_profile_file(path: &Path, contents: &str) -> Result<()> {
+    use crate::agent::credential_file::Entry;
+    let exec = crate::exec::for_path(path);
+    let Executor::Local = exec else {
+        return exec
+            .write(path, contents.as_bytes())
+            .map_err(|e| Error::Other(format!("failed to write profile file: {e}")));
+    };
+    let (Some(dir), Some(name)) = (path.parent(), path.file_name().and_then(|n| n.to_str())) else {
+        return Err(Error::InvalidPath(path.display().to_string()));
+    };
+    let handle = profile_dir_handle(dir)?;
+    let written = (|| -> std::io::Result<()> {
+        if handle.entry(name)? == Entry::Dir {
+            handle.remove(name)?;
+        }
+        handle.write_file(name, contents.as_bytes(), 0o644)
+    })();
+    written.map_err(|e| Error::Other(format!("failed to write profile file: {e}")))
 }
 
 /// Filesystem-safe slug for a skill file name: lowercased, runs of

@@ -1746,14 +1746,13 @@ mod tests {
 pub fn ensure_git_exclude(checkout: &Path, entry: &str) -> Result<()> {
     use crate::error::Error;
 
-    let info_dir = checkout.join(".git").join("info");
-    // Where the checkout is: this host, or a box's guest.
-    let exec = crate::exec::for_path(&info_dir);
-    exec.create_dir_all(&info_dir)
-        .map_err(|e| Error::Other(format!("create .git/info: {e}")))?;
-    let exclude = info_dir.join("exclude");
+    // Where the checkout is: this host, or a box's guest. Through the seam's
+    // own-file calls, so a `.git` (or `info`, or `exclude`) the agent swapped
+    // for a link never carries the host's write out of the checkout.
+    let exec = crate::exec::for_path(checkout);
+    let exclude = Path::new(".git/info/exclude");
     let existing = exec
-        .read(&exclude)
+        .read_beneath(checkout, exclude)
         .ok()
         .and_then(|bytes| String::from_utf8(bytes).ok())
         .unwrap_or_default();
@@ -1766,7 +1765,7 @@ pub fn ensure_git_exclude(checkout: &Path, entry: &str) -> Result<()> {
     }
     next.push_str(entry);
     next.push('\n');
-    exec.write(&exclude, next.as_bytes())
+    exec.write_beneath(checkout, exclude, next.as_bytes(), 0o644)
         .map_err(|e| Error::Other(format!("write .git/info/exclude: {e}")))?;
     Ok(())
 }
@@ -1774,6 +1773,8 @@ pub fn ensure_git_exclude(checkout: &Path, entry: &str) -> Result<()> {
 #[cfg(test)]
 mod exclude_tests {
     use super::*;
+    #[cfg(unix)]
+    use std::path::PathBuf;
 
     fn repo() -> tempfile::TempDir {
         let td = tempfile::tempdir().unwrap();
@@ -1817,5 +1818,62 @@ mod exclude_tests {
             std::fs::read_to_string(&exclude).unwrap(),
             "build/\n.codegraph\n"
         );
+    }
+
+    /// An agent-writable checkout with a file outside it the agent may not
+    /// touch, for the link cases below.
+    #[cfg(unix)]
+    fn repo_and_precious() -> (tempfile::TempDir, PathBuf, PathBuf) {
+        let td = tempfile::tempdir().unwrap();
+        let checkout = td.path().join("checkout");
+        std::fs::create_dir_all(checkout.join(".git/info")).unwrap();
+        let precious = td.path().join("precious");
+        std::fs::write(&precious, "keep\n").unwrap();
+        (td, checkout, precious)
+    }
+
+    /// `exclude` itself swapped for a link to a file outside the checkout:
+    /// the link is replaced, the file it pointed at untouched.
+    #[cfg(unix)]
+    #[test]
+    fn an_exclude_linked_out_of_the_checkout_is_replaced_not_written_through() {
+        let (_td, checkout, precious) = repo_and_precious();
+        let exclude = checkout.join(".git/info/exclude");
+        std::os::unix::fs::symlink(&precious, &exclude).unwrap();
+
+        ensure_git_exclude(&checkout, ".codegraph").unwrap();
+
+        assert_eq!(std::fs::read_to_string(&precious).unwrap(), "keep\n");
+        assert!(!std::fs::symlink_metadata(&exclude)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(std::fs::read_to_string(&exclude).unwrap(), ".codegraph\n");
+    }
+
+    /// The seatbelt profile denies writes under `.git/info` by path, which a
+    /// `.git` renamed (to a name it doesn't deny) and linked back walks around:
+    /// a link anywhere above the file is refused, so nothing outside the
+    /// checkout's own `.git` is written.
+    #[cfg(unix)]
+    #[test]
+    fn a_git_dir_linked_elsewhere_is_refused() {
+        let (_td, checkout, precious) = repo_and_precious();
+        let elsewhere = checkout.join(".gitx");
+        std::fs::rename(checkout.join(".git"), &elsewhere).unwrap();
+        std::os::unix::fs::symlink(&precious, elsewhere.join("info/exclude")).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, checkout.join(".git")).unwrap();
+
+        assert!(ensure_git_exclude(&checkout, ".codegraph").is_err());
+        assert_eq!(std::fs::read_to_string(&precious).unwrap(), "keep\n");
+
+        // `info` alone linked out of the checkout: nothing is created there.
+        let outside = checkout.parent().unwrap().join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::remove_file(checkout.join(".git")).unwrap();
+        std::fs::create_dir_all(checkout.join(".git")).unwrap();
+        std::os::unix::fs::symlink(&outside, checkout.join(".git/info")).unwrap();
+        assert!(ensure_git_exclude(&checkout, ".codegraph").is_err());
+        assert!(!outside.join("exclude").exists());
     }
 }
