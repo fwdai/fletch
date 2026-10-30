@@ -82,9 +82,12 @@ pub struct ExecSession {
     kill_plan: KillHandle,
     before_turn: Option<TurnPrep>,
     session_id: Arc<Mutex<Option<String>>>,
-    /// The turn's child, reaped only through the slot so the plan's
-    /// `after_exit` runs once per turn whichever path ends it.
-    child: Arc<child_io::ChildSlot>,
+    /// The current turn's child, in a slot of its own ([`child_io::ChildSlot`]):
+    /// reaped only through it, so the plan's `after_exit` runs once per turn
+    /// whichever path ends it, and watched only by its own reaper.
+    child: Mutex<Option<Arc<child_io::ChildSlot>>>,
+    /// The step each turn's slot runs after its child exits.
+    after_exit: Option<TurnPrep>,
     interrupted: Arc<AtomicBool>,
     /// Monotonic turn counter. A reap thread only reports its exit if its
     /// turn is still the latest — so a superseded turn's late exit can't
@@ -139,7 +142,8 @@ impl ExecSession {
             kill_plan: spec.kill_plan,
             before_turn: spec.before_turn,
             session_id: Arc::new(Mutex::new(spec.session_id)),
-            child: child_io::ChildSlot::new(spec.after_exit),
+            child: Mutex::new(None),
+            after_exit: spec.after_exit,
             interrupted: Arc::new(AtomicBool::new(false)),
             turn_seq: Arc::new(AtomicU64::new(0)),
             build_args: Arc::new(build_args),
@@ -167,8 +171,12 @@ impl ExecSession {
         self.interrupted.store(false, Ordering::SeqCst);
 
         // A new turn supersedes any still-running one (e.g. the user
-        // sent again before the prior turn finished). Kill + reap it.
-        self.child.kill_and_reap("agent");
+        // sent again before the prior turn finished). Kill + reap it, in its
+        // own slot: its reaper, waking later, finds that slot empty and can
+        // touch nothing of the new turn's.
+        if let Some(previous) = self.child.lock().take() {
+            previous.kill_and_reap("agent");
+        }
 
         // The typed message plus one reference line per attachment, so
         // file paths never pollute the user's prose; the agent reads each
@@ -243,7 +251,8 @@ impl ExecSession {
             .take()
             .ok_or_else(|| Error::Other("agent: child stderr missing".into()))?;
 
-        self.child.put(child);
+        let slot = child_io::ChildSlot::new(child, self.after_exit.clone());
+        *self.child.lock() = Some(slot.clone());
 
         // Honor an interrupt that arrived during the spawn/retry window, when
         // no child yet existed for `interrupt()` to signal. Loading the flag
@@ -281,7 +290,7 @@ impl ExecSession {
         let on_exit = self.on_exit.clone();
         let interrupted = self.interrupted.clone();
         let kill_plan = self.kill_plan.clone();
-        child_io::spawn_reaper(self.child.clone(), "agent", move |status| {
+        child_io::spawn_reaper(slot, "agent", move |status| {
             let interrupted = interrupted.load(Ordering::SeqCst);
             let exit = match status {
                 Ok(status) => {
@@ -337,7 +346,7 @@ impl ExecSession {
         {
             use nix::sys::signal::{kill, Signal};
             use nix::unistd::Pid;
-            if let Some(pid) = self.child.pid() {
+            if let Some(pid) = self.child.lock().as_ref().and_then(|s| s.pid()) {
                 let _ = kill(Pid::from_raw(pid as i32), Signal::SIGINT);
             }
         }
@@ -349,7 +358,9 @@ impl ExecSession {
         // engine error. Otherwise a Docker-backed session whose container kill
         // errors would leave the host-side wrapper running.
         let engine_result = self.kill_plan.kill();
-        self.child.kill_and_reap("agent");
+        if let Some(current) = self.child.lock().take() {
+            current.kill_and_reap("agent");
+        }
         engine_result
     }
 }
@@ -487,8 +498,52 @@ mod tests {
         assert_eq!(count.load(Ordering::SeqCst), 1);
     }
 
+    /// A turn sent over a running one supersedes it and is itself reported:
+    /// the old child's reaper, waking after the swap, finds its own slot
+    /// empty and leaves the new turn's child to its own reaper.
+    #[test]
+    fn a_superseding_turn_is_reported_by_its_own_reaper() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("agent.sh");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\ncase \"$*\" in *fast*) echo '{\"type\":\"turn.completed\"}';; *) sleep 30;; esac\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let (xtx, xrx) = mpsc::channel();
+        let session = ExecSession::new(
+            ExecSpawn {
+                program: script,
+                prefix_args: vec![],
+                cwd: dir.path().to_path_buf(),
+                session_id: None,
+                stdout_is_json: true,
+                env: vec![],
+                env_remove: Vec::new(),
+                kill_plan: KillHandle::ProcessGroup,
+                before_turn: None,
+                after_exit: None,
+            },
+            codex_args,
+            codex_id,
+            ExecCallbacks {
+                on_event: |_| {},
+                on_session_id: |_| {},
+                on_exit: move |exit| {
+                    let _ = xtx.send(exit);
+                },
+            },
+        );
+        session.send_user_message("slow", &[], None, None).unwrap();
+        session.send_user_message("fast", &[], None, None).unwrap();
+        let exit = xrx.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(exit.success, "{exit:?}");
+        assert!(xrx.recv_timeout(Duration::from_millis(200)).is_err());
+    }
+
     /// A turn sent over a running one supersedes it: the old child is
-    /// reaped through the slot, with its after-exit step, before the new
+    /// reaped through its slot, with its after-exit step, before the new
     /// one starts.
     #[test]
     fn a_superseding_turn_runs_the_after_exit_step_for_the_old_one() {

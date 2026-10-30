@@ -146,8 +146,7 @@ impl ManagedSession {
             .take()
             .ok_or_else(|| Error::Other("managed: child stdin missing".into()))?;
 
-        let child_arc = child_io::ChildSlot::new(spec.after_exit.clone());
-        child_arc.put(child);
+        let child_arc = child_io::ChildSlot::new(child, spec.after_exit.clone());
         let stdin_arc: Stdin = Arc::new(Mutex::new(Some(stdin)));
         let pending: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
 
@@ -414,7 +413,7 @@ mod tests {
     #[test]
     fn stale_tool_answer_does_not_write() {
         let session = ManagedSession {
-            child: child_io::ChildSlot::new(None),
+            child: child_io::ChildSlot::vacant(),
             stdin: Arc::new(Mutex::new(None)),
             pending: Arc::new(Mutex::new(HashSet::new())),
             kill_plan: KillHandle::ProcessGroup,
