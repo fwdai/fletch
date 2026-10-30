@@ -100,7 +100,7 @@ whisper-rs = { version = "0.16", features = ["metal", "tracing_backend"] }
 # `exception`: catching AppKit exceptions before they unwind into tao's
 # non-unwinding `sendEvent:` (appkit_exceptions.rs).
 objc2 = { version = "0.6", features = ["exception"] }
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSError", "NSString", "objc2-core-foundation"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSError", "NSException", "NSString", "objc2-core-foundation"] }
 block2 = "0.6"
 # Non-blocking window zoom (zoom.rs).
 objc2-app-kit = { version = "0.3", default-features = false, features = [

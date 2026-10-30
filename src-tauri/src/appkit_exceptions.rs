@@ -17,10 +17,11 @@
 use std::panic::AssertUnwindSafe;
 use std::sync::OnceLock;
 
+use objc2::exception::{self, Exception};
 use objc2::rc::Retained;
 use objc2::runtime::{AnyClass, AnyObject, Imp, Sel};
-use objc2::{exception, msg_send, sel};
-use objc2_foundation::NSString;
+use objc2::sel;
+use objc2_foundation::NSException;
 
 /// `void (self, _cmd, NSEvent *)`
 type SendEvent = unsafe extern "C-unwind" fn(&AnyObject, Sel, &AnyObject);
@@ -50,59 +51,51 @@ pub fn install() {
 
 extern "C-unwind" fn send_event(this: &AnyObject, cmd: Sel, event: &AnyObject) {
     let original = *ORIGINAL.get().expect("recorded before the swap");
-    guarded(|| unsafe { original(this, cmd, event) });
-}
-
-/// Run `f`, catching an Objective-C exception it raises: logged, and `None`
-/// returned in place of the value. Rust panics pass through untouched.
-fn guarded<R>(f: impl FnOnce() -> R) -> Option<R> {
-    match exception::catch(AssertUnwindSafe(f)) {
-        Ok(value) => Some(value),
-        Err(exception) => {
-            // The name is one of a fixed vocabulary (`NSInternalInconsistencyException`,
-            // `NSRangeException`, …); the reason is free-form, so it stays in
-            // the log file (`sentry_scrub` drops `reason`).
-            let exception: Option<&AnyObject> = exception.as_deref().map(AsRef::as_ref);
-            let name = exception.and_then(exception_name);
-            let reason = exception.map(|e| format!("{e:?}"));
-            tracing::error!(
-                exception_name = name.as_deref().unwrap_or("nil"),
-                reason = reason.as_deref().unwrap_or("nil"),
-                "AppKit raised an exception during event dispatch; dropped it"
-            );
-            None
-        }
+    if let Err(exception) =
+        exception::catch(AssertUnwindSafe(|| unsafe { original(this, cmd, event) }))
+    {
+        log_dropped(exception);
     }
 }
 
-fn exception_name(exception: &AnyObject) -> Option<String> {
-    let name: Option<Retained<NSString>> = unsafe { msg_send![exception, name] };
-    name.map(|name| name.to_string())
+/// The name is a constant the throwing framework defines
+/// (`NSInternalInconsistencyException`, …) and reaches Sentry; the free-form
+/// reason stays in the log file (`sentry_scrub` drops `reason`).
+fn log_dropped(exception: Option<Retained<Exception>>) {
+    match exception.map(NSException::from_exception) {
+        Some(Ok(e)) => tracing::error!(
+            exception_name = %e.name(),
+            reason = %e.reason().map(|r| r.to_string()).unwrap_or_default(),
+            "AppKit raised an exception during event dispatch; dropped it"
+        ),
+        _ => tracing::error!("AppKit raised a non-NSException during event dispatch; dropped it"),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    /// An out-of-range `characterAtIndex:` raises an NSException (which one
-    /// is Foundation's business); it is caught and named instead of unwinding.
-    #[test]
-    fn an_objc_exception_is_caught() {
-        let empty = NSString::new();
-        let out = guarded(|| {
-            let _: u16 = unsafe { msg_send![&empty, characterAtIndex: 5usize] };
-        });
-        assert!(out.is_none());
+    use objc2::msg_send;
+    use objc2_foundation::NSString;
 
+    /// An out-of-range `characterAtIndex:` raises an NSException (which one
+    /// is Foundation's business): caught, read, and logged without unwinding.
+    #[test]
+    fn an_nsexception_is_caught_and_read() {
+        let empty = NSString::new();
         let caught = exception::catch(AssertUnwindSafe(|| {
             let _: u16 = unsafe { msg_send![&empty, characterAtIndex: 5usize] };
         }))
-        .unwrap_err()
-        .expect("an NSException");
-        let name = exception_name(caught.as_ref()).expect("a named exception");
+        .unwrap_err();
+        let e = NSException::from_exception(caught.clone().expect("an exception"))
+            .expect("an NSException");
+        let name = e.name().to_string();
         assert!(
             name.starts_with("NS") && name.ends_with("Exception"),
             "{name}"
         );
+        assert!(e.reason().is_some());
+        log_dropped(caught);
     }
 
     /// `[super sendEvent:]` from tao's subclass reaches our wrapper, and a
@@ -117,10 +110,5 @@ mod tests {
         let wrapper = unsafe { std::mem::transmute::<SendEvent, Imp>(send_event) };
         assert_eq!(method.implementation() as usize, wrapper as usize);
         assert_ne!(*ORIGINAL.get().unwrap() as usize, wrapper as usize);
-    }
-
-    #[test]
-    fn a_normal_call_returns_its_value() {
-        assert_eq!(guarded(|| 7), Some(7));
     }
 }

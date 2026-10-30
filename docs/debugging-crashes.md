@@ -1,6 +1,6 @@
 # Debugging a native crash
 
-Release builds ship stripped, so a crash report shows our frames as
+Release builds (from 0.8.18) ship stripped, so a crash report shows our frames as
 `Fletch + 0x7f161c`. Each release has its symbols attached as
 `Fletch-<version>-dSYMs.zip` (one `fletch.dSYM` per architecture), which turn
 those addresses back into functions and lines.
@@ -14,18 +14,18 @@ those addresses back into functions and lines.
 Note the app version, the architecture (`arm64` / `x86_64`), and the
 `Fletch` image's base address and UUID. In an `.ips` they are in
 `usedImages`, and each frame of the crashed thread (`faultingThread`) has an
-`imageOffset`.
+`imageOffset`; both are decimal there (shell arithmetic below takes either).
 
 ## 2. Get the matching symbols
 
 ```sh
-gh release download v0.8.17 --pattern 'Fletch-*-dSYMs.zip'
-unzip Fletch-0.8.17-dSYMs.zip
-DWARF=$(ls Fletch-0.8.17-dSYMs/aarch64/fletch.dSYM/Contents/Resources/DWARF/*)
+gh release download v0.8.18 --pattern 'Fletch-*-dSYMs.zip'
+unzip Fletch-0.8.18-dSYMs.zip
+DWARF=$(ls Fletch-0.8.18-dSYMs/aarch64/fletch.dSYM/Contents/Resources/DWARF/*)
 dwarfdump --uuid "$DWARF"   # must equal the Fletch image UUID in the report
 ```
 
-Use `x86_64/` for an Intel crash. If the UUIDs differ, the symbols are for
+For an Intel crash use `x86_64/` here and `-arch x86_64` below. If the UUIDs differ, the symbols are for
 another build and the names they give are wrong.
 
 ## 3. Symbolicate

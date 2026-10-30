@@ -135,13 +135,17 @@ jobs:
       # entitlement and the runtime's signatures verify. No image argument:
       # hosted runners cannot boot a VM, so the boot half of the check is
       # skipped (packaging/box-bundle/README.md shows the full check for a Mac).
+      - name: Check the box runtime in the app
+        run: packaging/box-bundle/check.sh src-tauri/target/universal-apple-darwin/release/bundle/macos/Fletch.app
+
       # The release profile writes a `.dSYM` per architecture beside the
       # stripped binary (src-tauri/Cargo.toml). Attached to the release so a
       # crash report's `Fletch + 0x…` frames can be symbolicated by hand for
       # that exact version: `atos -o <dSYM>/Contents/Resources/DWARF/* -arch
-      # arm64 -l <load address> <address>` (docs/debugging-crashes.md). A
-      # missing dSYM warns rather than failing an already-published release.
+      # arm64 -l <load address> <address>` (docs/debugging-crashes.md). The release is
+      # already published, so a missing dSYM or failed upload only warns.
       - name: Attach debug symbols to the release
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -160,9 +164,6 @@ jobs:
             ditto -c -k --keepParent "$OUT" "$OUT.zip"
             gh release upload "v$VERSION" "$OUT.zip" --clobber
           fi
-
-      - name: Check the box runtime in the app
-        run: packaging/box-bundle/check.sh src-tauri/target/universal-apple-darwin/release/bundle/macos/Fletch.app
 
       # Replace the placeholder release body with GitHub's auto-generated
       # release notes (the same "What's Changed" list the UI button produces),
