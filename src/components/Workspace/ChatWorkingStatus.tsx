@@ -30,17 +30,29 @@ function useSlideReveal(visible: boolean) {
   return { mounted, open };
 }
 
+/** Something the running turn holds back, with a way to stop waiting for it
+ *  (a granted folder that applies when the turn ends). */
+export interface WorkingNotice {
+  text: string;
+  action: string;
+  /** Tooltip for the action: what taking it does to the running turn. */
+  actionTip: string;
+  onAction: () => void;
+}
+
 /** Pinned working indicator — slides up from behind the composer on show,
  *  back down on turn end. */
 export function ChatWorkingStatus({
   visible,
   label,
   startedAt,
+  notice,
 }: {
   visible: boolean;
   label: string;
   /** Epoch millis the open turn started; when set, a live timer ticks. */
   startedAt?: number;
+  notice?: WorkingNotice;
 }) {
   const { mounted, open } = useSlideReveal(visible);
   if (!mounted) return null;
@@ -54,6 +66,20 @@ export function ChatWorkingStatus({
           <span className="chat-status-sep">·</span>
           <Icon name="clock" size={11} className="turn-clock-i" />
           <LiveTimer startedAt={startedAt} />
+        </>
+      )}
+      {notice && (
+        <>
+          <span className="chat-status-sep">·</span>
+          <span className="chat-status-label">{notice.text}</span>
+          <button
+            type="button"
+            className="chat-status-action"
+            title={notice.actionTip}
+            onClick={notice.onAction}
+          >
+            {notice.action}
+          </button>
         </>
       )}
     </div>

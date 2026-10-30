@@ -40,6 +40,7 @@ fn claude_spec(start: SessionStart) -> SpawnSpec<'static> {
         oauth_token: None,
         blackboard: None,
         adopted_read_only: false,
+        folder_grants: &[],
     }
 }
 

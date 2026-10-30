@@ -1,4 +1,4 @@
-import { api } from "@/api";
+import { api, type FolderGrant } from "@/api";
 import { composeIssueBrief } from "@/components/Workspace/MissionControl/inbox";
 import { FIRST_TASK_PROMPT } from "@/data/firstTask";
 import { DEFAULT_PROVIDER_ID, PROVIDERS } from "@/data/providers";
@@ -117,7 +117,10 @@ export interface DraftsSlice {
   selectDraft: (id: string | null) => void;
   setNewDraftSelection: (provider: string, model?: string, customAgentId?: string) => void;
   rerollDraftName: (id: string) => Promise<void>;
-  /** Spawn the real agent for a draft and dispatch the first message. */
+  /** Spawn the real agent for a draft and dispatch the first message.
+   *  `folders` are granted from the agent's first launch. Resolves false when
+   *  the spawn failed (`lastError` says why), so the composer can put the
+   *  draft back. */
   spawnFromDraft: (
     id: string,
     text: string,
@@ -126,7 +129,8 @@ export interface DraftsSlice {
     attachments?: string[],
     thinking?: string,
     customAgentId?: string,
-  ) => Promise<void>;
+    folders?: FolderGrant[],
+  ) => Promise<boolean>;
 }
 
 const NEW_DRAFT_SELECTION_SETTING = "newDraftSelection";
@@ -365,9 +369,10 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get) => ({
     attachments = [],
     thinking?,
     customAgentId?,
+    folders = [],
   ) => {
     const draft = get().drafts.find((d) => d.id === id);
-    if (!draft) return;
+    if (!draft) return false;
     get().setLastRepoPath(draft.repoPath);
     set({ busy: true, lastError: null });
     const turnId = crypto.randomUUID();
@@ -437,7 +442,13 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get) => ({
         // already carry it, so the sidebar row never reads empty in between.
         prompt,
         draft.account,
+        // The composer's folder chips, checked by the backend and in place
+        // from the first launch.
+        folders,
       );
+      // The first message names each granted folder, by the canonical path
+      // the backend stored, after the files (`attachments::reference_line`).
+      const sent = [...attachments, ...(rec.folder_grants ?? []).map((g) => g.path)];
       // A draft started from a board card links its item to the agent the
       // moment there is an agent to link to — this is the only point where the
       // hand-off is real (a draft can be abandoned; an agent can't be un-spawned).
@@ -476,8 +487,8 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get) => ({
               // mirror recognizes this bubble as ours and skips it — see
               // `hasSentTurn`. Without it the host's announcement of our own
               // send appends a second, identical bubble for the first prompt.
-              attachments.length > 0
-                ? { kind: "user_message", text: prompt, attachments, turnId }
+              sent.length > 0
+                ? { kind: "user_message", text: prompt, attachments: sent, turnId }
                 : { kind: "user_message", text: prompt, turnId },
             ],
           },
@@ -491,14 +502,18 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get) => ({
       // In-flight across the whole wait for the agent to come up: a snapshot of
       // the spawn's resting `idle` must not settle the `sending` flag early.
       await whileSending(rec.id, () =>
-        sendWhenAgentReady(() => api.sendUserMessage(rec.id, turnId, prompt, attachments)),
+        sendWhenAgentReady(() => api.sendUserMessage(rec.id, turnId, prompt, sent)),
       );
+      return true;
     } catch (e) {
       const selected = get().selectedAgentId;
       set((state) => ({
         lastError: String(e),
         sending: selected ? { ...state.sending, [selected]: false } : state.sending,
       }));
+      // Only a spawn that never happened gives the draft back: once the agent
+      // exists its chat is open, and the composer the draft came from is gone.
+      return !get().drafts.some((d) => d.id === id);
     } finally {
       set({ busy: false });
     }

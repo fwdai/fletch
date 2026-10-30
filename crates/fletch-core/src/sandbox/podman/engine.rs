@@ -163,6 +163,7 @@ impl SandboxEngine for PodmanEngine {
                 adopted_read_only: ctx.adopted_read_only,
                 mounts: prep.mounts(),
                 borrowed_object_stores: &prep.borrowed_object_stores,
+                folder_grants: ctx.folder_grants,
                 memory: non_blank(settings.memory.as_deref()).unwrap_or(DEFAULT_MEMORY),
                 cpus: non_blank(settings.cpus.as_deref()).unwrap_or(DEFAULT_CPUS),
                 // Never mapped, on any platform. Podman is rootless here by
@@ -358,6 +359,7 @@ mod tests {
             blackboard: None,
             adopted_workspace: None,
             adopted_read_only: false,
+            folder_grants: &[],
             mounts: crate::sandbox::container::run_args::ProviderMounts::Claude {
                 config_dir: None,
                 credentials_rw: false,

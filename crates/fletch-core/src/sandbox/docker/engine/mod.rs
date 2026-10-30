@@ -237,6 +237,7 @@ impl SandboxEngine for DockerEngine {
                 adopted_read_only: ctx.adopted_read_only,
                 mounts: prep.mounts(),
                 borrowed_object_stores: &prep.borrowed_object_stores,
+                folder_grants: ctx.folder_grants,
                 memory: non_blank(settings.memory.as_deref()).unwrap_or(DEFAULT_MEMORY),
                 cpus: non_blank(settings.cpus.as_deref()).unwrap_or(DEFAULT_CPUS),
                 run_as_user: prep.mapped_user(),

@@ -175,7 +175,7 @@ impl ExecSession {
             if !prompt.is_empty() {
                 prompt.push_str("\n\n");
             }
-            prompt.push_str(&format!("Attached file: {path}"));
+            prompt.push_str(&crate::attachments::reference_line(path));
         }
 
         if let Some(prep) = &self.before_turn {

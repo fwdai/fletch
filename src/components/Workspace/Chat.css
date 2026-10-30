@@ -43,6 +43,25 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* The strip's one control (a held folder change's "Apply now"): the strip
+   itself ignores the pointer so the chat underneath stays scrollable. */
+.chat-status-action {
+  flex-shrink: 0;
+  height: 18px;
+  padding: 0 7px;
+  border: 1px solid var(--accent-line);
+  border-radius: var(--r-xs);
+  background: var(--accent-soft);
+  color: var(--fg-1);
+  font-size: 11.5px;
+  transition: var(--transition-ui);
+}
+.chat-status.is-open .chat-status-action {
+  pointer-events: auto;
+}
+.chat-status-action:hover {
+  color: var(--fg-0);
+}
 /* Live timer riding the working strip — the one moving numeric value. */
 .chat-status-sep {
   flex-shrink: 0;

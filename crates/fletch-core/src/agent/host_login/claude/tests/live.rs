@@ -127,6 +127,7 @@ fn seatbelt_run(
         oauth_token: Some(token),
         codex_home: None,
         adopted_read_only: false,
+        folder_grants: &[],
     };
     let plan = crate::sandbox::engine_for(crate::sandbox::EngineKind::SandboxExec)
         .unwrap()

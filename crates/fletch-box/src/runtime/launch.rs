@@ -8,6 +8,7 @@
 //! ```text
 //! fletch-vm [--id ID] [--host-pid PID] [--lib-dir DIR] [--cpus N] [--mem MIB]
 //!           [--disk ID:PATH | --disk-ro ID:PATH]...  --root-disk DEV:FS:OPTS
+//!           [--share TAG:DIR | --share-ro TAG:DIR]...
 //!           [--vsock PORT:SOCK]... [--vsock-listen PORT:SOCK]...
 //!           [--env K=V]... [--workdir DIR] [--log LEVEL] -- EXEC [ARGS...]
 //! ```
@@ -31,6 +32,8 @@ pub struct LaunchConfig {
     /// Block devices in guest order: the first is `/dev/vda`, the second `/dev/vdb`, ...
     pub disks: Vec<Disk>,
     pub root: RootDisk,
+    /// Host directories exposed as virtio-fs devices, in guest order.
+    pub shares: Vec<Share>,
     /// Guest connects to `port`; the host serves the unix socket.
     pub vsock_connect: Vec<VsockPort>,
     /// Guest listens on `port`; libkrun binds the unix socket for the host to connect to.
@@ -48,6 +51,16 @@ pub struct LaunchConfig {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Disk {
     pub id: String,
+    pub path: PathBuf,
+    pub read_only: bool,
+}
+
+/// A host directory the guest mounts by `tag` (`mount -t virtiofs TAG DIR`).
+/// `read_only` is enforced by libkrun on the host side: every mutating request
+/// fails with EROFS whatever the guest mounts it as.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Share {
+    pub tag: String,
     pub path: PathBuf,
     pub read_only: bool,
 }
@@ -96,6 +109,14 @@ impl LaunchConfig {
                 self.root.device, self.root.fstype, self.root.options
             ),
         );
+        for share in &self.shares {
+            let name = if share.read_only {
+                "--share-ro"
+            } else {
+                "--share"
+            };
+            flag(name, format!("{}:{}", share.tag, share.path.display()));
+        }
         for port in &self.vsock_connect {
             flag(
                 "--vsock",
@@ -158,6 +179,14 @@ impl LaunchConfig {
                         id: id.into(),
                         path: path.into(),
                         read_only: flag == "--disk-ro",
+                    });
+                }
+                "--share" | "--share-ro" => {
+                    let (tag, path) = split_once(value, ':', "TAG:DIR")?;
+                    c.shares.push(Share {
+                        tag: tag.into(),
+                        path: path.into(),
+                        read_only: flag == "--share-ro",
                     });
                 }
                 "--root-disk" => {
@@ -239,6 +268,18 @@ mod tests {
                 fstype: "erofs".into(),
                 options: "ro".into(),
             },
+            shares: vec![
+                Share {
+                    tag: "fletch-share-0".into(),
+                    path: "/Users/u/Library/Mobile Documents/notes".into(),
+                    read_only: true,
+                },
+                Share {
+                    tag: "fletch-share-1".into(),
+                    path: "/Volumes/Work:2/out".into(),
+                    read_only: false,
+                },
+            ],
             vsock_connect: vec![VsockPort {
                 port: 6000,
                 socket: "/b/egress.sock".into(),
@@ -263,6 +304,7 @@ mod tests {
         assert!(LaunchConfig::parse(&s(&["--root-disk", "/dev/vda:erofs:ro"])).is_err());
         assert!(LaunchConfig::parse(&s(&["--mem"])).is_err());
         assert!(LaunchConfig::parse(&s(&["--disk", "nocolon", "--", "x"])).is_err());
+        assert!(LaunchConfig::parse(&s(&["--share", ":/no-tag", "--", "x"])).is_err());
         assert!(LaunchConfig::parse(&s(&["--env", "NOEQUALS", "--", "x"])).is_err());
         assert!(LaunchConfig::parse(&s(&["--bogus", "1", "--", "x"])).is_err());
     }

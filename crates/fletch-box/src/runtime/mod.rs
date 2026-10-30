@@ -17,7 +17,7 @@ pub mod console;
 pub mod launch;
 
 pub use console::HostKey;
-use launch::{Disk, LaunchConfig, RootDisk, VsockPort};
+use launch::{Disk, LaunchConfig, RootDisk, Share, VsockPort};
 
 pub const HELPER: &str = "fletch-vm";
 pub const LIBKRUN: &str = "libkrun.1.dylib";
@@ -219,6 +219,10 @@ pub struct VmSpec {
     /// Further raw disks after the tools disk: `(block id, path, read-only)`.
     /// For script disks in tests and the CLI; the product attaches none.
     pub extra_disks: Vec<(String, PathBuf, bool)>,
+    /// Host folders the guest mounts at their own paths: `(path, read-only)`,
+    /// parents before the folders inside them. Each becomes a virtio-fs device
+    /// and the `FLETCH_BOX_SHARE*` env init reads ([`guest::ENV_SHARES`]).
+    pub shares: Vec<(PathBuf, bool)>,
     /// Guest listens; host connects to the unix socket libkrun binds.
     pub listen_ports: Vec<(u32, PathBuf)>,
     /// Guest connects; the host already serves the unix socket.
@@ -245,6 +249,7 @@ impl VmSpec {
             data_disk: data_disk.into(),
             tools_disk: None,
             extra_disks: Vec::new(),
+            shares: Vec::new(),
             listen_ports: Vec::new(),
             connect_ports: Vec::new(),
             env: BTreeMap::new(),
@@ -278,6 +283,19 @@ impl VmSpec {
         }
         if self.env.keys().any(|k| k.is_empty() || k.contains('=')) {
             return invalid("environment names must be non-empty and contain no '='".into());
+        }
+        for (path, _) in &self.shares {
+            let under_root = guest::SHARE_ROOTS
+                .iter()
+                .any(|root| path.starts_with(root) && path != Path::new(root));
+            let text = path.to_string_lossy();
+            if !under_root || text.contains('\n') {
+                return invalid(format!(
+                    "a shared folder must sit under {} and name no newline: {}",
+                    guest::SHARE_ROOTS.join(" or "),
+                    path.display()
+                ));
+            }
         }
         let mut ports: Vec<u32> = Vec::new();
         for (port, socket) in self.listen_ports.iter().chain(&self.connect_ports) {
@@ -332,8 +350,27 @@ impl VmSpec {
             ("TERM", "xterm"),
             (guest::ENV_BOX_ID, self.id.as_str()),
         ];
-        let mut env: BTreeMap<&str, &str> = base_env.into_iter().collect();
-        env.extend(self.env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
+        let mut env: BTreeMap<String, String> = base_env
+            .into_iter()
+            .map(|(k, v)| (k.to_owned(), v.to_owned()))
+            .collect();
+        env.extend(self.env.iter().map(|(k, v)| (k.clone(), v.clone())));
+        let mut shares = Vec::new();
+        if !self.shares.is_empty() {
+            env.insert(guest::ENV_SHARES.into(), self.shares.len().to_string());
+        }
+        for (n, (path, read_only)) in self.shares.iter().enumerate() {
+            let mode = if *read_only { "ro" } else { "rw" };
+            env.insert(
+                format!("{}{n}", guest::ENV_SHARE_PREFIX),
+                format!("{mode}:{}", path.display()),
+            );
+            shares.push(Share {
+                tag: guest::share_tag(n),
+                path: path.clone(),
+                read_only: *read_only,
+            });
+        }
 
         let port = |(port, socket): &(u32, PathBuf)| VsockPort {
             port: *port,
@@ -359,6 +396,7 @@ impl VmSpec {
                 fstype: "erofs".into(),
                 options: "ro".into(),
             },
+            shares,
             vsock_connect: self.connect_ports.iter().map(port).collect(),
             vsock_listen: self.listen_ports.iter().map(port).collect(),
             env: env.into_iter().map(|(k, v)| format!("{k}={v}")).collect(),
@@ -669,6 +707,53 @@ mod tests {
         assert!(config.env.contains(&"HOME=/root".to_string()));
     }
 
+    /// Each shared folder is one virtio-fs device and one env entry init reads,
+    /// numbered in the order the host listed them, with the read-only flag on
+    /// the device itself (libkrun enforces it, not the guest's mount).
+    #[test]
+    fn shares_become_devices_and_init_env() {
+        let mut spec = spec();
+        spec.shares = vec![
+            ("/Users/alex/Projects/lib".into(), true),
+            ("/Volumes/Work/out dir".into(), false),
+        ];
+        let config = spec.launch_config(&paths());
+        assert_eq!(LaunchConfig::parse(&config.to_argv()).unwrap(), config);
+        assert_eq!(
+            config.shares,
+            [
+                Share {
+                    tag: "fletch-share-0".into(),
+                    path: "/Users/alex/Projects/lib".into(),
+                    read_only: true,
+                },
+                Share {
+                    tag: "fletch-share-1".into(),
+                    path: "/Volumes/Work/out dir".into(),
+                    read_only: false,
+                },
+            ]
+        );
+        for kv in [
+            "FLETCH_BOX_SHARES=2",
+            "FLETCH_BOX_SHARE_0=ro:/Users/alex/Projects/lib",
+            "FLETCH_BOX_SHARE_1=rw:/Volumes/Work/out dir",
+        ] {
+            assert!(
+                config.env.contains(&kv.to_string()),
+                "{kv} in {:?}",
+                config.env
+            );
+        }
+        // No shares, no share env: an older init sees exactly what it always did.
+        let plain = self::spec().launch_config(&paths());
+        assert!(plain.shares.is_empty());
+        assert!(!plain
+            .env
+            .iter()
+            .any(|kv| kv.starts_with("FLETCH_BOX_SHARE")));
+    }
+
     #[test]
     fn test_init_overrides_the_entrypoint() {
         let mut spec = spec();
@@ -694,6 +779,11 @@ mod tests {
         bad.listen_ports
             .push((7, Path::new("/tmp").join("x".repeat(100)).join("s.sock")));
         assert!(bad.validate().is_err());
+        for path in ["/opt/data", "/Users", "/Users/u/a\nb"] {
+            let mut bad = spec();
+            bad.shares.push((path.into(), true));
+            assert!(bad.validate().is_err(), "{path:?}");
+        }
     }
 
     #[test]

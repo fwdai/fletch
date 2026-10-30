@@ -501,6 +501,12 @@ impl WorkspaceManager {
             false,
             last_error.as_deref(),
         );
+        // An archived workspace runs nothing, so nothing is granted.
+        let folder_grants = if is_archived {
+            Vec::new()
+        } else {
+            super::folder_grants::load_folder_grants(conn, &id)
+        };
 
         AgentRecord {
             id,
@@ -527,6 +533,7 @@ impl WorkspaceManager {
             skills: decode_json_vec(skills_json.as_deref()),
             mcp_servers: decode_json_vec(mcp_servers_json.as_deref()),
             sandbox_engine,
+            folder_grants,
             account,
             owner_run_id,
             issue_ref,

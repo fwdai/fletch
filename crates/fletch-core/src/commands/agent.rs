@@ -6,7 +6,7 @@ use std::sync::Arc;
 use crate::error::Result;
 use crate::host::EngineCtx;
 use crate::supervisor::{SpawnRequest, Supervisor};
-use crate::workspace::{AgentRecord, AgentView};
+use crate::workspace::{AgentRecord, AgentView, FolderGrant};
 
 /// The user-spawn field mapping: the argument defaults every caller funnels
 /// through on the way to `Supervisor::spawn_agent`. Shared by the desktop's
@@ -31,6 +31,7 @@ pub async fn spawn_agent_impl(
     purpose: Option<String>,
     task: Option<String>,
     account: Option<String>,
+    folder_grants: Option<Vec<FolderGrant>>,
 ) -> Result<AgentRecord> {
     sup.spawn_agent(
         ctx,
@@ -64,6 +65,8 @@ pub async fn spawn_agent_impl(
             // The first prompt, when the caller sends it right after spawning.
             task,
             account,
+            // The composer's folder chips, checked by the spawn.
+            folder_grants: folder_grants.unwrap_or_default(),
         },
     )
     .await

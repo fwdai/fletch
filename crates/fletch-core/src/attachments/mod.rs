@@ -51,6 +51,19 @@ const STAGING_SUBDIR: &str = "attachments";
 /// sits under the writable workspace root.
 pub const WORKSPACE_ATTACHMENTS_DIR: &str = ".fletch-attachments";
 
+/// The line a message carries for one attachment, after the user's own text:
+/// `Attached file: <path>`, or `Attached folder: <path>` for a folder the
+/// user granted the agent (`workspace::folder_grants`), which passes through
+/// [`adopt`] untouched and is read where it is.
+pub fn reference_line(path: &str) -> String {
+    let kind = if Path::new(path).is_dir() {
+        "folder"
+    } else {
+        "file"
+    };
+    format!("Attached {kind}: {path}")
+}
+
 /// Root under the app-data dir where the composer stages pasted attachments.
 pub(crate) fn staging_root() -> PathBuf {
     crate::data_dir().join(STAGING_SUBDIR)
@@ -272,6 +285,23 @@ mod tests {
     /// [`adopt_into`] for a workspace on this host.
     fn adopt_local(staging: &Path, dest_base: &Path, paths: &[String]) -> Vec<String> {
         adopt_into(staging, dest_base, &Executor::Local, paths).unwrap()
+    }
+
+    /// A granted folder is named as one, so the agent lists it rather than
+    /// trying to read it; files keep the line they always had.
+    #[test]
+    fn a_folder_attachment_is_named_as_a_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("notes.md");
+        std::fs::write(&file, "x").unwrap();
+        let (dir_s, file_s) = (dir.path().to_string_lossy(), file.to_string_lossy());
+        assert_eq!(reference_line(&dir_s), format!("Attached folder: {dir_s}"));
+        assert_eq!(reference_line(&file_s), format!("Attached file: {file_s}"));
+        // A path that is gone (or lives only in a box) stays a file reference.
+        assert_eq!(
+            reference_line("/nonexistent/x.png"),
+            "Attached file: /nonexistent/x.png"
+        );
     }
 
     /// A box's tree as the host sees it through `exec`: records every write,

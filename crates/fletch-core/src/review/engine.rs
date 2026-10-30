@@ -1209,6 +1209,8 @@ async fn ensure_reviewer(
         purpose: Some(PURPOSE_REVIEWER.to_string()),
         task: Some(format!("Review {coder_name}'s change")),
         account: None,
+        // The reviewer reads the coder's checkout, nothing else of the user's.
+        folder_grants: Vec::new(),
     };
     let record = sup.clone().spawn_agent(ctx.clone(), req).await?;
     Ok(ReviewerView {

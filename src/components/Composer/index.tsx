@@ -1,7 +1,7 @@
 import { open as openExternal } from "@tauri-apps/plugin-shell";
 import { type KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
 import { hasUsage } from "@/adapters/usage";
-import type { DirListing, IssueComment, PrSummary, TrackerIssue } from "@/api";
+import type { DirListing, FolderGrant, IssueComment, PrSummary, TrackerIssue } from "@/api";
 import { Icon } from "@/components/Icon";
 import { Chip } from "@/components/ui/Chip";
 import { IconButton } from "@/components/ui/IconButton";
@@ -19,6 +19,7 @@ import { useAppStore } from "@/store";
 import { blockedSentence, useAgentAvailability } from "./availability";
 import { ComposerFrame } from "./ComposerFrame";
 import { isDictationHotkey, useDictation, useDictationHotkey } from "./dictation";
+import { FolderList } from "./FolderList";
 import { IssuePicker } from "./IssuePicker";
 import { type AccountControl, ModelPicker } from "./ModelPicker";
 import { PrimaryControl, primaryState } from "./PrimaryControl";
@@ -56,7 +57,9 @@ interface Props {
   minRows?: number;
   /** Fired on Enter (without Shift) or send-button click. `attachments`
    *  holds absolute paths of staged files; the agent receives them as
-   *  separate content blocks, kept out of the typed message body. */
+   *  separate content blocks, kept out of the typed message body. The input
+   *  clears at once; a returned promise that resolves `false` (the send was
+   *  refused — the caller has said why) puts the draft back. */
   onSend: (payload: {
     text: string;
     provider: string;
@@ -67,7 +70,10 @@ interface Props {
     /** The selected custom agent's id, or undefined for a built-in spawn. */
     customAgentId: string | undefined;
     attachments: string[];
-  }) => void;
+    /** Folder chips to grant the agent before (or, for a new agent, at the
+     *  spawn of) this message. Empty unless `folders` is set. */
+    folders: FolderGrant[];
+  }) => undefined | Promise<boolean>;
   /** Fired when the composer is showing an active stop control. */
   onStop?: () => void;
   /** Fired when the user picks an app-defined slash command. The
@@ -96,6 +102,16 @@ interface Props {
   /** Lists the repo's open PRs for the "#" mention autocomplete, which
    *  inserts a `#<number>` reference. Omit to disable "#" mentions. */
   listPrs?: () => Promise<PrSummary[]>;
+  /** Folders can be attached — from the `@` listing or a drop — and are given
+   *  to the agent live, at their own paths, through `onSend`'s `folders`. */
+  folders?: boolean;
+  /** The folders the agent already has, shown above the input with their mode
+   *  and a way to take each back. Omit for a new agent (none yet). */
+  grantedFolders?: FolderGrant[];
+  /** Change a granted folder's mode (`writable` is the new one). */
+  onChangeGrantedFolder?: (path: string, writable: boolean) => void;
+  /** Take a granted folder back. */
+  onRevokeFolder?: (path: string) => void;
   /** Lists open tracker issues (GitHub, Linear) for the footer issue picker;
    *  picking one appends its brief to the prompt so the agent works that
    *  exact issue. Omit to hide the picker. */
@@ -191,6 +207,10 @@ export function Composer({
   mentionSource,
   listDir,
   listPrs,
+  folders,
+  grantedFolders,
+  onChangeGrantedFolder,
+  onRevokeFolder,
   listIssues,
   listIssueComments,
   onPickIssue,
@@ -321,6 +341,7 @@ export function Composer({
     mentionSource,
     listDir,
     listPrs,
+    folders,
     draftKey,
     autoFocus,
     seed,
@@ -338,7 +359,8 @@ export function Composer({
     (dictation.availability?.microphone === "denied" ||
       dictation.availability?.microphone === "restricted");
 
-  const hasContent = input.text.trim().length > 0 || input.attachments.length > 0;
+  const hasContent =
+    input.text.trim().length > 0 || input.attachments.length > 0 || input.folders.length > 0;
   // What the primary control is right now — the mic, send, or stop. Derived,
   // top to bottom (see `primaryState`); the control stores nothing. A busy
   // agent claims the slot only while the box is empty: once the user types,
@@ -361,16 +383,23 @@ export function Composer({
     // must refuse on the same rule. This used to re-test one of the reasons by
     // hand, which let Enter start an agent the button said could not be
     // started.
-    if ((!trimmed && input.attachments.length === 0) || disabled || sendBlocked) return;
-    onSend({
+    if (!hasContent || disabled || sendBlocked) return;
+    const draft = { text: input.text, attachments: input.attachments, folders: input.folders };
+    const sent = onSend({
       text: trimmed,
       provider,
       model,
       thinking: thinkingValue,
       customAgentId,
       attachments: input.attachments,
+      folders: input.folders,
     });
     input.clear();
+    if (sent instanceof Promise) {
+      void sent.then((ok) => {
+        if (ok === false) input.restore(draft);
+      });
+    }
   }
 
   /** The mic's action, from the control or ⌘⇧D. Not offered while the grant
@@ -420,6 +449,16 @@ export function Composer({
   return (
     <ComposerFrame
       input={input}
+      top={
+        grantedFolders && grantedFolders.length > 0 ? (
+          <FolderList
+            granted
+            folders={grantedFolders}
+            onToggle={(f) => onChangeGrantedFolder?.(f.path, !f.writable)}
+            onRemove={(path) => onRevokeFolder?.(path)}
+          />
+        ) : undefined
+      }
       placeholder={
         placeholder ||
         defaultPlaceholder(

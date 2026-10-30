@@ -380,6 +380,7 @@ describe("dropAgentEntries", () => {
         offSidebarAgents: {},
         backgroundTasks: {},
         codeUndo: {},
+        folderChangeWaiting: {},
         // biome-ignore lint/suspicious/noExplicitAny: partial state fixture
       } as any,
       "a1",

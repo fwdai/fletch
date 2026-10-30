@@ -47,6 +47,11 @@ export function ChatComposer({
   const send = useAppStore((s) => s.sendUserMessage);
   const setAgentEffort = useAppStore((s) => s.setAgentEffort);
   const setAgentModel = useAppStore((s) => s.setAgentModel);
+  const grantFolder = useAppStore((s) => s.grantAgentFolder);
+  const revokeFolder = useAppStore((s) => s.revokeAgentFolder);
+  const applyChangesNow = useAppStore((s) => s.applyAgentChangesNow);
+  // A folder change the running turn holds back: offered "apply now".
+  const folderChangeWaiting = useAppStore((s) => s.folderChangeWaiting[agent.id] === true);
   const switchAccount = useAppStore((s) => s.switchAgentAccount);
   const switchingAccount = useAppStore((s) => s.switchingAccount[agent.id] === true);
   const stop = useAppStore((s) => s.stop);
@@ -105,6 +110,17 @@ export function ChatComposer({
             visible={liveBusy}
             label={busyLabel ?? `${customAgent?.name ?? providerLabel(agent.provider)} is working`}
             startedAt={liveStartedAt}
+            notice={
+              folderChangeWaiting
+                ? {
+                    text: "folder access changes when this turn ends",
+                    action: "Apply now",
+                    actionTip:
+                      "Stop this turn so the agent restarts with the folder and gets your message now",
+                    onAction: () => void applyChangesNow(agent.id),
+                  }
+                : undefined
+            }
           />
           <Composer
             existingSession
@@ -151,6 +167,10 @@ export function ChatComposer({
             }
             listDir={api.listDir}
             listPrs={() => api.listPrs(agent.id)}
+            folders
+            grantedFolders={agent.folder_grants}
+            onChangeGrantedFolder={(path, writable) => void grantFolder(agent.id, path, writable)}
+            onRevokeFolder={(path) => void revokeFolder(agent.id, path)}
             listIssues={repoPath ? () => api.listTrackerIssues(repoPath, linearTeamId) : undefined}
             listIssueComments={
               repoPath ? (issue) => api.issueComments(repoPath, issue.source, issue.key) : undefined
@@ -166,13 +186,30 @@ export function ChatComposer({
             seed={composerSeed}
             onSeedConsumed={onSeedConsumed}
             draftKey={agent.id}
-            onSend={({ text, attachments }) => {
+            onSend={async ({ text, attachments, folders }) => {
+              // Folder chips are granted first, each queued with the agent's
+              // config changes: the agent relaunches with the folder before
+              // this message reaches it. Mid-turn, the message waits for the
+              // turn's end (or "Apply now" in the working strip); one the
+              // agent can already read goes in live. A refusal is in the error
+              // banner, and returning false puts the draft back to fix.
+              // Each is named by the path the backend stored, which can differ
+              // from the one picked (a link, `~`).
+              const granted: string[] = [];
+              for (const folder of folders) {
+                const path = await grantFolder(agent.id, folder.path, folder.writable);
+                if (!path) return false;
+                granted.push(path);
+              }
               // Effort is session-level now (persisted via onChangeEffort and
               // read from the record each turn), so sends carry no per-message
               // effort — the composer's `thinking` in the payload is only used
               // by the new-agent spawn path.
               onSend?.();
-              send(agent.id, text, attachments);
+              // The folders ride as attachments, named as folders to the
+              // agent (`attachments::reference_line`).
+              void send(agent.id, text, [...attachments, ...granted]);
+              return true;
             }}
             onStop={() => stop(agent.id)}
           />
