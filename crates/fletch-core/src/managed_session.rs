@@ -425,7 +425,6 @@ mod tests {
             stdin: Arc::new(Mutex::new(None)),
             pending: Arc::new(Mutex::new(HashSet::new())),
             kill_plan: KillHandle::ProcessGroup,
-            after_exit: None,
         };
 
         assert!(session
