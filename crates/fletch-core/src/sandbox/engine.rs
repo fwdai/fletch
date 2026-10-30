@@ -219,6 +219,43 @@ impl KillHandle {
     }
 }
 
+/// A launch's [`KillHandle`] from its plan until a session owns it. Planning
+/// can leave engine state behind that only the kill releases — a box attaches
+/// the launch (holding its VM against the idle stop) and is then sent its env
+/// file — so every failure between [`SandboxEngine::launch_agent`] and a
+/// started session (env delivery, the session's own spawn) must run the kill.
+/// Dropping the guard runs it; [`Self::start`] hands the handle to the session
+/// and stands down only once the session started.
+#[must_use]
+pub struct KillGuard {
+    kill: KillHandle,
+    armed: bool,
+}
+
+impl KillGuard {
+    pub fn new(kill: KillHandle) -> Self {
+        Self { kill, armed: true }
+    }
+
+    /// Start the session `start` builds around the handle. On an error the
+    /// session never owned the handle, so the kill runs here.
+    pub fn start<T>(mut self, start: impl FnOnce(KillHandle) -> Result<T>) -> Result<T> {
+        let session = start(self.kill.clone())?;
+        self.armed = false;
+        Ok(session)
+    }
+}
+
+impl Drop for KillGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            if let Err(e) = self.kill.kill() {
+                tracing::warn!(error = %e, "releasing a launch that never started failed");
+            }
+        }
+    }
+}
+
 /// How the agent's assembled env reaches its process.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum EnvDelivery {
@@ -342,5 +379,54 @@ mod tests {
     fn engine_kind_rejects_unknown_setting_values() {
         assert_eq!(EngineKind::from_setting("containerd"), None);
         assert_eq!(EngineKind::from_setting(""), None);
+    }
+
+    /// A plan's kill runs exactly when no session took it: the guard dropped
+    /// on the way (a failed env delivery) or a session whose start failed. A
+    /// started session owns it, and the guard leaves it alone.
+    #[test]
+    fn a_kill_guard_kills_unless_a_session_started() {
+        use super::{KillGuard, KillHandle, KillPlan, LaunchPlan, SandboxEngine};
+        use crate::error::{Error, Result};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        #[derive(Default)]
+        struct Counting(AtomicUsize);
+        impl SandboxEngine for Counting {
+            fn kind(&self) -> EngineKind {
+                EngineKind::Box
+            }
+            fn launch_agent(&self, _: &AgentLaunchCtx, _: &str) -> Result<LaunchPlan> {
+                unreachable!("the guard never plans")
+            }
+            fn kill(&self, _: &KillPlan) -> Result<()> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }
+        }
+        let engine = Arc::new(Counting::default());
+        let guard = || {
+            KillGuard::new(KillHandle::Engine {
+                engine: engine.clone(),
+                plan: KillPlan::Box {
+                    agent_id: "a".into(),
+                    launch_id: "l".into(),
+                },
+            })
+        };
+        let kills = || engine.0.load(Ordering::SeqCst);
+
+        drop(guard());
+        assert_eq!(kills(), 1);
+
+        let failed: Result<()> = guard().start(|_| Err(Error::Other("spawn failed".into())));
+        assert!(failed.is_err());
+        assert_eq!(kills(), 2);
+
+        let session = guard().start(Ok).unwrap();
+        assert_eq!(kills(), 2);
+        session.kill().unwrap();
+        assert_eq!(kills(), 3);
     }
 }

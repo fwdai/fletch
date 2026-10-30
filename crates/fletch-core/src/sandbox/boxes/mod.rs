@@ -469,7 +469,8 @@ impl SandboxEngine for BoxEngine {
         // Held on the box it runs in before reaching it, so the idle stop
         // cannot take the VM between handing it out and the session (a
         // tenant's session keeps its host's VM up too). Every failure below
-        // drops the hold; the session's kill releases it after that.
+        // drops the hold; after that the plan's kill releases it, which
+        // `KillGuard` runs should the session never start.
         // Registered first: a first launch's box is not known yet, and a hold
         // on an unknown box holds nothing.
         registry.register(identity.clone());
@@ -749,7 +750,8 @@ pub fn guest_program(
 /// idle stop spares only a box attached when it takes the VM, so a session
 /// that held first is never handed a VM being stopped idle. Dropped — any
 /// failure on the way to the session — it detaches; [`Hold::into_kill`] hands
-/// that to the session's kill instead ([`BoxEngine::kill`] detaches).
+/// that to the session's kill instead ([`BoxEngine::kill`] detaches), which
+/// must then run whether or not the session starts (`sandbox::KillGuard`).
 #[must_use]
 pub struct Hold {
     agent_id: String,

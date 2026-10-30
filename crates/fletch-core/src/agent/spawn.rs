@@ -10,7 +10,9 @@ use crate::exec_session::{ExecCallbacks, ExecExit, ExecSession, ExecSpawn};
 use crate::managed_session::{ManagedExit, ManagedSession, ManagedSpawn, ToolUseBehavior};
 use crate::pty_session::{PtyExit, PtySession, PtySpawn};
 use crate::sandbox;
-use crate::sandbox::{AgentLaunchCtx, EngineKind, EnvDelivery, LaunchPlan, SandboxEngine};
+use crate::sandbox::{
+    AgentLaunchCtx, EngineKind, EnvDelivery, KillGuard, LaunchPlan, SandboxEngine,
+};
 
 use super::accounts;
 use super::args::{prepare_managed_args, prepare_pty_args};
@@ -388,6 +390,8 @@ impl Agent {
             env_delivery,
             kill,
         } = engine.launch_agent(&ctx, &claude)?;
+        // Released on any failure before the session owns it (`KillGuard`).
+        let kill = KillGuard::new(kill);
         account.unset.extend(env_remove);
         let mut args = prefix_args;
         args.extend(agent_args);
@@ -406,20 +410,22 @@ impl Agent {
             "spawning sandboxed pty agent"
         );
 
-        let pty = PtySession::spawn(
-            PtySpawn {
-                program: &program,
-                args: &args,
-                cwd: &spec.cwd,
-                env: &env,
-                cols: spec.cols,
-                rows: spec.rows,
-                env_remove: &account.unset,
-                kill_plan: kill,
-            },
-            on_output,
-            on_exit,
-        )?;
+        let pty = kill.start(|kill_plan| {
+            PtySession::spawn(
+                PtySpawn {
+                    program: &program,
+                    args: &args,
+                    cwd: &spec.cwd,
+                    env: &env,
+                    cols: spec.cols,
+                    rows: spec.rows,
+                    env_remove: &account.unset,
+                    kill_plan,
+                },
+                on_output,
+                on_exit,
+            )
+        })?;
 
         Ok(Self::Pty(PtyAgent {
             pty,
@@ -499,6 +505,8 @@ impl Agent {
             env_delivery,
             kill,
         } = engine.launch_agent(&ctx, &bin)?;
+        // Released on any failure before the session owns it (`KillGuard`).
+        let kill = KillGuard::new(kill);
         account.unset.extend(env_remove);
         let mut args = prefix_args;
         args.extend(agent_args);
@@ -519,20 +527,22 @@ impl Agent {
             "spawning sandboxed native pty per-turn agent"
         );
 
-        let pty = PtySession::spawn(
-            PtySpawn {
-                program: &program,
-                args: &args,
-                cwd: &spec.cwd,
-                env: &env,
-                cols: spec.cols,
-                rows: spec.rows,
-                env_remove: &account.unset,
-                kill_plan: kill,
-            },
-            on_output,
-            on_exit,
-        )?;
+        let pty = kill.start(|kill_plan| {
+            PtySession::spawn(
+                PtySpawn {
+                    program: &program,
+                    args: &args,
+                    cwd: &spec.cwd,
+                    env: &env,
+                    cols: spec.cols,
+                    rows: spec.rows,
+                    env_remove: &account.unset,
+                    kill_plan,
+                },
+                on_output,
+                on_exit,
+            )
+        })?;
 
         Ok(Self::Pty(PtyAgent {
             pty,
@@ -578,6 +588,8 @@ impl Agent {
             env_delivery,
             kill,
         } = engine.launch_agent(&ctx, &claude)?;
+        // Released on any failure before the session owns it (`KillGuard`).
+        let kill = KillGuard::new(kill);
         account.unset.extend(env_remove);
         let mut args = prefix_args;
         args.extend(agent_args);
@@ -596,18 +608,20 @@ impl Agent {
             "spawning sandboxed managed agent"
         );
 
-        let session = ManagedSession::spawn(
-            ManagedSpawn {
-                program: &program,
-                args: &args,
-                cwd: &spec.cwd,
-                env: &env,
-                env_remove: &account.unset,
-                kill_plan: kill,
-            },
-            on_event,
-            on_exit,
-        )?;
+        let session = kill.start(|kill_plan| {
+            ManagedSession::spawn(
+                ManagedSpawn {
+                    program: &program,
+                    args: &args,
+                    cwd: &spec.cwd,
+                    env: &env,
+                    env_remove: &account.unset,
+                    kill_plan,
+                },
+                on_event,
+                on_exit,
+            )
+        })?;
 
         Ok(Self::Managed(ManagedAgent {
             session,
@@ -752,6 +766,8 @@ impl Agent {
             env_delivery,
             kill,
         } = engine.launch_agent(&ctx, agent_bin)?;
+        // Released on any failure before the session owns it (`KillGuard`).
+        let kill = KillGuard::new(kill);
         account.unset.extend(env_remove);
         let mut env = launch_env;
         env.extend(rpc_env(&spec.rpc_dir));
@@ -771,22 +787,24 @@ impl Agent {
             resume = spec.session_id.is_some(),
             "preparing sandboxed per-turn runner"
         );
-        let session = ExecSession::new(
-            ExecSpawn {
-                program: launch_program,
-                prefix_args,
-                cwd: spec.cwd,
-                session_id: spec.session_id,
-                stdout_is_json,
-                env,
-                env_remove: account.unset,
-                kill_plan: kill,
-                before_turn,
-            },
-            build_args,
-            extract_session_id,
-            cb,
-        );
+        let session = kill.start(|kill_plan| {
+            Ok(ExecSession::new(
+                ExecSpawn {
+                    program: launch_program,
+                    prefix_args,
+                    cwd: spec.cwd,
+                    session_id: spec.session_id,
+                    stdout_is_json,
+                    env,
+                    env_remove: account.unset,
+                    kill_plan,
+                    before_turn,
+                },
+                build_args,
+                extract_session_id,
+                cb,
+            ))
+        })?;
         Ok(Self::PerTurn(PerTurnAgent {
             session: Box::new(session),
         }))
