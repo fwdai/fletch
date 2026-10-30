@@ -59,13 +59,17 @@
   font-size: 12px;
 }
 
-/* how the workspace is isolated: a quiet glyph for seatbelt and containers;
- * a box's carries its phase (lit while it runs, pulsing on the way up or
- * down, red when it failed, dim when stopped) */
+/* how the workspace is isolated: a quiet glyph for containers; seatbelt has
+ * no lifecycle — it is in force whenever the workspace is — so it is always
+ * lit like a running box; a box's carries its phase (lit while it runs,
+ * pulsing on the way up or down, red when it failed, dim when stopped) */
 .ws-iso {
   display: inline-flex;
   flex-shrink: 0;
   color: var(--fg-2);
+}
+.ws-iso.seatbelt {
+  color: var(--info);
 }
 .ws-iso.box {
   color: var(--fg-3);
