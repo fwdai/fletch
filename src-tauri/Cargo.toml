@@ -97,7 +97,9 @@ whisper-rs = { version = "0.16", features = ["metal", "tracing_backend"] }
 # `default-features = false` throughout because these crates' defaults compile
 # *every* class in the framework — we name only the handful of classes and the
 # `block2` bridge (completion handlers, the tap block) that the mic path needs.
-objc2 = "0.6"
+# `exception`: catching AppKit exceptions before they unwind into tao's
+# non-unwinding `sendEvent:` (appkit_exceptions.rs).
+objc2 = { version = "0.6", features = ["exception"] }
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSError", "NSString", "objc2-core-foundation"] }
 block2 = "0.6"
 # Non-blocking window zoom (zoom.rs).
@@ -140,6 +142,12 @@ opt-level = "z"
 lto = true
 codegen-units = 1
 strip = true
+# The shipped binary stays stripped; its symbols go to a separate `.dSYM`
+# (line tables only: function names and lines, no variable info), which the
+# release workflow uploads to Sentry so native crash reports and minidumps
+# symbolicate. Without it every frame of ours read as `Fletch + 0x…`.
+debug = "line-tables-only"
+split-debuginfo = "packed"
 
 # The box engine hashes the 848 MB base image once per process before the first
 # VM boots (fletch-box image_store::verify), and git_dist checksums its tarball.

@@ -135,6 +135,23 @@ jobs:
       # entitlement and the runtime's signatures verify. No image argument:
       # hosted runners cannot boot a VM, so the boot half of the check is
       # skipped (packaging/box-bundle/README.md shows the full check for a Mac).
+      # The release profile writes a `.dSYM` per architecture beside the
+      # stripped binary (src-tauri/Cargo.toml); Sentry matches them to crash
+      # reports by Mach-O UUID. Skipped until the Sentry secrets exist.
+      - name: Upload debug symbols to Sentry
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
+        run: |
+          if [ -z "$SENTRY_AUTH_TOKEN" ]; then
+            echo "SENTRY_AUTH_TOKEN is not set; skipping the symbol upload"
+            exit 0
+          fi
+          npx --yes @sentry/cli@2 debug-files upload --type dsym --wait \
+            src-tauri/target/aarch64-apple-darwin/release \
+            src-tauri/target/x86_64-apple-darwin/release
+
       - name: Check the box runtime in the app
         run: packaging/box-bundle/check.sh src-tauri/target/universal-apple-darwin/release/bundle/macos/Fletch.app
 

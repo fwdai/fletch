@@ -12,6 +12,8 @@
 // This Mac as a client of *other* Fletch hosts: desktop glue over
 // `fletch_proto::client::Dialer`, so it stays a real module here rather than
 // joining the engine re-exports below.
+#[cfg(target_os = "macos")]
+mod appkit_exceptions;
 mod boot;
 mod client;
 mod commands;
@@ -1137,6 +1139,10 @@ pub fn run() {
 
     init_logging();
     install_panic_logging();
+    // Before the event loop: an AppKit exception during event dispatch would
+    // otherwise abort through tao's `sendEvent:` (appkit_exceptions.rs).
+    #[cfg(target_os = "macos")]
+    appkit_exceptions::install();
 
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_sentry::init(&_sentry))

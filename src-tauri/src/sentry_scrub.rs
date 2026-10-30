@@ -42,11 +42,14 @@ use sentry::Breadcrumb;
 /// * `agent_id` — opaque per-agent UUID;
 /// * `session`  — opaque per-session id;
 /// * `start`    — how a launch attaches to its session (`fresh`/`resume`/`branch`);
-/// * `op`       — a short static operation label.
+/// * `op`       — a short static operation label;
+/// * `exception_name` — an Objective-C exception's name, a constant the
+///   throwing framework defines (`NSInternalInconsistencyException`, …);
+///   its free-form `reason` is dropped.
 ///
 /// Everything else is dropped, including `error`, `path`, `file`, `cwd`, `argv`,
 /// `sandbox_root`, and `stderr`.
-const ALLOWLIST: &[&str] = &["agent_id", "session", "start", "op"];
+const ALLOWLIST: &[&str] = &["agent_id", "session", "start", "op", "exception_name"];
 
 /// Drop every entry whose key is not in [`ALLOWLIST`].
 fn retain_allowlisted(map: &mut BTreeMap<String, Value>) {
