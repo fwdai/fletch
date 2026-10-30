@@ -74,6 +74,9 @@ pub const TEMPLATE: &[(&str, Category)] = &[
     ("api.nuget.org", Category::Registries),
     ("static.rust-lang.org", Category::Toolchains),
     ("sh.rustup.rs", Category::Toolchains),
+    // Cursor's CLI installer and its download CDN (the cursor tools disk).
+    ("cursor.com", Category::Toolchains),
+    ("downloads.cursor.com", Category::Toolchains),
     ("nodejs.org", Category::Toolchains),
     ("bun.sh", Category::Toolchains),
     ("deno.land", Category::Toolchains),
@@ -365,6 +368,8 @@ mod tests {
             "sh.rustup.rs",
             "bun.sh",
             "cdn.playwright.dev",
+            "cursor.com",
+            "downloads.cursor.com",
         ] {
             assert_eq!(policy.check(host, 443), Ok(()), "{host}");
         }

@@ -39,19 +39,34 @@ use crate::instructions;
 
 use super::gated_session_id;
 
+/// A box agent's `~/.cursor/projects` is in its guest; the host reads the
+/// mirror the relay fills under its box dir (`sandbox::boxes::home`),
+/// scanned first. Absent for every other engine's agent, so the scan falls
+/// through to the user's own projects dir.
 pub(crate) fn cursor_locate(
     session_id: &str,
-    _agent_id: &str,
+    agent_id: &str,
     _cwd: &Path,
     diag: &mut ReadDiagnostics,
 ) -> Vec<PathBuf> {
-    let Some(home) = dirs::home_dir() else {
-        return Vec::new();
-    };
+    let roots = crate::sandbox::boxes::home::mirror_for_agent("cursor", agent_id)
+        .into_iter()
+        .chain(dirs::home_dir().map(|home| home.join(".cursor").join("projects")));
+    for projects in roots {
+        let found = cursor_locate_in(&projects, session_id, diag);
+        if !found.is_empty() {
+            return found;
+        }
+    }
+    Vec::new()
+}
+
+/// The transcript of `session_id` under one `projects` dir: the session-id
+/// dir is unique, so every project slug is tried.
+fn cursor_locate_in(projects: &Path, session_id: &str, diag: &mut ReadDiagnostics) -> Vec<PathBuf> {
     let rel = format!("agent-transcripts/{session_id}/{session_id}.jsonl");
-    let projects = home.join(".cursor").join("projects");
     let mut out = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(&projects) {
+    if let Ok(entries) = std::fs::read_dir(projects) {
         diag.root_exists = true;
         for entry in entries.flatten() {
             let path = entry.path().join(&rel);
@@ -328,6 +343,30 @@ pub(crate) fn cursor_pty_args(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// A session is found under whichever project slug holds it, by its own
+    /// id dir; a projects root with none, or no root, finds nothing.
+    #[test]
+    fn a_session_is_located_by_its_id_dir_under_any_project_slug() {
+        let td = tempfile::tempdir().unwrap();
+        let projects = td.path().join("projects");
+        let session = projects.join("slug-a/agent-transcripts/s1");
+        std::fs::create_dir_all(&session).unwrap();
+        std::fs::write(session.join("s1.jsonl"), "{}\n").unwrap();
+        std::fs::create_dir_all(projects.join("slug-b")).unwrap();
+
+        let mut diag = ReadDiagnostics::default();
+        assert_eq!(
+            cursor_locate_in(&projects, "s1", &mut diag),
+            vec![session.join("s1.jsonl")]
+        );
+        assert!(diag.root_exists);
+        assert_eq!(diag.files_matched, 1);
+        assert!(cursor_locate_in(&projects, "s2", &mut diag).is_empty());
+        let mut none = ReadDiagnostics::default();
+        assert!(cursor_locate_in(&td.path().join("missing"), "s1", &mut none).is_empty());
+        assert!(!none.root_exists);
+    }
 
     /// A sub-agent file's first record, in the shape real transcripts use.
     fn first_line(query: &str) -> String {

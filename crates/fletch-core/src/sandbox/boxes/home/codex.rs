@@ -10,7 +10,7 @@
 
 use std::path::{Path, PathBuf};
 
-use super::{copy_tree, Credential, GuestEntry, ProviderHome};
+use super::{copy_tree, login_shell_var, Credential, GuestEntry, ProviderHome};
 use crate::agent::{accounts, codex_home};
 use crate::error::Result;
 use crate::sandbox::engine::AgentLaunchCtx;
@@ -64,21 +64,17 @@ impl ProviderHome for Codex {
     /// well, which seatbelt lets through with the rest of the shell env and
     /// the container engines forward (`container::launch_auth`); a managed
     /// account runs on its stored login alone, as it does there.
-    fn credential(&self, ctx: &AgentLaunchCtx) -> Credential {
+    fn credential(&self, ctx: &AgentLaunchCtx) -> Result<Credential> {
         let file = ctx.codex_home.map(codex_home::launch_credential_path);
         let env = match ctx.account_dir {
-            None => shell_api_key().into_iter().collect(),
+            None => login_shell_var(OPENAI_API_KEY)
+                .map(|key| (OPENAI_API_KEY.to_string(), key))
+                .into_iter()
+                .collect(),
             Some(_) => Vec::new(),
         };
-        Credential { env, file }
+        Ok(Credential { env, file })
     }
-}
-
-/// `OPENAI_API_KEY` as the login shell exports it, trimmed, when non-blank.
-fn shell_api_key() -> Option<(String, String)> {
-    let key = crate::bin_resolve::effective_env_var(OPENAI_API_KEY)?;
-    let key = key.to_string_lossy().trim().to_string();
-    (!key.is_empty()).then(|| (OPENAI_API_KEY.to_string(), key))
 }
 
 const OPENAI_API_KEY: &str = "OPENAI_API_KEY";
@@ -174,19 +170,21 @@ mod tests {
     fn the_credential_is_the_overlays_launch_file() {
         let root = Path::new("/Users/u/.fletch/workspaces/a");
         let overlay = root.join(".fletch-codex-home");
-        let default = Codex.credential(&ctx(root, Some(overlay.as_path())));
+        let default = Codex
+            .credential(&ctx(root, Some(overlay.as_path())))
+            .unwrap();
         assert_eq!(default.file, Some(overlay.join("auth.json")));
         assert!(default.env.iter().all(|(k, _)| k == OPENAI_API_KEY));
 
         let mut managed = ctx(root, Some(overlay.as_path()));
         managed.account_dir = Some(Path::new("/Users/u/.fletch/accounts/codex/work"));
         assert_eq!(
-            Codex.credential(&managed),
+            Codex.credential(&managed).unwrap(),
             Credential {
                 env: Vec::new(),
                 file: Some(overlay.join("auth.json")),
             }
         );
-        assert_eq!(Codex.credential(&ctx(root, None)).file, None);
+        assert_eq!(Codex.credential(&ctx(root, None)).unwrap().file, None);
     }
 }

@@ -73,7 +73,7 @@ export function DeveloperPane() {
         </SetRow>
         <SetRow
           title="Box sandbox (micro-VM)"
-          sub="New Claude Code and Codex agents run in isolated micro-VMs; other providers keep the sandbox you had selected, for now. Turning this on downloads the 850 MB image once and switches new agents to boxes."
+          sub="New Claude Code, Codex and Cursor agents run in isolated micro-VMs; other providers keep the sandbox you had selected, for now. Turning this on downloads the 850 MB image once and switches new agents to boxes."
         >
           <SetToggle
             on={boxesEnabled}

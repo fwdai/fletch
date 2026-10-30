@@ -60,13 +60,13 @@ impl ProviderHome for Claude {
     /// The claude login the host resolved (`agent::host_login`), as the
     /// seatbelt engine passes it; the container auth chain adds the stored
     /// setup-token or the shell's own key when there is no host login.
-    fn credential(&self, ctx: &AgentLaunchCtx) -> Credential {
+    fn credential(&self, ctx: &AgentLaunchCtx) -> Result<Credential> {
         use crate::sandbox::container::auth::{resolve, ContainerAuth};
         let env = match resolve(ctx.oauth_token) {
             ContainerAuth::Resolved { env, .. } => env,
             ContainerAuth::Unavailable => Vec::new(),
         };
-        Credential { env, file: None }
+        Ok(Credential { env, file: None })
     }
 }
 

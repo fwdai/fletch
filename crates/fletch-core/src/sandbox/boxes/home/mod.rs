@@ -29,6 +29,7 @@
 
 pub mod claude;
 pub mod codex;
+pub mod cursor;
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -62,8 +63,10 @@ pub trait ProviderHome: Send + Sync {
     /// [`seed`] before every launch; must be idempotent.
     fn seed(&self, home: &Path, writable_root: &Path) -> Result<Vec<GuestEntry>>;
 
-    /// The launch's credential, resolved on the host.
-    fn credential(&self, ctx: &AgentLaunchCtx) -> Credential;
+    /// The launch's credential, resolved on the host. An error refuses the
+    /// launch: a CLI that could only fail on its first turn fails here, with
+    /// what to do about it.
+    fn credential(&self, ctx: &AgentLaunchCtx) -> Result<Credential>;
 }
 
 /// One thing the guest home holds after seeding. Removals and directories
@@ -99,7 +102,17 @@ pub struct Credential {
 }
 
 /// The adapters, one per provider boxes run.
-const ALL: &[&dyn ProviderHome] = &[&claude::Claude, &codex::Codex];
+const ALL: &[&dyn ProviderHome] = &[&claude::Claude, &codex::Codex, &cursor::Cursor];
+
+/// `name` as the login shell exports it (over the app's own env,
+/// `bin_resolve::effective_env_var`), trimmed, when non-blank: how a
+/// credential a user keeps in their shell reaches a box launch, since the
+/// guest inherits none of the host's env.
+pub(crate) fn login_shell_var(name: &str) -> Option<String> {
+    let value = crate::bin_resolve::effective_env_var(name)?;
+    let value = value.to_string_lossy().trim().to_string();
+    (!value.is_empty()).then_some(value)
+}
 
 /// The adapter of `provider`, when boxes run it.
 pub fn for_provider(provider: &str) -> Option<&'static dyn ProviderHome> {
@@ -351,9 +364,10 @@ mod tests {
 
     #[test]
     fn claude_and_codex_have_adapters_and_nothing_else_does() {
-        assert_eq!(for_provider("claude").map(|h| h.id()), Some("claude"));
-        assert_eq!(for_provider("codex").map(|h| h.id()), Some("codex"));
-        for other in ["cursor", "opencode", "pi", "antigravity", ""] {
+        for supported in ["claude", "codex", "cursor"] {
+            assert_eq!(for_provider(supported).map(|h| h.id()), Some(supported));
+        }
+        for other in ["opencode", "pi", "antigravity", ""] {
             assert!(!supported(other), "{other}");
             assert!(require(other).is_err(), "{other}");
         }

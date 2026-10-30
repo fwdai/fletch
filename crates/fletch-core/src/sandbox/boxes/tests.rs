@@ -293,20 +293,20 @@ async fn wait_for(mut done: impl FnMut() -> bool, timeout: Duration) {
 #[test]
 fn new_agents_of_unsupported_providers_fall_back_to_seatbelt() {
     use crate::sandbox::EngineKind;
-    for supported in ["claude", "codex"] {
+    for supported in ["claude", "codex", "cursor"] {
         assert!(super::supports_provider(supported), "{supported}");
         assert_eq!(
             super::engine_for_new_agent(EngineKind::Box, supported),
             EngineKind::Box
         );
     }
-    assert!(!super::supports_provider("cursor"));
+    assert!(!super::supports_provider("pi"));
     assert_eq!(
-        super::engine_for_new_agent(EngineKind::Box, "cursor"),
+        super::engine_for_new_agent(EngineKind::Box, "pi"),
         EngineKind::SandboxExec
     );
     assert_eq!(
-        super::engine_for_new_agent(EngineKind::Docker, "cursor"),
+        super::engine_for_new_agent(EngineKind::Docker, "pi"),
         EngineKind::Docker
     );
 }

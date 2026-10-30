@@ -1,9 +1,13 @@
 import type { BoxImageStatus, BoxRuntimeProbe, BoxToolsStatus } from "@/api";
 
 /** The providers boxes run (`boxes::supports_provider`), by label. Claude
- *  Code's disk is built by setup and gates readiness; Codex's is built by
- *  setup when the host has the CLI, else on the first Codex launch. */
-const PROVIDER_LABELS: Record<string, string> = { claude: "Claude Code", codex: "Codex" };
+ *  Code's disk is built by setup and gates readiness; the others' are built
+ *  by setup when the host has the CLI, else on that provider's first launch. */
+const PROVIDER_LABELS: Record<string, string> = {
+  claude: "Claude Code",
+  codex: "Codex",
+  cursor: "Cursor",
+};
 const GATE = "claude";
 
 /** Where the host's box setup stands, as one line: `busy` while the image

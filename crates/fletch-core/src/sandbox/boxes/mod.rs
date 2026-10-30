@@ -571,7 +571,7 @@ impl SandboxEngine for BoxEngine {
         let home::Credential {
             mut env,
             file: credential_file,
-        } = provider_home.credential(ctx);
+        } = provider_home.credential(ctx)?;
         env.push(("GIT_TERMINAL_PROMPT".to_string(), "0".to_string()));
         let before_turn = credential_file.clone().map(|path| {
             let engine = BoxEngine::shared();
