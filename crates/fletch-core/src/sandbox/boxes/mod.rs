@@ -24,7 +24,14 @@
 //! the workspaces root rather than inside it, so no host file sits under a path
 //! the seam routes remotely): `data.img`, `dirty`, `key`, `key.pub`,
 //! `known_hosts`, `ssh_config`, `ssh.sock`, `ctl.sock`, `egress.sock`,
-//! `console.log`, `mirror.git/`, `claude-projects/`, `relay/`.
+//! `console.log`, `mirror.git/`, the provider's sessions mirror
+//! (`claude-projects/`, `codex-sessions/` — [`home`]), `relay/`.
+//!
+//! **The engine names no provider.** What a CLI keeps outside the checkout —
+//! its config, its login, its transcripts — and how each reaches or leaves
+//! the guest is one adapter per provider behind [`home::ProviderHome`]; the
+//! engine seeds the guest home, delivers the credential and mirrors the
+//! sessions through that one interface.
 //!
 //! **An agent runs where the tree it works in lives.** An agent that adopts
 //! an existing checkout instead of provisioning one (the local reviewer, which
@@ -49,6 +56,7 @@
 
 pub mod allowlist;
 pub mod executor;
+pub mod home;
 pub mod mirror;
 pub mod provision;
 pub mod registry;
@@ -69,6 +77,7 @@ use crate::error::{Error, Result};
 use crate::host::Sink;
 use crate::sandbox::engine::{
     AgentLaunchCtx, EngineKind, EnvDelivery, KillHandle, KillPlan, LaunchPlan, SandboxEngine,
+    TurnPrep,
 };
 
 pub use registry::{BoxIdentity, BoxPhase, BoxRegistry, RunningBox, StopReason};
@@ -102,9 +111,11 @@ pub(crate) fn box_dir_for_root(writable_root: &Path) -> Option<PathBuf> {
     box_dir(agent_id).ok()
 }
 
-/// The transcript mirror of a box (`sandbox::transcript_root` for `Box`).
+/// The claude transcript mirror of a box (`sandbox::transcript_root` for
+/// `Box`, which the claude session locators walk). Codex rollouts are
+/// located through [`home::mirror_for_agent`] instead.
 pub(crate) fn transcript_dir_for_root(writable_root: &Path) -> Option<PathBuf> {
-    box_dir_for_root(writable_root).map(|dir| dir.join(registry::CLAUDE_PROJECTS_DIR))
+    home::mirror_for_root(&home::claude::Claude, writable_root)
 }
 
 /// The box whose writable root holds `path`, when a registered one does: the
@@ -332,6 +343,10 @@ struct PendingLaunch {
     box_agent_id: String,
     provider: String,
     home: PathBuf,
+    /// The launch's credential files, shipped after the env file
+    /// ([`home::CredentialSync::launch`]) and kept in step for as long as
+    /// the launch lives.
+    credentials: Arc<Mutex<home::CredentialSync>>,
 }
 
 /// `EngineKind::Box`. One instance per process ([`BoxEngine::shared`]), like
@@ -353,12 +368,33 @@ impl BoxEngine {
     }
 }
 
-/// Which providers run in a box so far: the ones with a tools-disk script
-/// *and* a launch whose credential is one host-resolved env var. Codex, Cursor
-/// and OpenCode have a script but their logins live in files the host writes
-/// into a host-side overlay; delivering those into a guest is later work.
+/// A launch plan step over the launch's credential files: the box's channel,
+/// then `step` on the sync. The credential state lives in the plan's own
+/// closures and ends with the session, so no engine bookkeeping can run
+/// ahead of, or outlive, the process it is about.
+fn credential_step(
+    box_agent_id: &str,
+    credentials: &Arc<Mutex<home::CredentialSync>>,
+    step: fn(&mut home::CredentialSync, &fletch_box::Channel) -> Result<()>,
+) -> TurnPrep {
+    let box_agent_id = box_agent_id.to_string();
+    let credentials = credentials.clone();
+    Arc::new(move || {
+        let channel = BoxRegistry::global().channel_for(&box_agent_id)?;
+        step(
+            &mut credentials.lock().unwrap_or_else(|p| p.into_inner()),
+            &channel,
+        )
+    })
+}
+
+/// Which providers run in a box: the ones with a guest-home adapter
+/// ([`home::ProviderHome`] — claude and codex so far) and a tools-disk
+/// script. Cursor and OpenCode have a script but no adapter yet: their logins
+/// live in files the host writes into a host-side overlay, which an adapter
+/// would ship the way codex's does.
 pub fn supports_provider(provider: &str) -> bool {
-    provider == "claude"
+    home::supported(provider) && fletch_box::tools::install_script(provider).is_some()
 }
 
 /// The codegraph launcher's path in `agent_id`'s guest, when the tools disk
@@ -444,6 +480,7 @@ impl SandboxEngine for BoxEngine {
         if let Some(why) = provider_refusal(ctx.provider) {
             return Err(Error::Other(why));
         }
+        let provider_home = home::require(ctx.provider)?;
         if ctx.blackboard.is_some() {
             return Err(Error::Other(
                 "workflow step agents don't run in box sandboxes yet".into(),
@@ -463,6 +500,18 @@ impl SandboxEngine for BoxEngine {
             _ => identity_of(ctx),
         };
         let is_tenant = identity.agent_id != ctx.agent_id;
+        if is_tenant && identity.provider != ctx.provider {
+            // A box carries one provider's CLI (its tools disk): a tenant of
+            // another provider would find no binary on its PATH.
+            let label = |p: &str| {
+                crate::agent::provider_bin_label(p).map_or(p.to_string(), |(_, l)| l.to_string())
+            };
+            return Err(Error::SandboxUnavailable(format!(
+                "{} can't run in a {} box: a box carries one provider's CLI",
+                label(ctx.provider),
+                label(&identity.provider)
+            )));
+        }
         let box_agent_id = identity.agent_id.clone();
         let registry = BoxRegistry::global();
         // Waits for the image and the tools disk when they are still being
@@ -508,7 +557,18 @@ impl SandboxEngine for BoxEngine {
                 )));
             }
             running.relay_mailbox(ctx.rpc_dir, ctx.agent_id);
+            // Its sessions, tailed into its own mirror, as the owner's are
+            // into the owner's (a pulled provider's are pulled per agent).
+            if provider_home.transport() == home::Transport::Tail {
+                if let Some(mirror) = home::mirror_for_agent(ctx.provider, ctx.agent_id) {
+                    let sessions = provider_home.sessions_dir(ctx.home, ctx.writable_root);
+                    running.relay_tail(&sessions, &mirror);
+                }
+            }
         }
+        // The provider's home in the guest, as its adapter lays it out:
+        // before every launch, so the user's config changes reach it.
+        home::seed(&running.channel, provider_home, ctx.home, ctx.writable_root)?;
         let launch_id = uuid::Uuid::new_v4().to_string();
         let env_file = env_file_path(&launch_id);
 
@@ -526,17 +586,26 @@ impl SandboxEngine for BoxEngine {
             &remote,
         );
 
-        // The claude login the host resolved (`agent::host_login`), as the
-        // seatbelt engine passes it; the container auth chain adds the stored
-        // setup-token or the shell's own key when there is no host login.
-        let mut env = Vec::new();
-        match crate::sandbox::container::auth::resolve(ctx.oauth_token) {
-            crate::sandbox::container::auth::ContainerAuth::Resolved { env: auth, .. } => {
-                env.extend(auth)
-            }
-            crate::sandbox::container::auth::ContainerAuth::Unavailable => {}
-        }
+        // The login as the host resolved it for this launch, the way the
+        // provider's adapter spells it: in the env file, and/or files kept
+        // in step between host and guest for as long as the launch lives
+        // (`home::CredentialSync`).
+        let home::Credential { mut env, files } = provider_home.credential(ctx)?;
         env.push(("GIT_TERMINAL_PROMPT".to_string(), "0".to_string()));
+        let credentials = Arc::new(Mutex::new(home::CredentialSync::new(files)));
+        let synced = !credentials
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .is_empty();
+        let before_turn = synced
+            .then(|| credential_step(&box_agent_id, &credentials, home::CredentialSync::turn));
+        let after_exit = synced.then(|| {
+            credential_step(
+                &box_agent_id,
+                &credentials,
+                home::CredentialSync::after_exit,
+            )
+        });
 
         self.pending
             .lock()
@@ -548,6 +617,7 @@ impl SandboxEngine for BoxEngine {
                     box_agent_id: box_agent_id.clone(),
                     provider: ctx.provider.to_string(),
                     home: ctx.home.to_path_buf(),
+                    credentials,
                 },
             );
         // Attached to the box it runs in: a tenant's session keeps its host's
@@ -561,6 +631,8 @@ impl SandboxEngine for BoxEngine {
             env_delivery: EnvDelivery::GuestFile {
                 launch_id: launch_id.clone(),
             },
+            before_turn,
+            after_exit,
             kill: KillHandle::Engine {
                 engine: BoxEngine::shared(),
                 plan: KillPlan::Box {
@@ -596,12 +668,19 @@ impl SandboxEngine for BoxEngine {
         let channel = BoxRegistry::global().channel_for(&pending.box_agent_id)?;
         let path = env_file_path(launch_id);
         executor::put(&channel, contents.as_bytes(), &path, 0o600)?;
+        pending
+            .credentials
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .launch(&channel)?;
         Ok(path)
     }
 
     /// The session's own kill ends the ssh client (and so the guest PTY); the
     /// engine detaches the launch so the idle timer may stop the VM, and
-    /// removes the env file the launch's token sat in.
+    /// removes the env file the launch's token sat in. The CLI's credential
+    /// changes were written back as each process exited (`after_exit`),
+    /// never here, where the process may still be running.
     fn kill(&self, plan: &KillPlan) -> Result<()> {
         let KillPlan::Box {
             agent_id,
@@ -750,7 +829,7 @@ pub fn guest_program(
 /// Create `guest_path` with `bytes` in the guest that holds `tree`, failing
 /// when something is already there — the twin of a host `create_new` write,
 /// for a file the host materializes for an agent outside the routed roots
-/// (a claude session under the guest's `~/.claude/projects`).
+/// (a session the provider's CLI will resume, `home::create_session_file`).
 pub fn write_new_guest_file(tree: &Path, guest_path: &Path, bytes: &[u8]) -> Result<()> {
     let identity = box_holding(tree)
         .ok_or_else(|| Error::Other(format!("{} is in no box", tree.display())))?;

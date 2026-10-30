@@ -23,7 +23,7 @@ use crate::error::{Error, Result};
 use crate::git;
 use crate::sandbox::provision::{self as clone, BaseFreshness, CheckoutSpec};
 
-use super::registry::{BoxIdentity, BoxRegistry, RunningBox};
+use super::registry::{BoxIdentity, BoxRegistry};
 use super::{executor, mirror};
 
 /// `git::fetch_fork_point`'s bound, for the same reason: this sits inside the
@@ -130,9 +130,9 @@ pub async fn provision(
     }
     clone::rewrite_origin_head(spec).await;
     mirror::record_source(&running.dir, spec.dest, spec.source_repo)?;
-    if identity.provider == "claude" {
-        seed_claude_state(&running, &identity.home).await?;
-    }
+    // The provider's home in the guest (onboarding state, shared config) is
+    // seeded by every launch (`home::seed`), not here: a checkout is
+    // provisioned once, the user's config changes between launches.
     Ok(freshness)
 }
 
@@ -270,36 +270,6 @@ async fn install_hooks(channel: &Arc<Channel>, dest: &Path) -> Result<()> {
         put(channel, body.into_bytes(), hooks.join(name), 0o755).await?;
     }
     Ok(())
-}
-
-/// Claude's onboarding state in the guest home (`~/.claude.json`), seeded as
-/// the container entrypoint and the managed account dirs seed it, unless the
-/// agent already made one; plus the projects dir the transcript tail follows.
-async fn seed_claude_state(running: &RunningBox, home: &Path) -> Result<()> {
-    let channel = running.channel.clone();
-    let state = home.join(".claude.json");
-    let own = match crate::agent::accounts::claude_config_override() {
-        Some(dir) => dir.join(".claude.json"),
-        None => home.join(".claude.json"),
-    };
-    let seed = crate::agent::accounts::claude_state_seed(std::fs::read(&own).ok().as_deref());
-    let projects = home.join(".claude").join("projects");
-    tokio::task::spawn_blocking(move || -> Result<()> {
-        executor::run(
-            &channel,
-            &["mkdir", "-p", &projects.to_string_lossy()],
-            None,
-        )?;
-        let exists = executor::run(&channel, &["test", "-f", &state.to_string_lossy()], None)?
-            .status
-            .success();
-        if !exists {
-            executor::put(&channel, seed.to_string().as_bytes(), &state, 0o600)?;
-        }
-        Ok(())
-    })
-    .await
-    .map_err(|e| Error::Other(e.to_string()))?
 }
 
 async fn put(

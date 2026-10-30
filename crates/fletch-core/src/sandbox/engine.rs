@@ -233,6 +233,10 @@ pub enum EnvDelivery {
     GuestFile { launch_id: String },
 }
 
+/// Work run on the host before each turn's process of a per-turn session is
+/// spawned; an error fails the turn before anything launches.
+pub type TurnPrep = Arc<dyn Fn() -> Result<()> + Send + Sync>;
+
 pub struct LaunchPlan {
     pub program: std::path::PathBuf,
     pub prefix_args: Vec<String>,
@@ -242,6 +246,20 @@ pub struct LaunchPlan {
     /// `SSH_AUTH_SOCK` here; the container engines pass no host env to strip.
     pub env_remove: Vec<String>,
     pub env_delivery: EnvDelivery,
+    /// The engine's own step before every turn of a per-turn session, run
+    /// after the host refreshed what the launch's credential comes from
+    /// (`agent::spawn` chains the two): the box engine ships the refreshed
+    /// credential file into the guest here. `None` for an engine whose
+    /// launcher runs where the agent runs, and ignored by the long-lived
+    /// session shapes, which get their credential once at launch.
+    pub before_turn: Option<TurnPrep>,
+    /// The engine's own step once a process of this launch has exited, run
+    /// by the session's reaper before it reports the exit: after each turn's
+    /// process of a per-turn session, after the one process of a long-lived
+    /// session. The box engine writes back what the CLI changed in its
+    /// credential files here — after the process, so nothing races it, and
+    /// after every turn, so a host crash between turns loses nothing.
+    pub after_exit: Option<TurnPrep>,
     pub kill: KillHandle,
 }
 

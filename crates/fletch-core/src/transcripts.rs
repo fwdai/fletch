@@ -305,10 +305,16 @@ pub(crate) fn find_codex_rollouts(
     agent_id: &str,
     diag: &mut ReadDiagnostics,
 ) -> Vec<PathBuf> {
+    // A box agent's overlay is in its guest; the host reads the mirror the
+    // relay fills under its box dir (`sandbox::boxes::home`). Scanned first,
+    // as the per-agent projects dirs are for claude; absent for every other
+    // engine's agent, so the scan falls through to its own overlay.
+    let mirrored = crate::sandbox::boxes::home::mirror_for_agent("codex", agent_id);
     let own = crate::agent::codex_home::overlay_for_agent(agent_id)
         .map(|o| o.join("sessions"))
         .ok();
     let tiers = [
+        mirrored.into_iter().collect::<Vec<_>>(),
         own.into_iter().collect::<Vec<_>>(),
         legacy_codex_sessions_dirs(),
     ];

@@ -254,6 +254,8 @@ impl SandboxEngine for DockerEngine {
             env: prep.env,
             env_remove: Vec::new(),
             env_delivery: EnvDelivery::Process,
+            before_turn: None,
+            after_exit: None,
             kill: KillHandle::Engine {
                 engine: DockerEngine::shared(),
                 // One daemon endpoint: nothing to pin teardown to.

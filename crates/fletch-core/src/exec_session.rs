@@ -17,7 +17,7 @@
 
 use parking_lot::Mutex;
 use std::path::PathBuf;
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc};
 use std::time::Duration;
@@ -35,8 +35,9 @@ type ArgsBuilder =
     Arc<dyn Fn(&str, Option<&str>, Option<&str>, Option<&str>) -> Vec<String> + Send + Sync>;
 type IdExtractor = Arc<dyn Fn(&Value) -> Option<String> + Send + Sync>;
 /// Runs on the host before each turn's process is spawned; an error fails the
-/// turn before anything launches.
-pub type TurnPrep = Arc<dyn Fn() -> Result<()> + Send + Sync>;
+/// turn before anything launches. The engine's own step is declared on its
+/// launch plan (`sandbox::engine::LaunchPlan::before_turn`) in the same shape.
+pub type TurnPrep = crate::sandbox::TurnPrep;
 
 pub struct ExecSpawn {
     /// Program to launch each turn. Normally `sandbox-exec`, with the real
@@ -66,6 +67,9 @@ pub struct ExecSpawn {
     pub kill_plan: KillHandle,
     /// Host work each turn needs fresh — codex's per-turn launch credential.
     pub before_turn: Option<TurnPrep>,
+    /// Host work once a turn's child has exited — a box writes the CLI's
+    /// credential changes back (`LaunchPlan::after_exit`).
+    pub after_exit: Option<TurnPrep>,
 }
 
 pub struct ExecSession {
@@ -78,7 +82,12 @@ pub struct ExecSession {
     kill_plan: KillHandle,
     before_turn: Option<TurnPrep>,
     session_id: Arc<Mutex<Option<String>>>,
-    child: Arc<Mutex<Option<Child>>>,
+    /// The current turn's child, in a slot of its own ([`child_io::ChildSlot`]):
+    /// reaped only through it, so the plan's `after_exit` runs once per turn
+    /// whichever path ends it, and watched only by its own reaper.
+    child: Mutex<Option<Arc<child_io::ChildSlot>>>,
+    /// The step each turn's slot runs after its child exits.
+    after_exit: Option<TurnPrep>,
     interrupted: Arc<AtomicBool>,
     /// Monotonic turn counter. A reap thread only reports its exit if its
     /// turn is still the latest — so a superseded turn's late exit can't
@@ -133,7 +142,8 @@ impl ExecSession {
             kill_plan: spec.kill_plan,
             before_turn: spec.before_turn,
             session_id: Arc::new(Mutex::new(spec.session_id)),
-            child: Arc::new(Mutex::new(None)),
+            child: Mutex::new(None),
+            after_exit: spec.after_exit,
             interrupted: Arc::new(AtomicBool::new(false)),
             turn_seq: Arc::new(AtomicU64::new(0)),
             build_args: Arc::new(build_args),
@@ -161,10 +171,11 @@ impl ExecSession {
         self.interrupted.store(false, Ordering::SeqCst);
 
         // A new turn supersedes any still-running one (e.g. the user
-        // sent again before the prior turn finished). Kill + reap it.
-        if let Some(mut prev) = self.child.lock().take() {
-            let _ = prev.kill();
-            let _ = prev.wait();
+        // sent again before the prior turn finished). Kill + reap it, in its
+        // own slot: its reaper, waking later, finds that slot empty and can
+        // touch nothing of the new turn's.
+        if let Some(previous) = self.child.lock().take() {
+            previous.kill_and_reap("agent");
         }
 
         // The typed message plus one reference line per attachment, so
@@ -240,7 +251,8 @@ impl ExecSession {
             .take()
             .ok_or_else(|| Error::Other("agent: child stderr missing".into()))?;
 
-        *self.child.lock() = Some(child);
+        let slot = child_io::ChildSlot::new(child, self.after_exit.clone());
+        *self.child.lock() = Some(slot.clone());
 
         // Honor an interrupt that arrived during the spawn/retry window, when
         // no child yet existed for `interrupt()` to signal. Loading the flag
@@ -278,7 +290,7 @@ impl ExecSession {
         let on_exit = self.on_exit.clone();
         let interrupted = self.interrupted.clone();
         let kill_plan = self.kill_plan.clone();
-        child_io::spawn_reaper(self.child.clone(), "agent", move |status| {
+        child_io::spawn_reaper(slot, "agent", move |status| {
             let interrupted = interrupted.load(Ordering::SeqCst);
             let exit = match status {
                 Ok(status) => {
@@ -334,8 +346,8 @@ impl ExecSession {
         {
             use nix::sys::signal::{kill, Signal};
             use nix::unistd::Pid;
-            if let Some(child) = self.child.lock().as_ref() {
-                let _ = kill(Pid::from_raw(child.id() as i32), Signal::SIGINT);
+            if let Some(pid) = self.child.lock().as_ref().and_then(|s| s.pid()) {
+                let _ = kill(Pid::from_raw(pid as i32), Signal::SIGINT);
             }
         }
     }
@@ -346,9 +358,8 @@ impl ExecSession {
         // engine error. Otherwise a Docker-backed session whose container kill
         // errors would leave the host-side wrapper running.
         let engine_result = self.kill_plan.kill();
-        if let Some(mut child) = self.child.lock().take() {
-            let _ = child.kill();
-            let _ = child.wait();
+        if let Some(current) = self.child.lock().take() {
+            current.kill_and_reap("agent");
         }
         engine_result
     }
@@ -432,6 +443,120 @@ mod tests {
         }
     }
 
+    /// A session whose turns run `sleep 30`, with a counting after-exit step.
+    fn sleeping_session(
+        dir: &std::path::Path,
+    ) -> (ExecSession, Arc<std::sync::atomic::AtomicUsize>) {
+        let script = dir.join("sleeper.sh");
+        std::fs::write(&script, "#!/bin/sh\nsleep 30\n").unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let step = {
+            let count = count.clone();
+            Arc::new(move || {
+                count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(())
+            }) as TurnPrep
+        };
+        let session = ExecSession::new(
+            ExecSpawn {
+                program: script,
+                prefix_args: vec![],
+                cwd: dir.to_path_buf(),
+                session_id: None,
+                stdout_is_json: true,
+                env: vec![],
+                env_remove: Vec::new(),
+                kill_plan: KillHandle::ProcessGroup,
+                before_turn: None,
+                after_exit: Some(step),
+            },
+            codex_args,
+            codex_id,
+            ExecCallbacks {
+                on_event: |_| {},
+                on_session_id: |_| {},
+                on_exit: |_| {},
+            },
+        );
+        (session, count)
+    }
+
+    /// Killing a session mid-turn reaps the turn's child through the slot:
+    /// the after-exit step runs exactly once, and once more for nothing on
+    /// a second kill.
+    #[test]
+    fn kill_mid_turn_runs_the_after_exit_step_once() {
+        use std::sync::atomic::Ordering;
+        let dir = tempfile::tempdir().unwrap();
+        let (session, count) = sleeping_session(dir.path());
+        session.send_user_message("go", &[], None, None).unwrap();
+        assert_eq!(count.load(Ordering::SeqCst), 0);
+        session.kill().unwrap();
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+        session.kill().unwrap();
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+    }
+
+    /// A turn sent over a running one supersedes it and is itself reported:
+    /// the old child's reaper, waking after the swap, finds its own slot
+    /// empty and leaves the new turn's child to its own reaper.
+    #[test]
+    fn a_superseding_turn_is_reported_by_its_own_reaper() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("agent.sh");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\ncase \"$*\" in *fast*) echo '{\"type\":\"turn.completed\"}';; *) sleep 30;; esac\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let (xtx, xrx) = mpsc::channel();
+        let session = ExecSession::new(
+            ExecSpawn {
+                program: script,
+                prefix_args: vec![],
+                cwd: dir.path().to_path_buf(),
+                session_id: None,
+                stdout_is_json: true,
+                env: vec![],
+                env_remove: Vec::new(),
+                kill_plan: KillHandle::ProcessGroup,
+                before_turn: None,
+                after_exit: None,
+            },
+            codex_args,
+            codex_id,
+            ExecCallbacks {
+                on_event: |_| {},
+                on_session_id: |_| {},
+                on_exit: move |exit| {
+                    let _ = xtx.send(exit);
+                },
+            },
+        );
+        session.send_user_message("slow", &[], None, None).unwrap();
+        session.send_user_message("fast", &[], None, None).unwrap();
+        let exit = xrx.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(exit.success, "{exit:?}");
+        assert!(xrx.recv_timeout(Duration::from_millis(200)).is_err());
+    }
+
+    /// A turn sent over a running one supersedes it: the old child is
+    /// reaped through its slot, with its after-exit step, before the new
+    /// one starts.
+    #[test]
+    fn a_superseding_turn_runs_the_after_exit_step_for_the_old_one() {
+        use std::sync::atomic::Ordering;
+        let dir = tempfile::tempdir().unwrap();
+        let (session, count) = sleeping_session(dir.path());
+        session.send_user_message("one", &[], None, None).unwrap();
+        session.send_user_message("two", &[], None, None).unwrap();
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+        session.kill().unwrap();
+        assert_eq!(count.load(Ordering::SeqCst), 2);
+    }
+
     #[test]
     fn spawns_a_turn_forwards_events_captures_id_and_reports_exit() {
         let dir = tempfile::tempdir().unwrap();
@@ -456,6 +581,7 @@ mod tests {
                 env_remove: Vec::new(),
                 kill_plan: KillHandle::ProcessGroup,
                 before_turn: None,
+                after_exit: None,
             },
             codex_args,
             codex_id,
@@ -515,6 +641,7 @@ mod tests {
                 env_remove: Vec::new(),
                 kill_plan: KillHandle::ProcessGroup,
                 before_turn: None,
+                after_exit: None,
             },
             codex_args,
             codex_id,
@@ -556,6 +683,7 @@ mod tests {
                 env_remove: Vec::new(),
                 kill_plan: KillHandle::ProcessGroup,
                 before_turn: None,
+                after_exit: None,
             },
             codex_args,
             codex_id,
@@ -630,6 +758,7 @@ mod tests {
                 env_remove: Vec::new(),
                 kill_plan: KillHandle::ProcessGroup,
                 before_turn: None,
+                after_exit: None,
             },
             codex_args,
             codex_id,
@@ -683,6 +812,7 @@ mod tests {
                 env: vec![],
                 env_remove: Vec::new(),
                 kill_plan: KillHandle::ProcessGroup,
+                after_exit: None,
                 before_turn: Some(Arc::new(move || {
                     counted.fetch_add(1, Ordering::SeqCst);
                     Err(Error::Other("login expired".into()))

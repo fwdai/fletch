@@ -37,7 +37,6 @@ pub const CONSOLE: &str = "console.log";
 pub const SSH_SOCK: &str = "ssh.sock";
 pub const CTL_SOCK: &str = "ctl.sock";
 pub const EGRESS_SOCK: &str = "egress.sock";
-pub const CLAUDE_PROJECTS_DIR: &str = "claude-projects";
 pub const MIRROR_DIR: &str = "mirror.git";
 
 /// `FLETCH_READY` must arrive within this, else the boot fails closed.
@@ -231,6 +230,13 @@ impl RunningBox {
         self.relays
             .add_mailbox(self.channel.clone(), &self.dir, rpc_dir, tenant_agent_id);
     }
+
+    /// Tail a tenant's sessions dir out of this box into the tenant's own
+    /// mirror too (`relay::Relays::add_tail`).
+    pub fn relay_tail(&self, guest_sessions: &Path, mirror: &Path) {
+        self.relays
+            .add_tail(self.channel.clone(), guest_sessions, mirror);
+    }
 }
 
 /// An agent that runs in another agent's box because the tree it adopted
@@ -337,6 +343,16 @@ impl BoxRegistry {
     }
 
     /// Forget every tenant of `host_agent_id`'s box: the box is going.
+    /// The tenants of `host_agent_id`'s box, by agent id.
+    pub fn tenants_of(&self, host_agent_id: &str) -> Vec<(String, Tenant)> {
+        self.tenants
+            .lock()
+            .iter()
+            .filter(|(_, t)| t.host_agent_id == host_agent_id)
+            .map(|(id, t)| (id.clone(), t.clone()))
+            .collect()
+    }
+
     fn forget_tenants_of(&self, host_agent_id: &str) {
         let gone: Vec<Tenant> = {
             let mut tenants = self.tenants.lock();
@@ -390,7 +406,8 @@ impl BoxRegistry {
             .collect()
     }
 
-    fn running(&self, agent_id: &str) -> Option<Arc<RunningBox>> {
+    /// The box of `agent_id` while its VM is up; never boots it.
+    pub(super) fn running(&self, agent_id: &str) -> Option<Arc<RunningBox>> {
         self.entries.lock().get(agent_id)?.running.clone()
     }
 
@@ -727,6 +744,7 @@ impl BoxRegistry {
             if let Err(e) = super::mirror::refresh_running(&running).await {
                 tracing::info!(agent_id, error = %e, "mirror refresh before stop failed");
             }
+            super::home::pull_before_stop(&running).await;
         }
         running.relays.stop().await;
         let outcome = stop_ladder(&running.vm, &running.channel).await;
@@ -1143,13 +1161,15 @@ async fn boot(
         Err(e) => tracing::warn!(agent_id, error = %e, "could not create the guest's rpc mailbox"),
     }
 
-    let relays = relay::Relays::start(
-        channel.clone(),
-        &dir,
-        &identity.rpc_dir,
-        &identity.home.join(".claude").join("projects"),
-        &dir.join(CLAUDE_PROJECTS_DIR),
-    );
+    // The owner's sessions dir — where the provider's CLI writes its
+    // transcripts in this guest — tailed into its mirror under the box dir
+    // when the provider's adapter has it tailed (`home::Transport`).
+    let provider_home = super::home::require(&identity.provider)?;
+    let sessions = provider_home.sessions_dir(&identity.home, &identity.writable_root);
+    let mirror = dir.join(provider_home.mirror_dirname());
+    let tail = (provider_home.transport() == super::home::Transport::Tail)
+        .then_some((sessions.as_path(), mirror.as_path()));
+    let relays = relay::Relays::start(channel.clone(), &dir, &identity.rpc_dir, tail);
     Ok(RunningBox {
         identity: identity.clone(),
         dir,

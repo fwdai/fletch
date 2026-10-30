@@ -22,9 +22,12 @@
 //!   sender re-sends everything it still holds at session start and then says
 //!   `synced`, so on `synced` the receiver deletes every marker it was not
 //!   shown this session. Markers made after the sync wait for the next one.
-//! - **Transcript tail**: `fletch-guest tail <home>/.claude/projects` emits
-//!   `create`/`append` lines for every `*.jsonl` under claude's projects dir;
-//!   the host appends them under `<box>/claude-projects/`, and on reconnect
+//! - **Transcript tail**: `fletch-guest tail <sessions dir>` emits
+//!   `create`/`append` lines for every `*.jsonl` under the dir the provider's
+//!   CLI writes its sessions to (`super::home::ProviderHome::sessions_dir`:
+//!   claude's `<home>/.claude/projects`, codex's `<CODEX_HOME>/sessions`);
+//!   the host appends them under the provider's mirror in the box dir
+//!   (`<box>/claude-projects/`, `<box>/codex-sessions/`), and on reconnect
 //!   tells the guest how much it already holds (`--offsets`).
 //!
 //! Both reconnect with backoff while the VM runs; `Relays::stop` ends them.
@@ -86,6 +89,9 @@ pub struct Relays {
     /// The mailboxes relayed, by rpc dir, so a tenant's relaunch adds no
     /// second relay for the same mailbox.
     mailboxes: parking_lot::Mutex<HashSet<PathBuf>>,
+    /// The mirrors tailed into, so a tenant's relaunch adds no second tail
+    /// for the same mirror.
+    mirrors: parking_lot::Mutex<HashSet<PathBuf>>,
 }
 
 /// Where, under the box dir, the host keeps its receipt markers for the
@@ -106,12 +112,15 @@ pub fn tenant_delivered_dir(box_dir: &Path, tenant_agent_id: &str) -> PathBuf {
 impl Relays {
     /// `box_dir` is the box's own directory, which outlives the VM: the
     /// request receipt markers live under it.
+    ///
+    /// `tail` is the guest sessions dir to follow and the host mirror to
+    /// append it to; `None` for a provider whose sessions the host pulls
+    /// instead (`super::home::Transport`).
     pub fn start(
         channel: Arc<Channel>,
         box_dir: &Path,
         rpc_dir: &Path,
-        guest_projects: &Path,
-        mirror: &Path,
+        tail: Option<(&Path, &Path)>,
     ) -> Self {
         let (stop, rx) = watch::channel(false);
         let mailbox = spawn_mailbox(
@@ -120,29 +129,31 @@ impl Relays {
             box_dir.join(DELIVERED_DIR),
             rx.clone(),
         );
-        let tail = {
-            let (guest_projects, mirror) = (guest_projects.to_path_buf(), mirror.to_path_buf());
-            crate::host::spawn(async move {
-                let root = guest_projects.to_string_lossy().into_owned();
-                run_with_reconnect(
-                    rx,
-                    || {
-                        // What the host already holds, so the guest resends
-                        // only what is new; a damaged mirror file starts over.
-                        let offsets = serde_json::to_string(&offsets(&guest_projects, &mirror))
-                            .unwrap_or_else(|_| "{}".into());
-                        channel.spawn_relay(&[guest::TAIL, &root, "--offsets", &offsets])
-                    },
-                    |child, stop| pump_tail(child, guest_projects.clone(), mirror.clone(), stop),
-                )
-                .await;
-            })
-        };
+        let mut tasks = vec![mailbox];
+        let mut mirrors = HashSet::new();
+        if let Some((guest_sessions, mirror)) = tail {
+            tasks.push(spawn_tail(channel, guest_sessions, mirror, rx));
+            mirrors.insert(mirror.to_path_buf());
+        }
         Self {
             stop,
-            tasks: parking_lot::Mutex::new(vec![mailbox, tail]),
+            tasks: parking_lot::Mutex::new(tasks),
             mailboxes: parking_lot::Mutex::new(HashSet::from([rpc_dir.to_path_buf()])),
+            mirrors: parking_lot::Mutex::new(mirrors),
         }
+    }
+
+    /// Tail one more sessions dir out of this box: a tenant's, into the
+    /// tenant's own mirror (a tenant of the owner's provider whose sessions
+    /// dir is the owner's — claude's `~/.claude/projects` — is tailed twice,
+    /// once per mirror, so each agent's mirror is whole). Idempotent per
+    /// mirror; ends and comes back with the box like a tenant's mailbox.
+    pub fn add_tail(&self, channel: Arc<Channel>, guest_sessions: &Path, mirror: &Path) {
+        if !self.mirrors.lock().insert(mirror.to_path_buf()) {
+            return;
+        }
+        let task = spawn_tail(channel, guest_sessions, mirror, self.stop.subscribe());
+        self.tasks.lock().push(task);
     }
 
     /// Relay one more mailbox out of this box: a tenant's — an agent that
@@ -185,6 +196,32 @@ impl Relays {
             }
         }
     }
+}
+
+/// One transcript tail, kept alive until `stop`: `fletch-guest tail
+/// <sessions>` in the guest, appended into `mirror` on the host.
+fn spawn_tail(
+    channel: Arc<Channel>,
+    guest_sessions: &Path,
+    mirror: &Path,
+    stop: watch::Receiver<bool>,
+) -> tokio::task::JoinHandle<()> {
+    let (guest_sessions, mirror) = (guest_sessions.to_path_buf(), mirror.to_path_buf());
+    crate::host::spawn(async move {
+        let root = guest_sessions.to_string_lossy().into_owned();
+        run_with_reconnect(
+            stop,
+            || {
+                // What the host already holds, so the guest resends only
+                // what is new; a damaged mirror file starts over.
+                let offsets = serde_json::to_string(&offsets(&guest_sessions, &mirror))
+                    .unwrap_or_else(|_| "{}".into());
+                channel.spawn_relay(&[guest::TAIL, &root, "--offsets", &offsets])
+            },
+            |child, stop| pump_tail(child, guest_sessions.clone(), mirror.clone(), stop),
+        )
+        .await;
+    })
 }
 
 /// One mailbox relay, kept alive until `stop`: `fletch-guest relay <rpc dir>`

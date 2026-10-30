@@ -53,6 +53,18 @@ pub const TEMPLATE: &[(&str, Category)] = &[
     ("api.cursor.com", Category::Providers),
     ("opencode.ai", Category::Providers),
     ("*.opencode.ai", Category::Providers),
+    // The model providers the multi-provider CLIs (opencode, pi) talk to
+    // directly, by the API keys they honour.
+    ("generativelanguage.googleapis.com", Category::Providers),
+    ("openrouter.ai", Category::Providers),
+    ("api.groq.com", Category::Providers),
+    ("api.x.ai", Category::Providers),
+    ("api.deepseek.com", Category::Providers),
+    ("api.mistral.ai", Category::Providers),
+    ("api.githubcopilot.com", Category::Providers),
+    // The model catalog opencode loads at start-up (and Fletch's own
+    // enrichment source); without it a fresh guest's opencode knows no models.
+    ("models.dev", Category::Providers),
     ("registry.npmjs.org", Category::Registries),
     ("*.npmjs.org", Category::Registries),
     ("registry.yarnpkg.com", Category::Registries),
@@ -74,6 +86,9 @@ pub const TEMPLATE: &[(&str, Category)] = &[
     ("api.nuget.org", Category::Registries),
     ("static.rust-lang.org", Category::Toolchains),
     ("sh.rustup.rs", Category::Toolchains),
+    // Cursor's CLI installer and its download CDN (the cursor tools disk).
+    ("cursor.com", Category::Toolchains),
+    ("downloads.cursor.com", Category::Toolchains),
     ("nodejs.org", Category::Toolchains),
     ("bun.sh", Category::Toolchains),
     ("deno.land", Category::Toolchains),
@@ -138,6 +153,16 @@ pub const QUIET: &[&str] = &[
     "*.amplitude.com",
     "*.mixpanel.com",
     "api.honeycomb.io",
+    // A Chromium an agent drives (Playwright, Puppeteer) phones its own
+    // services on start-up — autofill, optimization hints, Safe Browsing,
+    // the component updater — none of which a page needs.
+    "content-autofill.googleapis.com",
+    "optimizationguide-pa.googleapis.com",
+    "safebrowsing.googleapis.com",
+    "clientservices.googleapis.com",
+    "update.googleapis.com",
+    "clients2.google.com",
+    "*.gvt1.com",
 ];
 
 /// Whether a denial of `host` is noise ([`QUIET`]). `host` must be normalized.
@@ -320,6 +345,9 @@ mod tests {
             "platform.claude.com",
             "registry.npmjs.org",
             "api2.cursor.sh",
+            "generativelanguage.googleapis.com",
+            "openrouter.ai",
+            "models.dev",
             "github.com",
         ] {
             assert_eq!(policy.check(host, 443), Ok(()), "{host}");
@@ -365,6 +393,8 @@ mod tests {
             "sh.rustup.rs",
             "bun.sh",
             "cdn.playwright.dev",
+            "cursor.com",
+            "downloads.cursor.com",
         ] {
             assert_eq!(policy.check(host, 443), Ok(()), "{host}");
         }
@@ -372,10 +402,17 @@ mod tests {
             "http-intake.logs.us5.datadoghq.com",
             "o1.ingest.sentry.io",
             "statsig.com",
+            // A driven Chromium's own chatter.
+            "content-autofill.googleapis.com",
+            "optimizationguide-pa.googleapis.com",
+            "edgedl.me.gvt1.com",
         ] {
             assert!(is_quiet(host), "{host}");
             assert_eq!(policy.check(host, 443), Err(Denial::Host), "{host}");
         }
+        // Puppeteer's Chrome for Testing lives in a general-purpose bucket:
+        // neither allowed (an upload sink) nor quiet (a real need, for the
+        // project's own list).
         assert!(!is_quiet("storage.googleapis.com"));
         assert_eq!(
             policy.check("storage.googleapis.com", 443),

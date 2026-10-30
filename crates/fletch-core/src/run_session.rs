@@ -229,6 +229,7 @@ where
             rows: 32,
             env_remove: &[],
             kill_plan: crate::sandbox::KillHandle::ProcessGroup,
+            after_exit: None,
         },
         on_output,
         on_exit,
