@@ -450,6 +450,18 @@ mod tests {
         assert_eq!(parse_disk_name("claude.img", "claude"), None);
     }
 
+    /// The engine deletes disks by what this reads back, so no provider's
+    /// disk may parse as another's: no name is another's plus `-…`.
+    #[test]
+    fn no_providers_disks_read_as_anothers() {
+        for a in PROVIDERS {
+            for b in PROVIDERS {
+                let name = format!("{b}-v1.0.0.img");
+                assert_eq!(parse_disk_name(&name, a).is_some(), a == b, "{a} / {b}");
+            }
+        }
+    }
+
     /// The name is the record of whether codegraph is on a disk: the two
     /// builds of one CLI version never share a file, and only the one built
     /// with it reads as carrying it.

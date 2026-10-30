@@ -899,6 +899,12 @@ pub fn startup(workspace: &crate::workspace::WorkspaceManager) {
         // the first boot that finds it missing (which boots an earlier disk
         // meanwhile, `registry::bootable_tools_disk`). Skips a settled disk.
         setup::prebuild_tools();
+        // And the disks an earlier update superseded go, off this thread.
+        for provider in fletch_box::tools::PROVIDERS {
+            if supports_provider(provider) {
+                registry::sweep_tools_disks_in_background(provider.to_string());
+            }
+        }
     }
     let leaked = leaked_box_dirs(workspace);
     std::thread::spawn(move || {
