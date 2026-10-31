@@ -1166,12 +1166,7 @@ async fn ensure_reviewer(
             Ok(record)
                 if record.archive.is_none()
                     && record.custom_agent_id.as_deref() == Some(spec.custom_agent_id.as_str())
-                    && record
-                        .sandbox_engine
-                        .as_deref()
-                        .and_then(crate::sandbox::EngineKind::from_setting)
-                        .unwrap_or(crate::sandbox::EngineKind::SandboxExec)
-                        == wanted_engine =>
+                    && crate::sandbox::stamped_engine(&record) == wanted_engine =>
             {
                 if !sup.agents.lock().contains_key(id) {
                     sup.clone().resume_agent(ctx.clone(), id).await?;

@@ -40,9 +40,10 @@ pub trait RemoteExecutor: Send + Sync + fmt::Debug {
 
     fn read(&self, path: &Path) -> io::Result<Vec<u8>>;
 
-    /// Write `bytes` to `path`, creating missing parent directories: the host
-    /// does not prepare a remote tree the way it `create_dir_all`s its own.
-    fn write(&self, path: &Path, bytes: &[u8]) -> io::Result<()>;
+    /// Write `bytes` to `path` with permission bits `mode`, creating missing
+    /// parent directories: the host does not prepare a remote tree the way it
+    /// `create_dir_all`s its own.
+    fn write(&self, path: &Path, bytes: &[u8], mode: u32) -> io::Result<()>;
 
     /// Metadata of what `path` resolves to (symlinks followed), `None` when
     /// nothing is there.
@@ -171,7 +172,7 @@ impl Executor {
     pub fn write(&self, path: &Path, bytes: &[u8]) -> io::Result<()> {
         match self {
             Self::Local => std::fs::write(path, bytes),
-            Self::Remote(remote) => remote.write(path, bytes),
+            Self::Remote(remote) => remote.write(path, bytes, 0o644),
         }
     }
 
@@ -280,7 +281,7 @@ impl Executor {
                 let (dir, name) = local_parent(anchor, rel, true)?;
                 dir.write_file(name, bytes, mode)
             }
-            Self::Remote(remote) => remote.write(&anchor.join(rel), bytes),
+            Self::Remote(remote) => remote.write(&anchor.join(rel), bytes, mode),
         }
     }
 
@@ -298,7 +299,7 @@ impl Executor {
                 let (dir, name) = local_parent(anchor, rel, true)?;
                 dir.copy_file(name, from, mode)
             }
-            Self::Remote(remote) => remote.write(&anchor.join(rel), &std::fs::read(from)?),
+            Self::Remote(remote) => remote.write(&anchor.join(rel), &std::fs::read(from)?, mode),
         }
     }
 
@@ -349,7 +350,7 @@ mod tests {
         fn read(&self, _: &Path) -> io::Result<Vec<u8>> {
             Ok(self.0.as_bytes().to_vec())
         }
-        fn write(&self, _: &Path, _: &[u8]) -> io::Result<()> {
+        fn write(&self, _: &Path, _: &[u8], _: u32) -> io::Result<()> {
             Ok(())
         }
         fn stat(&self, _: &Path) -> io::Result<Option<Stat>> {

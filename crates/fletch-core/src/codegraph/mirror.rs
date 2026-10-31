@@ -366,7 +366,7 @@ mod tests {
                 .cloned()
                 .ok_or_else(|| std::io::ErrorKind::NotFound.into())
         }
-        fn write(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+        fn write(&self, path: &Path, bytes: &[u8], _: u32) -> std::io::Result<()> {
             self.files.lock().insert(path.to_path_buf(), bytes.to_vec());
             Ok(())
         }

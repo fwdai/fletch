@@ -194,9 +194,8 @@ pub(crate) async fn install_hook(checkout: &Path) -> crate::error::Result<()> {
 
 /// [`install_hook_in`] for a checkout the host reaches only through `exec`:
 /// the same chaining, over plain paths, since in the guest's own tree a link
-/// leads nowhere outside it (`exec::Executor::write_beneath`). The executor's
-/// write does not carry a mode, and git ignores a hook that is not
-/// executable, so the hook is `chmod`ed where it lives.
+/// leads nowhere outside it (`exec::Executor::write_beneath`), which writes
+/// the hook executable where it lives.
 fn install_hook_remote(exec: &crate::exec::Executor, checkout: &Path) -> crate::error::Result<()> {
     let rel = Path::new(".git/hooks/commit-msg");
     let hook = checkout.join(rel);
@@ -217,17 +216,6 @@ fn install_hook_remote(exec: &crate::exec::Executor, checkout: &Path) -> crate::
         exec.rename(&hook, &orig)?;
     }
     exec.write_beneath(checkout, rel, commit_msg_hook().as_bytes(), 0o755)?;
-    let out = exec
-        .command("chmod", checkout, &[])
-        .arg("755")
-        .arg(&hook)
-        .output()?;
-    if !out.status.success() {
-        return Err(crate::error::Error::Other(format!(
-            "chmod of the attribution hook failed: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        )));
-    }
     Ok(())
 }
 
@@ -560,10 +548,11 @@ mod tests {
 
     /// A box checkout as the executor sees it: `.git` a directory in the
     /// guest for `box-clone`, a file (a linked worktree) for `box-linked`,
-    /// while the host paths hold nothing at all. Records what is written.
+    /// while the host paths hold nothing at all. Records what is written,
+    /// and with what mode.
     #[derive(Debug, Default)]
     struct FakeBox {
-        writes: parking_lot::Mutex<Vec<PathBuf>>,
+        writes: parking_lot::Mutex<Vec<(PathBuf, u32)>>,
     }
 
     impl crate::exec::RemoteExecutor for FakeBox {
@@ -576,8 +565,8 @@ mod tests {
                 path.display().to_string(),
             ))
         }
-        fn write(&self, path: &Path, _: &[u8]) -> std::io::Result<()> {
-            self.writes.lock().push(path.to_path_buf());
+        fn write(&self, path: &Path, _: &[u8], mode: u32) -> std::io::Result<()> {
+            self.writes.lock().push((path.to_path_buf(), mode));
             Ok(())
         }
         fn stat(&self, path: &Path) -> std::io::Result<Option<crate::exec::Stat>> {
@@ -611,8 +600,8 @@ mod tests {
     }
 
     /// A box checkout's host path is an empty placeholder, so the `.git`
-    /// probe asks the guest: its clone gets the hook, written where it lives,
-    /// and a linked worktree there is still left alone.
+    /// probe asks the guest: its clone gets the hook, written executable where
+    /// it lives, and a linked worktree there is still left alone.
     #[tokio::test]
     async fn agent_start_installs_the_hook_in_a_box_checkout() {
         // A root no other test registers.
@@ -627,7 +616,7 @@ mod tests {
         crate::exec::unregister_root(&root);
         assert_eq!(
             *fake.writes.lock(),
-            vec![clone.join(".git/hooks/commit-msg")]
+            vec![(clone.join(".git/hooks/commit-msg"), 0o755)]
         );
     }
 }

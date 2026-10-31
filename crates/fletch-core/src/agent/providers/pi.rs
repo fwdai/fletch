@@ -32,7 +32,7 @@ fn pi_sessions_dir() -> Option<PathBuf> {
 }
 
 /// A box agent's sessions are in its guest; the host reads the mirror the
-/// relay fills under its box dir (`sandbox::boxes::home`), scanned first.
+/// relay fills under its box dir (`sandbox::session_mirror`), scanned first.
 /// Absent for every other engine's agent, so the scan falls through to the
 /// user's own sessions dir.
 pub(crate) fn pi_locate(
@@ -41,7 +41,7 @@ pub(crate) fn pi_locate(
     cwd: &Path,
     diag: &mut ReadDiagnostics,
 ) -> Vec<PathBuf> {
-    let roots = crate::sandbox::boxes::home::mirror_for_agent("pi", agent_id)
+    let roots = crate::sandbox::session_mirror("pi", agent_id)
         .into_iter()
         .chain(pi_sessions_dir());
     for sessions in roots {
@@ -82,19 +82,14 @@ pub(crate) fn pi_write(
     engine: crate::sandbox::EngineKind,
     bodies: &[Value],
 ) -> Result<Option<PathBuf>> {
-    if engine == crate::sandbox::EngineKind::Box {
-        // The pi that resumes this runs in the guest and reads its own
-        // `~/.pi/agent/sessions`; the host's copy is the mirror the relay
-        // fills. Created in both (`boxes::home::create_session_file`).
-        let (rel, lines) = pi_session_file(session_id, cwd, bodies);
-        return crate::sandbox::boxes::home::create_session_file(
-            &crate::sandbox::boxes::home::pi::Pi,
-            agent_id,
-            cwd,
-            &rel,
-            &lines,
-        )
-        .map(Some);
+    // Where the engine keeps the agent's sessions itself (a box: the pi
+    // that resumes this reads its own `~/.pi/agent/sessions` in the guest),
+    // it writes the file there.
+    let (rel, lines) = pi_session_file(session_id, cwd, bodies);
+    if let Some(path) =
+        crate::sandbox::create_session_file("pi", engine, agent_id, cwd, &rel, &lines)?
+    {
+        return Ok(Some(path));
     }
     let sessions = pi_sessions_dir()
         .ok_or_else(|| Error::Other("pi's sessions directory can't be resolved".into()))?;

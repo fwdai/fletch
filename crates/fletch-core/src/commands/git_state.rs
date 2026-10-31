@@ -70,7 +70,7 @@ pub(crate) fn checkout_asleep(
     agent_repo_checkout_opt(supervisor, agent_id, subdir)
         .ok()
         .flatten()
-        .is_some_and(|(_, checkout)| crate::sandbox::boxes::asleep_for_path(&checkout))
+        .is_some_and(|(_, checkout)| crate::sandbox::checkout_asleep(&checkout))
 }
 
 /// `read` as a [passive](crate::exec::passive) poll: `None` when `asleep`
@@ -101,11 +101,11 @@ async fn poll_checkout<T: Clone>(
     checkout: &Path,
     read: impl Future<Output = T>,
 ) -> Option<T> {
-    use crate::sandbox::boxes;
-    let Some(value) = poll_unless_asleep(|| boxes::asleep_for_path(checkout), read).await else {
+    use crate::sandbox::{checkout_asleep, checkout_is_remote};
+    let Some(value) = poll_unless_asleep(|| checkout_asleep(checkout), read).await else {
         return last.lock().get(checkout).cloned();
     };
-    if boxes::box_holding(checkout).is_some() {
+    if checkout_is_remote(checkout) {
         last.lock().insert(checkout.to_path_buf(), value.clone());
     }
     Some(value)

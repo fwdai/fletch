@@ -98,19 +98,15 @@ pub fn is_installed() -> bool {
 
 /// The codegraph launcher as `agent_id`'s sandbox sees it, when it has one —
 /// the one engine-specific input to injection, resolved the way the agent's
-/// CLI path is (`agent::spawn`): the host's install for a seatbelt agent,
-/// which runs on this host; the Linux build on the tools disk the agent's box
-/// runs with (`boxes::codegraph_bin`); nothing for a container, which can't
-/// exec the host's macOS binary and has no other.
+/// CLI path is (`agent::spawn`): the host's install for an agent that runs on
+/// this host, the engine's own build otherwise (`sandbox::codegraph_bin`).
 fn server_bin(engine: EngineKind, agent_id: &str, provider: &str) -> Option<String> {
-    match engine {
-        EngineKind::SandboxExec => is_installed()
+    crate::sandbox::codegraph_bin(engine, agent_id, provider, || {
+        is_installed()
             .then(bin_path)
             .and_then(Result::ok)
-            .map(|bin| bin.to_string_lossy().into_owned()),
-        EngineKind::Box => crate::sandbox::boxes::codegraph_bin(agent_id, provider),
-        EngineKind::Docker | EngineKind::Podman => None,
-    }
+            .map(|bin| bin.to_string_lossy().into_owned())
+    })
 }
 
 /// The codegraph MCP server snapshot for injection, running `command` (from
@@ -175,12 +171,8 @@ fn wants_codegraph(
     // The server runs beside the checkout, inside the agent's sandbox: on this
     // host for seatbelt, in the guest for a box. A container gets no build of
     // it.
-    let engine_runs_codegraph = match engine {
-        EngineKind::SandboxExec | EngineKind::Box => true,
-        EngineKind::Docker | EngineKind::Podman => false,
-    };
     enabled
-        && engine_runs_codegraph
+        && engine.caps().runs_codegraph
         && can_receive_mcp
         && !existing_names
             .iter()

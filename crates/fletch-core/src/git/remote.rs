@@ -89,7 +89,7 @@ const TRANSPORT_CONFIG: &[(&str, &str)] = &[
 pub struct Transport {
     /// The repository whose objects and per-worktree refs transport runs
     /// over: the checkout, or for a checkout inside a box its host-side
-    /// mirror (`sandbox::boxes::mirror`), since host git never runs in a
+    /// mirror (`sandbox::transport_repo`), since host git never runs in a
     /// guest's checkout.
     checkout: PathBuf,
     /// The guest checkout a box mirror stands in for, so the tracking refs
@@ -156,7 +156,7 @@ impl Transport {
         // A box checkout's objects reach host git only through its mirror,
         // refreshed from the guest now. The two checks above ran against the
         // real checkout, routed into the guest.
-        let mirror = crate::sandbox::boxes::mirror::for_transport(checkout, source_repo).await?;
+        let mirror = crate::sandbox::transport_repo(checkout, source_repo).await?;
         let guest = mirror.as_ref().map(|_| checkout.to_path_buf());
         let checkout = mirror.as_deref().unwrap_or(checkout);
         let split = if checkout == source_repo {
@@ -291,9 +291,7 @@ impl Transport {
     /// them; a host checkout moved its own and has nothing to sync.
     async fn sync_guest(&self) -> Result<()> {
         match &self.guest {
-            Some(guest) => {
-                crate::sandbox::boxes::mirror::push_tracking(&self.checkout, guest).await
-            }
+            Some(guest) => crate::sandbox::sync_tracking(&self.checkout, guest).await,
             None => Ok(()),
         }
     }

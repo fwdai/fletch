@@ -103,10 +103,6 @@ const SYSTEM_ROOTS: &[&str] = &[
     "/cores",
 ];
 
-/// The roots a box guest can mount a share under (the image ships both as
-/// empty mountpoints; see `packaging/box-image/build.sh`).
-const BOX_SHARE_ROOTS: &[&str] = &["/Users", "/Volumes"];
-
 /// Validate `requested` as a grant for an agent on `engine` and return the
 /// canonical folder to store. `~/` is expanded. The folder is listed once
 /// here, as the app: if macOS guards it with a privacy prompt (Documents,
@@ -194,15 +190,16 @@ pub fn launch_relevant(
     grants: &[FolderGrant],
     home: &Path,
 ) -> Vec<FolderGrant> {
-    let mut relevant: Vec<FolderGrant> = match engine {
-        EngineKind::SandboxExec => grants
+    let mut relevant: Vec<FolderGrant> = if engine.caps().shares_host_fs {
+        grants
             .iter()
             .filter(|g| {
                 g.writable || crate::sandbox::policy::inside_macos_privacy_dir(home, &g.path)
             })
             .cloned()
-            .collect(),
-        EngineKind::Docker | EngineKind::Podman | EngineKind::Box => grants.to_vec(),
+            .collect()
+    } else {
+        grants.to_vec()
     };
     relevant.sort_by(|a, b| a.path.cmp(&b.path));
     relevant
@@ -269,7 +266,13 @@ fn refusal(
             );
         }
     }
-    if engine == EngineKind::Box && !BOX_SHARE_ROOTS.iter().any(|root| path.starts_with(root)) {
+    // `EngineCaps::share_roots`: a box guest mounts shares only under the
+    // mountpoints its image ships (`packaging/box-image/build.sh`).
+    let outside_share_roots = engine
+        .caps()
+        .share_roots
+        .is_some_and(|roots| !roots.iter().any(|root| path.starts_with(root)));
+    if outside_share_roots {
         return Some("a box can only mount folders under /Users or /Volumes");
     }
     None

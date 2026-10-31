@@ -258,7 +258,16 @@ async fn summarize_repos(record: &AgentRecord) -> Option<Vec<RepoSummary>> {
                 return None;
             }
         };
-        let check = match crate::git_state::check_for_disposal(&checkout).await {
+        // A timer read: passive, so it never boots a stopped box, and a
+        // checkout whose box is asleep sits this pass out (docs/
+        // sandbox-foundation.md rule 2).
+        let read = crate::git_state::check_for_disposal(&checkout);
+        let asleep = || crate::sandbox::checkout_asleep(&checkout);
+        let Some(check) = crate::commands::git_state::poll_unless_asleep(asleep, read).await else {
+            tracing::debug!(agent_id = %record.id, "auto-archive: checkout's box is asleep");
+            return None;
+        };
+        let check = match check {
             Ok(c) => c,
             Err(e) => {
                 tracing::debug!(agent_id = %record.id, error = %e, "auto-archive: git read failed");

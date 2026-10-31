@@ -44,18 +44,8 @@ pub(crate) fn find_session_jsonl(
 /// `cwd` — for a reader that does not know the agent's engine. Deduped: the
 /// container engines share one.
 fn per_agent_projects_dirs(cwd: &Path) -> Vec<PathBuf> {
-    let Some(root) = cwd.parent() else {
-        return Vec::new();
-    };
-    let mut dirs: Vec<PathBuf> = Vec::new();
-    for &kind in EngineKind::ALL {
-        if let Some(dir) = transcript_root(kind, root) {
-            if !dirs.contains(&dir) {
-                dirs.push(dir);
-            }
-        }
-    }
-    dirs
+    cwd.parent()
+        .map_or_else(Vec::new, crate::sandbox::all_transcript_roots)
 }
 
 /// The `projects` directory claude keeps its sessions in when it runs in
@@ -306,10 +296,10 @@ pub(crate) fn find_codex_rollouts(
     diag: &mut ReadDiagnostics,
 ) -> Vec<PathBuf> {
     // A box agent's overlay is in its guest; the host reads the mirror the
-    // relay fills under its box dir (`sandbox::boxes::home`). Scanned first,
-    // as the per-agent projects dirs are for claude; absent for every other
-    // engine's agent, so the scan falls through to its own overlay.
-    let mirrored = crate::sandbox::boxes::home::mirror_for_agent("codex", agent_id);
+    // relay fills under its box dir (`sandbox::session_mirror`). Scanned
+    // first, as the per-agent projects dirs are for claude; absent for every
+    // other engine's agent, so the scan falls through to its own overlay.
+    let mirrored = crate::sandbox::session_mirror("codex", agent_id);
     let own = crate::agent::codex_home::overlay_for_agent(agent_id)
         .map(|o| o.join("sessions"))
         .ok();

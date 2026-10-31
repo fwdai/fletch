@@ -216,9 +216,9 @@ impl RemoteExecutor for BoxExecutor {
         get(&channel, path)
     }
 
-    fn write(&self, path: &Path, bytes: &[u8]) -> io::Result<()> {
+    fn write(&self, path: &Path, bytes: &[u8], mode: u32) -> io::Result<()> {
         let channel = self.channel()?;
-        put(&channel, bytes, path, 0o644).map_err(io::Error::other)
+        put(&channel, bytes, path, mode).map_err(io::Error::other)
     }
 
     /// `stat -L`: the type and size of what `path` resolves to.

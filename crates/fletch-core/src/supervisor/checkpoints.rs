@@ -174,7 +174,7 @@ impl Supervisor {
             // A box agent's checkpoint lives in the guest; the host-side
             // mirror follows it so publish has the objects whenever the box
             // next stops. Best effort, like the rest.
-            if let Err(e) = crate::sandbox::boxes::mirror::refresh_agent(agent_id).await {
+            if let Err(e) = crate::sandbox::after_checkpoint(agent_id).await {
                 tracing::info!(error = %e, agent_id, "box mirror refresh after checkpoint failed");
             }
         };

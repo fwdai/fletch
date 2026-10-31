@@ -32,26 +32,13 @@ use crate::workspace::{AgentRecord, AgentStatus};
 
 use super::account_switch::{ensure_signed_in, managed};
 use super::events::emit_workspace_changed;
-use super::lifecycle::{arm_spawn_timeout, stamped_engine};
+use super::lifecycle::arm_spawn_timeout;
 use super::Supervisor;
 
 const GAVE_UP_MSG: &str = "Claude rejected this account's login again after a refresh. \
      Sign in again under Settings → Providers, then resend.";
 
 const BUSY_MSG: &str = "a turn is in progress";
-
-/// Whether a launch under `engine` can only be signed in by a token the host
-/// hands over (`claude_login::launch_token`'s `containerized`): the container
-/// engines and the box have no view of the host's credential files, so the
-/// stored setup-token is a valid fallback for them; seatbelt shares the host's
-/// files, so for it only the shell's own auth counts.
-fn token_only_launch(engine: crate::sandbox::EngineKind) -> bool {
-    use crate::sandbox::EngineKind;
-    match engine {
-        EngineKind::Docker | EngineKind::Podman | EngineKind::Box => true,
-        EngineKind::SandboxExec => false,
-    }
-}
 
 /// How long a token resolved ahead of a launch stays good for that launch. A
 /// fresh spawn provisions its checkout in between, which takes a while; the
@@ -270,7 +257,12 @@ impl Supervisor {
         if record.provider != "claude" {
             return Ok(None);
         }
-        let containerized = token_only_launch(stamped_engine(record));
+        // Whether only a token the host hands over can sign this launch in
+        // (`EngineCaps::token_only_launch`): seatbelt shares the host's
+        // files, so for it only the shell's own auth counts.
+        let containerized = crate::sandbox::stamped_engine(record)
+            .caps()
+            .token_only_launch;
         let token = claude_login::launch_token(account, rejected, containerized).await;
         let kept = match &token {
             Ok(token) => Ok(token.clone()),
@@ -313,7 +305,9 @@ impl Supervisor {
             return kept.token.map_err(Error::Other);
         }
         let rejected = self.logins.lock().rejected.get(agent_id).copied();
-        let containerized = token_only_launch(stamped_engine(record));
+        let containerized = crate::sandbox::stamped_engine(record)
+            .caps()
+            .token_only_launch;
         claude_login::launch_token(record.account.as_deref(), rejected, containerized).await
     }
 

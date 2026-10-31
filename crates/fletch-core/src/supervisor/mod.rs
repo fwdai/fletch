@@ -344,7 +344,7 @@ impl Supervisor {
 
         // Box VMs last, once their ssh sessions are gone: a clean stop through
         // the guest, so no box disk is left dirty by the app quitting.
-        crate::sandbox::boxes::shutdown_all();
+        crate::sandbox::shutdown_all();
     }
 
     /// Record + broadcast a runtime status transition. The in-memory map is

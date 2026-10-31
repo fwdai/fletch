@@ -9,14 +9,14 @@ use crate::error::{Error, Result};
 use crate::git;
 use crate::host::EngineCtx;
 use crate::sandbox::provision::{self, CheckoutSpec};
-use crate::sandbox::{docker, podman, EngineKind};
+use crate::sandbox::{self, stamped_engine};
 use crate::workspace::{
     agent_parent_dir, repo_checkout_path, AgentRecord, AgentStatus, ArchivedRepoSnapshot,
     DiffStats, TrackedRepo,
 };
 
 use super::events::emit_workspace_changed;
-use super::lifecycle::{arm_spawn_timeout, fail_spawn, provision_codegraph_index, stamped_engine};
+use super::lifecycle::{arm_spawn_timeout, fail_spawn, provision_codegraph_index};
 use super::Supervisor;
 
 impl Supervisor {
@@ -69,7 +69,7 @@ impl Supervisor {
         crate::capture::extract::on_archive(ctx.clone(), agent_id.to_string());
 
         self.detach_runtime(agent_id);
-        reap_agent_containers(agent_id, Some(&record), "archive");
+        sandbox::reap_agent_containers(agent_id, Some(stamped_engine(&record)), "archive");
 
         // Snapshot SHAs + diff stats before any destructive step, then tear
         // down the checkouts/branches (best-effort — a single git failure
@@ -246,13 +246,9 @@ impl Supervisor {
                 base_ref: tip_sha,
                 dest: &checkout,
             };
-            // A box-stamped agent's checkout is rebuilt inside its box from
-            // what the source repository holds; the clone-based restore
-            // ladders below are for host checkouts.
-            let box_identity = match stamped_engine(&record) {
-                EngineKind::Box => Some(crate::sandbox::boxes::BoxIdentity::for_record(&record)?),
-                EngineKind::SandboxExec | EngineKind::Docker | EngineKind::Podman => None,
-            };
+            // Rebuilt where the engine keeps the checkout
+            // (`sandbox::restore_checkout`).
+            let engine = stamped_engine(&record);
             let branch = match &snap.branch_name {
                 // The agent had pushed a branch → recreate it at the tip,
                 // resolving name collisions with a -restored suffix. If the
@@ -265,26 +261,14 @@ impl Supervisor {
                     // tip must be refetched, the remote only knows the original
                     // name, not the -restored rename. `parent_branch_sha` is
                     // the last-resort detached base.
-                    let landed_on_branch = match &box_identity {
-                        Some(identity) => {
-                            crate::sandbox::boxes::provision::restore(
-                                identity,
-                                &spec,
-                                Some(&chosen),
-                                snap.parent_branch_sha.as_deref(),
-                            )
-                            .await?
-                        }
-                        None => {
-                            provision::provision_on_branch(
-                                &spec,
-                                &chosen,
-                                desired_name,
-                                snap.parent_branch_sha.as_deref(),
-                            )
-                            .await?
-                        }
-                    };
+                    let landed_on_branch = sandbox::restore_checkout(
+                        engine,
+                        &record,
+                        &spec,
+                        Some((chosen.as_str(), desired_name.as_str())),
+                        snap.parent_branch_sha.as_deref(),
+                    )
+                    .await?;
                     landed_on_branch.then_some(chosen)
                 }
                 // No branch of record → restore detached at the tip, ready to
@@ -293,24 +277,14 @@ impl Supervisor {
                 // then merged), so this recovers by SHA with the parent base
                 // as the last resort, like the branch path's lower rungs.
                 None => {
-                    match &box_identity {
-                        Some(identity) => {
-                            crate::sandbox::boxes::provision::restore(
-                                identity,
-                                &spec,
-                                None,
-                                snap.parent_branch_sha.as_deref(),
-                            )
-                            .await?;
-                        }
-                        None => {
-                            provision::provision_recovering(
-                                &spec,
-                                snap.parent_branch_sha.as_deref(),
-                            )
-                            .await?;
-                        }
-                    }
+                    sandbox::restore_checkout(
+                        engine,
+                        &record,
+                        &spec,
+                        None,
+                        snap.parent_branch_sha.as_deref(),
+                    )
+                    .await?;
                     None
                 }
             };
@@ -322,7 +296,7 @@ impl Supervisor {
                 snap.repo_path.clone(),
                 checkout.clone(),
                 Some(tip_sha.to_string()),
-                stamped_engine(&record),
+                engine,
                 &record.provider,
                 &record.mcp_servers,
             )
@@ -378,7 +352,7 @@ impl Supervisor {
         let repos = record.as_ref().map(|r| r.repos.clone()).unwrap_or_default();
 
         self.detach_runtime(agent_id);
-        reap_agent_containers(agent_id, record.as_ref(), "discard");
+        sandbox::reap_agent_containers(agent_id, record.as_ref().map(stamped_engine), "discard");
         // Discard deletes the row, so there is nowhere to record failures;
         // the helper has already logged them.
         let _ = teardown_agent_checkouts(agent_id, &repos, "discard").await;
@@ -563,75 +537,6 @@ async fn choose_restore_branch_name(repo_path: &Path, desired: &str) -> String {
     }
 }
 
-/// Best-effort teardown of any container still bearing this agent's
-/// `fletch.agent-id` label. The container counterpart to
-/// [`teardown_agent_checkouts`], and like it, failures never abort disposal —
-/// the caller's intent is to get rid of the agent.
-///
-/// Why it exists: `Supervisor::detach_runtime` reaches the container only
-/// *indirectly*, through the in-memory `agents` entry — no entry, no
-/// `KillHandle`, no runtime command at all. `run --rm` covers the ordinary exit
-/// and the startup pid-liveness sweep covers a crashed instance, but neither
-/// makes disposal itself self-sufficient. The label sweep does: it needs nothing
-/// but the agent id. (Container names can't serve here — they carry a
-/// launch-time nonce, see `container::util::container_name` — which is why the
-/// id label exists.)
-///
-/// Three gates, cheapest first:
-/// 1. The stamped engine, which also picks the runtime: an agent is reaped by
-///    the runtime that launched it, never by whichever is selected now. A
-///    seatbelt agent never had a container, so it never pays for a probe.
-///    `record: None` (discard tolerates a missing row) can't prove which
-///    runtime launched it, so it asks both — the label match is exact, so
-///    looking costs nothing but the queries.
-/// 2. The runtime's own availability probe — a machine without that runtime
-///    installed must never see one of its invocations, the same precedent the
-///    startup sweeps set.
-/// 3. Off the caller's path entirely. `spawn_blocking` rather than a bare
-///    thread: the CLI call is a blocking process wait (up to the probe's 2s
-///    plus the sweep's own timeouts) issued from inside the tokio runtime,
-///    which is precisely the blocking pool's job — and unlike the startup
-///    sweep, which runs before any runtime is a given, we always have one
-///    here. Detached on purpose: archive must not wait on a container
-///    round-trip to report success to the user.
-fn reap_agent_containers(agent_id: &str, record: Option<&AgentRecord>, op: &'static str) {
-    let engine = record.map(stamped_engine);
-    // Seatbelt runs no container; neither does a box, whose VM goes with
-    // `boxes::discard_if_any` in the checkout teardown instead.
-    if matches!(engine, Some(EngineKind::SandboxExec | EngineKind::Box)) {
-        return;
-    }
-    let agent_id = agent_id.to_string();
-    tokio::task::spawn_blocking(move || {
-        let report = |runtime: &'static str, removed: crate::error::Result<usize>| match removed {
-            Ok(0) => {}
-            Ok(n) => {
-                tracing::info!(agent_id = %agent_id, op, runtime, removed = n, "removed agent containers")
-            }
-            Err(e) => {
-                tracing::warn!(agent_id = %agent_id, op, runtime, error = %e, "agent container removal failed")
-            }
-        };
-        // A stamped engine narrows to one runtime; a rowless agent asks both.
-        if engine != Some(EngineKind::Podman)
-            && matches!(
-                docker::availability(),
-                docker::DockerAvailability::Available { .. }
-            )
-        {
-            report("docker", docker::remove_agent_containers(&agent_id));
-        }
-        if engine.map_or(true, |k| k == EngineKind::Podman)
-            && matches!(
-                podman::availability(),
-                podman::PodmanAvailability::Available { .. }
-            )
-        {
-            report("podman", podman::remove_agent_containers(&agent_id));
-        }
-    });
-}
-
 /// Best-effort teardown of every tracked repo's checkout + branch, plus the
 /// agent's parent dir. Failures are logged (tagged with `op` for context) but
 /// never abort the sweep — the caller's intent is to get rid of the agent.
@@ -650,7 +555,7 @@ async fn teardown_agent_checkouts(agent_id: &str, repos: &[TrackedRepo], op: &st
     // the box directory. The host paths below then hold only the placeholder
     // directories the launch needed, which the removals handle like any tree.
     // A directory probe for every other agent, so it stays here unconditionally.
-    if let Err(e) = crate::sandbox::boxes::discard_if_any(agent_id).await {
+    if let Err(e) = sandbox::discard_agent_state(agent_id).await {
         failures.push(format!("box: {e}"));
     }
     for repo in repos {

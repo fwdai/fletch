@@ -240,10 +240,10 @@ fn claude_write(
     // resolved; in a container, that is the path the checkout is mounted at,
     // and in a box the guest's path, which is the host's by identity (the
     // host has only a placeholder there, so nothing of its own to resolve).
-    let run_dir = if engine.is_container() || engine == crate::sandbox::EngineKind::Box {
-        cwd.to_path_buf()
-    } else {
+    let run_dir = if engine.caps().shares_host_fs {
         std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf())
+    } else {
+        cwd.to_path_buf()
     };
     let dirname = crate::transcripts::claude_project_dirname(&run_dir).ok_or_else(|| {
         Error::Other(format!(
@@ -262,18 +262,13 @@ fn claude_write(
         })
         .collect();
     let rel = Path::new(&dirname).join(format!("{session_id}.jsonl"));
-    if engine == crate::sandbox::EngineKind::Box {
-        // The claude that resumes this runs in the guest and reads its own
-        // `~/.claude/projects`; `projects` is the host's mirror of that dir.
-        // Created in both (`boxes::home::create_session_file`).
-        return crate::sandbox::boxes::home::create_session_file(
-            &crate::sandbox::boxes::home::claude::Claude,
-            agent_id,
-            cwd,
-            &rel,
-            &lines,
-        )
-        .map(Some);
+    // Where the engine keeps the agent's sessions itself (a box: the claude
+    // that resumes this reads its own `~/.claude/projects` in the guest, and
+    // `projects` is the host's mirror of that dir), it writes the file there.
+    if let Some(path) =
+        crate::sandbox::create_session_file("claude", engine, agent_id, cwd, &rel, &lines)?
+    {
+        return Ok(Some(path));
     }
     let path = projects.join(rel);
     write_new_jsonl(&path, &lines)?;

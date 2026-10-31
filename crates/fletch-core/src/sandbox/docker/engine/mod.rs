@@ -199,7 +199,7 @@ impl SandboxEngine for DockerEngine {
     /// and the argv from
     /// [`container::run_args`](crate::sandbox::container::run_args). `agent_bin`
     /// is the in-image command name the caller already resolved for the docker
-    /// boundary (`claude` / `codex`). `ensure_engine_supports_provider` gates
+    /// boundary (`claude` / `codex`). `sandbox::ensure_supports_provider` gates
     /// this to a supported provider, so the `from_id` failure below is
     /// defensive only.
     fn launch_agent(&self, ctx: &AgentLaunchCtx, agent_bin: &str) -> Result<LaunchPlan> {

@@ -125,7 +125,7 @@ impl SandboxEngine for PodmanEngine {
         EngineKind::Podman
     }
 
-    /// Launch a container for `ctx.provider`. `ensure_engine_supports_provider`
+    /// Launch a container for `ctx.provider`. `sandbox::ensure_supports_provider`
     /// gates this, so the `from_id` failure below is defensive only.
     fn launch_agent(&self, ctx: &AgentLaunchCtx, agent_bin: &str) -> Result<LaunchPlan> {
         let provider = ContainerProvider::from_id(ctx.provider).ok_or_else(|| {

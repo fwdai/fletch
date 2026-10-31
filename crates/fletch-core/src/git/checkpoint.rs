@@ -140,16 +140,7 @@ pub async fn fetch_into(dest: &Path, source: &Path, turn_id: &str) -> Result<Str
     // in a box reaches a checkout elsewhere only through that box's channel,
     // which this does not do yet — refused with the reason rather than
     // fetched from a path that names nothing there.
-    let (source_box, dest_box) = (
-        crate::sandbox::boxes::box_holding(source),
-        crate::sandbox::boxes::box_holding(dest),
-    );
-    let same_place = match (&source_box, &dest_box) {
-        (None, None) => true,
-        (Some(s), Some(d)) => s.agent_id == d.agent_id,
-        _ => false,
-    };
-    if !same_place {
+    if !crate::sandbox::checkpoint_carry_allowed(source, dest) {
         return Err(Error::Other(
             "carrying a checkpoint between a box and another workspace isn't supported yet".into(),
         ));
