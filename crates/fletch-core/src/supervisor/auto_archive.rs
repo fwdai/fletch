@@ -11,7 +11,8 @@
 //! checkout in a running box is read live, like any other; one in a stopped
 //! box answers what the box's stop read there (`sandbox::disposal_at_stop`),
 //! which no guest activity can postdate: the read is the stop ladder's first
-//! rung, and the record is dropped when the box boots. No record means skip.
+//! rung, and the record is dropped as the box starts (preparing included).
+//! No record means skip.
 
 use std::sync::Arc;
 use std::time::Duration;

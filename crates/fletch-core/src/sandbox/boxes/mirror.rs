@@ -3,9 +3,9 @@
 //! the agent's own objects move, refreshed over the channel before anything
 //! host-side needs the checkout's objects — publish and transport, which run
 //! host git with the user's credentials and so must never run *in* the
-//! checkout, and a turn checkpoint carried out of the box to a fork
-//! (`sandbox::carry_checkpoint`). Reads (`git_state`, diffs) do not come
-//! here: they run in the guest through the routed seam.
+//! checkout — and, on demand, the one turn checkpoint a fork carries out of
+//! the box (`sandbox::carry_checkpoint`, [`carry_out`]). Reads (`git_state`,
+//! diffs) do not come here: they run in the guest through the routed seam.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -73,9 +73,10 @@ fn read_sources(box_dir: &Path) -> std::collections::BTreeMap<String, String> {
 /// (`git_state::check_for_disposal`) found in each checkout of the box when
 /// it last stopped, so the auto-archive sweep can judge a sleeping box's
 /// checkouts without booting it. Written by the stop ladder after its mirror
-/// refresh ([`record_disposal`]) and deleted when the box boots
-/// ([`forget_disposal`]), so it exists only while the box is stopped and was
-/// read after everything that ran in it. Goes with the box dir on discard.
+/// refresh ([`record_disposal`]) and deleted as the box starts, before any
+/// setup wait ([`forget_disposal`]), so it exists only while the box is
+/// stopped and was read after everything that ran in it. Goes with the box
+/// dir on discard.
 const DISPOSAL: &str = "disposal.json";
 
 /// One checkout's entry in [`DISPOSAL`].
@@ -130,8 +131,9 @@ pub(super) async fn record_disposal(running: &RunningBox) {
     }
 }
 
-/// Delete [`DISPOSAL`] as the box in `box_dir` boots: from here on its
-/// checkouts can change, so the record no longer describes them.
+/// Delete [`DISPOSAL`] as the box in `box_dir` starts (`ensure_running`,
+/// before any setup wait): from here on its checkouts can change, so the
+/// record no longer describes them.
 pub(super) fn forget_disposal(box_dir: &Path) -> std::io::Result<()> {
     match std::fs::remove_file(box_dir.join(DISPOSAL)) {
         Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
@@ -140,10 +142,16 @@ pub(super) fn forget_disposal(box_dir: &Path) -> std::io::Result<()> {
 }
 
 /// What the stop ladder read in `checkout` when its box last stopped, or
-/// `None` when `checkout` is in no box, or nothing usable was recorded for
-/// it (no record, an unreadable one, a read that failed).
+/// `None` when `checkout` is in no box, its box is anything but stopped
+/// (preparing to start counts as started: the record goes as it begins), or
+/// nothing usable was recorded for it (no record, an unreadable one, a read
+/// that failed).
 pub fn disposal_at_stop(checkout: &Path) -> Option<crate::git_state::DisposalCheck> {
-    let box_dir = box_of(checkout)?.box_dir().ok()?;
+    let identity = box_of(checkout)?;
+    if BoxRegistry::global().state(&identity.agent_id) != super::BoxPhase::Stopped {
+        return None;
+    }
+    let box_dir = identity.box_dir().ok()?;
     let bytes = std::fs::read(box_dir.join(DISPOSAL)).ok()?;
     let mut checks: std::collections::BTreeMap<String, StoppedDisposal> =
         serde_json::from_slice(&bytes).ok()?;
@@ -174,9 +182,11 @@ pub async fn refresh_running(running: &RunningBox) -> Result<()> {
     Ok(())
 }
 
-/// `git fetch` the guest checkout's heads, HEAD, tracking refs and Fletch's
-/// own refs (`refs/fletch/*`: turn checkpoints, the undo point) into the
-/// mirror, creating it (with alternates to `source_repo`) on first use.
+/// `git fetch` the guest checkout's heads, HEAD and tracking refs into the
+/// mirror, creating it (with alternates to `source_repo`) on first use. Not
+/// its checkpoints: their snapshots carry untracked files, and every stop,
+/// turn and transport open runs this; [`carry_out`] fetches the one a fork
+/// needs.
 pub async fn refresh_checkout(
     running: &RunningBox,
     checkout: &Path,
@@ -195,10 +205,6 @@ pub async fn refresh_checkout(
         "+refs/heads/*:refs/heads/*",
         "+HEAD:refs/fletch/head",
         "+refs/remotes/origin/*:refs/remotes/origin/*",
-        // Overlaps `refs/fletch/head` above, which the guest never has: git
-        // keeps a ref any matching refspec still fetches, so `--prune` spares
-        // it.
-        "+refs/fletch/*:refs/fletch/*",
     ]);
     let out = output(&mut cmd, "mirror fetch").await?;
     if !out.status.success() {
@@ -210,19 +216,66 @@ pub async fn refresh_checkout(
     Ok(mirror)
 }
 
-/// The mirror refreshed from `checkout`, a checkout in `identity`'s box,
-/// booting the box when it is stopped: a host repository holding what only
-/// the guest has (a turn checkpoint), for a host fetch or a push into
-/// another box. Refreshed from this checkout now, because a box's checkouts
-/// share the one mirror and each refresh prunes the others' refs.
-pub async fn refreshed_for(identity: &super::BoxIdentity, checkout: &Path) -> Result<PathBuf> {
+/// Where [`carry_out`] puts a ref it fetched, one name per call. Outside
+/// every namespace [`refresh_checkout`] fetches or prunes.
+const CARRY_NS: &str = "refs/fletch-carry";
+
+/// Fetch `refname` (a turn checkpoint) from `checkout`, a checkout in
+/// `identity`'s box, into the box's mirror under a name of this call's own,
+/// booting the box when it is stopped, and return the mirror and that name:
+/// a host repository holding what only the guest has, for a host fetch or a
+/// push into another box. The box's checkouts share the one mirror and each
+/// pins a turn under the same name, so the original name there could be
+/// rewritten from another checkout before the caller reads it; this one
+/// cannot. The caller lets it go with [`drop_carried`].
+pub async fn carry_out(
+    identity: &super::BoxIdentity,
+    checkout: &Path,
+    refname: &str,
+) -> Result<(PathBuf, String)> {
     let running = BoxRegistry::global()
         .running_or_start(&identity.agent_id)
         .await?;
     let source = read_sources(&running.dir)
         .remove(&*checkout.to_string_lossy())
         .map(PathBuf::from);
-    refresh_checkout(&running, checkout, source.as_deref()).await
+    let mirror = mirror_dir(&running.dir);
+    ensure_mirror(&mirror, source.as_deref()).await?;
+    let carried = format!("{CARRY_NS}/{}", uuid::Uuid::new_v4());
+    let mut cmd = crate::git_dist::command(&mirror);
+    cmd.env("GIT_SSH_COMMAND", running.channel.git_ssh_command());
+    cmd.args([
+        "fetch",
+        "--quiet",
+        "--no-tags",
+        "--no-write-fetch-head",
+        &running.git_url(checkout),
+        &format!("+{refname}:{carried}"),
+    ]);
+    let out = output(&mut cmd, "checkpoint fetch").await?;
+    if !out.status.success() {
+        return Err(Error::Git(format!(
+            "fetching the checkpoint out of the box failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
+    Ok((mirror, carried))
+}
+
+/// Delete `carried`, a name [`carry_out`] made, from `mirror`. Best-effort:
+/// a leftover pins one snapshot until the box is discarded.
+pub async fn drop_carried(mirror: &Path, carried: &str) {
+    let mut cmd = crate::git_dist::command(mirror);
+    cmd.args(["update-ref", "-d", carried]);
+    match output(&mut cmd, "checkpoint ref delete").await {
+        Ok(out) if out.status.success() => {}
+        Ok(out) => tracing::debug!(
+            carried,
+            error = %String::from_utf8_lossy(&out.stderr).trim(),
+            "dropping a carried checkpoint ref failed"
+        ),
+        Err(e) => tracing::debug!(carried, error = %e, "dropping a carried checkpoint ref failed"),
+    }
 }
 
 /// Push `refspecs` from the host repository `from` into `checkout`, a

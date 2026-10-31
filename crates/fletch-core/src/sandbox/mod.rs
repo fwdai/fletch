@@ -599,16 +599,16 @@ pub async fn export_commit(checkout: &Path, sha: &str) -> Result<()> {
 ///
 /// - on one filesystem (the host, or one box's guest): `dest` fetches from
 ///   `source` by path, where `dest` lives;
-/// - out of a box: from the box's host-side mirror, refreshed from `source`
-///   in the guest now (docs/sandbox-foundation.md rule 4), which a host
-///   `dest` fetches from;
+/// - out of a box: the one ref fetched from `source` in the guest into the
+///   box's host-side mirror under a name of this carry's own
+///   (docs/sandbox-foundation.md rule 4), which a host `dest` fetches from;
+///   the name is dropped from the mirror afterwards;
 /// - into a box: pushed over the box's channel, from the host `source` or
-///   from the source box's refreshed mirror.
+///   from the source box's mirror.
 ///
 /// A box on either side is booted if it is stopped: carrying code is a user
 /// action (a fork).
 pub async fn carry_checkpoint(source: &Path, dest: &Path, refname: &str) -> Result<()> {
-    let refspec = format!("+{refname}:{refname}");
     let from_box = boxes::box_holding(source);
     let into_box = boxes::box_holding(dest);
     let one_place = match (&from_box, &into_box) {
@@ -617,16 +617,26 @@ pub async fn carry_checkpoint(source: &Path, dest: &Path, refname: &str) -> Resu
         (Some(_), None) | (None, Some(_)) => false,
     };
     if one_place {
-        return fetch_ref(dest, source, &refspec).await;
+        return fetch_ref(dest, source, &format!("+{refname}:{refname}")).await;
     }
-    let from = match &from_box {
-        Some(identity) => boxes::mirror::refreshed_for(identity, source).await?,
-        None => source.to_path_buf(),
+    // Out of a box, the ref is read under the name `carry_out` gave it in the
+    // mirror: the original name there is shared by every checkout of the box.
+    let (from, carried) = match &from_box {
+        Some(identity) => {
+            let (mirror, carried) = boxes::mirror::carry_out(identity, source, refname).await?;
+            (mirror, Some(carried))
+        }
+        None => (source.to_path_buf(), None),
     };
-    match &into_box {
+    let refspec = format!("+{}:{refname}", carried.as_deref().unwrap_or(refname));
+    let result = match &into_box {
         Some(identity) => boxes::mirror::push_into(identity, dest, &from, &[refspec]).await,
         None => fetch_ref(dest, &from, &refspec).await,
+    };
+    if let Some(carried) = &carried {
+        boxes::mirror::drop_carried(&from, carried).await;
     }
+    result
 }
 
 /// `git fetch --no-tags <from> <refspec>` in `dest`, `from` named by path.
@@ -672,9 +682,9 @@ pub fn checkout_asleep(path: &Path) -> bool {
 
 /// The disposal state of `path`, a checkout whose engine is not running
 /// ([`checkout_asleep`]), as read when it stopped: a box records its
-/// checkouts' state on every stop and drops the record when it boots. `None`
-/// when nothing usable was recorded, which a caller about to delete must
-/// treat as unknown.
+/// checkouts' state on every stop and drops the record as it starts. `None`
+/// unless the box is stopped, and when nothing usable was recorded, which a
+/// caller about to delete must treat as unknown.
 pub fn disposal_at_stop(path: &Path) -> Option<crate::git_state::DisposalCheck> {
     boxes::mirror::disposal_at_stop(path)
 }

@@ -65,9 +65,10 @@
 //! the mirror and the channel (`sandbox::carry_checkpoint`: a fork of a box
 //! agent with its code, or into one). The auto-archive sweep never boots a
 //! box: each stop reads every checkout's disposal state after the mirror
-//! refresh and writes it to `<box dir>/disposal.json`, which boot deletes,
-//! and the sweep answers a sleeping box's checkouts from that file
-//! (`mirror::record_disposal`, `sandbox::disposal_at_stop`).
+//! refresh, within a time bound, and writes it to `<box dir>/disposal.json`,
+//! which the box's start deletes before any setup wait; the sweep answers a
+//! stopped box's checkouts from that file, and nothing for a box in any
+//! other phase (`mirror::record_disposal`, `sandbox::disposal_at_stop`).
 
 pub mod allowlist;
 pub mod executor;

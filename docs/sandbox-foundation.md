@@ -46,8 +46,9 @@ engine enforces) and `docs/box.md` is the box runtime.
    never runs *in* an agent checkout. `git::remote::Transport` asks
    `sandbox::transport_repo(checkout)` for the repository to fetch and push
    over: the checkout itself on the host, the refreshed mirror for a box.
-   Checkpoints (`refs/fletch/*`) are part of what the mirror carries, so a
-   fork can carry code out of a box.
+   A fork carries a checkpoint out of a box through the mirror too: the one
+   ref it needs is fetched into the mirror under a name of its own
+   (`sandbox::carry_checkpoint`), never the box's every checkpoint.
 
 5. **Provider knowledge is one adapter.** What a provider CLI keeps outside
    the checkout, how its credential reaches a launch, where its transcripts
