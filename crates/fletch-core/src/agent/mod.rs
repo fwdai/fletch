@@ -50,10 +50,11 @@ pub use probe::{
     cached_provider_version, check_cli, probe_all_providers, resolve_all_providers, validate_bin,
     BinValidation, ProviderProbe, ToolStatus,
 };
-pub use probe::{parse_semver, resolve_agent_bin};
 pub(crate) use probe::{
-    claude_supports_thinking_display, probe_shows_thinking_display, THINKING_DISPLAY_PROBE_ARGS,
+    claude_supports_thinking_display, probe_shows_thinking_display, remember_thinking_display,
+    thinking_display_known, THINKING_DISPLAY_PROBE_ARGS,
 };
+pub use probe::{parse_semver, resolve_agent_bin};
 pub(crate) use providers::claude::claude_session_has_messages;
 pub use spawn::{PerTurnSpec, SessionStart, SpawnSpec};
 pub use transcript::{

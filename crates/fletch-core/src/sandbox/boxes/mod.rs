@@ -494,20 +494,34 @@ fn identity_of(ctx: &AgentLaunchCtx) -> BoxIdentity {
     .with_shares(ctx.folder_grants)
 }
 
+/// Whether the claude at `agent_bin` on the box's tools disk `disk` parses
+/// `--thinking-display`: remembered per disk file (its path and modification
+/// time, so a `latest` disk rebuilt in place is a new one), probed in the
+/// guest over the box's channel — the host's probe and reading
+/// (`agent::THINKING_DISPLAY_PROBE_ARGS`) — the first time a disk is seen.
+/// A probe that can't run reads as no.
+fn guest_thinking_summaries(channel: &fletch_box::Channel, disk: &Path, agent_bin: &str) -> bool {
+    let modified = std::fs::metadata(disk)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let identity = format!("box tools disk {} @{modified}", disk.display());
+    if let Some(known) = crate::agent::thinking_display_known(&identity) {
+        return known;
+    }
+    let mut words = vec![agent_bin];
+    words.extend(crate::agent::THINKING_DISPLAY_PROBE_ARGS);
+    let supported = executor::run(channel, &words, None)
+        .is_ok_and(|out| crate::agent::probe_shows_thinking_display(&out));
+    crate::agent::remember_thinking_display(&identity, supported);
+    supported
+}
+
 impl SandboxEngine for BoxEngine {
     fn kind(&self) -> EngineKind {
         EngineKind::Box
-    }
-
-    /// The box's tools disk installs the host CLI's version
-    /// (`registry::tools_version`), so the host binary answers for the guest's;
-    /// a host with no claude at all gets the newest release on the disk, which
-    /// has the flag.
-    fn claude_thinking_summaries(&self, _agent_bin: &str, home: &std::path::Path) -> bool {
-        crate::agent::resolve_agent_bin("claude", "claude", "Claude Code", home)
-            .ok()
-            .map(|host| crate::agent::claude_supports_thinking_display(&host))
-            .unwrap_or(true)
     }
 
     /// Boot (or reuse) the agent's box and plan an ssh session into it running
@@ -622,6 +636,15 @@ impl SandboxEngine for BoxEngine {
         // The provider's home in the guest, as its adapter lays it out:
         // before every launch, so the user's config changes reach it.
         home::seed(&running.channel, provider_home, ctx.home, ctx.writable_root)?;
+        // The claude on the tools disk this box booted with — which may be an
+        // older disk taken while the host's version builds — is the one this
+        // launch runs, so it is the one asked.
+        let claude_thinking_summaries = match running.tools_disk() {
+            Some(disk) if ctx.provider == "claude" => {
+                guest_thinking_summaries(&running.channel, disk, agent_bin)
+            }
+            _ => false,
+        };
         let env_file = env_file_path(&launch_id);
 
         let remote =
@@ -682,6 +705,7 @@ impl SandboxEngine for BoxEngine {
             );
         Ok(LaunchPlan {
             program: PathBuf::from(BASH),
+            claude_thinking_summaries,
             prefix_args,
             env,
             env_remove: ENV_DENY.iter().map(|v| v.to_string()).collect(),

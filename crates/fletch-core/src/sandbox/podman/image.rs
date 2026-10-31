@@ -19,7 +19,6 @@ use crate::error::Result;
 use crate::sandbox::container::freshness::{classify_freshness, version_refresh_wanted, Freshness};
 use crate::sandbox::container::images::{image_spec, image_tag, write_build_context};
 use crate::sandbox::container::progress::{self, BuildEvent};
-use crate::sandbox::container::thinking_display;
 use crate::sandbox::container::ContainerProvider;
 
 use super::cli;
@@ -225,12 +224,6 @@ fn refresh_if_needed(
         return;
     };
 
-    // The image this process launches from, probed once for what its CLI
-    // takes; a rebuild below re-probes after it lands.
-    if !thinking_display::known("podman", tag) {
-        probe_image_thinking_display(provider, connection, tag);
-    }
-
     match classify_freshness(&created_raw, chrono::Utc::now()) {
         Freshness::Stale => {
             tracing::info!(
@@ -431,25 +424,47 @@ fn cache_image_version_post_build(
             "post-build container CLI version probe failed; version trigger stays inert for this image",
         ),
     }
-    probe_image_thinking_display(provider, connection, tag);
 }
 
-/// Whether the image's claude parses `--thinking-display`, recorded for the
-/// launch path (`PodmanEngine::claude_thinking_summaries`) to read without a
-/// `podman run` of its own. The host's probe and reading, inside the image
-/// (`agent::THINKING_DISPLAY_PROBE_ARGS`); a run that fails for any other
-/// reason reads as unsupported. Only claude has the flag.
-fn probe_image_thinking_display(provider: ContainerProvider, connection: Option<&str>, tag: &str) {
+/// Whether the claude in `tag` on `connection` — the image this launch runs
+/// from, whatever the host has and whether or not a parity rebuild is pending
+/// — parses `--thinking-display`. Remembered by image id (content-addressed:
+/// the same id in two stores is the same image, a rebuild is a new one);
+/// probed inside the image, with the host's probe and reading
+/// (`agent::THINKING_DISPLAY_PROBE_ARGS`), the first time an id is seen —
+/// synchronously, so the first launch of an image gets the answer too, and
+/// once per app run. A probe that can't run reads as no. Only claude has the
+/// flag.
+pub(super) fn claude_thinking_summaries(
+    provider: ContainerProvider,
+    connection: Option<&str>,
+    tag: &str,
+) -> bool {
     if provider.id() != "claude" {
-        return;
+        return false;
+    }
+    let Some((image_id, _)) = inspect_id_and_created(connection, tag) else {
+        return false;
+    };
+    let identity = format!("podman image {image_id}");
+    if let Some(known) = crate::agent::thinking_display_known(&identity) {
+        return known;
     }
     let pid_label = crate::sandbox::container::labels::host_pid_label();
-    let mut args = vec!["run", "--rm", "--label", pid_label.as_str(), tag, provider.image_bin()];
+    let mut args = vec![
+        "run",
+        "--rm",
+        "--label",
+        pid_label.as_str(),
+        tag,
+        provider.image_bin(),
+    ];
     args.extend(crate::agent::THINKING_DISPLAY_PROBE_ARGS);
     let supported = cli::run_podman_on(connection, &args, VERSION_PROBE_TIMEOUT)
         .ok()
         .is_some_and(|out| crate::agent::probe_shows_thinking_display(&out));
-    thinking_display::record("podman", tag, supported);
+    crate::agent::remember_thinking_display(&identity, supported);
+    supported
 }
 
 /// `(image id, creation timestamp)` for `tag` in `connection`'s store, or `None`

@@ -34,7 +34,6 @@ use crate::error::Result;
 use crate::sandbox::container::freshness::{classify_freshness, version_refresh_wanted, Freshness};
 use crate::sandbox::container::images::{image_spec, write_build_context, BASE_IMAGE};
 use crate::sandbox::container::progress::{self, BuildEvent};
-use crate::sandbox::container::thinking_display;
 
 use super::cli;
 use super::DockerProvider;
@@ -408,12 +407,6 @@ fn refresh_if_needed(provider: DockerProvider, tag: String, host_cli_version: Op
         Ok(_) | Err(_) => return,
     };
 
-    // The image this process launches from, probed once for what its CLI
-    // takes; a rebuild below re-probes after it lands.
-    if !thinking_display::known("docker", tag) {
-        probe_image_thinking_display(provider, tag);
-    }
-
     match classify_freshness(&created_raw, chrono::Utc::now()) {
         Freshness::Stale => {
             tracing::info!(
@@ -583,12 +576,8 @@ fn probe_image_cli_version(provider: DockerProvider, tag: &str) -> Option<String
 /// probe logs at debug and the trigger stays inert for this image; it never
 /// fails or delays the build that preceded it.
 fn cache_image_version_post_build(provider: DockerProvider, tag: &str) {
-    let image_id = match cli::run_docker(
-        &["image", "inspect", "--format", "{{.Id}}", tag],
-        INSPECT_TIMEOUT,
-    ) {
-        Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout).trim().to_string(),
-        Ok(_) | Err(_) => return,
+    let Some(image_id) = inspect_image_id(tag) else {
+        return;
     };
     match image_cli_version(provider, tag, &image_id) {
         Some(version) => tracing::info!(
@@ -603,25 +592,52 @@ fn cache_image_version_post_build(provider: DockerProvider, tag: &str) {
             "post-build container CLI version probe failed; version trigger stays inert for this image",
         ),
     }
-    probe_image_thinking_display(provider, tag);
 }
 
-/// Whether the image's claude parses `--thinking-display`, recorded for the
-/// launch path (`DockerEngine::claude_thinking_summaries`) to read without a
-/// `docker run` of its own. The host's probe and reading, inside the image
-/// (`agent::THINKING_DISPLAY_PROBE_ARGS`); a run that fails for any other
-/// reason reads as unsupported. Only claude has the flag.
-fn probe_image_thinking_display(provider: DockerProvider, tag: &str) {
+/// Whether the claude in `tag` — the image this launch runs from, whatever
+/// the host has and whether or not a parity rebuild is pending — parses
+/// `--thinking-display`. Remembered by image id, so a rebuild is a new
+/// answer; probed inside the image, with the host's probe and reading
+/// (`agent::THINKING_DISPLAY_PROBE_ARGS`), the first time an id is seen —
+/// synchronously, so the first launch of an image gets the answer too, and
+/// once per app run. A probe that can't run reads as no. Only claude has the
+/// flag.
+pub(super) fn claude_thinking_summaries(provider: DockerProvider, tag: &str) -> bool {
     if provider.id() != "claude" {
-        return;
+        return false;
+    }
+    let Some(image_id) = inspect_image_id(tag) else {
+        return false;
+    };
+    let identity = format!("docker image {image_id}");
+    if let Some(known) = crate::agent::thinking_display_known(&identity) {
+        return known;
     }
     let pid_label = super::cleanup::host_pid_label();
-    let mut args = vec!["run", "--rm", "--label", pid_label.as_str(), tag, provider.image_bin()];
+    let mut args = vec![
+        "run",
+        "--rm",
+        "--label",
+        pid_label.as_str(),
+        tag,
+        provider.image_bin(),
+    ];
     args.extend(crate::agent::THINKING_DISPLAY_PROBE_ARGS);
     let supported = cli::run_docker(&args, VERSION_PROBE_TIMEOUT)
         .ok()
         .is_some_and(|out| crate::agent::probe_shows_thinking_display(&out));
-    thinking_display::record("docker", tag, supported);
+    crate::agent::remember_thinking_display(&identity, supported);
+    supported
+}
+
+/// The id of the image `tag` names right now, or `None` when docker can't say.
+fn inspect_image_id(tag: &str) -> Option<String> {
+    match cli::run_docker(&["image", "inspect", "--format", "{{.Id}}", tag], INSPECT_TIMEOUT) {
+        Ok(out) if out.status.success() => {
+            Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
+        }
+        Ok(_) | Err(_) => None,
+    }
 }
 
 /// Whether `tag` exists locally. A non-zero `image inspect` exit is the

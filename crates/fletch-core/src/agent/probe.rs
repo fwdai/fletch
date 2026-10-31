@@ -278,8 +278,30 @@ pub(crate) fn probe_shows_thinking_display(out: &std::process::Output) -> bool {
         && !stderr.contains("unknown option")
 }
 
-/// Whether `bin` — a claude CLI — parses `--thinking-display`, memoized per
-/// path. The flag is hidden from `--help`, and `--version` short-circuits
+/// What has been learnt about `--thinking-display`, by the identity of the
+/// binary it was learnt about: a host path, a container image id, a box's
+/// tools disk. Each engine records what it found about the binary it actually
+/// runs (`SandboxEngine::launch_agent`, `LaunchPlan::claude_thinking_summaries`)
+/// and reads it back before the next launch of the same one, so a binary is
+/// probed once per app run and never guessed at from another.
+pub(crate) fn thinking_display_known(identity: &str) -> Option<bool> {
+    known_map().lock().get(identity).copied()
+}
+
+pub(crate) fn remember_thinking_display(identity: &str, supported: bool) {
+    known_map().lock().insert(identity.to_string(), supported);
+    tracing::info!(identity, supported, "claude --thinking-display capability probed");
+}
+
+type Known = parking_lot::Mutex<std::collections::HashMap<String, bool>>;
+
+fn known_map() -> &'static Known {
+    static KNOWN: std::sync::OnceLock<Known> = std::sync::OnceLock::new();
+    KNOWN.get_or_init(|| parking_lot::Mutex::new(std::collections::HashMap::new()))
+}
+
+/// Whether `bin` — a claude CLI on the host — parses `--thinking-display`,
+/// remembered per path. The flag is hidden from `--help`, and `--version` short-circuits
 /// before unknown options are reported, so neither can say. What does: a
 /// CLI that knows the option validates its value as it parses, so
 /// `--thinking-display __fletch_probe__ --version` fails naming the option
@@ -289,18 +311,15 @@ pub(crate) fn probe_shows_thinking_display(out: &std::process::Output) -> bool {
 /// ([`probe_shows_thinking_display`]). A binary that can't be probed counts
 /// as not supporting it, so a launch never carries a flag it can't vouch for.
 pub fn claude_supports_thinking_display(bin: &str) -> bool {
-    static CACHE: std::sync::OnceLock<parking_lot::Mutex<std::collections::HashMap<String, bool>>> =
-        std::sync::OnceLock::new();
-    let cache = CACHE.get_or_init(|| parking_lot::Mutex::new(std::collections::HashMap::new()));
-    if let Some(known) = cache.lock().get(bin) {
-        return *known;
+    let identity = format!("host binary {bin}");
+    if let Some(known) = thinking_display_known(&identity) {
+        return known;
     }
     let path = bin.to_string();
-    let out = on_probe_thread(move |rt| {
-        rt.block_on(run_bounded(&path, &THINKING_DISPLAY_PROBE_ARGS))
-    });
+    let out =
+        on_probe_thread(move |rt| rt.block_on(run_bounded(&path, &THINKING_DISPLAY_PROBE_ARGS)));
     let supported = out.is_some_and(|out| probe_shows_thinking_display(&out));
-    cache.lock().insert(bin.to_string(), supported);
+    remember_thinking_display(&identity, supported);
     supported
 }
 
@@ -412,6 +431,18 @@ mod tests {
         assert!(!claude_supports_thinking_display(&strict));
         let missing = dir.path().join("missing").to_string_lossy().into_owned();
         assert!(!claude_supports_thinking_display(&missing));
+    }
+
+    /// What an engine learnt is read back by the same identity and by no
+    /// other: a rebuilt image or disk is a new identity, probed afresh.
+    #[test]
+    fn thinking_display_facts_are_kept_by_binary_identity() {
+        assert_eq!(thinking_display_known("test image a"), None);
+        remember_thinking_display("test image a", true);
+        assert_eq!(thinking_display_known("test image a"), Some(true));
+        assert_eq!(thinking_display_known("test image b"), None);
+        remember_thinking_display("test image a", false);
+        assert_eq!(thinking_display_known("test image a"), Some(false));
     }
 
     /// The sync door every non-async caller goes through — the readiness check,

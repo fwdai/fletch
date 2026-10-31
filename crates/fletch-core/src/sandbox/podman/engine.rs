@@ -125,27 +125,6 @@ impl SandboxEngine for PodmanEngine {
         EngineKind::Podman
     }
 
-    /// What the image this process launches claude from was seen to take
-    /// (`container::thinking_display`, probed inside the image off the launch
-    /// path). A user-supplied image is never probed, so it is never vouched
-    /// for; an image not probed yet launches without the flag.
-    fn claude_thinking_summaries(&self, _agent_bin: &str, _home: &std::path::Path) -> bool {
-        let Some(provider) = ContainerProvider::from_id("claude") else {
-            return false;
-        };
-        let settings = LAUNCH_SETTINGS.read().clone();
-        if non_blank(settings.image_override.as_deref()).is_some() {
-            return false;
-        }
-        let Ok(target) = machine::resolve_launch_target() else {
-            return false;
-        };
-        match self.resolve_image_cached(provider, None, target.connection.as_deref()) {
-            Ok(tag) => crate::sandbox::container::thinking_display::confirmed("podman", &tag),
-            Err(_) => false,
-        }
-    }
-
     /// Launch a container for `ctx.provider`. `ensure_engine_supports_provider`
     /// gates this, so the `from_id` failure below is defensive only.
     fn launch_agent(&self, ctx: &AgentLaunchCtx, agent_bin: &str) -> Result<LaunchPlan> {
@@ -167,6 +146,8 @@ impl SandboxEngine for PodmanEngine {
         // Never uid-mapped (see `run_as_user` below), so no passwd file.
         let prep = crate::sandbox::container::launch::prepare(ctx, provider, None)?;
 
+        // Named out here as well: the plan says what its image's claude takes.
+        let image;
         let prefix_args = {
             let auth_vars = prep.auth_vars();
             let toolchain_vars = prep.toolchain_vars();
@@ -208,7 +189,7 @@ impl SandboxEngine for PodmanEngine {
             // mounts empty rather than failing, and the refusal shouldn't come
             // after waiting out a build.
             machine::ensure_sources_are_shared(&mount_sources(&spec), &target)?;
-            let image = self.resolve_image_cached(
+            image = self.resolve_image_cached(
                 provider,
                 settings.image_override.as_deref(),
                 connection.as_deref(),
@@ -219,6 +200,12 @@ impl SandboxEngine for PodmanEngine {
 
         Ok(LaunchPlan {
             program: podman,
+            // The image this launch runs from, probed inside it (image.rs).
+            claude_thinking_summaries: image::claude_thinking_summaries(
+                provider,
+                connection.as_deref(),
+                &image,
+            ),
             prefix_args,
             env: prep.env,
             env_remove: Vec::new(),
