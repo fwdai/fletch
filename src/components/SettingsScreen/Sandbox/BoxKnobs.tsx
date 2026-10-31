@@ -130,7 +130,12 @@ function LayerToggle({ layer, value }: { layer: (typeof LAYERS)[number]; value: 
   };
   return (
     <SetRow title={layer.title} sub={hostGate ?? error ?? layer.sub}>
-      <SetToggle on={on} disabled={!!hostGate} tip={hostGate ?? undefined} onClick={() => void flip()} />
+      <SetToggle
+        on={on}
+        disabled={!!hostGate}
+        tip={hostGate ?? undefined}
+        onClick={() => void flip()}
+      />
     </SetRow>
   );
 }
