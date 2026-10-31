@@ -736,7 +736,12 @@ impl Agent {
         cb: ExecCallbacks<F, G, H>,
     ) -> Result<Self>
     where
-        A: Fn(&str, Option<&str>, Option<&str>, Option<&str>) -> crate::exec_session::TurnInvocation
+        A: Fn(
+                &str,
+                Option<&str>,
+                Option<&str>,
+                Option<&str>,
+            ) -> crate::exec_session::TurnInvocation
             + Send
             + Sync
             + 'static,
