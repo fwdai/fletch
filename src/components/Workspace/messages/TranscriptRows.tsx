@@ -7,15 +7,25 @@
 //
 // The rows are the row model's (rows.ts): runs of steps gathered behind one
 // line, and every settled turn but the latest folded down to its prompt, one
-// "Worked for …" line and its answer.
-import { Fragment, useMemo, useRef } from "react";
+// "Worked for …" line and its answer. This is the desktop's shell around the
+// shared rows: it draws messages with MessageItem and provides the app's
+// background tasks, reveal requests and markdown (TranscriptHost).
+import { Fragment, useCallback, useMemo, useRef } from "react";
 import type { AgentRecord } from "@/api";
+import { Markdown } from "@/components/Markdown";
 import { Loader } from "@/components/ui/Loader";
 import { providerLabel } from "@/data/providers";
+import { taskForToolUse, useAppStore } from "@/store";
 import { TurnFooter } from "../RunTimer";
+import { TranscriptHost, type TranscriptHostValue } from "./host";
+import { MessageItem } from "./MessageItem";
 import { RowEnv, type RowEnvValue, RowView, rowViewKey } from "./RowView";
 import { buildRows, lastIndex, newRowCache } from "./rows";
 import type { Transcript } from "./useTranscript";
+
+function HostMarkdown({ text }: { text: string }) {
+  return <Markdown>{text}</Markdown>;
+}
 
 export function TranscriptRows({
   agent,
@@ -34,22 +44,47 @@ export function TranscriptRows({
 
   // Runs and folds keep their identity across streaming deltas (see RowCache).
   const cache = useRef(newRowCache());
-  const { rows, quietFooters } = useMemo(() => buildRows(items, cache.current), [items]);
+  const { rows, quietFooters, tailRunKey } = useMemo(
+    () => buildRows(items, cache.current),
+    [items],
+  );
 
-  // The run the transcript ends on — a mid-turn follow-up bubble below it
-  // aside — is the one the agent is on while the turn is live.
-  const tailRunKey = useMemo(() => {
-    for (let r = rows.length - 1; r >= 0; r -= 1) {
-      const row = rows[r];
-      if (row.kind === "item" && items[row.index].kind === "queued_message") continue;
-      return row.kind === "steps" ? row.run.key : null;
-    }
-    return null;
-  }, [rows, items]);
+  const tasks = useAppStore((s) => s.backgroundTasks[agent.id]);
+  const focus = useAppStore((s) => s.chatFocus);
+  const clearFocus = useAppStore((s) => s.clearChatFocus);
+  const host = useMemo<TranscriptHostValue>(
+    () => ({
+      taskFor: (toolUseId) => taskForToolUse(tasks, toolUseId),
+      focus,
+      clearFocus,
+      Markdown: HostMarkdown,
+    }),
+    [tasks, focus, clearFocus],
+  );
 
+  const renderItem = useCallback(
+    (index: number, busy: boolean) => (
+      <MessageItem
+        item={items[index]}
+        provider={agent.provider}
+        agentId={agent.id}
+        busy={busy}
+        turnId={turnIds[index]}
+      />
+    ),
+    [items, turnIds, agent.provider, agent.id],
+  );
   const env = useMemo<RowEnvValue>(
-    () => ({ agent, items, turnIds, liveBusy, openTurnStart, tailRunKey }),
-    [agent, items, turnIds, liveBusy, openTurnStart, tailRunKey],
+    () => ({
+      agentId: agent.id,
+      provider: agent.provider,
+      items,
+      liveBusy,
+      openTurnStart,
+      tailRunKey,
+      renderItem,
+    }),
+    [agent.id, agent.provider, items, liveBusy, openTurnStart, tailRunKey, renderItem],
   );
 
   if (transcriptLoading && items.length === 0) {
@@ -71,24 +106,26 @@ export function TranscriptRows({
   }
 
   return (
-    <RowEnv.Provider value={env}>
-      {rows.map((row) => {
-        const end = lastIndex(row);
-        const footer = turnFooters[end];
-        return (
-          <Fragment key={rowViewKey(row, items)}>
-            <RowView row={row} />
-            {footer != null && (
-              <TurnFooter {...footer} agentId={agent.id} quiet={quietFooters.has(end)} />
-            )}
-          </Fragment>
-        );
-      })}
-      {pending && (
-        <div className="chat-pending" aria-hidden="true">
-          <Loader variant="muted" size="md" />
-        </div>
-      )}
-    </RowEnv.Provider>
+    <TranscriptHost.Provider value={host}>
+      <RowEnv.Provider value={env}>
+        {rows.map((row) => {
+          const end = lastIndex(row);
+          const footer = turnFooters[end];
+          return (
+            <Fragment key={rowViewKey(row, items)}>
+              <RowView row={row} />
+              {footer != null && (
+                <TurnFooter {...footer} agentId={agent.id} quiet={quietFooters.has(end)} />
+              )}
+            </Fragment>
+          );
+        })}
+        {pending && (
+          <div className="chat-pending" aria-hidden="true">
+            <Loader variant="muted" size="md" />
+          </div>
+        )}
+      </RowEnv.Provider>
+    </TranscriptHost.Provider>
   );
 }

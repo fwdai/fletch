@@ -6,13 +6,14 @@
 // identical log from the identical derivation — the two surfaces differ only in
 // chrome, and a second copy of this logic would drift.
 import { useEffect, useMemo, useRef } from "react";
-import { applyPolicy, getAdapter } from "@/adapters";
+import { getAdapter } from "@/adapters";
 import type { AgentRecord } from "@/api";
 import { APP_ACTION_PREFIX } from "@/delegation";
 import { type ChatItem, useAppStore } from "@/store";
 import { stripInjectedInstructions } from "@/util/instructions";
 import type { ChatTurn } from "../ChatNav";
-import { type PairCache, pairToolItems, type ViewItem } from "./pair";
+import { type PairCache, type ViewItem, visibleItems } from "./pair";
+import { openTurnStart as openTurnStartOf } from "./rows";
 import { isUserInputTool } from "./UserInput/parse";
 
 /** A turn's closing footer: how long it ran, its settled prose (for copy), and
@@ -49,26 +50,6 @@ export interface Transcript {
   hasPriorConversation: boolean;
   /** Raw log identity — a stable dep for scroll-to-bottom effects. */
   log: unknown;
-}
-
-/** Whether an item has anything to show. A text delta of only whitespace
- *  ("\n\n" between two tool calls) opens an agent message that renders as
- *  nothing — but would still stand between the calls and split one run of
- *  steps into two. */
-function isShown(item: ChatItem): boolean {
-  return item.kind !== "agent_message" || item.text.trim().length > 0;
-}
-
-/** The items the transcript renders, from an agent's log: the provider's
- *  display policy applied, blank messages dropped, each tool call paired with
- *  its result. Every other item — every thought included — passes through. */
-export function visibleItems(
-  log: ChatItem[],
-  provider: string | undefined,
-  cache?: PairCache,
-): ViewItem[] {
-  const visible = applyPolicy(log, getAdapter(provider).policy).filter(isShown);
-  return pairToolItems(visible, cache);
 }
 
 /** An agent's own conversation: its log from the store, loaded from history
@@ -131,7 +112,7 @@ export function useTranscriptFrom(
   const pairCache = useRef<PairCache>(new Map());
 
   const items = useMemo(
-    () => visibleItems(log ?? [], agent.provider, pairCache.current),
+    () => visibleItems(log ?? [], getAdapter(agent.provider).policy, pairCache.current),
     [log, agent.provider],
   );
 
@@ -205,12 +186,7 @@ export function useTranscriptFrom(
     );
   }, [items]);
 
-  const openTurnStart = useMemo(() => {
-    for (let i = items.length - 1; i >= 0; i -= 1) {
-      if (items[i].kind === "user_message") return i;
-    }
-    return 0;
-  }, [items]);
+  const openTurnStart = useMemo(() => openTurnStartOf(items), [items]);
 
   return {
     items,

@@ -2,7 +2,8 @@
 // the renderer can present them as one collapsible row. Orphan
 // tool_results (no matching call, defensive case) pass through.
 
-import type { ChatItem } from "@/store";
+import { applyPolicy } from "@/adapters/policy";
+import type { ChatItem, DisplayPolicy } from "@/adapters/types";
 import type { ToolCall, ToolResult } from "./presenters/types";
 
 export type ToolPair = { kind: "tool_pair"; call: ToolCall; result: ToolResult | null };
@@ -63,6 +64,26 @@ function pairFor(
   const pair: ToolPair = { kind: "tool_pair", call, result };
   cache.set(call.id, pair);
   return pair;
+}
+
+/** Whether an item has anything to show. A text delta of only whitespace
+ *  ("\n\n" between two tool calls) opens an agent message that renders as
+ *  nothing — but would still stand between the calls and split one run of
+ *  steps into two. */
+function isShown(item: ChatItem): boolean {
+  return item.kind !== "agent_message" || item.text.trim().length > 0;
+}
+
+/** The items a transcript renders, from an agent's log: the provider's display
+ *  policy applied, blank messages dropped, each tool call paired with its
+ *  result. Every other item — every thought included — passes through. The
+ *  one pass both the desktop chat and the phone derive their rows from. */
+export function visibleItems(
+  log: ChatItem[],
+  policy: DisplayPolicy,
+  cache?: PairCache,
+): ViewItem[] {
+  return pairToolItems(applyPolicy(log, policy).filter(isShown), cache);
 }
 
 /** Stable React key for a rendered row. Tool pairs/results key off their tool

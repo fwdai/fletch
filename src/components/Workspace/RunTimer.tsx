@@ -5,21 +5,12 @@
 import { useEffect, useState } from "react";
 import { Icon } from "@/components/Icon";
 import { CopyButton } from "@/components/ui/CopyButton";
+import { fmtDur } from "@/util/format";
 import { ForkMenu } from "./ForkMenu";
 
-/** Whole seconds under a minute; `{m}m {ss}s` (zero-padded seconds) at a
- *  minute or more; `{h}h {mm}m {ss}s` at an hour or more. Never a leading
- *  `0h`/`0m`, never decimals. */
-export function fmtDur(sec: number): string {
-  sec = Math.max(0, Math.floor(sec));
-  const h = Math.floor(sec / 3600);
-  const m = Math.floor((sec % 3600) / 60);
-  const s = sec % 60;
-  if (h > 0) {
-    return `${h}h ${String(m).padStart(2, "0")}m ${String(s).padStart(2, "0")}s`;
-  }
-  return m === 0 ? `${s}s` : `${m}m ${String(s).padStart(2, "0")}s`;
-}
+// `fmtDur` lives in util/format so the shared transcript rows (desktop and
+// phone) can say "Worked for 4m 12s" without this file's desktop chrome.
+export { fmtDur };
 
 /** Live elapsed value, recomputed from a fixed start timestamp every second so
  *  it never drifts when the tab is backgrounded. `startedAt` is epoch millis. */

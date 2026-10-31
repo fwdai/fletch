@@ -61,6 +61,20 @@ export interface TranscriptRowsModel {
   /** Footer indices whose turn's fold already says how long it ran; the
    *  footer leaves the duration out rather than repeating it. */
   quietFooters: Set<number>;
+  /** Key of the run the transcript ends on — a mid-turn follow-up bubble
+   *  below it aside — which is the one the agent is on while the turn is
+   *  live. Null when it ends on something else. */
+  tailRunKey: string | null;
+}
+
+/** Index where the latest turn begins: its prompt, or 0 before any. Only rows
+ *  at or after it may show a live spinner, so a dangling call from an
+ *  interrupted earlier turn can't light up when a later turn goes busy. */
+export function openTurnStart(items: ViewItem[]): number {
+  for (let i = items.length - 1; i >= 0; i -= 1) {
+    if (items[i].kind === "user_message") return i;
+  }
+  return 0;
 }
 
 function sameItems(a: ViewItem[], b: ViewItem[]): boolean {
@@ -188,5 +202,13 @@ export function buildRows(items: ViewItem[], cache: RowCache): TranscriptRowsMod
 
   for (const key of cache.runs.keys()) if (!seen.has(key)) cache.runs.delete(key);
   for (const key of cache.folds.keys()) if (!seen.has(key)) cache.folds.delete(key);
-  return { rows, quietFooters };
+
+  let tailRunKey: string | null = null;
+  for (let r = rows.length - 1; r >= 0; r -= 1) {
+    const row = rows[r];
+    if (row.kind === "item" && items[row.index].kind === "queued_message") continue;
+    tailRunKey = row.kind === "steps" ? row.run.key : null;
+    break;
+  }
+  return { rows, quietFooters, tailRunKey };
 }

@@ -3,11 +3,14 @@
 // and all; settled, what it did ("Changed 9 files +53 −20 · ran 2 commands").
 // Either way it opens to the steps, and each step to its detail; a run of one
 // opens straight to that detail.
+//
+// Shared by the desktop chat and the phone: the steps themselves (tool rows,
+// thoughts) render here, through the presenters; anything else that lands in a
+// run (a hook's output) goes back to the app's own `renderItem`.
 
-import { memo, useMemo, useState } from "react";
+import { memo, type ReactNode, useMemo, useState } from "react";
 import { Icon, type IconName } from "@/components/Icon";
 import { Loader } from "@/components/ui/Loader";
-import { taskForToolUse, useAppStore } from "@/store";
 import { firstLine } from "@/util/format";
 import {
   DeepOpen,
@@ -18,12 +21,20 @@ import {
   useRevealed,
   useSteady,
 } from "./Disclosure";
-import { MessageItem } from "./MessageItem";
+import { useTranscriptHost } from "./host";
 import type { ViewItem } from "./pair";
-import { getPresenter } from "./presenters";
+import { getPresenter, type ToolCall, type ToolResult } from "./presenters";
 import { DiffCount } from "./presenters/util";
 import type { StepRun } from "./rows";
-import { liveActivity, runIcon, type SummaryPart, summarizeSteps, summaryParts } from "./steps";
+import {
+  liveActivity,
+  runIcon,
+  type SummaryPart,
+  searchText,
+  summarizeSteps,
+  summaryParts,
+} from "./steps";
+import { ToolResultItem } from "./ToolResultItem";
 import { ToolRow } from "./ToolRow";
 
 /** The summary line: phrases joined by a quiet dot, the first capitalized
@@ -70,6 +81,52 @@ export function StepGlyph({ icon }: { icon: IconName }) {
   );
 }
 
+/** One tool call as a row: its presenter's icon, label, summary and detail.
+ *  In flight while the agent is busy and the call has no result yet (a long
+ *  Bash), or while the background task it launched is still running — its
+ *  launch result lands at once, so `busy && !result` alone would settle the
+ *  row too early. Used wherever a tool call is drawn: inside a run here, and
+ *  by each app's own message renderer for calls that aren't steps. */
+export function ToolStep({
+  call,
+  result,
+  agentId,
+  busy,
+}: {
+  call: ToolCall;
+  result: ToolResult | null;
+  agentId?: string;
+  busy: boolean;
+}) {
+  const presenter = getPresenter(call.name);
+  const task = useTranscriptHost().taskFor(call.id);
+  const taskRunning = task?.status === "running";
+  const taskFailed = task?.status === "failed";
+  const pair = useMemo(() => ({ kind: "tool_pair" as const, call, result }), [call, result]);
+  return (
+    <ToolRow
+      name={presenter.title ?? call.name}
+      icon={presenter.icon}
+      isError={result?.is_error || taskFailed}
+      running={(busy && !result) || taskRunning}
+      toolUseId={call.id}
+      agentId={agentId}
+      summary={
+        <>
+          {presenter.summary(call, result)}
+          {taskFailed && (
+            <span style={{ color: "var(--danger)", marginLeft: 8 }}>
+              · {task.failureStatus ?? "failed"}
+            </span>
+          )}
+        </>
+      }
+      expanded={presenter.expanded(call, result)}
+      revealText={searchText(pair)}
+    />
+  );
+}
+
 /** A thought in full. Every reasoning notice renders through here: as a row's
  *  body in a run of several steps, or as the whole body of a run of one. */
 function ThoughtBody({ text }: { text: string }) {
@@ -90,35 +147,46 @@ function ThoughtRow({ text }: { text: string }) {
   );
 }
 
+type RenderItem = (index: number, busy: boolean) => ReactNode;
+
 /** One step inside an open run. */
 function StepItem({
   item,
+  index,
   agentId,
-  provider,
   busy,
+  renderItem,
 }: {
   item: ViewItem;
+  index: number;
   agentId?: string;
-  provider?: string;
   busy: boolean;
+  renderItem: RenderItem;
 }) {
-  if (item.kind === "notice" && item.subtype === "reasoning")
-    return <ThoughtRow text={item.text} />;
-  return <MessageItem item={item} agentId={agentId} provider={provider} busy={busy} />;
+  switch (item.kind) {
+    case "notice":
+      if (item.subtype === "reasoning") return <ThoughtRow text={item.text} />;
+      return <>{renderItem(index, busy)}</>;
+    case "tool_pair":
+      return <ToolStep call={item.call} result={item.result} agentId={agentId} busy={busy} />;
+    case "tool_call":
+      return <ToolStep call={item} result={null} agentId={agentId} busy={busy} />;
+    case "tool_result":
+      return <ToolResultItem item={item} />;
+    default:
+      return <>{renderItem(index, busy)}</>;
+  }
 }
 
 /** A run of one opens to that step's own detail; there's no list to show. */
-function SoleDetail({
-  item,
-  agentId,
-  provider,
-  busy,
-}: {
+function SoleDetail(props: {
   item: ViewItem;
+  index: number;
   agentId?: string;
-  provider?: string;
   busy: boolean;
+  renderItem: RenderItem;
 }) {
+  const { item } = props;
   if (item.kind === "tool_pair") {
     return (
       <div className="tool-body is-sole">
@@ -133,15 +201,16 @@ function SoleDetail({
       </div>
     );
   }
-  return <MessageItem item={item} agentId={agentId} provider={provider} busy={busy} />;
+  return <StepItem {...props} />;
 }
 
 export const StepGroup = memo(function StepGroup({
   run,
   agentId,
-  provider,
+  provider: _provider,
   busy,
   tail,
+  renderItem,
 }: {
   run: StepRun;
   agentId?: string;
@@ -151,6 +220,9 @@ export const StepGroup = memo(function StepGroup({
   /** Nothing comes after the run yet: while the turn is live, the agent is
    *  still on it. */
   tail: boolean;
+  /** The app's rendering of an item in the run that isn't a tool call or a
+   *  thought (see RowEnv). */
+  renderItem: RenderItem;
 }) {
   const { items } = run;
   const { open, deep, instant, reveal, toggle } = useDisclosure();
@@ -168,13 +240,12 @@ export const StepGroup = memo(function StepGroup({
 
   // Background work this run launched that outlives it (a dev server, a test
   // watcher): the header keeps saying so after the run has settled.
-  const tasks = useAppStore((s) => (agentId ? s.backgroundTasks[agentId] : undefined));
+  const { taskFor } = useTranscriptHost();
   const running = useMemo(
     () =>
-      items.filter(
-        (it) => it.kind === "tool_pair" && taskForToolUse(tasks, it.call.id)?.status === "running",
-      ).length,
-    [items, tasks],
+      items.filter((it) => it.kind === "tool_pair" && taskFor(it.call.id)?.status === "running")
+        .length,
+    [items, taskFor],
   );
 
   // A run that appears live rises in; one already there on load doesn't.
@@ -214,7 +285,13 @@ export const StepGroup = memo(function StepGroup({
       <DisclosureBody open={shown} instant={instant || (revealed && !open)} className="steps-body">
         <DeepOpen.Provider value={deep}>
           {sole ? (
-            <SoleDetail item={sole} agentId={agentId} provider={provider} busy={busy} />
+            <SoleDetail
+              item={sole}
+              index={run.start}
+              agentId={agentId}
+              busy={busy}
+              renderItem={renderItem}
+            />
           ) : (
             <div className="steps-list">
               {items.map((item, i) => (
@@ -223,7 +300,13 @@ export const StepGroup = memo(function StepGroup({
                   className="steps-item"
                   style={{ "--i": Math.min(i, 12) } as React.CSSProperties}
                 >
-                  <StepItem item={item} agentId={agentId} provider={provider} busy={busy} />
+                  <StepItem
+                    item={item}
+                    index={run.start + i}
+                    agentId={agentId}
+                    busy={busy}
+                    renderItem={renderItem}
+                  />
                 </div>
               ))}
             </div>

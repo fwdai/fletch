@@ -90,7 +90,10 @@ export function SubagentScreen({ agentId, path: pathProp }: { agentId: string; p
         {thread ? (
           <>
             <Transcript
+              agentId={agentId}
+              provider={agent.provider}
               items={visible}
+              policy={policy}
               tasks={byToolUse}
               busy={live}
               openThread={(id) =>

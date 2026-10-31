@@ -41,6 +41,20 @@
   --scrim: rgba(0, 0, 0, 0.5);
   --tool-out: var(--bg-0);
   --knob: #fff;
+  /* Tokens the shared transcript rows (desktop Steps.css) read. Type a touch
+     larger than the Mac's: these are tapped, not hovered. */
+  --fs-xs: 11.5px;
+  --fs-sm: 13px;
+  --lh-snug: 1.4;
+  --lh-normal: 1.5;
+  --lh-relaxed: 1.65;
+  --r-sm: 6px;
+  --fs-base: 14px;
+  --hover: var(--bg-3);
+  --selected: var(--bg-3);
+  --transition-ui-ease: background 0.12s var(--ease), color 0.12s var(--ease);
+  --btn-fg-dark: oklch(0.16 0.02 60);
+  --btn-fg-light: oklch(0.98 0.005 60);
 }
 .theme-light {
   --bg-0: oklch(0.985 0.002 250);
@@ -73,6 +87,19 @@
   --scrim: rgba(0, 0, 0, 0.28);
   --tool-out: oklch(0.975 0.002 250);
   --knob: #fff;
+}
+/* Utilities the shared transcript rows (desktop Steps.css, ToolRow) use. */
+.flex-center {
+  display: flex;
+  align-items: center;
+}
+.iflex-center {
+  display: inline-flex;
+  align-items: center;
+}
+.flex-center > svg,
+.iflex-center > svg {
+  flex-shrink: 0;
 }
 html,
 body {

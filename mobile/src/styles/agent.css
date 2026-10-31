@@ -38,7 +38,6 @@
    paragraphs, list items, links and inline code. */
 .msg-user,
 .msg-text,
-.reasoning,
 .notice {
   overflow-wrap: anywhere;
 }
@@ -218,14 +217,6 @@
   max-width: 100%;
   border-radius: 11px;
 }
-.reasoning {
-  font-size: 13.5px;
-  line-height: 1.5;
-  color: var(--fg-2);
-  border-left: 2px solid var(--bd);
-  padding: 2px 0 2px 12px;
-  white-space: pre-wrap;
-}
 .notice {
   font-size: 12.5px;
   color: var(--fg-3);
@@ -238,77 +229,15 @@
   font-family: var(--font-sans);
   font-size: 13.5px;
 }
-.tools {
+/* A sub-agent launch in the log (Transcript's SubagentCard): a thread entry,
+   not a tool row — a status rail, two lines (name; type · status) and a
+   disclosure chevron. Tapping pushes the thread's own screen. A card of its
+   own, between the runs of steps around it. */
+.subcard {
+  display: flex;
   background: var(--bg-1);
   border: 1px solid var(--bd-soft);
   border-radius: 13px;
-  overflow: hidden;
-}
-.tool {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  padding: 9px 12px;
-  width: 100%;
-  text-align: left;
-  font-family: var(--font-mono);
-  font-size: 12.5px;
-  min-height: 38px;
-  position: relative;
-  transition: background 0.15s;
-}
-.tool:active {
-  background: var(--bg-3);
-}
-.tool-wrap + .tool-wrap {
-  border-top: 1px solid var(--bd-soft);
-}
-.tool .ic {
-  color: var(--tool);
-  flex-shrink: 0;
-  display: flex;
-}
-.tool .nm {
-  color: var(--tool);
-  font-weight: 500;
-  flex-shrink: 0;
-}
-.tool .arg {
-  flex: 1;
-  min-width: 0;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  color: var(--fg-1);
-}
-.tool .mt {
-  color: var(--fg-3);
-  flex-shrink: 0;
-  font-size: 11.5px;
-}
-.tool .mt.add {
-  color: var(--success);
-}
-.tool .mt.err {
-  color: var(--danger);
-}
-.tool .mt.run {
-  color: var(--merged);
-}
-.tool.failed .ic,
-.tool.failed .nm {
-  color: var(--danger);
-}
-.tool .chev {
-  transition: transform 0.25s var(--ease-out);
-}
-/* A sub-agent launch in the log (Transcript's SubagentCard): a thread entry,
-   not a tool row — a status rail, two lines (name; type · status) and a
-   disclosure chevron. Tapping pushes the thread's own screen. Sits inside the
-   `.tools` card with the rows around it, so a run of launches reads as one
-   group. */
-.subcard {
-  display: flex;
   align-items: center;
   gap: 10px;
   width: 100%;
@@ -320,11 +249,6 @@
 }
 .subcard:active {
   background: var(--bg-3);
-}
-.subcard + .subcard,
-.tool-wrap + .subcard,
-.subcard + .tool-wrap {
-  border-top: 1px solid var(--bd-soft);
 }
 .subcard::before {
   content: "";
@@ -459,23 +383,6 @@
 }
 .subagent.err .mt {
   color: var(--danger);
-}
-.tool.open .chev {
-  transform: rotate(90deg);
-}
-.tool-out {
-  font-family: var(--font-mono);
-  font-size: 11.5px;
-  color: var(--fg-2);
-  background: var(--tool-out);
-  padding: 10px 12px;
-  white-space: pre-wrap;
-  word-break: break-word;
-  line-height: 1.5;
-  border-top: 1px solid var(--bd-soft);
-  max-height: 180px;
-  overflow: auto;
-  animation: fade 0.25s var(--ease-out);
 }
 /* Sized to its label rather than stretched across the log like the rows. */
 .load-older {
@@ -1967,4 +1874,12 @@
   margin: 0;
   color: var(--fg-2);
   font-size: 14px;
+}
+
+/* The shared transcript rows (desktop Steps.css) on a touch screen: every row
+   is a tap target, so the heads stand a little taller than on the Mac. */
+.steps-head,
+.fold-head,
+.m-tool {
+  min-height: 40px;
 }

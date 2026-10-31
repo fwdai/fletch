@@ -1,12 +1,11 @@
 // Rendering the row model (rows.ts): a message, a run of steps, or a settled
 // turn's folded work. Shared by the transcript's top level and the inside of an
-// opened fold, which hold the same kinds of rows.
+// opened fold, which hold the same kinds of rows — and by the desktop chat and
+// the phone, which differ only in how they draw a message (`renderItem`).
 
-import { createContext, memo, useContext, useMemo } from "react";
-import type { AgentRecord } from "@/api";
-import { fmtDur } from "../RunTimer";
+import { createContext, memo, type ReactNode, useContext, useMemo } from "react";
+import { fmtDur } from "@/util/format";
 import { DeepOpen, DisclosureBody, useDisclosure, useFocusInside, useRevealed } from "./Disclosure";
-import { MessageItem } from "./MessageItem";
 import { rowKey, type ViewItem } from "./pair";
 import type { Fold, Row } from "./rows";
 import { StepGlyph, StepGroup, SummaryLine } from "./StepGroup";
@@ -16,13 +15,17 @@ import { summarizeSteps, summaryParts } from "./steps";
  *  so a closed fold doesn't re-render as the live turn streams below it; only
  *  the rows actually on the page do. */
 export interface RowEnvValue {
-  agent: AgentRecord;
+  agentId: string;
+  provider: string | undefined;
   items: ViewItem[];
-  turnIds: (number | undefined)[];
   liveBusy: boolean;
   openTurnStart: number;
   /** Key of the run the transcript ends on, if it ends on one. */
   tailRunKey: string | null;
+  /** The app's own rendering of one item that isn't a step — a prompt, the
+   *  agent's prose, a sub-agent card, a question for the user. `busy` is
+   *  whether the item's turn is live. */
+  renderItem: (index: number, busy: boolean) => ReactNode;
 }
 
 export const RowEnv = createContext<RowEnvValue | null>(null);
@@ -38,30 +41,23 @@ export function rowViewKey(row: Row, items: ViewItem[]): string {
 export function RowView({ row }: { row: Row }) {
   const env = useContext(RowEnv);
   if (!env) return null;
-  const { agent, items, turnIds, liveBusy, openTurnStart } = env;
+  const { agentId, provider, liveBusy, openTurnStart, renderItem } = env;
   switch (row.kind) {
     case "item":
-      return (
-        <MessageItem
-          item={items[row.index]}
-          provider={agent.provider}
-          agentId={agent.id}
-          busy={liveBusy && row.index >= openTurnStart}
-          turnId={turnIds[row.index]}
-        />
-      );
+      return <>{renderItem(row.index, liveBusy && row.index >= openTurnStart)}</>;
     case "steps":
       return (
         <StepGroup
           run={row.run}
-          agentId={agent.id}
-          provider={agent.provider}
+          agentId={agentId}
+          provider={provider}
           busy={liveBusy && row.run.start >= openTurnStart}
           tail={row.run.key === env.tailRunKey}
+          renderItem={renderItem}
         />
       );
     case "fold":
-      return <WorkFold fold={row.fold} agentId={agent.id} />;
+      return <WorkFold fold={row.fold} agentId={agentId} />;
   }
 }
 

@@ -101,7 +101,10 @@ export function ChatTab({
       <div className="scroll chat" ref={scroller} onScroll={onScroll}>
         <LoadOlder agentId={agent.id} scroller={scroller} />
         <Transcript
+          agentId={agent.id}
+          provider={agent.provider}
           items={visible}
+          policy={policy}
           tasks={byToolUse}
           busy={busy}
           openThread={openThread}

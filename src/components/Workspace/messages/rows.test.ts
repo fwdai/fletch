@@ -1,10 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { claudeAdapter } from "@/adapters/claude/index";
 import type { ChatItem } from "@/store";
-import type { ViewItem } from "./pair";
+import { type ViewItem, visibleItems } from "./pair";
 import { buildRows, newRowCache, type Row } from "./rows";
 import { liveActivity, summarizeSteps, summaryParts } from "./steps";
-import { visibleItems } from "./useTranscript";
 
 let seq = 0;
 const user = (text = "do it", timing?: { startedAt: number; endedAt?: number }): ViewItem => ({
@@ -195,7 +194,7 @@ describe("from Claude's records to rows", () => {
     const log = claudeAdapter
       .normalizeTranscript(lines)
       .reduce<ChatItem[]>((acc, ev) => claudeAdapter.reduce(acc, ev), []);
-    const items = visibleItems(log, "claude");
+    const items = visibleItems(log, claudeAdapter.policy);
     expect(thoughts(items)).toEqual(["Reading the reducer first.", "Now the test."]);
 
     const { rows } = buildRows(items, newRowCache());

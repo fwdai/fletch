@@ -13,7 +13,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { useAppStore } from "@/store";
+import { useTranscriptHost } from "./host";
 import type { ViewItem } from "./pair";
 import { REVEAL_MIN_QUERY, searchText } from "./steps";
 
@@ -72,18 +72,16 @@ export function useDisclosure(): {
   };
 }
 
-/** Open when a reveal request (store `chatFocus`) names a tool call among
- *  `items` — the sub-agent card the user just came back from, folded inside
- *  an older turn. Sticky: the request is consumed by the row it names, which
- *  only mounts once this has opened. Selects the request itself (null almost
- *  always) and looks through `items` only when it changes — never on the
- *  store updates every streaming token makes. */
+/** Open when a reveal request (TranscriptHost `focus`) names a tool call
+ *  among `items` — the sub-agent card the user just came back from, folded
+ *  inside an older turn. Sticky: the request is consumed by the row it names,
+ *  which only mounts once this has opened. */
 export function useFocusInside(
   agentId: string | undefined,
   items: ViewItem[],
   open: () => void,
 ): void {
-  const focus = useAppStore((s) => s.chatFocus);
+  const { focus } = useTranscriptHost();
   const inside =
     focus !== null &&
     focus.agentId === agentId &&
