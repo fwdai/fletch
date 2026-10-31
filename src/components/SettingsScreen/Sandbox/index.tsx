@@ -86,12 +86,19 @@ export function SandboxPane() {
       : podmanProbe.status === "machine-down"
         ? "Run podman machine start"
         : "Install Podman";
-  // The machine can boot a box: the switch is usable, and with it on the box
-  // controls below are shown. An Intel Mac, or one without the runtime, gets
-  // a disabled switch that says why rather than a refusal on click.
+  // Two facts, kept apart: the stored switch (`boxesEnabled`, the user's to
+  // flip either way) and whether this machine can boot a box right now
+  // (`boxRuntimeProblem`). The switch shows the stored value and only
+  // turning it *on* needs the runtime: a switch left on by a machine that
+  // has since lost the helper must still read as on and still turn off. The
+  // box controls below need both.
   const boxRuntimeProblem =
     boxProbe && !boxProbe.runtime_ok ? boxProbe.problems.join("; ") : undefined;
   const boxUsable = unlocked && boxesEnabled && !!boxProbe?.runtime_ok;
+  // A pinned `box` stays visible — and so escapable — while the runtime is
+  // out: the option is listed with the problem as its hint, and the warning
+  // below says what to do, as it does for a container engine that went away.
+  const boxOffered = boxUsable || (unlocked && sandboxEngine === "box");
   const setup = boxSetup(boxProbe, boxImage, boxTools);
   // What Automatic lands on right now, in two words: the Select's hint.
   const autoHint = !boxUsable
@@ -131,12 +138,12 @@ export function SandboxPane() {
             options={[
               ...(unlocked ? [{ value: "auto" as const, label: "Automatic", hint: autoHint }] : []),
               { value: "sandbox-exec", label: "macOS sandbox (Seatbelt)" },
-              ...(boxUsable
+              ...(boxOffered
                 ? [
                     {
                       value: "box" as const,
                       label: "Isolated VM (box)",
-                      hint: setup.text,
+                      hint: !boxesEnabled ? "Turned off below" : (boxRuntimeProblem ?? setup.text),
                     },
                   ]
                 : []),
@@ -176,6 +183,16 @@ export function SandboxPane() {
             or switch back to {fallbackLabel}.
           </div>
         )}
+        {sandboxEngine === "box" && !boxUsable && boxProbe && (
+          <div className="set-sandbox-warn">
+            Isolated VM is selected but{" "}
+            {!boxesEnabled
+              ? "isolated VMs are turned off below"
+              : `isn't available: ${boxRuntimeProblem}`}
+            . New agents won't launch until it is. Switch back to Automatic, or turn isolated VMs
+            on.
+          </div>
+        )}
         <ContainerAuth />
       </SetGroup>
 
@@ -189,12 +206,17 @@ export function SandboxPane() {
             }
           >
             <SetToggle
-              on={boxUsable}
+              on={boxesEnabled}
               onClick={() => void setBoxesEnabled(!boxesEnabled)}
-              disabled={!!hostGate || !!boxRuntimeProblem || !boxProbe}
-              tip={hostGate ?? boxRuntimeProblem ?? (!boxProbe ? "Checking…" : undefined)}
+              disabled={!!hostGate || !boxProbe || (!!boxRuntimeProblem && !boxesEnabled)}
+              tip={hostGate ?? (!boxProbe ? "Checking…" : boxRuntimeProblem)}
             />
           </SetRow>
+          {boxesEnabled && boxRuntimeProblem && (
+            <div className="set-row-s text-sm set-box-setup" data-state="error">
+              <span>Not available on this Mac: {boxRuntimeProblem}</span>
+            </div>
+          )}
           {boxUsable && <BoxSetupStatus />}
         </SetGroup>
       )}
