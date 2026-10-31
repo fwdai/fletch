@@ -266,6 +266,11 @@ export const createEnvironmentSwitchSlice: SliceCreator<EnvironmentSwitchSlice> 
     // nothing after it depends on it, and an answer that lands after a later
     // switch is dropped by `hydrateHostSettings` itself.
     void hydrateHostSettings(set).catch(() => {});
+    // …and where its isolated VM stands, which its `box:*` events keep
+    // current from here.
+    void get()
+      .loadBoxSetup()
+      .catch(() => {});
   };
 
   return {

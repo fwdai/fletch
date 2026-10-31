@@ -480,6 +480,18 @@ pub struct SpawnRequest {
 }
 
 impl Supervisor {
+    /// The stored `sandbox.placement` of the project `repo_path` belongs to,
+    /// if any. A repo no project owns yet (the row is created by the spawn
+    /// below) reads as unset.
+    fn project_placement(&self, repo_path: &std::path::Path) -> Option<String> {
+        let project_id = self
+            .workspace
+            .project_id_for_repo(&repo_path.to_string_lossy())
+            .ok()?;
+        self.workspace
+            .project_setting(&project_id, sandbox::placement::KEY)
+    }
+
     pub async fn spawn_agent(
         self: Arc<Self>,
         ctx: Arc<EngineCtx>,
@@ -529,11 +541,25 @@ impl Supervisor {
         // check waits on a privacy prompt. A second read under the lock could
         // stamp an engine the folders were never checked for. An adopting
         // agent runs where its tree lives (`engine_for_adopted_tree`): in the
-        // box that holds it, or never in a box for a host tree.
+        // box that holds it, or never in a box for a host tree. Anyone else
+        // gets the host's choice over the project's placement — read here,
+        // before the lock, since the automatic choice stats the repository
+        // and may run the runtime probe once.
         let engine_kind = match &adopted {
             Some(tree) => sandbox::engine_for_adopted_tree(tree),
             None => {
-                sandbox::boxes::engine_for_new_agent(sandbox::selected_engine_kind(), &req.provider)
+                let placement = self.project_placement(&req.repo_path);
+                let (selected, provider, repo) = (
+                    sandbox::selected_engine(),
+                    req.provider.clone(),
+                    req.repo_path.clone(),
+                );
+                tokio::task::spawn_blocking(move || {
+                    let placement = sandbox::placement::resolve(placement.as_deref(), &repo);
+                    sandbox::boxes::engine_for_new_agent(selected, &provider, placement)
+                })
+                .await
+                .map_err(|e| Error::Other(e.to_string()))?
             }
         };
         // The folder check may wait on a privacy prompt, so it too runs before

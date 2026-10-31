@@ -3,8 +3,9 @@ import { Select } from "@/components/ui/Select";
 import type { SandboxEngine } from "@/storage/preferences";
 import { useAppStore } from "@/store";
 import { useGate } from "@/store/capabilities";
-import { SetGroup, SetHead, SetRow } from "../primitives";
+import { SetGroup, SetHead, SetRow, SetToggle } from "../primitives";
 import { BoxKnobs } from "./BoxKnobs";
+import { BoxSetupStatus } from "./BoxSetupStatus";
 import { boxSetup } from "./boxSetup";
 import { ContainerAuth } from "./ContainerAuth";
 import { ContainerLaunchKnobs } from "./ContainerLaunchKnobs";
@@ -19,8 +20,9 @@ import { EgressGlobal } from "./EgressGlobal";
 // few seconds, so a tight interval mostly hits that cache.
 const PROBE_INTERVAL_MS = 3_000;
 
-/** Settings › Sandbox: which isolation engine new agents get, how container
- *  agents authenticate, and the per-runtime launch knobs. */
+/** Settings › Sandbox: which isolation engine new agents get, the isolated
+ *  VM behind the automatic choice, how container agents authenticate, and
+ *  the per-runtime launch knobs. */
 export function SandboxPane() {
   const sandboxEngine = useAppStore((s) => s.sandboxEngine);
   const setSandboxEngine = useAppStore((s) => s.setSandboxEngine);
@@ -28,14 +30,12 @@ export function SandboxPane() {
   const refreshDockerProbe = useAppStore((s) => s.refreshDockerProbe);
   const podmanProbe = useAppStore((s) => s.podmanProbe);
   const refreshPodmanProbe = useAppStore((s) => s.refreshPodmanProbe);
-  // The box sandbox is piloted behind Settings › Developer: with the flag off
-  // nothing below asks about it, so this page is what it was before boxes.
   const boxesEnabled = useAppStore((s) => s.boxesEnabled);
+  const setBoxesEnabled = useAppStore((s) => s.setBoxesEnabled);
   const boxProbe = useAppStore((s) => s.boxProbe);
   const boxImage = useAppStore((s) => s.boxImage);
   const boxTools = useAppStore((s) => s.boxTools);
   const refreshBoxProbe = useAppStore((s) => s.refreshBoxProbe);
-  const refreshBoxImage = useAppStore((s) => s.refreshBoxImage);
   // The engine (and the launch knobs below) are the host's: it stamps them on
   // the agents it spawns.
   const hostGate = useGate("hostSettings");
@@ -46,7 +46,7 @@ export function SandboxPane() {
       if (cancelled) return;
       void refreshDockerProbe();
       void refreshPodmanProbe();
-      if (boxesEnabled) void refreshBoxProbe();
+      void refreshBoxProbe();
     };
     probe(); // immediately on mount
     const timer = setInterval(probe, PROBE_INTERVAL_MS);
@@ -59,12 +59,7 @@ export function SandboxPane() {
       clearInterval(timer);
       window.removeEventListener("focus", onFocus);
     };
-  }, [refreshDockerProbe, refreshPodmanProbe, refreshBoxProbe, boxesEnabled]);
-
-  // The image state is read once; `box:image` carries every change after.
-  useEffect(() => {
-    if (boxesEnabled) void refreshBoxImage();
-  }, [refreshBoxImage, boxesEnabled]);
+  }, [refreshDockerProbe, refreshPodmanProbe, refreshBoxProbe]);
 
   // Each container option is enabled only when the runtime answered the probe;
   // otherwise it's disabled with a hint saying how to fix it. A `null` probe is
@@ -86,12 +81,19 @@ export function SandboxPane() {
       : podmanProbe.status === "machine-down"
         ? "Run podman machine start"
         : "Install Podman";
-  // Offered as soon as the flag is on (the toggle already refused a machine
-  // that cannot boot a box), and selectable right away: a launch waits for
-  // the image and the tools disk while they are still being set up, so the
-  // hint only says where that stands. Settings › Developer has the controls.
-  const boxOffered = boxesEnabled;
-  const boxHint = boxSetup(boxProbe, boxImage, boxTools).text;
+  // The machine can boot a box: the switch is usable, and with it on the box
+  // controls below are shown. An Intel Mac, or one without the runtime, gets
+  // a disabled switch that says why rather than a refusal on click.
+  const boxRuntimeProblem =
+    boxProbe && !boxProbe.runtime_ok ? boxProbe.problems.join("; ") : undefined;
+  const boxUsable = boxesEnabled && !!boxProbe?.runtime_ok;
+  const setup = boxSetup(boxProbe, boxImage, boxTools);
+  // What Automatic lands on right now, in two words: the Select's hint.
+  const autoHint = !boxUsable
+    ? "macOS sandbox"
+    : setup.state === "ready"
+      ? "Isolated VM"
+      : "macOS sandbox until the VM is ready";
 
   return (
     <div className="set-pane">
@@ -106,7 +108,7 @@ export function SandboxPane() {
           title="Engine"
           sub={
             hostGate ??
-            "Docker and Podman run agents in a Linux container. Applies to new agents only."
+            "Automatic runs each new workspace in an isolated VM once one is ready, and in the macOS sandbox until then. Applies to new workspaces only."
           }
         >
           <Select<SandboxEngine>
@@ -114,7 +116,17 @@ export function SandboxPane() {
             ariaLabel="Sandbox engine"
             disabled={!!hostGate}
             options={[
-              { value: "sandbox-exec", label: "Seatbelt (sandbox-exec)" },
+              { value: "auto", label: "Automatic", hint: autoHint },
+              { value: "sandbox-exec", label: "macOS sandbox (Seatbelt)" },
+              ...(boxUsable
+                ? [
+                    {
+                      value: "box" as const,
+                      label: "Isolated VM (box)",
+                      hint: setup.text,
+                    },
+                  ]
+                : []),
               {
                 value: "docker",
                 label: "Docker",
@@ -127,15 +139,6 @@ export function SandboxPane() {
                 hint: podmanHint || undefined,
                 disabled: !podmanAvailable,
               },
-              ...(boxOffered
-                ? [
-                    {
-                      value: "box" as const,
-                      label: "Box (micro-VM)",
-                      hint: boxHint,
-                    },
-                  ]
-                : []),
             ]}
             onChange={(v) => void setSandboxEngine(v)}
           />
@@ -146,7 +149,7 @@ export function SandboxPane() {
             {dockerProbe.status === "daemon-down" ? "the daemon isn't running" : "isn't installed"}.
             New agents won't launch until it's available.{" "}
             {dockerProbe.status === "daemon-down" ? "Start" : "Install"} Docker Desktop, or switch
-            back to Seatbelt.
+            back to Automatic.
           </div>
         )}
         {sandboxEngine === "podman" && podmanProbe && !podmanAvailable && (
@@ -157,16 +160,34 @@ export function SandboxPane() {
               : "isn't installed"}
             . New agents won't launch until it's available.{" "}
             {podmanProbe.status === "machine-down" ? "Run podman machine start" : "Install Podman"},
-            or switch back to Seatbelt.
+            or switch back to Automatic.
           </div>
         )}
         <ContainerAuth />
       </SetGroup>
 
+      <SetGroup label="Isolated VM">
+        <SetRow
+          title="Use isolated VMs when available"
+          sub={
+            hostGate ??
+            "A micro-VM per workspace that shares no folder with your Mac and reaches only the project's allowed hosts. Its image downloads once, in the background; until it's in, workspaces use the macOS sandbox. Projects that build a macOS or iOS app stay on your Mac."
+          }
+        >
+          <SetToggle
+            on={boxUsable}
+            onClick={() => void setBoxesEnabled(!boxesEnabled)}
+            disabled={!!hostGate || !!boxRuntimeProblem || !boxProbe}
+            tip={hostGate ?? boxRuntimeProblem ?? (!boxProbe ? "Checking…" : undefined)}
+          />
+        </SetRow>
+        {boxUsable && <BoxSetupStatus />}
+      </SetGroup>
+
+      {boxUsable && <BoxKnobs />}
       <ContainerLaunchKnobs runtime="docker" />
-      <ContainerLaunchKnobs runtime="podman" last={!boxesEnabled} />
-      {boxesEnabled && <BoxKnobs />}
-      {boxesEnabled && <EgressGlobal last />}
+      <ContainerLaunchKnobs runtime="podman" last={!boxUsable} />
+      {boxUsable && <EgressGlobal last />}
     </div>
   );
 }

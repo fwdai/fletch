@@ -52,9 +52,10 @@ export function hostSettingsState(s: Record<string, string>): Partial<AppState> 
     podmanImage: s.podman_image || "",
     podmanMemory: s.podman_memory || "",
     podmanCpus: s.podman_cpus || "",
-    // Opt-in: the box sandbox is piloted behind Settings › Developer. The
-    // knobs are blank when unset, as the container ones are.
-    boxesEnabled: s.boxes_enabled === "true",
+    // Opt-out: only an explicit "false" turns isolated VMs off
+    // (`boxes::settings::parse_enabled`). The knobs are blank when unset, as
+    // the container ones are.
+    boxesEnabled: s.boxes_enabled !== "false",
     boxMemoryMib: s.box_memory_mib || "",
     boxCpus: s.box_cpus || "",
     boxImageUrl: s.box_image_url || "",

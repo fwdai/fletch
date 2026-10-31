@@ -1,6 +1,6 @@
-//! The engine halves of the box commands: what the Settings › Sandbox page,
-//! the Developer pane and the agent's isolation row ask. `src-tauri` wraps
-//! each in a `#[tauri::command]` and `remote::dispatch` in a remote op.
+//! The engine halves of the box commands: what the Settings › Sandbox page
+//! and the agent's isolation row ask. `src-tauri` wraps each in a
+//! `#[tauri::command]` and `remote::dispatch` in a remote op.
 
 use fletch_box::Probe;
 use serde::Serialize;
@@ -19,7 +19,7 @@ pub use crate::sandbox::boxes::setup::BoxImageStatus;
 /// `box_runtime_probe`: can this host boot a box, item by item.
 #[derive(Debug, Clone, Serialize)]
 pub struct BoxRuntimeProbe {
-    /// The developer flag.
+    /// The switch (`boxes_enabled`).
     pub enabled: bool,
     /// Every item passed, the flag and image included.
     pub ok: bool,
@@ -77,7 +77,18 @@ pub fn box_runtime_probe_impl() -> BoxRuntimeProbe {
 /// Start downloading this build's pinned image in the background, then build
 /// the tools disks; progress and the outcome arrive as `box:image` and
 /// `box:tools` events. Idempotent, so it is also the Retry after a failure.
+/// Refused on a machine that cannot boot a box (the desktop calls it blindly
+/// when onboarding closes): the image would be dead weight there.
 pub fn box_image_install_impl() -> Result<()> {
+    if !boxes::runtime_usable() {
+        return Err(Error::Other(match boxes::probe() {
+            Some(probe) => format!(
+                "the box runtime is not usable: {}.",
+                probe.problems().join("; ")
+            ),
+            None => boxes::RUNTIME_NOT_FOUND.to_string(),
+        }));
+    }
     setup::start_install()
 }
 
@@ -227,11 +238,10 @@ pub fn set_box_egress_global_impl(
 
 /// Write one box setting (`boxes_enabled`, `box_memory_mib`, `box_cpus`,
 /// `box_image_url`, `box_idle_stop_minutes`), validated, and mirror it for the
-/// engine; `None` restores the default. The Developer pane's toggle and the
-/// Sandbox page's knobs go through here, not the client-side `set_setting`,
-/// since the engine reads these. The flag is the whole setup
-/// ([`set_enabled`]): on, it starts the image install and makes `box` the
-/// engine for new agents.
+/// engine; `None` restores the default. The Sandbox page's switch and knobs
+/// go through here, not the client-side `set_setting`, since the engine
+/// reads these. The switch going on starts the image install
+/// ([`set_enabled`]); the engine choice itself is `set_sandbox_engine`'s.
 pub fn set_box_setting_impl(ctx: &EngineCtx, key: &str, value: Option<&str>) -> Result<()> {
     let normalized = match value {
         Some(value) => Some(
@@ -245,8 +255,8 @@ pub fn set_box_setting_impl(ctx: &EngineCtx, key: &str, value: Option<&str>) -> 
             None
         }
     };
-    if key == settings::ENABLED_SETTING {
-        let on = normalized.as_deref() == Some("true");
+    if key == settings::ENABLED_SETTING && normalized.is_some() {
+        let on = normalized.as_deref() != Some("false");
         let probe = on.then(boxes::probe).flatten();
         set_enabled(ctx, on, probe.as_ref())?;
         if on {
@@ -272,13 +282,13 @@ pub fn set_box_setting_impl(ctx: &EngineCtx, key: &str, value: Option<&str>) -> 
     Ok(())
 }
 
-/// Flip the flag. On: refused, and nothing stored, unless `probe` says this
-/// machine and runtime can boot a box (Intel, a missing helper); then `box`
-/// becomes the engine for new agents and the engine it replaced is remembered.
-/// Off: `box` goes back to that engine (another engine the user picked
-/// meanwhile stays), and every running box is stopped cleanly — nothing is
-/// deleted. The install itself is the caller's, so this stays testable without
-/// a download.
+/// Flip the switch. On: refused, and nothing stored, unless `probe` says this
+/// machine and runtime can boot a box (Intel, a missing helper); the engine
+/// choice is untouched — automatic moves new agents to boxes on its own once
+/// the image is in. Off: a pinned `box` goes back to automatic (which lands
+/// on seatbelt while the switch is down; another pinned engine stays), and
+/// every running box is stopped cleanly — nothing is deleted. The install
+/// itself is the caller's, so this stays testable without a download.
 pub(crate) fn set_enabled(ctx: &EngineCtx, on: bool, probe: Option<&Probe>) -> Result<()> {
     if on {
         let problem = match probe {
@@ -300,54 +310,25 @@ pub(crate) fn set_enabled(ctx: &EngineCtx, on: bool, probe: Option<&Probe>) -> R
         settings::set(settings::load(&conn));
     }
     announce(ctx, settings::ENABLED_SETTING, Some(value));
-
-    let selected = sandbox::selected_engine_kind();
     if on {
-        if selected != sandbox::EngineKind::Box {
-            // Remembered so providers boxes cannot run keep this engine, and
-            // so off restores it (`settings::fallback_engine`).
-            let conn = ctx.db.lock();
-            database::set_setting(
-                &conn,
-                settings::PREVIOUS_ENGINE_SETTING,
-                selected.as_setting(),
-            )?;
-            settings::set(settings::load(&conn));
-            drop(conn);
-            select_engine(ctx, sandbox::EngineKind::Box)?;
-        }
         return Ok(());
     }
-    // Off must never leave `box` selected: with the flag down the engine is
-    // unavailable and every spawn would fail. The engine the flag replaced
-    // comes back; another engine the user picked meanwhile is theirs and stays.
-    let restore = settings::fallback_engine();
-    {
-        let conn = ctx.db.lock();
-        conn.execute(
-            "DELETE FROM settings WHERE key = ?1",
-            [settings::PREVIOUS_ENGINE_SETTING],
+    // Off must never leave `box` pinned: with the switch down the engine is
+    // unavailable and every spawn would fail.
+    if sandbox::selected_engine() == Some(sandbox::EngineKind::Box) {
+        database::set_setting(
+            &ctx.db.lock(),
+            sandbox::ENGINE_SETTING,
+            sandbox::ENGINE_AUTO,
         )?;
-        settings::set(settings::load(&conn));
-    }
-    if selected == sandbox::EngineKind::Box {
-        select_engine(ctx, restore)?;
+        sandbox::set_selected_engine(None);
+        announce(ctx, sandbox::ENGINE_SETTING, Some(sandbox::ENGINE_AUTO));
     }
     // Only when something runs: the stop is async, and a bare unit test has
     // no runtime to spawn it on.
     if !BoxRegistry::global().running_ids().is_empty() {
         crate::host::spawn(BoxRegistry::global().shutdown_all());
     }
-    Ok(())
-}
-
-/// Persist, mirror and announce the engine new agents get, with none of the
-/// probing `set_sandbox_engine_impl` does: the flag's own switch is already
-/// behind the runtime probe, and the switch back is to the default.
-fn select_engine(ctx: &EngineCtx, kind: sandbox::EngineKind) -> Result<()> {
-    database::set_setting(&ctx.db.lock(), sandbox::ENGINE_SETTING, kind.as_setting())?;
-    sandbox::set_selected_engine_kind(kind);
-    announce(ctx, sandbox::ENGINE_SETTING, Some(kind.as_setting()));
     Ok(())
 }
 
@@ -399,14 +380,18 @@ mod tests {
         assert_eq!(settings::current().memory_mib, settings::DEFAULT_MEMORY_MIB);
     }
 
-    /// An Intel Mac, or one without the runtime, cannot turn the flag on: the
-    /// refusal carries the probe's sentence and nothing is stored or announced.
+    /// An Intel Mac, or one without the runtime, cannot turn the switch on:
+    /// the refusal carries the probe's sentence and nothing is stored or
+    /// announced.
     #[test]
     fn enabling_with_a_failing_probe_is_refused() {
         let _serial = ENGINE_LOCK.blocking_lock();
         let (ctx, sink, _dir) = test_ctx();
-        settings::set(settings::BoxSettings::default());
-        sandbox::set_selected_engine_kind(sandbox::EngineKind::SandboxExec);
+        settings::set(settings::BoxSettings {
+            enabled: false,
+            ..Default::default()
+        });
+        sandbox::set_selected_engine(None);
         let err = set_enabled(&ctx, true, Some(&probe(false))).unwrap_err();
         assert!(err.to_string().contains("Apple silicon"), "{err}");
         let err = set_enabled(&ctx, true, None).unwrap_err();
@@ -414,108 +399,125 @@ mod tests {
         assert!(!settings::enabled());
         assert!(sink.events().is_empty());
         assert_eq!(engine_row(&ctx), None);
-        assert_eq!(
-            sandbox::selected_engine_kind(),
-            sandbox::EngineKind::SandboxExec
-        );
+        assert_eq!(sandbox::selected_engine(), None);
+        settings::set(settings::BoxSettings::default());
     }
 
-    /// On makes `box` the engine; off takes it back to the default, and both
-    /// ends are announced.
+    /// The switch never touches an automatic or hand-picked engine: on and
+    /// off announce the switch alone, and automatic stays automatic.
     #[test]
-    fn the_flag_switches_the_engine_to_box_and_back() {
+    fn the_switch_leaves_the_engine_choice_alone() {
         let _serial = ENGINE_LOCK.blocking_lock();
         let (ctx, sink, _dir) = test_ctx();
         settings::set(settings::BoxSettings::default());
-        sandbox::set_selected_engine_kind(sandbox::EngineKind::SandboxExec);
+        sandbox::set_selected_engine(None);
 
+        set_enabled(&ctx, false, None).unwrap();
+        assert!(!settings::enabled());
         set_enabled(&ctx, true, Some(&probe(true))).unwrap();
         assert!(settings::enabled());
-        assert_eq!(sandbox::selected_engine_kind(), sandbox::EngineKind::Box);
-        assert_eq!(engine_row(&ctx).as_deref(), Some("box"));
+        assert_eq!(sandbox::selected_engine(), None);
+        assert_eq!(engine_row(&ctx), None);
         assert_eq!(
             sink.events(),
             vec![
                 (
                     super::super::settings::SETTINGS_CHANGED.to_string(),
-                    json!({ "key": "boxes_enabled", "value": "true" })
+                    json!({ "key": "boxes_enabled", "value": "false" })
                 ),
                 (
                     super::super::settings::SETTINGS_CHANGED.to_string(),
-                    json!({ "key": "sandbox_engine", "value": "box" })
+                    json!({ "key": "boxes_enabled", "value": "true" })
                 ),
             ]
         );
 
-        set_enabled(&ctx, false, None).unwrap();
-        assert!(!settings::enabled());
-        assert_eq!(
-            sandbox::selected_engine_kind(),
-            sandbox::EngineKind::SandboxExec
-        );
-        assert_eq!(engine_row(&ctx).as_deref(), Some("sandbox-exec"));
-        assert_eq!(sink.events().len(), 4, "the flag and the engine, twice");
-    }
-
-    /// A user who picked another engine in between keeps it; `box` chosen by
-    /// hand still cannot survive the flag going off, since the engine is
-    /// unavailable without it.
-    #[test]
-    fn the_flag_leaves_another_engine_but_never_leaves_box_selected() {
-        let _serial = ENGINE_LOCK.blocking_lock();
-        let (ctx, _sink, _dir) = test_ctx();
-        settings::set(settings::BoxSettings::default());
-        sandbox::set_selected_engine_kind(sandbox::EngineKind::SandboxExec);
-
-        set_enabled(&ctx, true, Some(&probe(true))).unwrap();
-        // The user's own choice, as `set_sandbox_engine_impl` records it.
+        // A hand-picked Docker survives the switch going off.
         database::set_setting(&ctx.db.lock(), sandbox::ENGINE_SETTING, "docker").unwrap();
-        sandbox::set_selected_engine_kind(sandbox::EngineKind::Docker);
-
+        sandbox::set_selected_engine(Some(sandbox::EngineKind::Docker));
         set_enabled(&ctx, false, None).unwrap();
-        assert_eq!(sandbox::selected_engine_kind(), sandbox::EngineKind::Docker);
+        assert_eq!(
+            sandbox::selected_engine(),
+            Some(sandbox::EngineKind::Docker)
+        );
         assert_eq!(engine_row(&ctx).as_deref(), Some("docker"));
-
-        sandbox::set_selected_engine_kind(sandbox::EngineKind::Box);
-        set_enabled(&ctx, true, Some(&probe(true))).unwrap();
-        set_enabled(&ctx, false, None).unwrap();
-        assert_eq!(
-            sandbox::selected_engine_kind(),
-            sandbox::EngineKind::SandboxExec
-        );
-        assert_eq!(engine_row(&ctx).as_deref(), Some("sandbox-exec"));
+        sandbox::set_selected_engine(None);
+        settings::set(settings::BoxSettings::default());
     }
 
-    /// Docker selected, flag on: a Codex agent (which boxes cannot run yet) is
-    /// stamped Docker, not seatbelt, and off brings Docker back.
+    /// A pinned `box` cannot survive the switch going off, since the engine is
+    /// unavailable without it: it goes back to automatic, announced.
     #[test]
-    fn the_engine_the_flag_replaced_serves_unsupported_providers_and_comes_back() {
+    fn the_switch_going_off_never_leaves_box_pinned() {
         let _serial = ENGINE_LOCK.blocking_lock();
-        let (ctx, _sink, _dir) = test_ctx();
+        let (ctx, sink, _dir) = test_ctx();
         settings::set(settings::BoxSettings::default());
-        database::set_setting(&ctx.db.lock(), sandbox::ENGINE_SETTING, "docker").unwrap();
-        sandbox::set_selected_engine_kind(sandbox::EngineKind::Docker);
+        database::set_setting(&ctx.db.lock(), sandbox::ENGINE_SETTING, "box").unwrap();
+        sandbox::set_selected_engine(Some(sandbox::EngineKind::Box));
 
-        set_enabled(&ctx, true, Some(&probe(true))).unwrap();
-        assert_eq!(sandbox::selected_engine_kind(), sandbox::EngineKind::Box);
-        assert_eq!(settings::fallback_engine(), sandbox::EngineKind::Docker);
+        set_enabled(&ctx, false, None).unwrap();
+        assert_eq!(sandbox::selected_engine(), None);
+        assert_eq!(engine_row(&ctx).as_deref(), Some("auto"));
         assert_eq!(
-            boxes::engine_for_new_agent(sandbox::EngineKind::Box, "antigravity"),
+            sink.events().last().unwrap(),
+            &(
+                super::super::settings::SETTINGS_CHANGED.to_string(),
+                json!({ "key": "sandbox_engine", "value": "auto" })
+            )
+        );
+        settings::set(settings::BoxSettings::default());
+    }
+
+    /// The engine a new agent gets: a pinned engine is what it is (a pinned
+    /// `box` for a provider boxes cannot run lands on seatbelt), and automatic
+    /// is seatbelt whenever a box cannot boot right now — a project placed on
+    /// this Mac, no image yet — and never waits.
+    #[test]
+    fn a_new_agent_gets_the_pinned_engine_or_what_can_run_now() {
+        use crate::sandbox::placement::Placement;
+        let _serial = ENGINE_LOCK.blocking_lock();
+        settings::set(settings::BoxSettings::default());
+        let engine = boxes::engine_for_new_agent;
+
+        assert_eq!(
+            engine(Some(sandbox::EngineKind::Docker), "claude", Placement::Auto),
             sandbox::EngineKind::Docker
         );
         assert_eq!(
-            boxes::engine_for_new_agent(sandbox::EngineKind::Box, "claude"),
+            engine(Some(sandbox::EngineKind::Box), "claude", Placement::Host),
+            sandbox::EngineKind::Box,
+            "a pinned engine ignores the placement"
+        );
+        assert_eq!(
+            engine(
+                Some(sandbox::EngineKind::Box),
+                "antigravity",
+                Placement::Auto
+            ),
+            sandbox::EngineKind::SandboxExec
+        );
+        assert_eq!(
+            engine(None, "claude", Placement::Host),
+            sandbox::EngineKind::SandboxExec
+        );
+        // Automatic is whatever can boot right now and nothing else: on a
+        // developer's Mac with the runtime, the image and the disk in place
+        // that is a box, on every other machine (CI, a Linux host) seatbelt.
+        let now = if boxes::ready_for("claude") {
+            sandbox::EngineKind::Box
+        } else {
+            sandbox::EngineKind::SandboxExec
+        };
+        assert_eq!(engine(None, "claude", Placement::Auto), now);
+        // A project pinned to boxes waits for the image like a pinned engine.
+        assert_eq!(
+            engine(None, "claude", Placement::Box),
             sandbox::EngineKind::Box
         );
-
-        set_enabled(&ctx, false, None).unwrap();
-        assert_eq!(sandbox::selected_engine_kind(), sandbox::EngineKind::Docker);
-        assert_eq!(engine_row(&ctx).as_deref(), Some("docker"));
         assert_eq!(
-            database::get_setting(&ctx.db.lock(), settings::PREVIOUS_ENGINE_SETTING),
-            None
+            engine(None, "antigravity", Placement::Box),
+            sandbox::EngineKind::SandboxExec
         );
-        sandbox::set_selected_engine_kind(sandbox::EngineKind::SandboxExec);
     }
 
     #[test]
@@ -604,8 +606,8 @@ mod tests {
     }
 
     #[test]
-    fn the_probe_reports_the_flag_the_image_and_the_tools() {
-        // The flag is process-wide and the tests above flip it; the probe
+    fn the_probe_reports_the_switch_the_image_and_the_tools() {
+        // The switch is process-wide and the tests above flip it; the probe
         // reads it once and this test reads it again, so both reads happen
         // under the same lock those tests hold, or they can straddle a flip.
         let _serial = ENGINE_LOCK.blocking_lock();

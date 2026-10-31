@@ -5,6 +5,7 @@
 // is never offered two ways forward at once.
 
 import { type CSSProperties, useEffect } from "react";
+import { useAppStore } from "@/store";
 import { track } from "@/util/track";
 import { useGithubConnect } from "@/util/useGithubConnect";
 import { ExhibitCode, ExhibitParallel } from "../exhibits";
@@ -27,6 +28,14 @@ export function Preflight({
   // A successful sign-in re-runs the checks so the GitHub row turns green.
   const github = useGithubConnect(setup.recheck, "onboarding_github");
   const pf = usePreflight(setup, github.busy);
+  // Not a row — nothing to decide, nothing to wait for. One line of fine print
+  // under the way in, on a Mac that can boot a box whose image is not in yet:
+  // the download starts when onboarding closes and the first workspaces run
+  // in the macOS sandbox meanwhile, which is worth a sentence so the title
+  // bar's "macOS sandbox" never reads as the rule.
+  const boxesEnabled = useAppStore((s) => s.boxesEnabled);
+  const boxProbe = useAppStore((s) => s.boxProbe);
+  const vmComing = boxesEnabled && !!boxProbe?.runtime_ok && boxProbe.image.phase !== "installed";
 
   // Enter opens the app once it is offered. Buttons and fields keep Enter
   // for themselves (a focused "Not now" must not open the app instead).
@@ -89,6 +98,12 @@ export function Preflight({
             </button>
           )}
         </div>
+        {pf.done && vmComing && (
+          <p className="pf-vm-note text-xs">
+            Workspaces start in the macOS sandbox. An isolated VM is prepared in the background and
+            takes over once it&rsquo;s ready.
+          </p>
+        )}
       </div>
       <div className="pf-stage">
         <div className="pf-panel" key={stage}>

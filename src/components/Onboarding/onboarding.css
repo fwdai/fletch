@@ -576,6 +576,16 @@
 .pf-open {
   animation: pf-in 0.5s var(--ease) both;
 }
+/* fine print under the way in: what the first workspaces run in, and that
+   the isolated VM is on its way — read once, never acted on */
+.pf-vm-note {
+  margin: 12px 0 0;
+  max-width: 44ch;
+  color: var(--fg-3);
+  line-height: var(--lh-normal);
+  text-wrap: pretty;
+  animation: pf-in 0.5s 0.1s var(--ease) both;
+}
 
 /* the panel on the right follows the active (or inspected) row */
 .pf-stage {

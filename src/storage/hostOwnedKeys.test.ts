@@ -134,13 +134,19 @@ describe("host-owned settings", () => {
     ]) {
       expect(isHostSettingKey(key)).toBe(false);
     }
-    for (const key of ["verify.on_turn_end", "run.test", "run.agent.fuji.lint", "run_env"]) {
+    for (const key of [
+      "verify.on_turn_end",
+      "run.test",
+      "run.agent.fuji.lint",
+      "run_env",
+      "sandbox.placement",
+    ]) {
       expect(isHostProjectSettingKey(key)).toBe(true);
     }
     for (const key of ["autopilot.enabled", "roadmap.code_seq", "roadmap.code_prefix", "run."]) {
       expect(isHostProjectSettingKey(key)).toBe(false);
     }
     expect(HOST_SETTING_KEYS).toHaveLength(22);
-    expect(HOST_PROJECT_SETTING_KEYS).toHaveLength(13);
+    expect(HOST_PROJECT_SETTING_KEYS).toHaveLength(14);
   });
 });

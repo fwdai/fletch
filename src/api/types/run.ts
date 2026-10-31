@@ -39,6 +39,10 @@ export interface DetectedConfig {
 export interface ProjectRunConfig {
   project_id: string;
   configs: DetectedConfig[];
+  /** The repository builds a macOS or iOS app, so the automatic placement
+   *  runs its agents on this Mac (Rust `sandbox::placement::looks_native`).
+   *  Absent from a host that predates it. */
+  native_app?: boolean;
 }
 
 /** One `KEY=value` pair discovered in a project's `.env` (Rust

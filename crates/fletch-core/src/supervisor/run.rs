@@ -230,10 +230,12 @@ impl Supervisor {
     /// write `project_settings` without a second round-trip.
     pub fn project_run_config(&self, repo_path: &str) -> Result<ProjectRunConfig> {
         let project_id = self.workspace.project_id_for_repo(repo_path)?;
-        let configs = crate::run_detect::detect_all(Path::new(repo_path));
+        let repo = Path::new(repo_path);
+        let configs = crate::run_detect::detect_all(repo);
         Ok(ProjectRunConfig {
             project_id,
             configs,
+            native_app: crate::sandbox::placement::looks_native(repo),
         })
     }
 }
@@ -272,6 +274,10 @@ impl crate::rpc::run::RunControl for RunControlHandle {
 pub struct ProjectRunConfig {
     pub project_id: String,
     pub configs: Vec<crate::run_detect::DetectedConfig>,
+    /// The repository builds a macOS or iOS app
+    /// (`sandbox::placement::looks_native`), so the automatic placement
+    /// runs its agents on this Mac: the project's Sandbox section says so.
+    pub native_app: bool,
 }
 
 /// Inject a "$ <cmd>" header line into the log so each phase has a

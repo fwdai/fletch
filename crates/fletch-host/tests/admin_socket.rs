@@ -67,7 +67,7 @@ async fn the_admin_socket_refuses_what_it_does_not_know() {
         "{status}"
     );
     assert!(
-        ["sandbox-exec", "docker", "podman"]
+        ["auto", "sandbox-exec", "docker", "podman"]
             .contains(&status["sandboxEngine"].as_str().unwrap_or_default()),
         "sandboxEngine names one of the engines: {status}"
     );

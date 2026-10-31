@@ -520,7 +520,7 @@ fn track_event(event: String, props: Option<serde_json::Value>) {
 /// `set_sandbox_engine`, so no DB handle is needed.
 #[tauri::command]
 fn get_sandbox_engine() -> String {
-    sandbox::selected_engine_kind().as_setting().to_string()
+    sandbox::selected_engine_setting().to_string()
 }
 
 /// What each sandbox engine actually guarantees — one report per engine, so the
@@ -1027,8 +1027,9 @@ fn finish_boot(app: &tauri::AppHandle, engine: host::Engine, data_dir: &std::pat
         // Frontend-owned flag (camelCase), written when the user finishes
         // the first-run onboarding — the flow that carries the data-sharing
         // disclosure. Absent on a brand-new install.
-        let onboarded =
-            database::get_setting(&conn, "onboardingComplete").as_deref() == Some("true");
+        let onboarded = database::get_setting(&conn, host::boot::ONBOARDING_COMPLETE_SETTING)
+            .as_deref()
+            == Some("true");
         let prev = database::get_setting(&conn, "last_seen_version");
         let _ = database::set_setting(&conn, "last_seen_version", &version);
         (identity, enabled, onboarded, prev)

@@ -280,6 +280,12 @@ export const createUiSlice: SliceCreator<UiSlice> = (set, get) => ({
     // happened; `track_app_opened` is idempotent, so the normal path is a no-op
     // here rather than a double count.
     if (firstCompletion) void api.trackAppOpened();
+    // The isolated VM's image downloads from here on, in the background: the
+    // welcome just shown carried the data-sharing disclosure, which is what
+    // the host waited for (`boxes::setup::autostart` at its next boot does
+    // the same). A refusal — an Intel Mac, no runtime, the switch off — is
+    // the host's to log, not a banner.
+    if (firstCompletion) void api.boxImageInstall().catch(() => {});
   },
   toggleHistory: (open) =>
     set((s) => {

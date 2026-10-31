@@ -104,9 +104,10 @@ export interface BoxToolsStatus {
 
 /** `box_runtime_probe`: can this host boot a box, item by item. `runtime_ok`
  *  is the machine and the runtime (Apple silicon, hypervisor, helper, dylibs)
- *  — what the toggle needs — with `problems` one sentence per failing item;
- *  `ok` adds the flag and an installed image. */
+ *  — what the switch needs — with `problems` one sentence per failing item;
+ *  `ok` adds the switch and an installed image. */
 export interface BoxRuntimeProbe {
+  /** The `boxes_enabled` switch. */
   enabled: boolean;
   ok: boolean;
   runtime_ok: boolean;

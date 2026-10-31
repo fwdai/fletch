@@ -91,6 +91,7 @@ const newStore = () => {
         github: null,
         refreshGithub: vi.fn().mockResolvedValue(undefined),
         loadAllPrStatus: vi.fn().mockResolvedValue(undefined),
+        loadBoxSetup: vi.fn().mockResolvedValue(undefined),
       }) as unknown as AppState,
   );
   setEnvironmentsSource(store.getState);

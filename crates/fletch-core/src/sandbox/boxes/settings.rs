@@ -1,6 +1,6 @@
-//! The box engine's settings (the `boxes_enabled` flag and the `box_*` knobs),
-//! mirrored in-process the way the container engines' launch knobs are
-//! (`sandbox::docker::settings`):
+//! The box engine's settings (the `boxes_enabled` switch and the `box_*`
+//! knobs), mirrored in-process the way the container engines' launch knobs
+//! are (`sandbox::docker::settings`):
 //! the spawn path and the registry have no DB handle. Seeded at boot and kept
 //! in sync by `commands::set_box_setting_impl` / `box_egress_allow_impl`.
 
@@ -12,9 +12,11 @@ use rusqlite::Connection;
 
 use crate::database;
 use crate::error::{Error, Result};
-use crate::sandbox::EngineKind;
 
-/// The developer flag. Absent is off: with it off no box code path is reachable.
+/// The switch: "use isolated VMs when available". Opt-out — absent is on, and
+/// only an explicit `false` turns every box code path off. On a machine that
+/// cannot boot a box the switch changes nothing: the runtime probe refuses
+/// first, and the automatic engine choice lands on seatbelt.
 pub const ENABLED_SETTING: &str = "boxes_enabled";
 /// Guest RAM cap per box, MiB.
 pub const MEMORY_SETTING: &str = "box_memory_mib";
@@ -27,10 +29,6 @@ pub const IDLE_STOP_SETTING: &str = "box_idle_stop_minutes";
 /// Project setting: a JSON array of host patterns added to the default egress
 /// allow-list.
 pub const EGRESS_ALLOW_KEY: &str = "box.egress_allow";
-/// The engine that was selected when the flag switched new agents to `box`:
-/// what a provider boxes cannot run yet is stamped with, and what the flag
-/// going off restores. Host-internal, not a client key and not in [`KEYS`].
-pub const PREVIOUS_ENGINE_SETTING: &str = "box_previous_engine";
 
 /// Every global key, for the host-owned allowlist.
 pub const KEYS: &[&str] = &[
@@ -55,31 +53,26 @@ pub struct BoxSettings {
     pub image_url: Option<String>,
     /// `None` is never.
     pub idle_stop: Option<Duration>,
-    /// The engine selected before the flag made `box` the engine
-    /// ([`PREVIOUS_ENGINE_SETTING`]); `None` when the flag never switched it.
-    pub previous_engine: Option<EngineKind>,
 }
 
 impl Default for BoxSettings {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: true,
             memory_mib: DEFAULT_MEMORY_MIB,
             cpus: DEFAULT_CPUS,
             image_url: None,
             idle_stop: Some(Duration::from_secs(DEFAULT_IDLE_STOP_MINUTES * 60)),
-            previous_engine: None,
         }
     }
 }
 
 static SETTINGS: RwLock<BoxSettings> = RwLock::new(BoxSettings {
-    enabled: false,
+    enabled: true,
     memory_mib: DEFAULT_MEMORY_MIB,
     cpus: DEFAULT_CPUS,
     image_url: None,
     idle_stop: Some(Duration::from_secs(DEFAULT_IDLE_STOP_MINUTES * 60)),
-    previous_engine: None,
 });
 
 /// `project_id → patterns`, the per-project egress additions.
@@ -103,16 +96,6 @@ pub fn enabled() -> bool {
     SETTINGS.read().enabled
 }
 
-/// The engine new agents get when `box` is selected but cannot serve them,
-/// and the one the flag going off restores: the engine the flag replaced, or
-/// the default when the user selected `box` themselves. Never `Box`.
-pub fn fallback_engine() -> EngineKind {
-    match SETTINGS.read().previous_engine {
-        Some(EngineKind::Box) | None => EngineKind::SandboxExec,
-        Some(kind) => kind,
-    }
-}
-
 pub fn set(settings: BoxSettings) {
     *SETTINGS.write() = settings;
 }
@@ -129,9 +112,6 @@ pub fn load(conn: &Connection) -> BoxSettings {
         image_url: parse_image_url(raw(IMAGE_URL_SETTING).as_deref()).unwrap_or(None),
         idle_stop: parse_idle_stop(raw(IDLE_STOP_SETTING).as_deref())
             .unwrap_or(Some(Duration::from_secs(DEFAULT_IDLE_STOP_MINUTES * 60))),
-        previous_engine: raw(PREVIOUS_ENGINE_SETTING)
-            .as_deref()
-            .and_then(EngineKind::from_setting),
     }
 }
 
@@ -157,9 +137,9 @@ pub fn seed(conn: &Connection) {
     *EGRESS.write() = Some(map);
 }
 
-/// Only an explicit `true` turns the engine on.
+/// Only an explicit `false` turns the engine off.
 pub fn parse_enabled(raw: Option<&str>) -> bool {
-    raw.map(str::trim) == Some("true")
+    raw.map(str::trim) != Some("false")
 }
 
 /// A whole number of MiB, at least [`MIN_MEMORY_MIB`]; `None` when absent or
@@ -310,7 +290,11 @@ mod tests {
             Some(Duration::from_secs(180))
         );
         assert!(parse_idle_stop(Some("-1")).is_err());
-        assert_eq!(validate("boxes_enabled", "nope").unwrap().unwrap(), "false");
+        assert_eq!(
+            validate("boxes_enabled", "false").unwrap().unwrap(),
+            "false"
+        );
+        assert_eq!(validate("boxes_enabled", "nope").unwrap().unwrap(), "true");
         assert_eq!(
             validate("box_idle_stop_minutes", "0").unwrap().unwrap(),
             "0"
@@ -336,12 +320,13 @@ mod tests {
         let db = crate::database::init(dir.path()).unwrap();
         let conn = db.lock();
         assert_eq!(load(&conn), BoxSettings::default());
-        database::set_setting(&conn, ENABLED_SETTING, "true").unwrap();
+        assert!(load(&conn).enabled, "absent is on");
+        database::set_setting(&conn, ENABLED_SETTING, "false").unwrap();
         database::set_setting(&conn, MEMORY_SETTING, "3072").unwrap();
         database::set_setting(&conn, IDLE_STOP_SETTING, "0").unwrap();
         database::set_setting(&conn, CPUS_SETTING, "bogus").unwrap();
         let loaded = load(&conn);
-        assert!(loaded.enabled);
+        assert!(!loaded.enabled);
         assert_eq!(loaded.memory_mib, 3072);
         assert_eq!(loaded.idle_stop, None);
         assert_eq!(loaded.cpus, DEFAULT_CPUS, "a bad row reads as the default");

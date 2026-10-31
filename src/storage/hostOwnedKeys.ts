@@ -57,6 +57,7 @@ export const HOST_PROJECT_SETTING_KEYS = [
   "linear.team_name",
   "context.enabled",
   "context.extract",
+  "sandbox.placement",
 ] as const;
 
 /** `run.<row>` and `run.agent.<agentId>.<row>`. */

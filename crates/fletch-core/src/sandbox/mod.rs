@@ -4,6 +4,7 @@ pub(crate) mod container;
 pub mod docker;
 mod engine;
 pub mod guarantees;
+pub mod placement;
 pub mod podman;
 pub mod policy;
 pub mod provision;
@@ -38,26 +39,46 @@ pub use toolchain_cache::{
 };
 
 /// The `settings` key holding the user's engine choice; values are
-/// [`EngineKind::as_setting`] spellings, default `sandbox-exec`.
+/// [`EngineKind::as_setting`] spellings or [`ENGINE_AUTO`], the default.
 pub const ENGINE_SETTING: &str = "sandbox_engine";
 
-/// The user's engine selection, mirrored from the `sandbox_engine` setting so
-/// spawn paths (deep in agent code, no DB handle) can read it. Seeded at
-/// startup (`lib.rs setup`) and updated by the `set_sandbox_engine` command.
-/// Teardown never consults this — sessions carry a `KillHandle` bound to the
-/// engine that launched them.
-static SELECTED_ENGINE: RwLock<EngineKind> = RwLock::new(EngineKind::SandboxExec);
+/// The `sandbox_engine` value that leaves the choice to Fletch: a box when
+/// one can boot right now, the macOS sandbox otherwise
+/// (`boxes::engine_for_new_agent`). What an absent row means too.
+pub const ENGINE_AUTO: &str = "auto";
 
-pub fn set_selected_engine_kind(kind: EngineKind) {
-    *SELECTED_ENGINE.write() = kind;
+/// The user's engine selection, mirrored from the `sandbox_engine` setting so
+/// spawn paths (deep in agent code, no DB handle) can read it: `None` is
+/// automatic. Seeded at startup (`host::boot`) and updated by the
+/// `set_sandbox_engine` command. Teardown never consults this — sessions
+/// carry a `KillHandle` bound to the engine that launched them.
+static SELECTED_ENGINE: RwLock<Option<EngineKind>> = RwLock::new(None);
+
+pub fn set_selected_engine(choice: Option<EngineKind>) {
+    *SELECTED_ENGINE.write() = choice;
 }
 
-/// The engine a *new* agent would be stamped with right now. Existing agents
-/// keep the kind stamped on their record at creation (see
+/// The engine the user pinned for *new* agents, or `None` for automatic.
+/// Existing agents keep the kind stamped on their record at creation (see
 /// `supervisor::lifecycle::spawn_agent`), so a settings change never
 /// re-engines them.
-pub fn selected_engine_kind() -> EngineKind {
+pub fn selected_engine() -> Option<EngineKind> {
     *SELECTED_ENGINE.read()
+}
+
+/// The stored spelling of the current choice.
+pub fn selected_engine_setting() -> &'static str {
+    selected_engine().map_or(ENGINE_AUTO, EngineKind::as_setting)
+}
+
+/// Parse a `sandbox_engine` value: `Some(None)` for [`ENGINE_AUTO`],
+/// `Some(Some(kind))` for a pinned engine, `None` for anything else.
+pub fn parse_engine_setting(value: &str) -> Option<Option<EngineKind>> {
+    if value == ENGINE_AUTO {
+        Some(None)
+    } else {
+        EngineKind::from_setting(value).map(Some)
+    }
 }
 
 /// The engine an agent that *adopts* `tree` — works in an existing checkout
@@ -65,23 +86,23 @@ pub fn selected_engine_kind() -> EngineKind {
 /// is stamped with: **where the tree lives**, not what Settings selects. A
 /// tree inside a box is reachable only from that box, so the agent runs there
 /// as its tenant whatever the host's setting; a host tree is invisible to a
-/// guest, so a `box` selection falls back to the engine it replaced, as it
-/// does for a provider boxes cannot run. The caller still gates the provider
+/// guest, so automatic and a pinned `box` both land on seatbelt, as they do
+/// for a provider boxes cannot run. The caller still gates the provider
 /// against the result.
 pub fn engine_for_adopted_tree(tree: &Path) -> EngineKind {
     if boxes::box_holding(tree).is_some() {
         return EngineKind::Box;
     }
-    match selected_engine_kind() {
-        EngineKind::Box => boxes::settings::fallback_engine(),
-        kind => kind,
+    match selected_engine() {
+        Some(EngineKind::Box) | None => EngineKind::SandboxExec,
+        Some(kind) => kind,
     }
 }
 
 /// This engine's own data directory ([`crate::host::BootConfig::data_dir`]),
 /// mirrored process-wide so the macOS profile builder — reached on the spawn
 /// path, with no handle on the boot config — can carve it out of what a confined
-/// agent may read or write. Same mirror idiom as [`set_selected_engine_kind`].
+/// agent may read or write. Same mirror idiom as [`set_selected_engine`].
 ///
 /// It cannot be derived. [`crate::data_dir`] is the *desktop's* directory, keyed
 /// by [`crate::BUNDLE_ID`]; a `fletch-host` keeps its database (the GitHub token
@@ -114,9 +135,9 @@ pub(crate) fn configured_data_dir() -> Option<PathBuf> {
 pub fn engine_for(kind: EngineKind) -> Result<Arc<dyn SandboxEngine>> {
     match kind {
         EngineKind::SandboxExec => Ok(seatbelt_engine()),
-        // Behind the `boxes_enabled` developer flag, then the runtime probe
-        // and the image: `boxes::availability` refuses with the first thing
-        // missing, so a box-stamped agent never launches elsewhere.
+        // Behind the `boxes_enabled` switch, then the runtime probe and the
+        // image: `boxes::availability` refuses with the first thing missing,
+        // so a box-stamped agent never launches elsewhere.
         EngineKind::Box => boxes::availability().map(|_| boxes::BoxEngine::shared() as Arc<_>),
         EngineKind::Docker => match docker::availability() {
             DockerAvailability::Available { .. } => Ok(docker::DockerEngine::shared()),
