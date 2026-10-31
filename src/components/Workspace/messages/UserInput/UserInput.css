@@ -405,37 +405,6 @@
   font-style: italic;
 }
 
-.m-tool {
-  gap: 10px;
-  font-family: var(--font-mono);
-  font-size: var(--fs-sm);
-  color: var(--fg-1);
-  padding: 6px 0;
-  width: 100%;
-}
-.m-tool .t-icon {
-  width: 12px;
-  height: 12px;
-  color: var(--fg-3);
-  flex-shrink: 0;
-}
-.m-tool .t-name {
-  color: var(--accent);
-}
-.m-tool .t-arg {
-  flex: 1;
-  min-width: 0;
-  color: var(--fg-1);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.m-tool .t-result {
-  flex-shrink: 0;
-  font-size: var(--fs-xs);
-  color: var(--fg-3);
-}
-
 .writing {
   gap: 8px;
   font-size: var(--fs-base);

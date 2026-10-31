@@ -1,0 +1,642 @@
+/* ── Runs of steps, folded turns, tool rows and their detail ─────────────────
+   Three depths, one quiet language. A run of steps or a settled turn's work is
+   one muted line of prose (`.steps-head`); opened, its steps are compact rows
+   hung off a hairline (`.m-tool`); opened again, a step is a caption and a code
+   surface (`.tb-*`). Motion is short and soft: bodies grow open, labels
+   crossfade, the live line shimmers. Under reduced motion all of it is still. */
+
+/* ── The one-line header ─────────────────────────────────────────────────── */
+.steps,
+.fold {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  margin: -2px 0 6px;
+}
+.steps-head {
+  appearance: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: fit-content;
+  max-width: 100%;
+  min-height: 26px;
+  margin-left: -7px;
+  padding: 3px 10px 3px 7px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  font: inherit;
+  font-size: var(--fs-sm);
+  line-height: var(--lh-snug);
+  color: var(--fg-2);
+  text-align: left;
+  cursor: pointer;
+  transition:
+    background 0.16s var(--ease),
+    color 0.16s var(--ease);
+}
+.steps-head:hover,
+.steps-head:focus-visible {
+  background: var(--hover);
+  color: var(--fg-1);
+}
+.steps-head:focus-visible {
+  outline: 1px solid var(--accent-line);
+  outline-offset: 0;
+}
+
+/* The glyph: what the run is about at rest; a chevron on hover and while
+   open, turned down when open. Both share one cell and trade places. */
+.steps-glyph {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 14px;
+  height: 14px;
+  color: var(--fg-3);
+  transition: color 0.2s var(--ease);
+}
+.steps-glyph > * {
+  grid-area: 1 / 1;
+  transition:
+    opacity 0.18s var(--ease),
+    transform 0.24s var(--ease);
+}
+.steps-icon svg {
+  display: block;
+}
+.steps-chev {
+  opacity: 0;
+  transform: scale(0.7);
+}
+.steps-head:hover .steps-icon,
+.steps-head:focus-visible .steps-icon,
+.is-open > .steps-head .steps-icon {
+  opacity: 0;
+  transform: scale(0.7);
+}
+.steps-head:hover .steps-chev,
+.steps-head:focus-visible .steps-chev {
+  opacity: 1;
+  transform: scale(1);
+}
+.is-open > .steps-head .steps-chev {
+  opacity: 1;
+  transform: rotate(90deg);
+}
+.steps-head:hover .steps-glyph,
+.is-open > .steps-head .steps-glyph {
+  color: var(--fg-2);
+}
+.steps.is-live > .steps-head .steps-glyph {
+  color: var(--accent);
+}
+
+/* One line, always: a long summary trails off rather than wrapping. */
+.steps-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.steps-summary .steps-lead {
+  color: var(--fg-1);
+}
+.steps-sep {
+  margin: 0 7px;
+  color: var(--fg-3);
+}
+.steps-part code {
+  margin-left: 5px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--fg-1);
+}
+.steps-part.danger {
+  color: var(--danger);
+}
+.steps-note {
+  margin-left: 8px;
+  font-style: italic;
+  color: var(--fg-3);
+}
+.steps-aside {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  margin-left: 6px;
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-3);
+}
+
+/* The live line: present tense with a slow sweep of light through it. */
+.steps-live {
+  background: linear-gradient(
+    100deg,
+    var(--fg-2) 0%,
+    var(--fg-2) 42%,
+    var(--fg-0) 50%,
+    var(--fg-2) 58%,
+    var(--fg-2) 100%
+  );
+  background-size: 300% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: steps-shimmer 2.4s linear infinite;
+}
+@keyframes steps-shimmer {
+  0% {
+    background-position: 100% 0;
+  }
+  70%,
+  100% {
+    background-position: 0% 0;
+  }
+}
+
+/* A run that appears while the turn is live settles in from just below. */
+.steps.is-fresh {
+  animation: steps-rise 0.32s var(--ease) both;
+}
+@keyframes steps-rise {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+
+/* ── Crossfading label (Ticker) ──────────────────────────────────────────── */
+.ticker {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
+}
+.ticker-item {
+  grid-area: 1 / 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ticker-item.is-out {
+  pointer-events: none;
+  animation: ticker-out 0.2s var(--ease) both;
+}
+.ticker-item.is-in {
+  animation: ticker-in 0.3s var(--ease) both;
+}
+@keyframes ticker-out {
+  to {
+    opacity: 0;
+    transform: translateY(-5px);
+    filter: blur(1.5px);
+  }
+}
+@keyframes ticker-in {
+  from {
+    opacity: 0;
+    transform: translateY(5px);
+    filter: blur(1.5px);
+  }
+}
+
+/* ── Disclosure body: grows open, shrinks shut ───────────────────────────── */
+.disclosure {
+  display: grid;
+  grid-template-rows: 1fr;
+}
+.disclosure-inner {
+  min-height: 0;
+  min-width: 0;
+}
+.disclosure.is-entering > .disclosure-inner,
+.disclosure.is-closing > .disclosure-inner {
+  overflow: hidden;
+}
+.disclosure.is-entering {
+  animation: disclose-open 0.24s cubic-bezier(0.2, 0.7, 0.2, 1) both;
+}
+.disclosure.is-closing {
+  animation: disclose-close 0.18s cubic-bezier(0.4, 0, 0.7, 0.2) both;
+}
+.disclosure.is-entering > .disclosure-inner > * {
+  animation: disclose-content 0.28s var(--ease) both;
+}
+@keyframes disclose-open {
+  from {
+    grid-template-rows: 0fr;
+    opacity: 0;
+  }
+  to {
+    grid-template-rows: 1fr;
+    opacity: 1;
+  }
+}
+@keyframes disclose-close {
+  from {
+    grid-template-rows: 1fr;
+    opacity: 1;
+  }
+  to {
+    grid-template-rows: 0fr;
+    opacity: 0;
+  }
+}
+@keyframes disclose-content {
+  from {
+    transform: translateY(-4px);
+  }
+}
+
+/* ── An open run: its steps hung off a hairline ──────────────────────────── */
+.steps-list {
+  display: flex;
+  flex-direction: column;
+  margin: 2px 0 6px 6px;
+  padding-left: 9px;
+  border-left: 1px solid var(--bd-soft);
+}
+/* Opening, the steps arrive one after another; a step that lands while the
+   run is live arrives on its own. */
+.disclosure.is-entering .steps-item {
+  animation: step-in 0.26s var(--ease) both;
+  animation-delay: calc(var(--i, 0) * 16ms);
+}
+.steps.is-live .steps-item:last-child {
+  animation: step-in 0.26s var(--ease) both;
+}
+@keyframes step-in {
+  from {
+    opacity: 0;
+    transform: translateY(-3px);
+  }
+}
+
+/* An open fold: the turn as it happened, hung off the same hairline. */
+.fold-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 6px 0 10px 6px;
+  padding: 4px 0 0 17px;
+  border-left: 1px solid var(--bd-soft);
+}
+
+/* ── A step: icon, label, what it was about ──────────────────────────────── */
+.tool-row {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.m-tool {
+  appearance: none;
+  gap: 9px;
+  width: 100%;
+  min-height: 26px;
+  padding: 3px 8px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  color: var(--fg-1);
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.14s var(--ease);
+}
+.m-tool:hover {
+  background: var(--hover);
+}
+.m-tool .t-icon {
+  width: 12px;
+  height: 12px;
+  flex-shrink: 0;
+  color: var(--fg-3);
+  transition: color 0.14s var(--ease);
+}
+.m-tool:hover .t-icon,
+.tool-row.is-open > .m-tool .t-icon {
+  color: var(--fg-1);
+}
+.m-tool .t-name {
+  flex: none;
+  font-family: var(--font-sans);
+  font-weight: 500;
+  color: var(--fg-1);
+}
+.m-tool .t-arg {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-2);
+  transition: color 0.14s var(--ease);
+}
+.m-tool:hover .t-arg,
+.tool-row.is-open > .m-tool .t-arg {
+  color: var(--fg-1);
+}
+.m-tool .t-result {
+  flex-shrink: 0;
+  font-size: var(--fs-xs);
+  color: var(--fg-3);
+}
+.m-tool .t-chev {
+  flex: none;
+  color: var(--fg-3);
+  opacity: 0;
+  transition:
+    opacity 0.14s var(--ease),
+    transform 0.22s var(--ease);
+}
+.m-tool:hover .t-chev,
+.m-tool:focus-visible .t-chev,
+.tool-row.is-open > .m-tool .t-chev {
+  opacity: 1;
+}
+.tool-row.is-open > .m-tool .t-chev {
+  transform: rotate(90deg);
+}
+.tool-row.is-error > .m-tool .t-icon,
+.tool-row.is-error > .m-tool .t-name {
+  color: var(--danger);
+}
+/* Prose in a row's summary — a plan step, a thought — reads in the UI face. */
+.m-tool .t-prose,
+.m-tool .t-thought {
+  font-family: var(--font-sans);
+}
+.m-tool .t-thought {
+  font-style: italic;
+}
+.summary-note {
+  margin-left: 8px;
+  color: var(--fg-3);
+}
+.summary-lead {
+  margin-right: 8px;
+  color: var(--fg-3);
+}
+.diff-count {
+  margin-left: 6px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+}
+.diff-count .add {
+  color: var(--success);
+}
+.diff-count .del {
+  color: var(--danger);
+}
+
+/* ── A step's detail: a caption and a code surface ───────────────────────── */
+.tool-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  /* Under the label: past the row's padding, icon and gap. */
+  padding: 4px 0 10px 29px;
+}
+.tool-body.is-sole {
+  padding: 4px 0 8px 22px;
+}
+.tb-cap {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 8px;
+  min-width: 0;
+  font-size: var(--fs-xs);
+  line-height: var(--lh-snug);
+  color: var(--fg-3);
+}
+.tb-cap.danger {
+  font-family: var(--font-mono);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--danger);
+}
+.tb-path,
+.tb-mono {
+  font-family: var(--font-mono);
+  color: var(--fg-1);
+  overflow-wrap: anywhere;
+}
+.tb-path .dir {
+  color: var(--fg-3);
+}
+.tb-cap-note::before {
+  content: "·";
+  margin-right: 8px;
+}
+.tb-cap-sep {
+  color: var(--fg-3);
+}
+
+.tb-code {
+  max-height: 340px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 7px 0;
+  border: 1px solid var(--bd-soft);
+  border-radius: var(--r-sm);
+  background: color-mix(in oklch, var(--bg-2) 65%, transparent);
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  line-height: 1.55;
+  color: var(--fg-1);
+}
+.tb-code.is-error {
+  border-color: color-mix(in oklch, var(--danger) 45%, transparent);
+}
+.tb-pre {
+  margin: 0;
+  padding: 0 12px;
+  font: inherit;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.tb-line {
+  display: flex;
+  padding-right: 12px;
+}
+.tb-gutter {
+  flex: none;
+  min-width: 4ch;
+  padding: 0 12px 0 8px;
+  text-align: right;
+  color: var(--fg-3);
+  user-select: none;
+}
+.tb-text {
+  flex: 1;
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.tb-diff .tb-gutter {
+  min-width: 0;
+  width: 26px;
+  padding: 0 8px 0 0;
+}
+.tb-line.add {
+  background: color-mix(in oklch, var(--success) 10%, transparent);
+}
+.tb-line.add .tb-gutter {
+  color: var(--success);
+}
+.tb-line.del {
+  background: color-mix(in oklch, var(--danger) 10%, transparent);
+}
+.tb-line.del .tb-gutter {
+  color: var(--danger);
+}
+.tb-line.del .tb-text {
+  color: var(--fg-2);
+}
+.tb-term .tb-cmd {
+  display: flex;
+  gap: 8px;
+  padding: 0 12px;
+  color: var(--fg-0);
+}
+.tb-term .tb-cmd .tb-pre {
+  padding: 0;
+}
+.tb-prompt {
+  flex: none;
+  color: var(--accent);
+  user-select: none;
+}
+.tb-out {
+  margin-top: 7px;
+  padding-top: 7px;
+  border-top: 1px solid var(--bd-soft);
+  color: var(--fg-2);
+}
+.tb-empty {
+  padding: 0 12px;
+  font-family: var(--font-sans);
+  font-style: italic;
+  color: var(--fg-3);
+}
+.tb-more {
+  padding: 6px 12px 0;
+}
+.tb-fields {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 3px 14px;
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  line-height: 1.55;
+}
+.tb-field {
+  display: contents;
+}
+.tb-field dt {
+  color: var(--fg-3);
+}
+.tb-field dd {
+  margin: 0;
+  color: var(--fg-1);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.tb-quote {
+  margin: 0;
+  padding: 1px 0 1px 12px;
+  border-left: 2px solid var(--accent-line);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-normal);
+  color: var(--fg-1);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.tb-thought {
+  font-size: var(--fs-sm);
+  line-height: var(--lh-relaxed);
+  font-style: italic;
+  color: var(--fg-2);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.tb-plan {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--fs-sm);
+  line-height: var(--lh-snug);
+}
+.tb-plan li {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  color: var(--fg-1);
+}
+.tb-plan li.completed {
+  color: var(--fg-3);
+  text-decoration: line-through;
+  text-decoration-color: color-mix(in oklch, var(--fg-3) 60%, transparent);
+}
+.tb-plan li.in_progress {
+  color: var(--fg-0);
+}
+.tb-plan-mark {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 13px;
+  height: 13px;
+  margin-top: 1px;
+  border: 1px solid var(--bd-strong);
+  border-radius: 4px;
+}
+.tb-plan li.completed .tb-plan-mark {
+  border-color: color-mix(in oklch, var(--success) 55%, transparent);
+  color: var(--success);
+}
+.tb-plan li.in_progress .tb-plan-mark {
+  border-color: var(--accent);
+}
+.tb-plan-mark i {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .steps-live {
+    animation: none;
+    background: none;
+    -webkit-text-fill-color: currentColor;
+    color: var(--fg-1);
+  }
+  .steps-glyph > *,
+  .m-tool .t-chev {
+    transition: none;
+  }
+  .steps.is-fresh,
+  .ticker-item.is-in,
+  .ticker-item.is-out,
+  .disclosure.is-entering,
+  .disclosure.is-closing,
+  .disclosure.is-entering > .disclosure-inner > *,
+  .disclosure.is-entering .steps-item,
+  .steps.is-live .steps-item:last-child {
+    animation: none;
+  }
+}

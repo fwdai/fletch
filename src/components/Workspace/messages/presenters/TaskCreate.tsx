@@ -1,7 +1,8 @@
 import { Markdown } from "@/components/Markdown";
 import { renderToolResult } from "@/util/toolText";
+import { Fields } from "./blocks";
 import type { ToolPresenter } from "./types";
-import { getStringField, ToolBlock } from "./util";
+import { getStringField } from "./util";
 
 /** Pull a metadata object off the input bag, if present and non-empty. */
 function getMetadata(input: unknown): Record<string, unknown> | null {
@@ -67,7 +68,7 @@ export const taskCreatePresenter: ToolPresenter = {
             ⟳ {activeForm}
           </div>
         )}
-        {metadata && <ToolBlock label="metadata">{JSON.stringify(metadata, null, 2)}</ToolBlock>}
+        {metadata && <Fields input={metadata} />}
         {result && (
           <div
             className={result.is_error ? "m-agent" : "m-agent m-agent-dim"}
@@ -81,5 +82,10 @@ export const taskCreatePresenter: ToolPresenter = {
         )}
       </>
     );
+  },
+  facts: () => ({ kind: "plan" }),
+  activity: (call) => {
+    const subject = getStringField(call.input, "subject");
+    return subject ? `Adding task “${subject}”` : "Adding a task";
   },
 };

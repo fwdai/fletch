@@ -1,20 +1,20 @@
-import { renderToolResult, stringifyInput } from "@/util/toolText";
+import { renderToolResult } from "@/util/toolText";
+import { CodeSurface, Fields } from "./blocks";
 import type { ToolPresenter } from "./types";
-import { describeInput, ToolBlock } from "./util";
+import { describeInput } from "./util";
 
 /** Fallback presenter for tools without a dedicated implementation:
- *  a readable one-line rendering of the input when collapsed, the exact
- *  input JSON plus the result when expanded. */
+ *  a readable one-line rendering of the input when collapsed; opened, the
+ *  input as labelled fields and the result on a code surface. */
 export const defaultPresenter: ToolPresenter = {
   summary: (call) => describeInput(call.input, 120),
-  expanded: (call, result) => (
-    <>
-      <ToolBlock label="input">{stringifyInput(call.input, 2)}</ToolBlock>
-      {result && (
-        <ToolBlock label="result" isError={result.is_error}>
-          {renderToolResult(result.content)}
-        </ToolBlock>
-      )}
-    </>
-  ),
+  expanded: (call, result) => {
+    const text = result ? renderToolResult(result.content) : "";
+    return (
+      <>
+        <Fields input={call.input} />
+        {result && <CodeSurface text={text} isError={result.is_error} />}
+      </>
+    );
+  },
 };

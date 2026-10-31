@@ -1,8 +1,9 @@
 import { basename } from "@/util/format";
 import { lineDiffCounts } from "@/util/lineDiff";
 import { renderToolResult } from "@/util/toolText";
+import { Caption, CodeSurface, PathText } from "./blocks";
 import type { ToolPresenter } from "./types";
-import { DiffCount, getStringField, ToolBlock } from "./util";
+import { DiffCount, getStringField } from "./util";
 
 export const writePresenter: ToolPresenter = {
   icon: "notebookPen",
@@ -24,14 +25,23 @@ export const writePresenter: ToolPresenter = {
     const content = getStringField(call.input, "content");
     return (
       <>
-        <ToolBlock label="file">{path}</ToolBlock>
-        {content && <ToolBlock label="body">{content}</ToolBlock>}
-        {result && (
-          <ToolBlock label="↳" isError={result.is_error}>
-            {renderToolResult(result.content)}
-          </ToolBlock>
+        {path && (
+          <Caption>
+            <PathText path={path} />
+          </Caption>
         )}
+        {content && <CodeSurface text={content} />}
+        {result?.is_error && <Caption tone="danger">{renderToolResult(result.content)}</Caption>}
       </>
     );
+  },
+  facts: (call) => ({
+    kind: "change",
+    path: getStringField(call.input, "file_path"),
+    ...lineDiffCounts("", getStringField(call.input, "content")),
+  }),
+  activity: (call) => {
+    const path = getStringField(call.input, "file_path");
+    return path ? `Writing ${basename(path)}` : "Writing a file";
   },
 };

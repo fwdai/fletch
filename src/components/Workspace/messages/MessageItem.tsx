@@ -15,6 +15,7 @@ import { isSubagentCall } from "../SubagentThread/thread";
 import type { ViewItem } from "./pair";
 import { getPresenter } from "./presenters";
 import { SubagentCard } from "./SubagentCard";
+import { searchText } from "./steps";
 import { ToolResultItem } from "./ToolResultItem";
 import { ToolRow } from "./ToolRow";
 import { UndeliveredMarker } from "./UndeliveredMarker";
@@ -174,6 +175,7 @@ export const MessageItem = memo(function MessageItem({
             </>
           }
           expanded={presenter.expanded(item.call, item.result)}
+          revealText={searchText(item)}
         />
       );
     }
@@ -191,6 +193,7 @@ export const MessageItem = memo(function MessageItem({
           icon={presenter.icon}
           summary={presenter.summary(item, null)}
           expanded={presenter.expanded(item, null)}
+          revealText={searchText(item)}
         />
       );
     }
