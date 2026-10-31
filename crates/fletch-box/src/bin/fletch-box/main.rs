@@ -9,8 +9,8 @@ use std::time::{Duration, Instant};
 
 use clap::{Parser, Subcommand};
 use fletch_box::{
-    channel, disks, guest, image_store, Channel, EgressEvent, EgressPolicy, EgressProxy, ImageStore,
-    PinnedImage, RuntimePaths, StopOutcome, Vm, VmSpec,
+    channel, disks, guest, image_store, Channel, EgressEvent, EgressPolicy, EgressProxy,
+    ImageStore, PinnedImage, RuntimePaths, StopOutcome, Vm, VmSpec,
 };
 
 #[derive(Parser)]
@@ -303,7 +303,8 @@ async fn boot(args: BootArgs) -> Result<(), String> {
         spec.env.insert(k.into(), v.into());
     }
     for (i, layer) in args.layers.iter().enumerate() {
-        spec.extra_disks.push((format!("layer{i}"), layer.clone(), true));
+        spec.extra_disks
+            .push((format!("layer{i}"), layer.clone(), true));
     }
     if let Some(script) = &args.script_disk {
         let bytes = std::fs::read(script).map_err(|e| format!("read {}: {e}", script.display()))?;

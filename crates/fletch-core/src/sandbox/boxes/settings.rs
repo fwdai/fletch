@@ -369,7 +369,10 @@ mod tests {
         );
         assert!(parse_layers(Some("none")).unwrap().is_empty());
         assert!(parse_layers(Some("gpu")).is_err());
-        assert_eq!(validate("box_layers", "browser").unwrap().unwrap(), "browser");
+        assert_eq!(
+            validate("box_layers", "browser").unwrap().unwrap(),
+            "browser"
+        );
         assert_eq!(validate("box_layers", "none").unwrap().unwrap(), "none");
         assert_eq!(validate("boxes_enabled", "nope").unwrap().unwrap(), "false");
         assert_eq!(

@@ -101,7 +101,9 @@ impl ImageManifest {
     /// The entries an install of `layers` needs: the base, then each named
     /// layer in manifest order. A layer the release does not have is an error.
     pub fn wanted(&self, layers: &[String]) -> Result<Vec<&ImageEntry>> {
-        let base = self.base().ok_or_else(|| Error::Other("the manifest has no base image".into()))?;
+        let base = self
+            .base()
+            .ok_or_else(|| Error::Other("the manifest has no base image".into()))?;
         let mut wanted = vec![base];
         for entry in &self.images {
             if entry.name != BASE && layers.iter().any(|l| l == &entry.name) {
@@ -408,7 +410,10 @@ impl ImageStore {
                 continue;
             }
             let candidate = entry.path().join(file);
-            if fs::metadata(&candidate).map(|m| m.is_file() && m.len() > 0).unwrap_or(false) {
+            if fs::metadata(&candidate)
+                .map(|m| m.is_file() && m.len() > 0)
+                .unwrap_or(false)
+            {
                 seeds.push(candidate);
             }
         }
@@ -441,7 +446,8 @@ impl ImageStore {
 /// The image in `dir`, if it has a manifest for `version` and a non-empty
 /// base file; the layers are the manifest's other entries whose file is there.
 fn image_at(dir: PathBuf, version: &str) -> Option<InstalledImage> {
-    let manifest: ImageManifest = serde_json::from_slice(&fs::read(dir.join(MANIFEST)).ok()?).ok()?;
+    let manifest: ImageManifest =
+        serde_json::from_slice(&fs::read(dir.join(MANIFEST)).ok()?).ok()?;
     if manifest.version != version {
         return None;
     }
@@ -541,14 +547,20 @@ async fn fetch_manifest(image: &PinnedImage) -> Result<ImageManifest> {
     }
     for entry in &mut manifest.images {
         if entry.file.is_empty() || entry.file.contains('/') || entry.file.starts_with('.') {
-            return Err(bad(format!("`{}` names the file {:?}", entry.name, entry.file)));
+            return Err(bad(format!(
+                "`{}` names the file {:?}",
+                entry.name, entry.file
+            )));
         }
         if entry.size == 0 {
             return Err(bad(format!("`{}` has size 0", entry.name)));
         }
         entry.sha256 = entry.sha256.to_ascii_lowercase();
         if !well_formed_sha256(&entry.sha256) {
-            return Err(bad(format!("`{}`'s sha256 is not 64 hex digits", entry.name)));
+            return Err(bad(format!(
+                "`{}`'s sha256 is not 64 hex digits",
+                entry.name
+            )));
         }
     }
     Ok(manifest)
@@ -645,9 +657,12 @@ mod tests {
 
     #[test]
     fn a_manifest_knows_what_an_install_wants() {
-        let m: ImageManifest =
-            serde_json::from_str(&manifest_json("1.0.0", b"base", &[("devtools", b"d"), ("browser", b"b")]))
-                .unwrap();
+        let m: ImageManifest = serde_json::from_str(&manifest_json(
+            "1.0.0",
+            b"base",
+            &[("devtools", b"d"), ("browser", b"b")],
+        ))
+        .unwrap();
         let names = |w: Vec<&ImageEntry>| w.iter().map(|e| e.name.clone()).collect::<Vec<_>>();
         assert_eq!(names(m.wanted(&[]).unwrap()), ["base"]);
         assert_eq!(
@@ -668,7 +683,11 @@ mod tests {
             let dir = store.dir().join(version);
             fs::create_dir_all(&dir).unwrap();
             fs::write(dir.join(MANIFEST), manifest_json(version, base, layers)).unwrap();
-            fs::write(dir.join(BASE_IMAGE), if damage { b"xxxxx" as &[u8] } else { base }).unwrap();
+            fs::write(
+                dir.join(BASE_IMAGE),
+                if damage { b"xxxxx" as &[u8] } else { base },
+            )
+            .unwrap();
             for (name, bytes) in layers {
                 fs::write(dir.join(format!("layer-{name}.erofs")), bytes).unwrap();
             }
@@ -680,7 +699,11 @@ mod tests {
         // alone is installed.
         let dir = store.dir().join("0.11.0");
         fs::create_dir_all(&dir).unwrap();
-        fs::write(dir.join(MANIFEST), manifest_json("0.11.0", b"hello", &[("browser", b"b")])).unwrap();
+        fs::write(
+            dir.join(MANIFEST),
+            manifest_json("0.11.0", b"hello", &[("browser", b"b")]),
+        )
+        .unwrap();
         fs::write(dir.join(BASE_IMAGE), b"hello").unwrap();
         fs::create_dir_all(store.dir().join(".staging-x-1")).unwrap();
 
@@ -705,7 +728,11 @@ mod tests {
         assert!(matches!(store.verify(&damaged), Err(Error::Damaged { .. })));
         assert!(store.find("0.2.0").is_none());
         // A damaged layer takes the whole version down too.
-        fs::write(store.dir().join("0.10.0").join("layer-devtools.erofs"), b"bad").unwrap();
+        fs::write(
+            store.dir().join("0.10.0").join("layer-devtools.erofs"),
+            b"bad",
+        )
+        .unwrap();
         assert!(matches!(store.verify(&ten), Err(Error::Damaged { .. })));
         assert!(store.find("0.10.0").is_none());
 
@@ -744,10 +771,15 @@ mod tests {
             Err(Error::Io { .. })
         ));
         let good = local_release("3.0.0", b"hello", &[]);
-        assert!(matches!(
-            store.install(&pin_to("3.0.0", &good), &strings(&["browser"]), go).await,
-            Err(Error::Other(_))
-        ), "a layer the release lacks");
+        assert!(
+            matches!(
+                store
+                    .install(&pin_to("3.0.0", &good), &strings(&["browser"]), go)
+                    .await,
+                Err(Error::Other(_))
+            ),
+            "a layer the release lacks"
+        );
         assert!(store.installed().unwrap().is_empty());
     }
 
@@ -766,28 +798,57 @@ mod tests {
     async fn install_from_a_local_directory_copies_and_verifies() {
         let root = tempfile::tempdir().unwrap();
         let store = ImageStore::new(root.path());
-        let src = local_release("3.0.0", b"hello", &[("devtools", b"dev"), ("browser", b"www")]);
+        let src = local_release(
+            "3.0.0",
+            b"hello",
+            &[("devtools", b"dev"), ("browser", b"www")],
+        );
         let pin = pin_to("3.0.0", &src);
 
-        let installed = store.install(&pin, &strings(&["devtools"]), go).await.unwrap();
+        let installed = store
+            .install(&pin, &strings(&["devtools"]), go)
+            .await
+            .unwrap();
         assert_eq!(fs::read(installed.path()).unwrap(), b"hello");
         assert_eq!(installed.sha256, HELLO_SHA256);
         assert_eq!(installed.layers.len(), 1);
         assert_eq!(fs::read(&installed.layer_paths()[0]).unwrap(), b"dev");
-        assert!(store.find("3.0.0").unwrap().with_layers(&strings(&["browser"])).is_none());
+        assert!(store
+            .find("3.0.0")
+            .unwrap()
+            .with_layers(&strings(&["browser"]))
+            .is_none());
 
-        let more = store.install(&pin, &strings(&["devtools", "browser"]), go).await.unwrap();
+        let more = store
+            .install(&pin, &strings(&["devtools", "browser"]), go)
+            .await
+            .unwrap();
         assert_eq!(more.layers.len(), 2);
         assert_eq!(fs::read(&more.layer_paths()[1]).unwrap(), b"www");
 
         fs::write(installed.path(), b"hellp").unwrap();
-        let again = store.install(&pin, &strings(&["devtools"]), go).await.unwrap();
-        assert_eq!(fs::read(again.path()).unwrap(), b"hello", "a damaged file is replaced");
-        assert_eq!(store.find("3.0.0").unwrap().layers.len(), 2, "the other layer stays");
+        let again = store
+            .install(&pin, &strings(&["devtools"]), go)
+            .await
+            .unwrap();
+        assert_eq!(
+            fs::read(again.path()).unwrap(),
+            b"hello",
+            "a damaged file is replaced"
+        );
+        assert_eq!(
+            store.find("3.0.0").unwrap().layers.len(),
+            2,
+            "the other layer stays"
+        );
 
         let wrong = tempfile::tempdir().unwrap();
         fs::write(wrong.path().join(BASE_IMAGE), b"hello").unwrap();
-        fs::write(wrong.path().join(MANIFEST), manifest_json("3.1.0", b"other", &[])).unwrap();
+        fs::write(
+            wrong.path().join(MANIFEST),
+            manifest_json("3.1.0", b"other", &[]),
+        )
+        .unwrap();
         assert!(matches!(
             store.install(&pin_to("3.1.0", &wrong), &[], go).await,
             Err(Error::Sha256)
@@ -817,23 +878,30 @@ mod tests {
                     let path = request.split_whitespace().nth(1).unwrap_or("").to_owned();
                     let range = request
                         .lines()
-                        .find_map(|l| l.strip_prefix("range: ").or_else(|| l.strip_prefix("Range: ")))
+                        .find_map(|l| {
+                            l.strip_prefix("range: ")
+                                .or_else(|| l.strip_prefix("Range: "))
+                        })
                         .map(|r| r.trim().to_owned());
-                    seen.lock().unwrap().push(format!("{path} {}", range.as_deref().unwrap_or("")));
+                    seen.lock()
+                        .unwrap()
+                        .push(format!("{path} {}", range.as_deref().unwrap_or("")));
                     let Some(body) = files.get(path.trim_start_matches('/')) else {
                         s.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
                             .await
                             .unwrap();
                         return;
                     };
-                    let (status, body): (&str, Vec<u8>) = match range.as_deref().and_then(|r| r.strip_prefix("bytes=")) {
-                        Some(r) => {
-                            let (a, b) = r.split_once('-').unwrap();
-                            let (a, b): (usize, usize) = (a.parse().unwrap(), b.parse().unwrap());
-                            ("206 Partial Content", body[a..=b].to_vec())
-                        }
-                        None => ("200 OK", body.clone()),
-                    };
+                    let (status, body): (&str, Vec<u8>) =
+                        match range.as_deref().and_then(|r| r.strip_prefix("bytes=")) {
+                            Some(r) => {
+                                let (a, b) = r.split_once('-').unwrap();
+                                let (a, b): (usize, usize) =
+                                    (a.parse().unwrap(), b.parse().unwrap());
+                                ("206 Partial Content", body[a..=b].to_vec())
+                            }
+                            None => ("200 OK", body.clone()),
+                        };
                     let head = format!(
                         "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                         body.len()
@@ -874,11 +942,20 @@ mod tests {
     #[tokio::test]
     async fn install_downloads_verifies_and_renames() {
         let mut files = HashMap::new();
-        files.insert("1.0.0/good/manifest.json".to_owned(), manifest_json("1.0.0", b"hello", &[]).into_bytes());
+        files.insert(
+            "1.0.0/good/manifest.json".to_owned(),
+            manifest_json("1.0.0", b"hello", &[]).into_bytes(),
+        );
         files.insert("1.0.0/good/base.erofs".to_owned(), b"hello".to_vec());
-        files.insert("1.0.0/bad/manifest.json".to_owned(), manifest_json("1.0.0", b"hello", &[]).into_bytes());
+        files.insert(
+            "1.0.0/bad/manifest.json".to_owned(),
+            manifest_json("1.0.0", b"hello", &[]).into_bytes(),
+        );
         files.insert("1.0.0/bad/base.erofs".to_owned(), b"hellp".to_vec());
-        files.insert("2.0.0/good/manifest.json".to_owned(), manifest_json("2.0.0", b"hello", &[]).into_bytes());
+        files.insert(
+            "2.0.0/good/manifest.json".to_owned(),
+            manifest_json("2.0.0", b"hello", &[]).into_bytes(),
+        );
         files.insert("2.0.0/good/base.erofs".to_owned(), b"hello".to_vec());
         let (port, _log) = serve(files).await;
         let root = tempfile::tempdir().unwrap();
@@ -891,10 +968,15 @@ mod tests {
         ));
         assert!(store.installed().unwrap().is_empty());
         assert!(
-            fs::read_dir(store.dir()).unwrap().all(|e| e.unwrap().file_name() == "1.0.0"),
+            fs::read_dir(store.dir())
+                .unwrap()
+                .all(|e| e.unwrap().file_name() == "1.0.0"),
             "staging left behind"
         );
-        assert!(store.find("1.0.0").is_none(), "a manifest alone is not an install");
+        assert!(
+            store.find("1.0.0").is_none(),
+            "a manifest alone is not an install"
+        );
 
         let good = PinnedImage::new(
             "1.0.0",
@@ -914,7 +996,10 @@ mod tests {
         assert_eq!(store.current().unwrap(), Some(installed.clone()));
         store.verify(&installed).unwrap();
 
-        let again = store.install(&good, &[], |_| ControlFlow::Break(())).await.unwrap();
+        let again = store
+            .install(&good, &[], |_| ControlFlow::Break(()))
+            .await
+            .unwrap();
         assert_eq!(
             again, installed,
             "an installed match is not downloaded again"
@@ -924,7 +1009,9 @@ mod tests {
             Some(&format!("http://127.0.0.1:{port}/2.0.0/good")),
         );
         assert!(matches!(
-            store.install(&cancelled, &[], |_| ControlFlow::Break(())).await,
+            store
+                .install(&cancelled, &[], |_| ControlFlow::Break(()))
+                .await,
             Err(Error::Cancelled)
         ));
         assert!(store.find("2.0.0").is_none());
@@ -941,15 +1028,27 @@ mod tests {
         v2.extend_from_slice(&v1[1 << 20..]);
         let layer = noise(3, 1 << 20);
         let mut files = HashMap::new();
-        files.insert("1.0.0/manifest.json".to_owned(), manifest_json("1.0.0", &v1, &[]).into_bytes());
+        files.insert(
+            "1.0.0/manifest.json".to_owned(),
+            manifest_json("1.0.0", &v1, &[]).into_bytes(),
+        );
         files.insert("1.0.0/base.erofs".to_owned(), v1.clone());
-        files.insert("2.0.0/manifest.json".to_owned(), manifest_json("2.0.0", &v2, &[("devtools", &layer[..])]).into_bytes());
+        files.insert(
+            "2.0.0/manifest.json".to_owned(),
+            manifest_json("2.0.0", &v2, &[("devtools", &layer[..])]).into_bytes(),
+        );
         files.insert("2.0.0/base.erofs".to_owned(), v2.clone());
-        files.insert("2.0.0/base.erofs.chunks.json".to_owned(), chunk_list_json(&v2));
+        files.insert(
+            "2.0.0/base.erofs.chunks.json".to_owned(),
+            chunk_list_json(&v2),
+        );
         files.insert("2.0.0/layer-devtools.erofs".to_owned(), layer.clone());
         // A chunk list that lies about the layer: the delta is abandoned for a
         // whole download, which the manifest then verifies.
-        files.insert("2.0.0/layer-devtools.erofs.chunks.json".to_owned(), chunk_list_json(&noise(9, 1 << 20)));
+        files.insert(
+            "2.0.0/layer-devtools.erofs.chunks.json".to_owned(),
+            chunk_list_json(&noise(9, 1 << 20)),
+        );
         let (port, log) = serve(files).await;
         let root = tempfile::tempdir().unwrap();
         let store = ImageStore::new(root.path());
@@ -957,14 +1056,22 @@ mod tests {
 
         store.install(&at("1.0.0"), &[], go).await.unwrap();
         log.lock().unwrap().clear();
-        let two = store.install(&at("2.0.0"), &strings(&["devtools"]), go).await.unwrap();
+        let two = store
+            .install(&at("2.0.0"), &strings(&["devtools"]), go)
+            .await
+            .unwrap();
         assert_eq!(fs::read(two.path()).unwrap(), v2);
         assert_eq!(fs::read(&two.layer_paths()[0]).unwrap(), layer);
 
         let requests = log.lock().unwrap().clone();
-        let base_requests: Vec<&String> = requests.iter().filter(|r| r.starts_with("/2.0.0/base.erofs ")).collect();
-        assert!(!base_requests.is_empty() && base_requests.iter().all(|r| r.contains("bytes=")),
-            "the base came by range requests only: {requests:?}");
+        let base_requests: Vec<&String> = requests
+            .iter()
+            .filter(|r| r.starts_with("/2.0.0/base.erofs "))
+            .collect();
+        assert!(
+            !base_requests.is_empty() && base_requests.iter().all(|r| r.contains("bytes=")),
+            "the base came by range requests only: {requests:?}"
+        );
         let ranged: u64 = base_requests
             .iter()
             .map(|r| {
@@ -972,9 +1079,15 @@ mod tests {
                 b.parse::<u64>().unwrap() - a.parse::<u64>().unwrap() + 1
             })
             .sum();
-        assert!(ranged < v2.len() as u64 / 2, "fetched {ranged} of {}", v2.len());
-        assert!(requests.iter().any(|r| r == "/2.0.0/layer-devtools.erofs "),
-            "the layer fell back to a whole download: {requests:?}");
+        assert!(
+            ranged < v2.len() as u64 / 2,
+            "fetched {ranged} of {}",
+            v2.len()
+        );
+        assert!(
+            requests.iter().any(|r| r == "/2.0.0/layer-devtools.erofs "),
+            "the layer fell back to a whole download: {requests:?}"
+        );
         store.verify(&two).unwrap();
         // The seed is gone once pruned; the next install of 2.0.0 is a no-op.
         store.prune("2.0.0").unwrap();

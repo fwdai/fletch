@@ -340,7 +340,10 @@ fn only_a_verified_image_of_this_builds_version_is_installed() {
     let dir = images.join(&pin.version);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("base.erofs"), b"not really an image").unwrap();
-    assert!(super::installed_image().unwrap().is_none(), "no manifest yet");
+    assert!(
+        super::installed_image().unwrap().is_none(),
+        "no manifest yet"
+    );
     assert_eq!(super::setup::image_status().phase, "not_installed");
 
     std::fs::write(dir.join("manifest.json"), manifest(&pin.version)).unwrap();
