@@ -44,8 +44,8 @@ UUID_V2=3f2a9c1e-7b4d-4e8a-9d0c-5e6f7a8b9c20
 # Today's flags (build.sh) and the proposed ones. -x -1: no xattrs. -T/--all-time:
 # every inode gets SOURCE_DATE_EPOCH.
 OLD_FLAGS="-zlz4hc -x -1 -T $SOURCE_DATE_EPOCH --all-time"
-NEW_FLAGS="-zlz4hc,12 -C65536 -Ededupe -Efragments -Eztailpacking -x -1 -T $SOURCE_DATE_EPOCH --all-time"
-BIG_FLAGS="-zlz4hc,12 -C262144 -Ededupe -Efragments -Eztailpacking -x -1 -T $SOURCE_DATE_EPOCH --all-time"
+NEW_FLAGS="-zlz4hc,12 -C65536 -Ededupe,fragments,ztailpacking -x -1 -T $SOURCE_DATE_EPOCH --all-time"
+BIG_FLAGS="-zlz4hc,12 -C262144 -Ededupe,fragments,ztailpacking -x -1 -T $SOURCE_DATE_EPOCH --all-time"
 
 [ "$(id -u)" = 0 ] || { echo "build-layers.sh: run as root" >&2; exit 1; }
 [ "$(uname -m)" = "$ARCH" ] || { echo "build-layers.sh: needs an $ARCH host" >&2; exit 1; }
@@ -131,8 +131,10 @@ say "cleaning the base"
 clean_tree "$ROOT"
 pin_times "$ROOT"
 chroot "$ROOT" /usr/bin/fc-cache -s -f
-chroot "$ROOT" dpkg-query -W -f '${binary:Package}=${Version}\n' | sort > "$WORK/base.pkgs"
-echo "node=$NODE_VERSION" >> "$WORK/base.pkgs"
+{
+  chroot "$ROOT" dpkg-query -W -f '${binary:Package}=${Version}\n'
+  echo "node=$NODE_VERSION"
+} | LC_ALL=C sort > "$WORK/base.pkgs"
 BASE_TREE_BYTES=$(tree_size "$ROOT")
 
 say "writing base images (new, old and big-cluster flags)"
@@ -170,8 +172,8 @@ for layer in $LAYERS; do
   fi
   clean_tree "$LR"
   chroot "$LR" /usr/bin/fc-cache -s -f
-  chroot "$LR" dpkg-query -W -f '${binary:Package}=${Version}\n' | sort > "$WORK/$layer.allpkgs"
-  comm -13 "$WORK/base.pkgs" "$WORK/$layer.allpkgs" > "$WORK/$layer.pkgs"
+  chroot "$LR" dpkg-query -W -f '${binary:Package}=${Version}\n' | LC_ALL=C sort > "$WORK/$layer.allpkgs"
+  LC_ALL=C comm -13 "$WORK/base.pkgs" "$WORK/$layer.allpkgs" > "$WORK/$layer.pkgs"
 
   # The delta: what the layer tree has that the base has not, byte for byte
   # (-c). The package databases, apt state and logs stay with the base; the

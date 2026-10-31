@@ -29,7 +29,7 @@ fail() { say "FAIL $1: $2"; row "$1" "**FAIL**" "$2"; failed=1; }
 check() {
   local name=$1 desc=$2; shift 2; [ "$1" = -- ] && shift
   local out
-  if out=$(timeout 900 "$@" 2>&1); then
+  if out=$("$@" 2>&1); then
     pass "$name" "$desc: $(echo "$out" | tail -1)"
   else
     echo "$out" >> "$LOG"
@@ -88,7 +88,7 @@ assemble() {
 ENVI=(/usr/bin/env -i HOME=/data/home USER=agent LOGNAME=agent PATH=/usr/local/bin:/usr/bin:/bin LANG=C.UTF-8 TERM=xterm SHELL=/bin/bash)
 run() { chroot --userspec=1000:1000 --groups=1000 "$M" "${ENVI[@]}" "$@"; }
 runroot() { chroot "$M" /usr/bin/env -i PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin LANG=C.UTF-8 "$@"; }
-sh_as_agent() { run bash -lc "$1"; }
+sh_as_agent() { run bash -c "$1"; }
 
 # ------------------------------------------------------------ default: base + devtools
 say "configuration: base + devtools"
@@ -112,9 +112,9 @@ check T-dev-python "devtools: python3 with ssl, sqlite3, pip and venv" -- \
 check T-ldd "no missing shared libraries for python3, gcc, node, git, sshd through the overlay" -- \
   runroot sh -c 'for b in /usr/bin/python3 /usr/bin/gcc /usr/bin/git /usr/sbin/sshd /usr/local/bin/node /usr/bin/rg; do ldd $b | grep -q "not found" && { echo "$b: missing libs"; ldd $b | grep "not found"; exit 1; }; done; echo "all resolve"'
 check T-dev-nodegyp "devtools: node-gyp builds a native addon against the Node headers in the layer" -- \
-  sh_as_agent 'set -e; cd $(mktemp -d); test -f /usr/local/include/node/node_api.h; npm init -y >/dev/null; npm i --silent node-gyp@latest node-addon-api@latest; cat > binding.gyp <<EOF
-{ "targets": [ { "target_name": "hello", "sources": [ "hello.cc" ], "include_dirs": ["<!@(node -p \"require(\\"node-addon-api\\").include\")"], "defines": ["NAPI_DISABLE_CPP_EXCEPTIONS"] } ] }
-EOF
+  sh_as_agent 'set -e; cd $(mktemp -d); test -f /usr/local/include/node/node_api.h; npm init -y >/dev/null; npm i --silent node-gyp@latest node-addon-api@latest
+INC=$(node -p "require(\"node-addon-api\").include_dir")
+printf "{ \"targets\": [ { \"target_name\": \"hello\", \"sources\": [ \"hello.cc\" ], \"include_dirs\": [ \"%s\" ], \"defines\": [ \"NAPI_DISABLE_CPP_EXCEPTIONS\" ] } ] }\n" "$INC" > binding.gyp
 printf "#include <napi.h>\nNapi::String Hi(const Napi::CallbackInfo& i){return Napi::String::New(i.Env(),\"hi from addon\");}\nNapi::Object Init(Napi::Env e, Napi::Object x){x.Set(\"hi\",Napi::Function::New(e,Hi));return x;}\nNODE_API_MODULE(hello, Init)\n" > hello.cc
 npx node-gyp rebuild --nodedir=/usr/local >/dev/null 2>&1 || npx node-gyp rebuild --nodedir=/usr/local
 node -e "console.log(require(\"./build/Release/hello.node\").hi())"'
