@@ -482,7 +482,10 @@ mod tests {
     fn a_new_agent_gets_the_pinned_engine_or_what_can_run_now() {
         use crate::sandbox::placement::Placement;
         let _serial = ENGINE_LOCK.blocking_lock();
-        settings::set(settings::BoxSettings::default());
+        settings::set(settings::BoxSettings {
+            enabled: true,
+            ..Default::default()
+        });
         let engine = boxes::engine_for_new_agent;
 
         assert_eq!(

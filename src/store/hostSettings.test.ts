@@ -33,7 +33,7 @@ describe("host settings", () => {
       agentAttributionRemoved: false,
       codeIndexingEnabled: true,
       sandboxEngine: "auto",
-      boxesEnabled: true,
+      boxesEnabled: false,
       publishConfirmation: false,
       branchPrefix: "",
       draftPrs: false,

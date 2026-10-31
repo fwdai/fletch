@@ -265,11 +265,10 @@ export const createEnvironmentSwitchSlice: SliceCreator<EnvironmentSwitchSlice> 
     // provider binary paths show (and edit) the engine on screen. Not awaited:
     // nothing after it depends on it, and an answer that lands after a later
     // switch is dropped by `hydrateHostSettings` itself.
-    void hydrateHostSettings(set).catch(() => {});
-    // …and where its isolated VM stands, which its `box:*` events keep
-    // current from here.
-    void get()
-      .loadBoxSetup()
+    // …and where its isolated VM stands (once the settings say the switch is
+    // on), which its `box:*` events keep current from here.
+    void hydrateHostSettings(set)
+      .then(() => get().loadBoxSetup())
       .catch(() => {});
   };
 

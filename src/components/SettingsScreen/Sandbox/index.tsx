@@ -3,6 +3,7 @@ import { Select } from "@/components/ui/Select";
 import type { SandboxEngine } from "@/storage/preferences";
 import { useAppStore } from "@/store";
 import { useGate } from "@/store/capabilities";
+import { useBoxesUnlocked } from "@/util/boxesUnlocked";
 import { SetGroup, SetHead, SetRow, SetToggle } from "../primitives";
 import { BoxKnobs } from "./BoxKnobs";
 import { BoxSetupStatus } from "./BoxSetupStatus";
@@ -39,6 +40,10 @@ export function SandboxPane() {
   // The engine (and the launch knobs below) are the host's: it stamps them on
   // the agents it spawns.
   const hostGate = useGate("hostSettings");
+  // Boxes are rolled out behind the developer unlock: until then this page is
+  // what it was before them — no VM group, no Automatic option, no probe —
+  // and the stored `auto` reads as the macOS sandbox it resolves to.
+  const unlocked = useBoxesUnlocked();
 
   useEffect(() => {
     let cancelled = false;
@@ -46,7 +51,7 @@ export function SandboxPane() {
       if (cancelled) return;
       void refreshDockerProbe();
       void refreshPodmanProbe();
-      void refreshBoxProbe();
+      if (unlocked) void refreshBoxProbe();
     };
     probe(); // immediately on mount
     const timer = setInterval(probe, PROBE_INTERVAL_MS);
@@ -59,7 +64,7 @@ export function SandboxPane() {
       clearInterval(timer);
       window.removeEventListener("focus", onFocus);
     };
-  }, [refreshDockerProbe, refreshPodmanProbe, refreshBoxProbe]);
+  }, [refreshDockerProbe, refreshPodmanProbe, refreshBoxProbe, unlocked]);
 
   // Each container option is enabled only when the runtime answered the probe;
   // otherwise it's disabled with a hint saying how to fix it. A `null` probe is
@@ -86,7 +91,7 @@ export function SandboxPane() {
   // a disabled switch that says why rather than a refusal on click.
   const boxRuntimeProblem =
     boxProbe && !boxProbe.runtime_ok ? boxProbe.problems.join("; ") : undefined;
-  const boxUsable = boxesEnabled && !!boxProbe?.runtime_ok;
+  const boxUsable = unlocked && boxesEnabled && !!boxProbe?.runtime_ok;
   const setup = boxSetup(boxProbe, boxImage, boxTools);
   // What Automatic lands on right now, in two words: the Select's hint.
   const autoHint = !boxUsable
@@ -94,6 +99,12 @@ export function SandboxPane() {
     : setup.state === "ready"
       ? "Isolated VM"
       : "macOS sandbox until the VM is ready";
+  // Locked, `auto` is the macOS sandbox, so that is the option shown selected;
+  // picking it back writes `auto`, which keeps the user on the automatic
+  // choice (and so on boxes) once they are released.
+  const shownEngine: SandboxEngine =
+    !unlocked && sandboxEngine === "auto" ? "sandbox-exec" : sandboxEngine;
+  const fallbackLabel = unlocked ? "Automatic" : "Seatbelt";
 
   return (
     <div className="set-pane">
@@ -108,15 +119,17 @@ export function SandboxPane() {
           title="Engine"
           sub={
             hostGate ??
-            "Automatic runs each new workspace in an isolated VM once one is ready, and in the macOS sandbox until then. Applies to new workspaces only."
+            (unlocked
+              ? "Automatic runs each new workspace in an isolated VM once one is ready, and in the macOS sandbox until then. Applies to new workspaces only."
+              : "Docker and Podman run agents in a Linux container. Applies to new workspaces only.")
           }
         >
           <Select<SandboxEngine>
-            value={sandboxEngine}
+            value={shownEngine}
             ariaLabel="Sandbox engine"
             disabled={!!hostGate}
             options={[
-              { value: "auto", label: "Automatic", hint: autoHint },
+              ...(unlocked ? [{ value: "auto" as const, label: "Automatic", hint: autoHint }] : []),
               { value: "sandbox-exec", label: "macOS sandbox (Seatbelt)" },
               ...(boxUsable
                 ? [
@@ -140,7 +153,7 @@ export function SandboxPane() {
                 disabled: !podmanAvailable,
               },
             ]}
-            onChange={(v) => void setSandboxEngine(v)}
+            onChange={(v) => void setSandboxEngine(!unlocked && v === "sandbox-exec" ? "auto" : v)}
           />
         </SetRow>
         {sandboxEngine === "docker" && dockerProbe && !dockerAvailable && (
@@ -149,7 +162,7 @@ export function SandboxPane() {
             {dockerProbe.status === "daemon-down" ? "the daemon isn't running" : "isn't installed"}.
             New agents won't launch until it's available.{" "}
             {dockerProbe.status === "daemon-down" ? "Start" : "Install"} Docker Desktop, or switch
-            back to Automatic.
+            back to {fallbackLabel}.
           </div>
         )}
         {sandboxEngine === "podman" && podmanProbe && !podmanAvailable && (
@@ -160,29 +173,31 @@ export function SandboxPane() {
               : "isn't installed"}
             . New agents won't launch until it's available.{" "}
             {podmanProbe.status === "machine-down" ? "Run podman machine start" : "Install Podman"},
-            or switch back to Automatic.
+            or switch back to {fallbackLabel}.
           </div>
         )}
         <ContainerAuth />
       </SetGroup>
 
-      <SetGroup label="Isolated VM">
-        <SetRow
-          title="Use isolated VMs when available"
-          sub={
-            hostGate ??
-            "A micro-VM per workspace that shares no folder with your Mac and reaches only the project's allowed hosts. Its image downloads once, in the background; until it's in, workspaces use the macOS sandbox. Projects that build a macOS or iOS app stay on your Mac."
-          }
-        >
-          <SetToggle
-            on={boxUsable}
-            onClick={() => void setBoxesEnabled(!boxesEnabled)}
-            disabled={!!hostGate || !!boxRuntimeProblem || !boxProbe}
-            tip={hostGate ?? boxRuntimeProblem ?? (!boxProbe ? "Checking…" : undefined)}
-          />
-        </SetRow>
-        {boxUsable && <BoxSetupStatus />}
-      </SetGroup>
+      {unlocked && (
+        <SetGroup label="Isolated VM">
+          <SetRow
+            title="Use isolated VMs when available"
+            sub={
+              hostGate ??
+              "A micro-VM per workspace that shares no folder with your Mac and reaches only the project's allowed hosts. Its image downloads once, in the background; until it's in, workspaces use the macOS sandbox. Projects that build a macOS or iOS app stay on your Mac."
+            }
+          >
+            <SetToggle
+              on={boxUsable}
+              onClick={() => void setBoxesEnabled(!boxesEnabled)}
+              disabled={!!hostGate || !!boxRuntimeProblem || !boxProbe}
+              tip={hostGate ?? boxRuntimeProblem ?? (!boxProbe ? "Checking…" : undefined)}
+            />
+          </SetRow>
+          {boxUsable && <BoxSetupStatus />}
+        </SetGroup>
+      )}
 
       {boxUsable && <BoxKnobs />}
       <ContainerLaunchKnobs runtime="docker" />

@@ -1,5 +1,6 @@
 import { useAppStore } from "@/store";
 import { useGate } from "@/store/capabilities";
+import { useBoxesUnlocked } from "@/util/boxesUnlocked";
 import { useProjectSettings } from "@/util/useProjectSettings";
 
 /** Project-settings key the host's spawn path reads (Rust
@@ -25,10 +26,13 @@ export function SandboxSection({
    *  Apple-platform Swift package at the repository root. */
   nativeApp: boolean;
 }) {
-  const { settings, save } = useProjectSettings(projectId);
+  const unlocked = useBoxesUnlocked();
+  const { settings, save } = useProjectSettings(unlocked ? projectId : null);
   const gate = useGate("projectSettings");
   const boxesEnabled = useAppStore((s) => s.boxesEnabled);
   const value = parsePlacement(settings?.[KEY]);
+  // Nothing to place until boxes are rolled out to this user.
+  if (!unlocked) return null;
 
   const hint = !boxesEnabled
     ? "Isolated VMs are off in Settings › Sandbox, so every workspace runs on this Mac."

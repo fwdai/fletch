@@ -91,6 +91,7 @@ export const createAppSlice: SliceCreator<AppSlice> = (set, get) => ({
     void get().refreshLinear();
     // Where the isolated VM stands (downloading, ready, unavailable), so the
     // title bar and the ready toast can say so from the first workspace on.
+    // A no-op while the switch is off (the settings above are hydrated).
     void get().loadBoxSetup();
 
     // The desktop-pinned streams first, since nothing ever takes them down;

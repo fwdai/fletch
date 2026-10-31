@@ -13,11 +13,18 @@ use rusqlite::Connection;
 use crate::database;
 use crate::error::{Error, Result};
 
-/// The switch: "use isolated VMs when available". Opt-out — absent is on, and
-/// only an explicit `false` turns every box code path off. On a machine that
-/// cannot boot a box the switch changes nothing: the runtime probe refuses
-/// first, and the automatic engine choice lands on seatbelt.
+/// The switch: "use isolated VMs when available". An explicit `true` or
+/// `false` wins; absent is [`DEFAULT_ENABLED`]. With it off no box code path
+/// is reachable and the automatic engine choice lands on seatbelt. On a
+/// machine that cannot boot a box the switch changes nothing: the runtime
+/// probe refuses first.
 pub const ENABLED_SETTING: &str = "boxes_enabled";
+/// What an absent `boxes_enabled` row means. Off while boxes are rolled out
+/// behind the developer unlock (the desktop mirrors this in
+/// `store/hostSettings.ts`); flipping both to `true` is the public release —
+/// every host then downloads the image on its own and moves new agents to
+/// boxes, and nothing else has to change.
+pub const DEFAULT_ENABLED: bool = false;
 /// Guest RAM cap per box, MiB.
 pub const MEMORY_SETTING: &str = "box_memory_mib";
 /// vCPUs per box.
@@ -65,7 +72,7 @@ pub struct BoxSettings {
 impl Default for BoxSettings {
     fn default() -> Self {
         Self {
-            enabled: true,
+            enabled: DEFAULT_ENABLED,
             memory_mib: DEFAULT_MEMORY_MIB,
             cpus: DEFAULT_CPUS,
             image_url: None,
@@ -76,7 +83,7 @@ impl Default for BoxSettings {
 }
 
 static SETTINGS: RwLock<BoxSettings> = RwLock::new(BoxSettings {
-    enabled: true,
+    enabled: DEFAULT_ENABLED,
     memory_mib: DEFAULT_MEMORY_MIB,
     cpus: DEFAULT_CPUS,
     image_url: None,
@@ -155,9 +162,13 @@ pub fn seed(conn: &Connection) {
     *EGRESS.write() = Some(map);
 }
 
-/// Only an explicit `false` turns the engine off.
+/// An explicit `true` or `false`; anything else is [`DEFAULT_ENABLED`].
 pub fn parse_enabled(raw: Option<&str>) -> bool {
-    raw.map(str::trim) != Some("false")
+    match raw.map(str::trim) {
+        Some("true") => true,
+        Some("false") => false,
+        _ => DEFAULT_ENABLED,
+    }
 }
 
 /// A whole number of MiB, at least [`MIN_MEMORY_MIB`]; `None` when absent or
@@ -310,18 +321,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_an_explicit_false_disables() {
+    fn an_explicit_value_wins_and_anything_else_is_the_default() {
+        assert!(parse_enabled(Some("true")));
+        assert!(parse_enabled(Some(" true ")));
         assert!(!parse_enabled(Some("false")));
-        assert!(!parse_enabled(Some(" false ")));
-        for raw in [
-            None,
-            Some(""),
-            Some("true"),
-            Some("0"),
-            Some("FALSE"),
-            Some("no"),
-        ] {
-            assert!(parse_enabled(raw), "{raw:?}");
+        for raw in [None, Some(""), Some("1"), Some("TRUE"), Some("yes")] {
+            assert_eq!(parse_enabled(raw), DEFAULT_ENABLED, "{raw:?}");
         }
     }
 
@@ -366,7 +371,10 @@ mod tests {
             validate("boxes_enabled", "false").unwrap().unwrap(),
             "false"
         );
-        assert_eq!(validate("boxes_enabled", "nope").unwrap().unwrap(), "true");
+        assert_eq!(
+            validate("boxes_enabled", "nope").unwrap().unwrap(),
+            DEFAULT_ENABLED.to_string()
+        );
         assert_eq!(
             validate("box_idle_stop_minutes", "0").unwrap().unwrap(),
             "0"
@@ -392,13 +400,14 @@ mod tests {
         let db = crate::database::init(dir.path()).unwrap();
         let conn = db.lock();
         assert_eq!(load(&conn), BoxSettings::default());
-        assert!(load(&conn).enabled, "absent is on");
-        database::set_setting(&conn, ENABLED_SETTING, "false").unwrap();
+        assert_eq!(load(&conn).enabled, DEFAULT_ENABLED, "absent is the default");
+        let flipped = if DEFAULT_ENABLED { "false" } else { "true" };
+        database::set_setting(&conn, ENABLED_SETTING, flipped).unwrap();
         database::set_setting(&conn, MEMORY_SETTING, "3072").unwrap();
         database::set_setting(&conn, IDLE_STOP_SETTING, "0").unwrap();
         database::set_setting(&conn, CPUS_SETTING, "bogus").unwrap();
         let loaded = load(&conn);
-        assert!(!loaded.enabled);
+        assert_eq!(loaded.enabled, !DEFAULT_ENABLED);
         assert_eq!(loaded.memory_mib, 3072);
         assert_eq!(loaded.idle_stop, None);
         assert_eq!(loaded.cpus, DEFAULT_CPUS, "a bad row reads as the default");

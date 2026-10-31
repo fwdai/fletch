@@ -18,6 +18,7 @@ import { DEFAULT_SANDBOX_ENGINE, type SandboxEngine } from "@/storage/preference
 import { newestWins } from "@/util/newestWins";
 import { type ApprovalEvent, replayApprovalEvents } from "@/util/publishApprovals";
 import { activeEnvironment, forActiveEnvironment } from "./environments";
+import { BOXES_DEFAULT_ENABLED } from "./hostSettings";
 import type { SliceCreator } from "./types";
 
 /** Live state of one embedded container image build (first spawn under a
@@ -123,9 +124,9 @@ export interface SandboxSlice {
    *  dropped entry fails closed. */
   pendingPublishApprovals: PublishApproval[];
   /** "Use isolated VMs when available", mirrored from the host-owned
-   *  `boxes_enabled` (opt-out: on unless the host stored `false`). Off, the
-   *  Sandbox page's box controls fold away and the automatic engine choice
-   *  lands on the macOS sandbox. */
+   *  `boxes_enabled` (absent is `BOXES_DEFAULT_ENABLED`). Off, the Sandbox
+   *  page's box controls fold away, nothing box-related is probed or shown,
+   *  and the automatic engine choice lands on the macOS sandbox. */
   boxesEnabled: boolean;
   /** The box knobs, mirrored from the host-owned `box_*` settings. Empty
    *  string = unset (the engine's defaults apply). */
@@ -316,7 +317,7 @@ export const createSandboxSlice: SliceCreator<SandboxSlice> = (set, get) => ({
   podmanCpus: "",
   publishConfirmation: false,
   pendingPublishApprovals: [],
-  boxesEnabled: true,
+  boxesEnabled: BOXES_DEFAULT_ENABLED,
   boxMemoryMib: "",
   boxCpus: "",
   boxImageUrl: "",
@@ -504,6 +505,9 @@ export const createSandboxSlice: SliceCreator<SandboxSlice> = (set, get) => ({
     }
   },
   loadBoxSetup: async () => {
+    // Nothing reads the setup while the switch is off, and the probe runs
+    // processes: a host with boxes off is never asked.
+    if (!get().boxesEnabled) return;
     await Promise.all([get().refreshBoxProbe(), get().refreshBoxImage()]);
   },
   installBoxImage: async () => {
