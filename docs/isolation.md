@@ -198,20 +198,23 @@ read-only — so a container can't reach back through the alternates link to
 mutate the source (`sandbox/provision.rs`). `git clone --no-hardlinks` makes a
 full, self-contained copy with no alternates and no shared inodes.
 
-After either clone, three fixups run (`sandbox/provision.rs`):
+A box delivers its base differently: `git init` in the guest and a push of the
+base commit over the box's channel, a full copy (`sandbox/boxes/provision.rs`).
+After the base is in, every checkout Fletch makes (a clone of either strategy,
+a box's guest checkout, a restored one) runs the same pipeline,
+`sandbox::provision::fixups`. Each step is git in the checkout or a write
+through its executor, so it runs wherever the checkout lives; a failure removes
+the half-built checkout there. In order:
 
-- **Origin is rewritten** to the source repo's *real* remote, so push/PR/fetch
-  behave as they would from a normal checkout. If the source has no remote, the
-  clone's implicit local-path `origin` is *removed* — otherwise a push could
-  silently create branches and objects inside your source repo.
-- **Delegation git hooks** (`post-commit`, `post-merge`) are installed into the
-  clone so the agent's own native git commits and merges signal the UI. They are
-  installed only in the clone; host-side git runs with hooks disabled, so they
-  never fire on the host.
-- **A git identity is frozen** into the clone's own config, so in-container git
+- **Origin is rewritten** to the source repo's *real* remote (added in a box's
+  fresh repository, which has none), so push/PR/fetch behave as they would from
+  a normal checkout. If the source has no remote, the clone's implicit
+  local-path `origin` is *removed* — otherwise a push could silently create
+  branches and objects inside your source repo.
+- **A git identity is frozen** into the checkout's own config, so in-container git
   (which can't see your global gitconfig) can commit without failing on "Please
   tell me who you are."
-- **Commit signing is switched off** in the clone's own config
+- **Commit signing is switched off** in the checkout's own config
   (`commit.gpgsign=false`). The seatbelt engine, unlike a container, lets git
   read your global gitconfig, so a `commit.gpgsign=true` there would reach the
   sandbox while the key it names (`~/.ssh`, the ssh-agent, a gpg keyring) stays
@@ -224,6 +227,23 @@ After either clone, three fixups run (`sandbox/provision.rs`):
   is the agent's to write. In your own repositories Fletch's git signs as your
   config asks, so the first commit of a new project is signed like any of
   yours.
+- **Git hooks** are written, executable, into the checkout's `.git/hooks`
+  through its executor: the delegation hooks (`post-commit`, `post-merge`), so
+  the agent's own native git commits and merges signal the UI, and the
+  attribution hook (`commit-msg`). Host-side git runs with hooks disabled, so
+  they never fire on the host.
+- **The caller's checkout step** puts HEAD where it belongs: detached at the
+  base for a fresh workspace, the restore ladders for a restored one (fetching
+  inside the step), the pushed base for a box.
+- **Local heads and `origin/HEAD` are reconciled**: a head the clone inherited
+  from the source is re-pointed at its fetched `origin/<name>` or deleted (a
+  box's fresh repository has none), and `origin/HEAD` names the source's real
+  default branch.
+
+A workflow run repository (`workflow/gitops.rs`) takes only the origin rewrite,
+the identity and the attribution hook from this pipeline: its host-side merge
+commits keep your signing config, and nothing listens for delegation hooks
+there.
 
 ### Signing on publish
 

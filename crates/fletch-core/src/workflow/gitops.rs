@@ -20,6 +20,7 @@ use std::path::{Path, PathBuf};
 
 use crate::error::{Error, Result};
 use crate::git;
+use crate::sandbox::provision;
 
 /// The run repository lives beside the blackboard, under the run directory.
 pub fn run_repo_path(run_dir: &Path) -> PathBuf {
@@ -61,58 +62,19 @@ pub async fn provision_run_repo(source_repo: &Path, run_dir: &Path) -> Result<Pa
         "clone run repo",
     )
     .await?;
-    rewrite_origin(source_repo, &dest).await?;
-    seed_identity(source_repo, &dest).await?;
+    // The pieces of the checkout pipeline (`sandbox::provision::fixups`) a run
+    // repo needs: origin and identity, so finalize's push and the host-side
+    // merge commits (§12.3) work on a machine with no global gitconfig. Not
+    // the rest, which would change what a run repo has always been: no
+    // delegation hooks (no agent mailbox listens there), no signing freeze
+    // (the host's own merge commits keep the user's signing config), and its
+    // refs stay as cloned.
+    provision::rewrite_origin(source_repo, &dest).await?;
+    provision::seed_identity(source_repo, &dest).await?;
     // The kernel runner's step agents adopt this tree and commit in it directly,
     // so it needs the same attribution hook as an agent workspace.
     crate::attribution::install_hook(&dest).await?;
     Ok(dest)
-}
-
-/// Persist a commit identity into the run repo's local config so host-side merge
-/// / conflict-snapshot commits (§12.3) succeed on a machine with no global
-/// gitconfig (e.g. CI). Mirrors `sandbox/provision.rs::seed_identity`: write the
-/// identity the source repo resolves, filling any half from the neutral fallback.
-async fn seed_identity(source_repo: &Path, dest: &Path) -> Result<()> {
-    let (fallback_name, fallback_email) = crate::git_dist::fallback_identity();
-    for (key, fallback) in [("user.name", fallback_name), ("user.email", fallback_email)] {
-        let effective = git::git_output(source_repo, &["config", "--get", key])
-            .await
-            .ok()
-            .filter(|out| out.status.success())
-            .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
-            .filter(|v| !v.is_empty());
-        let value = effective.unwrap_or(fallback);
-        git::run_git(dest, &["config", key, &value], "seed run repo identity").await?;
-    }
-    Ok(())
-}
-
-/// Point the run repo's `origin` at the source repo's real remote (so a finalize
-/// push reaches the user's remote, not the local source path). Removes the
-/// clone's local-path `origin` when the source has none — the same discipline as
-/// `sandbox/provision.rs::rewrite_origin`.
-///
-/// A github.com SSH remote is written in its HTTPS form, always, as the
-/// sandbox clones are: workflow step agents adopt this tree inside the
-/// sandbox, and over SSH their git would publish with the user's key,
-/// bypassing the host-brokered git ops. Over HTTPS it has no credential.
-async fn rewrite_origin(source_repo: &Path, dest: &Path) -> Result<()> {
-    let out = git::git_output(source_repo, &["remote", "get-url", "origin"]).await?;
-    if out.status.success() {
-        let url = crate::github::github_https_remote(&String::from_utf8_lossy(&out.stdout));
-        git::run_git(
-            dest,
-            &["remote", "set-url", "origin", &url],
-            "set-url origin",
-        )
-        .await?;
-    } else {
-        // No source remote → drop the local-path origin so a push can't write
-        // into the user's source repo.
-        let _ = git::run_git(dest, &["remote", "remove", "origin"], "remove origin").await;
-    }
-    Ok(())
 }
 
 /// Current HEAD of a checkout (the `head_start` snapshot and the `commit` gate).

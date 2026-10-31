@@ -130,32 +130,14 @@ async fn resolve_ref(checkout: &Path, refname: &str) -> Result<Option<String>> {
 }
 
 /// Copy `turn_id`'s checkpoint from the `source` checkout (a fork's parent)
-/// into `dest` under the same ref, and return its sha. Fetched by ref rather
+/// into `dest` under the same ref, and return its sha. Carried by ref rather
 /// than by sha, so `source` needs no `allowAnySHA1InWant`, and the pin keeps
-/// it in `dest` until it is applied ([`restore`]).
+/// it in `dest` until it is applied ([`restore`]). Either checkout may be on
+/// the host or in a box: how the ref gets from one to the other is
+/// `sandbox::carry_checkpoint`'s.
 pub async fn fetch_into(dest: &Path, source: &Path, turn_id: &str) -> Result<String> {
     let refname = checkpoint_ref(turn_id)?;
-    // The fetch runs where `dest` lives and names `source` by path, so both
-    // must be on one filesystem: the host, or one box's guest. A checkpoint
-    // in a box reaches a checkout elsewhere only through that box's channel,
-    // which this does not do yet — refused with the reason rather than
-    // fetched from a path that names nothing there.
-    if !crate::sandbox::checkpoint_carry_allowed(source, dest) {
-        return Err(Error::Other(
-            "carrying a checkpoint between a box and another workspace isn't supported yet".into(),
-        ));
-    }
-    let source = source
-        .to_str()
-        .ok_or_else(|| Error::InvalidPath(source.display().to_string()))?;
-    // `+`: a re-captured checkpoint is never a fast-forward of the old one.
-    let refspec = format!("+{refname}:{refname}");
-    run_git(
-        dest,
-        &["fetch", "--no-tags", source, &refspec],
-        "fetch checkpoint",
-    )
-    .await?;
+    crate::sandbox::carry_checkpoint(source, dest, &refname).await?;
     rev_parse(dest, &refname).await
 }
 

@@ -3,8 +3,9 @@
 //! the agent's own objects move, refreshed over the channel before anything
 //! host-side needs the checkout's objects — publish and transport, which run
 //! host git with the user's credentials and so must never run *in* the
-//! checkout. Reads (`git_state`, diffs) do not come here: they run in the
-//! guest through the routed seam.
+//! checkout, and a turn checkpoint carried out of the box to a fork
+//! (`sandbox::carry_checkpoint`). Reads (`git_state`, diffs) do not come
+//! here: they run in the guest through the routed seam.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -88,7 +89,8 @@ pub async fn refresh_running(running: &RunningBox) -> Result<()> {
     Ok(())
 }
 
-/// `git fetch` the guest checkout's heads, HEAD and tracking refs into the
+/// `git fetch` the guest checkout's heads, HEAD, tracking refs and Fletch's
+/// own refs (`refs/fletch/*`: turn checkpoints, the undo point) into the
 /// mirror, creating it (with alternates to `source_repo`) on first use.
 pub async fn refresh_checkout(
     running: &RunningBox,
@@ -108,6 +110,10 @@ pub async fn refresh_checkout(
         "+refs/heads/*:refs/heads/*",
         "+HEAD:refs/fletch/head",
         "+refs/remotes/origin/*:refs/remotes/origin/*",
+        // Overlaps `refs/fletch/head` above, which the guest never has: git
+        // keeps a ref any matching refspec still fetches, so `--prune` spares
+        // it.
+        "+refs/fletch/*:refs/fletch/*",
     ]);
     let out = output(&mut cmd, "mirror fetch").await?;
     if !out.status.success() {
@@ -117,6 +123,38 @@ pub async fn refresh_checkout(
         )));
     }
     Ok(mirror)
+}
+
+/// The mirror refreshed from `checkout`, a checkout in `identity`'s box,
+/// booting the box when it is stopped: a host repository holding what only
+/// the guest has (a turn checkpoint), for a host fetch or a push into
+/// another box. Refreshed from this checkout now, because a box's checkouts
+/// share the one mirror and each refresh prunes the others' refs.
+pub async fn refreshed_for(identity: &super::BoxIdentity, checkout: &Path) -> Result<PathBuf> {
+    let running = BoxRegistry::global()
+        .running_or_start(&identity.agent_id)
+        .await?;
+    let source = read_sources(&running.dir)
+        .remove(&*checkout.to_string_lossy())
+        .map(PathBuf::from);
+    refresh_checkout(&running, checkout, source.as_deref()).await
+}
+
+/// Push `refspecs` from the host repository `from` into `checkout`, a
+/// checkout in `identity`'s box, over its channel, booting the box when it is
+/// stopped. `from` may be an agent's host checkout, so its config is checked
+/// first as for any host git run there.
+pub async fn push_into(
+    identity: &super::BoxIdentity,
+    checkout: &Path,
+    from: &Path,
+    refspecs: &[String],
+) -> Result<()> {
+    git::hardening::refuse_steerable_config(from).await?;
+    let running = BoxRegistry::global()
+        .running_or_start(&identity.agent_id)
+        .await?;
+    push(from, &running.channel, &running.git_url(checkout), refspecs).await
 }
 
 /// Make `sha` an object in the guest checkout: a commit the host made over
@@ -172,8 +210,9 @@ const TRACKING_SYNC: &[&str] = &[
     "+refs/pull/*:refs/pull/*",
 ];
 
-async fn push(mirror: &Path, channel: &Arc<Channel>, url: &str, refspecs: &[String]) -> Result<()> {
-    let mut cmd = crate::git_dist::command(mirror);
+/// `git push` from the host repository `from` into the guest at `url`.
+async fn push(from: &Path, channel: &Arc<Channel>, url: &str, refspecs: &[String]) -> Result<()> {
+    let mut cmd = crate::git_dist::command(from);
     cmd.env("GIT_SSH_COMMAND", channel.git_ssh_command());
     cmd.args(["push", "--quiet", url]).args(refspecs);
     let out = output(&mut cmd, "mirror push").await?;

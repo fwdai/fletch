@@ -56,12 +56,13 @@
 //! What touches a checkout from the host goes through the seam, or asks
 //! [`box_holding`] and refuses with the reason. Not in the guest yet, each
 //! refusing or skipping rather than acting on the host's empty placeholder:
-//! the Run panel (`supervisor::run`), verification (`verify`), workflow step
-//! agents (`BoxEngine::launch_agent` refuses a blackboard), and carrying a
-//! checkpoint between a box and another workspace (`git::checkpoint::
-//! fetch_into`: a fork of a box agent). Codegraph runs in the guest from the
-//! tools disk ([`codegraph_bin`]), and the attribution hook refresh reaches
-//! the guest through the seam (`attribution::refresh_hooks`).
+//! the Run panel (`supervisor::run`), verification (`verify`) and workflow
+//! step agents (`BoxEngine::launch_agent` refuses a blackboard). Codegraph
+//! runs in the guest from the tools disk ([`codegraph_bin`]), the attribution
+//! hook refresh reaches the guest through the seam (`attribution::
+//! refresh_hooks`), and a turn checkpoint crosses the box boundary through
+//! the mirror and the channel (`sandbox::carry_checkpoint`: a fork of a box
+//! agent with its code, or into one).
 
 pub mod allowlist;
 pub mod executor;

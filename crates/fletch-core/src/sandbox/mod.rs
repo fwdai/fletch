@@ -501,15 +501,54 @@ pub async fn export_commit(checkout: &Path, sha: &str) -> Result<()> {
     boxes::mirror::export_commit(checkout, sha).await
 }
 
-/// Whether a checkpoint can be fetched from the checkout `source` into the
-/// checkout `dest`: the fetch runs where `dest` lives and names `source` by
-/// path, so both must be on one filesystem — the host, or one box's guest.
-pub fn checkpoint_carry_allowed(source: &Path, dest: &Path) -> bool {
-    match (boxes::box_holding(source), boxes::box_holding(dest)) {
+/// Make `refname` (a turn checkpoint) in the checkout `source` exist in the
+/// checkout `dest` under the same name, force-updated: a re-captured
+/// checkpoint is never a fast-forward of the old one. Wherever each lives:
+///
+/// - on one filesystem (the host, or one box's guest): `dest` fetches from
+///   `source` by path, where `dest` lives;
+/// - out of a box: from the box's host-side mirror, refreshed from `source`
+///   in the guest now (docs/sandbox-foundation.md rule 4), which a host
+///   `dest` fetches from;
+/// - into a box: pushed over the box's channel, from the host `source` or
+///   from the source box's refreshed mirror.
+///
+/// A box on either side is booted if it is stopped: carrying code is a user
+/// action (a fork).
+pub async fn carry_checkpoint(source: &Path, dest: &Path, refname: &str) -> Result<()> {
+    let refspec = format!("+{refname}:{refname}");
+    let from_box = boxes::box_holding(source);
+    let into_box = boxes::box_holding(dest);
+    let one_place = match (&from_box, &into_box) {
         (None, None) => true,
         (Some(s), Some(d)) => s.agent_id == d.agent_id,
-        _ => false,
+        (Some(_), None) | (None, Some(_)) => false,
+    };
+    if one_place {
+        return fetch_ref(dest, source, &refspec).await;
     }
+    let from = match &from_box {
+        Some(identity) => boxes::mirror::refreshed_for(identity, source).await?,
+        None => source.to_path_buf(),
+    };
+    match &into_box {
+        Some(identity) => boxes::mirror::push_into(identity, dest, &from, &[refspec]).await,
+        None => fetch_ref(dest, &from, &refspec).await,
+    }
+}
+
+/// `git fetch --no-tags <from> <refspec>` in `dest`, `from` named by path.
+async fn fetch_ref(dest: &Path, from: &Path, refspec: &str) -> Result<()> {
+    let from = from
+        .to_str()
+        .ok_or_else(|| Error::InvalidPath(from.display().to_string()))?;
+    crate::git::run_git(
+        dest,
+        &["fetch", "--no-tags", from, refspec],
+        "fetch checkpoint",
+    )
+    .await?;
+    Ok(())
 }
 
 /// The interactive shell the user's workspace terminal runs for the checkout

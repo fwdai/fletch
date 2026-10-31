@@ -106,7 +106,7 @@ pub async fn provision_at_remote_base(
 ) -> Result<BaseFreshness> {
     clone_base(spec, shared).await?;
     let base_branch = base_branch.to_string();
-    finish_clone(spec, |dest| async move {
+    fixups(spec, |dest| async move {
         // `rewrite_origin` *removes* the clone's local-path `origin` when the
         // source repo has no remote. There is then nothing to fetch and nothing
         // to be stale against, so take the inherited ref without warning the
@@ -160,7 +160,7 @@ pub async fn provision_at_remote_base(
 /// something the source already has.
 async fn clone_detached(spec: &CheckoutSpec<'_>) -> Result<()> {
     clone_base(spec, true).await?;
-    finish_clone(spec, |dest| async move {
+    fixups(spec, |dest| async move {
         checkout_detached(&dest, spec.base_ref).await
     })
     .await
@@ -184,7 +184,7 @@ async fn clone_detached(spec: &CheckoutSpec<'_>) -> Result<()> {
 /// somewhere else.
 pub async fn provision_forking_run_repo(spec: &CheckoutSpec<'_>, run_repo: &Path) -> Result<()> {
     clone_base(spec, true).await?;
-    finish_clone(spec, |dest| async move {
+    fixups(spec, |dest| async move {
         let remote = path_str(run_repo)?;
         // `<ref>:<ref>`, not a bare source ref: step N's base is the pinned
         // `refs/wf/steps/<prev>` (an explicit ref, so the run repo needs no
@@ -248,7 +248,7 @@ pub async fn provision_on_branch(
     let branch = branch.to_string();
     let origin_branch = origin_branch.to_string();
     let fallback = fallback_ref.map(str::to_string);
-    finish_clone(spec, |dest| async move {
+    fixups(spec, |dest| async move {
         recover_and_checkout(
             &dest,
             spec.source_repo,
@@ -279,7 +279,7 @@ pub async fn provision_recovering(
 ) -> Result<()> {
     clone_base(spec, true).await?;
     let fallback = fallback_ref.map(str::to_string);
-    finish_clone(spec, |dest| async move {
+    fixups(spec, |dest| async move {
         recover_detached(&dest, spec.source_repo, spec.base_ref, fallback.as_deref()).await
     })
     .await
@@ -479,25 +479,33 @@ async fn clone_base(spec: &CheckoutSpec<'_>, shared: bool) -> Result<()> {
     Ok(())
 }
 
-/// Run the shared post-clone fixups, then the mode-specific checkout step.
+/// The fixups every checkout Fletch makes gets once its base is delivered
+/// (docs/sandbox-foundation.md rule 3): a host `git clone` here, a `git init`
+/// in the guest plus a push of the base for a box (`boxes::provision`). Then
+/// `checkout`, the caller's step that puts HEAD somewhere. Every step is git
+/// in the checkout or a write through its executor, so it runs wherever the
+/// checkout lives.
+///
 /// The origin rewrite must come first: the branch-restore checkout may need
 /// to `fetch origin`, which has to hit the real remote, not the source path.
 /// The `origin/HEAD` rewrite must come *last*, for the mirror-image reason —
-/// see [`rewrite_origin_head`]. Any failure tears the half-built clone down so
-/// nothing orphaned blocks a retry (a clone is self-contained, so `rm -rf` is
-/// always safe here).
-async fn finish_clone<F, Fut, T>(spec: &CheckoutSpec<'_>, checkout: F) -> Result<T>
+/// see [`rewrite_origin_head`]. Any failure removes the half-built checkout,
+/// where it lives, so nothing orphaned blocks a retry (a checkout is
+/// self-contained, so removing it is always safe here).
+pub(crate) async fn fixups<F, Fut, T>(spec: &CheckoutSpec<'_>, checkout: F) -> Result<T>
 where
     F: FnOnce(std::path::PathBuf) -> Fut,
     Fut: std::future::Future<Output = Result<T>>,
 {
     let result = async {
-        rewrite_origin(spec).await?;
-        seed_identity(spec).await?;
+        rewrite_origin(spec.source_repo, spec.dest).await?;
+        seed_identity(spec.source_repo, spec.dest).await?;
+        freeze_unsigned(spec.dest).await?;
         install_delegation_hooks(spec.dest).await?;
         crate::attribution::install_hook(spec.dest).await?;
         // Snapshot before the checkout so the cleanup below can tell the heads
-        // `git clone` handed us from any branch the checkout step creates.
+        // `git clone` handed us from any branch the checkout step creates. A
+        // fresh `git init` has none, which leaves the cleanup nothing to do.
         let inherited = local_heads(spec.dest).await;
         let checked_out = checkout(spec.dest.to_path_buf()).await?;
         prune_inherited_heads(spec.dest, &inherited).await;
@@ -506,17 +514,30 @@ where
     }
     .await;
     if result.is_err() {
-        let _ = tokio::fs::remove_dir_all(spec.dest).await;
+        discard(spec.dest).await;
     }
     result
 }
 
-/// Point the clone's `origin` at the source repo's real remote so push/PR/
-/// fetch behave exactly as they would from a checkout. When the source has no
-/// `origin`, the clone's implicit local-path `origin` is *removed*: keeping it
-/// would let `git push -u origin <branch>` silently create branches and
-/// objects inside the user's source repo. With no remote at all, push fails
-/// cleanly — the same terminal state the source repo itself is in.
+/// Remove the checkout at `dest` where it lives (the host, or a box's guest),
+/// best-effort: the cleanup after a failed provisioning.
+pub(crate) async fn discard(dest: &Path) {
+    let dest = dest.to_path_buf();
+    let removed =
+        tokio::task::spawn_blocking(move || crate::exec::for_path(&dest).remove(&dest)).await;
+    if let Ok(Err(e)) = removed {
+        tracing::debug!(error = %e, "removing a half-built checkout failed");
+    }
+}
+
+/// Point the checkout's `origin` at the source repo's real remote so push/PR/
+/// fetch behave exactly as they would from a checkout: `set-url` over the
+/// local-path `origin` a clone starts with, `add` in a fresh `git init` that
+/// has none. When the source has no `origin`, the clone's implicit local-path
+/// `origin` is *removed*: keeping it would let `git push -u origin <branch>`
+/// silently create branches and objects inside the user's source repo. With no
+/// remote at all, push fails cleanly — the same terminal state the source repo
+/// itself is in.
 ///
 /// A github.com SSH remote is written in its HTTPS form
 /// ([`crate::github::github_https_remote`]), always, token or not: over SSH git in
@@ -525,26 +546,30 @@ where
 /// credential; the host's token reaches git only from host-side calls. A user
 /// without a GitHub sign-in in Fletch loses only the base fetch, which falls
 /// back to the local ref.
-async fn rewrite_origin(spec: &CheckoutSpec<'_>) -> Result<()> {
-    let out = git::git_output(spec.source_repo, &["remote", "get-url", "origin"]).await?;
+pub(crate) async fn rewrite_origin(source_repo: &Path, dest: &Path) -> Result<()> {
+    let out = git::git_output(source_repo, &["remote", "get-url", "origin"]).await?;
+    let present = has_origin(dest).await;
     if !out.status.success() {
-        tracing::info!(
-            source = %spec.source_repo.display(),
-            "source repo has no origin remote; removing the clone's local-path remote"
-        );
-        git::run_git(
-            spec.dest,
-            &["remote", "remove", "origin"],
-            "remote remove origin",
-        )
-        .await?;
+        if present {
+            tracing::info!(
+                source = %source_repo.display(),
+                "source repo has no origin remote; removing the checkout's local-path remote"
+            );
+            git::run_git(
+                dest,
+                &["remote", "remove", "origin"],
+                "remote remove origin",
+            )
+            .await?;
+        }
         return Ok(());
     }
     let url = crate::github::github_https_remote(&String::from_utf8_lossy(&out.stdout));
+    let verb = if present { "set-url" } else { "add" };
     git::run_git(
-        spec.dest,
-        &["remote", "set-url", "origin", &url],
-        "remote set-url origin",
+        dest,
+        &["remote", verb, "origin", &url],
+        &format!("remote {verb} origin"),
     )
     .await?;
     Ok(())
@@ -579,7 +604,7 @@ async fn rewrite_origin(spec: &CheckoutSpec<'_>) -> Result<()> {
 /// conventional names and finally to `"main"`. A merely conventional guess is
 /// recoverable; confidently naming the user's in-progress branch as the repo
 /// default is the bug.
-pub(crate) async fn rewrite_origin_head(spec: &CheckoutSpec<'_>) {
+async fn rewrite_origin_head(spec: &CheckoutSpec<'_>) {
     // `rewrite_origin` *removes* the remote when the source has none, taking
     // every `refs/remotes/origin/*` with it — including the bad symref. There
     // is nothing left to correct, and no remote to correct it against.
@@ -688,7 +713,8 @@ async fn prune_inherited_heads(dest: &Path, inherited: &[String]) {
     }
 }
 
-/// Install Fletch's delegation-signal git hooks into the clone's `.git/hooks`.
+/// Install Fletch's delegation-signal git hooks into the checkout's
+/// `.git/hooks`.
 ///
 /// With local git mutations (commit, merge, conflict-resolve) now running as
 /// native in-container git rather than host RPC ops, the old "a mutating RPC op
@@ -707,36 +733,45 @@ async fn prune_inherited_heads(dest: &Path, inherited: &[String]) {
 /// (`sandbox::policy::GIT_EXEC_CONFIG_DIRS`), so the payload cannot be replaced
 /// after this install. The hook is best-effort and always
 /// exits 0, so a missing mailbox or a slow write can never fail the agent's
-/// commit. Installed only for clones (this is the clone-arm path); a linked
-/// worktree's hooks live in the user's real repo and must never be touched.
+/// commit. Installed only for checkouts Fletch made; a linked worktree's hooks
+/// live in the user's real repo and must never be touched.
+///
+/// Written through the checkout's executor (`exec::Executor::write_beneath`),
+/// executable, with any missing directory created: on the host without
+/// following a link the agent planted, in a box where the checkout lives.
 async fn install_delegation_hooks(dest: &Path) -> Result<()> {
-    let hooks_dir = dest.join(".git/hooks");
-    // A fresh clone always has `.git/hooks`, but create it defensively so a
-    // future object-layout change can't silently drop the signal.
-    tokio::fs::create_dir_all(&hooks_dir).await?;
     // post-merge fires on a completed clean `git merge` (fast-forward or merge
     // commit): the action is unambiguously a base merge.
-    let post_merge = hooks_dir.join("post-merge");
-    tokio::fs::write(
-        &post_merge,
-        delegation_hook_script(r#"action="git_update_branch""#),
-    )
-    .await?;
-    set_executable(&post_merge).await?;
+    //
     // post-commit fires on *every* plain `git commit` — including the commit
     // that completes a *conflicted* merge, which never reaches post-merge. Those
     // two cases must report different actions or an unrelated commit made during
     // an `update-branch` delegation would falsely satisfy it. A merge-completion
     // commit is a merge commit (it has a second parent, `HEAD^2`); a plain commit
     // does not — so branch on that.
-    let post_commit = hooks_dir.join("post-commit");
-    tokio::fs::write(&post_commit, delegation_hook_script(POST_COMMIT_ACTION)).await?;
-    set_executable(&post_commit).await?;
-    Ok(())
+    let hooks = [
+        (
+            "post-merge",
+            delegation_hook_script(r#"action="git_update_branch""#),
+        ),
+        ("post-commit", delegation_hook_script(POST_COMMIT_ACTION)),
+    ];
+    let dest = dest.to_path_buf();
+    tokio::task::spawn_blocking(move || -> Result<()> {
+        let exec = crate::exec::for_path(&dest);
+        for (name, body) in hooks {
+            let rel = Path::new(".git/hooks").join(name);
+            // 0755: git silently ignores a hook that is not executable.
+            exec.write_beneath(&dest, &rel, body.as_bytes(), 0o755)?;
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|e| Error::Other(format!("delegation hooks task: {e}")))?
 }
 
 /// post-commit's `set_action`: a merge-completion commit has a second parent.
-pub(crate) const POST_COMMIT_ACTION: &str = concat!(
+const POST_COMMIT_ACTION: &str = concat!(
     "if git rev-parse -q --verify HEAD^2 >/dev/null 2>&1; then\n",
     "  action=\"git_update_branch\"\n",
     "else\n",
@@ -747,11 +782,11 @@ pub(crate) const POST_COMMIT_ACTION: &str = concat!(
 /// The body of a delegation hook. `set_action` is a shell fragment that assigns
 /// the reported op to `$action` (a literal for post-merge, a merge-commit test
 /// for post-commit). POSIX `sh`, no bashisms: runs in the container image's
-/// shell and macOS `/bin/sh` alike. Writes the mailbox request atomically
-/// (`.tmp` then `mv`) so the watcher never reads a half-written file, and
-/// swallows every error — the git op must not depend on the signal landing.
-/// The box engine writes the same script over its channel.
-pub(crate) fn delegation_hook_script(set_action: &str) -> String {
+/// shell, a box's guest and macOS `/bin/sh` alike. Writes the mailbox request
+/// atomically (`.tmp` then `mv`) so the watcher never reads a half-written
+/// file, and swallows every error — the git op must not depend on the signal
+/// landing.
+fn delegation_hook_script(set_action: &str) -> String {
     format!(
         r#"#!/bin/sh
 # Fletch-managed: delegation signal. Pings the app RPC mailbox so the panel can
@@ -770,17 +805,7 @@ exit 0
     )
 }
 
-/// Mark a file user/group/other-executable (0755). The hooks must be executable
-/// or git silently ignores them.
-async fn set_executable(path: &Path) -> Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    let mut perms = tokio::fs::metadata(path).await?.permissions();
-    perms.set_mode(0o755);
-    tokio::fs::set_permissions(path, perms).await?;
-    Ok(())
-}
-
-/// Seed the clone with a git identity it can commit under **without** the
+/// Seed the checkout with a git identity it can commit under **without** the
 /// host's global gitconfig. A container can't see that file, so with local git
 /// mutations now running as native in-container `git commit`, a clone that
 /// inherited its identity only from the host's global config would die with
@@ -789,42 +814,42 @@ async fn set_executable(path: &Path) -> Result<()> {
 ///
 /// Write the *effective* identity the source repo resolves (`--get`, i.e.
 /// local ▸ global ▸ system — exactly what the host itself would author with)
-/// into the clone's own config, and fill any half the host can't resolve from
+/// into `dest`'s own config, and fill any half the host can't resolve from
 /// the signed-in profile / neutral default. This is the same fallback
-/// `git::identity_env` applied, but persisted into the clone so in-container
-/// git sees it. Clones are ephemeral, so freezing the value here is harmless.
-///
-/// Commit signing is frozen **off** in the same place. The seatbelt engine, unlike
-/// a container, lets git read the host's global gitconfig, so a user with
-/// `commit.gpgsign=true` hands the sandbox a signing *policy* without the key:
-/// `~/.ssh` and the ssh-agent socket are denied to agents (`seatbelt::
-/// deny_host_git_credentials`), and gpg's keyring is nothing the sandbox should
-/// hold either. Every `git commit` would then die with "failed to write commit
-/// object". The clone's local scope outranks global, so this one key makes the
-/// sandbox match the container engines — unsigned — while the user's own repos
-/// keep signing. Where a signature is wanted, the host — which holds the key —
-/// is the place to make it.
-pub(crate) async fn seed_identity(spec: &CheckoutSpec<'_>) -> Result<()> {
+/// `git::identity_env` applied, but persisted into the checkout so
+/// in-container git sees it. Checkouts are ephemeral, so freezing the value
+/// here is harmless. Also what a workflow run repo gets
+/// (`workflow::gitops::provision_run_repo`).
+pub(crate) async fn seed_identity(source_repo: &Path, dest: &Path) -> Result<()> {
     let (fallback_name, fallback_email) = crate::git_dist::fallback_identity();
     for (key, fallback) in [("user.name", fallback_name), ("user.email", fallback_email)] {
         // `--get` (no `--local`) is the effective value across every scope;
         // empty or exit-1 means the host resolves nothing, so fall back.
-        let effective = git::git_output(spec.source_repo, &["config", "--get", key])
+        let effective = git::git_output(source_repo, &["config", "--get", key])
             .await
             .ok()
             .filter(|out| out.status.success())
             .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
             .filter(|v| !v.is_empty());
         let value = effective.unwrap_or(fallback);
-        git::run_git(
-            spec.dest,
-            &["config", key, &value],
-            &format!("config {key}"),
-        )
-        .await?;
+        git::run_git(dest, &["config", key, &value], &format!("config {key}")).await?;
     }
+    Ok(())
+}
+
+/// Freeze commit signing **off** in the checkout. The seatbelt engine, unlike
+/// a container, lets git read the host's global gitconfig, so a user with
+/// `commit.gpgsign=true` hands the sandbox a signing *policy* without the key:
+/// `~/.ssh` and the ssh-agent socket are denied to agents (`seatbelt::
+/// deny_host_git_credentials`), and gpg's keyring is nothing the sandbox should
+/// hold either. Every `git commit` would then die with "failed to write commit
+/// object". The checkout's local scope outranks global, so this one key makes
+/// the sandbox match the container engines — unsigned — while the user's own
+/// repos keep signing. Where a signature is wanted, the host — which holds the
+/// key — is the place to make it.
+async fn freeze_unsigned(dest: &Path) -> Result<()> {
     git::run_git(
-        spec.dest,
+        dest,
         &["config", "commit.gpgsign", "false"],
         "config commit.gpgsign",
     )
