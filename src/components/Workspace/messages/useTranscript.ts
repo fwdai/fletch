@@ -51,6 +51,14 @@ export interface Transcript {
   log: unknown;
 }
 
+/** Whether an item has anything to show. A text delta of only whitespace
+ *  ("\n\n" between two tool calls) opens an agent message that renders as
+ *  nothing — but would still stand between the calls and split one run of
+ *  steps into two. */
+function isShown(item: ChatItem): boolean {
+  return item.kind !== "agent_message" || item.text.trim().length > 0;
+}
+
 /** An agent's own conversation: its log from the store, loaded from history
  *  on first sight (useHistoryLoad), derived for display (useTranscriptFrom). */
 export function useTranscript(agent: AgentRecord): Transcript {
@@ -112,7 +120,7 @@ export function useTranscriptFrom(
 
   const items = useMemo(() => {
     const adapter = getAdapter(agent.provider);
-    const visible = applyPolicy(log ?? [], adapter.policy);
+    const visible = applyPolicy(log ?? [], adapter.policy).filter(isShown);
     return pairToolItems(visible, pairCache.current);
   }, [log, agent.provider]);
 

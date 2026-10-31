@@ -274,6 +274,41 @@ describe("claudeAdapter.reduce — extended thinking", () => {
     expect(twice).toEqual(once);
   });
 
+  // Claude persists each content block as its own record, so the thinking
+  // before a tool call is a record holding nothing else. The rebuild that
+  // replaces the live log at turn end runs through here; dropping these made
+  // a turn's reasoning vanish from the chat the moment the turn ended.
+  it("keeps thinking-only transcript records, in order, and skips redacted ones", () => {
+    const assistant = (block: Record<string, unknown>) => ({
+      type: "assistant",
+      message: { id: "m1", role: "assistant", content: [block] },
+    });
+    const lines = [
+      { type: "user", message: { role: "user", content: "go" } },
+      assistant({ type: "thinking", thinking: "", signature: "redacted" }),
+      assistant({ type: "thinking", thinking: "Check the reducer first.", signature: "s" }),
+      assistant({ type: "tool_use", id: "t1", name: "Read", input: { file_path: "/a" } }),
+      {
+        type: "user",
+        message: {
+          role: "user",
+          content: [{ type: "tool_result", tool_use_id: "t1", content: "x" }],
+        },
+      },
+      assistant({ type: "thinking", thinking: "Now edit it.", signature: "s" }),
+      assistant({ type: "text", text: "Done." }),
+    ];
+    const items = reduceAll(claudeAdapter.normalizeTranscript(lines));
+    expect(items.map((i) => (i.kind === "notice" ? `reasoning:${i.text}` : i.kind))).toEqual([
+      "user_message",
+      "reasoning:Check the reducer first.",
+      "tool_call",
+      "tool_result",
+      "reasoning:Now edit it.",
+      "agent_message",
+    ]);
+  });
+
   it("exposes a reasoning-visible policy", () => {
     expect(claudeAdapter.policy["notice:reasoning"]).toBe("show");
   });
