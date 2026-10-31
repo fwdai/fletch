@@ -56,16 +56,21 @@ a release asset without a chunk list, or a server without ranges, falls back
 to a whole download. Installed images live under `<data dir>/box/images/<version>/`.
 
 Two things are coupled and nothing else: the image VERSION and the app's pin.
-An image is published once per version and never replaced.
+One rule governs publishing: **a version names one set of inputs**. `publish.sh`
+records the source trees (`packaging/box-image`, `crates/fletch-guest`) in the
+release as `inputs.json`; publishing the same inputs again is a no-op, other
+inputs under an existing version are an error, so every run of the Box image
+workflow checks this first and a change without a VERSION bump fails at the
+pull request.
 
 ## Workflows
 
 | Workflow | When | Does |
 | --- | --- | --- |
-| **Box image** (`box-image.yml`) | PR touching `packaging/box-image`, `crates/fletch-guest` | Builds and tests the images; uploads them as an artifact; publishes nothing |
-| | Push to `main` touching them | Same, then publishes `box-image-v<VERSION>` unless it exists |
+| **Box image** (`box-image.yml`) | PR touching `packaging/box-image`, `crates/fletch-guest` | Checks VERSION is unreleased or released from these inputs; builds and tests; uploads the images as an artifact; publishes nothing |
+| | Push to `main` touching them | Same, then publishes `box-image-v<VERSION>`; a no-op when the release with these inputs exists |
 | | Run workflow | Same on any branch; `publish` to publish from a branch before merging (so the pin never names a missing release) |
-| **Box image bump** (`box-image-bump.yml`) | Mondays 06:00 UTC, or by hand | `bump.sh`: newest Debian snapshot and Node 22 release, VERSION patch bump, app pin bump. Builds and tests. Tests green: publishes the release. Either way opens or refreshes the PR `chore/box-image-bump` with the report. Merge it to adopt; close it to skip |
+| **Box image bump** (`box-image-bump.yml`) | Mondays 06:00 UTC, or by hand | `bump.sh`: newest Debian snapshot and Node 22 release, VERSION patch bump, app pin bump, committed on `chore/box-image-bump`. Builds and tests that commit. Tests green: publishes the release. Either way opens or refreshes the PR with the report. Merge it to adopt (main's publish then finds the release in place); close it to skip |
 
 Both run `.github/actions/box-image`: fletch-guest cross-build, `build.sh` in
 a privileged `debian:trixie` container on the arm64 runner, `test.sh` in the

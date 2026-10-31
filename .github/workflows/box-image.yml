@@ -6,11 +6,13 @@ name: Box image
 # what `fletch-box`'s ImageStore downloads. The app boots the version
 # `PinnedImage::VERSION` names. See docs/box.md.
 #
-# - A pull request touching the image builds and tests it; nothing is published.
-# - A push to main that touches it publishes the release for VERSION, unless
-#   that release exists already (an image is never republished under a version).
+# One rule holds throughout: a version names one set of inputs (publish.sh
+# records the source tree ids in the release). So:
+# - A pull request touching the image builds and tests it, and fails if VERSION
+#   is already released from other inputs (bump VERSION); nothing is published.
+# - A push to main that touches it publishes VERSION, or does nothing when the
+#   release with these inputs exists (published from the branch, or by the bump).
 # - Run workflow: build and test on any branch, publishing when asked.
-# The weekly bump (box-image-bump.yml) publishes its own release the same way.
 on:
   pull_request:
     paths:
@@ -44,6 +46,13 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
+
+      - name: VERSION names these inputs
+        # Before the build: a changed image under an already released VERSION
+        # fails here, in minutes, rather than after merging.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: packaging/box-image/publish.sh --check "$(cat packaging/box-image/VERSION)"
 
       - name: Build and test
         id: image

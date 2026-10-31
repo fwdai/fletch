@@ -26,6 +26,7 @@
 pub mod chunks;
 mod fetch;
 
+use std::collections::HashSet;
 use std::fs::{self, File};
 use std::io;
 use std::ops::ControlFlow;
@@ -96,6 +97,57 @@ impl ImageManifest {
 
     pub fn base(&self) -> Option<&ImageEntry> {
         self.image(BASE)
+    }
+
+    /// Holds the manifest to what the store relies on: it describes
+    /// `version`; exactly one entry is the base and its file is `base.erofs`
+    /// ([`InstalledImage::path`]); every entry has a distinct name, a distinct
+    /// plain file name that is not the manifest's, a non-zero size and a
+    /// well-formed sha256 (lowercased here). A fetched manifest and one read
+    /// back from an installed directory both pass through this, so nothing
+    /// downstream re-checks.
+    pub fn validate(&mut self, version: &str) -> std::result::Result<(), String> {
+        if self.version != version {
+            return Err(format!(
+                "describes image {}, not the {version} this build boots",
+                self.version
+            ));
+        }
+        let bases = self.images.iter().filter(|e| e.name == BASE).count();
+        if bases != 1 {
+            return Err(format!("has {bases} base entries, not one"));
+        }
+        let plain = |s: &str| !s.is_empty() && !s.contains('/') && !s.starts_with('.');
+        let mut names = HashSet::new();
+        let mut files = HashSet::new();
+        for entry in &mut self.images {
+            if !plain(&entry.name) {
+                return Err(format!("an entry is named {:?}", entry.name));
+            }
+            if !plain(&entry.file) || entry.file == MANIFEST {
+                return Err(format!("`{}` names the file {:?}", entry.name, entry.file));
+            }
+            if entry.name == BASE && entry.file != BASE_IMAGE {
+                return Err(format!(
+                    "the base's file is {:?}, not {BASE_IMAGE}",
+                    entry.file
+                ));
+            }
+            if !names.insert(entry.name.clone()) {
+                return Err(format!("two entries are named `{}`", entry.name));
+            }
+            if !files.insert(entry.file.clone()) {
+                return Err(format!("two entries share the file {:?}", entry.file));
+            }
+            if entry.size == 0 {
+                return Err(format!("`{}` has size 0", entry.name));
+            }
+            entry.sha256 = entry.sha256.to_ascii_lowercase();
+            if !well_formed_sha256(&entry.sha256) {
+                return Err(format!("`{}`'s sha256 is not 64 hex digits", entry.name));
+            }
+        }
+        Ok(())
     }
 
     /// The entries an install of `layers` needs: the base, then each named
@@ -446,24 +498,22 @@ impl ImageStore {
 /// The image in `dir`, if it has a manifest for `version` and a non-empty
 /// base file; the layers are the manifest's other entries whose file is there.
 fn image_at(dir: PathBuf, version: &str) -> Option<InstalledImage> {
-    let manifest: ImageManifest =
+    let mut manifest: ImageManifest =
         serde_json::from_slice(&fs::read(dir.join(MANIFEST)).ok()?).ok()?;
-    if manifest.version != version {
-        return None;
-    }
+    manifest.validate(version).ok()?;
     let present = |file: &str| {
         fs::metadata(dir.join(file))
             .map(|m| m.is_file() && m.len() > 0)
             .unwrap_or(false)
     };
     let base = manifest.base()?;
-    if !present(&base.file) || !well_formed_sha256(&base.sha256) {
+    if !present(&base.file) {
         return None;
     }
     let layers = manifest
         .images
         .iter()
-        .filter(|e| e.name != BASE && present(&e.file) && well_formed_sha256(&e.sha256))
+        .filter(|e| e.name != BASE && present(&e.file))
         .map(|e| InstalledLayer {
             name: e.name.clone(),
             file: e.file.clone(),
@@ -509,10 +559,8 @@ pub(crate) fn sha256_of(mut reader: impl io::Read) -> io::Result<String> {
     Ok(format!("{:x}", hasher.finalize()))
 }
 
-/// The `manifest.json` of `image`'s release, checked to describe that version
-/// with a base entry and, for every entry, a plain file name, a non-zero size
-/// and a well-formed sha256 (returned lowercase). A `file://` base is read
-/// from disk.
+/// The `manifest.json` of `image`'s release, held to [`ImageManifest::validate`]
+/// for that version. A `file://` base is read from disk.
 async fn fetch_manifest(image: &PinnedImage) -> Result<ImageManifest> {
     let url = image.manifest_url();
     let bad = |message: String| Error::Manifest {
@@ -536,33 +584,7 @@ async fn fetch_manifest(image: &PinnedImage) -> Result<ImageManifest> {
     };
     let mut manifest: ImageManifest =
         serde_json::from_slice(&bytes).map_err(|e| bad(e.to_string()))?;
-    if manifest.version != image.version {
-        return Err(bad(format!(
-            "describes image {}, not the {} this build boots",
-            manifest.version, image.version
-        )));
-    }
-    if manifest.base().is_none() {
-        return Err(bad("has no base image".to_owned()));
-    }
-    for entry in &mut manifest.images {
-        if entry.file.is_empty() || entry.file.contains('/') || entry.file.starts_with('.') {
-            return Err(bad(format!(
-                "`{}` names the file {:?}",
-                entry.name, entry.file
-            )));
-        }
-        if entry.size == 0 {
-            return Err(bad(format!("`{}` has size 0", entry.name)));
-        }
-        entry.sha256 = entry.sha256.to_ascii_lowercase();
-        if !well_formed_sha256(&entry.sha256) {
-            return Err(bad(format!(
-                "`{}`'s sha256 is not 64 hex digits",
-                entry.name
-            )));
-        }
-    }
+    manifest.validate(&image.version).map_err(bad)?;
     Ok(manifest)
 }
 
@@ -653,6 +675,59 @@ mod tests {
         assert!(file_matches(&path, None, &HELLO_SHA256.to_ascii_uppercase()).unwrap());
         assert!(!file_matches(&path, Some(6), HELLO_SHA256).unwrap());
         assert!(!file_matches(&path, None, &"0".repeat(64)).unwrap());
+    }
+
+    /// Every shape the store would misread is refused by the one gate both
+    /// a download and an installed directory pass through.
+    #[test]
+    fn a_manifest_is_held_to_the_stores_assumptions() {
+        let good: ImageManifest =
+            serde_json::from_str(&manifest_json("1.0.0", b"base", &[("devtools", b"d")])).unwrap();
+        let mut ok = good.clone();
+        ok.images[0].sha256 = ok.images[0].sha256.to_uppercase();
+        assert!(ok.validate("1.0.0").is_ok());
+        assert_eq!(ok.images[0].sha256, good.images[0].sha256, "lowercased");
+        let refused = |edit: &dyn Fn(&mut ImageManifest), why: &str| {
+            let mut m = good.clone();
+            edit(&mut m);
+            assert!(m.validate("1.0.0").is_err(), "{why}");
+        };
+        assert!(good.clone().validate("1.0.1").is_err(), "another version");
+        refused(
+            &|m| m.images[0].file = "root.img".into(),
+            "the base must be base.erofs",
+        );
+        refused(
+            &|m| {
+                m.images.remove(0);
+            },
+            "no base",
+        );
+        refused(&|m| m.images.push(m.images[0].clone()), "two bases");
+        refused(&|m| m.images[1].name = "base".into(), "two bases by name");
+        refused(
+            &|m| m.images[1].file = BASE_IMAGE.into(),
+            "two entries, one file",
+        );
+        refused(
+            &|m| m.images[1].file = MANIFEST.into(),
+            "a file named like the manifest",
+        );
+        refused(&|m| m.images[1].file = "../x".into(), "a path, not a name");
+        refused(&|m| m.images[1].name = String::new(), "an unnamed entry");
+        refused(&|m| m.images[1].size = 0, "an empty file");
+        refused(&|m| m.images[1].sha256 = "nope".into(), "a malformed hash");
+
+        // An installed directory whose manifest fails the gate is not an image.
+        let root = tempfile::tempdir().unwrap();
+        let store = ImageStore::new(root.path());
+        let dir = store.dir().join("1.0.0");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("root.img"), b"base").unwrap();
+        let mut bad = good.clone();
+        bad.images[0].file = "root.img".into();
+        fs::write(dir.join(MANIFEST), serde_json::to_vec(&bad).unwrap()).unwrap();
+        assert!(store.find("1.0.0").is_none());
     }
 
     #[test]

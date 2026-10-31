@@ -2,12 +2,14 @@ name: Box image bump
 
 # Keeps the box image's dependencies current without anyone editing pins:
 # every week, packaging/box-image/bump.sh moves the Debian snapshot and the
-# Node release, bumps the image VERSION and the app's pin; the images are
-# built and tested; if the tests pass the release box-image-v<VERSION> is
-# published; either way one pull request (branch chore/box-image-bump) is
-# opened or refreshed with the report. Merging it adopts the new image in the
-# next app release; closing it leaves an unused release behind, nothing more.
-# See docs/box.md.
+# Node release, bumps the image VERSION and the app's pin, and that is
+# committed on the branch chore/box-image-bump; the images are built and
+# tested from that commit; if the tests pass the release box-image-v<VERSION>
+# is published (idempotent: publish.sh records the inputs); either way one pull
+# request is opened or refreshed with the report. Merging it adopts the new
+# image in the next app release (main's own publish then finds the release in
+# place and does nothing); closing it leaves an unused release behind. See
+# docs/box.md.
 on:
   schedule:
     - cron: "0 6 * * 1" # Mondays 06:00 UTC
@@ -43,6 +45,19 @@ jobs:
         if: steps.bump.outputs.changed == 'no'
         run: echo "The pins are current; no build, no pull request." >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Commit the bump
+        # Before the build, so the inputs publish.sh records are the committed trees.
+        if: steps.bump.outputs.changed == 'yes'
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B chore/box-image-bump
+          git add packaging/box-image/build.sh packaging/box-image/VERSION crates/fletch-box/src/image_store/mod.rs
+          git commit -q -m "chore(box-image): bump to ${{ steps.bump.outputs.version }}
+
+          $(sed -n '/->/p' bump.txt)"
+
       - name: Build and test
         if: steps.bump.outputs.changed == 'yes'
         id: image
@@ -69,15 +84,7 @@ jobs:
         run: |
           set -euo pipefail
           BRANCH=chore/box-image-bump
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git checkout -B "$BRANCH"
-          git add packaging/box-image/build.sh packaging/box-image/VERSION crates/fletch-box/src/image_store/mod.rs
-          git commit -q -m "chore(box-image): bump to $VERSION
-
-          $(sed -n '/->/p' bump.txt)"
           git push -f origin "$BRANCH"
-
           if [ "$OUTCOME" = success ]; then
             TITLE="chore(box-image): bump to $VERSION"
             STATUS="Built, tested and published as \`box-image-v$VERSION\`. Merging adopts it (the app's pin is bumped here)."
