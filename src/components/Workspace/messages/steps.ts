@@ -88,7 +88,9 @@ export function summarizeSteps(items: ViewItem[]): StepSummary {
     const facts = stepFacts(c.call, item.kind === "tool_pair" ? item.result : null);
     switch (facts.kind) {
       case "change":
-        if (facts.path && !s.changed.paths.includes(facts.path)) s.changed.paths.push(facts.path);
+        for (const path of facts.paths ?? (facts.path ? [facts.path] : [])) {
+          if (!s.changed.paths.includes(path)) s.changed.paths.push(path);
+        }
         s.changed.additions += facts.additions ?? 0;
         s.changed.deletions += facts.deletions ?? 0;
         break;

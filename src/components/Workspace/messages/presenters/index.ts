@@ -6,7 +6,10 @@ import { defaultPresenter } from "./default";
 import { editPresenter } from "./Edit";
 import { globPresenter } from "./Glob";
 import { grepPresenter } from "./Grep";
+import { inferActivity, inferFacts } from "./infer";
+import { listPresenter } from "./List";
 import { multiEditPresenter } from "./MultiEdit";
+import { patchPresenter } from "./Patch";
 import { planPresenter } from "./Plan";
 import { readPresenter } from "./Read";
 import { taskCreatePresenter } from "./TaskCreate";
@@ -17,6 +20,10 @@ import { writePresenter } from "./Write";
 
 export type { StepFacts, StepKind, ToolCall, ToolPresenter, ToolResult } from "./types";
 
+// Keyed by the name each provider's reducer hands over; the lookup is
+// case-insensitive, so Cursor's `read`, OpenCode's `bash` and Pi's `write`
+// land on Claude's presenters without entries of their own. Names that differ
+// in more than case get an entry here.
 export const PRESENTERS: Record<string, ToolPresenter> = {
   Agent: agentPresenter,
   // Cursor's sub-agent tool (and Claude's former name for its own): same input
@@ -25,12 +32,22 @@ export const PRESENTERS: Record<string, ToolPresenter> = {
   Bash: bashPresenter,
   // Codex and Cursor name their shell tool `shell`; same UI as Claude's `Bash`.
   shell: bashPresenter,
+  // Codex's replayed `exec_command` / `exec` (a bare command string).
+  exec_command: bashPresenter,
+  exec: bashPresenter,
   Read: readPresenter,
   Edit: editPresenter,
   MultiEdit: multiEditPresenter,
   Write: writePresenter,
+  // Codex's `apply_patch` and OpenCode's `patch`: one text, several files.
+  apply_patch: patchPresenter,
+  patch: patchPresenter,
   Grep: grepPresenter,
   Glob: globPresenter,
+  // Directory listings: Claude `LS`, Cursor `ls`, OpenCode `list`, Antigravity `list_dir`.
+  LS: listPresenter,
+  list: listPresenter,
+  list_dir: listPresenter,
   TaskCreate: taskCreatePresenter,
   TodoWrite: planPresenter,
   // Codex's checklist tool; same list, `plan: [{ step, status }]`.
@@ -81,17 +98,13 @@ export function toolLabel(name: string): string {
 }
 
 /** What a call did, for the summary over its run of steps. A tool without a
- *  presenter of its own is an `other` step, named. */
+ *  presenter of its own is placed by its name and input (presenters/infer.ts):
+ *  `write_to_file` is a change, `run_command` a run, `grep_search` a search. */
 export function stepFacts(call: ToolCall, result: ToolResult | null): StepFacts {
-  return (
-    getPresenter(call.name).facts?.(call, result) ?? {
-      kind: "other",
-      subject: toolLabel(call.name),
-    }
-  );
+  return getPresenter(call.name).facts?.(call, result) ?? inferFacts(call);
 }
 
 /** Present tense for the live line while `call` runs. */
 export function stepActivity(call: ToolCall): string {
-  return getPresenter(call.name).activity?.(call) ?? `Using ${toolLabel(call.name)}`;
+  return getPresenter(call.name).activity?.(call) ?? inferActivity(call);
 }

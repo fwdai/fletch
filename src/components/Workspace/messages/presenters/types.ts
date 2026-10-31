@@ -17,6 +17,8 @@ export interface StepFacts {
   /** The file a change or read touched (full path; the summary shows its
    *  basename). */
   path?: string;
+  /** Every file a change touched, when one call touches several (a patch). */
+  paths?: string[];
   additions?: number;
   deletions?: number;
   /** A short name for the step when the summary names it rather than counts

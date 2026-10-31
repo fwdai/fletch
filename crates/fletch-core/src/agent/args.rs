@@ -91,6 +91,16 @@ pub(crate) fn prepare_managed_args(spec: &SpawnSpec<'_>, mcp_args: &[String]) ->
     // question tools, which it holds open so the user actually answers — see
     // managed_session.rs. `bypassPermissions` can't do this: it auto-denies
     // AskUserQuestion before the client is consulted.
+    //
+    // `--thinking-display summarized` asks for a readable summary of each
+    // thinking phase. Left unset, claude in print mode leaves the display to
+    // the server, which redacts the reasoning to an empty block and shares a
+    // one-line note for only some phases (observed: 55 of 234 in one session)
+    // — so the chat had almost no thoughts to show. The flag is hidden from
+    // `--help` but parsed (2.1.314: choices summarized, omitted, highlights);
+    // an older claude without it refuses to launch, as with any flag here.
+    // Whatever comes back, an empty thinking block still shows nothing
+    // (src/adapters/claude/reduce.ts).
     let mut args: Vec<String> = vec![
         "--print".into(),
         "--input-format".into(),
@@ -99,6 +109,8 @@ pub(crate) fn prepare_managed_args(spec: &SpawnSpec<'_>, mcp_args: &[String]) ->
         "stream-json".into(),
         "--verbose".into(),
         "--include-partial-messages".into(),
+        "--thinking-display".into(),
+        "summarized".into(),
         "--permission-mode".into(),
         "default".into(),
         "--permission-prompt-tool".into(),

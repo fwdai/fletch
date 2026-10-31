@@ -4,7 +4,7 @@
 
 import { type ReactNode, useMemo, useState } from "react";
 import { Button } from "@/components/ui/Button";
-import { lineDiffLines } from "@/util/lineDiff";
+import { type DiffLine, lineDiffLines } from "@/util/lineDiff";
 import { stringifyInput } from "@/util/toolText";
 
 /** Lines a surface renders before offering the rest behind "Show all". A long
@@ -106,8 +106,14 @@ export function CodeSurface({ text, isError }: { text: string; isError?: boolean
  *  here, when the surface mounts — not for every collapsed row. */
 export function DiffSurface({ before, after }: { before: string; after: string }) {
   const lines = useMemo(() => lineDiffLines(before, after), [before, after]);
-  const { shown, rest, showAll } = useBudget(lines);
   if (lines.length === 0) return <Caption>No changes</Caption>;
+  return <DiffRows lines={lines} />;
+}
+
+/** Diff lines already worked out — a patch the agent wrote itself — on the
+ *  same surface as `DiffSurface`. */
+export function DiffRows({ lines }: { lines: DiffLine[] }) {
+  const { shown, rest, showAll } = useBudget(lines);
   return (
     <div className="tb-code tb-diff">
       {shown.map((l, i) => (

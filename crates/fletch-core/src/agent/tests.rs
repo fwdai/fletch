@@ -682,6 +682,22 @@ fn pi_args_thinking_when_set() {
     assert!(args.args.contains(&"xhigh".to_string()));
 }
 
+/// The custom view asks claude for readable thinking summaries; the native
+/// view is claude's own TUI, which picks its display itself.
+#[test]
+fn managed_args_ask_for_summarized_thinking_and_pty_args_do_not() {
+    let spec = claude_spec(SessionStart::Fresh);
+    let managed = prepare_managed_args(&spec, &[]);
+    let at = managed
+        .iter()
+        .position(|a| a == "--thinking-display")
+        .expect("managed args carry --thinking-display");
+    assert_eq!(managed[at + 1], "summarized");
+    assert!(!prepare_pty_args(&spec, &[])
+        .iter()
+        .any(|a| a == "--thinking-display"));
+}
+
 #[test]
 fn effort_args_present_when_set() {
     assert_eq!(
