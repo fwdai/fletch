@@ -105,27 +105,6 @@ pub struct PerTurnAgent {
     session: Box<ExecSession>,
 }
 
-/// One per-turn process invocation. Most providers take the user prompt on
-/// stdin; the few that require it as an argument leave `stdin` unset.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct TurnInvocation {
-    pub(crate) args: Vec<String>,
-    pub(crate) stdin: Option<String>,
-}
-
-impl TurnInvocation {
-    pub(crate) fn with_stdin(args: Vec<String>, stdin: String) -> Self {
-        Self {
-            args,
-            stdin: Some(stdin),
-        }
-    }
-
-    pub(crate) fn args(args: Vec<String>) -> Self {
-        Self { args, stdin: None }
-    }
-}
-
 /// The per-turn inputs a `*_build_args` builder turns into an invocation.
 /// Bundled so builders and their call sites read as named fields instead of a
 /// row of positional `Option<&str>`s. `Default` (all-`None`, empty prompt)

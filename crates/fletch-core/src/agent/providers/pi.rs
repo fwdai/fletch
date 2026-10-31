@@ -164,7 +164,7 @@ fn pi_prompt(record: &Value) -> Option<String> {
 /// it's the resume flag common to the versions we target — 0.74.x lacks
 /// `--session-id` entirely. Verified end-to-end against pi 0.74.2. Pi runs in
 /// the child's cwd; the prompt is streamed on stdin.
-pub(crate) fn pi_build_args(turn: &TurnArgs) -> crate::agent::TurnInvocation {
+pub(crate) fn pi_build_args(turn: &TurnArgs) -> crate::exec_session::TurnInvocation {
     let &TurnArgs {
         prompt,
         session_id,
@@ -181,7 +181,7 @@ pub(crate) fn pi_build_args(turn: &TurnArgs) -> crate::agent::TurnInvocation {
     }
     args.extend(instructions::append_system_prompt_args(extra));
     push_opt(&mut args, "--session", session_id);
-    crate::agent::TurnInvocation::with_stdin(args, prompt.to_string())
+    crate::exec_session::TurnInvocation::with_stdin(args, prompt.to_string())
 }
 
 /// Pi as a one-shot completion (`OneShot`), per `pi --help` (0.78.0): print

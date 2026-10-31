@@ -25,7 +25,6 @@ use std::time::Duration;
 
 use serde_json::Value;
 
-use crate::agent::TurnInvocation;
 use crate::child_io;
 use crate::error::{Error, Result};
 use crate::sandbox::KillHandle;
@@ -115,10 +114,60 @@ pub struct ExecCallbacks<F, G, H> {
     pub on_exit: H,
 }
 
+/// One per-turn process invocation. Most providers take the user prompt on
+/// stdin; providers whose CLI requires it as an argument leave `stdin` unset.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TurnInvocation {
+    pub args: Vec<String>,
+    pub stdin: Option<String>,
+}
+
+impl TurnInvocation {
+    pub fn with_stdin(args: Vec<String>, stdin: String) -> Self {
+        Self {
+            args,
+            stdin: Some(stdin),
+        }
+    }
+
+    pub fn args(args: Vec<String>) -> Self {
+        Self { args, stdin: None }
+    }
+}
+
 impl ExecSession {
-    /// Build the session. Spawns **no** process — the first child is
-    /// created when the first user message arrives.
-    pub(crate) fn new<A, I, F, G, H>(
+    /// Build an argv-only session. Preserves the original public API; callers
+    /// that need to stream turn input use [`Self::new_with_invocation`].
+    pub fn new<A, I, F, G, H>(
+        spec: ExecSpawn,
+        build_args: A,
+        extract_session_id: I,
+        cb: ExecCallbacks<F, G, H>,
+    ) -> Self
+    where
+        A: Fn(&str, Option<&str>, Option<&str>, Option<&str>) -> Vec<String>
+            + Send
+            + Sync
+            + 'static,
+        I: Fn(&Value) -> Option<String> + Send + Sync + 'static,
+        F: Fn(Value) + Send + Sync + 'static,
+        G: Fn(String) + Send + Sync + 'static,
+        H: Fn(ExecExit) + Send + Sync + 'static,
+    {
+        Self::new_with_invocation(
+            spec,
+            move |prompt, session_id, effort, model| {
+                TurnInvocation::args(build_args(prompt, session_id, effort, model))
+            },
+            extract_session_id,
+            cb,
+        )
+    }
+
+    /// Build a session whose per-turn builder may supply stdin as well as argv.
+    /// Spawns **no** process — the first child is created when the first user
+    /// message arrives.
+    pub fn new_with_invocation<A, I, F, G, H>(
         spec: ExecSpawn,
         build_args: A,
         extract_session_id: I,
@@ -449,7 +498,7 @@ mod tests {
         session_id: Option<&str>,
         _thinking: Option<&str>,
         model: Option<&str>,
-    ) -> TurnInvocation {
+    ) -> Vec<String> {
         let mut a = vec!["exec".to_string()];
         if let Some(id) = session_id {
             a.push("resume".into());
@@ -461,7 +510,7 @@ mod tests {
         }
         a.push("--json".into());
         a.push(prompt.to_string());
-        TurnInvocation::args(a)
+        a
     }
 
     fn stdin_args(
@@ -669,7 +718,7 @@ mod tests {
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
 
         let (xtx, xrx) = mpsc::channel();
-        let session = ExecSession::new(
+        let session = ExecSession::new_with_invocation(
             ExecSpawn {
                 program: script,
                 prefix_args: vec![],

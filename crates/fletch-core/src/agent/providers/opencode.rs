@@ -141,7 +141,7 @@ pub(crate) fn opencode_prompt_texts(records: &[Value]) -> Vec<Option<String>> {
 /// writes) so turns run unattended; verified end-to-end against opencode
 /// 1.15.12. OpenCode runs in the child's cwd (no `--dir` needed) and assigns
 /// its own session id on the first turn. The prompt is streamed on stdin.
-pub(crate) fn opencode_build_args(turn: &TurnArgs) -> crate::agent::TurnInvocation {
+pub(crate) fn opencode_build_args(turn: &TurnArgs) -> crate::exec_session::TurnInvocation {
     let &TurnArgs {
         prompt,
         session_id,
@@ -165,7 +165,7 @@ pub(crate) fn opencode_build_args(turn: &TurnArgs) -> crate::agent::TurnInvocati
     }
     args.extend(model_args(model));
     push_opt(&mut args, "--session", session_id);
-    crate::agent::TurnInvocation::with_stdin(
+    crate::exec_session::TurnInvocation::with_stdin(
         args,
         instructions::prepend_to_prompt(prompt, session_id, extra),
     )

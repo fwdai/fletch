@@ -6,6 +6,7 @@ use std::path::Path;
 use serde_json::Value;
 
 use crate::activity::{Activity, ManagedActivity};
+use crate::exec_session::TurnInvocation;
 use crate::message_queue::InjectionMode;
 
 use super::providers::antigravity::{
@@ -30,7 +31,7 @@ use super::providers::pi::{
     pi_session_id, pi_write,
 };
 use super::transcript::{JsonlTail, TranscriptReader};
-use super::{McpDeliveryBuilder, OneShot, PtyArgsBuilder, TurnArgs, TurnInvocation};
+use super::{McpDeliveryBuilder, OneShot, PtyArgsBuilder, TurnArgs};
 
 /// Everything that varies between per-turn agents. The runner lifecycle —
 /// one fresh process per turn via `ExecSession` — is identical for all of

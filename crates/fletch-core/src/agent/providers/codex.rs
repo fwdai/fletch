@@ -452,7 +452,7 @@ pub(crate) const CODEX_SUBAGENTS: SubagentLayout = SubagentLayout {
 /// sandbox-exec like every other agent, so codex's own confinement is disabled
 /// to leave a single boundary — and so codex can reach its RPC mailbox, which
 /// lives outside the checkout that `workspace-write` would have confined it to.
-pub(crate) fn codex_build_args(turn: &TurnArgs) -> crate::agent::TurnInvocation {
+pub(crate) fn codex_build_args(turn: &TurnArgs) -> crate::exec_session::TurnInvocation {
     let &TurnArgs {
         prompt,
         session_id,
@@ -479,7 +479,7 @@ pub(crate) fn codex_build_args(turn: &TurnArgs) -> crate::agent::TurnInvocation 
     // `agent_profile::codex_mcp_args`), re-passed every turn like the rest of
     // the config since `codex exec` reads config per invocation.
     args.extend_from_slice(mcp_args);
-    crate::agent::TurnInvocation::with_stdin(args, prompt.to_string())
+    crate::exec_session::TurnInvocation::with_stdin(args, prompt.to_string())
 }
 
 /// Codex as a one-shot completion (`OneShot`), per `codex exec --help`
