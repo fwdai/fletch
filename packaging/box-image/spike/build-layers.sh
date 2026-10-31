@@ -203,8 +203,9 @@ for layer in $LAYERS; do
   pin_times "$D"
   eval "uuid=\$UUID_$(echo "$layer" | tr a-z- A-Z_)"
   mkimage "$uuid" "$NEW_FLAGS" "$OUT/layer-$layer.erofs" "$D"
-  eval "${layer}_tree_bytes=$(tree_size "$D")"
-  eval "${layer}_full_bytes=$(tree_size "$LR")"
+  var=$(echo "$layer" | tr - _)
+  eval "${var}_tree_bytes=$(tree_size "$D")"
+  eval "${var}_full_bytes=$(tree_size "$LR")"
   layer_entries="$layer_entries $layer"
 done
 
@@ -237,7 +238,7 @@ entry() { # <name> <file> <dirs json> <packages file> <tree bytes>
 {
   entry base base.erofs '["/"]' "$WORK/base.pkgs" "$BASE_TREE_BYTES"
   for layer in $layer_entries; do
-    eval "tb=\$${layer}_tree_bytes"
+    var=$(echo "$layer" | tr - _); eval "tb=\$${var}_tree_bytes"
     entry "$layer" "layer-$layer.erofs" "$(jq -c .dirs "$WORK/$layer-delta/.fletch-layer")" "$WORK/$layer.pkgs" "$tb"
   done
 } | jq -s --arg version "$VERSION" --arg arch "$ARCH" '{version: $version, arch: $arch, images: .}' > "$OUT/manifest.json"
@@ -256,7 +257,7 @@ size_of() { stat -c %s "$OUT/$1"; }
   row "base, new flags (lz4hc,12 64 KiB dedupe fragments ztailpacking)" base.erofs "$BASE_TREE_BYTES"
   row "base, 256 KiB clusters" base-big.erofs "$BASE_TREE_BYTES"
   for layer in $layer_entries; do
-    eval "tb=\$${layer}_tree_bytes"; eval "fb=\$${layer}_full_bytes"
+    var=$(echo "$layer" | tr - _); eval "tb=\$${var}_tree_bytes"; eval "fb=\$${var}_full_bytes"
     row "layer $layer (delta; full tree would be $(mib "$fb") MB)" "layer-$layer.erofs" "$tb"
   done
   echo
