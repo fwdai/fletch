@@ -319,12 +319,26 @@ pub fn claude_supports_thinking_display(bin: &str) -> bool {
     if let Some(known) = thinking_display_known(&identity) {
         return known;
     }
-    let path = bin.to_string();
-    let out =
-        on_probe_thread(move |rt| rt.block_on(run_bounded(&path, &THINKING_DISPLAY_PROBE_ARGS)));
-    let supported = out.is_some_and(|out| probe_shows_thinking_display(&out));
+    // A probe that couldn't run (or didn't finish) is no answer: nothing is
+    // remembered, and the next launch asks again.
+    let Some(out) = run_probe_bounded(bin, &THINKING_DISPLAY_PROBE_ARGS) else {
+        return false;
+    };
+    let supported = probe_shows_thinking_display(&out);
     remember_thinking_display(&identity, supported);
     supported
+}
+
+/// Run `<program> <args>` under [`VERSION_TIMEOUT`] from a thread with no
+/// runtime, torn down as a process group when it doesn't finish — the one
+/// way a capability probe runs, on the host and over ssh into a box alike.
+pub(crate) fn run_probe_bounded(program: &str, args: &[&str]) -> Option<std::process::Output> {
+    let program = program.to_string();
+    let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+    on_probe_thread(move |rt| {
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        rt.block_on(run_bounded(&program, &args))
+    })
 }
 
 /// The sync callers' door to [`probe_version_bounded`] — the readiness check

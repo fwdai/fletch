@@ -426,26 +426,32 @@ fn cache_image_version_post_build(
     }
 }
 
-/// Whether the claude in `tag` on `connection` — the image this launch runs
-/// from, whatever the host has and whether or not a parity rebuild is pending
-/// — parses `--thinking-display`. Remembered by image id (content-addressed:
-/// the same id in two stores is the same image, a rebuild is a new one);
-/// probed inside the image, with the host's probe and reading
+/// The image id `tag` names right now in `connection`'s store, for a launch
+/// to run and probe by instead of the tag: a parity rebuild in the background
+/// retags at any moment (`resolve_image`), and the probe and the `podman run`
+/// after it have to see one image. `None` when podman can't say, and the
+/// caller keeps the tag and vouches for nothing.
+pub(super) fn pin_image(connection: Option<&str>, tag: &str) -> Option<String> {
+    inspect_id_and_created(connection, tag).map(|(id, _)| id)
+}
+
+/// Whether the claude in `image_id` on `connection` — the image this launch
+/// runs from, pinned (`pin_image`), whatever the host has — parses
+/// `--thinking-display`. Remembered by that id (content-addressed: the same
+/// id in two stores is the same image, a rebuild is a new one); probed inside
+/// the image, with the host's probe and reading
 /// (`agent::THINKING_DISPLAY_PROBE_ARGS`), the first time an id is seen —
 /// synchronously, so the first launch of an image gets the answer too, and
-/// once per app run. A probe that can't run reads as no. Only claude has the
-/// flag.
+/// once per app run. A probe that couldn't run is no answer: nothing is
+/// remembered and the next launch asks again. Only claude has the flag.
 pub(super) fn claude_thinking_summaries(
     provider: ContainerProvider,
     connection: Option<&str>,
-    tag: &str,
+    image_id: &str,
 ) -> bool {
     if provider.id() != "claude" {
         return false;
     }
-    let Some((image_id, _)) = inspect_id_and_created(connection, tag) else {
-        return false;
-    };
     let identity = format!("podman image {image_id}");
     if let Some(known) = crate::agent::thinking_display_known(&identity) {
         return known;
@@ -456,13 +462,14 @@ pub(super) fn claude_thinking_summaries(
         "--rm",
         "--label",
         pid_label.as_str(),
-        tag,
+        image_id,
         provider.image_bin(),
     ];
     args.extend(crate::agent::THINKING_DISPLAY_PROBE_ARGS);
-    let supported = cli::run_podman_on(connection, &args, VERSION_PROBE_TIMEOUT)
-        .ok()
-        .is_some_and(|out| crate::agent::probe_shows_thinking_display(&out));
+    let Ok(out) = cli::run_podman_on(connection, &args, VERSION_PROBE_TIMEOUT) else {
+        return false;
+    };
+    let supported = crate::agent::probe_shows_thinking_display(&out);
     crate::agent::remember_thinking_display(&identity, supported);
     supported
 }

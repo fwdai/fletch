@@ -52,7 +52,7 @@ pub use probe::{
 };
 pub(crate) use probe::{
     claude_supports_thinking_display, probe_shows_thinking_display, remember_thinking_display,
-    thinking_display_known, THINKING_DISPLAY_PROBE_ARGS,
+    run_probe_bounded, thinking_display_known, THINKING_DISPLAY_PROBE_ARGS,
 };
 pub use probe::{parse_semver, resolve_agent_bin};
 pub(crate) use providers::claude::claude_session_has_messages;

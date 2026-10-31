@@ -594,21 +594,27 @@ fn cache_image_version_post_build(provider: DockerProvider, tag: &str) {
     }
 }
 
-/// Whether the claude in `tag` — the image this launch runs from, whatever
-/// the host has and whether or not a parity rebuild is pending — parses
-/// `--thinking-display`. Remembered by image id, so a rebuild is a new
-/// answer; probed inside the image, with the host's probe and reading
+/// The image id `tag` names right now, for a launch to run and probe by
+/// instead of the tag: a parity rebuild in the background retags at any
+/// moment (`resolve_image`), and the probe and the `docker run` after it have
+/// to see one image. `None` when docker can't say, and the caller keeps the
+/// tag and vouches for nothing.
+pub(super) fn pin_image(tag: &str) -> Option<String> {
+    inspect_image_id(tag)
+}
+
+/// Whether the claude in `image_id` — the image this launch runs from,
+/// pinned (`pin_image`), whatever the host has — parses `--thinking-display`.
+/// Remembered by that id, so a rebuild is a new answer; probed inside the
+/// image, with the host's probe and reading
 /// (`agent::THINKING_DISPLAY_PROBE_ARGS`), the first time an id is seen —
 /// synchronously, so the first launch of an image gets the answer too, and
-/// once per app run. A probe that can't run reads as no. Only claude has the
-/// flag.
-pub(super) fn claude_thinking_summaries(provider: DockerProvider, tag: &str) -> bool {
+/// once per app run. A probe that couldn't run is no answer: nothing is
+/// remembered and the next launch asks again. Only claude has the flag.
+pub(super) fn claude_thinking_summaries(provider: DockerProvider, image_id: &str) -> bool {
     if provider.id() != "claude" {
         return false;
     }
-    let Some(image_id) = inspect_image_id(tag) else {
-        return false;
-    };
     let identity = format!("docker image {image_id}");
     if let Some(known) = crate::agent::thinking_display_known(&identity) {
         return known;
@@ -619,13 +625,14 @@ pub(super) fn claude_thinking_summaries(provider: DockerProvider, tag: &str) -> 
         "--rm",
         "--label",
         pid_label.as_str(),
-        tag,
+        image_id,
         provider.image_bin(),
     ];
     args.extend(crate::agent::THINKING_DISPLAY_PROBE_ARGS);
-    let supported = cli::run_docker(&args, VERSION_PROBE_TIMEOUT)
-        .ok()
-        .is_some_and(|out| crate::agent::probe_shows_thinking_display(&out));
+    let Ok(out) = cli::run_docker(&args, VERSION_PROBE_TIMEOUT) else {
+        return false;
+    };
+    let supported = crate::agent::probe_shows_thinking_display(&out);
     crate::agent::remember_thinking_display(&identity, supported);
     supported
 }

@@ -497,9 +497,11 @@ fn identity_of(ctx: &AgentLaunchCtx) -> BoxIdentity {
 /// Whether the claude at `agent_bin` on the box's tools disk `disk` parses
 /// `--thinking-display`: remembered per disk file (its path and modification
 /// time, so a `latest` disk rebuilt in place is a new one), probed in the
-/// guest over the box's channel — the host's probe and reading
-/// (`agent::THINKING_DISPLAY_PROBE_ARGS`) — the first time a disk is seen.
-/// A probe that can't run reads as no.
+/// guest over the box's ssh channel — the host's probe and reading
+/// (`agent::THINKING_DISPLAY_PROBE_ARGS`), on the host probe's bounded runner,
+/// so a wedged guest can't hold a launch — the first time a disk is seen. A
+/// probe that didn't run or finish is no answer: nothing is remembered and
+/// the next launch asks again.
 fn guest_thinking_summaries(channel: &fletch_box::Channel, disk: &Path, agent_bin: &str) -> bool {
     let modified = std::fs::metadata(disk)
         .and_then(|m| m.modified())
@@ -511,10 +513,19 @@ fn guest_thinking_summaries(channel: &fletch_box::Channel, disk: &Path, agent_bi
     if let Some(known) = crate::agent::thinking_display_known(&identity) {
         return known;
     }
-    let mut words = vec![agent_bin];
-    words.extend(crate::agent::THINKING_DISPLAY_PROBE_ARGS);
-    let supported = executor::run(channel, &words, None)
-        .is_ok_and(|out| crate::agent::probe_shows_thinking_display(&out));
+    // `ssh -F <config> box <words…>`, each word quoted for the guest shell —
+    // what `executor::run` sends, under a deadline.
+    let config = channel.config.to_string_lossy().into_owned();
+    let words: Vec<String> = std::iter::once(agent_bin)
+        .chain(crate::agent::THINKING_DISPLAY_PROBE_ARGS)
+        .map(fletch_box::channel::shell_quote)
+        .collect();
+    let mut args: Vec<&str> = vec!["-F", &config, fletch_box::guest::SSH_HOST_ALIAS];
+    args.extend(words.iter().map(String::as_str));
+    let Some(out) = crate::agent::run_probe_bounded(SSH, &args) else {
+        return false;
+    };
+    let supported = crate::agent::probe_shows_thinking_display(&out);
     crate::agent::remember_thinking_display(&identity, supported);
     supported
 }

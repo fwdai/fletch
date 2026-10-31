@@ -148,6 +148,7 @@ impl SandboxEngine for PodmanEngine {
 
         // Named out here as well: the plan says what its image's claude takes.
         let image;
+        let claude_thinking_summaries;
         let prefix_args = {
             let auth_vars = prep.auth_vars();
             let toolchain_vars = prep.toolchain_vars();
@@ -189,23 +190,27 @@ impl SandboxEngine for PodmanEngine {
             // mounts empty rather than failing, and the refusal shouldn't come
             // after waiting out a build.
             machine::ensure_sources_are_shared(&mount_sources(&spec), &target)?;
-            image = self.resolve_image_cached(
+            let tag = self.resolve_image_cached(
                 provider,
                 settings.image_override.as_deref(),
                 connection.as_deref(),
             )?;
+            // Pinned to the id the tag names right now: a parity rebuild may
+            // retag in the background between here and the `podman run`, and
+            // the probe and the launch must see one image. Unpinnable, the
+            // tag launches as before and nothing is vouched for.
+            let pinned = image::pin_image(connection.as_deref(), &tag);
+            claude_thinking_summaries = pinned.as_deref().is_some_and(|id| {
+                image::claude_thinking_summaries(provider, connection.as_deref(), id)
+            });
+            image = pinned.unwrap_or(tag);
             spec.image = &image;
             pinned_argv(connection.as_deref(), run_args(&spec))
         };
 
         Ok(LaunchPlan {
             program: podman,
-            // The image this launch runs from, probed inside it (image.rs).
-            claude_thinking_summaries: image::claude_thinking_summaries(
-                provider,
-                connection.as_deref(),
-                &image,
-            ),
+            claude_thinking_summaries,
             prefix_args,
             env: prep.env,
             env_remove: Vec::new(),
