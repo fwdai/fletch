@@ -1,12 +1,24 @@
 #!/bin/sh
 # Spike, Mac side: boot the layered image with two layer disks and check the
-# guest over ssh (assumptions A14 to A16 in README.md). Needs the runtime on
-# PATH: `eval "$(scripts/box-dev.sh)"`, and the workflow's artifact unpacked.
+# guest over ssh (assumptions A14 to A16 in README.md). Stages the dev runtime
+# and builds the CLI from this checkout when `fletch-box` is not on PATH
+# (scripts/box-dev.sh); the workflow's artifact must be unpacked.
 #
 #   packaging/box-image/spike/boot-test.sh <artifact dir>
 set -eu
 OUT=${1:?usage: boot-test.sh <dir with base.erofs and layer-*.erofs>}
 OUT=$(cd "$OUT" && pwd)
+REPO=$(cd "$(dirname "$0")/../../.." && pwd)
+for f in base.erofs layer-devtools.erofs layer-browser.erofs; do
+  [ -f "$OUT/$f" ] || { echo "boot-test.sh: no $f in $OUT (unpack the box-image-spike artifact there)" >&2; exit 1; }
+done
+if ! command -v fletch-box >/dev/null 2>&1; then
+  echo "== staging the box runtime and building fletch-box (scripts/box-dev.sh)"
+  eval "$("$REPO/scripts/box-dev.sh")"
+fi
+# --layer exists only on this branch's CLI; another checkout's binary would boot without the layers.
+fletch-box boot --help 2>&1 | grep -q -- '--layer' ||
+  { echo "boot-test.sh: this fletch-box has no --layer flag; run scripts/box-dev.sh from the spike branch checkout" >&2; exit 1; }
 ID=spike
 export FLETCH_BOX_RUN_ROOT=${FLETCH_BOX_RUN_ROOT:-/tmp/fletch-box-spike}
 B="$FLETCH_BOX_RUN_ROOT/$ID"
