@@ -400,7 +400,11 @@ mod tests {
         let db = crate::database::init(dir.path()).unwrap();
         let conn = db.lock();
         assert_eq!(load(&conn), BoxSettings::default());
-        assert_eq!(load(&conn).enabled, DEFAULT_ENABLED, "absent is the default");
+        assert_eq!(
+            load(&conn).enabled,
+            DEFAULT_ENABLED,
+            "absent is the default"
+        );
         let flipped = if DEFAULT_ENABLED { "false" } else { "true" };
         database::set_setting(&conn, ENABLED_SETTING, flipped).unwrap();
         database::set_setting(&conn, MEMORY_SETTING, "3072").unwrap();
