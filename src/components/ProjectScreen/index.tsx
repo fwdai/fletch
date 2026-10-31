@@ -128,7 +128,7 @@ export function ProjectScreen({ repoPath }: { repoPath: string }) {
                   initialOverrides={loaded.overrides}
                 />
                 <EnvVarsSection projectId={loaded.projectId} repoPath={repoPath} />
-                <SandboxSection projectId={loaded.projectId} />
+                <SandboxSection projectId={loaded.projectId} repoPath={repoPath} />
                 <NetworkSection projectId={loaded.projectId} />
                 <LinearSection projectId={loaded.projectId} />
                 <RoadmapSection projectId={loaded.projectId} />

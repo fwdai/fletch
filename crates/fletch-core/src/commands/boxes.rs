@@ -77,9 +77,14 @@ pub fn box_runtime_probe_impl() -> BoxRuntimeProbe {
 /// Start downloading this build's pinned image in the background, then build
 /// the tools disks; progress and the outcome arrive as `box:image` and
 /// `box:tools` events. Idempotent, so it is also the Retry after a failure.
-/// Refused on a machine that cannot boot a box (the desktop calls it blindly
-/// when onboarding closes): the image would be dead weight there.
+/// The switch is checked before anything else: with boxes off nothing
+/// box-related runs, not even the runtime probe (which spawns processes).
+/// Then refused on a machine that cannot boot a box: the image would be dead
+/// weight there.
 pub fn box_image_install_impl() -> Result<()> {
+    if !settings::enabled() {
+        return Err(Error::Other(boxes::SWITCHED_OFF.into()));
+    }
     if !boxes::runtime_usable() {
         return Err(Error::Other(match boxes::probe() {
             Some(probe) => format!(
@@ -350,8 +355,13 @@ pub(crate) fn set_enabled(
         sandbox::set_selected_engine(None);
         announce(ctx, sandbox::ENGINE_SETTING, Some(sandbox::ENGINE_AUTO));
     }
-    // Only when something runs: the stop is async, and a bare unit test has
-    // no runtime to spawn it on.
+    // Off means nothing box-related keeps running: a download under way is
+    // stopped (its staging is removed, and `autostart` will not pick it up
+    // again while the switch is down) — a no-op when none is — and every
+    // running box, a tools-disk build's throwaway box included, is shut
+    // down. Only when something runs: the stop is async, and a bare unit
+    // test has no runtime to spawn it on.
+    let _ = setup::cancel_install();
     if !BoxRegistry::global().running_ids().is_empty() {
         crate::host::spawn(BoxRegistry::global().shutdown_all());
     }

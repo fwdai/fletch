@@ -283,9 +283,10 @@ export const createUiSlice: SliceCreator<UiSlice> = (set, get) => ({
     // The isolated VM's image downloads from here on, in the background: the
     // welcome just shown carried the data-sharing disclosure, which is what
     // the host waited for (`boxes::setup::autostart` at its next boot does
-    // the same). A refusal — an Intel Mac, no runtime, the switch off — is
-    // the host's to log, not a banner.
-    if (firstCompletion) void api.boxImageInstall().catch(() => {});
+    // the same). Only with the switch on — nothing box-related is asked of a
+    // host with boxes off, not even the runtime probe. A refusal (an Intel
+    // Mac, no runtime) is the host's to log, not a banner.
+    if (firstCompletion && get().boxesEnabled) void api.boxImageInstall().catch(() => {});
   },
   toggleHistory: (open) =>
     set((s) => {
