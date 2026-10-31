@@ -22,11 +22,19 @@ export function BoxReadyToast() {
   const image = useAppStore((s) => s.boxImage);
   const tools = useAppStore((s) => s.boxTools);
   const openSettingsScreen = useAppStore((s) => s.openSettingsScreen);
+  const environmentId = useAppStore((s) => s.activeEnvironmentId);
   const [open, setOpen] = useState(false);
   // The image was seen on its way this session; the next "ready" is news. A
   // tools disk rebuilt after a CLI update (busy, image already in) is not:
   // boxes were the engine before it and are after it.
   const sawDownload = useRef(false);
+  // A download watched on one host is not news about another: the memory
+  // and any open toast belong to the environment they were seen in.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: environmentId is the intended reset trigger
+  useEffect(() => {
+    sawDownload.current = false;
+    setOpen(false);
+  }, [environmentId]);
 
   const state = enabled && probe?.runtime_ok && image ? boxSetup(probe, image, tools).state : null;
   const downloading = state === "busy" && image?.phase !== "installed";

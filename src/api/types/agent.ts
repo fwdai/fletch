@@ -178,6 +178,10 @@ export interface ProjectRef {
   name: string;
   project_id: string;
   label: string | null;
+  /** The repository builds a macOS or iOS app, so the automatic engine choice
+   *  keeps its agents on this Mac (Rust `sandbox::placement::looks_native`,
+   *  decided by the host per snapshot). Absent from a host that predates it. */
+  native_app?: boolean;
 }
 
 export interface Workspace {

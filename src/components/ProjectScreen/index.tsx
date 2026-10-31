@@ -24,8 +24,6 @@ interface Loaded {
   rows: SetupRow[];
   ecosystem: string | null;
   overrides: Record<string, string>;
-  /** The repository builds a macOS or iOS app (the host's detection). */
-  nativeApp: boolean;
 }
 
 /** Full-screen project page. Rendered in place of the workspace panes while
@@ -74,12 +72,10 @@ export function ProjectScreen({ repoPath }: { repoPath: string }) {
         const known = useAppStore
           .getState()
           .workspace?.projects.find((p) => p.path === repoPath)?.project_id;
-        const { project_id, configs, native_app } = await api
-          .projectRunConfig(repoPath)
-          .catch((err) => {
-            if (!known) throw err;
-            return { project_id: known, configs: [], native_app: false };
-          });
+        const { project_id, configs } = await api.projectRunConfig(repoPath).catch((err) => {
+          if (!known) throw err;
+          return { project_id: known, configs: [] };
+        });
         const overrides = await loadRunOverrides(project_id).catch((err) => {
           console.error("loadRunOverrides failed", err);
           return {};
@@ -91,7 +87,6 @@ export function ProjectScreen({ repoPath }: { repoPath: string }) {
           rows: toSetupRows(primary?.rows ?? []),
           ecosystem: primary?.ecosystem ?? null,
           overrides,
-          nativeApp: native_app ?? false,
         });
       } catch (err) {
         if (cancelled) return;
@@ -133,7 +128,7 @@ export function ProjectScreen({ repoPath }: { repoPath: string }) {
                   initialOverrides={loaded.overrides}
                 />
                 <EnvVarsSection projectId={loaded.projectId} repoPath={repoPath} />
-                <SandboxSection projectId={loaded.projectId} nativeApp={loaded.nativeApp} />
+                <SandboxSection projectId={loaded.projectId} />
                 <NetworkSection projectId={loaded.projectId} />
                 <LinearSection projectId={loaded.projectId} />
                 <RoadmapSection projectId={loaded.projectId} />

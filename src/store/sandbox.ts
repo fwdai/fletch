@@ -485,7 +485,10 @@ export const createSandboxSlice: SliceCreator<SandboxSlice> = (set, get) => ({
   },
   refreshBoxProbe: async () => {
     try {
-      const probe = await api.boxRuntimeProbe();
+      // Bound to the environment that was asked: an answer that lands after
+      // a switch is another host's and is dropped, as every host read is.
+      const probe = await forActiveEnvironment(() => api.boxRuntimeProbe());
+      if (!probe) return;
       // The probe is also the one read of the tools disks; `box:tools` carries
       // every change after.
       set({
@@ -499,14 +502,18 @@ export const createSandboxSlice: SliceCreator<SandboxSlice> = (set, get) => ({
   },
   refreshBoxImage: async () => {
     try {
-      set({ boxImage: await api.boxImageStatus() });
+      const image = await forActiveEnvironment(() => api.boxImageStatus());
+      if (image) set({ boxImage: image });
     } catch {
       // Same posture as the probe.
     }
   },
   loadBoxSetup: async () => {
-    // Nothing reads the setup while the switch is off, and the probe runs
-    // processes: a host with boxes off is never asked.
+    // The setup is the active host's, wholesale: what the last one said is
+    // cleared before this one answers, so a switch never shows host A's
+    // download on host B. Nothing reads it while the switch is off, and the
+    // probe runs processes, so a host with boxes off is never asked.
+    set({ boxProbe: null, boxImage: null, boxTools: {} });
     if (!get().boxesEnabled) return;
     await Promise.all([get().refreshBoxProbe(), get().refreshBoxImage()]);
   },

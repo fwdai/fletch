@@ -256,10 +256,14 @@ pub fn set_box_setting_impl(ctx: &EngineCtx, key: &str, value: Option<&str>) -> 
             None
         }
     };
-    if key == settings::ENABLED_SETTING && normalized.is_some() {
-        let on = normalized.as_deref() != Some("false");
+    if key == settings::ENABLED_SETTING {
+        // Every write of the switch — an explicit value or the reset to the
+        // default — goes through the same path, since what it lands on
+        // decides the side effects, not how it was spelled.
+        let value = normalized.as_deref().map(|v| v == "true");
+        let on = value.unwrap_or(settings::DEFAULT_ENABLED);
         let probe = on.then(boxes::probe).flatten();
-        set_enabled(ctx, on, probe.as_ref())?;
+        set_enabled(ctx, value, probe.as_ref())?;
         if on {
             // The download, then the tools disks (`setup::prebuild_tools`);
             // quick when both are in place already.
@@ -288,14 +292,22 @@ pub fn set_box_setting_impl(ctx: &EngineCtx, key: &str, value: Option<&str>) -> 
     Ok(())
 }
 
-/// Flip the switch. On: refused, and nothing stored, unless `probe` says this
-/// machine and runtime can boot a box (Intel, a missing helper); the engine
-/// choice is untouched — automatic moves new agents to boxes on its own once
-/// the image is in. Off: a pinned `box` goes back to automatic (which lands
-/// on seatbelt while the switch is down; another pinned engine stays), and
-/// every running box is stopped cleanly — nothing is deleted. The install
-/// itself is the caller's, so this stays testable without a download.
-pub(crate) fn set_enabled(ctx: &EngineCtx, on: bool, probe: Option<&Probe>) -> Result<()> {
+/// Write the switch: `Some(true)`, `Some(false)`, or `None` to clear the row
+/// back to the build's default ([`settings::DEFAULT_ENABLED`]). What the
+/// switch *lands on* drives the side effects, whichever spelling got it
+/// there. On: refused, and nothing stored, unless `probe` says this machine
+/// and runtime can boot a box (Intel, a missing helper); the engine choice is
+/// untouched — automatic moves new agents to boxes on its own once the image
+/// is in. Off: a pinned `box` goes back to automatic (which lands on seatbelt
+/// while the switch is down; another pinned engine stays), and every running
+/// box is stopped cleanly — nothing is deleted. The install itself is the
+/// caller's, so this stays testable without a download.
+pub(crate) fn set_enabled(
+    ctx: &EngineCtx,
+    value: Option<bool>,
+    probe: Option<&Probe>,
+) -> Result<()> {
+    let on = value.unwrap_or(settings::DEFAULT_ENABLED);
     if on {
         let problem = match probe {
             None => Some(boxes::RUNTIME_NOT_FOUND.to_string()),
@@ -309,13 +321,21 @@ pub(crate) fn set_enabled(ctx: &EngineCtx, on: bool, probe: Option<&Probe>) -> R
             return Err(Error::Other(why));
         }
     }
-    let value = if on { "true" } else { "false" };
+    let stored = value.map(|on| if on { "true" } else { "false" });
     {
         let conn = ctx.db.lock();
-        database::set_setting(&conn, settings::ENABLED_SETTING, value)?;
+        match stored {
+            Some(v) => database::set_setting(&conn, settings::ENABLED_SETTING, v)?,
+            None => {
+                conn.execute(
+                    "DELETE FROM settings WHERE key = ?1",
+                    [settings::ENABLED_SETTING],
+                )?;
+            }
+        }
         settings::set(settings::load(&conn));
     }
-    announce(ctx, settings::ENABLED_SETTING, Some(value));
+    announce(ctx, settings::ENABLED_SETTING, stored);
     if on {
         return Ok(());
     }
@@ -398,9 +418,9 @@ mod tests {
             ..Default::default()
         });
         sandbox::set_selected_engine(None);
-        let err = set_enabled(&ctx, true, Some(&probe(false))).unwrap_err();
+        let err = set_enabled(&ctx, Some(true), Some(&probe(false))).unwrap_err();
         assert!(err.to_string().contains("Apple silicon"), "{err}");
-        let err = set_enabled(&ctx, true, None).unwrap_err();
+        let err = set_enabled(&ctx, Some(true), None).unwrap_err();
         assert!(err.to_string().contains("not found"), "{err}");
         assert!(!settings::enabled());
         assert!(sink.events().is_empty());
@@ -418,9 +438,9 @@ mod tests {
         settings::set(settings::BoxSettings::default());
         sandbox::set_selected_engine(None);
 
-        set_enabled(&ctx, false, None).unwrap();
+        set_enabled(&ctx, Some(false), None).unwrap();
         assert!(!settings::enabled());
-        set_enabled(&ctx, true, Some(&probe(true))).unwrap();
+        set_enabled(&ctx, Some(true), Some(&probe(true))).unwrap();
         assert!(settings::enabled());
         assert_eq!(sandbox::selected_engine(), None);
         assert_eq!(engine_row(&ctx), None);
@@ -441,7 +461,7 @@ mod tests {
         // A hand-picked Docker survives the switch going off.
         database::set_setting(&ctx.db.lock(), sandbox::ENGINE_SETTING, "docker").unwrap();
         sandbox::set_selected_engine(Some(sandbox::EngineKind::Docker));
-        set_enabled(&ctx, false, None).unwrap();
+        set_enabled(&ctx, Some(false), None).unwrap();
         assert_eq!(
             sandbox::selected_engine(),
             Some(sandbox::EngineKind::Docker)
@@ -461,7 +481,7 @@ mod tests {
         database::set_setting(&ctx.db.lock(), sandbox::ENGINE_SETTING, "box").unwrap();
         sandbox::set_selected_engine(Some(sandbox::EngineKind::Box));
 
-        set_enabled(&ctx, false, None).unwrap();
+        set_enabled(&ctx, Some(false), None).unwrap();
         assert_eq!(sandbox::selected_engine(), None);
         assert_eq!(engine_row(&ctx).as_deref(), Some("auto"));
         assert_eq!(
@@ -471,6 +491,48 @@ mod tests {
                 json!({ "key": "sandbox_engine", "value": "auto" })
             )
         );
+        settings::set(settings::BoxSettings::default());
+    }
+
+    /// Clearing the row ("restore the default") is a write of the switch like
+    /// any other: it lands on the build's default with that value's side
+    /// effects — here off, so a pinned `box` goes back to automatic — and
+    /// announces the row as gone rather than as a literal.
+    #[test]
+    fn resetting_the_switch_lands_on_the_default_with_its_side_effects() {
+        let _serial = ENGINE_LOCK.blocking_lock();
+        let (ctx, sink, _dir) = test_ctx();
+        settings::set(settings::BoxSettings {
+            enabled: true,
+            ..Default::default()
+        });
+        database::set_setting(&ctx.db.lock(), settings::ENABLED_SETTING, "true").unwrap();
+        database::set_setting(&ctx.db.lock(), sandbox::ENGINE_SETTING, "box").unwrap();
+        sandbox::set_selected_engine(Some(sandbox::EngineKind::Box));
+
+        set_enabled(&ctx, None, Some(&probe(true))).unwrap();
+        assert_eq!(settings::enabled(), settings::DEFAULT_ENABLED);
+        assert_eq!(
+            database::get_setting(&ctx.db.lock(), settings::ENABLED_SETTING),
+            None,
+            "the row is gone, not rewritten"
+        );
+        assert_eq!(
+            sink.events()[0],
+            (
+                super::super::settings::SETTINGS_CHANGED.to_string(),
+                json!({ "key": "boxes_enabled", "value": null })
+            )
+        );
+        if !settings::DEFAULT_ENABLED {
+            assert_eq!(
+                sandbox::selected_engine(),
+                None,
+                "off never leaves box pinned"
+            );
+            assert_eq!(engine_row(&ctx).as_deref(), Some("auto"));
+        }
+        sandbox::set_selected_engine(None);
         settings::set(settings::BoxSettings::default());
     }
 

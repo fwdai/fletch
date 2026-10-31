@@ -75,11 +75,13 @@ impl WorkspaceManager {
                     .unwrap_or(&path)
                     .to_string()
             });
+            let native_app = crate::sandbox::placement::looks_native(Path::new(&path));
             Ok(ProjectRef {
                 path: PathBuf::from(path),
                 name,
                 project_id: project_id.unwrap_or_default(),
                 label,
+                native_app,
             })
         })
         .ok()
