@@ -23,8 +23,8 @@ use crate::error::{Error, Result};
 
 use super::{registry, settings, Ready, EVENT_IMAGE};
 
-/// How long a launch waits for the image download before giving up: 850 MB
-/// on a slow connection.
+/// How long a launch waits for the image download before giving up: a few
+/// hundred MB on a slow connection.
 pub const IMAGE_WAIT: Duration = Duration::from_secs(30 * 60);
 /// How long a launch waits for a tools disk build: an npm install through the
 /// egress proxy in a fresh box.
@@ -113,10 +113,11 @@ pub fn image_status() -> BoxImageStatus {
 }
 
 /// Start downloading (or copying, for a `file://` URL) this build's pinned
-/// image in the background; progress and the outcome arrive as `box:image`
-/// events, and the tools disks are built once it is in. A no-op while an
-/// install runs, and quick when the image is installed already (the store
-/// skips the download), so the toggle and a Retry can both call it blindly.
+/// image and the enabled layers (`box_layers`) in the background; progress
+/// and the outcome arrive as `box:image` events, and the tools disks are
+/// built once it is in. A no-op while an install runs, and quick when
+/// everything is installed already (the store skips the download), so the
+/// toggle, a layer change and a Retry can all call it blindly.
 pub fn start_install() -> Result<()> {
     if !settings::enabled() {
         return Err(Error::Other(super::SWITCHED_OFF.into()));
@@ -149,8 +150,9 @@ pub fn start_install() -> Result<()> {
         };
         publish(&status);
         let mut last = 0u8;
+        let layers = settings::current().layers;
         let result = super::image_store()
-            .install(&pinned, |p| {
+            .install(&pinned, &layers, |p| {
                 if cancel.load(Ordering::Relaxed) {
                     return ControlFlow::Break(());
                 }

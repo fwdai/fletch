@@ -237,11 +237,12 @@ pub fn set_box_egress_global_impl(
 }
 
 /// Write one box setting (`boxes_enabled`, `box_memory_mib`, `box_cpus`,
-/// `box_image_url`, `box_idle_stop_minutes`), validated, and mirror it for the
-/// engine; `None` restores the default. The Sandbox page's switch and knobs
-/// go through here, not the client-side `set_setting`, since the engine
-/// reads these. The switch going on starts the image install
-/// ([`set_enabled`]); the engine choice itself is `set_sandbox_engine`'s.
+/// `box_image_url`, `box_idle_stop_minutes`, `box_layers`), validated, and
+/// mirror it for the engine; `None` restores the default. The Sandbox page's
+/// switch and knobs go through here, not the client-side `set_setting`,
+/// since the engine reads these. The switch going on starts the image
+/// install ([`set_enabled`]), and so does a layer turned on (the next boot of
+/// every box attaches it); the engine choice itself is `set_sandbox_engine`'s.
 pub fn set_box_setting_impl(ctx: &EngineCtx, key: &str, value: Option<&str>) -> Result<()> {
     let normalized = match value {
         Some(value) => Some(
@@ -279,6 +280,11 @@ pub fn set_box_setting_impl(ctx: &EngineCtx, key: &str, value: Option<&str>) -> 
         settings::set(settings::load(&conn));
     }
     announce(ctx, key, normalized.as_deref());
+    if key == settings::LAYERS_SETTING && settings::enabled() {
+        if let Err(e) = setup::start_install() {
+            tracing::warn!(error = %e, "the box layer install did not start");
+        }
+    }
     Ok(())
 }
 

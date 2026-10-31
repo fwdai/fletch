@@ -133,6 +133,9 @@ export interface SandboxSlice {
   boxCpus: string;
   boxImageUrl: string;
   boxIdleStopMinutes: string;
+  /** `box_layers`: the image layers every box gets, comma-separated; empty =
+   *  the engine default (devtools), `none` = base only. */
+  boxLayers: string;
   /** Latest box runtime probe; `null` until the first lands. */
   boxProbe: BoxRuntimeProbe | null;
   /** The pinned guest image's install state: `box_image_status` once, then
@@ -318,6 +321,7 @@ export const createSandboxSlice: SliceCreator<SandboxSlice> = (set, get) => ({
   boxCpus: "",
   boxImageUrl: "",
   boxIdleStopMinutes: "",
+  boxLayers: "",
   boxProbe: null,
   boxImage: null,
   boxTools: {},

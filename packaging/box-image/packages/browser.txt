@@ -1,0 +1,7 @@
+# browser layer: a system browser for agents that drive one directly, and
+# wider script coverage for rendering. Debian's chromium-headless-shell is
+# Chromium's headless build without the UI, GTK and audio stacks: screenshot
+# and scraping grade, what Playwright runs headless by default. Playwright
+# projects download their own browser and need only the base's libraries.
+chromium-headless-shell
+fonts-noto-core

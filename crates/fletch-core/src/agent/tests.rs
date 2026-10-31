@@ -340,14 +340,16 @@ fn antigravity_args_raise_print_timeout_and_keep_prompt_last() {
         ..Default::default()
     });
     let timeout = args
+        .args
         .iter()
         .position(|a| a == "--print-timeout")
         .expect("--print-timeout flag");
     assert_eq!(
-        args.get(timeout + 1).map(String::as_str),
+        args.args.get(timeout + 1).map(String::as_str),
         Some(ANTIGRAVITY_PRINT_TIMEOUT)
     );
     let print = args
+        .args
         .iter()
         .position(|a| a == "--print")
         .expect("--print flag");
@@ -355,13 +357,18 @@ fn antigravity_args_raise_print_timeout_and_keep_prompt_last() {
         timeout < print,
         "timeout flag must precede --print: {args:?}"
     );
-    assert_eq!(print + 2, args.len(), "prompt is the last arg: {args:?}");
-    assert!(args.last().unwrap().ends_with("hi"));
+    assert_eq!(
+        print + 2,
+        args.args.len(),
+        "prompt is the last arg: {args:?}"
+    );
+    assert!(args.args.last().unwrap().ends_with("hi"));
     let conv = args
+        .args
         .iter()
         .position(|a| a == "--conversation")
         .expect("--conversation flag");
-    assert_eq!(args.get(conv + 1).map(String::as_str), Some("conv-1"));
+    assert_eq!(args.args.get(conv + 1).map(String::as_str), Some("conv-1"));
 }
 
 #[test]
@@ -480,14 +487,66 @@ fn opencode_args_request_thinking() {
         prompt: "hi",
         ..Default::default()
     });
-    assert!(args.contains(&"--thinking".to_string()));
-    assert!(args.contains(&"--format".to_string()));
-    // Prompt is positional and last (possibly prefixed with injected
-    // instructions on a fresh turn, so match the tail rather than equality).
-    assert!(
-        args.last().unwrap().ends_with("hi"),
-        "prompt is positional and last"
-    );
+    assert!(args.args.contains(&"--thinking".to_string()));
+    assert!(args.args.contains(&"--format".to_string()));
+    assert!(args.stdin.as_deref().unwrap().ends_with("hi"));
+    assert!(!args.args.iter().any(|arg| arg == "hi"));
+}
+
+#[test]
+fn supported_per_turn_agents_keep_prompts_out_of_argv() {
+    let prompt = "prompt-that-must-not-be-an-argument";
+    for (provider, invocation) in [
+        (
+            "codex",
+            codex_build_args(&TurnArgs {
+                prompt,
+                ..Default::default()
+            }),
+        ),
+        (
+            "cursor",
+            cursor_build_args(&TurnArgs {
+                prompt,
+                ..Default::default()
+            }),
+        ),
+        (
+            "opencode",
+            opencode_build_args(&TurnArgs {
+                prompt,
+                ..Default::default()
+            }),
+        ),
+        (
+            "pi",
+            pi_build_args(&TurnArgs {
+                prompt,
+                ..Default::default()
+            }),
+        ),
+    ] {
+        assert!(
+            invocation
+                .stdin
+                .as_deref()
+                .is_some_and(|input| input.ends_with(prompt)),
+            "{provider} did not receive the prompt on stdin"
+        );
+        assert!(
+            !invocation.args.iter().any(|arg| arg.contains(prompt)),
+            "{provider} leaked the prompt into argv: {:?}",
+            invocation.args
+        );
+    }
+
+    // Antigravity's `--print` parser requires the prompt as the flag's value.
+    let antigravity = antigravity_build_args(&TurnArgs {
+        prompt,
+        ..Default::default()
+    });
+    assert!(antigravity.stdin.is_none());
+    assert!(antigravity.args.last().unwrap().contains(prompt));
 }
 
 // ── pty (native TUI) args ──────────────────────────────────────────────
@@ -582,8 +641,8 @@ fn opencode_args_variant_when_thinking_set() {
         thinking: Some("max"),
         ..Default::default()
     });
-    assert!(args.contains(&"--variant".to_string()));
-    assert!(args.contains(&"max".to_string()));
+    assert!(args.args.contains(&"--variant".to_string()));
+    assert!(args.args.contains(&"max".to_string()));
 }
 
 #[test]
@@ -593,7 +652,7 @@ fn codex_args_reasoning_effort_when_thinking_set() {
         thinking: Some("high"),
         ..Default::default()
     });
-    assert!(args.contains(&"reasoning_effort=\"high\"".to_string()));
+    assert!(args.args.contains(&"reasoning_effort=\"high\"".to_string()));
 }
 
 #[test]
@@ -605,9 +664,11 @@ fn codex_args_disable_codex_own_sandbox() {
         prompt: "hi",
         ..Default::default()
     });
-    assert!(args.contains(&"sandbox_mode=\"danger-full-access\"".to_string()));
-    assert!(!args.iter().any(|a| a.contains("workspace-write")));
-    assert!(args.contains(&"approval_policy=\"never\"".to_string()));
+    assert!(args
+        .args
+        .contains(&"sandbox_mode=\"danger-full-access\"".to_string()));
+    assert!(!args.args.iter().any(|a| a.contains("workspace-write")));
+    assert!(args.args.contains(&"approval_policy=\"never\"".to_string()));
 }
 
 #[test]
@@ -617,8 +678,8 @@ fn pi_args_thinking_when_set() {
         thinking: Some("xhigh"),
         ..Default::default()
     });
-    assert!(args.contains(&"--thinking".to_string()));
-    assert!(args.contains(&"xhigh".to_string()));
+    assert!(args.args.contains(&"--thinking".to_string()));
+    assert!(args.args.contains(&"xhigh".to_string()));
 }
 
 #[test]

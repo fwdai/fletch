@@ -1,113 +1,84 @@
 name: Box image
 
-# Builds the box base image (packaging/box-image) and publishes it as the
-# GitHub release `box-image-v<version>` holding `base.erofs` and
-# `manifest.json`: the URL `fletch-box`'s ImageStore downloads from
-# (`image_store::RELEASES_URL`), verifying `base.erofs` against the manifest.
-# The app boots the version `PinnedImage::VERSION` names
-# (crates/fletch-box/src/image_store/mod.rs); a new image reaches users once
-# that constant is bumped to it. See packaging/box-image/README.md.
+# Builds and tests the box images (packaging/box-image) and publishes them as
+# the GitHub release `box-image-v<VERSION>` (the VERSION file): manifest.json,
+# base.erofs, layer-*.erofs and the *.chunks.json delta manifests, which is
+# what `fletch-box`'s ImageStore downloads. The app boots the version
+# `PinnedImage::VERSION` names. See docs/box.md.
 #
-# Run it from Actions → Box image → Run workflow with the version, or push a
-# tag `box-image-v<version>`. A version is published once: an app that has
-# one `base.erofs` under a version treats it as installed, so the job refuses
-# to touch an existing release.
+# One rule holds throughout: a version names one set of inputs (publish.sh
+# records the source tree ids in the release). So:
+# - A pull request touching the image builds and tests it, and fails if VERSION
+#   is already released from other inputs (bump VERSION); nothing is published.
+# - A push to main that touches it publishes VERSION, or does nothing when the
+#   release with these inputs exists (published from the branch, or by the bump).
+# - Run workflow: build and test on any branch, publishing when asked.
 on:
+  pull_request:
+    paths:
+      - "packaging/box-image/**"
+      - "crates/fletch-guest/**"
+      - ".github/workflows/box-image.yml"
+      - ".github/actions/box-image/**"
+  push:
+    branches: [main]
+    paths:
+      - "packaging/box-image/**"
+      - "crates/fletch-guest/**"
   workflow_dispatch:
     inputs:
-      version:
-        description: "Image version (semver X.Y.Z, e.g. 0.1.0); the release is box-image-v<version>"
-        required: true
-        type: string
-  push:
-    tags: ["box-image-v*"]
+      publish:
+        description: "Publish the release box-image-v<VERSION> (refused if it exists)"
+        type: boolean
+        default: false
+      with_agents:
+        description: "Install the agent CLIs in the tests (about 1 GB of downloads)"
+        type: boolean
+        default: true
 
 jobs:
   image:
-    # The image is aarch64 and build.sh wants an aarch64 host, so the arm64
-    # runner (free for public repos) builds it natively, no emulation.
+    # The image is aarch64 and build.sh wants an aarch64 host: the arm64 runner
+    # builds it natively, no emulation.
     runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
 
-      - name: Version
-        id: version
+      - name: VERSION names these inputs
+        # Before the build: a changed image under an already released VERSION
+        # fails here, in minutes, rather than after merging.
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          INPUT_VERSION: ${{ inputs.version }}
-        run: |
-          set -euo pipefail
-          if [ "$GITHUB_EVENT_NAME" = push ]; then
-            VERSION="${GITHUB_REF_NAME#box-image-v}"
-          else
-            VERSION="$INPUT_VERSION"
-          fi
-          if ! echo "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
-            echo "::error::version must be X.Y.Z, got '$VERSION'"
-            exit 1
-          fi
-          if gh release view "box-image-v$VERSION" > /dev/null 2>&1; then
-            echo "::error::release box-image-v$VERSION already exists; images are never republished under a version"
-            exit 1
-          fi
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+        run: packaging/box-image/publish.sh --check "$(cat packaging/box-image/VERSION)"
 
-      - name: Install Rust
-        # Toolchain from /rust-toolchain.toml, as in ci.yml. fletch-guest is a
-        # static musl binary; on this arm64 host that is a native build.
-        run: |
-          rustup toolchain install
-          rustup target add aarch64-unknown-linux-musl
-
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+      - name: Build and test
+        id: image
+        uses: ./.github/actions/box-image
         with:
-          workspaces: crates/fletch-guest
+          with-agents: ${{ (github.event_name != 'workflow_dispatch' || inputs.with_agents) && '1' || '0' }}
 
-      - name: Build the image
-        # build-mac.sh is, despite its name, `cargo build` of fletch-guest plus
-        # `docker run debian:trixie build.sh`, and both run natively on an arm64
-        # Linux runner. Building inside the Debian container rather than on the
-        # Ubuntu host keeps CI on the exact pipeline the README documents (the
-        # same mmdebstrap, erofs-utils and Debian archive keyring a local build
-        # uses), so a CI image is byte-identical to a local one with the same
-        # inputs. DEBIAN_SNAPSHOT is the pin in build.sh unless given here.
-        run: packaging/box-image/build-mac.sh "$RUNNER_TEMP/image" "${{ steps.version.outputs.version }}"
-
-      - name: Release notes
-        id: notes
-        run: |
-          set -euo pipefail
-          M="$RUNNER_TEMP/image/manifest.json"
-          NOTES="$RUNNER_TEMP/notes.md"
-          {
-            echo "Box base image for Fletch (\`packaging/box-image\`): the Debian root filesystem every box boots."
-            echo
-            jq -r '"`base.erofs` is \(.size) bytes, sha256 `\(.sha256)` (`manifest.json`, which the app verifies its download against). The app boots it once `PinnedImage::VERSION` in `crates/fletch-box/src/image_store/mod.rs` is `\(.version)`."' "$M"
-            echo
-            echo "$(jq -r '.packages | length' "$M") packages (\`$(jq -r .arch "$M")\`), among them:"
-            echo
-            jq -r '.packages[] | select(test("^(node|chromium|git|python3|openssh-server|gcc|bash|curl|ripgrep|jq)="))
-                   | "- `\(.)`"' "$M"
-            echo
-            echo "The full list with versions is in \`manifest.json\`; each package's licence is in the image under \`/usr/share/doc/<package>/copyright\`."
-          } > "$NOTES"
-          cat "$NOTES"
-          echo "file=$NOTES" >> "$GITHUB_OUTPUT"
+      - name: Upload the images
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: box-image-${{ steps.image.outputs.version }}
+          if-no-files-found: warn
+          retention-days: 14
+          path: |
+            ${{ steps.image.outputs.out }}/*.erofs
+            ${{ steps.image.outputs.out }}/*.chunks.json
+            ${{ steps.image.outputs.out }}/manifest.json
+            ${{ steps.image.outputs.out }}/sizes.md
+            ${{ steps.image.outputs.out }}/report.md
+            ${{ steps.image.outputs.out }}/test.log
 
       - name: Publish the release
-        # `gh`, as release.yml does for the host tarballs. `--latest=false`:
-        # the app updater's endpoint serves the repository's *latest* release
-        # (docs/RELEASING.md), and an image release must never become it.
+        if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: >
-          gh release create "box-image-v${{ steps.version.outputs.version }}"
-          --target "$GITHUB_SHA"
-          --title "Box image v${{ steps.version.outputs.version }}"
-          --notes-file "${{ steps.notes.outputs.file }}"
-          --latest=false
-          "$RUNNER_TEMP/image/base.erofs"
-          "$RUNNER_TEMP/image/manifest.json"
+          OUT: ${{ steps.image.outputs.out }}
+          VERSION: ${{ steps.image.outputs.version }}
+        run: packaging/box-image/publish.sh "$OUT" "$VERSION"

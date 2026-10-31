@@ -276,13 +276,17 @@ pub fn ready_for(provider: &str) -> bool {
         && registry::built_tools_disk(provider).is_some()
 }
 
-/// This build's image, when installed.
+/// This build's image with the enabled layers (`box_layers`), when all of
+/// them are installed; `None` while a layer the user turned on is still on
+/// its way, so a launch waits for it like for the base.
 pub fn installed_image() -> Result<Option<InstalledImage>> {
     // This build's version, never the newest on disk: a newer image left by a
     // later build would boot a guest whose init contract this build does not
-    // know. The file is hashed against its recorded sha256 before the first
-    // boot of a session (the registry), which is where damage is caught.
-    Ok(image_store().find(&pinned_image().version))
+    // know. The files are hashed against their recorded sha256 before the
+    // first boot of a session (the registry), which is where damage is caught.
+    Ok(image_store()
+        .find(&pinned_image().version)
+        .and_then(|image| image.with_layers(&settings::current().layers)))
 }
 
 /// The runtime probe alone, for the Settings page: `None` when no runtime
@@ -674,6 +678,14 @@ impl SandboxEngine for BoxEngine {
             &[
                 "-F".to_string(),
                 running.channel.config.to_string_lossy().into_owned(),
+                // Agent commands can carry substantial provider configuration.
+                // A multiplexed session has to send that command and three file
+                // descriptors through one AF_UNIX message; macOS rejects large
+                // messages before OpenSSH can pass the descriptors. Keep the
+                // shared connection for small box operations, but give the agent
+                // process its own SSH transport.
+                "-S".to_string(),
+                "none".to_string(),
                 tty.to_string(),
                 fletch_box::guest::SSH_HOST_ALIAS.to_string(),
             ],

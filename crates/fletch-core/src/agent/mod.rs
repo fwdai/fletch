@@ -105,13 +105,13 @@ pub struct PerTurnAgent {
     session: Box<ExecSession>,
 }
 
-/// The per-turn inputs a `*_build_args` builder turns into CLI argv. Bundled
-/// so builders and their call sites read as named fields instead of a row of
-/// positional `Option<&str>`s. `Default` (all-`None`, empty prompt) keeps test
-/// call sites terse: `TurnArgs { prompt: "hi", ..Default::default() }`.
+/// The per-turn inputs a `*_build_args` builder turns into an invocation.
+/// Bundled so builders and their call sites read as named fields instead of a
+/// row of positional `Option<&str>`s. `Default` (all-`None`, empty prompt)
+/// keeps test call sites terse: `TurnArgs { prompt: "hi", ..Default::default() }`.
 #[derive(Clone, Copy, Default)]
 pub struct TurnArgs<'a> {
-    /// The user's message for this turn (positional in most agents' argv).
+    /// The user's message for this turn.
     pub prompt: &'a str,
     /// Resume target: `None` starts a fresh session, `Some(id)` resumes it.
     pub session_id: Option<&'a str>,

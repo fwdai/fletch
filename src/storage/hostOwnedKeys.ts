@@ -25,6 +25,7 @@ export const HOST_SETTING_KEYS = [
   "box_cpus",
   "box_image_url",
   "box_idle_stop_minutes",
+  "box_layers",
   "git_branch_prefix",
   "github_draft_prs",
   "publish_confirmation",

@@ -60,6 +60,7 @@ export function hostSettingsState(s: Record<string, string>): Partial<AppState> 
     boxCpus: s.box_cpus || "",
     boxImageUrl: s.box_image_url || "",
     boxIdleStopMinutes: s.box_idle_stop_minutes || "",
+    boxLayers: s.box_layers || "",
   };
 }
 
