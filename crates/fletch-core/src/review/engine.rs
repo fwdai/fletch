@@ -1228,6 +1228,8 @@ async fn ensure_reviewer(
         account: None,
         // The reviewer reads the coder's checkout, nothing else of the user's.
         folder_grants: Vec::new(),
+        // It adopts that checkout, so it runs where the checkout lives.
+        workspace_type: None,
     };
     let record = sup.clone().spawn_agent(ctx.clone(), req).await?;
     Ok(ReviewerView {

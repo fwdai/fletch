@@ -1,4 +1,4 @@
-import { api, type FolderGrant } from "@/api";
+import { api, type FolderGrant, type WorkspaceKind } from "@/api";
 import { composeIssueBrief } from "@/components/Workspace/MissionControl/inbox";
 import { FIRST_TASK_PROMPT } from "@/data/firstTask";
 import { DEFAULT_PROVIDER_ID, PROVIDERS } from "@/data/providers";
@@ -42,6 +42,10 @@ export interface DraftAgent {
   /** The provider account picked for this draft's agent. Never remembered
    *  past the draft: undefined follows the active account in Settings. */
   account?: string;
+  /** The workspace type picked in the composer, only when it differs from
+   *  what the host would pick (`workspaceTypeOverride`). Never remembered past
+   *  the draft: undefined leaves it to Settings and the project's placement. */
+  workspaceType?: WorkspaceKind;
   /** Base branch to fork from. */
   base: string;
   /** Canonical issue ref this draft was started from ("123" for GitHub,
@@ -445,6 +449,9 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get) => ({
         // The composer's folder chips, checked by the backend and in place
         // from the first launch.
         folders,
+        // The composer's workspace type, when the user picked one other than
+        // the host's; a VM that cannot be had fails the spawn with why.
+        draft.workspaceType,
       );
       // The first message names each granted folder, by the canonical path
       // the backend stored, after the files (`attachments::reference_line`).

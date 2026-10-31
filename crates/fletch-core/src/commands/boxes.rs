@@ -1,6 +1,7 @@
-//! The engine halves of the box commands: what the Settings › Sandbox page
-//! and the agent's isolation row ask. `src-tauri` wraps each in a
-//! `#[tauri::command]` and `remote::dispatch` in a remote op.
+//! The engine halves of the box commands: what the Settings › Sandbox page,
+//! the agent's isolation row and the composer's workspace type ask.
+//! `src-tauri` wraps each in a `#[tauri::command]` and `remote::dispatch` in
+//! a remote op.
 
 use fletch_box::Probe;
 use serde::Serialize;
@@ -85,14 +86,8 @@ pub fn box_image_install_impl() -> Result<()> {
     if !settings::enabled() {
         return Err(Error::Other(boxes::SWITCHED_OFF.into()));
     }
-    if !boxes::runtime_usable() {
-        return Err(Error::Other(match boxes::probe() {
-            Some(probe) => format!(
-                "the box runtime is not usable: {}.",
-                probe.problems().join("; ")
-            ),
-            None => boxes::RUNTIME_NOT_FOUND.to_string(),
-        }));
+    if let Some(refusal) = boxes::runtime_refusal() {
+        return Err(Error::Other(refusal));
     }
     setup::start_install()
 }
@@ -111,6 +106,41 @@ pub fn box_tools_retry_impl(provider: &str) -> Result<()> {
 /// `box_state(agent_id)`: the registry's phase for the agent's box.
 pub fn box_state_impl(agent_id: &str) -> boxes::registry::BoxStateReport {
     BoxRegistry::global().report(agent_id)
+}
+
+/// `available_workspace_types(repo_path, provider)`: what the composer offers
+/// a new agent of `provider` in the repo at `repo_path` — this Mac always, a
+/// box with the reason when it cannot be had, and which one the spawn picks
+/// with no choice made (`sandbox::workspace_types`). Off the async runtime:
+/// the answer stats the repository and may run the runtime probe.
+pub async fn available_workspace_types_impl(
+    ctx: &EngineCtx,
+    repo_path: &str,
+    provider: &str,
+) -> Result<Vec<sandbox::WorkspaceTypeOption>> {
+    let placement = project_placement(ctx, repo_path);
+    let (repo, provider) = (std::path::PathBuf::from(repo_path), provider.to_string());
+    tokio::task::spawn_blocking(move || {
+        sandbox::workspace_types(placement.as_deref(), &repo, &provider)
+    })
+    .await
+    .map_err(|e| Error::Other(e.to_string()))
+}
+
+/// The stored `sandbox.placement` of the project the repo at `repo_path`
+/// belongs to, as the spawn reads it; `None` for a repo no project owns yet.
+/// A plain read: unlike the spawn, asking never creates the project.
+fn project_placement(ctx: &EngineCtx, repo_path: &str) -> Option<String> {
+    ctx.db
+        .lock()
+        .query_row(
+            "SELECT ps.value FROM repos r \
+             JOIN project_settings ps ON ps.project_id = r.project_id \
+             WHERE r.path = ?1 AND ps.key = ?2",
+            rusqlite::params![repo_path, sandbox::placement::KEY],
+            |row| row.get::<_, String>(0),
+        )
+        .ok()
 }
 
 /// `box_stop(agent_id)`: stop the box now, reporting which rung worked.

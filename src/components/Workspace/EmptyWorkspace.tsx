@@ -9,7 +9,8 @@ import { IconButton } from "@/components/ui/IconButton";
 import { getLinearTeamId } from "@/storage/projectSettings";
 import type { DraftAgent } from "@/store";
 import { useAppStore } from "@/store";
-import { useGate } from "@/store/capabilities";
+import { activeEntry, useGate } from "@/store/capabilities";
+import { useBoxesUnlocked } from "@/util/boxesUnlocked";
 import {
   type ComposerMode,
   loadPipelinePrefs,
@@ -109,6 +110,11 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
   // is the whole page, whatever the project remembered.
   const workflowGate = useGate("workflows");
   const workflowMode = mode === "workflow" && !workflowGate;
+  // The workspace type is offered where boxes are rolled out to this user, and
+  // only for an agent on this Mac: a paired host's spawn carries no workspace
+  // type yet, so a choice there would be silently dropped.
+  const boxesUnlocked = useBoxesUnlocked();
+  const onThisMac = useAppStore((s) => activeEntry(s).kind !== "remote");
 
   return (
     <div className="pane center">
@@ -241,6 +247,17 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
                   current: draft.account,
                   onPick: (account) => updateDraft(draft.id, { account }),
                 }}
+                // Per draft too, and kept only while it differs from where the
+                // host would put the agent anyway.
+                workspaceType={
+                  boxesUnlocked && onThisMac
+                    ? {
+                        repoPath: draft.repoPath,
+                        current: draft.workspaceType,
+                        onPick: (workspaceType) => updateDraft(draft.id, { workspaceType }),
+                      }
+                    : undefined
+                }
                 placeholder="Describe the task for the agent. ↵ to spawn."
                 folders
                 onSend={({

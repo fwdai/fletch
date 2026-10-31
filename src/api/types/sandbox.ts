@@ -120,6 +120,22 @@ export interface BoxRuntimeProbe {
   tools: BoxToolsStatus[];
 }
 
+/** A workspace type a new agent may be given (`sandbox::placement::Placement`
+ *  minus automatic): this Mac's sandbox or an isolated VM. */
+export type WorkspaceKind = "host" | "box";
+
+/** One row of `available_workspace_types(repo_path, provider)`. `host` is
+ *  always available; `box` exactly when a spawn asking for it would be
+ *  accepted, else `reason` is the sentence that spawn would fail with.
+ *  `default` marks what a spawn with no choice picks — neither row while the
+ *  host pins a container engine. */
+export interface WorkspaceTypeOption {
+  kind: WorkspaceKind;
+  available: boolean;
+  reason: string | null;
+  default: boolean;
+}
+
 /** `box_state(agent_id)` and the `box:state` event: one agent's box.
  *  `since` is set while running, `reason` when failed, `detail` while
  *  preparing (what the box waits for: the image download, the tools disk). */

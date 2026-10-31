@@ -10,6 +10,7 @@ import type {
   BoxStateEvent,
   EgressDelta,
   EgressOverview,
+  WorkspaceTypeOption,
 } from "../types/sandbox";
 
 export const boxesApi = {
@@ -26,6 +27,11 @@ export const boxesApi = {
   boxToolsRetry: (provider: string) => invoke<void>("box_tools_retry", { provider }),
   /** The registry's phase for one agent's box. */
   boxState: (agentId: string) => invoke<BoxStateEvent>("box_state", { agentId }),
+  /** The workspace types a new agent of `provider` in the repo at `repoPath`
+   *  may be given, each with why not when it cannot, and which one a spawn
+   *  with no choice picks. */
+  availableWorkspaceTypes: (repoPath: string, provider: string) =>
+    invoke<WorkspaceTypeOption[]>("available_workspace_types", { repoPath, provider }),
   /** Stop the agent's box now; resolves to which rung of the ladder worked. */
   boxStop: (agentId: string) => invoke<string>("box_stop", { agentId }),
   /** Add one host pattern to a project's egress allow-list; resolves to the

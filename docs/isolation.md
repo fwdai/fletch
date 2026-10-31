@@ -45,6 +45,21 @@ Docker-stamped agent whose daemon is unreachable is a **hard error** — Fletch
 fails closed rather than quietly launching outside the container boundary the
 user selected (`sandbox/mod.rs`, `engine_for`).
 
+Which engine a new agent gets is decided once, at creation, by
+`sandbox::engine_for_spawn` from three inputs: the host's choice in Settings ›
+Sandbox (an engine, or automatic), the project's placement
+(`sandbox.placement`: automatic, this Mac or an isolated VM; under automatic a
+repository that builds a macOS or iOS app stays on this Mac), and an optional
+per-session choice made in the composer for a new agent (this Mac or an
+isolated VM), which stands over the other two for that agent alone. A
+per-session isolated VM that cannot be had (the switch off, a runtime that
+cannot boot, a provider boxes do not run) fails the spawn with that reason
+rather than landing somewhere else; the composer offers the choice from the
+same answer (`available_workspace_types`). An agent that adopts an existing
+tree (the local reviewer, a workflow step in its run's workspace) runs where
+that tree lives whatever was chosen. The result is stamped on the record and
+kept for life.
+
 ### What the seatbelt profile allows
 
 Writes are permitted only to: the agent's workspace root, its private RPC

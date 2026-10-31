@@ -47,7 +47,6 @@ impl EngineKind {
                 added_repos_self_contained: false,
                 share_roots: None,
                 run_panel: true,
-                verify: true,
                 workflow_steps: true,
             },
             Self::Docker | Self::Podman => EngineCaps {
@@ -58,7 +57,6 @@ impl EngineKind {
                 added_repos_self_contained: true,
                 share_roots: None,
                 run_panel: true,
-                verify: true,
                 workflow_steps: true,
             },
             Self::Box => EngineCaps {
@@ -69,7 +67,6 @@ impl EngineKind {
                 added_repos_self_contained: false,
                 share_roots: Some(&["/Users", "/Volumes"]),
                 run_panel: false,
-                verify: false,
                 workflow_steps: false,
             },
         }
@@ -122,9 +119,6 @@ pub struct EngineCaps {
     /// the checkout; a box's checkout is in its guest, which needs port
     /// forwarding over the channel first.
     pub run_panel: bool,
-    /// The verify checks can run. They run on the host, in the checkout,
-    /// under the Run-panel profile; the same gap as [`Self::run_panel`].
-    pub verify: bool,
     /// The agent can be a workflow step. A step forks from the run repo, a
     /// host path a guest cannot see.
     pub workflow_steps: bool,
@@ -482,7 +476,6 @@ mod tests {
         assert_eq!(with(|k| k.caps().share_roots.is_some()), vec![Box]);
         assert_eq!(Box.caps().share_roots, Some(&["/Users", "/Volumes"][..]));
         assert_eq!(with(|k| !k.caps().run_panel), vec![Box]);
-        assert_eq!(with(|k| !k.caps().verify), vec![Box]);
         assert_eq!(with(|k| !k.caps().workflow_steps), vec![Box]);
     }
 

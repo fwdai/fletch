@@ -5,13 +5,17 @@ use std::sync::Arc;
 
 use crate::error::Result;
 use crate::host::EngineCtx;
+use crate::sandbox::placement::Placement;
 use crate::supervisor::{SpawnRequest, Supervisor};
 use crate::workspace::{AgentRecord, AgentView, FolderGrant};
 
 /// The user-spawn field mapping: the argument defaults every caller funnels
 /// through on the way to `Supervisor::spawn_agent`. Shared by the desktop's
 /// `spawn_agent` command and the remote dispatcher, which passes `None` for the
-/// custom-agent fields and the account the mobile surface does not expose.
+/// custom-agent fields, the account and the workspace type the mobile surface
+/// does not expose. `workspace_type` is the composer's pick, `host` or `box`
+/// (`sandbox::placement::Placement`); anything else, or none, leaves the
+/// engine to the host's choice and the project's placement.
 #[allow(clippy::too_many_arguments)]
 pub async fn spawn_agent_impl(
     sup: Arc<Supervisor>,
@@ -32,7 +36,12 @@ pub async fn spawn_agent_impl(
     task: Option<String>,
     account: Option<String>,
     folder_grants: Option<Vec<FolderGrant>>,
+    workspace_type: Option<String>,
 ) -> Result<AgentRecord> {
+    let workspace_type = match Placement::parse(workspace_type.as_deref()) {
+        Placement::Auto => None,
+        explicit => Some(explicit),
+    };
     sup.spawn_agent(
         ctx,
         SpawnRequest {
@@ -67,6 +76,7 @@ pub async fn spawn_agent_impl(
             account,
             // The composer's folder chips, checked by the spawn.
             folder_grants: folder_grants.unwrap_or_default(),
+            workspace_type,
         },
     )
     .await

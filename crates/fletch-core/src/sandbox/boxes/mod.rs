@@ -271,6 +271,23 @@ pub fn runtime_usable() -> bool {
     ok
 }
 
+/// Why this machine and runtime cannot boot a box, in the sentence the user
+/// sees; `None` when they can. The cached [`runtime_usable`] answers first, so
+/// only a failing runtime pays for a fresh probe, which names what fails.
+pub fn runtime_refusal() -> Option<String> {
+    if runtime_usable() {
+        return None;
+    }
+    match probe() {
+        Some(probe) if probe.ok() => None,
+        Some(probe) => Some(format!(
+            "the box runtime is not usable: {}.",
+            probe.problems().join("; ")
+        )),
+        None => Some(RUNTIME_NOT_FOUND.to_string()),
+    }
+}
+
 /// Whether a new agent of `provider` could boot a box right now, without
 /// waiting on anything: the switch, the runtime, this build's image, and
 /// the provider's tools disk — the gate the automatic engine choice stands

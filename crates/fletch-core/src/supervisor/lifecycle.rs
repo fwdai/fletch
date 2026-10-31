@@ -434,6 +434,11 @@ pub struct SpawnRequest {
     /// stamped with before the record is written, so the first launch already
     /// has them and a refused folder fails the spawn with the reason.
     pub folder_grants: Vec<FolderGrant>,
+    /// The workspace type the user picked for this session (the composer's
+    /// choice): `Host` or `Box`, standing over the host's engine choice and
+    /// the project's placement (`sandbox::engine_for_spawn`). `None` lets
+    /// those decide, as every spawn but the composer's does.
+    pub workspace_type: Option<sandbox::placement::Placement>,
 }
 
 impl Supervisor {
@@ -499,19 +504,29 @@ impl Supervisor {
         // stamp an engine the folders were never checked for. An adopting
         // agent runs where its tree lives (`engine_for_adopted_tree`): in the
         // box that holds it, or never in a box for a host tree. Anyone else
-        // gets the host's choice over the project's placement — read here,
-        // before the lock, since the automatic choice stats the repository
-        // and may run the runtime probe once.
+        // gets the session's workspace type when it picked one, else the
+        // host's choice over the project's placement — read here, before the
+        // lock, since the automatic choice stats the repository and may run
+        // the runtime probe once. A workspace type that cannot be had (a box
+        // with the switch off, say) fails the spawn here, before anything is
+        // written.
         let placement = match &adopted {
             Some(_) => None,
             None => self.project_placement(&req.repo_path),
         };
         let (tree, provider, repo) = (adopted.clone(), req.provider.clone(), req.repo_path.clone());
+        let workspace_type = req.workspace_type;
         let engine_kind = tokio::task::spawn_blocking(move || {
-            sandbox::engine_for_spawn(tree.as_deref(), placement.as_deref(), &repo, &provider)
+            sandbox::engine_for_spawn(
+                tree.as_deref(),
+                placement.as_deref(),
+                &repo,
+                &provider,
+                workspace_type,
+            )
         })
         .await
-        .map_err(|e| Error::Other(e.to_string()))?;
+        .map_err(|e| Error::Other(e.to_string()))??;
         // The folder check may wait on a privacy prompt, so it too runs before
         // the lifecycle lock.
         let folder_grants = crate::workspace::folder_grants::check_all(
@@ -544,6 +559,8 @@ impl Supervisor {
             task,
             account: _,
             folder_grants: _,
+            // Read above, where it decided the engine.
+            workspace_type: _,
         } = req;
         if !repo_path.join(".git").exists() {
             return Err(Error::InvalidPath(format!(

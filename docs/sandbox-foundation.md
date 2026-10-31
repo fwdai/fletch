@@ -72,9 +72,18 @@ engine enforces) and `docs/box.md` is the box runtime.
 
 8. **Workspace type is a field.** Every spawn carries the engine it is stamped
    with, resolved from the host's choice, the project's placement and an
-   optional per-session override, by one function
-   (`sandbox::engine_for_spawn`). The UI reads one host-computed list of
-   available workspace types with each one's reason when unavailable.
+   optional per-session override (`SpawnRequest::workspace_type`, a
+   `sandbox::placement::Placement` of `Host` or `Box`), by one function
+   (`sandbox::engine_for_spawn`). The override stands over both for that
+   spawn: `Host` is seatbelt; `Box` is a box that waits for its image as a
+   box-pinned project does, and a spawn refused with the user-facing reason
+   when there can be no box (switch off, runtime unusable, provider
+   unsupported), never a quiet fallback. An adopting agent ignores it and
+   runs where its tree lives. The UI reads one host-computed list of
+   available workspace types with each one's reason when unavailable and the
+   default marked (`sandbox::workspace_types`, served by the
+   `available_workspace_types` command in `commands/boxes.rs`, on the desktop
+   and the remote wire).
 
 ## What `caps()` says today
 
@@ -87,11 +96,13 @@ engine enforces) and `docs/box.md` is the box runtime.
 | `added_repos_self_contained` | no | no | yes |
 | `share_roots` | any | `/Users`, `/Volumes` | any |
 | `run_panel` | yes | no | yes |
-| `verify` | yes | no | yes |
 | `workflow_steps` | yes | no | yes |
-| `handoff_summary` | yes | no | no |
 
 A `no` carries its reason in the struct, which is what the UI shows.
+
+The verify checks are not a row: they take a checkout path, not an agent
+record, so `verify.rs` skips them for a checkout its executor says is in a
+box. The handoff summary is not a row either: nothing reads such a fact yet.
 
 ## Retiring the container engines
 

@@ -270,25 +270,111 @@ pub(crate) fn runs_in_container(provider: &str) -> bool {
     container::ContainerProvider::from_id(provider).is_some()
 }
 
-/// The engine a new agent is stamped with. An agent adopting `adopted_tree`
-/// runs where the tree lives ([`engine_for_adopted_tree`]); anyone else gets
-/// the host's choice over the placement of the project at `repo`, whose
-/// stored setting is `placement_setting`. Blocking: the automatic choice
-/// stats the repository and may run the runtime probe once, so a spawn calls
-/// this off the async runtime.
+/// The engine a new agent is stamped with (docs/sandbox-foundation.md rule
+/// 8). An agent adopting `adopted_tree` runs where the tree lives
+/// ([`engine_for_adopted_tree`]) and ignores `override_`: a tree in a box is
+/// reachable only there, a host tree never from a guest. Anyone else gets
+/// the session's own choice when there is one, else the host's choice over
+/// the placement of the project at `repo`, whose stored setting is
+/// `placement_setting`.
+///
+/// The override is the composer's workspace type, and it stands over both
+/// the host's choice and the project's placement for this spawn only:
+/// `Placement::Host` is the macOS sandbox; `Placement::Box` is a box,
+/// waiting at launch for an image still on its way as a project pinned to
+/// boxes does, and refused with the reason the user sees (`box_refusal`:
+/// the switch off, a runtime that cannot boot, a provider boxes do not run)
+/// when there can be no box at all — an explicit choice never quietly lands
+/// somewhere else. `Placement::Auto` is no override. Without one this never
+/// errs.
+///
+/// Blocking: the automatic choice stats the repository and may run the
+/// runtime probe once, so a spawn calls this off the async runtime.
 pub fn engine_for_spawn(
     adopted_tree: Option<&Path>,
     placement_setting: Option<&str>,
     repo: &Path,
     provider: &str,
-) -> EngineKind {
-    match adopted_tree {
-        Some(tree) => engine_for_adopted_tree(tree),
-        None => {
+    override_: Option<placement::Placement>,
+) -> Result<EngineKind> {
+    use placement::Placement;
+    if let Some(tree) = adopted_tree {
+        return Ok(engine_for_adopted_tree(tree));
+    }
+    match override_ {
+        Some(Placement::Host) => Ok(EngineKind::SandboxExec),
+        Some(Placement::Box) => match box_refusal(provider) {
+            Some(reason) => Err(Error::Other(reason)),
+            None => Ok(EngineKind::Box),
+        },
+        Some(Placement::Auto) | None => {
             let placement = placement::resolve(placement_setting, repo);
-            boxes::engine_for_new_agent(selected_engine(), provider, placement)
+            Ok(boxes::engine_for_new_agent(
+                selected_engine(),
+                provider,
+                placement,
+            ))
         }
     }
+}
+
+/// Why a new agent of `provider` cannot run in a box, in the sentence the
+/// user sees, or `None` when it can (an image still downloading is waited
+/// for, not refused): the switch, then the machine and runtime, then the
+/// provider gate.
+fn box_refusal(provider: &str) -> Option<String> {
+    if !boxes::settings::enabled() {
+        return Some(boxes::SWITCHED_OFF.to_string());
+    }
+    if let Some(refusal) = boxes::runtime_refusal() {
+        return Some(refusal);
+    }
+    self::provider::supports(EngineKind::Box, provider).err()
+}
+
+/// One workspace type a new agent may be given, as the composer offers it
+/// ([`workspace_types`]).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct WorkspaceTypeOption {
+    /// `host` (the macOS sandbox) or `box` (an isolated VM): the
+    /// `placement::Placement` spelling a spawn's override takes.
+    pub kind: &'static str,
+    /// Whether a spawn may ask for it.
+    pub available: bool,
+    /// Why not, when it is not: the sentence the spawn would fail with.
+    pub reason: Option<String>,
+    /// What [`engine_for_spawn`] picks with no override. Neither option is
+    /// the default while the host pins a container engine.
+    pub default: bool,
+}
+
+/// The workspace types a new agent of `provider` in the project at `repo`
+/// (stored placement `placement_setting`) may be given: the one list the UI
+/// reads. The macOS sandbox is always available; a box exactly when
+/// [`engine_for_spawn`] would accept it as an override, with the same
+/// sentence when not. Blocking, like [`engine_for_spawn`].
+pub fn workspace_types(
+    placement_setting: Option<&str>,
+    repo: &Path,
+    provider: &str,
+) -> Vec<WorkspaceTypeOption> {
+    use placement::Placement;
+    let default = engine_for_spawn(None, placement_setting, repo, provider, None).ok();
+    let box_reason = box_refusal(provider);
+    vec![
+        WorkspaceTypeOption {
+            kind: Placement::Host.as_setting(),
+            available: true,
+            reason: None,
+            default: default == Some(EngineKind::SandboxExec),
+        },
+        WorkspaceTypeOption {
+            kind: Placement::Box.as_setting(),
+            available: box_reason.is_none(),
+            reason: box_reason,
+            default: default == Some(EngineKind::Box),
+        },
+    ]
 }
 
 /// Provision `spec.dest` for `record`, an agent stamped `engine`, at the base
@@ -668,6 +754,69 @@ mod adopted_tree_tests {
         );
         registry.discard("adopted-tree-test-coder").await.unwrap();
         assert_ne!(engine_for_adopted_tree(&root.join("repo")), EngineKind::Box);
+    }
+}
+
+#[cfg(test)]
+mod workspace_type_tests {
+    use super::placement::Placement;
+    use super::*;
+
+    /// A session's workspace type stands over the host's choice and the
+    /// project's placement, an explicit box is never quietly something else,
+    /// and an adopted tree keeps running where it lives. Written to hold
+    /// whatever the boxes switch and the selected engine read while other
+    /// tests flip them.
+    #[test]
+    fn a_session_choice_is_honoured_or_refused() {
+        let repo = tempfile::tempdir().unwrap();
+        // A project pinned to boxes still gets this Mac when the session asks.
+        assert_eq!(
+            engine_for_spawn(
+                None,
+                Some("box"),
+                repo.path(),
+                "claude",
+                Some(Placement::Host)
+            )
+            .unwrap(),
+            EngineKind::SandboxExec
+        );
+        // A provider boxes do not run: refused whatever the switch and the
+        // runtime say, never stamped seatbelt instead.
+        assert!(
+            engine_for_spawn(None, None, repo.path(), "antigravity", Some(Placement::Box)).is_err()
+        );
+        // Without an override nothing errs.
+        assert!(engine_for_spawn(None, None, repo.path(), "antigravity", None).is_ok());
+        // An adopted host tree ignores the override.
+        let tree = Path::new("/workspace-type-test/runs/run-1/repo");
+        let adopted = engine_for_spawn(
+            Some(tree),
+            None,
+            repo.path(),
+            "claude",
+            Some(Placement::Box),
+        )
+        .unwrap();
+        assert_ne!(adopted, EngineKind::Box);
+    }
+
+    /// The list offers both types, this Mac always, and a box only when the
+    /// override would be accepted, with the refusal as its reason.
+    #[test]
+    fn the_list_says_why_a_box_is_not_offered() {
+        let repo = tempfile::tempdir().unwrap();
+        let options = workspace_types(None, repo.path(), "antigravity");
+        let kinds: Vec<&str> = options.iter().map(|o| o.kind).collect();
+        assert_eq!(kinds, ["host", "box"]);
+        assert!(options[0].available && options[0].reason.is_none());
+        assert!(!options[1].available);
+        assert!(options[1].reason.as_deref().is_some_and(|r| !r.is_empty()));
+        assert!(
+            !options[1].default,
+            "nothing defaults to a refused box here"
+        );
     }
 }
 

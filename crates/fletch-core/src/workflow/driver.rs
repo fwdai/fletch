@@ -177,6 +177,9 @@ impl AgentDriver for SupervisorDriver {
                         account: None,
                         // A step works in its run's tree only.
                         folder_grants: Vec::new(),
+                        // No per-session choice: a step's engine is the host's
+                        // and the project's, or its adopted tree's.
+                        workspace_type: None,
                     },
                 )
                 .await?;
