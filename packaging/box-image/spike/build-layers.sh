@@ -156,11 +156,15 @@ for layer in $LAYERS; do
   say "building the $layer layer"
   cp -a "$ROOT" "$LR"
   mount -t proc proc "$LR/proc"
+  # The image's resolv.conf is empty (a box has no DNS; the proxy resolves),
+  # so apt in the chroot borrows the build host's resolver for the install.
+  cp /etc/resolv.conf "$LR/etc/resolv.conf"
   # The snapshot's Release files are past Valid-Until, as for mmdebstrap above.
   chroot "$LR" sh -c "apt-get -qq -o Acquire::Check-Valid-Until=false -o Acquire::Retries=5 update \
     && apt-get -qq -o Acquire::Check-Valid-Until=false install -y --no-install-recommends $(pkgs "$layer" | tr , ' ')" \
     </dev/null
   umount "$LR/proc"
+  : > "$LR/etc/resolv.conf"
   if [ "$layer" = devtools ]; then
     cp -a "$WORK/node-include" "$LR/usr/local/include"
   fi

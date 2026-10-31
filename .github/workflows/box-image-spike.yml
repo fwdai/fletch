@@ -76,8 +76,9 @@ jobs:
             -e FLETCH_GUEST=/guest/fletch-guest -e WITH_AGENTS="$WITH_AGENTS" \
             -e "DEBIAN_SNAPSHOT=${DEBIAN_SNAPSHOT:-}" -e "SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH:-}" \
             debian:trixie /src/spike/run.sh /out 0.0.0-spike
-          echo "status=$?" >> "$GITHUB_OUTPUT"
-          echo $? > "$RUNNER_TEMP/out/exit-code"
+          rc=$?
+          echo "container exited with $rc"
+          echo "$rc" > "$RUNNER_TEMP/out/exit-code"
         id: spike
 
       - name: Summary
