@@ -25,5 +25,5 @@ pub mod version;
 pub use channel::{Channel, Forward};
 pub use egress::{EgressEvent, EgressPolicy, EgressProxy, HostPattern};
 pub use error::{Error, Result};
-pub use image_store::{ImageStore, InstalledImage, PinnedImage};
+pub use image_store::{ImageStore, InstalledImage, InstalledLayer, PinnedImage};
 pub use runtime::{HostKey, Probe, RuntimePaths, StopOutcome, Vm, VmSpec};

@@ -226,8 +226,9 @@ pub fn set_box_egress_global_impl(
 }
 
 /// Write one box setting (`boxes_enabled`, `box_memory_mib`, `box_cpus`,
-/// `box_image_url`, `box_idle_stop_minutes`), validated, and mirror it for the
-/// engine; `None` restores the default. The Developer pane's toggle and the
+/// `box_image_url`, `box_idle_stop_minutes`, `box_layers`), validated, and
+/// mirror it for the engine; `None` restores the default. A layer turned on
+/// starts its download; the next boot of every box attaches it. The Developer pane's toggle and the
 /// Sandbox page's knobs go through here, not the client-side `set_setting`,
 /// since the engine reads these. The flag is the whole setup
 /// ([`set_enabled`]): on, it starts the image install and makes `box` the
@@ -269,6 +270,11 @@ pub fn set_box_setting_impl(ctx: &EngineCtx, key: &str, value: Option<&str>) -> 
         settings::set(settings::load(&conn));
     }
     announce(ctx, key, normalized.as_deref());
+    if key == settings::LAYERS_SETTING && settings::enabled() {
+        if let Err(e) = setup::start_install() {
+            tracing::warn!(error = %e, "the box layer install did not start");
+        }
+    }
     Ok(())
 }
 

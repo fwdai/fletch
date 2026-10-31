@@ -1,60 +1,182 @@
-//! The base images this host has downloaded, and downloading the one this
-//! build boots (port of Calina's image store).
+//! The images this host has downloaded, and downloading the ones this build
+//! boots (port of Calina's image store, with layers and delta downloads).
 //!
-//! Each build names one image release ([`PinnedImage::this_build`]). The
-//! release's `manifest.json` gives the exact size and sha256 `base.erofs` is
-//! verified against as it arrives, so a truncated or corrupted download never
-//! installs. A verified download is not trusted forever: the file can be
-//! damaged on disk later, and [`ImageStore::verify`] hashes it again before
-//! the first boot of a session.
+//! A release (`box-image-v<version>`, built by `packaging/box-image`) holds a
+//! `manifest.json` and the files it lists: `base.erofs`, the root every box
+//! boots, and `layer-<name>.erofs`, read-only layers init overlays on it
+//! ([`OPTIONAL_LAYERS`]: `devtools`, `browser`). Each build names one release
+//! ([`PinnedImage::this_build`]); the manifest gives every file's size and
+//! sha256, which a download is verified against as it arrives, so a truncated
+//! or corrupted download never installs. Next to each file the release may
+//! carry `<file>.chunks.json` ([`chunks`]): with an older copy of the same
+//! file on this host, only the chunks that changed are fetched ([`fetch`]).
 //!
 //! ```text
 //! <root>/images/
-//!   <version>/base.erofs          an installed image; appears only by renaming a verified download
-//!   <version>/base.erofs.sha256   the sha256 it was verified against, lowercase hex
+//!   <version>/manifest.json       the release manifest, written before the first file
+//!   <version>/base.erofs          a file is here only by renaming a verified download
+//!   <version>/layer-<name>.erofs  the layers installed so far; absent means not installed
 //!   .staging-*/                   a download in progress; the next install or prune removes leftovers
 //! ```
+//!
+//! A verified download is not trusted forever: the files can be damaged on
+//! disk later, and [`ImageStore::verify`] hashes them again before the first
+//! boot of a session.
 
+pub mod chunks;
+mod fetch;
+
+use std::collections::HashSet;
 use std::fs::{self, File};
 use std::io;
 use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use tokio::io::AsyncWriteExt;
 
 use crate::error::{Error, Result};
 use crate::fsutil;
 use crate::version::version_key;
 
+pub use fetch::Outcome;
+
 pub const BASE_IMAGE: &str = "base.erofs";
 pub const MANIFEST: &str = "manifest.json";
-/// A manifest is a few KB; anything past this is not one.
-const MAX_MANIFEST: u64 = 1 << 20;
-const SHA256_FILE: &str = "base.erofs.sha256";
+/// The base image's entry in a manifest.
+pub const BASE: &str = "base";
+/// The layers a release may carry besides the base, in the order init stacks
+/// them. `devtools`: gcc, python3, pip, Node headers. `browser`: Debian's
+/// chromium-headless-shell and the Noto fonts.
+pub const OPTIONAL_LAYERS: &[&str] = &["devtools", "browser"];
+/// The layers installed unless the user says otherwise.
+pub const DEFAULT_LAYERS: &[&str] = &["devtools"];
+/// A manifest is a few hundred KB at most (the package lists); anything past this is not one.
+const MAX_MANIFEST: u64 = 4 << 20;
 const STAGING_PREFIX: &str = ".staging-";
 const IMAGES_DIR: &str = "images";
 
 /// Where image releases are downloaded from: one GitHub release per image on
-/// the public repository, tagged `box-image-v<version>`, holding `base.erofs`
-/// and `manifest.json`.
+/// the public repository, tagged `box-image-v<version>`, holding
+/// `manifest.json` and the files it lists.
 pub const RELEASES_URL: &str = "https://github.com/fwdai/fletch/releases/download";
 
 /// The release manifest (`manifest.json`), written by `packaging/box-image`
-/// next to `base.erofs`; a download is verified against its size and sha256.
+/// next to the files; a download is verified against its entry's size and sha256.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ImageManifest {
     pub version: String,
     pub arch: String,
+    pub images: Vec<ImageEntry>,
+}
+
+/// One file of a release: the base or a layer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImageEntry {
+    /// `base`, or a layer's name.
+    pub name: String,
     pub file: String,
     pub size: u64,
+    /// Lowercase hex once through [`fetch_manifest`].
     pub sha256: String,
+    /// The top-level directories a layer carries (`usr`, `etc`, `var`); `/` for the base.
+    #[serde(default)]
+    pub dirs: Vec<String>,
+    /// The uncompressed tree, for release notes.
+    #[serde(default)]
+    pub tree_bytes: u64,
+    /// `name=version` of every Debian package in it (and `node=`).
+    #[serde(default)]
+    pub packages: Vec<String>,
+}
+
+impl ImageManifest {
+    pub fn image(&self, name: &str) -> Option<&ImageEntry> {
+        self.images.iter().find(|i| i.name == name)
+    }
+
+    pub fn base(&self) -> Option<&ImageEntry> {
+        self.image(BASE)
+    }
+
+    /// Holds the manifest to what the store relies on: it describes
+    /// `version`; exactly one entry is the base and its file is `base.erofs`
+    /// ([`InstalledImage::path`]); every entry has a distinct name, a distinct
+    /// plain file name that is not the manifest's, a non-zero size and a
+    /// well-formed sha256 (lowercased here). A fetched manifest and one read
+    /// back from an installed directory both pass through this, so nothing
+    /// downstream re-checks.
+    pub fn validate(&mut self, version: &str) -> std::result::Result<(), String> {
+        if self.version != version {
+            return Err(format!(
+                "describes image {}, not the {version} this build boots",
+                self.version
+            ));
+        }
+        let bases = self.images.iter().filter(|e| e.name == BASE).count();
+        if bases != 1 {
+            return Err(format!("has {bases} base entries, not one"));
+        }
+        let plain = |s: &str| !s.is_empty() && !s.contains('/') && !s.starts_with('.');
+        let mut names = HashSet::new();
+        let mut files = HashSet::new();
+        for entry in &mut self.images {
+            if !plain(&entry.name) {
+                return Err(format!("an entry is named {:?}", entry.name));
+            }
+            if !plain(&entry.file) || entry.file == MANIFEST {
+                return Err(format!("`{}` names the file {:?}", entry.name, entry.file));
+            }
+            if entry.name == BASE && entry.file != BASE_IMAGE {
+                return Err(format!(
+                    "the base's file is {:?}, not {BASE_IMAGE}",
+                    entry.file
+                ));
+            }
+            if !names.insert(entry.name.clone()) {
+                return Err(format!("two entries are named `{}`", entry.name));
+            }
+            if !files.insert(entry.file.clone()) {
+                return Err(format!("two entries share the file {:?}", entry.file));
+            }
+            if entry.size == 0 {
+                return Err(format!("`{}` has size 0", entry.name));
+            }
+            entry.sha256 = entry.sha256.to_ascii_lowercase();
+            if !well_formed_sha256(&entry.sha256) {
+                return Err(format!("`{}`'s sha256 is not 64 hex digits", entry.name));
+            }
+        }
+        Ok(())
+    }
+
+    /// The entries an install of `layers` needs: the base, then each named
+    /// layer in manifest order. A layer the release does not have is an error.
+    pub fn wanted(&self, layers: &[String]) -> Result<Vec<&ImageEntry>> {
+        let base = self
+            .base()
+            .ok_or_else(|| Error::Other("the manifest has no base image".into()))?;
+        let mut wanted = vec![base];
+        for entry in &self.images {
+            if entry.name != BASE && layers.iter().any(|l| l == &entry.name) {
+                wanted.push(entry);
+            }
+        }
+        if let Some(unknown) = layers
+            .iter()
+            .find(|l| !wanted.iter().any(|e| &e.name == *l))
+        {
+            return Err(Error::Other(format!(
+                "image {} has no `{unknown}` layer",
+                self.version
+            )));
+        }
+        Ok(wanted)
+    }
 }
 
 /// The image this build boots: a version and the release directory holding
-/// its `base.erofs` and `manifest.json`.
+/// its `manifest.json` and files.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PinnedImage {
     pub version: String,
@@ -64,9 +186,9 @@ pub struct PinnedImage {
 
 impl PinnedImage {
     /// The image release this build boots, `box-image-v<VERSION>`
-    /// (packaging/box-image/README.md, "Publishing a release"). Bump it once
-    /// the release exists; nothing else in the app changes with an image.
-    pub const VERSION: &'static str = "0.2.0";
+    /// (docs/box.md, "Releases"). `packaging/box-image/bump.sh` moves it with
+    /// the image's VERSION; nothing else in the app changes with an image.
+    pub const VERSION: &'static str = "0.3.0";
 
     /// This build's image, from `base_url` (the `box_image_url` setting) or
     /// the GitHub release.
@@ -87,12 +209,17 @@ impl PinnedImage {
 
     /// The URL of `base.erofs`.
     pub fn url(&self) -> String {
-        format!("{}/{BASE_IMAGE}", self.base)
+        self.file_url(BASE_IMAGE)
     }
 
     /// The URL of `manifest.json`.
     pub fn manifest_url(&self) -> String {
-        format!("{}/{MANIFEST}", self.base)
+        self.file_url(MANIFEST)
+    }
+
+    /// The URL of one of the release's files.
+    pub fn file_url(&self, file: &str) -> String {
+        format!("{}/{file}", self.base)
     }
 }
 
@@ -100,18 +227,53 @@ pub fn release_url(version: &str) -> String {
     format!("{RELEASES_URL}/box-image-v{version}")
 }
 
-/// An image a `VmSpec` can boot from.
+/// A layer file installed next to its base.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InstalledLayer {
+    pub name: String,
+    pub file: String,
+    pub sha256: String,
+}
+
+/// An image a `VmSpec` can boot from: the base and the layers installed with it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InstalledImage {
     pub dir: PathBuf,
     pub version: String,
     /// What `base.erofs` was verified against when installed, lowercase hex.
     pub sha256: String,
+    /// The layers present, in manifest order (the order init stacks them).
+    pub layers: Vec<InstalledLayer>,
 }
 
 impl InstalledImage {
+    /// `base.erofs`.
     pub fn path(&self) -> PathBuf {
         self.dir.join(BASE_IMAGE)
+    }
+
+    pub fn layer_path(&self, layer: &InstalledLayer) -> PathBuf {
+        self.dir.join(&layer.file)
+    }
+
+    /// The layer files, in stacking order: what a `VmSpec` attaches.
+    pub fn layer_paths(&self) -> Vec<PathBuf> {
+        self.layers.iter().map(|l| self.layer_path(l)).collect()
+    }
+
+    /// This image with only the layers `names` lists, or `None` when one of
+    /// them is not installed.
+    pub fn with_layers(&self, names: &[String]) -> Option<InstalledImage> {
+        let layers: Vec<InstalledLayer> = self
+            .layers
+            .iter()
+            .filter(|l| names.contains(&l.name))
+            .cloned()
+            .collect();
+        (layers.len() == names.len()).then(|| InstalledImage {
+            layers,
+            ..self.clone()
+        })
     }
 }
 
@@ -144,7 +306,7 @@ impl ImageStore {
             .into_iter()
             .filter_map(|entry| {
                 let name = entry.file_name().to_str()?.to_owned();
-                (!name.starts_with('.')).then(|| image_at(entry.path(), name))?
+                (!name.starts_with('.')).then(|| image_at(entry.path(), &name))?
             })
             .collect();
         images.sort_by_key(|image| (version_key(&image.version), image.version.clone()));
@@ -157,50 +319,65 @@ impl ImageStore {
     }
 
     pub fn find(&self, version: &str) -> Option<InstalledImage> {
-        image_at(self.dir.join(version), version.to_owned())
+        image_at(self.dir.join(version), version)
     }
 
-    /// Hashes `image` again and compares it with the hash recorded when it was
-    /// installed. On a mismatch the image is removed and the result is
-    /// [`Error::Damaged`]. Reads the whole file: call it once per session, off
-    /// the UI thread.
+    /// Hashes `image`'s files again and compares them with the hashes
+    /// recorded when they were installed. On a mismatch the image is removed
+    /// and the result is [`Error::Damaged`]. Reads every file: call it once
+    /// per session, off the UI thread.
     pub fn verify(&self, image: &InstalledImage) -> Result<()> {
-        if file_matches(&image.path(), None, &image.sha256)? {
-            return Ok(());
+        let mut files = vec![(image.path(), image.sha256.as_str())];
+        files.extend(
+            image
+                .layers
+                .iter()
+                .map(|l| (image.layer_path(l), l.sha256.as_str())),
+        );
+        for (path, sha256) in files {
+            if file_matches(&path, None, sha256)? {
+                continue;
+            }
+            fs::remove_dir_all(&image.dir)
+                .map_err(Error::io(format!("remove {}", image.dir.display())))?;
+            return Err(Error::Damaged {
+                version: image.version.clone(),
+            });
         }
-        fs::remove_dir_all(&image.dir)
-            .map_err(Error::io(format!("remove {}", image.dir.display())))?;
-        Err(Error::Damaged {
-            version: image.version.clone(),
-        })
+        Ok(())
     }
 
-    /// Downloads `image` unless it is installed and matches its release
-    /// manifest already. The manifest is fetched first and must describe
-    /// `image.version`; the file is then hashed as it arrives and refused the
-    /// moment it runs past the manifest's size. It becomes `<version>/` by one
-    /// rename once it matched, so a failed or cancelled install leaves nothing
-    /// behind. `progress` sees every chunk; returning `Break` cancels.
+    /// Downloads what `image` with `layers` needs and is not installed yet.
+    /// The manifest is fetched first and must describe `image.version`; each
+    /// file is then verified as it arrives and lands in `<version>/` by one
+    /// rename, so a failed or cancelled install leaves nothing half-done. A
+    /// file an older version has on this host seeds a delta download.
+    /// `progress` sees every chunk, over all files; returning `Break` cancels.
     pub async fn install(
         &self,
         image: &PinnedImage,
+        layers: &[String],
         mut progress: impl FnMut(Progress) -> ControlFlow<()>,
     ) -> Result<InstalledImage> {
         let manifest = fetch_manifest(image).await?;
+        let wanted = manifest.wanted(layers)?;
         fs::create_dir_all(&self.dir)
             .map_err(Error::io(format!("create {}", self.dir.display())))?;
         let target = self.dir.join(&image.version);
-        let installed = InstalledImage {
-            dir: target.clone(),
-            version: image.version.clone(),
-            sha256: manifest.sha256.clone(),
-        };
-        if let Some(existing) = self.find(&image.version) {
-            if existing.sha256 == manifest.sha256
-                && file_matches(&existing.path(), Some(manifest.size), &manifest.sha256)?
-            {
-                return Ok(installed);
+
+        let mut todo = Vec::new();
+        for entry in wanted {
+            let path = target.join(&entry.file);
+            if path.is_file() && file_matches(&path, Some(entry.size), &entry.sha256)? {
+                continue;
             }
+            todo.push(entry);
+        }
+        if todo.is_empty() {
+            // Everything is in place; the manifest may still be missing (an
+            // install interrupted between the last file and nothing else).
+            self.write_manifest(&target, &manifest)?;
+            return self.installed_with(&image.version, layers);
         }
 
         self.remove_staging()?;
@@ -210,43 +387,89 @@ impl ImageStore {
             std::process::id()
         ));
         fs::create_dir(&staging).map_err(Error::io(format!("create {}", staging.display())))?;
+        let total: u64 = todo.iter().map(|e| e.size).sum();
         let result = async {
-            download(
-                &image.url(),
-                &manifest,
-                &staging.join(BASE_IMAGE),
-                &mut progress,
-            )
-            .await?;
-            let sha256_file = staging.join(SHA256_FILE);
-            fsutil::write_synced(&sha256_file, format!("{}\n", manifest.sha256).as_bytes())
-                .map_err(Error::io(format!("write {}", sha256_file.display())))?;
-            // A same-version directory that did not match (a damaged copy) is replaced.
-            if target.exists() {
-                fs::remove_dir_all(&target)
-                    .map_err(Error::io(format!("remove {}", target.display())))?;
+            let mut done_before = 0u64;
+            for entry in &todo {
+                let seeds = self.seeds_for(&entry.file)?;
+                let staged = staging.join(&entry.file);
+                let url = image.file_url(&entry.file);
+                let want = fetch::Want {
+                    url: &url,
+                    size: entry.size,
+                    sha256: &entry.sha256,
+                };
+                let outcome = fetch::fetch(&want, &staged, &seeds, &mut |p| {
+                    progress(Progress {
+                        done: done_before + p.done,
+                        total,
+                    })
+                })
+                .await?;
+                tracing::info!(file = %entry.file, ?outcome, "box image file installed");
+                done_before += entry.size;
+                // Into place: the manifest first, so a file is never there
+                // without the record of what it was verified against.
+                self.write_manifest(&target, &manifest)?;
+                let final_path = target.join(&entry.file);
+                fs::rename(&staged, &final_path)
+                    .and_then(|()| fsutil::sync_dir(&target))
+                    .map_err(Error::io(format!("install {}", final_path.display())))?;
             }
-            fs::rename(&staging, &target)
-                .and_then(|()| fsutil::sync_dir(&target))
-                .map_err(Error::io(format!("install {}", target.display())))
+            Ok::<(), Error>(())
         }
         .await;
-        if result.is_err() {
-            let _ = fs::remove_dir_all(&staging);
-        }
+        let _ = fs::remove_dir_all(&staging);
         result?;
-        Ok(installed)
+        self.installed_with(&image.version, layers)
     }
 
     /// Removes every installed version but `keep`, and leftovers of interrupted installs.
     pub fn prune(&self, keep: &str) -> io::Result<()> {
         self.remove_staging().map_err(io::Error::other)?;
-        for image in self.installed()? {
-            if image.version != keep {
-                fs::remove_dir_all(&image.dir)?;
+        for entry in self.entries()? {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if !name.starts_with('.') && name != keep && entry.path().is_dir() {
+                fs::remove_dir_all(entry.path())?;
             }
         }
         Ok(())
+    }
+
+    fn installed_with(&self, version: &str, layers: &[String]) -> Result<InstalledImage> {
+        self.find(version)
+            .and_then(|image| image.with_layers(layers))
+            .ok_or_else(|| Error::Other(format!("image {version} did not install")))
+    }
+
+    fn write_manifest(&self, target: &Path, manifest: &ImageManifest) -> Result<()> {
+        fs::create_dir_all(target).map_err(Error::io(format!("create {}", target.display())))?;
+        let path = target.join(MANIFEST);
+        let bytes = serde_json::to_vec_pretty(manifest).map_err(|e| Error::Other(e.to_string()))?;
+        if fs::read(&path).ok().as_deref() == Some(bytes.as_slice()) {
+            return Ok(());
+        }
+        fsutil::write_synced(&path, &bytes).map_err(Error::io(format!("write {}", path.display())))
+    }
+
+    /// Older (or damaged same-version) copies of `file` on this host: the
+    /// seeds of a delta download.
+    fn seeds_for(&self, file: &str) -> Result<Vec<PathBuf>> {
+        let mut seeds = Vec::new();
+        for entry in self.entries().map_err(Error::io("list the images"))? {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.starts_with('.') {
+                continue;
+            }
+            let candidate = entry.path().join(file);
+            if fs::metadata(&candidate)
+                .map(|m| m.is_file() && m.len() > 0)
+                .unwrap_or(false)
+            {
+                seeds.push(candidate);
+            }
+        }
+        Ok(seeds)
     }
 
     fn remove_staging(&self) -> Result<()> {
@@ -272,15 +495,36 @@ impl ImageStore {
     }
 }
 
-/// The image in `dir`, if it has a non-empty `base.erofs` and a well-formed recorded hash.
-fn image_at(dir: PathBuf, version: String) -> Option<InstalledImage> {
-    let base = fs::metadata(dir.join(BASE_IMAGE)).ok()?;
-    let recorded = fs::read_to_string(dir.join(SHA256_FILE)).ok()?;
-    let sha256 = recorded.trim();
-    (base.is_file() && base.len() > 0 && well_formed_sha256(sha256)).then(|| InstalledImage {
+/// The image in `dir`, if it has a manifest for `version` and a non-empty
+/// base file; the layers are the manifest's other entries whose file is there.
+fn image_at(dir: PathBuf, version: &str) -> Option<InstalledImage> {
+    let mut manifest: ImageManifest =
+        serde_json::from_slice(&fs::read(dir.join(MANIFEST)).ok()?).ok()?;
+    manifest.validate(version).ok()?;
+    let present = |file: &str| {
+        fs::metadata(dir.join(file))
+            .map(|m| m.is_file() && m.len() > 0)
+            .unwrap_or(false)
+    };
+    let base = manifest.base()?;
+    if !present(&base.file) {
+        return None;
+    }
+    let layers = manifest
+        .images
+        .iter()
+        .filter(|e| e.name != BASE && present(&e.file))
+        .map(|e| InstalledLayer {
+            name: e.name.clone(),
+            file: e.file.clone(),
+            sha256: e.sha256.clone(),
+        })
+        .collect();
+    Some(InstalledImage {
         dir,
-        version,
-        sha256: sha256.to_owned(),
+        version: version.to_owned(),
+        sha256: base.sha256.clone(),
+        layers,
     })
 }
 
@@ -315,17 +559,8 @@ pub(crate) fn sha256_of(mut reader: impl io::Read) -> io::Result<String> {
     Ok(format!("{:x}", hasher.finalize()))
 }
 
-fn client() -> Result<reqwest::Client> {
-    reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(30))
-        .read_timeout(Duration::from_secs(60))
-        .build()
-        .map_err(|e| Error::Other(e.to_string()))
-}
-
-/// The `manifest.json` of `image`'s release, checked to describe that version
-/// with a non-zero size and a well-formed sha256 (returned lowercase). A
-/// `file://` base is read from disk.
+/// The `manifest.json` of `image`'s release, held to [`ImageManifest::validate`]
+/// for that version. A `file://` base is read from disk.
 async fn fetch_manifest(image: &PinnedImage) -> Result<ImageManifest> {
     let url = image.manifest_url();
     let bad = |message: String| Error::Manifest {
@@ -339,164 +574,73 @@ async fn fetch_manifest(image: &PinnedImage) -> Result<ImageManifest> {
             url: url.clone(),
             message: e.to_string(),
         };
-        let mut response = client()?
+        let response = fetch::client()?
             .get(&url)
             .send()
             .await
             .and_then(|r| r.error_for_status())
             .map_err(http)?;
-        let mut bytes = Vec::new();
-        while let Some(chunk) = response.chunk().await.map_err(http)? {
-            bytes.extend_from_slice(&chunk);
-            if bytes.len() as u64 > MAX_MANIFEST {
-                return Err(bad(format!("larger than {MAX_MANIFEST} bytes")));
-            }
-        }
-        bytes
+        fetch::read_body(response, MAX_MANIFEST, &url).await?
     };
-    let manifest: ImageManifest = serde_json::from_slice(&bytes).map_err(|e| bad(e.to_string()))?;
-    if manifest.version != image.version {
-        return Err(bad(format!(
-            "describes image {}, not the {} this build boots",
-            manifest.version, image.version
-        )));
-    }
-    if manifest.size == 0 {
-        return Err(bad("size is 0".to_owned()));
-    }
-    let sha256 = manifest.sha256.to_ascii_lowercase();
-    if !well_formed_sha256(&sha256) {
-        return Err(bad("sha256 is not 64 hex digits".to_owned()));
-    }
-    Ok(ImageManifest { sha256, ..manifest })
-}
-
-/// Streams `url` to a new file at `path`, hashing as it goes, and checks the
-/// size and sha256 `manifest` lists. On error the file is the caller's to
-/// remove. A `file://` URL (the `box_image_url` setting pointed at a local
-/// `packaging/box-image/out`) is cloned instead of fetched, then verified the
-/// same way.
-async fn download(
-    url: &str,
-    manifest: &ImageManifest,
-    path: &Path,
-    progress: &mut impl FnMut(Progress) -> ControlFlow<()>,
-) -> Result<()> {
-    let http = |e: reqwest::Error| Error::Http {
-        url: url.to_owned(),
-        message: e.to_string(),
-    };
-    if let Some(local) = url.strip_prefix("file://") {
-        let source = Path::new(local);
-        crate::disks::clone(source, path)
-            .map_err(Error::io(format!("copy {}", source.display())))?;
-        if progress(Progress {
-            done: manifest.size,
-            total: manifest.size,
-        })
-        .is_break()
-        {
-            return Err(Error::Cancelled);
-        }
-        let len = fs::metadata(path)
-            .map_err(Error::io(format!("stat {}", path.display())))?
-            .len();
-        if len != manifest.size {
-            return Err(Error::Size {
-                expected: manifest.size,
-                actual: len,
-            });
-        }
-        if !file_matches(path, Some(manifest.size), &manifest.sha256)? {
-            return Err(Error::Sha256);
-        }
-        return Ok(());
-    }
-    let mut response = client()?
-        .get(url)
-        .send()
-        .await
-        .and_then(|r| r.error_for_status())
-        .map_err(http)?;
-    if let Some(len) = response.content_length() {
-        if len != manifest.size {
-            return Err(Error::Size {
-                expected: manifest.size,
-                actual: len,
-            });
-        }
-    }
-
-    let mut out = tokio::fs::File::create_new(path)
-        .await
-        .map_err(Error::io(format!("create {}", path.display())))?;
-    let mut hasher = Sha256::new();
-    let mut received = 0u64;
-    let total = manifest.size;
-    if progress(Progress { done: 0, total }).is_break() {
-        return Err(Error::Cancelled);
-    }
-    while let Some(chunk) = response.chunk().await.map_err(http)? {
-        received += chunk.len() as u64;
-        if received > manifest.size {
-            return Err(Error::Size {
-                expected: manifest.size,
-                actual: received,
-            });
-        }
-        hasher.update(&chunk);
-        out.write_all(&chunk)
-            .await
-            .map_err(Error::io(format!("write {}", path.display())))?;
-        if progress(Progress {
-            done: received,
-            total,
-        })
-        .is_break()
-        {
-            return Err(Error::Cancelled);
-        }
-    }
-    if received < manifest.size {
-        return Err(Error::Size {
-            expected: manifest.size,
-            actual: received,
-        });
-    }
-    if format!("{:x}", hasher.finalize()) != manifest.sha256 {
-        return Err(Error::Sha256);
-    }
-    out.sync_all()
-        .await
-        .map_err(Error::io(format!("sync {}", path.display())))
+    let mut manifest: ImageManifest =
+        serde_json::from_slice(&bytes).map_err(|e| bad(e.to_string()))?;
+    manifest.validate(&image.version).map_err(bad)?;
+    Ok(manifest)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex};
 
     const HELLO_SHA256: &str = "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824";
 
-    /// A `manifest.json` as `packaging/box-image/build.sh` writes it.
-    fn manifest_json(version: &str, size: u64, sha256: &str) -> String {
-        serde_json::json!({
-            "version": version, "arch": "aarch64", "file": BASE_IMAGE,
-            "size": size, "sha256": sha256, "packages": ["bash=5.2"],
-        })
-        .to_string()
+    fn sha(bytes: &[u8]) -> String {
+        format!("{:x}", Sha256::digest(bytes))
     }
 
-    /// A local release directory: `base.erofs` holding `content` and a
-    /// manifest describing it as `version` with `sha256`.
-    fn local_release(version: &str, content: &[u8], sha256: &str) -> tempfile::TempDir {
+    fn strings(names: &[&str]) -> Vec<String> {
+        names.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// A `manifest.json` as `packaging/box-image/build.sh` writes it, for a
+    /// base of `base` bytes and the given `(name, bytes)` layers.
+    fn manifest_json(version: &str, base: &[u8], layers: &[(&str, &[u8])]) -> String {
+        let mut images = vec![serde_json::json!({
+            "name": "base", "file": BASE_IMAGE, "size": base.len(), "sha256": sha(base),
+            "dirs": ["/"], "tree_bytes": 1, "packages": ["bash=5.2"],
+        })];
+        for (name, bytes) in layers {
+            images.push(serde_json::json!({
+                "name": name, "file": format!("layer-{name}.erofs"), "size": bytes.len(),
+                "sha256": sha(bytes), "dirs": ["usr", "etc", "var"], "tree_bytes": 1, "packages": [],
+            }));
+        }
+        serde_json::json!({ "version": version, "arch": "aarch64", "images": images }).to_string()
+    }
+
+    /// A local release directory.
+    fn local_release(version: &str, base: &[u8], layers: &[(&str, &[u8])]) -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
-        fs::write(dir.path().join(BASE_IMAGE), content).unwrap();
+        fs::write(dir.path().join(BASE_IMAGE), base).unwrap();
+        for (name, bytes) in layers {
+            fs::write(dir.path().join(format!("layer-{name}.erofs")), bytes).unwrap();
+        }
         fs::write(
             dir.path().join(MANIFEST),
-            manifest_json(version, content.len() as u64, sha256),
+            manifest_json(version, base, layers),
         )
         .unwrap();
         dir
+    }
+
+    fn pin_to(version: &str, dir: &tempfile::TempDir) -> PinnedImage {
+        PinnedImage::new(version, Some(&format!("file://{}", dir.path().display())))
+    }
+
+    fn go(_: Progress) -> ControlFlow<()> {
+        ControlFlow::Continue(())
     }
 
     #[test]
@@ -509,6 +653,10 @@ mod tests {
         assert_eq!(
             pinned.manifest_url(),
             "https://github.com/fwdai/fletch/releases/download/box-image-v0.1.0/manifest.json"
+        );
+        assert_eq!(
+            pinned.file_url("layer-devtools.erofs"),
+            "https://github.com/fwdai/fletch/releases/download/box-image-v0.1.0/layer-devtools.erofs"
         );
         let mirrored = PinnedImage::new("0.1.0", Some("https://mirror.test/images/"));
         assert_eq!(mirrored.url(), "https://mirror.test/images/base.erofs");
@@ -529,32 +677,139 @@ mod tests {
         assert!(!file_matches(&path, None, &"0".repeat(64)).unwrap());
     }
 
+    /// Every shape the store would misread is refused by the one gate both
+    /// a download and an installed directory pass through.
+    #[test]
+    fn a_manifest_is_held_to_the_stores_assumptions() {
+        let good: ImageManifest =
+            serde_json::from_str(&manifest_json("1.0.0", b"base", &[("devtools", b"d")])).unwrap();
+        let mut ok = good.clone();
+        ok.images[0].sha256 = ok.images[0].sha256.to_uppercase();
+        assert!(ok.validate("1.0.0").is_ok());
+        assert_eq!(ok.images[0].sha256, good.images[0].sha256, "lowercased");
+        let refused = |edit: &dyn Fn(&mut ImageManifest), why: &str| {
+            let mut m = good.clone();
+            edit(&mut m);
+            assert!(m.validate("1.0.0").is_err(), "{why}");
+        };
+        assert!(good.clone().validate("1.0.1").is_err(), "another version");
+        refused(
+            &|m| m.images[0].file = "root.img".into(),
+            "the base must be base.erofs",
+        );
+        refused(
+            &|m| {
+                m.images.remove(0);
+            },
+            "no base",
+        );
+        refused(&|m| m.images.push(m.images[0].clone()), "two bases");
+        refused(&|m| m.images[1].name = "base".into(), "two bases by name");
+        refused(
+            &|m| m.images[1].file = BASE_IMAGE.into(),
+            "two entries, one file",
+        );
+        refused(
+            &|m| m.images[1].file = MANIFEST.into(),
+            "a file named like the manifest",
+        );
+        refused(&|m| m.images[1].file = "../x".into(), "a path, not a name");
+        refused(&|m| m.images[1].name = String::new(), "an unnamed entry");
+        refused(&|m| m.images[1].size = 0, "an empty file");
+        refused(&|m| m.images[1].sha256 = "nope".into(), "a malformed hash");
+
+        // An installed directory whose manifest fails the gate is not an image.
+        let root = tempfile::tempdir().unwrap();
+        let store = ImageStore::new(root.path());
+        let dir = store.dir().join("1.0.0");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("root.img"), b"base").unwrap();
+        let mut bad = good.clone();
+        bad.images[0].file = "root.img".into();
+        fs::write(dir.join(MANIFEST), serde_json::to_vec(&bad).unwrap()).unwrap();
+        assert!(store.find("1.0.0").is_none());
+    }
+
+    #[test]
+    fn a_manifest_knows_what_an_install_wants() {
+        let m: ImageManifest = serde_json::from_str(&manifest_json(
+            "1.0.0",
+            b"base",
+            &[("devtools", b"d"), ("browser", b"b")],
+        ))
+        .unwrap();
+        let names = |w: Vec<&ImageEntry>| w.iter().map(|e| e.name.clone()).collect::<Vec<_>>();
+        assert_eq!(names(m.wanted(&[]).unwrap()), ["base"]);
+        assert_eq!(
+            names(m.wanted(&strings(&["browser", "devtools"])).unwrap()),
+            ["base", "devtools", "browser"],
+            "manifest order, not the request's"
+        );
+        assert!(m.wanted(&strings(&["gpu"])).is_err());
+    }
+
     #[test]
     fn installed_images_are_found_verified_and_pruned() {
         let root = tempfile::tempdir().unwrap();
         let store = ImageStore::new(root.path());
         assert_eq!(store.current().unwrap(), None);
 
-        let put = |version: &str, sha: &str| {
+        let put = |version: &str, base: &[u8], layers: &[(&str, &[u8])], damage: bool| {
             let dir = store.dir().join(version);
             fs::create_dir_all(&dir).unwrap();
-            fs::write(dir.join(BASE_IMAGE), b"hello").unwrap();
-            fs::write(dir.join(SHA256_FILE), format!("{sha}\n")).unwrap();
+            fs::write(dir.join(MANIFEST), manifest_json(version, base, layers)).unwrap();
+            fs::write(
+                dir.join(BASE_IMAGE),
+                if damage { b"xxxxx" as &[u8] } else { base },
+            )
+            .unwrap();
+            for (name, bytes) in layers {
+                fs::write(dir.join(format!("layer-{name}.erofs")), bytes).unwrap();
+            }
         };
-        put("0.9.0", HELLO_SHA256);
-        put("0.10.0", HELLO_SHA256);
-        put("0.2.0", &"0".repeat(64));
+        put("0.9.0", b"hello", &[], false);
+        put("0.10.0", b"hello", &[("devtools", b"dev")], false);
+        put("0.2.0", b"hello", &[], true);
+        // A manifest that promises a layer whose file is missing: the base
+        // alone is installed.
+        let dir = store.dir().join("0.11.0");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join(MANIFEST),
+            manifest_json("0.11.0", b"hello", &[("browser", b"b")]),
+        )
+        .unwrap();
+        fs::write(dir.join(BASE_IMAGE), b"hello").unwrap();
         fs::create_dir_all(store.dir().join(".staging-x-1")).unwrap();
 
         let current = store.current().unwrap().unwrap();
-        assert_eq!(current.version, "0.10.0");
-        assert_eq!(current.path(), store.dir().join("0.10.0").join(BASE_IMAGE));
-        store.verify(&current).unwrap();
-        assert!(store.find("0.10.0").is_some());
+        assert_eq!(current.version, "0.11.0");
+        assert!(current.layers.is_empty());
+        assert!(current.with_layers(&strings(&["browser"])).is_none());
+        assert!(current.with_layers(&[]).is_some());
+
+        let ten = store.find("0.10.0").unwrap();
+        assert_eq!(ten.path(), store.dir().join("0.10.0").join(BASE_IMAGE));
+        assert_eq!(ten.layers.len(), 1);
+        assert_eq!(
+            ten.layer_paths(),
+            [store.dir().join("0.10.0").join("layer-devtools.erofs")]
+        );
+        assert_eq!(ten.with_layers(&strings(&["devtools"])), Some(ten.clone()));
+        assert!(ten.with_layers(&[]).unwrap().layers.is_empty());
+        store.verify(&ten).unwrap();
 
         let damaged = store.find("0.2.0").unwrap();
         assert!(matches!(store.verify(&damaged), Err(Error::Damaged { .. })));
         assert!(store.find("0.2.0").is_none());
+        // A damaged layer takes the whole version down too.
+        fs::write(
+            store.dir().join("0.10.0").join("layer-devtools.erofs"),
+            b"bad",
+        )
+        .unwrap();
+        assert!(matches!(store.verify(&ten), Err(Error::Damaged { .. })));
+        assert!(store.find("0.10.0").is_none());
 
         store.prune("0.9.0").unwrap();
         let left: Vec<_> = store
@@ -573,28 +828,33 @@ mod tests {
     async fn install_refuses_a_manifest_that_is_not_this_builds_image() {
         let root = tempfile::tempdir().unwrap();
         let store = ImageStore::new(root.path());
-        let store = &store;
-        let install = |version: &'static str, src: &tempfile::TempDir| {
-            let base = format!("file://{}", src.path().display());
-            let pin = PinnedImage::new(version, Some(&base));
-            async move { store.install(&pin, |_| ControlFlow::Continue(())).await }
-        };
 
-        let other = local_release("3.1.0", b"hello", HELLO_SHA256);
+        let other = local_release("3.1.0", b"hello", &[]);
         assert!(matches!(
-            install("3.0.0", &other).await,
+            store.install(&pin_to("3.0.0", &other), &[], go).await,
             Err(Error::Manifest { .. })
         ));
-        let malformed = local_release("3.0.0", b"hello", "not a sha");
+        let malformed = tempfile::tempdir().unwrap();
+        fs::write(malformed.path().join(MANIFEST), r#"{"version":"3.0.0","arch":"aarch64","images":[{"name":"base","file":"base.erofs","size":5,"sha256":"nope"}]}"#).unwrap();
         assert!(matches!(
-            install("3.0.0", &malformed).await,
+            store.install(&pin_to("3.0.0", &malformed), &[], go).await,
             Err(Error::Manifest { .. })
         ));
         let missing = tempfile::tempdir().unwrap();
         assert!(matches!(
-            install("3.0.0", &missing).await,
+            store.install(&pin_to("3.0.0", &missing), &[], go).await,
             Err(Error::Io { .. })
         ));
+        let good = local_release("3.0.0", b"hello", &[]);
+        assert!(
+            matches!(
+                store
+                    .install(&pin_to("3.0.0", &good), &strings(&["browser"]), go)
+                    .await,
+                Err(Error::Other(_))
+            ),
+            "a layer the release lacks"
+        );
         assert!(store.installed().unwrap().is_empty());
     }
 
@@ -607,81 +867,190 @@ mod tests {
         assert!(pinned.base.starts_with(RELEASES_URL));
     }
 
-    /// A `file://` base URL installs by copying, verified like a download.
+    /// A `file://` base URL installs by copying, verified like a download;
+    /// layers come one install at a time, and a damaged file is replaced.
     #[tokio::test]
     async fn install_from_a_local_directory_copies_and_verifies() {
         let root = tempfile::tempdir().unwrap();
         let store = ImageStore::new(root.path());
+        let src = local_release(
+            "3.0.0",
+            b"hello",
+            &[("devtools", b"dev"), ("browser", b"www")],
+        );
+        let pin = pin_to("3.0.0", &src);
 
-        let src = local_release("3.0.0", b"hello", HELLO_SHA256);
-        let base = format!("file://{}", src.path().display());
         let installed = store
-            .install(&PinnedImage::new("3.0.0", Some(&base)), |_| {
-                ControlFlow::Continue(())
-            })
+            .install(&pin, &strings(&["devtools"]), go)
             .await
             .unwrap();
         assert_eq!(fs::read(installed.path()).unwrap(), b"hello");
         assert_eq!(installed.sha256, HELLO_SHA256);
+        assert_eq!(installed.layers.len(), 1);
+        assert_eq!(fs::read(&installed.layer_paths()[0]).unwrap(), b"dev");
+        assert!(store
+            .find("3.0.0")
+            .unwrap()
+            .with_layers(&strings(&["browser"]))
+            .is_none());
 
-        let wrong = local_release("3.1.0", b"hello", &"0".repeat(64));
-        let base = format!("file://{}", wrong.path().display());
+        let more = store
+            .install(&pin, &strings(&["devtools", "browser"]), go)
+            .await
+            .unwrap();
+        assert_eq!(more.layers.len(), 2);
+        assert_eq!(fs::read(&more.layer_paths()[1]).unwrap(), b"www");
+
+        fs::write(installed.path(), b"hellp").unwrap();
+        let again = store
+            .install(&pin, &strings(&["devtools"]), go)
+            .await
+            .unwrap();
+        assert_eq!(
+            fs::read(again.path()).unwrap(),
+            b"hello",
+            "a damaged file is replaced"
+        );
+        assert_eq!(
+            store.find("3.0.0").unwrap().layers.len(),
+            2,
+            "the other layer stays"
+        );
+
+        let wrong = tempfile::tempdir().unwrap();
+        fs::write(wrong.path().join(BASE_IMAGE), b"hello").unwrap();
+        fs::write(
+            wrong.path().join(MANIFEST),
+            manifest_json("3.1.0", b"other", &[]),
+        )
+        .unwrap();
         assert!(matches!(
-            store
-                .install(&PinnedImage::new("3.1.0", Some(&base)), |_| {
-                    ControlFlow::Continue(())
-                })
-                .await,
+            store.install(&pin_to("3.1.0", &wrong), &[], go).await,
             Err(Error::Sha256)
         ));
         assert!(store.find("3.1.0").is_none());
     }
 
-    #[tokio::test]
-    async fn install_downloads_verifies_and_renames() {
+    /// A release served over HTTP: `files` by path; GET with a `Range` header
+    /// is answered with 206. Every request line (with its Range, if any) is
+    /// recorded.
+    async fn serve(files: HashMap<String, Vec<u8>>) -> (u16, Arc<Mutex<Vec<String>>>) {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
-        // A release per `/<version>/<good|bad>/`: the manifest always describes
-        // "hello", which `bad` then does not serve.
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let seen = log.clone();
+        let files = Arc::new(files);
         tokio::spawn(async move {
             loop {
                 let (mut s, _) = listener.accept().await.unwrap();
-                let mut buf = [0u8; 1024];
-                let n = s.read(&mut buf).await.unwrap_or(0);
-                let request = String::from_utf8_lossy(&buf[..n]).into_owned();
-                let path = request.split_whitespace().nth(1).unwrap_or("");
-                let mut parts = path.trim_start_matches('/').splitn(3, '/');
-                let version = parts.next().unwrap_or("").to_owned();
-                let kind = parts.next().unwrap_or("");
-                let file = parts.next().unwrap_or("");
-                let body: Vec<u8> = if file == MANIFEST {
-                    manifest_json(&version, 5, HELLO_SHA256).into_bytes()
-                } else if kind == "bad" {
-                    b"hellp".to_vec()
-                } else {
-                    b"hello".to_vec()
-                };
-                let head = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                    body.len()
-                );
-                s.write_all(head.as_bytes()).await.unwrap();
-                s.write_all(&body).await.unwrap();
+                let files = files.clone();
+                let seen = seen.clone();
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; 4096];
+                    let n = s.read(&mut buf).await.unwrap_or(0);
+                    let request = String::from_utf8_lossy(&buf[..n]).into_owned();
+                    let path = request.split_whitespace().nth(1).unwrap_or("").to_owned();
+                    let range = request
+                        .lines()
+                        .find_map(|l| {
+                            l.strip_prefix("range: ")
+                                .or_else(|| l.strip_prefix("Range: "))
+                        })
+                        .map(|r| r.trim().to_owned());
+                    seen.lock()
+                        .unwrap()
+                        .push(format!("{path} {}", range.as_deref().unwrap_or("")));
+                    let Some(body) = files.get(path.trim_start_matches('/')) else {
+                        s.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                            .await
+                            .unwrap();
+                        return;
+                    };
+                    let (status, body): (&str, Vec<u8>) =
+                        match range.as_deref().and_then(|r| r.strip_prefix("bytes=")) {
+                            Some(r) => {
+                                let (a, b) = r.split_once('-').unwrap();
+                                let (a, b): (usize, usize) =
+                                    (a.parse().unwrap(), b.parse().unwrap());
+                                ("206 Partial Content", body[a..=b].to_vec())
+                            }
+                            None => ("200 OK", body.clone()),
+                        };
+                    let head = format!(
+                        "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    s.write_all(head.as_bytes()).await.unwrap();
+                    s.write_all(&body).await.unwrap();
+                });
             }
         });
+        (port, log)
+    }
+
+    fn noise(seed: u64, len: usize) -> Vec<u8> {
+        let mut x = seed | 1;
+        (0..len)
+            .map(|_| {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                (x >> 24) as u8
+            })
+            .collect()
+    }
+
+    fn chunk_list_json(bytes: &[u8]) -> Vec<u8> {
+        let mut chunker = chunks::Chunker::new();
+        chunker.update(bytes);
+        let list = chunks::ChunkList {
+            algorithm: chunks::ALGORITHM.into(),
+            avg: chunks::AVG,
+            size: bytes.len() as u64,
+            sha256: sha(bytes),
+            chunks: chunker.finish(),
+        };
+        serde_json::to_vec(&list).unwrap()
+    }
+
+    #[tokio::test]
+    async fn install_downloads_verifies_and_renames() {
+        let mut files = HashMap::new();
+        files.insert(
+            "1.0.0/good/manifest.json".to_owned(),
+            manifest_json("1.0.0", b"hello", &[]).into_bytes(),
+        );
+        files.insert("1.0.0/good/base.erofs".to_owned(), b"hello".to_vec());
+        files.insert(
+            "1.0.0/bad/manifest.json".to_owned(),
+            manifest_json("1.0.0", b"hello", &[]).into_bytes(),
+        );
+        files.insert("1.0.0/bad/base.erofs".to_owned(), b"hellp".to_vec());
+        files.insert(
+            "2.0.0/good/manifest.json".to_owned(),
+            manifest_json("2.0.0", b"hello", &[]).into_bytes(),
+        );
+        files.insert("2.0.0/good/base.erofs".to_owned(), b"hello".to_vec());
+        let (port, _log) = serve(files).await;
         let root = tempfile::tempdir().unwrap();
         let store = ImageStore::new(root.path());
 
         let bad = PinnedImage::new("1.0.0", Some(&format!("http://127.0.0.1:{port}/1.0.0/bad")));
         assert!(matches!(
-            store.install(&bad, |_| ControlFlow::Continue(())).await,
+            store.install(&bad, &[], go).await,
             Err(Error::Sha256)
         ));
         assert!(store.installed().unwrap().is_empty());
         assert!(
-            fs::read_dir(store.dir()).unwrap().next().is_none(),
+            fs::read_dir(store.dir())
+                .unwrap()
+                .all(|e| e.unwrap().file_name() == "1.0.0"),
             "staging left behind"
+        );
+        assert!(
+            store.find("1.0.0").is_none(),
+            "a manifest alone is not an install"
         );
 
         let good = PinnedImage::new(
@@ -690,7 +1059,7 @@ mod tests {
         );
         let mut seen = Vec::new();
         let installed = store
-            .install(&good, |p| {
+            .install(&good, &[], |p| {
                 seen.push(p.done);
                 ControlFlow::Continue(())
             })
@@ -703,7 +1072,7 @@ mod tests {
         store.verify(&installed).unwrap();
 
         let again = store
-            .install(&good, |_| ControlFlow::Break(()))
+            .install(&good, &[], |_| ControlFlow::Break(()))
             .await
             .unwrap();
         assert_eq!(
@@ -715,9 +1084,88 @@ mod tests {
             Some(&format!("http://127.0.0.1:{port}/2.0.0/good")),
         );
         assert!(matches!(
-            store.install(&cancelled, |_| ControlFlow::Break(())).await,
+            store
+                .install(&cancelled, &[], |_| ControlFlow::Break(()))
+                .await,
             Err(Error::Cancelled)
         ));
         assert!(store.find("2.0.0").is_none());
+    }
+
+    /// With an older version on disk and a chunk list in the release, a new
+    /// version is assembled from the old file plus range requests, and the
+    /// result is byte for byte the new file.
+    #[tokio::test]
+    async fn an_older_image_seeds_a_delta_download() {
+        let v1 = noise(1, 3 << 20);
+        let mut v2 = v1[..1 << 20].to_vec();
+        v2.extend_from_slice(&noise(2, 200_000));
+        v2.extend_from_slice(&v1[1 << 20..]);
+        let layer = noise(3, 1 << 20);
+        let mut files = HashMap::new();
+        files.insert(
+            "1.0.0/manifest.json".to_owned(),
+            manifest_json("1.0.0", &v1, &[]).into_bytes(),
+        );
+        files.insert("1.0.0/base.erofs".to_owned(), v1.clone());
+        files.insert(
+            "2.0.0/manifest.json".to_owned(),
+            manifest_json("2.0.0", &v2, &[("devtools", &layer[..])]).into_bytes(),
+        );
+        files.insert("2.0.0/base.erofs".to_owned(), v2.clone());
+        files.insert(
+            "2.0.0/base.erofs.chunks.json".to_owned(),
+            chunk_list_json(&v2),
+        );
+        files.insert("2.0.0/layer-devtools.erofs".to_owned(), layer.clone());
+        // A chunk list that lies about the layer: the delta is abandoned for a
+        // whole download, which the manifest then verifies.
+        files.insert(
+            "2.0.0/layer-devtools.erofs.chunks.json".to_owned(),
+            chunk_list_json(&noise(9, 1 << 20)),
+        );
+        let (port, log) = serve(files).await;
+        let root = tempfile::tempdir().unwrap();
+        let store = ImageStore::new(root.path());
+        let at = |v: &str| PinnedImage::new(v, Some(&format!("http://127.0.0.1:{port}/{v}")));
+
+        store.install(&at("1.0.0"), &[], go).await.unwrap();
+        log.lock().unwrap().clear();
+        let two = store
+            .install(&at("2.0.0"), &strings(&["devtools"]), go)
+            .await
+            .unwrap();
+        assert_eq!(fs::read(two.path()).unwrap(), v2);
+        assert_eq!(fs::read(&two.layer_paths()[0]).unwrap(), layer);
+
+        let requests = log.lock().unwrap().clone();
+        let base_requests: Vec<&String> = requests
+            .iter()
+            .filter(|r| r.starts_with("/2.0.0/base.erofs "))
+            .collect();
+        assert!(
+            !base_requests.is_empty() && base_requests.iter().all(|r| r.contains("bytes=")),
+            "the base came by range requests only: {requests:?}"
+        );
+        let ranged: u64 = base_requests
+            .iter()
+            .map(|r| {
+                let (a, b) = r.rsplit_once("bytes=").unwrap().1.split_once('-').unwrap();
+                b.parse::<u64>().unwrap() - a.parse::<u64>().unwrap() + 1
+            })
+            .sum();
+        assert!(
+            ranged < v2.len() as u64 / 2,
+            "fetched {ranged} of {}",
+            v2.len()
+        );
+        assert!(
+            requests.iter().any(|r| r == "/2.0.0/layer-devtools.erofs "),
+            "the layer fell back to a whole download: {requests:?}"
+        );
+        store.verify(&two).unwrap();
+        // The seed is gone once pruned; the next install of 2.0.0 is a no-op.
+        store.prune("2.0.0").unwrap();
+        assert_eq!(store.installed().unwrap().len(), 1);
     }
 }

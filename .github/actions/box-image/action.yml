@@ -1,0 +1,110 @@
+name: Build and test the box image
+description: >
+  Cross-builds fletch-guest, builds the box images (packaging/box-image/build.sh)
+  in a privileged Debian arm64 container, tests them (test.sh), writes the delta
+  manifests (fletch-box image chunk) and puts report.md in the job summary.
+  Publishes nothing. Needs an arm64 Linux runner.
+inputs:
+  version:
+    description: Image version (semver); default the VERSION file
+    required: false
+    default: ""
+  with-agents:
+    description: Install the agent CLIs in the tests ("1" or "0")
+    required: false
+    default: "1"
+  out:
+    description: Output directory
+    required: false
+    default: ${{ runner.temp }}/box-image
+outputs:
+  out:
+    description: The output directory with the images, manifest.json, *.chunks.json, sizes.md, report.md
+    value: ${{ inputs.out }}
+  version:
+    description: The version built
+    value: ${{ steps.version.outputs.version }}
+runs:
+  using: composite
+  steps:
+    - id: version
+      shell: bash
+      run: |
+        set -euo pipefail
+        VERSION="${{ inputs.version }}"
+        [ -n "$VERSION" ] || VERSION=$(cat packaging/box-image/VERSION)
+        echo "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$' || { echo "::error::version must be semver, got '$VERSION'"; exit 1; }
+        echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+    - name: Install Rust
+      shell: bash
+      run: |
+        rustup toolchain install
+        rustup target add aarch64-unknown-linux-musl
+
+    - name: Cache cargo
+      uses: Swatinem/rust-cache@v2
+      with:
+        workspaces: |
+          crates/fletch-guest
+          crates/fletch-box
+
+    - name: Build fletch-guest and the fletch-box CLI
+      # fletch-guest goes into the image; the CLI writes the delta manifests.
+      shell: bash
+      run: |
+        set -euo pipefail
+        (cd crates/fletch-guest && cargo build --quiet --release --target aarch64-unknown-linux-musl)
+        (cd crates/fletch-box && cargo build --quiet --release --bin fletch-box)
+        mkdir -p "$RUNNER_TEMP/guest"
+        cp crates/fletch-guest/target/aarch64-unknown-linux-musl/release/fletch-guest "$RUNNER_TEMP/guest/"
+
+    - name: Kernel modules for the tests
+      shell: bash
+      run: |
+        sudo modprobe erofs || true
+        sudo modprobe overlay || true
+        grep -E "erofs|overlay" /proc/filesystems
+
+    - name: Build the images
+      shell: bash
+      env:
+        OUT: ${{ inputs.out }}
+        VERSION: ${{ steps.version.outputs.version }}
+      run: |
+        set -euo pipefail
+        mkdir -p "$OUT"
+        docker run --rm --privileged --platform linux/arm64 \
+          -v "$PWD/packaging/box-image:/src:ro" -v "$RUNNER_TEMP/guest:/guest:ro" -v "$OUT:/out" \
+          -e FLETCH_GUEST=/guest/fletch-guest \
+          -e "DEBIAN_SNAPSHOT=${DEBIAN_SNAPSHOT:-}" -e "SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH:-}" \
+          debian:trixie /src/build.sh /out "$VERSION"
+
+    - name: Test the images
+      shell: bash
+      env:
+        OUT: ${{ inputs.out }}
+        WITH_AGENTS: ${{ inputs.with-agents }}
+      run: |
+        set -euo pipefail
+        docker run --rm --privileged --platform linux/arm64 \
+          -v "$PWD/packaging/box-image:/src:ro" -v "$OUT:/out" -e WITH_AGENTS="$WITH_AGENTS" \
+          debian:trixie sh -c "apt-get -qq update && apt-get -qq install -y --no-install-recommends jq >/dev/null && /src/test.sh /out"
+
+    - name: Delta manifests
+      shell: bash
+      env:
+        OUT: ${{ inputs.out }}
+      run: crates/fletch-box/target/release/fletch-box image chunk "$OUT"/*.erofs
+
+    - name: Summary
+      if: always()
+      shell: bash
+      env:
+        OUT: ${{ inputs.out }}
+      run: |
+        {
+          echo "## Box image ${{ steps.version.outputs.version }}"
+          echo
+          if [ -f "$OUT/report.md" ]; then cat "$OUT/report.md"; else echo "The build failed before the tests ran."; fi
+        } >> "$GITHUB_STEP_SUMMARY"

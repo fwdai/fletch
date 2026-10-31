@@ -1,42 +1,58 @@
 #!/bin/sh
-# Build the box base image. Runs as root on Debian arm64: a `debian:trixie`
-# container (build-mac.sh) or CI.
+# Build the box images: the base root filesystem and the layers. Runs as root
+# on Debian trixie arm64 with CAP_SYS_ADMIN (a privileged container: the layer
+# installs chroot and mount /proc), see build-mac.sh and the Box image workflow.
 #
 #   build.sh OUT_DIR [VERSION]
 #
-# VERSION is semver (default 0.0.0-dev); releases are X.Y.Z. Expects the guest
-# agent cross-built first (crates/fletch-guest, aarch64-unknown-linux-musl);
+# VERSION is semver (default: the VERSION file). Expects the guest agent
+# cross-built first (crates/fletch-guest, aarch64-unknown-linux-musl);
 # FLETCH_GUEST overrides its path.
 #
 # Writes to OUT_DIR:
-#   base.erofs      read-only root filesystem, lz4hc erofs
-#   manifest.json   {version, arch, file, size, sha256, packages}: what fletch-box's
-#                   ImageStore pins, plus the package list to rebuild from
+#   base.erofs             the root every box boots, read-only
+#   layer-<name>.erofs     one per packages/<name>.txt but base: the files that
+#                          installing those packages adds to the base, overlaid
+#                          by init on /usr, /etc and /var (rootfs/opt/fletch/init)
+#   manifest.json          version, arch, and per image: file, size, sha256,
+#                          dirs, tree_bytes, packages (what the app verifies
+#                          downloads against; `fletch-box image chunk` adds the
+#                          delta manifests next to the files)
+#   sizes.md               tree and packed sizes, for the release notes
 #
 # Reproducible inputs: packages come from a snapshot.debian.org timestamp
 # (DEBIAN_SNAPSHOT), Node from one nodejs.org tarball checked against its
-# SHASUMS256 entry, every inode gets SOURCE_DATE_EPOCH, the filesystem UUID is
-# fixed. Rebuilding with the same inputs and the same fletch-guest binary gives
-# the same base.erofs.
+# SHASUMS256 entry, every inode gets SOURCE_DATE_EPOCH, each image has a fixed
+# UUID. The same inputs and the same fletch-guest give the same images.
 set -eu
 
 HERE=$(cd "$(dirname "$0")" && pwd)
 OUT=${1:?usage: build.sh OUT_DIR [VERSION]}
-VERSION=${2:-0.0.0-dev}
+VERSION=${2:-$(cat "$HERE/VERSION")}
 GUEST=${FLETCH_GUEST:-$HERE/../../crates/fletch-guest/target/aarch64-unknown-linux-musl/release/fletch-guest}
+WORK=${WORK:-/work}
 
 ARCH=aarch64
 SUITE=trixie
+# --- pins: packaging/box-image/bump.sh moves these ---
 DEBIAN_SNAPSHOT=${DEBIAN_SNAPSHOT:-20261027T000000Z}
-MIRROR=https://snapshot.debian.org/archive/debian/$DEBIAN_SNAPSHOT
-SECURITY=https://snapshot.debian.org/archive/debian-security/$DEBIAN_SNAPSHOT
-# Node 22 LTS as a tarball rather than the NodeSource apt repo: one URL and one
-# hash pin it, no third-party signing key or repo metadata to keep in step.
 NODE_VERSION=22.23.4
 NODE_SHA256=6287aa46b6c375d816e63ae66d024fbbfd70404825aabdfdf898a970871d2f4b
+# --- end pins ---
+MIRROR=https://snapshot.debian.org/archive/debian/$DEBIAN_SNAPSHOT
+SECURITY=https://snapshot.debian.org/archive/debian-security/$DEBIAN_SNAPSHOT
 SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH:-1767225600} # 2026-01-01
 export SOURCE_DATE_EPOCH
-BASE_UUID=3f2a9c1e-7b4d-4e8a-9d0c-5e6f7a8b9c0d
+# The layers, in the order init stacks them (later on top; they are disjoint).
+LAYERS="devtools browser"
+# Fixed filesystem UUIDs, one per image.
+UUID_BASE=3f2a9c1e-7b4d-4e8a-9d0c-5e6f7a8b9c0d
+UUID_DEVTOOLS=3f2a9c1e-7b4d-4e8a-9d0c-5e6f7a8b9c11
+UUID_BROWSER=3f2a9c1e-7b4d-4e8a-9d0c-5e6f7a8b9c12
+# lz4hc is the one codec the guest kernel (libkrunfw) decodes. 64 KiB clusters,
+# dedupe, fragments and tail packing: 24% smaller than the 4 KiB default on the
+# same tree. -x -1: no xattrs. -T/--all-time: every inode gets SOURCE_DATE_EPOCH.
+MKFS_FLAGS="-zlz4hc,12 -C65536 -Ededupe,fragments,ztailpacking -x -1 -T $SOURCE_DATE_EPOCH --all-time"
 
 echo "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$' ||
   { echo "build.sh: VERSION must be semver (X.Y.Z or X.Y.Z-tag), got '$VERSION'" >&2; exit 1; }
@@ -46,34 +62,58 @@ echo "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$' ||
   echo "build.sh: no fletch-guest at $GUEST; build crates/fletch-guest for aarch64-unknown-linux-musl first" >&2
   exit 1
 }
+mkdir -p "$OUT" "$WORK"
+OUT=$(cd "$OUT" && pwd)
 
 echo "== installing build tools"
 export DEBIAN_FRONTEND=noninteractive
 apt-get -qq update
-apt-get -qq install -y --no-install-recommends mmdebstrap erofs-utils jq xz-utils curl ca-certificates >/dev/null
+apt-get -qq install -y --no-install-recommends mmdebstrap erofs-utils jq xz-utils curl ca-certificates rsync >/dev/null
 
-WORK=$(mktemp -d)
-trap 'rm -rf "$WORK"' EXIT
-ROOT="$WORK/rootfs"
-mkdir -p "$OUT"
+pkgs() { grep -v '^\s*#' "$HERE/packages/$1.txt" | grep -v '^\s*$' | paste -sd, -; }
+# The dpkg rules as --dpkgopt arguments. They hold globs, so `set -f` guards
+# their expansion.
+DPKGOPTS=$(grep -v '^\s*#' "$HERE/dpkg-excludes.cfg" | grep -v '^\s*$' | sed 's/^/--dpkgopt=/' | paste -sd' ' -)
+pin_times() { find "$1" -exec touch -h -d "@$SOURCE_DATE_EPOCH" {} +; }
+tree_size() { du -sxb "$1" | cut -f1; }
+mib() { awk "BEGIN { printf \"%.0f\", $1 / 1048576 }"; }
+mkimage() { # <uuid> <out> <tree>
+  rm -f "$2"
+  set -f
+  # shellcheck disable=SC2086
+  mkfs.erofs --quiet $MKFS_FLAGS -U "$1" "$2" "$3"
+  set +f
+  chmod 644 "$2"
+}
+clean_tree() {
+  rm -rf "$1/var/cache/apt" "$1/var/lib/apt/lists" "$1/var/log"/* "$1/tmp"/* "$1/root/.bash_history"
+  mkdir -p "$1/var/cache/apt" "$1/var/lib/apt/lists"
+}
 
-echo "== installing Debian $SUITE from snapshot $DEBIAN_SNAPSHOT"
-PACKAGES=$(grep -v '^\s*#' "$HERE/packages.txt" | grep -v '^\s*$' | paste -sd, -)
-# Snapshot Release files are past their Valid-Until by design. Docs, man pages
-# and info are left out of the image; copyright files stay.
+# ---------------------------------------------------------------- base
+ROOT="$WORK/base"
+rm -rf "$ROOT"
+echo "== installing Debian $SUITE from snapshot $DEBIAN_SNAPSHOT (base)"
+set -f
+# shellcheck disable=SC2086
 mmdebstrap --mode=root --variant=minbase --architectures=arm64 \
   --aptopt='Acquire::Check-Valid-Until "false"' --aptopt='Acquire::Retries "5"' \
-  --dpkgopt='path-exclude=/usr/share/doc/*' --dpkgopt='path-include=/usr/share/doc/*/copyright' \
-  --dpkgopt='path-exclude=/usr/share/man/*' --dpkgopt='path-exclude=/usr/share/info/*' \
-  --include="$PACKAGES" \
+  $DPKGOPTS \
+  --include="$(pkgs base)" \
   "$SUITE" "$ROOT" "deb $MIRROR $SUITE main" "deb $SECURITY $SUITE-security main"
+set +f
+# The same rules for everything installed into a copy of this tree (the layers).
+install -D -m 644 "$HERE/dpkg-excludes.cfg" "$ROOT/etc/dpkg/dpkg.cfg.d/fletch-excludes"
 
-echo "== installing Node $NODE_VERSION"
-tarball="$WORK/node.tar.xz"
-curl -fsSL -o "$tarball" "https://nodejs.org/dist/v$NODE_VERSION/node-v$NODE_VERSION-linux-arm64.tar.xz"
+echo "== installing Node $NODE_VERSION (headers go to the devtools layer)"
+tarball="$WORK/node-$NODE_VERSION.tar.xz"
+[ -f "$tarball" ] || curl -fsSL -o "$tarball" "https://nodejs.org/dist/v$NODE_VERSION/node-v$NODE_VERSION-linux-arm64.tar.xz"
 echo "$NODE_SHA256  $tarball" | sha256sum -c - >/dev/null
 tar -xJf "$tarball" -C "$ROOT/usr/local" --strip-components=1
 rm -f "$ROOT/usr/local/CHANGELOG.md" "$ROOT/usr/local/README.md" "$ROOT/usr/local/LICENSE"
+rm -rf "$ROOT/usr/local/share/doc" "$ROOT/usr/local/share/man" "$ROOT/usr/local/lib/node_modules/npm/docs"
+rm -rf "$WORK/node-include"
+mv "$ROOT/usr/local/include" "$WORK/node-include"
 
 echo "== adding Fletch files"
 cp -R "$HERE/rootfs/." "$ROOT/"
@@ -101,33 +141,104 @@ rm -f "$ROOT"/etc/ssh/ssh_host_*
 : > "$ROOT/etc/machine-id"
 echo "fletch-box-image $VERSION ($ARCH, debian $SUITE @ $DEBIAN_SNAPSHOT, node $NODE_VERSION)" > "$ROOT/etc/fletch-image"
 
-echo "== cleaning"
-rm -rf "$ROOT/var/cache/apt" "$ROOT/var/lib/apt/lists" "$ROOT/var/log"/* "$ROOT/tmp"/* "$ROOT/root/.bash_history"
-mkdir -p "$ROOT/var/cache/apt" "$ROOT/var/lib/apt/lists"
+echo "== cleaning the base"
+clean_tree "$ROOT"
 # Reproducible: fontconfig caches record their directories' mtimes. Pin every
-# mtime to the one the image carries (mkfs.erofs -T) and rebuild them, so they
-# match and Chromium never rebuilds them into the agent's home.
-find "$ROOT" -exec touch -h -d "@$SOURCE_DATE_EPOCH" {} +
+# mtime to the one the image carries (mkfs.erofs -T) and build the caches after,
+# so they match and a browser never rebuilds them into the agent's home.
+pin_times "$ROOT"
 chroot "$ROOT" /usr/bin/fc-cache -s -f
 {
   chroot "$ROOT" dpkg-query -W -f '${binary:Package}=${Version}\n'
   echo "node=$NODE_VERSION"
-} | sort > "$WORK/packages.lst"
-
+} | LC_ALL=C sort > "$WORK/base.pkgs"
+BASE_TREE_BYTES=$(tree_size "$ROOT")
 echo "== writing base.erofs"
-rm -f "$OUT/base.erofs"
-# -x -1: no xattrs, nothing in the image needs them. -T: every inode gets SOURCE_DATE_EPOCH.
-mkfs.erofs --quiet -zlz4hc -x -1 -T "$SOURCE_DATE_EPOCH" --all-time -U "$BASE_UUID" \
-  "$OUT/base.erofs" "$ROOT"
+mkimage "$UUID_BASE" "$OUT/base.erofs" "$ROOT"
 
-echo "== writing manifest.json"
-jq -n --arg version "$VERSION" --arg arch "$ARCH" \
-  --argjson size "$(stat -c %s "$OUT/base.erofs")" \
-  --arg sha256 "$(sha256sum "$OUT/base.erofs" | cut -d' ' -f1)" \
-  --rawfile packages "$WORK/packages.lst" \
-  '{version: $version, arch: $arch, file: "base.erofs", size: $size, sha256: $sha256,
-    packages: ($packages | split("\n") | map(select(length > 0)))}' > "$OUT/manifest.json"
+# ---------------------------------------------------------------- layers
+for layer in $LAYERS; do
+  LR="$WORK/$layer-root"
+  D="$WORK/$layer-delta"
+  rm -rf "$LR" "$D"
+  echo "== building the $layer layer"
+  cp -a "$ROOT" "$LR"
+  mount -t proc proc "$LR/proc"
+  # The image's resolv.conf is empty (a box has no DNS), so apt in the chroot
+  # borrows the build host's resolver for the install.
+  cp /etc/resolv.conf "$LR/etc/resolv.conf"
+  chroot "$LR" sh -c "apt-get -qq -o Acquire::Check-Valid-Until=false -o Acquire::Retries=5 update \
+    && apt-get -qq -o Acquire::Check-Valid-Until=false install -y --no-install-recommends $(pkgs "$layer" | tr , ' ')" \
+    </dev/null
+  umount "$LR/proc"
+  : > "$LR/etc/resolv.conf"
+  if [ "$layer" = devtools ]; then
+    cp -a "$WORK/node-include" "$LR/usr/local/include"
+  fi
+  clean_tree "$LR"
+  pin_times "$LR"
+  chroot "$LR" /usr/bin/fc-cache -s -f
+  chroot "$LR" dpkg-query -W -f '${binary:Package}=${Version}\n' | LC_ALL=C sort > "$WORK/$layer.allpkgs"
+  LC_ALL=C comm -13 "$WORK/base.pkgs" "$WORK/$layer.allpkgs" > "$WORK/$layer.pkgs"
 
-chmod 644 "$OUT/base.erofs" "$OUT/manifest.json"
-jq -r '"   base.erofs \(.size) bytes, sha256 \(.sha256)"' "$OUT/manifest.json"
+  # The delta: what the layer tree has that the base has not, byte for byte
+  # (-c). The package databases, apt state and logs stay with the base; the
+  # loader cache too, since the loader's default search path covers the
+  # multiarch directories and two layers could not share one cache.
+  mkdir "$D"
+  rsync -a -c --compare-dest="$ROOT/" \
+    --exclude=/proc --exclude=/dev --exclude=/sys --exclude=/run --exclude=/tmp \
+    --exclude=/etc/ld.so.cache \
+    --exclude=/var/lib/dpkg --exclude=/var/lib/apt --exclude=/var/cache/apt \
+    --exclude=/var/cache/debconf --exclude=/var/log --exclude=/var/backups \
+    "$LR/" "$D/"
+  find "$D" -depth -type d -empty -delete
+  dirs=$(ls "$D" | tr '\n' ' ')
+  echo "   $layer carries: $dirs"
+  for d in $dirs; do
+    case "$d" in usr|etc|var) ;; *) echo "build.sh: the $layer layer touches /$d, which init does not overlay" >&2; exit 1;; esac
+  done
+  jq -n --arg name "$layer" --arg version "$VERSION" \
+    --argjson dirs "$(printf '%s\n' $dirs | jq -R . | jq -s .)" \
+    '{name: $name, version: $version, dirs: $dirs}' > "$D/.fletch-layer"
+  pin_times "$D"
+  var=$(echo "$layer" | tr - _)
+  eval "uuid=\$UUID_$(echo "$layer" | tr a-z- A-Z_)"
+  echo "== writing layer-$layer.erofs"
+  mkimage "$uuid" "$OUT/layer-$layer.erofs" "$D"
+  eval "${var}_tree_bytes=$(tree_size "$D")"
+  rm -rf "$LR"
+done
+
+# ---------------------------------------------------------------- manifest and sizes
+echo "== writing manifest.json and sizes.md"
+entry() { # <name> <file> <dirs json> <packages file> <tree bytes>
+  jq -n --arg name "$1" --arg file "$2" --argjson dirs "$3" \
+    --argjson size "$(stat -c %s "$OUT/$2")" \
+    --arg sha256 "$(sha256sum "$OUT/$2" | cut -d' ' -f1)" \
+    --argjson tree_bytes "$5" \
+    --rawfile packages "$4" \
+    '{name: $name, file: $file, dirs: $dirs, size: $size, sha256: $sha256, tree_bytes: $tree_bytes,
+      packages: ($packages | split("\n") | map(select(length > 0)))}'
+}
+{
+  entry base base.erofs '["/"]' "$WORK/base.pkgs" "$BASE_TREE_BYTES"
+  for layer in $LAYERS; do
+    var=$(echo "$layer" | tr - _)
+    eval "tb=\$${var}_tree_bytes"
+    entry "$layer" "layer-$layer.erofs" "$(jq -c .dirs "$WORK/$layer-delta/.fletch-layer")" "$WORK/$layer.pkgs" "$tb"
+  done
+} | jq -s --arg version "$VERSION" --arg arch "$ARCH" '{version: $version, arch: $arch, images: .}' > "$OUT/manifest.json"
+chmod 644 "$OUT/manifest.json"
+
+{
+  echo "| Image | Tree | Packed | Packages |"
+  echo "| --- | ---: | ---: | ---: |"
+  jq -r '.images[] | "| \(.name) (`\(.file)`) | \(.tree_bytes / 1048576 | floor) MB | \(.size / 1048576 | floor) MB | \(.packages | length) |"' "$OUT/manifest.json"
+  echo
+  def=$(jq '[.images[] | select(.name == "base" or .name == "devtools") | .size] | add' "$OUT/manifest.json")
+  all=$(jq '[.images[] | .size] | add' "$OUT/manifest.json")
+  echo "Default download (base + devtools): $(mib "$def") MB; every layer: $(mib "$all") MB."
+} > "$OUT/sizes.md"
+cat "$OUT/sizes.md"
 echo "== done: $OUT"

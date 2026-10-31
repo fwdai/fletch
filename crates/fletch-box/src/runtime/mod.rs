@@ -216,7 +216,10 @@ pub struct VmSpec {
     pub base_image: PathBuf,
     pub data_disk: PathBuf,
     pub tools_disk: Option<PathBuf>,
-    /// Further raw disks after the tools disk: `(block id, path, read-only)`.
+    /// Layer images (`layer-<name>.erofs`), attached read-only after the tools
+    /// disk; init overlays them on the root ([`guest::LAYER_MARKER`]).
+    pub layers: Vec<PathBuf>,
+    /// Further raw disks after the layers: `(block id, path, read-only)`.
     /// For script disks in tests and the CLI; the product attaches none.
     pub extra_disks: Vec<(String, PathBuf, bool)>,
     /// Host folders the guest mounts at their own paths: `(path, read-only)`,
@@ -248,6 +251,7 @@ impl VmSpec {
             base_image: base_image.into(),
             data_disk: data_disk.into(),
             tools_disk: None,
+            layers: Vec::new(),
             extra_disks: Vec::new(),
             shares: Vec::new(),
             listen_ports: Vec::new(),
@@ -335,6 +339,11 @@ impl VmSpec {
                 read_only: true,
             });
         }
+        disks.extend(self.layers.iter().enumerate().map(|(i, path)| Disk {
+            id: format!("layer{i}"),
+            path: path.clone(),
+            read_only: true,
+        }));
         disks.extend(self.extra_disks.iter().map(|(id, path, ro)| Disk {
             id: id.clone(),
             path: path.clone(),
@@ -665,6 +674,7 @@ mod tests {
     fn spec_becomes_helper_argv() {
         let mut spec = spec();
         spec.tools_disk = Some("/t/claude.img".into());
+        spec.layers = vec!["/img/layer-devtools.erofs".into()];
         spec.extra_disks
             .push(("script".into(), "/b/script.img".into(), true));
         let config = spec.launch_config(&paths());
@@ -682,6 +692,7 @@ mod tests {
                 ("base", "/img/base.erofs", true),
                 ("data", "/b/data.img", false),
                 ("tools", "/t/claude.img", true),
+                ("layer0", "/img/layer-devtools.erofs", true),
                 ("script", "/b/script.img", true),
             ]
         );

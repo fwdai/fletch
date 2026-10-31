@@ -24,6 +24,9 @@ pub const CPUS_SETTING: &str = "box_cpus";
 pub const IMAGE_URL_SETTING: &str = "box_image_url";
 /// Minutes a box with no attached launch stays up; `0` is never.
 pub const IDLE_STOP_SETTING: &str = "box_idle_stop_minutes";
+/// The image layers attached to every box besides the base, comma-separated
+/// (`fletch_box::image_store::OPTIONAL_LAYERS`); blank is the default set.
+pub const LAYERS_SETTING: &str = "box_layers";
 /// Project setting: a JSON array of host patterns added to the default egress
 /// allow-list.
 pub const EGRESS_ALLOW_KEY: &str = "box.egress_allow";
@@ -39,6 +42,7 @@ pub const KEYS: &[&str] = &[
     CPUS_SETTING,
     IMAGE_URL_SETTING,
     IDLE_STOP_SETTING,
+    LAYERS_SETTING,
 ];
 
 pub const DEFAULT_MEMORY_MIB: u32 = 2048;
@@ -58,6 +62,9 @@ pub struct BoxSettings {
     /// The engine selected before the flag made `box` the engine
     /// ([`PREVIOUS_ENGINE_SETTING`]); `None` when the flag never switched it.
     pub previous_engine: Option<EngineKind>,
+    /// The image layers every box gets besides the base, in
+    /// `OPTIONAL_LAYERS` order; the install fetches them, the boot attaches them.
+    pub layers: Vec<String>,
 }
 
 impl Default for BoxSettings {
@@ -69,6 +76,7 @@ impl Default for BoxSettings {
             image_url: None,
             idle_stop: Some(Duration::from_secs(DEFAULT_IDLE_STOP_MINUTES * 60)),
             previous_engine: None,
+            layers: default_layers(),
         }
     }
 }
@@ -80,7 +88,16 @@ static SETTINGS: RwLock<BoxSettings> = RwLock::new(BoxSettings {
     image_url: None,
     idle_stop: Some(Duration::from_secs(DEFAULT_IDLE_STOP_MINUTES * 60)),
     previous_engine: None,
+    layers: Vec::new(),
 });
+
+/// The layers a host gets without a `box_layers` row.
+pub fn default_layers() -> Vec<String> {
+    fletch_box::image_store::DEFAULT_LAYERS
+        .iter()
+        .map(|l| l.to_string())
+        .collect()
+}
 
 /// `project_id → patterns`, the per-project egress additions.
 static EGRESS: RwLock<Option<HashMap<String, Vec<String>>>> = RwLock::new(None);
@@ -132,6 +149,7 @@ pub fn load(conn: &Connection) -> BoxSettings {
         previous_engine: raw(PREVIOUS_ENGINE_SETTING)
             .as_deref()
             .and_then(EngineKind::from_setting),
+        layers: parse_layers(raw(LAYERS_SETTING).as_deref()).unwrap_or_else(|_| default_layers()),
     }
 }
 
@@ -219,6 +237,31 @@ pub fn parse_idle_stop(raw: Option<&str>) -> Result<Option<Duration>> {
     }
 }
 
+/// Comma-separated layer names out of `OPTIONAL_LAYERS`, returned in that
+/// order without repeats; blank is the default set, `none` is no layer.
+pub fn parse_layers(raw: Option<&str>) -> Result<Vec<String>> {
+    let Some(raw) = raw.map(str::trim).filter(|s| !s.is_empty()) else {
+        return Ok(default_layers());
+    };
+    if raw == "none" {
+        return Ok(Vec::new());
+    }
+    let known = fletch_box::image_store::OPTIONAL_LAYERS;
+    for name in raw.split(',').map(str::trim) {
+        if !known.contains(&name) {
+            return Err(Error::Other(format!(
+                "{LAYERS_SETTING} must name layers out of {}, comma-separated, or `none`; got {raw:?}",
+                known.join(", ")
+            )));
+        }
+    }
+    Ok(known
+        .iter()
+        .filter(|k| raw.split(',').any(|n| n.trim() == **k))
+        .map(|k| k.to_string())
+        .collect())
+}
+
 /// Validate `value` for `key` and return it normalized for storage, or why it
 /// is refused. `None` for a key that is not a box setting.
 pub fn validate(key: &str, value: &str) -> Option<Result<String>> {
@@ -230,6 +273,13 @@ pub fn validate(key: &str, value: &str) -> Option<Result<String>> {
         IDLE_STOP_SETTING => {
             parse_idle_stop(Some(value)).map(|d| d.map_or(0, |d| d.as_secs() / 60).to_string())
         }
+        LAYERS_SETTING => parse_layers(Some(value)).map(|layers| {
+            if layers.is_empty() {
+                "none".to_string()
+            } else {
+                layers.join(",")
+            }
+        }),
         _ => return None,
     })
 }
@@ -310,6 +360,20 @@ mod tests {
             Some(Duration::from_secs(180))
         );
         assert!(parse_idle_stop(Some("-1")).is_err());
+        assert_eq!(parse_layers(None).unwrap(), ["devtools"]);
+        assert_eq!(parse_layers(Some(" ")).unwrap(), ["devtools"]);
+        assert_eq!(
+            parse_layers(Some("browser, devtools,browser")).unwrap(),
+            ["devtools", "browser"],
+            "canonical order, no repeats"
+        );
+        assert!(parse_layers(Some("none")).unwrap().is_empty());
+        assert!(parse_layers(Some("gpu")).is_err());
+        assert_eq!(
+            validate("box_layers", "browser").unwrap().unwrap(),
+            "browser"
+        );
+        assert_eq!(validate("box_layers", "none").unwrap().unwrap(), "none");
         assert_eq!(validate("boxes_enabled", "nope").unwrap().unwrap(), "false");
         assert_eq!(
             validate("box_idle_stop_minutes", "0").unwrap().unwrap(),

@@ -1,0 +1,68 @@
+# Base layer: Debian trixie (arm64) packages every box boots. Node is not here:
+# it comes from the pinned nodejs.org tarball (build-layers.sh).
+
+# Shell and base tools. bash is a contract: Claude Code's Bash tool needs it.
+bash
+coreutils
+procps
+less
+netbase
+tzdata
+ca-certificates
+curl
+jq
+ripgrep
+unzip
+xz-utils
+
+# SSH on vsock: sshd -i per connection, sftp for the host's file reads and writes.
+# systemd-standalone-sysusers satisfies openssh-server's "systemd | systemd-sysusers"
+# alternative without pulling systemd in.
+openssh-server
+openssh-sftp-server
+openssh-client
+systemd-standalone-sysusers
+
+# Version control
+git
+
+# Formats the data disk on first boot (mkfs.ext4), repairs it when it does not mount (e2fsck)
+e2fsprogs
+
+# Debugging only (vsock <-> tcp by hand); nothing in the contract depends on it
+socat
+
+# Shared libraries a Chromium build needs at runtime: Playwright's list for
+# debian13 (nativeDeps.ts), so a browser Playwright downloads into the agent's
+# home runs on the base alone. libgbm1 drags Mesa and LLVM in; dpkg-excludes.cfg
+# drops those files.
+libasound2t64
+libatk-bridge2.0-0t64
+libatk1.0-0t64
+libatspi2.0-0t64
+libcairo2
+libcups2t64
+libdbus-1-3
+libdrm2
+libgbm1
+libglib2.0-0t64
+libnspr4
+libnss3
+libpango-1.0-0
+libx11-6
+libxcb1
+libxcomposite1
+libxdamage1
+libxext6
+libxfixes3
+libxkbcommon0
+libxrandr2
+
+# Fonts: Latin/Cyrillic/Greek, a CJK fallback and emoji in ~25 MB. fonts-noto-core
+# (Indic, Arabic, Thai ... but no CJK) rides in the browser layer. fontconfig for
+# fc-cache at build time.
+fontconfig
+fonts-liberation
+fonts-dejavu-core
+fonts-droid-fallback
+fonts-noto-color-emoji

@@ -44,7 +44,7 @@ async fn setup() -> tempfile::TempDir {
     });
     let t0 = Instant::now();
     let installed = super::image_store()
-        .install(&super::pinned_image(), |_| {
+        .install(&super::pinned_image(), &settings::current().layers, |_| {
             std::ops::ControlFlow::Continue(())
         })
         .await
@@ -312,8 +312,9 @@ fn new_agents_of_unsupported_providers_fall_back_to_seatbelt() {
     );
 }
 
-/// An image directory counts as installed only for this build's version and
-/// only once it carries the recorded hash a verified download leaves behind.
+/// An image directory counts as installed only for this build's version,
+/// only once it carries the manifest a verified download leaves behind, and
+/// only with every enabled layer in place.
 #[test]
 fn only_a_verified_image_of_this_builds_version_is_installed() {
     let _serial = settings::TEST_LOCK.blocking_lock();
@@ -322,28 +323,49 @@ fn only_a_verified_image_of_this_builds_version_is_installed() {
     settings::set(BoxSettings::default());
     let pin = super::pinned_image();
     let images = super::data_root().join("images");
+    let manifest = |version: &str| {
+        serde_json::json!({
+            "version": version, "arch": "aarch64",
+            "images": [
+                {"name": "base", "file": "base.erofs", "size": 5, "sha256": "0".repeat(64)},
+                {"name": "devtools", "file": "layer-devtools.erofs", "size": 5, "sha256": "1".repeat(64)},
+            ],
+        })
+        .to_string()
+    };
     let other = images.join("99.0.0");
     std::fs::create_dir_all(&other).unwrap();
     std::fs::write(other.join("base.erofs"), b"a newer image").unwrap();
-    std::fs::write(
-        other.join("base.erofs.sha256"),
-        format!("{}\n", "0".repeat(64)),
-    )
-    .unwrap();
+    std::fs::write(other.join("manifest.json"), manifest("99.0.0")).unwrap();
     let dir = images.join(&pin.version);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("base.erofs"), b"not really an image").unwrap();
-    assert!(super::installed_image().unwrap().is_none());
+    assert!(
+        super::installed_image().unwrap().is_none(),
+        "no manifest yet"
+    );
     assert_eq!(super::setup::image_status().phase, "not_installed");
 
-    std::fs::write(
-        dir.join("base.erofs.sha256"),
-        format!("{}\n", "0".repeat(64)),
-    )
-    .unwrap();
+    std::fs::write(dir.join("manifest.json"), manifest(&pin.version)).unwrap();
+    assert!(
+        super::installed_image().unwrap().is_none(),
+        "the default devtools layer is not there yet"
+    );
+    std::fs::write(dir.join("layer-devtools.erofs"), b"layer").unwrap();
     let installed = super::installed_image().unwrap().expect("the pinned image");
     assert_eq!(installed.version, pin.version);
+    assert_eq!(installed.layers.len(), 1);
     assert_eq!(super::setup::image_status().phase, "installed");
+
+    settings::set(BoxSettings {
+        layers: vec!["devtools".into(), "browser".into()],
+        ..BoxSettings::default()
+    });
+    assert!(
+        super::installed_image().unwrap().is_none(),
+        "a layer turned on but not downloaded holds the image back"
+    );
+    settings::set(BoxSettings::default());
 }
 
 // `block_on` from the sync seams (`launch_agent`, the executor).

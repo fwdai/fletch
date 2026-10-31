@@ -234,13 +234,17 @@ pub fn availability() -> Result<RuntimePaths> {
     Ok(paths)
 }
 
-/// This build's image, when installed.
+/// This build's image with the enabled layers (`box_layers`), when all of
+/// them are installed; `None` while a layer the user turned on is still on
+/// its way, so a launch waits for it like for the base.
 pub fn installed_image() -> Result<Option<InstalledImage>> {
     // This build's version, never the newest on disk: a newer image left by a
     // later build would boot a guest whose init contract this build does not
-    // know. The file is hashed against its recorded sha256 before the first
-    // boot of a session (the registry), which is where damage is caught.
-    Ok(image_store().find(&pinned_image().version))
+    // know. The files are hashed against their recorded sha256 before the
+    // first boot of a session (the registry), which is where damage is caught.
+    Ok(image_store()
+        .find(&pinned_image().version)
+        .and_then(|image| image.with_layers(&settings::current().layers)))
 }
 
 /// The runtime probe alone, for the Settings page: `None` when no runtime

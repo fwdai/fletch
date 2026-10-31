@@ -21,7 +21,7 @@ set -eu
 
 SSH_VSOCK=22 EGRESS_VSOCK=6000 CONTROL_VSOCK=5000 EGRESS_PORT=8899
 GUEST=/opt/fletch/bin/fletch-guest
-DATA_DEV=/dev/vdb TOOLS_DEV=/dev/vdc
+DATA_DEV=/dev/vdb
 
 step="starting"
 failed=
@@ -42,11 +42,54 @@ esac
 echo "fletch-init: box ${FLETCH_BOX_ID:-?}"
 
 step="mounting tmpfs"
-for dir in /tmp /run /var/tmp; do
+# /var/tmp comes after the layers: a layer overlay on /var would hide it.
+for dir in /tmp /run; do
   mount -t tmpfs -o mode=1777,nosuid,nodev tmpfs "$dir"
 done
 mkdir -m 755 /run/sshd   # sshd's privilege separation directory, needed even with -i
 echo fletch-box > /proc/sys/kernel/hostname
+
+step="mounting layers"
+# Every disk after the data disk is told apart by content, not by its letter:
+# an erofs with a /.fletch-layer marker is a layer (devtools, browser, ...),
+# an ext4 is the tools disk, a disk with no filesystem (a test's script disk)
+# is left alone. Layers are mounted read-only under /run/layers and each
+# top-level directory they carry (usr, etc, var) becomes a read-only overlay
+# on the root, later disks on top. Binaries already running keep their inodes;
+# every later lookup goes through the overlay.
+layers=""
+tools_dev=""
+n=0
+for dev in /dev/vd[c-z]; do
+  [ -b "$dev" ] || continue
+  type=$(blkid -o value -s TYPE "$dev" 2>/dev/null || true)
+  case "$type" in
+    erofs)
+      mnt=/run/layers/$n
+      mkdir -p "$mnt"
+      mount -t erofs -o ro,nosuid,nodev "$dev" "$mnt" || fail "the layer disk $dev does not mount"
+      [ -f "$mnt/.fletch-layer" ] || fail "$dev is an erofs disk without a /.fletch-layer marker"
+      layers="$mnt $layers"
+      n=$((n + 1))
+      ;;
+    ext4)
+      [ -z "$tools_dev" ] || fail "two ext4 disks ($tools_dev, $dev); a box has one tools disk"
+      tools_dev=$dev
+      ;;
+    "") ;;
+    *) fail "$dev holds a $type filesystem, which is neither a layer (erofs) nor a tools disk (ext4)";;
+  esac
+done
+for dir in usr etc var; do
+  lower=""
+  for mnt in $layers; do
+    [ -d "$mnt/$dir" ] && lower="$lower$mnt/$dir:"
+  done
+  [ -n "$lower" ] || continue
+  mount -t overlay overlay -o "ro,lowerdir=${lower}/$dir" "/$dir" || fail "the layer overlay on /$dir does not mount"
+done
+[ "$n" -eq 0 ] || echo "fletch-init: $n layer(s): $(cat /run/layers/*/.fletch-layer | tr -d '\n')"
+mount -t tmpfs -o mode=1777,nosuid,nodev tmpfs /var/tmp
 
 step="mounting /data"
 [ -b "$DATA_DEV" ] || fail "no data disk at $DATA_DEV"
@@ -135,11 +178,11 @@ while [ "$i" -lt "$shares" ]; do
 done
 
 step="mounting the tools disk"
-if [ -b "$TOOLS_DEV" ]; then
+if [ -n "$tools_dev" ]; then
   # The disk was built by booting a box with it as /data, so the CLIs sit under
   # its tools/ directory (packaging/box-image/tools); only that part is exposed.
   mkdir -p /run/tools
-  mount -t ext4 -o ro,nosuid,nodev "$TOOLS_DEV" /run/tools
+  mount -t ext4 -o ro,nosuid,nodev "$tools_dev" /run/tools
   [ -d /run/tools/tools ] || fail "the tools disk has no tools/ directory"
   mount --bind /run/tools/tools /opt/fletch/tools
 fi

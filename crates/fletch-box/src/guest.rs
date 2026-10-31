@@ -58,10 +58,18 @@ pub const GID: u32 = 1000;
 /// The guest's loopback proxy, for processes that only honour `HTTPS_PROXY`.
 pub const LOOPBACK_PROXY: &str = "http://127.0.0.1:8899";
 
-/// Block device order: the base image, the data disk, the optional tools disk.
+/// Block device order: the base image, the data disk, then the optional tools
+/// disk and the layer images. Init tells the disks after the data disk apart
+/// by content (ext4 is the tools disk, an erofs with [`LAYER_MARKER`] is a
+/// layer), not by letter.
 pub const DISK_BASE: &str = "/dev/vda";
 pub const DISK_DATA: &str = "/dev/vdb";
 pub const DISK_TOOLS: &str = "/dev/vdc";
+/// A layer image's marker file (`{name, version, dirs}`); init overlays each
+/// of the directories it names on the root, read-only.
+pub const LAYER_MARKER: &str = "/.fletch-layer";
+/// Where init mounts the layer images before overlaying them.
+pub const LAYERS_MOUNT: &str = "/run/layers";
 
 /// `fletch-guest` subcommands the host invokes over the channel.
 pub const EXEC: &str = "exec";
