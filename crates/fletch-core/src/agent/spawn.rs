@@ -736,7 +736,12 @@ impl Agent {
         cb: ExecCallbacks<F, G, H>,
     ) -> Result<Self>
     where
-        A: Fn(&str, Option<&str>, Option<&str>, Option<&str>) -> Vec<String>
+        A: Fn(
+                &str,
+                Option<&str>,
+                Option<&str>,
+                Option<&str>,
+            ) -> crate::exec_session::TurnInvocation
             + Send
             + Sync
             + 'static,
@@ -819,7 +824,7 @@ impl Agent {
             "preparing sandboxed per-turn runner"
         );
         let session = kill.start(|kill_plan| {
-            Ok(ExecSession::new(
+            Ok(ExecSession::new_with_invocation(
                 ExecSpawn {
                     program: launch_program,
                     prefix_args,

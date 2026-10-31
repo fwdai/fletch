@@ -6,6 +6,7 @@ use std::path::Path;
 use serde_json::Value;
 
 use crate::activity::{Activity, ManagedActivity};
+use crate::exec_session::TurnInvocation;
 use crate::message_queue::InjectionMode;
 
 use super::providers::antigravity::{
@@ -45,8 +46,8 @@ pub struct PerTurnDescriptor {
     pub(crate) bin: &'static str,
     /// Human-facing product name, used only in the not-found error.
     pub(crate) label: &'static str,
-    /// Builds the CLI args for one turn from the turn's [`TurnArgs`].
-    pub(crate) build_args: fn(&TurnArgs) -> Vec<String>,
+    /// Builds one process invocation from the turn's [`TurnArgs`].
+    pub(crate) build_args: fn(&TurnArgs) -> TurnInvocation,
     /// Builds the args to launch this agent's interactive TUI in the native
     /// (PTY) view: `(session [None = fresh], model, custom_instructions,
     /// mcp_args)`.
@@ -127,9 +128,9 @@ pub fn capabilities(provider: &str) -> AgentCapabilities {
 
 /// How a provider accepts a follow-up message sent mid-turn. Claude (the lone
 /// persistent-runner agent) keeps an open stream-json stdin, so it can take a
-/// message live; per-turn agents are one-shot processes with no live stdin, so
-/// they queue until the next turn boundary. Unknown providers default to the
-/// safe boundary path.
+/// message live. A per-turn process may receive its initial prompt on stdin,
+/// but Fletch closes that pipe immediately; follow-ups therefore queue until
+/// the next turn boundary. Unknown providers default to the safe boundary path.
 pub fn injection_mode(provider: &str) -> InjectionMode {
     match per_turn_descriptor(provider) {
         Some(_) => InjectionMode::AtTurnBoundary,
