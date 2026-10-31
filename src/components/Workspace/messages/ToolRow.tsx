@@ -1,6 +1,7 @@
-import { type ReactNode, useRef, useState } from "react";
+import { type ReactNode, useRef } from "react";
 import { Icon, type IconName } from "@/components/Icon";
 import { Loader } from "@/components/ui/Loader";
+import { DisclosureBody, useDisclosure, useRevealedText } from "./Disclosure";
 import { useChatFocus } from "./useChatFocus";
 
 /** Shared chrome for every tool presenter: icon, name, one-line summary,
@@ -8,7 +9,8 @@ import { useChatFocus } from "./useChatFocus";
  *  `running` marks a tool call still in flight (no result yet, agent busy)
  *  so the row shows a live spinner instead of looking identical to a settled
  *  one. `toolUseId` + `agentId` let the row answer a `chatFocus` request: it
- *  opens, scrolls itself into view, and clears the request (useChatFocus). */
+ *  opens, scrolls itself into view, and clears the request (useChatFocus).
+ *  `revealText` (lower-cased) opens the row while a find query matches it. */
 export function ToolRow({
   name,
   icon = "wrench",
@@ -18,6 +20,7 @@ export function ToolRow({
   expanded,
   toolUseId,
   agentId,
+  revealText,
 }: {
   name: string;
   icon?: IconName;
@@ -27,34 +30,30 @@ export function ToolRow({
   expanded: ReactNode;
   toolUseId?: string;
   agentId?: string;
+  revealText?: string;
 }) {
-  const [open, setOpen] = useState(false);
+  const { open, instant, reveal, toggle } = useDisclosure();
+  const revealed = useRevealedText(revealText);
+  const shown = open || revealed;
   const rootRef = useRef<HTMLDivElement | null>(null);
-  useChatFocus(
-    agentId,
-    toolUseId,
-    () => rootRef.current,
-    () => setOpen(true),
-  );
+  useChatFocus(agentId, toolUseId, () => rootRef.current, reveal);
 
-  const dangerColor = isError ? "var(--danger)" : undefined;
+  const cls = ["tool-row", shown && "is-open", isError && "is-error"].filter(Boolean).join(" ");
   return (
-    <div ref={rootRef} data-tool-use-id={toolUseId}>
-      <button
-        type="button"
-        className="m-tool flex-center"
-        onClick={() => setOpen((o) => !o)}
-        style={{ width: "100%", textAlign: "left", color: dangerColor }}
-      >
+    <div ref={rootRef} className={cls} data-tool-use-id={toolUseId}>
+      <button type="button" className="m-tool flex-center" aria-expanded={shown} onClick={toggle}>
         <Icon name={icon} size={12} className="t-icon" />
-        <span className="t-name" style={{ color: dangerColor }}>
-          {name}
-        </span>
+        <span className="t-name">{name}</span>
         <span className="t-arg">{summary}</span>
-        {running && <Loader variant="muted" size="sm" aria-label={`${name} running`} />}
-        <span className="t-result">{open ? "▾" : "▸"}</span>
+        {running ? (
+          <Loader variant="muted" size="sm" aria-label={`${name} running`} />
+        ) : (
+          <Icon name="chevR" size={12} className="t-chev" />
+        )}
       </button>
-      {open && <div style={{ padding: "8px 14px 12px" }}>{expanded}</div>}
+      <DisclosureBody open={shown} instant={instant || (revealed && !open)} className="tool-detail">
+        <div className="tool-body">{expanded}</div>
+      </DisclosureBody>
     </div>
   );
 }

@@ -7,12 +7,15 @@ import { editPresenter } from "./Edit";
 import { globPresenter } from "./Glob";
 import { grepPresenter } from "./Grep";
 import { multiEditPresenter } from "./MultiEdit";
+import { planPresenter } from "./Plan";
 import { readPresenter } from "./Read";
 import { taskCreatePresenter } from "./TaskCreate";
-import type { ToolPresenter } from "./types";
+import type { StepFacts, ToolCall, ToolPresenter, ToolResult } from "./types";
+import { prettyToolName } from "./util";
+import { webFetchPresenter, webSearchPresenter } from "./Web";
 import { writePresenter } from "./Write";
 
-export type { ToolCall, ToolPresenter, ToolResult } from "./types";
+export type { StepFacts, StepKind, ToolCall, ToolPresenter, ToolResult } from "./types";
 
 export const PRESENTERS: Record<string, ToolPresenter> = {
   Agent: agentPresenter,
@@ -29,6 +32,11 @@ export const PRESENTERS: Record<string, ToolPresenter> = {
   Grep: grepPresenter,
   Glob: globPresenter,
   TaskCreate: taskCreatePresenter,
+  TodoWrite: planPresenter,
+  // Codex's checklist tool; same list, `plan: [{ step, status }]`.
+  update_plan: planPresenter,
+  WebFetch: webFetchPresenter,
+  WebSearch: webSearchPresenter,
 };
 
 // Look up on the lowercased tool name so adapters that report the same tool
@@ -64,4 +72,26 @@ const FUZZY: { match: (key: string) => boolean; presenter: ToolPresenter }[] = [
 export function getPresenter(toolName: string): ToolPresenter {
   const key = toolName.toLowerCase();
   return BY_KEY[key] ?? FUZZY.find((entry) => entry.match(key))?.presenter ?? defaultPresenter;
+}
+
+/** The name a step summary or live line gives a tool: its presenter's title,
+ *  else the raw name made readable. */
+export function toolLabel(name: string): string {
+  return getPresenter(name).title ?? prettyToolName(name);
+}
+
+/** What a call did, for the summary over its run of steps. A tool without a
+ *  presenter of its own is an `other` step, named. */
+export function stepFacts(call: ToolCall, result: ToolResult | null): StepFacts {
+  return (
+    getPresenter(call.name).facts?.(call, result) ?? {
+      kind: "other",
+      subject: toolLabel(call.name),
+    }
+  );
+}
+
+/** Present tense for the live line while `call` runs. */
+export function stepActivity(call: ToolCall): string {
+  return getPresenter(call.name).activity?.(call) ?? `Using ${toolLabel(call.name)}`;
 }

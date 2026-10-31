@@ -1,6 +1,7 @@
 import { renderToolResult } from "@/util/toolText";
+import { Caption, CodeSurface, PathText } from "./blocks";
 import type { ToolPresenter } from "./types";
-import { countResultLines, getStringField, SummaryNote, ToolBlock } from "./util";
+import { countResultLines, firstLineOf, getStringField, SummaryNote } from "./util";
 
 /** A muted count of what the grep returned, labelled by output_mode:
  *  - files_with_matches (default): one path per line  -> "N files"
@@ -50,22 +51,35 @@ export const grepPresenter: ToolPresenter = {
     );
   },
   expanded: (call, result) => {
-    const pattern = getStringField(call.input, "pattern");
     const path = getStringField(call.input, "path");
     const glob = getStringField(call.input, "glob");
     const type = getStringField(call.input, "type");
+    const scope = [glob, type && `*.${type}`].filter(Boolean).join(" · ");
+    const { count, label } = grepCount(call, result);
     return (
       <>
-        <ToolBlock label="pattern">{pattern}</ToolBlock>
-        {path && <ToolBlock label="path">{path}</ToolBlock>}
-        {glob && <ToolBlock label="glob">{glob}</ToolBlock>}
-        {type && <ToolBlock label="type">{type}</ToolBlock>}
-        {result && (
-          <ToolBlock label="↳" isError={result.is_error}>
-            {renderToolResult(result.content)}
-          </ToolBlock>
+        <Caption>
+          <span className="tb-mono">{getStringField(call.input, "pattern")}</span>
+          {path && (
+            <>
+              <span className="tb-cap-sep">in</span>
+              <PathText path={path} />
+            </>
+          )}
+          {scope && <span className="tb-cap-note">{scope}</span>}
+          {result && (
+            <span className="tb-cap-note">{count > 0 ? `${count} ${label}` : "no matches"}</span>
+          )}
+        </Caption>
+        {result && count > 0 && (
+          <CodeSurface text={renderToolResult(result.content)} isError={result.is_error} />
         )}
       </>
     );
+  },
+  facts: (call) => ({ kind: "search", subject: getStringField(call.input, "pattern") }),
+  activity: (call) => {
+    const pattern = getStringField(call.input, "pattern");
+    return pattern ? `Searching for ${firstLineOf(pattern, 48)}` : "Searching";
   },
 };

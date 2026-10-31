@@ -40,22 +40,29 @@ export function LiveTimer({ startedAt }: { startedAt: number }) {
  *  action. Doubles as the seam between turns (the hairline lives in CSS).
  *
  *  `agentId` + `forkTurnId` (the last turn above this footer) are what the fork
- *  action anchors the new conversation on; no turn id, no fork action. */
+ *  action anchors the new conversation on; no turn id, no fork action. `quiet`
+ *  leaves the duration out — a folded turn's "Worked for …" line said it. */
 export function TurnFooter({
   runSec,
   copyText,
   agentId,
   forkTurnId,
+  quiet,
 }: {
   runSec: number;
   copyText: string;
   agentId: string;
   forkTurnId: string | undefined;
+  quiet?: boolean;
 }) {
   return (
     <div className="turn-meta">
-      <Icon name="clock" size={11} />
-      <span>Ran {fmtDur(runSec)}</span>
+      {!quiet && (
+        <>
+          <Icon name="clock" size={11} />
+          <span>Ran {fmtDur(runSec)}</span>
+        </>
+      )}
       {copyText && <CopyButton text={copyText} className="turn-copy" />}
       {forkTurnId && (
         <ForkMenu agentId={agentId} turnId={forkTurnId} tip="Fork from here" compact />

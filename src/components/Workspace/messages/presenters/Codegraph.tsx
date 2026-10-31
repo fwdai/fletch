@@ -1,6 +1,7 @@
 import { renderToolResult, stringifyInput } from "@/util/toolText";
+import { Caption, CodeSurface, Fields, PathText } from "./blocks";
 import type { ToolPresenter } from "./types";
-import { firstLineOf, getStringField, SummaryNote, ToolBlock } from "./util";
+import { firstLineOf, getStringField, SummaryNote } from "./util";
 
 /** Pull the operation out of a codegraph tool name, regardless of how the
  *  adapter spelled the namespace: the tool itself is always `codegraph_<op>`,
@@ -37,17 +38,21 @@ export const codegraphPresenter: ToolPresenter = {
     return (
       <>
         {query ? (
-          <ToolBlock label="query">{query}</ToolBlock>
+          <blockquote className="tb-quote">{query}</blockquote>
         ) : (
-          <ToolBlock label="input">{stringifyInput(call.input, 2)}</ToolBlock>
+          <Fields input={call.input} />
         )}
-        {projectPath && <ToolBlock label="path">{projectPath}</ToolBlock>}
+        {projectPath && (
+          <Caption>
+            <PathText path={projectPath} />
+          </Caption>
+        )}
         {result && (
-          <ToolBlock label="↳" isError={result.is_error}>
-            {renderToolResult(result.content)}
-          </ToolBlock>
+          <CodeSurface text={renderToolResult(result.content)} isError={result.is_error} />
         )}
       </>
     );
   },
+  facts: (call) => ({ kind: "search", subject: getStringField(call.input, "query") }),
+  activity: () => "Exploring the code graph",
 };

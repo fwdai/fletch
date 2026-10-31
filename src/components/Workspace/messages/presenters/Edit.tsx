@@ -1,8 +1,9 @@
 import { basename } from "@/util/format";
 import { lineDiffCounts } from "@/util/lineDiff";
 import { renderToolResult } from "@/util/toolText";
+import { Caption, DiffSurface, PathText } from "./blocks";
 import type { ToolPresenter } from "./types";
-import { DiffCount, getStringField, ToolBlock } from "./util";
+import { DiffCount, getStringField } from "./util";
 
 export const editPresenter: ToolPresenter = {
   icon: "edit",
@@ -24,23 +25,27 @@ export const editPresenter: ToolPresenter = {
     const newStr = getStringField(call.input, "new_string");
     return (
       <>
-        <ToolBlock label="file">{path}</ToolBlock>
-        {oldStr && (
-          <ToolBlock label="- old" isError>
-            {oldStr}
-          </ToolBlock>
+        {path && (
+          <Caption>
+            <PathText path={path} />
+          </Caption>
         )}
-        {newStr && (
-          <ToolBlock label="+ new">
-            <span style={{ color: "var(--success, #6c9c5e)" }}>{newStr}</span>
-          </ToolBlock>
-        )}
-        {result && (
-          <ToolBlock label="↳" isError={result.is_error}>
-            {renderToolResult(result.content)}
-          </ToolBlock>
-        )}
+        <DiffSurface before={oldStr} after={newStr} />
+        {/* A successful edit's result only restates the path; a failed one
+            says why, and that's worth the space. */}
+        {result?.is_error && <Caption tone="danger">{renderToolResult(result.content)}</Caption>}
       </>
     );
+  },
+  facts: (call) => {
+    const { additions, deletions } = lineDiffCounts(
+      getStringField(call.input, "old_string"),
+      getStringField(call.input, "new_string"),
+    );
+    return { kind: "change", path: getStringField(call.input, "file_path"), additions, deletions };
+  },
+  activity: (call) => {
+    const path = getStringField(call.input, "file_path");
+    return path ? `Editing ${basename(path)}` : "Editing a file";
   },
 };
