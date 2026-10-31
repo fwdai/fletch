@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use clap::{Parser, Subcommand};
 use fletch_box::{
-    channel, disks, guest, Channel, EgressEvent, EgressPolicy, EgressProxy, ImageStore,
+    channel, disks, guest, image_store, Channel, EgressEvent, EgressPolicy, EgressProxy, ImageStore,
     PinnedImage, RuntimePaths, StopOutcome, Vm, VmSpec,
 };
 
@@ -121,11 +121,22 @@ struct BootArgs {
 
 #[derive(Subcommand)]
 enum ImageCmd {
+    /// The pinned image and what is installed in the dev store.
     Status,
+    /// Download this build's image (the base and layers) into the dev store.
     Install {
         /// Alternate release base URL (the `box_image_url` setting).
         #[arg(long)]
         url: Option<String>,
+        /// Layers besides the base, comma-separated; default `devtools`.
+        #[arg(long, value_delimiter = ',')]
+        layers: Option<Vec<String>>,
+    },
+    /// Write `<file>.chunks.json` next to each image file: the delta manifest
+    /// a release ships so hosts fetch only the chunks that changed.
+    Chunk {
+        /// `base.erofs`, `layer-*.erofs`.
+        files: Vec<PathBuf>,
     },
 }
 
@@ -432,23 +443,41 @@ async fn stop(id: &str) -> Result<(), String> {
 }
 
 async fn image(command: ImageCmd) -> Result<(), String> {
-    let store = ImageStore::new(&dev_root()?);
     match command {
         ImageCmd::Status => {
+            let store = ImageStore::new(&dev_root()?);
             let pinned = PinnedImage::this_build(None);
-            println!("pinned: {} ({})", pinned.version, pinned.url());
-            match store.current().map_err(|e| e.to_string())? {
-                Some(image) => {
-                    println!("installed: {} at {}", image.version, image.path().display())
-                }
-                None => println!("installed: none under {}", store.dir().display()),
+            println!("pinned: {} ({})", pinned.version, pinned.manifest_url());
+            let installed = store.installed().map_err(|e| e.to_string())?;
+            if installed.is_empty() {
+                println!("installed: none under {}", store.dir().display());
+            }
+            for image in installed {
+                let layers: Vec<&str> = image.layers.iter().map(|l| l.name.as_str()).collect();
+                println!(
+                    "installed: {} at {} (layers: {})",
+                    image.version,
+                    image.dir.display(),
+                    if layers.is_empty() {
+                        "none".to_string()
+                    } else {
+                        layers.join(", ")
+                    }
+                );
             }
         }
-        ImageCmd::Install { url } => {
+        ImageCmd::Install { url, layers } => {
+            let store = ImageStore::new(&dev_root()?);
             let pinned = PinnedImage::this_build(url.as_deref());
+            let layers = layers.unwrap_or_else(|| {
+                image_store::DEFAULT_LAYERS
+                    .iter()
+                    .map(|l| l.to_string())
+                    .collect()
+            });
             let mut last = 0;
             let installed = store
-                .install(&pinned, |p| {
+                .install(&pinned, &layers, |p| {
                     let pct = (p.done * 100).checked_div(p.total).unwrap_or(0);
                     if pct != last {
                         last = pct;
@@ -459,10 +488,31 @@ async fn image(command: ImageCmd) -> Result<(), String> {
                 .await
                 .map_err(|e| e.to_string())?;
             println!(
-                "installed {} at {}",
+                "installed {} at {} with {} layer(s)",
                 installed.version,
-                installed.path().display()
+                installed.dir.display(),
+                installed.layers.len()
             );
+        }
+        ImageCmd::Chunk { files } => {
+            for file in &files {
+                let list = image_store::chunks::chunk_file(file)
+                    .map_err(|e| format!("read {}: {e}", file.display()))?;
+                let name = file
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .ok_or_else(|| format!("{}: not a file name", file.display()))?;
+                let out = file.with_file_name(image_store::chunks::list_name(name));
+                let json = serde_json::to_vec(&list).map_err(|e| e.to_string())?;
+                std::fs::write(&out, json).map_err(|e| format!("write {}: {e}", out.display()))?;
+                println!(
+                    "{}: {} bytes in {} chunks -> {}",
+                    file.display(),
+                    list.size,
+                    list.chunks.len(),
+                    out.display()
+                );
+            }
         }
     }
     Ok(())

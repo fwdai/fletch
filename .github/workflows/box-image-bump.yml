@@ -1,0 +1,111 @@
+name: Box image bump
+
+# Keeps the box image's dependencies current without anyone editing pins:
+# every week, packaging/box-image/bump.sh moves the Debian snapshot and the
+# Node release, bumps the image VERSION and the app's pin; the images are
+# built and tested; if the tests pass the release box-image-v<VERSION> is
+# published; either way one pull request (branch chore/box-image-bump) is
+# opened or refreshed with the report. Merging it adopts the new image in the
+# next app release; closing it leaves an unused release behind, nothing more.
+# See docs/box.md.
+on:
+  schedule:
+    - cron: "0 6 * * 1" # Mondays 06:00 UTC
+  workflow_dispatch:
+
+concurrency:
+  group: box-image-bump
+  cancel-in-progress: false
+
+jobs:
+  bump:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Move the pins
+        id: bump
+        run: |
+          set -euo pipefail
+          sudo apt-get -qq install -y jq >/dev/null
+          packaging/box-image/bump.sh | tee bump.txt
+          grep -q '^changed=yes' bump.txt && echo "changed=yes" >> "$GITHUB_OUTPUT" || echo "changed=no" >> "$GITHUB_OUTPUT"
+          echo "version=$(cat packaging/box-image/VERSION)" >> "$GITHUB_OUTPUT"
+
+      - name: Nothing to bump
+        if: steps.bump.outputs.changed == 'no'
+        run: echo "The pins are current; no build, no pull request." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Build and test
+        if: steps.bump.outputs.changed == 'yes'
+        id: image
+        continue-on-error: true
+        uses: ./.github/actions/box-image
+        with:
+          version: ${{ steps.bump.outputs.version }}
+
+      - name: Publish the release
+        if: steps.bump.outputs.changed == 'yes' && steps.image.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OUT: ${{ steps.image.outputs.out }}
+          VERSION: ${{ steps.bump.outputs.version }}
+        run: packaging/box-image/publish.sh "$OUT" "$VERSION"
+
+      - name: Open or refresh the pull request
+        if: steps.bump.outputs.changed == 'yes'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OUT: ${{ steps.image.outputs.out }}
+          VERSION: ${{ steps.bump.outputs.version }}
+          OUTCOME: ${{ steps.image.outcome }}
+        run: |
+          set -euo pipefail
+          BRANCH=chore/box-image-bump
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B "$BRANCH"
+          git add packaging/box-image/build.sh packaging/box-image/VERSION crates/fletch-box/src/image_store/mod.rs
+          git commit -q -m "chore(box-image): bump to $VERSION
+
+          $(sed -n '/->/p' bump.txt)"
+          git push -f origin "$BRANCH"
+
+          if [ "$OUTCOME" = success ]; then
+            TITLE="chore(box-image): bump to $VERSION"
+            STATUS="Built, tested and published as \`box-image-v$VERSION\`. Merging adopts it (the app's pin is bumped here)."
+          else
+            TITLE="chore(box-image): bump to $VERSION (tests failed)"
+            STATUS="**The build or its tests failed; nothing was published.** Fix forward on this branch or close it. Logs: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          fi
+          {
+            echo "Weekly dependency bump of the box image (\`packaging/box-image/bump.sh\`)."
+            echo
+            sed -n '/->/p' bump.txt | sed 's/^/- /'
+            echo
+            echo "$STATUS"
+            echo
+            [ -f "$OUT/sizes.md" ] && cat "$OUT/sizes.md"
+            echo
+            [ -f "$OUT/report.md" ] && cat "$OUT/report.md"
+            echo
+            echo "## Decisions"
+            echo "- none"
+          } > body.md
+          if gh pr view "$BRANCH" --json number >/dev/null 2>&1; then
+            gh pr edit "$BRANCH" --title "$TITLE" --body-file body.md
+          else
+            gh pr create --base main --head "$BRANCH" --title "$TITLE" --body-file body.md
+          fi
+          gh pr view "$BRANCH" --json url -q .url >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Result
+        if: steps.bump.outputs.changed == 'yes'
+        run: test "${{ steps.image.outcome }}" = success

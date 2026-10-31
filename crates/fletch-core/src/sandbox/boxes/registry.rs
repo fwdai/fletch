@@ -1712,6 +1712,7 @@ async fn boot(
     spec.cpus = knobs.cpus;
     spec.memory_mib = knobs.memory_mib;
     spec.tools_disk = tools_lease.as_ref().map(|lease| lease.path.clone());
+    spec.layers = ready.image.layer_paths();
     spec.shares = identity
         .shares
         .iter()
@@ -2486,6 +2487,7 @@ mod tests {
                 dir: PathBuf::from("/nonexistent/image"),
                 version: "0.0.0-test".into(),
                 sha256: String::new(),
+                layers: Vec::new(),
             },
         };
         let waiter = async { registry.tools_disk(&ready, agent_id, provider).await };

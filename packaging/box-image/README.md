@@ -1,140 +1,79 @@
-# Box base image
+# Box image
 
-The Debian root filesystem every box boots. `build.sh` turns `packages.txt`, `rootfs/` and the cross-built `fletch-guest` into:
+The root filesystem every box boots and the layers it overlays. The map of the
+whole VM side, releases and workflows is [docs/box.md](../../docs/box.md); this
+is the pipeline.
 
-| File            | What                                                                                   |
-| --------------- | -------------------------------------------------------------------------------------- |
-| `base.erofs`    | Read-only root filesystem, lz4hc erofs, attached read-only as `/dev/vda` to every box  |
-| `manifest.json` | `version`, `arch`, `file`, `size`, `sha256` (what `fletch-box`'s `ImageStore` pins) and `packages` |
+| File | What |
+| --- | --- |
+| `VERSION` | The image version; `bump.sh` moves it, the release is `box-image-v<VERSION>` |
+| `packages/base.txt`, `devtools.txt`, `browser.txt` | The package split: the base and one file per layer |
+| `dpkg-excludes.cfg` | dpkg path rules for every install: docs, man, locales, Mesa/LLVM |
+| `rootfs/` | Files copied over the base: `opt/fletch/init`, `etc/ssh/sshd_config.fletch` |
+| `build.sh` | Root, Debian arm64, privileged: mmdebstrap the base, apt the layers into copies of it, rsync the deltas, `mkfs.erofs` each, `manifest.json`, `sizes.md` |
+| `test.sh` | Mounts the output as init would and runs the checks (chroot as `agent`); `report.md` |
+| `build-mac.sh` | The two above on a Mac through Docker Desktop (`--test` runs the tests) |
+| `boot-check.sh` | Boots the output on a Mac with its layers and checks the guest over ssh |
+| `bump.sh` | Moves the pins in `build.sh` (Debian snapshot, Node 22), VERSION and the app's pin |
+| `publish.sh` | Creates the GitHub release from an output directory; refuses an existing version |
 
-Each box's data disk is not part of the image: the host hands over an empty sparse file and init formats it.
+## Outputs
 
-## Building
+`base.erofs`, `layer-<name>.erofs`, `manifest.json`, `sizes.md`, and after
+`fletch-box image chunk out/*.erofs` a `<file>.chunks.json` per image (the CI
+action does this; the app fetches only changed chunks on an update).
 
-`build.sh` runs as root on Debian arm64 (a container or CI). On a Mac:
-
-```sh
-packaging/box-image/build-mac.sh                      # -> packaging/box-image/out, version 0.0.0-dev
-packaging/box-image/build-mac.sh out/0.1.0 0.1.0      # a release build
-```
-
-`build-mac.sh` cross-builds `crates/fletch-guest` for `aarch64-unknown-linux-musl` (rustup's self-contained
-musl target, `rust-lld`, no C toolchain), then runs `build.sh` in `docker run --platform linux/arm64
-debian:trixie` with this directory and the binary mounted. `out/` is gitignored.
-
-Inputs that pin the result:
-
-- **Debian packages** from `snapshot.debian.org` at `DEBIAN_SNAPSHOT` (default in `build.sh`), so a rebuild
-  months later installs the same versions. Bump the timestamp deliberately to pick up security updates.
-- **Node 22 LTS** from one nodejs.org tarball, checked against its `SHASUMS256` entry. A tarball rather than the
-  NodeSource apt repository: one URL and one hash, no third-party key or repo metadata to keep in step.
-- **Timestamps**: every inode gets `SOURCE_DATE_EPOCH` (default 2026-01-01); fontconfig caches are rebuilt
-  after the mtimes are pinned so they stay valid. **Identity**: a fixed filesystem UUID. Postinst-generated
-  ssh host keys, apt lists, logs and `machine-id` are removed.
+Inputs that pin the result: Debian packages from `snapshot.debian.org` at
+`DEBIAN_SNAPSHOT`, Node from one nodejs.org tarball checked against its
+`SHASUMS256` entry, every inode at `SOURCE_DATE_EPOCH`, a fixed UUID per image.
+The same inputs and the same `fletch-guest` give byte-identical images.
 
 ## What the guest looks like
 
-`/opt/fletch/init` (`rootfs/opt/fletch/init`) is the workload libkrun's init runs. It reads its inputs from the
-kernel environment (`krun_set_env`), never from argv:
+`/opt/fletch/init` is the workload libkrun's init runs. It reads its inputs
+from the kernel environment (`krun_set_env`), never from argv:
 
-| Env                         | Meaning                                                                  |
-| --------------------------- | ------------------------------------------------------------------------ |
-| `FLETCH_BOX_WRITABLE_ROOT`  | host path of the agent's writable root, bind-mounted from `/data/ws`     |
-| `FLETCH_BOX_RPC_DIR`        | host path of the RPC mailbox, from `/data/rpc`                           |
-| `FLETCH_BOX_HOME`           | host path of `$HOME`, from `/data/home` (mounted first; the others may lie inside it) |
-| `FLETCH_BOX_AUTHORIZED_KEY` | one OpenSSH public key line, written to `/data/ssh/authorized_keys`      |
-| `FLETCH_BOX_ID`             | optional, shown in log lines                                             |
-| `FLETCH_BOX_SHARES`         | optional count `n` of folders the user shared with this box              |
-| `FLETCH_BOX_SHARE_<i>`      | `ro:<path>` or `rw:<path>`: virtio-fs device `fletch-share-<i>`, mounted at `<path>` (under `/Users` or `/Volumes`) after the binds, parents first |
+| Env | Meaning |
+| --- | --- |
+| `FLETCH_BOX_WRITABLE_ROOT` | host path of the agent's writable root, bind-mounted from `/data/ws` |
+| `FLETCH_BOX_RPC_DIR` | host path of the RPC mailbox, from `/data/rpc` |
+| `FLETCH_BOX_HOME` | host path of `$HOME`, from `/data/home` (mounted first; the others may lie inside it) |
+| `FLETCH_BOX_AUTHORIZED_KEY` | one OpenSSH public key line, written to `/data/ssh/authorized_keys` |
+| `FLETCH_BOX_ID` | optional, shown in log lines |
+| `FLETCH_BOX_SHARES`, `FLETCH_BOX_SHARE_<i>` | folders the user shared: `ro:<path>` or `rw:<path>`, virtio-fs device `fletch-share-<i>` mounted at `<path>` |
 
-| Path / port             | What                                                                                      |
-| ----------------------- | ----------------------------------------------------------------------------------------- |
-| `/`                     | this image, erofs, read-only (`/dev/vda`)                                                 |
-| `/data`                 | the workspace disk (`/dev/vdb`, ext4 `nosuid,nodev,discard,noinit_itable`); formatted on first boot 4 MiB short of the device, `e2fsck -y` when it does not mount, reformatted only if fsck cannot repair it |
-| `/data/{ws,rpc,home,run}` | owned by `agent`; `/data/ssh` holds the host key and `authorized_keys` (root, StrictModes-clean) |
-| `/data/run/<launch>.env` | env files the host writes for `fletch-guest exec --env-file`                              |
-| `/opt/fletch/tools`     | the `tools/` directory of the tools disk (`/dev/vdc`, ext4, read-only), when one is attached |
-| `/tmp`, `/run`, `/var/tmp` | tmpfs                                                                                  |
-| vsock 22                | `fletch-guest vsock-listen 22 -- sshd -i -e -f /etc/ssh/sshd_config.fletch`: one sshd per connection, no TCP listener |
-| vsock 6000              | the host's egress proxy; `fletch-guest egress-loopback 8899 6000` exposes it as `http://127.0.0.1:8899` |
-| vsock 5000              | control: `fletch-guest wait-stop 5000`; the host sends the line `stop`                    |
+| Path / port | What |
+| --- | --- |
+| `/` | `base.erofs`, read-only (`/dev/vda`) |
+| `/data` | the workspace disk (`/dev/vdb`, ext4), formatted on first boot, `e2fsck` when it does not mount |
+| `/run/layers/<n>` | each layer image (an erofs after the data disk with `/.fletch-layer`), whose `usr`, `etc`, `var` are overlaid read-only on the root, later disks on top |
+| `/opt/fletch/tools` | the `tools/` directory of the tools disk (the ext4 after the data disk), when one is attached |
+| `/tmp`, `/run`, `/var/tmp` | tmpfs |
+| vsock 22 | `fletch-guest vsock-listen 22 -- sshd -i`: one sshd per connection, no TCP listener |
+| vsock 6000 | the host's egress proxy, exposed as `http://127.0.0.1:8899` |
+| vsock 5000 | control: the host sends the line `stop` |
 
-Console markers, in order: `FLETCH_HOSTKEY <type> <base64>` (from `/data/ssh/host_key.pub`), `FLETCH_READY`
-(all three vsock ports are bound: each service reports through a FIFO before init goes on), and on any failure
-`FLETCH_INIT_ERROR <text>` followed by a non-zero exit. On `stop` init kills every process, `sync`s, unmounts
-the binds and `/data` and exits; libkrun's init then powers the VM off.
-
-Users: `root` and `agent` (uid/gid 1000, home `/data/home`, shell `/bin/bash`, no password, not locked).
-sshd (`rootfs/etc/ssh/sshd_config.fletch`) allows `agent` only, public key only, sftp through
-`/usr/lib/openssh/sftp-server`, TCP forwarding on, nothing accepted from the client environment.
-`/usr/local/bin/fletch-guest` links to `/opt/fletch/bin/fletch-guest` so `ssh box fletch-guest exec ...` works
-from the login shell's default PATH.
-
-Identity paths: erofs is read-only, so init shadows the first component of each host path (`/Users` on a Mac
-host, `/home` or `/root` on Linux) with a tmpfs and creates the tree inside it. The image ships an empty `/Users`
-for that. Paths under the guest's own directories (`/usr`, `/var`, `/opt`, `/etc`, ...) are refused.
-
-## Booting by hand
-
-With the runtime's CLI (`crates/fletch-box`; `scripts/box-dev.sh` stages the runtime and puts `fletch-box` on `PATH`):
-
-```sh
-eval "$(scripts/box-dev.sh)"
-export FLETCH_BOX_RUN_ROOT=/tmp/fletch-box-dev                           # box dirs; default ~/.fletch/box-dev
-fletch-box boot --id dev --image packaging/box-image/out/base.erofs --data $FLETCH_BOX_RUN_ROOT/dev/data.img \
-  --env FLETCH_BOX_ID=dev --env FLETCH_BOX_HOME=$HOME \
-  --env FLETCH_BOX_WRITABLE_ROOT=$HOME/.fletch/workspaces/dev --env FLETCH_BOX_RPC_DIR=$HOME/.fletch/rpc/dev \
-  --allow deb.debian.org
-```
-
-`boot` creates the data disk sparse when it is missing (init formats it), generates the box's key pair and passes
-`FLETCH_BOX_AUTHORIZED_KEY` itself, serves the egress proxy (the defaults plus `--allow`) and stays attached. The
-console prints `FLETCH_HOSTKEY ...` and `FLETCH_READY`; the box dir (`$FLETCH_BOX_RUN_ROOT/dev/`) then holds the
-key, `known_hosts`, the sockets and an `ssh_config` whose host alias is `box`. From another shell:
-
-```sh
-B=$FLETCH_BOX_RUN_ROOT/dev
-fletch-box ssh dev -- uname -a
-ssh -F $B/ssh_config box 'umask 077; cat > /data/run/t.env' <<EOF
-HOME=$HOME
-PATH=/usr/local/bin:/usr/bin:/bin
-EOF
-ssh -F $B/ssh_config box fletch-guest exec --env-file /data/run/t.env --cwd $HOME -- env
-sftp -F $B/ssh_config box
-fletch-box stop dev                                                      # clean stop, or Ctrl-C in the boot terminal
-```
-
-Never use macOS `nc -U` against the sockets: it returns nothing. Use ssh, or `fletch-vm pipe <socket>` (what the
-`ssh_config`'s `ProxyCommand` runs).
+Console markers, in order: `FLETCH_HOSTKEY <type> <base64>`, `FLETCH_READY`,
+and on any failure `FLETCH_INIT_ERROR <text>` then a non-zero exit. Users:
+`root` and `agent` (uid 1000, home `/data/home`); sshd allows `agent` only,
+public key only. Host paths are shadowed with a tmpfs at their first component
+(`/Users` on a Mac host); paths under the guest's own directories are refused.
 
 ## Tools disks
 
-`crates/fletch-box/tools/<provider>.sh <version>` installs one provider's CLI into `/data/tools/<provider>` from inside a guest
-booted on a fresh sparse disk with the proxy variables set (`fletch-guest exec --env-file`). After a clean stop
-the host marks the disk read-only and attaches it as `/dev/vdc`; init exposes its `tools/` directory as
-`/opt/fletch/tools`, so `PATH` gets `/opt/fletch/tools/<provider>/bin`. Each script ends with the CLI's
-`--version`. The host side that boots the box and runs them is `fletch_box::tools::build`, which `fletch-box tools
-build` and the engine's tools prebuild share.
+`crates/fletch-box/tools/<provider>.sh <version>` installs one provider's CLI
+into `/data/tools/<provider>` from inside a guest booted on the base alone with
+a fresh disk as `/data` and the proxy variables set. After a clean stop the host
+marks the disk read-only and attaches it; init exposes its `tools/` as
+`/opt/fletch/tools`. The host side is `fletch_box::tools::build`.
 
-## Publishing a release
+## By hand
 
-Images are GitHub releases on this repository tagged `box-image-v<version>`, each holding `base.erofs` and
-`manifest.json`. The app boots the one version `PinnedImage::VERSION` names
-(`crates/fletch-box/src/image_store/mod.rs`) and fetches it from `<base URL>/`
-(`https://github.com/fwdai/fletch/releases/download/box-image-v<version>/`, or the `box_image_url` setting):
-`manifest.json` first, which must describe that version, then `base.erofs`, verified against the manifest's
-size and sha256 as it arrives. No hash lives in the app, so publishing an image is one step:
-
-Actions → *Box image* → *Run workflow* with the version (`X.Y.Z`), or push a tag `box-image-v<version>`. The
-workflow (`.github/workflows/box-image.yml`) runs on GitHub's arm64 runner, builds `fletch-guest` and runs
-`build.sh` in a `debian:trixie` container (`build-mac.sh`, which is cargo plus docker and works there too), and
-creates the release. It refuses a version that already has a release: never publish two different `base.erofs`
-under one version, an app that has one treats it as installed.
-
-The app moves to a new image when `PinnedImage::VERSION` is bumped to it, in a normal commit after the release
-exists (before, every download would 404); the next app release then installs the new image on first use and
-prunes the old one. That bump is the only place the app and the image are coupled: do it when the guest
-(`fletch-guest`, init, packages) changes, not with every app release.
-
-For a local image, build it under the version the app boots (`build-mac.sh out <version>`) and point the
-`box_image_url` setting at `file://<path to out>`; a manifest of any other version is refused.
+```sh
+eval "$(scripts/box-dev.sh)"                 # stages the runtime, builds the CLI
+fletch-box boot --id dev --image out/base.erofs --layer out/layer-devtools.erofs \
+  --data /tmp/dev-data.img --env FLETCH_BOX_ID=dev --env FLETCH_BOX_HOME=$HOME \
+  --env FLETCH_BOX_WRITABLE_ROOT=$HOME/.fletch/workspaces/dev --env FLETCH_BOX_RPC_DIR=$HOME/.fletch/rpc/dev
+fletch-box ssh dev -- gcc --version
+fletch-box stop dev
+```

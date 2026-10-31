@@ -1,6 +1,0 @@
-# browser-shell layer: a variant of the browser layer measured against it.
-# Debian's chromium-headless-shell is Chromium's old-headless build without
-# the UI, GTK or audio stacks: screenshot and scraping grade, what Playwright
-# runs headless by default.
-chromium-headless-shell
-fonts-noto-core
