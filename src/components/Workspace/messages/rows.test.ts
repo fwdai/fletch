@@ -181,8 +181,8 @@ describe("liveActivity", () => {
     expect(liveActivity(items).label).toBe("Reading 2 files");
   });
 
-  it("is thinking between calls, and says so at once on a thought", () => {
-    expect(liveActivity([read("/a")])).toMatchObject({ label: "Thinking", idle: true });
+  it("says it's thinking only with a thought to show for it", () => {
+    expect(liveActivity([read("/a")])).toMatchObject({ label: "Working", idle: true });
     expect(liveActivity([read("/a"), think()])).toMatchObject({ label: "Thinking", idle: false });
   });
 });

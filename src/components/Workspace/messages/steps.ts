@@ -196,7 +196,7 @@ export function runIcon(items: ViewItem[], summary: StepSummary): IconName {
 
 /** What a live run is doing right now. `idle` marks the in-between — the last
  *  call came back and nothing new has started — which the header holds back
- *  briefly so it doesn't flash "Thinking" between every pair of calls. */
+ *  briefly so it doesn't flash "Working" between every pair of calls. */
 export interface LiveActivity {
   label: string;
   icon: IconName;
@@ -238,9 +238,15 @@ export function liveActivity(items: ViewItem[]): LiveActivity {
     }
     return { label: `${stepActivity(first)} and ${pending.length - 1} more`, icon, idle: false };
   }
+  // Between calls the model is generating, and much of that is thinking it
+  // won't share (Claude redacts it). "Thinking" is said only when a thought
+  // the run will show is in hand; otherwise the line says no more than it can
+  // back up.
   const last = items[items.length - 1];
-  const thinking = last?.kind === "notice" && last.subtype === "reasoning";
-  return { label: "Thinking", icon: "sparkle", idle: !thinking };
+  if (last?.kind === "notice" && last.subtype === "reasoning") {
+    return { label: "Thinking", icon: "sparkle", idle: false };
+  }
+  return { label: "Working", icon: "activity", idle: true };
 }
 
 /** Text of an item a find-in-conversation query can match: what the row shows

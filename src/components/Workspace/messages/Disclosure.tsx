@@ -203,8 +203,8 @@ export function Ticker({
 
 /** A live value that changes no faster than it can be read: each one holds
  *  for `dwellMs` before the next replaces it, and an `idle` one (nothing in
- *  flight between two calls) waits `idleMs` first, so "Thinking" only shows
- *  when the agent really is. `key` says when the value has changed; the
+ *  flight between two calls) waits `idleMs` first, so a quick gap between
+ *  two calls doesn't flash "Working". `key` says when the value has changed; the
  *  value travels with it, so a label and its icon switch together. */
 export function useSteady<T>(
   value: T,
