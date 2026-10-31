@@ -105,13 +105,34 @@ pub struct PerTurnAgent {
     session: Box<ExecSession>,
 }
 
-/// The per-turn inputs a `*_build_args` builder turns into CLI argv. Bundled
-/// so builders and their call sites read as named fields instead of a row of
-/// positional `Option<&str>`s. `Default` (all-`None`, empty prompt) keeps test
-/// call sites terse: `TurnArgs { prompt: "hi", ..Default::default() }`.
+/// One per-turn process invocation. Most providers take the user prompt on
+/// stdin; the few that require it as an argument leave `stdin` unset.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TurnInvocation {
+    pub(crate) args: Vec<String>,
+    pub(crate) stdin: Option<String>,
+}
+
+impl TurnInvocation {
+    pub(crate) fn with_stdin(args: Vec<String>, stdin: String) -> Self {
+        Self {
+            args,
+            stdin: Some(stdin),
+        }
+    }
+
+    pub(crate) fn args(args: Vec<String>) -> Self {
+        Self { args, stdin: None }
+    }
+}
+
+/// The per-turn inputs a `*_build_args` builder turns into an invocation.
+/// Bundled so builders and their call sites read as named fields instead of a
+/// row of positional `Option<&str>`s. `Default` (all-`None`, empty prompt)
+/// keeps test call sites terse: `TurnArgs { prompt: "hi", ..Default::default() }`.
 #[derive(Clone, Copy, Default)]
 pub struct TurnArgs<'a> {
-    /// The user's message for this turn (positional in most agents' argv).
+    /// The user's message for this turn.
     pub prompt: &'a str,
     /// Resume target: `None` starts a fresh session, `Some(id)` resumes it.
     pub session_id: Option<&'a str>,

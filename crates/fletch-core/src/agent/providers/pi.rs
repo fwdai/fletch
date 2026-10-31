@@ -163,8 +163,8 @@ fn pi_prompt(record: &Value) -> Option<String> {
 /// resumes it. We deliberately use `--session` (not the newer `--session-id`):
 /// it's the resume flag common to the versions we target — 0.74.x lacks
 /// `--session-id` entirely. Verified end-to-end against pi 0.74.2. Pi runs in
-/// the child's cwd; the prompt is positional and must come after the flags.
-pub(crate) fn pi_build_args(turn: &TurnArgs) -> Vec<String> {
+/// the child's cwd; the prompt is streamed on stdin.
+pub(crate) fn pi_build_args(turn: &TurnArgs) -> crate::agent::TurnInvocation {
     let &TurnArgs {
         prompt,
         session_id,
@@ -181,8 +181,7 @@ pub(crate) fn pi_build_args(turn: &TurnArgs) -> Vec<String> {
     }
     args.extend(instructions::append_system_prompt_args(extra));
     push_opt(&mut args, "--session", session_id);
-    args.push(prompt.to_string());
-    args
+    crate::agent::TurnInvocation::with_stdin(args, prompt.to_string())
 }
 
 /// Pi as a one-shot completion (`OneShot`), per `pi --help` (0.78.0): print
@@ -312,7 +311,8 @@ mod tests {
             session_id: Some(NEW),
             ..Default::default()
         });
-        assert!(turn.ends_with(&["--session".into(), NEW.into(), "go on".into()]));
+        assert!(turn.args.ends_with(&["--session".into(), NEW.into()]));
+        assert_eq!(turn.stdin.as_deref(), Some("go on"));
         assert!(
             pi_pty_args(Some(NEW), None, None, &[]).ends_with(&["--session".into(), NEW.into()])
         );

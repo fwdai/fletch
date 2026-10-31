@@ -140,9 +140,8 @@ pub(crate) fn opencode_prompt_texts(records: &[Value]) -> Vec<Option<String>> {
 /// `--dangerously-skip-permissions` auto-approves tools (incl. shell + file
 /// writes) so turns run unattended; verified end-to-end against opencode
 /// 1.15.12. OpenCode runs in the child's cwd (no `--dir` needed) and assigns
-/// its own session id on the first turn. The prompt is positional and must
-/// come after the flags.
-pub(crate) fn opencode_build_args(turn: &TurnArgs) -> Vec<String> {
+/// its own session id on the first turn. The prompt is streamed on stdin.
+pub(crate) fn opencode_build_args(turn: &TurnArgs) -> crate::agent::TurnInvocation {
     let &TurnArgs {
         prompt,
         session_id,
@@ -166,8 +165,10 @@ pub(crate) fn opencode_build_args(turn: &TurnArgs) -> Vec<String> {
     }
     args.extend(model_args(model));
     push_opt(&mut args, "--session", session_id);
-    args.push(instructions::prepend_to_prompt(prompt, session_id, extra));
-    args
+    crate::agent::TurnInvocation::with_stdin(
+        args,
+        instructions::prepend_to_prompt(prompt, session_id, extra),
+    )
 }
 
 /// OpenCode stamps the session id (`ses_…`) on the top-level `sessionID` field

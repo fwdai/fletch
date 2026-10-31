@@ -445,13 +445,14 @@ pub(crate) const CODEX_SUBAGENTS: SubagentLayout = SubagentLayout {
     id_field: None,
 };
 
-/// Codex: `codex exec [resume <id>] --json …`. Approvals off and codex's own
+/// Codex: `codex exec [resume <id>] --json …`, with the prompt on stdin.
+/// Approvals off and codex's own
 /// sandbox set to `danger-full-access` via `-c` (works on both `exec` and
 /// `exec resume`, unlike the `-s`/`-a` flags). Fletch now runs codex under
 /// sandbox-exec like every other agent, so codex's own confinement is disabled
 /// to leave a single boundary — and so codex can reach its RPC mailbox, which
 /// lives outside the checkout that `workspace-write` would have confined it to.
-pub(crate) fn codex_build_args(turn: &TurnArgs) -> Vec<String> {
+pub(crate) fn codex_build_args(turn: &TurnArgs) -> crate::agent::TurnInvocation {
     let &TurnArgs {
         prompt,
         session_id,
@@ -478,8 +479,7 @@ pub(crate) fn codex_build_args(turn: &TurnArgs) -> Vec<String> {
     // `agent_profile::codex_mcp_args`), re-passed every turn like the rest of
     // the config since `codex exec` reads config per invocation.
     args.extend_from_slice(mcp_args);
-    args.push(prompt.to_string());
-    args
+    crate::agent::TurnInvocation::with_stdin(args, prompt.to_string())
 }
 
 /// Codex as a one-shot completion (`OneShot`), per `codex exec --help`
@@ -930,7 +930,7 @@ mod tests {
             session_id: Some(NEW),
             ..Default::default()
         });
-        assert_eq!(turn[..3], ["exec", "resume", NEW]);
+        assert_eq!(turn.args[..3], ["exec", "resume", NEW]);
         assert!(
             codex_pty_args(Some(NEW), None, None, &[]).ends_with(&["resume".into(), NEW.into()])
         );

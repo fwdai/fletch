@@ -617,6 +617,14 @@ impl SandboxEngine for BoxEngine {
             &[
                 "-F".to_string(),
                 running.channel.config.to_string_lossy().into_owned(),
+                // Agent commands can carry substantial provider configuration.
+                // A multiplexed session has to send that command and three file
+                // descriptors through one AF_UNIX message; macOS rejects large
+                // messages before OpenSSH can pass the descriptors. Keep the
+                // shared connection for small box operations, but give the agent
+                // process its own SSH transport.
+                "-S".to_string(),
+                "none".to_string(),
                 tty.to_string(),
                 fletch_box::guest::SSH_HOST_ALIAS.to_string(),
             ],

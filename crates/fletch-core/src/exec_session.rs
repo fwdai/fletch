@@ -8,14 +8,15 @@
 //! agent down. The agent itself persists across turns.
 //!
 //! The two provider-specific bits are injected:
-//!   - `build_args(prompt, session_id)` → the argv for one turn (fresh
-//!     when `session_id` is `None`, resume otherwise).
+//!   - `build_args(prompt, session_id)` → the argv and optional stdin for one
+//!     turn (fresh when `session_id` is `None`, resume otherwise).
 //!   - `extract_session_id(event)` → the id from whichever event carries
 //!     it (codex's `thread.started`, cursor's `system/init`). These
 //!     agents assign their own session id rather than taking ours, so we
 //!     capture it from the first turn and reuse it to resume.
 
 use parking_lot::Mutex;
+use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -24,6 +25,7 @@ use std::time::Duration;
 
 use serde_json::Value;
 
+use crate::agent::TurnInvocation;
 use crate::child_io;
 use crate::error::{Error, Result};
 use crate::sandbox::KillHandle;
@@ -32,7 +34,7 @@ type EventCb = Arc<dyn Fn(Value) + Send + Sync>;
 type SessionIdCb = Arc<dyn Fn(String) + Send + Sync>;
 type ExitCb = Arc<dyn Fn(ExecExit) + Send + Sync>;
 type ArgsBuilder =
-    Arc<dyn Fn(&str, Option<&str>, Option<&str>, Option<&str>) -> Vec<String> + Send + Sync>;
+    Arc<dyn Fn(&str, Option<&str>, Option<&str>, Option<&str>) -> TurnInvocation + Send + Sync>;
 type IdExtractor = Arc<dyn Fn(&Value) -> Option<String> + Send + Sync>;
 /// Runs on the host before each turn's process is spawned; an error fails the
 /// turn before anything launches. The engine's own step is declared on its
@@ -123,7 +125,7 @@ impl ExecSession {
         cb: ExecCallbacks<F, G, H>,
     ) -> Self
     where
-        A: Fn(&str, Option<&str>, Option<&str>, Option<&str>) -> Vec<String>
+        A: Fn(&str, Option<&str>, Option<&str>, Option<&str>) -> TurnInvocation
             + Send
             + Sync
             + 'static,
@@ -193,13 +195,13 @@ impl ExecSession {
             prep()?;
         }
 
-        let args = {
+        let invocation = {
             let id = self.session_id.lock();
             (self.build_args)(&prompt, id.as_deref(), effort, model)
         };
         let mut cmd = Command::new(&self.program);
         cmd.args(&self.prefix_args);
-        cmd.args(&args);
+        cmd.args(&invocation.args);
         cmd.current_dir(&self.cwd);
         crate::bin_resolve::apply_login_shell_env(&mut cmd);
         // Portable-git PATH/env so the child's own `git` calls work on a
@@ -215,7 +217,11 @@ impl ExecSession {
         for (k, v) in &self.env {
             cmd.env(k, v);
         }
-        cmd.stdin(Stdio::null());
+        cmd.stdin(if invocation.stdin.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        });
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
 
@@ -250,6 +256,13 @@ impl ExecSession {
             .stderr
             .take()
             .ok_or_else(|| Error::Other("agent: child stderr missing".into()))?;
+        let stdin = invocation.stdin.map(|input| {
+            let pipe = child
+                .stdin
+                .take()
+                .expect("piped agent stdin must be present after spawn");
+            (pipe, input)
+        });
 
         let slot = child_io::ChildSlot::new(child, self.after_exit.clone());
         *self.child.lock() = Some(slot.clone());
@@ -282,6 +295,23 @@ impl ExecSession {
         child_io::spawn_stderr_reader(stderr, "agent", move |line| {
             let _ = stderr_tx.send(line);
         });
+
+        // Write on its own thread so a large prompt cannot block stdout/stderr
+        // draining. Dropping the pipe after `write_all` delivers EOF, which is
+        // what these one-shot CLIs use as the prompt boundary.
+        if let Some((mut pipe, input)) = stdin {
+            let writer = std::thread::Builder::new()
+                .name("agent-stdin".into())
+                .spawn(move || {
+                    if let Err(error) = pipe.write_all(input.as_bytes()) {
+                        tracing::debug!(%error, "agent stdin closed before prompt was written");
+                    }
+                });
+            if let Err(error) = writer {
+                slot.kill_and_reap("agent");
+                return Err(Error::Other(format!("agent stdin writer: {error}")));
+            }
+        }
 
         // Reap the per-turn child when it exits, and report the exit so the
         // supervisor can end the turn — covering turns that exit without an
@@ -419,7 +449,7 @@ mod tests {
         session_id: Option<&str>,
         _thinking: Option<&str>,
         model: Option<&str>,
-    ) -> Vec<String> {
+    ) -> TurnInvocation {
         let mut a = vec!["exec".to_string()];
         if let Some(id) = session_id {
             a.push("resume".into());
@@ -431,7 +461,16 @@ mod tests {
         }
         a.push("--json".into());
         a.push(prompt.to_string());
-        a
+        TurnInvocation::args(a)
+    }
+
+    fn stdin_args(
+        prompt: &str,
+        _session_id: Option<&str>,
+        _thinking: Option<&str>,
+        _model: Option<&str>,
+    ) -> TurnInvocation {
+        TurnInvocation::with_stdin(vec!["--json".into()], prompt.to_string())
     }
     fn codex_id(ev: &Value) -> Option<String> {
         if ev.get("type").and_then(|t| t.as_str()) == Some("thread.started") {
@@ -616,6 +655,58 @@ mod tests {
         assert_eq!(session.session_id.lock().as_deref(), Some("abc-123"));
         assert_eq!(events.len(), 3);
         assert!(xrx.recv_timeout(Duration::from_secs(2)).unwrap().success);
+    }
+
+    #[test]
+    fn streams_large_prompt_on_stdin_and_closes_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("stdin-agent.sh");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\nprintf '%s' \"$*\" > argv.txt\ncat > stdin.txt\necho '{\"type\":\"turn.completed\"}'\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let (xtx, xrx) = mpsc::channel();
+        let session = ExecSession::new(
+            ExecSpawn {
+                program: script,
+                prefix_args: vec![],
+                cwd: dir.path().to_path_buf(),
+                session_id: None,
+                stdout_is_json: true,
+                env: vec![],
+                env_remove: Vec::new(),
+                kill_plan: KillHandle::ProcessGroup,
+                before_turn: None,
+                after_exit: None,
+            },
+            stdin_args,
+            codex_id,
+            ExecCallbacks {
+                on_event: |_| {},
+                on_session_id: |_| {},
+                on_exit: move |exit| {
+                    let _ = xtx.send(exit);
+                },
+            },
+        );
+        let prompt = "x".repeat(256 * 1024);
+
+        session
+            .send_user_message(&prompt, &[], None, None)
+            .unwrap();
+
+        assert!(xrx.recv_timeout(Duration::from_secs(5)).unwrap().success);
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("stdin.txt")).unwrap(),
+            prompt
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("argv.txt")).unwrap(),
+            "--json"
+        );
     }
 
     #[test]

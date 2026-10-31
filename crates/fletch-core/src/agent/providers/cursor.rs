@@ -273,11 +273,12 @@ pub(crate) const CURSOR_SUBAGENTS: SubagentLayout = SubagentLayout {
     id_field: None,
 };
 
-/// Cursor: `cursor-agent -p --output-format stream-json --force [--resume <id>] <prompt>`.
+/// Cursor: `cursor-agent -p --output-format stream-json --force [--resume <id>]`,
+/// with the prompt streamed on stdin.
 /// `--force` runs commands without approval prompts; `--trust` trusts the
 /// workspace in headless mode. Cursor's own sandbox applies; cwd comes from
 /// the child process working directory.
-pub(crate) fn cursor_build_args(turn: &TurnArgs) -> Vec<String> {
+pub(crate) fn cursor_build_args(turn: &TurnArgs) -> crate::agent::TurnInvocation {
     let &TurnArgs {
         prompt,
         session_id,
@@ -294,9 +295,10 @@ pub(crate) fn cursor_build_args(turn: &TurnArgs) -> Vec<String> {
     ];
     push_opt(&mut args, "--resume", session_id);
     args.extend(model_args(model));
-    // Prompt is positional and must come after options.
-    args.push(instructions::prepend_to_prompt(prompt, session_id, extra));
-    args
+    crate::agent::TurnInvocation::with_stdin(
+        args,
+        instructions::prepend_to_prompt(prompt, session_id, extra),
+    )
 }
 
 /// Cursor as a one-shot completion (`OneShot`), per `cursor-agent --help`

@@ -736,7 +736,7 @@ impl Agent {
         cb: ExecCallbacks<F, G, H>,
     ) -> Result<Self>
     where
-        A: Fn(&str, Option<&str>, Option<&str>, Option<&str>) -> Vec<String>
+        A: Fn(&str, Option<&str>, Option<&str>, Option<&str>) -> super::TurnInvocation
             + Send
             + Sync
             + 'static,

@@ -29,7 +29,7 @@ pub(crate) const ANTIGRAVITY_PRINT_TIMEOUT: &str = "24h";
 // `_model` is intentionally unused: agy's `--print` runner ignores model
 // selection (the `--model` flag is inert in print mode), so the picker offers
 // no selectable models for antigravity (see `model_catalog::discover_one`).
-pub(crate) fn antigravity_build_args(turn: &TurnArgs) -> Vec<String> {
+pub(crate) fn antigravity_build_args(turn: &TurnArgs) -> crate::agent::TurnInvocation {
     let &TurnArgs {
         prompt,
         session_id,
@@ -47,7 +47,7 @@ pub(crate) fn antigravity_build_args(turn: &TurnArgs) -> Vec<String> {
     push_opt(&mut args, "--conversation", session_id);
     args.push("--print".into());
     args.push(instructions::prepend_to_prompt(prompt, session_id, extra));
-    args
+    crate::agent::TurnInvocation::args(args)
 }
 
 // `_model` unused: agy's TUI manages its own model selection (see
