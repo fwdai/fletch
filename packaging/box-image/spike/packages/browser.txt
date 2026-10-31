@@ -1,0 +1,5 @@
+# browser layer: a system Chromium for agents that drive one directly, and
+# wider script coverage for rendering. Playwright projects download their own
+# browser and need only the base's libraries.
+chromium
+fonts-noto-core

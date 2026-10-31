@@ -90,6 +90,10 @@ struct BootArgs {
     data: PathBuf,
     #[arg(long)]
     tools: Option<PathBuf>,
+    /// Layer images (erofs with a /.fletch-layer marker), attached read-only
+    /// after the tools disk; an init that knows layers overlays them on the root.
+    #[arg(long = "layer")]
+    layers: Vec<PathBuf>,
     #[arg(long, default_value_t = 2048)]
     mem: u32,
     #[arg(long, default_value_t = 2)]
@@ -287,12 +291,15 @@ async fn boot(args: BootArgs) -> Result<(), String> {
             .ok_or_else(|| format!("--env wants K=V, got {kv}"))?;
         spec.env.insert(k.into(), v.into());
     }
+    for (i, layer) in args.layers.iter().enumerate() {
+        spec.extra_disks.push((format!("layer{i}"), layer.clone(), true));
+    }
     if let Some(script) = &args.script_disk {
         let bytes = std::fs::read(script).map_err(|e| format!("read {}: {e}", script.display()))?;
         let disk = dir.join("script.img");
         disks::write_script_disk(&bytes, &disk).map_err(|e| e.to_string())?;
-        // vda base, vdb data, then the tools disk if any, then this one.
-        let letter = (b'c' + u8::from(args.tools.is_some())) as char;
+        // vda base, vdb data, then the tools disk if any, the layers, then this one.
+        let letter = (b'c' + u8::from(args.tools.is_some()) + args.layers.len() as u8) as char;
         if spec.init_args.is_empty() {
             spec.init_args = vec!["/bin/sh".into(), format!("/dev/vd{letter}")];
         }

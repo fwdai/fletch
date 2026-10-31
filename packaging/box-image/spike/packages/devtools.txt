@@ -1,0 +1,8 @@
+# devtools layer: toolchains for projects that compile native code. No agent
+# CLI needs these to install or run (all ship prebuilt binaries); Node's headers
+# join this layer from the tarball (build-layers.sh).
+python3
+python3-venv
+python3-pip
+build-essential
+pkg-config
