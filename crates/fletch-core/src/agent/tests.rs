@@ -368,10 +368,7 @@ fn antigravity_args_raise_print_timeout_and_keep_prompt_last() {
         .iter()
         .position(|a| a == "--conversation")
         .expect("--conversation flag");
-    assert_eq!(
-        args.args.get(conv + 1).map(String::as_str),
-        Some("conv-1")
-    );
+    assert_eq!(args.args.get(conv + 1).map(String::as_str), Some("conv-1"));
 }
 
 #[test]
@@ -530,7 +527,10 @@ fn supported_per_turn_agents_keep_prompts_out_of_argv() {
         ),
     ] {
         assert!(
-            invocation.stdin.as_deref().is_some_and(|input| input.ends_with(prompt)),
+            invocation
+                .stdin
+                .as_deref()
+                .is_some_and(|input| input.ends_with(prompt)),
             "{provider} did not receive the prompt on stdin"
         );
         assert!(
@@ -652,10 +652,7 @@ fn codex_args_reasoning_effort_when_thinking_set() {
         thinking: Some("high"),
         ..Default::default()
     });
-    assert!(
-        args.args
-            .contains(&"reasoning_effort=\"high\"".to_string())
-    );
+    assert!(args.args.contains(&"reasoning_effort=\"high\"".to_string()));
 }
 
 #[test]
@@ -667,15 +664,11 @@ fn codex_args_disable_codex_own_sandbox() {
         prompt: "hi",
         ..Default::default()
     });
-    assert!(
-        args.args
-            .contains(&"sandbox_mode=\"danger-full-access\"".to_string())
-    );
+    assert!(args
+        .args
+        .contains(&"sandbox_mode=\"danger-full-access\"".to_string()));
     assert!(!args.args.iter().any(|a| a.contains("workspace-write")));
-    assert!(
-        args.args
-            .contains(&"approval_policy=\"never\"".to_string())
-    );
+    assert!(args.args.contains(&"approval_policy=\"never\"".to_string()));
 }
 
 #[test]

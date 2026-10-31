@@ -118,7 +118,7 @@ pub struct ExecCallbacks<F, G, H> {
 impl ExecSession {
     /// Build the session. Spawns **no** process — the first child is
     /// created when the first user message arrives.
-    pub fn new<A, I, F, G, H>(
+    pub(crate) fn new<A, I, F, G, H>(
         spec: ExecSpawn,
         build_args: A,
         extract_session_id: I,
@@ -694,9 +694,7 @@ mod tests {
         );
         let prompt = "x".repeat(256 * 1024);
 
-        session
-            .send_user_message(&prompt, &[], None, None)
-            .unwrap();
+        session.send_user_message(&prompt, &[], None, None).unwrap();
 
         assert!(xrx.recv_timeout(Duration::from_secs(5)).unwrap().success);
         assert_eq!(
