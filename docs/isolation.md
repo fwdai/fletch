@@ -77,7 +77,10 @@ The toolchain cache (`~/.fletch/toolchain-cache/<project id>`, or
 package manager, the cargo overlay and the headless browsers are redirected. What is in it gets executed by later
 sandboxed processes, so it is keyed by project: every profile and container
 mount names that project's root and never the directory above it, so no project
-can write what another one executes. Why it is shaped that way (per project, per
+can write what another one executes. A box points the same variables at the
+same path, which by path identity is a directory on its own guest disk: the
+package caches without the cargo overlay, and not shared with the host's
+cache. Why it is shaped that way (per project, per
 build, platform-keyed rows, the reclaim, the nested instance and `fletch-host`)
 is told once, in the module doc of `sandbox/toolchain_cache/mod.rs`. The Run
 profile denies the host's claude and codex login files as the agent profile

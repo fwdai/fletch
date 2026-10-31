@@ -451,58 +451,15 @@ mod tests {
         "sandbox/boxes/executor.rs",
     ];
 
-    fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
-        for entry in std::fs::read_dir(dir).unwrap().flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                rust_files(&path, out);
-            } else if path.extension().is_some_and(|e| e == "rs") {
-                out.push(path);
-            }
-        }
-    }
-
-    fn is_test_file(rel: &str) -> bool {
-        rel.contains("/tests/")
-            || rel.ends_with("/tests.rs")
-            || rel.ends_with("_tests.rs")
-            || rel.ends_with("testing.rs")
-    }
-
-    /// The source up to the file's test module, where one exists.
-    fn production_half(text: &str) -> &str {
-        [
-            "#[cfg(test)]\nmod ",
-            "#[cfg(test)]\npub(crate) mod ",
-            "#[cfg(test)]\npub mod ",
-        ]
-        .iter()
-        .filter_map(|marker| text.find(marker))
-        .min()
-        .map_or(text, |at| &text[..at])
-    }
-
     /// Every git invocation in a checkout goes through `git_dist` (and so
     /// through [`for_path`]); nothing else spawns `git` or sets a cwd on a
     /// process without being accounted for above. A new direct call would run
     /// on the host against a tree a box keeps in its guest.
     #[test]
     fn no_direct_git_on_checkouts() {
-        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-        let mut files = Vec::new();
-        rust_files(&src, &mut files);
         let mut offenders = Vec::new();
-        for file in files {
-            let rel = file
-                .strip_prefix(&src)
-                .unwrap()
-                .to_string_lossy()
-                .replace('\\', "/");
-            if is_test_file(&rel) {
-                continue;
-            }
-            let text = std::fs::read_to_string(&file).unwrap();
-            for (i, line) in production_half(&text).lines().enumerate() {
+        for (rel, text) in crate::source_scan::production_sources() {
+            for (i, line) in text.lines().enumerate() {
                 let spawns_git =
                     line.contains("Command::new(\"git\")") || line.contains("Command::new(git");
                 let sets_cwd = line.contains(".current_dir(");

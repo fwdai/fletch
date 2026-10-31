@@ -279,6 +279,14 @@ async fn summarize_repos(record: &AgentRecord) -> Option<Vec<RepoSummary>> {
 /// so this is when the current checkout came to exist; later writes inside it
 /// leave it alone (unlike mtime, which every `git status` index refresh bumps).
 /// `None` where the filesystem has no birth time to report.
+///
+/// A host read even for a box checkout, on purpose: the host path is then an
+/// empty placeholder, but box provisioning creates it in the same step as the
+/// guest's `git init` (the box engine's `provision`, on spawn and restore)
+/// and teardown removes it with the agent's dir, so its birth time is the
+/// guest checkout's. The record's `created_at` is not a substitute: a restore
+/// keeps it, which is the case this floor exists for. The executor's `stat`
+/// carries no birth time to ask the guest for instead.
 fn provisioned_at(checkout: &std::path::Path) -> Option<i64> {
     let created = std::fs::metadata(checkout).ok()?.created().ok()?;
     let since_epoch = created.duration_since(std::time::UNIX_EPOCH).ok()?;

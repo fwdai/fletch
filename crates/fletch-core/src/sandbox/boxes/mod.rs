@@ -56,11 +56,12 @@
 //! What touches a checkout from the host goes through the seam, or asks
 //! [`box_holding`] and refuses with the reason. Not in the guest yet, each
 //! refusing or skipping rather than acting on the host's empty placeholder:
-//! the Run panel (`supervisor::run`), verification (`verify`), codegraph
-//! indexing (`codegraph::wants_codegraph`), workflow step agents, carrying a
+//! the Run panel (`supervisor::run`), verification (`verify`), workflow step
+//! agents (`BoxEngine::launch_agent` refuses a blackboard), and carrying a
 //! checkpoint between a box and another workspace (`git::checkpoint::
-//! fetch_into`: a fork of a box agent), and the attribution hook refresh
-//! (`attribution::refresh_hooks`, which provisioning covers in the guest).
+//! fetch_into`: a fork of a box agent). Codegraph runs in the guest from the
+//! tools disk ([`codegraph_bin`]), and the attribution hook refresh reaches
+//! the guest through the seam (`attribution::refresh_hooks`).
 
 pub mod allowlist;
 pub mod executor;
@@ -456,10 +457,8 @@ fn credential_step(
 }
 
 /// Which providers run in a box: the ones with a guest-home adapter
-/// ([`home::ProviderHome`] — claude and codex so far) and a tools-disk
-/// script. Cursor and OpenCode have a script but no adapter yet: their logins
-/// live in files the host writes into a host-side overlay, which an adapter
-/// would ship the way codex's does.
+/// ([`home::ProviderHome`]: claude, codex, cursor, opencode and pi) and a
+/// tools-disk script.
 pub fn supports_provider(provider: &str) -> bool {
     home::supported(provider) && fletch_box::tools::install_script(provider).is_some()
 }
@@ -668,6 +667,30 @@ impl SandboxEngine for BoxEngine {
         // The provider's home in the guest, as its adapter lays it out:
         // before every launch, so the user's config changes reach it.
         home::seed(&running.channel, provider_home, ctx.home, ctx.writable_root)?;
+        // The project's toolchain cache, made in the guest before the agent
+        // runs. A guest that cannot make it keeps the toolchains' defaults,
+        // which in a box are its own disk anyway.
+        let (cache_root, cache_env) = guest_toolchain_cache(ctx.home, ctx.project_id)?;
+        let made = executor::run(
+            &running.channel,
+            &["mkdir", "-p", "--", &cache_root.to_string_lossy()],
+            None,
+        );
+        let cache_env = match made {
+            Ok(out) if out.status.success() => cache_env,
+            failed => {
+                let why = failed.map_or_else(
+                    |e| e.to_string(),
+                    |out| String::from_utf8_lossy(&out.stderr).trim().to_string(),
+                );
+                tracing::warn!(
+                    root = %cache_root.display(),
+                    error = %why,
+                    "could not create the toolchain cache in the box; toolchains keep their defaults"
+                );
+                Vec::new()
+            }
+        };
         let env_file = env_file_path(&launch_id);
 
         let remote =
@@ -698,6 +721,7 @@ impl SandboxEngine for BoxEngine {
         // (`home::CredentialSync`).
         let home::Credential { mut env, files } = provider_home.credential(ctx)?;
         env.push(("GIT_TERMINAL_PROMPT".to_string(), "0".to_string()));
+        env.extend(cache_env);
         let credentials = Arc::new(Mutex::new(home::CredentialSync::new(files)));
         let synced = !credentials
             .lock()
@@ -796,6 +820,24 @@ impl SandboxEngine for BoxEngine {
         registry.detach(agent_id, launch_id);
         Ok(())
     }
+}
+
+/// The project's toolchain cache for a launch in a box, and the env pointing
+/// the toolchains into it: the root seatbelt grants this project
+/// (`toolchain_cache_root`), which by path identity is a directory on the
+/// guest's own disk, not the host's cache. Only the redirect rows: the cargo
+/// overlay `prepare_toolchain_cache` adds links the host's cargo home, which
+/// a guest does not have, and creating the root is the guest's to do.
+fn guest_toolchain_cache(
+    home: &Path,
+    project_id: &str,
+) -> Result<(PathBuf, Vec<(String, String)>)> {
+    let root = crate::sandbox::toolchain_cache_root(home, project_id)?;
+    let env = crate::sandbox::toolchain_cache::toolchain_cache_env(
+        &root,
+        crate::sandbox::BoxPlatform::linux(),
+    );
+    Ok((root, env))
 }
 
 /// `/data/run/<launch id>.env`.

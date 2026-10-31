@@ -230,3 +230,79 @@ mod adopted_tree_tests {
         assert_ne!(engine_for_adopted_tree(&root.join("repo")), EngineKind::Box);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    /// Files outside `sandbox/` that name engine internals today. This list
+    /// may only shrink: a feature that needs an engine fact asks
+    /// `sandbox` for it instead of matching on the engine itself. The target
+    /// is the set named in docs/sandbox-foundation.md rule 1: the engine's
+    /// own settings surface (`commands/boxes.rs`, `commands/settings.rs`),
+    /// boot (`host/boot.rs`) and the event list (`remote/events.rs`). Paths
+    /// are relative to this crate's `src/`.
+    const ALLOWED: &[&str] = &[
+        "agent/providers/claude.rs",
+        "agent/providers/codex.rs",
+        "agent/providers/cursor.rs",
+        "agent/providers/opencode.rs",
+        "agent/providers/pi.rs",
+        "agent/spawn.rs",
+        "codegraph/mod.rs",
+        "commands/boxes.rs",
+        "commands/git_state.rs",
+        "commands/mod.rs",
+        "commands/project_settings.rs",
+        "commands/settings.rs",
+        "git/checkpoint.rs",
+        "git/publish.rs",
+        "git/remote.rs",
+        "host/boot.rs",
+        "project_file/mod.rs",
+        "remote/events.rs",
+        "review/engine.rs",
+        "supervisor/checkpoints.rs",
+        "supervisor/disposition.rs",
+        "supervisor/lifecycle.rs",
+        "supervisor/login_refresh.rs",
+        "supervisor/mod.rs",
+        "supervisor/run.rs",
+        "supervisor/shell.rs",
+        "transcripts.rs",
+        "workspace/folder_grants.rs",
+    ];
+
+    /// What marks a line as engine knowledge: matching on an engine variant,
+    /// or reaching into the box engine's module.
+    const TOKENS: &[&str] = &["EngineKind::", "sandbox::boxes", "boxes::", "box_holding("];
+
+    /// Engine knowledge stays in `sandbox/` (docs/sandbox-foundation.md, rule
+    /// 1). Every production line of every file outside it counts, comments
+    /// and doc comments included: simple and conservative. A file that gains
+    /// one of [`TOKENS`] fails this until the knowledge moves behind
+    /// `sandbox`; a file that loses its last one fails it until it is struck
+    /// from [`ALLOWED`], so the list cannot go stale.
+    #[test]
+    fn engine_knowledge_stays_in_sandbox() {
+        let found: Vec<String> = crate::source_scan::production_sources()
+            .into_iter()
+            .filter(|(rel, text)| {
+                !rel.starts_with("sandbox/") && TOKENS.iter().any(|t| text.contains(t))
+            })
+            .map(|(rel, _)| rel)
+            .collect();
+        let added: Vec<&String> = found
+            .iter()
+            .filter(|rel| !ALLOWED.contains(&rel.as_str()))
+            .collect();
+        let gone: Vec<&&str> = ALLOWED
+            .iter()
+            .filter(|rel| !found.iter().any(|f| f == *rel))
+            .collect();
+        assert!(
+            added.is_empty() && gone.is_empty(),
+            "engine knowledge outside sandbox/ must go through sandbox (docs/sandbox-foundation.md \
+             rule 1).\nnew files naming engine internals: {added:?}\nno longer naming them, \
+             strike from sandbox::tests::ALLOWED: {gone:?}"
+        );
+    }
+}

@@ -14,7 +14,9 @@
 //! adding a toolchain is a row in [`vars`] with no policy change; invariant 1
 //! stops applying rather than needing to be checked, since Fletch owns this
 //! layout and it is never on the user's PATH. A container binds the same root
-//! at its host path, so the engines share one warm cache.
+//! at its host path, so the engines share one warm cache. A box points the
+//! same variables at the same path inside its guest, a directory on the
+//! guest's own disk with no cargo overlay (`boxes::guest_toolchain_cache`).
 //!
 //! **Why per project.** Everything under a root is executed by sandboxed
 //! processes (cargo compiles `registry/src`, pnpm hardlinks its store into
