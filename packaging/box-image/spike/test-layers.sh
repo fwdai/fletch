@@ -100,7 +100,7 @@ check T-base-tools "bash, git, rg, curl, jq, node, npm present" -- \
 check T-base-noperl-ok "git subcommands that need perl are not on the critical path (git init/add/commit work)" -- \
   sh_as_agent 'cd $(mktemp -d) && git init -q . && git -c user.email=a@b -c user.name=a commit -q --allow-empty -m x && git log --oneline | head -1'
 check T-sshd "sshd -t with the box config and a generated host key; sshd user exists; no systemd package" -- \
-  runroot sh -c 'getent passwd sshd >/dev/null && mkdir -p /data/ssh && ssh-keygen -q -t ed25519 -N "" -f /data/ssh/host_key && /usr/sbin/sshd -t -f /etc/ssh/sshd_config.fletch && ! test -x /usr/lib/systemd/systemd && echo "sshd config ok, systemd absent"'
+  runroot sh -c 'getent passwd sshd >/dev/null && mkdir -m 755 -p /run/sshd && mkdir -p /data/ssh && ssh-keygen -q -t ed25519 -N "" -f /data/ssh/host_key && /usr/sbin/sshd -t -f /etc/ssh/sshd_config.fletch && ! test -x /usr/lib/systemd/systemd && echo "sshd config ok, systemd absent"'
 check T-nollvm-files "Mesa/LLVM files are excluded from the tree" -- \
   sh -c "! ls $M/usr/lib/aarch64-linux-gnu/libLLVM* $M/usr/lib/aarch64-linux-gnu/libgallium* $M/usr/lib/aarch64-linux-gnu/libz3* 2>/dev/null && ls $M/usr/lib/aarch64-linux-gnu/libgbm.so.1 && echo 'libgbm present, backend absent'"
 check T-locale "no /usr/share/locale, C.UTF-8 works" -- \
