@@ -323,11 +323,20 @@
 .tool-row.is-open > .m-tool .t-icon {
   color: var(--fg-1);
 }
+/* The accent label is the app's signature on a tool row — softened so a long
+   list of them doesn't shout, and full accent on hover and while open. Muted
+   by transparency, not by mixing toward the gray: a mix swings the hue
+   through red, where it reads like a failed row. */
 .m-tool .t-name {
   flex: none;
   font-family: var(--font-sans);
   font-weight: 500;
-  color: var(--fg-1);
+  color: color-mix(in oklch, var(--accent) 72%, transparent);
+  transition: color 0.14s var(--ease);
+}
+.m-tool:hover .t-name,
+.tool-row.is-open > .m-tool .t-name {
+  color: var(--accent);
 }
 .m-tool .t-arg {
   flex: 1;
