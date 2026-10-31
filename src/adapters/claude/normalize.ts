@@ -51,17 +51,14 @@ export function normalizeTranscript(
       const text = transcriptTextContent(message.content);
       const hasText = text.length > 0;
       // Claude writes each content block of a message as its own record, so a
-      // thinking block arrives alone. One with text is the reasoning the live
-      // stream showed, and the rebuild at turn end must keep it; a redacted
-      // one (empty, signature only) has nothing to show.
+      // thinking block arrives alone. The rebuild at turn end must keep it,
+      // redacted (empty) or not, or the thinking the live chat showed would
+      // vanish as the turn ended (see the reducer's thinking branch).
       const hasBlocks =
         Array.isArray(message.content) &&
         (message.content as unknown[]).some((b) => {
-          const block = asRecord(b);
-          if (block.type === "thinking") {
-            return typeof block.thinking === "string" && block.thinking.length > 0;
-          }
-          return block.type === "tool_use" || block.type === "tool_result";
+          const type = asRecord(b).type;
+          return type === "thinking" || type === "tool_use" || type === "tool_result";
         });
       if (!hasText && !hasBlocks) continue;
     }

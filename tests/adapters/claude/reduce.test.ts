@@ -278,14 +278,16 @@ describe("claudeAdapter.reduce — extended thinking", () => {
   // before a tool call is a record holding nothing else. The rebuild that
   // replaces the live log at turn end runs through here; dropping these made
   // a turn's reasoning vanish from the chat the moment the turn ended.
-  it("keeps thinking-only transcript records, in order, and skips redacted ones", () => {
-    const assistant = (block: Record<string, unknown>) => ({
-      type: "assistant",
-      message: { id: "m1", role: "assistant", content: [block] },
-    });
+  const assistant = (block: Record<string, unknown>) => ({
+    type: "assistant",
+    message: { id: "m1", role: "assistant", content: [block] },
+  });
+  const shape = (items: ChatItem[]) =>
+    items.map((i) => (i.kind === "notice" ? `reasoning:${i.text}` : i.kind));
+
+  it("keeps thinking-only transcript records, in order", () => {
     const lines = [
       { type: "user", message: { role: "user", content: "go" } },
-      assistant({ type: "thinking", thinking: "", signature: "redacted" }),
       assistant({ type: "thinking", thinking: "Check the reducer first.", signature: "s" }),
       assistant({ type: "tool_use", id: "t1", name: "Read", input: { file_path: "/a" } }),
       {
@@ -298,12 +300,35 @@ describe("claudeAdapter.reduce — extended thinking", () => {
       assistant({ type: "thinking", thinking: "Now edit it.", signature: "s" }),
       assistant({ type: "text", text: "Done." }),
     ];
-    const items = reduceAll(claudeAdapter.normalizeTranscript(lines));
-    expect(items.map((i) => (i.kind === "notice" ? `reasoning:${i.text}` : i.kind))).toEqual([
+    expect(shape(reduceAll(claudeAdapter.normalizeTranscript(lines)))).toEqual([
       "user_message",
       "reasoning:Check the reducer first.",
       "tool_call",
       "tool_result",
+      "reasoning:Now edit it.",
+      "agent_message",
+    ]);
+  });
+
+  // Claude Code redacts most thinking: the block arrives as "" plus a
+  // signature. The agent still thought there, and the live line said so, so
+  // the log keeps one empty thought per thinking phase — merged into the
+  // readable block when one follows in the same message.
+  it("keeps one thought per thinking phase, redacted or not", () => {
+    const redacted = assistant({ type: "thinking", thinking: "", signature: "r" });
+    const lines = [
+      { type: "user", message: { role: "user", content: "go" } },
+      redacted,
+      redacted,
+      assistant({ type: "tool_use", id: "t1", name: "Read", input: { file_path: "/a" } }),
+      redacted,
+      assistant({ type: "thinking", thinking: "Now edit it.", signature: "s" }),
+      assistant({ type: "text", text: "Done." }),
+    ];
+    expect(shape(reduceAll(claudeAdapter.normalizeTranscript(lines)))).toEqual([
+      "user_message",
+      "reasoning:",
+      "tool_call",
       "reasoning:Now edit it.",
       "agent_message",
     ]);

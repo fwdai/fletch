@@ -96,7 +96,10 @@ function Item({ item, resend }: { item: ChatItem; resend?: Resend }) {
           </div>
         );
       }
-      if (item.subtype === "reasoning") return <div className="reasoning rise">{item.text}</div>;
+      // A redacted thought (Claude sends most as "") has no text to show.
+      if (item.subtype === "reasoning") {
+        return item.text ? <div className="reasoning rise">{item.text}</div> : null;
+      }
       return <div className={`notice rise${item.is_error ? " err" : ""}`}>{item.text}</div>;
     default:
       return null;

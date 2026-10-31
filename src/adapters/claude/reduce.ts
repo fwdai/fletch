@@ -94,15 +94,26 @@ function handleAssistant(prev: ChatItem[], ev: RawEvent): ChatItem[] {
       // Extended-thinking block → reasoning notice (we capture the whole
       // block here; the stream-event deltas are ignored). The text lives in
       // the assistant event's `thinking` field — confirmed against real
-      // persisted events. (Some Claude auth modes redact this to "" and emit
-      // only a signature; `if (!text) continue` skips those cleanly.)
+      // persisted events. Claude Code redacts most of it: a block arrives as
+      // "" plus a signature, sometimes followed by a short readable one in
+      // the same message. One thinking phase is one notice either way — ""
+      // when nothing was shared — so the chat can say the agent thought here
+      // even when it can't say what.
       const text = block.thinking;
-      if (!text) continue;
+      const last = items[items.length - 1];
+      const lastThought = last?.kind === "notice" && last.subtype === "reasoning" ? last : null;
+      if (!text) {
+        if (!lastThought) items = [...items, { kind: "notice", subtype: "reasoning", text: "" }];
+        continue;
+      }
       const exists = items
         .slice(turnStart)
         .some((it) => it.kind === "notice" && it.subtype === "reasoning" && it.text === text);
       if (exists) continue;
-      items = [...items, { kind: "notice", subtype: "reasoning", text }];
+      const thought: ChatItem = { kind: "notice", subtype: "reasoning", text };
+      // The readable block that follows a redacted one is the same phase.
+      items =
+        lastThought && !lastThought.text ? [...items.slice(0, -1), thought] : [...items, thought];
     } else if (block.type === "text" && typeof block.text === "string") {
       // The text may already exist as a streamed agent_message for this turn
       // (deltas arrived before this finalized event). If so, stamp the model
