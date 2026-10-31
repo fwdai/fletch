@@ -310,10 +310,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_an_explicit_true_enables() {
-        assert!(parse_enabled(Some("true")));
-        for raw in [None, Some(""), Some("1"), Some("TRUE"), Some("yes")] {
-            assert!(!parse_enabled(raw), "{raw:?}");
+    fn only_an_explicit_false_disables() {
+        assert!(!parse_enabled(Some("false")));
+        assert!(!parse_enabled(Some(" false ")));
+        for raw in [None, Some(""), Some("true"), Some("0"), Some("FALSE"), Some("no")] {
+            assert!(parse_enabled(raw), "{raw:?}");
         }
     }
 
