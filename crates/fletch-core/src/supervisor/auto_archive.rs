@@ -6,17 +6,19 @@
 //! that is clean *and* fully pushed, and treats every read failure as "not
 //! this pass". The decision itself is [`eligible`], a pure function over a
 //! [`Candidate`], so the rules are tested without git or a database.
+//!
+//! The sweep never boots a box (docs/sandbox-foundation.md rule 2). A
+//! checkout in a running box is read live, like any other; one in a stopped
+//! box answers what the box's stop read there (`sandbox::disposal_at_stop`),
+//! which no guest activity can postdate: the read is the stop ladder's first
+//! rung, and the record is dropped when the box boots. No record means skip.
 
-use std::collections::{BTreeMap, BTreeSet};
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use parking_lot::Mutex;
 use serde::Serialize;
 
 use crate::database;
-use crate::git_state::DisposalCheck;
 use crate::github::PrStatus;
 use crate::host::EngineCtx;
 use crate::workspace::{AgentRecord, AgentStatus};
@@ -180,21 +182,6 @@ async fn sweep(ctx: &Arc<EngineCtx>, supervisor: &Arc<Supervisor>, db: &DbState)
         return;
     };
     let now_ms = chrono::Utc::now().timestamp_millis();
-    // Reads kept for checkouts that are gone have nothing left to answer for.
-    let live: BTreeSet<PathBuf> = ws
-        .agents
-        .iter()
-        .filter(|record| record.archive.is_none())
-        .flat_map(|record| {
-            record
-                .repos
-                .iter()
-                .filter_map(|repo| repo.checkout_path(&record.id).ok())
-        })
-        .collect();
-    LAST_CHECK
-        .lock()
-        .retain(|checkout, _| live.contains(checkout));
     let mut archived: Vec<(String, String)> = Vec::new();
     for record in ws.agents {
         // `eligible` rejects these too; skipping first avoids git reads on a
@@ -204,8 +191,7 @@ async fn sweep(ctx: &Arc<EngineCtx>, supervisor: &Arc<Supervisor>, db: &DbState)
         {
             continue;
         }
-        let last_activity_ms = supervisor.last_activity(&record.id);
-        let Some(repos) = summarize_repos(&record, last_activity_ms).await else {
+        let Some(repos) = summarize_repos(&record).await else {
             continue;
         };
         let candidate = Candidate {
@@ -213,7 +199,7 @@ async fn sweep(ctx: &Arc<EngineCtx>, supervisor: &Arc<Supervisor>, db: &DbState)
             run_owned: record.owner_run_id.is_some(),
             purpose_tagged: record.purpose.is_some(),
             status: record.status.clone(),
-            last_activity_ms,
+            last_activity_ms: supervisor.last_activity(&record.id),
             created_at_ms: chrono::DateTime::parse_from_rfc3339(&record.created_at)
                 .ok()
                 .map(|t| t.timestamp_millis()),
@@ -264,29 +250,11 @@ async fn sweep(ctx: &Arc<EngineCtx>, supervisor: &Arc<Supervisor>, db: &DbState)
     }
 }
 
-/// The last disposal read of each box checkout, taken while its box was
-/// awake, and when it was taken (ms since the epoch): `None` for a read that
-/// failed. What a sleeping box's checkout answers ([`summarize_repos`]).
-static LAST_CHECK: Mutex<BTreeMap<PathBuf, (Option<DisposalCheck>, i64)>> =
-    Mutex::new(BTreeMap::new());
-
 /// Read every owned checkout fail-closed. `None` when any probe fails — an
 /// unreadable tree might hold anything, so the agent sits this pass out. Not
 /// `git_state::query`: that one degrades a failed read to an empty, "clean"
 /// state for the panel, which is exactly the answer a deletion must not trust.
-///
-/// A timer read: passive, so it never boots a stopped box (docs/
-/// sandbox-foundation.md rule 2). A checkout whose box is asleep answers its
-/// last read from while the box was awake, as the sidebar's poll does
-/// (`commands::git_state::poll_checkout`): boxes stop when idle, so without it
-/// an idle box agent would never be archived, and a stopped guest cannot have
-/// changed its tree. Only a read taken after the agent's last activity
-/// (`last_activity_ms`) counts, so a turn since the read cannot have left work
-/// it did not see; with no such read the agent sits the pass out.
-async fn summarize_repos(
-    record: &AgentRecord,
-    last_activity_ms: Option<i64>,
-) -> Option<Vec<RepoSummary>> {
+async fn summarize_repos(record: &AgentRecord) -> Option<Vec<RepoSummary>> {
     let mut out = Vec::new();
     for repo in record.repos.iter().filter(|r| !r.is_adopted()) {
         let checkout = match repo.checkout_path(&record.id) {
@@ -296,30 +264,27 @@ async fn summarize_repos(
                 return None;
             }
         };
-        let read = async {
-            let read_at = chrono::Utc::now().timestamp_millis();
-            let check = crate::git_state::check_for_disposal(&checkout).await;
-            if let Err(e) = &check {
+        // A timer read: passive, so it never boots a stopped box; a checkout
+        // whose box is asleep answers what its stop recorded instead.
+        let read = crate::git_state::check_for_disposal(&checkout);
+        let asleep = || crate::sandbox::checkout_asleep(&checkout);
+        let check = match crate::commands::git_state::poll_unless_asleep(asleep, read).await {
+            Some(Ok(check)) => check,
+            Some(Err(e)) => {
                 tracing::debug!(agent_id = %record.id, error = %e, "auto-archive: git read failed");
+                return None;
             }
-            (check.ok(), read_at)
+            None => match crate::sandbox::disposal_at_stop(&checkout) {
+                Some(check) => check,
+                None => {
+                    tracing::debug!(
+                        agent_id = %record.id,
+                        "auto-archive: checkout's box is asleep with nothing recorded at its stop"
+                    );
+                    return None;
+                }
+            },
         };
-        let polled = crate::commands::git_state::poll_checkout(&LAST_CHECK, &checkout, read).await;
-        let Some((check, read_at)) = polled else {
-            tracing::debug!(
-                agent_id = %record.id,
-                "auto-archive: checkout's box is asleep with no read from while it was awake"
-            );
-            return None;
-        };
-        if last_activity_ms.is_some_and(|active| read_at < active) {
-            tracing::debug!(
-                agent_id = %record.id,
-                "auto-archive: the sleeping box's last read predates the agent's last activity"
-            );
-            return None;
-        }
-        let check = check?;
         out.push(RepoSummary {
             clean_tree: check.clean_tree,
             unpushed: check.unpushed,

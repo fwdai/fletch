@@ -1181,7 +1181,9 @@ impl BoxRegistry {
     }
 
     /// Stop `agent_id`'s VM through the ladder (§7.7): the mirror refreshed
-    /// first so publish has the objects while the box is down, then `stop` on
+    /// first so publish has the objects while the box is down, and each
+    /// checkout's disposal state recorded for the auto-archive sweep
+    /// (`mirror::record_disposal`), then `stop` on
     /// the control port, the ssh sysrq rung, SIGTERM, SIGKILL. `dirty` is
     /// cleared only after a clean rung.
     pub async fn stop(&self, agent_id: &str, reason: StopReason) -> Result<StopOutcome> {
@@ -1216,15 +1218,27 @@ impl BoxRegistry {
         Some(taken)
     }
 
+    /// Whether no launch is attached to `agent_id`'s box: the disposal read
+    /// a stop records is taken only then, since a session still running in
+    /// the guest could change its checkouts between the read and the halt.
+    /// With no record its agent is not auto-archived until a later stop.
+    fn nothing_attached(&self, agent_id: &str) -> bool {
+        self.entries
+            .lock()
+            .get(agent_id)
+            .is_some_and(|entry| entry.attached.is_empty())
+    }
+
     /// The ladder for a VM [`Self::take_running`] took.
     ///
     /// A [`StopReason::Shutdown`] stop is bounded by [`SHUTDOWN_GRACE`] (the
-    /// lock wait, the sessions pull, and the clean rungs from `send_stop` on)
-    /// and skips the mirror refresh: every turn checkpoint already refreshed
-    /// it. Nothing holds the lifecycle lock long once a box runs, but if
-    /// something did, the VM is killed without it. On app exit nothing can boot
-    /// meanwhile ([`Self::close`]); with the box flag going off, a boot could
-    /// start a second VM on the same disk while this one is killed.
+    /// lock wait, the sessions pull with the disposal read beside it, and the
+    /// clean rungs from `send_stop` on) and skips the mirror refresh: every
+    /// turn checkpoint already refreshed it. Nothing holds the lifecycle lock
+    /// long once a box runs, but if something did, the VM is killed without
+    /// it. On app exit nothing can boot meanwhile ([`Self::close`]); with the
+    /// box flag going off, a boot could start a second VM on the same disk
+    /// while this one is killed.
     async fn stop_taken(
         &self,
         agent_id: &str,
@@ -1240,14 +1254,34 @@ impl BoxRegistry {
             match reason {
                 StopReason::Discard => {}
                 StopReason::Shutdown => {
-                    let pulled = super::home::pull_before_stop(&running);
-                    if tokio::time::timeout(SHUTDOWN_GRACE, pulled).await.is_err() {
+                    // The disposal read alongside the sessions pull, so app
+                    // exit waits no longer: without it a box running at exit
+                    // has no record (its boot deleted the last one), and its
+                    // agent could not be auto-archived until it next ran.
+                    let pulled = tokio::time::timeout(
+                        SHUTDOWN_GRACE,
+                        super::home::pull_before_stop(&running),
+                    );
+                    let quiet = self.nothing_attached(agent_id);
+                    let recorded = tokio::time::timeout(SHUTDOWN_GRACE, async {
+                        if quiet {
+                            super::mirror::record_disposal(&running).await;
+                        }
+                    });
+                    let (pulled, recorded) = tokio::join!(pulled, recorded);
+                    if pulled.is_err() {
                         tracing::warn!(agent_id, "sessions pull before shutdown timed out");
+                    }
+                    if recorded.is_err() {
+                        tracing::warn!(agent_id, "disposal read before shutdown timed out");
                     }
                 }
                 _ => {
                     if let Err(e) = super::mirror::refresh_running(&running).await {
                         tracing::info!(agent_id, error = %e, "mirror refresh before stop failed");
+                    }
+                    if self.nothing_attached(agent_id) {
+                        super::mirror::record_disposal(&running).await;
                     }
                     super::home::pull_before_stop(&running).await;
                 }
@@ -1687,6 +1721,8 @@ async fn boot(
     if !data.exists() {
         disks::create_sparse(&data, disks::DEFAULT_DATA_DISK_BYTES)?;
     }
+    // What the last stop read of its checkouts stops being true from here.
+    super::mirror::forget_disposal(&dir)?;
     let dirty = Dirty::in_dir(&dir);
     if dirty.set()? {
         tracing::warn!(

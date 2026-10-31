@@ -69,6 +69,91 @@ fn read_sources(box_dir: &Path) -> std::collections::BTreeMap<String, String> {
         .unwrap_or_default()
 }
 
+/// `<box>/disposal.json`: what the fail-closed disposal read
+/// (`git_state::check_for_disposal`) found in each checkout of the box when
+/// it last stopped, so the auto-archive sweep can judge a sleeping box's
+/// checkouts without booting it. Written by the stop ladder after its mirror
+/// refresh ([`record_disposal`]) and deleted when the box boots
+/// ([`forget_disposal`]), so it exists only while the box is stopped and was
+/// read after everything that ran in it. Goes with the box dir on discard.
+const DISPOSAL: &str = "disposal.json";
+
+/// One checkout's entry in [`DISPOSAL`].
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct StoppedDisposal {
+    clean_tree: bool,
+    unpushed: u32,
+    /// When the read was taken, ms since the epoch.
+    read_at_ms: i64,
+}
+
+/// Read every checkout of `running`, a box whose stop has begun, and write
+/// [`DISPOSAL`]. A checkout whose read fails is left out, which the sweep
+/// takes as "skip". Best-effort: a failure is logged, and the box stops
+/// regardless (with no file, its agent is not archived).
+pub(super) async fn record_disposal(running: &RunningBox) {
+    let mut checks = std::collections::BTreeMap::new();
+    for checkout in read_sources(&running.dir).into_keys() {
+        let read = crate::git_state::check_for_disposal(Path::new(&checkout));
+        // Passive too, so a read that escapes the scope fails instead of
+        // booting the box being stopped.
+        let read = super::executor::with_stopping(
+            running.agent_id(),
+            running.channel.clone(),
+            crate::exec::passive(read),
+        );
+        let read_at_ms = chrono::Utc::now().timestamp_millis();
+        match read.await {
+            Ok(check) => {
+                checks.insert(
+                    checkout,
+                    StoppedDisposal {
+                        clean_tree: check.clean_tree,
+                        unpushed: check.unpushed,
+                        read_at_ms,
+                    },
+                );
+            }
+            Err(e) => tracing::info!(
+                agent_id = running.agent_id(),
+                checkout = %checkout,
+                error = %e,
+                "disposal read before stop failed; the checkout will not be auto-archived"
+            ),
+        }
+    }
+    let written = serde_json::to_vec_pretty(&checks)
+        .map_err(Error::from)
+        .and_then(|bytes| std::fs::write(running.dir.join(DISPOSAL), bytes).map_err(Error::from));
+    if let Err(e) = written {
+        tracing::warn!(agent_id = running.agent_id(), error = %e, "writing the disposal record failed");
+    }
+}
+
+/// Delete [`DISPOSAL`] as the box in `box_dir` boots: from here on its
+/// checkouts can change, so the record no longer describes them.
+pub(super) fn forget_disposal(box_dir: &Path) -> std::io::Result<()> {
+    match std::fs::remove_file(box_dir.join(DISPOSAL)) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
+        _ => Ok(()),
+    }
+}
+
+/// What the stop ladder read in `checkout` when its box last stopped, or
+/// `None` when `checkout` is in no box, or nothing usable was recorded for
+/// it (no record, an unreadable one, a read that failed).
+pub fn disposal_at_stop(checkout: &Path) -> Option<crate::git_state::DisposalCheck> {
+    let box_dir = box_of(checkout)?.box_dir().ok()?;
+    let bytes = std::fs::read(box_dir.join(DISPOSAL)).ok()?;
+    let mut checks: std::collections::BTreeMap<String, StoppedDisposal> =
+        serde_json::from_slice(&bytes).ok()?;
+    let check = checks.remove(&*checkout.to_string_lossy())?;
+    Some(crate::git_state::DisposalCheck {
+        clean_tree: check.clean_tree,
+        unpushed: check.unpushed,
+    })
+}
+
 /// [`refresh_running`] for an agent by id: a no-op for one with no running
 /// box (another engine's, or a box that is stopped and so already mirrored).
 /// Never boots one.

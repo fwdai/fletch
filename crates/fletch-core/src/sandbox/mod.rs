@@ -578,6 +578,15 @@ pub fn checkout_asleep(path: &Path) -> bool {
     boxes::asleep_for_path(path)
 }
 
+/// The disposal state of `path`, a checkout whose engine is not running
+/// ([`checkout_asleep`]), as read when it stopped: a box records its
+/// checkouts' state on every stop and drops the record when it boots. `None`
+/// when nothing usable was recorded, which a caller about to delete must
+/// treat as unknown.
+pub fn disposal_at_stop(path: &Path) -> Option<crate::git_state::DisposalCheck> {
+    boxes::mirror::disposal_at_stop(path)
+}
+
 /// Whether `path` is a checkout the engine keeps off the host (in a box,
 /// running or not).
 pub fn checkout_is_remote(path: &Path) -> bool {

@@ -62,7 +62,11 @@
 //! hook refresh reaches the guest through the seam (`attribution::
 //! refresh_hooks`), and a turn checkpoint crosses the box boundary through
 //! the mirror and the channel (`sandbox::carry_checkpoint`: a fork of a box
-//! agent with its code, or into one).
+//! agent with its code, or into one). The auto-archive sweep never boots a
+//! box: each stop reads every checkout's disposal state after the mirror
+//! refresh and writes it to `<box dir>/disposal.json`, which boot deletes,
+//! and the sweep answers a sleeping box's checkouts from that file
+//! (`mirror::record_disposal`, `sandbox::disposal_at_stop`).
 
 pub mod allowlist;
 pub mod executor;

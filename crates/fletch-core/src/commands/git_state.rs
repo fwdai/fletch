@@ -96,7 +96,7 @@ static LAST_GIT_META: Mutex<BTreeMap<PathBuf, GitMeta>> = Mutex::new(BTreeMap::n
 /// `read` of `checkout` for a bulk poll ([`poll_unless_asleep`]). A sleeping
 /// box answers its last read, which its stopped guest cannot have changed, so
 /// the sidebar keeps its numbers; `None` before a first read.
-pub(crate) async fn poll_checkout<T: Clone>(
+async fn poll_checkout<T: Clone>(
     last: &Mutex<BTreeMap<PathBuf, T>>,
     checkout: &Path,
     read: impl Future<Output = T>,
