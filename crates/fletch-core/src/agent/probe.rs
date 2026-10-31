@@ -290,7 +290,11 @@ pub(crate) fn thinking_display_known(identity: &str) -> Option<bool> {
 
 pub(crate) fn remember_thinking_display(identity: &str, supported: bool) {
     known_map().lock().insert(identity.to_string(), supported);
-    tracing::info!(identity, supported, "claude --thinking-display capability probed");
+    tracing::info!(
+        identity,
+        supported,
+        "claude --thinking-display capability probed"
+    );
 }
 
 type Known = parking_lot::Mutex<std::collections::HashMap<String, bool>>;

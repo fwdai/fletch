@@ -632,7 +632,10 @@ pub(super) fn claude_thinking_summaries(provider: DockerProvider, tag: &str) -> 
 
 /// The id of the image `tag` names right now, or `None` when docker can't say.
 fn inspect_image_id(tag: &str) -> Option<String> {
-    match cli::run_docker(&["image", "inspect", "--format", "{{.Id}}", tag], INSPECT_TIMEOUT) {
+    match cli::run_docker(
+        &["image", "inspect", "--format", "{{.Id}}", tag],
+        INSPECT_TIMEOUT,
+    ) {
         Ok(out) if out.status.success() => {
             Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
         }
