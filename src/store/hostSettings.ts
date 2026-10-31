@@ -22,6 +22,9 @@ import type { AppState } from "./types";
 
 type Patch = (patch: Partial<AppState>) => void;
 
+/** What an absent `boxes_enabled` row means: `boxes::settings::DEFAULT_ENABLED`. */
+export const BOXES_DEFAULT_ENABLED = false;
+
 /** The store fields the host-owned keys decide. Every default here is the one
  *  the host's own parser applies to an absent or unreadable value, so a key the
  *  host has never written reads the same on both sides. */
@@ -52,9 +55,12 @@ export function hostSettingsState(s: Record<string, string>): Partial<AppState> 
     podmanImage: s.podman_image || "",
     podmanMemory: s.podman_memory || "",
     podmanCpus: s.podman_cpus || "",
-    // Opt-in: the box sandbox is piloted behind Settings › Developer. The
-    // knobs are blank when unset, as the container ones are.
-    boxesEnabled: s.boxes_enabled === "true",
+    // An explicit "true" or "false" wins; absent is the host's default, off
+    // while boxes are rolled out behind the developer unlock — the mirror of
+    // `boxes::settings::DEFAULT_ENABLED`, flipped together with it at the
+    // public release. The knobs are blank when unset, as the container ones are.
+    boxesEnabled:
+      s.boxes_enabled === undefined ? BOXES_DEFAULT_ENABLED : s.boxes_enabled === "true",
     boxMemoryMib: s.box_memory_mib || "",
     boxCpus: s.box_cpus || "",
     boxImageUrl: s.box_image_url || "",

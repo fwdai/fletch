@@ -68,7 +68,7 @@ pub fn load_keep_awake_on_power(conn: &rusqlite::Connection) -> bool {
 type ChangeCb = Arc<dyn Fn(usize, usize) + Send + Sync>;
 
 /// Process-wide activity monitor. Mirrors the in-process singleton idiom used
-/// elsewhere (e.g. `sandbox::set_selected_engine_kind`) so code deep in the
+/// elsewhere (e.g. `sandbox::set_selected_engine`) so code deep in the
 /// spawn/scheduler paths — which has no `AppHandle` — can report activity
 /// without threading state through.
 pub struct ActivityMonitor {

@@ -16,6 +16,7 @@ import { ProjectHeader } from "./ProjectHeader";
 import { Roadmap, useRoadmap } from "./Roadmap";
 import { RoadmapSection } from "./RoadmapSection";
 import { RunEnvSection } from "./RunEnvSection";
+import { SandboxSection } from "./SandboxSection";
 import { VerifySection } from "./VerifySection";
 
 interface Loaded {
@@ -127,6 +128,7 @@ export function ProjectScreen({ repoPath }: { repoPath: string }) {
                   initialOverrides={loaded.overrides}
                 />
                 <EnvVarsSection projectId={loaded.projectId} repoPath={repoPath} />
+                <SandboxSection projectId={loaded.projectId} repoPath={repoPath} />
                 <NetworkSection projectId={loaded.projectId} />
                 <LinearSection projectId={loaded.projectId} />
                 <RoadmapSection projectId={loaded.projectId} />

@@ -388,17 +388,18 @@ pub fn boot(cfg: BootConfig) -> Result<Engine, BootError> {
     // Seed the in-memory sandbox engine selection (mirror of the
     // `sandbox_engine` setting) so spawn-time engine resolution — deep in agent
     // code with no DB handle — honors the user's choice. Missing/unknown values
-    // keep the sandbox-exec default, except on a headless host off macOS, where
-    // there is no such thing (see `headless_container_engine`).
+    // are automatic (a box when one can boot, seatbelt otherwise), except on
+    // a headless host off macOS, where neither exists: there automatic too
+    // means the container engine (see `headless_container_engine`).
     match database::get_setting(&db.lock(), sandbox::ENGINE_SETTING)
         .as_deref()
-        .and_then(sandbox::EngineKind::from_setting)
+        .and_then(sandbox::parse_engine_setting)
     {
-        Some(kind) => sandbox::set_selected_engine_kind(kind),
-        None if headless && !cfg!(target_os = "macos") => {
-            sandbox::set_selected_engine_kind(headless_container_engine()?)
+        Some(Some(kind)) => sandbox::set_selected_engine(Some(kind)),
+        Some(None) | None if headless && !cfg!(target_os = "macos") => {
+            sandbox::set_selected_engine(Some(headless_container_engine()?))
         }
-        None => {}
+        Some(None) | None => sandbox::set_selected_engine(None),
     }
 
     {
@@ -793,11 +794,22 @@ pub fn boot(cfg: BootConfig) -> Result<Engine, BootError> {
     // The box engine: its settings mirrored like the container knobs, its
     // `box:*` events through the fanout, every live box-stamped agent's root
     // routed to its box, and the helpers of dead instances swept — on a
-    // thread, like the container sweeps. With the developer flag off this
-    // registers nothing and only the sweep runs.
+    // thread, like the container sweeps. With the switch off this registers
+    // nothing and only the sweep runs.
     sandbox::boxes::settings::seed(&db.lock());
     sandbox::boxes::set_event_sink(sink.clone());
     sandbox::boxes::startup(&workspace);
+    // And the image, downloaded on its own so boxes become the engine
+    // without anyone asking for them. The desktop waits for onboarding to
+    // have been completed once (its welcome carries the data-sharing
+    // disclosure; `Onboarding` starts the download itself at that point); a
+    // headless host was set up on purpose. Off the boot thread: the runtime
+    // probe runs processes.
+    let onboarded =
+        database::get_setting(&db.lock(), ONBOARDING_COMPLETE_SETTING).as_deref() == Some("true");
+    if headless || onboarded {
+        std::thread::spawn(sandbox::boxes::setup::autostart);
+    }
     // Each project's `.fletch/settings.json`, read into its mirror before any
     // box boots and watched from here on (`project_file`).
     crate::project_file::seed(&db.lock());
@@ -876,6 +888,12 @@ fn headless_container_engine() -> Result<crate::sandbox::EngineKind, BootError> 
         sandbox::ENGINE_SETTING
     )))
 }
+
+/// The frontend-owned flag (camelCase) written when the user finishes the
+/// first-run onboarding, the flow that carries the data-sharing disclosure.
+/// Absent on a brand-new install. Read here and by the desktop's telemetry
+/// init, never written by the engine.
+pub const ONBOARDING_COMPLETE_SETTING: &str = "onboardingComplete";
 
 /// Startup seed retry pacing for an unavailable secret store: start at 30s (the
 /// realistic case — a login-item launch racing the keychain unlock — resolves

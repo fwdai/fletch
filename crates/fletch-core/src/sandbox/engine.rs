@@ -11,7 +11,7 @@ pub enum EngineKind {
     /// A libkrun micro-VM per agent, reached only over ssh on vsock and an
     /// egress proxy. Named here so settings, guarantees and the seams can refer
     /// to it; [`super::engine_for`] refuses it while the `boxes_enabled`
-    /// developer flag is off.
+    /// switch is off.
     Box,
 }
 

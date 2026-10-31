@@ -53,7 +53,7 @@ export function boxSetup(
         retry: "image",
       };
     case "not_installed":
-      return { state: "error", text: "Image not installed.", retry: "image" };
+      return { state: "error", text: "Image not downloaded yet.", retry: "image" };
     default:
       break;
   }
@@ -89,6 +89,6 @@ export function boxSetup(
     .map(({ provider, disk }) => `${label(provider)} ${disk?.version}`);
   return {
     state: "ready",
-    text: `Ready · image v${image.version ?? image.pinned_version} · ${ready.join(" · ")} · other providers keep the previous sandbox`,
+    text: `Ready · image v${image.version ?? image.pinned_version} · ${ready.join(" · ")} · other providers use the macOS sandbox`,
   };
 }

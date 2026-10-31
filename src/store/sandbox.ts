@@ -18,6 +18,7 @@ import { DEFAULT_SANDBOX_ENGINE, type SandboxEngine } from "@/storage/preference
 import { newestWins } from "@/util/newestWins";
 import { type ApprovalEvent, replayApprovalEvents } from "@/util/publishApprovals";
 import { activeEnvironment, forActiveEnvironment } from "./environments";
+import { BOXES_DEFAULT_ENABLED } from "./hostSettings";
 import type { SliceCreator } from "./types";
 
 /** Live state of one embedded container image build (first spawn under a
@@ -122,9 +123,10 @@ export interface SandboxSlice {
    *  head. Unanswered requests are denied backend-side after a timeout, so a
    *  dropped entry fails closed. */
   pendingPublishApprovals: PublishApproval[];
-  /** The box sandbox's developer flag, mirrored from the host-owned
-   *  `boxes_enabled`. Everything box-related on the Sandbox page renders only
-   *  while this is on. */
+  /** "Use isolated VMs when available", mirrored from the host-owned
+   *  `boxes_enabled` (absent is `BOXES_DEFAULT_ENABLED`). Off, the Sandbox
+   *  page's box controls fold away, nothing box-related is probed or shown,
+   *  and the automatic engine choice lands on the macOS sandbox. */
   boxesEnabled: boolean;
   /** The box knobs, mirrored from the host-owned `box_*` settings. Empty
    *  string = unset (the engine's defaults apply). */
@@ -200,12 +202,16 @@ export interface SandboxSlice {
   /** Launch Docker Desktop (daemon-down error action); surfaces failures via
    *  `lastError`. */
   startDockerDesktop: () => Promise<void>;
-  /** Flip the box developer flag (host-owned `boxes_enabled`, written through
-   *  `set_box_setting`). On the host, turning it on is the whole setup: the
-   *  image download, the tools disks, and `box` as the engine for new agents;
-   *  those arrive back as events and `settings:changed`. Reverts the toggle
-   *  on refusal (an Intel Mac, no runtime). */
+  /** Flip the isolated-VM switch (host-owned `boxes_enabled`, written through
+   *  `set_box_setting`). On the host, turning it on starts the image download
+   *  and the tools disks after it; those arrive back as events. Reverts the
+   *  toggle on refusal (an Intel Mac, no runtime). */
   setBoxesEnabled: (enabled: boolean) => Promise<void>;
+  /** Read where the host's box setup stands — the runtime probe (with the
+   *  tools disks) and the image — once per environment; `box:image` and
+   *  `box:tools` carry every change after. What the title bar's popover,
+   *  the ready toast and the onboarding note read. */
+  loadBoxSetup: () => Promise<void>;
   /** Write one box knob; blank restores the default. Resolves to the host's
    *  validation message, or `null` when it stuck — the field shows it inline.
    *  The stored value arrives back as `settings:changed`, so no optimistic
@@ -311,7 +317,7 @@ export const createSandboxSlice: SliceCreator<SandboxSlice> = (set, get) => ({
   podmanCpus: "",
   publishConfirmation: false,
   pendingPublishApprovals: [],
-  boxesEnabled: false,
+  boxesEnabled: BOXES_DEFAULT_ENABLED,
   boxMemoryMib: "",
   boxCpus: "",
   boxImageUrl: "",
@@ -479,7 +485,10 @@ export const createSandboxSlice: SliceCreator<SandboxSlice> = (set, get) => ({
   },
   refreshBoxProbe: async () => {
     try {
-      const probe = await api.boxRuntimeProbe();
+      // Bound to the environment that was asked: an answer that lands after
+      // a switch is another host's and is dropped, as every host read is.
+      const probe = await forActiveEnvironment(() => api.boxRuntimeProbe());
+      if (!probe) return;
       // The probe is also the one read of the tools disks; `box:tools` carries
       // every change after.
       set({
@@ -493,10 +502,20 @@ export const createSandboxSlice: SliceCreator<SandboxSlice> = (set, get) => ({
   },
   refreshBoxImage: async () => {
     try {
-      set({ boxImage: await api.boxImageStatus() });
+      const image = await forActiveEnvironment(() => api.boxImageStatus());
+      if (image) set({ boxImage: image });
     } catch {
       // Same posture as the probe.
     }
+  },
+  loadBoxSetup: async () => {
+    // The setup is the active host's, wholesale: what the last one said is
+    // cleared before this one answers, so a switch never shows host A's
+    // download on host B. Nothing reads it while the switch is off, and the
+    // probe runs processes, so a host with boxes off is never asked.
+    set({ boxProbe: null, boxImage: null, boxTools: {} });
+    if (!get().boxesEnabled) return;
+    await Promise.all([get().refreshBoxProbe(), get().refreshBoxImage()]);
   },
   installBoxImage: async () => {
     try {

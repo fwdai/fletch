@@ -25,10 +25,13 @@ pub fn box_image_status() -> engine::BoxImageStatus {
 }
 
 /// Start installing the pinned image in the background, then the tools
-/// disks; a no-op while one runs, so it doubles as Retry.
+/// disks; a no-op while one runs, so it doubles as Retry. Async: the refusal
+/// for a machine that cannot boot a box runs the runtime probe's processes.
 #[tauri::command]
-pub fn box_image_install() -> Result<()> {
-    engine::box_image_install_impl()
+pub async fn box_image_install() -> Result<()> {
+    tauri::async_runtime::spawn_blocking(engine::box_image_install_impl)
+        .await
+        .map_err(|e| crate::error::Error::Other(e.to_string()))?
 }
 
 #[tauri::command]

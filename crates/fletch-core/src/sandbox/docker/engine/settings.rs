@@ -18,7 +18,7 @@ pub const CPUS_SETTING: &str = "docker_cpus";
 // [`crate::sandbox::container::run_args`] so both runtimes cap the same way.
 
 /// Launch knobs read from the `settings` table, mirrored in-process (the spawn
-/// path has no DB handle — same pattern as `sandbox::set_selected_engine_kind`).
+/// path has no DB handle — same pattern as `sandbox::set_selected_engine`).
 /// Seeded at startup in `lib.rs setup` and kept in sync by the settings
 /// set-commands.
 #[derive(Clone, Default)]

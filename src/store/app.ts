@@ -89,6 +89,10 @@ export const createAppSlice: SliceCreator<AppSlice> = (set, get) => ({
     // it gates the issue inbox and the composer's issue picker.
     void get().refreshGithub();
     void get().refreshLinear();
+    // Where the isolated VM stands (downloading, ready, unavailable), so the
+    // title bar and the ready toast can say so from the first workspace on.
+    // A no-op while the switch is off (the settings above are hydrated).
+    void get().loadBoxSetup();
 
     // The desktop-pinned streams first, since nothing ever takes them down;
     // the engine ones are re-made against the new transport on every

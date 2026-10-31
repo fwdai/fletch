@@ -253,8 +253,21 @@ async fn warm_codegraph_index(repos: Vec<(String, PathBuf)>) {
 /// the choice is actionable on this host. Existing agents keep the engine
 /// stamped on their record at creation.
 pub async fn set_sandbox_engine_impl(ctx: &EngineCtx, engine: &str) -> Result<()> {
-    let kind = sandbox::EngineKind::from_setting(engine)
+    let choice = sandbox::parse_engine_setting(engine)
         .ok_or_else(|| Error::Other(format!("unknown sandbox engine: {engine}")))?;
+    let Some(kind) = choice else {
+        // Automatic needs no probe: it resolves per spawn to what can run —
+        // a box or seatbelt, neither of which a host off macOS has.
+        if !cfg!(target_os = "macos") {
+            return Err(Error::Other(
+                "automatic needs macOS (a box or the macOS sandbox); pick Docker or Podman on this host"
+                    .into(),
+            ));
+        }
+        store(ctx, sandbox::ENGINE_SETTING, sandbox::ENGINE_AUTO)?;
+        sandbox::set_selected_engine(None);
+        return Ok(());
+    };
     let blocking = |e: tokio::task::JoinError| Error::Other(e.to_string());
     if kind == sandbox::EngineKind::Podman {
         // A stored engine is stamped onto every new agent, so one whose runtime
@@ -289,15 +302,13 @@ pub async fn set_sandbox_engine_impl(ctx: &EngineCtx, engine: &str) -> Result<()
         }
     }
     if kind == sandbox::EngineKind::Box {
-        // The developer flag first, then the runtime: the same refusal a
-        // launch would meet (`boxes::availability`), so a stored `box` always
-        // names an engine that can boot one. Not the image: a launch waits for
-        // its download (`boxes::setup`), so `box` is selectable as soon as the
-        // flag is on.
+        // The switch first, then the runtime: the same refusal a launch would
+        // meet (`boxes::availability`), so a stored `box` always names an
+        // engine that can boot one. Not the image: a launch waits for its
+        // download (`boxes::setup`), so `box` is selectable as soon as the
+        // switch is on.
         if !sandbox::boxes::settings::enabled() {
-            return Err(Error::Other(
-                "box sandbox is off; enable it in Developer settings".into(),
-            ));
+            return Err(Error::Other(sandbox::boxes::SWITCHED_OFF.into()));
         }
         tokio::task::spawn_blocking(sandbox::boxes::availability)
             .await
@@ -324,7 +335,7 @@ pub async fn set_sandbox_engine_impl(ctx: &EngineCtx, engine: &str) -> Result<()
         }
     }
     store(ctx, sandbox::ENGINE_SETTING, kind.as_setting())?;
-    sandbox::set_selected_engine_kind(kind);
+    sandbox::set_selected_engine(Some(kind));
     Ok(())
 }
 
@@ -582,16 +593,53 @@ mod tests {
         assert!(err.to_string().contains("firecracker"));
     }
 
-    /// `box` is refused while the developer flag is off, before any probe, and
-    /// nothing is stored. (The flag is process-wide; the test leaves it off.)
+    /// `box` is refused while the switch is off, before any probe, and
+    /// nothing is stored. (The switch is process-wide: put back on after.)
     #[tokio::test]
-    async fn the_box_engine_is_refused_while_the_flag_is_off() {
+    async fn the_box_engine_is_refused_while_the_switch_is_off() {
         let _serial = sandbox::boxes::settings::TEST_LOCK.lock().await;
         let (ctx, sink, _dir) = test_ctx();
-        sandbox::boxes::settings::set(sandbox::boxes::settings::BoxSettings::default());
+        sandbox::boxes::settings::set(sandbox::boxes::settings::BoxSettings {
+            enabled: false,
+            ..Default::default()
+        });
         let err = set_sandbox_engine_impl(&ctx, "box").await.unwrap_err();
-        assert!(err.to_string().contains("Developer settings"), "{err}");
+        sandbox::boxes::settings::set(sandbox::boxes::settings::BoxSettings::default());
+        assert!(err.to_string().contains("Settings › Sandbox"), "{err}");
         assert!(get_settings_impl(&ctx).unwrap().is_empty());
         assert!(sink.events().is_empty());
+    }
+
+    /// Automatic is stored as `auto` and mirrored as no pinned engine, with
+    /// no probe in the way; off macOS, where neither engine it picks between
+    /// exists, it is refused.
+    #[tokio::test]
+    async fn automatic_is_stored_and_mirrored_as_no_pinned_engine() {
+        let _serial = sandbox::boxes::settings::TEST_LOCK.lock().await;
+        let (ctx, sink, _dir) = test_ctx();
+        sandbox::set_selected_engine(Some(sandbox::EngineKind::SandboxExec));
+        if !cfg!(target_os = "macos") {
+            assert!(set_sandbox_engine_impl(&ctx, "auto").await.is_err());
+            assert!(sink.events().is_empty());
+            sandbox::set_selected_engine(None);
+            return;
+        }
+        set_sandbox_engine_impl(&ctx, "auto").await.unwrap();
+        assert_eq!(sandbox::selected_engine(), None);
+        assert_eq!(sandbox::selected_engine_setting(), "auto");
+        assert_eq!(
+            get_settings_impl(&ctx)
+                .unwrap()
+                .get("sandbox_engine")
+                .unwrap(),
+            "auto"
+        );
+        assert_eq!(
+            sink.events(),
+            vec![(
+                SETTINGS_CHANGED.to_string(),
+                json!({ "key": "sandbox_engine", "value": "auto" })
+            )]
+        );
     }
 }

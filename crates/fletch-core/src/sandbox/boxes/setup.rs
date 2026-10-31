@@ -1,13 +1,17 @@
 //! Getting a host ready to boot boxes, and waiting for it: the pinned image's
 //! install (one at a time, in the background, `box:image` events) and the
-//! tools disks built after it. Turning the flag on starts the install
-//! (`commands::set_box_setting_impl`); a launch or provision that arrives
-//! before it is done waits here instead of failing
-//! (`BoxRegistry::ensure_running`), reporting what it waits on as the box's
-//! `Preparing` phase.
+//! tools disks built after it. The install starts on its own once the host
+//! can boot a box ([`autostart`]: at boot, and when onboarding finishes) and
+//! when the switch is turned on (`commands::set_box_setting_impl`); a failed
+//! download tries again after a growing delay. A launch or provision of a
+//! box-stamped agent that arrives before it is done waits here instead of
+//! failing (`BoxRegistry::ensure_running`), reporting what it waits on as
+//! the box's `Preparing` phase — only ever for an engine the user or the
+//! project pinned, since the automatic choice stamps `box` only once nothing
+//! is left to wait for (`boxes::ready_for`).
 
 use std::ops::ControlFlow;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -28,6 +32,18 @@ pub const TOOLS_WAIT: Duration = Duration::from_secs(10 * 60);
 /// How long a tools disk build waits for codegraph's guest bundle (a 55 MB
 /// download, seconds as a rule) before building the disk without it.
 pub const CODEGRAPH_BUNDLE_WAIT: Duration = Duration::from_secs(3 * 60);
+/// The waits before a failed download is tried again, by consecutive
+/// failure; the last one repeats. Quiet by design: offline for the evening
+/// costs nothing but a few retries, and the user is never asked.
+const RETRY_DELAYS: [Duration; 4] = [
+    Duration::from_secs(60),
+    Duration::from_secs(5 * 60),
+    Duration::from_secs(15 * 60),
+    Duration::from_secs(60 * 60),
+];
+
+/// Consecutive download failures, for the retry delay; reset by a success.
+static FAILURES: AtomicUsize = AtomicUsize::new(0);
 
 /// How long a launch waits for a tools disk build to finish, the codegraph
 /// bundle it fetches first included when indexing is on.
@@ -104,9 +120,7 @@ pub fn image_status() -> BoxImageStatus {
 /// toggle, a layer change and a Retry can all call it blindly.
 pub fn start_install() -> Result<()> {
     if !settings::enabled() {
-        return Err(Error::Other(
-            "box sandbox is off; enable it in Developer settings".into(),
-        ));
+        return Err(Error::Other(super::SWITCHED_OFF.into()));
     }
     let pinned = super::pinned_image();
     let mut status = BoxImageStatus {
@@ -157,12 +171,14 @@ pub fn start_install() -> Result<()> {
         *lock_slot() = None;
         match result {
             Ok(image) => {
+                FAILURES.store(0, Ordering::Relaxed);
                 status.phase = "installed";
                 status.progress = None;
                 status.version = Some(image.version);
                 publish(&status);
                 prebuild_tools();
             }
+            // The user's own stop: no retry.
             Err(fletch_box::Error::Cancelled) => publish(&image_status()),
             Err(e) => {
                 tracing::warn!(error = %e, "box image install failed");
@@ -170,10 +186,37 @@ pub fn start_install() -> Result<()> {
                 status.progress = None;
                 status.error = Some(e.to_string());
                 publish(&status);
+                let failures = FAILURES.fetch_add(1, Ordering::Relaxed);
+                let delay = RETRY_DELAYS[failures.min(RETRY_DELAYS.len() - 1)];
+                // Off the worker: `autostart` stats files and may run the
+                // runtime probe's processes.
+                crate::host::spawn(async move {
+                    tokio::time::sleep(delay).await;
+                    let _ = tokio::task::spawn_blocking(autostart).await;
+                });
             }
         }
     });
     Ok(())
+}
+
+/// Start the image install on its own when it is wanted and nothing stands
+/// in the way: the switch on, a runtime that can boot a box, and no image
+/// for this build. A no-op everywhere else (and while an install runs), so
+/// boot, the end of onboarding and the retry timer all call it blindly. The
+/// download is the one thing boxes cost the user, and it is paid here in
+/// the background rather than asked for: the engine choice stays on
+/// seatbelt until the image and the tools disk are in, then moves to boxes.
+pub fn autostart() {
+    if !settings::enabled() || matches!(super::installed_image(), Ok(Some(_))) {
+        return;
+    }
+    if !super::runtime_usable() {
+        return;
+    }
+    if let Err(e) = start_install() {
+        tracing::info!(error = %e, "the box image install did not start");
+    }
 }
 
 pub fn cancel_install() -> Result<()> {
@@ -186,7 +229,7 @@ pub fn cancel_install() -> Result<()> {
     }
 }
 
-/// Everything a boot needs, now: the flag, the runtime and an installed
+/// Everything a boot needs, now: the switch, the runtime and an installed
 /// image, with no waiting.
 pub fn ready_now() -> Result<Ready> {
     let paths = super::availability()?;
@@ -285,9 +328,7 @@ pub fn prebuild_tools() {
 /// and builds the disks once it is in.
 pub fn retry_tools(provider: &str) -> Result<()> {
     if !settings::enabled() {
-        return Err(Error::Other(
-            "box sandbox is off; enable it in Developer settings".into(),
-        ));
+        return Err(Error::Other(super::SWITCHED_OFF.into()));
     }
     if !super::supports_provider(provider) {
         return Err(Error::Other(format!(

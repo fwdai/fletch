@@ -415,6 +415,12 @@ pub struct ProjectRef {
     /// Per-repo display label ("Frontend", "Gateway"); `None` falls back to
     /// the folder basename. Distinct from `name`, which labels the project.
     pub label: Option<String>,
+    /// The repository builds a macOS or iOS app
+    /// (`sandbox::placement::looks_native`), so the automatic engine choice
+    /// keeps its agents on this Mac. Decided here, by the host, once per
+    /// snapshot, so every surface that explains where a workspace runs reads
+    /// the same answer the spawn path acts on.
+    pub native_app: bool,
 }
 
 /// What the DB phase of an attach changed, so the command layer can undo it

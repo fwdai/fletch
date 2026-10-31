@@ -272,19 +272,23 @@ export function parseRoadmapBoardWidth(raw: string | undefined): number | null {
 
 // ---- Sandbox engine ------------------------------------------------------------
 
-/** Isolation engine new agents are stamped with. Mirrors the backend's
- *  `EngineKind::as_setting` spellings (`sandbox/engine.rs`), so both sides
- *  agree on the wire strings. */
-export type SandboxEngine = "sandbox-exec" | "docker" | "podman" | "box";
+/** The isolation engine choice for new agents: `auto` leaves it to the host
+ *  (a box when one can boot right now, the macOS sandbox otherwise), the
+ *  rest pin one. Mirrors the backend's `EngineKind::as_setting` spellings and
+ *  `sandbox::ENGINE_AUTO` (`sandbox/mod.rs`), so both sides agree on the wire
+ *  strings. */
+export type SandboxEngine = "auto" | "sandbox-exec" | "docker" | "podman" | "box";
 
-export const DEFAULT_SANDBOX_ENGINE: SandboxEngine = "sandbox-exec";
+export const DEFAULT_SANDBOX_ENGINE: SandboxEngine = "auto";
 
 /** Parse the `sandbox_engine` setting. The key is backend-owned (snake_case,
  *  written by the `set_sandbox_engine` Rust command — never via a frontend
  *  `setSetting`, same posture as `telemetry_enabled`). Unknown/missing values
- *  fall back to the seatbelt default, matching the backend's parser. */
+ *  are automatic, matching the backend's parser. */
 export function parseSandboxEngine(raw: string | undefined): SandboxEngine {
-  return raw === "docker" || raw === "podman" || raw === "box" ? raw : DEFAULT_SANDBOX_ENGINE;
+  return raw === "sandbox-exec" || raw === "docker" || raw === "podman" || raw === "box"
+    ? raw
+    : DEFAULT_SANDBOX_ENGINE;
 }
 
 /** Seconds a publish-approval prompt waits before denying — the backend's
@@ -328,6 +332,8 @@ export function sandboxEngineLabel(engine: SandboxEngine): string {
       return "Podman";
     case "box":
       return "Box";
+    case "auto":
+      return "Automatic";
     default:
       return "Seatbelt";
   }

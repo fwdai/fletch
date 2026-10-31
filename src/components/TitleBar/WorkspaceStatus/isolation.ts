@@ -1,5 +1,7 @@
 import type { BoxStateEvent } from "@/api";
 import type { IconName } from "@/components/Icon";
+import type { BoxSetup } from "@/components/SettingsScreen/Sandbox/boxSetup";
+import type { Placement } from "@/util/placement";
 
 /** How a workspace's agent is confined, as the title bar tells it apart. */
 export type IsolationKind = "box" | "container" | "seatbelt";
@@ -46,6 +48,36 @@ export function isolationOf(engine: string | null | undefined): Isolation {
   if (engine === "docker") return container("Docker");
   if (engine === "podman") return container("Podman");
   return SEATBELT;
+}
+
+/** One more line under a seatbelt workspace's hint: where the isolated VM
+ *  stands, for a host that could run one. The workspace itself stays where
+ *  it is — the line is about the next one — so it says so. `placement` is
+ *  the project's *effective* placement (`util/placement`): a project kept
+ *  on this Mac, by the user or by the host's native-app detection, is the
+ *  whole answer. Null when there is nothing worth adding: the switch off, a
+ *  machine that cannot boot a box, a setup that failed (Settings has that),
+ *  or no answer yet. */
+export function seatbeltNote(
+  vmUsable: boolean,
+  setup: BoxSetup,
+  placement: { placement: Placement; detected: boolean },
+): string | null {
+  if (placement.detected) {
+    return "This project builds a macOS or iOS app, so its workspaces run on your Mac (Project Settings › Sandbox).";
+  }
+  if (placement.placement === "host") {
+    return "This project's workspaces run on your Mac (Project Settings › Sandbox).";
+  }
+  if (!vmUsable) return null;
+  switch (setup.state) {
+    case "ready":
+      return "Isolated VMs are ready. New workspaces run in one.";
+    case "busy":
+      return `An isolated VM is being prepared — ${setup.text.replace(/…$/, "").toLowerCase()}. New workspaces will run in it.`;
+    default:
+      return null;
+  }
 }
 
 /** The box's phase as the title bar spells it. */

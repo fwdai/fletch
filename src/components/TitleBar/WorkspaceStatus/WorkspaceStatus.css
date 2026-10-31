@@ -439,6 +439,13 @@
   line-height: 1.45;
   color: var(--fg-2);
 }
+/* where the isolated VM stands, under a seatbelt workspace: about the next
+   workspace, not this one, so a step quieter than the hint */
+.ws-pop-iso-note {
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--fg-3);
+}
 
 /* the checkout's lanes — the Git panel's own rows (`LaneRow`), flush with the
    popover's padding rather than the panel's, and never pickable here */

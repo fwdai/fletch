@@ -35,6 +35,10 @@ const PROJECT_SETTING_KEYS: &[&str] = &[
     // (`sandbox::boxes::settings`); written through `box_egress_allow`, which
     // also updates the running proxies, but readable like any project key.
     crate::sandbox::boxes::settings::EGRESS_ALLOW_KEY,
+    // Where the project's agents run under the automatic engine choice:
+    // absent (automatic, with native apps on this Mac), `host` or `box`
+    // (`sandbox::placement`).
+    crate::sandbox::placement::KEY,
 ];
 
 /// The key family a client may write in full: `run.<row>` (the project's run
@@ -158,6 +162,7 @@ mod tests {
             "linear.team_name",
             "context.enabled",
             "context.extract",
+            "sandbox.placement",
         ] {
             assert!(is_client_project_key(key), "{key} must be client-writable");
         }

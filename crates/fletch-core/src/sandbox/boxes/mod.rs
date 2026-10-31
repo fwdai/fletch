@@ -1,15 +1,21 @@
 //! The box sandbox engine: one libkrun micro-VM per agent, reached only over
-//! ssh on vsock and an egress proxy, behind the `boxes_enabled` developer flag.
-//! The guest holds the agent's checkout at the same absolute paths the host
-//! uses, so host code that touches the tree is routed into the guest, never
-//! given a translated path. Nothing of the host's enters the guest except the
-//! env file written for each launch and the folders the user granted the
+//! ssh on vsock and an egress proxy. The standard engine wherever a box can
+//! boot: with the engine choice on automatic (`sandbox::selected_engine` is
+//! `None`) a new agent is stamped `box` the moment the image and its
+//! provider's tools disk are in ([`engine_for_new_agent`]), and seatbelt
+//! until then — the image downloads itself in the background
+//! ([`setup::autostart`]) and no launch ever waits for it. The guest holds
+//! the agent's checkout at the same absolute paths the host uses, so host
+//! code that touches the tree is routed into the guest, never given a
+//! translated path. Nothing of the host's enters the guest except the env
+//! file written for each launch and the folders the user granted the
 //! workspace (`workspace::folder_grants`, mounted as virtio-fs shares at their
-//! own paths), and a step that cannot keep that promise fails closed. With the flag off nothing here is reachable:
-//! [`availability`] refuses first, and `engine_for(Box)` asks it.
+//! own paths), and a step that cannot keep that promise fails closed. With
+//! the `boxes_enabled` switch off nothing here is reachable: [`availability`]
+//! refuses first, and `engine_for(Box)` asks it.
 //!
 //! Layout:
-//! - [`settings`]: the flag and knobs, mirrored in-process.
+//! - [`settings`]: the switch and knobs, mirrored in-process.
 //! - [`registry`]: `BoxRegistry`, one entry per box-stamped agent: boot, stop
 //!   ladder, idle timer, relays, discard.
 //! - [`executor`]: the `RemoteExecutor` the path-routed seam (`crate::exec`)
@@ -82,6 +88,7 @@ use crate::sandbox::engine::{
     AgentLaunchCtx, EngineKind, EnvDelivery, KillHandle, KillPlan, LaunchPlan, SandboxEngine,
     TurnPrep,
 };
+use crate::sandbox::placement::Placement;
 
 pub use registry::{BoxIdentity, BoxPhase, BoxRegistry, RunningBox, StopReason};
 
@@ -218,9 +225,7 @@ pub const RUNTIME_NOT_FOUND: &str = "the box runtime was not found: no fletch-vm
 /// refusing, so the engine is handed out while it is still on its way.
 pub fn availability() -> Result<RuntimePaths> {
     if !settings::enabled() {
-        return Err(Error::SandboxUnavailable(
-            "box sandbox is off; enable it in Developer settings".into(),
-        ));
+        return Err(Error::SandboxUnavailable(SWITCHED_OFF.into()));
     }
     let paths =
         runtime_paths().ok_or_else(|| Error::SandboxUnavailable(RUNTIME_NOT_FOUND.into()))?;
@@ -232,6 +237,43 @@ pub fn availability() -> Result<RuntimePaths> {
         )));
     }
     Ok(paths)
+}
+
+/// The sentence for the switch being off.
+pub const SWITCHED_OFF: &str = "isolated VMs are off; turn them on in Settings › Sandbox";
+
+/// Whether this machine and runtime can boot a box, probed once per process:
+/// the helper, its entitlement and dylibs, the architecture and the
+/// hypervisor do not change while Fletch runs, and the probe spawns
+/// `codesign` and `sysctl`, which every spawn's engine choice must not pay.
+/// A passing probe is remembered, and so is one the machine itself fails
+/// (Intel, no hypervisor); a runtime that is merely missing is asked again,
+/// since a dev checkout can stage it while the app runs.
+pub fn runtime_usable() -> bool {
+    static USABLE: OnceLock<bool> = OnceLock::new();
+    if let Some(usable) = USABLE.get() {
+        return *usable;
+    }
+    let probe = probe();
+    let ok = probe.as_ref().is_some_and(|p| p.ok());
+    let settled = ok || probe.is_some_and(|p| !p.arch_ok || !p.hypervisor);
+    if settled {
+        let _ = USABLE.set(ok);
+    }
+    ok
+}
+
+/// Whether a new agent of `provider` could boot a box right now, without
+/// waiting on anything: the switch, the runtime, this build's image, and
+/// the provider's tools disk — the gate the automatic engine choice stands
+/// behind. Everything here is a flag read or a file stat once the runtime
+/// probe has passed.
+pub fn ready_for(provider: &str) -> bool {
+    settings::enabled()
+        && supports_provider(provider)
+        && runtime_usable()
+        && matches!(installed_image(), Ok(Some(_)))
+        && registry::built_tools_disk(provider).is_some()
 }
 
 /// This build's image with the enabled layers (`box_layers`), when all of
@@ -458,25 +500,40 @@ pub fn provider_refusal(provider: &str) -> Option<String> {
     })
 }
 
-/// The engine a new agent of `provider` is stamped with when `selected` is the
-/// host's choice: `Box` only for a provider boxes can launch, otherwise the
-/// engine the flag replaced ([`settings::fallback_engine`]: Docker stays
-/// Docker, a hand-picked `box` falls back to the default). While the pilot runs
-/// Claude Code alone, enabling it must not make every other provider
-/// unsendable or quietly weaken the isolation they had; their capsule badge
-/// shows the engine they got.
-pub fn engine_for_new_agent(selected: EngineKind, provider: &str) -> EngineKind {
+/// The engine a new agent of `provider` is stamped with, from the host's
+/// choice (`sandbox::selected_engine`, `None` for automatic) and the
+/// project's placement.
+///
+/// A pinned engine is what the user asked for: `box` for a provider boxes
+/// cannot launch falls back to seatbelt rather than making the provider
+/// unsendable, and a pinned `box` with no image yet waits for it at launch
+/// (`setup::ready`). Automatic never waits: the project's placement decides
+/// first — a project that runs on this Mac (a macOS or iOS app, or the
+/// user's say-so) is seatbelt — then a box when one can boot right now
+/// ([`ready_for`]) and seatbelt otherwise, so the first workspace of a fresh
+/// install starts at once and the ones after the download land in boxes.
+pub fn engine_for_new_agent(
+    selected: Option<EngineKind>,
+    provider: &str,
+    placement: Placement,
+) -> EngineKind {
     match selected {
-        EngineKind::Box if !supports_provider(provider) => {
-            let fallback = settings::fallback_engine();
+        Some(EngineKind::Box) if !supports_provider(provider) => {
             tracing::info!(
                 provider,
-                engine = fallback.as_setting(),
-                "box engine does not run this provider yet; using the previous engine"
+                "box engine does not run this provider yet; using seatbelt"
             );
-            fallback
+            EngineKind::SandboxExec
         }
-        kind => kind,
+        Some(kind) => kind,
+        None => match placement {
+            Placement::Host => EngineKind::SandboxExec,
+            Placement::Auto | Placement::Box if ready_for(provider) => EngineKind::Box,
+            // Pinned to boxes by the project but nothing to boot yet: the
+            // launch waits, as a pinned engine does.
+            Placement::Box if settings::enabled() && supports_provider(provider) => EngineKind::Box,
+            Placement::Auto | Placement::Box => EngineKind::SandboxExec,
+        },
     }
 }
 
