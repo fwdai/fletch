@@ -313,7 +313,14 @@ mod tests {
     fn only_an_explicit_false_disables() {
         assert!(!parse_enabled(Some("false")));
         assert!(!parse_enabled(Some(" false ")));
-        for raw in [None, Some(""), Some("true"), Some("0"), Some("FALSE"), Some("no")] {
+        for raw in [
+            None,
+            Some(""),
+            Some("true"),
+            Some("0"),
+            Some("FALSE"),
+            Some("no"),
+        ] {
             assert!(parse_enabled(raw), "{raw:?}");
         }
     }
