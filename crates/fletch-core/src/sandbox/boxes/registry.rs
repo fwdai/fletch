@@ -1832,11 +1832,11 @@ async fn boot(
 
     // The owner's sessions dir — where the provider's CLI writes its
     // transcripts in this guest — tailed into its mirror under the box dir
-    // when the provider's adapter has it tailed (`home::Transport`).
-    let provider_home = super::home::require(&identity.provider)?;
+    // when the provider's adapter has it tailed (`provider::Transport`).
+    let provider_home = crate::sandbox::provider::require(&identity.provider)?;
     let sessions = provider_home.sessions_dir(&identity.home, &identity.writable_root);
     let mirror = dir.join(provider_home.mirror_dirname());
-    let tail = (provider_home.transport() == super::home::Transport::Tail)
+    let tail = (provider_home.transport() == crate::sandbox::provider::Transport::Tail)
         .then_some((sessions.as_path(), mirror.as_path()));
     let relays = relay::Relays::start(channel.clone(), &dir, &identity.rpc_dir, tail);
     Ok(RunningBox {

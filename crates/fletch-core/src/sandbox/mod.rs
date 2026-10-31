@@ -7,6 +7,7 @@ pub mod guarantees;
 pub mod placement;
 pub mod podman;
 pub mod policy;
+pub mod provider;
 pub mod provision;
 mod seatbelt;
 pub mod toolchain_cache;
@@ -234,7 +235,7 @@ pub(crate) fn create_session_file(
 ) -> Result<Option<PathBuf>> {
     match engine {
         EngineKind::Box => {
-            let home = boxes::home::require(provider)?;
+            let home = self::provider::require(provider)?;
             boxes::home::create_session_file(home, agent_id, cwd, rel, lines).map(Some)
         }
         EngineKind::SandboxExec | EngineKind::Docker | EngineKind::Podman => Ok(None),
@@ -252,36 +253,21 @@ pub fn stamped_engine(record: &AgentRecord) -> EngineKind {
         .unwrap_or(EngineKind::SandboxExec)
 }
 
-/// Whether `provider` can launch under `engine`. The container engines run
-/// those with a wired-up container image + config-mount + auth (see
-/// [`docker::DockerProvider`]) — claude, codex, opencode, pi, and cursor so
-/// far. antigravity stays gated: its CLI has no non-interactive credential
-/// path (browser-OAuth only, tokens in the host keychain, no API-key env
-/// fallback), so a container can't authenticate. Checked before every spawn —
-/// fresh spawns and resume/view-switch — so a docker-stamped record can never
-/// launch an unsupported provider. Consults the capability lookup rather than
-/// string-matching a single provider id.
+/// Whether `provider` can launch under `engine`: the one support gate,
+/// [`provider::supports`], as the spawn path's error. Checked before every
+/// spawn — fresh spawns and resume/view-switch — so a record stamped with an
+/// engine can never launch a provider that engine cannot run.
 pub fn ensure_supports_provider(engine: EngineKind, provider: &str) -> Result<()> {
-    match engine {
-        EngineKind::Docker | EngineKind::Podman => {
-            if docker::DockerProvider::from_id(provider).is_none() {
-                let label = crate::agent::per_turn_descriptor(provider)
-                    .map(|d| d.label())
-                    .unwrap_or(provider);
-                return Err(Error::Other(format!(
-                    "{label} isn't available in container sandboxes yet"
-                )));
-            }
-            Ok(())
-        }
-        // Its own gate: a provider needs a tools-disk script and a guest-home
-        // adapter (`boxes::supports_provider`, `boxes::home`).
-        EngineKind::Box => match boxes::provider_refusal(provider) {
-            Some(why) => Err(Error::Other(why)),
-            None => Ok(()),
-        },
-        EngineKind::SandboxExec => Ok(()),
-    }
+    self::provider::supports(engine, provider).map_err(Error::Other)
+}
+
+/// Whether the container engines run `provider`: it has a wired-up container
+/// image, config mount and auth (`container::ContainerProvider`) — claude,
+/// codex, opencode, pi and cursor so far. The container half of
+/// [`provider::supports`], kept here with the engine registry so the provider
+/// adapter names no container module.
+pub(crate) fn runs_in_container(provider: &str) -> bool {
+    container::ContainerProvider::from_id(provider).is_some()
 }
 
 /// The engine a new agent is stamped with. An agent adopting `adopted_tree`
@@ -769,6 +755,61 @@ mod tests {
             "engine knowledge outside sandbox/ must go through sandbox (docs/sandbox-foundation.md \
              rule 1).\nnew files naming engine internals: {added:?}\nno longer naming them, \
              strike from sandbox::tests::ALLOWED: {gone:?}"
+        );
+    }
+
+    /// The container engines' own modules: what retiring Docker and Podman
+    /// deletes (docs/sandbox-foundation.md, "Retiring the container engines").
+    const CONTAINER_MODULES: &[&str] =
+        &["sandbox/container/", "sandbox/docker/", "sandbox/podman/"];
+
+    /// Files outside [`CONTAINER_MODULES`] that name them today: the engine
+    /// registry and its availability re-exports (`sandbox/mod.rs`), the
+    /// isolation report's container rows (`sandbox/guarantees.rs`), the
+    /// container settings surface (`commands/settings.rs`) and boot
+    /// (`host/boot.rs`). This list may only shrink. Paths are relative to
+    /// this crate's `src/`.
+    const CONTAINER_NAMERS: &[&str] = &[
+        "commands/settings.rs",
+        "host/boot.rs",
+        "sandbox/guarantees.rs",
+        "sandbox/mod.rs",
+    ];
+
+    /// What marks a line as naming a container module: a path into one of
+    /// them, absolute (`sandbox::docker::…`) or relative (`docker::…`,
+    /// `super::container::…`).
+    const CONTAINER_TOKENS: &[&str] = &["container::", "docker::", "podman::"];
+
+    /// Nothing depends on the container engines but the files in
+    /// [`CONTAINER_NAMERS`], so retiring them is a deletion plus edits to
+    /// those files. Like [`engine_knowledge_stays_in_sandbox`], every
+    /// production line counts, comments included; a file that gains a
+    /// reference fails this, and so does one that loses its last.
+    #[test]
+    fn container_engines_are_a_leaf() {
+        let found: Vec<String> = crate::source_scan::production_sources()
+            .into_iter()
+            .filter(|(rel, text)| {
+                !CONTAINER_MODULES.iter().any(|m| rel.starts_with(m))
+                    && CONTAINER_TOKENS.iter().any(|t| text.contains(t))
+            })
+            .map(|(rel, _)| rel)
+            .collect();
+        let added: Vec<&String> = found
+            .iter()
+            .filter(|rel| !CONTAINER_NAMERS.contains(&rel.as_str()))
+            .collect();
+        let gone: Vec<&&str> = CONTAINER_NAMERS
+            .iter()
+            .filter(|rel| !found.iter().any(|f| f == *rel))
+            .collect();
+        assert!(
+            added.is_empty() && gone.is_empty(),
+            "the container engines must stay a leaf (docs/sandbox-foundation.md, \"Retiring the \
+             container engines\").\nnew files naming sandbox::container, docker or podman: \
+             {added:?}\nno longer naming them, strike from sandbox::tests::CONTAINER_NAMERS: \
+             {gone:?}"
         );
     }
 }

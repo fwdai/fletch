@@ -18,8 +18,8 @@
 //! object store. Because the clone lives at the normal
 //! host path, all host-side git (diff polling, RPC commit/push,
 //! archive/restore) operates on it unchanged. For Docker the borrowed object
-//! store is mounted read-only at its identical host path (see
-//! `sandbox::docker::engine`); under seatbelt no mount is needed (same
+//! store is mounted read-only at its identical host path (see the docker
+//! engine); under seatbelt no mount is needed (same
 //! filesystem, reads open, writes blocked outside the workspace by policy).
 //! The source object store must therefore remain present for the clone's
 //! lifetime — Fletch owns the source repo lifecycle, so this holds.

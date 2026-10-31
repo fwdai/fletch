@@ -498,23 +498,29 @@ to `~/.fletch/workspaces/`; a one-time migration handles existing installs
 The code is canonical. When this document and the code disagree, the code wins —
 and this document should be corrected.
 
-- `src-tauri/src/sandbox/seatbelt.rs` — the macOS `sandbox-exec` profile: the
+- `crates/fletch-core/src/sandbox/seatbelt.rs` — the macOS `sandbox-exec` profile: the
   deny-writes-then-re-allow model, the writable set, and the app-data deny.
-- `src-tauri/src/sandbox/docker/` — the Docker engine: per-agent
+- `crates/fletch-core/src/sandbox/docker/` — the Docker engine: per-agent
   `docker run --rm --init`, the identical-host-path mounts, the read-only
   borrowed object store, and the invariants that keep the source `.git` and your
   credentials out of the container.
-- `src-tauri/src/sandbox/guarantees.rs` — the claim/coverage matrix: what each
+- `crates/fletch-core/src/sandbox/boxes/` — the box engine: the micro-VM per
+  agent, the checkout inside the guest, and the guest-home mechanism
+  (`home.rs`) that seeds a provider's home and keeps its credential files in
+  step.
+- `crates/fletch-core/src/sandbox/provider/` — provider knowledge shared by
+  every engine: what each CLI keeps outside the checkout, how its credential
+  is resolved on the host for a launch (`auth.rs`: the claude auth chain, the
+  stored setup-token), and which engines can run it (`supports`).
+- `crates/fletch-core/src/sandbox/guarantees.rs` — the claim/coverage matrix: what each
   engine actually guarantees, and the stated reason wherever coverage is less
   than complete. Authoritative for per-engine coverage.
-- `src-tauri/src/sandbox/policy.rs` — the engine-independent write policy and its
+- `crates/fletch-core/src/sandbox/policy.rs` — the engine-independent write policy and its
   invariants, including invariant 3 (git-executable config is never
   agent-writable).
-- `src-tauri/src/git/hardening.rs` — the overrides every host-side git invocation
+- `crates/fletch-core/src/git/hardening.rs` — the overrides every host-side git invocation
   carries, applied at git's single spawn seam.
-- `src-tauri/src/sandbox/provision.rs` — how a workspace comes into existence:
+- `crates/fletch-core/src/sandbox/provision.rs` — how a workspace comes into existence:
   the two clone strategies, origin rewrite, hook install, and identity seeding.
-- `src-tauri/src/rpc/git.rs` — the host-side broker for `git_push`, `open_pr`,
+- `crates/fletch-core/src/rpc/git/` — the host-side broker for `git_push`, `open_pr`,
   and `git_fetch`, including the (currently unprompted) publication ops.
-</content>
-</invoke>

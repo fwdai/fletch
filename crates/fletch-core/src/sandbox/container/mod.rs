@@ -6,7 +6,6 @@
 //! those invocations carry out lives here as pure data and pure functions, so
 //! both runtimes reuse it verbatim and no policy change can land on only one.
 
-pub mod auth;
 pub(crate) mod config_dir;
 pub(crate) mod freshness;
 pub(crate) mod image_gc;

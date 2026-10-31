@@ -37,9 +37,10 @@
 //!
 //! **The engine names no provider.** What a CLI keeps outside the checkout —
 //! its config, its login, its transcripts — and how each reaches or leaves
-//! the guest is one adapter per provider behind [`home::ProviderHome`]; the
-//! engine seeds the guest home, delivers the credential and mirrors the
-//! sessions through that one interface.
+//! the guest is one adapter per provider behind
+//! [`ProviderHome`](crate::sandbox::provider::ProviderHome) (`sandbox::provider`,
+//! shared with every engine); the engine seeds the guest home, delivers the
+//! credential and mirrors the sessions through that one interface ([`home`]).
 //!
 //! **An agent runs where the tree it works in lives.** An agent that adopts
 //! an existing checkout instead of provisioning one (the local reviewer, which
@@ -95,6 +96,7 @@ use crate::sandbox::engine::{
     TurnPrep,
 };
 use crate::sandbox::placement::Placement;
+use crate::sandbox::provider;
 
 pub use registry::{BoxIdentity, BoxPhase, BoxRegistry, RunningBox, StopReason};
 
@@ -131,7 +133,7 @@ pub(crate) fn box_dir_for_root(writable_root: &Path) -> Option<PathBuf> {
 /// `Box`, which the claude session locators walk). Codex rollouts are
 /// located through [`home::mirror_for_agent`] instead.
 pub(crate) fn transcript_dir_for_root(writable_root: &Path) -> Option<PathBuf> {
-    home::mirror_for_root(&home::claude::Claude, writable_root)
+    home::mirror_for_root(&provider::claude::Claude, writable_root)
 }
 
 /// The box whose writable root holds `path`, when a registered one does: the
@@ -461,11 +463,10 @@ fn credential_step(
     })
 }
 
-/// Which providers run in a box: the ones with a guest-home adapter
-/// ([`home::ProviderHome`]: claude, codex, cursor, opencode and pi) and a
-/// tools-disk script.
+/// Which providers run in a box: the box half of the support gate
+/// ([`provider::supports`]: a provider adapter and a tools-disk script).
 pub fn supports_provider(provider: &str) -> bool {
-    home::supported(provider) && fletch_box::tools::install_script(provider).is_some()
+    provider::supports(EngineKind::Box, provider).is_ok()
 }
 
 /// The codegraph launcher's path in `agent_id`'s guest, when the tools disk
@@ -494,14 +495,6 @@ pub fn running_for_path(path: &Path) -> bool {
 pub fn asleep_for_path(path: &Path) -> bool {
     box_holding(path)
         .is_some_and(|identity| BoxRegistry::global().running(&identity.agent_id).is_none())
-}
-
-/// Why `provider` cannot launch in a box, for the spawn gate.
-pub fn provider_refusal(provider: &str) -> Option<String> {
-    (!supports_provider(provider)).then(|| {
-        let label = crate::agent::provider_bin_label(provider).map_or(provider, |(_, l)| l);
-        format!("{label} isn't available in box sandboxes yet")
-    })
 }
 
 /// The engine a new agent of `provider` is stamped with, from the host's
@@ -570,10 +563,8 @@ impl SandboxEngine for BoxEngine {
     /// tenant's own env file, mailbox relay and launch attached to the host's
     /// idle timer.
     fn launch_agent(&self, ctx: &AgentLaunchCtx, agent_bin: &str) -> Result<LaunchPlan> {
-        if let Some(why) = provider_refusal(ctx.provider) {
-            return Err(Error::Other(why));
-        }
-        let provider_home = home::require(ctx.provider)?;
+        provider::supports(EngineKind::Box, ctx.provider).map_err(Error::Other)?;
+        let provider_home = provider::require(ctx.provider)?;
         if ctx.blackboard.is_some() {
             return Err(Error::Other(
                 "workflow step agents don't run in box sandboxes yet".into(),
@@ -662,7 +653,7 @@ impl SandboxEngine for BoxEngine {
             running.relay_mailbox(ctx.rpc_dir, ctx.agent_id);
             // Its sessions, tailed into its own mirror, as the owner's are
             // into the owner's (a pulled provider's are pulled per agent).
-            if provider_home.transport() == home::Transport::Tail {
+            if provider_home.transport() == provider::Transport::Tail {
                 if let Some(mirror) = home::mirror_for_agent(ctx.provider, ctx.agent_id) {
                     let sessions = provider_home.sessions_dir(ctx.home, ctx.writable_root);
                     running.relay_tail(&sessions, &mirror);
@@ -724,7 +715,7 @@ impl SandboxEngine for BoxEngine {
         // provider's adapter spells it: in the env file, and/or files kept
         // in step between host and guest for as long as the launch lives
         // (`home::CredentialSync`).
-        let home::Credential { mut env, files } = provider_home.credential(ctx)?;
+        let provider::Credential { mut env, files } = provider_home.credential(ctx)?;
         env.push(("GIT_TERMINAL_PROMPT".to_string(), "0".to_string()));
         env.extend(cache_env);
         let credentials = Arc::new(Mutex::new(home::CredentialSync::new(files)));

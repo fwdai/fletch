@@ -15,7 +15,7 @@
 //! in this file.
 //!
 //! The layouts are the ones the container launch path already depends on (see
-//! [`crate::sandbox::container::launch_auth`]), so the two can't drift. Where a
+//! [`crate::sandbox::provider::auth`]), so the two can't drift. Where a
 //! layout isn't knowable from a cheap check we return [`AuthStatus::Unknown`]
 //! rather than guess: a wrong "Not signed in" sends the user chasing a login
 //! they already have.
@@ -93,15 +93,15 @@ pub(crate) fn probe_default(id: &'static str) -> ProviderAuthProbe {
 /// account read as signed in at once, when it only ever authenticates the
 /// default.
 pub(crate) fn probe_dir(id: &str, dir: &Path) -> ProviderAuthProbe {
-    use crate::sandbox::container::auth as container_auth;
+    use crate::sandbox::provider::auth as provider_auth;
     match id {
         "claude" if login_revoked(Some(dir)) => revoked_entry(),
         "claude" => {
             let keychain = crate::keychain::item_present(
-                &container_auth::claude_keychain_service(Some(dir)),
+                &provider_auth::claude_keychain_service(Some(dir)),
                 None,
             );
-            let file = container_auth::credentials_file_usable(
+            let file = provider_auth::credentials_file_usable(
                 read_file(&dir.join(".credentials.json")).as_deref(),
             );
             detailed(
@@ -150,12 +150,12 @@ fn probe_one(id: &'static str) -> ProviderAuthProbe {
 /// `~/.claude/.credentials.json`, or an Anthropic key in the login shell). The
 /// container-only pasted setup token is excluded there, and the Keychain step is
 /// a presence check that never reads the credential — see
-/// [`crate::sandbox::container::auth::host_login_present`].
+/// [`crate::sandbox::provider::auth::host_login_present`].
 fn claude_probe() -> ProviderAuthProbe {
     if login_revoked(None) {
         return revoked_entry();
     }
-    if crate::sandbox::container::auth::host_login_present() {
+    if crate::sandbox::provider::auth::host_login_present() {
         entry_ok("claude")
     } else if crate::agent::accounts::claude_config_override().is_some() {
         // The probe follows the shell's relocation, so a login kept under the

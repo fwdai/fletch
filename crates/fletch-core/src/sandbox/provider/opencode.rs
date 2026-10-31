@@ -18,12 +18,12 @@
 
 use std::path::{Path, PathBuf};
 
+use super::auth::{multi_provider_auth_env, present_api_keys};
 use super::{
     copy_tree, login_shell_var, Credential, CredentialFile, FileOwner, GuestEntry, ProviderHome,
     Transport,
 };
 use crate::error::Result;
-use crate::sandbox::container::launch_auth::{multi_provider_auth_env, present_api_keys};
 use crate::sandbox::engine::AgentLaunchCtx;
 use crate::sandbox::policy;
 

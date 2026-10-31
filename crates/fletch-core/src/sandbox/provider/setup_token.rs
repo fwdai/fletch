@@ -328,7 +328,7 @@ pub fn awaiting_code(output: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sandbox::docker::auth::normalize_token;
+    use crate::sandbox::provider::auth::normalize_token;
 
     #[test]
     fn strip_ansi_removes_csi_osc_and_two_byte_escapes() {

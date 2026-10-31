@@ -14,7 +14,7 @@ use crate::sandbox::{transcript_root, EngineKind};
 /// Directory (under an agent's writable root) that the container sandboxes
 /// bind over the container's read-only `<config-dir>/projects`, so claude's
 /// session transcripts persist on a per-agent host dir instead of the shared,
-/// read-only `~/.claude` (see `sandbox::container`). Shared with the mount side
+/// read-only `~/.claude` (see the container launch). Shared with the mount side
 /// so the writer and this reader agree on one name; [`transcript_root`] is
 /// where an engine is mapped to it.
 pub(crate) const DOCKER_CLAUDE_PROJECTS_DIRNAME: &str = ".fletch-claude-projects";

@@ -115,8 +115,8 @@ use std::path::{Path, PathBuf};
 /// profile grants — the enumeration [`all_provider_state_dirs`] folds over.
 /// A superset of Docker's supported providers (Docker has no `gemini` image
 /// yet, but the seatbelt agent still runs the gemini CLI and must let it
-/// persist `~/.gemini`), so this list, not [`super::docker::DockerProvider`],
-/// is the authority for the seatbelt side.
+/// persist `~/.gemini`), so this list, not the container engines'
+/// `ContainerProvider`, is the authority for the seatbelt side.
 const STATE_DIR_PROVIDERS: &[&str] = &["claude", "codex", "cursor", "gemini", "pi", "opencode"];
 
 /// The one **file** under a claude config dir that stays writable when the dir
@@ -269,7 +269,7 @@ pub const APP_SUPPORT_EXEC_DIRS: &[&str] = &[
 /// its session store, auth, and config. Docker mounts exactly these read-write
 /// at their host paths; the seatbelt profile folds them in provider-agnostically
 /// via [`all_provider_state_dirs`]. An unrecognized provider yields an empty
-/// list — Docker already gates on a known [`super::docker::DockerProvider`], and
+/// list — Docker already gates on a known `ContainerProvider`, and
 /// the seatbelt side only ever passes ids from [`STATE_DIR_PROVIDERS`].
 ///
 /// Note the omissions this policy makes on purpose: claude's grant is NOT its

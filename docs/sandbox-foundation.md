@@ -52,8 +52,10 @@ engine enforces) and `docs/box.md` is the box runtime.
 5. **Provider knowledge is one adapter.** What a provider CLI keeps outside
    the checkout, how its credential reaches a launch, where its transcripts
    land, and which engines can run it are answered by `sandbox::provider`
-   (the `ProviderHome` adapter and the single `supports(engine, provider)`
-   gate). Provider modules under `agent/providers/` never name an engine;
+   (the `ProviderHome` adapter, one per provider; the credential resolution
+   every engine shares, `sandbox::provider::auth`; and the single
+   `supports(engine, provider)` gate). An engine applies the adapter's
+   answers (the box: `sandbox::boxes::home`) and names no provider. Provider modules under `agent/providers/` never name an engine;
    they ask `sandbox::transcript_roots` and `sandbox::create_session_file`.
    The engine-independent *host write policy* (`sandbox/policy.rs`) stays the
    authority for which host directories seatbelt may grant; it is security
@@ -94,20 +96,102 @@ A `no` carries its reason in the struct, which is what the UI shows.
 ## Retiring the container engines
 
 Docker and Podman are retired when the box covers their use. The retirement
-is a deletion only if, by then, nothing depends on `sandbox/container/`,
-`sandbox/docker/` and `sandbox/podman/` except the engine registry
-(`sandbox::engine_for`), the settings surface and the caps table. Three
-things are prepared ahead of it:
+is a deletion: nothing depends on `sandbox/container/`, `sandbox/docker/` and
+`sandbox/podman/` but the few files the guard test
+`sandbox::tests::container_engines_are_a_leaf` pins (`sandbox/mod.rs`,
+`sandbox/guarantees.rs`, `commands/settings.rs`, `host/boot.rs`). Provider
+knowledge the box shares with them, credential resolution and the claude
+setup-token capture included, lives under `sandbox::provider`. What the
+deletion touches:
 
-- The box's provider adapters depend on nothing in the container module; the
-  credential resolution they share lives under `sandbox::provider`.
-- The fate of records stamped `docker` or `podman` is decided: they fail
-  closed with a message naming the workspace, and a re-stamp to seatbelt or
-  box happens only on an explicit user action.
-- The headless host (`fletch-host` off macOS) boots on a container engine
-  today and the box runs on Apple silicon only. Retiring containers either
-  ends Linux host support or waits for a box runtime there. This is decided
-  before the deletion, not during it.
+**Rust (`crates/fletch-core/src/` unless named otherwise)**
+
+- [ ] Delete `sandbox/container/`, `sandbox/docker/`, `sandbox/podman/` and
+  their `mod` lines and re-exports in `sandbox/mod.rs` (`docker_availability`,
+  `DockerAvailability`, `podman_availability`, `podman_launch_blocker`,
+  `PodmanAvailability`).
+- [ ] Drop `EngineKind::Docker` and `EngineKind::Podman` (`sandbox/engine.rs`)
+  and every exhaustive match on them:
+  - `sandbox/engine.rs`: `ALL`, `as_setting`, `caps()` (the `Docker | Podman`
+    row), `from_setting`;
+  - `sandbox/mod.rs`: `engine_for`, `transcript_root`, `create_session_file`,
+    `provision_checkout`, `restore_checkout`, `before_launch`,
+    `setup_allowance`, `agent_bin`, `codegraph_bin`, `reap_agent_containers`
+    (and with it `runs_in_container`);
+  - `sandbox/provider/mod.rs`: the `Docker | Podman` arm of `supports`;
+  - `sandbox/guarantees.rs`: every `Docker` / `Podman` coverage row;
+  - `commands/settings.rs`: the `Docker` and `Podman` arms of
+    `set_sandbox_engine_impl` (and its "pick Docker or Podman on this host" copy);
+  - `host/boot.rs`: `headless_container_engine`.
+- [ ] Delete the `caps()` table's docker/podman column above.
+- [ ] `supervisor/disposition.rs` calls `sandbox::reap_agent_containers` at
+  archive and discard; the calls go with the function.
+- [ ] `transcripts::DOCKER_CLAUDE_PROJECTS_DIRNAME` (`.fletch-claude-projects`,
+  bound over the container's claude `projects` dir) stays for as long as
+  container-era workspaces are readable: `transcript_root` and the claude
+  session locators read old transcripts from it.
+- [ ] Settings keys: `docker_image`, `docker_memory`, `docker_cpus`,
+  `docker_version_refresh_guard` (`sandbox/docker/engine/settings.rs`),
+  `podman_image`, `podman_memory`, `podman_cpus`,
+  `podman_version_refresh_guard` (`sandbox/podman/settings.rs`). Drop them
+  from `HOST_SETTING_KEYS` and the `set_docker_launch_settings_impl` /
+  `set_podman_launch_settings_impl` setters in `commands/settings.rs`, and
+  from boot's seeding in `host/boot.rs` (`set_launch_settings`,
+  `init_version_refresh_guard`, `set_build_sink`, `sweep_orphans_at_startup`).
+  Stored rows are left in the database, unread.
+- [ ] `claude_container_token` (`sandbox::provider::auth::TOKEN_SETTING`) is
+  not a container key: the claude auth chain offers it to a box launch too.
+  Its fate goes with its Settings UI (`ContainerAuth.tsx` below).
+- [ ] The desktop commands in `src-tauri/src/lib.rs`: `probe_docker_engine`,
+  `probe_podman_engine`, `set_docker_launch_settings`,
+  `set_podman_launch_settings`, `start_docker_desktop`
+  (`src-tauri/src/commands/app.rs`), and the container-auth commands if the
+  setup-token UI goes.
+
+**Records stamped `docker` or `podman`**
+
+- [ ] `sandbox_engine` on an agent row keeps its stored value. Once the
+  variants are gone `EngineKind::from_setting` no longer recognises it and
+  `sandbox::stamped_engine` would fall back to seatbelt, a silent change of
+  engine. Instead the record fails closed: a spawn, resume or view switch
+  refuses with a message naming the workspace and the retired engine, and a
+  re-stamp to seatbelt or box happens only on an explicit user action.
+- [ ] The host's own `sandbox_engine` setting at `docker` or `podman` would
+  read as automatic (`parse_engine_setting` returns `None`; `host/boot.rs`
+  then selects automatic). It only picks the engine for new agents; existing
+  records are covered by the item above.
+
+**The headless host**
+
+- [ ] `host/boot.rs::headless_container_engine` is how `fletch-host` off
+  macOS picks an engine today, and the box runs on Apple silicon only.
+  Retiring containers either ends Linux host support or waits for a box
+  runtime there. This is decided before the deletion, not during it.
+
+**Frontend (`src/`)**
+
+- [ ] `components/SettingsScreen/Sandbox/ContainerAuth.tsx`,
+  `components/SettingsScreen/Sandbox/ContainerLaunchKnobs.tsx`, and the
+  container rows of `components/SettingsScreen/Sandbox/index.tsx` (the
+  Docker and Podman engine options, their probes and hints, the knobs).
+- [ ] `components/DockerBuildToast.tsx`.
+- [ ] `store/sandbox.ts`: `applyBuildEvent`, `containerBuilds`, the docker and
+  podman probes, `containerAuth`, `startDockerDesktop`, and the
+  `DockerBuildProgress` type (re-exported from `store/types.ts`; tests in
+  `store/buildEvents.test.ts`).
+- [ ] The `docker:build-progress` stream: `onDockerBuildProgress` in
+  `api/events.ts`, its listener in `store/eventListeners.ts`, the
+  `DockerBuildEvent` type in `api/types/sandbox.ts`; the probe, container-auth
+  and `startDockerDesktop` calls in `api/domains/sandbox.ts`.
+- [ ] The `dockerCrashKind` banner in `components/Workspace/index.tsx`.
+- [ ] `dockerSupported` / `isDockerSupported` in `data/providers.ts` and its
+  check in `components/Composer/availability.ts`.
+- [ ] `isContainerEngine`, and `docker` / `podman` in `SandboxEngine`, in
+  `storage/preferences.ts`; the Docker label in
+  `components/TitleBar/WorkspaceStatus/isolation.ts`.
+- [ ] The `set_docker_launch_settings` / `set_podman_launch_settings` ops in
+  `store/gates.ts`.
+- [ ] The `docker` variant of `components/ui/Badge.tsx`.
 
 ## Not done on purpose
 

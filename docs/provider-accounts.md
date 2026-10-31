@@ -311,7 +311,7 @@ Engine (`crates/fletch-core/src/`):
   denied; every profile denies reading `~/.codex/auth.json` and
   `<accounts root>/codex` (`deny_host_codex_logins`). Ignored kernel tests
   `seatbelt_enforces_account_dir_grants`, `seatbelt_hides_the_hosts_codex_logins`.
-- `sandbox/container/{launch.rs, auth.rs, launch_auth.rs, config_dir.rs}` —
+- `sandbox/container/{launch.rs, launch_auth.rs, config_dir.rs}`, `sandbox/provider/auth.rs` —
   `auth::resolve(oauth_token)`: the host token (`AuthSource::HostLogin`), then (default account only,
   since a managed launch always has a token) the stored setup-token and the
   shell's auth vars. A claude account dir is never mounted; the per-agent
@@ -597,7 +597,7 @@ Response: `five_hour {utilization, resets_at}`, `seven_day {…}`, optional
 `seven_day_opus`, `seven_day_sonnet`, `extra_usage`. **`utilization` here is a
 percent 0–100** (unlike the stream's 0–1) and `resets_at` is ISO 8601. The
 token is the `claudeAiOauth.accessToken` of the account's credential JSON: the
-Keychain item named by `container::auth::claude_keychain_service(Some(dir))`
+Keychain item named by `provider::auth::claude_keychain_service(Some(dir))`
 (default: `None`) read with `keychain_token(service)`, else
 `<dir>/.credentials.json`. Today `keychain_token` is launch-path-only and
 documented as such — PR 3 adds a second, explicitly user-initiated caller;

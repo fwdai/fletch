@@ -233,11 +233,11 @@ fn the_default_login_is_read_from_a_config_dir_the_login_shell_exports() {
     .unwrap();
     assert_eq!(
         store.service,
-        crate::sandbox::container::auth::claude_keychain_service(Some(&dir))
+        crate::sandbox::provider::auth::claude_keychain_service(Some(&dir))
     );
     assert_ne!(
         store.service,
-        crate::sandbox::container::auth::claude_keychain_service(None)
+        crate::sandbox::provider::auth::claude_keychain_service(None)
     );
     assert_eq!(store.file, dir.join(".credentials.json"));
 }

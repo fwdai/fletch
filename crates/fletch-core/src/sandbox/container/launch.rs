@@ -9,13 +9,14 @@ use std::path::{Path, PathBuf};
 use crate::error::{Error, Result};
 use crate::sandbox::engine::AgentLaunchCtx;
 use crate::sandbox::policy::{opencode_config_dir, opencode_data_dir};
+use crate::sandbox::provider::auth::{present_api_keys, resolve};
 
 use super::config_dir::{
     borrowed_object_stores, nondefault_claude_config_dir, xdg_base_is_nondefault,
 };
 use super::launch_auth::{
     apply_container_auth, prepare_codex_launch, prepare_cursor_launch, prepare_opencode_launch,
-    prepare_pi_launch, present_api_keys, NO_ACCOUNT_AUTH_MSG,
+    prepare_pi_launch, NO_ACCOUNT_AUTH_MSG,
 };
 use super::run_args::{prepare_config_mount_dir, MappedUser, ProviderMounts, CREDENTIALS_FILE};
 use super::ContainerProvider;
@@ -288,7 +289,7 @@ pub(crate) fn prepare(
             projects_src = Some(ps);
 
             auth_start = env.len();
-            apply_container_auth(&mut env, super::auth::resolve(ctx.oauth_token))?;
+            apply_container_auth(&mut env, resolve(ctx.oauth_token))?;
         }
         ContainerProvider::Codex => {
             // The host assembled the overlay and wrote its launch credential
