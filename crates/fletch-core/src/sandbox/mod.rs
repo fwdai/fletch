@@ -253,6 +253,18 @@ pub fn stamped_engine(record: &AgentRecord) -> EngineKind {
         .unwrap_or(EngineKind::SandboxExec)
 }
 
+/// The workspace type `record` was stamped with, as a spawn's override
+/// spells it: `Host` for the macOS sandbox, `Box` for a box, `None` for a
+/// container engine. A fork passes its parent's, so the child runs where the
+/// parent does.
+pub fn placement_of(record: &AgentRecord) -> Option<placement::Placement> {
+    match stamped_engine(record) {
+        EngineKind::SandboxExec => Some(placement::Placement::Host),
+        EngineKind::Box => Some(placement::Placement::Box),
+        EngineKind::Docker | EngineKind::Podman => None,
+    }
+}
+
 /// Whether `provider` can launch under `engine`: the one support gate,
 /// [`provider::supports`], as the spawn path's error. Checked before every
 /// spawn — fresh spawns and resume/view-switch — so a record stamped with an
@@ -359,20 +371,28 @@ pub fn workspace_types(
     provider: &str,
 ) -> Vec<WorkspaceTypeOption> {
     use placement::Placement;
-    let default = engine_for_spawn(None, placement_setting, repo, provider, None).ok();
     let box_reason = box_refusal(provider);
+    // What `engine_for_spawn` picks with no override. A box refused above is
+    // never ready, and a passing runtime is remembered, so the runtime is
+    // probed at most once for the whole answer.
+    let default = boxes::engine_for_new_agent_with(
+        selected_engine(),
+        provider,
+        placement::resolve(placement_setting, repo),
+        || box_reason.is_none() && boxes::ready_for(provider),
+    );
     vec![
         WorkspaceTypeOption {
             kind: Placement::Host.as_setting(),
             available: true,
             reason: None,
-            default: default == Some(EngineKind::SandboxExec),
+            default: default == EngineKind::SandboxExec,
         },
         WorkspaceTypeOption {
             kind: Placement::Box.as_setting(),
             available: box_reason.is_none(),
             reason: box_reason,
-            default: default == Some(EngineKind::Box),
+            default: default == EngineKind::Box,
         },
     ]
 }

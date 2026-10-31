@@ -5,7 +5,7 @@ import { Chip } from "@/components/ui/Chip";
 import { DropdownItem, DropdownMenu, DropdownSection } from "@/components/ui/Dropdown";
 import { Scrim } from "@/components/ui/Scrim";
 import { useAppStore } from "@/store";
-import { shownWorkspaceType, workspaceTypeLabel, workspaceTypeOverride } from "./workspaceType";
+import { shownWorkspaceType, workspaceTypeLabel, workspaceTypeVisible } from "./workspaceType";
 
 /** The composer's workspace type for a new agent draft. Existing sessions keep
  *  the engine stamped at their creation and get no control. */
@@ -13,10 +13,9 @@ export interface WorkspaceTypeControl {
   /** The repo the agent will be started in: the project's placement and its
    *  native-app detection are read against it. */
   repoPath: string;
-  /** The user's pick, kept only while it differs from the host's default. */
+  /** The user's explicit pick; `undefined` until they make one. */
   current?: WorkspaceKind;
-  /** Store the pick: `undefined` when it is the default (or no longer
-   *  offered), so the spawn carries nothing and the host decides. */
+  /** Store a pick, or `undefined` to leave it to the host again. */
   onPick: (kind: WorkspaceKind | undefined) => void;
 }
 
@@ -25,28 +24,36 @@ interface Props extends WorkspaceTypeControl {
   provider: string;
 }
 
-const icon = (kind: WorkspaceKind | null) =>
-  kind === "box" ? "cube" : kind === "host" ? "folderLock" : "settings";
+const icon = (kind: WorkspaceKind) => (kind === "box" ? "cube" : "folderLock");
+
+/** What the host answered: the options, or that it could not answer. */
+type Answer =
+  | { kind: "loading" }
+  | { kind: "failed" }
+  | { kind: "ok"; options: WorkspaceTypeOption[] };
 
 /** Footer chip and menu for where a new agent runs. The options, each one's
  *  availability and reason, and the default are the host's
  *  (`available_workspace_types`); refetched when the repo, the provider or
  *  the boxes switch changes, and on every open, since an image finishing its
- *  download moves the default. Draws nothing until the host has answered. */
+ *  download moves the default. Draws nothing until the host has answered, nor
+ *  when no option is the default (a container engine pinned in Settings);
+ *  a pick made earlier is dropped then, so the spawn never carries a choice
+ *  the user cannot see. */
 export function WorkspaceTypePicker({ repoPath, provider, current, onPick }: Props) {
   const [open, setOpen] = useState(false);
-  const [options, setOptions] = useState<WorkspaceTypeOption[] | null>(null);
+  const [answer, setAnswer] = useState<Answer>({ kind: "loading" });
   const boxesEnabled = useAppStore((s) => s.boxesEnabled);
 
   const load = useCallback(() => {
     let alive = true;
     api
       .availableWorkspaceTypes(repoPath, provider)
-      .then((list) => {
-        if (alive) setOptions(list);
+      .then((options) => {
+        if (alive) setAnswer({ kind: "ok", options });
       })
       .catch(() => {
-        if (alive) setOptions(null);
+        if (alive) setAnswer({ kind: "failed" });
       });
     return () => {
       alive = false;
@@ -57,28 +64,29 @@ export function WorkspaceTypePicker({ repoPath, provider, current, onPick }: Pro
   // biome-ignore lint/correctness/useExhaustiveDependencies: refetch trigger
   useEffect(() => load(), [load, boxesEnabled]);
 
-  // A pick the host no longer offers, or that became the default, is dropped
-  // so the spawn never carries a stale choice.
+  const options = answer.kind === "ok" ? answer.options : null;
+  const hidden = answer.kind === "failed" || (options !== null && !workspaceTypeVisible(options));
   useEffect(() => {
-    if (!options) return;
-    const next = workspaceTypeOverride(options, current);
-    if (next !== current) onPick(next);
-  }, [options, current, onPick]);
+    if (hidden && current) onPick(undefined);
+  }, [hidden, current, onPick]);
 
-  if (!options) return null;
+  if (!options || hidden) return null;
   const shown = shownWorkspaceType(options, current);
+  if (!shown) return null;
 
   return (
     <span style={{ position: "relative", minWidth: 0 }}>
       <Chip
-        tip="Where this workspace runs"
+        // An option shown but unavailable (a project pinned to VMs on a
+        // runtime that cannot boot one) says why the launch will fail.
+        tip={shown.available ? "Where this workspace runs" : (shown.reason ?? undefined)}
         onClick={() => {
           if (!open) load();
           setOpen((v) => !v);
         }}
       >
-        <Icon name={icon(shown)} size={11} />
-        <span>{shown ? workspaceTypeLabel(shown) : "As in Settings"}</span>
+        <Icon name={icon(shown.kind)} size={11} />
+        <span>{workspaceTypeLabel(shown.kind)}</span>
       </Chip>
 
       {open && (
@@ -91,12 +99,15 @@ export function WorkspaceTypePicker({ repoPath, provider, current, onPick }: Pro
             {options.map((o) => (
               <DropdownItem
                 key={o.kind}
-                active={o.kind === shown}
+                active={o.kind === shown.kind}
                 disabled={!o.available}
                 style={{ padding: "7px 9px" }}
                 title={o.reason ?? undefined}
                 onClick={() => {
-                  onPick(workspaceTypeOverride(options, o.kind));
+                  // Every click is kept, the default included: the agent
+                  // lands where the chip says even if the default moves
+                  // before the draft is sent.
+                  onPick(o.kind);
                   setOpen(false);
                 }}
               >

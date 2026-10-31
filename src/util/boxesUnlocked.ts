@@ -1,4 +1,5 @@
 import { useAppStore } from "@/store";
+import { boxesUnlockedFor } from "./boxesRollout";
 
 /** Whether this user may see the isolated-VM controls at all: the box
  *  sandbox is rolled out behind the same unlock as Settings › Developer (a
@@ -10,5 +11,5 @@ import { useAppStore } from "@/store";
  *  the switch are already in place for everyone. */
 export function useBoxesUnlocked(): boolean {
   const admin = useAppStore((s) => s.admin);
-  return import.meta.env.DEV || admin;
+  return boxesUnlockedFor(admin);
 }

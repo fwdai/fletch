@@ -258,34 +258,32 @@ pub const SWITCHED_OFF: &str = "isolated VMs are off; turn them on in Settings â
 /// (Intel, no hypervisor); a runtime that is merely missing is asked again,
 /// since a dev checkout can stage it while the app runs.
 pub fn runtime_usable() -> bool {
-    static USABLE: OnceLock<bool> = OnceLock::new();
-    if let Some(usable) = USABLE.get() {
-        return *usable;
-    }
-    let probe = probe();
-    let ok = probe.as_ref().is_some_and(|p| p.ok());
-    let settled = ok || probe.is_some_and(|p| !p.arch_ok || !p.hypervisor);
-    if settled {
-        let _ = USABLE.set(ok);
-    }
-    ok
+    runtime_refusal().is_none()
 }
 
 /// Why this machine and runtime cannot boot a box, in the sentence the user
-/// sees; `None` when they can. The cached [`runtime_usable`] answers first, so
-/// only a failing runtime pays for a fresh probe, which names what fails.
+/// sees; `None` when they can. One probe answers both this and
+/// [`runtime_usable`], remembered on the same terms: a pass, or a machine
+/// that fails itself; a merely missing runtime is probed again next time.
 pub fn runtime_refusal() -> Option<String> {
-    if runtime_usable() {
-        return None;
+    static SETTLED: OnceLock<Option<String>> = OnceLock::new();
+    if let Some(settled) = SETTLED.get() {
+        return settled.clone();
     }
-    match probe() {
+    let probe = probe();
+    let refusal = match &probe {
         Some(probe) if probe.ok() => None,
         Some(probe) => Some(format!(
             "the box runtime is not usable: {}.",
             probe.problems().join("; ")
         )),
         None => Some(RUNTIME_NOT_FOUND.to_string()),
+    };
+    let settled = refusal.is_none() || probe.is_some_and(|p| !p.arch_ok || !p.hypervisor);
+    if settled {
+        let _ = SETTLED.set(refusal.clone());
     }
+    refusal
 }
 
 /// Whether a new agent of `provider` could boot a box right now, without
@@ -531,6 +529,18 @@ pub fn engine_for_new_agent(
     provider: &str,
     placement: Placement,
 ) -> EngineKind {
+    engine_for_new_agent_with(selected, provider, placement, || ready_for(provider))
+}
+
+/// [`engine_for_new_agent`] with [`ready_for`] supplied by a caller that has
+/// already answered part of it, so the runtime is probed once (asked only
+/// when automatic gets that far).
+pub fn engine_for_new_agent_with(
+    selected: Option<EngineKind>,
+    provider: &str,
+    placement: Placement,
+    ready: impl Fn() -> bool,
+) -> EngineKind {
     match selected {
         Some(EngineKind::Box) if !supports_provider(provider) => {
             tracing::info!(
@@ -542,7 +552,7 @@ pub fn engine_for_new_agent(
         Some(kind) => kind,
         None => match placement {
             Placement::Host => EngineKind::SandboxExec,
-            Placement::Auto | Placement::Box if ready_for(provider) => EngineKind::Box,
+            Placement::Auto | Placement::Box if ready() => EngineKind::Box,
             // Pinned to boxes by the project but nothing to boot yet: the
             // launch waits, as a pinned engine does.
             Placement::Box if settings::enabled() && supports_provider(provider) => EngineKind::Box,

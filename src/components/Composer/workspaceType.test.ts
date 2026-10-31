@@ -4,7 +4,9 @@ import {
   defaultWorkspaceType,
   shownWorkspaceType,
   workspaceTypeLabel,
-  workspaceTypeOverride,
+  workspaceTypeOffered,
+  workspaceTypeToSend,
+  workspaceTypeVisible,
 } from "./workspaceType";
 
 const host = (over: Partial<WorkspaceTypeOption> = {}): WorkspaceTypeOption => ({
@@ -31,31 +33,38 @@ describe("workspace type", () => {
     expect(defaultWorkspaceType([])).toBeNull();
   });
 
-  it("shows the choice while it is offered, else the default", () => {
+  it("keeps an explicit pick on the chip, the default included", () => {
     const options = [host({ default: true }), box()];
-    expect(shownWorkspaceType(options, undefined)).toBe("host");
-    expect(shownWorkspaceType(options, "box")).toBe("box");
+    expect(shownWorkspaceType(options, undefined)?.kind).toBe("host");
+    expect(shownWorkspaceType(options, "box")?.kind).toBe("box");
+    // Picking the default is a pick: if the default then moves, the chip (and
+    // the spawn) stay where the user clicked.
+    const moved = [host(), box({ default: true })];
+    expect(shownWorkspaceType(moved, "host")?.kind).toBe("host");
+    // A pick no longer available stays shown, so its reason is on screen.
     const refused = [host({ default: true }), box({ available: false, reason: "off" })];
-    expect(shownWorkspaceType(refused, "box")).toBe("host");
+    expect(shownWorkspaceType(refused, "box")).toEqual(refused[1]);
+    // An unavailable default is shown with its reason too.
+    const brokenDefault = [host(), box({ default: true, available: false, reason: "no runtime" })];
+    expect(shownWorkspaceType(brokenDefault, undefined)?.reason).toBe("no runtime");
   });
 
-  it("sends only an available choice that differs from the default", () => {
-    const hostDefault = [host({ default: true }), box()];
-    expect(workspaceTypeOverride(hostDefault, undefined)).toBeUndefined();
-    expect(workspaceTypeOverride(hostDefault, "host")).toBeUndefined();
-    expect(workspaceTypeOverride(hostDefault, "box")).toBe("box");
+  it("hides the chip when no option is the default", () => {
+    expect(workspaceTypeVisible(null)).toBe(false);
+    expect(workspaceTypeVisible([host(), box()])).toBe(false);
+    expect(workspaceTypeVisible([host({ default: true }), box()])).toBe(true);
+    expect(workspaceTypeVisible([host(), box({ default: true, available: false })])).toBe(true);
+  });
 
-    const boxDefault = [host(), box({ default: true })];
-    expect(workspaceTypeOverride(boxDefault, "host")).toBe("host");
-    expect(workspaceTypeOverride(boxDefault, "box")).toBeUndefined();
-
-    const refused = [host({ default: true }), box({ available: false, reason: "off" })];
-    expect(workspaceTypeOverride(refused, "box")).toBeUndefined();
-
-    // With no default (a container engine pinned) either pick is a real choice.
-    expect(workspaceTypeOverride([host(), box()], "host")).toBe("host");
-    // A kind the host did not list is never sent.
-    expect(workspaceTypeOverride([host({ default: true })], "box")).toBeUndefined();
+  it("sends an explicit pick only while the control is offered", () => {
+    expect(workspaceTypeToSend(undefined, true)).toBeUndefined();
+    expect(workspaceTypeToSend("host", true)).toBe("host");
+    expect(workspaceTypeToSend("box", true)).toBe("box");
+    expect(workspaceTypeToSend("box", false)).toBeUndefined();
+    // On a paired host the control is never offered.
+    expect(workspaceTypeOffered(true, false)).toBe(false);
+    // A dev build (the test run) is unlocked whoever the user is.
+    expect(workspaceTypeOffered(false, true)).toBe(true);
   });
 
   it("names each type", () => {

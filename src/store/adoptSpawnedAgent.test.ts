@@ -6,7 +6,7 @@
 // and since the id — and so the React key — never changed, the composer's
 // mount-time picker state was never corrected until the user switched chats.
 
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { create } from "zustand";
 
 const { spawnAgent, sendUserMessage, getWorkspace } = vi.hoisted(() => ({
@@ -21,6 +21,7 @@ vi.mock("@/data/slashCommands", () => ({ discoverCommands: vi.fn() }));
 import type { AgentRecord, Workspace } from "@/api";
 import { adoptSpawnedAgent } from "./adoptSpawnedAgent";
 import { createDraftsSlice } from "./drafts";
+import { LOCAL_ENVIRONMENT_ID, setEnvironmentsSource } from "./environments";
 import type { AppState } from "./types";
 
 const NAME = "chimborazo";
@@ -133,5 +134,58 @@ describe("spawning a draft under a recycled landmark name", () => {
 
     const { selectedAgentId, workspace } = store.getState();
     expect(workspace?.agents.find((a) => a.id === selectedAgentId)).toEqual(fresh);
+  });
+});
+
+describe("the composer's workspace type at spawn", () => {
+  const local = {
+    id: LOCAL_ENVIRONMENT_ID,
+    name: "This Mac",
+    kind: "local" as const,
+    connection: "connected" as const,
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    spawnAgent.mockResolvedValue(fresh);
+    sendUserMessage.mockResolvedValue(false);
+    getWorkspace.mockResolvedValue(null);
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    setEnvironmentsSource(() => ({
+      environments: { [LOCAL_ENVIRONMENT_ID]: local },
+      activeEnvironmentId: LOCAL_ENVIRONMENT_ID,
+    }));
+  });
+
+  const spawnWithPick = async (admin: boolean) => {
+    const store = makeStore(workspaceWith([]));
+    store.setState((s) => ({
+      admin,
+      drafts: s.drafts.map((d) => ({ ...d, workspaceType: "box" as const })),
+    }));
+    await store.getState().spawnFromDraft("d1", "ship it", "claude");
+    return spawnAgent.mock.calls[0]?.at(-1);
+  };
+
+  it("sends an explicit pick from this Mac", async () => {
+    expect(await spawnWithPick(true)).toBe("box");
+  });
+
+  it("does not send a pick while a paired host is active", async () => {
+    setEnvironmentsSource(() => ({
+      environments: {
+        [LOCAL_ENVIRONMENT_ID]: local,
+        studio: { id: "studio", name: "Studio", kind: "remote", connection: "connected" },
+      },
+      activeEnvironmentId: "studio",
+    }));
+    expect(await spawnWithPick(true)).toBeUndefined();
+  });
+
+  it("does not send a pick once boxes are locked for this user", async () => {
+    vi.stubEnv("DEV", false);
+    expect(await spawnWithPick(false)).toBeUndefined();
   });
 });

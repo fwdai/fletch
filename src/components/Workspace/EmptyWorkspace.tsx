@@ -3,6 +3,7 @@ import { api } from "@/api";
 import { Composer } from "@/components/Composer";
 import { BranchPicker } from "@/components/Composer/BranchPicker";
 import { type ProjectOption, ProjectPicker } from "@/components/Composer/ProjectPicker";
+import { workspaceTypeOffered } from "@/components/Composer/workspaceType";
 import { Icon, LandmarkGlyph } from "@/components/Icon";
 import { PanelToggle } from "@/components/PanelToggle";
 import { IconButton } from "@/components/ui/IconButton";
@@ -10,7 +11,6 @@ import { getLinearTeamId } from "@/storage/projectSettings";
 import type { DraftAgent } from "@/store";
 import { useAppStore } from "@/store";
 import { activeEntry, useGate } from "@/store/capabilities";
-import { useBoxesUnlocked } from "@/util/boxesUnlocked";
 import {
   type ComposerMode,
   loadPipelinePrefs,
@@ -112,9 +112,10 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
   const workflowMode = mode === "workflow" && !workflowGate;
   // The workspace type is offered where boxes are rolled out to this user, and
   // only for an agent on this Mac: a paired host's spawn carries no workspace
-  // type yet, so a choice there would be silently dropped.
-  const boxesUnlocked = useBoxesUnlocked();
-  const onThisMac = useAppStore((s) => activeEntry(s).kind !== "remote");
+  // type yet. `spawnFromDraft` sends the pick on the same rule.
+  const workspaceTypeShown = useAppStore((s) =>
+    workspaceTypeOffered(s.admin, activeEntry(s).kind !== "remote"),
+  );
 
   return (
     <div className="pane center">
@@ -247,10 +248,9 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
                   current: draft.account,
                   onPick: (account) => updateDraft(draft.id, { account }),
                 }}
-                // Per draft too, and kept only while it differs from where the
-                // host would put the agent anyway.
+                // Per draft too: an explicit pick, kept as made.
                 workspaceType={
-                  boxesUnlocked && onThisMac
+                  workspaceTypeShown
                     ? {
                         repoPath: draft.repoPath,
                         current: draft.workspaceType,

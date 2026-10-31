@@ -164,9 +164,11 @@ impl Supervisor {
             // it, checked again for the fork's engine — those still there: a
             // folder deleted since must not stop the fork.
             folder_grants: crate::workspace::folder_grants::present(&parent.folder_grants),
-            // The fork's engine is resolved as any new agent's is, from the
-            // host's choice and the project's placement.
-            workspace_type: None,
+            // The child follows its parent's engine — this Mac or a box — even
+            // where the automatic choice would now pick the other: a parent
+            // kept on this Mac (it needs Xcode, say) must not fork into a box.
+            // A container-stamped parent's child is resolved as a new agent's.
+            workspace_type: crate::sandbox::placement_of(&parent),
         };
         let spawned = self.spawn_agent(ctx, req).await;
         // Once spawned, its provisioning releases the code's pin; a spawn

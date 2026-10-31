@@ -78,8 +78,9 @@ engine enforces) and `docs/box.md` is the box runtime.
    spawn: `Host` is seatbelt; `Box` is a box that waits for its image as a
    box-pinned project does, and a spawn refused with the user-facing reason
    when there can be no box (switch off, runtime unusable, provider
-   unsupported), never a quiet fallback. An adopting agent ignores it and
-   runs where its tree lives. The UI reads one host-computed list of
+   unsupported), never a quiet fallback. A fork passes its parent's stamp
+   (`sandbox::placement_of`). An adopting agent ignores it and runs where
+   its tree lives. The UI reads one host-computed list of
    available workspace types with each one's reason when unavailable and the
    default marked (`sandbox::workspace_types`, served by the
    `available_workspace_types` command in `commands/boxes.rs`, on the desktop
@@ -127,8 +128,8 @@ deletion touches:
     row), `from_setting`;
   - `sandbox/mod.rs`: `engine_for`, `transcript_root`, `create_session_file`,
     `provision_checkout`, `restore_checkout`, `before_launch`,
-    `setup_allowance`, `agent_bin`, `codegraph_bin`, `reap_agent_containers`
-    (and with it `runs_in_container`);
+    `setup_allowance`, `agent_bin`, `codegraph_bin`, `placement_of`,
+    `reap_agent_containers` (and with it `runs_in_container`);
   - `sandbox/provider/mod.rs`: the `Docker | Podman` arm of `supports`;
   - `sandbox/guarantees.rs`: every `Docker` / `Podman` coverage row;
   - `commands/settings.rs`: the `Docker` and `Podman` arms of

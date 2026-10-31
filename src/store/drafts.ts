@@ -1,4 +1,5 @@
 import { api, type FolderGrant, type WorkspaceKind } from "@/api";
+import { workspaceTypeOffered, workspaceTypeToSend } from "@/components/Composer/workspaceType";
 import { composeIssueBrief } from "@/components/Workspace/MissionControl/inbox";
 import { FIRST_TASK_PROMPT } from "@/data/firstTask";
 import { DEFAULT_PROVIDER_ID, PROVIDERS } from "@/data/providers";
@@ -15,7 +16,7 @@ import {
 import { setSetting } from "@/storage/settings";
 import { track } from "@/util/track";
 import { adoptSpawnedAgent } from "./adoptSpawnedAgent";
-import { activeEnvironmentId } from "./environments";
+import { activeEnvironment, activeEnvironmentId } from "./environments";
 import { refreshWorkspace } from "./refreshWorkspace";
 import { activeSurface } from "./surface";
 import type { AppState, SliceCreator } from "./types";
@@ -42,9 +43,10 @@ export interface DraftAgent {
   /** The provider account picked for this draft's agent. Never remembered
    *  past the draft: undefined follows the active account in Settings. */
   account?: string;
-  /** The workspace type picked in the composer, only when it differs from
-   *  what the host would pick (`workspaceTypeOverride`). Never remembered past
-   *  the draft: undefined leaves it to Settings and the project's placement. */
+  /** The workspace type the user picked in the composer, kept as clicked
+   *  (the default included). Never remembered past the draft: undefined
+   *  leaves it to Settings and the project's placement. Sent only while the
+   *  composer offers the control (`workspaceTypeOffered`). */
   workspaceType?: WorkspaceKind;
   /** Base branch to fork from. */
   base: string;
@@ -449,9 +451,13 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get) => ({
         // The composer's folder chips, checked by the backend and in place
         // from the first launch.
         folders,
-        // The composer's workspace type, when the user picked one other than
-        // the host's; a VM that cannot be had fails the spawn with why.
-        draft.workspaceType,
+        // The composer's workspace type, when the user picked one and the
+        // control is on screen — never a pick the user can no longer see. A
+        // VM that cannot be had fails the spawn with why.
+        workspaceTypeToSend(
+          draft.workspaceType,
+          workspaceTypeOffered(get().admin, activeEnvironment().kind !== "remote"),
+        ),
       );
       // The first message names each granted folder, by the canonical path
       // the backend stored, after the files (`attachments::reference_line`).
