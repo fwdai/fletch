@@ -70,32 +70,14 @@ export function StepGlyph({ icon }: { icon: IconName }) {
   );
 }
 
-/** What a thought the model kept to itself says in its place. Claude Code
- *  redacts most thinking: the block arrives empty, but it did happen. */
-const UNSHARED = "not shared by the model";
-
-/** A thought, as a row among the steps: its first line, opening to the rest.
- *  A redacted one has nothing to open, so it's a quiet, still row. */
+/** A thought, as a row among the steps: its first line, opening to the rest. */
 function ThoughtRow({ text }: { text: string }) {
   const lower = useMemo(() => text.toLowerCase(), [text]);
-  if (!text) {
-    return (
-      <div className="tool-row is-still">
-        <div className="m-tool flex-center">
-          <Icon name="sparkle" size={12} className="t-icon" />
-          <span className="t-name">Thought</span>
-          <span className="t-arg">
-            <span className="t-thought">{UNSHARED}</span>
-          </span>
-        </div>
-      </div>
-    );
-  }
   return (
     <ToolRow
       name="Thought"
       icon="sparkle"
-      summary={<span className="t-thought">{firstLine(text, 160)}</span>}
+      summary={<span className="t-thought">{firstLine(text.trimStart(), 160)}</span>}
       expanded={<div className="tb-thought">{text}</div>}
       revealText={lower}
     />
@@ -141,11 +123,7 @@ function SoleDetail({
   if (item.kind === "notice" && item.subtype === "reasoning") {
     return (
       <div className="tool-body is-sole">
-        {item.text ? (
-          <div className="tb-thought">{item.text}</div>
-        ) : (
-          <div className="tb-cap">The model thought here but didn't share its thinking.</div>
-        )}
+        <div className="tb-thought">{item.text}</div>
       </div>
     );
   }
@@ -215,7 +193,7 @@ export const StepGroup = memo(function StepGroup({
               parts={parts}
               note={
                 thoughtOnly && firstThought?.kind === "notice"
-                  ? firstLine(firstThought.text, 140) || UNSHARED
+                  ? firstLine(firstThought.text.trimStart(), 140)
                   : undefined
               }
             />

@@ -310,15 +310,14 @@ describe("claudeAdapter.reduce — extended thinking", () => {
     ]);
   });
 
-  // Claude Code redacts most thinking: the block arrives as "" plus a
-  // signature. The agent still thought there, and the live line said so, so
-  // the log keeps one empty thought per thinking phase — merged into the
-  // readable block when one follows in the same message.
-  it("keeps one thought per thinking phase, redacted or not", () => {
+  // Under `thinkingDisplay: "updates"` the reasoning itself arrives as "" plus
+  // a signature, and the short progress updates as readable blocks. A
+  // redacted block has nothing to show and leaves no item; the updates keep
+  // their place.
+  it("drops redacted thinking and keeps the readable updates in place", () => {
     const redacted = assistant({ type: "thinking", thinking: "", signature: "r" });
     const lines = [
       { type: "user", message: { role: "user", content: "go" } },
-      redacted,
       redacted,
       assistant({ type: "tool_use", id: "t1", name: "Read", input: { file_path: "/a" } }),
       redacted,
@@ -327,11 +326,12 @@ describe("claudeAdapter.reduce — extended thinking", () => {
     ];
     expect(shape(reduceAll(claudeAdapter.normalizeTranscript(lines)))).toEqual([
       "user_message",
-      "reasoning:",
       "tool_call",
       "reasoning:Now edit it.",
       "agent_message",
     ]);
+    // Live, the redacted block reaches the reducer too, and still leaves nothing.
+    expect(shape(reduceAll([redacted] as RawEvent[]))).toEqual([]);
   });
 
   it("exposes a reasoning-visible policy", () => {

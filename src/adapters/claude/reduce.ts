@@ -94,26 +94,17 @@ function handleAssistant(prev: ChatItem[], ev: RawEvent): ChatItem[] {
       // Extended-thinking block → reasoning notice (we capture the whole
       // block here; the stream-event deltas are ignored). The text lives in
       // the assistant event's `thinking` field — confirmed against real
-      // persisted events. Claude Code redacts most of it: a block arrives as
-      // "" plus a signature, sometimes followed by a short readable one in
-      // the same message. One thinking phase is one notice either way — ""
-      // when nothing was shared — so the chat can say the agent thought here
-      // even when it can't say what.
+      // persisted events. Claude Code's `thinkingDisplay: "updates"` redacts
+      // the reasoning itself to "" (plus a signature) and sends the short
+      // progress updates it writes along the way as readable blocks. An empty
+      // block has nothing to show, so it leaves no row.
       const text = block.thinking;
-      const last = items[items.length - 1];
-      const lastThought = last?.kind === "notice" && last.subtype === "reasoning" ? last : null;
-      if (!text) {
-        if (!lastThought) items = [...items, { kind: "notice", subtype: "reasoning", text: "" }];
-        continue;
-      }
+      if (!text) continue;
       const exists = items
         .slice(turnStart)
         .some((it) => it.kind === "notice" && it.subtype === "reasoning" && it.text === text);
       if (exists) continue;
-      const thought: ChatItem = { kind: "notice", subtype: "reasoning", text };
-      // The readable block that follows a redacted one is the same phase.
-      items =
-        lastThought && !lastThought.text ? [...items.slice(0, -1), thought] : [...items, thought];
+      items = [...items, { kind: "notice", subtype: "reasoning", text }];
     } else if (block.type === "text" && typeof block.text === "string") {
       // The text may already exist as a streamed agent_message for this turn
       // (deltas arrived before this finalized event). If so, stamp the model

@@ -307,8 +307,6 @@ function NoticeView({ item }: { item: Extract<ChatItem, { kind: "notice" }> }) {
       </div>
     );
   }
-  // A redacted thought renders in its run (StepGroup); alone it has no text.
-  if (item.subtype === "reasoning" && !item.text) return null;
   const isError = item.is_error || item.subtype === "error";
   return (
     <div

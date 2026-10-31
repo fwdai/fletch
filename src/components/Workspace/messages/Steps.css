@@ -351,16 +351,6 @@
 .tool-row.is-open > .m-tool .t-arg {
   color: var(--fg-1);
 }
-/* A row with nothing to open (a thought the model didn't share). */
-.tool-row.is-still > .m-tool {
-  cursor: default;
-}
-.tool-row.is-still > .m-tool:hover {
-  background: transparent;
-}
-.tool-row.is-still > .m-tool .t-arg {
-  color: var(--fg-3);
-}
 .m-tool .t-result {
   flex-shrink: 0;
   font-size: var(--fs-xs);
