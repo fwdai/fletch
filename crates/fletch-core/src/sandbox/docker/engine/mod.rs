@@ -192,6 +192,24 @@ impl SandboxEngine for DockerEngine {
         EngineKind::Docker
     }
 
+    /// What the image this process launches claude from was seen to take
+    /// (`container::thinking_display`, probed inside the image off the launch
+    /// path). A user-supplied image is never probed, so it is never vouched
+    /// for; an image not probed yet launches without the flag.
+    fn claude_thinking_summaries(&self, _agent_bin: &str, _home: &std::path::Path) -> bool {
+        let Some(provider) = DockerProvider::from_id("claude") else {
+            return false;
+        };
+        let settings = LAUNCH_SETTINGS.read().clone();
+        if non_blank(settings.image_override.as_deref()).is_some() {
+            return false;
+        }
+        match self.resolve_image_cached(provider, None) {
+            Ok(tag) => crate::sandbox::container::thinking_display::confirmed("docker", &tag),
+            Err(_) => false,
+        }
+    }
+
     /// Launch a container for `ctx.provider`. Everything but the binary and the
     /// resolved image is shared with the other container runtime: the env,
     /// mounts and auth come from

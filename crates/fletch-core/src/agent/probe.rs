@@ -255,8 +255,28 @@ async fn run_bounded(bin: &str, args: &[&str]) -> Option<std::process::Output> {
     Some(out)
 }
 
-/// The value the capability probe below passes: a bad one on purpose.
+/// The value the capability probe passes: a bad one on purpose.
 const THINKING_DISPLAY_PROBE: &str = "__fletch_probe__";
+
+/// The argv of the `--thinking-display` capability probe, after the binary:
+/// what [`claude_supports_thinking_display`] runs on the host, and what the
+/// container runtimes run inside their images (`sandbox::container::
+/// thinking_display`), so one reading serves every engine.
+pub(crate) const THINKING_DISPLAY_PROBE_ARGS: [&str; 3] =
+    ["--thinking-display", THINKING_DISPLAY_PROBE, "--version"];
+
+/// Whether a probe's output proves the CLI parses `--thinking-display`: it
+/// failed, named the option, and named the sentinel value it rejected. An
+/// "unknown option '--thinking-display'" diagnostic from a CLI that reports
+/// unknown options before `--version` names the option but never the value,
+/// and is not support; neither is a run that failed for any other reason.
+pub(crate) fn probe_shows_thinking_display(out: &std::process::Output) -> bool {
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    !out.status.success()
+        && stderr.contains("--thinking-display")
+        && stderr.contains(THINKING_DISPLAY_PROBE)
+        && !stderr.contains("unknown option")
+}
 
 /// Whether `bin` — a claude CLI — parses `--thinking-display`, memoized per
 /// path. The flag is hidden from `--help`, and `--version` short-circuits
@@ -265,8 +285,9 @@ const THINKING_DISPLAY_PROBE: &str = "__fletch_probe__";
 /// `--thinking-display __fletch_probe__ --version` fails naming the option
 /// ("argument '__fletch_probe__' is invalid", 2.1.314), while a CLI that does
 /// not know it prints its version and exits 0. No network, no login, no
-/// session. A binary that can't be probed counts as not supporting it, so a
-/// launch never carries a flag it can't vouch for.
+/// session. The proof is the sentinel value named in the rejection
+/// ([`probe_shows_thinking_display`]). A binary that can't be probed counts
+/// as not supporting it, so a launch never carries a flag it can't vouch for.
 pub fn claude_supports_thinking_display(bin: &str) -> bool {
     static CACHE: std::sync::OnceLock<parking_lot::Mutex<std::collections::HashMap<String, bool>>> =
         std::sync::OnceLock::new();
@@ -276,14 +297,9 @@ pub fn claude_supports_thinking_display(bin: &str) -> bool {
     }
     let path = bin.to_string();
     let out = on_probe_thread(move |rt| {
-        rt.block_on(run_bounded(
-            &path,
-            &["--thinking-display", THINKING_DISPLAY_PROBE, "--version"],
-        ))
+        rt.block_on(run_bounded(&path, &THINKING_DISPLAY_PROBE_ARGS))
     });
-    let supported = out.is_some_and(|out| {
-        !out.status.success() && String::from_utf8_lossy(&out.stderr).contains("--thinking-display")
-    });
+    let supported = out.is_some_and(|out| probe_shows_thinking_display(&out));
     cache.lock().insert(bin.to_string(), supported);
     supported
 }
@@ -386,6 +402,14 @@ mod tests {
         assert!(claude_supports_thinking_display(&knows));
         let older = script(dir.path(), "older", "#!/bin/sh\necho 2.0.0\n");
         assert!(!claude_supports_thinking_display(&older));
+        // One that reports unknown options before answering `--version`:
+        // the option is named, the value is not — no support.
+        let strict = script(
+            dir.path(),
+            "strict",
+            "#!/bin/sh\necho \"error: unknown option '$1'\" >&2; exit 1\n",
+        );
+        assert!(!claude_supports_thinking_display(&strict));
         let missing = dir.path().join("missing").to_string_lossy().into_owned();
         assert!(!claude_supports_thinking_display(&missing));
     }

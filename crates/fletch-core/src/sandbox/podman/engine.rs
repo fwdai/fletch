@@ -125,6 +125,27 @@ impl SandboxEngine for PodmanEngine {
         EngineKind::Podman
     }
 
+    /// What the image this process launches claude from was seen to take
+    /// (`container::thinking_display`, probed inside the image off the launch
+    /// path). A user-supplied image is never probed, so it is never vouched
+    /// for; an image not probed yet launches without the flag.
+    fn claude_thinking_summaries(&self, _agent_bin: &str, _home: &std::path::Path) -> bool {
+        let Some(provider) = ContainerProvider::from_id("claude") else {
+            return false;
+        };
+        let settings = LAUNCH_SETTINGS.read().clone();
+        if non_blank(settings.image_override.as_deref()).is_some() {
+            return false;
+        }
+        let Ok(target) = machine::resolve_launch_target() else {
+            return false;
+        };
+        match self.resolve_image_cached(provider, None, target.connection.as_deref()) {
+            Ok(tag) => crate::sandbox::container::thinking_display::confirmed("podman", &tag),
+            Err(_) => false,
+        }
+    }
+
     /// Launch a container for `ctx.provider`. `ensure_engine_supports_provider`
     /// gates this, so the `from_id` failure below is defensive only.
     fn launch_agent(&self, ctx: &AgentLaunchCtx, agent_bin: &str) -> Result<LaunchPlan> {

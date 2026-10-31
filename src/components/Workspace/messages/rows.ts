@@ -141,8 +141,12 @@ export function buildRows(items: ViewItem[], cache: RowCache): TranscriptRowsMod
     const key = runKey(start, end);
     seen.add(key);
     const slice = items.slice(start, end);
+    // Same key and items at the same place: the object is reused. The same
+    // items at a new place (older history prepended above them) get a fresh
+    // object under the same key — the key keeps the row's state, the object
+    // carries the indices the footers and the live turn are placed by.
     const cached = cache.runs.get(key);
-    if (cached && sameItems(cached.items, slice)) return cached;
+    if (cached && cached.start === start && sameItems(cached.items, slice)) return cached;
     const fresh: StepRun = { key, start, items: slice };
     cache.runs.set(key, fresh);
     return fresh;
@@ -188,6 +192,7 @@ export function buildRows(items: ViewItem[], cache: RowCache): TranscriptRowsMod
     const cached = cache.folds.get(key);
     if (
       cached &&
+      cached.head === head &&
       cached.end === answerAt &&
       cached.runSec === runSec &&
       sameItems(cached.items, work)

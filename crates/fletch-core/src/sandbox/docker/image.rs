@@ -34,6 +34,7 @@ use crate::error::Result;
 use crate::sandbox::container::freshness::{classify_freshness, version_refresh_wanted, Freshness};
 use crate::sandbox::container::images::{image_spec, write_build_context, BASE_IMAGE};
 use crate::sandbox::container::progress::{self, BuildEvent};
+use crate::sandbox::container::thinking_display;
 
 use super::cli;
 use super::DockerProvider;
@@ -407,6 +408,12 @@ fn refresh_if_needed(provider: DockerProvider, tag: String, host_cli_version: Op
         Ok(_) | Err(_) => return,
     };
 
+    // The image this process launches from, probed once for what its CLI
+    // takes; a rebuild below re-probes after it lands.
+    if !thinking_display::known("docker", tag) {
+        probe_image_thinking_display(provider, tag);
+    }
+
     match classify_freshness(&created_raw, chrono::Utc::now()) {
         Freshness::Stale => {
             tracing::info!(
@@ -596,6 +603,25 @@ fn cache_image_version_post_build(provider: DockerProvider, tag: &str) {
             "post-build container CLI version probe failed; version trigger stays inert for this image",
         ),
     }
+    probe_image_thinking_display(provider, tag);
+}
+
+/// Whether the image's claude parses `--thinking-display`, recorded for the
+/// launch path (`DockerEngine::claude_thinking_summaries`) to read without a
+/// `docker run` of its own. The host's probe and reading, inside the image
+/// (`agent::THINKING_DISPLAY_PROBE_ARGS`); a run that fails for any other
+/// reason reads as unsupported. Only claude has the flag.
+fn probe_image_thinking_display(provider: DockerProvider, tag: &str) {
+    if provider.id() != "claude" {
+        return;
+    }
+    let pid_label = super::cleanup::host_pid_label();
+    let mut args = vec!["run", "--rm", "--label", pid_label.as_str(), tag, provider.image_bin()];
+    args.extend(crate::agent::THINKING_DISPLAY_PROBE_ARGS);
+    let supported = cli::run_docker(&args, VERSION_PROBE_TIMEOUT)
+        .ok()
+        .is_some_and(|out| crate::agent::probe_shows_thinking_display(&out));
+    thinking_display::record("docker", tag, supported);
 }
 
 /// Whether `tag` exists locally. A non-zero `image inspect` exit is the

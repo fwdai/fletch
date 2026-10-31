@@ -92,16 +92,25 @@ const WorkFold = memo(function WorkFold({ fold, agentId }: { fold: Fold; agentId
   const lead = fold.runSec !== undefined ? `Worked for ${fmtDur(fold.runSec)}` : undefined;
 
   return (
-    <div className={shown ? "fold is-open" : "fold"} data-fold={fold.key}>
-      <button type="button" className="steps-head fold-head" aria-expanded={shown} onClick={toggle}>
+    <div className={shown ? "turnfold is-open" : "turnfold"} data-turnfold={fold.key}>
+      <button
+        type="button"
+        className="steprun-head turnfold-head"
+        aria-expanded={shown}
+        onClick={toggle}
+      >
         <StepGlyph icon="clock" />
-        <span className="steps-text">
+        <span className="steprun-text">
           <SummaryLine lead={lead} parts={parts} />
         </span>
       </button>
-      <DisclosureBody open={shown} instant={instant || (revealed && !open)} className="fold-body">
+      <DisclosureBody
+        open={shown}
+        instant={instant || (revealed && !open)}
+        className="turnfold-body"
+      >
         <DeepOpen.Provider value={deep}>
-          <div className="fold-list">
+          <div className="turnfold-list">
             <FoldRows rows={fold.rows} />
           </div>
         </DeepOpen.Provider>

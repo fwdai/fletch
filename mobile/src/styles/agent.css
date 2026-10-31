@@ -1878,8 +1878,8 @@
 
 /* The shared transcript rows (desktop Steps.css) on a touch screen: every row
    is a tap target, so the heads stand a little taller than on the Mac. */
-.steps-head,
-.fold-head,
+.steprun-head,
+.turnfold-head,
 .m-tool {
   min-height: 40px;
 }

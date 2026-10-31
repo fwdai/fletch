@@ -20,7 +20,7 @@ use super::capabilities::{mcp_delivery, per_turn_descriptor};
 use super::codex_home;
 use super::host_login;
 use super::host_login::claude::AccessToken;
-use super::probe::{claude_supports_thinking_display, resolve_agent_bin};
+use super::probe::resolve_agent_bin;
 use super::{Agent, ManagedAgent, PerTurnAgent, PerTurnDescriptor, PtyAgent, TurnArgs};
 
 /// Parameters for spawning a per-turn runner. Unlike `SpawnSpec` there's
@@ -582,7 +582,10 @@ impl Agent {
         let engine = sandbox::engine_for(spec.engine)?;
         let claude = agent_bin_for("claude", "claude", "Claude Code", engine.as_ref(), &home)?;
         let mcp = resolve_mcp("claude", spec.mcp_servers, &spec.sandbox_root)?;
-        let summaries = thinking_summaries_supported(engine.kind(), &claude, &home);
+        // Asked of the engine: only it knows which claude actually runs — the
+        // host's, a container image's, a box's — and whether that one takes
+        // the flag (`SandboxEngine::claude_thinking_summaries`).
+        let summaries = engine.claude_thinking_summaries(&claude, &home);
         let agent_args = prepare_managed_args(&spec, &mcp.args, summaries);
         let mut account = account_launch("claude", spec.account)?;
 
@@ -1022,24 +1025,6 @@ fn push_typed(out: &mut String, s: &str) {
             }
             c if c.is_control() => {}
             c => out.push(c),
-        }
-    }
-}
-
-/// Whether the claude this launch runs parses `--thinking-display`. On the
-/// host (seatbelt) that's the resolved binary itself. A container or a box runs
-/// the host CLI's version — the tools disk installs it, the container engines
-/// check parity — so the host binary answers for them; a host with no claude at
-/// all gets the newest release on the box, which has the flag.
-fn thinking_summaries_supported(kind: sandbox::EngineKind, claude_bin: &str, home: &Path) -> bool {
-    use sandbox::EngineKind;
-    match kind {
-        EngineKind::SandboxExec => claude_supports_thinking_display(claude_bin),
-        EngineKind::Box | EngineKind::Docker | EngineKind::Podman => {
-            resolve_agent_bin("claude", "claude", "Claude Code", home)
-                .ok()
-                .map(|host| claude_supports_thinking_display(&host))
-                .unwrap_or(true)
         }
     }
 }

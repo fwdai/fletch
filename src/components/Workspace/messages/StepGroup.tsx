@@ -52,20 +52,20 @@ export function SummaryLine({
   note?: string;
 }) {
   return (
-    <span className="steps-summary">
-      {lead && <span className="steps-lead">{lead}</span>}
+    <span className="steprun-summary">
+      {lead && <span className="steprun-lead">{lead}</span>}
       {parts.map((p, i) => {
         const text = i === 0 && !lead ? p.text.charAt(0).toUpperCase() + p.text.slice(1) : p.text;
         return (
-          <span key={p.key} className={p.tone ? `steps-part ${p.tone}` : "steps-part"}>
-            {(i > 0 || lead) && <span className="steps-sep">·</span>}
+          <span key={p.key} className={p.tone ? `steprun-part ${p.tone}` : "steprun-part"}>
+            {(i > 0 || lead) && <span className="steprun-sep">·</span>}
             {text}
             {p.code && <code>{p.code}</code>}
             {p.diff && <DiffCount additions={p.diff.additions} deletions={p.diff.deletions} />}
           </span>
         );
       })}
-      {note && <span className="steps-note">{note}</span>}
+      {note && <span className="steprun-note">{note}</span>}
     </span>
   );
 }
@@ -74,11 +74,11 @@ export function SummaryLine({
  *  while open. A live run's icon follows what it's doing now. */
 export function StepGlyph({ icon }: { icon: IconName }) {
   return (
-    <span className="steps-glyph" aria-hidden>
-      <Ticker k={icon} className="steps-icon">
+    <span className="steprun-glyph" aria-hidden>
+      <Ticker k={icon} className="steprun-icon">
         <Icon name={icon} size={12} />
       </Ticker>
-      <Icon name="chevR" size={12} className="steps-chev" />
+      <Icon name="chevR" size={12} className="steprun-chev" />
     </span>
   );
 }
@@ -256,31 +256,35 @@ export const StepGroup = memo(function StepGroup({
       : undefined;
   const icon = live ? activity.icon : runIcon(items, summary);
 
-  const cls = ["steps", live && "is-live", shown && "is-open", fresh && "is-fresh"]
+  const cls = ["steprun", live && "is-live", shown && "is-open", fresh && "is-fresh"]
     .filter(Boolean)
     .join(" ");
   return (
-    <div className={cls} data-steps={run.key}>
-      <button type="button" className="steps-head" aria-expanded={shown} onClick={toggle}>
+    <div className={cls} data-steprun={run.key}>
+      <button type="button" className="steprun-head" aria-expanded={shown} onClick={toggle}>
         <StepGlyph icon={icon} />
-        <Ticker k={live ? `live:${label}` : "settled"} className="steps-text">
+        <Ticker k={live ? `live:${label}` : "settled"} className="steprun-text">
           {live ? (
-            <span className="steps-live">{label}</span>
+            <span className="steprun-live">{label}</span>
           ) : (
             <SummaryLine parts={parts} note={note} />
           )}
         </Ticker>
         {running > 0 && (
-          <span className="steps-aside">
+          <span className="steprun-aside">
             <Loader variant="muted" size="sm" />
             {running} running
           </span>
         )}
         {live && summary.calls > 1 && (
-          <span className="steps-aside steps-count">{summary.calls} steps</span>
+          <span className="steprun-aside steps-count">{summary.calls} steps</span>
         )}
       </button>
-      <DisclosureBody open={shown} instant={instant || (revealed && !open)} className="steps-body">
+      <DisclosureBody
+        open={shown}
+        instant={instant || (revealed && !open)}
+        className="steprun-body"
+      >
         <DeepOpen.Provider value={deep}>
           {sole ? (
             <SoleDetail
@@ -291,11 +295,11 @@ export const StepGroup = memo(function StepGroup({
               renderItem={renderItem}
             />
           ) : (
-            <div className="steps-list">
+            <div className="steprun-list">
               {items.map((item, i) => (
                 <div
                   key={stepKey(item, run.start + i)}
-                  className="steps-item"
+                  className="steprun-item"
                   style={{ "--i": Math.min(i, 12) } as React.CSSProperties}
                 >
                   <StepItem

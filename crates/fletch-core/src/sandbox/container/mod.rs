@@ -19,6 +19,7 @@ pub mod progress;
 pub(crate) mod provider;
 pub(crate) mod run_args;
 pub(crate) mod sweep;
+pub(crate) mod thinking_display;
 pub(crate) mod util;
 pub(crate) mod version_guard;
 

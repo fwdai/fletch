@@ -1,19 +1,19 @@
 /* ── Runs of steps, folded turns, tool rows and their detail ─────────────────
    Three depths, one quiet language. A run of steps or a settled turn's work is
-   one muted line of prose (`.steps-head`); opened, its steps are compact rows
+   one muted line of prose (`.steprun-head`); opened, its steps are compact rows
    hung off a hairline (`.m-tool`); opened again, a step is a caption and a code
    surface (`.tb-*`). Motion is short and soft: bodies grow open, labels
    crossfade, the live line shimmers. Under reduced motion all of it is still. */
 
 /* ── The one-line header ─────────────────────────────────────────────────── */
-.steps,
-.fold {
+.steprun,
+.turnfold {
   display: flex;
   flex-direction: column;
   min-width: 0;
   margin: -2px 0 6px;
 }
-.steps-head {
+.steprun-head {
   appearance: none;
   display: flex;
   align-items: center;
@@ -36,19 +36,19 @@
     background 0.16s var(--ease),
     color 0.16s var(--ease);
 }
-.steps-head:hover,
-.steps-head:focus-visible {
+.steprun-head:hover,
+.steprun-head:focus-visible {
   background: var(--hover);
   color: var(--fg-1);
 }
-.steps-head:focus-visible {
+.steprun-head:focus-visible {
   outline: 1px solid var(--accent-line);
   outline-offset: 0;
 }
 
 /* The glyph: what the run is about at rest; a chevron on hover and while
    open, turned down when open. Both share one cell and trade places. */
-.steps-glyph {
+.steprun-glyph {
   display: grid;
   place-items: center;
   flex: none;
@@ -57,72 +57,72 @@
   color: var(--fg-3);
   transition: color 0.2s var(--ease);
 }
-.steps-glyph > * {
+.steprun-glyph > * {
   grid-area: 1 / 1;
   transition:
     opacity 0.18s var(--ease),
     transform 0.24s var(--ease);
 }
-.steps-icon svg {
+.steprun-icon svg {
   display: block;
 }
-.steps-chev {
+.steprun-chev {
   opacity: 0;
   transform: scale(0.7);
 }
-.steps-head:hover .steps-icon,
-.steps-head:focus-visible .steps-icon,
-.is-open > .steps-head .steps-icon {
+.steprun-head:hover .steprun-icon,
+.steprun-head:focus-visible .steprun-icon,
+.is-open > .steprun-head .steprun-icon {
   opacity: 0;
   transform: scale(0.7);
 }
-.steps-head:hover .steps-chev,
-.steps-head:focus-visible .steps-chev {
+.steprun-head:hover .steprun-chev,
+.steprun-head:focus-visible .steprun-chev {
   opacity: 1;
   transform: scale(1);
 }
-.is-open > .steps-head .steps-chev {
+.is-open > .steprun-head .steprun-chev {
   opacity: 1;
   transform: rotate(90deg);
 }
-.steps-head:hover .steps-glyph,
-.is-open > .steps-head .steps-glyph {
+.steprun-head:hover .steprun-glyph,
+.is-open > .steprun-head .steprun-glyph {
   color: var(--fg-2);
 }
-.steps.is-live > .steps-head .steps-glyph {
+.steprun.is-live > .steprun-head .steprun-glyph {
   color: var(--accent);
 }
 
 /* One line, always: a long summary trails off rather than wrapping. */
-.steps-text {
+.steprun-text {
   flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.steps-summary .steps-lead {
+.steprun-summary .steprun-lead {
   color: var(--fg-1);
 }
-.steps-sep {
+.steprun-sep {
   margin: 0 7px;
   color: var(--fg-3);
 }
-.steps-part code {
+.steprun-part code {
   margin-left: 5px;
   font-family: var(--font-mono);
   font-size: var(--fs-xs);
   color: var(--fg-1);
 }
-.steps-part.danger {
+.steprun-part.danger {
   color: var(--danger);
 }
-.steps-note {
+.steprun-note {
   margin-left: 8px;
   font-style: italic;
   color: var(--fg-3);
 }
-.steps-aside {
+.steprun-aside {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -134,7 +134,7 @@
 }
 
 /* The live line: present tense with a slow sweep of light through it. */
-.steps-live {
+.steprun-live {
   background: linear-gradient(
     100deg,
     var(--fg-2) 0%,
@@ -160,7 +160,7 @@
 }
 
 /* A run that appears while the turn is live settles in from just below. */
-.steps.is-fresh {
+.steprun.is-fresh {
   animation: steps-rise 0.32s var(--ease) both;
 }
 @keyframes steps-rise {
@@ -254,7 +254,7 @@
 }
 
 /* ── An open run: its steps hung off a hairline ──────────────────────────── */
-.steps-list {
+.steprun-list {
   display: flex;
   flex-direction: column;
   margin: 2px 0 6px 6px;
@@ -263,11 +263,11 @@
 }
 /* Opening, the steps arrive one after another; a step that lands while the
    run is live arrives on its own. */
-.disclosure.is-entering .steps-item {
+.disclosure.is-entering .steprun-item {
   animation: step-in 0.26s var(--ease) both;
   animation-delay: calc(var(--i, 0) * 16ms);
 }
-.steps.is-live .steps-item:last-child {
+.steprun.is-live .steprun-item:last-child {
   animation: step-in 0.26s var(--ease) both;
 }
 @keyframes step-in {
@@ -278,7 +278,7 @@
 }
 
 /* An open fold: the turn as it happened, hung off the same hairline. */
-.fold-list {
+.turnfold-list {
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -628,24 +628,24 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .steps-live {
+  .steprun-live {
     animation: none;
     background: none;
     -webkit-text-fill-color: currentColor;
     color: var(--fg-1);
   }
-  .steps-glyph > *,
+  .steprun-glyph > *,
   .m-tool .t-chev {
     transition: none;
   }
-  .steps.is-fresh,
+  .steprun.is-fresh,
   .ticker-item.is-in,
   .ticker-item.is-out,
   .disclosure.is-entering,
   .disclosure.is-closing,
   .disclosure.is-entering > .disclosure-inner > *,
-  .disclosure.is-entering .steps-item,
-  .steps.is-live .steps-item:last-child {
+  .disclosure.is-entering .steprun-item,
+  .steprun.is-live .steprun-item:last-child {
     animation: none;
   }
 }

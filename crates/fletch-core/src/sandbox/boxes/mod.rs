@@ -499,6 +499,17 @@ impl SandboxEngine for BoxEngine {
         EngineKind::Box
     }
 
+    /// The box's tools disk installs the host CLI's version
+    /// (`registry::tools_version`), so the host binary answers for the guest's;
+    /// a host with no claude at all gets the newest release on the disk, which
+    /// has the flag.
+    fn claude_thinking_summaries(&self, _agent_bin: &str, home: &std::path::Path) -> bool {
+        crate::agent::resolve_agent_bin("claude", "claude", "Claude Code", home)
+            .ok()
+            .map(|host| crate::agent::claude_supports_thinking_display(&host))
+            .unwrap_or(true)
+    }
+
     /// Boot (or reuse) the agent's box and plan an ssh session into it running
     /// `agent_bin` under `fletch-guest exec` with the env file [`deliver_env`]
     /// writes next. The launcher is `bash -c` quoting the agent's arguments for
