@@ -35,6 +35,8 @@ export interface StepSummary {
   /** Tool calls, sub-agent launches included. */
   calls: number;
   thoughts: number;
+  /** The first thought's text, for a run that did nothing but think. */
+  firstThought: string | undefined;
   changed: { paths: string[]; additions: number; deletions: number };
   ran: string[];
   read: string[];
@@ -56,6 +58,7 @@ export function summarizeSteps(items: ViewItem[]): StepSummary {
   const s: StepSummary = {
     calls: 0,
     thoughts: 0,
+    firstThought: undefined,
     changed: { paths: [], additions: 0, deletions: 0 },
     ran: [],
     read: [],
@@ -67,8 +70,10 @@ export function summarizeSteps(items: ViewItem[]): StepSummary {
   };
   for (const item of items) {
     if (item.kind === "notice") {
-      if (item.subtype === "reasoning") s.thoughts += 1;
-      else if (item.is_error || item.subtype === "error") s.failed += 1;
+      if (item.subtype === "reasoning") {
+        s.thoughts += 1;
+        s.firstThought ??= item.text;
+      } else if (item.is_error || item.subtype === "error") s.failed += 1;
       continue;
     }
     const c = callOf(item);

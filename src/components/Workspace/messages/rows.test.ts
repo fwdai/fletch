@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
+import { claudeAdapter } from "@/adapters/claude/index";
+import type { ChatItem } from "@/store";
 import type { ViewItem } from "./pair";
-import { buildRows, type Row, type RowCache } from "./rows";
+import { buildRows, newRowCache, type Row } from "./rows";
 import { liveActivity, summarizeSteps, summaryParts } from "./steps";
+import { visibleItems } from "./useTranscript";
 
 let seq = 0;
 const user = (text = "do it", timing?: { startedAt: number; endedAt?: number }): ViewItem => ({
@@ -41,17 +44,49 @@ function shape(rows: Row[]): unknown[] {
   });
 }
 
+/** Every item the rows hold, in order, folds and runs opened. */
+function flatten(rows: Row[], items: ViewItem[]): ViewItem[] {
+  return rows.flatMap((r) => {
+    if (r.kind === "item") return [items[r.index]];
+    if (r.kind === "steps") return r.run.items;
+    return flatten(r.fold.rows, items);
+  });
+}
+
 describe("buildRows", () => {
   it("gathers consecutive steps into one run, broken by prose", () => {
     const items = [user(), think(), read("/a.ts"), read("/b.ts"), say(), edit("/a.ts"), say()];
-    expect(shape(buildRows(items, new Map()).rows)).toEqual([0, "steps×3", 4, "steps×1", 6]);
+    expect(shape(buildRows(items, newRowCache()).rows)).toEqual([0, "steps×3", 4, "steps×1", 6]);
+  });
+
+  // The rows only regroup the items; nothing is left out. Thoughts in
+  // particular: live, mid-run, between a call and its result, and in a turn
+  // folded away — each is in the rows exactly once, in its place.
+  it("holds every item exactly once, thoughts included", () => {
+    const items = [
+      user("one", { startedAt: 0, endedAt: 1000 }),
+      think("first look"),
+      read("/a"),
+      think("now change it"),
+      edit("/a"),
+      say("done"),
+      user("two"),
+      think("checking"),
+      bash("npm test"),
+      think("passes"),
+      say("fine"),
+      think("one more thing"),
+      tool("Read", { file_path: "/b" }, null),
+    ];
+    const { rows } = buildRows(items, newRowCache());
+    expect(flatten(rows, items)).toEqual(items);
   });
 
   it("keeps questions for the user and sub-agent launches out of runs", () => {
     const ask = tool("AskUserQuestion", { questions: [] }, null);
     const sub = tool("Agent", { description: "explore", prompt: "go" });
     const items = [user(), read("/a"), sub, read("/b"), ask];
-    expect(shape(buildRows(items, new Map()).rows)).toEqual([0, "steps×1", 2, "steps×1", 4]);
+    expect(shape(buildRows(items, newRowCache()).rows)).toEqual([0, "steps×1", 2, "steps×1", 4]);
   });
 
   it("folds an older turn's work and keeps its prompt and answer", () => {
@@ -66,7 +101,7 @@ describe("buildRows", () => {
       read("/b"),
       say("fine"),
     ];
-    const { rows, quietFooters } = buildRows(items, new Map());
+    const { rows, quietFooters } = buildRows(items, newRowCache());
     expect(shape(rows)).toEqual([0, { fold: [1, "steps×1", 3, "steps×1"] }, 5, 6, "steps×1", 8]);
     const fold = rows[1].kind === "fold" ? rows[1].fold : null;
     expect(fold?.runSec).toBe(252);
@@ -77,17 +112,17 @@ describe("buildRows", () => {
 
   it("never folds the latest turn", () => {
     const items = [user(), say("a"), read("/a"), say("b"), read("/b"), say("c")];
-    expect(shape(buildRows(items, new Map()).rows)).toEqual([0, 1, "steps×1", 3, "steps×1", 5]);
+    expect(shape(buildRows(items, newRowCache()).rows)).toEqual([0, 1, "steps×1", 3, "steps×1", 5]);
   });
 
   it("leaves a turn whose work is a single row as it is", () => {
     const items = [user(), read("/a"), read("/b"), say("done"), user(), say("hi")];
-    expect(shape(buildRows(items, new Map()).rows)).toEqual([0, "steps×2", 3, 4, 5]);
+    expect(shape(buildRows(items, newRowCache()).rows)).toEqual([0, "steps×2", 3, 4, 5]);
   });
 
   it("folds everything after the prompt when the turn ends on a step", () => {
     const items = [user(), say("a"), read("/a"), say("b"), bash("ls"), user(), say("x")];
-    expect(shape(buildRows(items, new Map()).rows)).toEqual([
+    expect(shape(buildRows(items, newRowCache()).rows)).toEqual([
       0,
       { fold: [1, "steps×1", 3, "steps×1"] },
       5,
@@ -96,7 +131,7 @@ describe("buildRows", () => {
   });
 
   it("reuses unchanged runs and folds across passes", () => {
-    const cache: RowCache = new Map();
+    const cache = newRowCache();
     const items = [
       user(),
       say("a"),
@@ -117,6 +152,55 @@ describe("buildRows", () => {
     // The live run grew, so it's a new object.
     const lastRun = (rows: Row[]) => rows[rows.length - 1];
     expect(lastRun(second)).not.toBe(lastRun(first));
+  });
+});
+
+describe("from Claude's records to rows", () => {
+  const assistant = (block: Record<string, unknown>) => ({
+    type: "assistant",
+    thinkingDisplay: "updates",
+    message: { id: "m1", role: "assistant", model: "claude-opus-5-5", content: [block] },
+  });
+  const toolResult = (id: string) => ({
+    type: "user",
+    message: { role: "user", content: [{ type: "tool_result", tool_use_id: id, content: "x" }] },
+  });
+  const thoughts = (xs: ViewItem[]) =>
+    xs.flatMap((it) => (it.kind === "notice" && it.subtype === "reasoning" ? [it.text] : []));
+
+  // The records as Claude Code writes them: one content block per line, the
+  // reasoning itself redacted to "" plus a signature, and the short readable
+  // updates it shares as blocks of their own. The old inline view showed each
+  // readable one as a THINKING block; here each is a Thought step inside its
+  // run, and a redacted one leaves nothing — in the live log and in the
+  // rebuild from these records alike.
+  it("gives every readable thought a step and a redacted one none", () => {
+    const lines = [
+      { type: "user", message: { role: "user", content: "go" } },
+      assistant({ type: "thinking", thinking: "", signature: "r" }),
+      assistant({ type: "thinking", thinking: "Reading the reducer first.", signature: "s" }),
+      assistant({ type: "tool_use", id: "t1", name: "Read", input: { file_path: "/a" } }),
+      toolResult("t1"),
+      assistant({ type: "thinking", thinking: "", signature: "r" }),
+      assistant({
+        type: "tool_use",
+        id: "t2",
+        name: "Edit",
+        input: { file_path: "/a", old_string: "a", new_string: "b" },
+      }),
+      toolResult("t2"),
+      assistant({ type: "thinking", thinking: "Now the test.", signature: "s" }),
+      assistant({ type: "text", text: "Done." }),
+    ];
+    const log = claudeAdapter
+      .normalizeTranscript(lines)
+      .reduce<ChatItem[]>((acc, ev) => claudeAdapter.reduce(acc, ev), []);
+    const items = visibleItems(log, "claude");
+    expect(thoughts(items)).toEqual(["Reading the reducer first.", "Now the test."]);
+
+    const { rows } = buildRows(items, newRowCache());
+    expect(shape(rows)).toEqual([0, "steps×4", 5]);
+    expect(thoughts(flatten(rows, items))).toEqual(thoughts(items));
   });
 });
 

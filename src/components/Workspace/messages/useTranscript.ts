@@ -59,6 +59,18 @@ function isShown(item: ChatItem): boolean {
   return item.kind !== "agent_message" || item.text.trim().length > 0;
 }
 
+/** The items the transcript renders, from an agent's log: the provider's
+ *  display policy applied, blank messages dropped, each tool call paired with
+ *  its result. Every other item — every thought included — passes through. */
+export function visibleItems(
+  log: ChatItem[],
+  provider: string | undefined,
+  cache?: PairCache,
+): ViewItem[] {
+  const visible = applyPolicy(log, getAdapter(provider).policy).filter(isShown);
+  return pairToolItems(visible, cache);
+}
+
 /** An agent's own conversation: its log from the store, loaded from history
  *  on first sight (useHistoryLoad), derived for display (useTranscriptFrom). */
 export function useTranscript(agent: AgentRecord): Transcript {
@@ -118,11 +130,10 @@ export function useTranscriptFrom(
   // needs no reset when switching agents (tool-use ids never collide).
   const pairCache = useRef<PairCache>(new Map());
 
-  const items = useMemo(() => {
-    const adapter = getAdapter(agent.provider);
-    const visible = applyPolicy(log ?? [], adapter.policy).filter(isShown);
-    return pairToolItems(visible, pairCache.current);
-  }, [log, agent.provider]);
+  const items = useMemo(
+    () => visibleItems(log ?? [], agent.provider, pairCache.current),
+    [log, agent.provider],
+  );
 
   // Navigable turns = the real user prompts (git-action chips excluded). Each
   // gets a stable ordinal that maps an item to its `data-chat-turn` marker, so

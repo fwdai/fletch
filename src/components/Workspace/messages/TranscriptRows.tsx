@@ -14,7 +14,7 @@ import { Loader } from "@/components/ui/Loader";
 import { providerLabel } from "@/data/providers";
 import { TurnFooter } from "../RunTimer";
 import { RowEnv, type RowEnvValue, RowView, rowViewKey } from "./RowView";
-import { buildRows, lastIndex, type RowCache } from "./rows";
+import { buildRows, lastIndex, newRowCache } from "./rows";
 import type { Transcript } from "./useTranscript";
 
 export function TranscriptRows({
@@ -33,7 +33,7 @@ export function TranscriptRows({
   const { items, turnIds, turnFooters, openTurnStart, transcriptLoading } = transcript;
 
   // Runs and folds keep their identity across streaming deltas (see RowCache).
-  const cache = useRef<RowCache>(new Map());
+  const cache = useRef(newRowCache());
   const { rows, quietFooters } = useMemo(() => buildRows(items, cache.current), [items]);
 
   // The run the transcript ends on — a mid-turn follow-up bubble below it

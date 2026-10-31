@@ -49,7 +49,12 @@ export type Row =
 /** Runs and folds by key from the previous pass, reused while their items are
  *  unchanged so memoized rows skip re-rendering during streaming (the same
  *  idea as pair.ts's PairCache, one level up). */
-export type RowCache = Map<string, StepRun | Fold>;
+export interface RowCache {
+  runs: Map<string, StepRun>;
+  folds: Map<string, Fold>;
+}
+
+export const newRowCache = (): RowCache => ({ runs: new Map(), folds: new Map() });
 
 export interface TranscriptRowsModel {
   rows: Row[];
@@ -90,12 +95,10 @@ export function buildRows(items: ViewItem[], cache: RowCache): TranscriptRowsMod
     const key = `s:${start}`;
     seen.add(key);
     const slice = items.slice(start, end);
-    const cached = cache.get(key);
-    if (cached && "items" in cached && !("rows" in cached) && sameItems(cached.items, slice)) {
-      return cached;
-    }
+    const cached = cache.runs.get(key);
+    if (cached && sameItems(cached.items, slice)) return cached;
     const fresh: StepRun = { key, start, items: slice };
-    cache.set(key, fresh);
+    cache.runs.set(key, fresh);
     return fresh;
   };
 
@@ -136,10 +139,9 @@ export function buildRows(items: ViewItem[], cache: RowCache): TranscriptRowsMod
         : undefined;
     const key = `f:${head}`;
     seen.add(key);
-    const cached = cache.get(key);
+    const cached = cache.folds.get(key);
     if (
       cached &&
-      "rows" in cached &&
       cached.end === answerAt &&
       cached.runSec === runSec &&
       sameItems(cached.items, work)
@@ -147,7 +149,7 @@ export function buildRows(items: ViewItem[], cache: RowCache): TranscriptRowsMod
       return { fold: cached, answerAt };
     }
     const fresh: Fold = { key, head, start, end: answerAt, items: work, rows, runSec };
-    cache.set(key, fresh);
+    cache.folds.set(key, fresh);
     return { fold: fresh, answerAt };
   };
 
@@ -184,6 +186,7 @@ export function buildRows(items: ViewItem[], cache: RowCache): TranscriptRowsMod
     }
   });
 
-  for (const key of cache.keys()) if (!seen.has(key)) cache.delete(key);
+  for (const key of cache.runs.keys()) if (!seen.has(key)) cache.runs.delete(key);
+  for (const key of cache.folds.keys()) if (!seen.has(key)) cache.folds.delete(key);
   return { rows, quietFooters };
 }

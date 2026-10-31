@@ -70,6 +70,12 @@ export function StepGlyph({ icon }: { icon: IconName }) {
   );
 }
 
+/** A thought in full. Every reasoning notice renders through here: as a row's
+ *  body in a run of several steps, or as the whole body of a run of one. */
+function ThoughtBody({ text }: { text: string }) {
+  return <div className="tb-thought">{text}</div>;
+}
+
 /** A thought, as a row among the steps: its first line, opening to the rest. */
 function ThoughtRow({ text }: { text: string }) {
   const lower = useMemo(() => text.toLowerCase(), [text]);
@@ -78,7 +84,7 @@ function ThoughtRow({ text }: { text: string }) {
       name="Thought"
       icon="sparkle"
       summary={<span className="t-thought">{firstLine(text.trimStart(), 160)}</span>}
-      expanded={<div className="tb-thought">{text}</div>}
+      expanded={<ThoughtBody text={text} />}
       revealText={lower}
     />
   );
@@ -123,7 +129,7 @@ function SoleDetail({
   if (item.kind === "notice" && item.subtype === "reasoning") {
     return (
       <div className="tool-body is-sole">
-        <div className="tb-thought">{item.text}</div>
+        <ThoughtBody text={item.text} />
       </div>
     );
   }
@@ -174,8 +180,11 @@ export const StepGroup = memo(function StepGroup({
   // A run that appears live rises in; one already there on load doesn't.
   const [fresh] = useState(live);
   const sole = items.length === 1 ? items[0] : null;
-  const thoughtOnly = parts.length === 1 && parts[0].key === "thought";
-  const firstThought = items.find((it) => it.kind === "notice" && it.subtype === "reasoning");
+  // A run that only thought says what it thought, in brief.
+  const note =
+    parts.length === 1 && parts[0].key === "thought" && summary.firstThought
+      ? firstLine(summary.firstThought.trimStart(), 140)
+      : undefined;
   const icon = live ? activity.icon : runIcon(items, summary);
 
   const cls = ["steps", live && "is-live", shown && "is-open", fresh && "is-fresh"]
@@ -189,14 +198,7 @@ export const StepGroup = memo(function StepGroup({
           {live ? (
             <span className="steps-live">{label}</span>
           ) : (
-            <SummaryLine
-              parts={parts}
-              note={
-                thoughtOnly && firstThought?.kind === "notice"
-                  ? firstLine(firstThought.text.trimStart(), 140)
-                  : undefined
-              }
-            />
+            <SummaryLine parts={parts} note={note} />
           )}
         </Ticker>
         {running > 0 && (
