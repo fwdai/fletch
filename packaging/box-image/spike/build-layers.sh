@@ -35,11 +35,12 @@ NODE_VERSION=22.23.4
 NODE_SHA256=6287aa46b6c375d816e63ae66d024fbbfd70404825aabdfdf898a970871d2f4b
 SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH:-1767225600} # 2026-01-01
 export SOURCE_DATE_EPOCH
-LAYERS="devtools browser"
+LAYERS="devtools browser browser-shell"
 # Fixed filesystem UUIDs: one per image, so a rebuild is byte-identical.
 UUID_BASE=3f2a9c1e-7b4d-4e8a-9d0c-5e6f7a8b9c0d
 UUID_DEVTOOLS=3f2a9c1e-7b4d-4e8a-9d0c-5e6f7a8b9c11
 UUID_BROWSER=3f2a9c1e-7b4d-4e8a-9d0c-5e6f7a8b9c12
+UUID_BROWSER_SHELL=3f2a9c1e-7b4d-4e8a-9d0c-5e6f7a8b9c13
 UUID_V2=3f2a9c1e-7b4d-4e8a-9d0c-5e6f7a8b9c20
 # Today's flags (build.sh) and the proposed ones. -x -1: no xattrs. -T/--all-time:
 # every inode gets SOURCE_DATE_EPOCH.
@@ -171,6 +172,7 @@ for layer in $LAYERS; do
     cp -a "$WORK/node-include" "$LR/usr/local/include"
   fi
   clean_tree "$LR"
+  pin_times "$LR"
   chroot "$LR" /usr/bin/fc-cache -s -f
   chroot "$LR" dpkg-query -W -f '${binary:Package}=${Version}\n' | LC_ALL=C sort > "$WORK/$layer.allpkgs"
   LC_ALL=C comm -13 "$WORK/base.pkgs" "$WORK/$layer.allpkgs" > "$WORK/$layer.pkgs"
@@ -199,7 +201,7 @@ for layer in $LAYERS; do
     --argjson dirs "$(printf '%s\n' $dirs | jq -R . | jq -s .)" \
     '{name: $name, version: $version, dirs: $dirs}' > "$D/.fletch-layer"
   pin_times "$D"
-  eval "uuid=\$UUID_$(echo "$layer" | tr a-z A-Z)"
+  eval "uuid=\$UUID_$(echo "$layer" | tr a-z- A-Z_)"
   mkimage "$uuid" "$NEW_FLAGS" "$OUT/layer-$layer.erofs" "$D"
   eval "${layer}_tree_bytes=$(tree_size "$D")"
   eval "${layer}_full_bytes=$(tree_size "$LR")"

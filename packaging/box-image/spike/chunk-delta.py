@@ -12,9 +12,11 @@ import hashlib
 import random
 import sys
 
-MIN = 256 * 1024
-MAX = 4 * 1024 * 1024
-MASK = (1 << 20) - 1  # cut when the low 20 bits are zero: ~1 MiB average
+import os
+AVG = int(os.environ.get("CHUNK_AVG_KIB", "1024")) * 1024  # average chunk; 1 MiB by default
+MIN = AVG // 4
+MAX = AVG * 4
+MASK = AVG - 1  # cut when the low bits are zero: AVG must be a power of two
 _rng = random.Random(0x5EED5EED)
 GEAR = [_rng.getrandbits(64) for _ in range(256)]
 WORD = (1 << 64) - 1

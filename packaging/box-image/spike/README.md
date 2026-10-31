@@ -40,7 +40,7 @@ browser never loads it. Likewise `/usr/share/locale`, docs and man pages.
 | A5 | Dropping locales, docs and man pages under `LANG=C.UTF-8` breaks nothing | Every test runs with that environment | CI (all) |
 | A6 | A layer's delta fits in `/usr`, `/etc` and `/var`, and removes no base file | The build lists each delta's top-level dirs and fails on others; devtools and browser work through the overlay | CI build + `T-dev`, `T-chromium` |
 | A7 | The loader finds layer libraries without a merged `/etc/ld.so.cache` | `python3` (libpython lives only in devtools) and `chromium` start; `ldd` on layer binaries reports nothing missing | CI `T-ldd` |
-| A8 | The browser layer's fontconfig cache overlays the base's, so Chromium does not rebuild caches into `$HOME` | After `T-chromium`, `~/.cache/fontconfig` is absent or empty | CI `T-fontcache` |
+| A8 | The browser layer's fontconfig cache overlays the base's, so the system Chromium does not rebuild caches into `$HOME` (Playwright's browser bundles its own fontconfig and keeps a cache in `$HOME` on any image; `T-fontcache-pw` only records that) | After `T-chromium`, `~/.cache/fontconfig` is absent or empty | CI `T-fontcache` |
 | A9 | Overlay lookup overhead is acceptable | Cold `ls -lR /usr` on the plain base vs the three-layer merge, caches dropped | CI `T-overlay-perf` |
 | A10 | The new `mkfs.erofs` flags shrink the images substantially and the guest kernel reads them | `sizes.md` compares old and new flags on the same tree; the Mac boot mounts them | CI `T-sizes`, Mac |
 | A11 | Builds are reproducible | `mkfs.erofs` twice on the same tree gives the same sha256 | CI `T-repro` |
@@ -59,7 +59,7 @@ host page-cache sharing between boxes, and the scheduled dependency-bump workflo
 
 | File | What |
 | --- | --- |
-| `packages/{base,devtools,browser}.txt` | The package split |
+| `packages/{base,devtools,browser,browser-shell}.txt` | The package split; `browser-shell` is a variant of `browser` with Debian's `chromium-headless-shell`, built and measured beside it |
 | `dpkg-excludes.cfg` | dpkg `path-exclude` rules, applied at build and persisted in the image for layer installs |
 | `init` | The guest init with layer mounting (a copy of `../rootfs/opt/fletch/init` plus one step) |
 | `build-layers.sh` | Builds base and layers, three base variants for size comparison, the delta variant, `manifest.json`, `sizes.md` |
