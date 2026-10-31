@@ -11,10 +11,14 @@
 // log has pinned to the bottom, so nothing collapses under their eyes.
 //
 // Pure. Rows refer to items by index into the list, so the per-index
-// bookkeeping (live turn, turn ids, footers) carries over unchanged.
+// bookkeeping (live turn, turn ids, footers) carries over unchanged. Their
+// keys, though, follow the items (`itemIdentity`): a run is named by the first
+// tool call in it and a fold by its prompt, so the log can be rebuilt at turn
+// end or grow a page of older history at the top (the phone's "Load older
+// messages") without a run's disclosure state moving to a different run.
 
 import { APP_ACTION_PREFIX } from "@/delegation";
-import type { ViewItem } from "./pair";
+import { itemIdentity, type ViewItem } from "./pair";
 import { isStep } from "./steps";
 
 /** A run of consecutive steps, rendered as one collapsible row. */
@@ -67,6 +71,17 @@ export interface TranscriptRowsModel {
   tailRunKey: string | null;
 }
 
+/** Whether the log ends on a step — a follow-up bubble queued below it aside
+ *  — so a run's own live line is on the page and no second "working"
+ *  indicator is needed under it. */
+export function endsInSteps(items: ViewItem[]): boolean {
+  for (let i = items.length - 1; i >= 0; i -= 1) {
+    if (items[i].kind === "queued_message") continue;
+    return isStep(items[i]);
+  }
+  return false;
+}
+
 /** Index where the latest turn begins: its prompt, or 0 before any. Only rows
  *  at or after it may show a live spinner, so a dangling call from an
  *  interrupted earlier turn can't light up when a later turn goes busy. */
@@ -105,8 +120,25 @@ function isAnswer(item: ViewItem): boolean {
 export function buildRows(items: ViewItem[], cache: RowCache): TranscriptRowsModel {
   const seen = new Set<string>();
 
+  /** A run's name: its first tool call, else its first identified item, else
+   *  its position. */
+  const runKey = (start: number, end: number): string => {
+    for (let i = start; i < end; i += 1) {
+      const it = items[i];
+      if (it.kind === "tool_pair" || it.kind === "tool_call") {
+        const id = itemIdentity(it);
+        if (id) return `s:${id}`;
+      }
+    }
+    for (let i = start; i < end; i += 1) {
+      const id = itemIdentity(items[i]);
+      if (id) return `s:${id}`;
+    }
+    return `s:i:${start}`;
+  };
+
   const run = (start: number, end: number): StepRun => {
-    const key = `s:${start}`;
+    const key = runKey(start, end);
     seen.add(key);
     const slice = items.slice(start, end);
     const cached = cache.runs.get(key);
@@ -151,7 +183,7 @@ export function buildRows(items: ViewItem[], cache: RowCache): TranscriptRowsMod
       prompt.kind === "user_message" && prompt.startedAt != null && prompt.endedAt != null
         ? (prompt.endedAt - prompt.startedAt) / 1000
         : undefined;
-    const key = `f:${head}`;
+    const key = `f:${itemIdentity(prompt) ?? `i:${head}`}`;
     seen.add(key);
     const cached = cache.folds.get(key);
     if (

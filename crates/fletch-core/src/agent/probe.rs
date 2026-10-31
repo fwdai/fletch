@@ -201,8 +201,23 @@ const VERSION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 /// for the leader. A probe that times out reports no version, exactly like one
 /// that printed nothing.
 async fn probe_version_bounded(bin: &str) -> Option<String> {
+    let out = run_bounded(bin, &["--version"]).await?;
+    // Stdout, or stderr when stdout was silent — some CLIs print their version
+    // on the latter.
+    let said = if out.stdout.is_empty() {
+        &out.stderr
+    } else {
+        &out.stdout
+    };
+    parse_semver(&String::from_utf8_lossy(said))
+}
+
+/// Run `<bin> <args>` under [`VERSION_TIMEOUT`] and hand back what it printed
+/// and how it exited; `None` when it could not be started or did not finish
+/// in time (and was torn down, group and all).
+async fn run_bounded(bin: &str, args: &[&str]) -> Option<std::process::Output> {
     let mut cmd = tokio::process::Command::new(bin);
-    cmd.arg("--version")
+    cmd.args(args)
         .kill_on_drop(true)
         // Explicit, because this no longer goes through `Command::output()`:
         // a version probe reads nothing and its output is ours to parse, never
@@ -237,14 +252,40 @@ async fn probe_version_bounded(bin: &str) -> Option<String> {
             return None;
         }
     };
-    // Stdout, or stderr when stdout was silent — some CLIs print their version
-    // on the latter.
-    let said = if out.stdout.is_empty() {
-        &out.stderr
-    } else {
-        &out.stdout
-    };
-    parse_semver(&String::from_utf8_lossy(said))
+    Some(out)
+}
+
+/// The value the capability probe below passes: a bad one on purpose.
+const THINKING_DISPLAY_PROBE: &str = "__fletch_probe__";
+
+/// Whether `bin` — a claude CLI — parses `--thinking-display`, memoized per
+/// path. The flag is hidden from `--help`, and `--version` short-circuits
+/// before unknown options are reported, so neither can say. What does: a
+/// CLI that knows the option validates its value as it parses, so
+/// `--thinking-display __fletch_probe__ --version` fails naming the option
+/// ("argument '__fletch_probe__' is invalid", 2.1.314), while a CLI that does
+/// not know it prints its version and exits 0. No network, no login, no
+/// session. A binary that can't be probed counts as not supporting it, so a
+/// launch never carries a flag it can't vouch for.
+pub fn claude_supports_thinking_display(bin: &str) -> bool {
+    static CACHE: std::sync::OnceLock<parking_lot::Mutex<std::collections::HashMap<String, bool>>> =
+        std::sync::OnceLock::new();
+    let cache = CACHE.get_or_init(|| parking_lot::Mutex::new(std::collections::HashMap::new()));
+    if let Some(known) = cache.lock().get(bin) {
+        return *known;
+    }
+    let path = bin.to_string();
+    let out = on_probe_thread(move |rt| {
+        rt.block_on(run_bounded(
+            &path,
+            &["--thinking-display", THINKING_DISPLAY_PROBE, "--version"],
+        ))
+    });
+    let supported = out.is_some_and(|out| {
+        !out.status.success() && String::from_utf8_lossy(&out.stderr).contains("--thinking-display")
+    });
+    cache.lock().insert(bin.to_string(), supported);
+    supported
 }
 
 /// The sync callers' door to [`probe_version_bounded`] — the readiness check
@@ -258,20 +299,29 @@ async fn probe_version_bounded(bin: &str) -> Option<String> {
 /// own is safe from all three. The thread lives for one bounded probe.
 fn probe_version(bin: &str) -> Option<String> {
     let bin = bin.to_string();
-    let probed = std::thread::spawn(move || {
+    on_probe_thread(move |rt| rt.block_on(probe_version_bounded(&bin)))
+}
+
+/// Run one bounded probe on a thread of its own with a runtime of its own
+/// (see [`probe_version`] for why), and hand back what it found.
+fn on_probe_thread<T: Send + 'static>(
+    probe: impl FnOnce(&tokio::runtime::Runtime) -> Option<T> + Send + 'static,
+) -> Option<T> {
+    std::thread::spawn(move || {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .ok()?;
-        let version = runtime.block_on(probe_version_bounded(&bin));
+        let found = probe(&runtime);
         // Let the runtime's process driver reap a child the deadline killed,
         // so a wedged probe leaves nothing behind. Returns at once when there
         // is nothing to wait for, which is every ordinary probe.
         runtime.shutdown_timeout(std::time::Duration::from_millis(200));
-        version
+        found
     })
-    .join();
-    probed.ok().flatten()
+    .join()
+    .ok()
+    .flatten()
 }
 
 /// Extract the first `N.N[.N[.N]]` token from arbitrary version output.
@@ -320,6 +370,24 @@ mod tests {
             }
             std::thread::sleep(std::time::Duration::from_millis(25));
         }
+    }
+
+    /// A claude that knows `--thinking-display` rejects the probe's value
+    /// before `--version` can answer; one that doesn't answers as if the flag
+    /// weren't there. Older hosts keep launching without the flag.
+    #[test]
+    fn the_thinking_display_probe_reads_the_option_off_a_rejection() {
+        let dir = tempfile::tempdir().unwrap();
+        let knows = script(
+            dir.path(),
+            "knows",
+            "#!/bin/sh\nif [ \"$1\" = --thinking-display ]; then echo \"error: option '--thinking-display <display>' argument '$2' is invalid.\" >&2; exit 1; fi\necho 2.1.314\n",
+        );
+        assert!(claude_supports_thinking_display(&knows));
+        let older = script(dir.path(), "older", "#!/bin/sh\necho 2.0.0\n");
+        assert!(!claude_supports_thinking_display(&older));
+        let missing = dir.path().join("missing").to_string_lossy().into_owned();
+        assert!(!claude_supports_thinking_display(&missing));
     }
 
     /// The sync door every non-async caller goes through — the readiness check,

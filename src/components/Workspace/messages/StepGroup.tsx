@@ -22,8 +22,9 @@ import {
   useSteady,
 } from "./Disclosure";
 import { useTranscriptHost } from "./host";
-import type { ViewItem } from "./pair";
+import { itemIdentity, type ViewItem } from "./pair";
 import { getPresenter, type ToolCall, type ToolResult } from "./presenters";
+import { Caption } from "./presenters/blocks";
 import { DiffCount } from "./presenters/util";
 import type { StepRun } from "./rows";
 import {
@@ -31,6 +32,7 @@ import {
   runIcon,
   type SummaryPart,
   searchText,
+  stepStatus,
   summarizeSteps,
   summaryParts,
 } from "./steps";
@@ -99,25 +101,21 @@ export function ToolStep({
   busy: boolean;
 }) {
   const presenter = getPresenter(call.name);
-  const task = useTranscriptHost().taskFor(call.id);
-  const taskRunning = task?.status === "running";
-  const taskFailed = task?.status === "failed";
+  const status = stepStatus(result, useTranscriptHost().taskFor(call.id), busy);
   const pair = useMemo(() => ({ kind: "tool_pair" as const, call, result }), [call, result]);
   return (
     <ToolRow
       name={presenter.title ?? call.name}
       icon={presenter.icon}
-      isError={result?.is_error || taskFailed}
-      running={(busy && !result) || taskRunning}
+      isError={status.failed}
+      running={status.running}
       toolUseId={call.id}
       agentId={agentId}
       summary={
         <>
           {presenter.summary(call, result)}
-          {taskFailed && (
-            <span style={{ color: "var(--danger)", marginLeft: 8 }}>
-              · {task.failureStatus ?? "failed"}
-            </span>
+          {status.note && (
+            <span style={{ color: "var(--danger)", marginLeft: 8 }}>· {status.note}</span>
           )}
         </>
       }
@@ -178,7 +176,9 @@ function StepItem({
   }
 }
 
-/** A run of one opens to that step's own detail; there's no list to show. */
+/** A run of one opens to that step's own detail; there's no list to show.
+ *  A failed background task has no row to say so here, so its status leads
+ *  the detail. */
 function SoleDetail(props: {
   item: ViewItem;
   index: number;
@@ -186,10 +186,13 @@ function SoleDetail(props: {
   busy: boolean;
   renderItem: RenderItem;
 }) {
-  const { item } = props;
+  const { item, busy } = props;
+  const { taskFor } = useTranscriptHost();
   if (item.kind === "tool_pair") {
+    const status = stepStatus(item.result, taskFor(item.call.id), busy);
     return (
       <div className="tool-body is-sole">
+        {status.note && <Caption tone="danger">{status.note}</Caption>}
         {getPresenter(item.call.name).expanded(item.call, item.result)}
       </div>
     );
@@ -230,23 +233,18 @@ export const StepGroup = memo(function StepGroup({
   useFocusInside(agentId, items, reveal);
   const shown = open || revealed;
 
-  const summary = useMemo(() => summarizeSteps(items), [items]);
+  // The summary reads the background tasks too: work this run launched that
+  // outlives it (a dev server, a watcher) keeps the header saying "running",
+  // and a command that failed after its launch result landed counts as failed.
+  const { taskFor } = useTranscriptHost();
+  const summary = useMemo(() => summarizeSteps(items, taskFor), [items, taskFor]);
   const parts = useMemo(() => summaryParts(summary), [summary]);
   const pending = busy && items.some((it) => it.kind === "tool_pair" && !it.result);
   const live = busy && (tail || pending);
   const raw = liveActivity(items);
   const activity = useSteady(raw, raw.label, raw.idle);
   const label = activity.label;
-
-  // Background work this run launched that outlives it (a dev server, a test
-  // watcher): the header keeps saying so after the run has settled.
-  const { taskFor } = useTranscriptHost();
-  const running = useMemo(
-    () =>
-      items.filter((it) => it.kind === "tool_pair" && taskFor(it.call.id)?.status === "running")
-        .length,
-    [items, taskFor],
-  );
+  const running = summary.running;
 
   // A run that appears live rises in; one already there on load doesn't.
   const [fresh] = useState(live);
@@ -318,6 +316,5 @@ export const StepGroup = memo(function StepGroup({
 });
 
 function stepKey(item: ViewItem, index: number): string {
-  if (item.kind === "tool_pair" && item.call.id) return `tp:${item.call.id}`;
-  return `i:${index}`;
+  return itemIdentity(item) ?? `i:${index}`;
 }

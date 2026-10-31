@@ -129,6 +129,35 @@ describe("buildRows", () => {
     ]);
   });
 
+  // A run is named by its first tool call and a fold by its prompt, so a page
+  // of older history prepended at the top (the phone's "Load older messages")
+  // moves every index but no key: an open run stays open, and the run that
+  // now sits at its old index doesn't inherit its state.
+  it("keeps run and fold keys through a prepend", () => {
+    const older = [
+      { ...user("zero", { startedAt: 0, endedAt: 1 }), turnId: "t0" },
+      read("/z"),
+      say("done"),
+    ];
+    const items = [
+      { ...user("one", { startedAt: 0, endedAt: 1 }), turnId: "t1" },
+      read("/a"),
+      say("looking"),
+      edit("/a"),
+      say("ok"),
+      user("two"),
+      read("/b"),
+      think(),
+    ];
+    const keys = (rows: Row[]) =>
+      rows.flatMap((r) => (r.kind === "item" ? [] : [r.kind === "fold" ? r.fold.key : r.run.key]));
+    const before = keys(buildRows(items, newRowCache()).rows);
+    const after = keys(buildRows([...older, ...items], newRowCache()).rows);
+    expect(after.slice(-before.length)).toEqual(before);
+    expect(before[0]).toBe("f:u:t1");
+    expect(before[1]).toBe(`s:tp:${(items[6] as { call: { id: string } }).call.id}`);
+  });
+
   it("reuses unchanged runs and folds across passes", () => {
     const cache = newRowCache();
     const items = [
@@ -237,6 +266,36 @@ describe("summaryParts", () => {
   it("totals line changes across a run", () => {
     const s = summarizeSteps([edit("/a", "1", "2\n3"), edit("/b", "x\ny", "z")]);
     expect(s.changed).toMatchObject({ additions: 3, deletions: 3 });
+  });
+});
+
+describe("summaryParts fallbacks", () => {
+  const texts = (items: ViewItem[], taskFor?: Parameters<typeof summarizeSteps>[1]) =>
+    summaryParts(summarizeSteps(items, taskFor)).map((p) =>
+      p.code ? `${p.text} ${p.code}` : p.text,
+    );
+
+  it("never leaves a run unlabelled", () => {
+    const orphan: ViewItem = { kind: "tool_result", tool_use_id: "gone", content: "x" };
+    const hook: ViewItem = { kind: "notice", subtype: "hook_output", text: "lint ok" };
+    expect(texts([orphan])).toEqual(["received 1 result"]);
+    expect(texts([hook, hook])).toEqual(["ran 2 hooks"]);
+    expect(texts([{ kind: "notice", subtype: "info", text: "hi" }])).toEqual(["1 step"]);
+  });
+
+  // A background command fails after its launch result landed; the result in
+  // the log says nothing about it, the task does.
+  it("counts a failed background task as a failure of the run", () => {
+    const launch = bash("npm run dev &");
+    const id = launch.kind === "tool_pair" ? launch.call.id : "";
+    const failed = (toolUseId: string) =>
+      toolUseId === id
+        ? ({ status: "failed", failureStatus: "exited 1" } as ReturnType<
+            NonNullable<Parameters<typeof summarizeSteps>[1]>
+          >)
+        : undefined;
+    expect(texts([launch])).toEqual(["ran npm run dev &"]);
+    expect(texts([launch], failed)).toEqual(["ran npm run dev &", "1 failed"]);
   });
 });
 

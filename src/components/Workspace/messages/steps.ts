@@ -3,12 +3,20 @@
 // present-tense line for a run still in flight. Pure; the rendering is
 // StepGroup's.
 
+import type { BackgroundTask } from "@/adapters/shared/backgroundTasks";
 import { isSubagentCall } from "@/adapters/shared/subagents";
 import type { IconName } from "@/components/Icon";
 import { basename } from "@/util/format";
 import { renderToolResult } from "@/util/toolText";
 import type { ViewItem } from "./pair";
-import { getPresenter, type StepKind, stepActivity, stepFacts, type ToolCall } from "./presenters";
+import {
+  getPresenter,
+  type StepKind,
+  stepActivity,
+  stepFacts,
+  type ToolCall,
+  type ToolResult,
+} from "./presenters";
 import { isUserInputTool } from "./UserInput/parse";
 
 /** Whether `item` folds into a run of steps. Questions for the user and
@@ -29,12 +37,47 @@ export function isStep(item: ViewItem): boolean {
   }
 }
 
+/** The background task a tool call launched, if any — what the app knows
+ *  about a call after its launch result landed (TranscriptHost). */
+export type TaskLookup = (toolUseId: string) => BackgroundTask | undefined;
+
+/** How one tool call stands: still running (no result while the turn is
+ *  live, or a background task still going), failed (an error result, or the
+ *  task it launched failed), and what to say about a failed task. One rule,
+ *  read by the row, the run's summary and a run of one's detail alike. */
+export interface StepStatus {
+  running: boolean;
+  failed: boolean;
+  /** A failed background task's own account of it, when there is one. */
+  note?: string;
+}
+
+export function stepStatus(
+  result: ToolResult | null,
+  task: BackgroundTask | undefined,
+  busy: boolean,
+): StepStatus {
+  const taskFailed = task?.status === "failed";
+  return {
+    running: (busy && !result) || task?.status === "running",
+    failed: !!result?.is_error || taskFailed,
+    note: taskFailed ? (task.failureStatus ?? "failed") : undefined,
+  };
+}
+
 /** What a run of steps (or a whole turn's work) did. Files are counted once
  *  however many times they were touched; everything else is counted by call. */
 export interface StepSummary {
+  /** Every step, whatever it is. */
+  steps: number;
   /** Tool calls, sub-agent launches included. */
   calls: number;
+  /** Calls whose background task is still going. */
+  running: number;
   thoughts: number;
+  /** Tool outputs without a call of their own, and hooks' output. */
+  outputs: number;
+  hooks: number;
   /** The first thought's text, for a run that did nothing but think. */
   firstThought: string | undefined;
   changed: { paths: string[]; additions: number; deletions: number };
@@ -48,16 +91,20 @@ export interface StepSummary {
   failed: number;
 }
 
-function callOf(item: ViewItem): { call: ToolCall; failed: boolean } | null {
-  if (item.kind === "tool_pair") return { call: item.call, failed: !!item.result?.is_error };
-  if (item.kind === "tool_call") return { call: item, failed: false };
+function callOf(item: ViewItem): { call: ToolCall } | null {
+  if (item.kind === "tool_pair") return { call: item.call };
+  if (item.kind === "tool_call") return { call: item };
   return null;
 }
 
-export function summarizeSteps(items: ViewItem[]): StepSummary {
+export function summarizeSteps(items: ViewItem[], taskFor?: TaskLookup): StepSummary {
   const s: StepSummary = {
+    steps: items.length,
     calls: 0,
+    running: 0,
     thoughts: 0,
+    outputs: 0,
+    hooks: 0,
     firstThought: undefined,
     changed: { paths: [], additions: 0, deletions: 0 },
     ran: [],
@@ -73,13 +120,27 @@ export function summarizeSteps(items: ViewItem[]): StepSummary {
       if (item.subtype === "reasoning") {
         s.thoughts += 1;
         s.firstThought ??= item.text;
-      } else if (item.is_error || item.subtype === "error") s.failed += 1;
+      } else if (item.subtype === "hook_output") s.hooks += 1;
+      else if (item.is_error || item.subtype === "error") s.failed += 1;
+      continue;
+    }
+    if (item.kind === "tool_result") {
+      s.outputs += 1;
+      if (item.is_error) s.failed += 1;
       continue;
     }
     const c = callOf(item);
     if (!c) continue;
     s.calls += 1;
-    if (c.failed) s.failed += 1;
+    // A call's own result, and the background task it launched: a command
+    // that failed after its launch result landed is a failure of this run.
+    const status = stepStatus(
+      item.kind === "tool_pair" ? item.result : null,
+      taskFor?.(c.call.id),
+      false,
+    );
+    if (status.failed) s.failed += 1;
+    if (status.running) s.running += 1;
     if (isSubagentCall(c.call)) {
       s.subagents += 1;
       continue;
@@ -169,7 +230,12 @@ export function summaryParts(s: StepSummary): SummaryPart[] {
     });
   }
   if (s.planned > 0) parts.push({ key: "planned", text: "updated the plan" });
+  if (s.hooks > 0) parts.push({ key: "hooks", text: `ran ${plural(s.hooks, "hook")}` });
+  if (s.outputs > 0)
+    parts.push({ key: "outputs", text: `received ${plural(s.outputs, "result")}` });
   if (parts.length === 0 && s.thoughts > 0) parts.push({ key: "thought", text: "thought" });
+  // Whatever the steps were, the line says something: a run never reads blank.
+  if (parts.length === 0) parts.push({ key: "steps", text: `${plural(s.steps, "step")}` });
   if (s.failed > 0) parts.push({ key: "failed", text: `${s.failed} failed`, tone: "danger" });
   return parts;
 }

@@ -15,9 +15,10 @@ import {
   threadType,
 } from "@desktop/adapters/shared/subagents";
 import { Icon } from "@desktop/components/Icon";
+import { endsInSteps } from "@desktop/components/Workspace/messages/rows";
 import { agentTitle } from "@desktop/util/agentTitle";
 import { useMemo } from "react";
-import { applyPolicy, type ChatItem, getAdapter } from "../../adapters";
+import { type ChatItem, getAdapter } from "../../adapters";
 import { Nav } from "../../components/ui";
 import { isAgentBusy } from "../../lib/agents";
 import { fmtElapsed, useElapsed } from "../../lib/hooks";
@@ -25,7 +26,7 @@ import { joinThreadPath, splitThreadPath, tasksByToolUse, threadStatus } from ".
 import { useStickyScroll } from "../../lib/useStickyScroll";
 import { agentOf, useStore } from "../../store";
 import { LogPlaceholder } from "../Agent/LogState";
-import { Dots, Transcript } from "../Agent/Transcript";
+import { Dots, Transcript, useVisibleItems } from "../Agent/Transcript";
 
 const EMPTY: ChatItem[] = [];
 
@@ -46,9 +47,8 @@ export function SubagentScreen({ agentId, path: pathProp }: { agentId: string; p
   const live = state === "running";
   const elapsed = useElapsed(task?.startedAt, live);
 
-  const policy = getAdapter(agent?.provider).policy;
   const items = thread?.items ?? EMPTY;
-  const visible = useMemo(() => applyPolicy(items, policy), [items, policy]);
+  const visible = useVisibleItems(items, getAdapter(agent?.provider).policy);
   const byToolUse = useMemo(() => tasksByToolUse(tasks), [tasks]);
   const { ref, onScroll } = useStickyScroll<HTMLDivElement>([items, state]);
 
@@ -93,14 +93,13 @@ export function SubagentScreen({ agentId, path: pathProp }: { agentId: string; p
               agentId={agentId}
               provider={agent.provider}
               items={visible}
-              policy={policy}
               tasks={byToolUse}
               busy={live}
               openThread={(id) =>
                 push("subagent", { agentId, path: joinThreadPath([...path, id]) })
               }
             />
-            {live && (
+            {live && !endsInSteps(visible) && (
               <div className="working rise">
                 <Dots />
                 Sub-agent is working

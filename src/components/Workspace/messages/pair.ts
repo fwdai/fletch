@@ -86,6 +86,26 @@ export function visibleItems(
   return pairToolItems(applyPolicy(log, policy).filter(isShown), cache);
 }
 
+/** What names an item across the log's reshapings — a turn-end rebuild, a
+ *  page of older history prepended on the phone — so a run, a fold and its
+ *  disclosure state follow the item rather than its current index: a tool
+ *  call's id, a prompt's turn id, else the session record it came from. Null
+ *  for an item that has none (a live thought before the rebuild stamps it). */
+export function itemIdentity(item: ViewItem): string | null {
+  switch (item.kind) {
+    case "tool_pair":
+      return item.call.id ? `tp:${item.call.id}` : null;
+    case "tool_call":
+      return item.id ? `tp:${item.id}` : null;
+    case "tool_result":
+      return item.tool_use_id ? `tr:${item.tool_use_id}` : null;
+    case "user_message":
+      if (item.turnId) return `u:${item.turnId}`;
+      break;
+  }
+  return item.recordSeq !== undefined ? `r:${item.recordSession ?? ""}:${item.recordSeq}` : null;
+}
+
 /** Stable React key for a rendered row. Tool pairs/results key off their tool
  *  id so a row's expand state stays anchored to the tool rather than to a list
  *  position. Messages and notices have no id and the log is append-only, so

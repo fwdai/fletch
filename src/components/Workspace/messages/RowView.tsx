@@ -6,6 +6,7 @@
 import { createContext, memo, type ReactNode, useContext, useMemo } from "react";
 import { fmtDur } from "@/util/format";
 import { DeepOpen, DisclosureBody, useDisclosure, useFocusInside, useRevealed } from "./Disclosure";
+import { useTranscriptHost } from "./host";
 import { rowKey, type ViewItem } from "./pair";
 import type { Fold, Row } from "./rows";
 import { StepGlyph, StepGroup, SummaryLine } from "./StepGroup";
@@ -83,7 +84,11 @@ const WorkFold = memo(function WorkFold({ fold, agentId }: { fold: Fold; agentId
   const revealed = useRevealed(fold.items);
   useFocusInside(agentId, fold.items, reveal);
   const shown = open || revealed;
-  const parts = useMemo(() => summaryParts(summarizeSteps(fold.items)), [fold.items]);
+  const { taskFor } = useTranscriptHost();
+  const parts = useMemo(
+    () => summaryParts(summarizeSteps(fold.items, taskFor)),
+    [fold.items, taskFor],
+  );
   const lead = fold.runSec !== undefined ? `Worked for ${fmtDur(fold.runSec)}` : undefined;
 
   return (

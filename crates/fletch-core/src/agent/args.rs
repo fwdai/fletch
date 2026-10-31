@@ -79,7 +79,13 @@ pub(crate) fn prepare_pty_args(spec: &SpawnSpec<'_>, mcp_args: &[String]) -> Vec
     args
 }
 
-pub(crate) fn prepare_managed_args(spec: &SpawnSpec<'_>, mcp_args: &[String]) -> Vec<String> {
+/// `thinking_summaries`: whether the claude this launch runs parses
+/// `--thinking-display` (see below).
+pub(crate) fn prepare_managed_args(
+    spec: &SpawnSpec<'_>,
+    mcp_args: &[String],
+    thinking_summaries: bool,
+) -> Vec<String> {
     // Stream-json input + output give us a structured back-and-forth
     // over stdio. --verbose is required when using stream-json output
     // so events keep flowing. --include-partial-messages emits
@@ -97,10 +103,11 @@ pub(crate) fn prepare_managed_args(spec: &SpawnSpec<'_>, mcp_args: &[String]) ->
     // the server, which redacts the reasoning to an empty block and shares a
     // one-line note for only some phases (observed: 55 of 234 in one session)
     // — so the chat had almost no thoughts to show. The flag is hidden from
-    // `--help` but parsed (2.1.314: choices summarized, omitted, highlights);
-    // an older claude without it refuses to launch, as with any flag here.
-    // Whatever comes back, an empty thinking block still shows nothing
-    // (src/adapters/claude/reduce.ts).
+    // `--help` but parsed (2.1.314: choices summarized, omitted, highlights),
+    // and a claude that doesn't parse it refuses to launch, so it goes on the
+    // line only when `thinking_summaries` says this launch's binary takes it
+    // (`probe::claude_supports_thinking_display`). Whatever comes back, an
+    // empty thinking block still shows nothing (src/adapters/claude/reduce.ts).
     let mut args: Vec<String> = vec![
         "--print".into(),
         "--input-format".into(),
@@ -109,13 +116,17 @@ pub(crate) fn prepare_managed_args(spec: &SpawnSpec<'_>, mcp_args: &[String]) ->
         "stream-json".into(),
         "--verbose".into(),
         "--include-partial-messages".into(),
-        "--thinking-display".into(),
-        "summarized".into(),
+    ];
+    if thinking_summaries {
+        args.push("--thinking-display".into());
+        args.push("summarized".into());
+    }
+    args.extend([
         "--permission-mode".into(),
         "default".into(),
         "--permission-prompt-tool".into(),
         "stdio".into(),
-    ];
+    ]);
     args.extend(effort_args(spec.effort));
     args.extend(model_args(spec.model));
     args.extend(instructions::append_system_prompt_args(spec.instructions));

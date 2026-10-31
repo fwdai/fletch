@@ -19,7 +19,11 @@ import {
   TranscriptHost,
   type TranscriptHostValue,
 } from "@desktop/components/Workspace/messages/host";
-import { type PairCache, visibleItems } from "@desktop/components/Workspace/messages/pair";
+import {
+  type PairCache,
+  type ViewItem,
+  visibleItems,
+} from "@desktop/components/Workspace/messages/pair";
 import {
   RowEnv,
   type RowEnvValue,
@@ -41,6 +45,15 @@ type ToolResult = Extract<ChatItem, { kind: "tool_result" }>;
 
 /** Background tasks by the tool_use id that launched them. */
 export type TasksByToolUse = Record<string, BackgroundTask>;
+
+/** The items a screen's transcript shows, derived once from the log: the
+ *  provider's display policy, the blank-message filter and tool pairing, in
+ *  the one pass the desktop uses (`visibleItems`). Tool-pair identity survives
+ *  streaming deltas (PairCache). */
+export function useVisibleItems(log: ChatItem[] | undefined, policy: DisplayPolicy): ViewItem[] {
+  const cache = useRef<PairCache>(new Map());
+  return useMemo(() => visibleItems(log ?? [], policy, cache.current), [log, policy]);
+}
 
 /** Send a message again, as a new turn. */
 export type Resend = (text: string, attachments?: string[]) => void;
@@ -150,16 +163,15 @@ function SubagentCard({
   );
 }
 
-/** `items` is the agent's log (or a thread's); `policy` is its provider's
- *  display policy. `busy` is the owning agent's (or thread's) liveness, which
- *  the open turn's rows read their running state from. `openThread` opens a
+/** `items` is the agent's log (or a thread's) as the screen derived it once
+ *  (`useVisibleItems`). `busy` is the owning agent's (or thread's) liveness,
+ *  which the open turn's rows read their running state from. `openThread` opens a
  *  sub-agent's thread; without it the cards are inert. `resend` backs the
  *  Resend on a message the agent never read; without it there is none. */
 export function Transcript({
   agentId,
   provider,
-  items,
-  policy,
+  items: view,
   tasks,
   busy = false,
   openThread,
@@ -167,18 +179,15 @@ export function Transcript({
 }: {
   agentId: string;
   provider?: string;
-  items: ChatItem[];
-  policy: DisplayPolicy;
+  items: ViewItem[];
   tasks?: TasksByToolUse;
   busy?: boolean;
   openThread?: (toolUseId: string) => void;
   resend?: Resend;
 }) {
-  // Wrapper identity survives streaming deltas (PairCache, RowCache), so
-  // settled rows skip re-rendering while the live one grows.
-  const pairCache = useRef<PairCache>(new Map());
+  // Run and fold identity survives streaming deltas (RowCache), so settled
+  // rows skip re-rendering while the live one grows.
   const rowCache = useRef(newRowCache());
-  const view = useMemo(() => visibleItems(items, policy, pairCache.current), [items, policy]);
   const { rows, tailRunKey } = useMemo(() => buildRows(view, rowCache.current), [view]);
 
   const host = useMemo<TranscriptHostValue>(
