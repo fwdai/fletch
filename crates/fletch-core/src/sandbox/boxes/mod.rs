@@ -113,6 +113,7 @@ use crate::sandbox::engine::{
     TurnPrep,
 };
 use crate::sandbox::placement::Placement;
+use crate::sandbox::provider::GuestEntry;
 use crate::sandbox::{policy, provider};
 
 pub use registry::{BoxIdentity, BoxPhase, BoxRegistry, RunningBox, StopReason};
@@ -676,6 +677,48 @@ impl ConfinedView {
         borrowed(&self.cow_files)
     }
 
+    /// The scope the host's own operations for a launch confined to this
+    /// view run in ([`executor::Scope`]): inside the view, so what the host
+    /// writes for the launch (its seed, its credential files) lands where the
+    /// launch's own writes do, and what it reads back is what the launch
+    /// sees, never the shared layer below a private copy.
+    fn scope(&self) -> executor::Scope {
+        executor::Scope::confined(self.exec_words())
+    }
+
+    /// `fletch-guest exec` with this view's options and an empty env file,
+    /// through the `--` before a command; unquoted.
+    fn exec_words(&self) -> Vec<String> {
+        let mut words: Vec<String> = vec![
+            fletch_box::guest::GUEST_AGENT.into(),
+            fletch_box::guest::EXEC.into(),
+        ];
+        let options = [
+            (fletch_box::guest::EXEC_READ_ONLY, self.read_only()),
+            (fletch_box::guest::EXEC_WRITABLE, self.writable()),
+        ];
+        for (option, paths) in options {
+            for path in paths {
+                words.push(option.into());
+                words.push(path.to_string_lossy().into_owned());
+            }
+        }
+        let copies = [
+            (fletch_box::guest::EXEC_COW, self.cow_dirs()),
+            (fletch_box::guest::EXEC_COW_FILE, self.cow_files()),
+        ];
+        for (option, pairs) in copies {
+            for (shared, private) in pairs {
+                words.push(option.into());
+                words.push(shared.to_string_lossy().into_owned());
+                words.push(private.to_string_lossy().into_owned());
+            }
+        }
+        let rest = ["--env-file", "/dev/null", "--"];
+        words.extend(rest.map(String::from));
+        words
+    }
+
     /// Where a launch confined to this view finds what it wrote at `shared`,
     /// as the guest outside the confinement sees it: inside a copy-on-write
     /// directory, the same path in its store's upper layer; for a
@@ -726,16 +769,18 @@ fn borrowed(pairs: &[(PathBuf, PathBuf)]) -> Vec<(&Path, &Path)> {
 ///   box covers is not mounted in the guest at all. Read-only shares stay as
 ///   the host mounts them.
 /// - Every shared location a CLI writes is a private copy-on-write view
-///   ([`shared_state`]): its provider's state dirs
-///   (`policy::provider_state_dirs`, in the per-provider form a box carrying
-///   one provider's CLI wants), the agent scratch dirs
+///   ([`shared_state`]): its provider's state dirs as the adapter lays them
+///   out in the guest, the agent scratch dirs
 ///   (`policy::agent_scratch_dirs`), the project's toolchain cache
 ///   (`toolchain_cache`, its guest path), each an overlay with its store
-///   under [`COW_DIR`], and claude's `~/.claude.json`, a private copy there.
-///   The reviewer reads the coder's state through it, and what it writes
-///   lands in its own upper layer: a later coder launch never sees a file it
-///   wrote, so nothing it could plant there (an MCP config, a hook, a plugin)
-///   is executed by the coder. That takes no list of each provider's
+///   under [`COW_DIR`], and the provider's state files (claude's
+///   `~/.claude.json`), each a private copy there. The reviewer reads the
+///   coder's state through it, and what it writes lands in its own upper
+///   layer: a later coder launch never sees a file it wrote, so nothing it
+///   could plant there (an MCP config, a hook, a plugin) is executed by the
+///   coder. What the host writes for the launch (its seed and its credential
+///   files) is written in the same view ([`ConfinedView::scope`]), where the
+///   reviewer reads it. That takes no list of each provider's
 ///   executable config, which seatbelt denies back by path
 ///   (`policy::provider_exec_config_denials`) and a mount could not, for a
 ///   path that does not exist yet. The toolchain cache is no exception: the
@@ -826,26 +871,28 @@ fn confined_view(
 }
 
 /// What a launch in a box shares with every other launch there and writes:
-/// its provider's state dirs (`policy::provider_state_dirs`), the agent
-/// scratch dirs (`policy::agent_scratch_dirs`) and the project's toolchain
-/// cache when it is given, then the state files (claude's `~/.claude.json`).
-/// A confined tenant sees each as a private copy ([`confined_view`]).
+/// the project's toolchain cache when it is given, its provider's shared
+/// state as the adapter lays it out in the guest
+/// ([`ProviderHome::shared_state`](provider::ProviderHome::shared_state),
+/// which holds everything the seed and the credential files put outside the
+/// writable root) and the agent scratch dirs (`policy::agent_scratch_dirs`),
+/// then the provider's state files. A confined tenant sees each as a private
+/// copy ([`confined_view`]).
 fn shared_state(
     provider: &str,
     home: &Path,
     toolchain_cache: Option<&Path>,
 ) -> (Vec<PathBuf>, Vec<PathBuf>) {
+    let state = provider::for_provider(provider)
+        .map(|adapter| adapter.shared_state(home))
+        .unwrap_or_default();
     let dirs = toolchain_cache
         .map(Path::to_path_buf)
         .into_iter()
-        .chain(policy::provider_state_dirs(provider, home))
+        .chain(state.dirs)
         .chain(policy::agent_scratch_dirs(home))
         .collect();
-    let files = (provider == "claude")
-        .then(|| home.join(".claude.json"))
-        .into_iter()
-        .collect();
-    (dirs, files)
+    (dirs, state.files)
 }
 
 /// Each of `shared` with its private counterpart under `own_root`'s
@@ -930,8 +977,8 @@ fn outermost<'a>(paths: impl IntoIterator<Item = &'a Path>) -> Vec<PathBuf> {
 
 /// The guest command that makes every directory `view` binds or overlays
 /// exist, which a mount needs: the writable ones and the shared copy-on-write
-/// ones, run before the launch in the guest's own view. A shared file is
-/// there already: the provider's home is seeded first (`home::seed`). The
+/// ones, run before the launch in the guest's own view. A shared file the
+/// view copies is made from the seed ([`mount_point_seed`]). The
 /// stores and the copies are not made here but by the guest, inside the
 /// confinement, where a link planted under the tenant's own root can only
 /// lead to its own paths, never into the coder's.
@@ -950,9 +997,14 @@ fn carve_out_script(view: &ConfinedView) -> String {
     script
 }
 
-/// Makes every directory `view` mounts exist in `channel`'s guest
-/// ([`carve_out_script`]), in one round trip.
-fn make_carve_outs(channel: &fletch_box::Channel, view: &ConfinedView) -> Result<()> {
+/// Makes everything `view` mounts exist in `channel`'s guest: every directory
+/// ([`carve_out_script`]), in one round trip, then every file it copies, from
+/// the launch's `seed` ([`mount_point_seed`]).
+fn make_carve_outs(
+    channel: &fletch_box::Channel,
+    view: &ConfinedView,
+    seed: &[GuestEntry],
+) -> Result<()> {
     let out = executor::run(channel, &["sh", "-c", &carve_out_script(view)], None)?;
     if !out.status.success() {
         return Err(Error::SandboxUnavailable(format!(
@@ -960,7 +1012,29 @@ fn make_carve_outs(channel: &fletch_box::Channel, view: &ConfinedView) -> Result
             String::from_utf8_lossy(&out.stderr).trim()
         )));
     }
-    Ok(())
+    home::apply(channel, &executor::Scope::default(), &mount_point_seed(view, seed))
+}
+
+/// The entries of a launch's `seed` for the files `view` copies
+/// (`--cow-file`), each made only where nothing is yet. The guest binds the
+/// launch's copy on the shared file, which must therefore exist before the
+/// view does, and makes the copy from it the first time. Applied in the
+/// guest's own view, they make no file the coder's own seed would not make,
+/// with the same contents, and change none that exists; the rest of the seed
+/// is applied in the view ([`ConfinedView::scope`]).
+fn mount_point_seed(view: &ConfinedView, seed: &[GuestEntry]) -> Vec<GuestEntry> {
+    let copied = |path: &Path| view.cow_files.iter().any(|(file, _)| file == path);
+    let mut entries: Vec<GuestEntry> = seed
+        .iter()
+        .filter(|entry| matches!(entry, GuestEntry::File { path, .. } if copied(path)))
+        .cloned()
+        .collect();
+    for entry in &mut entries {
+        if let GuestEntry::File { keep_existing, .. } = entry {
+            *keep_existing = true;
+        }
+    }
+    entries
 }
 
 /// `view` once the guest has shown it enforces it (`guest_enforces`,
@@ -1012,35 +1086,11 @@ fn guest_confines(running: &RunningBox, view: &ConfinedView) -> Result<bool> {
     Ok(confines)
 }
 
-/// The words of [`guest_confines`]'s probe, unquoted.
+/// The words of [`guest_confines`]'s probe, unquoted: `/bin/true` in the
+/// view.
 fn probe_words(view: &ConfinedView) -> Vec<String> {
-    let mut words: Vec<String> = vec![
-        fletch_box::guest::GUEST_AGENT.into(),
-        fletch_box::guest::EXEC.into(),
-    ];
-    let options = [
-        (fletch_box::guest::EXEC_READ_ONLY, view.read_only()),
-        (fletch_box::guest::EXEC_WRITABLE, view.writable()),
-    ];
-    for (option, paths) in options {
-        for path in paths {
-            words.push(option.into());
-            words.push(path.to_string_lossy().into_owned());
-        }
-    }
-    let copies = [
-        (fletch_box::guest::EXEC_COW, view.cow_dirs()),
-        (fletch_box::guest::EXEC_COW_FILE, view.cow_files()),
-    ];
-    for (option, pairs) in copies {
-        for (shared, private) in pairs {
-            words.push(option.into());
-            words.push(shared.to_string_lossy().into_owned());
-            words.push(private.to_string_lossy().into_owned());
-        }
-    }
-    let rest = ["--env-file", "/dev/null", "--", "/bin/true"];
-    words.extend(rest.map(String::from));
+    let mut words = view.exec_words();
+    words.push("/bin/true".into());
     words
 }
 
@@ -1210,13 +1260,26 @@ impl SandboxEngine for BoxEngine {
                 }
             }
         }
+        // What a reviewer's view mounts exists before the guest is asked to
+        // set it up, and the guest has shown it can.
+        let seed = provider_home.seed(ctx.home, ctx.writable_root)?;
+        if let Some(view) = &view {
+            make_carve_outs(&running.channel, view, &seed)?;
+        }
+        let view = enforced_view(view, |view| guest_confines(&running, view))?;
+        // What the host writes in the guest for the launch from here on,
+        // its seed and its credential files, it writes where the launch
+        // runs: in a confined launch's view, where the launch reads it and
+        // where nothing of it reaches what the launch shares with the coder.
+        let scope = view.as_ref().map(ConfinedView::scope).unwrap_or_default();
         // The provider's home in the guest, as its adapter lays it out:
         // before every launch, so the user's config changes reach it.
-        home::seed(&running.channel, provider_home, ctx.home, ctx.writable_root)?;
+        home::seed(&running.channel, &scope, &seed)?;
         // The project's toolchain cache, made in the guest before the agent
-        // runs. A guest that cannot make it keeps the toolchains' defaults,
-        // which in a box are its own disk anyway.
-        let made = executor::run(
+        // runs, where the agent runs. A guest that cannot make it (or a view
+        // that leaves it read-only) keeps the toolchains' defaults, which in
+        // a box are its own disk anyway.
+        let made = scope.run(
             &running.channel,
             &["mkdir", "-p", "--", &cache_root.to_string_lossy()],
             None,
@@ -1246,12 +1309,6 @@ impl SandboxEngine for BoxEngine {
             _ => false,
         };
         let env_file = env_file_path(&launch_id);
-        // What a reviewer's view mounts exists before the guest is asked to.
-        if let Some(view) = &view {
-            make_carve_outs(&running.channel, view)?;
-        }
-        let view = enforced_view(view, |view| guest_confines(&running, view))?;
-
         let remote = agent_remote_command(ctx.cwd, &env_file, view.as_ref(), agent_bin);
         let tty = if ctx.interactive { "-tt" } else { "-T" };
         let prefix_args = executor::quoting_wrapper(
@@ -1285,7 +1342,7 @@ impl SandboxEngine for BoxEngine {
             env.push(("GIT_OPTIONAL_LOCKS".to_string(), "0".to_string()));
         }
         env.extend(cache_env);
-        let credentials = Arc::new(Mutex::new(home::CredentialSync::new(files)));
+        let credentials = Arc::new(Mutex::new(home::CredentialSync::new(files, scope)));
         let synced = !credentials
             .lock()
             .unwrap_or_else(|p| p.into_inner())

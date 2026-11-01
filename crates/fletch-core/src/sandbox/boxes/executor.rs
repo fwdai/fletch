@@ -154,11 +154,6 @@ async fn run_async(channel: &Channel, words: &[&str], stdin: Option<&[u8]>) -> i
     }
 }
 
-/// [`run`] as an `io::Result<Vec<u8>>` of stdout ([`interpret`]).
-fn output(channel: &Channel, words: &[&str], stdin: Option<&[u8]>) -> io::Result<Vec<u8>> {
-    interpret(run(channel, words, stdin)?, words)
-}
-
 /// [`run_async`] as an `io::Result<Vec<u8>>` of stdout ([`interpret`]).
 async fn output_async(
     channel: &Channel,
@@ -196,14 +191,79 @@ fn interpret(out: Output, words: &[&str]) -> io::Result<Vec<u8>> {
 /// Write `bytes` to `guest_path` with `mode`, creating the parent directories;
 /// the contents travel on stdin, never argv. The sync twin of `Channel::put`.
 pub(crate) fn put(channel: &Channel, bytes: &[u8], guest_path: &Path, mode: u32) -> Result<()> {
-    let script = put_script(mode);
-    output(
-        channel,
-        &["sh", "-c", &script, "sh", &guest_path.to_string_lossy()],
-        Some(bytes),
-    )
-    .map(drop)
-    .map_err(|e| Error::Other(format!("put {}: {e}", guest_path.display())))
+    Scope::default().put(channel, bytes, guest_path, mode)
+}
+
+/// Where an operation the host makes in a guest on a launch's behalf runs: in
+/// the guest's own view (the default), or inside the view a confined launch's
+/// process has (`fletch-guest exec` with that launch's options, from an empty
+/// env file). Inside it, the operation reads what the process reads and
+/// writes where the process's writes land: under a copy-on-write directory,
+/// in the launch's own upper layer, a removal there a whiteout over the
+/// shared file rather than a change to it. Each operation sets the view up
+/// afresh, from the same stores the launch's process mounts.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct Scope {
+    /// The words before the command that run it in the view, unquoted; none
+    /// for the guest's own.
+    exec: Vec<String>,
+}
+
+impl Scope {
+    /// A view entered by `exec`, the words that run a command in it.
+    pub(crate) fn confined(exec: Vec<String>) -> Self {
+        Self { exec }
+    }
+
+    /// `cmd` as run in this scope.
+    pub(crate) fn words<'a>(&'a self, cmd: &[&'a str]) -> Vec<&'a str> {
+        let exec = self.exec.iter().map(String::as_str);
+        exec.chain(cmd.iter().copied()).collect()
+    }
+
+    /// [`run`] in this scope. A view the guest could not set up is an error,
+    /// never an exit status the caller could read as the command's own (a
+    /// `cat` that found nothing).
+    pub(crate) fn run(
+        &self,
+        channel: &Channel,
+        cmd: &[&str],
+        stdin: Option<&[u8]>,
+    ) -> io::Result<Output> {
+        let out = run(channel, &self.words(cmd), stdin)?;
+        let failed = out.status.code() == Some(fletch_box::guest::EXEC_CONFINE_FAILED);
+        if !self.exec.is_empty() && failed {
+            return Err(io::Error::other(format!(
+                "the launch's confined view could not be set up: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            )));
+        }
+        Ok(out)
+    }
+
+    /// [`put`] in this scope.
+    pub(crate) fn put(
+        &self,
+        channel: &Channel,
+        bytes: &[u8],
+        guest_path: &Path,
+        mode: u32,
+    ) -> Result<()> {
+        let script = put_script(mode);
+        let path = guest_path.to_string_lossy();
+        let cmd: [&str; 5] = ["sh", "-c", &script, "sh", &path];
+        self.run(channel, &cmd, Some(bytes))
+            .and_then(|out| interpret(out, &cmd))
+            .map(drop)
+            .map_err(|e| Error::Other(format!("put {}: {e}", guest_path.display())))
+    }
+
+    /// `cat` of `guest_path` in this scope.
+    pub(crate) fn get(&self, channel: &Channel, guest_path: &Path) -> io::Result<Vec<u8>> {
+        let path = guest_path.to_string_lossy();
+        let cmd: [&str; 3] = ["cat", "--", &path];
+        interpret(self.run(channel, &cmd, None)?, &cmd)
+    }
 }
 
 /// [`put`] for an async caller; the error keeps its kind.
@@ -229,12 +289,7 @@ fn put_script(mode: u32) -> String {
     format!("umask 077 && mkdir -p \"$(dirname \"$1\")\" && cat > \"$1\" && chmod {mode:o} \"$1\"")
 }
 
-/// `cat` of `guest_path`.
-pub(crate) fn get(channel: &Channel, guest_path: &Path) -> io::Result<Vec<u8>> {
-    output(channel, &["cat", "--", &guest_path.to_string_lossy()], None)
-}
-
-/// [`get`] for an async caller.
+/// [`Scope::get`] in the guest's own view, for an async caller.
 async fn get_async(channel: &Channel, guest_path: &Path) -> io::Result<Vec<u8>> {
     output_async(channel, &["cat", "--", &guest_path.to_string_lossy()], None).await
 }

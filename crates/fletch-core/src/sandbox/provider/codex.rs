@@ -10,7 +10,9 @@
 
 use std::path::{Path, PathBuf};
 
-use super::{copy_tree, login_shell_var, Credential, CredentialFile, GuestEntry, ProviderHome};
+use super::{
+    copy_tree, login_shell_var, Credential, CredentialFile, GuestEntry, ProviderHome, SharedState,
+};
 use crate::agent::{accounts, codex_home};
 use crate::error::Result;
 use crate::sandbox::engine::AgentLaunchCtx;
@@ -74,6 +76,12 @@ impl ProviderHome for Codex {
             Some(_) => Vec::new(),
         };
         Ok(Credential { env, files })
+    }
+
+    /// Nothing: a launch's `CODEX_HOME` is its own overlay under its writable
+    /// root (`agent::codex_home`), the seed's and the login's place alike.
+    fn shared_state(&self, _home: &Path) -> SharedState {
+        SharedState::default()
     }
 }
 

@@ -450,7 +450,11 @@ mod imp {
     /// lower layer is resolved before the overlay covers the path, so the
     /// mountpoint may be the lower directory itself. `userxattr` keeps the
     /// overlay's own metadata in `user.*` extended attributes, which is what
-    /// lets an unprivileged user namespace mount it (Linux 5.11).
+    /// lets an unprivileged user namespace mount it (Linux 5.11). `index=off`,
+    /// whatever the kernel's default: the same store is mounted again by each
+    /// `exec` the host runs in the view on the launch's behalf (its seed, its
+    /// credential files), and overlayfs refuses an upper layer another mount
+    /// holds only when it keeps an index.
     fn mount_cow(dir: &Path, store: &Path) -> Result<(), String> {
         let (upper, work) = (store.join(COW_UPPER), store.join(COW_WORK));
         for layer in [&upper, &work] {
@@ -535,7 +539,7 @@ mod imp {
                 data.push(byte);
             }
         }
-        data.extend_from_slice(b",userxattr");
+        data.extend_from_slice(b",userxattr,index=off");
         data
     }
 
@@ -716,7 +720,8 @@ mod imp {
         }
 
         /// What overlayfs splits its options on is escaped in every path,
-        /// and the overlay keeps its metadata in user xattrs.
+        /// the overlay keeps its metadata in user xattrs, and it keeps no
+        /// index, so a second mount of the same store is not refused.
         #[test]
         fn overlay_options_escape_what_overlayfs_splits_on() {
             let data = overlay_options(
@@ -727,7 +732,7 @@ mod imp {
             assert_eq!(
                 String::from_utf8(data).unwrap(),
                 "lowerdir=/Users/u/.cursor,upperdir=/w/own/.fletch-cow/a\\:b\\,c\\\\d/upper,\
-                 workdir=/w/own/.fletch-cow/x/work,userxattr"
+                 workdir=/w/own/.fletch-cow/x/work,userxattr,index=off"
             );
         }
 

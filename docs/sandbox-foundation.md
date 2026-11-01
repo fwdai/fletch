@@ -249,7 +249,13 @@ deletion touches:
   its writes, new files included, never reach it, so no per-provider list of
   executable config is needed; the toolchain cache is no exception (the
   reviewer re-downloads what it needs into its upper). Its sessions are read
-  from its upper layer. `/data` is hidden, `/proc` is private and every
+  from its upper layer. What the host writes for its launch (the provider's
+  seed, the credential files it keeps in step) runs in the same view, so a
+  login is shipped to, read back from and removed in the reviewer's copy,
+  and none of it reaches the coder's; the provider adapter names what is
+  shared at the guest's own paths (`ProviderHome::shared_state`), which hold
+  every seeded path and credential file outside the writable root. `/data`
+  is hidden, `/proc` is private and every
   capability is dropped (`boxes::confined_view`). Enforced, with no
   fallback: a guest that predates the options or cannot set them up refuses
   the launch. What it does not cover: scratch outside every bind (`/tmp` and

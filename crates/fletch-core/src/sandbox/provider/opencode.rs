@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 use super::auth::{multi_provider_auth_env, present_api_keys};
 use super::{
     copy_tree, login_shell_var, Credential, CredentialFile, FileOwner, GuestEntry, ProviderHome,
-    Transport,
+    SharedState, Transport,
 };
 use crate::error::Result;
 use crate::sandbox::engine::AgentLaunchCtx;
@@ -86,6 +86,16 @@ impl ProviderHome for OpenCode {
             &policy::opencode_data_dir(ctx.home),
             present_api_keys(login_shell_var),
         )
+    }
+
+    /// The guest's data dir (the login and the session store) and config
+    /// dir, at their XDG defaults under `home`, which is where the guest
+    /// keeps them whatever the host's XDG variables say.
+    fn shared_state(&self, home: &Path) -> SharedState {
+        SharedState {
+            dirs: vec![Self::data_dir(home), Self::config_dir(home)],
+            files: Vec::new(),
+        }
     }
 }
 
@@ -176,6 +186,12 @@ mod tests {
                 owner: FileOwner::Cli,
             }]
         );
+
+        // Both in what the guest's opencode shares, at the guest's paths.
+        let state = OpenCode.shared_state(home);
+        let shared = |path: &Path| state.dirs.iter().any(|dir| path.starts_with(dir));
+        assert!(shared(&config.join("opencode.json")), "{:?}", state.dirs);
+        assert!(shared(&credential.files[0].guest), "{:?}", state.dirs);
     }
 
     /// With no login file, a provider key is enough and travels in the env;

@@ -52,22 +52,33 @@ own inside them: its writable root and mailbox, its `CODEX_HOME` (under that
 root), and its writable folder grants (a grant inside a share is carved out
 of it; a share inside a grant is the reviewer's whole). Every shared location
 a CLI writes is a private copy-on-write view instead: `--cow <dir> <store>`
-for its provider's state dirs, the agent scratch dirs and the project's
-toolchain cache, `--cow-file <file> <copy>` for `~/.claude.json`, each store
-and copy under `<reviewer root>/.fletch-cow/`. The reviewer reads the coder's
-state there, and everything it writes, a file that did not exist before
-included, lands in its own copy, so nothing it could plant (an MCP config, a
-hook, a plugin) is ever run by the coder, with no per-provider list of what a
-CLI executes. Its session transcripts are tailed or pulled from its copy. The
-host creates the directories before the launch; the guest makes the stores
-and copies inside the confinement. The command gets a user namespace mapping
+for its provider's state dirs (as the provider adapter lays them out in the
+guest, `ProviderHome::shared_state`), the agent scratch dirs and the
+project's toolchain cache, `--cow-file <file> <copy>` for the adapter's state
+files (`~/.claude.json`), each store and copy under
+`<reviewer root>/.fletch-cow/`. The reviewer reads the coder's state there,
+and everything it writes, a file that did not exist before included, lands
+in its own copy, so nothing it could plant (an MCP config, a hook, a plugin)
+is ever run by the coder, with no per-provider list of what a CLI executes.
+Its session transcripts are tailed or pulled from its copy. What the host
+writes in the guest for the launch, the provider's seed and its credential
+files, it writes in the same view (`boxes::executor::Scope`: each operation
+runs under `fletch-guest exec` with the launch's options): a seeded config
+or a shipped login lands in the reviewer's copy, where its CLI reads it; a
+refreshed login is read back from there; a removed one is a whiteout there,
+hiding the coder's file rather than exposing it; and the coder's files are
+never written. The host creates the directories before the launch, and each
+file the view copies, from the seed, where it does not exist yet (the copy
+is bound on it); the guest makes the stores and copies inside the
+confinement. The command gets a user namespace mapping
 `agent` to itself; a mount namespace in which each `<dir>` is bound on itself
 with every mount below it and the whole subtree made read-only in one
 `mount_setattr(2)`, each `<path>` (a directory or file, reached through no
 symbolic link) bound again and made writable, each `--cow` directory covered
 by an overlay of itself, with options
-`lowerdir=<dir>,upperdir=<store>/upper,workdir=<store>/work,userxattr` (the
-last is what lets an unprivileged user namespace mount it), each `--cow-file`
+`lowerdir=<dir>,upperdir=<store>/upper,workdir=<store>/work,userxattr,index=off`
+(`userxattr` is what lets an unprivileged user namespace mount it; with no
+index, the host's own operations may mount the same store again), each `--cow-file`
 file covered by a bind of its copy (made from it the first time), and
 `/data` (the other route to the same trees) covered by an empty tmpfs; and a
 pid namespace with a private `/proc`, so no other process's `/proc/<pid>/root`

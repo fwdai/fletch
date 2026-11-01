@@ -849,6 +849,110 @@ fn a_confined_launch_renders_the_view_it_was_given() {
     );
 }
 
+/// What the host does in the guest for a launch, its seed and its credential
+/// files, runs where the launch runs: for a confined launch under
+/// `fletch-guest exec` with the launch's view (which the probe enters too),
+/// so a removal there is a whiteout in its own copy; for any other launch as
+/// it is.
+#[test]
+fn the_hosts_operations_for_a_launch_run_in_its_view() {
+    let home = Path::new(HOME);
+    let view = super::ConfinedView {
+        read_only: vec![home.to_path_buf()],
+        writable_dirs: vec![PathBuf::from(OWN_ROOT)],
+        cow_dirs: vec![(home.join(".pi"), own_copy(".pi"))],
+        cow_files: Vec::new(),
+    };
+    let rm = ["rm", "-f", "--", "/Users/u/.pi/agent/auth.json"];
+    let mut confined = view.exec_words();
+    assert_eq!(
+        &confined[..],
+        &[
+            "/opt/fletch/bin/fletch-guest",
+            "exec",
+            "--read-only",
+            "/Users/u",
+            "--writable",
+            OWN_ROOT,
+            "--cow",
+            "/Users/u/.pi",
+            "/Users/u/.fletch/workspaces/reviewer/.fletch-cow/.pi",
+            "--env-file",
+            "/dev/null",
+            "--",
+        ]
+    );
+    confined.extend(rm.map(String::from));
+    assert_eq!(view.scope().words(&rm), confined);
+    assert_eq!(super::executor::Scope::default().words(&rm), rm);
+
+    let mut probe = view.exec_words();
+    probe.push("/bin/true".into());
+    assert_eq!(super::probe_words(&view), probe);
+}
+
+/// Before a confined launch's view is set up, the files it copies are made
+/// from its seed in the guest's own view, and only where nothing is yet: the
+/// copy is bound on the shared file, which must exist. The rest of the seed
+/// is applied in the view.
+#[test]
+fn only_the_files_a_view_copies_are_seeded_outside_it() {
+    use crate::sandbox::provider::GuestEntry;
+
+    let tree = Path::new(CODER_ROOT).join("repo");
+    let host = coder_box(CODER_ROOT, Vec::new());
+    let ctx = launch_ctx(Path::new(OWN_ROOT), &tree, true);
+    let view = super::confined_view(&ctx, true, &host, Path::new(CACHE)).unwrap();
+    let home = Path::new(HOME);
+    let file = |path: PathBuf, keep_existing| GuestEntry::File {
+        path,
+        bytes: b"{}".to_vec(),
+        mode: 0o600,
+        keep_existing,
+    };
+    let seed = vec![
+        GuestEntry::Dir(home.join(".claude/projects")),
+        file(home.join(".claude.json"), false),
+        file(home.join(".claude/projects/x.json"), false),
+        GuestEntry::Absent(home.join(".claude.json")),
+    ];
+    assert_eq!(
+        super::mount_point_seed(&view, &seed),
+        [file(home.join(".claude.json"), true)]
+    );
+}
+
+/// What the host writes for a confined Pi or OpenCode launch, its login files
+/// and its seeded config, lies in the launch's private copies at the guest's
+/// own paths, so in its view they are its own and the coder's are untouched.
+#[test]
+fn a_reviewers_login_and_seed_land_in_its_own_copies() {
+    let tree = Path::new(CODER_ROOT).join("repo");
+    let host = coder_box(CODER_ROOT, Vec::new());
+    let home = Path::new(HOME);
+    let pi = [".pi/agent/auth.json", ".pi/agent/settings.json"];
+    let opencode = [
+        ".local/share/opencode/auth.json",
+        ".local/share/opencode/opencode.db",
+        ".config/opencode/opencode.json",
+    ];
+    for (provider, paths) in [("pi", &pi[..]), ("opencode", &opencode[..])] {
+        let ctx = AgentLaunchCtx {
+            provider,
+            ..launch_ctx(Path::new(OWN_ROOT), &tree, true)
+        };
+        let view = super::confined_view(&ctx, true, &host, Path::new(CACHE)).unwrap();
+        for path in paths {
+            let path = home.join(path);
+            assert!(
+                view.private_path(&path).is_some(),
+                "{provider}: {}",
+                path.display()
+            );
+        }
+    }
+}
+
 /// A confined launch's own files are found where it wrote them: under a
 /// copy-on-write directory in its store's upper layer, a copy-on-write file
 /// in its copy; the host finds the same paths without the launch's view.
