@@ -179,7 +179,10 @@ mod tests {
             ("--env-file /e --cow", "--cow needs <dir> <store>"),
             ("--env-file /e --cow /a store", "not an absolute path"),
             ("--env-file /e --cow a /store", "not an absolute path"),
-            ("--env-file /e --cow-file /a", "--cow-file needs <file> <copy>"),
+            (
+                "--env-file /e --cow-file /a",
+                "--cow-file needs <file> <copy>",
+            ),
             ("--env-file /e --cow-file /a copy", "not an absolute path"),
             ("--env-file /e --rw /x", "unknown option --rw"),
             ("--read-only /x", "--env-file is required"),
