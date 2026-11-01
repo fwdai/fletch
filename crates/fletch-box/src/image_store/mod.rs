@@ -186,9 +186,14 @@ pub struct PinnedImage {
 
 impl PinnedImage {
     /// The image release this build boots, `box-image-v<VERSION>`
-    /// (docs/box.md, "Releases"). `packaging/box-image/bump.sh` moves it with
-    /// the image's VERSION; nothing else in the app changes with an image.
-    pub const VERSION: &'static str = "0.3.0";
+    /// (docs/box.md, "Releases"). Always the image's own VERSION
+    /// (`packaging/box-image/VERSION`; `scripts/check-version.sh` fails CI when
+    /// they differ): the guest agent is one of the image's inputs, and a build
+    /// that boots an older image than the guest it was written against would
+    /// launch agents the host-side contract no longer matches. A push to main
+    /// that changes the image publishes this version (`box-image.yml`), so a
+    /// merged build finds its image.
+    pub const VERSION: &'static str = "0.3.1";
 
     /// This build's image, from `base_url` (the `box_image_url` setting) or
     /// the GitHub release.
