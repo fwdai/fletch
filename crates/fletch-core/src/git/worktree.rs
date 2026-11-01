@@ -64,7 +64,7 @@ pub async fn snapshot_worktree(checkout: &Path) -> Result<String> {
     // A throwaway index so `add -A` never stages into the live agent's index.
     let tmp = SnapshotIndex::new(checkout).await?;
     let result = snapshot_with_index(checkout, &tmp).await;
-    tmp.cleanup();
+    tmp.cleanup().await;
     result
 }
 
@@ -109,9 +109,9 @@ impl SnapshotIndex {
     /// Remove the guest's file; the host's goes with its guard. Best-effort:
     /// a leftover is a stray file in the checkout's `.git`, never a wrong
     /// snapshot.
-    fn cleanup(self) {
+    async fn cleanup(self) {
         if let Self::Guest { exec, path } = self {
-            if let Err(e) = exec.remove(&path) {
+            if let Err(e) = exec.remove_async(&path).await {
                 tracing::info!(path = %path.display(), error = %e, "snapshot index not removed");
             }
         }

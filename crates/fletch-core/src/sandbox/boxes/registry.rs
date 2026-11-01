@@ -604,9 +604,10 @@ impl BoxRegistry {
             .ok_or_else(|| Error::Other(format!("box {agent_id} is not running")))
     }
 
-    /// The channel of `agent_id`'s box, booting it when it is stopped. For the
-    /// executor and the mirror, which are synchronous: the boot runs on the
-    /// engine runtime from a scoped thread (`boxes::block_on`).
+    /// The channel of `agent_id`'s box, booting it when it is stopped. For
+    /// synchronous callers (the launch path, ssh access): the boot runs on
+    /// the engine runtime from a scoped thread (`boxes::block_on`). The
+    /// executor awaits [`Self::running_or_start`] instead.
     pub fn channel_for(&self, agent_id: &str) -> Result<Arc<Channel>> {
         if let Some(running) = self.running(agent_id) {
             return Ok(running.channel.clone());
@@ -1315,8 +1316,9 @@ impl BoxRegistry {
 
     /// End `running`'s VM with `halt` (the ladder or the kill rungs) and clean
     /// up after it: relays stopped first, so none reconnects to a guest going
-    /// down; then the proxy dropped, the dirty marker cleared after a clean
-    /// outcome, and the phase `Stopped` unless a newer box was published.
+    /// down; then the channel's ssh master ended and the proxy dropped, the
+    /// dirty marker cleared after a clean outcome, and the phase `Stopped`
+    /// unless a newer box was published.
     async fn finish_stop(
         &self,
         running: &RunningBox,
@@ -1325,6 +1327,9 @@ impl BoxRegistry {
         let agent_id = running.agent_id();
         running.relays.stop().await;
         let outcome = halt.await;
+        // After the halt, whose sysrq rung still runs over the master: ended
+        // before, the rung would have started another.
+        close_master(agent_id, &running.channel).await;
         drop(running.proxy.lock().take());
         if outcome.clean() {
             if let Err(e) = running.dirty.clear() {
@@ -1805,12 +1810,18 @@ async fn boot(
         ready_in = ?started.elapsed(),
         "box ready"
     );
+    // The first command below starts the ssh master every later one rides
+    // on, for the box's lifetime. One left by an earlier run of this box (an
+    // app that quit without stopping it) would carry them to a guest that is
+    // gone, so it is ended first.
+    close_master(&agent_id, &channel).await;
 
     // An image whose init predates shared folders boots without mounting
     // them, and the agent would find empty directories where the user's
     // folders should be: refuse the box instead, with what to do about it.
     if let Err(e) = verify_shares(&channel, &identity.shares).await {
         vm.kill();
+        close_master(&agent_id, &channel).await;
         return Err(e);
     }
 

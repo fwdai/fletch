@@ -180,6 +180,32 @@ impl Channel {
         Ok(out.stdout)
     }
 
+    /// The multiplexing master's socket: beside the config, where
+    /// [`Channel::new`] puts it when the path fits `sun_path`.
+    fn control_path(&self) -> PathBuf {
+        self.config.with_file_name(CONTROL_FILE)
+    }
+
+    /// Ends the multiplexing master (`ssh -O exit`), which the config keeps
+    /// for as long as it has a connection ([`render_config`]). `Ok(false)`
+    /// when no master is running: none was started, the socket path did not
+    /// fit, or the master already went with its connection. Talks only to
+    /// the control socket; it never opens a connection to the guest.
+    pub async fn close_master(&self) -> Result<bool> {
+        if !self.control_path().exists() {
+            return Ok(false);
+        }
+        let out = self
+            .ssh()
+            .args(["-O", "exit", guest::SSH_HOST_ALIAS])
+            .stdin(Stdio::null())
+            .output()
+            .await
+            .map_err(Error::io("run ssh -O exit"))?;
+        check(&out, "ssh -O exit")?;
+        Ok(true)
+    }
+
     /// For `GIT_SSH_COMMAND`: git then speaks to `box:<path>` through this config.
     pub fn git_ssh_command(&self) -> String {
         format!("{SSH} -F {}", shell_quote(&self.config.to_string_lossy()))
@@ -284,9 +310,13 @@ pub fn render_config(
         helper = q(helper),
         sock = q(ssh_sock),
     );
+    // The master lives as long as its connection, not until an idle timeout:
+    // otherwise the first command after a pause pays a whole handshake
+    // through the proxy helper. The box's stop ends it (`close_master`), and
+    // it goes by itself when the guest does, since the helper's pipe closes.
     if let Some(control) = control {
         config.push_str(&format!(
-            "  ControlMaster auto\n  ControlPath {}\n  ControlPersist 30s\n",
+            "  ControlMaster auto\n  ControlPath {}\n  ControlPersist yes\n",
             q(control)
         ));
     }
@@ -403,6 +433,7 @@ mod tests {
             "  ServerAliveInterval 15",
             "  ControlMaster auto",
             "  ControlPath \"/b/cm.sock\"",
+            "  ControlPersist yes",
         ];
         for line in expected {
             assert!(
@@ -410,6 +441,8 @@ mod tests {
                 "missing {line:?} in\n{config}"
             );
         }
+        // No idle timeout: the master is ended by the box's stop.
+        assert_eq!(config.matches("ControlPersist").count(), 1);
         let without = render_config(
             Path::new("/s"),
             Path::new("/k"),
@@ -418,6 +451,17 @@ mod tests {
             None,
         );
         assert!(!without.contains("ControlMaster"));
+        assert!(!without.contains("ControlPersist"));
+    }
+
+    /// The master's socket is the one the config names, beside it; with no
+    /// socket there is no master to end, and nothing is run.
+    #[tokio::test]
+    async fn closing_without_a_master_is_a_no_op() {
+        let dir = tempfile::tempdir().unwrap();
+        let channel = Channel::open(dir.path());
+        assert_eq!(channel.control_path(), dir.path().join(CONTROL_FILE));
+        assert!(!channel.close_master().await.unwrap());
     }
 
     #[test]

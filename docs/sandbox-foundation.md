@@ -228,10 +228,12 @@ deletion touches:
 
 ## Not done on purpose
 
-- The box executor is a synchronous ssh client per command, and obtaining its
-  channel can block a runtime worker while a VM boots. A persistent async
-  channel is a later optimisation; the seam that would change is `exec.rs`
-  and `sandbox/boxes/executor.rs` only.
+- The box executor's file operations are async (`Executor::*_async`, one
+  `tokio::process` ssh client per call, a stopped box's boot awaited), riding
+  an ssh master that lives as long as the box and is ended by its stop. The
+  sync methods and `RemoteExecutor::command` still block their thread, on a
+  boot too: they serve callers reached through sync code, git's
+  `std::process::Command` above all.
 - The box reviewer (a tenant in the coder's box) has no read-only grant on
   the coder's tree: both are one user in the guest. Its brief and capability
   grant hold it.
