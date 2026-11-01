@@ -671,7 +671,11 @@ fn nested_grants_and_shares_are_matched_by_containment() {
     let writable = |path: &str| view.writable_dirs.contains(&PathBuf::from(path));
     // Carved out of the read-only project share; the notes share, inside
     // the home grant, carved out of the read-only home.
-    assert!(writable("/Volumes/project/docs"), "{:?}", view.writable_dirs);
+    assert!(
+        writable("/Volumes/project/docs"),
+        "{:?}",
+        view.writable_dirs
+    );
     assert!(writable("/Users/u/notes"), "{:?}", view.writable_dirs);
     // Outside every read-only tree (the guest's own mode), not mounted at
     // all, granted read-only, or the coder's home.
