@@ -39,7 +39,10 @@ fn pins() -> &'static Mutex<HashMap<String, Instant>> {
 
 /// Reserve `id` for a launch that is about to run it: see the module notes.
 pub(crate) fn pin_launch(id: &str) {
-    pins().lock().unwrap().insert(id.to_string(), Instant::now());
+    pins()
+        .lock()
+        .unwrap()
+        .insert(id.to_string(), Instant::now());
 }
 
 /// The ids a launch pinned within [`LAUNCH_PIN_TTL`], for [`unpinned_rows`]
