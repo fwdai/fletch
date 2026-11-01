@@ -434,11 +434,12 @@ pub struct SpawnRequest {
     /// stamped with before the record is written, so the first launch already
     /// has them and a refused folder fails the spawn with the reason.
     pub folder_grants: Vec<FolderGrant>,
-    /// The workspace type the user picked for this session (the composer's
-    /// choice): `Host` or `Box`, standing over the host's engine choice and
-    /// the project's placement (`sandbox::engine_for_spawn`). `None` lets
-    /// those decide, as every spawn but the composer's does.
-    pub workspace_type: Option<sandbox::placement::Placement>,
+    /// This session's engine override, standing over the host's engine
+    /// choice and the project's placement (`sandbox::engine_for_spawn`): the
+    /// composer's `Host` or `Box`, or a fork's parent's exact engine
+    /// (`sandbox::WorkspaceType::stamped`). `None` lets those decide, as
+    /// every other spawn does.
+    pub workspace_type: Option<sandbox::WorkspaceType>,
 }
 
 impl Supervisor {

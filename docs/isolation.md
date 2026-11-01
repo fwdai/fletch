@@ -54,9 +54,10 @@ per-session choice made in the composer for a new agent (this Mac or an
 isolated VM), which stands over the other two for that agent alone. A
 per-session "this Mac" always means the macOS sandbox, even when Settings
 pins a container engine, whereas a project placement of "this Mac" under a
-pinned container engine keeps the pinned engine. A fork makes the same
-choice for its child that its parent was stamped with, so a parent kept on
-this Mac never forks into a VM. A
+pinned container engine keeps the pinned engine. A fork's child is stamped
+with exactly the engine its parent was stamped with, whatever Settings or the
+placement now say, so a parent kept on this Mac never forks into a VM and a
+container-stamped parent's child stays in that container engine. A
 per-session isolated VM that cannot be had (the switch off, a runtime that
 cannot boot, a provider boxes do not run) fails the spawn with that reason
 rather than landing somewhere else; the composer offers the choice from the

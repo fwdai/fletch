@@ -253,15 +253,42 @@ pub fn stamped_engine(record: &AgentRecord) -> EngineKind {
         .unwrap_or(EngineKind::SandboxExec)
 }
 
-/// The workspace type `record` was stamped with, as a spawn's override
-/// spells it: `Host` for the macOS sandbox, `Box` for a box, `None` for a
-/// container engine. A fork passes its parent's, so the child runs where the
-/// parent does.
-pub fn placement_of(record: &AgentRecord) -> Option<placement::Placement> {
-    match stamped_engine(record) {
-        EngineKind::SandboxExec => Some(placement::Placement::Host),
-        EngineKind::Box => Some(placement::Placement::Box),
-        EngineKind::Docker | EngineKind::Podman => None,
+/// A spawn's per-session engine override (`SpawnRequest::workspace_type`,
+/// docs/sandbox-foundation.md rule 8), resolved by [`engine_for_spawn`].
+///
+/// `Host` and `Box` are the user-facing choice the composer offers
+/// ([`workspace_types`]), read off the wire by [`WorkspaceType::parse`].
+/// `Stamped` is the exact engine an existing record was stamped with, built
+/// only here ([`WorkspaceType::stamped`]): a fork passes its parent's, so the
+/// child runs under the parent's engine, whichever it is, even where the
+/// automatic choice would now pick another. It is not the project's
+/// placement setting (`placement::Placement`), which only feeds the choice
+/// made when there is no override.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkspaceType {
+    /// The macOS sandbox.
+    Host,
+    /// A box, or a refusal with the reason when there can be none.
+    Box,
+    /// The engine an existing record was stamped with.
+    Stamped(EngineKind),
+}
+
+impl WorkspaceType {
+    /// The composer's spelling: `host` or `box`. Anything else, or none, is
+    /// no override.
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim() {
+            "host" => Some(Self::Host),
+            "box" => Some(Self::Box),
+            _ => None,
+        }
+    }
+
+    /// The engine `record` was stamped with, as an override: what a fork
+    /// passes for its parent.
+    pub fn stamped(record: &AgentRecord) -> Self {
+        Self::Stamped(stamped_engine(record))
     }
 }
 
@@ -290,15 +317,16 @@ pub(crate) fn runs_in_container(provider: &str) -> bool {
 /// the placement of the project at `repo`, whose stored setting is
 /// `placement_setting`.
 ///
-/// The override is the composer's workspace type, and it stands over both
-/// the host's choice and the project's placement for this spawn only:
-/// `Placement::Host` is the macOS sandbox; `Placement::Box` is a box,
-/// waiting at launch for an image still on its way as a project pinned to
-/// boxes does, and refused with the reason the user sees (`box_refusal`:
-/// the switch off, a runtime that cannot boot, a provider boxes do not run)
-/// when there can be no box at all — an explicit choice never quietly lands
-/// somewhere else. `Placement::Auto` is no override. Without one this never
-/// errs.
+/// The override ([`WorkspaceType`]) stands over both the host's choice and
+/// the project's placement for this spawn only: `Host` is the macOS sandbox;
+/// `Box` is a box, waiting at launch for an image still on its way as a
+/// project pinned to boxes does, and refused with the reason the user sees
+/// (`box_refusal`: the switch off, a runtime that cannot boot, a provider
+/// boxes do not run) when there can be no box at all — an explicit choice
+/// never quietly lands somewhere else. `Stamped(kind)` is exactly `kind`: a
+/// stamped box is checked as an explicit `Box` is, and a stamped container
+/// engine is returned as it is (its launch fails closed when the daemon is
+/// down, [`engine_for`]). Without an override this never errs.
 ///
 /// Blocking: the automatic choice stats the repository and may run the
 /// runtime probe once, so a spawn calls this off the async runtime.
@@ -307,19 +335,23 @@ pub fn engine_for_spawn(
     placement_setting: Option<&str>,
     repo: &Path,
     provider: &str,
-    override_: Option<placement::Placement>,
+    override_: Option<WorkspaceType>,
 ) -> Result<EngineKind> {
-    use placement::Placement;
     if let Some(tree) = adopted_tree {
         return Ok(engine_for_adopted_tree(tree));
     }
     match override_ {
-        Some(Placement::Host) => Ok(EngineKind::SandboxExec),
-        Some(Placement::Box) => match box_refusal(provider) {
-            Some(reason) => Err(Error::Other(reason)),
-            None => Ok(EngineKind::Box),
-        },
-        Some(Placement::Auto) | None => {
+        Some(WorkspaceType::Host | WorkspaceType::Stamped(EngineKind::SandboxExec)) => {
+            Ok(EngineKind::SandboxExec)
+        }
+        Some(WorkspaceType::Box | WorkspaceType::Stamped(EngineKind::Box)) => {
+            match box_refusal(provider) {
+                Some(reason) => Err(Error::Other(reason)),
+                None => Ok(EngineKind::Box),
+            }
+        }
+        Some(WorkspaceType::Stamped(kind @ (EngineKind::Docker | EngineKind::Podman))) => Ok(kind),
+        None => {
             let placement = placement::resolve(placement_setting, repo);
             Ok(boxes::engine_for_new_agent(
                 selected_engine(),
@@ -348,8 +380,8 @@ fn box_refusal(provider: &str) -> Option<String> {
 /// ([`workspace_types`]).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct WorkspaceTypeOption {
-    /// `host` (the macOS sandbox) or `box` (an isolated VM): the
-    /// `placement::Placement` spelling a spawn's override takes.
+    /// `host` (the macOS sandbox) or `box` (an isolated VM): the spelling
+    /// [`WorkspaceType::parse`] reads a spawn's override from.
     pub kind: &'static str,
     /// Whether a spawn may ask for it.
     pub available: bool,
@@ -370,11 +402,11 @@ pub fn workspace_types(
     repo: &Path,
     provider: &str,
 ) -> Vec<WorkspaceTypeOption> {
-    use placement::Placement;
     let box_reason = box_refusal(provider);
-    // What `engine_for_spawn` picks with no override. A box refused above is
-    // never ready, and a passing runtime is remembered, so the runtime is
-    // probed at most once for the whole answer.
+    // What `engine_for_spawn` picks with a `None` override: the host's choice
+    // over the project's placement. A box refused above is never ready, and
+    // a passing runtime is remembered, so the runtime is probed at most once
+    // for the whole answer.
     let default = boxes::engine_for_new_agent_with(
         selected_engine(),
         provider,
@@ -383,13 +415,13 @@ pub fn workspace_types(
     );
     vec![
         WorkspaceTypeOption {
-            kind: Placement::Host.as_setting(),
+            kind: "host",
             available: true,
             reason: None,
             default: default == EngineKind::SandboxExec,
         },
         WorkspaceTypeOption {
-            kind: Placement::Box.as_setting(),
+            kind: "box",
             available: box_reason.is_none(),
             reason: box_reason,
             default: default == EngineKind::Box,
@@ -789,8 +821,18 @@ mod adopted_tree_tests {
 
 #[cfg(test)]
 mod workspace_type_tests {
-    use super::placement::Placement;
     use super::*;
+
+    /// The composer's spelling is `host` or `box`; nothing else is an
+    /// override, and no spelling reaches a stamped engine.
+    #[test]
+    fn only_host_and_box_parse() {
+        assert_eq!(WorkspaceType::parse("host"), Some(WorkspaceType::Host));
+        assert_eq!(WorkspaceType::parse(" box "), Some(WorkspaceType::Box));
+        for raw in ["", "auto", "docker", "podman", "sandbox-exec", "vm"] {
+            assert_eq!(WorkspaceType::parse(raw), None, "{raw}");
+        }
+    }
 
     /// A session's workspace type stands over the host's choice and the
     /// project's placement, an explicit box is never quietly something else,
@@ -807,16 +849,21 @@ mod workspace_type_tests {
                 Some("box"),
                 repo.path(),
                 "claude",
-                Some(Placement::Host)
+                Some(WorkspaceType::Host)
             )
             .unwrap(),
             EngineKind::SandboxExec
         );
         // A provider boxes do not run: refused whatever the switch and the
         // runtime say, never stamped seatbelt instead.
-        assert!(
-            engine_for_spawn(None, None, repo.path(), "antigravity", Some(Placement::Box)).is_err()
-        );
+        assert!(engine_for_spawn(
+            None,
+            None,
+            repo.path(),
+            "antigravity",
+            Some(WorkspaceType::Box)
+        )
+        .is_err());
         // Without an override nothing errs.
         assert!(engine_for_spawn(None, None, repo.path(), "antigravity", None).is_ok());
         // An adopted host tree ignores the override.
@@ -826,10 +873,58 @@ mod workspace_type_tests {
             None,
             repo.path(),
             "claude",
-            Some(Placement::Box),
+            Some(WorkspaceType::Box),
         )
         .unwrap();
         assert_ne!(adopted, EngineKind::Box);
+    }
+
+    /// A stamped engine is kept exactly, whatever the project's placement
+    /// says: a fork of a container-stamped parent stays in its container
+    /// engine, and one of a seatbelt parent on this Mac.
+    #[test]
+    fn a_stamped_engine_is_kept() {
+        let repo = tempfile::tempdir().unwrap();
+        for kind in [
+            EngineKind::Docker,
+            EngineKind::Podman,
+            EngineKind::SandboxExec,
+        ] {
+            assert_eq!(
+                engine_for_spawn(
+                    None,
+                    Some("box"),
+                    repo.path(),
+                    "claude",
+                    Some(WorkspaceType::Stamped(kind))
+                )
+                .unwrap(),
+                kind
+            );
+        }
+    }
+
+    /// A stamped box that cannot exist refuses with the reason, as an
+    /// explicit box does, never falling back to this Mac.
+    #[test]
+    fn a_stamped_box_with_the_switch_off_is_refused() {
+        let _serial = boxes::settings::TEST_LOCK.blocking_lock();
+        let before = boxes::settings::current();
+        boxes::settings::set(boxes::settings::BoxSettings {
+            enabled: false,
+            ..before.clone()
+        });
+        let repo = tempfile::tempdir().unwrap();
+        let result = engine_for_spawn(
+            None,
+            Some("host"),
+            repo.path(),
+            "claude",
+            Some(WorkspaceType::Stamped(EngineKind::Box)),
+        );
+        boxes::settings::set(before);
+        let err = result.expect_err("a stamped box with the switch off must refuse");
+        assert!(err.to_string().contains(boxes::SWITCHED_OFF), "{err}");
     }
 
     /// The list offers both types, this Mac always, and a box only when the
@@ -840,6 +935,7 @@ mod workspace_type_tests {
         let options = workspace_types(None, repo.path(), "antigravity");
         let kinds: Vec<&str> = options.iter().map(|o| o.kind).collect();
         assert_eq!(kinds, ["host", "box"]);
+        assert!(kinds.iter().all(|k| WorkspaceType::parse(k).is_some()));
         assert!(options[0].available && options[0].reason.is_none());
         assert!(!options[1].available);
         assert!(options[1].reason.as_deref().is_some_and(|r| !r.is_empty()));

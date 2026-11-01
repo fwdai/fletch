@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use crate::error::Result;
 use crate::host::EngineCtx;
-use crate::sandbox::placement::Placement;
+use crate::sandbox::WorkspaceType;
 use crate::supervisor::{SpawnRequest, Supervisor};
 use crate::workspace::{AgentRecord, AgentView, FolderGrant};
 
@@ -14,7 +14,7 @@ use crate::workspace::{AgentRecord, AgentView, FolderGrant};
 /// `spawn_agent` command and the remote dispatcher, which passes `None` for the
 /// custom-agent fields, the account and the workspace type the mobile surface
 /// does not expose. `workspace_type` is the composer's pick, `host` or `box`
-/// (`sandbox::placement::Placement`); anything else, or none, leaves the
+/// (`sandbox::WorkspaceType::parse`); anything else, or none, leaves the
 /// engine to the host's choice and the project's placement.
 #[allow(clippy::too_many_arguments)]
 pub async fn spawn_agent_impl(
@@ -38,10 +38,7 @@ pub async fn spawn_agent_impl(
     folder_grants: Option<Vec<FolderGrant>>,
     workspace_type: Option<String>,
 ) -> Result<AgentRecord> {
-    let workspace_type = match Placement::parse(workspace_type.as_deref()) {
-        Placement::Auto => None,
-        explicit => Some(explicit),
-    };
+    let workspace_type = workspace_type.as_deref().and_then(WorkspaceType::parse);
     sup.spawn_agent(
         ctx,
         SpawnRequest {

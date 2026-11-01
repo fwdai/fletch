@@ -72,11 +72,13 @@ fn read_sources(box_dir: &Path) -> std::collections::BTreeMap<String, String> {
 /// `<box>/disposal.json`: what the fail-closed disposal read
 /// (`git_state::check_for_disposal`) found in each checkout of the box when
 /// it last stopped, so the auto-archive sweep can judge a sleeping box's
-/// checkouts without booting it. Written by the stop ladder after its mirror
-/// refresh ([`record_disposal`]) and deleted as the box starts, before any
-/// setup wait ([`forget_disposal`]), so it exists only while the box is
-/// stopped and was read after everything that ran in it. Goes with the box
-/// dir on discard.
+/// checkouts without booting it. The whole lifecycle: written by the stop
+/// ladder, with no session attached, after everything that ran in the box
+/// ([`record_disposal`]); deleted at the box's next start, before any setup
+/// wait ([`forget_disposal`]); read only while the box is stopped
+/// ([`disposal_at_stop`]). So it carries no timestamp: whenever it can be
+/// read, it describes the checkouts as they are. Goes with the box dir on
+/// discard.
 const DISPOSAL: &str = "disposal.json";
 
 /// One checkout's entry in [`DISPOSAL`].
@@ -84,8 +86,6 @@ const DISPOSAL: &str = "disposal.json";
 struct StoppedDisposal {
     clean_tree: bool,
     unpushed: u32,
-    /// When the read was taken, ms since the epoch.
-    read_at_ms: i64,
 }
 
 /// Read every checkout of `running`, a box whose stop has begun, and write
@@ -103,7 +103,6 @@ pub(super) async fn record_disposal(running: &RunningBox) {
             running.channel.clone(),
             crate::exec::passive(read),
         );
-        let read_at_ms = chrono::Utc::now().timestamp_millis();
         match read.await {
             Ok(check) => {
                 checks.insert(
@@ -111,7 +110,6 @@ pub(super) async fn record_disposal(running: &RunningBox) {
                     StoppedDisposal {
                         clean_tree: check.clean_tree,
                         unpushed: check.unpushed,
-                        read_at_ms,
                     },
                 );
             }

@@ -39,8 +39,15 @@ engine enforces) and `docs/box.md` is the box runtime.
    (`sandbox::provision::fixups`: origin rewrite to the HTTPS remote, frozen
    identity, `commit.gpgsign=false`, delegation and attribution hooks, HEAD
    and tracking refs). Fixups are written once over the executor and run for
-   every checkout Fletch makes: an agent's, a secondary repo's, a restored
-   one's, and a workflow run's.
+   every agent checkout Fletch makes: an agent's, a secondary repo's, a
+   restored one's. The one exception is a workflow run's repository
+   (`workflow/gitops.rs::provision_run_repo`), which takes only the origin
+   rewrite, the identity seeding and the attribution hook. It is a host-only
+   internal repository that step agents adopt, not an agent checkout: the
+   delegation hooks and the `commit.gpgsign` freeze exist for checkouts whose
+   commits an agent makes inside its sandbox, whereas the run repo's own
+   merge commits are made by the host and keep the user's signing config, no
+   agent mailbox listens there, and its refs stay as cloned.
 
 4. **Transport is asked of the sandbox.** Host git with the user's credentials
    never runs *in* an agent checkout. `git::remote::Transport` asks
@@ -68,19 +75,30 @@ engine enforces) and `docs/box.md` is the box runtime.
    runs where the agent runs. Sessions never inspect the engine.
 
 7. **Gaps are declared, not discovered.** A feature an engine cannot serve
-   yet is a `false` in `caps()` with the user-facing reason beside it, read by
-   the feature's entry point and by the UI. Nothing refuses by probing a path.
+   yet is a `false` in `caps()`, read by the feature's entry point. `caps()`
+   holds facts only; the user-facing reason lives at the feature's refusal
+   site, written beside the cap read: `supervisor/run.rs` for the Run panel
+   (`run_panel`), the step provisioning in `supervisor/lifecycle.rs` for
+   workflow steps (`workflow_steps`). What the UI shows comes from a refusal
+   site too, never from the struct: `sandbox::workspace_types` carries the
+   sentence a box spawn would fail with. Nothing refuses by probing a path.
 
 8. **Workspace type is a field.** Every spawn carries the engine it is stamped
    with, resolved from the host's choice, the project's placement and an
    optional per-session override (`SpawnRequest::workspace_type`, a
-   `sandbox::placement::Placement` of `Host` or `Box`), by one function
-   (`sandbox::engine_for_spawn`). The override stands over both for that
-   spawn: `Host` is seatbelt; `Box` is a box that waits for its image as a
-   box-pinned project does, and a spawn refused with the user-facing reason
-   when there can be no box (switch off, runtime unusable, provider
-   unsupported), never a quiet fallback. A fork passes its parent's stamp
-   (`sandbox::placement_of`). An adopting agent ignores it and runs where
+   `sandbox::WorkspaceType`), by one function (`sandbox::engine_for_spawn`).
+   The override stands over both for that spawn. The composer's choice is
+   `Host` or `Box` (`WorkspaceType::parse`): `Host` is seatbelt; `Box` is a
+   box that waits for its image as a box-pinned project does, and a spawn
+   refused with the user-facing reason when there can be no box (switch off,
+   runtime unusable, provider unsupported), never a quiet fallback. A fork
+   passes its parent's exact engine (`WorkspaceType::stamped`, the
+   `Stamped(kind)` variant only `sandbox` builds): the child gets that engine
+   whatever Settings say now, a stamped box refused like an explicit `Box`
+   when it cannot be had, a stamped container engine kept as it is (its
+   launch fails closed when the daemon is down). The project's placement
+   (`sandbox::placement::Placement`) is a project setting only and never a
+   spawn's override. An adopting agent ignores the override and runs where
    its tree lives. The UI reads one host-computed list of
    available workspace types with each one's reason when unavailable and the
    default marked (`sandbox::workspace_types`, served by the
@@ -100,7 +118,8 @@ engine enforces) and `docs/box.md` is the box runtime.
 | `run_panel` | yes | no | yes |
 | `workflow_steps` | yes | no | yes |
 
-A `no` carries its reason in the struct, which is what the UI shows.
+The struct holds only these facts. A `no` has its user-facing reason at the
+feature's refusal site, beside the cap read (rule 7), not in `caps()`.
 
 The verify checks are not a row: they take a checkout path, not an agent
 record, so `verify.rs` skips them for a checkout its executor says is in a
@@ -129,8 +148,9 @@ deletion touches:
     row), `from_setting`;
   - `sandbox/mod.rs`: `engine_for`, `transcript_root`, `create_session_file`,
     `provision_checkout`, `restore_checkout`, `before_launch`,
-    `setup_allowance`, `agent_bin`, `codegraph_bin`, `placement_of`,
-    `reap_agent_containers` (and with it `runs_in_container`);
+    `setup_allowance`, `agent_bin`, `codegraph_bin`,
+    `reap_agent_containers` (and with it `runs_in_container`), and the
+    `WorkspaceType::Stamped(Docker | Podman)` arm of `engine_for_spawn`;
   - `sandbox/provider/mod.rs`: the `Docker | Podman` arm of `supports`;
   - `sandbox/guarantees.rs`: every `Docker` / `Podman` coverage row;
   - `commands/settings.rs`: the `Docker` and `Podman` arms of
