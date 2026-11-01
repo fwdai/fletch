@@ -18,7 +18,7 @@
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -302,6 +302,9 @@ struct Entry {
     lifecycle: Arc<tokio::sync::Mutex<()>>,
     /// Set by [`BoxRegistry::discard`]: no boot starts from then on.
     discarding: bool,
+    /// The boot in flight, for every caller that wants the box meanwhile to
+    /// join ([`BoxRegistry::ensure_running`]); `None` once it has ended.
+    boot: Option<BootInFlight>,
 }
 
 impl Entry {
@@ -314,7 +317,80 @@ impl Entry {
             idle_gen: 0,
             lifecycle: Arc::new(tokio::sync::Mutex::new(())),
             discarding: false,
+            boot: None,
         }
+    }
+}
+
+/// A boot's outcome as its waiters share it: `None` until it ends. The error
+/// is shared because [`Error`] is not `Clone`; each waiter gets a copy of its
+/// own ([`error_for_waiter`]).
+type BootOutcome = Option<std::result::Result<Arc<RunningBox>, Arc<Error>>>;
+
+/// A boot in flight, kept in its box's entry for later callers to join.
+struct BootInFlight {
+    /// Tells this boot from a later one of the same box ([`BootOwner`]).
+    id: u64,
+    outcome: watch::Receiver<BootOutcome>,
+}
+
+/// The id of the next [`BootInFlight`].
+static NEXT_BOOT_ID: AtomicU64 = AtomicU64::new(0);
+
+/// A boot's hold on its place in the entry ([`Entry::boot`]), given up as the
+/// boot ends, or as its task is dropped unfinished (the runtime going down, a
+/// panic). Either way the next caller starts a boot of its own, and a box no
+/// boot is left to finish does not stay `Preparing` or `Starting`: a phase
+/// the boot left there (a refusal after the wait for a boot slot leaves
+/// `Preparing`) goes back to `Stopped`.
+struct BootOwner {
+    registry: &'static BoxRegistry,
+    agent_id: String,
+    id: u64,
+}
+
+impl Drop for BootOwner {
+    fn drop(&mut self) {
+        let abandoned = {
+            let mut entries = self.registry.entries.lock();
+            let Some(entry) = entries.get_mut(&self.agent_id) else {
+                return;
+            };
+            // The entry was forgotten and registered again since: what it
+            // holds now belongs to another boot.
+            if entry.boot.as_ref().map(|boot| boot.id) != Some(self.id) {
+                return;
+            }
+            entry.boot = None;
+            let abandoned = match entry.phase {
+                BoxPhase::Preparing { .. } | BoxPhase::Starting => entry.running.is_none(),
+                _ => false,
+            };
+            if abandoned {
+                entry.phase = BoxPhase::Stopped;
+            }
+            abandoned
+        };
+        if abandoned {
+            self.registry.emit_state(&self.agent_id);
+        }
+    }
+}
+
+/// A copy of a shared boot failure for one of its waiters: the variants
+/// callers match on keep their kind and text, an io error its kind, and the
+/// wrapped library errors their text.
+fn error_for_waiter(e: &Error) -> Error {
+    match e {
+        Error::Git(s) => Error::Git(s.clone()),
+        Error::Gh(s) => Error::Gh(s.clone()),
+        Error::AgentNotFound(s) => Error::AgentNotFound(s.clone()),
+        Error::InvalidPath(s) => Error::InvalidPath(s.clone()),
+        Error::Io(io) => Error::Io(std::io::Error::new(io.kind(), io.to_string())),
+        Error::SchemaTooNew => Error::SchemaTooNew,
+        Error::SandboxUnavailable(s) => Error::SandboxUnavailable(s.clone()),
+        Error::Other(s) => Error::Other(s.clone()),
+        Error::Json(_) | Error::Database(_) => Error::Other(e.to_string()),
     }
 }
 
@@ -615,10 +691,11 @@ impl BoxRegistry {
     }
 
     /// The channel of `agent_id`'s box, booting it when it is stopped. For
-    /// synchronous callers (the launch path, ssh access): the boot runs on
-    /// the engine runtime from a scoped thread (`boxes::block_on`). The
-    /// executor awaits [`Self::running_or_start`] instead.
-    pub fn channel_for(&self, agent_id: &str) -> Result<Arc<Channel>> {
+    /// synchronous callers (the launch path, ssh access): the wait for the
+    /// boot, which runs in the registry's own task ([`Self::ensure_running`]),
+    /// blocks (`boxes::block_on`). The executor awaits
+    /// [`Self::running_or_start`] instead.
+    pub fn channel_for(&'static self, agent_id: &str) -> Result<Arc<Channel>> {
         if let Some(running) = self.running(agent_id) {
             return Ok(running.channel.clone());
         }
@@ -632,7 +709,7 @@ impl BoxRegistry {
     }
 
     /// The running box for `agent_id`, booting it when stopped (async callers).
-    pub async fn running_or_start(&self, agent_id: &str) -> Result<Arc<RunningBox>> {
+    pub async fn running_or_start(&'static self, agent_id: &str) -> Result<Arc<RunningBox>> {
         if let Some(running) = self.running(agent_id) {
             return Ok(running);
         }
@@ -645,28 +722,102 @@ impl BoxRegistry {
         self.ensure_running(&identity).await
     }
 
-    /// Boot `identity`'s box unless it runs already. While the host is still
-    /// being set up — the image downloading,
-    /// the provider's tools disk being built — this waits for it (`setup`),
-    /// reporting the box as `Preparing` with what it waits on, so a launch
-    /// made right after the flag went on is late rather than refused. Fails
-    /// closed with the reason, the console tail included when the guest never
-    /// became ready.
-    pub async fn ensure_running(&self, identity: &BoxIdentity) -> Result<Arc<RunningBox>> {
+    /// Boot `identity`'s box unless it runs already, and wait for it. While
+    /// the host is still being set up — the image downloading, the provider's
+    /// tools disk being built — the boot waits for it (`setup`), reporting the
+    /// box as `Preparing` with what it waits on, so a launch made right after
+    /// the flag went on is late rather than refused. Fails closed with the
+    /// reason, the console tail included when the guest never became ready.
+    ///
+    /// A boot belongs to the registry and outlives any one caller: it runs in
+    /// a task of its own (`own_boot`), every caller that finds it in flight
+    /// joins it and gets its one outcome, and a caller that goes away (a
+    /// cancelled command, a `select!` that lost) only stops waiting. Run in
+    /// the caller's future, a boot dropped half-way left the box `Preparing`
+    /// or `Starting` with nothing left to finish it. `'static` because the
+    /// boot's task holds the registry.
+    pub async fn ensure_running(&'static self, identity: &BoxIdentity) -> Result<Arc<RunningBox>> {
         self.register(identity.clone());
-        let lifecycle = {
-            let entries = self.entries.lock();
-            let entry = entries.get(&identity.agent_id).expect("registered above");
+        let (mut outcome, start) = {
+            let mut entries = self.entries.lock();
+            let entry = entries
+                .get_mut(&identity.agent_id)
+                .expect("registered above");
             if let Some(running) = &entry.running {
                 return Ok(running.clone());
             }
-            entry.lifecycle.clone()
+            match &entry.boot {
+                Some(boot) => (boot.outcome.clone(), None),
+                None => {
+                    let (tx, rx) = watch::channel(None);
+                    let id = NEXT_BOOT_ID.fetch_add(1, Ordering::Relaxed);
+                    entry.boot = Some(BootInFlight {
+                        id,
+                        outcome: rx.clone(),
+                    });
+                    (rx, Some((id, tx)))
+                }
+            }
+        };
+        if let Some((id, tx)) = start {
+            // The owner exists before the task does, so a boot whose task
+            // never runs still gives its place in the entry up as it drops.
+            let owner = BootOwner {
+                registry: self,
+                agent_id: identity.agent_id.clone(),
+                id,
+            };
+            crate::host::spawn(self.own_boot(identity.clone(), owner, tx));
+        }
+        let joined = outcome
+            .wait_for(|o| o.is_some())
+            .await
+            .ok()
+            .and_then(|o| o.clone());
+        match joined {
+            Some(Ok(running)) => Ok(running),
+            Some(Err(e)) => Err(error_for_waiter(&e)),
+            None => Err(Error::SandboxUnavailable(format!(
+                "the box for {} did not start: its boot ended without a result",
+                identity.agent_id
+            ))),
+        }
+    }
+
+    /// The task a boot runs in ([`Self::ensure_running`]): the boot, then its
+    /// place in the entry given up, then its outcome to every waiter. Given
+    /// up first, so a caller that reads a failure and asks again starts a
+    /// fresh boot rather than joining the one that failed.
+    async fn own_boot(
+        &'static self,
+        identity: BoxIdentity,
+        owner: BootOwner,
+        outcome: watch::Sender<BootOutcome>,
+    ) {
+        let booted = self.boot_box(&identity).await;
+        drop(owner);
+        outcome.send_replace(Some(booted.map_err(Arc::new)));
+    }
+
+    /// One boot of `identity`'s box, in its task ([`Self::own_boot`]): after
+    /// the box's other boots and stops (its lifecycle lock), and refused once
+    /// the app is quitting or the box is being discarded.
+    async fn boot_box(&self, identity: &BoxIdentity) -> Result<Arc<RunningBox>> {
+        let agent_id = &identity.agent_id;
+        // Gone between the call that started this boot and its task: a
+        // discard finished in between.
+        let lifecycle = self
+            .entries
+            .lock()
+            .get(agent_id)
+            .map(|e| e.lifecycle.clone());
+        let Some(lifecycle) = lifecycle else {
+            return Err(discarded_error(agent_id));
         };
         let _guard = lifecycle.lock().await;
-        if let Some(running) = self.running(&identity.agent_id) {
+        if let Some(running) = self.running(agent_id) {
             return Ok(running);
         }
-        let agent_id = &identity.agent_id;
         // A discard waits on this lock before it forgets the box, so a boot
         // that reaches it once one has begun must not start a VM for an agent
         // that is going: checked here and again after the (long) preparation.
@@ -724,7 +875,7 @@ impl BoxRegistry {
                     }
                     let entry = entries
                         .get_mut(&identity.agent_id)
-                        .expect("registered above");
+                        .expect("a discard waits for the lifecycle lock held here");
                     entry.running = Some(running.clone());
                     entry.phase = BoxPhase::Running {
                         since: running.since,
@@ -2429,7 +2580,8 @@ mod tests {
     /// anything, rather than start a VM behind the shutdown.
     #[tokio::test]
     async fn a_closed_registry_boots_nothing() {
-        let registry = test_registry();
+        // Leaked: a boot runs in a task of its own, which holds the registry.
+        let registry: &'static BoxRegistry = Box::leak(Box::new(test_registry()));
         let root = PathBuf::from("/registry-unit-test-closed/root");
         let identity = BoxIdentity {
             agent_id: "registry-unit-test-closed".into(),
@@ -2450,6 +2602,105 @@ mod tests {
         crate::exec::unregister_root(&root);
         assert!(err.contains("quitting"), "{err}");
         assert_eq!(registry.state(&identity.agent_id), BoxPhase::Stopped);
+    }
+
+    /// A boot belongs to the registry, not to the caller that started it: a
+    /// waiter dropped mid-boot leaves it going, callers that come later join
+    /// it rather than start another, each gets its one outcome, and once it
+    /// has ended the box reads a settled phase and the next caller starts a
+    /// fresh boot. Stand-ins that need no VM: for a long boot, the box's
+    /// lifecycle lock held (as a stop in flight holds it); for its outcome,
+    /// a discard begun meanwhile.
+    #[tokio::test]
+    async fn a_boot_outlives_its_waiters_and_shares_its_outcome() {
+        let registry = BoxRegistry::global();
+        let id = "registry-unit-test-owned-boot";
+        let _test_box = TestBox::register(id);
+        let (identity, lifecycle) = {
+            let entries = registry.entries.lock();
+            let entry = entries.get(id).unwrap();
+            (entry.identity.clone(), entry.lifecycle.clone())
+        };
+        let boot_id = || {
+            registry
+                .entries
+                .lock()
+                .get(id)
+                .and_then(|e| e.boot.as_ref().map(|boot| boot.id))
+        };
+
+        let in_flight = lifecycle.lock().await;
+        let started = registry.ensure_running(&identity);
+        let waited = tokio::time::timeout(Duration::from_millis(30), started).await;
+        assert!(waited.is_err(), "the boot waits on the lifecycle lock");
+        let first = boot_id().expect("outlives the waiter that started it");
+        let join = || {
+            let identity = identity.clone();
+            tokio::spawn(async move {
+                BoxRegistry::global()
+                    .ensure_running(&identity)
+                    .await
+                    .map(drop)
+            })
+        };
+        let waiters = [join(), join()];
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert_eq!(boot_id(), Some(first), "joined, not started anew");
+
+        // A refusal after the wait for a boot slot leaves the box `Preparing`
+        // behind it; the boot's end puts it back.
+        {
+            let mut entries = registry.entries.lock();
+            let entry = entries.get_mut(id).unwrap();
+            entry.discarding = true;
+            entry.phase = BoxPhase::Preparing {
+                detail: WAITING_FOR_SLOT.into(),
+            };
+        }
+        drop(in_flight);
+        for waiter in waiters {
+            let err = waiter.await.unwrap().unwrap_err().to_string();
+            assert!(err.contains("discarded"), "{err}");
+        }
+        assert_eq!(boot_id(), None);
+        assert_eq!(registry.state(id), BoxPhase::Stopped);
+
+        // The next caller starts a boot of its own.
+        let in_flight = lifecycle.lock().await;
+        let started = registry.ensure_running(&identity);
+        let waited = tokio::time::timeout(Duration::from_millis(30), started).await;
+        assert!(waited.is_err(), "the boot waits on the lifecycle lock");
+        let second = boot_id().expect("a fresh boot");
+        assert_ne!(second, first);
+        drop(in_flight);
+        let err = registry
+            .ensure_running(&identity)
+            .await
+            .map(drop)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("discarded"), "{err}");
+        assert_eq!(boot_id(), None);
+    }
+
+    /// Each waiter on a shared boot gets the failure as the boot had it: the
+    /// variant callers match on, an io error's kind, the text.
+    #[test]
+    fn a_shared_boot_failure_reaches_each_waiter_intact() {
+        use std::io::ErrorKind;
+
+        let unavailable = Error::SandboxUnavailable("no image".into());
+        let Error::SandboxUnavailable(reason) = error_for_waiter(&unavailable) else {
+            panic!("the variant changed");
+        };
+        assert_eq!(reason, "no image");
+
+        let io = Error::Io(std::io::Error::new(ErrorKind::NotFound, "data.img"));
+        let Error::Io(copied) = error_for_waiter(&io) else {
+            panic!("the variant changed");
+        };
+        assert_eq!(copied.kind(), ErrorKind::NotFound);
+        assert_eq!(Error::Io(copied).to_string(), io.to_string());
     }
 
     #[test]
