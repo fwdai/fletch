@@ -271,7 +271,7 @@ pub(crate) fn tail_lines(log: &str, lines: usize, raw: bool) -> (String, bool) {
 /// progress line caught mid-update) only moved the cursor, so the text
 /// before it is what the terminal still shows.
 fn plain_text(log: &str) -> String {
-    let stripped = crate::sandbox::docker::setup_token::strip_ansi(log);
+    let stripped = crate::sandbox::provider::setup_token::strip_ansi(log);
     stripped
         .replace("\r\n", "\n")
         .lines()

@@ -40,9 +40,10 @@ pub trait RemoteExecutor: Send + Sync + fmt::Debug {
 
     fn read(&self, path: &Path) -> io::Result<Vec<u8>>;
 
-    /// Write `bytes` to `path`, creating missing parent directories: the host
-    /// does not prepare a remote tree the way it `create_dir_all`s its own.
-    fn write(&self, path: &Path, bytes: &[u8]) -> io::Result<()>;
+    /// Write `bytes` to `path` with permission bits `mode`, creating missing
+    /// parent directories: the host does not prepare a remote tree the way it
+    /// `create_dir_all`s its own.
+    fn write(&self, path: &Path, bytes: &[u8], mode: u32) -> io::Result<()>;
 
     /// Metadata of what `path` resolves to (symlinks followed), `None` when
     /// nothing is there.
@@ -171,7 +172,7 @@ impl Executor {
     pub fn write(&self, path: &Path, bytes: &[u8]) -> io::Result<()> {
         match self {
             Self::Local => std::fs::write(path, bytes),
-            Self::Remote(remote) => remote.write(path, bytes),
+            Self::Remote(remote) => remote.write(path, bytes, 0o644),
         }
     }
 
@@ -280,7 +281,7 @@ impl Executor {
                 let (dir, name) = local_parent(anchor, rel, true)?;
                 dir.write_file(name, bytes, mode)
             }
-            Self::Remote(remote) => remote.write(&anchor.join(rel), bytes),
+            Self::Remote(remote) => remote.write(&anchor.join(rel), bytes, mode),
         }
     }
 
@@ -298,7 +299,7 @@ impl Executor {
                 let (dir, name) = local_parent(anchor, rel, true)?;
                 dir.copy_file(name, from, mode)
             }
-            Self::Remote(remote) => remote.write(&anchor.join(rel), &std::fs::read(from)?),
+            Self::Remote(remote) => remote.write(&anchor.join(rel), &std::fs::read(from)?, mode),
         }
     }
 
@@ -349,7 +350,7 @@ mod tests {
         fn read(&self, _: &Path) -> io::Result<Vec<u8>> {
             Ok(self.0.as_bytes().to_vec())
         }
-        fn write(&self, _: &Path, _: &[u8]) -> io::Result<()> {
+        fn write(&self, _: &Path, _: &[u8], _: u32) -> io::Result<()> {
             Ok(())
         }
         fn stat(&self, _: &Path) -> io::Result<Option<Stat>> {
@@ -451,58 +452,15 @@ mod tests {
         "sandbox/boxes/executor.rs",
     ];
 
-    fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
-        for entry in std::fs::read_dir(dir).unwrap().flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                rust_files(&path, out);
-            } else if path.extension().is_some_and(|e| e == "rs") {
-                out.push(path);
-            }
-        }
-    }
-
-    fn is_test_file(rel: &str) -> bool {
-        rel.contains("/tests/")
-            || rel.ends_with("/tests.rs")
-            || rel.ends_with("_tests.rs")
-            || rel.ends_with("testing.rs")
-    }
-
-    /// The source up to the file's test module, where one exists.
-    fn production_half(text: &str) -> &str {
-        [
-            "#[cfg(test)]\nmod ",
-            "#[cfg(test)]\npub(crate) mod ",
-            "#[cfg(test)]\npub mod ",
-        ]
-        .iter()
-        .filter_map(|marker| text.find(marker))
-        .min()
-        .map_or(text, |at| &text[..at])
-    }
-
     /// Every git invocation in a checkout goes through `git_dist` (and so
     /// through [`for_path`]); nothing else spawns `git` or sets a cwd on a
     /// process without being accounted for above. A new direct call would run
     /// on the host against a tree a box keeps in its guest.
     #[test]
     fn no_direct_git_on_checkouts() {
-        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-        let mut files = Vec::new();
-        rust_files(&src, &mut files);
         let mut offenders = Vec::new();
-        for file in files {
-            let rel = file
-                .strip_prefix(&src)
-                .unwrap()
-                .to_string_lossy()
-                .replace('\\', "/");
-            if is_test_file(&rel) {
-                continue;
-            }
-            let text = std::fs::read_to_string(&file).unwrap();
-            for (i, line) in production_half(&text).lines().enumerate() {
+        for (rel, text) in crate::source_scan::production_sources() {
+            for (i, line) in text.lines().enumerate() {
                 let spawns_git =
                     line.contains("Command::new(\"git\")") || line.contains("Command::new(git");
                 let sets_cwd = line.contains(".current_dir(");

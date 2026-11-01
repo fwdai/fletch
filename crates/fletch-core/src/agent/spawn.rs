@@ -1032,17 +1032,13 @@ fn push_typed(out: &mut String, s: &str) {
     }
 }
 
-/// The agent binary handed to `launch_agent`, decided by the *resolved*
-/// engine's kind: under a container engine it's the provider's in-image command
-/// name (`claude` / `codex` — the image carries its own install; a resolved host
-/// path would be meaningless, or missing, inside the container), under seatbelt
-/// the host-resolved absolute path as always. Keyed off the resolved engine rather
-/// than the stamped setting; a docker-stamped agent whose daemon is down never
-/// reaches here — `sandbox::engine_for` fails the spawn instead of degrading to
-/// seatbelt — so the resolved engine always matches the launch boundary.
-///
-/// Docker reaches here only for a provider `DockerProvider::from_id` accepts
-/// (the `supervisor::lifecycle` gate ran first), so the `None` case is defensive.
+/// The agent binary handed to `launch_agent` (`sandbox::agent_bin`), decided
+/// by the *resolved* engine's kind: the host-resolved absolute path for an
+/// engine that runs it on this host, the engine's own otherwise. Keyed off the
+/// resolved engine rather than the stamped setting; a docker-stamped agent
+/// whose daemon is down never reaches here — `sandbox::engine_for` fails the
+/// spawn instead of degrading to seatbelt — so the resolved engine always
+/// matches the launch boundary.
 fn agent_bin_for(
     provider: &str,
     bin: &str,
@@ -1050,23 +1046,9 @@ fn agent_bin_for(
     engine: &dyn SandboxEngine,
     home: &Path,
 ) -> Result<String> {
-    use sandbox::EngineKind;
-    match engine.kind() {
-        EngineKind::Docker | EngineKind::Podman => {
-            sandbox::docker::DockerProvider::from_id(provider)
-                .map(|p| p.image_bin().to_string())
-                .ok_or_else(|| {
-                    Error::Other(format!(
-                        "{label} isn't available in container sandboxes yet"
-                    ))
-                })
-        }
-        // The CLI on the box's tools disk; a host path would mean nothing in
-        // the guest.
-        EngineKind::Box => fletch_box::tools::bin_path(provider)
-            .ok_or_else(|| Error::Other(format!("{label} isn't available in box sandboxes yet"))),
-        EngineKind::SandboxExec => resolve_agent_bin(provider, bin, label, home),
-    }
+    sandbox::agent_bin(engine.kind(), provider, label, || {
+        resolve_agent_bin(provider, bin, label, home)
+    })
 }
 
 #[cfg(test)]

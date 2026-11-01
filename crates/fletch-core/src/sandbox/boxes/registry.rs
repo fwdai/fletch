@@ -60,6 +60,11 @@ const KILL_GRACE: Duration = Duration::from_secs(5);
 /// sessions pull, and from `send_stop` on, on the clean rungs together; then
 /// TERM/KILL.
 const SHUTDOWN_GRACE: Duration = CONTROL_GRACE;
+/// The bound on a stop's disposal read (`mirror::record_disposal`): `git
+/// status` and `rev-list` over the channel, run under the lifecycle lock.
+const DISPOSAL_READ: Duration = Duration::from_secs(30);
+/// [`DISPOSAL_READ`] at app exit, where quitting waits on it.
+const SHUTDOWN_DISPOSAL_READ: Duration = Duration::from_secs(5);
 
 /// The paths one box mirrors from the host, and who it belongs to.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -658,6 +663,10 @@ impl BoxRegistry {
         if let Some(refused) = self.refuse_boot(agent_id) {
             return Err(refused);
         }
+        // What the last stop read of its checkouts stops being true from
+        // here, before any setup wait: a box that is preparing is not running
+        // either, and the sweep must not judge it from the old record.
+        super::mirror::forget_disposal(&identity.box_dir()?)?;
         let prepared = async {
             let ready = setup::ready(|detail| {
                 self.set_phase(agent_id, BoxPhase::Preparing { detail });
@@ -1181,7 +1190,9 @@ impl BoxRegistry {
     }
 
     /// Stop `agent_id`'s VM through the ladder (§7.7): the mirror refreshed
-    /// first so publish has the objects while the box is down, then `stop` on
+    /// first so publish has the objects while the box is down, and each
+    /// checkout's disposal state recorded for the auto-archive sweep
+    /// (`mirror::record_disposal`), then `stop` on
     /// the control port, the ssh sysrq rung, SIGTERM, SIGKILL. `dirty` is
     /// cleared only after a clean rung.
     pub async fn stop(&self, agent_id: &str, reason: StopReason) -> Result<StopOutcome> {
@@ -1216,15 +1227,27 @@ impl BoxRegistry {
         Some(taken)
     }
 
+    /// Whether no launch is attached to `agent_id`'s box: the disposal read
+    /// a stop records is taken only then, since a session still running in
+    /// the guest could change its checkouts between the read and the halt.
+    /// With no record its agent is not auto-archived until a later stop.
+    fn nothing_attached(&self, agent_id: &str) -> bool {
+        self.entries
+            .lock()
+            .get(agent_id)
+            .is_some_and(|entry| entry.attached.is_empty())
+    }
+
     /// The ladder for a VM [`Self::take_running`] took.
     ///
     /// A [`StopReason::Shutdown`] stop is bounded by [`SHUTDOWN_GRACE`] (the
-    /// lock wait, the sessions pull, and the clean rungs from `send_stop` on)
-    /// and skips the mirror refresh: every turn checkpoint already refreshed
-    /// it. Nothing holds the lifecycle lock long once a box runs, but if
-    /// something did, the VM is killed without it. On app exit nothing can boot
-    /// meanwhile ([`Self::close`]); with the box flag going off, a boot could
-    /// start a second VM on the same disk while this one is killed.
+    /// lock wait, the sessions pull, and the clean rungs from `send_stop` on;
+    /// the disposal read beside the pull gets [`SHUTDOWN_DISPOSAL_READ`]) and skips the mirror refresh: every
+    /// turn checkpoint already refreshed it. Nothing holds the lifecycle lock
+    /// long once a box runs, but if something did, the VM is killed without
+    /// it. On app exit nothing can boot meanwhile ([`Self::close`]); with the
+    /// box flag going off, a boot could start a second VM on the same disk
+    /// while this one is killed.
     async fn stop_taken(
         &self,
         agent_id: &str,
@@ -1240,14 +1263,33 @@ impl BoxRegistry {
             match reason {
                 StopReason::Discard => {}
                 StopReason::Shutdown => {
-                    let pulled = super::home::pull_before_stop(&running);
-                    if tokio::time::timeout(SHUTDOWN_GRACE, pulled).await.is_err() {
+                    // The disposal read runs beside the sessions pull under a
+                    // bound of its own, shorter than the pull's: without it a
+                    // box running at exit has no record (its start deleted
+                    // the last one) and its agent could not be auto-archived
+                    // until it next ran, but quitting may wait on it for at
+                    // most [`SHUTDOWN_DISPOSAL_READ`].
+                    let pulled = tokio::time::timeout(
+                        SHUTDOWN_GRACE,
+                        super::home::pull_before_stop(&running),
+                    );
+                    let quiet = self.nothing_attached(agent_id);
+                    let recorded = async {
+                        if quiet {
+                            record_disposal_within(&running, SHUTDOWN_DISPOSAL_READ).await;
+                        }
+                    };
+                    let (pulled, ()) = tokio::join!(pulled, recorded);
+                    if pulled.is_err() {
                         tracing::warn!(agent_id, "sessions pull before shutdown timed out");
                     }
                 }
                 _ => {
                     if let Err(e) = super::mirror::refresh_running(&running).await {
                         tracing::info!(agent_id, error = %e, "mirror refresh before stop failed");
+                    }
+                    if self.nothing_attached(agent_id) {
+                        record_disposal_within(&running, DISPOSAL_READ).await;
                     }
                     super::home::pull_before_stop(&running).await;
                 }
@@ -1796,11 +1838,11 @@ async fn boot(
 
     // The owner's sessions dir — where the provider's CLI writes its
     // transcripts in this guest — tailed into its mirror under the box dir
-    // when the provider's adapter has it tailed (`home::Transport`).
-    let provider_home = super::home::require(&identity.provider)?;
+    // when the provider's adapter has it tailed (`provider::Transport`).
+    let provider_home = crate::sandbox::provider::require(&identity.provider)?;
     let sessions = provider_home.sessions_dir(&identity.home, &identity.writable_root);
     let mirror = dir.join(provider_home.mirror_dirname());
-    let tail = (provider_home.transport() == super::home::Transport::Tail)
+    let tail = (provider_home.transport() == crate::sandbox::provider::Transport::Tail)
         .then_some((sessions.as_path(), mirror.as_path()));
     let relays = relay::Relays::start(channel.clone(), &dir, &identity.rpc_dir, tail);
     Ok(RunningBox {
@@ -1912,6 +1954,21 @@ async fn remove_box_dir(dir: &Path) -> Result<()> {
         }
     }
     unreachable!("the last attempt returns")
+}
+
+/// `mirror::record_disposal` for `running`, given at most `bound`: a stop
+/// runs it under the box's lifecycle lock, ahead of the ladder's kill rungs,
+/// so a slow or stuck guest must not hold the stop. On timeout nothing is
+/// recorded, which the auto-archive sweep takes as "skip".
+async fn record_disposal_within(running: &RunningBox, bound: Duration) {
+    let recorded = tokio::time::timeout(bound, super::mirror::record_disposal(running)).await;
+    if recorded.is_err() {
+        tracing::warn!(
+            agent_id = running.agent_id(),
+            timeout_s = bound.as_secs(),
+            "disposal read before stop timed out; nothing recorded"
+        );
+    }
 }
 
 /// The stop ladder (§7.7). With a `bound`, the clean rungs together get that

@@ -29,7 +29,7 @@ fn opencode_storage_root() -> Option<PathBuf> {
 }
 
 /// A box agent's store is in its guest; the host reads the mirror it pulls
-/// under the agent's box dir (`sandbox::boxes::home::sessions_mirror`,
+/// under the agent's box dir (`sandbox::session_mirror`,
 /// refreshed from a running box first), scanned before the user's own
 /// store. Absent for every other engine's agent.
 pub(crate) fn opencode_locate(
@@ -38,7 +38,7 @@ pub(crate) fn opencode_locate(
     _cwd: &Path,
     diag: &mut ReadDiagnostics,
 ) -> Vec<PathBuf> {
-    let roots = crate::sandbox::boxes::home::sessions_mirror("opencode", agent_id)
+    let roots = crate::sandbox::session_mirror("opencode", agent_id)
         .into_iter()
         .chain(opencode_storage_root());
     for root in roots {

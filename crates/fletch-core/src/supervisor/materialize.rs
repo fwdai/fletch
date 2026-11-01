@@ -12,9 +12,9 @@ use serde_json::Value;
 
 use crate::agent::{capabilities, provider_bin_label, transcript_reader, ReadDiagnostics};
 use crate::error::{Error, Result};
+use crate::sandbox::stamped_engine;
 use crate::workspace::{AgentRecord, NativeTranscript, SessionLineage, SessionRecord};
 
-use super::lifecycle::stamped_engine;
 use super::session_sync::{agent_sync_lock, SUBAGENT_TAG};
 use super::Supervisor;
 

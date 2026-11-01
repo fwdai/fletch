@@ -1166,12 +1166,7 @@ async fn ensure_reviewer(
             Ok(record)
                 if record.archive.is_none()
                     && record.custom_agent_id.as_deref() == Some(spec.custom_agent_id.as_str())
-                    && record
-                        .sandbox_engine
-                        .as_deref()
-                        .and_then(crate::sandbox::EngineKind::from_setting)
-                        .unwrap_or(crate::sandbox::EngineKind::SandboxExec)
-                        == wanted_engine =>
+                    && crate::sandbox::stamped_engine(&record) == wanted_engine =>
             {
                 if !sup.agents.lock().contains_key(id) {
                     sup.clone().resume_agent(ctx.clone(), id).await?;
@@ -1233,6 +1228,8 @@ async fn ensure_reviewer(
         account: None,
         // The reviewer reads the coder's checkout, nothing else of the user's.
         folder_grants: Vec::new(),
+        // It adopts that checkout, so it runs where the checkout lives.
+        workspace_type: None,
     };
     let record = sup.clone().spawn_agent(ctx.clone(), req).await?;
     Ok(ReviewerView {

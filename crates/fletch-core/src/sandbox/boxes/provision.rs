@@ -1,11 +1,10 @@
 //! A checkout provisioned *inside* a box, replacing `sandbox::provision`'s
-//! clone for box-stamped agents: `git init` in the guest,
-//! the host pushes the base commit in over the channel (a full copy — no
-//! `--shared`, no alternates; the guest has no view of the user's repository),
-//! the guest checks it out, then the fixups every clone gets. Those that are
-//! git in the checkout (`seed_identity`, `rewrite_origin_head`) are the
-//! existing ones, routed to the guest by the seam; the hooks are written over
-//! the channel because they need the executable bit.
+//! clone for box-stamped agents. Only the base delivery differs: `git init` in
+//! the guest, and the host pushes the base commit in over the channel (a full
+//! copy — no `--shared`, no alternates; the guest has no view of the user's
+//! repository). Everything after is the one pipeline every checkout gets
+//! (`sandbox::provision::fixups`), git and file writes routed to the guest by
+//! the executor seam, with the checkout from the pushed base as its step.
 //!
 //! The host also gets an empty placeholder directory at the checkout path: the
 //! ssh launcher is spawned with the checkout as its cwd, which must exist on
@@ -14,17 +13,14 @@
 //! the agent's parent dir.
 
 use std::path::Path;
-use std::sync::Arc;
 use std::time::Duration;
-
-use fletch_box::Channel;
 
 use crate::error::{Error, Result};
 use crate::git;
 use crate::sandbox::provision::{self as clone, BaseFreshness, CheckoutSpec};
 
-use super::registry::{BoxIdentity, BoxRegistry};
-use super::{executor, mirror};
+use super::mirror;
+use super::registry::{BoxIdentity, BoxRegistry, RunningBox};
 
 /// `git::fetch_fork_point`'s bound, for the same reason: this sits inside the
 /// supervisor's spawn watchdog.
@@ -64,22 +60,66 @@ pub async fn provision(
     }
     std::fs::create_dir_all(spec.dest)?;
 
-    let origin = origin_url(spec.source_repo).await?;
-    let (sha, freshness) = base_commit(spec, base_branch, origin.is_some()).await?;
+    let has_origin = git::git_output(spec.source_repo, &["remote", "get-url", "origin"])
+        .await?
+        .status
+        .success();
+    let (sha, freshness) = base_commit(spec, base_branch, has_origin).await?;
 
-    // In the guest: an empty repository at the checkout path.
+    if let Err(e) = deliver_base(&running, spec, &sha, base_branch.filter(|_| has_origin)).await {
+        clone::discard(spec.dest).await;
+        return Err(e);
+    }
+
+    clone::fixups(spec, |dest| async move {
+        match landing {
+            Landing::Detached => {
+                git::run_git(
+                    &dest,
+                    &["checkout", "--detach", BASE_REF],
+                    "checkout --detach",
+                )
+                .await?;
+            }
+            Landing::Branch(branch) => {
+                git::run_git(
+                    &dest,
+                    &["checkout", "-b", branch, BASE_REF],
+                    &format!("checkout -b {branch}"),
+                )
+                .await?;
+            }
+        }
+        Ok(())
+    })
+    .await?;
+    mirror::record_source(&running.dir, spec.dest, spec.source_repo)?;
+    // The provider's home in the guest (onboarding state, shared config) is
+    // seeded by every launch (`home::seed`), not here: a checkout is
+    // provisioned once, the user's config changes between launches.
+    Ok(freshness)
+}
+
+/// The base delivery: an empty repository at the checkout path in the guest,
+/// then from the host the base commit `sha` (and, with `tracking`, the
+/// tracking ref `origin/<tracking>` the Git panel measures against) over the
+/// channel, a full copy of what it reaches.
+async fn deliver_base(
+    running: &RunningBox,
+    spec: &CheckoutSpec<'_>,
+    sha: &str,
+    tracking: Option<&str>,
+) -> Result<()> {
     let dest = path_str(spec.dest)?;
-    let mut init = crate::git_dist::command(&identity.writable_root);
+    let mut init = crate::git_dist::command(&running.identity.writable_root);
     init.args(["init", "-q", &dest]);
     git_ok(&mut init, "git init in the box").await?;
 
-    // From the host: the base commit (and the tracking ref the Git panel
-    // measures against) over the channel, a full copy of what it reaches.
     let url = running.git_url(spec.dest);
     let mut push = crate::git_dist::command(spec.source_repo);
     push.env("GIT_SSH_COMMAND", running.channel.git_ssh_command());
     push.args(["push", "--quiet", &url, &format!("+{sha}:{BASE_REF}")]);
-    if let Some(base) = base_branch.filter(|_| origin.is_some()) {
+    if let Some(base) = tracking {
         push.arg(format!("+{sha}:refs/remotes/origin/{base}"));
     }
     let out = tokio::time::timeout(PUSH_TIMEOUT, push.output())
@@ -91,49 +131,7 @@ pub async fn provision(
             String::from_utf8_lossy(&out.stderr).trim()
         )));
     }
-
-    // The clone's fixups, in the clone's order: origin first (the checkout
-    // step may need it), hooks and identity, the checkout, `origin/HEAD` last.
-    match &origin {
-        Some(url) => {
-            git::run_git(
-                spec.dest,
-                &["remote", "add", "origin", url],
-                "remote add origin",
-            )
-            .await?;
-        }
-        None => tracing::info!(
-            source = %spec.source_repo.display(),
-            "source repo has no origin remote; the box checkout gets none"
-        ),
-    }
-    clone::seed_identity(spec).await?;
-    install_hooks(&running.channel, spec.dest).await?;
-    match landing {
-        Landing::Detached => {
-            git::run_git(
-                spec.dest,
-                &["checkout", "--detach", BASE_REF],
-                "checkout --detach",
-            )
-            .await?;
-        }
-        Landing::Branch(branch) => {
-            git::run_git(
-                spec.dest,
-                &["checkout", "-b", branch, BASE_REF],
-                &format!("checkout -b {branch}"),
-            )
-            .await?;
-        }
-    }
-    clone::rewrite_origin_head(spec).await;
-    mirror::record_source(&running.dir, spec.dest, spec.source_repo)?;
-    // The provider's home in the guest (onboarding state, shared config) is
-    // seeded by every launch (`home::seed`), not here: a checkout is
-    // provisioned once, the user's config changes between launches.
-    Ok(freshness)
+    Ok(())
 }
 
 /// Restore a box agent's checkout at `spec.base_ref` (its archived tip): on
@@ -239,49 +237,6 @@ async fn resolve(repo: &Path, rev: &str) -> Result<String> {
     git::resolve(repo, rev)
         .await?
         .ok_or_else(|| Error::Git(format!("{rev} is not a commit in {}", repo.display())))
-}
-
-/// The source's `origin` in the https form provisioning writes, if any.
-async fn origin_url(source_repo: &Path) -> Result<Option<String>> {
-    let out = git::git_output(source_repo, &["remote", "get-url", "origin"]).await?;
-    Ok(out
-        .status
-        .success()
-        .then(|| crate::github::github_https_remote(String::from_utf8_lossy(&out.stdout).trim())))
-}
-
-/// The delegation hooks and the attribution hook, as `sandbox::provision` and
-/// `attribution` write them into a host clone, put over the channel with the
-/// executable bit the guest's git requires.
-async fn install_hooks(channel: &Arc<Channel>, dest: &Path) -> Result<()> {
-    let hooks = dest.join(".git/hooks");
-    let files = [
-        (
-            "post-merge",
-            clone::delegation_hook_script(r#"action="git_update_branch""#),
-        ),
-        (
-            "post-commit",
-            clone::delegation_hook_script(clone::POST_COMMIT_ACTION),
-        ),
-        ("commit-msg", crate::attribution::commit_msg_hook()),
-    ];
-    for (name, body) in files {
-        put(channel, body.into_bytes(), hooks.join(name), 0o755).await?;
-    }
-    Ok(())
-}
-
-async fn put(
-    channel: &Arc<Channel>,
-    bytes: Vec<u8>,
-    path: std::path::PathBuf,
-    mode: u32,
-) -> Result<()> {
-    let channel = channel.clone();
-    tokio::task::spawn_blocking(move || executor::put(&channel, &bytes, &path, mode))
-        .await
-        .map_err(|e| Error::Other(e.to_string()))?
 }
 
 async fn git_ok(cmd: &mut tokio::process::Command, what: &str) -> Result<()> {

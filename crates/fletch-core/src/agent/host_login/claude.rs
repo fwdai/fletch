@@ -207,7 +207,7 @@ pub async fn launch_token(
             let error = e.clone();
             let refusal = tokio::task::spawn_blocking(move || {
                 let fallback =
-                    crate::sandbox::container::auth::fallback_login_present(containerized);
+                    crate::sandbox::provider::auth::fallback_login_present(containerized);
                 default_launch_refusal(&error, fallback, default_store_description)
             })
             .await
@@ -260,7 +260,7 @@ fn default_launch_refusal(
 /// the Keychain service (which carries no path) and the credentials file by
 /// its generic name, never a path that names the user.
 fn default_store_description() -> String {
-    let service = crate::sandbox::container::auth::default_keychain_service();
+    let service = crate::sandbox::provider::auth::default_keychain_service();
     let dir = match accounts::claude_config_override() {
         Some(_) => "the config dir your shell's CLAUDE_CONFIG_DIR names",
         None => "~/.claude",
@@ -505,8 +505,8 @@ impl HostStore {
         // The default account's item is the one Settings' presence probe
         // names, so the two can't disagree on where the login is.
         let service = match account_dir {
-            Some(dir) => crate::sandbox::container::auth::claude_keychain_service(Some(dir)),
-            None => crate::sandbox::container::auth::default_keychain_service(),
+            Some(dir) => crate::sandbox::provider::auth::claude_keychain_service(Some(dir)),
+            None => crate::sandbox::provider::auth::default_keychain_service(),
         };
         Some(Self {
             service,

@@ -40,7 +40,7 @@ use crate::instructions;
 use super::gated_session_id;
 
 /// A box agent's `~/.cursor/projects` is in its guest; the host reads the
-/// mirror the relay fills under its box dir (`sandbox::boxes::home`),
+/// mirror the relay fills under its box dir (`sandbox::session_mirror`),
 /// scanned first. Absent for every other engine's agent, so the scan falls
 /// through to the user's own projects dir.
 pub(crate) fn cursor_locate(
@@ -49,7 +49,7 @@ pub(crate) fn cursor_locate(
     _cwd: &Path,
     diag: &mut ReadDiagnostics,
 ) -> Vec<PathBuf> {
-    let roots = crate::sandbox::boxes::home::mirror_for_agent("cursor", agent_id)
+    let roots = crate::sandbox::session_mirror("cursor", agent_id)
         .into_iter()
         .chain(dirs::home_dir().map(|home| home.join(".cursor").join("projects")));
     for projects in roots {

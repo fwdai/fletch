@@ -1,6 +1,6 @@
 //! Signing on publish. An agent's clone commits unsigned — the sandbox holds no
 //! key, provisioning freezes `commit.gpgsign=false` into the clone
-//! (`sandbox::provision::seed_identity`), and host-side git never signs
+//! (`sandbox::provision::fixups`), and host-side git never signs
 //! implicitly in any checkout (`hardening::NEUTRALISED`) — so when the user's
 //! own repository signs its commits, the host signs what a push publishes, at
 //! the push. That is the moment the user takes responsibility for the commits

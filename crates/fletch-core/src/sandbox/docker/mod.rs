@@ -32,7 +32,6 @@ mod cli;
 mod engine;
 mod image;
 mod probe;
-pub mod setup_token;
 
 pub use cleanup::remove_agent_containers;
 pub use engine::{
@@ -47,11 +46,6 @@ pub use probe::{availability, DockerAvailability};
 /// the `sandbox::docker::set_build_sink` path `lib.rs` installs at startup keeps
 /// resolving.
 pub use crate::sandbox::container::progress::set_build_sink;
-
-/// The container auth chain, now runtime-neutral. Re-exported so the
-/// `sandbox::docker::auth::…` paths the app and its Tauri commands already use
-/// keep resolving.
-pub use crate::sandbox::container::auth;
 
 /// The set of providers a container can run, under the name the rest of the app
 /// knows it by. Docker was the first container runtime, so the type is spelled

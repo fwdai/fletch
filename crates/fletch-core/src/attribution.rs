@@ -139,7 +139,7 @@ fn is_attribution_line(line: &str) -> bool {
 /// first and honours its verdict, then strips attribution when armed. git's
 /// message cleanup afterwards collapses the blank lines left behind. `LC_ALL=C`
 /// makes `[^ -~]` (an emoji's bytes) locale-independent.
-pub(crate) fn commit_msg_hook() -> String {
+fn commit_msg_hook() -> String {
     let emails = AGENT_EMAILS
         .iter()
         .map(|e| e.replace('.', r"\."))
@@ -179,11 +179,44 @@ exit 0
 /// `.git` renamed and linked back would carry a path-based write (of an
 /// executable, here) out of the checkout. A link anywhere along `.git/hooks`
 /// is refused.
+///
+/// A checkout in a box is written where it lives, through its executor
+/// ([`install_hook_remote`]).
 pub(crate) async fn install_hook(checkout: &Path) -> crate::error::Result<()> {
     let checkout = checkout.to_path_buf();
-    tokio::task::spawn_blocking(move || install_hook_in(&checkout))
-        .await
-        .map_err(|e| crate::error::Error::Other(format!("attribution hook task: {e}")))?
+    tokio::task::spawn_blocking(move || match crate::exec::for_path(&checkout) {
+        crate::exec::Executor::Local => install_hook_in(&checkout),
+        remote => install_hook_remote(&remote, &checkout),
+    })
+    .await
+    .map_err(|e| crate::error::Error::Other(format!("attribution hook task: {e}")))?
+}
+
+/// [`install_hook_in`] for a checkout the host reaches only through `exec`:
+/// the same chaining, over plain paths, since in the guest's own tree a link
+/// leads nowhere outside it (`exec::Executor::write_beneath`), which writes
+/// the hook executable where it lives.
+fn install_hook_remote(exec: &crate::exec::Executor, checkout: &Path) -> crate::error::Result<()> {
+    let rel = Path::new(".git/hooks/commit-msg");
+    let hook = checkout.join(rel);
+    let orig = checkout.join(".git/hooks/commit-msg.orig");
+    let ours = |bytes: Vec<u8>| {
+        let marker = HOOK_MARKER.as_bytes();
+        bytes.windows(marker.len()).any(|w| w == marker)
+    };
+    let foreign = exec.stat(&hook)?.is_some() && !exec.read(&hook).is_ok_and(ours);
+    if foreign {
+        if exec.stat(&orig)?.is_some() {
+            tracing::warn!(
+                checkout = %checkout.display(),
+                "commit-msg and commit-msg.orig both exist; not installing the attribution hook"
+            );
+            return Ok(());
+        }
+        exec.rename(&hook, &orig)?;
+    }
+    exec.write_beneath(checkout, rel, commit_msg_hook().as_bytes(), 0o755)?;
+    Ok(())
 }
 
 fn install_hook_in(checkout: &Path) -> crate::error::Result<()> {
@@ -229,11 +262,25 @@ fn owned_checkouts(agent_id: &str, repos: &[TrackedRepo]) -> Vec<PathBuf> {
         .collect()
 }
 
+/// The `.git` probe asks the checkout's executor: a box checkout's host path
+/// is an empty placeholder. On the launch path, so reaching a stopped box
+/// boots it, as the launch is about to.
 async fn refresh_hooks_in(checkouts: Vec<PathBuf>) {
     for checkout in checkouts {
+        let probe = checkout.clone();
+        let git_dir = tokio::task::spawn_blocking(move || {
+            crate::exec::for_path(&probe).stat(&probe.join(".git"))
+        })
+        .await
+        .unwrap_or_else(|e| Err(std::io::Error::other(e)));
         // A `.git` *file* is a linked worktree: its hooks are the user's repo's.
-        if !checkout.join(".git").is_dir() {
-            continue;
+        match git_dir {
+            Ok(Some(stat)) if stat.is_dir => {}
+            Ok(_) => continue,
+            Err(e) => {
+                tracing::warn!(checkout = %checkout.display(), error = %e, "attribution hook refresh: .git probe failed");
+                continue;
+            }
         }
         if let Err(e) = install_hook(&checkout).await {
             tracing::warn!(checkout = %checkout.display(), error = %e, "attribution hook refresh failed");
@@ -497,5 +544,79 @@ mod tests {
             0o755
         );
         assert!(linked.join(".git").is_file());
+    }
+
+    /// A box checkout as the executor sees it: `.git` a directory in the
+    /// guest for `box-clone`, a file (a linked worktree) for `box-linked`,
+    /// while the host paths hold nothing at all. Records what is written,
+    /// and with what mode.
+    #[derive(Debug, Default)]
+    struct FakeBox {
+        writes: parking_lot::Mutex<Vec<(PathBuf, u32)>>,
+    }
+
+    impl crate::exec::RemoteExecutor for FakeBox {
+        fn command(&self, _: &str, _: &Path, _: &[(String, String)]) -> std::process::Command {
+            std::process::Command::new("true")
+        }
+        fn read(&self, path: &Path) -> std::io::Result<Vec<u8>> {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                path.display().to_string(),
+            ))
+        }
+        fn write(&self, path: &Path, _: &[u8], mode: u32) -> std::io::Result<()> {
+            self.writes.lock().push((path.to_path_buf(), mode));
+            Ok(())
+        }
+        fn stat(&self, path: &Path) -> std::io::Result<Option<crate::exec::Stat>> {
+            let kind = |is_dir| {
+                Some(crate::exec::Stat {
+                    is_dir,
+                    is_file: !is_dir,
+                    len: 0,
+                })
+            };
+            Ok(if path.ends_with("box-clone/.git") {
+                kind(true)
+            } else if path.ends_with("box-linked/.git") {
+                kind(false)
+            } else {
+                None
+            })
+        }
+        fn list(&self, _: &Path) -> std::io::Result<Vec<crate::exec::DirEntry>> {
+            Ok(Vec::new())
+        }
+        fn create_dir_all(&self, _: &Path) -> std::io::Result<()> {
+            Ok(())
+        }
+        fn remove(&self, _: &Path) -> std::io::Result<()> {
+            Ok(())
+        }
+        fn rename(&self, _: &Path, _: &Path) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// A box checkout's host path is an empty placeholder, so the `.git`
+    /// probe asks the guest: its clone gets the hook, written executable where
+    /// it lives, and a linked worktree there is still left alone.
+    #[tokio::test]
+    async fn agent_start_installs_the_hook_in_a_box_checkout() {
+        // A root no other test registers.
+        let root = PathBuf::from("/attribution-test/box-root");
+        let fake = std::sync::Arc::new(FakeBox::default());
+        crate::exec::register_root(root.clone(), fake.clone());
+        let clone = root.join("box-clone");
+        let linked = root.join("box-linked");
+        assert!(!clone.join(".git").exists(), "nothing on the host");
+
+        refresh_hooks_in(vec![clone.clone(), linked]).await;
+        crate::exec::unregister_root(&root);
+        assert_eq!(
+            *fake.writes.lock(),
+            vec![(clone.join(".git/hooks/commit-msg"), 0o755)]
+        );
     }
 }

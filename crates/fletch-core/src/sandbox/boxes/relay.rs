@@ -24,7 +24,7 @@
 //!   shown this session. Markers made after the sync wait for the next one.
 //! - **Transcript tail**: `fletch-guest tail <sessions dir>` emits
 //!   `create`/`append` lines for every `*.jsonl` under the dir the provider's
-//!   CLI writes its sessions to (`super::home::ProviderHome::sessions_dir`:
+//!   CLI writes its sessions to (`sandbox::provider::ProviderHome::sessions_dir`:
 //!   claude's `<home>/.claude/projects`, codex's `<CODEX_HOME>/sessions`);
 //!   the host appends them under the provider's mirror in the box dir
 //!   (`<box>/claude-projects/`, `<box>/codex-sessions/`), and on reconnect
@@ -115,7 +115,7 @@ impl Relays {
     ///
     /// `tail` is the guest sessions dir to follow and the host mirror to
     /// append it to; `None` for a provider whose sessions the host pulls
-    /// instead (`super::home::Transport`).
+    /// instead (`sandbox::provider::Transport`).
     pub fn start(
         channel: Arc<Channel>,
         box_dir: &Path,

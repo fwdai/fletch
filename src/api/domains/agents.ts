@@ -14,6 +14,7 @@ import type {
   RewindScope,
   TrackedRepo,
 } from "../types/agent";
+import type { WorkspaceKind } from "../types/sandbox";
 
 export const agentsApi = {
   spawnAgent: (
@@ -55,6 +56,10 @@ export const agentsApi = {
      *  launch (the composer's folder chips). Each is checked by the backend;
      *  a refused one fails the spawn with the reason. */
     folderGrants?: FolderGrant[],
+    /** The composer's workspace type for this agent: this Mac's sandbox or an
+     *  isolated VM, over Settings and the project's placement. `undefined`
+     *  leaves it to them. A VM that cannot be had fails the spawn with why. */
+    workspaceType?: WorkspaceKind,
   ) =>
     invoke<AgentRecord>("spawn_agent", {
       view,
@@ -73,6 +78,7 @@ export const agentsApi = {
       task: task ?? null,
       account: account ?? null,
       folderGrants: folderGrants?.length ? folderGrants : null,
+      workspaceType: workspaceType ?? null,
     }),
   /** A project's purpose-tagged chats, newest first (see `ROADMAP_PM_PURPOSE`).
    *  These never appear in the workspace snapshot, so the surface that owns

@@ -45,6 +45,9 @@ pub async fn spawn_agent(
     // The composer's folder chips: folders on this machine to grant the new
     // agent, checked by the spawn. Absent grants nothing.
     folder_grants: Option<Vec<FolderGrant>>,
+    // The composer's workspace type for a new agent, `host` or `box`; absent
+    // leaves it to Settings and the project's placement.
+    workspace_type: Option<String>,
 ) -> Result<AgentRecord> {
     fletch_core::commands::spawn_agent_impl(
         supervisor.inner().clone(),
@@ -65,6 +68,7 @@ pub async fn spawn_agent(
         task,
         account,
         folder_grants,
+        workspace_type,
     )
     .await
 }

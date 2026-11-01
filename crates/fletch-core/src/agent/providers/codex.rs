@@ -151,19 +151,19 @@ pub(crate) fn codex_write(
     engine: crate::sandbox::EngineKind,
     bodies: &[Value],
 ) -> Result<Option<PathBuf>> {
-    if engine == crate::sandbox::EngineKind::Box {
-        // The codex that resumes this runs in the guest and reads the
-        // overlay's `sessions` there; the host's copy is the mirror the relay
-        // fills. Created in both (`boxes::home::create_session_file`).
-        let rollout = Rollout::new(session_id, cwd, bodies);
-        return crate::sandbox::boxes::home::create_session_file(
-            &crate::sandbox::boxes::home::codex::Codex,
-            agent_id,
-            cwd,
-            &rollout.rel,
-            &rollout.lines,
-        )
-        .map(Some);
+    // Where the engine keeps the agent's sessions itself (a box: the codex
+    // that resumes this reads the overlay's `sessions` in the guest), it
+    // writes the file there.
+    let rollout = Rollout::new(session_id, cwd, bodies);
+    if let Some(path) = crate::sandbox::create_session_file(
+        "codex",
+        engine,
+        agent_id,
+        cwd,
+        &rollout.rel,
+        &rollout.lines,
+    )? {
+        return Ok(Some(path));
     }
     let overlay = crate::agent::codex_home::overlay_for_agent(agent_id)?;
     let sessions = crate::agent::codex_home::open_overlay(&overlay)?.subdir("sessions")?;

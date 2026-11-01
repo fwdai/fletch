@@ -36,7 +36,7 @@ impl Supervisor {
         // The Run panel's process runs on the host, in the checkout; a box
         // keeps the checkout in its guest, where nothing here can reach yet.
         // Refused with the reason rather than run in the empty placeholder.
-        if crate::sandbox::boxes::box_holding(&cwd).is_some() {
+        if !crate::sandbox::stamped_engine(&record).caps().run_panel {
             return Err(Error::Other(
                 "the Run panel doesn't run inside box sandboxes yet".into(),
             ));

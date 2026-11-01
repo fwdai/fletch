@@ -168,3 +168,8 @@ mod tests {
         }
     }
 }
+
+// Declared after the test module above: the source-scanning guard tests read a
+// file only up to its first `#[cfg(test)]` module, so this must not come first.
+#[cfg(test)]
+pub(crate) mod source_scan;

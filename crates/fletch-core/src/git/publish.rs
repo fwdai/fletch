@@ -108,7 +108,7 @@ async fn signed(p: &Publication<'_>, tip: String) -> Result<String> {
         // The signed copies were written over the mirror's objects when the
         // checkout is in a box; the guest must hold them before its branch
         // can name one. A host checkout's store already has them.
-        crate::sandbox::boxes::mirror::export_commit(p.checkout, &signed).await?;
+        crate::sandbox::export_commit(p.checkout, &signed).await?;
         move_branch(p.checkout, p.branch, &tip, &signed).await?;
     }
     Ok(signed)

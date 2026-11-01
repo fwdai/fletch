@@ -22,11 +22,14 @@ import type { TurnSentEvent } from "@/api";
 import { mirrorSentTurn } from "@/helpers";
 import { createDraftsSlice } from "./drafts";
 import type { AppState } from "./types";
+import { createWorkspaceTypesSlice } from "./workspaceTypes";
 
 const PROMPT = "reorganize the settings pane";
 
 const makeStore = () => {
-  const store = create<AppState>()((...a) => ({ ...createDraftsSlice(...a) }) as AppState);
+  const store = create<AppState>()(
+    (...a) => ({ ...createDraftsSlice(...a), ...createWorkspaceTypesSlice(...a) }) as AppState,
+  );
   store.setState({
     drafts: [
       {

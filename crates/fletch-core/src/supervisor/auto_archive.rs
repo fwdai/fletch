@@ -6,6 +6,13 @@
 //! that is clean *and* fully pushed, and treats every read failure as "not
 //! this pass". The decision itself is [`eligible`], a pure function over a
 //! [`Candidate`], so the rules are tested without git or a database.
+//!
+//! The sweep never boots a box (docs/sandbox-foundation.md rule 2). A
+//! checkout in a running box is read live, like any other; one in a stopped
+//! box answers what the box's stop read there (`sandbox::disposal_at_stop`),
+//! which no guest activity can postdate: the read is the stop ladder's first
+//! rung, and the record is dropped as the box starts (preparing included).
+//! No record means skip.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -258,12 +265,26 @@ async fn summarize_repos(record: &AgentRecord) -> Option<Vec<RepoSummary>> {
                 return None;
             }
         };
-        let check = match crate::git_state::check_for_disposal(&checkout).await {
-            Ok(c) => c,
-            Err(e) => {
+        // A timer read: passive, so it never boots a stopped box; a checkout
+        // whose box is asleep answers what its stop recorded instead.
+        let read = crate::git_state::check_for_disposal(&checkout);
+        let asleep = || crate::sandbox::checkout_asleep(&checkout);
+        let check = match crate::commands::git_state::poll_unless_asleep(asleep, read).await {
+            Some(Ok(check)) => check,
+            Some(Err(e)) => {
                 tracing::debug!(agent_id = %record.id, error = %e, "auto-archive: git read failed");
                 return None;
             }
+            None => match crate::sandbox::disposal_at_stop(&checkout) {
+                Some(check) => check,
+                None => {
+                    tracing::debug!(
+                        agent_id = %record.id,
+                        "auto-archive: checkout's box is asleep with nothing recorded at its stop"
+                    );
+                    return None;
+                }
+            },
         };
         out.push(RepoSummary {
             clean_tree: check.clean_tree,
@@ -279,6 +300,14 @@ async fn summarize_repos(record: &AgentRecord) -> Option<Vec<RepoSummary>> {
 /// so this is when the current checkout came to exist; later writes inside it
 /// leave it alone (unlike mtime, which every `git status` index refresh bumps).
 /// `None` where the filesystem has no birth time to report.
+///
+/// A host read even for a box checkout, on purpose: the host path is then an
+/// empty placeholder, but box provisioning creates it in the same step as the
+/// guest's `git init` (the box engine's `provision`, on spawn and restore)
+/// and teardown removes it with the agent's dir, so its birth time is the
+/// guest checkout's. The record's `created_at` is not a substitute: a restore
+/// keeps it, which is the case this floor exists for. The executor's `stat`
+/// carries no birth time to ask the guest for instead.
 fn provisioned_at(checkout: &std::path::Path) -> Option<i64> {
     let created = std::fs::metadata(checkout).ok()?.created().ok()?;
     let since_epoch = created.duration_since(std::time::UNIX_EPOCH).ok()?;

@@ -574,8 +574,9 @@ async fn probe_podman_engine() -> Result<sandbox::PodmanAvailability, String> {
 /// `spawn_blocking` because the first resolution may load the login-shell env
 /// (runs a shell).
 #[tauri::command]
-async fn get_container_auth_status() -> Result<sandbox::docker::auth::ContainerAuthStatus, String> {
-    tauri::async_runtime::spawn_blocking(sandbox::docker::auth::status)
+async fn get_container_auth_status() -> Result<sandbox::provider::auth::ContainerAuthStatus, String>
+{
+    tauri::async_runtime::spawn_blocking(sandbox::provider::auth::status)
         .await
         .map_err(|e| e.to_string())
 }
@@ -602,7 +603,7 @@ async fn set_container_auth_token(
 /// spawn path reads — so a change applies to the next docker spawn without a
 /// restart. Same shape as `github::set_token`.
 fn store_container_token(db: &DbState, raw_token: &str) -> Result<(), String> {
-    let (token, recognized) = sandbox::docker::auth::normalize_token(raw_token)?;
+    let (token, recognized) = sandbox::provider::auth::normalize_token(raw_token)?;
     if !recognized {
         tracing::warn!(
             "container auth token doesn't look like a `claude setup-token` value \
@@ -611,17 +612,17 @@ fn store_container_token(db: &DbState, raw_token: &str) -> Result<(), String> {
     }
     {
         let conn = db.lock();
-        secrets::set(&conn, sandbox::docker::auth::TOKEN_SETTING, &token)
+        secrets::set(&conn, sandbox::provider::auth::TOKEN_SETTING, &token)
             .map_err(|e| e.to_string())?;
     }
-    sandbox::docker::auth::set_stored_token(Some(token));
+    sandbox::provider::auth::set_stored_token(Some(token));
     Ok(())
 }
 
 /// A `claude setup-token` capture in flight, held so the code-submit and cancel
 /// commands can reach its live PTY. At most one runs at a time; dropping the
-/// stored session kills the PTY (see [`sandbox::docker::setup_token`]).
-type ClaudeSetupState = Mutex<Option<sandbox::docker::setup_token::ClaudeSetup>>;
+/// stored session kills the PTY (see [`sandbox::provider::setup_token`]).
+type ClaudeSetupState = Mutex<Option<sandbox::provider::setup_token::ClaudeSetup>>;
 
 /// Drive `claude setup-token` on the user's behalf: spawn it under a PTY, emit
 /// the consent URL and the auth-code prompt to the UI (`claude-setup:url` /
@@ -646,9 +647,9 @@ async fn connect_claude_container_auth(
 
     let (tx, rx) = std::sync::mpsc::channel::<crate::error::Result<String>>();
     let emit_handle = app.clone();
-    let emit: Arc<dyn Fn(sandbox::docker::setup_token::SetupEvent) + Send + Sync> =
+    let emit: Arc<dyn Fn(sandbox::provider::setup_token::SetupEvent) + Send + Sync> =
         Arc::new(move |event| {
-            use sandbox::docker::setup_token::SetupEvent;
+            use sandbox::provider::setup_token::SetupEvent;
             match event {
                 SetupEvent::Url(url) => {
                     let _ = emit_handle.emit("claude-setup:url", url);
@@ -669,7 +670,7 @@ async fn connect_claude_container_auth(
         if slot.is_some() {
             return Err("A Claude connection is already in progress.".into());
         }
-        let session = sandbox::docker::setup_token::ClaudeSetup::start(
+        let session = sandbox::provider::setup_token::ClaudeSetup::start(
             std::path::Path::new(&bin),
             &std::env::temp_dir(),
             emit,
@@ -732,9 +733,10 @@ async fn cancel_claude_container_auth(
 async fn clear_container_auth_token(state: tauri::State<'_, DbState>) -> Result<(), String> {
     {
         let conn = state.lock();
-        secrets::delete(&conn, sandbox::docker::auth::TOKEN_SETTING).map_err(|e| e.to_string())?;
+        secrets::delete(&conn, sandbox::provider::auth::TOKEN_SETTING)
+            .map_err(|e| e.to_string())?;
     }
-    sandbox::docker::auth::set_stored_token(None);
+    sandbox::provider::auth::set_stored_token(None);
     Ok(())
 }
 
@@ -1385,6 +1387,7 @@ pub fn run() {
             commands::box_image_cancel,
             commands::box_tools_retry,
             commands::box_state,
+            commands::available_workspace_types,
             commands::box_stop,
             commands::box_egress_allow,
             commands::set_box_setting,

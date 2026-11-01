@@ -45,6 +45,27 @@ Docker-stamped agent whose daemon is unreachable is a **hard error** — Fletch
 fails closed rather than quietly launching outside the container boundary the
 user selected (`sandbox/mod.rs`, `engine_for`).
 
+Which engine a new agent gets is decided once, at creation, by
+`sandbox::engine_for_spawn` from three inputs: the host's choice in Settings ›
+Sandbox (an engine, or automatic), the project's placement
+(`sandbox.placement`: automatic, this Mac or an isolated VM; under automatic a
+repository that builds a macOS or iOS app stays on this Mac), and an optional
+per-session choice made in the composer for a new agent (this Mac or an
+isolated VM), which stands over the other two for that agent alone. A
+per-session "this Mac" always means the macOS sandbox, even when Settings
+pins a container engine, whereas a project placement of "this Mac" under a
+pinned container engine keeps the pinned engine. A fork's child is stamped
+with exactly the engine its parent was stamped with, whatever Settings or the
+placement now say, so a parent kept on this Mac never forks into a VM and a
+container-stamped parent's child stays in that container engine. A
+per-session isolated VM that cannot be had (the switch off, a runtime that
+cannot boot, a provider boxes do not run) fails the spawn with that reason
+rather than landing somewhere else; the composer offers the choice from the
+same answer (`available_workspace_types`). An agent that adopts an existing
+tree (the local reviewer, a workflow step in its run's workspace) runs where
+that tree lives whatever was chosen. The result is stamped on the record and
+kept for life.
+
 ### What the seatbelt profile allows
 
 Writes are permitted only to: the agent's workspace root, its private RPC
@@ -77,7 +98,10 @@ The toolchain cache (`~/.fletch/toolchain-cache/<project id>`, or
 package manager, the cargo overlay and the headless browsers are redirected. What is in it gets executed by later
 sandboxed processes, so it is keyed by project: every profile and container
 mount names that project's root and never the directory above it, so no project
-can write what another one executes. Why it is shaped that way (per project, per
+can write what another one executes. A box points the same variables at the
+same path, which by path identity is a directory on its own guest disk: the
+package caches without the cargo overlay, and not shared with the host's
+cache. Why it is shaped that way (per project, per
 build, platform-keyed rows, the reclaim, the nested instance and `fletch-host`)
 is told once, in the module doc of `sandbox/toolchain_cache/mod.rs`. The Run
 profile denies the host's claude and codex login files as the agent profile
@@ -195,20 +219,23 @@ read-only — so a container can't reach back through the alternates link to
 mutate the source (`sandbox/provision.rs`). `git clone --no-hardlinks` makes a
 full, self-contained copy with no alternates and no shared inodes.
 
-After either clone, three fixups run (`sandbox/provision.rs`):
+A box delivers its base differently: `git init` in the guest and a push of the
+base commit over the box's channel, a full copy (`sandbox/boxes/provision.rs`).
+After the base is in, every checkout Fletch makes (a clone of either strategy,
+a box's guest checkout, a restored one) runs the same pipeline,
+`sandbox::provision::fixups`. Each step is git in the checkout or a write
+through its executor, so it runs wherever the checkout lives; a failure removes
+the half-built checkout there. In order:
 
-- **Origin is rewritten** to the source repo's *real* remote, so push/PR/fetch
-  behave as they would from a normal checkout. If the source has no remote, the
-  clone's implicit local-path `origin` is *removed* — otherwise a push could
-  silently create branches and objects inside your source repo.
-- **Delegation git hooks** (`post-commit`, `post-merge`) are installed into the
-  clone so the agent's own native git commits and merges signal the UI. They are
-  installed only in the clone; host-side git runs with hooks disabled, so they
-  never fire on the host.
-- **A git identity is frozen** into the clone's own config, so in-container git
+- **Origin is rewritten** to the source repo's *real* remote (added in a box's
+  fresh repository, which has none), so push/PR/fetch behave as they would from
+  a normal checkout. If the source has no remote, the clone's implicit
+  local-path `origin` is *removed* — otherwise a push could silently create
+  branches and objects inside your source repo.
+- **A git identity is frozen** into the checkout's own config, so in-container git
   (which can't see your global gitconfig) can commit without failing on "Please
   tell me who you are."
-- **Commit signing is switched off** in the clone's own config
+- **Commit signing is switched off** in the checkout's own config
   (`commit.gpgsign=false`). The seatbelt engine, unlike a container, lets git
   read your global gitconfig, so a `commit.gpgsign=true` there would reach the
   sandbox while the key it names (`~/.ssh`, the ssh-agent, a gpg keyring) stays
@@ -221,6 +248,23 @@ After either clone, three fixups run (`sandbox/provision.rs`):
   is the agent's to write. In your own repositories Fletch's git signs as your
   config asks, so the first commit of a new project is signed like any of
   yours.
+- **Git hooks** are written, executable, into the checkout's `.git/hooks`
+  through its executor: the delegation hooks (`post-commit`, `post-merge`), so
+  the agent's own native git commits and merges signal the UI, and the
+  attribution hook (`commit-msg`). Host-side git runs with hooks disabled, so
+  they never fire on the host.
+- **The caller's checkout step** puts HEAD where it belongs: detached at the
+  base for a fresh workspace, the restore ladders for a restored one (fetching
+  inside the step), the pushed base for a box.
+- **Local heads and `origin/HEAD` are reconciled**: a head the clone inherited
+  from the source is re-pointed at its fetched `origin/<name>` or deleted (a
+  box's fresh repository has none), and `origin/HEAD` names the source's real
+  default branch.
+
+A workflow run repository (`workflow/gitops.rs`) takes only the origin rewrite,
+the identity and the attribution hook from this pipeline: its host-side merge
+commits keep your signing config, and nothing listens for delegation hooks
+there.
 
 ### Signing on publish
 
@@ -475,23 +519,29 @@ to `~/.fletch/workspaces/`; a one-time migration handles existing installs
 The code is canonical. When this document and the code disagree, the code wins —
 and this document should be corrected.
 
-- `src-tauri/src/sandbox/seatbelt.rs` — the macOS `sandbox-exec` profile: the
+- `crates/fletch-core/src/sandbox/seatbelt.rs` — the macOS `sandbox-exec` profile: the
   deny-writes-then-re-allow model, the writable set, and the app-data deny.
-- `src-tauri/src/sandbox/docker/` — the Docker engine: per-agent
+- `crates/fletch-core/src/sandbox/docker/` — the Docker engine: per-agent
   `docker run --rm --init`, the identical-host-path mounts, the read-only
   borrowed object store, and the invariants that keep the source `.git` and your
   credentials out of the container.
-- `src-tauri/src/sandbox/guarantees.rs` — the claim/coverage matrix: what each
+- `crates/fletch-core/src/sandbox/boxes/` — the box engine: the micro-VM per
+  agent, the checkout inside the guest, and the guest-home mechanism
+  (`home.rs`) that seeds a provider's home and keeps its credential files in
+  step.
+- `crates/fletch-core/src/sandbox/provider/` — provider knowledge shared by
+  every engine: what each CLI keeps outside the checkout, how its credential
+  is resolved on the host for a launch (`auth.rs`: the claude auth chain, the
+  stored setup-token), and which engines can run it (`supports`).
+- `crates/fletch-core/src/sandbox/guarantees.rs` — the claim/coverage matrix: what each
   engine actually guarantees, and the stated reason wherever coverage is less
   than complete. Authoritative for per-engine coverage.
-- `src-tauri/src/sandbox/policy.rs` — the engine-independent write policy and its
+- `crates/fletch-core/src/sandbox/policy.rs` — the engine-independent write policy and its
   invariants, including invariant 3 (git-executable config is never
   agent-writable).
-- `src-tauri/src/git/hardening.rs` — the overrides every host-side git invocation
+- `crates/fletch-core/src/git/hardening.rs` — the overrides every host-side git invocation
   carries, applied at git's single spawn seam.
-- `src-tauri/src/sandbox/provision.rs` — how a workspace comes into existence:
+- `crates/fletch-core/src/sandbox/provision.rs` — how a workspace comes into existence:
   the two clone strategies, origin rewrite, hook install, and identity seeding.
-- `src-tauri/src/rpc/git.rs` — the host-side broker for `git_push`, `open_pr`,
+- `crates/fletch-core/src/rpc/git/` — the host-side broker for `git_push`, `open_pr`,
   and `git_fetch`, including the (currently unprompted) publication ops.
-</content>
-</invoke>

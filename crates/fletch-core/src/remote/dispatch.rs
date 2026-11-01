@@ -304,6 +304,8 @@ pub const OPS: &[&str] = &[
     "box_stop",
     "box_egress_allow",
     "set_box_setting",
+    // What a new agent here may run in, for the composer's workspace type.
+    "available_workspace_types",
     // A project's `.fletch/settings.json`: what it says, and the approval of
     // what it adds.
     "project_file_status",
@@ -618,6 +620,8 @@ const OP_SCOPES: &[(&str, Scope)] = &[
     ("box_runtime_probe", Scope::Observe),
     ("box_image_status", Scope::Observe),
     ("box_state", Scope::Observe),
+    // The workspace types a new agent may be given: a read.
+    ("available_workspace_types", Scope::Observe),
     ("box_image_install", Scope::Projects),
     ("box_image_cancel", Scope::Projects),
     ("box_tools_retry", Scope::Projects),
@@ -794,6 +798,9 @@ impl Dispatch for SupervisorDispatch {
                         a.task,
                         None,
                         a.folder_grants,
+                        // No workspace type on the wire yet: the host's
+                        // choice and the project's placement decide.
+                        None,
                     )
                     .await)
                 }
@@ -1870,9 +1877,16 @@ impl Dispatch for SupervisorDispatch {
                 | "get_project_settings"
                 | "set_project_setting" => settings_op(ctx, sup, op, args).await,
 
-                "box_runtime_probe" | "box_image_status" | "box_image_install"
-                | "box_image_cancel" | "box_tools_retry" | "box_state" | "box_stop"
-                | "box_egress_allow" | "set_box_setting" => boxes_op(ctx, op, args).await,
+                "box_runtime_probe"
+                | "box_image_status"
+                | "box_image_install"
+                | "box_image_cancel"
+                | "box_tools_retry"
+                | "box_state"
+                | "box_stop"
+                | "box_egress_allow"
+                | "set_box_setting"
+                | "available_workspace_types" => boxes_op(ctx, op, args).await,
 
                 "project_file_status"
                 | "project_file_approve"
@@ -2131,6 +2145,10 @@ async fn boxes_op(ctx: &Arc<EngineCtx>, op: &str, args: Value) -> DispatchResult
         "set_box_setting" => {
             let a: BoxSettingArgs = parse(args)?;
             res(c::set_box_setting_impl(ctx, &a.key, a.value.as_deref()))
+        }
+        "available_workspace_types" => {
+            let a: WorkspaceTypesArgs = parse(args)?;
+            res(c::available_workspace_types_impl(ctx, &a.repo_path, &a.provider).await)
         }
         _ => Err(UNKNOWN_OP.to_string()),
     }
@@ -2903,6 +2921,13 @@ struct ProjectChatsArgs {
 #[serde(rename_all = "camelCase")]
 struct ProjectArgs {
     project_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkspaceTypesArgs {
+    repo_path: String,
+    provider: String,
 }
 
 #[derive(Deserialize)]

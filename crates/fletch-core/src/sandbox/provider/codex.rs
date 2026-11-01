@@ -58,7 +58,7 @@ impl ProviderHome for Codex {
     /// with the refresh token blanked, rewritten before every launch and
     /// turn. For the default account, the login shell's `OPENAI_API_KEY` as
     /// well, which seatbelt lets through with the rest of the shell env and
-    /// the container engines forward (`container::launch_auth`); a managed
+    /// the container engines forward (`provider::auth`); a managed
     /// account runs on its stored login alone, as it does there.
     fn credential(&self, ctx: &AgentLaunchCtx) -> Result<Credential> {
         let files = ctx

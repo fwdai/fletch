@@ -387,7 +387,7 @@ fn symlink(src: &Path, dst: &Path) -> std::io::Result<()> {
 pub fn remove_account_dir(provider: &str, id: &str) -> Result<()> {
     let dir = account_dir(provider, id)?;
     if provider == "claude" {
-        let service = crate::sandbox::container::auth::claude_keychain_service(Some(&dir));
+        let service = crate::sandbox::provider::auth::claude_keychain_service(Some(&dir));
         if let Err(reason) = crate::keychain::delete_item(&service) {
             return Err(Error::Other(format!(
                 "Could not delete the `{id}` account's Keychain login ({reason}). \

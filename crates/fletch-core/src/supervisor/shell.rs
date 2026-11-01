@@ -7,7 +7,7 @@ use std::sync::Arc;
 use crate::error::{Error, Result};
 use crate::host::EngineCtx;
 use crate::pty_session::{PtySession, PtySpawn};
-use crate::sandbox::{boxes, KillGuard, KillHandle};
+use crate::sandbox::{self, KillGuard, KillHandle};
 
 use super::events::emit_shell_output;
 use super::Supervisor;
@@ -83,34 +83,20 @@ impl Supervisor {
         let checkout = repo.checkout_path(agent_id)?;
 
         // The shell opens where the checkout is: a box keeps it in its guest,
-        // so the terminal is a shell there, over the box's channel (booting a
-        // stopped box); a host checkout gets the user's own shell. The host
-        // PTY's cwd is the checkout either way (a box has a placeholder
-        // directory there). The guest shell is interactive but not a login
-        // shell: Debian's /etc/profile resets PATH, dropping the tools disk
-        // (claude, codegraph) the guest env puts on it.
-        //
-        // The box is held like an agent's session, from before it is reached,
-        // so its idle stop never ends the user's shell (and whatever it runs)
-        // under them. Any return without a shell drops the hold.
-        let hold = boxes::hold_session(&checkout);
-        let (shell_path, args, kill_plan) =
-            match boxes::guest_program(&checkout, "bash", &["-i".to_string()])? {
-                Some((program, args)) => (
-                    program,
-                    args,
-                    hold.map_or(KillHandle::ProcessGroup, boxes::Hold::into_kill),
-                ),
-                None => {
-                    let shell_str =
-                        std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
-                    (
-                        std::path::PathBuf::from(&shell_str),
-                        Vec::new(),
-                        KillHandle::ProcessGroup,
-                    )
-                }
-            };
+        // so the terminal is a shell there (`sandbox::shell_program`); a host
+        // checkout gets the user's own shell. The host PTY's cwd is the
+        // checkout either way (a box has a placeholder directory there).
+        let (shell_path, args, kill_plan) = match sandbox::shell_program(&checkout)? {
+            Some(shell) => shell,
+            None => {
+                let shell_str = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
+                (
+                    std::path::PathBuf::from(&shell_str),
+                    Vec::new(),
+                    KillHandle::ProcessGroup,
+                )
+            }
+        };
 
         let sup_weak = Arc::downgrade(self);
         let ctx = ctx.clone();

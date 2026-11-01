@@ -313,6 +313,41 @@ fn new_agents_of_unsupported_providers_fall_back_to_seatbelt() {
     );
 }
 
+/// A box launch's env file points every toolchain into the project's cache
+/// root, the same path seatbelt grants that project, with the Linux key on
+/// the per-platform rows; nothing in the env file's filtering drops them.
+#[test]
+fn a_box_launch_redirects_toolchain_caches_into_the_projects_root() {
+    let home = Path::new("/Users/u");
+    let project = "0b9f3c1e-6a4d-4e8b-9c2f-1d7e5a3b8c90";
+    let (root, env) = super::guest_toolchain_cache(home, project).unwrap();
+    assert_eq!(
+        root,
+        crate::sandbox::toolchain_cache_root(home, project).unwrap()
+    );
+    let file = super::render_env_file(&env, "claude", home, super::ENV_DENY).unwrap();
+    let root = root.to_string_lossy();
+    let linux = crate::sandbox::BoxPlatform::linux().key();
+    for line in [
+        format!("BUN_INSTALL_CACHE_DIR={root}/bun"),
+        format!("PIP_CACHE_DIR={root}/pip"),
+        format!("npm_config_cache={root}/npm/{linux}"),
+        format!("PLAYWRIGHT_BROWSERS_PATH={root}/playwright/{linux}"),
+    ] {
+        assert!(
+            file.lines().any(|l| l == line),
+            "{line} missing from:\n{file}"
+        );
+    }
+    assert_eq!(
+        file.lines().filter(|l| l.contains(&*root)).count(),
+        env.len(),
+        "every cache variable lands in the env file"
+    );
+    // A bad project id fails the launch rather than widening the root.
+    assert!(super::guest_toolchain_cache(home, "..").is_err());
+}
+
 /// An image directory counts as installed only for this build's version,
 /// only once it carries the manifest a verified download leaves behind, and
 /// only with every enabled layer in place.

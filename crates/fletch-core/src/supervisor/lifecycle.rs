@@ -38,17 +38,6 @@ use super::{transition_active, Supervisor};
 const WATCHDOG_TICK: Duration = Duration::from_millis(500);
 const SPAWN_TIMEOUT: Duration = Duration::from_secs(15);
 
-/// The engine stamped on an agent's record at creation. Records from before
-/// engine selection existed (NULL) always ran under sandbox-exec, so that
-/// stays their permanent kind — never re-derived from the live setting.
-pub(super) fn stamped_engine(record: &AgentRecord) -> EngineKind {
-    record
-        .sandbox_engine
-        .as_deref()
-        .and_then(EngineKind::from_setting)
-        .unwrap_or(EngineKind::SandboxExec)
-}
-
 /// The account a new agent of `provider` is stamped with: the active-account
 /// setting, when it names a managed account that still exists (see
 /// `accounts::account_for_new_agent`); else the default (`None`).
@@ -59,38 +48,6 @@ fn active_account(ctx: &EngineCtx, provider: &str) -> Option<String> {
     let setting =
         crate::database::get_setting(&ctx.db.lock(), &accounts::active_setting_key(provider));
     accounts::account_for_new_agent(provider, setting.as_deref())
-}
-
-/// Which providers run in container sandboxes: those with a wired-up container
-/// image + config-mount + auth (see [`sandbox::docker::DockerProvider`]) — claude,
-/// codex, opencode, pi, and cursor so far. antigravity stays gated: its CLI has no
-/// non-interactive credential path (browser-OAuth only, tokens in the host
-/// keychain, no API-key env fallback), so a container can't authenticate. Checked
-/// before every spawn — fresh spawns and, via `spawn_agent_process`,
-/// resume/view-switch — so a docker-stamped record can never launch an
-/// unsupported provider. Consults the capability lookup rather than string-
-/// matching a single provider id.
-fn ensure_engine_supports_provider(engine: EngineKind, provider: &str) -> Result<()> {
-    match engine {
-        EngineKind::Docker | EngineKind::Podman => {
-            if sandbox::docker::DockerProvider::from_id(provider).is_none() {
-                let label = per_turn_descriptor(provider)
-                    .map(|d| d.label())
-                    .unwrap_or(provider);
-                return Err(Error::Other(format!(
-                    "{label} isn't available in container sandboxes yet"
-                )));
-            }
-            Ok(())
-        }
-        // Its own gate: a provider needs a tools-disk script and a guest-home
-        // adapter (`boxes::supports_provider`, `boxes::home`).
-        EngineKind::Box => match sandbox::boxes::provider_refusal(provider) {
-            Some(why) => Err(Error::Other(why)),
-            None => Ok(()),
-        },
-        EngineKind::SandboxExec => Ok(()),
-    }
 }
 
 /// Wire codegraph indexing into a freshly-provisioned checkout — best-effort and
@@ -196,7 +153,7 @@ pub(super) async fn provision_codegraph_index(
 fn checkout_still_reachable(checkout: &Path) -> bool {
     match crate::exec::for_path(checkout) {
         crate::exec::Executor::Local => checkout.exists(),
-        crate::exec::Executor::Remote(_) => sandbox::boxes::running_for_path(checkout),
+        crate::exec::Executor::Remote(_) => sandbox::checkout_awake(checkout),
     }
 }
 
@@ -225,7 +182,7 @@ async fn discard_failed_spawn(agent_id: &str, checkout: Option<&Path>, parent_di
     // A box-stamped spawn provisioned into its guest: the box goes first, data
     // disk and all, so the host paths below are only its placeholders and a
     // later attempt never finds a half-made checkout on a surviving disk.
-    let _ = sandbox::boxes::discard_if_any(agent_id).await;
+    let _ = sandbox::discard_agent_state(agent_id).await;
     if let Some(checkout) = checkout {
         let _ = provision::teardown(checkout).await;
     }
@@ -301,7 +258,7 @@ async fn discard_if_still_dead(sup: &Supervisor, agent_id: &str, parent_dir: &Pa
     // A box-stamped spawn's checkout is on its data disk, which no tombstone
     // sweep reaches: the box goes with the attempt, outside the lock like the
     // delete below (a stop ladder is slow).
-    let _ = sandbox::boxes::discard_if_any(agent_id).await;
+    let _ = sandbox::discard_agent_state(agent_id).await;
     // Once set aside the tree is invisible to every other path, so a failed
     // delete costs disk, not correctness: `boot` sweeps leftover tombstones
     // (`workspace::sweep_discarded_checkouts`), which is the retry.
@@ -477,6 +434,12 @@ pub struct SpawnRequest {
     /// stamped with before the record is written, so the first launch already
     /// has them and a refused folder fails the spawn with the reason.
     pub folder_grants: Vec<FolderGrant>,
+    /// This session's engine override, standing over the host's engine
+    /// choice and the project's placement (`sandbox::engine_for_spawn`): the
+    /// composer's `Host` or `Box`, or a fork's parent's exact engine
+    /// (`sandbox::WorkspaceType::stamped`). `None` lets those decide, as
+    /// every other spawn does.
+    pub workspace_type: Option<sandbox::WorkspaceType>,
 }
 
 impl Supervisor {
@@ -542,26 +505,29 @@ impl Supervisor {
         // stamp an engine the folders were never checked for. An adopting
         // agent runs where its tree lives (`engine_for_adopted_tree`): in the
         // box that holds it, or never in a box for a host tree. Anyone else
-        // gets the host's choice over the project's placement — read here,
-        // before the lock, since the automatic choice stats the repository
-        // and may run the runtime probe once.
-        let engine_kind = match &adopted {
-            Some(tree) => sandbox::engine_for_adopted_tree(tree),
-            None => {
-                let placement = self.project_placement(&req.repo_path);
-                let (selected, provider, repo) = (
-                    sandbox::selected_engine(),
-                    req.provider.clone(),
-                    req.repo_path.clone(),
-                );
-                tokio::task::spawn_blocking(move || {
-                    let placement = sandbox::placement::resolve(placement.as_deref(), &repo);
-                    sandbox::boxes::engine_for_new_agent(selected, &provider, placement)
-                })
-                .await
-                .map_err(|e| Error::Other(e.to_string()))?
-            }
+        // gets the session's workspace type when it picked one, else the
+        // host's choice over the project's placement — read here, before the
+        // lock, since the automatic choice stats the repository and may run
+        // the runtime probe once. A workspace type that cannot be had (a box
+        // with the switch off, say) fails the spawn here, before anything is
+        // written.
+        let placement = match &adopted {
+            Some(_) => None,
+            None => self.project_placement(&req.repo_path),
         };
+        let (tree, provider, repo) = (adopted.clone(), req.provider.clone(), req.repo_path.clone());
+        let workspace_type = req.workspace_type;
+        let engine_kind = tokio::task::spawn_blocking(move || {
+            sandbox::engine_for_spawn(
+                tree.as_deref(),
+                placement.as_deref(),
+                &repo,
+                &provider,
+                workspace_type,
+            )
+        })
+        .await
+        .map_err(|e| Error::Other(e.to_string()))??;
         // The folder check may wait on a privacy prompt, so it too runs before
         // the lifecycle lock.
         let folder_grants = crate::workspace::folder_grants::check_all(
@@ -594,6 +560,8 @@ impl Supervisor {
             task,
             account: _,
             folder_grants: _,
+            // Read above, where it decided the engine.
+            workspace_type: _,
         } = req;
         if !repo_path.join(".git").exists() {
             return Err(Error::InvalidPath(format!(
@@ -608,7 +576,7 @@ impl Supervisor {
         // can't fail with a missing working directory downstream.
         git::ensure_head_commit(&repo_path).await?;
 
-        ensure_engine_supports_provider(engine_kind, &provider)?;
+        sandbox::ensure_supports_provider(engine_kind, &provider)?;
 
         // Only agents with a wired native (PTY/TUI) view can honor a Native
         // request; the rest fall back to the structured Custom view. Native
@@ -778,7 +746,7 @@ impl Supervisor {
         let provider_for_task = record.provider.clone();
         // The box a box-stamped spawn provisions into boots with the shares
         // its first launch will ask for, so that launch need not restart it.
-        let folder_grants_for_task = record.folder_grants.clone();
+        let record_for_task = record.clone();
         let model_for_task = record.model.clone();
         let mcp_servers_for_task = record.mcp_servers.clone();
         let adopted_for_task = adopted.is_some();
@@ -856,11 +824,11 @@ impl Supervisor {
                 discard_if_still_dead(&sup, &id_for_task, &parent_dir).await;
                 return;
             }
-            let provision_result = match (&run_repo_for_task, engine_kind) {
+            let provision_result = match &run_repo_for_task {
                 _ if adopted_for_task => Ok(()),
                 // A workflow step's fork reads the run repo, a host path the
                 // guest cannot see; fail closed rather than clone a stale base.
-                (Some(_), EngineKind::Box) => Err(Error::Other(
+                Some(_) if !engine_kind.caps().workflow_steps => Err(Error::Other(
                     "workflow step agents don't run in box sandboxes yet".into(),
                 )),
                 // Workflow step (§12.1): fork from `fork_base` in the run repo.
@@ -868,7 +836,7 @@ impl Supervisor {
                 // it's a run-internal commit-ish, not a branch: step 1's
                 // `base_sha` is already in the fresh source clone, and step N's
                 // `refs/wf/steps/<prev>` is fetched from the run repo instead.
-                (Some(run_repo), _) => {
+                Some(run_repo) => {
                     let spec = CheckoutSpec {
                         source_repo: &repo_path,
                         base_ref: &parent_for_fork,
@@ -876,34 +844,7 @@ impl Supervisor {
                     };
                     provision::provision_forking_run_repo(&spec, run_repo).await
                 }
-                // Into the guest: `git init` there, the base pushed over the
-                // channel, the same fixups.
-                (None, EngineKind::Box) => {
-                    let fallback = git::base_tip(&repo_path, &parent_for_fork).await;
-                    let spec = CheckoutSpec {
-                        source_repo: &repo_path,
-                        base_ref: fallback.as_deref().unwrap_or(&parent_for_fork),
-                        dest: &primary_checkout,
-                    };
-                    match sandbox::boxes::BoxIdentity::new(
-                        &id_for_task,
-                        &project_id_for_task,
-                        &provider_for_task,
-                    )
-                    .map(|identity| identity.with_shares(&folder_grants_for_task))
-                    {
-                        Ok(identity) => sandbox::boxes::provision::provision(
-                            &identity,
-                            &spec,
-                            Some(&parent_for_fork),
-                            sandbox::boxes::provision::Landing::Detached,
-                        )
-                        .await
-                        .map(|freshness| base_freshness = Some(freshness)),
-                        Err(e) => Err(e),
-                    }
-                }
-                (None, _) => {
+                None => {
                     // Offline fallback: the base as this machine already knows
                     // it, never `HEAD` — that is the source repo's checked-out
                     // branch, unrelated to the base the user picked (see
@@ -916,9 +857,15 @@ impl Supervisor {
                         base_ref: fallback.as_deref().unwrap_or(&parent_for_fork),
                         dest: &primary_checkout,
                     };
-                    provision::provision_at_remote_base(&spec, &parent_for_fork, true)
-                        .await
-                        .map(|freshness| base_freshness = Some(freshness))
+                    sandbox::provision_checkout(
+                        engine_kind,
+                        &record_for_task,
+                        &spec,
+                        &parent_for_fork,
+                        true,
+                    )
+                    .await
+                    .map(|freshness| base_freshness = Some(freshness))
                 }
             };
             if let Err(e) = provision_result {
@@ -1098,12 +1045,9 @@ impl Supervisor {
         // uses the normal (`--shared`) clone path. A later restore relaunches
         // the container and re-provisions via `--shared` + mount.
         let record = self.workspace.agent(agent_id)?;
-        let self_contained = match stamped_engine(&record) {
-            EngineKind::Docker | EngineKind::Podman => true,
-            // A box checkout is always a full copy pushed into the guest
-            // (`boxes::provision`), so the flag has nothing to decide there.
-            EngineKind::SandboxExec | EngineKind::Box => false,
-        };
+        let self_contained = sandbox::stamped_engine(&record)
+            .caps()
+            .added_repos_self_contained;
         self.attach_repo_checkout(&ctx, agent_id, repo_path, self_contained)
             .await
     }
@@ -1154,21 +1098,14 @@ impl Supervisor {
             base_ref: fallback.as_deref().unwrap_or(&parent_branch),
             dest: &checkout,
         };
-        match stamped_engine(&record) {
-            EngineKind::Box => {
-                let identity = sandbox::boxes::BoxIdentity::for_record(&record)?;
-                sandbox::boxes::provision::provision(
-                    &identity,
-                    &spec,
-                    Some(&parent_branch),
-                    sandbox::boxes::provision::Landing::Detached,
-                )
-                .await?;
-            }
-            EngineKind::SandboxExec | EngineKind::Docker | EngineKind::Podman => {
-                provision::provision_at_remote_base(&spec, &parent_branch, !self_contained).await?;
-            }
-        }
+        sandbox::provision_checkout(
+            sandbox::stamped_engine(&record),
+            &record,
+            &spec,
+            &parent_branch,
+            !self_contained,
+        )
+        .await?;
         let base_sha = git::rev_parse(&checkout, "HEAD").await.ok();
 
         // Warm the codegraph index for this additional checkout too, so a
@@ -1179,7 +1116,7 @@ impl Supervisor {
             repo_path.clone(),
             checkout.clone(),
             base_sha.clone(),
-            stamped_engine(&record),
+            sandbox::stamped_engine(&record),
             &record.provider,
             &record.mcp_servers,
         )
@@ -1348,10 +1285,7 @@ impl Supervisor {
         // the account's dir; this launch resumes in the default one. Only a
         // seatbelt agent's sessions are in the host's dirs at all: a container
         // keeps them beside the checkout, a box inside its guest.
-        let sessions_on_host = match stamped_engine(&record) {
-            EngineKind::SandboxExec => true,
-            EngineKind::Docker | EngineKind::Podman | EngineKind::Box => false,
-        };
+        let sessions_on_host = sandbox::stamped_engine(&record).caps().shares_host_fs;
         if record.provider == "claude" && sessions_on_host {
             if let Some(session) = record.session_id.as_deref() {
                 match crate::transcripts::adopt_account_session(session, &cwd) {
@@ -1511,18 +1445,15 @@ impl Supervisor {
         } = launch;
         let agent_id_str = agent_id.to_string();
 
-        let engine = stamped_engine(record);
+        let engine = sandbox::stamped_engine(record);
         // Re-checked on every launch path (resume, view switch, binary-swap
         // respawn), not just fresh spawns: not every provider is wired up to run
         // under a container engine.
-        ensure_engine_supports_provider(engine, &record.provider)?;
-        // A box-stamped agent that adopted its tree runs in the box that
-        // holds it (`sandbox::boxes`, tenants). Routed before the profile is
-        // materialized under `sandbox_root` below, so those writes land in
-        // the guest it will run in rather than on the host.
-        if engine == EngineKind::Box {
-            sandbox::boxes::route_tenant(record)?;
-        }
+        sandbox::ensure_supports_provider(engine, &record.provider)?;
+        // Before the profile is materialized under `sandbox_root` below, so
+        // those writes land where the agent will run (a tenant's, in the box
+        // that holds its tree) rather than on the host.
+        sandbox::before_launch(record)?;
         // Every launch path, so a checkout older than the attribution hook
         // gets it on the agent's next start.
         crate::attribution::refresh_hooks(agent_id, &record.repos).await;
@@ -1956,9 +1887,11 @@ impl Supervisor {
             path: path.to_path_buf(),
             writable,
         };
-        let checked =
-            crate::workspace::folder_grants::check_all(vec![requested], stamped_engine(&record))
-                .await?;
+        let checked = crate::workspace::folder_grants::check_all(
+            vec![requested],
+            sandbox::stamped_engine(&record),
+        )
+        .await?;
         let Some(FolderGrant { path, .. }) = checked.into_iter().next() else {
             return Err(Error::Other("no folder to grant".into()));
         };
@@ -2010,7 +1943,7 @@ impl Supervisor {
         grants: Vec<FolderGrant>,
     ) -> Result<FolderGrantsUpdate> {
         use crate::workspace::folder_grants::launch_relevant;
-        let engine = stamped_engine(record);
+        let engine = sandbox::stamped_engine(record);
         let home =
             dirs::home_dir().ok_or_else(|| Error::Other("HOME directory not available".into()))?;
         let home = home.canonicalize().unwrap_or(home);
@@ -2580,10 +2513,15 @@ fn arm_spawn_watchdog(
     timeout: Duration,
 ) {
     crate::host::spawn(async move {
-        // A box agent may first have to wait for the host's setup — the image
-        // download, its tools disk build (`boxes::setup`) — far longer than any
-        // process start; the box reports that wait as its own phase meanwhile.
-        let timeout = timeout + box_setup_allowance(&sup, &agent_id);
+        // An agent may first have to wait for the engine's setup (a box's
+        // image download and tools disk build), far longer than any process
+        // start; the box reports that wait as its own phase meanwhile.
+        let setup = sup
+            .workspace
+            .agent(&agent_id)
+            .ok()
+            .map_or(Duration::ZERO, |record| sandbox::setup_allowance(&record));
+        let timeout = timeout + setup;
         tokio::time::sleep(timeout).await;
         // Atomically claim the timeout outcome. Only an agent still in the
         // live Spawning state may be timed out; if the swap fails the spawn
@@ -2607,18 +2545,6 @@ fn arm_spawn_watchdog(
         }
         sup.activities.lock().remove(&agent_id);
     });
-}
-
-/// The extra time a box-stamped agent's spawn gets for the setup it may wait
-/// on; zero for every other engine and once the setup is done.
-fn box_setup_allowance(sup: &Supervisor, agent_id: &str) -> Duration {
-    sup.workspace
-        .agent(agent_id)
-        .ok()
-        .filter(|record| stamped_engine(record) == EngineKind::Box)
-        .map_or(Duration::ZERO, |record| {
-            sandbox::boxes::setup::setup_allowance(&record.provider)
-        })
 }
 
 pub(super) fn fail_spawn(sup: &Supervisor, ctx: &Arc<EngineCtx>, agent_id: &str, err: String) {
@@ -2817,32 +2743,6 @@ mod tests {
         on_event(json!({"type": "turn.completed", "usage": {}}));
         assert_eq!(sup.live_status(&agent_id), Some(AgentStatus::Running));
         assert!(sink.events().iter().all(|(n, _)| n == "agent:event"));
-    }
-
-    #[test]
-    fn docker_supports_wired_providers_but_refuses_the_rest() {
-        // All wired-up providers launch under docker.
-        for provider in ["claude", "codex", "opencode", "pi", "cursor"] {
-            assert!(
-                ensure_engine_supports_provider(EngineKind::Docker, provider).is_ok(),
-                "{provider} should be docker-supported",
-            );
-        }
-        // antigravity is the last still-gated provider — no container auth path.
-        let err = ensure_engine_supports_provider(EngineKind::Docker, "antigravity")
-            .expect_err("antigravity must refuse under docker");
-        assert!(
-            err.to_string()
-                .ends_with("isn't available in container sandboxes yet"),
-            "unexpected refusal copy: {err}",
-        );
-        // The copy uses the human-facing product name, not the provider id.
-        assert!(err.to_string().starts_with("Antigravity "), "{err}");
-
-        // Seatbelt is unaffected.
-        for provider in ["claude", "codex", "cursor", "antigravity"] {
-            assert!(ensure_engine_supports_provider(EngineKind::SandboxExec, provider).is_ok());
-        }
     }
 
     /// A timed-out spawn's task outlives the timeout, and the user may have

@@ -516,8 +516,8 @@ pub fn boot(cfg: BootConfig) -> Result<Engine, BootError> {
     // a token pasted in a previous run.
     seed_secret_mirror(
         &db,
-        sandbox::docker::auth::TOKEN_SETTING,
-        sandbox::docker::auth::seed_stored_token,
+        sandbox::provider::auth::TOKEN_SETTING,
+        sandbox::provider::auth::seed_stored_token,
     );
 
     // Unified git resolution: point the portable-install root at app data, wire
@@ -908,7 +908,7 @@ const SECRET_SEED_RETRY_CAP: std::time::Duration = std::time::Duration::from_sec
 /// answer (present or absent) applies immediately; an *unavailable* store
 /// (`Err` — e.g. the keychain is locked) retries in the background until it gets
 /// one. `apply` must be the mirror's `seed_*` variant (`github::seed_token`,
-/// `linear::seed_token`, `docker::auth::seed_stored_token`), which no-ops once
+/// `linear::seed_token`, `provider::auth::seed_stored_token`), which no-ops once
 /// any explicit set has run — a connect/disconnect that lands while a retry is
 /// pending must win over the (possibly stale) value that retry read.
 fn seed_secret_mirror(db: &Db, key: &'static str, apply: fn(Option<String>)) {

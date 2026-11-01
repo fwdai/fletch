@@ -33,6 +33,7 @@ import { createDraftsSlice } from "./drafts";
 import { type EnvironmentEntry, LOCAL_ENVIRONMENT_ID, setEnvironmentsSource } from "./environments";
 import { createReposSlice } from "./repos";
 import type { AppState } from "./types";
+import { createWorkspaceTypesSlice } from "./workspaceTypes";
 
 const workspaceOf = (paths: string[]): Workspace => ({
   repos: paths,
@@ -48,6 +49,7 @@ const makeStore = (workspace: Workspace | null) => {
       ({
         ...createReposSlice(...a),
         ...createDraftsSlice(...a),
+        ...createWorkspaceTypesSlice(...a),
         ...createComposerSlice(...a),
         closeProjectScreen,
         setLastError,

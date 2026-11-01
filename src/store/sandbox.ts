@@ -376,13 +376,18 @@ export const createSandboxSlice: SliceCreator<SandboxSlice> = (set, get) => ({
     }));
   },
 
-  setSandboxEngine: (engine) =>
+  setSandboxEngine: async (engine) => {
     // The backend command persists the `sandbox_engine` setting AND updates its
     // in-memory spawn-path mirror, so we don't also call setSetting here (same
     // posture as `setTelemetryEnabled`).
-    optimistic(set, { sandboxEngine: engine }, { sandboxEngine: get().sandboxEngine }, () =>
+    await optimistic(set, { sandboxEngine: engine }, { sandboxEngine: get().sandboxEngine }, () =>
       api.setSandboxEngine(engine),
-    ),
+    );
+    // The engine moves the default workspace type. The picker re-reads as the
+    // store value changes, which can reach the host before this write does;
+    // once the write settled, read again.
+    get().reloadWorkspaceTypes();
+  },
   refreshDockerProbe: async () => {
     let probe: DockerProbe;
     try {
@@ -471,10 +476,13 @@ export const createSandboxSlice: SliceCreator<SandboxSlice> = (set, get) => ({
     }
   },
 
-  setBoxesEnabled: (enabled) =>
-    optimistic(set, { boxesEnabled: enabled }, { boxesEnabled: get().boxesEnabled }, () =>
+  setBoxesEnabled: async (enabled) => {
+    await optimistic(set, { boxesEnabled: enabled }, { boxesEnabled: get().boxesEnabled }, () =>
       api.setBoxSetting("boxes_enabled", String(enabled)),
-    ),
+    );
+    // As for the engine: re-read once the write settled.
+    get().reloadWorkspaceTypes();
+  },
   saveBoxSetting: async (key, value) => {
     try {
       await api.setBoxSetting(key, value || null);

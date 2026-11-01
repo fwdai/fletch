@@ -104,6 +104,7 @@ import {
 import { refreshWorkspace } from "./refreshWorkspace";
 import { applyBuildEvent } from "./sandbox";
 import type { AppSlice, SliceCreator } from "./types";
+import { applyBoxSetupEvent } from "./workspaceTypes";
 
 type AppSet = Parameters<SliceCreator<AppSlice>>[0];
 type AppGet = Parameters<SliceCreator<AppSlice>>[1];
@@ -770,10 +771,11 @@ export const registerEventListeners = async (set: AppSet, get: AppGet) => {
   // The box sandbox: the image install and the tools builds for the Developer
   // pane's setup line, each box's phase for the workspace capsule, and the
   // connections the egress proxy refused for the toast. Allowed connections
-  // are routine.
-  await bind(onBoxImage((e) => get().applyBoxImage(e)));
-  await bind(onBoxTools((e) => get().applyBoxTools(e)));
-  await bind(onBoxState((e) => get().applyBoxState(e)));
+  // are routine. A phase change also moves the default workspace type, so the
+  // composer's picker on screen re-reads its options.
+  await bind(onBoxImage((image) => applyBoxSetupEvent(get, { image })));
+  await bind(onBoxTools((tools) => applyBoxSetupEvent(get, { tools })));
+  await bind(onBoxState((state) => applyBoxSetupEvent(get, { state })));
   await bind(
     onBoxEgress((e) => {
       if (!e.allowed) get().receiveBoxEgress(e);

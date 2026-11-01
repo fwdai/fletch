@@ -13,7 +13,8 @@ each part's README has the detail.
 | Image | `packaging/box-image` | The Debian root every box boots and its layers; `build.sh`, `test.sh`, `bump.sh`, `publish.sh` |
 | libkrun | `packaging/libkrun` | libkrun 1.19 + patches and the libkrunfw 6.12 kernel the app ships |
 | Bundle | `packaging/box-bundle` | How the helper and dylibs are signed and placed in the app |
-| Engine | `crates/fletch-core/src/sandbox/boxes` | Boots boxes for agents: registry, setup, settings, provider homes |
+| Engine | `crates/fletch-core/src/sandbox/boxes` | Boots boxes for agents: registry, setup, settings, the guest-home mechanism (`home.rs`: seeding, credential sync, session mirrors) |
+| Provider adapters | `crates/fletch-core/src/sandbox/provider` | What each provider CLI keeps outside the checkout and how its credential reaches a launch (`ProviderHome`), shared with every engine, and the provider support gate (`supports`) |
 
 ## What a box boots
 

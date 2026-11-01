@@ -3,17 +3,18 @@ use super::*;
 use std::path::{Path, PathBuf};
 
 use super::util::container_running;
-use crate::sandbox::container::auth::ContainerAuth;
 use crate::sandbox::container::config_dir::{borrowed_object_stores, config_dir_is_default};
 use crate::sandbox::container::launch::write_passwd_file;
 use crate::sandbox::container::launch_auth::{
-    apply_container_auth, codex_auth_env, cursor_auth_env, multi_provider_auth_env,
-    prepare_codex_launch, prepare_cursor_launch, prepare_opencode_launch, prepare_pi_launch,
-    present_api_keys, NO_CODEX_AUTH_MSG, NO_CONTAINER_AUTH_MSG, NO_CURSOR_AUTH_MSG,
-    NO_OPENCODE_AUTH_MSG, NO_PI_AUTH_MSG,
+    apply_container_auth, prepare_codex_launch, prepare_cursor_launch, prepare_opencode_launch,
+    prepare_pi_launch, NO_CONTAINER_AUTH_MSG, NO_OPENCODE_AUTH_MSG, NO_PI_AUTH_MSG,
 };
 use crate::sandbox::container::run_args::{
     mount_sources, prepare_config_mount_dir, MappedUser, ProviderMounts,
+};
+use crate::sandbox::provider::auth::{
+    codex_auth_env, cursor_auth_env, multi_provider_auth_env, present_api_keys, ContainerAuth,
+    NO_CODEX_AUTH_MSG, NO_CURSOR_AUTH_MSG,
 };
 
 /// The version-refresh loop guard: exact-pair matching, per-provider
@@ -1061,7 +1062,7 @@ fn blank_settings_fall_back_to_defaults() {
 /// never appear in argv (invariant 3).
 #[test]
 fn resolved_auth_forwards_values_in_env_never_argv() {
-    use super::super::auth::AuthSource;
+    use crate::sandbox::provider::auth::AuthSource;
 
     let secret = "sk-ant-oat-SECRET-VALUE";
     let resolved = ContainerAuth::Resolved {

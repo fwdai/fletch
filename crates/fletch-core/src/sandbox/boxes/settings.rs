@@ -1,6 +1,6 @@
 //! The box engine's settings (the `boxes_enabled` switch and the `box_*`
 //! knobs), mirrored in-process the way the container engines' launch knobs
-//! are (`sandbox::docker::settings`):
+//! are (the docker and podman engines' own `settings`):
 //! the spawn path and the registry have no DB handle. Seeded at boot and kept
 //! in sync by `commands::set_box_setting_impl` / `box_egress_allow_impl`.
 

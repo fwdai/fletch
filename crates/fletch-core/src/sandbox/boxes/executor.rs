@@ -25,6 +25,26 @@ use crate::exec::{DirEntry, RemoteExecutor, Stat};
 
 use super::registry::BoxRegistry;
 
+tokio::task_local! {
+    /// A box being stopped and its channel, set for the duration of a
+    /// [`with_stopping`] future: the registry no longer lists the box as
+    /// running once its stop has begun, but the stop ladder still reads its
+    /// checkouts before the VM goes down.
+    static STOPPING: (String, Arc<Channel>);
+}
+
+/// Run `fut` with `agent_id`'s box reachable over `channel` although its stop
+/// has begun: the stop ladder's last reads of the guest. The task only, as
+/// [`crate::exec::passive`]; wrap it in that too, so a read that escapes the
+/// scope fails rather than booting the box being stopped.
+pub(super) async fn with_stopping<F: std::future::Future>(
+    agent_id: &str,
+    channel: Arc<Channel>,
+    fut: F,
+) -> F::Output {
+    STOPPING.scope((agent_id.to_string(), channel), fut).await
+}
+
 /// The script [`quoting_wrapper`] runs. `$1` is the transport program, `$2`
 /// the remote command's fixed prefix (already quoted), then `N` fixed
 /// transport arguments, then whatever the caller appended, each of which is
@@ -154,6 +174,13 @@ impl BoxExecutor {
     fn channel(&self) -> io::Result<Arc<Channel>> {
         let registry = BoxRegistry::global();
         let id = &self.agent_id;
+        let stopping = STOPPING
+            .try_with(|(stopping, channel)| (stopping == id).then(|| channel.clone()))
+            .ok()
+            .flatten();
+        if let Some(channel) = stopping {
+            return Ok(channel);
+        }
         if !crate::exec::is_passive() {
             return registry
                 .channel_for(id)
@@ -216,9 +243,9 @@ impl RemoteExecutor for BoxExecutor {
         get(&channel, path)
     }
 
-    fn write(&self, path: &Path, bytes: &[u8]) -> io::Result<()> {
+    fn write(&self, path: &Path, bytes: &[u8], mode: u32) -> io::Result<()> {
         let channel = self.channel()?;
-        put(&channel, bytes, path, 0o644).map_err(io::Error::other)
+        put(&channel, bytes, path, mode).map_err(io::Error::other)
     }
 
     /// `stat -L`: the type and size of what `path` resolves to.

@@ -6,7 +6,7 @@
 // and since the id — and so the React key — never changed, the composer's
 // mount-time picker state was never corrected until the user switched chats.
 
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { create } from "zustand";
 
 const { spawnAgent, sendUserMessage, getWorkspace } = vi.hoisted(() => ({
@@ -21,7 +21,9 @@ vi.mock("@/data/slashCommands", () => ({ discoverCommands: vi.fn() }));
 import type { AgentRecord, Workspace } from "@/api";
 import { adoptSpawnedAgent } from "./adoptSpawnedAgent";
 import { createDraftsSlice } from "./drafts";
+import { LOCAL_ENVIRONMENT_ID, setEnvironmentsSource } from "./environments";
 import type { AppState } from "./types";
+import { createWorkspaceTypesSlice, workspaceTypesKeyFor } from "./workspaceTypes";
 
 const NAME = "chimborazo";
 
@@ -61,7 +63,9 @@ const workspaceWith = (agents: AgentRecord[]): Workspace => ({
 });
 
 const makeStore = (workspace: Workspace) => {
-  const store = create<AppState>()((...a) => ({ ...createDraftsSlice(...a) }) as AppState);
+  const store = create<AppState>()(
+    (...a) => ({ ...createDraftsSlice(...a), ...createWorkspaceTypesSlice(...a) }) as AppState,
+  );
   store.setState({
     workspace,
     drafts: [{ id: "d1", repoPath: "/repos/app", name: NAME, provider: "claude", base: "main" }],
@@ -114,11 +118,14 @@ describe("spawning a draft under a recycled landmark name", () => {
     // The prompt rides the spawn as the record's task, so the returned record
     // and every later snapshot carry it — no client-side seed to be clobbered
     // by a refresh while the process starts.
-    expect(spawnAgent.mock.calls[0]?.at(-3)).toBe("ship it");
+    expect(spawnAgent.mock.calls[0]?.at(-4)).toBe("ship it");
     // No account picked: the spawn follows the active one in Settings.
-    expect(spawnAgent.mock.calls[0]?.at(-2)).toBeUndefined();
+    expect(spawnAgent.mock.calls[0]?.at(-3)).toBeUndefined();
     // No folder chips: nothing granted.
-    expect(spawnAgent.mock.calls[0]?.at(-1)).toEqual([]);
+    expect(spawnAgent.mock.calls[0]?.at(-2)).toEqual([]);
+    // No answer from the host for the draft's inputs, so the chip declares
+    // nothing and nothing is sent: Settings and the project's placement decide.
+    expect(spawnAgent.mock.calls[0]?.at(-1)).toBeUndefined();
     // The archived predecessor is gone entirely — one record per id.
     expect(workspace?.agents.filter((a) => a.id === NAME)).toHaveLength(1);
     expect(workspace?.agents).toContainEqual(unrelated);
@@ -131,5 +138,71 @@ describe("spawning a draft under a recycled landmark name", () => {
 
     const { selectedAgentId, workspace } = store.getState();
     expect(workspace?.agents.find((a) => a.id === selectedAgentId)).toEqual(fresh);
+  });
+});
+
+describe("the composer's workspace type at spawn", () => {
+  const local = {
+    id: LOCAL_ENVIRONMENT_ID,
+    name: "This Mac",
+    kind: "local" as const,
+    connection: "connected" as const,
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    spawnAgent.mockResolvedValue(fresh);
+    sendUserMessage.mockResolvedValue(false);
+    getWorkspace.mockResolvedValue(null);
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    setEnvironmentsSource(() => ({
+      environments: { [LOCAL_ENVIRONMENT_ID]: local },
+      activeEnvironmentId: LOCAL_ENVIRONMENT_ID,
+    }));
+  });
+
+  // The chip on screen has the host's answer for the draft's inputs and shows
+  // the pick: what it declares is sent wherever the control is offered.
+  const spawnWithPick = async (admin: boolean) => {
+    const store = makeStore(workspaceWith([]));
+    store.setState((s) => ({
+      admin,
+      drafts: s.drafts.map((d) => ({ ...d, workspaceType: "box" as const })),
+      workspaceTypes: {
+        inputs: { repoPath: "/repos/app", provider: "claude" },
+        answer: {
+          key: workspaceTypesKeyFor(s, "/repos/app", "claude"),
+          options: [
+            { kind: "host", available: true, reason: null, default: true },
+            { kind: "box", available: true, reason: null, default: false },
+          ],
+        },
+        failedKey: null,
+      },
+    }));
+    await store.getState().spawnFromDraft("d1", "ship it", "claude");
+    return spawnAgent.mock.calls[0]?.at(-1);
+  };
+
+  it("sends an explicit pick from this Mac", async () => {
+    expect(await spawnWithPick(true)).toBe("box");
+  });
+
+  it("does not send a pick while a paired host is active", async () => {
+    setEnvironmentsSource(() => ({
+      environments: {
+        [LOCAL_ENVIRONMENT_ID]: local,
+        studio: { id: "studio", name: "Studio", kind: "remote", connection: "connected" },
+      },
+      activeEnvironmentId: "studio",
+    }));
+    expect(await spawnWithPick(true)).toBeUndefined();
+  });
+
+  it("does not send a pick once boxes are locked for this user", async () => {
+    vi.stubEnv("DEV", false);
+    expect(await spawnWithPick(false)).toBeUndefined();
   });
 });

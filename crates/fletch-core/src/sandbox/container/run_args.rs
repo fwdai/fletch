@@ -167,7 +167,7 @@ pub(crate) struct RunSpec<'a> {
     /// set: an ambient credential the chain didn't pick must not reach the
     /// container and override the resolved login.
     ///
-    /// [`resolve`]: crate::sandbox::container::auth::resolve
+    /// [`resolve`]: crate::sandbox::provider::auth::resolve
     pub auth_vars: &'a [&'a str],
     /// Toolchain-cache var names `launch::prepare` set
     /// ([`ContainerLaunch::toolchain_vars`]), forwarded like the other plain

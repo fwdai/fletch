@@ -28,6 +28,7 @@ import type { DockerBuildProgress, SandboxSlice } from "./sandbox";
 import type { SkillsSlice } from "./skills";
 import type { RightPanelTab, UiSlice } from "./ui";
 import type { PromoteSeed, SyncHealthInfo, WorkspaceSlice } from "./workspace";
+import type { WorkspaceTypesSlice } from "./workspaceTypes";
 
 export type {
   AccountSlice,
@@ -59,6 +60,7 @@ export type {
   SyncHealthInfo,
   UiSlice,
   WorkspaceSlice,
+  WorkspaceTypesSlice,
 };
 
 export type AppState = AppSlice &
@@ -82,6 +84,7 @@ export type AppState = AppSlice &
   SkillsSlice &
   McpServersSlice &
   SandboxSlice &
+  WorkspaceTypesSlice &
   LocalCommandsSlice;
 
 export type SliceCreator<T> = StateCreator<AppState, [], [], T>;

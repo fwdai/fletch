@@ -37,9 +37,10 @@
 //!
 //! **The engine names no provider.** What a CLI keeps outside the checkout —
 //! its config, its login, its transcripts — and how each reaches or leaves
-//! the guest is one adapter per provider behind [`home::ProviderHome`]; the
-//! engine seeds the guest home, delivers the credential and mirrors the
-//! sessions through that one interface.
+//! the guest is one adapter per provider behind
+//! [`ProviderHome`](crate::sandbox::provider::ProviderHome) (`sandbox::provider`,
+//! shared with every engine); the engine seeds the guest home, delivers the
+//! credential and mirrors the sessions through that one interface ([`home`]).
 //!
 //! **An agent runs where the tree it works in lives.** An agent that adopts
 //! an existing checkout instead of provisioning one (the local reviewer, which
@@ -56,11 +57,18 @@
 //! What touches a checkout from the host goes through the seam, or asks
 //! [`box_holding`] and refuses with the reason. Not in the guest yet, each
 //! refusing or skipping rather than acting on the host's empty placeholder:
-//! the Run panel (`supervisor::run`), verification (`verify`), codegraph
-//! indexing (`codegraph::wants_codegraph`), workflow step agents, carrying a
-//! checkpoint between a box and another workspace (`git::checkpoint::
-//! fetch_into`: a fork of a box agent), and the attribution hook refresh
-//! (`attribution::refresh_hooks`, which provisioning covers in the guest).
+//! the Run panel (`supervisor::run`), verification (`verify`) and workflow
+//! step agents (`BoxEngine::launch_agent` refuses a blackboard). Codegraph
+//! runs in the guest from the tools disk ([`codegraph_bin`]), the attribution
+//! hook refresh reaches the guest through the seam (`attribution::
+//! refresh_hooks`), and a turn checkpoint crosses the box boundary through
+//! the mirror and the channel (`sandbox::carry_checkpoint`: a fork of a box
+//! agent with its code, or into one). The auto-archive sweep never boots a
+//! box: each stop reads every checkout's disposal state after the mirror
+//! refresh, within a time bound, and writes it to `<box dir>/disposal.json`,
+//! which the box's start deletes before any setup wait; the sweep answers a
+//! stopped box's checkouts from that file, and nothing for a box in any
+//! other phase (`mirror::record_disposal`, `sandbox::disposal_at_stop`).
 
 pub mod allowlist;
 pub mod executor;
@@ -89,6 +97,7 @@ use crate::sandbox::engine::{
     TurnPrep,
 };
 use crate::sandbox::placement::Placement;
+use crate::sandbox::provider;
 
 pub use registry::{BoxIdentity, BoxPhase, BoxRegistry, RunningBox, StopReason};
 
@@ -125,7 +134,7 @@ pub(crate) fn box_dir_for_root(writable_root: &Path) -> Option<PathBuf> {
 /// `Box`, which the claude session locators walk). Codex rollouts are
 /// located through [`home::mirror_for_agent`] instead.
 pub(crate) fn transcript_dir_for_root(writable_root: &Path) -> Option<PathBuf> {
-    home::mirror_for_root(&home::claude::Claude, writable_root)
+    home::mirror_for_root(&provider::claude::Claude, writable_root)
 }
 
 /// The box whose writable root holds `path`, when a registered one does: the
@@ -250,17 +259,32 @@ pub const SWITCHED_OFF: &str = "isolated VMs are off; turn them on in Settings �
 /// (Intel, no hypervisor); a runtime that is merely missing is asked again,
 /// since a dev checkout can stage it while the app runs.
 pub fn runtime_usable() -> bool {
-    static USABLE: OnceLock<bool> = OnceLock::new();
-    if let Some(usable) = USABLE.get() {
-        return *usable;
+    runtime_refusal().is_none()
+}
+
+/// Why this machine and runtime cannot boot a box, in the sentence the user
+/// sees; `None` when they can. One probe answers both this and
+/// [`runtime_usable`], remembered on the same terms: a pass, or a machine
+/// that fails itself; a merely missing runtime is probed again next time.
+pub fn runtime_refusal() -> Option<String> {
+    static SETTLED: OnceLock<Option<String>> = OnceLock::new();
+    if let Some(settled) = SETTLED.get() {
+        return settled.clone();
     }
     let probe = probe();
-    let ok = probe.as_ref().is_some_and(|p| p.ok());
-    let settled = ok || probe.is_some_and(|p| !p.arch_ok || !p.hypervisor);
+    let refusal = match &probe {
+        Some(probe) if probe.ok() => None,
+        Some(probe) => Some(format!(
+            "the box runtime is not usable: {}.",
+            probe.problems().join("; ")
+        )),
+        None => Some(RUNTIME_NOT_FOUND.to_string()),
+    };
+    let settled = refusal.is_none() || probe.is_some_and(|p| !p.arch_ok || !p.hypervisor);
     if settled {
-        let _ = USABLE.set(ok);
+        let _ = SETTLED.set(refusal.clone());
     }
-    ok
+    refusal
 }
 
 /// Whether a new agent of `provider` could boot a box right now, without
@@ -455,13 +479,10 @@ fn credential_step(
     })
 }
 
-/// Which providers run in a box: the ones with a guest-home adapter
-/// ([`home::ProviderHome`] — claude and codex so far) and a tools-disk
-/// script. Cursor and OpenCode have a script but no adapter yet: their logins
-/// live in files the host writes into a host-side overlay, which an adapter
-/// would ship the way codex's does.
+/// Which providers run in a box: the box half of the support gate
+/// ([`provider::supports`]: a provider adapter and a tools-disk script).
 pub fn supports_provider(provider: &str) -> bool {
-    home::supported(provider) && fletch_box::tools::install_script(provider).is_some()
+    provider::supports(EngineKind::Box, provider).is_ok()
 }
 
 /// The codegraph launcher's path in `agent_id`'s guest, when the tools disk
@@ -492,14 +513,6 @@ pub fn asleep_for_path(path: &Path) -> bool {
         .is_some_and(|identity| BoxRegistry::global().running(&identity.agent_id).is_none())
 }
 
-/// Why `provider` cannot launch in a box, for the spawn gate.
-pub fn provider_refusal(provider: &str) -> Option<String> {
-    (!supports_provider(provider)).then(|| {
-        let label = crate::agent::provider_bin_label(provider).map_or(provider, |(_, l)| l);
-        format!("{label} isn't available in box sandboxes yet")
-    })
-}
-
 /// The engine a new agent of `provider` is stamped with, from the host's
 /// choice (`sandbox::selected_engine`, `None` for automatic) and the
 /// project's placement.
@@ -517,6 +530,18 @@ pub fn engine_for_new_agent(
     provider: &str,
     placement: Placement,
 ) -> EngineKind {
+    engine_for_new_agent_with(selected, provider, placement, || ready_for(provider))
+}
+
+/// [`engine_for_new_agent`] with [`ready_for`] supplied by a caller that has
+/// already answered part of it, so the runtime is probed once (asked only
+/// when automatic gets that far).
+pub fn engine_for_new_agent_with(
+    selected: Option<EngineKind>,
+    provider: &str,
+    placement: Placement,
+    ready: impl Fn() -> bool,
+) -> EngineKind {
     match selected {
         Some(EngineKind::Box) if !supports_provider(provider) => {
             tracing::info!(
@@ -528,7 +553,7 @@ pub fn engine_for_new_agent(
         Some(kind) => kind,
         None => match placement {
             Placement::Host => EngineKind::SandboxExec,
-            Placement::Auto | Placement::Box if ready_for(provider) => EngineKind::Box,
+            Placement::Auto | Placement::Box if ready() => EngineKind::Box,
             // Pinned to boxes by the project but nothing to boot yet: the
             // launch waits, as a pinned engine does.
             Placement::Box if settings::enabled() && supports_provider(provider) => EngineKind::Box,
@@ -596,10 +621,8 @@ impl SandboxEngine for BoxEngine {
     /// tenant's own env file, mailbox relay and launch attached to the host's
     /// idle timer.
     fn launch_agent(&self, ctx: &AgentLaunchCtx, agent_bin: &str) -> Result<LaunchPlan> {
-        if let Some(why) = provider_refusal(ctx.provider) {
-            return Err(Error::Other(why));
-        }
-        let provider_home = home::require(ctx.provider)?;
+        provider::supports(EngineKind::Box, ctx.provider).map_err(Error::Other)?;
+        let provider_home = provider::require(ctx.provider)?;
         if ctx.blackboard.is_some() {
             return Err(Error::Other(
                 "workflow step agents don't run in box sandboxes yet".into(),
@@ -688,7 +711,7 @@ impl SandboxEngine for BoxEngine {
             running.relay_mailbox(ctx.rpc_dir, ctx.agent_id);
             // Its sessions, tailed into its own mirror, as the owner's are
             // into the owner's (a pulled provider's are pulled per agent).
-            if provider_home.transport() == home::Transport::Tail {
+            if provider_home.transport() == provider::Transport::Tail {
                 if let Some(mirror) = home::mirror_for_agent(ctx.provider, ctx.agent_id) {
                     let sessions = provider_home.sessions_dir(ctx.home, ctx.writable_root);
                     running.relay_tail(&sessions, &mirror);
@@ -698,6 +721,30 @@ impl SandboxEngine for BoxEngine {
         // The provider's home in the guest, as its adapter lays it out:
         // before every launch, so the user's config changes reach it.
         home::seed(&running.channel, provider_home, ctx.home, ctx.writable_root)?;
+        // The project's toolchain cache, made in the guest before the agent
+        // runs. A guest that cannot make it keeps the toolchains' defaults,
+        // which in a box are its own disk anyway.
+        let (cache_root, cache_env) = guest_toolchain_cache(ctx.home, ctx.project_id)?;
+        let made = executor::run(
+            &running.channel,
+            &["mkdir", "-p", "--", &cache_root.to_string_lossy()],
+            None,
+        );
+        let cache_env = match made {
+            Ok(out) if out.status.success() => cache_env,
+            failed => {
+                let why = failed.map_or_else(
+                    |e| e.to_string(),
+                    |out| String::from_utf8_lossy(&out.stderr).trim().to_string(),
+                );
+                tracing::warn!(
+                    root = %cache_root.display(),
+                    error = %why,
+                    "could not create the toolchain cache in the box; toolchains keep their defaults"
+                );
+                Vec::new()
+            }
+        };
         // The claude on the tools disk this box booted with — which may be an
         // older disk taken while the host's version builds — is the one this
         // launch runs, so it is the one asked.
@@ -735,8 +782,9 @@ impl SandboxEngine for BoxEngine {
         // provider's adapter spells it: in the env file, and/or files kept
         // in step between host and guest for as long as the launch lives
         // (`home::CredentialSync`).
-        let home::Credential { mut env, files } = provider_home.credential(ctx)?;
+        let provider::Credential { mut env, files } = provider_home.credential(ctx)?;
         env.push(("GIT_TERMINAL_PROMPT".to_string(), "0".to_string()));
+        env.extend(cache_env);
         let credentials = Arc::new(Mutex::new(home::CredentialSync::new(files)));
         let synced = !credentials
             .lock()
@@ -836,6 +884,24 @@ impl SandboxEngine for BoxEngine {
         registry.detach(agent_id, launch_id);
         Ok(())
     }
+}
+
+/// The project's toolchain cache for a launch in a box, and the env pointing
+/// the toolchains into it: the root seatbelt grants this project
+/// (`toolchain_cache_root`), which by path identity is a directory on the
+/// guest's own disk, not the host's cache. Only the redirect rows: the cargo
+/// overlay `prepare_toolchain_cache` adds links the host's cargo home, which
+/// a guest does not have, and creating the root is the guest's to do.
+fn guest_toolchain_cache(
+    home: &Path,
+    project_id: &str,
+) -> Result<(PathBuf, Vec<(String, String)>)> {
+    let root = crate::sandbox::toolchain_cache_root(home, project_id)?;
+    let env = crate::sandbox::toolchain_cache::toolchain_cache_env(
+        &root,
+        crate::sandbox::BoxPlatform::linux(),
+    );
+    Ok((root, env))
 }
 
 /// `/data/run/<launch id>.env`.

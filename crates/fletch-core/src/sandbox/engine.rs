@@ -34,18 +34,41 @@ impl EngineKind {
         }
     }
 
-    /// Whether this engine runs the agent inside a container. Call sites outside
-    /// the sandbox module ask this instead of matching `Docker` directly, so a
-    /// second container engine updates one place. Matched exhaustively: a new
-    /// variant forces the decision here rather than silently landing on a
-    /// default.
-    pub fn is_container(self) -> bool {
+    /// What this engine can and cannot do: the one table every "does this
+    /// engine …" question outside `sandbox/` reads (docs/sandbox-foundation.md
+    /// rule 1). Matched exhaustively, so a new variant states every fact.
+    pub const fn caps(self) -> EngineCaps {
         match self {
-            Self::Docker | Self::Podman => true,
-            // A box is as self-contained as a container, but shares none of the
-            // container plumbing this gates (provider images, bind mounts, the
-            // in-image bin), so each caller handles it on its own.
-            Self::SandboxExec | Self::Box => false,
+            Self::SandboxExec => EngineCaps {
+                checkout_on_host: true,
+                shares_host_fs: true,
+                runs_codegraph: true,
+                token_only_launch: false,
+                added_repos_self_contained: false,
+                share_roots: None,
+                run_panel: true,
+                workflow_steps: true,
+            },
+            Self::Docker | Self::Podman => EngineCaps {
+                checkout_on_host: true,
+                shares_host_fs: false,
+                runs_codegraph: false,
+                token_only_launch: true,
+                added_repos_self_contained: true,
+                share_roots: None,
+                run_panel: true,
+                workflow_steps: true,
+            },
+            Self::Box => EngineCaps {
+                checkout_on_host: false,
+                shares_host_fs: false,
+                runs_codegraph: true,
+                token_only_launch: true,
+                added_repos_self_contained: false,
+                share_roots: Some(&["/Users", "/Volumes"]),
+                run_panel: false,
+                workflow_steps: false,
+            },
         }
     }
 
@@ -62,6 +85,45 @@ impl EngineKind {
     }
 }
 
+/// One engine's facts ([`EngineKind::caps`]). A `false` is a gap the engine
+/// declares, read by the feature's entry point rather than discovered by
+/// probing a path (docs/sandbox-foundation.md rule 7).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EngineCaps {
+    /// The agent's checkout is a real tree on this host. A box keeps it in
+    /// its guest and the host path is an empty placeholder.
+    pub checkout_on_host: bool,
+    /// The agent sees the host's own filesystem at the host's paths, so what
+    /// the OS reports for a path (symlinks resolved) is what the agent sees,
+    /// and its provider CLI writes the host's own session dirs (seatbelt).
+    pub shares_host_fs: bool,
+    /// The codegraph MCP server can run beside the checkout, inside the
+    /// agent's sandbox: the host's build under seatbelt, the tools disk's in
+    /// a box. A container gets no build of it.
+    pub runs_codegraph: bool,
+    /// A claude launch can be signed in only by a token the host hands over:
+    /// the engine has no view of the host's credential files, so the stored
+    /// setup-token is a valid fallback.
+    pub token_only_launch: bool,
+    /// A repo added to a live agent must be a self-contained clone (full
+    /// object copy, no alternates): a container's mounts are fixed at launch,
+    /// so a `--shared` clone's borrowed store would be unreachable in it. A
+    /// box checkout is always a full copy pushed into the guest, so the flag
+    /// has nothing to decide there.
+    pub added_repos_self_contained: bool,
+    /// The roots a granted folder must lie under, `None` for any: a box guest
+    /// mounts shares only under the mountpoints its image ships (both empty
+    /// mountpoints; see `packaging/box-image/build.sh`).
+    pub share_roots: Option<&'static [&'static str]>,
+    /// The Run panel can run the agent's dev server. It runs on the host, in
+    /// the checkout; a box's checkout is in its guest, which needs port
+    /// forwarding over the channel first.
+    pub run_panel: bool,
+    /// The agent can be a workflow step. A step forks from the run repo, a
+    /// host path a guest cannot see.
+    pub workflow_steps: bool,
+}
+
 pub struct AgentLaunchCtx<'a> {
     pub agent_id: &'a str,
     /// The agent's project (`AgentRecord.project_id`), which keys the
@@ -71,8 +133,8 @@ pub struct AgentLaunchCtx<'a> {
     pub project_id: &'a str,
     /// The provider launching (`AgentRecord.provider`). Seatbelt ignores it —
     /// its profile is provider-agnostic — while the Docker engine branches on it
-    /// for the per-provider image, config-dir mount, and auth (see
-    /// [`sandbox::docker::DockerProvider`]).
+    /// for the per-provider image, config-dir mount, and auth (see the
+    /// container engines' `ContainerProvider`).
     pub provider: &'a str,
     pub writable_root: &'a Path,
     /// The authoritative source repos each checkout under `writable_root` was
@@ -393,12 +455,36 @@ mod tests {
         }
     }
 
+    /// The fact table as docs/sandbox-foundation.md states it.
     #[test]
-    fn only_the_container_runtimes_are_container_engines() {
-        assert!(EngineKind::Docker.is_container());
-        assert!(EngineKind::Podman.is_container());
-        assert!(!EngineKind::SandboxExec.is_container());
-        assert!(!EngineKind::Box.is_container());
+    fn caps_match_the_charter_table() {
+        use EngineKind::{Box, Docker, Podman, SandboxExec};
+        let with = |fact: fn(EngineKind) -> bool| -> Vec<EngineKind> {
+            EngineKind::ALL
+                .iter()
+                .copied()
+                .filter(|&kind| fact(kind))
+                .collect()
+        };
+        assert_eq!(
+            with(|k| !k.caps().checkout_on_host),
+            vec![Box],
+            "only a box keeps the checkout off the host"
+        );
+        assert_eq!(with(|k| k.caps().shares_host_fs), vec![SandboxExec]);
+        assert_eq!(with(|k| k.caps().runs_codegraph), vec![SandboxExec, Box]);
+        assert_eq!(
+            with(|k| k.caps().token_only_launch),
+            vec![Docker, Podman, Box]
+        );
+        assert_eq!(
+            with(|k| k.caps().added_repos_self_contained),
+            vec![Docker, Podman]
+        );
+        assert_eq!(with(|k| k.caps().share_roots.is_some()), vec![Box]);
+        assert_eq!(Box.caps().share_roots, Some(&["/Users", "/Volumes"][..]));
+        assert_eq!(with(|k| !k.caps().run_panel), vec![Box]);
+        assert_eq!(with(|k| !k.caps().workflow_steps), vec![Box]);
     }
 
     #[test]

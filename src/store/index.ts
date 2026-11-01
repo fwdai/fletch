@@ -23,6 +23,7 @@ import { createSkillsSlice } from "./skills";
 import type { AppState } from "./types";
 import { createUiSlice } from "./ui";
 import { createWorkspaceSlice } from "./workspace";
+import { createWorkspaceTypesSlice } from "./workspaceTypes";
 
 export const EMPTY_AGENTS: readonly AgentRecord[] = Object.freeze([]);
 
@@ -48,6 +49,7 @@ export const useAppStore = create<AppState>()((...a) => ({
   ...createSkillsSlice(...a),
   ...createMcpServersSlice(...a),
   ...createSandboxSlice(...a),
+  ...createWorkspaceTypesSlice(...a),
   ...createLocalCommandsSlice(...a),
 }));
 

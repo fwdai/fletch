@@ -319,7 +319,7 @@ mod tests {
         fn read(&self, _: &Path) -> io::Result<Vec<u8>> {
             unreachable!("adoption reads nothing from the box")
         }
-        fn write(&self, path: &Path, bytes: &[u8]) -> io::Result<()> {
+        fn write(&self, path: &Path, bytes: &[u8], _: u32) -> io::Result<()> {
             if self.unreachable {
                 return Err(io::Error::other("ssh to the box failed"));
             }

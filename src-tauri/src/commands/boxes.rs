@@ -52,6 +52,16 @@ pub fn box_state(agent_id: String) -> fletch_core::sandbox::boxes::registry::Box
     engine::box_state_impl(&agent_id)
 }
 
+/// The workspace types a new agent may be given, for the composer's choice.
+#[tauri::command]
+pub async fn available_workspace_types(
+    ctx: State<'_, Arc<EngineCtx>>,
+    repo_path: String,
+    provider: String,
+) -> Result<Vec<fletch_core::sandbox::WorkspaceTypeOption>> {
+    engine::available_workspace_types_impl(&ctx, &repo_path, &provider).await
+}
+
 /// Stop the agent's box now; answers which rung of the ladder worked.
 #[tauri::command]
 pub async fn box_stop(agent_id: String) -> Result<String> {
