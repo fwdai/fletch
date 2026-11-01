@@ -39,6 +39,59 @@ software GL and LLVM, locales, docs and man pages are excluded with dpkg path
 rules (`dpkg-excludes.cfg`); a headless browser never loads them. Images are
 lz4hc erofs (64 KiB clusters, dedupe): the guest kernel decodes LZ4 only.
 
+Every agent process starts through `fletch-guest exec`, which clears the
+environment and loads the launch's env file. All ssh sessions are the one
+guest user `agent`, so a tenant that must only read its host's files (the
+local reviewer) is confined by namespaces instead of a file mode, under one
+rule: it writes nothing it shares with the coder (`boxes::confined_view`).
+`exec --read-only <dir>` names each of the host agent's identity binds (its
+writable root, the home, its mailbox; one nested in another is covered by it)
+and each folder the box shares writable that no writable grant of the
+reviewer's covers. `--writable <path>` names each path that is the reviewer's
+own inside them: its writable root and mailbox, its `CODEX_HOME` (under that
+root), and its writable folder grants (a grant inside a share is carved out
+of it; a share inside a grant is the reviewer's whole). Every shared location
+a CLI writes is a private copy-on-write view instead: `--cow <dir> <store>`
+for its provider's state dirs (as the provider adapter lays them out in the
+guest, `ProviderHome::shared_state`), the agent scratch dirs and the
+project's toolchain cache, `--cow-file <file> <copy>` for the adapter's state
+files (`~/.claude.json`), each store and copy under
+`<reviewer root>/.fletch-cow/`. The reviewer reads the coder's state there,
+and everything it writes, a file that did not exist before included, lands
+in its own copy, so nothing it could plant (an MCP config, a hook, a plugin)
+is ever run by the coder, with no per-provider list of what a CLI executes.
+Its session transcripts are tailed or pulled from its copy. What the host
+writes in the guest for the launch, the provider's seed and its credential
+files, it writes in the same view (`boxes::executor::Scope`: each operation
+runs under `fletch-guest exec` with the launch's options): a seeded config
+or a shipped login lands in the reviewer's copy, where its CLI reads it; a
+refreshed login is read back from there; a removed one is a whiteout there,
+hiding the coder's file rather than exposing it; and the coder's files are
+never written. The host creates the directories before the launch, and each
+file the view copies, from the seed, where it does not exist yet (the copy
+is bound on it); the guest makes the stores and copies inside the
+confinement. The command gets a user namespace mapping
+`agent` to itself; a mount namespace in which each `<dir>` is bound on itself
+with every mount below it and the whole subtree made read-only in one
+`mount_setattr(2)`, each `<path>` (a directory or file, reached through no
+symbolic link) bound again and made writable, each `--cow` directory covered
+by an overlay of itself, with options
+`lowerdir=<dir>,upperdir=<store>/upper,workdir=<store>/work,userxattr,index=off`
+(`userxattr` is what lets an unprivileged user namespace mount it; with no
+index, the host's own operations may mount the same store again), each `--cow-file`
+file covered by a bind of its copy (made from it the first time), and
+`/data` (the other route to the same trees) covered by an empty tmpfs; and a
+pid namespace with a private `/proc`, so no other process's `/proc/<pid>/root`
+leads back to the writable view. Every capability is then dropped and
+`no_new_privs` set; a namespace the command creates inherits the mounts
+locked. A step that fails exits 125 before the command runs. There is no
+fallback: a guest without the options (images up to 0.3.0) or one that
+cannot set them up refuses the reviewer's launch and asks for the box image
+to be updated; the app pins an image whose guest has them. What it does not
+cover: scratch outside every bind (`/tmp`, `/var/tmp`, `/run`), which the
+reviewer may write as the guest user, and the network namespace, which is the
+guest's.
+
 Settings (Settings › Sandbox › Box): memory, CPUs, idle stop, image URL, and a
 toggle per layer (`box_layers`). A layer turned on is downloaded once and
 attached to every box from its next boot.

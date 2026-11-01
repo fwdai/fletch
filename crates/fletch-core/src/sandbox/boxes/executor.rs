@@ -1,9 +1,16 @@
 //! The box's [`RemoteExecutor`]: every git invocation and checkout file access
 //! under a box's writable root becomes an ssh session into its guest, at the
-//! same absolute path. Synchronous on purpose — `exec::for_path` is
-//! asked from sync code (`git_dist::std_command_env`), so the ssh client is a
-//! `std::process::Command`; a stopped box is booted on demand through the
-//! registry.
+//! same absolute path, multiplexed over the master the box keeps for its
+//! lifetime (`fletch_box::channel::render_config`). A stopped box is booted
+//! on demand through the registry.
+//!
+//! Each file operation has one implementation, the async one, on
+//! `tokio::process`: an async caller waits on the ssh round trip, or on the
+//! boot, without holding a thread. The sync methods run that same future
+//! through [`super::block_on`] for callers reached through sync code (the
+//! agent profile, attachments, the codegraph mirror). [`RemoteExecutor::command`]
+//! stays sync, since its caller (`git_dist::std_command_env`) builds a
+//! `std::process::Command`; only a boot makes it wait.
 //!
 //! ssh joins its arguments with spaces and the guest shell re-splits them, so
 //! nothing a caller appends to a returned `Command` could survive as one word
@@ -21,7 +28,7 @@ use fletch_box::channel::shell_quote;
 use fletch_box::Channel;
 
 use crate::error::{Error, Result};
-use crate::exec::{DirEntry, RemoteExecutor, Stat};
+use crate::exec::{DirEntry, ExecFuture, RemoteExecutor, Stat};
 
 use super::registry::BoxRegistry;
 
@@ -110,11 +117,56 @@ pub(crate) fn run(channel: &Channel, words: &[&str], stdin: Option<&[u8]>) -> io
     }
 }
 
-/// [`run`] as an `io::Result<Vec<u8>>` of stdout: a failed ssh connection is
+/// [`run`] for an async caller: the same ssh invocation on `tokio::process`,
+/// `stdin` fed while the output is read. Killed if the future is dropped.
+async fn run_async(channel: &Channel, words: &[&str], stdin: Option<&[u8]>) -> io::Result<Output> {
+    use tokio::io::AsyncWriteExt;
+
+    let mut cmd = tokio::process::Command::from(channel.std_command());
+    cmd.arg(fletch_box::guest::SSH_HOST_ALIAS)
+        .args(words.iter().map(|w| shell_quote(w)))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    let Some(bytes) = stdin else {
+        cmd.stdin(Stdio::null());
+        return cmd.output().await;
+    };
+    cmd.stdin(Stdio::piped());
+    let mut child = cmd.spawn()?;
+    let mut pipe = child
+        .stdin
+        .take()
+        .ok_or_else(|| io::Error::other("ssh's stdin is not piped"))?;
+    let feed = async move {
+        let written = pipe.write_all(bytes).await;
+        // Closed here, so the remote sees the end of its input.
+        drop(pipe);
+        written
+    };
+    let (written, out) = tokio::join!(feed, child.wait_with_output());
+    let out = out?;
+    match written {
+        // A remote that quit early closes its stdin on us; its exit status
+        // is the answer then, not the broken pipe.
+        Err(e) if e.kind() != io::ErrorKind::BrokenPipe => Err(e),
+        _ => Ok(out),
+    }
+}
+
+/// [`run_async`] as an `io::Result<Vec<u8>>` of stdout ([`interpret`]).
+async fn output_async(
+    channel: &Channel,
+    words: &[&str],
+    stdin: Option<&[u8]>,
+) -> io::Result<Vec<u8>> {
+    interpret(run_async(channel, words, stdin).await?, words)
+}
+
+/// The stdout of `words`' run, or why it failed: a failed ssh connection is
 /// `ConnectionRefused`, a missing path `NotFound`, anything else `Other`
 /// carrying the remote's stderr.
-fn output(channel: &Channel, words: &[&str], stdin: Option<&[u8]>) -> io::Result<Vec<u8>> {
-    let out = run(channel, words, stdin)?;
+fn interpret(out: Output, words: &[&str]) -> io::Result<Vec<u8>> {
     if out.status.success() {
         return Ok(out.stdout);
     }
@@ -139,21 +191,117 @@ fn output(channel: &Channel, words: &[&str], stdin: Option<&[u8]>) -> io::Result
 /// Write `bytes` to `guest_path` with `mode`, creating the parent directories;
 /// the contents travel on stdin, never argv. The sync twin of `Channel::put`.
 pub(crate) fn put(channel: &Channel, bytes: &[u8], guest_path: &Path, mode: u32) -> Result<()> {
-    let script = format!(
-        "umask 077 && mkdir -p \"$(dirname \"$1\")\" && cat > \"$1\" && chmod {mode:o} \"$1\""
-    );
-    output(
+    Scope::default().put(channel, bytes, guest_path, mode)
+}
+
+/// Where an operation the host makes in a guest on a launch's behalf runs: in
+/// the guest's own view (the default), or inside the view a confined launch's
+/// process has (`fletch-guest exec` with that launch's options, from an empty
+/// env file). Inside it, the operation reads what the process reads and
+/// writes where the process's writes land: under a copy-on-write directory,
+/// in the launch's own upper layer, a removal there a whiteout over the
+/// shared file rather than a change to it. Each operation sets the view up
+/// afresh, from the same stores the launch's process mounts.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct Scope {
+    /// The words before the command that run it in the view, unquoted; none
+    /// for the guest's own.
+    exec: Vec<String>,
+}
+
+impl Scope {
+    /// A view entered by `exec`, the words that run a command in it.
+    pub(crate) fn confined(exec: Vec<String>) -> Self {
+        Self { exec }
+    }
+
+    /// `cmd` as run in this scope.
+    pub(crate) fn words<'a>(&'a self, cmd: &[&'a str]) -> Vec<&'a str> {
+        let exec = self.exec.iter().map(String::as_str);
+        exec.chain(cmd.iter().copied()).collect()
+    }
+
+    /// [`run`] in this scope. A view the guest could not set up is an error,
+    /// never an exit status the caller could read as the command's own (a
+    /// `cat` that found nothing).
+    pub(crate) fn run(
+        &self,
+        channel: &Channel,
+        cmd: &[&str],
+        stdin: Option<&[u8]>,
+    ) -> io::Result<Output> {
+        let out = run(channel, &self.words(cmd), stdin)?;
+        let failed = out.status.code() == Some(fletch_box::guest::EXEC_CONFINE_FAILED);
+        if !self.exec.is_empty() && failed {
+            return Err(io::Error::other(format!(
+                "the launch's confined view could not be set up: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            )));
+        }
+        Ok(out)
+    }
+
+    /// [`put`] in this scope.
+    pub(crate) fn put(
+        &self,
+        channel: &Channel,
+        bytes: &[u8],
+        guest_path: &Path,
+        mode: u32,
+    ) -> Result<()> {
+        let script = put_script(mode);
+        let path = guest_path.to_string_lossy();
+        let cmd: [&str; 5] = ["sh", "-c", &script, "sh", &path];
+        self.run(channel, &cmd, Some(bytes))
+            .and_then(|out| interpret(out, &cmd))
+            .map(drop)
+            .map_err(|e| Error::Other(format!("put {}: {e}", guest_path.display())))
+    }
+
+    /// `cat` of `guest_path` in this scope.
+    pub(crate) fn get(&self, channel: &Channel, guest_path: &Path) -> io::Result<Vec<u8>> {
+        let path = guest_path.to_string_lossy();
+        let cmd: [&str; 3] = ["cat", "--", &path];
+        interpret(self.run(channel, &cmd, None)?, &cmd)
+    }
+}
+
+/// [`put`] for an async caller; the error keeps its kind.
+async fn put_async(
+    channel: &Channel,
+    bytes: &[u8],
+    guest_path: &Path,
+    mode: u32,
+) -> io::Result<()> {
+    let script = put_script(mode);
+    output_async(
         channel,
         &["sh", "-c", &script, "sh", &guest_path.to_string_lossy()],
         Some(bytes),
     )
+    .await
     .map(drop)
-    .map_err(|e| Error::Other(format!("put {}: {e}", guest_path.display())))
+    .map_err(|e| io::Error::new(e.kind(), format!("put {}: {e}", guest_path.display())))
 }
 
-/// `cat` of `guest_path`.
-pub(crate) fn get(channel: &Channel, guest_path: &Path) -> io::Result<Vec<u8>> {
-    output(channel, &["cat", "--", &guest_path.to_string_lossy()], None)
+/// The remote script of [`put`]: `$1` is the guest path.
+fn put_script(mode: u32) -> String {
+    format!("umask 077 && mkdir -p \"$(dirname \"$1\")\" && cat > \"$1\" && chmod {mode:o} \"$1\"")
+}
+
+/// [`Scope::get`] in the guest's own view, for an async caller.
+async fn get_async(channel: &Channel, guest_path: &Path) -> io::Result<Vec<u8>> {
+    output_async(channel, &["cat", "--", &guest_path.to_string_lossy()], None).await
+}
+
+/// How a [`BoxExecutor`] operation may reach its box ([`BoxExecutor::access`]).
+enum Access {
+    /// The box is being stopped: over its channel ([`with_stopping`]).
+    Stopping(Arc<Channel>),
+    /// A [passive](crate::exec::passive) caller: a running box, or an error.
+    Passive,
+    /// Any other caller: a stopped box is booted.
+    Wake,
 }
 
 /// A box's executor: the registry's channel for `agent_id`, booting the box
@@ -171,28 +319,83 @@ impl BoxExecutor {
         })
     }
 
-    fn channel(&self) -> io::Result<Arc<Channel>> {
-        let registry = BoxRegistry::global();
-        let id = &self.agent_id;
+    /// How the caller may reach the box, read from its task-locals: by an
+    /// async method when its future is first polled, so in the awaiting
+    /// task; by [`Self::wait`] before it hands the future to another thread.
+    fn access(&self) -> Access {
         let stopping = STOPPING
-            .try_with(|(stopping, channel)| (stopping == id).then(|| channel.clone()))
+            .try_with(|(stopping, channel)| (*stopping == self.agent_id).then(|| channel.clone()))
             .ok()
             .flatten();
-        if let Some(channel) = stopping {
-            return Ok(channel);
+        match stopping {
+            Some(channel) => Access::Stopping(channel),
+            None if crate::exec::is_passive() => Access::Passive,
+            None => Access::Wake,
         }
-        if !crate::exec::is_passive() {
-            return registry
-                .channel_for(id)
-                .map_err(|e| io::Error::other(format!("box {id}: {e}")));
+    }
+
+    /// The channel `access` gives without waiting: the stopping box's, a
+    /// running box's, or a passive caller's error. `None` when only a boot
+    /// would give one.
+    fn channel_now(&self, access: &Access) -> Option<io::Result<Arc<Channel>>> {
+        let registry = BoxRegistry::global();
+        let id = &self.agent_id;
+        if let Access::Stopping(channel) = access {
+            return Some(Ok(channel.clone()));
         }
-        match registry.running(id) {
-            Some(running) => Ok(running.channel.clone()),
-            None if registry.discarded(id) => {
-                Err(io::Error::other(format!("box {id} was discarded")))
+        if let Some(running) = registry.running(id) {
+            return Some(Ok(running.channel.clone()));
+        }
+        match access {
+            Access::Passive if registry.discarded(id) => {
+                Some(Err(io::Error::other(format!("box {id} was discarded"))))
             }
-            None => Err(io::Error::other(format!("box {id} is stopped"))),
+            Access::Passive => Some(Err(io::Error::other(format!("box {id} is stopped")))),
+            Access::Stopping(_) | Access::Wake => None,
         }
+    }
+
+    /// The channel the caller's access gives, booting a stopped box for a
+    /// caller that may wake it. The boot is awaited, so it holds no thread.
+    async fn channel(&self) -> io::Result<Arc<Channel>> {
+        match self.channel_now(&self.access()) {
+            Some(now) => now,
+            None => self.boot().await,
+        }
+    }
+
+    /// [`Self::channel`] for [`RemoteExecutor::command`], which is sync: no
+    /// wait unless the box must boot.
+    fn channel_blocking(&self) -> io::Result<Arc<Channel>> {
+        match self.channel_now(&self.access()) {
+            Some(now) => now,
+            None => super::block_on(self.boot()),
+        }
+    }
+
+    /// The box's channel, booting it when it is stopped.
+    async fn boot(&self) -> io::Result<Arc<Channel>> {
+        let id = &self.agent_id;
+        BoxRegistry::global()
+            .running_or_start(id)
+            .await
+            .map(|running| running.channel.clone())
+            .map_err(|e| io::Error::other(format!("box {id}: {e}")))
+    }
+
+    /// `fut`, one of the async methods' futures, run to completion for a
+    /// sync caller. [`super::block_on`] may poll it on another thread, which
+    /// would not see the caller's task-locals: its [`STOPPING`] and
+    /// `passive` scopes are carried over to that poll.
+    fn wait<T: Send>(&self, fut: ExecFuture<'_, T>) -> io::Result<T> {
+        let access = self.access();
+        super::block_on(async move {
+            match access {
+                Access::Stopping(channel) => with_stopping(&self.agent_id, channel, fut).await,
+                Access::Passive => crate::exec::passive(fut).await,
+                Access::Wake => fut.await,
+            }
+        })
     }
 
     fn path_str(path: &Path) -> String {
@@ -205,7 +408,7 @@ impl RemoteExecutor for BoxExecutor {
     /// A box that cannot be reached yields a command that fails to spawn with
     /// the reason, so the caller's error path says why.
     fn command(&self, program: &str, cwd: &Path, env: &[(String, String)]) -> Command {
-        let channel = match self.channel() {
+        let channel = match self.channel_blocking() {
             Ok(channel) => channel,
             Err(e) => {
                 // A program that cannot exist: spawning it reports the box error.
@@ -238,70 +441,135 @@ impl RemoteExecutor for BoxExecutor {
         cmd
     }
 
+    // The sync methods: each runs its async twin below to completion
+    // ([`BoxExecutor::wait`]).
+
     fn read(&self, path: &Path) -> io::Result<Vec<u8>> {
-        let channel = self.channel()?;
-        get(&channel, path)
+        self.wait(self.read_async(path))
     }
 
     fn write(&self, path: &Path, bytes: &[u8], mode: u32) -> io::Result<()> {
-        let channel = self.channel()?;
-        put(&channel, bytes, path, mode).map_err(io::Error::other)
+        self.wait(self.write_async(path, bytes, mode))
     }
 
-    /// `stat -L`: the type and size of what `path` resolves to.
     fn stat(&self, path: &Path) -> io::Result<Option<Stat>> {
-        let channel = self.channel()?;
-        let out = output(
-            &channel,
-            &["stat", "-L", "-c", "%F %s", "--", &Self::path_str(path)],
-            None,
-        );
-        match out {
-            Ok(text) => Ok(parse_stat(&String::from_utf8_lossy(&text))),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(e),
-        }
+        self.wait(self.stat_async(path))
     }
 
-    /// `find -L <dir> -mindepth 1 -maxdepth 1 -printf '%y\t%s\t%f\n'`.
     fn list(&self, dir: &Path) -> io::Result<Vec<DirEntry>> {
-        let channel = self.channel()?;
-        let text = output(
-            &channel,
-            &[
-                "find",
-                "-L",
-                &Self::path_str(dir),
-                "-mindepth",
-                "1",
-                "-maxdepth",
-                "1",
-                "-printf",
-                "%y\\t%s\\t%f\\n",
-            ],
-            None,
-        )?;
-        Ok(parse_find(&String::from_utf8_lossy(&text)))
+        self.wait(self.list_async(dir))
     }
 
     fn create_dir_all(&self, dir: &Path) -> io::Result<()> {
-        let channel = self.channel()?;
-        output(&channel, &["mkdir", "-p", "--", &Self::path_str(dir)], None).map(drop)
+        self.wait(self.create_dir_all_async(dir))
     }
 
     fn remove(&self, path: &Path) -> io::Result<()> {
-        let channel = self.channel()?;
-        output(&channel, &["rm", "-rf", "--", &Self::path_str(path)], None).map(drop)
+        self.wait(self.remove_async(path))
     }
 
     fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
-        let channel = self.channel()?;
-        output(
-            &channel,
-            &["mv", "--", &Self::path_str(from), &Self::path_str(to)],
-            None,
-        )
-        .map(drop)
+        self.wait(self.rename_async(from, to))
+    }
+
+    // The one implementation of each operation. Each reads the caller's
+    // access when first polled ([`BoxExecutor::access`]).
+
+    /// `cat` of `path`.
+    fn read_async<'a>(&'a self, path: &'a Path) -> ExecFuture<'a, Vec<u8>> {
+        Box::pin(async move {
+            let channel = self.channel().await?;
+            get_async(&channel, path).await
+        })
+    }
+
+    /// `mkdir -p` of the parent, then the bytes on stdin, never argv.
+    fn write_async<'a>(
+        &'a self,
+        path: &'a Path,
+        contents: &'a [u8],
+        mode: u32,
+    ) -> ExecFuture<'a, ()> {
+        Box::pin(async move {
+            let channel = self.channel().await?;
+            put_async(&channel, contents, path, mode).await
+        })
+    }
+
+    /// `stat -L`: the type and size of what `path` resolves to.
+    fn stat_async<'a>(&'a self, path: &'a Path) -> ExecFuture<'a, Option<Stat>> {
+        Box::pin(async move {
+            let channel = self.channel().await?;
+            let out = output_async(
+                &channel,
+                &["stat", "-L", "-c", "%F %s", "--", &Self::path_str(path)],
+                None,
+            )
+            .await;
+            match out {
+                Ok(text) => Ok(parse_stat(&String::from_utf8_lossy(&text))),
+                Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+                Err(e) => Err(e),
+            }
+        })
+    }
+
+    /// `find -L <dir> -mindepth 1 -maxdepth 1 -printf '%y\t%s\t%f\n'`.
+    fn list_async<'a>(&'a self, dir: &'a Path) -> ExecFuture<'a, Vec<DirEntry>> {
+        Box::pin(async move {
+            let channel = self.channel().await?;
+            let text = output_async(
+                &channel,
+                &[
+                    "find",
+                    "-L",
+                    &Self::path_str(dir),
+                    "-mindepth",
+                    "1",
+                    "-maxdepth",
+                    "1",
+                    "-printf",
+                    "%y\\t%s\\t%f\\n",
+                ],
+                None,
+            )
+            .await?;
+            Ok(parse_find(&String::from_utf8_lossy(&text)))
+        })
+    }
+
+    fn create_dir_all_async<'a>(&'a self, dir: &'a Path) -> ExecFuture<'a, ()> {
+        Box::pin(async move {
+            let channel = self.channel().await?;
+            let dir = Self::path_str(dir);
+            output_async(&channel, &["mkdir", "-p", "--", &dir], None).await?;
+            Ok(())
+        })
+    }
+
+    /// `rm -rf`, after giving the owner back the permissions a tree may lack:
+    /// an overlay leaves its `work/work` directory with mode 000 in a
+    /// confined tenant's store (`super::COW_DIR`), which `rm` could not enter
+    /// to empty. The path itself is left alone when it is a link, so a link
+    /// an agent planted never has its target's modes changed; `rm` removes
+    /// the link only, as it always did.
+    fn remove_async<'a>(&'a self, path: &'a Path) -> ExecFuture<'a, ()> {
+        Box::pin(async move {
+            let channel = self.channel().await?;
+            let path = Self::path_str(path);
+            let script = "[ -L \"$1\" ] || chmod -R u+rwX -- \"$1\" 2>/dev/null; rm -rf -- \"$1\"";
+            output_async(&channel, &["sh", "-c", script, "sh", &path], None).await?;
+            Ok(())
+        })
+    }
+
+    fn rename_async<'a>(&'a self, from: &'a Path, to: &'a Path) -> ExecFuture<'a, ()> {
+        Box::pin(async move {
+            let channel = self.channel().await?;
+            let (from, to) = (Self::path_str(from), Self::path_str(to));
+            output_async(&channel, &["mv", "--", &from, &to], None).await?;
+            Ok(())
+        })
     }
 }
 
@@ -455,6 +723,67 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err.to_string(), format!("box {id} was discarded"));
+    }
+
+    /// The async methods honour `passive` as the sync ones do, and the sync
+    /// ones, which poll the async future through `block_on` (on another
+    /// thread under this current-thread runtime), still see the scope.
+    #[tokio::test]
+    async fn a_passive_async_read_of_a_stopped_box_fails_without_booting_it() {
+        use super::super::registry::{BoxPhase, TestBox};
+        use crate::exec::passive;
+
+        let id = "executor-unit-test-passive-async";
+        let test_box = TestBox::register(id);
+        let repo = test_box.root().join("repo");
+        let exec = crate::exec::for_path(&repo);
+        assert!(matches!(exec, crate::exec::Executor::Remote(_)));
+
+        let err = passive(exec.read_async(&repo.join("README.md")))
+            .await
+            .unwrap_err();
+        assert_eq!(err.to_string(), format!("box {id} is stopped"));
+        let sync_err = passive(async { exec.stat(&repo) }).await.unwrap_err();
+        let async_err = passive(exec.stat_async(&repo)).await.unwrap_err();
+        assert_eq!(sync_err.to_string(), async_err.to_string());
+        assert!(passive(exec.list_async(&repo)).await.is_err());
+        assert!(passive(exec.exists_async(&repo)).await.is_err());
+        assert_eq!(BoxRegistry::global().state(id), BoxPhase::Stopped);
+
+        drop(test_box);
+        let box_exec = BoxExecutor::new(id);
+        let err = passive(box_exec.read_async(&repo)).await.unwrap_err();
+        assert_eq!(err.to_string(), format!("box {id} was discarded"));
+    }
+
+    /// How an ssh run's outcome becomes an `io::Result`: the error kinds
+    /// callers branch on (`stat`'s "nothing there") come from here.
+    #[test]
+    fn ssh_outcomes_map_to_error_kinds() {
+        use std::os::unix::process::ExitStatusExt;
+
+        let ran = |code: i32, stdout: &str, stderr: &str| Output {
+            status: std::process::ExitStatus::from_raw(code << 8),
+            stdout: stdout.as_bytes().to_vec(),
+            stderr: stderr.as_bytes().to_vec(),
+        };
+        assert_eq!(interpret(ran(0, "out", ""), &["cat"]).unwrap(), b"out");
+        let refused = interpret(ran(255, "", "kex failed"), &["cat"]).unwrap_err();
+        assert_eq!(refused.kind(), io::ErrorKind::ConnectionRefused);
+        let no_file = ran(1, "", "cat: /x: No such file or directory");
+        let missing = interpret(no_file, &["cat"]).unwrap_err();
+        assert_eq!(missing.kind(), io::ErrorKind::NotFound);
+        let other = interpret(ran(2, "", "denied"), &["mv"]).unwrap_err();
+        assert_eq!(other.kind(), io::ErrorKind::Other);
+        assert!(other.to_string().starts_with("mv in the box"), "{other}");
+    }
+
+    #[test]
+    fn put_writes_through_stdin_with_the_mode_in_octal() {
+        let script = put_script(0o600);
+        assert!(script.contains("cat > \"$1\""), "{script}");
+        assert!(script.ends_with("chmod 600 \"$1\""), "{script}");
+        assert!(script.starts_with("umask 077 && mkdir -p"), "{script}");
     }
 
     #[test]

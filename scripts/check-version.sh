@@ -44,4 +44,23 @@ if [[ $status -ne 0 ]]; then
   exit $status
 fi
 
+# The box image the app boots is the image this tree describes. The guest
+# agent (`crates/fletch-guest`) is one of the image's inputs and the host side
+# of its contract lives in the app, so a pin behind the image would launch
+# agents against a guest the app no longer matches, and a pin ahead of it
+# names a release that does not exist. `packaging/box-image/bump.sh` moves both;
+# a PR that changes the image by hand must too. The image workflow publishes
+# the version when the change reaches main (docs/box.md, "Releases").
+image_version="$(tr -d '[:space:]' < packaging/box-image/VERSION)"
+pinned="$(sed -n 's/^ *pub const VERSION: &'"'"'static str = "\([^"]*\)";.*/\1/p' crates/fletch-box/src/image_store/mod.rs)"
+if [[ -z "$pinned" ]]; then
+  echo "error: no PinnedImage::VERSION found in crates/fletch-box/src/image_store/mod.rs" >&2
+  exit 1
+fi
+if [[ "$pinned" != "$image_version" ]]; then
+  echo "error: the app pins box image $pinned, but packaging/box-image/VERSION is $image_version" >&2
+  echo "Bump both together (packaging/box-image/bump.sh does); see docs/box.md, \"Releases\"." >&2
+  exit 1
+fi
+
 echo "$version"

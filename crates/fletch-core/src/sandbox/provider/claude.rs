@@ -8,9 +8,10 @@
 
 use std::path::{Path, PathBuf};
 
-use super::{Credential, GuestEntry, ProviderHome};
+use super::{Credential, GuestEntry, ProviderHome, SharedState};
 use crate::error::Result;
 use crate::sandbox::engine::AgentLaunchCtx;
+use crate::sandbox::policy;
 
 /// Where the host mirrors `~/.claude/projects`, under the box dir.
 pub const MIRROR_DIR: &str = "claude-projects";
@@ -70,6 +71,16 @@ impl ProviderHome for Claude {
             env,
             files: Vec::new(),
         })
+    }
+
+    /// The writable islands of `~/.claude` seatbelt grants
+    /// (`policy::provider_state_dirs`), the projects dir among them, and
+    /// `~/.claude.json`.
+    fn shared_state(&self, home: &Path) -> SharedState {
+        SharedState {
+            dirs: policy::provider_state_dirs("claude", home),
+            files: vec![home.join(".claude.json")],
+        }
     }
 }
 

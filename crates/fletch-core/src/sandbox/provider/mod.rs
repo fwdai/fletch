@@ -62,6 +62,24 @@ pub trait ProviderHome: Send + Sync {
     /// launch: a CLI that could only fail on its first turn fails here, with
     /// what to do about it.
     fn credential(&self, ctx: &AgentLaunchCtx) -> Result<Credential>;
+
+    /// What the CLI writes in the guest outside the writable root, which
+    /// every launch in the box shares, at the guest's own paths (the guest
+    /// sets no XDG variable, wherever the host's put the user's copies).
+    /// Every path [`seed`](Self::seed) names and every guest credential file
+    /// lies in it or under the writable root, so a launch that sees it as a
+    /// private copy (`boxes::confined_view`) is seeded and signed in there.
+    fn shared_state(&self, home: &Path) -> SharedState;
+}
+
+/// What a CLI shares with every other launch in its box and writes
+/// ([`ProviderHome::shared_state`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SharedState {
+    /// Directories, whole.
+    pub dirs: Vec<PathBuf>,
+    /// Single files outside every one of [`dirs`](Self::dirs).
+    pub files: Vec<PathBuf>,
 }
 
 /// How a provider's sessions dir reaches the host's mirror of it.
@@ -394,6 +412,34 @@ mod tests {
 
     /// Every adapter's mirror has a name of its own, so two providers'
     /// sessions never land in one dir of a box.
+    /// Everything a seed writes outside the writable root lies in what the
+    /// CLI shares ([`ProviderHome::shared_state`]), where a confined launch's
+    /// view gives it a private copy; each adapter's own tests hold its guest
+    /// credential files to the same.
+    #[test]
+    fn what_a_seed_writes_lies_in_the_shared_state_or_the_writable_root() {
+        let td = tempfile::tempdir().unwrap();
+        let home = td.path().join("home");
+        let root = home.join(".fletch/workspaces/a");
+        std::fs::create_dir_all(home.join(".pi/agent")).unwrap();
+        std::fs::write(home.join(".pi/agent/settings.json"), b"{}").unwrap();
+        for adapter in ALL {
+            let state = adapter.shared_state(&home);
+            let covered = |path: &Path| {
+                path.starts_with(&root)
+                    || state.files.iter().any(|file| file == path)
+                    || state.dirs.iter().any(|dir| path.starts_with(dir))
+            };
+            for entry in adapter.seed(&home, &root).unwrap() {
+                let path = match &entry {
+                    GuestEntry::Dir(path) | GuestEntry::Absent(path) => path,
+                    GuestEntry::File { path, .. } => path,
+                };
+                assert!(covered(path), "{}: {}", adapter.id(), path.display());
+            }
+        }
+    }
+
     #[test]
     fn mirror_names_are_distinct() {
         let mut names: Vec<&str> = ALL.iter().map(|h| h.mirror_dirname()).collect();

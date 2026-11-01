@@ -228,12 +228,37 @@ deletion touches:
 
 ## Not done on purpose
 
-- The box executor is a synchronous ssh client per command, and obtaining its
-  channel can block a runtime worker while a VM boots. A persistent async
-  channel is a later optimisation; the seam that would change is `exec.rs`
-  and `sandbox/boxes/executor.rs` only.
-- The box reviewer (a tenant in the coder's box) has no read-only grant on
-  the coder's tree: both are one user in the guest. Its brief and capability
-  grant hold it.
+- The box executor's file operations are async (`Executor::*_async`, one
+  `tokio::process` ssh client per call, a stopped box's boot awaited), riding
+  an ssh master that lives as long as the box and is ended by its stop. The
+  sync methods and `RemoteExecutor::command` still block their thread, on a
+  boot too: they serve callers reached through sync code, git's
+  `std::process::Command` above all.
+- The box reviewer (a tenant in the coder's box) is held off the coder's
+  files by the guest kernel, not by file modes (both are one user in the
+  guest), and writes nothing it shares with the coder: `fletch-guest exec
+  --read-only … --writable … --cow … --cow-file …` gives its launch user,
+  mount and pid namespaces in which everything the guest exposes of the
+  coder's (its writable root, the home, its mailbox, the folders shared
+  writable) is read-only with every mount nested in it; the reviewer's own
+  root, mailbox and writable folder grants are real writes; and every shared
+  location a CLI writes (the provider's state dirs, the scratch dirs, the
+  toolchain cache, `~/.claude.json`) is a private copy-on-write view, an
+  overlay whose upper layer (or, for the state file, a private copy) lies
+  under the reviewer's own root. It reads the coder's state through it and
+  its writes, new files included, never reach it, so no per-provider list of
+  executable config is needed; the toolchain cache is no exception (the
+  reviewer re-downloads what it needs into its upper). Its sessions are read
+  from its upper layer. What the host writes for its launch (the provider's
+  seed, the credential files it keeps in step) runs in the same view, so a
+  login is shipped to, read back from and removed in the reviewer's copy,
+  and none of it reaches the coder's; the provider adapter names what is
+  shared at the guest's own paths (`ProviderHome::shared_state`), which hold
+  every seeded path and credential file outside the writable root. `/data`
+  is hidden, `/proc` is private and every
+  capability is dropped (`boxes::confined_view`). Enforced, with no
+  fallback: a guest that predates the options or cannot set them up refuses
+  the launch. What it does not cover: scratch outside every bind (`/tmp` and
+  the other tmpfs mounts), and the network namespace, which is the guest's.
 - The Run panel inside a box needs port forwarding over the channel; it is a
   declared gap.

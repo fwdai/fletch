@@ -522,10 +522,7 @@ where
 /// Remove the checkout at `dest` where it lives (the host, or a box's guest),
 /// best-effort: the cleanup after a failed provisioning.
 pub(crate) async fn discard(dest: &Path) {
-    let dest = dest.to_path_buf();
-    let removed =
-        tokio::task::spawn_blocking(move || crate::exec::for_path(&dest).remove(&dest)).await;
-    if let Ok(Err(e)) = removed {
+    if let Err(e) = crate::exec::for_path(dest).remove_async(dest).await {
         tracing::debug!(error = %e, "removing a half-built checkout failed");
     }
 }

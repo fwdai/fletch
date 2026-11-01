@@ -3451,6 +3451,7 @@ fn allocate_subdir_never_claims_a_reserved_name() {
     for reserved in [
         crate::agent_profile::PROFILE_DIR,
         crate::attachments::WORKSPACE_ATTACHMENTS_DIR,
+        crate::sandbox::COW_DIR,
     ] {
         assert_eq!(
             allocate_repo_subdir(Path::new(&format!("/foo/{reserved}")), &[]),

@@ -16,7 +16,9 @@
 //!   current (`agent::codex_home` rewrites codex's before every launch and
 //!   turn), which [`CredentialSync`] copies into the guest with the env file
 //!   and again before every turn — the engine's `before_turn` hook on the
-//!   launch plan.
+//!   launch plan. The seed and the credential files are applied in the
+//!   launch's [`Scope`]: for a confined launch, inside its view, where its
+//!   CLI reads them and where nothing of them reaches the coder's files.
 //! - **Transcripts**: the guest dir the CLI writes its sessions to
 //!   ([`ProviderHome::sessions_dir`]) reaches a mirror under the box dir
 //!   ([`mirror_for_root`]), where the host reads them, one of two ways
@@ -42,7 +44,7 @@ use crate::sandbox::provider::{
     for_provider, CredentialFile, FileOwner, GuestEntry, ProviderHome, Transport,
 };
 
-use super::executor;
+use super::executor::{self, Scope};
 
 /// The credential files of one launch, kept in step for as long as it lives:
 /// [`launch`](Self::launch) when the env file is delivered,
@@ -50,18 +52,28 @@ use super::executor;
 /// [`after_exit`](Self::after_exit) once each process of the launch has
 /// exited. Remembers what each side last held, so a change on either side
 /// is told from the other's.
+///
+/// The guest side is the file as the launch's process sees it: every read,
+/// write and removal runs in the launch's [`Scope`]. For a confined launch
+/// that is its view, where a credential inside a copy-on-write directory is
+/// the launch's own copy: shipped there, read back from there once the CLI
+/// refreshed it, and removed there with a whiteout, which hides the shared
+/// file rather than exposing it. The coder's file below is never touched.
 #[derive(Debug, Default)]
 pub struct CredentialSync {
     files: Vec<CredentialFile>,
+    /// Where the guest side is read and written.
+    scope: Scope,
     /// What both sides held after the last sync, by guest path: a digest of
     /// the contents, or `None` for no file.
     synced: std::collections::HashMap<PathBuf, Option<[u8; 32]>>,
 }
 
 impl CredentialSync {
-    pub fn new(files: Vec<CredentialFile>) -> Self {
+    pub(crate) fn new(files: Vec<CredentialFile>, scope: Scope) -> Self {
         Self {
             files,
+            scope,
             synced: Default::default(),
         }
     }
@@ -109,7 +121,7 @@ impl CredentialSync {
     fn ship(&mut self, channel: &Channel, i: usize) -> Result<()> {
         let CredentialFile { host, guest, .. } = &self.files[i];
         let bytes = read_optional(host)?;
-        put_optional(channel, guest, bytes.as_deref())?;
+        put_optional(channel, &self.scope, guest, bytes.as_deref())?;
         self.synced
             .insert(guest.clone(), bytes.as_deref().map(digest));
         Ok(())
@@ -121,7 +133,7 @@ impl CredentialSync {
     fn reconcile(&mut self, channel: &Channel, i: usize) -> Result<()> {
         let CredentialFile { host, guest, .. } = &self.files[i];
         let last = self.synced.get(guest).copied().flatten();
-        let in_guest = get_optional(channel, guest)?;
+        let in_guest = get_optional(channel, &self.scope, guest)?;
         let on_host = read_optional(host)?;
         let guest_digest = in_guest.as_deref().map(digest);
         let host_digest = on_host.as_deref().map(digest);
@@ -131,7 +143,7 @@ impl CredentialSync {
                 self.synced.insert(guest.clone(), guest_digest);
             }
             Move::ToGuest => {
-                put_optional(channel, guest, on_host.as_deref())?;
+                put_optional(channel, &self.scope, guest, on_host.as_deref())?;
                 self.synced.insert(guest.clone(), host_digest);
             }
             Move::Nothing => {}
@@ -180,9 +192,9 @@ fn read_optional(path: &Path) -> Result<Option<Vec<u8>>> {
     }
 }
 
-/// The guest file's contents, `None` when there is none.
-fn get_optional(channel: &Channel, path: &Path) -> Result<Option<Vec<u8>>> {
-    match executor::get(channel, path) {
+/// The guest file's contents in `scope`, `None` when there is none.
+fn get_optional(channel: &Channel, scope: &Scope, path: &Path) -> Result<Option<Vec<u8>>> {
+    match scope.get(channel, path) {
         Ok(bytes) => Ok(Some(bytes)),
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(Error::Other(format!(
@@ -192,12 +204,13 @@ fn get_optional(channel: &Channel, path: &Path) -> Result<Option<Vec<u8>>> {
     }
 }
 
-/// Put `bytes` at the guest path, 0600, or remove it for `None`.
-fn put_optional(channel: &Channel, path: &Path, bytes: Option<&[u8]>) -> Result<()> {
+/// Put `bytes` at the guest path in `scope`, 0600, or remove it for `None`.
+fn put_optional(channel: &Channel, scope: &Scope, path: &Path, bytes: Option<&[u8]>) -> Result<()> {
     match bytes {
-        Some(bytes) => executor::put(channel, bytes, path, 0o600),
+        Some(bytes) => scope.put(channel, bytes, path, 0o600),
         None => {
-            let out = executor::run(channel, &["rm", "-f", "--", &path.to_string_lossy()], None)
+            let out = scope
+                .run(channel, &["rm", "-f", "--", &path.to_string_lossy()], None)
                 .map_err(|e| {
                     Error::Other(format!("removing {} in the box: {e}", path.display()))
                 })?;
@@ -248,34 +261,23 @@ pub(crate) fn mirror_for_agent(provider: &str, agent_id: &str) -> Option<PathBuf
         .map(|dir| dir.join(home.mirror_dirname()))
 }
 
-/// Apply `home`'s seed to the guest reached over `channel`, for an agent
-/// with this home and writable root. Synchronous; the caller is on a thread
-/// that may block.
-pub(crate) fn seed(
-    channel: &Channel,
-    home: &dyn ProviderHome,
-    home_dir: &Path,
-    writable_root: &Path,
-) -> Result<()> {
-    apply(channel, &home.seed(home_dir, writable_root)?)
+/// Apply a provider's seed ([`ProviderHome::seed`]) to the guest reached over
+/// `channel`, in the launch's `scope`, where its CLI reads it: for a confined
+/// launch the copies a seeded path inside a copy-on-write directory resolves
+/// to are its own, and what the user changed or removed since reaches them.
+/// Synchronous; the caller is on a thread that may block.
+pub(crate) fn seed(channel: &Channel, scope: &Scope, entries: &[GuestEntry]) -> Result<()> {
+    apply(channel, scope, entries)
 }
 
-/// Apply `entries`: removals and directories in one shell pass, the files
-/// as one tar stream, each `keep_existing` file behind its own probe.
-fn apply(channel: &Channel, entries: &[GuestEntry]) -> Result<()> {
-    let mut script = String::from("umask 077");
+/// Apply `entries` in `scope`: removals and directories in one shell pass,
+/// the files as one tar stream, each `keep_existing` file behind its own
+/// probe.
+pub(crate) fn apply(channel: &Channel, scope: &Scope, entries: &[GuestEntry]) -> Result<()> {
     let mut tar: Vec<&GuestEntry> = Vec::new();
     let mut guarded: Vec<(&Path, &[u8], u32)> = Vec::new();
     for entry in entries {
         match entry {
-            GuestEntry::Dir(path) => {
-                script.push_str(" && mkdir -p -- ");
-                script.push_str(&fletch_box::channel::shell_quote(&path.to_string_lossy()));
-            }
-            GuestEntry::Absent(path) => {
-                script.push_str(" && rm -rf -- ");
-                script.push_str(&fletch_box::channel::shell_quote(&path.to_string_lossy()));
-            }
             GuestEntry::File {
                 path,
                 bytes,
@@ -283,10 +285,12 @@ fn apply(channel: &Channel, entries: &[GuestEntry]) -> Result<()> {
                 keep_existing: true,
             } => guarded.push((path, bytes, *mode)),
             GuestEntry::File { .. } => tar.push(entry),
+            GuestEntry::Dir(_) | GuestEntry::Absent(_) => {}
         }
     }
-    if script != "umask 077" {
-        let out = executor::run(channel, &["sh", "-c", &script], None)
+    if let Some(script) = shell_pass(entries) {
+        let out = scope
+            .run(channel, &["sh", "-c", &script], None)
             .map_err(|e| Error::Other(format!("seeding the guest home: {e}")))?;
         if !out.status.success() {
             return Err(Error::Other(format!(
@@ -297,12 +301,13 @@ fn apply(channel: &Channel, entries: &[GuestEntry]) -> Result<()> {
     }
     if !tar.is_empty() {
         let archive = tar_of(&tar)?;
-        let out = executor::run(
-            channel,
-            &["sh", "-c", "umask 077 && tar -xpf - -C /"],
-            Some(&archive),
-        )
-        .map_err(|e| Error::Other(format!("seeding the guest home: {e}")))?;
+        let out = scope
+            .run(
+                channel,
+                &["sh", "-c", "umask 077 && tar -xpf - -C /"],
+                Some(&archive),
+            )
+            .map_err(|e| Error::Other(format!("seeding the guest home: {e}")))?;
         if !out.status.success() {
             return Err(Error::Other(format!(
                 "unpacking the guest home seed failed: {}",
@@ -311,15 +316,42 @@ fn apply(channel: &Channel, entries: &[GuestEntry]) -> Result<()> {
         }
     }
     for (path, bytes, mode) in guarded {
-        let exists = executor::run(channel, &["test", "-e", &path.to_string_lossy()], None)
+        let exists = scope
+            .run(channel, &["test", "-e", &path.to_string_lossy()], None)
             .map_err(|e| Error::Other(format!("probing {}: {e}", path.display())))?
             .status
             .success();
         if !exists {
-            executor::put(channel, bytes, path, mode)?;
+            scope.put(channel, bytes, path, mode)?;
         }
     }
     Ok(())
+}
+
+/// The shell pass of [`apply`]: `entries`' directories made and removals
+/// made, in their order; `None` when they have neither. A removal empties a
+/// directory it cannot remove because a launch's view mounts on it (the root
+/// of a copy-on-write directory, seeded in the view): emptied, it reads as
+/// replaced when the entries go on to fill it, and as nothing there when
+/// they do not. A removal that leaves anything behind fails the pass.
+fn shell_pass(entries: &[GuestEntry]) -> Option<String> {
+    let mut script = String::from("umask 077");
+    for entry in entries {
+        match entry {
+            GuestEntry::Dir(path) => {
+                script.push_str(" && mkdir -p -- ");
+                script.push_str(&fletch_box::channel::shell_quote(&path.to_string_lossy()));
+            }
+            GuestEntry::Absent(path) => {
+                let path = fletch_box::channel::shell_quote(&path.to_string_lossy());
+                script.push_str(&format!(
+                    " && {{ rm -rf -- {path} || [ -z \"$(ls -A -- {path})\" ]; }}"
+                ));
+            }
+            GuestEntry::File { .. } => {}
+        }
+    }
+    (script != "umask 077").then_some(script)
 }
 
 /// A tar archive of the `File` entries among `entries`, rooted at `/`, for
@@ -440,29 +472,48 @@ fn unpack_files(archive: &[u8], dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// The guest dir the CLI of an agent whose own writable root is `root`
+/// writes its sessions to: its provider's sessions dir, or for a tenant whose
+/// launches are confined (`super::confined_view`) the private copy of it
+/// under its own root that they write instead (`super::tenant_private_path`),
+/// which holds its sessions and none of its host's.
+fn agent_sessions_dir(
+    home: &dyn ProviderHome,
+    home_dir: &Path,
+    root: &Path,
+    confined: bool,
+) -> PathBuf {
+    let shared = home.sessions_dir(home_dir, root);
+    if !confined {
+        return shared;
+    }
+    super::tenant_private_path(home.id(), home_dir, root, &shared).unwrap_or(shared)
+}
+
 /// Where agent `agent_id`'s sessions are while its box (its own, or its
 /// host's when it is a tenant) runs: the channel, the guest sessions dir of
-/// the agent's own writable root, and the host mirror. `None` when nothing
-/// of the agent's runs now.
+/// the agent's own ([`agent_sessions_dir`]), and the host mirror. `None` when
+/// nothing of the agent's runs now.
 fn live_sessions(
     home: &dyn ProviderHome,
     agent_id: &str,
 ) -> Option<(Arc<Channel>, PathBuf, PathBuf)> {
     let registry = super::BoxRegistry::global();
-    let (running, root) = match registry.running(agent_id) {
+    let (running, root, confined) = match registry.running(agent_id) {
         Some(running) => {
             let root = running.identity.writable_root.clone();
-            (running, root)
+            (running, root, false)
         }
         None => {
             let tenant = registry.tenant_of(agent_id)?;
             (
                 registry.running(&tenant.host_agent_id)?,
                 tenant.writable_root,
+                tenant.confined,
             )
         }
     };
-    let sessions = home.sessions_dir(&running.identity.home, &root);
+    let sessions = agent_sessions_dir(home, &running.identity.home, &root, confined);
     let mirror = mirror_for_agent(home.id(), agent_id)?;
     Some((running.channel.clone(), sessions, mirror))
 }
@@ -497,19 +548,20 @@ pub(crate) async fn pull_before_stop(running: &super::RunningBox) {
     if home.transport() != Transport::Pull {
         return;
     }
-    let mut agents = vec![(identity.agent_id.clone(), identity.writable_root.clone())];
+    let (owner, owner_root) = (identity.agent_id.clone(), identity.writable_root.clone());
+    let mut agents = vec![(owner, owner_root, false)];
     agents.extend(
         super::BoxRegistry::global()
             .tenants_of(&identity.agent_id)
             .into_iter()
-            .map(|(id, tenant)| (id, tenant.writable_root)),
+            .map(|(id, tenant)| (id, tenant.writable_root, tenant.confined)),
     );
-    for (agent_id, root) in agents {
+    for (agent_id, root, confined) in agents {
         let Some(mirror) = mirror_for_agent(home.id(), &agent_id) else {
             continue;
         };
         let channel = running.channel.clone();
-        let sessions = home.sessions_dir(&identity.home, &root);
+        let sessions = agent_sessions_dir(home, &identity.home, &root, confined);
         let id = agent_id.clone();
         let pulled =
             tokio::task::spawn_blocking(move || pull_sessions(&channel, &id, &sessions, &mirror))
@@ -544,7 +596,11 @@ pub(crate) fn create_session_file(
     let mirror = mirror_for_agent(home.id(), agent_id)
         .ok_or_else(|| Error::Other("the box's mirror directory can't be resolved".into()))?
         .join(rel);
-    let guest_path = home.sessions_dir(&identity.home, &root).join(rel);
+    // A confined tenant's CLI resumes from its private copy of the dir.
+    let confined = super::BoxRegistry::global()
+        .tenant_of(agent_id)
+        .is_some_and(|tenant| tenant.confined);
+    let guest_path = agent_sessions_dir(home, &identity.home, &root, confined).join(rel);
     let mut bytes = Vec::new();
     for line in lines {
         serde_json::to_writer(&mut bytes, line)?;
@@ -570,6 +626,53 @@ mod tests {
             "the two spellings of one agent's mirror agree"
         );
         assert_eq!(mirror_for_agent("antigravity", "agent-7"), None);
+    }
+
+    /// A removal of a directory that cannot itself go (a read-only parent
+    /// here, a view's mount point in a box) empties it and the pass goes on;
+    /// one that leaves anything inside behind fails the pass.
+    #[test]
+    fn a_removal_empties_a_directory_it_cannot_remove() {
+        use std::os::unix::fs::PermissionsExt as _;
+        use std::process::Command;
+
+        let td = tempfile::tempdir().unwrap();
+        let parent = td.path().join("home");
+        let config = parent.join("config");
+        std::fs::create_dir_all(config.join("sub")).unwrap();
+        std::fs::write(config.join("sub/a.json"), b"{}").unwrap();
+        let entries = [
+            GuestEntry::Absent(config.clone()),
+            GuestEntry::Dir(config.join("fresh")),
+        ];
+        let script = shell_pass(&entries).unwrap();
+        let sh = |script: &str| {
+            let out = Command::new("sh").args(["-c", script]).output();
+            out.unwrap().status.success()
+        };
+        let chmod = |path: &Path, mode: u32| {
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap()
+        };
+
+        chmod(&parent, 0o555);
+        // Not as root, which no mode stops.
+        let enforced = std::fs::write(parent.join("probe"), b"").is_err();
+        let ran = sh(&script);
+        chmod(&parent, 0o755);
+        assert!(ran, "{script}");
+        assert!(config.join("fresh").is_dir());
+        assert!(!config.join("sub").exists());
+
+        if enforced {
+            let locked = config.join("locked");
+            std::fs::create_dir_all(&locked).unwrap();
+            std::fs::write(locked.join("x"), b"").unwrap();
+            chmod(&locked, 0o555);
+            let ran = sh(&script);
+            chmod(&locked, 0o755);
+            assert!(!ran, "{script}");
+        }
+        assert_eq!(shell_pass(&[]), None);
     }
 
     /// The guest's change goes to the host, the host's to the guest, a

@@ -21,6 +21,10 @@ use parking_lot::RwLock;
 use crate::error::{Error, Result};
 use crate::workspace::AgentRecord;
 
+// The name in an agent's writable root where a confined box tenant keeps its
+// private copies of what it shares with its host: Fletch's own, which no
+// checkout may take (`workspace::allocate_repo_subdir`).
+pub(crate) use boxes::COW_DIR;
 pub use docker::{availability as docker_availability, DockerAvailability};
 pub use engine::{
     AgentLaunchCtx, EngineCaps, EngineKind, EnvDelivery, KillGuard, KillHandle, LaunchPlan,

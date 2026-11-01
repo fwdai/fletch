@@ -267,12 +267,8 @@ fn owned_checkouts(agent_id: &str, repos: &[TrackedRepo]) -> Vec<PathBuf> {
 /// boots it, as the launch is about to.
 async fn refresh_hooks_in(checkouts: Vec<PathBuf>) {
     for checkout in checkouts {
-        let probe = checkout.clone();
-        let git_dir = tokio::task::spawn_blocking(move || {
-            crate::exec::for_path(&probe).stat(&probe.join(".git"))
-        })
-        .await
-        .unwrap_or_else(|e| Err(std::io::Error::other(e)));
+        let exec = crate::exec::for_path(&checkout);
+        let git_dir = exec.stat_async(&checkout.join(".git")).await;
         // A `.git` *file* is a linked worktree: its hooks are the user's repo's.
         match git_dir {
             Ok(Some(stat)) if stat.is_dir => {}

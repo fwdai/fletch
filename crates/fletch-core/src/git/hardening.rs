@@ -431,7 +431,7 @@ async fn submodule_configs(dir: &Path) -> Vec<SubmoduleConfig> {
     let mut visited = 0usize;
     let mut pending = vec![(common.join("modules"), 0usize)];
     while let Some((root, depth)) = pending.pop() {
-        let Ok(entries) = exec.list(&root) else {
+        let Ok(entries) = exec.list_async(&root).await else {
             continue;
         };
         for entry in entries {
@@ -451,11 +451,15 @@ async fn submodule_configs(dir: &Path) -> Vec<SubmoduleConfig> {
             } else if entry.name == "config"
                 // `stat` follows a link, as git reads through one.
                 && exec
-                    .stat(&path)
+                    .stat_async(&path)
+                    .await
                     .ok()
                     .flatten()
                     .is_some_and(|s| s.is_file)
-                && exec.exists(&path.with_file_name("HEAD")).unwrap_or(false)
+                && exec
+                    .exists_async(&path.with_file_name("HEAD"))
+                    .await
+                    .unwrap_or(false)
             {
                 let name = path
                     .strip_prefix(&common)

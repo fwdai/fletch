@@ -640,13 +640,14 @@ pub async fn read_checkout_file_impl(
 
     // Where the checkout lives: a box keeps it in its guest (`crate::exec`).
     let exec = crate::exec::for_path(&checkout);
-    let Some(meta) = exec.stat(&abs).ok().flatten().filter(|m| m.is_file) else {
+    let stat = exec.stat_async(&abs).await.ok().flatten();
+    let Some(meta) = stat.filter(|m| m.is_file) else {
         return Ok(empty(String::new(), false, false));
     };
     if meta.len > MAX_FILE_BYTES {
         return Ok(empty(String::new(), false, true));
     }
-    let bytes = exec.read(&abs)?;
+    let bytes = exec.read_async(&abs).await?;
     if bytes.contains(&0) {
         return Ok(empty(String::new(), true, false));
     }
@@ -687,15 +688,15 @@ pub async fn get_file_diff_impl(
 /// traversal, refuse to clobber an existing entry, and create its parent
 /// directory. The create / rename / copy commands all share this so the
 /// no-clobber + path-safety contract lives in exactly one place.
-pub fn resolve_new_path(checkout: &Path, rel: &str) -> Result<PathBuf> {
+pub async fn resolve_new_path(checkout: &Path, rel: &str) -> Result<PathBuf> {
     let abs = safe_join(checkout, rel)?;
     // Where the checkout lives: a box keeps it in its guest (`crate::exec`).
     let exec = crate::exec::for_path(checkout);
-    if exec.exists(&abs)? {
+    if exec.exists_async(&abs).await? {
         return Err(Error::Other(format!("\"{rel}\" already exists")));
     }
     if let Some(dir) = abs.parent() {
-        exec.create_dir_all(dir)?;
+        exec.create_dir_all_async(dir).await?;
     }
     Ok(abs)
 }
@@ -711,9 +712,9 @@ pub async fn write_checkout_file_impl(
     let abs = safe_join(&checkout, &path)?;
     let exec = crate::exec::for_path(&checkout);
     if let Some(dir) = abs.parent() {
-        exec.create_dir_all(dir)?;
+        exec.create_dir_all_async(dir).await?;
     }
-    exec.write(&abs, contents.as_bytes())?;
+    exec.write_async(&abs, contents.as_bytes()).await?;
     Ok(())
 }
 
@@ -731,8 +732,9 @@ pub async fn rename_checkout_path_impl(
     let (checkout_from, _base, from) = checkout_scope_for_path(supervisor, agent_id, from).await?;
     let (checkout_to, _base, to) = checkout_scope_for_path(supervisor, agent_id, to).await?;
     let src = safe_join(&checkout_from, &from)?;
-    let dst = resolve_new_path(&checkout_to, &to)?;
-    crate::exec::for_path(&checkout_from).rename(&src, &dst)?;
+    let dst = resolve_new_path(&checkout_to, &to).await?;
+    let exec = crate::exec::for_path(&checkout_from);
+    exec.rename_async(&src, &dst).await?;
     Ok(())
 }
 
@@ -746,7 +748,8 @@ pub async fn delete_checkout_path_impl(
 ) -> Result<()> {
     let (checkout, _base, path) = checkout_scope_for_path(supervisor, agent_id, path).await?;
     let abs = safe_join(&checkout, &path)?;
-    crate::exec::for_path(&checkout).remove(&abs)?;
+    let exec = crate::exec::for_path(&checkout);
+    exec.remove_async(&abs).await?;
     Ok(())
 }
 
@@ -758,8 +761,9 @@ pub async fn create_checkout_file_impl(
     path: &str,
 ) -> Result<()> {
     let (checkout, _base, path) = checkout_scope_for_path(supervisor, agent_id, path).await?;
-    let abs = resolve_new_path(&checkout, &path)?;
-    crate::exec::for_path(&checkout).write(&abs, b"")?;
+    let abs = resolve_new_path(&checkout, &path).await?;
+    let exec = crate::exec::for_path(&checkout);
+    exec.write_async(&abs, b"").await?;
     Ok(())
 }
 
@@ -770,8 +774,9 @@ pub async fn create_checkout_dir_impl(
     path: &str,
 ) -> Result<()> {
     let (checkout, _base, path) = checkout_scope_for_path(supervisor, agent_id, path).await?;
-    let abs = resolve_new_path(&checkout, &path)?;
-    crate::exec::for_path(&checkout).create_dir_all(&abs)?;
+    let abs = resolve_new_path(&checkout, &path).await?;
+    let exec = crate::exec::for_path(&checkout);
+    exec.create_dir_all_async(&abs).await?;
     Ok(())
 }
 
@@ -786,10 +791,10 @@ pub async fn copy_checkout_file_impl(
     let (checkout_from, _base, from) = checkout_scope_for_path(supervisor, agent_id, from).await?;
     let (checkout_to, _base, to) = checkout_scope_for_path(supervisor, agent_id, to).await?;
     let src = safe_join(&checkout_from, &from)?;
-    let dst = resolve_new_path(&checkout_to, &to)?;
+    let dst = resolve_new_path(&checkout_to, &to).await?;
     let exec = crate::exec::for_path(&checkout_from);
-    let bytes = exec.read(&src)?;
-    exec.write(&dst, &bytes)?;
+    let bytes = exec.read_async(&src).await?;
+    exec.write_async(&dst, &bytes).await?;
     Ok(())
 }
 

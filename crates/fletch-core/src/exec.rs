@@ -17,18 +17,30 @@
 //! link the agent planted, since the host writes with the user's full rights.
 
 use std::fmt;
+use std::future::Future;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::sync::Arc;
 
 use parking_lot::RwLock;
 
-/// A sandbox that owns a tree the host cannot reach directly. Implemented in a
-/// later phase by the box engine over its SSH channel; a trait here so
-/// `fletch-core` never depends on the runtime crate.
+/// What the async methods of [`RemoteExecutor`] return. Boxed by hand: the
+/// trait is used as `Arc<dyn RemoteExecutor>`, which an `async fn` in it
+/// would rule out.
+pub type ExecFuture<'a, T> = Pin<Box<dyn Future<Output = io::Result<T>> + Send + 'a>>;
+
+/// A sandbox that owns a tree the host cannot reach directly. Implemented by
+/// the box engine over its SSH channel; a trait here so `fletch-core` never
+/// depends on the runtime crate.
 ///
 /// Every method takes the host-side absolute path, which by path identity is
-/// also the guest's.
+/// also the guest's. Each file operation comes twice: sync, for callers
+/// reached through sync code, and `…_async`, for a caller on the runtime,
+/// which must not hold its thread on a round trip to the sandbox or on the
+/// sandbox starting. The async ones default to their sync twin run inline,
+/// which suits an in-memory double; an executor whose sync methods block
+/// overrides every one.
 pub trait RemoteExecutor: Send + Sync + fmt::Debug {
     /// A host-side command that runs `program` in `cwd` inside the remote,
     /// with `env` set *for that process* (an `ssh … fletch-guest exec --cwd
@@ -60,6 +72,46 @@ pub trait RemoteExecutor: Send + Sync + fmt::Debug {
 
     /// `std::fs::rename`: the file panel's move.
     fn rename(&self, from: &Path, to: &Path) -> io::Result<()>;
+
+    /// [`read`](Self::read) for an async caller.
+    fn read_async<'a>(&'a self, path: &'a Path) -> ExecFuture<'a, Vec<u8>> {
+        Box::pin(async move { self.read(path) })
+    }
+
+    /// [`write`](Self::write) for an async caller.
+    fn write_async<'a>(
+        &'a self,
+        path: &'a Path,
+        contents: &'a [u8],
+        mode: u32,
+    ) -> ExecFuture<'a, ()> {
+        Box::pin(async move { self.write(path, contents, mode) })
+    }
+
+    /// [`stat`](Self::stat) for an async caller.
+    fn stat_async<'a>(&'a self, path: &'a Path) -> ExecFuture<'a, Option<Stat>> {
+        Box::pin(async move { self.stat(path) })
+    }
+
+    /// [`list`](Self::list) for an async caller.
+    fn list_async<'a>(&'a self, dir: &'a Path) -> ExecFuture<'a, Vec<DirEntry>> {
+        Box::pin(async move { self.list(dir) })
+    }
+
+    /// [`create_dir_all`](Self::create_dir_all) for an async caller.
+    fn create_dir_all_async<'a>(&'a self, dir: &'a Path) -> ExecFuture<'a, ()> {
+        Box::pin(async move { self.create_dir_all(dir) })
+    }
+
+    /// [`remove`](Self::remove) for an async caller.
+    fn remove_async<'a>(&'a self, path: &'a Path) -> ExecFuture<'a, ()> {
+        Box::pin(async move { self.remove(path) })
+    }
+
+    /// [`rename`](Self::rename) for an async caller.
+    fn rename_async<'a>(&'a self, from: &'a Path, to: &'a Path) -> ExecFuture<'a, ()> {
+        Box::pin(async move { self.rename(from, to) })
+    }
 }
 
 /// What [`Executor::stat`] reports about a path.
@@ -255,6 +307,101 @@ impl Executor {
         }
     }
 
+    // The async twins of the file operations above, for a caller on the
+    // runtime. Remotely the executor's async half, so a sandbox's round trip
+    // (or its start) holds no thread. Locally the same `std` call on a
+    // blocking thread ([`off_runtime`]): a local file operation can stall
+    // too (a large read, a tree's removal, a slow volume), and the async
+    // caller must not stall the runtime on it either.
+
+    /// [`read`](Self::read) for an async caller.
+    pub async fn read_async(&self, path: &Path) -> io::Result<Vec<u8>> {
+        match self {
+            Self::Local => {
+                let path = path.to_path_buf();
+                off_runtime(move || Self::Local.read(&path)).await
+            }
+            Self::Remote(remote) => remote.read_async(path).await,
+        }
+    }
+
+    /// [`write`](Self::write) for an async caller.
+    pub async fn write_async(&self, path: &Path, bytes: &[u8]) -> io::Result<()> {
+        match self {
+            Self::Local => {
+                let (path, bytes) = (path.to_path_buf(), bytes.to_vec());
+                off_runtime(move || Self::Local.write(&path, &bytes)).await
+            }
+            Self::Remote(remote) => remote.write_async(path, bytes, 0o644).await,
+        }
+    }
+
+    /// [`stat`](Self::stat) for an async caller.
+    pub async fn stat_async(&self, path: &Path) -> io::Result<Option<Stat>> {
+        match self {
+            Self::Local => {
+                let path = path.to_path_buf();
+                off_runtime(move || Self::Local.stat(&path)).await
+            }
+            Self::Remote(remote) => remote.stat_async(path).await,
+        }
+    }
+
+    /// [`exists`](Self::exists) for an async caller.
+    pub async fn exists_async(&self, path: &Path) -> io::Result<bool> {
+        match self {
+            Self::Local => {
+                let path = path.to_path_buf();
+                off_runtime(move || Self::Local.exists(&path)).await
+            }
+            Self::Remote(remote) => remote.stat_async(path).await.map(|s| s.is_some()),
+        }
+    }
+
+    /// [`list`](Self::list) for an async caller.
+    pub async fn list_async(&self, dir: &Path) -> io::Result<Vec<DirEntry>> {
+        match self {
+            Self::Local => {
+                let dir = dir.to_path_buf();
+                off_runtime(move || Self::Local.list(&dir)).await
+            }
+            Self::Remote(remote) => remote.list_async(dir).await,
+        }
+    }
+
+    /// [`create_dir_all`](Self::create_dir_all) for an async caller.
+    pub async fn create_dir_all_async(&self, dir: &Path) -> io::Result<()> {
+        match self {
+            Self::Local => {
+                let dir = dir.to_path_buf();
+                off_runtime(move || Self::Local.create_dir_all(&dir)).await
+            }
+            Self::Remote(remote) => remote.create_dir_all_async(dir).await,
+        }
+    }
+
+    /// [`remove`](Self::remove) for an async caller.
+    pub async fn remove_async(&self, path: &Path) -> io::Result<()> {
+        match self {
+            Self::Local => {
+                let path = path.to_path_buf();
+                off_runtime(move || Self::Local.remove(&path)).await
+            }
+            Self::Remote(remote) => remote.remove_async(path).await,
+        }
+    }
+
+    /// [`rename`](Self::rename) for an async caller.
+    pub async fn rename_async(&self, from: &Path, to: &Path) -> io::Result<()> {
+        match self {
+            Self::Local => {
+                let (from, to) = (from.to_path_buf(), to.to_path_buf());
+                off_runtime(move || Self::Local.rename(&from, &to)).await
+            }
+            Self::Remote(remote) => remote.rename_async(from, to).await,
+        }
+    }
+
     /// Write one of Fletch's own files into a tree an agent can also write
     /// (`.git/info/exclude`, the `.codegraph` index): `bytes` at `rel` beneath
     /// `anchor`, missing directories created. The one way host code puts such
@@ -315,6 +462,16 @@ impl Executor {
             Self::Remote(remote) => remote.read(&anchor.join(rel)),
         }
     }
+}
+
+/// `op` on the runtime's blocking pool: the local half of [`Executor`]'s async
+/// methods. A task that cannot be joined (it panicked) is an error.
+async fn off_runtime<T: Send + 'static>(
+    op: impl FnOnce() -> io::Result<T> + Send + 'static,
+) -> io::Result<T> {
+    tokio::task::spawn_blocking(op)
+        .await
+        .unwrap_or_else(|e| Err(io::Error::other(e)))
 }
 
 /// The directory holding `rel` beneath `anchor`, opened by handle without
@@ -420,6 +577,55 @@ mod tests {
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].name, "f");
         assert_eq!(listed[0].len, 3);
+    }
+
+    /// Each async method answers as its sync twin: locally, and through a
+    /// remote's async half (here the trait's defaults).
+    #[tokio::test]
+    async fn async_methods_agree_with_the_sync_ones() {
+        let td = tempfile::tempdir().unwrap();
+        let file = td.path().join("f");
+        let missing = td.path().join("missing");
+        let local = Executor::Local;
+        local.write_async(&file, b"abc").await.unwrap();
+        assert_eq!(local.read(&file).unwrap(), b"abc");
+        let read = local.read_async(&file).await.unwrap();
+        assert_eq!(read, local.read(&file).unwrap());
+        let stat = local.stat_async(&file).await.unwrap();
+        assert_eq!(stat, local.stat(&file).unwrap());
+        assert_eq!(local.stat_async(&missing).await.unwrap(), None);
+        assert!(local.exists_async(&file).await.unwrap());
+        assert!(!local.exists_async(&missing).await.unwrap());
+        let listed = local.list_async(td.path()).await.unwrap();
+        assert_eq!(listed, local.list(td.path()).unwrap());
+        assert!(local.list_async(&missing).await.is_err());
+
+        let nested = td.path().join("a").join("b");
+        local.create_dir_all_async(&nested).await.unwrap();
+        assert!(local.stat(&nested).unwrap().is_some_and(|s| s.is_dir));
+        let moved = td.path().join("g");
+        local.rename_async(&file, &moved).await.unwrap();
+        assert!(!local.exists(&file).unwrap());
+        assert_eq!(local.read(&moved).unwrap(), b"abc");
+        local.remove_async(&td.path().join("a")).await.unwrap();
+        assert!(!local.exists(&nested).unwrap());
+        // Already gone is success, as for the sync remove.
+        local.remove_async(&td.path().join("a")).await.unwrap();
+
+        let remote = Executor::Remote(Arc::new(Fake("remote")));
+        let path = Path::new("/exec-test/async/file");
+        let read = remote.read_async(path).await.unwrap();
+        assert_eq!(read, remote.read(path).unwrap());
+        let stat = remote.stat_async(path).await.unwrap();
+        assert_eq!(stat, remote.stat(path).unwrap());
+        let exists = remote.exists_async(path).await.unwrap();
+        assert_eq!(exists, remote.exists(path).unwrap());
+        let listed = remote.list_async(path).await.unwrap();
+        assert_eq!(listed, remote.list(path).unwrap());
+        remote.write_async(path, b"x").await.unwrap();
+        remote.create_dir_all_async(path).await.unwrap();
+        remote.rename_async(path, path).await.unwrap();
+        remote.remove_async(path).await.unwrap();
     }
 
     /// Files whose git invocations are the seam itself.

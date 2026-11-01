@@ -12,12 +12,14 @@ pub fn allocate_repo_subdir(repo_path: &Path, used: &[String]) -> String {
         .unwrap_or("repo")
         .to_string();
     // `.fletch-profile` (per-agent artifacts: skill files, MCP config — see
-    // `agent_profile::PROFILE_DIR`) and `.fletch-attachments` (pasted files
+    // `agent_profile::PROFILE_DIR`), `.fletch-attachments` (pasted files
     // adopted into the workspace — see `attachments::WORKSPACE_ATTACHMENTS_DIR`)
-    // are Fletch-owned; a repo with either basename gets a numbered subdir
-    // instead of colliding with it.
+    // and `.fletch-cow` (a confined sandbox tenant's private copies — see
+    // `sandbox::COW_DIR`) are Fletch-owned; a repo with one of those
+    // basenames gets a numbered subdir instead of colliding with it.
     let reserved = base == crate::agent_profile::PROFILE_DIR
-        || base == crate::attachments::WORKSPACE_ATTACHMENTS_DIR;
+        || base == crate::attachments::WORKSPACE_ATTACHMENTS_DIR
+        || base == crate::sandbox::COW_DIR;
     if !reserved && !used.iter().any(|u| u == &base) {
         return base;
     }

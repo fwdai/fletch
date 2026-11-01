@@ -82,13 +82,55 @@ impl Channel {
         env_file: Option<&Path>,
         cmd: &[&str],
     ) -> Vec<String> {
+        Self::remote_command_confined(cwd, env_file, &[], &[], &[], &[], cmd)
+    }
+
+    /// [`remote_command`](Self::remote_command) with directories `cmd` must
+    /// only read, each a [`guest::EXEC_READ_ONLY`] to `fletch-guest exec`;
+    /// paths inside them it may write after all, each a
+    /// [`guest::EXEC_WRITABLE`]; and directories and files inside them it
+    /// sees as private copies, each `(shared, private)` pair a
+    /// [`guest::EXEC_COW`] or [`guest::EXEC_COW_FILE`]: the guest kernel
+    /// enforces all of them, whoever owns the tree. The guest needs an env
+    /// file alongside.
+    pub fn remote_command_confined(
+        cwd: Option<&Path>,
+        env_file: Option<&Path>,
+        read_only: &[&Path],
+        writable: &[&Path],
+        cow_dirs: &[(&Path, &Path)],
+        cow_files: &[(&Path, &Path)],
+        cmd: &[&str],
+    ) -> Vec<String> {
         let mut words: Vec<String> = Vec::new();
-        if cwd.is_some() || env_file.is_some() {
+        let confined = !read_only.is_empty()
+            || !writable.is_empty()
+            || !cow_dirs.is_empty()
+            || !cow_files.is_empty();
+        if cwd.is_some() || env_file.is_some() || confined {
             words.push(guest::GUEST_AGENT.into());
             words.push(guest::EXEC.into());
             if let Some(env_file) = env_file {
                 words.push("--env-file".into());
                 words.push(env_file.to_string_lossy().into_owned());
+            }
+            for dir in read_only {
+                words.push(guest::EXEC_READ_ONLY.into());
+                words.push(dir.to_string_lossy().into_owned());
+            }
+            for path in writable {
+                words.push(guest::EXEC_WRITABLE.into());
+                words.push(path.to_string_lossy().into_owned());
+            }
+            for (option, pairs) in [
+                (guest::EXEC_COW, cow_dirs),
+                (guest::EXEC_COW_FILE, cow_files),
+            ] {
+                for (shared, private) in pairs {
+                    words.push(option.into());
+                    words.push(shared.to_string_lossy().into_owned());
+                    words.push(private.to_string_lossy().into_owned());
+                }
             }
             if let Some(cwd) = cwd {
                 words.push("--cwd".into());
@@ -178,6 +220,32 @@ impl Channel {
             )));
         }
         Ok(out.stdout)
+    }
+
+    /// The multiplexing master's socket: beside the config, where
+    /// [`Channel::new`] puts it when the path fits `sun_path`.
+    fn control_path(&self) -> PathBuf {
+        self.config.with_file_name(CONTROL_FILE)
+    }
+
+    /// Ends the multiplexing master (`ssh -O exit`), which the config keeps
+    /// for as long as it has a connection ([`render_config`]). `Ok(false)`
+    /// when no master is running: none was started, the socket path did not
+    /// fit, or the master already went with its connection. Talks only to
+    /// the control socket; it never opens a connection to the guest.
+    pub async fn close_master(&self) -> Result<bool> {
+        if !self.control_path().exists() {
+            return Ok(false);
+        }
+        let out = self
+            .ssh()
+            .args(["-O", "exit", guest::SSH_HOST_ALIAS])
+            .stdin(Stdio::null())
+            .output()
+            .await
+            .map_err(Error::io("run ssh -O exit"))?;
+        check(&out, "ssh -O exit")?;
+        Ok(true)
     }
 
     /// For `GIT_SSH_COMMAND`: git then speaks to `box:<path>` through this config.
@@ -284,9 +352,13 @@ pub fn render_config(
         helper = q(helper),
         sock = q(ssh_sock),
     );
+    // The master lives as long as its connection, not until an idle timeout:
+    // otherwise the first command after a pause pays a whole handshake
+    // through the proxy helper. The box's stop ends it (`close_master`), and
+    // it goes by itself when the guest does, since the helper's pipe closes.
     if let Some(control) = control {
         config.push_str(&format!(
-            "  ControlMaster auto\n  ControlPath {}\n  ControlPersist 30s\n",
+            "  ControlMaster auto\n  ControlPath {}\n  ControlPersist yes\n",
             q(control)
         ));
     }
@@ -403,6 +475,7 @@ mod tests {
             "  ServerAliveInterval 15",
             "  ControlMaster auto",
             "  ControlPath \"/b/cm.sock\"",
+            "  ControlPersist yes",
         ];
         for line in expected {
             assert!(
@@ -410,6 +483,8 @@ mod tests {
                 "missing {line:?} in\n{config}"
             );
         }
+        // No idle timeout: the master is ended by the box's stop.
+        assert_eq!(config.matches("ControlPersist").count(), 1);
         let without = render_config(
             Path::new("/s"),
             Path::new("/k"),
@@ -418,6 +493,17 @@ mod tests {
             None,
         );
         assert!(!without.contains("ControlMaster"));
+        assert!(!without.contains("ControlPersist"));
+    }
+
+    /// The master's socket is the one the config names, beside it; with no
+    /// socket there is no master to end, and nothing is run.
+    #[tokio::test]
+    async fn closing_without_a_master_is_a_no_op() {
+        let dir = tempfile::tempdir().unwrap();
+        let channel = Channel::open(dir.path());
+        assert_eq!(channel.control_path(), dir.path().join(CONTROL_FILE));
+        assert!(!channel.close_master().await.unwrap());
     }
 
     #[test]
@@ -490,6 +576,55 @@ mod tests {
         assert_eq!(shell_quote("a b"), "'a b'");
         assert_eq!(shell_quote(""), "''");
         assert_eq!(shell_quote("$HOME"), "'$HOME'");
+    }
+
+    #[test]
+    fn confined_remote_commands_name_each_read_only_and_writable_path() {
+        let (home, other) = (Path::new("/Users/a"), Path::new("/Volumes/my tree"));
+        let (own, state) = (Path::new("/Users/a/own"), Path::new("/Users/a/s.json"));
+        let cursor = (Path::new("/Users/a/.cur"), Path::new("/Users/a/o/x y"));
+        let file = (Path::new("/Users/a/.c"), Path::new("/Users/a/o/f"));
+        assert_eq!(
+            Channel::remote_command_confined(
+                Some(Path::new("/Users/a/ws/repo")),
+                Some(Path::new("/data/run/1.env")),
+                &[home, other],
+                &[own, state],
+                &[cursor],
+                &[file],
+                &["claude"]
+            ),
+            [
+                "/opt/fletch/bin/fletch-guest",
+                "exec",
+                "--env-file",
+                "/data/run/1.env",
+                "--read-only",
+                "/Users/a",
+                "--read-only",
+                "'/Volumes/my tree'",
+                "--writable",
+                "/Users/a/own",
+                "--writable",
+                "/Users/a/s.json",
+                "--cow",
+                "/Users/a/.cur",
+                "'/Users/a/o/x y'",
+                "--cow-file",
+                "/Users/a/.c",
+                "/Users/a/o/f",
+                "--cwd",
+                "/Users/a/ws/repo",
+                "--",
+                "claude"
+            ]
+        );
+        // Nothing confined: the plain command, word for word.
+        let env_file = Some(Path::new("/e"));
+        assert_eq!(
+            Channel::remote_command_confined(None, env_file, &[], &[], &[], &[], &["true"]),
+            Channel::remote_command(None, env_file, &["true"])
+        );
     }
 
     #[test]

@@ -11,7 +11,9 @@
 use std::path::{Path, PathBuf};
 
 use super::auth::{multi_provider_auth_env, present_api_keys};
-use super::{copy_tree, login_shell_var, Credential, CredentialFile, GuestEntry, ProviderHome};
+use super::{
+    copy_tree, login_shell_var, Credential, CredentialFile, GuestEntry, ProviderHome, SharedState,
+};
 use crate::error::Result;
 use crate::sandbox::engine::AgentLaunchCtx;
 
@@ -67,6 +69,14 @@ impl ProviderHome for Pi {
     /// login shell exports; one of the two is required.
     fn credential(&self, ctx: &AgentLaunchCtx) -> Result<Credential> {
         credential_from(ctx.home, present_api_keys(login_shell_var))
+    }
+
+    /// `~/.pi`: the agent dir with its login, settings and sessions.
+    fn shared_state(&self, home: &Path) -> SharedState {
+        SharedState {
+            dirs: vec![home.join(".pi")],
+            files: Vec::new(),
+        }
     }
 }
 
@@ -127,6 +137,9 @@ mod tests {
             credential.files,
             vec![CredentialFile::cli_owned(agent.join("auth.json"))]
         );
+        // The login lies in what the guest's pi shares, with the settings.
+        let state = Pi.shared_state(home);
+        assert!(state.dirs.iter().any(|dir| agent.starts_with(dir)));
     }
 
     /// With no login file, a provider key is enough; with neither, the

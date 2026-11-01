@@ -481,7 +481,8 @@ impl Supervisor {
         let adopted = match req.existing_workspace.take() {
             Some(path) => {
                 let is_repo = crate::exec::for_path(&path)
-                    .exists(&path.join(".git"))
+                    .exists_async(&path.join(".git"))
+                    .await
                     .map_err(|e| {
                         Error::InvalidPath(format!(
                             "adopted workspace {} could not be read: {e}",

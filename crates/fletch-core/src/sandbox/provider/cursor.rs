@@ -9,7 +9,7 @@
 
 use std::path::{Path, PathBuf};
 
-use super::{login_shell_var, Credential, GuestEntry, ProviderHome};
+use super::{login_shell_var, Credential, GuestEntry, ProviderHome, SharedState};
 use crate::error::{Error, Result};
 use crate::sandbox::engine::AgentLaunchCtx;
 
@@ -59,6 +59,14 @@ impl ProviderHome for Cursor {
             env: vec![(API_KEY.to_string(), key)],
             files: Vec::new(),
         })
+    }
+
+    /// `~/.cursor`.
+    fn shared_state(&self, home: &Path) -> SharedState {
+        SharedState {
+            dirs: vec![home.join(".cursor")],
+            files: Vec::new(),
+        }
     }
 }
 
