@@ -498,7 +498,7 @@ mod tests {
         let (_guard, dir) = tempdir();
         let file = dir.join("f");
         std::fs::write(&file, b"").unwrap();
-        assert!(check_paths(&[dir.clone()], &[]).is_ok());
+        assert!(check_paths(std::slice::from_ref(&dir), &[]).is_ok());
         assert!(check_paths(&[], &[]).is_ok());
         let err = check_paths(&[file], &[]).unwrap_err();
         assert!(err.contains("not a directory"), "{err}");
@@ -544,7 +544,7 @@ mod tests {
         std::fs::create_dir_all(&elsewhere).unwrap();
         let link = home.join("cache");
         std::os::unix::fs::symlink(&elsewhere, &link).unwrap();
-        let err = check_paths(&[home], &[link.clone()]).unwrap_err();
+        let err = check_paths(&[home], std::slice::from_ref(&link)).unwrap_err();
         assert!(err.contains("symbolic link"), "{err}");
         let err = check_paths(&[link], &[]).unwrap_err();
         assert!(err.contains("symbolic link"), "{err}");
