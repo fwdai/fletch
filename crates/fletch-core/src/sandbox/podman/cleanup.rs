@@ -16,8 +16,8 @@ use std::time::Duration;
 
 use crate::error::{Error, Result};
 use crate::sandbox::container::image_gc::{
-    current_tags, image_removal_refs, known_repos, parse_images_line, ImageRow, IMAGES_FORMAT,
-    RETIRED_REPOS,
+    current_tags, image_removal_refs, known_repos, parse_images_line, pinned_ids, unpinned_rows,
+    ImageRow, IMAGES_FORMAT, RETIRED_REPOS,
 };
 use crate::sandbox::container::images::AGENT_IMAGE_LABEL;
 use crate::sandbox::container::labels::{
@@ -220,8 +220,10 @@ fn list_ids(connection: Option<&str>, filter: &str) -> Result<Vec<String>> {
 /// failures as non-fatal.
 ///
 /// Never touched: current tags, the user's `podman_image` override, unlabeled
-/// images, and images in use — `podman rmi` runs WITHOUT `-f`, so an in-use
-/// image fails removal, which is expected and logged at debug.
+/// images, images a launch has just pinned (`image_gc::pin_launch`: between
+/// its inspect and its `podman run` the id is held by nothing else), and
+/// images in use — `podman rmi` runs WITHOUT `-f`, so an in-use image fails
+/// removal, which is expected and logged at debug.
 pub(super) fn sweep_stale_images() -> Result<usize> {
     across_machines("podman image sweep", sweep_stale_images_on)
 }
@@ -229,17 +231,19 @@ pub(super) fn sweep_stale_images() -> Result<usize> {
 /// One image-GC pass against a single connection's store; a background refresh
 /// rebuild calls this directly for the one store it just rebuilt in.
 pub(super) fn sweep_stale_images_on(connection: Option<&str>) -> Result<usize> {
+    let labeled = list_images(
+        connection,
+        &[
+            "images",
+            "--filter",
+            &format!("label={AGENT_IMAGE_LABEL}"),
+            "--format",
+            IMAGES_FORMAT,
+        ],
+    )?;
+    let labeled = unpinned_rows(labeled, &pinned_ids());
     let refs = image_removal_refs(
-        &list_images(
-            connection,
-            &[
-                "images",
-                "--filter",
-                &format!("label={AGENT_IMAGE_LABEL}"),
-                "--format",
-                IMAGES_FORMAT,
-            ],
-        )?,
+        &labeled,
         // No legacy arm: see the module doc — a Podman store predates nothing.
         &[],
         &current_tags(),

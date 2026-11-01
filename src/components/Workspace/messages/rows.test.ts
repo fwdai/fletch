@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { claudeAdapter } from "@/adapters/claude/index";
+import { APP_ACTION_PREFIX } from "@/delegation";
 import type { ChatItem } from "@/store";
 import { type ViewItem, visibleItems } from "./pair";
-import { buildRows, newRowCache, type Row } from "./rows";
+import { buildRows, newRowCache, type Row, turnSpans } from "./rows";
 import { liveActivity, summarizeSteps, summaryParts } from "./steps";
 
 let seq = 0;
@@ -107,6 +108,43 @@ describe("buildRows", () => {
     // The fold says how long turn one ran, so its footer (at its last item)
     // leaves the duration out.
     expect([...quietFooters]).toEqual([5]);
+  });
+
+  // A git button's app action is a message to the agent, so its work folds
+  // under its chip; it's not a turn of the user's, so the turn it was clicked
+  // in ends after the action's reply — where its footer sits (useTranscript
+  // places footers by the same `turnSpans`). The fold under the prompt said
+  // how long the prompt ran, so that footer is the one that goes quiet.
+  it("ends a turn after the app action clicked in it", () => {
+    const items = [
+      user("one", { startedAt: 0, endedAt: 60_000 }),
+      say("looking"),
+      read("/a"),
+      say("done"),
+      user(`${APP_ACTION_PREFIX}commit-pr`, { startedAt: 70_000, endedAt: 80_000 }),
+      bash("git commit"),
+      say("committed"),
+      bash("git push"),
+      say("opened #1"),
+      user("two"),
+      say("hi"),
+    ];
+    expect(turnSpans(items)).toEqual([
+      { head: 0, end: 9 },
+      { head: 9, end: 11 },
+    ]);
+    const { rows, quietFooters } = buildRows(items, newRowCache());
+    expect(shape(rows)).toEqual([
+      0,
+      { fold: [1, "steps×1"] },
+      3,
+      4,
+      { fold: ["steps×1", 6, "steps×1"] },
+      8,
+      9,
+      10,
+    ]);
+    expect([...quietFooters]).toEqual([8]);
   });
 
   it("never folds the latest turn", () => {

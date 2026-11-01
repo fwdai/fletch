@@ -429,10 +429,14 @@ fn cache_image_version_post_build(
 /// The image id `tag` names right now in `connection`'s store, for a launch
 /// to run and probe by instead of the tag: a parity rebuild in the background
 /// retags at any moment (`resolve_image`), and the probe and the `podman run`
-/// after it have to see one image. `None` when podman can't say, and the
-/// caller keeps the tag and vouches for nothing.
+/// after it have to see one image. The id is pinned for the GC
+/// (`image_gc::pin_launch`), so the rebuild's sweep of the then-untagged
+/// predecessor can't take it from under the launch. `None` when podman can't
+/// say, and the caller keeps the tag and vouches for nothing.
 pub(super) fn pin_image(connection: Option<&str>, tag: &str) -> Option<String> {
-    inspect_id_and_created(connection, tag).map(|(id, _)| id)
+    let (id, _) = inspect_id_and_created(connection, tag)?;
+    crate::sandbox::container::image_gc::pin_launch(&id);
+    Some(id)
 }
 
 /// Whether the claude in `image_id` on `connection` — the image this launch

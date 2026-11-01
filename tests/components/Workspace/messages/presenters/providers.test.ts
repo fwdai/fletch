@@ -178,6 +178,33 @@ describe("patchPresenter", () => {
     expect(files[0].lines.map((l) => l.op)).toEqual(["keep", "del", "add", "add"]);
   });
 
+  it("reports a moved file where it ends up and remembers where it was", () => {
+    const patch = [
+      "*** Begin Patch",
+      "*** Update File: src/old.ts",
+      "*** Move to: src/new.ts",
+      "@@",
+      "-a",
+      "+b",
+      "*** End Patch",
+    ].join("\n");
+    expect(parsePatch(patch)).toEqual([
+      {
+        path: "src/new.ts",
+        from: "src/old.ts",
+        op: "update",
+        lines: [
+          { op: "del", text: "a" },
+          { op: "add", text: "b" },
+        ],
+      },
+    ]);
+    expect(patchPresenter.facts?.(call("apply_patch", { patch }), null)?.paths).toEqual([
+      "src/new.ts",
+    ]);
+    expect(patchPresenter.activity?.(call("apply_patch", patch))).toBe("Editing new.ts");
+  });
+
   it("parses a unified diff too", () => {
     const files = parsePatch(
       [

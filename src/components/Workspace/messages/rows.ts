@@ -82,6 +82,33 @@ export function endsInSteps(items: ViewItem[]): boolean {
   return false;
 }
 
+/** A prompt the user wrote. An app action (`[app-action] …`, the chip a git
+ *  button sends) is a message too, but not a turn of its own in the user's
+ *  eyes: it continues the turn it was clicked in. */
+export function isPrompt(item: ViewItem): item is Extract<ViewItem, { kind: "user_message" }> {
+  return item.kind === "user_message" && !item.text.startsWith(APP_ACTION_PREFIX);
+}
+
+/** A turn as the user counts them: `[head, end)` from a prompt they wrote up
+ *  to the next, app actions and their replies inside it. One model for every
+ *  per-turn derivation — the footer that closes a turn (`useTranscript`), the
+ *  navigable turns, and which footer a fold has already spoken for — so none
+ *  of them can place a turn's end somewhere another doesn't. */
+export interface TurnSpan {
+  head: number;
+  end: number;
+}
+
+export function turnSpans(items: ViewItem[]): TurnSpan[] {
+  const spans: TurnSpan[] = [];
+  items.forEach((it, i) => {
+    if (!isPrompt(it)) return;
+    if (spans.length > 0) spans[spans.length - 1].end = i;
+    spans.push({ head: i, end: items.length });
+  });
+  return spans;
+}
+
 /** Index where the latest turn begins: its prompt, or 0 before any. Only rows
  *  at or after it may show a live spinner, so a dangling call from an
  *  interrupted earlier turn can't light up when a later turn goes busy. */
@@ -204,15 +231,18 @@ export function buildRows(items: ViewItem[], cache: RowCache): TranscriptRowsMod
     return { fold: fresh, answerAt };
   };
 
-  // Turns start at each prompt; anything before the first (a forked history's
-  // inherited tail, a sub-agent thread's whole log) has no prompt to fold under.
+  // Work folds under the message that asked for it — a prompt, or an app
+  // action clicked after the reply, whose own work is its own fold. Anything
+  // before the first message (a forked history's inherited tail, a sub-agent
+  // thread's whole log) has nothing to fold under.
   const heads: number[] = [];
   items.forEach((it, i) => {
     if (it.kind === "user_message") heads.push(i);
   });
 
   const rows: Row[] = [];
-  const quietFooters = new Set<number>();
+  /** How long each folded message's work ran, by its index. */
+  const spoken = new Map<number, number>();
   rows.push(...flat(0, heads.length > 0 ? heads[0] : items.length));
   heads.forEach((head, k) => {
     const end = k + 1 < heads.length ? heads[k + 1] : items.length;
@@ -224,18 +254,17 @@ export function buildRows(items: ViewItem[], cache: RowCache): TranscriptRowsMod
     }
     rows.push({ kind: "item", index: head }, { kind: "fold", fold: folded.fold });
     rows.push(...flat(folded.answerAt, end));
-    // The footer closing a turn says how long it ran; the fold says it first.
-    // An app action's turn is footed with its prompt's span (useTranscript),
-    // a different duration, so its footer keeps its own.
-    const prompt = items[head];
-    if (
-      folded.fold.runSec !== undefined &&
-      prompt.kind === "user_message" &&
-      !prompt.text.startsWith(APP_ACTION_PREFIX)
-    ) {
-      quietFooters.add(end - 1);
-    }
+    if (folded.fold.runSec !== undefined) spoken.set(head, folded.fold.runSec);
   });
+
+  // The footer closing a turn says how long its prompt ran; when the fold
+  // under that prompt said it first, the footer leaves it out. The footer
+  // sits where the turn ends as the user counts turns (`turnSpans`): after an
+  // app action's reply, not before the action.
+  const quietFooters = new Set<number>();
+  for (const span of turnSpans(items)) {
+    if (spoken.has(span.head)) quietFooters.add(span.end - 1);
+  }
 
   for (const key of cache.runs.keys()) if (!seen.has(key)) cache.runs.delete(key);
   for (const key of cache.folds.keys()) if (!seen.has(key)) cache.folds.delete(key);

@@ -25,8 +25,8 @@ use std::time::Duration;
 
 use crate::error::{Error, Result};
 use crate::sandbox::container::image_gc::{
-    current_tags, image_removal_refs, known_repos, parse_images_line, ImageRow, IMAGES_FORMAT,
-    RETIRED_REPOS,
+    current_tags, image_removal_refs, known_repos, parse_images_line, pinned_ids, unpinned_rows,
+    ImageRow, IMAGES_FORMAT, RETIRED_REPOS,
 };
 
 use super::{cli, engine, image};
@@ -171,7 +171,9 @@ pub fn remove_agent_containers(agent_id: &str) -> Result<usize> {
 ///
 /// Never touched: current tags, the user's `docker_image` override (excluded
 /// defensively even though it can't carry the label), any unlabeled image
-/// not on the legacy list, and images in use by a container — `docker rmi`
+/// not on the legacy list, images a launch has just pinned
+/// (`image_gc::pin_launch`: between its inspect and its `docker run` the id is
+/// held by nothing else), and images in use by a container — `docker rmi`
 /// runs WITHOUT `-f`, so an in-use image fails removal, which is expected and
 /// logged at debug. Returns the number of images actually removed; callers
 /// treat all failures as non-fatal.
@@ -179,6 +181,7 @@ pub fn sweep_stale_images() -> Result<usize> {
     let current_tags = current_tags();
     let known_repos = known_repos();
     let override_image = engine::image_override();
+    let pinned = pinned_ids();
 
     let labeled = list_images(&[
         "images",
@@ -187,6 +190,7 @@ pub fn sweep_stale_images() -> Result<usize> {
         "--format",
         IMAGES_FORMAT,
     ])?;
+    let labeled = unpinned_rows(labeled, &pinned);
     // Legacy pre-label images: list each Fletch-owned repo by name. (A repo
     // argument to `docker images` matches only that exact repo.) Retired repos
     // are listed too — a pre-label image doesn't stop being ours because the
@@ -200,6 +204,7 @@ pub fn sweep_stale_images() -> Result<usize> {
     {
         legacy.extend(list_images(&["images", repo, "--format", IMAGES_FORMAT])?);
     }
+    let legacy = unpinned_rows(legacy, &pinned);
 
     let refs = image_removal_refs(
         &labeled,

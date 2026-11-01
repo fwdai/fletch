@@ -597,10 +597,14 @@ fn cache_image_version_post_build(provider: DockerProvider, tag: &str) {
 /// The image id `tag` names right now, for a launch to run and probe by
 /// instead of the tag: a parity rebuild in the background retags at any
 /// moment (`resolve_image`), and the probe and the `docker run` after it have
-/// to see one image. `None` when docker can't say, and the caller keeps the
+/// to see one image. The id is pinned for the GC (`image_gc::pin_launch`), so
+/// the rebuild's sweep of the then-untagged predecessor can't take it from
+/// under the launch. `None` when docker can't say, and the caller keeps the
 /// tag and vouches for nothing.
 pub(super) fn pin_image(tag: &str) -> Option<String> {
-    inspect_image_id(tag)
+    let id = inspect_image_id(tag)?;
+    crate::sandbox::container::image_gc::pin_launch(&id);
+    Some(id)
 }
 
 /// Whether the claude in `image_id` — the image this launch runs from,

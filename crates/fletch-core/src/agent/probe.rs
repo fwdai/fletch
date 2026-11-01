@@ -304,8 +304,32 @@ fn known_map() -> &'static Known {
     KNOWN.get_or_init(|| parking_lot::Mutex::new(std::collections::HashMap::new()))
 }
 
+/// What names a file for the capability memo: its real path (a `claude`
+/// symlink into a versions directory points somewhere new after an update)
+/// and the size and modification time of what is there (an in-place
+/// reinstall under the same name is a new file). A file that can't be read
+/// is named by its path alone. Shared by every engine that remembers a fact
+/// about a file: the host binary, a box's tools disk.
+pub(crate) fn file_identity(path: &std::path::Path) -> String {
+    let real = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let stamp = std::fs::metadata(&real)
+        .ok()
+        .map(|m| {
+            let modified = m
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_nanos())
+                .unwrap_or(0);
+            format!(" @{modified}+{}", m.len())
+        })
+        .unwrap_or_default();
+    format!("{}{stamp}", real.display())
+}
+
 /// Whether `bin` — a claude CLI on the host — parses `--thinking-display`,
-/// remembered per path. The flag is hidden from `--help`, and `--version` short-circuits
+/// remembered per file ([`file_identity`]: the binary a path leads to today,
+/// not the path). The flag is hidden from `--help`, and `--version` short-circuits
 /// before unknown options are reported, so neither can say. What does: a
 /// CLI that knows the option validates its value as it parses, so
 /// `--thinking-display __fletch_probe__ --version` fails naming the option
@@ -315,7 +339,7 @@ fn known_map() -> &'static Known {
 /// ([`probe_shows_thinking_display`]). A binary that can't be probed counts
 /// as not supporting it, so a launch never carries a flag it can't vouch for.
 pub fn claude_supports_thinking_display(bin: &str) -> bool {
-    let identity = format!("host binary {bin}");
+    let identity = format!("host binary {}", file_identity(std::path::Path::new(bin)));
     if let Some(known) = thinking_display_known(&identity) {
         return known;
     }
@@ -449,6 +473,37 @@ mod tests {
         assert!(!claude_supports_thinking_display(&strict));
         let missing = dir.path().join("missing").to_string_lossy().into_owned();
         assert!(!claude_supports_thinking_display(&missing));
+    }
+
+    /// What was learnt about a binary is about that binary, not its name: a
+    /// claude reinstalled under the same path, or a symlink pointed at a new
+    /// version, is probed afresh rather than read from the old one's memo.
+    #[test]
+    fn a_binary_replaced_in_place_is_probed_afresh() {
+        let dir = tempfile::tempdir().unwrap();
+        let knows = "#!/bin/sh\nif [ \"$1\" = --thinking-display ]; then echo \"error: option '--thinking-display <display>' argument '$2' is invalid.\" >&2; exit 1; fi\necho 2.1.314\n";
+        let older = "#!/bin/sh\necho 2.0.0\n";
+
+        let claude = script(dir.path(), "claude", older);
+        assert!(!claude_supports_thinking_display(&claude));
+        script(dir.path(), "claude", knows);
+        assert!(
+            claude_supports_thinking_display(&claude),
+            "the reinstalled binary was answered for by the old one's memo"
+        );
+
+        let link = dir.path().join("link");
+        let old_version = script(dir.path(), "v2.0.0", older);
+        let new_version = script(dir.path(), "v2.1.314", knows);
+        std::os::unix::fs::symlink(&old_version, &link).unwrap();
+        let link_str = link.to_string_lossy().into_owned();
+        assert!(!claude_supports_thinking_display(&link_str));
+        std::fs::remove_file(&link).unwrap();
+        std::os::unix::fs::symlink(&new_version, &link).unwrap();
+        assert!(
+            claude_supports_thinking_display(&link_str),
+            "the symlink's new target was answered for by the old target's memo"
+        );
     }
 
     /// What an engine learnt is read back by the same identity and by no

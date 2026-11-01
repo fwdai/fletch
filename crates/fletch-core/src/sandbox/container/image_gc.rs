@@ -7,10 +7,65 @@
 //! one of the current expected tags is removed. Anything we can't attribute
 //! survives — the under-reclaim bias the container sweep takes too.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use super::images::{image_repo, image_tag};
 use super::ContainerProvider;
+
+// ── Launch pins ───────────────────────────────────────────────────────────────
+//
+// A launch runs the image *id* its tag named when it looked (the engines'
+// `pin_image`), so the capability probe and the `run` see one image while a
+// background rebuild may retag at any moment. An id, though, holds no
+// reference: the rebuild's sweep finds the untagged predecessor and removes it
+// — and a launch between its inspect and its `run` would then start from an
+// image that is gone. So a pin is a reservation the GC honours: an id pinned
+// within [`LAUNCH_PIN_TTL`] is never a removal candidate. The pin outlives any
+// launch by a wide margin (a launch resolves its image at `create`, seconds
+// after the pin, the probe included); a sweep that deferred to one leaves the
+// image for the next pass — the next refresh or app start — which is how every
+// leftover is reclaimed anyway. Pins live in this process: a second Fletch
+// sharing the daemon does not see them.
+
+/// How long a pinned id is kept from the GC after the launch took it.
+const LAUNCH_PIN_TTL: Duration = Duration::from_secs(120);
+
+fn pins() -> &'static Mutex<HashMap<String, Instant>> {
+    static PINS: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();
+    PINS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Reserve `id` for a launch that is about to run it: see the module notes.
+pub(crate) fn pin_launch(id: &str) {
+    pins().lock().unwrap().insert(id.to_string(), Instant::now());
+}
+
+/// The ids a launch pinned within [`LAUNCH_PIN_TTL`], for [`unpinned_rows`]
+/// to keep out of a sweep. Expired pins are dropped on the way.
+pub(crate) fn pinned_ids() -> HashSet<String> {
+    let mut pins = pins().lock().unwrap();
+    pins.retain(|_, at| at.elapsed() < LAUNCH_PIN_TTL);
+    pins.keys().cloned().collect()
+}
+
+/// `rows` less every image a launch has pinned: what a sweep selects from.
+/// A pin is spelled as `inspect` printed it (`sha256:` and all 64 hex chars)
+/// and a row as `images` did (12), so the comparison is prefix-tolerant
+/// ([`id_matches`]).
+pub(crate) fn unpinned_rows(rows: Vec<ImageRow>, pinned: &HashSet<String>) -> Vec<ImageRow> {
+    if pinned.is_empty() {
+        return rows;
+    }
+    rows.into_iter()
+        .filter(|row| {
+            !pinned
+                .iter()
+                .any(|pin| id_matches(pin.strip_prefix("sha256:").unwrap_or(pin), &row.id))
+        })
+        .collect()
+}
 
 /// `images` line format for the GC listings. Both runtimes print `<none>` for a
 /// dangling image's repository and tag.
@@ -297,6 +352,26 @@ mod tests {
             refs,
             vec!["fletch-agent:0dab1e000000".to_string(), "ccc".to_string()],
         );
+    }
+
+    /// A launch's pin keeps its image out of a sweep, however either side
+    /// spells the id; everything else is still a candidate.
+    #[test]
+    fn pinned_images_are_not_swept() {
+        let full = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let rows = vec![
+            row("0123456789ab", "<none>", "<none>"),
+            row("bbbbbbbbbbbb", "<none>", "<none>"),
+        ];
+        let pinned: HashSet<String> = [format!("sha256:{full}")].into();
+        assert_eq!(
+            unpinned_rows(rows.clone(), &pinned),
+            vec![row("bbbbbbbbbbbb", "<none>", "<none>")],
+        );
+        assert_eq!(unpinned_rows(rows.clone(), &HashSet::new()), rows);
+
+        pin_launch("sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc");
+        assert!(pinned_ids().iter().any(|id| id.ends_with("cccc")));
     }
 
     #[test]

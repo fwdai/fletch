@@ -2,9 +2,10 @@
 // `patch`. The row names the files and totals the lines; opened, it's the
 // patch as a diff, one caption per file.
 //
-// Codex's format (verified against its rollout tests): `*** Begin Patch`,
-// then per file `*** Update File: path` / `*** Add File: path` /
-// `*** Delete File: path`, hunks of lines led by a space, `+` or `-`, and
+// Codex's format (its apply_patch grammar): `*** Begin Patch`, then per file
+// `*** Update File: path` / `*** Add File: path` / `*** Delete File: path`,
+// an update optionally followed by `*** Move to: new path` (a rename, with
+// or without edits), hunks of lines led by a space, `+` or `-`, and
 // `*** End Patch`. A unified diff (`--- a/x` / `+++ b/x` / `@@`) parses the
 // same way, so a provider that hands over git's output renders too.
 
@@ -16,12 +17,16 @@ import type { ToolPresenter } from "./types";
 import { DiffCount, getStringField } from "./util";
 
 export interface PatchFile {
+  /** Where the file is once the patch has applied. */
   path: string;
+  /** Where it was, when the patch moves it. */
+  from?: string;
   op: "update" | "add" | "delete";
   lines: DiffLine[];
 }
 
 const CODEX_HEADER = /^\*\*\* (Update|Add|Delete) File: (.+)$/;
+const CODEX_MOVE = /^\*\*\* Move to: (.+)$/;
 const UNIFIED_NEW = /^\+\+\+ (?:b\/)?(.+)$/;
 const UNIFIED_OLD = /^--- (?:a\/)?(.+)$/;
 /** Lines that frame a patch rather than belong to one. */
@@ -38,6 +43,12 @@ export function parsePatch(text: string): PatchFile[] {
       const op = codex[1] === "Add" ? "add" : codex[1] === "Delete" ? "delete" : "update";
       file = { path: codex[2].trim(), op, lines: [] };
       files.push(file);
+      continue;
+    }
+    const move = CODEX_MOVE.exec(line);
+    if (move && file) {
+      file.from = file.path;
+      file.path = move[1].trim();
       continue;
     }
     const old = UNIFIED_OLD.exec(line);
@@ -114,6 +125,12 @@ export const patchPresenter: ToolPresenter = {
         {files.map((f) => (
           <div key={`${f.op}:${f.path}`}>
             <Caption>
+              {f.from && (
+                <>
+                  <PathText path={f.from} />
+                  <span className="tb-cap-note">moved to</span>
+                </>
+              )}
               <PathText path={f.path} />
               {f.op !== "update" && (
                 <span className="tb-cap-note">{f.op === "add" ? "new file" : "deleted"}</span>

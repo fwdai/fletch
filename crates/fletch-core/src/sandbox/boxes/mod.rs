@@ -495,21 +495,15 @@ fn identity_of(ctx: &AgentLaunchCtx) -> BoxIdentity {
 }
 
 /// Whether the claude at `agent_bin` on the box's tools disk `disk` parses
-/// `--thinking-display`: remembered per disk file (its path and modification
-/// time, so a `latest` disk rebuilt in place is a new one), probed in the
-/// guest over the box's ssh channel — the host's probe and reading
-/// (`agent::THINKING_DISPLAY_PROBE_ARGS`), on the host probe's bounded runner,
-/// so a wedged guest can't hold a launch — the first time a disk is seen. A
-/// probe that didn't run or finish is no answer: nothing is remembered and
-/// the next launch asks again.
+/// `--thinking-display`: remembered per disk file (`agent::file_identity`:
+/// the real path, size and modification time, so a `latest` disk rebuilt in
+/// place is a new one), probed in the guest over the box's ssh channel — the
+/// host's probe and reading (`agent::THINKING_DISPLAY_PROBE_ARGS`), on the
+/// host probe's bounded runner, so a wedged guest can't hold a launch — the
+/// first time a disk is seen. A probe that didn't run or finish is no answer:
+/// nothing is remembered and the next launch asks again.
 fn guest_thinking_summaries(channel: &fletch_box::Channel, disk: &Path, agent_bin: &str) -> bool {
-    let modified = std::fs::metadata(disk)
-        .and_then(|m| m.modified())
-        .ok()
-        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    let identity = format!("box tools disk {} @{modified}", disk.display());
+    let identity = format!("box tools disk {}", crate::agent::file_identity(disk));
     if let Some(known) = crate::agent::thinking_display_known(&identity) {
         return known;
     }
