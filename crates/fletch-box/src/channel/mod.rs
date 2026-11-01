@@ -82,21 +82,24 @@ impl Channel {
         env_file: Option<&Path>,
         cmd: &[&str],
     ) -> Vec<String> {
-        Self::remote_command_confined(cwd, env_file, &[], cmd)
+        Self::remote_command_confined(cwd, env_file, &[], &[], cmd)
     }
 
     /// [`remote_command`](Self::remote_command) with directories `cmd` must
-    /// only read: each is a [`guest::EXEC_READ_ONLY`] to `fletch-guest exec`,
-    /// which the guest kernel enforces whoever owns the tree. The guest needs
-    /// an env file alongside.
+    /// only read, each a [`guest::EXEC_READ_ONLY`] to `fletch-guest exec`,
+    /// and paths inside them it may write after all, each a
+    /// [`guest::EXEC_WRITABLE`]: the guest kernel enforces both, whoever owns
+    /// the tree. The guest needs an env file alongside.
     pub fn remote_command_confined(
         cwd: Option<&Path>,
         env_file: Option<&Path>,
         read_only: &[&Path],
+        writable: &[&Path],
         cmd: &[&str],
     ) -> Vec<String> {
         let mut words: Vec<String> = Vec::new();
-        if cwd.is_some() || env_file.is_some() || !read_only.is_empty() {
+        let confined = !read_only.is_empty() || !writable.is_empty();
+        if cwd.is_some() || env_file.is_some() || confined {
             words.push(guest::GUEST_AGENT.into());
             words.push(guest::EXEC.into());
             if let Some(env_file) = env_file {
@@ -106,6 +109,10 @@ impl Channel {
             for dir in read_only {
                 words.push(guest::EXEC_READ_ONLY.into());
                 words.push(dir.to_string_lossy().into_owned());
+            }
+            for path in writable {
+                words.push(guest::EXEC_WRITABLE.into());
+                words.push(path.to_string_lossy().into_owned());
             }
             if let Some(cwd) = cwd {
                 words.push("--cwd".into());
@@ -554,13 +561,15 @@ mod tests {
     }
 
     #[test]
-    fn confined_remote_commands_name_each_read_only_dir() {
-        let (ws, other) = (Path::new("/Users/a/ws"), Path::new("/Users/a/my tree"));
+    fn confined_remote_commands_name_each_read_only_and_writable_path() {
+        let (home, other) = (Path::new("/Users/a"), Path::new("/Volumes/my tree"));
+        let (own, state) = (Path::new("/Users/a/own"), Path::new("/Users/a/s.json"));
         assert_eq!(
             Channel::remote_command_confined(
                 Some(Path::new("/Users/a/ws/repo")),
                 Some(Path::new("/data/run/1.env")),
-                &[ws, other],
+                &[home, other],
+                &[own, state],
                 &["claude"]
             ),
             [
@@ -569,18 +578,22 @@ mod tests {
                 "--env-file",
                 "/data/run/1.env",
                 "--read-only",
-                "/Users/a/ws",
+                "/Users/a",
                 "--read-only",
-                "'/Users/a/my tree'",
+                "'/Volumes/my tree'",
+                "--writable",
+                "/Users/a/own",
+                "--writable",
+                "/Users/a/s.json",
                 "--cwd",
                 "/Users/a/ws/repo",
                 "--",
                 "claude"
             ]
         );
-        // No read-only dirs: the plain command, word for word.
+        // Nothing confined: the plain command, word for word.
         assert_eq!(
-            Channel::remote_command_confined(None, Some(Path::new("/e")), &[], &["true"]),
+            Channel::remote_command_confined(None, Some(Path::new("/e")), &[], &[], &["true"]),
             Channel::remote_command(None, Some(Path::new("/e")), &["true"])
         );
     }

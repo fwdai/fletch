@@ -234,17 +234,17 @@ deletion touches:
   sync methods and `RemoteExecutor::command` still block their thread, on a
   boot too: they serve callers reached through sync code, git's
   `std::process::Command` above all.
-- The box reviewer (a tenant in the coder's box) is held off the coder's tree
-  by the guest kernel, not by file modes (both are one user in the guest):
-  `fletch-guest exec --read-only` gives its launch user, mount and pid
-  namespaces in which the coder's writable root is a read-only bind, `/data`
-  is hidden, `/proc` is private and every capability is dropped
-  (`boxes::read_only_view`). This is enforced once a box image with that
-  `fletch-guest` is published and pinned; until then a box runs the 0.3.0
-  guest, which refuses the option, and the reviewer runs unconfined with a
-  warning, held by its brief and capability grant
-  (`REVIEW_UNCONFINED_ON_AN_OLD_GUEST`, a one-line flip to a refusal). What it
-  does not cover: what the one guest user may write anyway outside that root
-  (its home, `/tmp`).
+- The box reviewer (a tenant in the coder's box) is held off the coder's
+  files by the guest kernel, not by file modes (both are one user in the
+  guest): `fletch-guest exec --read-only … --writable …` gives its launch
+  user, mount and pid namespaces in which everything the guest exposes of the
+  coder's (its writable root, the home, its mailbox, the folders shared
+  writable) is read-only with every mount nested in it, and only the paths
+  seatbelt's allow-list gives the reviewer are writable again; `/data` is
+  hidden, `/proc` is private and every capability is dropped
+  (`boxes::confined_view`). Enforced, with no fallback: a guest that predates
+  the options or cannot set them up refuses the launch. What it does not
+  cover: scratch outside every bind (`/tmp` and the other tmpfs mounts), and
+  the network namespace, which is the guest's.
 - The Run panel inside a box needs port forwarding over the channel; it is a
   declared gap.

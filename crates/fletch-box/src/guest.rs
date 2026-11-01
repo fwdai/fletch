@@ -74,11 +74,17 @@ pub const LAYERS_MOUNT: &str = "/run/layers";
 /// `fletch-guest` subcommands the host invokes over the channel.
 pub const EXEC: &str = "exec";
 /// `exec --read-only <dir>`, repeatable: the command sees `<dir>` read-only,
-/// enforced by the guest kernel (namespaces of the command's own: a read-only
-/// bind of `<dir>`, `/data` hidden, a private `/proc`, no capabilities). A
-/// `fletch-guest` older than the option (image 0.3.0) refuses it as an unknown
-/// option, before running anything.
+/// mounts below it included, enforced by the guest kernel (namespaces of the
+/// command's own: a recursive read-only bind of `<dir>`, `/data` hidden, a
+/// private `/proc`, no capabilities). A `fletch-guest` older than the option
+/// (image 0.3.0) refuses it as an unknown option, before running anything.
 pub const EXEC_READ_ONLY: &str = "--read-only";
+/// `exec --writable <path>`, repeatable: an existing directory or file inside
+/// an [`EXEC_READ_ONLY`] directory that the command may write after all (a
+/// bind of its own, writable). Every path on the way must be a real one, not
+/// a symbolic link. New with image 0.3.1, like `--read-only` in its shipped
+/// form.
+pub const EXEC_WRITABLE: &str = "--writable";
 /// What `exec` exits with when it cannot set up `--read-only`: the command
 /// never ran. Apart from 126 (could not run) and 127 (not found).
 pub const EXEC_CONFINE_FAILED: i32 = 125;

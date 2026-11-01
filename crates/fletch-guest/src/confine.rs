@@ -1,34 +1,38 @@
-//! `exec --read-only <dir>`: run the command with `<dir>` read-only. Inside a
-//! box every ssh session is the one guest user, so a file mode cannot keep one
-//! process off a tree another may write; the kernel's namespaces can. The
-//! command gets namespaces of its own:
+//! `exec --read-only <dir> --writable <path>`: run the command with each
+//! `<dir>` read-only, whole, and each `<path>` inside one writable again.
+//! Inside a box every ssh session is the one guest user, so a file mode cannot
+//! keep one process off a tree another may write; the kernel's namespaces can.
+//! The command gets namespaces of its own:
 //!
 //! - a user namespace mapping the guest user to itself (so `id`, file
 //!   ownership and git's `safe.directory` check read as before), which is what
 //!   lets an unprivileged process make the rest;
-//! - a mount namespace in which each `<dir>` is bind-mounted on itself
-//!   read-only, and the data disk's own mountpoint (`/data`, where the same
-//!   trees are reachable as `/data/ws/…`) is covered by an empty read-only
-//!   tmpfs; the identity binds at the host paths are separate mounts and stay;
+//! - a mount namespace in which each `<dir>` is bind-mounted on itself with
+//!   every mount below it, and that whole subtree made read-only at once
+//!   (`mount_setattr(2)` with `AT_RECURSIVE`), so a mount nested in the tree
+//!   is read-only too; then each `<path>` is bound on itself again and that
+//!   one bind alone made writable. The data disk's own mountpoint (`/data`,
+//!   where the same trees are reachable as `/data/ws/…`) is covered by an
+//!   empty read-only tmpfs; the identity binds at the host paths are separate
+//!   mounts and stay;
 //! - a pid namespace with a private `/proc`. Without it `/proc/<pid>/root` of
 //!   any other process of the guest user is a same-user path back into the
-//!   guest's own mount namespace, where the tree is writable.
+//!   guest's own mount namespace, where the trees are writable.
 //!
 //! Then every capability goes and `no_new_privs` is set, so the command can
 //! neither remount nor unmount what was set up. A user namespace it creates
 //! itself inherits these mounts locked (`MNT_LOCK_READONLY`, `MNT_LOCKED`): the
 //! kernel refuses to make them writable or peel them off there too.
 //!
-//! Mounts below a `<dir>` (none in a box today) keep their own mode. What the
-//! confinement does not cover is everything outside the named trees that the
-//! guest user may write anyway (its home, `/tmp`) and what another process of
-//! that user may be asked to do over a socket: the network namespace is the
-//! guest's.
+//! What the confinement does not cover is everything outside the named trees
+//! that the guest user may write anyway (`/tmp` and the other scratch tmpfs)
+//! and what another process of that user may be asked to do over a socket:
+//! the network namespace is the guest's.
 //!
 //! Every step fails closed: the command never runs unconfined because a step
 //! did not work.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// The exit status of an `exec` whose `--read-only` could not be set up: never
 /// the command's own, and apart from the shell's 126 (could not run) and 127
@@ -37,26 +41,59 @@ use std::path::PathBuf;
 /// host side.
 pub const CONFINE_FAILED: i32 = 125;
 
-/// Each path must be an existing directory: checked before anything is
-/// unshared, for a message that names the path rather than a mount error.
-pub fn check_paths(paths: &[PathBuf]) -> Result<(), String> {
-    for path in paths {
-        let meta =
-            std::fs::metadata(path).map_err(|e| format!("--read-only {}: {e}", path.display()))?;
+/// Checked before anything is unshared, for a message that names the path
+/// rather than a mount error. Each `read_only` path must be an existing
+/// directory, each `writable` one an existing directory or file strictly
+/// inside one of them (outside, it is writable or not as the guest has it
+/// already). Neither may reach its target through a symbolic link: a mount
+/// follows one, so a link another process of the guest user planted at a
+/// writable path would open whatever it points to.
+pub fn check_paths(read_only: &[PathBuf], writable: &[PathBuf]) -> Result<(), String> {
+    for dir in read_only {
+        let meta = resolved(dir, "--read-only")?;
         if !meta.is_dir() {
-            return Err(format!("--read-only {}: not a directory", path.display()));
+            return Err(format!("--read-only {}: not a directory", dir.display()));
+        }
+    }
+    for path in writable {
+        resolved(path, "--writable")?;
+        if !read_only.iter().any(|dir| inside(path, dir)) {
+            return Err(format!(
+                "--writable {}: not inside any --read-only directory",
+                path.display()
+            ));
         }
     }
     Ok(())
 }
 
-/// Confines this process to a read-only view of `paths` (module docs).
-/// Returns only in the process that is to exec the command, which starts in
-/// `/`: the directory it was in may lie in one of the trees, reached through
-/// the writable mount underneath. The processes that stay behind wait for it
-/// and exit with its status; they never return from here.
-pub fn read_only(paths: &[PathBuf]) -> Result<(), String> {
-    imp::read_only(paths)
+/// `path`'s metadata, when it exists and is its own canonical form.
+fn resolved(path: &Path, option: &str) -> Result<std::fs::Metadata, String> {
+    let canonical =
+        std::fs::canonicalize(path).map_err(|e| format!("{option} {}: {e}", path.display()))?;
+    if canonical != path {
+        return Err(format!(
+            "{option} {}: resolves to {} (a symbolic link on the way)",
+            path.display(),
+            canonical.display()
+        ));
+    }
+    std::fs::metadata(path).map_err(|e| format!("{option} {}: {e}", path.display()))
+}
+
+/// Whether `path` lies strictly below `dir`, by whole components.
+fn inside(path: &Path, dir: &Path) -> bool {
+    path != dir && path.starts_with(dir)
+}
+
+/// Confines this process to a view in which each of `read_only` is read-only
+/// and each of `writable` writable again (module docs). Returns only in the
+/// process that is to exec the command, which starts in `/`: the directory it
+/// was in may lie in one of the trees, reached through the writable mount
+/// underneath. The processes that stay behind wait for it and exit with its
+/// status; they never return from here.
+pub fn confine(read_only: &[PathBuf], writable: &[PathBuf]) -> Result<(), String> {
+    imp::confine(read_only, writable)
 }
 
 #[cfg(target_os = "linux")]
@@ -70,14 +107,29 @@ mod imp {
 
     use super::CONFINE_FAILED;
 
-    /// The kernel's `statvfs` `f_flag` bits (`ST_*`, include/linux/statfs.h),
-    /// the same on every Linux architecture and libc.
-    const ST_NOSUID: libc::c_ulong = 0x0002;
-    const ST_NODEV: libc::c_ulong = 0x0004;
-    const ST_NOEXEC: libc::c_ulong = 0x0008;
-    const ST_NOATIME: libc::c_ulong = 0x0400;
-    const ST_NODIRATIME: libc::c_ulong = 0x0800;
-    const ST_RELATIME: libc::c_ulong = 0x1000;
+    /// `mount_setattr(2)` (Linux 5.12), by number: the syscall table is one
+    /// for every architecture from 424 on, so x86_64 and aarch64 both call it
+    /// 442, and defining it here does not depend on which `libc` release
+    /// spells it. A kernel without it answers `ENOSYS`, which fails closed.
+    const SYS_MOUNT_SETATTR: libc::c_long = 442;
+    /// `mount_setattr`'s flag to apply to the whole mount tree at the path,
+    /// include/uapi/linux/fcntl.h.
+    const AT_RECURSIVE: libc::c_uint = 0x8000;
+    /// `MOUNT_ATTR_RDONLY`, include/uapi/linux/mount.h.
+    const MOUNT_ATTR_RDONLY: u64 = 0x0000_0001;
+
+    /// `struct mount_attr`, include/uapi/linux/mount.h: its first version
+    /// (`MOUNT_ATTR_SIZE_VER0`, 32 bytes), which every kernel with the
+    /// syscall takes. The kernel reads the fields, through the pointer the
+    /// syscall gets; nothing here does, which is what the lint allowance says.
+    #[repr(C)]
+    #[allow(dead_code)]
+    struct MountAttr {
+        attr_set: u64,
+        attr_clr: u64,
+        propagation: u64,
+        userns_fd: u64,
+    }
 
     /// `si_code` of a signal the kernel raised itself (a terminal's `SIGINT`,
     /// `SIGHUP` on hangup), include/uapi/asm-generic/siginfo.h.
@@ -94,12 +146,9 @@ mod imp {
     /// The process a waiting parent passes signals to; 0 while there is none.
     static CHILD: AtomicI32 = AtomicI32::new(0);
 
-    pub fn read_only(paths: &[PathBuf]) -> Result<(), String> {
-        let targets = paths
-            .iter()
-            .map(PathBuf::as_path)
-            .map(c_path)
-            .collect::<Result<Vec<_>, _>>()?;
+    pub fn confine(read_only: &[PathBuf], writable: &[PathBuf]) -> Result<(), String> {
+        let read_only = c_paths(read_only, "--read-only")?;
+        let writable = c_paths(writable, "--writable")?;
         // Before the fork, so a signal never finds a waiting parent with the
         // default action; the handlers do not survive the command's exec.
         forward_signals().map_err(|e| format!("installing signal handlers: {e}"))?;
@@ -137,8 +186,13 @@ mod imp {
             Some(c"mode=755"),
         )
         .map_err(|e| format!("hiding /data: {e}"))?;
-        for (path, target) in paths.iter().zip(&targets) {
+        // Every read-only tree before any writable path: a path is bound from
+        // the tree's read-only bind, and so starts out read-only itself.
+        for (path, target) in &read_only {
             bind_read_only(target).map_err(|e| format!("--read-only {}: {e}", path.display()))?;
+        }
+        for (path, target) in &writable {
+            bind_writable(target).map_err(|e| format!("--writable {}: {e}", path.display()))?;
         }
 
         // pid 1 of a namespace is the reaper of every orphan in it and
@@ -150,9 +204,16 @@ mod imp {
         Ok(())
     }
 
-    fn c_path(path: &Path) -> Result<CString, String> {
-        CString::new(path.as_os_str().as_bytes())
-            .map_err(|_| format!("--read-only {}: contains a NUL byte", path.display()))
+    /// Each of `paths` with its C string, for `mount`.
+    fn c_paths<'a>(paths: &'a [PathBuf], flag: &str) -> Result<Vec<(&'a Path, CString)>, String> {
+        paths
+            .iter()
+            .map(|path| {
+                CString::new(path.as_os_str().as_bytes())
+                    .map(|c| (path.as_path(), c))
+                    .map_err(|_| format!("{flag} {}: contains a NUL byte", path.display()))
+            })
+            .collect()
     }
 
     fn check(ret: libc::c_int) -> io::Result<()> {
@@ -193,10 +254,11 @@ mod imp {
         })
     }
 
-    /// `target` bound on itself, then that bind remounted read-only. The
-    /// remount must repeat the mount's `nosuid`/`nodev`/`noexec` and atime
-    /// flags: in a user namespace they are locked to what the guest's own
-    /// namespace set, and a remount that would drop one fails with `EPERM`.
+    /// `target` bound on itself with every mount below it, then that whole
+    /// subtree made read-only in one call. `mount_setattr` only adds the
+    /// read-only bit, so unlike a `MS_REMOUNT` it need not repeat the
+    /// `nosuid`/`nodev`/atime flags the user namespace locked, and it reaches
+    /// the nested mounts a remount of the top one would leave writable.
     fn bind_read_only(target: &CStr) -> io::Result<()> {
         mount(
             Some(target),
@@ -205,39 +267,57 @@ mod imp {
             libc::MS_BIND | libc::MS_REC,
             None,
         )?;
-        // SAFETY: an all-zero statvfs is a valid out-buffer for statvfs(3).
-        let mut vfs: libc::statvfs = unsafe { std::mem::zeroed() };
-        // SAFETY: target is NUL-terminated and vfs is a valid out-pointer.
-        check(unsafe { libc::statvfs(target.as_ptr(), &mut vfs) })?;
-        mount(
-            None,
-            target,
-            None,
-            libc::MS_REMOUNT | libc::MS_BIND | libc::MS_RDONLY | locked_flags(vfs.f_flag),
-            None,
-        )
+        set_read_only(target, true, AT_RECURSIVE)
     }
 
-    /// The `MS_*` flags a bind remount must carry to keep what `statvfs`
-    /// reports in `f_flag`. No atime flag at all is `strictatime`, which the
-    /// remount has to say, as it would otherwise default to `relatime`.
-    pub(super) fn locked_flags(f_flag: libc::c_ulong) -> libc::c_ulong {
-        const MAP: [(libc::c_ulong, libc::c_ulong); 6] = [
-            (ST_NOSUID, libc::MS_NOSUID),
-            (ST_NODEV, libc::MS_NODEV),
-            (ST_NOEXEC, libc::MS_NOEXEC),
-            (ST_NOATIME, libc::MS_NOATIME),
-            (ST_NODIRATIME, libc::MS_NODIRATIME),
-            (ST_RELATIME, libc::MS_RELATIME),
-        ];
-        let flags: libc::c_ulong = MAP
-            .iter()
-            .filter(|(st, _)| f_flag & st != 0)
-            .fold(0, |acc, (_, ms)| acc | ms);
-        if f_flag & (ST_NOATIME | ST_RELATIME) == 0 {
-            flags | libc::MS_STRICTATIME
+    /// `target`, inside a tree [`bind_read_only`] made read-only, bound on
+    /// itself again (a new bind copies the read-only bit of the mount it is
+    /// taken from), and that top bind alone made writable. Clearing the bit is
+    /// allowed because this namespace set it: the kernel locks only what a
+    /// mount had when the namespace was made. Mounts nested below `target`
+    /// come along and stay read-only.
+    fn bind_writable(target: &CStr) -> io::Result<()> {
+        mount(
+            Some(target),
+            target,
+            None,
+            libc::MS_BIND | libc::MS_REC,
+            None,
+        )?;
+        set_read_only(target, false, 0)
+    }
+
+    /// Sets (`read_only`) or clears the read-only bit of the mount at
+    /// `target`, and with [`AT_RECURSIVE`] in `flags` of every mount below it,
+    /// atomically: either all of them change or none does.
+    fn set_read_only(target: &CStr, read_only: bool, flags: libc::c_uint) -> io::Result<()> {
+        let (attr_set, attr_clr) = if read_only {
+            (MOUNT_ATTR_RDONLY, 0)
         } else {
-            flags
+            (0, MOUNT_ATTR_RDONLY)
+        };
+        let attr = MountAttr {
+            attr_set,
+            attr_clr,
+            propagation: 0,
+            userns_fd: 0,
+        };
+        // SAFETY: target is NUL-terminated and attr is a mount_attr of the
+        // size passed, both living for the call.
+        let ret = unsafe {
+            libc::syscall(
+                SYS_MOUNT_SETATTR,
+                libc::AT_FDCWD,
+                target.as_ptr(),
+                flags,
+                std::ptr::addr_of!(attr),
+                std::mem::size_of::<MountAttr>(),
+            )
+        };
+        if ret < 0 {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(())
         }
     }
 
@@ -370,22 +450,11 @@ mod imp {
     mod tests {
         use super::*;
 
-        /// `ST_RDONLY`, which the remount sets anyway.
-        const ST_RDONLY: libc::c_ulong = 0x0001;
-
+        /// The kernel reads `struct mount_attr` by the size it is passed: its
+        /// first version is four `u64`s.
         #[test]
-        fn a_remount_keeps_the_locked_flags() {
-            // The data disk's binds: nosuid, nodev, relatime.
-            assert_eq!(
-                locked_flags(ST_NOSUID | ST_NODEV | ST_RELATIME),
-                libc::MS_NOSUID | libc::MS_NODEV | libc::MS_RELATIME
-            );
-            assert_eq!(
-                locked_flags(ST_NOEXEC | ST_NOATIME | ST_NODIRATIME),
-                libc::MS_NOEXEC | libc::MS_NOATIME | libc::MS_NODIRATIME
-            );
-            // No atime flag at all: strictatime, said out loud.
-            assert_eq!(locked_flags(ST_RDONLY), libc::MS_STRICTATIME);
+        fn mount_attr_is_the_first_kernel_version() {
+            assert_eq!(std::mem::size_of::<MountAttr>(), 32);
         }
 
         #[test]
@@ -405,25 +474,79 @@ mod imp {
 mod imp {
     use std::path::PathBuf;
 
-    pub fn read_only(_paths: &[PathBuf]) -> Result<(), String> {
+    pub fn confine(_read_only: &[PathBuf], _writable: &[PathBuf]) -> Result<(), String> {
         Err("--read-only needs Linux namespaces".into())
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::check_paths;
+
+    /// A temporary directory by its canonical path (on macOS the temp dir
+    /// lies behind the `/var` link).
+    fn tempdir() -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = std::fs::canonicalize(dir.path()).unwrap();
+        (dir, path)
+    }
 
     #[test]
     fn read_only_paths_must_be_directories() {
-        let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("f");
+        let (_guard, dir) = tempdir();
+        let file = dir.join("f");
         std::fs::write(&file, b"").unwrap();
-        assert!(check_paths(&[dir.path().to_path_buf()]).is_ok());
-        assert!(check_paths(&[]).is_ok());
-        let err = check_paths(&[file]).unwrap_err();
+        assert!(check_paths(&[dir.clone()], &[]).is_ok());
+        assert!(check_paths(&[], &[]).is_ok());
+        let err = check_paths(&[file], &[]).unwrap_err();
         assert!(err.contains("not a directory"), "{err}");
-        let err = check_paths(&[dir.path().join("missing")]).unwrap_err();
+        let err = check_paths(&[dir.join("missing")], &[]).unwrap_err();
         assert!(err.contains("missing"), "{err}");
+    }
+
+    /// A writable path is a directory or a file that exists, strictly inside
+    /// a read-only directory.
+    #[test]
+    fn writable_paths_lie_inside_a_read_only_dir() {
+        let (_guard, root) = tempdir();
+        let (home, other) = (root.join("home"), root.join("other"));
+        let (own, state) = (home.join("own"), home.join(".state.json"));
+        for dir in [&home, &other, &own] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        std::fs::write(&state, b"{}").unwrap();
+        let read_only = [home.clone()];
+        assert!(check_paths(&read_only, &[own.clone(), state]).is_ok());
+
+        for (writable, why) in [
+            (other, "not inside any --read-only directory"),
+            (home.clone(), "not inside any --read-only directory"),
+            (home.join("missing"), "missing"),
+        ] {
+            let err = check_paths(&read_only, &[writable]).unwrap_err();
+            assert!(err.contains(why), "{err}");
+        }
+        // No read-only directory at all: nothing to make writable again.
+        let err = check_paths(&[], &[own]).unwrap_err();
+        assert!(err.contains("not inside"), "{err}");
+    }
+
+    /// A path reached through a symbolic link is refused: the bind would
+    /// follow it to wherever it points.
+    #[cfg(unix)]
+    #[test]
+    fn paths_through_a_symbolic_link_are_refused() {
+        let (_guard, root) = tempdir();
+        let (home, elsewhere) = (root.join("home"), root.join("elsewhere"));
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        let link = home.join("cache");
+        std::os::unix::fs::symlink(&elsewhere, &link).unwrap();
+        let err = check_paths(&[home], &[link.clone()]).unwrap_err();
+        assert!(err.contains("symbolic link"), "{err}");
+        let err = check_paths(&[link], &[]).unwrap_err();
+        assert!(err.contains("symbolic link"), "{err}");
     }
 }

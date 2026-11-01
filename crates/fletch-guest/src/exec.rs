@@ -1,9 +1,9 @@
-//! `exec --env-file <path> [--cwd <dir>] [--read-only <dir>]... -- <cmd...>`:
-//! a clean environment from a file, then exec. Every ssh session into a box
-//! starts here, so a process sees exactly what the host wrote for this launch
-//! and nothing from sshd, a shell profile or the box itself. With
-//! `--read-only`, the command sees each such directory read-only, whoever owns
-//! it ([`crate::confine`]).
+//! `exec --env-file <path> [--cwd <dir>] [--read-only <dir>]... [--writable
+//! <path>]... -- <cmd...>`: a clean environment from a file, then exec. Every
+//! ssh session into a box starts here, so a process sees exactly what the host
+//! wrote for this launch and nothing from sshd, a shell profile or the box
+//! itself. With `--read-only`, the command sees each such directory read-only,
+//! whoever owns it, bar each `--writable` path inside one ([`crate::confine`]).
 
 use std::fs;
 use std::io;
@@ -21,10 +21,10 @@ pub fn run(args: &[String]) -> Result<()> {
         fs::read_to_string(env_file).map_err(|e| format!("exec: cannot read {env_file}: {e}"))?;
     let env = parse_env(&text).map_err(|e| format!("exec: {env_file}: {e}"))?;
 
-    if !opts.read_only.is_empty() {
+    if !opts.read_only.is_empty() || !opts.writable.is_empty() {
         // After the env file is read: confinement hides `/data`, where it lies.
-        let confined = confine::check_paths(&opts.read_only)
-            .and_then(|()| confine::read_only(&opts.read_only));
+        let confined = confine::check_paths(&opts.read_only, &opts.writable)
+            .and_then(|()| confine::confine(&opts.read_only, &opts.writable));
         if let Err(err) = confined {
             eprintln!("fletch-guest: exec: {err}");
             std::process::exit(confine::CONFINE_FAILED);
@@ -54,22 +54,22 @@ struct Options {
     cwd: Option<String>,
     /// Every `--read-only`, in order; absolute.
     read_only: Vec<PathBuf>,
+    /// Every `--writable`, in order; absolute. Whether each lies inside a
+    /// `--read-only` directory is checked against the filesystem
+    /// ([`confine::check_paths`]).
+    writable: Vec<PathBuf>,
 }
 
 fn parse_options(opts: &[String]) -> std::result::Result<Options, String> {
-    let (mut env_file, mut cwd, mut read_only) = (None, None, Vec::new());
+    let (mut env_file, mut cwd) = (None, None);
+    let (mut read_only, mut writable) = (Vec::new(), Vec::new());
     let mut it = opts.iter();
     while let Some(opt) = it.next() {
         match opt.as_str() {
             "--env-file" => env_file = it.next(),
             "--cwd" => cwd = it.next(),
-            "--read-only" => {
-                let dir = it.next().ok_or("exec: --read-only needs a directory")?;
-                if !Path::new(dir).is_absolute() {
-                    return Err(format!("exec: --read-only {dir}: not an absolute path"));
-                }
-                read_only.push(PathBuf::from(dir));
-            }
+            "--read-only" => read_only.push(absolute(opt, it.next())?),
+            "--writable" => writable.push(absolute(opt, it.next())?),
             other => return Err(format!("exec: unknown option {other}")),
         }
     }
@@ -77,7 +77,17 @@ fn parse_options(opts: &[String]) -> std::result::Result<Options, String> {
         env_file: env_file.ok_or("exec: --env-file is required")?.clone(),
         cwd: cwd.cloned(),
         read_only,
+        writable,
     })
+}
+
+/// The absolute path `option` takes.
+fn absolute(option: &str, value: Option<&String>) -> std::result::Result<PathBuf, String> {
+    let path = value.ok_or_else(|| format!("exec: {option} needs a path"))?;
+    if !Path::new(path).is_absolute() {
+        return Err(format!("exec: {option} {path}: not an absolute path"));
+    }
+    Ok(PathBuf::from(path))
 }
 
 /// `KEY=VALUE` per line; values may contain `=`; blank lines and `#` comments
@@ -111,27 +121,32 @@ mod tests {
     }
 
     #[test]
-    fn options_take_repeated_read_only_dirs() {
-        let args = words("--env-file /e --read-only /a/ws --cwd /a/ws/repo --read-only /b");
+    fn options_take_repeated_read_only_and_writable_paths() {
+        let mut args = words("--env-file /e --read-only /a --writable /a/own --cwd /a/ws");
+        args.extend(words("--read-only /b --writable /a/.state.json"));
         let opts = parse_options(&args).unwrap();
         assert_eq!(
             opts,
             Options {
                 env_file: "/e".into(),
-                cwd: Some("/a/ws/repo".into()),
-                read_only: vec![PathBuf::from("/a/ws"), PathBuf::from("/b")],
+                cwd: Some("/a/ws".into()),
+                read_only: vec![PathBuf::from("/a"), PathBuf::from("/b")],
+                writable: vec![PathBuf::from("/a/own"), PathBuf::from("/a/.state.json")],
             }
         );
         let plain = parse_options(&words("--env-file /dev/null")).unwrap();
         assert!(plain.read_only.is_empty() && plain.cwd.is_none());
+        assert!(plain.writable.is_empty());
     }
 
     #[test]
     fn options_refuse_what_they_cannot_honour() {
         for (args, why) in [
-            ("--env-file /e --read-only", "needs a directory"),
+            ("--env-file /e --read-only", "--read-only needs a path"),
             ("--env-file /e --read-only repo", "not an absolute path"),
-            ("--env-file /e --writable /x", "unknown option --writable"),
+            ("--env-file /e --writable", "--writable needs a path"),
+            ("--env-file /e --writable own", "not an absolute path"),
+            ("--env-file /e --rw /x", "unknown option --rw"),
             ("--read-only /x", "--env-file is required"),
         ] {
             let err = parse_options(&words(args)).unwrap_err();

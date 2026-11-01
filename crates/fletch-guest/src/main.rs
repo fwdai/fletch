@@ -27,10 +27,12 @@ const USAGE: &str = "\
 usage: fletch-guest <subcommand> ...
   vsock-listen <port> -- <cmd...>            inetd: one <cmd> per connection, socket as stdin/stdout
   egress-loopback <tcp port> <vsock port>    127.0.0.1:<tcp port> -> host vsock <vsock port>
-  exec --env-file <path> [--cwd <dir>] [--read-only <dir>]... -- <cmd...>
+  exec --env-file <path> [--cwd <dir>] [--read-only <dir>]... [--writable <path>]... -- <cmd...>
                                              clear the environment, load the file, chdir, exec;
-                                             each --read-only <dir> is read-only to <cmd>
-                                             (exit 125 when that cannot be set up)
+                                             each --read-only <dir> is read-only to <cmd>, mounts
+                                             below it included, bar each --writable <path> (a
+                                             directory or file inside one); exit 125 when that
+                                             cannot be set up
   relay <mailbox dir>                        requests out as JSON lines, responses in
   tail <dir> [--offsets <json>]              follow *.jsonl under <dir> as JSON lines
   wait-stop <vsock port>                     return once the host sends `stop`";

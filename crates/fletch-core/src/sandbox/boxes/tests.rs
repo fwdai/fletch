@@ -24,8 +24,11 @@ use super::block_on_with;
 use super::provision::Landing;
 use super::registry::{BoxIdentity, BoxRegistry, StopReason};
 use super::settings::{self, BoxSettings};
+use crate::error::Error;
 use crate::sandbox::engine::AgentLaunchCtx;
+use crate::sandbox::policy;
 use crate::sandbox::provision::CheckoutSpec;
+use crate::workspace::FolderGrant;
 
 fn env_path(name: &str) -> PathBuf {
     PathBuf::from(std::env::var_os(name).unwrap_or_else(|| panic!("{name} must be set")))
@@ -453,7 +456,14 @@ async fn a_current_thread_caller_does_not_panic() {
     assert_eq!(block_on_with(None, async { 8 }), 8);
 }
 
-// The reviewer's read-only view (`read_only_view`, `enforced_view`).
+// The reviewer's confined view (`confined_view`, `enforced_view`).
+
+const HOME: &str = "/Users/u";
+const CODER_ROOT: &str = "/Users/u/.fletch/workspaces/coder";
+const CODER_RPC: &str = "/Users/u/.fletch/rpc/coder";
+const OWN_ROOT: &str = "/Users/u/.fletch/workspaces/reviewer";
+const OWN_RPC: &str = "/Users/u/.fletch/rpc/reviewer";
+const CACHE: &str = "/Users/u/.fletch/toolchain-cache/p1";
 
 fn launch_ctx<'a>(
     writable_root: &'a Path,
@@ -466,9 +476,9 @@ fn launch_ctx<'a>(
         provider: "claude",
         writable_root,
         source_repos: &[],
-        rpc_dir: Path::new("/rpc/reviewer"),
+        rpc_dir: Path::new(OWN_RPC),
         cwd,
-        home: Path::new("/Users/u"),
+        home: Path::new(HOME),
         interactive: true,
         blackboard: None,
         account_dir: None,
@@ -479,21 +489,176 @@ fn launch_ctx<'a>(
     }
 }
 
-/// The local reviewer, a tenant adopting the coder's checkout to read it,
-/// launches with the coder's whole writable root read-only when the guest
-/// enforces that; a guest that predates it runs the reviewer as before (or
-/// refuses, per the policy const), and one that cannot set it up refuses.
-#[test]
-fn a_reviewer_tenant_launches_with_its_hosts_root_read_only() {
-    let (host_root, own_root) = (Path::new("/w/coder"), Path::new("/w/reviewer"));
-    let tree = host_root.join("repo");
-    let view = super::read_only_view(&launch_ctx(own_root, &tree, true), true, host_root);
-    assert_eq!(view.as_deref(), Some(host_root));
+fn grant(path: &str, writable: bool) -> FolderGrant {
+    FolderGrant {
+        path: PathBuf::from(path),
+        writable,
+    }
+}
 
-    let enforced = super::enforced_view(view.clone(), |_| Ok(true), "r", "c");
-    let read_only = enforced.unwrap();
+/// The coder's box: its root, mailbox and home as the launch context derives
+/// them, with `shares`.
+fn coder_box(writable_root: &str, shares: Vec<FolderGrant>) -> BoxIdentity {
+    BoxIdentity {
+        agent_id: "coder".into(),
+        project_id: "p1".into(),
+        provider: "claude".into(),
+        writable_root: PathBuf::from(writable_root),
+        rpc_dir: PathBuf::from(CODER_RPC),
+        home: PathBuf::from(HOME),
+        shares,
+    }
+}
+
+/// The local reviewer, a tenant adopting the coder's checkout to read it,
+/// sees everything the guest exposes of the coder's read-only — the home,
+/// which holds the coder's root and mailbox, and the folders the box shares
+/// writable that the reviewer was not granted writable — and only what
+/// seatbelt lets it write on the host writable again.
+#[test]
+fn a_reviewer_tenant_writes_only_its_own_paths() {
+    let tree = Path::new(CODER_ROOT).join("repo");
+    let shares = vec![
+        grant("/Volumes/data", true),
+        grant("/Volumes/ref", false),
+        grant("/Volumes/both", true),
+        grant("/Users/u/notes", true),
+    ];
+    let host = coder_box(CODER_ROOT, shares);
+    // Its own grants: two of the box's writable shares writable, one
+    // read-only.
+    let grants = [
+        grant("/Volumes/data", false),
+        grant("/Volumes/both", true),
+        grant("/Users/u/notes", true),
+    ];
+    let ctx = AgentLaunchCtx {
+        folder_grants: &grants,
+        ..launch_ctx(Path::new(OWN_ROOT), &tree, true)
+    };
+    let view = super::confined_view(&ctx, true, &host, Path::new(CACHE)).unwrap();
+
+    // The coder's root and mailbox lie in the home, whose read-only tree
+    // takes them along; a read-only share needs nothing, and one the
+    // reviewer may write keeps the guest's mode.
+    let read_only: Vec<PathBuf> = [HOME, "/Volumes/data"].map(PathBuf::from).into();
+    assert_eq!(view.read_only, read_only);
+
+    let home = Path::new(HOME);
+    let mut expected: Vec<PathBuf> = [OWN_ROOT, OWN_RPC, CACHE, "/Users/u/notes"]
+        .map(PathBuf::from)
+        .into();
+    expected.extend(policy::provider_state_dirs("claude", home));
+    expected.extend(policy::agent_scratch_dirs(home));
+    expected.sort();
+    let mut writable = view.writable_dirs.clone();
+    writable.sort();
+    assert_eq!(writable, expected);
+    assert_eq!(view.writable_files, [home.join(".claude.json")]);
+
+    // Each inside a read-only tree, none in anything of the coder's.
+    let held = |path: &Path| view.read_only.iter().any(|dir| super::inside(path, dir));
+    for path in view.writable() {
+        assert!(held(path), "{}", path.display());
+        for coders in [CODER_ROOT, CODER_RPC, "/Volumes/data"] {
+            assert!(!path.starts_with(coders), "{}", path.display());
+        }
+    }
+    // Parents first: no path is bound before a directory that holds it.
+    let dirs = &view.writable_dirs;
+    for (i, dir) in dirs.iter().enumerate() {
+        assert!(
+            !dirs[i + 1..].iter().any(|later| dir.starts_with(later)),
+            "{} comes before its parent",
+            dir.display()
+        );
+    }
+}
+
+/// The three identity binds all go in when none holds the others, and a
+/// codex reviewer's `CODEX_HOME` is writable, with no claude state file.
+#[test]
+fn a_root_outside_the_home_is_read_only_too() {
+    let tree = Path::new("/w/coder/repo");
+    let host = coder_box("/w/coder", Vec::new());
+    let codex_home = Path::new(OWN_ROOT).join("codex-home");
+    let ctx = AgentLaunchCtx {
+        provider: "codex",
+        codex_home: Some(codex_home.as_path()),
+        ..launch_ctx(Path::new(OWN_ROOT), tree, true)
+    };
+    let view = super::confined_view(&ctx, true, &host, Path::new(CACHE)).unwrap();
+    let read_only: Vec<PathBuf> = ["/w/coder", HOME].map(PathBuf::from).into();
+    assert_eq!(view.read_only, read_only);
+    let at = |path: &Path| view.writable_dirs.iter().position(|dir| dir == path);
+    let root = at(Path::new(OWN_ROOT)).unwrap();
+    let overlay = at(&codex_home).unwrap();
+    assert!(root < overlay, "{:?}", view.writable_dirs);
+    assert!(view.writable_files.is_empty());
+}
+
+/// An owner is never confined, nor is a tenant that adopts its tree to
+/// write it (a workflow step); the guest is not even asked.
+#[test]
+fn owners_and_workflow_steps_are_not_confined() {
+    let root = Path::new(CODER_ROOT);
+    let own_tree = root.join("repo");
+    let run_tree = Path::new("/runs/run-7/repo");
+    let host = coder_box(CODER_ROOT, Vec::new());
+    let cases = [
+        // An owner, in its own checkout or in an adopted one.
+        (launch_ctx(root, &own_tree, true), false),
+        (launch_ctx(root, run_tree, true), false),
+        // A tenant that adopts its tree to write it.
+        (launch_ctx(Path::new(OWN_ROOT), run_tree, false), true),
+    ];
+    for (ctx, is_tenant) in &cases {
+        let view = super::confined_view(ctx, *is_tenant, &host, Path::new(CACHE));
+        assert_eq!(view, None, "{}", ctx.cwd.display());
+        let enforced = super::enforced_view(view, |_| panic!("the guest was asked"));
+        assert_eq!(enforced.unwrap(), None);
+    }
+}
+
+/// A view the guest enforces is the launch's; a guest that predates it, or
+/// cannot set it up, refuses the launch: there is no unconfined fallback.
+#[test]
+fn a_guest_that_cannot_confine_refuses_the_reviewer() {
+    let view = super::ConfinedView {
+        read_only: vec![PathBuf::from(HOME)],
+        ..Default::default()
+    };
+    let enforced = super::enforced_view(Some(view.clone()), |_| Ok(true));
+    assert_eq!(enforced.unwrap().as_ref(), Some(&view));
+
+    match super::enforced_view(Some(view.clone()), |_| Ok(false)) {
+        Err(Error::SandboxUnavailable(why)) => {
+            assert!(why.contains("update the box image"), "{why}");
+        }
+        other => panic!("an old guest must refuse the launch: {other:?}"),
+    }
+    let cannot = |_: &super::ConfinedView| -> crate::error::Result<bool> {
+        Err(Error::SandboxUnavailable("exit status: 125".into()))
+    };
+    assert!(super::enforced_view(Some(view), cannot).is_err());
+}
+
+/// The launch, its probe and the step that makes the writable paths all
+/// carry the same view.
+#[test]
+fn a_confined_launch_renders_the_view_it_was_given() {
+    let home = Path::new(HOME);
+    let view = super::ConfinedView {
+        read_only: vec![home.to_path_buf(), PathBuf::from("/Volumes/my data")],
+        writable_dirs: vec![
+            PathBuf::from(OWN_ROOT),
+            home.join("Library/Application Support"),
+        ],
+        writable_files: vec![home.join(".claude.json")],
+    };
+    let tree = Path::new(CODER_ROOT).join("repo");
     let env_file = Path::new("/data/run/1.env");
-    let remote = super::agent_remote_command(&tree, env_file, read_only.as_deref(), "claude");
+    let remote = super::agent_remote_command(&tree, env_file, Some(&view), "claude");
     assert_eq!(
         remote,
         [
@@ -502,64 +667,62 @@ fn a_reviewer_tenant_launches_with_its_hosts_root_read_only() {
             "--env-file",
             "/data/run/1.env",
             "--read-only",
-            "/w/coder",
+            "/Users/u",
+            "--read-only",
+            "'/Volumes/my data'",
+            "--writable",
+            "/Users/u/.fletch/workspaces/reviewer",
+            "--writable",
+            "'/Users/u/Library/Application Support'",
+            "--writable",
+            "/Users/u/.claude.json",
             "--cwd",
-            "/w/coder/repo",
+            "/Users/u/.fletch/workspaces/coder/repo",
             "--",
             "claude"
         ]
     );
+    let plain = super::agent_remote_command(&tree, env_file, None, "claude");
+    let options = ["--read-only", "--writable"].map(String::from);
+    assert!(!plain.iter().any(|w| options.contains(w)), "{plain:?}");
 
-    let old = super::enforced_view(view.clone(), |_| Ok(false), "r", "c");
-    if super::REVIEW_UNCONFINED_ON_AN_OLD_GUEST {
-        let read_only = old.unwrap();
-        assert_eq!(read_only, None);
-        let remote = super::agent_remote_command(&tree, env_file, read_only.as_deref(), "claude");
-        assert!(!remote.iter().any(|w| w == "--read-only"), "{remote:?}");
-    } else {
-        assert!(old.is_err());
-    }
-    let cannot = |_: &Path| -> crate::error::Result<bool> {
-        Err(crate::error::Error::Other("exit status: 125".into()))
-    };
-    assert!(super::enforced_view(view, cannot, "r", "c").is_err());
-
-    // A tenant whose own root lies under its host's keeps it writable: only
-    // the tree is read-only then.
-    let nested = host_root.join("reviewer");
-    let view = super::read_only_view(&launch_ctx(&nested, &tree, true), true, host_root);
-    assert_eq!(view, Some(tree));
+    assert_eq!(
+        super::probe_words(&view),
+        [
+            "/opt/fletch/bin/fletch-guest",
+            "exec",
+            "--read-only",
+            "/Users/u",
+            "--read-only",
+            "/Volumes/my data",
+            "--writable",
+            "/Users/u/.fletch/workspaces/reviewer",
+            "--writable",
+            "/Users/u/Library/Application Support",
+            "--writable",
+            "/Users/u/.claude.json",
+            "--env-file",
+            "/dev/null",
+            "--",
+            "/bin/true"
+        ]
+    );
+    assert_eq!(
+        super::carve_out_script(&view),
+        "umask 077 && mkdir -p -- /Users/u/.fletch/workspaces/reviewer \
+         '/Users/u/Library/Application Support' && touch -- /Users/u/.claude.json"
+    );
 }
 
-/// An owner never gets a read-only view, nor does a tenant that adopts its
-/// tree to write it (a workflow step); the guest is not even asked.
-#[test]
-fn owners_and_workflow_steps_get_no_read_only_view() {
-    let root = Path::new("/w/coder");
-    let own_tree = root.join("repo");
-    let run_tree = Path::new("/runs/run-7/repo");
-    let cases = [
-        // An owner, in its own checkout or in an adopted one.
-        (launch_ctx(root, &own_tree, true), false),
-        (launch_ctx(root, run_tree, true), false),
-        // A tenant that adopts its tree to write it.
-        (launch_ctx(root, run_tree, false), true),
-    ];
-    for (ctx, is_tenant) in &cases {
-        let view = super::read_only_view(ctx, *is_tenant, Path::new("/runs/run-7"));
-        assert_eq!(view, None, "{}", ctx.cwd.display());
-        let enforced = super::enforced_view(view, |_| panic!("the guest was asked"), "a", "b");
-        assert_eq!(enforced.unwrap(), None);
-    }
-}
-
-/// The probe tells a guest that predates `--read-only` (it names the option
-/// unknown) from one that has it and could not set it up.
+/// The probe tells a guest that predates the options (it names one unknown)
+/// from one that has them and could not set them up.
 #[test]
 fn the_read_only_probe_tells_an_old_guest_from_a_failed_one() {
     assert_eq!(super::read_only_probe_answer(true, ""), Some(true));
     let old = "fletch-guest: exec: unknown option --read-only\n";
     assert_eq!(super::read_only_probe_answer(false, old), Some(false));
+    let older = "fletch-guest: exec: unknown option --writable\n";
+    assert_eq!(super::read_only_probe_answer(false, older), Some(false));
     let failed = "fletch-guest: exec: unshare: Operation not permitted (os error 1)\n";
     assert_eq!(super::read_only_probe_answer(false, failed), None);
     assert_eq!(super::read_only_probe_answer(false, ""), None);

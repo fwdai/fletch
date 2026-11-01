@@ -41,18 +41,31 @@ lz4hc erofs (64 KiB clusters, dedupe): the guest kernel decodes LZ4 only.
 
 Every agent process starts through `fletch-guest exec`, which clears the
 environment and loads the launch's env file. All ssh sessions are the one
-guest user `agent`, so a tenant that must only read its host's tree (the
-local reviewer) gets `exec --read-only <dir>` on the host agent's writable
-root instead of a file mode: a user namespace mapping `agent` to itself, a
-mount namespace in which `<dir>` is a read-only bind and `/data` (the other
-route to the same trees) is covered by an empty tmpfs, and a pid namespace
-with a private `/proc`, so no other process's `/proc/<pid>/root` leads back
-to the writable view. Every capability is then dropped and `no_new_privs`
-set; a namespace the command creates inherits the mounts locked. A step that
-fails exits 125 before the command runs. It covers the named trees only:
-what the guest user may write anyway (its home, `/tmp`) stays writable.
-Images up to 0.3.0 ship a `fletch-guest` without the option; until a newer
-one is published and pinned, the reviewer runs unconfined with a warning.
+guest user `agent`, so a tenant that must only read its host's files (the
+local reviewer) is confined by namespaces instead of a file mode, to the view
+seatbelt gives it on the host: `exec --read-only <dir>` for each of the host
+agent's identity binds (its writable root, the home, its mailbox; one nested
+in another is covered by it) and each folder the box shares writable that the
+reviewer was not granted writable, then `--writable <path>` for each path of
+the reviewer's own inside them — its writable root and mailbox, its
+provider's state dirs and `~/.claude.json`, the agent scratch dirs, the
+project's toolchain cache, its `CODEX_HOME`, its own writable grants
+(`boxes::confined_view`, which names seatbelt's allow-list as its source).
+The host creates those paths before the launch. The command gets a user
+namespace mapping `agent` to itself; a mount namespace in which each `<dir>`
+is bound on itself with every mount below it and the whole subtree made
+read-only in one `mount_setattr(2)`, each `<path>` (a directory or file,
+reached through no symbolic link) bound again and made writable, and `/data`
+(the other route to the same trees) covered by an empty tmpfs; and a pid
+namespace with a private `/proc`, so no other process's `/proc/<pid>/root`
+leads back to the writable view. Every capability is then dropped and
+`no_new_privs` set; a namespace the command creates inherits the mounts
+locked. A step that fails exits 125 before the command runs. There is no
+fallback: a guest without the options (images up to 0.3.0) or one that cannot
+set them up refuses the reviewer's launch and asks for the box image to be
+updated; the app pins an image whose guest has them. What stays writable is
+scratch outside every bind (`/tmp`, `/var/tmp`, `/run`), and the network
+namespace is the guest's.
 
 Settings (Settings › Sandbox › Box): memory, CPUs, idle stop, image URL, and a
 toggle per layer (`box_layers`). A layer turned on is downloaded once and
