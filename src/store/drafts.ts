@@ -20,6 +20,7 @@ import { activeEnvironment, activeEnvironmentId } from "./environments";
 import { refreshWorkspace } from "./refreshWorkspace";
 import { activeSurface } from "./surface";
 import type { AppState, SliceCreator } from "./types";
+import { workspaceTypeOptionsFor } from "./workspaceTypes";
 
 // ---- Drafts ----------------------------------------------------------------
 // A draft is a new agent the user is about to spawn. It owns a landmark
@@ -44,9 +45,9 @@ export interface DraftAgent {
    *  past the draft: undefined follows the active account in Settings. */
   account?: string;
   /** The workspace type the user picked in the composer, kept as clicked
-   *  (the default included). Never remembered past the draft: undefined
-   *  leaves it to Settings and the project's placement. Sent only while the
-   *  composer offers the control (`workspaceTypeOffered`). */
+   *  (the default included): a preference, shown over the default whenever
+   *  the host lists it. Never remembered past the draft. The spawn sends
+   *  what the chip declares from it (`workspaceTypeToSend`), not the field. */
   workspaceType?: WorkspaceKind;
   /** Base branch to fork from. */
   base: string;
@@ -451,12 +452,14 @@ export const createDraftsSlice: SliceCreator<DraftsSlice> = (set, get) => ({
         // The composer's folder chips, checked by the backend and in place
         // from the first launch.
         folders,
-        // The composer's workspace type, when the user picked one and the
-        // control is on screen — never a pick the user can no longer see. A
-        // VM that cannot be had fails the spawn with why.
+        // What the composer's chip declares, the pick or the default alike,
+        // read from the host's answer for this repo and provider only: the
+        // agent lands where the chip says, or the spawn fails with why. With
+        // no such answer the chip shows nothing and nothing is sent.
         workspaceTypeToSend(
           draft.workspaceType,
           workspaceTypeOffered(get().admin, activeEnvironment().kind !== "remote"),
+          workspaceTypeOptionsFor(get(), draft.repoPath, provider),
         ),
       );
       // The first message names each granted folder, by the canonical path

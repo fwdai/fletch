@@ -1,8 +1,10 @@
 // The composer's workspace type for a new agent: this Mac's sandbox or an
-// isolated VM. The host computes the options (`available_workspace_types`);
-// these helpers only decide whether the control is offered, what it shows and
-// what the spawn carries, so the rule is the host's and the control cannot
-// disagree with it.
+// isolated VM. The chip declares where the agent runs: the spawn carries
+// exactly the kind the chip shows, the user's pick or the host's default
+// alike, so the host lands the agent there or refuses with why, and the
+// display cannot disagree with the outcome. The options are the host's
+// (`available_workspace_types`), read for one set of inputs and never shown
+// for others; while there is no such answer nothing is shown and nothing sent.
 
 import type { WorkspaceKind, WorkspaceTypeOption } from "@/api";
 import { boxesUnlockedFor } from "@/util/boxesRollout";
@@ -13,16 +15,6 @@ import { boxesUnlockedFor } from "@/util/boxesRollout";
  *  spawn sends the pick on this one rule. */
 export function workspaceTypeOffered(admin: boolean, onThisMac: boolean): boolean {
   return boxesUnlockedFor(admin) && onThisMac;
-}
-
-/** What the spawn carries: the user's explicit pick, only while the control
- *  is offered. A draft the user never touched carries nothing, and the host
- *  decides. */
-export function workspaceTypeToSend(
-  choice: WorkspaceKind | undefined,
-  offered: boolean,
-): WorkspaceKind | undefined {
-  return offered ? choice : undefined;
 }
 
 /** What a spawn with no choice gets, or null when neither option is it (the
@@ -56,63 +48,78 @@ export function workspaceTypeLabel(kind: WorkspaceKind): string {
   return kind === "box" ? "Isolated VM" : "This Mac";
 }
 
-/** What the host has answered the picker so far: the options of its last
- *  successful read (null until there is one) and whether the latest read
- *  failed. A failure keeps the options already shown. */
+/** The option the chip declares: the shown option while the host offers the
+ *  control (one option is the default), else none. The chip draws it and the
+ *  spawn sends its kind, so the two are one derivation. */
+export function declaredWorkspaceType(
+  options: WorkspaceTypeOption[] | null,
+  choice: WorkspaceKind | undefined,
+): WorkspaceTypeOption | null {
+  return options && workspaceTypeVisible(options) ? shownWorkspaceType(options, choice) : null;
+}
+
+/** What the spawn carries: the kind the chip declares, the default included,
+ *  while the control is offered and `options` is the host's answer for the
+ *  draft's current inputs. Nothing otherwise (not offered, still loading, the
+ *  host could not answer, or a container engine pinned): the host decides. */
+export function workspaceTypeToSend(
+  choice: WorkspaceKind | undefined,
+  offered: boolean,
+  options: WorkspaceTypeOption[] | null,
+): WorkspaceKind | undefined {
+  return offered ? declaredWorkspaceType(options, choice)?.kind : undefined;
+}
+
+/** The inputs an answer is for, as one key: the repo and the provider, and the
+ *  two settings that move the default wholesale (the engine pinned in
+ *  Settings, the boxes switch). An answer is shown, and sent, only for its own
+ *  key. */
+export function workspaceTypesKey(
+  repoPath: string,
+  provider: string,
+  sandboxEngine: string,
+  boxesEnabled: boolean,
+): string {
+  return [repoPath, provider, sandboxEngine, String(boxesEnabled)].join("\u0000");
+}
+
+/** One successful read: the options and the key of the inputs it was for. */
 export interface WorkspaceTypeAnswer {
-  options: WorkspaceTypeOption[] | null;
-  failed: boolean;
+  key: string;
+  options: WorkspaceTypeOption[];
 }
 
-/** Before the first read lands: the picker draws nothing. */
-export const UNANSWERED: WorkspaceTypeAnswer = { options: null, failed: false };
-
-/** The answer after a read: its options when it succeeded, else the previous
- *  options with the failure noted. */
-export function answerWith(
-  prev: WorkspaceTypeAnswer,
-  read: WorkspaceTypeOption[] | "failed",
-): WorkspaceTypeAnswer {
-  return read === "failed"
-    ? { options: prev.options, failed: true }
-    : { options: read, failed: false };
+/** The answer's options when it is for `key`, else null. */
+export function answeredOptions(
+  answer: WorkspaceTypeAnswer | null,
+  key: string,
+): WorkspaceTypeOption[] | null {
+  return answer?.key === key ? answer.options : null;
 }
 
-/** One read of the options: its sequence number and the inputs it asked for. */
-export interface WorkspaceTypeRequest {
-  id: number;
-  repoPath: string;
-  provider: string;
-}
-
-/** Whether a read's response may land: it is the latest one started and it
- *  asked for the inputs the picker has now, so an older repo's or provider's
- *  options never overwrite the current ones. */
+/** Whether a read's response may land: it is the latest one started and its
+ *  key is the inputs the picker on screen has now (`null` when none is). */
 export function workspaceTypeResponseLands(
-  request: WorkspaceTypeRequest,
+  request: { id: number; key: string },
   latestId: number,
-  inputs: { repoPath: string; provider: string },
+  currentKey: string | null,
 ): boolean {
-  return (
-    request.id === latestId &&
-    request.repoPath === inputs.repoPath &&
-    request.provider === inputs.provider
-  );
+  return request.id === latestId && request.key === currentKey;
 }
 
 /** Whether the user's pick must be dropped: only when the host answered that
- *  the control is not offered (no option is the default). A failed or pending
+ *  the control is not offered (no option is the default). A pending or failed
  *  read is no such answer. */
-export function workspaceTypePickDropped(answer: WorkspaceTypeAnswer): boolean {
-  return answer.options !== null && !workspaceTypeVisible(answer.options);
+export function workspaceTypePickDropped(options: WorkspaceTypeOption[] | null): boolean {
+  return options !== null && !workspaceTypeVisible(options);
 }
 
 export const WORKSPACE_TYPES_UNREADABLE = "Couldn't load the workspace types. Click to retry.";
 
-/** What the chip draws for an answer and the user's pick: nothing (first read
- *  pending, or the host does not offer the control), a retry chip (no read has
- *  succeeded and the last one failed; it shows the pick if there is one, and
- *  the menu stays shut), or the menu chip for the shown option. */
+/** What the chip draws: nothing (no answer for the current inputs yet, or the
+ *  host does not offer the control), a retry chip (no answer for these inputs
+ *  and the last read failed; it shows the pick if there is one, and the menu
+ *  stays shut), or the menu chip for the declared option. */
 export type WorkspaceTypeChip =
   | null
   | { kind: "retry"; pick: WorkspaceKind | null; label: string; tip: string }
@@ -124,12 +131,12 @@ export type WorkspaceTypeChip =
     };
 
 export function workspaceTypeChip(
-  answer: WorkspaceTypeAnswer,
+  options: WorkspaceTypeOption[] | null,
+  failed: boolean,
   choice: WorkspaceKind | undefined,
 ): WorkspaceTypeChip {
-  const { options } = answer;
   if (!options) {
-    if (!answer.failed) return null;
+    if (!failed) return null;
     return {
       kind: "retry",
       pick: choice ?? null,
@@ -137,8 +144,7 @@ export function workspaceTypeChip(
       tip: WORKSPACE_TYPES_UNREADABLE,
     };
   }
-  if (!workspaceTypeVisible(options)) return null;
-  const shown = shownWorkspaceType(options, choice);
+  const shown = declaredWorkspaceType(options, choice);
   if (!shown) return null;
   // An option shown but unavailable (a project pinned to VMs on a runtime
   // that cannot boot one) says why the launch will fail.

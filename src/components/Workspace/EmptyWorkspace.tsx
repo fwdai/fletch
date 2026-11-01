@@ -112,7 +112,7 @@ export function EmptyWorkspace({ draft }: { draft: DraftAgent }) {
   const workflowMode = mode === "workflow" && !workflowGate;
   // The workspace type is offered where boxes are rolled out to this user, and
   // only for an agent on this Mac: a paired host's spawn carries no workspace
-  // type yet. `spawnFromDraft` sends the pick on the same rule.
+  // type yet. `spawnFromDraft` sends what the chip declares on the same rule.
   const workspaceTypeShown = useAppStore((s) =>
     workspaceTypeOffered(s.admin, activeEntry(s).kind !== "remote"),
   );

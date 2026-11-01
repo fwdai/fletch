@@ -1,19 +1,12 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { api, type WorkspaceKind, type WorkspaceTypeOption } from "@/api";
+import { useCallback, useEffect, useState } from "react";
+import type { WorkspaceKind } from "@/api";
 import { Icon } from "@/components/Icon";
 import { Chip } from "@/components/ui/Chip";
 import { DropdownItem, DropdownMenu, DropdownSection } from "@/components/ui/Dropdown";
 import { Scrim } from "@/components/ui/Scrim";
 import { useAppStore } from "@/store";
-import {
-  answerWith,
-  UNANSWERED,
-  type WorkspaceTypeAnswer,
-  workspaceTypeChip,
-  workspaceTypeLabel,
-  workspaceTypePickDropped,
-  workspaceTypeResponseLands,
-} from "./workspaceType";
+import { workspaceTypeOptionsFor, workspaceTypesFailedFor } from "@/store/workspaceTypes";
+import { workspaceTypeChip, workspaceTypeLabel, workspaceTypePickDropped } from "./workspaceType";
 
 /** The composer's workspace type for a new agent draft. Existing sessions keep
  *  the engine stamped at their creation and get no control. */
@@ -34,52 +27,39 @@ interface Props extends WorkspaceTypeControl {
 
 const icon = (kind: WorkspaceKind) => (kind === "box" ? "cube" : "folderLock");
 
-/** Footer chip and menu for where a new agent runs. The options, each one's
- *  availability and reason, and the default are the host's
- *  (`available_workspace_types`); every read (on mount, when the repo, the
- *  provider or the boxes switch changes, and on every open, since an image
- *  finishing its download moves the default) goes through one numbered `load`,
- *  and only the latest read for the current repo and provider lands. A failed
- *  read keeps the options already shown and the user's pick; before any read
- *  has succeeded the chip draws nothing while loading and offers a retry once
- *  one failed. The pick is dropped only when the host answers that no option
- *  is the default (a container engine pinned in Settings), and the chip then
- *  stays away. */
+/** Footer chip and menu for where a new agent runs. The chip declares it: the
+ *  spawn sends the kind shown here, read from the store's one answer for this
+ *  repo, provider and settings (`store/workspaceTypes`), which is loaded on
+ *  mount, when those inputs change, on every open and when a box setup event
+ *  moves the default; an answer for other inputs is never shown.
+ *  Nothing is drawn until the answer for these inputs lands, nor when the host
+ *  answers that no option is the default (a container engine pinned in
+ *  Settings), which also drops the pick; a failed read keeps the answer and
+ *  the pick, and with no answer yet the chip offers a retry instead. */
 export function WorkspaceTypePicker({ repoPath, provider, current, onPick }: Props) {
   const [open, setOpen] = useState(false);
-  const [answer, setAnswer] = useState<WorkspaceTypeAnswer>(UNANSWERED);
+  const options = useAppStore((s) => workspaceTypeOptionsFor(s, repoPath, provider));
+  const failed = useAppStore((s) => workspaceTypesFailedFor(s, repoPath, provider));
+  const loadWorkspaceTypes = useAppStore((s) => s.loadWorkspaceTypes);
+  const releaseWorkspaceTypes = useAppStore((s) => s.releaseWorkspaceTypes);
+  // Part of the answer's key: a change drops the answer, so read again.
+  const sandboxEngine = useAppStore((s) => s.sandboxEngine);
   const boxesEnabled = useAppStore((s) => s.boxesEnabled);
-  const latestId = useRef(0);
-  const inputs = useRef({ repoPath, provider });
-  inputs.current = { repoPath, provider };
 
-  const load = useCallback(() => {
-    latestId.current += 1;
-    const request = { id: latestId.current, repoPath, provider };
-    const land = (read: WorkspaceTypeOption[] | "failed") => {
-      if (workspaceTypeResponseLands(request, latestId.current, inputs.current)) {
-        setAnswer((prev) => answerWith(prev, read));
-      }
-    };
-    api.availableWorkspaceTypes(repoPath, provider).then(land, () => land("failed"));
-  }, [repoPath, provider]);
+  const load = useCallback(
+    () => void loadWorkspaceTypes(repoPath, provider),
+    [loadWorkspaceTypes, repoPath, provider],
+  );
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the settings are refetch triggers
+  useEffect(load, [load, sandboxEngine, boxesEnabled]);
+  useEffect(() => releaseWorkspaceTypes, [releaseWorkspaceTypes]);
 
-  // `boxesEnabled` only triggers the refetch; the host reads the switch itself.
-  // Unmounting, or the inputs changing, invalidates the read in flight.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: refetch trigger
-  useEffect(() => {
-    load();
-    return () => {
-      latestId.current += 1;
-    };
-  }, [load, boxesEnabled]);
-
-  const dropPick = workspaceTypePickDropped(answer);
+  const dropPick = workspaceTypePickDropped(options);
   useEffect(() => {
     if (dropPick && current) onPick(undefined);
   }, [dropPick, current, onPick]);
 
-  const chip = workspaceTypeChip(answer, current);
+  const chip = workspaceTypeChip(options, failed, current);
   if (!chip) return null;
 
   if (chip.kind === "retry") {
@@ -92,7 +72,7 @@ export function WorkspaceTypePicker({ repoPath, provider, current, onPick }: Pro
       </span>
     );
   }
-  const { options, shown } = chip;
+  const { shown } = chip;
 
   return (
     <span style={{ position: "relative", minWidth: 0 }}>
@@ -114,7 +94,7 @@ export function WorkspaceTypePicker({ repoPath, provider, current, onPick }: Pro
             style={{ bottom: "calc(100% + 6px)", left: 0, padding: 0, overflow: "hidden" }}
           >
             <DropdownSection>Runs in</DropdownSection>
-            {options.map((o) => (
+            {chip.options.map((o) => (
               <DropdownItem
                 key={o.kind}
                 active={o.kind === shown.kind}
