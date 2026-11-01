@@ -17,6 +17,7 @@ use std::time::Duration;
 
 use crate::error::Result;
 use crate::sandbox::container::freshness::{classify_freshness, version_refresh_wanted, Freshness};
+use crate::sandbox::container::image_gc;
 use crate::sandbox::container::images::{image_spec, image_tag, write_build_context};
 use crate::sandbox::container::progress::{self, BuildEvent};
 use crate::sandbox::container::ContainerProvider;
@@ -429,14 +430,20 @@ fn cache_image_version_post_build(
 /// The image id `tag` names right now in `connection`'s store, for a launch
 /// to run and probe by instead of the tag: a parity rebuild in the background
 /// retags at any moment (`resolve_image`), and the probe and the `podman run`
-/// after it have to see one image. The id is pinned for the GC
-/// (`image_gc::pin_launch`), so the rebuild's sweep of the then-untagged
-/// predecessor can't take it from under the launch. `None` when podman can't
-/// say, and the caller keeps the tag and vouches for nothing.
+/// after it have to see one image. The image is held for the launch by a
+/// `fletch-launch` tag written first and read for its id
+/// (`image_gc::launch_tag`: every sweep of this store, by this Fletch or one
+/// beside it, lists the tag and keeps the image while the tag is young), so
+/// the rebuild's sweep of the then-untagged predecessor can't take it from
+/// under the launch. `None` when podman couldn't tag or say, and the caller
+/// keeps the tag and vouches for nothing.
 pub(super) fn pin_image(connection: Option<&str>, tag: &str) -> Option<String> {
-    let (id, _) = inspect_id_and_created(connection, tag)?;
-    crate::sandbox::container::image_gc::pin_launch(&id);
-    Some(id)
+    let hold = image_gc::launch_tag(image_gc::unix_now());
+    let tagged = cli::run_podman_on(connection, &["tag", tag, &hold], INSPECT_TIMEOUT).ok()?;
+    if !tagged.status.success() {
+        return None;
+    }
+    inspect_id_and_created(connection, &hold).map(|(id, _)| id)
 }
 
 /// Whether the claude in `image_id` on `connection` — the image this launch

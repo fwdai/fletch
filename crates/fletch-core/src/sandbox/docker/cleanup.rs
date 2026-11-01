@@ -25,8 +25,8 @@ use std::time::Duration;
 
 use crate::error::{Error, Result};
 use crate::sandbox::container::image_gc::{
-    current_tags, image_removal_refs, known_repos, parse_images_line, pinned_ids, unpinned_rows,
-    ImageRow, IMAGES_FORMAT, RETIRED_REPOS,
+    current_tags, image_removal_refs, known_repos, launch_holds, parse_images_line, unheld_rows,
+    unix_now, ImageRow, IMAGES_FORMAT, RETIRED_REPOS,
 };
 
 use super::{cli, engine, image};
@@ -171,17 +171,17 @@ pub fn remove_agent_containers(agent_id: &str) -> Result<usize> {
 ///
 /// Never touched: current tags, the user's `docker_image` override (excluded
 /// defensively even though it can't carry the label), any unlabeled image
-/// not on the legacy list, images a launch has just pinned
-/// (`image_gc::pin_launch`: between its inspect and its `docker run` the id is
-/// held by nothing else), and images in use by a container — `docker rmi`
-/// runs WITHOUT `-f`, so an in-use image fails removal, which is expected and
-/// logged at debug. Returns the number of images actually removed; callers
-/// treat all failures as non-fatal.
+/// not on the legacy list, images a launch holds (`image_gc::launch_tag`: a
+/// `fletch-launch` tag a launch of any Fletch instance wrote, between its
+/// inspect and its `docker run`, when nothing else held the id; a hold past
+/// its time is untagged here instead), and images in use by a container —
+/// `docker rmi` runs WITHOUT `-f`, so an in-use image fails removal, which is
+/// expected and logged at debug. Returns the number of images actually
+/// removed; callers treat all failures as non-fatal.
 pub fn sweep_stale_images() -> Result<usize> {
     let current_tags = current_tags();
     let known_repos = known_repos();
     let override_image = engine::image_override();
-    let pinned = pinned_ids();
 
     let labeled = list_images(&[
         "images",
@@ -190,7 +190,8 @@ pub fn sweep_stale_images() -> Result<usize> {
         "--format",
         IMAGES_FORMAT,
     ])?;
-    let labeled = unpinned_rows(labeled, &pinned);
+    let holds = launch_holds(&labeled, unix_now());
+    let labeled = unheld_rows(labeled, &holds.held);
     // Legacy pre-label images: list each Fletch-owned repo by name. (A repo
     // argument to `docker images` matches only that exact repo.) Retired repos
     // are listed too — a pre-label image doesn't stop being ours because the
@@ -204,9 +205,9 @@ pub fn sweep_stale_images() -> Result<usize> {
     {
         legacy.extend(list_images(&["images", repo, "--format", IMAGES_FORMAT])?);
     }
-    let legacy = unpinned_rows(legacy, &pinned);
+    let legacy = unheld_rows(legacy, &holds.held);
 
-    let refs = image_removal_refs(
+    let mut refs = image_removal_refs(
         &labeled,
         &legacy,
         &current_tags,
@@ -215,6 +216,7 @@ pub fn sweep_stale_images() -> Result<usize> {
         LEGACY_TAGS,
         override_image.as_deref(),
     );
+    refs.extend(holds.expired);
     if refs.is_empty() {
         return Ok(0);
     }
@@ -225,6 +227,17 @@ pub fn sweep_stale_images() -> Result<usize> {
     );
     let mut removed = 0;
     for image_ref in &refs {
+        // A dangling image is removed by id, which docker does even if one
+        // tag was written since the listing — a launch hold that landed in
+        // between. Look once more, right before.
+        if !image_ref.contains(':') && !still_dangling(image_ref) {
+            tracing::debug!(
+                target: "fletch::docker",
+                image = %image_ref,
+                "image tagged since the listing; left for the next pass",
+            );
+            continue;
+        }
         // One rmi per image (not batched): a single in-use image must not
         // taint the exit status the others report. No `-f` — an image backing
         // a running container stays, by design. A transport failure is per-image
@@ -253,6 +266,18 @@ pub fn sweep_stale_images() -> Result<usize> {
         }
     }
     Ok(removed)
+}
+
+/// Whether image `id` still has no tag at all. "Can't tell" (gone already, or
+/// no answer) reads as not dangling: the image is left alone this pass.
+fn still_dangling(id: &str) -> bool {
+    match cli::run_docker(
+        &["image", "inspect", "--format", "{{len .RepoTags}}", id],
+        QUERY_TIMEOUT,
+    ) {
+        Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout).trim() == "0",
+        Ok(_) | Err(_) => false,
+    }
 }
 
 /// Run one `docker images` listing and parse its rows.

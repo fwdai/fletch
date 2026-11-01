@@ -32,6 +32,7 @@ use std::time::Duration;
 
 use crate::error::Result;
 use crate::sandbox::container::freshness::{classify_freshness, version_refresh_wanted, Freshness};
+use crate::sandbox::container::image_gc;
 use crate::sandbox::container::images::{image_spec, write_build_context, BASE_IMAGE};
 use crate::sandbox::container::progress::{self, BuildEvent};
 
@@ -597,14 +598,19 @@ fn cache_image_version_post_build(provider: DockerProvider, tag: &str) {
 /// The image id `tag` names right now, for a launch to run and probe by
 /// instead of the tag: a parity rebuild in the background retags at any
 /// moment (`resolve_image`), and the probe and the `docker run` after it have
-/// to see one image. The id is pinned for the GC (`image_gc::pin_launch`), so
-/// the rebuild's sweep of the then-untagged predecessor can't take it from
-/// under the launch. `None` when docker can't say, and the caller keeps the
-/// tag and vouches for nothing.
+/// to see one image. The image is held for the launch by a `fletch-launch`
+/// tag written first and read for its id (`image_gc::launch_tag`: every
+/// sweep, of this Fletch or one beside it, lists the tag and keeps the image
+/// while the tag is young), so the rebuild's sweep of the then-untagged
+/// predecessor can't take it from under the launch. `None` when docker
+/// couldn't tag or say, and the caller keeps the tag and vouches for nothing.
 pub(super) fn pin_image(tag: &str) -> Option<String> {
-    let id = inspect_image_id(tag)?;
-    crate::sandbox::container::image_gc::pin_launch(&id);
-    Some(id)
+    let hold = image_gc::launch_tag(image_gc::unix_now());
+    let tagged = cli::run_docker(&["tag", tag, &hold], INSPECT_TIMEOUT).ok()?;
+    if !tagged.status.success() {
+        return None;
+    }
+    inspect_image_id(&hold)
 }
 
 /// Whether the claude in `image_id` — the image this launch runs from,

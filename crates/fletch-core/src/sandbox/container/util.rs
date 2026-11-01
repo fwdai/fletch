@@ -24,8 +24,8 @@ pub(crate) fn container_name(agent_id: &str) -> String {
 }
 
 /// 8 hex chars from (pid, monotonic counter): unique across side-by-side Fletch
-/// instances for the lifetime of any one container.
-fn nonce() -> String {
+/// instances for the lifetime of any one container (or launch hold).
+pub(crate) fn nonce() -> String {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
