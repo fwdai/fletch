@@ -910,7 +910,7 @@ fn only_the_files_a_view_copies_are_seeded_outside_it() {
         mode: 0o600,
         keep_existing,
     };
-    let seed = vec![
+    let seed = [
         GuestEntry::Dir(home.join(".claude/projects")),
         file(home.join(".claude.json"), false),
         file(home.join(".claude/projects/x.json"), false),

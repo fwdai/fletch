@@ -1012,7 +1012,11 @@ fn make_carve_outs(
             String::from_utf8_lossy(&out.stderr).trim()
         )));
     }
-    home::apply(channel, &executor::Scope::default(), &mount_point_seed(view, seed))
+    home::apply(
+        channel,
+        &executor::Scope::default(),
+        &mount_point_seed(view, seed),
+    )
 }
 
 /// The entries of a launch's `seed` for the files `view` copies

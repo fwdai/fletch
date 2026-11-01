@@ -634,6 +634,7 @@ mod tests {
     #[test]
     fn a_removal_empties_a_directory_it_cannot_remove() {
         use std::os::unix::fs::PermissionsExt as _;
+        use std::process::Command;
 
         let td = tempfile::tempdir().unwrap();
         let parent = td.path().join("home");
@@ -646,7 +647,7 @@ mod tests {
         ];
         let script = shell_pass(&entries).unwrap();
         let sh = |script: &str| {
-            let out = std::process::Command::new("sh").arg("-c").arg(script).output();
+            let out = Command::new("sh").args(["-c", script]).output();
             out.unwrap().status.success()
         };
         let chmod = |path: &Path, mode: u32| {
