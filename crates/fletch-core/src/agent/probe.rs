@@ -259,9 +259,9 @@ async fn run_bounded(bin: &str, args: &[&str]) -> Option<std::process::Output> {
 const THINKING_DISPLAY_PROBE: &str = "__fletch_probe__";
 
 /// The argv of the `--thinking-display` capability probe, after the binary:
-/// what [`claude_supports_thinking_display`] runs on the host, and what the
-/// container runtimes run inside their images (`sandbox::container::
-/// thinking_display`), so one reading serves every engine.
+/// what [`claude_supports_thinking_display`] runs on the host, and what every
+/// other engine runs against the claude it launches (an image's, a box's
+/// tools disk's), so one reading serves every engine.
 pub(crate) const THINKING_DISPLAY_PROBE_ARGS: [&str; 3] =
     ["--thinking-display", THINKING_DISPLAY_PROBE, "--version"];
 
