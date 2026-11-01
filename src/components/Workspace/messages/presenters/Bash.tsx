@@ -1,6 +1,7 @@
 import { renderToolResult } from "@/util/toolText";
+import { Caption, TermSurface } from "./blocks";
 import type { ToolPresenter } from "./types";
-import { firstLineOf, getCommandField, getStringField, ToolBlock } from "./util";
+import { commandHead, firstLineOf, getCommandField, getStringField, progressive } from "./util";
 
 export const bashPresenter: ToolPresenter = {
   icon: "terminal",
@@ -13,14 +14,24 @@ export const bashPresenter: ToolPresenter = {
     const description = getStringField(call.input, "description");
     return (
       <>
-        {description && <ToolBlock label="·">{description}</ToolBlock>}
-        <ToolBlock label="$">{cmd}</ToolBlock>
-        {result && (
-          <ToolBlock label="↳" isError={result.is_error}>
-            {renderToolResult(result.content)}
-          </ToolBlock>
-        )}
+        {description && <Caption>{description}</Caption>}
+        <TermSurface
+          command={cmd}
+          output={result ? renderToolResult(result.content) : null}
+          isError={result?.is_error}
+        />
       </>
     );
+  },
+  // The summary names the command itself: "ran cargo test" reads; a
+  // description ("Run the tests") would read "ran Run the tests".
+  facts: (call) => ({ kind: "run", subject: commandHead(getCommandField(call.input)) }),
+  // The agent's own description says what the command is *for* ("Running the
+  // unit tests"); without a description we know, name the command itself.
+  activity: (call) => {
+    const said = progressive(getStringField(call.input, "description"));
+    if (said) return said;
+    const head = commandHead(getCommandField(call.input));
+    return head ? `Running ${head}` : "Running a command";
   },
 };

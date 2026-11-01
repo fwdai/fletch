@@ -5,21 +5,12 @@
 import { useEffect, useState } from "react";
 import { Icon } from "@/components/Icon";
 import { CopyButton } from "@/components/ui/CopyButton";
+import { fmtDur } from "@/util/format";
 import { ForkMenu } from "./ForkMenu";
 
-/** Whole seconds under a minute; `{m}m {ss}s` (zero-padded seconds) at a
- *  minute or more; `{h}h {mm}m {ss}s` at an hour or more. Never a leading
- *  `0h`/`0m`, never decimals. */
-export function fmtDur(sec: number): string {
-  sec = Math.max(0, Math.floor(sec));
-  const h = Math.floor(sec / 3600);
-  const m = Math.floor((sec % 3600) / 60);
-  const s = sec % 60;
-  if (h > 0) {
-    return `${h}h ${String(m).padStart(2, "0")}m ${String(s).padStart(2, "0")}s`;
-  }
-  return m === 0 ? `${s}s` : `${m}m ${String(s).padStart(2, "0")}s`;
-}
+// `fmtDur` lives in util/format so the shared transcript rows (desktop and
+// phone) can say "Worked for 4m 12s" without this file's desktop chrome.
+export { fmtDur };
 
 /** Live elapsed value, recomputed from a fixed start timestamp every second so
  *  it never drifts when the tab is backgrounded. `startedAt` is epoch millis. */
@@ -40,22 +31,29 @@ export function LiveTimer({ startedAt }: { startedAt: number }) {
  *  action. Doubles as the seam between turns (the hairline lives in CSS).
  *
  *  `agentId` + `forkTurnId` (the last turn above this footer) are what the fork
- *  action anchors the new conversation on; no turn id, no fork action. */
+ *  action anchors the new conversation on; no turn id, no fork action. `quiet`
+ *  leaves the duration out — a folded turn's "Worked for …" line said it. */
 export function TurnFooter({
   runSec,
   copyText,
   agentId,
   forkTurnId,
+  quiet,
 }: {
   runSec: number;
   copyText: string;
   agentId: string;
   forkTurnId: string | undefined;
+  quiet?: boolean;
 }) {
   return (
     <div className="turn-meta">
-      <Icon name="clock" size={11} />
-      <span>Ran {fmtDur(runSec)}</span>
+      {!quiet && (
+        <>
+          <Icon name="clock" size={11} />
+          <span>Ran {fmtDur(runSec)}</span>
+        </>
+      )}
       {copyText && <CopyButton text={copyText} className="turn-copy" />}
       {forkTurnId && (
         <ForkMenu agentId={agentId} turnId={forkTurnId} tip="Fork from here" compact />

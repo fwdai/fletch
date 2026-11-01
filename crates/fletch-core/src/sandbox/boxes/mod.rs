@@ -576,6 +576,36 @@ fn identity_of(ctx: &AgentLaunchCtx) -> BoxIdentity {
     .with_shares(ctx.folder_grants)
 }
 
+/// Whether the claude at `agent_bin` on the box's tools disk `disk` parses
+/// `--thinking-display`: remembered per disk file (`agent::file_identity`:
+/// the real path, size and modification time, so a `latest` disk rebuilt in
+/// place is a new one), probed in the guest over the box's ssh channel — the
+/// host's probe and reading (`agent::THINKING_DISPLAY_PROBE_ARGS`), on the
+/// host probe's bounded runner, so a wedged guest can't hold a launch — the
+/// first time a disk is seen. A probe that didn't run or finish is no answer:
+/// nothing is remembered and the next launch asks again.
+fn guest_thinking_summaries(channel: &fletch_box::Channel, disk: &Path, agent_bin: &str) -> bool {
+    let identity = format!("box tools disk {}", crate::agent::file_identity(disk));
+    if let Some(known) = crate::agent::thinking_display_known(&identity) {
+        return known;
+    }
+    // `ssh -F <config> box <words…>`, each word quoted for the guest shell —
+    // what `executor::run` sends, under a deadline.
+    let config = channel.config.to_string_lossy().into_owned();
+    let words: Vec<String> = std::iter::once(agent_bin)
+        .chain(crate::agent::THINKING_DISPLAY_PROBE_ARGS)
+        .map(fletch_box::channel::shell_quote)
+        .collect();
+    let mut args: Vec<&str> = vec!["-F", &config, fletch_box::guest::SSH_HOST_ALIAS];
+    args.extend(words.iter().map(String::as_str));
+    let Some(out) = crate::agent::run_probe_bounded(SSH, &args) else {
+        return false;
+    };
+    let supported = crate::agent::probe_shows_thinking_display(&out);
+    crate::agent::remember_thinking_display(&identity, supported);
+    supported
+}
+
 impl SandboxEngine for BoxEngine {
     fn kind(&self) -> EngineKind {
         EngineKind::Box
@@ -715,6 +745,15 @@ impl SandboxEngine for BoxEngine {
                 Vec::new()
             }
         };
+        // The claude on the tools disk this box booted with — which may be an
+        // older disk taken while the host's version builds — is the one this
+        // launch runs, so it is the one asked.
+        let claude_thinking_summaries = match running.tools_disk() {
+            Some(disk) if ctx.provider == "claude" => {
+                guest_thinking_summaries(&running.channel, disk, agent_bin)
+            }
+            _ => false,
+        };
         let env_file = env_file_path(&launch_id);
 
         let remote =
@@ -776,6 +815,7 @@ impl SandboxEngine for BoxEngine {
             );
         Ok(LaunchPlan {
             program: PathBuf::from(BASH),
+            claude_thinking_summaries,
             prefix_args,
             env,
             env_remove: ENV_DENY.iter().map(|v| v.to_string()).collect(),

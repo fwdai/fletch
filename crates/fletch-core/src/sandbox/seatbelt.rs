@@ -132,6 +132,9 @@ impl SandboxEngine for SandboxExecEngine {
         prefix_args.push(agent_bin.to_string());
         Ok(LaunchPlan {
             program: PathBuf::from(SANDBOX_EXEC),
+            // The host binary this launch runs, probed once per path.
+            claude_thinking_summaries: ctx.provider == "claude"
+                && crate::agent::claude_supports_thinking_display(agent_bin),
             prefix_args,
             env,
             env_remove: HOST_CREDENTIAL_ENV.iter().map(|v| v.to_string()).collect(),

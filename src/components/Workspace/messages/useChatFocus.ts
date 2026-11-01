@@ -1,11 +1,11 @@
-// Answer a `chatFocus` request (store/ui) for one row: when the sidebar — or
-// the thread view's "back" — asks for this tool_use in this agent's chat, run
-// `open`, scroll the row into view on the next frame, then consume the
-// request. Shared by the generic ToolRow and the sub-agent card so both
-// reveal the same way. The frame-ordering subtlety lives in revealToolRow.
+// Answer a reveal request (TranscriptHost `focus`) for one row: when the
+// sidebar — or the thread view's "back" — asks for this tool_use in this
+// agent's chat, run `open`, scroll the row into view on the next frame, then
+// consume the request. Shared by the generic ToolRow and the sub-agent card so
+// both reveal the same way. The frame-ordering subtlety lives in revealToolRow.
 
 import { useEffect, useRef } from "react";
-import { useAppStore } from "@/store";
+import { useTranscriptHost } from "./host";
 import { revealToolRow } from "./revealToolRow";
 
 export function useChatFocus(
@@ -14,14 +14,12 @@ export function useChatFocus(
   root: () => HTMLElement | null,
   open: () => void,
 ) {
-  const focused = useAppStore(
-    (s) =>
-      toolUseId !== undefined &&
-      s.chatFocus !== null &&
-      s.chatFocus.toolUseId === toolUseId &&
-      s.chatFocus.agentId === agentId,
-  );
-  const clearChatFocus = useAppStore((s) => s.clearChatFocus);
+  const { focus, clearFocus } = useTranscriptHost();
+  const focused =
+    toolUseId !== undefined &&
+    focus !== null &&
+    focus.toolUseId === toolUseId &&
+    focus.agentId === agentId;
 
   // Callers pass fresh closures each render; held in refs so the effect only
   // re-runs on the request itself (a re-run's cleanup would cancel the frame).
@@ -35,7 +33,7 @@ export function useChatFocus(
     return revealToolRow(
       () => rootRef.current(),
       () => openRef.current(),
-      clearChatFocus,
+      clearFocus,
     );
-  }, [focused, clearChatFocus]);
+  }, [focused, clearFocus]);
 }

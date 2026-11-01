@@ -16,8 +16,8 @@ use std::time::Duration;
 
 use crate::error::{Error, Result};
 use crate::sandbox::container::image_gc::{
-    current_tags, image_removal_refs, known_repos, parse_images_line, ImageRow, IMAGES_FORMAT,
-    RETIRED_REPOS,
+    current_tags, image_removal_refs, known_repos, launch_holds, parse_images_line, unheld_rows,
+    unix_now, ImageRow, IMAGES_FORMAT, RETIRED_REPOS,
 };
 use crate::sandbox::container::images::AGENT_IMAGE_LABEL;
 use crate::sandbox::container::labels::{
@@ -220,8 +220,12 @@ fn list_ids(connection: Option<&str>, filter: &str) -> Result<Vec<String>> {
 /// failures as non-fatal.
 ///
 /// Never touched: current tags, the user's `podman_image` override, unlabeled
-/// images, and images in use — `podman rmi` runs WITHOUT `-f`, so an in-use
-/// image fails removal, which is expected and logged at debug.
+/// images, images a launch holds (`image_gc::launch_tag`: a `fletch-launch`
+/// tag a launch of any Fletch instance wrote in this store, between its
+/// inspect and its `podman run`, when nothing else held the id; a hold past
+/// its time is untagged here instead), and images in use — `podman rmi` runs
+/// WITHOUT `-f`, so an in-use image fails removal, which is expected and
+/// logged at debug.
 pub(super) fn sweep_stale_images() -> Result<usize> {
     across_machines("podman image sweep", sweep_stale_images_on)
 }
@@ -229,17 +233,20 @@ pub(super) fn sweep_stale_images() -> Result<usize> {
 /// One image-GC pass against a single connection's store; a background refresh
 /// rebuild calls this directly for the one store it just rebuilt in.
 pub(super) fn sweep_stale_images_on(connection: Option<&str>) -> Result<usize> {
-    let refs = image_removal_refs(
-        &list_images(
-            connection,
-            &[
-                "images",
-                "--filter",
-                &format!("label={AGENT_IMAGE_LABEL}"),
-                "--format",
-                IMAGES_FORMAT,
-            ],
-        )?,
+    let labeled = list_images(
+        connection,
+        &[
+            "images",
+            "--filter",
+            &format!("label={AGENT_IMAGE_LABEL}"),
+            "--format",
+            IMAGES_FORMAT,
+        ],
+    )?;
+    let holds = launch_holds(&labeled, unix_now());
+    let labeled = unheld_rows(labeled, &holds.held);
+    let mut refs = image_removal_refs(
+        &labeled,
         // No legacy arm: see the module doc — a Podman store predates nothing.
         &[],
         &current_tags(),
@@ -248,6 +255,7 @@ pub(super) fn sweep_stale_images_on(connection: Option<&str>) -> Result<usize> {
         &[],
         super::settings::image_override().as_deref(),
     );
+    refs.extend(holds.expired);
     if refs.is_empty() {
         return Ok(0);
     }
@@ -258,6 +266,17 @@ pub(super) fn sweep_stale_images_on(connection: Option<&str>) -> Result<usize> {
     );
     let mut removed = 0;
     for image_ref in &refs {
+        // A dangling image is removed by id, which podman does even if one
+        // tag was written since the listing — a launch hold that landed in
+        // between. Look once more, right before.
+        if !image_ref.contains(':') && !still_dangling(connection, image_ref) {
+            tracing::debug!(
+                target: "fletch::podman",
+                image = %image_ref,
+                "image tagged since the listing; left for the next pass",
+            );
+            continue;
+        }
         // One rmi per image, not batched: a single in-use image or transport
         // failure must not taint the others' exit status or strand them.
         let out = match cli::run_podman_on(connection, &["rmi", image_ref], REMOVE_TIMEOUT) {
@@ -284,6 +303,19 @@ pub(super) fn sweep_stale_images_on(connection: Option<&str>) -> Result<usize> {
         }
     }
     Ok(removed)
+}
+
+/// Whether image `id` still has no tag at all in `connection`'s store. "Can't
+/// tell" (gone already, or no answer) reads as not dangling: left alone.
+fn still_dangling(connection: Option<&str>, id: &str) -> bool {
+    match cli::run_podman_on(
+        connection,
+        &["image", "inspect", "--format", "{{len .RepoTags}}", id],
+        QUERY_TIMEOUT,
+    ) {
+        Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout).trim() == "0",
+        Ok(_) | Err(_) => false,
+    }
 }
 
 fn list_images(connection: Option<&str>, args: &[&str]) -> Result<Vec<ImageRow>> {

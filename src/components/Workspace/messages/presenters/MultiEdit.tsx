@@ -1,8 +1,9 @@
 import { basename } from "@/util/format";
 import { lineDiffCounts } from "@/util/lineDiff";
 import { renderToolResult } from "@/util/toolText";
+import { Caption, DiffSurface, PathText } from "./blocks";
 import type { ToolPresenter } from "./types";
-import { DiffCount, getStringField, ToolBlock } from "./util";
+import { DiffCount, getStringField } from "./util";
 
 interface SingleEdit {
   old_string: string;
@@ -57,27 +58,27 @@ export const multiEditPresenter: ToolPresenter = {
     const edits = getEdits(call.input);
     return (
       <>
-        <ToolBlock label="file">{path}</ToolBlock>
-        {edits.map((e, i) => (
-          <div key={i}>
-            {e.old_string && (
-              <ToolBlock label="- old" isError>
-                {e.old_string}
-              </ToolBlock>
-            )}
-            {e.new_string && (
-              <ToolBlock label="+ new">
-                <span style={{ color: "var(--success, #6c9c5e)" }}>{e.new_string}</span>
-              </ToolBlock>
-            )}
-          </div>
-        ))}
-        {result && (
-          <ToolBlock label="↳" isError={result.is_error}>
-            {renderToolResult(result.content)}
-          </ToolBlock>
+        {path && (
+          <Caption>
+            <PathText path={path} />
+            {edits.length > 1 && <span className="tb-cap-note">{edits.length} edits</span>}
+          </Caption>
         )}
+        {edits.map((e, i) => (
+          // biome-ignore lint/suspicious/noArrayIndexKey: edits have no ids; their order is fixed
+          <DiffSurface key={i} before={e.old_string} after={e.new_string} />
+        ))}
+        {result?.is_error && <Caption tone="danger">{renderToolResult(result.content)}</Caption>}
       </>
     );
+  },
+  facts: (call) => ({
+    kind: "change",
+    path: getStringField(call.input, "file_path"),
+    ...totalCounts(getEdits(call.input)),
+  }),
+  activity: (call) => {
+    const path = getStringField(call.input, "file_path");
+    return path ? `Editing ${basename(path)}` : "Editing a file";
   },
 };

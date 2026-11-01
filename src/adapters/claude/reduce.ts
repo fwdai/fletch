@@ -94,8 +94,10 @@ function handleAssistant(prev: ChatItem[], ev: RawEvent): ChatItem[] {
       // Extended-thinking block → reasoning notice (we capture the whole
       // block here; the stream-event deltas are ignored). The text lives in
       // the assistant event's `thinking` field — confirmed against real
-      // persisted events. (Some Claude auth modes redact this to "" and emit
-      // only a signature; `if (!text) continue` skips those cleanly.)
+      // persisted events. Claude Code's `thinkingDisplay: "updates"` redacts
+      // the reasoning itself to "" (plus a signature) and sends the short
+      // progress updates it writes along the way as readable blocks. An empty
+      // block has nothing to show, so it leaves no row.
       const text = block.thinking;
       if (!text) continue;
       const exists = items

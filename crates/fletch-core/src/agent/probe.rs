@@ -201,8 +201,23 @@ const VERSION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 /// for the leader. A probe that times out reports no version, exactly like one
 /// that printed nothing.
 async fn probe_version_bounded(bin: &str) -> Option<String> {
+    let out = run_bounded(bin, &["--version"]).await?;
+    // Stdout, or stderr when stdout was silent — some CLIs print their version
+    // on the latter.
+    let said = if out.stdout.is_empty() {
+        &out.stderr
+    } else {
+        &out.stdout
+    };
+    parse_semver(&String::from_utf8_lossy(said))
+}
+
+/// Run `<bin> <args>` under [`VERSION_TIMEOUT`] and hand back what it printed
+/// and how it exited; `None` when it could not be started or did not finish
+/// in time (and was torn down, group and all).
+async fn run_bounded(bin: &str, args: &[&str]) -> Option<std::process::Output> {
     let mut cmd = tokio::process::Command::new(bin);
-    cmd.arg("--version")
+    cmd.args(args)
         .kill_on_drop(true)
         // Explicit, because this no longer goes through `Command::output()`:
         // a version probe reads nothing and its output is ours to parse, never
@@ -237,14 +252,117 @@ async fn probe_version_bounded(bin: &str) -> Option<String> {
             return None;
         }
     };
-    // Stdout, or stderr when stdout was silent — some CLIs print their version
-    // on the latter.
-    let said = if out.stdout.is_empty() {
-        &out.stderr
-    } else {
-        &out.stdout
+    Some(out)
+}
+
+/// The value the capability probe passes: a bad one on purpose.
+const THINKING_DISPLAY_PROBE: &str = "__fletch_probe__";
+
+/// The argv of the `--thinking-display` capability probe, after the binary:
+/// what [`claude_supports_thinking_display`] runs on the host, and what the
+/// container runtimes run inside their images (`sandbox::container::
+/// thinking_display`), so one reading serves every engine.
+pub(crate) const THINKING_DISPLAY_PROBE_ARGS: [&str; 3] =
+    ["--thinking-display", THINKING_DISPLAY_PROBE, "--version"];
+
+/// Whether a probe's output proves the CLI parses `--thinking-display`: it
+/// failed, named the option, and named the sentinel value it rejected. An
+/// "unknown option '--thinking-display'" diagnostic from a CLI that reports
+/// unknown options before `--version` names the option but never the value,
+/// and is not support; neither is a run that failed for any other reason.
+pub(crate) fn probe_shows_thinking_display(out: &std::process::Output) -> bool {
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    !out.status.success()
+        && stderr.contains("--thinking-display")
+        && stderr.contains(THINKING_DISPLAY_PROBE)
+        && !stderr.contains("unknown option")
+}
+
+/// What has been learnt about `--thinking-display`, by the identity of the
+/// binary it was learnt about: a host path, a container image id, a box's
+/// tools disk. Each engine records what it found about the binary it actually
+/// runs (`SandboxEngine::launch_agent`, `LaunchPlan::claude_thinking_summaries`)
+/// and reads it back before the next launch of the same one, so a binary is
+/// probed once per app run and never guessed at from another.
+pub(crate) fn thinking_display_known(identity: &str) -> Option<bool> {
+    known_map().lock().get(identity).copied()
+}
+
+pub(crate) fn remember_thinking_display(identity: &str, supported: bool) {
+    known_map().lock().insert(identity.to_string(), supported);
+    tracing::info!(
+        identity,
+        supported,
+        "claude --thinking-display capability probed"
+    );
+}
+
+type Known = parking_lot::Mutex<std::collections::HashMap<String, bool>>;
+
+fn known_map() -> &'static Known {
+    static KNOWN: std::sync::OnceLock<Known> = std::sync::OnceLock::new();
+    KNOWN.get_or_init(|| parking_lot::Mutex::new(std::collections::HashMap::new()))
+}
+
+/// What names a file for the capability memo: its real path (a `claude`
+/// symlink into a versions directory points somewhere new after an update)
+/// and the size and modification time of what is there (an in-place
+/// reinstall under the same name is a new file). A file that can't be read
+/// is named by its path alone. Shared by every engine that remembers a fact
+/// about a file: the host binary, a box's tools disk.
+pub(crate) fn file_identity(path: &std::path::Path) -> String {
+    let real = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let stamp = std::fs::metadata(&real)
+        .ok()
+        .map(|m| {
+            let modified = m
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_nanos())
+                .unwrap_or(0);
+            format!(" @{modified}+{}", m.len())
+        })
+        .unwrap_or_default();
+    format!("{}{stamp}", real.display())
+}
+
+/// Whether `bin` — a claude CLI on the host — parses `--thinking-display`,
+/// remembered per file ([`file_identity`]: the binary a path leads to today,
+/// not the path). The flag is hidden from `--help`, and `--version` short-circuits
+/// before unknown options are reported, so neither can say. What does: a
+/// CLI that knows the option validates its value as it parses, so
+/// `--thinking-display __fletch_probe__ --version` fails naming the option
+/// ("argument '__fletch_probe__' is invalid", 2.1.314), while a CLI that does
+/// not know it prints its version and exits 0. No network, no login, no
+/// session. The proof is the sentinel value named in the rejection
+/// ([`probe_shows_thinking_display`]). A binary that can't be probed counts
+/// as not supporting it, so a launch never carries a flag it can't vouch for.
+pub fn claude_supports_thinking_display(bin: &str) -> bool {
+    let identity = format!("host binary {}", file_identity(std::path::Path::new(bin)));
+    if let Some(known) = thinking_display_known(&identity) {
+        return known;
+    }
+    // A probe that couldn't run (or didn't finish) is no answer: nothing is
+    // remembered, and the next launch asks again.
+    let Some(out) = run_probe_bounded(bin, &THINKING_DISPLAY_PROBE_ARGS) else {
+        return false;
     };
-    parse_semver(&String::from_utf8_lossy(said))
+    let supported = probe_shows_thinking_display(&out);
+    remember_thinking_display(&identity, supported);
+    supported
+}
+
+/// Run `<program> <args>` under [`VERSION_TIMEOUT`] from a thread with no
+/// runtime, torn down as a process group when it doesn't finish — the one
+/// way a capability probe runs, on the host and over ssh into a box alike.
+pub(crate) fn run_probe_bounded(program: &str, args: &[&str]) -> Option<std::process::Output> {
+    let program = program.to_string();
+    let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+    on_probe_thread(move |rt| {
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        rt.block_on(run_bounded(&program, &args))
+    })
 }
 
 /// The sync callers' door to [`probe_version_bounded`] — the readiness check
@@ -258,20 +376,29 @@ async fn probe_version_bounded(bin: &str) -> Option<String> {
 /// own is safe from all three. The thread lives for one bounded probe.
 fn probe_version(bin: &str) -> Option<String> {
     let bin = bin.to_string();
-    let probed = std::thread::spawn(move || {
+    on_probe_thread(move |rt| rt.block_on(probe_version_bounded(&bin)))
+}
+
+/// Run one bounded probe on a thread of its own with a runtime of its own
+/// (see [`probe_version`] for why), and hand back what it found.
+fn on_probe_thread<T: Send + 'static>(
+    probe: impl FnOnce(&tokio::runtime::Runtime) -> Option<T> + Send + 'static,
+) -> Option<T> {
+    std::thread::spawn(move || {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .ok()?;
-        let version = runtime.block_on(probe_version_bounded(&bin));
+        let found = probe(&runtime);
         // Let the runtime's process driver reap a child the deadline killed,
         // so a wedged probe leaves nothing behind. Returns at once when there
         // is nothing to wait for, which is every ordinary probe.
         runtime.shutdown_timeout(std::time::Duration::from_millis(200));
-        version
+        found
     })
-    .join();
-    probed.ok().flatten()
+    .join()
+    .ok()
+    .flatten()
 }
 
 /// Extract the first `N.N[.N[.N]]` token from arbitrary version output.
@@ -320,6 +447,75 @@ mod tests {
             }
             std::thread::sleep(std::time::Duration::from_millis(25));
         }
+    }
+
+    /// A claude that knows `--thinking-display` rejects the probe's value
+    /// before `--version` can answer; one that doesn't answers as if the flag
+    /// weren't there. Older hosts keep launching without the flag.
+    #[test]
+    fn the_thinking_display_probe_reads_the_option_off_a_rejection() {
+        let dir = tempfile::tempdir().unwrap();
+        let knows = script(
+            dir.path(),
+            "knows",
+            "#!/bin/sh\nif [ \"$1\" = --thinking-display ]; then echo \"error: option '--thinking-display <display>' argument '$2' is invalid.\" >&2; exit 1; fi\necho 2.1.314\n",
+        );
+        assert!(claude_supports_thinking_display(&knows));
+        let older = script(dir.path(), "older", "#!/bin/sh\necho 2.0.0\n");
+        assert!(!claude_supports_thinking_display(&older));
+        // One that reports unknown options before answering `--version`:
+        // the option is named, the value is not — no support.
+        let strict = script(
+            dir.path(),
+            "strict",
+            "#!/bin/sh\necho \"error: unknown option '$1'\" >&2; exit 1\n",
+        );
+        assert!(!claude_supports_thinking_display(&strict));
+        let missing = dir.path().join("missing").to_string_lossy().into_owned();
+        assert!(!claude_supports_thinking_display(&missing));
+    }
+
+    /// What was learnt about a binary is about that binary, not its name: a
+    /// claude reinstalled under the same path, or a symlink pointed at a new
+    /// version, is probed afresh rather than read from the old one's memo.
+    #[test]
+    fn a_binary_replaced_in_place_is_probed_afresh() {
+        let dir = tempfile::tempdir().unwrap();
+        let knows = "#!/bin/sh\nif [ \"$1\" = --thinking-display ]; then echo \"error: option '--thinking-display <display>' argument '$2' is invalid.\" >&2; exit 1; fi\necho 2.1.314\n";
+        let older = "#!/bin/sh\necho 2.0.0\n";
+
+        let claude = script(dir.path(), "claude", older);
+        assert!(!claude_supports_thinking_display(&claude));
+        script(dir.path(), "claude", knows);
+        assert!(
+            claude_supports_thinking_display(&claude),
+            "the reinstalled binary was answered for by the old one's memo"
+        );
+
+        let link = dir.path().join("link");
+        let old_version = script(dir.path(), "v2.0.0", older);
+        let new_version = script(dir.path(), "v2.1.314", knows);
+        std::os::unix::fs::symlink(&old_version, &link).unwrap();
+        let link_str = link.to_string_lossy().into_owned();
+        assert!(!claude_supports_thinking_display(&link_str));
+        std::fs::remove_file(&link).unwrap();
+        std::os::unix::fs::symlink(&new_version, &link).unwrap();
+        assert!(
+            claude_supports_thinking_display(&link_str),
+            "the symlink's new target was answered for by the old target's memo"
+        );
+    }
+
+    /// What an engine learnt is read back by the same identity and by no
+    /// other: a rebuilt image or disk is a new identity, probed afresh.
+    #[test]
+    fn thinking_display_facts_are_kept_by_binary_identity() {
+        assert_eq!(thinking_display_known("test image a"), None);
+        remember_thinking_display("test image a", true);
+        assert_eq!(thinking_display_known("test image a"), Some(true));
+        assert_eq!(thinking_display_known("test image b"), None);
+        remember_thinking_display("test image a", false);
+        assert_eq!(thinking_display_known("test image a"), Some(false));
     }
 
     /// The sync door every non-async caller goes through — the readiness check,

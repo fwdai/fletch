@@ -98,6 +98,7 @@ export function ChatView({ agent }: { agent: AgentRecord }) {
         scrollRef={scrollRef}
         pinRef={pinnedToBottom}
         hideNav={searchOpen}
+        revealQuery={searchOpen ? searchQuery : ""}
       />
       <CodeUndoBar agentId={agent.id} />
       {!liveBusy && endedOnAccountError(items) && <SwitchAccountHint agent={agent} />}

@@ -213,6 +213,15 @@ impl SandboxEngine for DockerEngine {
             .ok_or_else(|| Error::Other("docker binary not found — is Docker installed?".into()))?;
         let settings = LAUNCH_SETTINGS.read().clone();
         let image = self.resolve_image_cached(provider, settings.image_override.as_deref())?;
+        // Pinned to the id the tag names right now: a parity rebuild may retag
+        // in the background between here and the `docker run`, and the probe
+        // below and the launch must see one image. Unpinnable, the tag
+        // launches as before and nothing is vouched for.
+        let pinned = image::pin_image(&image);
+        let claude_thinking_summaries = pinned
+            .as_deref()
+            .is_some_and(|id| image::claude_thinking_summaries(provider, id));
+        let image = pinned.unwrap_or(image);
         let name = container_name(ctx.agent_id);
         // Everything about *what* to mount, set, and authenticate is
         // runtime-neutral policy; this engine only decides which binary carries
@@ -250,6 +259,7 @@ impl SandboxEngine for DockerEngine {
 
         Ok(LaunchPlan {
             program: docker,
+            claude_thinking_summaries,
             prefix_args,
             env: prep.env,
             env_remove: Vec::new(),

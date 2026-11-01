@@ -360,6 +360,14 @@ pub struct LaunchPlan {
     /// after every turn, so a host crash between turns loses nothing.
     pub after_exit: Option<TurnPrep>,
     pub kill: KillHandle,
+    /// Whether the claude this plan runs — the binary the engine committed to
+    /// in `launch_agent`: the host's, a container image's, a box's tools
+    /// disk's — parses `--thinking-display`, so the custom view can ask it for
+    /// thinking summaries (`agent::args::prepare_managed_args`). A claude that
+    /// doesn't parse the flag refuses to launch with it, so this is evidence
+    /// about that very binary (`agent::probe`), never a guess from another;
+    /// `false` for any other provider and wherever there is no evidence.
+    pub claude_thinking_summaries: bool,
 }
 
 pub trait SandboxEngine: Send + Sync {
