@@ -48,11 +48,15 @@
 //! is another agent's — as its tenant ([`registry::Tenant`]): same VM, its own
 //! ssh session, env file, mailbox relay and profile dir, no box of its own.
 //! Conversely an agent adopting a host tree never runs in a box, which cannot
-//! see it ([`crate::sandbox::engine_for_adopted_tree`]). The one thing a
-//! tenant launch does not get is the read-only grant on the adopted tree the
-//! seatbelt and container engines give the reviewer: inside the guest both
-//! agents are one user, so the reviewer's mandate not to change the coder's
-//! tree is held by its brief and its capability grant alone.
+//! see it ([`crate::sandbox::engine_for_adopted_tree`]). Inside the guest both
+//! agents are one user, so a file mode cannot keep the reviewer off the
+//! coder's tree; its launch gets namespaces of its own instead (`fletch-guest
+//! exec --read-only`), in which the host's writable root is a read-only bind,
+//! `/data` is hidden, `/proc` is private and no capability is left
+//! ([`read_only_view`]): the read-only grant seatbelt and the container
+//! engines give it, kernel-enforced. A guest from before the option (image
+//! 0.3.0) cannot; the reviewer then runs unconfined with a warning
+//! ([`REVIEW_UNCONFINED_ON_AN_OLD_GUEST`]).
 //!
 //! What touches a checkout from the host goes through the seam, or asks
 //! [`box_holding`] and refuses with the reason. Not in the guest yet, each
@@ -606,6 +610,134 @@ fn guest_thinking_summaries(channel: &fletch_box::Channel, disk: &Path, agent_bi
     supported
 }
 
+/// What a reviewer launch does in a box whose `fletch-guest` predates
+/// `exec --read-only` (image 0.3.0 and earlier): `true` runs it unconfined, as
+/// before, with its brief and capability grant alone keeping it off the
+/// coder's tree, and warns that the box image wants updating; `false` refuses
+/// the launch. Running is the choice while the pinned image is one of those,
+/// so that this build does not take the box reviewer away before an image
+/// with the new guest is published; once the pin names one, no box this build
+/// boots has an old guest, and `false` turns one that does into a refusal.
+const REVIEW_UNCONFINED_ON_AN_OLD_GUEST: bool = true;
+
+/// The directory a launch must only read, when there is one: for a tenant
+/// that adopts its host's tree to read it (`adopted_read_only`, the local
+/// reviewer), the host's whole writable root. That is the adopted checkout
+/// and what lies beside it which the host agent's own launches read, such as
+/// its profile dir: seatbelt lets the reviewer write none of the coder's
+/// root either. Just the tree, should the tenant's own root lie under the
+/// host's. `None` for an owner, for a launch that adopts its tree to write it
+/// (a workflow step), and for one that adopts nothing.
+fn read_only_view(ctx: &AgentLaunchCtx, is_tenant: bool, host_root: &Path) -> Option<PathBuf> {
+    if !is_tenant || !ctx.adopted_read_only {
+        return None;
+    }
+    let tree = ctx.adopted_workspace()?;
+    let whole_root = tree.starts_with(host_root) && !ctx.writable_root.starts_with(host_root);
+    Some(if whole_root { host_root } else { tree }.to_path_buf())
+}
+
+/// `view` when the guest enforces it (`guest_enforces`, [`guest_confines`]
+/// in a launch); else, per [`REVIEW_UNCONFINED_ON_AN_OLD_GUEST`], no view and
+/// a warning, or a refusal.
+fn enforced_view(
+    view: Option<PathBuf>,
+    guest_enforces: impl FnOnce(&Path) -> Result<bool>,
+    agent_id: &str,
+    box_agent_id: &str,
+) -> Result<Option<PathBuf>> {
+    let Some(tree) = view else {
+        return Ok(None);
+    };
+    if guest_enforces(&tree)? {
+        return Ok(Some(tree));
+    }
+    if !REVIEW_UNCONFINED_ON_AN_OLD_GUEST {
+        return Err(Error::SandboxUnavailable(format!(
+            "this box's image predates read-only views, so it cannot keep the reviewer off {}; \
+             update the box image",
+            tree.display()
+        )));
+    }
+    tracing::warn!(
+        agent_id,
+        box_agent_id,
+        tree = %tree.display(),
+        "the box's guest predates read-only views: the reviewer runs with write access to \
+         the tree it reviews until the box image is updated"
+    );
+    Ok(None)
+}
+
+/// Whether `running`'s guest confines a launch to a read-only view
+/// (`exec --read-only`), asked the first time a launch needs it and
+/// remembered for the boot: `fletch-guest exec --read-only <tree>` running
+/// `/bin/true` from an empty env file, which sets up the whole confinement
+/// and so also shows the guest kernel allows it. A guest with the option
+/// that cannot set it up fails the launch, as the launch itself would.
+fn guest_confines(running: &RunningBox, tree: &Path) -> Result<bool> {
+    if let Some(known) = running.read_only_exec().get() {
+        return Ok(*known);
+    }
+    let tree_arg = tree.to_string_lossy();
+    let out = executor::run(
+        &running.channel,
+        &[
+            fletch_box::guest::GUEST_AGENT,
+            fletch_box::guest::EXEC,
+            fletch_box::guest::EXEC_READ_ONLY,
+            &tree_arg,
+            "--env-file",
+            "/dev/null",
+            "--",
+            "/bin/true",
+        ],
+        None,
+    )?;
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let Some(confines) = read_only_probe_answer(out.status.success(), &stderr) else {
+        return Err(Error::SandboxUnavailable(format!(
+            "the box could not give this agent a read-only view of {} ({}): {}",
+            tree.display(),
+            out.status,
+            stderr.trim()
+        )));
+    };
+    let _ = running.read_only_exec().set(confines);
+    Ok(confines)
+}
+
+/// What a `guest_confines` probe says: `Some(true)` when the command ran
+/// confined, `Some(false)` when the guest refused the option as unknown (it
+/// predates it), `None` when it has the option and could not set it up
+/// (exit `EXEC_CONFINE_FAILED`), or the probe never reached it.
+fn read_only_probe_answer(success: bool, stderr: &str) -> Option<bool> {
+    let unknown = format!("unknown option {}", fletch_box::guest::EXEC_READ_ONLY);
+    if success {
+        Some(true)
+    } else if stderr.contains(&unknown) {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+/// The remote command of an agent launch: `agent_bin` under `fletch-guest
+/// exec` with the launch's env file, in `cwd`, and `read_only` read-only.
+fn agent_remote_command(
+    cwd: &Path,
+    env_file: &Path,
+    read_only: Option<&Path>,
+    agent_bin: &str,
+) -> Vec<String> {
+    fletch_box::Channel::remote_command_confined(
+        Some(cwd),
+        Some(env_file),
+        read_only.as_slice(),
+        &[agent_bin],
+    )
+}
+
 impl SandboxEngine for BoxEngine {
     fn kind(&self) -> EngineKind {
         EngineKind::Box
@@ -619,7 +751,8 @@ impl SandboxEngine for BoxEngine {
     /// An agent whose cwd is a tree it adopted runs in the box that holds the
     /// tree, as that box's tenant (module docs): the host's VM, with the
     /// tenant's own env file, mailbox relay and launch attached to the host's
-    /// idle timer.
+    /// idle timer. A tenant that adopts the tree to read it runs with its
+    /// host's writable root read-only ([`read_only_view`]).
     fn launch_agent(&self, ctx: &AgentLaunchCtx, agent_bin: &str) -> Result<LaunchPlan> {
         provider::supports(EngineKind::Box, ctx.provider).map_err(Error::Other)?;
         let provider_home = provider::require(ctx.provider)?;
@@ -755,9 +888,14 @@ impl SandboxEngine for BoxEngine {
             _ => false,
         };
         let env_file = env_file_path(&launch_id);
+        let read_only = enforced_view(
+            read_only_view(ctx, is_tenant, &identity.writable_root),
+            |tree| guest_confines(&running, tree),
+            ctx.agent_id,
+            &box_agent_id,
+        )?;
 
-        let remote =
-            fletch_box::Channel::remote_command(Some(ctx.cwd), Some(&env_file), &[agent_bin]);
+        let remote = agent_remote_command(ctx.cwd, &env_file, read_only.as_deref(), agent_bin);
         let tty = if ctx.interactive { "-tt" } else { "-T" };
         let prefix_args = executor::quoting_wrapper(
             SSH,

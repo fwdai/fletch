@@ -39,6 +39,21 @@ software GL and LLVM, locales, docs and man pages are excluded with dpkg path
 rules (`dpkg-excludes.cfg`); a headless browser never loads them. Images are
 lz4hc erofs (64 KiB clusters, dedupe): the guest kernel decodes LZ4 only.
 
+Every agent process starts through `fletch-guest exec`, which clears the
+environment and loads the launch's env file. All ssh sessions are the one
+guest user `agent`, so a tenant that must only read its host's tree (the
+local reviewer) gets `exec --read-only <dir>` on the host agent's writable
+root instead of a file mode: a user namespace mapping `agent` to itself, a
+mount namespace in which `<dir>` is a read-only bind and `/data` (the other
+route to the same trees) is covered by an empty tmpfs, and a pid namespace
+with a private `/proc`, so no other process's `/proc/<pid>/root` leads back
+to the writable view. Every capability is then dropped and `no_new_privs`
+set; a namespace the command creates inherits the mounts locked. A step that
+fails exits 125 before the command runs. It covers the named trees only:
+what the guest user may write anyway (its home, `/tmp`) stays writable.
+Images up to 0.3.0 ship a `fletch-guest` without the option; until a newer
+one is published and pinned, the reviewer runs unconfined with a warning.
+
 Settings (Settings › Sandbox › Box): memory, CPUs, idle stop, image URL, and a
 toggle per layer (`box_layers`). A layer turned on is downloaded once and
 attached to every box from its next boot.

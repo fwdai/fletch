@@ -82,13 +82,30 @@ impl Channel {
         env_file: Option<&Path>,
         cmd: &[&str],
     ) -> Vec<String> {
+        Self::remote_command_confined(cwd, env_file, &[], cmd)
+    }
+
+    /// [`remote_command`](Self::remote_command) with directories `cmd` must
+    /// only read: each is a [`guest::EXEC_READ_ONLY`] to `fletch-guest exec`,
+    /// which the guest kernel enforces whoever owns the tree. The guest needs
+    /// an env file alongside.
+    pub fn remote_command_confined(
+        cwd: Option<&Path>,
+        env_file: Option<&Path>,
+        read_only: &[&Path],
+        cmd: &[&str],
+    ) -> Vec<String> {
         let mut words: Vec<String> = Vec::new();
-        if cwd.is_some() || env_file.is_some() {
+        if cwd.is_some() || env_file.is_some() || !read_only.is_empty() {
             words.push(guest::GUEST_AGENT.into());
             words.push(guest::EXEC.into());
             if let Some(env_file) = env_file {
                 words.push("--env-file".into());
                 words.push(env_file.to_string_lossy().into_owned());
+            }
+            for dir in read_only {
+                words.push(guest::EXEC_READ_ONLY.into());
+                words.push(dir.to_string_lossy().into_owned());
             }
             if let Some(cwd) = cwd {
                 words.push("--cwd".into());
@@ -534,6 +551,38 @@ mod tests {
         assert_eq!(shell_quote("a b"), "'a b'");
         assert_eq!(shell_quote(""), "''");
         assert_eq!(shell_quote("$HOME"), "'$HOME'");
+    }
+
+    #[test]
+    fn confined_remote_commands_name_each_read_only_dir() {
+        let (ws, other) = (Path::new("/Users/a/ws"), Path::new("/Users/a/my tree"));
+        assert_eq!(
+            Channel::remote_command_confined(
+                Some(Path::new("/Users/a/ws/repo")),
+                Some(Path::new("/data/run/1.env")),
+                &[ws, other],
+                &["claude"]
+            ),
+            [
+                "/opt/fletch/bin/fletch-guest",
+                "exec",
+                "--env-file",
+                "/data/run/1.env",
+                "--read-only",
+                "/Users/a/ws",
+                "--read-only",
+                "'/Users/a/my tree'",
+                "--cwd",
+                "/Users/a/ws/repo",
+                "--",
+                "claude"
+            ]
+        );
+        // No read-only dirs: the plain command, word for word.
+        assert_eq!(
+            Channel::remote_command_confined(None, Some(Path::new("/e")), &[], &["true"]),
+            Channel::remote_command(None, Some(Path::new("/e")), &["true"])
+        );
     }
 
     #[test]

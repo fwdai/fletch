@@ -24,6 +24,7 @@ use super::block_on_with;
 use super::provision::Landing;
 use super::registry::{BoxIdentity, BoxRegistry, StopReason};
 use super::settings::{self, BoxSettings};
+use crate::sandbox::engine::AgentLaunchCtx;
 use crate::sandbox::provision::CheckoutSpec;
 
 fn env_path(name: &str) -> PathBuf {
@@ -450,4 +451,116 @@ async fn a_current_thread_caller_does_not_panic() {
     let handle = tokio::runtime::Handle::current();
     assert_eq!(block_on_with(Some(handle), async { 7 }), 7);
     assert_eq!(block_on_with(None, async { 8 }), 8);
+}
+
+// The reviewer's read-only view (`read_only_view`, `enforced_view`).
+
+fn launch_ctx<'a>(
+    writable_root: &'a Path,
+    cwd: &'a Path,
+    adopted_read_only: bool,
+) -> AgentLaunchCtx<'a> {
+    AgentLaunchCtx {
+        agent_id: "reviewer",
+        project_id: "p1",
+        provider: "claude",
+        writable_root,
+        source_repos: &[],
+        rpc_dir: Path::new("/rpc/reviewer"),
+        cwd,
+        home: Path::new("/Users/u"),
+        interactive: true,
+        blackboard: None,
+        account_dir: None,
+        oauth_token: None,
+        codex_home: None,
+        adopted_read_only,
+        folder_grants: &[],
+    }
+}
+
+/// The local reviewer, a tenant adopting the coder's checkout to read it,
+/// launches with the coder's whole writable root read-only when the guest
+/// enforces that; a guest that predates it runs the reviewer as before (or
+/// refuses, per the policy const), and one that cannot set it up refuses.
+#[test]
+fn a_reviewer_tenant_launches_with_its_hosts_root_read_only() {
+    let (host_root, own_root) = (Path::new("/w/coder"), Path::new("/w/reviewer"));
+    let tree = host_root.join("repo");
+    let view = super::read_only_view(&launch_ctx(own_root, &tree, true), true, host_root);
+    assert_eq!(view.as_deref(), Some(host_root));
+
+    let enforced = super::enforced_view(view.clone(), |_| Ok(true), "r", "c");
+    let read_only = enforced.unwrap();
+    let env_file = Path::new("/data/run/1.env");
+    let remote = super::agent_remote_command(&tree, env_file, read_only.as_deref(), "claude");
+    assert_eq!(
+        remote,
+        [
+            "/opt/fletch/bin/fletch-guest",
+            "exec",
+            "--env-file",
+            "/data/run/1.env",
+            "--read-only",
+            "/w/coder",
+            "--cwd",
+            "/w/coder/repo",
+            "--",
+            "claude"
+        ]
+    );
+
+    let old = super::enforced_view(view.clone(), |_| Ok(false), "r", "c");
+    if super::REVIEW_UNCONFINED_ON_AN_OLD_GUEST {
+        let read_only = old.unwrap();
+        assert_eq!(read_only, None);
+        let remote = super::agent_remote_command(&tree, env_file, read_only.as_deref(), "claude");
+        assert!(!remote.iter().any(|w| w == "--read-only"), "{remote:?}");
+    } else {
+        assert!(old.is_err());
+    }
+    let cannot = |_: &Path| -> crate::error::Result<bool> {
+        Err(crate::error::Error::Other("exit status: 125".into()))
+    };
+    assert!(super::enforced_view(view, cannot, "r", "c").is_err());
+
+    // A tenant whose own root lies under its host's keeps it writable: only
+    // the tree is read-only then.
+    let nested = host_root.join("reviewer");
+    let view = super::read_only_view(&launch_ctx(&nested, &tree, true), true, host_root);
+    assert_eq!(view, Some(tree));
+}
+
+/// An owner never gets a read-only view, nor does a tenant that adopts its
+/// tree to write it (a workflow step); the guest is not even asked.
+#[test]
+fn owners_and_workflow_steps_get_no_read_only_view() {
+    let root = Path::new("/w/coder");
+    let own_tree = root.join("repo");
+    let run_tree = Path::new("/runs/run-7/repo");
+    let cases = [
+        // An owner, in its own checkout or in an adopted one.
+        (launch_ctx(root, &own_tree, true), false),
+        (launch_ctx(root, run_tree, true), false),
+        // A tenant that adopts its tree to write it.
+        (launch_ctx(root, run_tree, false), true),
+    ];
+    for (ctx, is_tenant) in &cases {
+        let view = super::read_only_view(ctx, *is_tenant, Path::new("/runs/run-7"));
+        assert_eq!(view, None, "{}", ctx.cwd.display());
+        let enforced = super::enforced_view(view, |_| panic!("the guest was asked"), "a", "b");
+        assert_eq!(enforced.unwrap(), None);
+    }
+}
+
+/// The probe tells a guest that predates `--read-only` (it names the option
+/// unknown) from one that has it and could not set it up.
+#[test]
+fn the_read_only_probe_tells_an_old_guest_from_a_failed_one() {
+    assert_eq!(super::read_only_probe_answer(true, ""), Some(true));
+    let old = "fletch-guest: exec: unknown option --read-only\n";
+    assert_eq!(super::read_only_probe_answer(false, old), Some(false));
+    let failed = "fletch-guest: exec: unshare: Operation not permitted (os error 1)\n";
+    assert_eq!(super::read_only_probe_answer(false, failed), None);
+    assert_eq!(super::read_only_probe_answer(false, ""), None);
 }

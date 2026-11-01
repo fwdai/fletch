@@ -238,6 +238,10 @@ pub struct RunningBox {
     proxy: Mutex<Option<EgressProxy>>,
     relays: relay::Relays,
     dirty: Dirty,
+    /// Whether this boot's `fletch-guest` takes `exec --read-only`, once a
+    /// launch has asked (`super::guest_confines`). The guest is the image's,
+    /// fixed for the boot.
+    read_only_exec: OnceLock<bool>,
 }
 
 impl RunningBox {
@@ -266,6 +270,12 @@ impl RunningBox {
     pub fn relay_tail(&self, guest_sessions: &Path, mirror: &Path) {
         self.relays
             .add_tail(self.channel.clone(), guest_sessions, mirror);
+    }
+
+    /// The remembered answer to whether this box's guest confines a launch
+    /// to a read-only view (`super::guest_confines` asks and sets it).
+    pub(super) fn read_only_exec(&self) -> &OnceLock<bool> {
+        &self.read_only_exec
     }
 }
 
@@ -1866,7 +1876,19 @@ async fn boot(
         proxy: Mutex::new(Some(proxy)),
         relays,
         dirty,
+        read_only_exec: OnceLock::new(),
     })
+}
+
+/// End `channel`'s ssh master (`Channel::close_master`), best-effort: one
+/// that outlived its guest dies with its connection anyway, and a stale
+/// socket is replaced by the next master. A failure is expected after a
+/// halt, when the master is going with the guest as this asks it to exit,
+/// so it is only debug-logged.
+async fn close_master(agent_id: &str, channel: &Channel) {
+    if let Err(e) = channel.close_master().await {
+        tracing::debug!(agent_id, error = %e, "ending the box's ssh master failed");
+    }
 }
 
 /// Every shared folder is a mountpoint in the guest (`mountpoint -q`, one ssh

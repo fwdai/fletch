@@ -73,6 +73,15 @@ pub const LAYERS_MOUNT: &str = "/run/layers";
 
 /// `fletch-guest` subcommands the host invokes over the channel.
 pub const EXEC: &str = "exec";
+/// `exec --read-only <dir>`, repeatable: the command sees `<dir>` read-only,
+/// enforced by the guest kernel (namespaces of the command's own: a read-only
+/// bind of `<dir>`, `/data` hidden, a private `/proc`, no capabilities). A
+/// `fletch-guest` older than the option (image 0.3.0) refuses it as an unknown
+/// option, before running anything.
+pub const EXEC_READ_ONLY: &str = "--read-only";
+/// What `exec` exits with when it cannot set up `--read-only`: the command
+/// never ran. Apart from 126 (could not run) and 127 (not found).
+pub const EXEC_CONFINE_FAILED: i32 = 125;
 pub const RELAY: &str = "relay";
 pub const TAIL: &str = "tail";
 
