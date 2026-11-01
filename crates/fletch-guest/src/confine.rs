@@ -41,8 +41,8 @@ pub const CONFINE_FAILED: i32 = 125;
 /// unshared, for a message that names the path rather than a mount error.
 pub fn check_paths(paths: &[PathBuf]) -> Result<(), String> {
     for path in paths {
-        let meta = std::fs::metadata(path)
-            .map_err(|e| format!("--read-only {}: {e}", path.display()))?;
+        let meta =
+            std::fs::metadata(path).map_err(|e| format!("--read-only {}: {e}", path.display()))?;
         if !meta.is_dir() {
             return Err(format!("--read-only {}: not a directory", path.display()));
         }
